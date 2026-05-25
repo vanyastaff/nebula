@@ -1017,13 +1017,13 @@ mod shared_resource {
         let mut found = false;
         for _ in 0..16 {
             match events.try_recv() {
-                Ok(ResourceEvent::ConfigReloaded { key }) => {
+                Some(ResourceEvent::ConfigReloaded { key }) => {
                     assert_eq!(key, TelegramBot::key());
                     found = true;
                     break;
                 },
-                Ok(_) => continue,
-                Err(_) => break,
+                Some(_) => continue,
+                None => break,
             }
         }
         assert!(

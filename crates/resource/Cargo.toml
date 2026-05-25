@@ -18,6 +18,7 @@ default = []
 # Nebula ecosystem
 nebula-core = { path = "../core" }
 nebula-credential = { path = "../credential" }
+nebula-eventbus = { path = "../eventbus" }
 nebula-expression = { path = "../expression", default-features = false, features = ["cache"] }
 nebula-metrics = { path = "../metrics" }
 nebula-metadata = { path = "../metadata" }

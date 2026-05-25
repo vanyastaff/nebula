@@ -372,6 +372,10 @@ pub trait Resource: Send + Sync + 'static {
     /// generation, so any post-build slot transition yields a different
     /// epoch — proving a credential rotated/was revoked in between.
     ///
+    /// For resources with no `#[credential]` slots, this returns `0`
+    /// permanently (slot-less resources rely on runtime-presence checks
+    /// only, not epoch-based rotation tracking).
+    ///
     /// `#[derive(Resource)]` emits the real implementation: an
     /// order-sensitive positional fold
     /// (`acc = acc * K + slot.generation()`, fixed odd `K`) over every

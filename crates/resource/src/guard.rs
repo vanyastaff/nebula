@@ -240,6 +240,9 @@ impl<R: Resource> ResourceGuard<R> {
     /// topology runtime hands back the guard. Without this, the guard
     /// silently skips the released event — the existing best-effort
     /// `event_tx.send(...).ok()` discipline applies here too.
+    // TODO(eventbus-migration): convert to EventBus — currently unused
+    // because `Manager::run_acquire` no longer holds a broadcast sender.
+    #[allow(dead_code)]
     pub(crate) fn with_event_tx(mut self, event_tx: broadcast::Sender<ResourceEvent>) -> Self {
         self.event_tx = Some(event_tx);
         self

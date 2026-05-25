@@ -41,6 +41,20 @@ use crate::{
     topology_tag::TopologyTag,
 };
 
+// ─── Static error messages ───────────────────────────────────────────────────
+
+/// The concurrency semaphore was closed (runtime is shutting down).
+const ERR_SEMAPHORE_CLOSED: &str = "bounded: semaphore closed";
+
+/// Timed out waiting for a concurrency permit.
+const ERR_PERMIT_TIMEOUT: &str = "bounded: timed out waiting for a permit";
+
+/// Exclusive runtime was poisoned by a prior failed reset (S4).
+const ERR_POISONED: &str = "bounded: exclusive runtime poisoned by a prior failed reset \
+     (S4) — re-register the resource to obtain a fresh instance";
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 /// Runtime state for a [`Bounded`](crate::topology::bounded::Bounded)
 /// resource.
 ///
@@ -311,11 +325,9 @@ where
                 let timeout = options.remaining().unwrap_or(self.config.acquire_timeout);
                 match time::timeout(timeout, sem.clone().acquire_owned()).await {
                     Ok(Ok(p)) => Some(p),
-                    Ok(Err(_)) => return Err(Error::permanent("bounded: semaphore closed")),
+                    Ok(Err(_)) => return Err(Error::permanent(ERR_SEMAPHORE_CLOSED)),
                     Err(_) => {
-                        return Err(Error::backpressure(
-                            "bounded: timed out waiting for a permit",
-                        ));
+                        return Err(Error::backpressure(ERR_PERMIT_TIMEOUT));
                     },
                 }
             },
@@ -338,10 +350,7 @@ where
             if let Some(m) = &metrics {
                 m.record_acquire_error();
             }
-            return Err(Error::permanent(
-                "bounded: exclusive runtime poisoned by a prior failed reset \
-                 (S4) — re-register the resource to obtain a fresh instance",
-            ));
+            return Err(Error::permanent(ERR_POISONED));
         }
 
         // 2. Mint the lease.

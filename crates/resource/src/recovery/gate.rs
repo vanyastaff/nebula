@@ -377,6 +377,9 @@ impl RecoveryGate {
     /// `set_event_sink` is a no-op by design. Treat one
     /// `Arc<RecoveryGate>` as belonging to one resource registration; if
     /// recovery-group sharing matters, give each resource its own gate.
+    // TODO(eventbus-migration): convert to EventBus — currently unused
+    // because `Manager::register` no longer wires a broadcast sender.
+    #[allow(dead_code)]
     pub(crate) fn set_event_sink(&self, tx: broadcast::Sender<ResourceEvent>, key: ResourceKey) {
         // OnceLock::set returns Err on second call — we treat that as
         // a no-op rather than a programming error, since the manager

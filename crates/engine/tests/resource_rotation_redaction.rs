@@ -276,7 +276,7 @@ impl Resident for SecretBearingResource {
 /// expected slot variants were observed so the event surface is proven
 /// non-empty (not trivially redaction-clean by emitting nothing).
 struct EventSink {
-    rx: tokio::sync::broadcast::Receiver<ResourceEvent>,
+    rx: nebula_eventbus::Subscriber<ResourceEvent>,
 }
 
 #[derive(Default)]
@@ -296,41 +296,34 @@ impl EventSink {
         // broadcast channel is a fixed 256-slot buffer (constructed
         // internally by `Manager`; capacity is not caller-controllable
         // here) and this gate emits ≤2 events per direction, so `Lagged`
-        // cannot trigger under load — the panic below is a guard that
-        // converts the impossible-by-construction case into a hard fail
-        // rather than a worthless pass.
-        loop {
-            match self.rx.try_recv() {
-                Ok(evt) => {
-                    // `ResourceEvent` derives `Debug` (no `Display`); the
-                    // Debug rendering expands every struct field name +
-                    // value, so a credential in any field — including the
-                    // `error: String` on the `*Failed` variants — would
-                    // surface here verbatim.
-                    d.rendered.push_str(&format!("{evt:?}\n"));
-                    match (&evt, want_revoke) {
-                        (ResourceEvent::SlotRefreshed { .. }, false)
-                        | (ResourceEvent::SlotRevoked { .. }, true) => {
-                            d.saw_success_variant = true;
-                        },
-                        (ResourceEvent::SlotRefreshFailed { .. }, false)
-                        | (ResourceEvent::SlotRevokeFailed { .. }, true) => {
-                            d.saw_failed_variant = true;
-                        },
-                        _ => {},
-                    }
-                    d.count += 1;
+        // cannot trigger under load — the `Subscriber` wrapper
+        // automatically skips lagged events and continues, so we drain
+        // until `None` (empty or closed).
+        while let Some(evt) = self.rx.try_recv() {
+            // `ResourceEvent` derives `Debug` (no `Display`); the
+            // Debug rendering expands every struct field name +
+            // value, so a credential in any field — including the
+            // `error: String` on the `*Failed` variants — would
+            // surface here verbatim.
+            d.rendered.push_str(&format!("{evt:?}\n"));
+            match (&evt, want_revoke) {
+                (ResourceEvent::SlotRefreshed { .. }, false)
+                | (ResourceEvent::SlotRevoked { .. }, true) => {
+                    d.saw_success_variant = true;
                 },
-                Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,
-                Err(tokio::sync::broadcast::error::TryRecvError::Closed) => break,
-                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(n)) => {
-                    panic!(
-                        "EventSink lagged by {n}: events were dropped — \
-                         redaction gate would be incomplete (false-clean risk)"
-                    );
+                (ResourceEvent::SlotRefreshFailed { .. }, false)
+                | (ResourceEvent::SlotRevokeFailed { .. }, true) => {
+                    d.saw_failed_variant = true;
                 },
+                _ => {},
             }
+            d.count += 1;
         }
+        assert_eq!(
+            self.rx.lagged_count(),
+            0,
+            "event lag detected — security gate may have missed events"
+        );
         d
     }
 }

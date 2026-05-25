@@ -323,7 +323,7 @@ impl Manager {
         let reason = error.to_string();
         for managed in self.registry.all_managed() {
             managed.set_failed_erased(&reason);
-            let _ = self.event_tx.send(ResourceEvent::HealthChanged {
+            let _ = self.event_bus.emit(ResourceEvent::HealthChanged {
                 key: managed.resource_key(),
                 healthy: false,
             });

@@ -7,23 +7,25 @@ Lifecycle event system for observability and diagnostics.
 ## Overview
 
 The `Manager` emits `ResourceEvent`s on every significant lifecycle
-transition. Events are broadcast via a `tokio::sync::broadcast` channel —
-see `Manager::subscribe_events()` for the receiver type.
+transition. Events are published through a `nebula_eventbus::EventBus<ResourceEvent>`
+— see `Manager::subscribe_events()` for the subscriber type.
 
 Subscribe with `Manager::subscribe_events()`:
 
 ```rust,ignore
-let mut rx = manager.subscribe_events();
+use nebula_resource::Subscriber;
+
+let mut rx: Subscriber<ResourceEvent> = manager.subscribe_events();
 tokio::spawn(async move {
-    while let Ok(event) = rx.recv().await {
+    while let Some(event) = rx.recv().await {
         tracing::info!(?event, "resource lifecycle event");
     }
 });
 ```
 
-The channel buffer is fixed at construction; slow consumers receive
-`tokio::sync::broadcast::error::RecvError::Lagged` when they fall
-behind — see [Slow consumers](#slow-consumers) below.
+Lag handling is automatic: when a subscriber falls behind, the
+`EventBus` skips to the latest event internally — subscribers never
+need to handle a lag error explicitly.
 
 ---
 
@@ -92,7 +94,7 @@ non-resource-scoped variant, but every variant shipped today returns
 ### Metrics collection
 
 ```rust,ignore
-while let Ok(event) = rx.recv().await {
+while let Some(event) = rx.recv().await {
     match &event {
         ResourceEvent::AcquireSuccess { duration, .. } => {
             histogram.record(duration.as_millis() as f64);
@@ -111,21 +113,21 @@ while let Ok(event) = rx.recv().await {
 
 ### Slow consumers
 
-Slow consumers receive `tokio::sync::broadcast::error::RecvError::Lagged(n)`
-when the channel overruns — *n* events were dropped. Handle it:
+The `EventBus` handles buffer overflow internally: when a subscriber
+falls behind, the bus skips to the latest event automatically.
+Subscribers do **not** need to handle `RecvError::Lagged` explicitly —
+the lag recovery is transparent.
 
 ```rust,ignore
-match rx.recv().await {
-    Ok(event) => handle(event),
-    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-        tracing::warn!(dropped = n, "event consumer lagged");
-    }
-    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+// Simple consumption loop — no lag error handling needed.
+while let Some(event) = rx.recv().await {
+    handle(event);
 }
 ```
 
-The broadcast channel drops oldest events on overflow — there is no
-back-pressure or retry mechanism inside the Manager.
+There is no back-pressure or retry mechanism inside the Manager; the
+EventBus drops oldest events on overflow and advances slow subscribers
+to the latest position.
 
 ### Auditing slot rotation
 
@@ -154,8 +156,11 @@ aggregate.
 
 ## Differences from v1
 
-- **No `EventBus`** — events come directly from `Manager::subscribe_events()`;
-  no separate bus crate, no subscriber registration.
+- **Uses `nebula_eventbus::EventBus`** — events are published through the
+  shared EventBus crate; `Manager::subscribe_events()` returns a
+  `Subscriber<ResourceEvent>` (re-exported from `nebula_resource`).
 - **No `HookRegistry`** — pre/post hooks were removed. Use events for observation.
 - **No filtered subscriptions** — filter in your consumer logic.
-- **No `BackPressurePolicy`** — the broadcast channel drops oldest on overflow.
+- **Automatic lag handling** — the EventBus drops oldest on overflow and
+  skips slow subscribers to the latest event; no explicit `RecvError::Lagged`
+  handling required.
