@@ -746,6 +746,8 @@ Closure criteria (on top of the global DoD):
 
 #### M12.2 nebula-credential — finish hardening
 
+> **Strategic debt:** [`docs/plans/2026-05-25-001-refactor-credential-architecture-debt.md`](plans/2026-05-25-001-refactor-credential-architecture-debt.md) documents 8 architectural findings (capability model, ResolveResult gaps, store atomicity, bidirectional auth, registry namespacing, macro fragility, StaticProtocol vestige, handle invariance) with a phased resolution timeline. None block 1.0; all should be reviewed when credential scope expands beyond OAuth2/API-key.
+
 - [ ] Audit ADR-0032 storage-layer composition (`EncryptionLayer`,
       `CacheLayer`, `AuditLayer`, `ScopeLayer`) for production wiring gaps —
       each layer has a typed-error surface, observability triple, and a
