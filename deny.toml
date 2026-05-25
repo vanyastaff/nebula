@@ -190,6 +190,11 @@ deny = [
     # (CredentialService facade + type registry + ops dispatch). See
     # docs/adr/0081-m6-resource-credential-integration.md.
     "nebula-credential-runtime",
+    # nebula-credential-testutil is the publish=false shim crate that
+    # re-exports InMemoryStore + InMemoryPendingStore for test builds.
+    # It depends on the contract crate (not on nebula-storage) to avoid
+    # the two-copies dep-cycle.
+    "nebula-credential-testutil",
     "nebula-credential-vault",
     "nebula-engine",
     "nebula-plugin",
@@ -241,6 +246,22 @@ deny = [
     # CredentialRegistry/CredentialDispatch (docs/adr/0081-m6-resource-credential-integration.md).
     "nebula-credential-runtime",
   ], reason = "Built-in credential types are first-party; the credential-runtime composition root wires them via register_builtins (ADR-0066, consolidated into ADR-0081)" },
+
+  # nebula-credential-testutil is a publish=false internal test-utility crate.
+  # It re-exports InMemoryStore + InMemoryPendingStore for crates that cannot
+  # dev-dep on nebula-storage (dep-cycle). In nebula-tenancy it is a pure
+  # dev-dep for inline #[cfg(test)] tests; in nebula-credential-runtime it
+  # is BOTH an optional regular dep gated by the `test-util` feature (for
+  # the `test_support` module that is itself cfg(any(test, feature = "test-util"))-gated)
+  # AND a dev-dep for the #[cfg(test)] inline tests in ops.rs and the
+  # compile_fail/ probes. cargo-deny has no feature-aware wrappers, so the
+  # wrapper allowlist below is the only structural enforcement — the
+  # `test-util` feature MUST never be enabled in a release build (ADR-0023).
+  { crate = "nebula-credential-testutil", wrappers = [
+    "nebula-credential-testutil",
+    "nebula-credential-runtime",
+    "nebula-tenancy",
+  ], reason = "Test-utility shim (publish=false): only dev-dep consumers (credential-runtime, tenancy) may depend on it; not for production code" },
 
   # nebula-credential-vault is the first concrete LeasedProvider impl per
   # ADR-0051 Phase C — Business-tier backend wrapping the HashiCorp Vault

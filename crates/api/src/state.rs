@@ -8,6 +8,7 @@ use std::{collections::HashMap, sync::Arc};
 use async_trait::async_trait;
 use nebula_core::{OrgId, OrgRole, WorkspaceId, WorkspaceRole, id::ExecutionId, scope::Principal};
 use nebula_credential::PendingToken;
+use nebula_credential_runtime::CredentialService;
 use nebula_engine::ActionRegistry;
 use nebula_metrics::MetricsRegistry;
 use nebula_plugin::PluginRegistry;
@@ -242,6 +243,21 @@ pub struct AppState {
     /// (honest capability stub, mirroring `action_registry`).
     pub credential_schema: Option<Arc<dyn crate::ports::credential_schema::CredentialSchemaPort>>,
 
+    /// Optional `CredentialService` facade — when `Some`, the credential CRUD
+    /// transport layer uses the service's encryption+audit+cache store handle
+    /// instead of the raw `InMemoryStore` wrapped by `CredentialScopeLayer`.
+    ///
+    /// When `None`, the CRUD path falls back to `oauth_credential_store` (the
+    /// raw in-memory store via `CredentialScopeLayer`) for backward compatibility
+    /// during the wire-up transition — after Task 18 deletes `CredentialScopeLayer`
+    /// from `nebula-tenancy` this fallback path will be removed and `credential_service`
+    /// will be mandatory.
+    ///
+    /// The concrete type is `CredentialService<InMemoryStore, InMemoryPendingStore>` —
+    /// the api always uses the in-memory backend; production composition roots that
+    /// use a durable backend wire the service through the server binary, not here.
+    pub credential_service: Option<Arc<CredentialService<InMemoryStore, InMemoryPendingStore>>>,
+
     /// Optional webhook HTTP transport. When `None`, no `/webhooks/*`
     /// routes are mounted on the app; webhook-style `WebhookAction`
     /// triggers registered via `ActionRegistry::register_webhook`
@@ -426,6 +442,7 @@ impl AppState {
             action_registry: None,
             plugin_registry: None,
             credential_schema: None,
+            credential_service: None,
             webhook_transport: None,
             oauth_pending_store: Arc::new(InMemoryPendingStore::new()),
             oauth_state_tokens: Arc::new(RwLock::new(HashMap::new())),
@@ -996,6 +1013,22 @@ impl AppState {
         port: Arc<dyn crate::ports::credential_schema::CredentialSchemaPort>,
     ) -> Self {
         self.credential_schema = Some(port);
+        self
+    }
+
+    /// Attach the `CredentialService` facade for credential CRUD.
+    ///
+    /// When set, the credential transport layer uses the service's
+    /// encryption+audit+cache store stack (`LayeredStore<InMemoryStore>`)
+    /// instead of the raw `oauth_credential_store` wrapped by
+    /// `CredentialScopeLayer`. Tenant isolation is applied by the transport
+    /// layer via `credential_store_for_owner`.
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_credential_service(
+        mut self,
+        service: Arc<CredentialService<InMemoryStore, InMemoryPendingStore>>,
+    ) -> Self {
+        self.credential_service = Some(service);
         self
     }
 

@@ -77,7 +77,10 @@ pub mod secrets;
 
 // ── Flattened modules (previously nested under accessor/ and metadata/) ───
 
-/// Credential accessor implementations — NoopCredentialAccessor, ScopedCredentialAccessor.
+/// Credential accessor stub — NoopCredentialAccessor + default_credential_accessor.
+///
+/// The engine-runtime allowlist-enforcing accessor lives in
+/// `nebula_engine::credential::ScopedCredentialAccessor`.
 mod accessor;
 /// Credential operation context — CredentialContext, CredentialContextBuilder.
 mod context;
@@ -101,26 +104,10 @@ pub mod error;
 pub mod event;
 /// Pending state store trait for interactive credential flows.
 pub mod pending_store;
-/// In-memory pending state store — **test shim only**.
-///
-/// The canonical production impl lives in
-/// `nebula_storage::credential::InMemoryPendingStore` per storage credential layers.
-/// This copy exists solely for credential's own `#[cfg(test)]` code
-/// which cannot depend on `nebula-storage` (dep-cycle, storage credential layers §3).
-#[cfg(any(test, feature = "test-util"))]
-pub mod pending_store_memory;
 /// Credential snapshot.
 pub mod snapshot;
 /// Credential store trait with layered composition.
 pub mod store;
-/// In-memory `CredentialStore` impl — **test shim only**.
-///
-/// The canonical production impl lives in
-/// `nebula_storage::credential::InMemoryStore` per storage credential layers.
-/// This copy exists solely for credential's own `#[cfg(test)]` code
-/// which cannot depend on `nebula-storage` (dep-cycle, storage credential layers §3).
-#[cfg(any(test, feature = "test-util"))]
-pub mod store_memory;
 
 // ── Backward-compat re-export: `nebula_credential::resolve::*` ──────────
 // The proc-macro and downstream crates reference `nebula_credential::resolve::`.
@@ -131,7 +118,7 @@ pub mod store_memory;
 
 // Consumer-facing accessor surface — trait (re-exported from core), impls, handle, context,
 // access error
-pub use accessor::{NoopCredentialAccessor, ScopedCredentialAccessor, default_credential_accessor};
+pub use accessor::{NoopCredentialAccessor, default_credential_accessor};
 pub use context::{CredentialContext, CredentialContextBuilder};
 pub use contract::resolve;
 // Credential contract — Credential trait + associated types
@@ -169,8 +156,6 @@ pub use nebula_credential_macros::{AuthScheme, Credential};
 pub use no_credential::{NoCredential, NoCredentialState};
 // Pending state store
 pub use pending_store::{PendingStateStore, PendingStoreError};
-#[cfg(any(test, feature = "test-util"))]
-pub use pending_store_memory::InMemoryPendingStore;
 // External provider abstraction (redesigned per external provider):
 // - Trait & data types (ExternalProvider, ExternalReference, ProviderError, ProviderKind)
 // - Future newtype (ProviderFuture) for dyn-safe + zero-alloc-ready resolve
@@ -188,8 +173,9 @@ pub use provider::{
 // Pruned 2026-04-24: FederatedAssertion (Plane A), OtpSeed + ChallengeSecret
 // (integration-internal, не projected auth material).
 pub use scheme::{
-    AuthPattern, AuthScheme, Certificate, ConnectionUri, IdentityPassword, InstanceBinding,
-    KeyPair, OAuth2Token, PublicScheme, SecretToken, SensitiveScheme, SharedKey, SigningKey,
+    AuthPattern, AuthScheme, AuthStyle, Certificate, ConnectionUri, IdentityPassword,
+    InstanceBinding, KeyPair, OAuth2Token, PublicScheme, SecretToken, SensitiveScheme, SharedKey,
+    SigningKey,
 };
 // credential secrecy secret-handling primitives — crypto, guard, zeroizing wrappers,
 // scheme-guard refresh surface (§15.7). The refresh-notification hook
@@ -201,16 +187,13 @@ pub use scheme::{
 // from public surface. See `secrets/mod.rs` rationale comment above the
 // `pub use crypto::{...}` block.
 pub use secrets::{
-    CredentialGuard, EncryptedData, EncryptionKey, RedactedSecret, SchemeFactory, SchemeGuard,
-    SecretString, decrypt, decrypt_with_aad, encrypt_with_aad, encrypt_with_key_id,
-    generate_code_challenge, generate_pkce_verifier, generate_random_state,
+    CredentialGuard, EncryptedData, EncryptionKey, ExposeSecret, ExposeSecretMut, RedactedSecret,
+    SchemeFactory, SchemeGuard, SecretBox, SecretString, decrypt, decrypt_with_aad,
+    encrypt_with_aad, encrypt_with_key_id, generate_code_challenge, generate_pkce_verifier,
+    generate_random_state, secret_from_string,
 };
 // Store trait + DTOs (canonical impls live in `nebula_storage::credential` per storage credential layers)
 pub use store::{CredentialStore, PutMode, ScopeResolver, StoreError, StoredCredential};
-// In-memory impl — test shim only; production consumers use
-// `nebula_storage::credential::InMemoryStore` (storage credential layers).
-#[cfg(any(test, feature = "test-util"))]
-pub use store_memory::InMemoryStore;
 
 // Rotation (feature-gated)
 #[cfg(feature = "rotation")]
@@ -222,8 +205,10 @@ pub use crate::secrets::serde_secret;
 // Error / event / metadata / snapshot / identifiers
 pub use crate::{
     error::{
-        CredentialAccessError, CredentialError, CryptoError, RefreshErrorKind, ResolutionStage,
-        RetryAdvice, ValidationError,
+        CredentialAccessError, CredentialError, CryptoError, ProviderErrorContext,
+        ProviderErrorKind, RefreshErrorKind, RefreshFailedContext, ResolutionStage, RetryAdvice,
+        RevokeErrorKind, RevokeFailedContext, SchemeIdentity, SchemeKind, SchemeMismatch,
+        SecretFreeMessage, ValidationError,
     },
     event::CredentialEvent,
     ext::HasCredentialsExt,

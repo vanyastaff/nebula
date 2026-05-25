@@ -2,7 +2,10 @@
 //!
 //! Tests for error messages, context propagation, and actionable error information.
 
-use nebula_credential::{CredentialError, CryptoError, ValidationError};
+use nebula_credential::{
+    CredentialError, CryptoError, ProviderErrorContext, ProviderErrorKind, RefreshErrorKind,
+    RefreshFailedContext, RetryAdvice, SecretFreeMessage, ValidationError,
+};
 
 /// Test: Crypto error messages don't leak secrets
 #[test]
@@ -58,7 +61,6 @@ fn test_crypto_error_conversion() {
     let crypto_err = CryptoError::DecryptionFailed;
     let cred_err: CredentialError = crypto_err.into();
     let msg = cred_err.to_string();
-    assert!(msg.contains("Cryptographic error"));
     assert!(msg.contains("Decryption failed"));
 }
 
@@ -67,7 +69,7 @@ fn test_crypto_error_conversion() {
 fn test_validation_error_conversion() {
     let val_err = ValidationError::EmptyCredentialId;
     let cred_err: CredentialError = val_err.into();
-    assert!(matches!(cred_err, CredentialError::Validation { .. }));
+    assert!(matches!(cred_err, CredentialError::Validation(_)));
 }
 
 /// Test: Error Display format is stable
@@ -92,13 +94,32 @@ fn test_classify_integration() {
     assert_eq!(err.category(), nebula_error::ErrorCategory::Validation);
     assert!(!err.is_retryable());
 
-    let err = CredentialError::refresh(
-        nebula_credential::RefreshErrorKind::TransientNetwork,
-        nebula_credential::RetryAdvice::Immediate,
-        "connection reset",
-    );
+    let err = CredentialError::RefreshFailed(Box::new(RefreshFailedContext::new(
+        RefreshErrorKind::TransientNetwork,
+        RetryAdvice::Immediate,
+        SecretFreeMessage::new("connection reset"),
+    )));
     assert!(err.is_retryable());
 
     let err = CryptoError::DecryptionFailed;
     assert_eq!(err.category(), nebula_error::ErrorCategory::Internal);
+}
+
+/// Test: Provider error context accessors
+#[test]
+fn test_provider_error_context() {
+    use nebula_error::Classify;
+
+    let ctx = ProviderErrorContext::new(
+        ProviderErrorKind::Network,
+        SecretFreeMessage::new("connection refused"),
+    )
+    .with_code("ERR_CONNECT");
+
+    assert_eq!(ctx.kind(), ProviderErrorKind::Network);
+    assert_eq!(ctx.message().as_str(), "connection refused");
+    assert_eq!(ctx.provider_code(), Some("ERR_CONNECT"));
+
+    let err = CredentialError::Provider(Box::new(ctx));
+    assert!(err.is_retryable());
 }

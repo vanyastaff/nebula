@@ -103,7 +103,7 @@ pub async fn get_oauth2_authorize_url_for_owner(
             .unwrap_or_default(),
         auth_style: query
             .auth_style
-            .unwrap_or(nebula_credential::credentials::oauth2::AuthStyle::Header),
+            .unwrap_or(nebula_credential::AuthStyle::Header),
         owner_id,
         expected_version,
     };
@@ -351,7 +351,7 @@ struct OAuthPendingExchange {
     #[serde(with = "nebula_credential::serde_secret")]
     code_verifier: SecretString,
     scopes: Vec<String>,
-    auth_style: nebula_credential::credentials::oauth2::AuthStyle,
+    auth_style: nebula_credential::AuthStyle,
     owner_id: Option<String>,
     expected_version: Option<u64>,
 }
@@ -615,7 +615,7 @@ mod tests {
             redirect_uri: "https://app.example.com/callback".to_owned(),
             code_verifier: SecretString::new("pkce-verifier"),
             scopes: vec!["read".to_owned(), "write".to_owned()],
-            auth_style: nebula_credential::credentials::oauth2::AuthStyle::Header,
+            auth_style: nebula_credential::AuthStyle::Header,
             owner_id: None,
             expected_version: None,
         }
@@ -711,7 +711,7 @@ mod tests {
             client_id: SecretString::new("old-client-id"),
             client_secret: SecretString::new("old-client-secret"),
             token_url: "https://provider.example.com/token".to_owned(),
-            auth_style: nebula_credential::credentials::oauth2::AuthStyle::Header,
+            auth_style: nebula_credential::AuthStyle::Header,
         };
         persist_oauth_state(&state, None, None, credential_id, old_oauth_state)
             .await

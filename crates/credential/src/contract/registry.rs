@@ -258,6 +258,17 @@ impl CredentialRegistry {
     pub fn contains(&self, key: &str) -> bool {
         self.entries.contains_key(key)
     }
+
+    /// Iterate registered credential keys.
+    ///
+    /// Used by the registry-sync invariant probe to assert that the three
+    /// credential registries (KEY-keyed [`CredentialRegistry`],
+    /// `StateProjectionRegistry`, and `CredentialDispatch` in
+    /// `nebula-credential-runtime`) hold the same set of types after plugin
+    /// init.
+    pub fn iter_keys(&self) -> impl Iterator<Item = &str> + '_ {
+        self.entries.keys().map(AsRef::as_ref)
+    }
 }
 
 impl std::fmt::Debug for CredentialRegistry {

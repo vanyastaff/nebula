@@ -3,15 +3,13 @@
 //! Data is lost when the store is dropped. Use this in tests and for local
 //! development rather than mocking [`PendingStateStore`] directly.
 //!
-//! # Dual-home note
+//! # Shim note
 //!
-//! A body-identical shim exists at
-//! `nebula_credential::pending_store_memory::InMemoryPendingStore` because
-//! credential's own `executor.rs` `#[cfg(test)]` tests reference it directly
-//! and cannot dev-dep on `nebula-storage` (the dev-dep path produces a
-//! two-copies cargo resolution that breaks the `PendingStateStore` trait
-//! bound). Both copies implement the same trait with the same semantics.
-//! Production consumers and composition roots should prefer this storage-side copy.
+//! A body-identical shim exists in `nebula-credential-testutil` for crates that
+//! cannot dev-dep on `nebula-storage` (the dev-dep path produces a two-copies
+//! cargo resolution that breaks the `PendingStateStore` trait bound). Both copies
+//! implement the same trait with the same semantics. Production consumers and
+//! composition roots should prefer this storage-side copy.
 //!
 //! # Invariants
 //!

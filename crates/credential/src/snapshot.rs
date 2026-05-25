@@ -235,6 +235,20 @@ impl CredentialSnapshot {
     pub fn record(&self) -> &CredentialRecord {
         &self.record
     }
+
+    /// True iff this snapshot's `expires_at` is in the past.
+    ///
+    /// Delegates to [`CredentialRecord::is_expired`] — a snapshot without an
+    /// explicit expiry (e.g. a long-lived API key) is treated as non-expiring
+    /// and this returns `false`.
+    ///
+    /// Used by the fallback-on-interrupt path in
+    /// `CredentialService::refresh` (in `nebula-credential-runtime`) to decide
+    /// whether a cached snapshot is still valid.
+    #[must_use]
+    pub fn is_expired(&self) -> bool {
+        self.record.is_expired()
+    }
 }
 
 impl Clone for CredentialSnapshot {

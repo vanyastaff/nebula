@@ -6,7 +6,7 @@
 
 use std::net::IpAddr;
 
-use nebula_credential::credentials::oauth2::AuthStyle;
+use nebula_credential::AuthStyle;
 use serde::Deserialize;
 use url::{Host, Url};
 

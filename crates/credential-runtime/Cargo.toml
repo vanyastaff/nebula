@@ -20,6 +20,9 @@ nebula-credential-builtin = { path = "../credential-builtin" }
 # StaticKeyProvider) are dev-only — ADR-0023 forbids test-util in a
 # release build, so they live under [dev-dependencies], not here.
 nebula-storage = { path = "../storage" }
+# InMemoryPendingStore for `test_support` (gated on `test-util`).
+# Optional so it is absent from production dependency trees.
+nebula-credential-testutil = { path = "../credential-testutil", optional = true }
 nebula-engine = { path = "../engine" }
 nebula-core = { path = "../core" }
 nebula-schema = { path = "../schema" }
@@ -42,6 +45,9 @@ nebula-storage = { path = "../storage", features = ["credential-in-memory", "tes
 # (established pattern: `crates/api` dev-depends on itself with
 # `test-util`). Confined to the test build per ADR-0023.
 nebula-credential-runtime = { path = ".", features = ["test-util"] }
+# Available as both an optional dep (for test_support via test-util feature)
+# and as a dev-dep (for #[cfg(test)] inline tests in ops.rs / compile_fail/).
+nebula-credential-testutil = { path = "../credential-testutil" }
 pretty_assertions = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
 trybuild = "1.0"
@@ -56,7 +62,11 @@ default = []
 # `InMemoryStore` is non-durable + unencrypted-at-rest. The default
 # build keeps `[dependencies] nebula-storage` featureless, so a
 # production dependency tree never reaches these symbols.
-test-util = ["nebula-storage/credential-in-memory", "nebula-storage/test-util"]
+test-util = [
+  "nebula-storage/credential-in-memory",
+  "nebula-storage/test-util",
+  "dep:nebula-credential-testutil",
+]
 
 [lints]
 workspace = true

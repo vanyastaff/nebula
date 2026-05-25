@@ -8,6 +8,7 @@ members = [
   "crates/core",
   "crates/credential",
   "crates/credential-builtin",
+  "crates/credential-testutil",
   "crates/credential-vault",
   "crates/credential-runtime",
   "crates/engine",
@@ -168,6 +169,12 @@ wiremock = "0.6"
 
 # Semantic versioning
 semver = { version = "1", features = ["serde"] }
+
+# Compact inline string (≤24 bytes heap-free; used in error ABI + future ID types)
+compact_str = { version = "0.7", features = ["serde"] }
+
+# Compile-time layout assertions
+static_assertions = "1"
 
 # Nebula internal
 nebula-error = { path = "crates/error" }

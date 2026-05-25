@@ -16,6 +16,7 @@
 //! ones [`crate::service::test_support`] uses) and `unwrap`/`expect` is
 //! acceptable here — this is test-support code, not a release path.
 
+// guard-justified: test-fixture-only module gated `cfg(any(test, feature = "test-util"))`. unwrap/expect inside builder fixtures are acceptable here — never reachable from a release build (see crate doc above).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::sync::Arc;
@@ -23,10 +24,12 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use nebula_credential::contract::plugin_capability_report;
 use nebula_credential::contract::resolve::{RefreshOutcome, ResolveResult};
+use nebula_credential::error::{RefreshErrorKind, RefreshFailedContext, RetryAdvice};
 use nebula_credential::scheme::SecretToken;
 use nebula_credential::{
     AuthPattern, Credential, CredentialContext, CredentialError, CredentialMetadata,
-    CredentialState, Refreshable, SecretString,
+    CredentialState, ProviderErrorContext, ProviderErrorKind, Refreshable, SecretFreeMessage,
+    SecretString,
 };
 use nebula_schema::{FieldValues, Schema};
 use serde::{Deserialize, Serialize};
@@ -103,6 +106,45 @@ pub fn set_refresh_rendezvous(barrier: Option<Arc<tokio::sync::Barrier>>) {
     *REFRESH_RENDEZVOUS.lock().unwrap() = barrier;
 }
 
+/// Scripted failure for refresh calls. Fires on **every** invocation
+/// until the test explicitly clears it with `set_refresh_failure(None)`
+/// (NOT one-shot — see rationale below). Used by the
+/// fallback-on-interrupt probe to inject transient vs terminal refresh
+/// outcomes deterministically.
+///
+/// # Why not one-shot?
+///
+/// `CredentialService::refresh` retries transient failures up to 3
+/// times via `nebula_resilience::retry::retry_with`. A one-shot
+/// `take()`-on-read script would fire once, then the retry budget
+/// would consume the remaining attempts and the second call would
+/// succeed normally — masking the failure the test is trying to
+/// observe. Persistent firing is what lets the fallback probe assert
+/// the outer fallback branch (return cached snapshot) was actually
+/// taken.
+#[derive(Debug, Clone, Copy)]
+pub enum RefreshFailureScript {
+    /// Emit a transient refresh error (`TransientNetwork`).
+    Transient,
+    /// Emit a terminal refresh error (`TokenExpired`).
+    Terminal,
+}
+
+static FAIL_NEXT_REFRESH: std::sync::Mutex<Option<RefreshFailureScript>> =
+    std::sync::Mutex::new(None);
+
+/// Install (or clear with `None`) a scripted failure for subsequent
+/// calls to [`RefreshableFixtureCredential::refresh`]. The script
+/// persists across calls until the test clears it explicitly — see
+/// [`RefreshFailureScript`] docs for why this isn't one-shot.
+pub fn set_refresh_failure(script: Option<RefreshFailureScript>) {
+    let mut guard = match FAIL_NEXT_REFRESH.lock() {
+        Ok(g) => g,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    *guard = script;
+}
+
 /// A minimal refreshable credential used only by the test suite. Static
 /// in shape (token-bearing) but it implements [`Refreshable`]: each
 /// `refresh` bumps the counter and rotates the token to
@@ -146,7 +188,10 @@ impl Credential for RefreshableFixtureCredential {
         _ctx: &CredentialContext,
     ) -> Result<ResolveResult<RefreshableFixtureState, ()>, CredentialError> {
         let token = values.get_string_by_str("token").ok_or_else(|| {
-            CredentialError::Provider("missing required field 'token'".to_owned())
+            CredentialError::Provider(Box::new(ProviderErrorContext::new(
+                ProviderErrorKind::Schema,
+                SecretFreeMessage::new("missing required field 'token'"),
+            )))
         })?;
         Ok(ResolveResult::Complete(RefreshableFixtureState {
             token: token.to_owned(),
@@ -161,6 +206,37 @@ impl Refreshable for RefreshableFixtureCredential {
         state: &mut RefreshableFixtureState,
         _ctx: &CredentialContext,
     ) -> Result<RefreshOutcome, CredentialError> {
+        // Honor any installed scripted failure — fires on EVERY refresh
+        // call (not just once) so retry budgets cannot mask it. The test
+        // clears it explicitly via `set_refresh_failure(None)` between
+        // probe arms. Avoids local-state mutation if firing so the
+        // cached row stays as last successful refresh wrote it.
+        let scripted = {
+            let guard = match FAIL_NEXT_REFRESH.lock() {
+                Ok(g) => g,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            *guard
+        };
+        if let Some(script) = scripted {
+            return Err(match script {
+                RefreshFailureScript::Transient => {
+                    CredentialError::RefreshFailed(Box::new(RefreshFailedContext::new(
+                        RefreshErrorKind::TransientNetwork,
+                        RetryAdvice::After(std::time::Duration::from_millis(50)),
+                        SecretFreeMessage::new("scripted transient refresh failure"),
+                    )))
+                },
+                RefreshFailureScript::Terminal => {
+                    CredentialError::RefreshFailed(Box::new(RefreshFailedContext::new(
+                        RefreshErrorKind::TokenExpired,
+                        RetryAdvice::Never,
+                        SecretFreeMessage::new("scripted terminal refresh failure"),
+                    )))
+                },
+            });
+        }
+
         // Rotate the token deterministically and bump the counter so a
         // test can prove the *mutated* state was the thing re-persisted
         // under CAS (not the pre-refresh copy).

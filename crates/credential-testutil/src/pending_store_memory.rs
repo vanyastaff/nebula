@@ -2,33 +2,19 @@
 //! canonical impl at `nebula_storage::credential::pending::InMemoryPendingStore`
 //! (pending store / storage credential layers §7).
 //!
-//! # Why a dual-home shim?
-//!
-//! Credential's own `executor.rs` `#[cfg(test)] mod tests` uses an
-//! `InMemoryPendingStore` to exercise `execute_resolve` / `execute_continue`
-//! against a real `PendingStateStore`. Those tests cannot dev-dep on
-//! `nebula-storage`: that dev-dep path produces a two-copies cargo
-//! resolution, which means the `PendingStateStore` trait bound on the
-//! generic executor no longer accepts the storage-side type
-//! (empirically confirmed in P6.2 with `InMemoryStore`).
-//!
-//! The fix is the same narrowly-scoped exception storage credential layers §7 carved out
-//! for `store_memory`: keep a body-identical copy in credential for
-//! internal tests; production consumers and composition roots prefer the
-//! storage-side canonical home.
+//! This copy lives in `nebula-credential-testutil` (`publish = false`) so the
+//! contract crate (`nebula-credential`) does not export `#[cfg(test)]`-style
+//! code.
 //!
 //! If you are adding new production code, reach for
-//! `nebula_storage::credential::InMemoryPendingStore`. Only credential's
-//! internal `#[cfg(test)]` code should touch this module.
-//!
-//! Ref:  §7
+//! `nebula_storage::credential::InMemoryPendingStore`.
 
 use std::{collections::HashMap, sync::Arc};
 
 use chrono::Utc;
 use tokio::sync::RwLock;
 
-use crate::{
+use nebula_credential::{
     PendingState, PendingToken,
     pending_store::{PendingStateStore, PendingStoreError},
 };
@@ -41,7 +27,7 @@ use crate::{
 /// # Examples
 ///
 /// ```rust,ignore
-/// use nebula_credential::InMemoryPendingStore;
+/// use nebula_credential_testutil::InMemoryPendingStore;
 ///
 /// let store = InMemoryPendingStore::new();
 /// let token = store.put("oauth2", "user_1", "sess_1", pending).await?;
@@ -210,9 +196,13 @@ impl PendingStateStore for InMemoryPendingStore {
         }
 
         // Only now remove the entry and deserialize from the owned bytes.
-        let entry = entries
-            .remove(token.as_str())
-            .expect("entry was just validated via get() under the same lock");
+        // Entry presence was confirmed by the get() above under the same write
+        // lock; a None here would be a lock-safety bug, so map it to Backend.
+        let entry = entries.remove(token.as_str()).ok_or_else(|| {
+            PendingStoreError::Backend(Box::new(std::io::Error::other(
+                "entry vanished under write lock",
+            )))
+        })?;
         drop(entries);
 
         serde_json::from_slice(&entry.data).map_err(|e| PendingStoreError::Backend(Box::new(e)))

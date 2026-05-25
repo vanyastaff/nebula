@@ -119,6 +119,19 @@ impl StateProjectionRegistry {
     pub fn is_empty(&self) -> bool {
         self.handlers.is_empty()
     }
+
+    /// Iterate registered state-kind keys.
+    ///
+    /// Used by the registry-sync invariant probe to cross-check entry
+    /// count against the KEY-keyed registries (`CredentialRegistry` and
+    /// `CredentialDispatch`). Note: keys here are
+    /// `<C::State as CredentialState>::KIND` strings (e.g.
+    /// `"bearer_token_state_v1"`), a different namespace from the
+    /// `Credential::KEY` strings used by the other two registries — only
+    /// count equality is meaningful across the three.
+    pub fn iter_keys(&self) -> impl Iterator<Item = &str> + '_ {
+        self.handlers.keys().map(String::as_str)
+    }
 }
 
 impl fmt::Debug for StateProjectionRegistry {

@@ -21,10 +21,7 @@
 use std::net::IpAddr;
 
 use chrono::Utc;
-use nebula_credential::{
-    SecretString,
-    credentials::{OAuth2State, oauth2::AuthStyle},
-};
+use nebula_credential::{AuthStyle, SecretString, credentials::OAuth2State};
 use reqwest::Response;
 use serde_json::Value;
 use url::{Host, Url};

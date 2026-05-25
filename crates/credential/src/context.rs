@@ -12,6 +12,7 @@ use nebula_core::{
     obs::TraceId,
     scope::{Principal, Scope},
 };
+use tokio_util::sync::CancellationToken;
 
 use crate::accessor::default_credential_accessor;
 
@@ -120,6 +121,14 @@ pub struct CredentialContext {
     /// Otherwise, `owner_id()` derives a string from
     /// [`self.principal()`](Context::principal).
     owner_id_override: Option<String>,
+
+    /// Per-operation cancellation token.
+    ///
+    /// Callers derive child tokens with `.child_token()` and check
+    /// status with `.is_cancelled()` directly on the borrowed token —
+    /// no proxy methods on the context (avoids duplicating tokio-util's
+    /// surface; ADR-0083 budget).
+    cancel: CancellationToken,
 }
 
 impl fmt::Debug for CredentialContext {
@@ -132,6 +141,7 @@ impl fmt::Debug for CredentialContext {
             .field("app_url", &self.app_url)
             .field("session_id", &self.session_id)
             .field("owner_id_override", &self.owner_id_override)
+            .field("cancel", &self.cancel)
             .finish()
     }
 }
@@ -147,8 +157,13 @@ impl Context for CredentialContext {
         self.base.principal()
     }
 
-    fn cancellation(&self) -> &tokio_util::sync::CancellationToken {
-        self.base.cancellation()
+    fn cancellation(&self) -> &CancellationToken {
+        // Return the per-operation token attached via `with_cancel`,
+        // not `BaseContext`'s token. Callers using either the Context
+        // trait OR the direct `cancel_token()` accessor see the same
+        // value (collapses the previous dual-token divergence flagged
+        // in the PR review).
+        &self.cancel
     }
 
     fn clock(&self) -> &dyn nebula_core::accessor::Clock {
@@ -177,6 +192,23 @@ impl HasResources for CredentialContext {
 // ── Domain-specific accessors ─────────────────────────────────────────────
 
 impl CredentialContext {
+    /// Borrow the context's cancellation token.
+    ///
+    /// Returns the same token as [`Context::cancellation()`](nebula_core::Context::cancellation)
+    /// — they are unified to the per-operation `cancel` field. Default
+    /// (when the builder wasn't given an explicit `with_cancel`) is a
+    /// child of `BaseContext::cancellation()`, so engine-level shutdown
+    /// still cascades.
+    ///
+    /// Callers derive child tokens with `.child_token()` and check
+    /// status with `.is_cancelled()` directly on the borrowed token —
+    /// no proxy methods on the context itself (avoids duplicating
+    /// tokio-util's surface; ADR-0083 budget).
+    #[must_use]
+    pub fn cancel_token(&self) -> &CancellationToken {
+        &self.cancel
+    }
+
     /// Returns the callback URL for OAuth2/SAML redirects.
     pub fn callback_url(&self) -> Option<&str> {
         self.callback_url.as_deref()
@@ -213,14 +245,17 @@ impl CredentialContext {
     /// default scope, system clock) and noop accessors. The `owner_id` is
     /// stored as an override for backward-compatible pending-store binding.
     pub fn for_test(owner_id: impl Into<String>) -> Self {
+        let base = BaseContext::builder().build();
+        let cancel = base.cancellation().child_token();
         Self {
-            base: Arc::new(BaseContext::builder().build()),
+            base: Arc::new(base),
             credentials: default_credential_accessor(),
             resources: default_resource_accessor(),
             callback_url: None,
             app_url: None,
             session_id: None,
             owner_id_override: Some(owner_id.into()),
+            cancel,
         }
     }
 
@@ -260,6 +295,7 @@ pub struct CredentialContextBuilder {
     app_url: Option<String>,
     session_id: Option<String>,
     owner_id: Option<String>,
+    cancel: Option<CancellationToken>,
 }
 
 impl CredentialContextBuilder {
@@ -277,6 +313,7 @@ impl CredentialContextBuilder {
             app_url: None,
             session_id: None,
             owner_id: None,
+            cancel: None,
         }
     }
 
@@ -311,8 +348,31 @@ impl CredentialContextBuilder {
         self
     }
 
+    /// Attach a per-operation cancellation token, overriding the
+    /// default.
+    ///
+    /// If omitted, [`build`](Self::build) derives the cancel token as a
+    /// child of `BaseContext::cancellation()`, so engine-level shutdown
+    /// cascades transparently. Use `with_cancel(token)` to substitute a
+    /// caller-supplied token (e.g. a request-scoped cancel signal that
+    /// is independent of engine shutdown).
+    #[must_use]
+    pub fn with_cancel(mut self, token: CancellationToken) -> Self {
+        self.cancel = Some(token);
+        self
+    }
+
     /// Build the [`CredentialContext`].
+    ///
+    /// Cancellation default: when `with_cancel(...)` was NOT called, the
+    /// per-operation cancel field defaults to a child of
+    /// `BaseContext::cancellation()`, so engine-level shutdown still
+    /// cascades to credential ops (and `Context::cancellation()` /
+    /// `cancel_token()` return the same token).
     pub fn build(self) -> CredentialContext {
+        let cancel = self
+            .cancel
+            .unwrap_or_else(|| self.base.cancellation().child_token());
         CredentialContext {
             base: Arc::new(self.base),
             credentials: self.credentials,
@@ -321,6 +381,7 @@ impl CredentialContextBuilder {
             app_url: self.app_url,
             session_id: self.session_id,
             owner_id_override: self.owner_id,
+            cancel,
         }
     }
 }

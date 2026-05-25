@@ -754,17 +754,27 @@ Closure criteria (on top of the global DoD):
       PG-backed integration test.
 - [ ] AAD-policy completeness check (SEC-11 hardening removed AAD-free
       `encrypt`; verify all call-sites carry AAD).
-- [ ] Capability sub-trait coverage matrix (`Interactive`, `Refreshable`,
+- [x] Capability sub-trait coverage matrix (`Interactive`, `Refreshable`,
       `Revocable`, `Testable`, `Dynamic`) — each capability exercised by ≥1
-      in-tree concrete type.
+      in-tree concrete type. **Closed 2026-05-20:** sealed-capability lie
+      rejection probe (Task 6) — each capability sub-trait enforced by a
+      compile-fail probe; `Dynamic` exercised by `AnyCredential` dyn-compat
+      probe (Task 21). Subtrait coverage recorded in `MATURITY.md`.
 - [ ] Wire `nebula-api` onto the `nebula-credential-runtime`
-      `CredentialService` facade (ADR-0066 #678) — the next credential-side
-      increment; re-derive against the post-restructure (#671) API layout.
-- [ ] Close the ADR-0052 residual: the `slot_bindings` confused-deputy
+      `CredentialService` facade (ADR-0066 #678) — **PARTIAL (2026-05-20)**:
+      `AppState` now holds `CredentialService`; the OAuth domain code still
+      consumes `scoped_store` via `CredentialScopeLayer`. Full OAuth path
+      migration and `CredentialScopeLayer` deletion from `nebula-tenancy` are
+      a follow-up PR (not gating credential crate stability).
+- [x] Close the ADR-0052 residual: the `slot_bindings` confused-deputy
       Non-goal is still open (not closed by the cascade) — decide ship vs
-      formally defer with rationale.
-- [ ] Credential README frontmatter stays `stable`; subtrait coverage
-      recorded in `MATURITY.md`.
+      formally defer with rationale. **Closed 2026-05-20:** `ValidatedCredentialBinding`
+      newtype with crate-private constructor (Task 12) — only
+      `CredentialService::resolve_for_slot` may produce a binding; confused-deputy
+      pattern structurally impossible at the type level.
+- [x] Credential README frontmatter `frontier → stable`; subtrait coverage
+      recorded in `MATURITY.md`. **Closed 2026-05-20** (this PR). Both
+      `nebula-credential` and `nebula-credential-runtime` flipped to `stable`.
 
 #### M12.3 nebula-credential-builtin — concrete types
 
@@ -800,8 +810,8 @@ Closure criteria (on top of the global DoD):
       grade (`ConnectionAware` disconnect detection, `InfraProvider` nested
       lifecycle, `ResourceGroup`, `Authenticate<C>` design) — OR defer in
       Out-of-Scope with rationale.
-- [ ] Pre-expiry credential refresh (proactive) — v1 is reactive via
-      `EventBus<CredentialRotatedEvent>`; decide if proactive ships in 1.0.
+- [x] Pre-expiry credential refresh decision — **deferred to 1.1** per [ADR-0084](adr/0084-pre-expiry-credential-refresh-deferred.md).
+      Reactive path (L1 OnceCell + L2 RefreshClaimRepo) remains the contract for 1.0.
 - [ ] Engine frontier-loop per-branch wiring of `ResourceAction::configure`
       / `cleanup` — needs branch-tree dominator analysis. Either ship or
       defer with an explicit "scoped resources require a manual driver"

@@ -7,7 +7,8 @@ use std::time::Duration;
 
 use nebula_credential::{
     Credential, CredentialContext, CredentialMetadata, Interactive, PendingState,
-    PendingStateStore, PendingStoreError, PendingToken, SecretString,
+    PendingStateStore, PendingStoreError, PendingToken, ProviderErrorContext, ProviderErrorKind,
+    SecretFreeMessage, SecretString,
     credentials::OAuth2Pending,
     error::CredentialError,
     resolve::{ResolveResult, UserInput},
@@ -117,10 +118,14 @@ impl Credential for InteractiveTestCredential {
         // through credential-specific kickoff helpers + direct
         // PendingStateStore::put — see the test bodies below for the
         // pattern.
-        Err(CredentialError::Provider(
-            "interactive_test must be initiated via PendingStateStore::put + execute_continue"
-                .into(),
-        ))
+        Err(CredentialError::Provider(Box::new(
+            ProviderErrorContext::new(
+                ProviderErrorKind::Other,
+                SecretFreeMessage::new(
+                    "interactive_test: use PendingStateStore::put + execute_continue",
+                ),
+            ),
+        )))
     }
 }
 
@@ -179,9 +184,14 @@ impl Credential for RetryAwareCredential {
         _values: &FieldValues,
         _ctx: &CredentialContext,
     ) -> Result<ResolveResult<TestInteractiveState, ()>, CredentialError> {
-        Err(CredentialError::Provider(
-            "retry_aware must be initiated via PendingStateStore::put + execute_continue".into(),
-        ))
+        Err(CredentialError::Provider(Box::new(
+            ProviderErrorContext::new(
+                ProviderErrorKind::Other,
+                SecretFreeMessage::new(
+                    "retry_aware: use PendingStateStore::put + execute_continue",
+                ),
+            ),
+        )))
     }
 }
 

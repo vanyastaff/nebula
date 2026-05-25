@@ -256,9 +256,7 @@ impl<S> EncryptionLayer<S> {
 #[cfg(all(test, feature = "test-util"))]
 mod tests {
     use nebula_credential::{
-        PutMode, SecretString,
-        credentials::oauth2::{AuthStyle, OAuth2State},
-        encrypt_with_key_id,
+        AuthStyle, PutMode, SecretString, credentials::oauth2::OAuth2State, encrypt_with_key_id,
         store::test_helpers::make_credential,
     };
 

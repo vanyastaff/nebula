@@ -21,7 +21,8 @@ mod connection_uri;
 mod identity_password;
 mod instance_binding;
 mod key_pair;
-mod oauth2;
+/// OAuth2 token scheme and protocol helpers (public for `scheme::oauth2::AuthStyle` path).
+pub mod oauth2;
 mod secret_token;
 mod shared_key;
 mod signing_key;
@@ -32,7 +33,7 @@ pub use connection_uri::ConnectionUri;
 pub use identity_password::IdentityPassword;
 pub use instance_binding::InstanceBinding;
 pub use key_pair::KeyPair;
-pub use oauth2::OAuth2Token;
+pub use oauth2::{AuthStyle, OAuth2Token};
 pub use secret_token::SecretToken;
 pub use shared_key::SharedKey;
 pub use signing_key::SigningKey;

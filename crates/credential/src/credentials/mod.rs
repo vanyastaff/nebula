@@ -19,6 +19,13 @@ pub use api_key::{ApiKeyCredential, ApiKeyProperties};
 pub use basic_auth::{BasicAuthCredential, BasicAuthProperties};
 pub use oauth2::{OAuth2Credential, OAuth2Pending, OAuth2Properties, OAuth2State};
 pub use oauth2_config::{
-    AuthCodeBuilder, AuthStyle, ClientCredentialsBuilder, DeviceCodeBuilder, GrantType,
-    OAuth2Config, PkceMethod,
+    AuthCodeBuilder, ClientCredentialsBuilder, DeviceCodeBuilder, GrantType, OAuth2Config,
+    PkceMethod,
 };
+// AuthStyle lives in scheme::oauth2 as of Task 8 (M12.3 carve-out prep).
+// Re-exported here so `credentials::AuthStyle` still resolves; deprecated.
+#[deprecated(
+    since = "0.1.0",
+    note = "use `nebula_credential::scheme::oauth2::AuthStyle` or the crate-root re-export `nebula_credential::AuthStyle`"
+)]
+pub use crate::scheme::oauth2::AuthStyle;

@@ -29,6 +29,73 @@
 //! (success or failure) to wake waiters and remove the in-flight entry.
 //! Wrapping the call in a `scopeguard` is recommended so the guarantee
 //! survives panics and error paths.
+//!
+//! ## Coalescer audit (2026-05-20)
+//!
+//! Scored against `tokio::sync::OnceCell::get_or_init` as a single-flight
+//! replacement. Per-axis verdict:
+//!
+//! - **Keying:** `String` (canonical `CredentialId` form); no version
+//!   component — version is not part of the in-flight key because the
+//!   coordinator always refreshes to "latest". A `DashMap<String,
+//!   OnceCell<...>>` could replicate this key shape without friction.
+//!
+//! - **Metrics:** `L1RefreshCoalescer` itself emits **no typed metrics**.
+//!   The `coalesced_total{tier=l1}` counter is incremented by the outer
+//!   `RefreshCoordinator` (coordinator.rs) against pre-bound
+//!   `RefreshCoordMetrics` handles. The only tracing in this file is two
+//!   `tracing::error!` calls on the circuit-breaker config fallback path.
+//!   Swapping to OnceCell would not silently lose any metric signal.
+//!
+//! - **Eviction:** Drop-after-resolve — `complete()` removes the entry
+//!   from the `HashMap` under the same `parking_lot::Mutex`. Structurally
+//!   identical to calling `DashMap::remove()` after a `OnceCell` is set.
+//!   No LRU, no TTL sweep for the in-flight table (the circuit-breaker
+//!   LRU is separate and would need to stay).
+//!
+//! - **Cancellation:** Not observed via a `CancellationToken`. A dropped
+//!   waiter receiver is silently ignored in `complete()`. `acquire_permit`
+//!   (the semaphore path) is cancel-safe by `tokio::sync::Semaphore`
+//!   contract. `OnceCell::get_or_init` is also not cancellation-aware;
+//!   neither is strictly better here.
+//!
+//! - **Error sharing:** `complete()` sends `()` (unit), not a `Result`.
+//!   Waiters learn only that the winner finished; they receive no error
+//!   payload. The coordinator maps all waiter wakeups to
+//!   `CoalescedByOtherReplica` and lets the caller re-read state
+//!   regardless of the winner's outcome. `OnceCell<Result<T, E>>`
+//!   would be *more* expressive here, but the current design intentionally
+//!   discards the error to avoid propagating winner failures to unrelated
+//!   waiters. This is a deliberate semantic choice, not a OnceCell
+//!   limitation.
+//!
+//! - **Circuit breaker (bonus axis, not in task scoring grid):**
+//!   `L1RefreshCoalescer` holds a per-credential `nebula_resilience::CircuitBreaker`
+//!   in an LRU-capped `parking_lot::Mutex<LruCache<String, Arc<CircuitBreaker>>>`
+//!   (capped at 4096 entries, issue #278). After 5 consecutive failures
+//!   the circuit opens for 5 minutes, then half-opens. A `DashMap<String,
+//!   OnceCell>` has no equivalent; this state would need a separate
+//!   structure.
+//!
+//! - **Global concurrency semaphore (bonus axis):** The coalescer owns a
+//!   `Arc<tokio::sync::Semaphore>` (default 32 permits) that winners
+//!   must acquire before issuing the IdP POST. Limits blast-radius when
+//!   many distinct credentials expire simultaneously against a
+//!   rate-limiting provider. `OnceCell` has no such mechanism.
+//!
+//! **Verdict: KEEP custom.** Two bonus axes (per-credential circuit
+//! breaker wired to `nebula-resilience` + global concurrency semaphore)
+//! are genuine production features with no `OnceCell` equivalent. Reducing
+//! to `DashMap<String, OnceCell<()>>` would replicate only the
+//! winner-election / waiter-wake pattern and silently drop the CB and
+//! semaphore. The five task-scoring axes individually lean substitutable,
+//! but the structural co-location of CB + semaphore + coalescer makes
+//! extraction more complexity than it saves.
+//!
+//! No behaviour change in the audit — if a future pass disagrees (e.g.
+//! the semaphore and CB are extracted to the coordinator layer), a
+//! SWAP to `DashMap<String, OnceCell<()>>` could land in a separate
+//! follow-up PR alongside a test exercising behaviour parity.
 
 use std::{collections::HashMap, fmt, num::NonZeroUsize, sync::Arc, time::Duration};
 

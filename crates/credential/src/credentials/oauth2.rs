@@ -12,11 +12,29 @@ use std::{fmt, fmt::Formatter, time::Duration};
 
 use chrono::{DateTime, Utc};
 use nebula_schema::{FieldValues, Schema};
-// Re-exports for backward compatibility with `credentials::oauth2::` paths
-// used by external crates (nebula-api, nebula-storage).
+// Re-exports for backward compatibility with `credentials::oauth2::` paths.
+// `AuthStyle` now lives in `scheme::oauth2`; re-exported here under the
+// deprecated shim so the old import path still resolves during migration.
+// Other config types remain in `oauth2_config`.
+// guard-justified: suppress deprecated warning on the deprecated re-export within the same crate's migration shim
+/// OAuth2 client authentication style.
+///
+/// Moved to [`crate::scheme::oauth2::AuthStyle`]. This re-export keeps the
+/// `credentials::oauth2::AuthStyle` path alive during migration (deprecated).
+#[deprecated(
+    since = "0.1.0",
+    note = "use `nebula_credential::scheme::oauth2::AuthStyle` or the crate-root re-export `nebula_credential::AuthStyle`"
+)]
+pub use crate::scheme::oauth2::AuthStyle;
+// guard-justified: re-export block intentionally bridges deprecated
+// `oauth2_config` paths for downstream API consumers still importing
+// from this submodule; the inner items themselves are NOT deprecated,
+// only the legacy `AuthStyle` constant on `oauth2_config` is, and the
+// deprecation surfaces at the caller's import site, not here.
+#[allow(deprecated)]
 pub use oauth2_config::{
-    AuthCodeBuilder, AuthStyle, ClientCredentialsBuilder, DeviceCodeBuilder, GrantType,
-    OAuth2Config, PkceMethod,
+    AuthCodeBuilder, ClientCredentialsBuilder, DeviceCodeBuilder, GrantType, OAuth2Config,
+    PkceMethod,
 };
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
@@ -27,7 +45,7 @@ use crate::{
     Credential, CredentialContext, CredentialState, Interactive, PendingState, Refreshable,
     Revocable, SecretString, Testable,
     contract::plugin_capability_report,
-    error::CredentialError,
+    error::{CredentialError, ProviderErrorContext, ProviderErrorKind, SecretFreeMessage},
     metadata::CredentialMetadata,
     resolve::{InteractionRequest, RefreshOutcome, ResolveResult, TestResult, UserInput},
     scheme::OAuth2Token,
@@ -448,7 +466,12 @@ impl Credential for OAuth2Credential {
 
         match grant_type {
             GrantType::AuthorizationCode | GrantType::DeviceCode => Err(CredentialError::Provider(
-                "OAuth2 authorization_code / device_code flow must be initiated via OAuth2Credential::initiate_* and the framework PendingStateStore (Tech Spec §15.4)".into(),
+                Box::new(ProviderErrorContext::new(
+                    ProviderErrorKind::Other,
+                    SecretFreeMessage::new(
+                        "OAuth2 auth_code/device_code: use initiate_* + PendingStateStore",
+                    ),
+                )),
             )),
             GrantType::ClientCredentials => Err(oauth2_http_transport_disabled()),
         }
@@ -655,12 +678,12 @@ impl OAuth2Credential {
         // `CredentialError` rather than a runtime panic in library code.
         // PR #582 review (CodeRabbit) — no `unwrap`/`expect` in lib code.
         let redirect_uri = config.redirect_uri.clone().ok_or_else(|| {
-            CredentialError::Provider(
-                "authorization_code config missing redirect_uri (RFC 6749 §4.1.1 requires \
-                 `redirect_uri` to be present at the authorization request site; check \
-                 OAuth2Config builder)"
-                    .into(),
-            )
+            CredentialError::Provider(Box::new(ProviderErrorContext::new(
+                ProviderErrorKind::Schema,
+                SecretFreeMessage::new(
+                    "authorization_code config missing redirect_uri (RFC 6749 §4.1.1)",
+                ),
+            )))
         })?;
 
         let pending = OAuth2Pending {
@@ -682,10 +705,10 @@ impl OAuth2Credential {
 // ── Private helpers ────────────────────────────────────────────────────
 
 fn oauth2_http_transport_disabled() -> CredentialError {
-    CredentialError::Provider(
-        "OAuth2 HTTP transport has moved: code exchange to nebula-api, token refresh to nebula-engine (API-owned OAuth flow)"
-            .into(),
-    )
+    CredentialError::Provider(Box::new(ProviderErrorContext::new(
+        ProviderErrorKind::Other,
+        SecretFreeMessage::new("OAuth2 HTTP transport moved: use nebula-api/nebula-engine"),
+    )))
 }
 
 /// Build the authorization URL for the Authorization Code grant.
@@ -701,14 +724,24 @@ fn build_auth_url(
     state: &str,
 ) -> Result<String, CredentialError> {
     let redirect_uri = config.redirect_uri.as_deref().ok_or_else(|| {
-        CredentialError::Provider("authorization_code config missing redirect_uri".into())
+        CredentialError::Provider(Box::new(ProviderErrorContext::new(
+            ProviderErrorKind::Schema,
+            SecretFreeMessage::new("authorization_code config missing redirect_uri"),
+        )))
     })?;
     let pkce_method = config.pkce.ok_or_else(|| {
-        CredentialError::Provider("authorization_code config missing pkce method".into())
+        CredentialError::Provider(Box::new(ProviderErrorContext::new(
+            ProviderErrorKind::Schema,
+            SecretFreeMessage::new("authorization_code config missing pkce method"),
+        )))
     })?;
 
-    let mut url = url::Url::parse(&config.auth_url)
-        .map_err(|e| CredentialError::Provider(format!("invalid auth_url: {e}")))?;
+    let mut url = url::Url::parse(&config.auth_url).map_err(|e| {
+        CredentialError::Provider(Box::new(ProviderErrorContext::new(
+            ProviderErrorKind::Schema,
+            SecretFreeMessage::new(format!("invalid auth_url: {e}")),
+        )))
+    })?;
 
     {
         let mut q = url.query_pairs_mut();

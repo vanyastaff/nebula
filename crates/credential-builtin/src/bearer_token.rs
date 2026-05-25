@@ -8,7 +8,8 @@ use nebula_credential::contract::plugin_capability_report;
 use nebula_credential::contract::resolve::ResolveResult;
 use nebula_credential::scheme::SecretToken;
 use nebula_credential::{
-    AuthPattern, Credential, CredentialContext, CredentialError, CredentialMetadata, SecretString,
+    AuthPattern, Credential, CredentialContext, CredentialError, CredentialMetadata,
+    ProviderErrorContext, ProviderErrorKind, SecretFreeMessage, SecretString,
 };
 use nebula_schema::{FieldValues, Schema};
 use serde::Deserialize;
@@ -54,7 +55,10 @@ impl Credential for BearerTokenCredential {
         _ctx: &CredentialContext,
     ) -> Result<ResolveResult<SecretToken, ()>, CredentialError> {
         let token = values.get_string_by_str("token").ok_or_else(|| {
-            CredentialError::Provider("missing required field 'token'".to_owned())
+            CredentialError::Provider(Box::new(ProviderErrorContext::new(
+                ProviderErrorKind::Schema,
+                SecretFreeMessage::new("missing required field 'token'"),
+            )))
         })?;
         Ok(ResolveResult::Complete(SecretToken::new(
             SecretString::new(token.to_owned()),

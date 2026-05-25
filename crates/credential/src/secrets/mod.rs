@@ -40,4 +40,6 @@ pub use crypto::{
 pub use guard::CredentialGuard;
 pub use redacted::RedactedSecret;
 pub use scheme_guard::{SchemeFactory, SchemeGuard};
-pub use secret_string::SecretString;
+pub use secret_string::{
+    ExposeSecret, ExposeSecretMut, SecretBox, SecretString, secret_from_string,
+};

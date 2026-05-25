@@ -144,6 +144,15 @@ impl CredentialDispatch {
         self.entries.contains_key(key)
     }
 
+    /// Iterate registered credential keys (`Credential::KEY` strings).
+    ///
+    /// Used by the registry-sync invariant probe to assert that
+    /// `CredentialDispatch` and `CredentialRegistry` hold the same key set
+    /// after plugin init.
+    pub fn iter_keys(&self) -> impl Iterator<Item = &'static str> + '_ {
+        self.entries.keys().copied()
+    }
+
     /// Whether the type at `key` is refreshable.
     #[must_use]
     pub fn is_refreshable(&self, key: &str) -> bool {

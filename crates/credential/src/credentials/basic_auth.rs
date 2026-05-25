@@ -7,8 +7,11 @@ use nebula_schema::{FieldValues, Schema};
 use serde::Deserialize;
 
 use crate::{
-    Credential, CredentialContext, SecretString, contract::plugin_capability_report,
-    error::CredentialError, metadata::CredentialMetadata, resolve::ResolveResult,
+    Credential, CredentialContext, SecretString,
+    contract::plugin_capability_report,
+    error::{CredentialError, ProviderErrorContext, ProviderErrorKind, SecretFreeMessage},
+    metadata::CredentialMetadata,
+    resolve::ResolveResult,
     scheme::IdentityPassword,
 };
 
@@ -71,10 +74,16 @@ impl Credential for BasicAuthCredential {
         _ctx: &CredentialContext,
     ) -> Result<ResolveResult<IdentityPassword, ()>, CredentialError> {
         let username = values.get_string_by_str("username").ok_or_else(|| {
-            CredentialError::Provider("missing required field 'username'".to_owned())
+            CredentialError::Provider(Box::new(ProviderErrorContext::new(
+                ProviderErrorKind::Schema,
+                SecretFreeMessage::new("missing required field 'username'"),
+            )))
         })?;
         let password = values.get_string_by_str("password").ok_or_else(|| {
-            CredentialError::Provider("missing required field 'password'".to_owned())
+            CredentialError::Provider(Box::new(ProviderErrorContext::new(
+                ProviderErrorKind::Schema,
+                SecretFreeMessage::new("missing required field 'password'"),
+            )))
         })?;
         let secret = SecretString::new(password.to_owned());
         Ok(ResolveResult::Complete(IdentityPassword::new(

@@ -1,8 +1,8 @@
 ---
 name: nebula-credential
 role: Credential Contract (stored state vs projected auth material; runtime orchestration lives in nebula-engine)
-status: frontier
-last-reviewed: 2026-04-29
+status: stable
+last-reviewed: 2026-05-20
 canon-invariants: [L2-12.5, L2-13.2]
 related: [nebula-core, nebula-schema, nebula-resource, nebula-action, nebula-plugin]
 ---
@@ -195,9 +195,8 @@ Plugin authors: see [`crates/credential-builtin/`](../credential-builtin/) for c
 
 See `docs/MATURITY.md` row for `nebula-credential`.
 
-- API stability: `frontier` — Phase 5 / M6 trait shape lands `type Properties` (replacing `type Input`) and shifts schema ownership to typed companion structs (2026-04-29). П1 trait scaffolding (capability sub-trait split, sensitivity dichotomy, fatal duplicate-KEY registration, `SchemeGuard` / `SchemeFactory` refresh hook, capability-from-type) preserved. 9 scheme types, store contract, and secret primitives implemented. Runtime resolver/registry/executor in `nebula-engine::credential`. `CredentialContext` embeds `BaseContext` and implements `Context` trait from `nebula-core`. Former `accessor/` and `metadata/` directories flattened to root-level modules. Rotation feature (`rotation`) is feature-gated and still evolving.
+- API stability: `stable` — M12.2 hardening closed 2026-05-20. Error taxonomy reshape per Smithy RFC-0022 (per-variant context structs + boxed payloads + 32-byte size cap closes #588); `SecretString` is a thin wrapper over `secrecy::SecretBox<String>` with `ExposeSecret` trait surface; `ValidatedCredentialBinding` newtype closes the `slot_bindings` confused-deputy non-goal from the ADR-0052 cascade; `CredentialService::resolve_for_slot` is the production bind-population seam; fallback-on-interrupt protects in-flight executions from transient provider failures; three-registry sync invariant probe + composite `register_credential_complete` close the silent-drift vector; dyn-compat probe locks the plugin registry against Rust 1.95 next-gen solver regressions. Phase 5 / M6 trait shape (`type Properties` replacing `type Input`, schema ownership on typed companion structs, 2026-04-29) and P1 trait scaffolding (capability sub-trait split, sensitivity dichotomy, fatal duplicate-KEY registration, `SchemeGuard` / `SchemeFactory` refresh hook, capability-from-type) preserved. 9 scheme types, store contract, and secret primitives implemented. Runtime resolver/registry/executor in `nebula-engine::credential`. `CredentialContext` embeds `BaseContext` and implements `Context` trait from `nebula-core`. ADR-0084 defers proactive pre-expiry refresh to 1.1. Rotation feature (`rotation`) is feature-gated and still evolving.
 - `#![forbid(unsafe_code)]` enforced.
-- Known gap: `CredentialRecord` placement is tracked for potential movement (see comment in `src/record.rs`); no canon revision required.
 
 ## Related
 

@@ -86,6 +86,20 @@ pub enum CredentialServiceError {
     #[error("external provider error: {0}")]
     Provider(String),
 
+    /// A transient provider failure during refresh — network error, rate-limit,
+    /// or temporary unavailability. Discriminated from [`Provider`] so the
+    /// fallback-on-interrupt path can pattern-match without string-scanning.
+    ///
+    /// The fallback wrapper in [`CredentialService::refresh`] intercepts this
+    /// variant when a non-expired cached snapshot is available and returns the
+    /// cached material instead of propagating the error.
+    ///
+    /// [`Provider`]: Self::Provider
+    /// [`CredentialService::refresh`]: crate::service::CredentialService::refresh
+    #[classify(category = "external", code = "CREDENTIAL_SERVICE:TRANSIENT_PROVIDER")]
+    #[error("transient provider error during refresh: {0}")]
+    TransientProvider(String),
+
     /// The persistence layer failed.
     #[classify(category = "internal", code = "CREDENTIAL_SERVICE:STORE")]
     #[error("credential store error: {0}")]
@@ -112,6 +126,31 @@ pub enum CredentialServiceError {
     #[classify(category = "internal", code = "CREDENTIAL_SERVICE:INTERNAL")]
     #[error("internal credential runtime error: {0}")]
     Internal(String),
+
+    /// The caller's cancellation token fired during the operation.
+    ///
+    /// The operation terminated without partial state mutation.
+    #[classify(category = "internal", code = "CREDENTIAL_SERVICE:CANCELLED")]
+    #[error("credential operation cancelled")]
+    Cancelled,
+
+    /// The validated binding's tenant fingerprint did not match the
+    /// caller's scope.
+    ///
+    /// Defence-in-depth check: [`validate_credential_binding`] already
+    /// enforced the scope at construction; this variant fires only when
+    /// the binding is presented against a mismatched scope at
+    /// `resolve_for_slot` time.
+    ///
+    /// [`validate_credential_binding`]: crate::service::CredentialService::validate_credential_binding
+    #[classify(category = "validation", code = "CREDENTIAL_SERVICE:SCOPE_VIOLATION")]
+    #[error(
+        "scope violation: credential binding validated for a different tenant than `{requested}`"
+    )]
+    ScopeViolation {
+        /// `owner_id` of the caller's scope.
+        requested: String,
+    },
 }
 
 #[cfg(test)]

@@ -2,19 +2,25 @@
 
 use std::fmt;
 
-use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroize;
 
+/// Re-exported so downstream crates can do `use nebula_credential::ExposeSecret`
+/// rather than taking a direct dependency on `secrecy`.
+pub use secrecy::{ExposeSecret, ExposeSecretMut, SecretBox};
+
 /// Secret string with automatic memory zeroization.
 ///
-/// Thin wrapper around [`secrecy::SecretString`] that adds sentinel-aware
-/// serde (the default `Serialize` writes `"[REDACTED]"` and `Deserialize`
-/// rejects the sentinel) plus convenience helpers (`len`, `is_empty`).
+/// Thin wrapper around [`secrecy::SecretString`] (`= SecretBox<str>`) that
+/// adds:
+/// - sentinel-aware serde: `Serialize` always writes `"[REDACTED]"`;
+///   `Deserialize` rejects the sentinel.
+/// - convenience helpers: `len`, `is_empty`.
+/// - implements [`ExposeSecret<str>`] so secret access is trait-based and
+///   grep-able (`use nebula_credential::ExposeSecret`).
 ///
-/// Access the plaintext via [`expose_secret()`](SecretString::expose_secret),
-/// which returns `&str` directly.
-/// Memory is automatically zeroed when the value is dropped.
+/// Access the plaintext via `.expose_secret()` — the call is auditable via
+/// `rg 'expose_secret'`.  Memory is automatically zeroed on drop.
 #[derive(Clone)]
 pub struct SecretString {
     inner: secrecy::SecretString,
@@ -29,6 +35,10 @@ impl SecretString {
     }
 
     /// Exposes the secret value. The caller is responsible for not leaking it.
+    ///
+    /// Prefer `use nebula_credential::ExposeSecret` + the trait method for
+    /// new code that needs to be polymorphic over secret types.
+    #[inline]
     pub fn expose_secret(&self) -> &str {
         self.inner.expose_secret()
     }
@@ -43,6 +53,37 @@ impl SecretString {
     pub fn is_empty(&self) -> bool {
         self.inner.expose_secret().is_empty()
     }
+}
+
+/// Trait-based secret access — makes every expose site grep-able.
+///
+/// With `use nebula_credential::ExposeSecret` in scope, `T: ExposeSecret<str>`
+/// bounds work on `SecretString` without a direct `secrecy` dependency.
+/// The inherent `expose_secret()` method is still preferred at non-generic
+/// call sites (inherent methods shadow trait methods), so existing call sites
+/// require no changes.
+impl ExposeSecret<str> for SecretString {
+    #[inline]
+    fn expose_secret(&self) -> &str {
+        self.inner.expose_secret()
+    }
+}
+
+impl ExposeSecretMut<str> for SecretString {
+    #[inline]
+    fn expose_secret_mut(&mut self) -> &mut str {
+        self.inner.expose_secret_mut()
+    }
+}
+
+/// Moves an owned `String` into a `SecretString`.
+///
+/// Prefer [`SecretBox::init_with_mut`] for new code where you want to avoid
+/// a stack copy of the plaintext (builds the value inside the box directly).
+/// Use this helper for the common case where you already hold an owned `String`.
+#[must_use]
+pub fn secret_from_string(s: String) -> SecretString {
+    SecretString::new(s)
 }
 
 impl fmt::Debug for SecretString {

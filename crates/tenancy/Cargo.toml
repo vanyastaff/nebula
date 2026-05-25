@@ -29,12 +29,8 @@ serde_json = { workspace = true }
 tokio = { workspace = true, features = ["rt", "macros", "sync"] }
 # `make_credential` test fixture stamps StoredCredential timestamps.
 chrono = { workspace = true }
-# Enable nebula-credential's in-memory `CredentialStore` (behind its
-# `test-util` feature) for the credential-scope-layer regression tests.
-# Cargo unions this with the normal dependency for test builds, so
-# `InMemoryStore` is available under `#[cfg(test)]` without a crate
-# feature of our own.
-nebula-credential = { path = "../credential", features = ["test-util"] }
+# InMemoryStore for the credential-scope-layer regression tests.
+nebula-credential-testutil = { path = "../credential-testutil" }
 
 [lib]
 doctest = false

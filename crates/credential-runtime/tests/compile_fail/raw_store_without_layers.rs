@@ -9,8 +9,8 @@
 //! Expected: a privacy error (E0624 — associated function is private),
 //! NOT an arity/type error (we never get far enough to type-check args).
 
-use nebula_credential::InMemoryPendingStore;
 use nebula_credential_runtime::CredentialService;
+use nebula_credential_testutil::InMemoryPendingStore;
 use nebula_storage::credential::InMemoryStore;
 
 fn main() {
