@@ -30,6 +30,30 @@ use crate::{
     topology_tag::TopologyTag,
 };
 
+// ─── Static error messages ───────────────────────────────────────────────────
+
+/// Pool cannot operate with zero max size.
+const ERR_MAX_SIZE_ZERO: &str = "PoolRuntime: config.max_size must be > 0 (got 0 — would \
+     deadlock the checkout semaphore on first acquire)";
+
+/// The checkout semaphore was closed (pool is shutting down).
+const ERR_SEMAPHORE_CLOSED: &str = "pool semaphore closed";
+
+/// All pool slots are in use and the timeout expired.
+const ERR_POOL_FULL_TIMEOUT: &str = "pool full: timed out waiting for available slot";
+
+/// The create-semaphore was closed (pool is shutting down).
+const ERR_CREATE_SEMAPHORE_CLOSED: &str = "pool: create semaphore closed";
+
+/// Timed out waiting for a create-semaphore permit.
+const ERR_CREATE_SEMAPHORE_TIMEOUT: &str =
+    "pool: create timed out waiting for create-semaphore permit";
+
+/// The `resource.create()` call exceeded `create_timeout`.
+const ERR_CREATE_TIMED_OUT: &str = "pool: create timed out";
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 /// A single pooled instance with its metrics and config fingerprint.
 ///
 /// The semaphore permit no longer lives here — it is held in
@@ -156,10 +180,7 @@ impl<R: Resource> PoolRuntime<R> {
         // violation); invariants that must hold for the pool to function
         // at all are rejected here, never silently clamped.
         if config.max_size == 0 {
-            return Err(Error::permanent(
-                "PoolRuntime: config.max_size must be > 0 (got 0 — would \
-                 deadlock the checkout semaphore on first acquire)",
-            ));
+            return Err(Error::permanent(ERR_MAX_SIZE_ZERO));
         }
         if config.min_size > config.max_size {
             return Err(Error::permanent(format!(
@@ -647,10 +668,8 @@ where
         let timeout = options.remaining().unwrap_or(self.config.create_timeout);
         match tokio::time::timeout(timeout, self.semaphore.clone().acquire_owned()).await {
             Ok(Ok(permit)) => Ok(permit),
-            Ok(Err(_closed)) => Err(Error::permanent("pool semaphore closed")),
-            Err(_timeout) => Err(Error::backpressure(
-                "pool full: timed out waiting for available slot",
-            )),
+            Ok(Err(_closed)) => Err(Error::permanent(ERR_SEMAPHORE_CLOSED)),
+            Err(_timeout) => Err(Error::backpressure(ERR_POOL_FULL_TIMEOUT)),
         }
     }
 
@@ -701,7 +720,7 @@ where
                     )));
                 },
                 Err(tokio::sync::TryAcquireError::Closed) => {
-                    return Err(Error::permanent("pool: create semaphore closed"));
+                    return Err(Error::permanent(ERR_CREATE_SEMAPHORE_CLOSED));
                 },
             }
         } else {
@@ -713,12 +732,10 @@ where
             {
                 Ok(Ok(permit)) => permit,
                 Ok(Err(_)) => {
-                    return Err(Error::permanent("pool: create semaphore closed"));
+                    return Err(Error::permanent(ERR_CREATE_SEMAPHORE_CLOSED));
                 },
                 Err(_) => {
-                    return Err(Error::backpressure(
-                        "pool: create timed out waiting for create-semaphore permit",
-                    ));
+                    return Err(Error::backpressure(ERR_CREATE_SEMAPHORE_TIMEOUT));
                 },
             }
         };
@@ -731,7 +748,7 @@ where
                 Ok(Ok(rt)) => rt,
                 Ok(Err(e)) => return Err(e.into()),
                 Err(_timeout) => {
-                    return Err(Error::transient("pool: create timed out"));
+                    return Err(Error::transient(ERR_CREATE_TIMED_OUT));
                 },
             };
 

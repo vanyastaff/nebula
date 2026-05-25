@@ -3914,6 +3914,7 @@ dependencies = [
  "nebula-core",
  "nebula-credential",
  "nebula-error",
+ "nebula-eventbus",
  "nebula-expression",
  "nebula-metadata",
  "nebula-metrics",

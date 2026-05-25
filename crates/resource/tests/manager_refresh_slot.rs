@@ -580,7 +580,7 @@ async fn revoke_failure_emits_slot_revoke_failed_not_refresh() {
     // Drain the broadcast channel and assert the failure event is the
     // revoke variant, never the refresh one.
     let mut saw_revoke_failed = false;
-    while let Ok(evt) = events.try_recv() {
+    while let Some(evt) = events.try_recv() {
         match evt {
             ResourceEvent::SlotRevokeFailed {
                 key: k,

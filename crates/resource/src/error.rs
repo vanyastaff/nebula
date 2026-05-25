@@ -49,6 +49,41 @@ pub enum ErrorKind {
     Ambiguous,
 }
 
+impl ErrorKind {
+    /// Returns the `(category, code-string)` classification for this error kind.
+    ///
+    /// Consolidates the per-variant category and code into a single match so
+    /// that adding a new variant only requires one update site.
+    fn classification(&self) -> (nebula_error::ErrorCategory, &'static str) {
+        match self {
+            Self::Transient => (nebula_error::ErrorCategory::External, "RESOURCE:TRANSIENT"),
+            Self::Permanent => (nebula_error::ErrorCategory::Internal, "RESOURCE:PERMANENT"),
+            Self::Exhausted { .. } => {
+                (nebula_error::ErrorCategory::Exhausted, "RESOURCE:EXHAUSTED")
+            },
+            Self::Backpressure => (
+                nebula_error::ErrorCategory::RateLimit,
+                "RESOURCE:BACKPRESSURE",
+            ),
+            Self::NotFound => (nebula_error::ErrorCategory::NotFound, "RESOURCE:NOT_FOUND"),
+            Self::Cancelled => (nebula_error::ErrorCategory::Cancelled, "RESOURCE:CANCELLED"),
+            Self::Revoked => (nebula_error::ErrorCategory::Unavailable, "RESOURCE:REVOKED"),
+            Self::Ambiguous => (nebula_error::ErrorCategory::Conflict, "RESOURCE:AMBIGUOUS"),
+        }
+    }
+
+    /// Whether this error kind is retryable by default.
+    ///
+    /// `Transient`, `Exhausted`, `Backpressure`, and `Revoked` represent
+    /// conditions that resolve with time or backoff.
+    fn is_default_retryable(&self) -> bool {
+        matches!(
+            self,
+            Self::Transient | Self::Exhausted { .. } | Self::Backpressure | Self::Revoked
+        )
+    }
+}
+
 /// Whether the error is resource-wide or target-specific.
 ///
 /// Currently a single-variant `#[non_exhaustive]` enum: only [`Resource`]
@@ -110,13 +145,7 @@ impl Error {
     /// with time or backoff (`Revoked` clears once the credential is
     /// re-registered).
     pub fn is_retryable(&self) -> bool {
-        matches!(
-            self.kind,
-            ErrorKind::Transient
-                | ErrorKind::Exhausted { .. }
-                | ErrorKind::Backpressure
-                | ErrorKind::Revoked
-        )
+        self.kind.is_default_retryable()
     }
 
     /// Returns the retry-after hint, if available.
@@ -269,44 +298,15 @@ impl std::error::Error for Error {
 
 impl nebula_error::Classify for Error {
     fn category(&self) -> nebula_error::ErrorCategory {
-        match &self.kind {
-            ErrorKind::Transient => nebula_error::ErrorCategory::External,
-            ErrorKind::Permanent => nebula_error::ErrorCategory::Internal,
-            ErrorKind::Exhausted { .. } => nebula_error::ErrorCategory::Exhausted,
-            ErrorKind::Backpressure => nebula_error::ErrorCategory::RateLimit,
-            ErrorKind::NotFound => nebula_error::ErrorCategory::NotFound,
-            ErrorKind::Cancelled => nebula_error::ErrorCategory::Cancelled,
-            // Non-terminal: the taint clears on credential re-registration.
-            // `Unavailable` is the retryable family the shared classifier
-            // uses for "temporarily down, try again" (see
-            // `ErrorCategory::is_default_retryable`).
-            ErrorKind::Revoked => nebula_error::ErrorCategory::Unavailable,
-            // Caller/wiring fault, not an internal breach: the caller asked
-            // for a `(key, scope)` that resolves to more than one tenant's
-            // registration without pinning a slot identity. `Conflict` is
-            // the client-error, non-retryable family (it is NOT a server
-            // 5xx — see `ErrorCategory::is_client_error` /
-            // `is_server_error`), so the deny surfaces as a caller conflict
-            // rather than `Internal`.
-            ErrorKind::Ambiguous => nebula_error::ErrorCategory::Conflict,
-        }
+        self.kind.classification().0
     }
 
     fn code(&self) -> nebula_error::ErrorCode {
-        nebula_error::ErrorCode::new(match &self.kind {
-            ErrorKind::Transient => "RESOURCE:TRANSIENT",
-            ErrorKind::Permanent => "RESOURCE:PERMANENT",
-            ErrorKind::Exhausted { .. } => "RESOURCE:EXHAUSTED",
-            ErrorKind::Backpressure => "RESOURCE:BACKPRESSURE",
-            ErrorKind::NotFound => "RESOURCE:NOT_FOUND",
-            ErrorKind::Cancelled => "RESOURCE:CANCELLED",
-            ErrorKind::Revoked => "RESOURCE:REVOKED",
-            ErrorKind::Ambiguous => "RESOURCE:AMBIGUOUS",
-        })
+        nebula_error::ErrorCode::new(self.kind.classification().1)
     }
 
     fn is_retryable(&self) -> bool {
-        self.is_retryable()
+        self.kind.is_default_retryable()
     }
 
     fn retry_hint(&self) -> Option<nebula_error::RetryHint> {

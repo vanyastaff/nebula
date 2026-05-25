@@ -93,6 +93,7 @@ pub struct ReleaseQueueHandle {
 /// ReleaseQueue::shutdown(handle).await;
 /// # }
 /// ```
+#[must_use = "dropping the queue closes its channels — keep it alive to submit work"]
 pub struct ReleaseQueue {
     senders: Vec<mpsc::Sender<TaskFactory>>,
     fallback_tx: mpsc::Sender<TaskFactory>,

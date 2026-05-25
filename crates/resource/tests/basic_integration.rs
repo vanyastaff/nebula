@@ -4413,7 +4413,7 @@ async fn graceful_shutdown_abort_marks_resources_failed_not_ready() {
     // events like `Registered` and `AcquireSuccess` were also emitted
     // earlier).
     let mut saw_health_change = false;
-    while let Ok(event) = events.try_recv() {
+    while let Some(event) = events.try_recv() {
         if let ResourceEvent::HealthChanged {
             key,
             healthy: false,

@@ -251,7 +251,7 @@ Supported kinds: `transient`, `permanent`, `exhausted` (with optional
 | Fast-fail during backend recovery           | `RegistrationSpec::recovery_gate: Some(Arc<RecoveryGate>)`    |
 | Config hot-reload (fingerprint-based)       | Implement `ResourceConfig::fingerprint`; call `Manager::reload_config` |
 | Per-tenant credential isolation             | Build `SlotIdentity::from_bindings(…)` and acquire via `acquire_<topo>_for_identity` |
-| Lifecycle event stream                      | `manager.subscribe_events()` → `broadcast::Receiver<ResourceEvent>` |
+| Lifecycle event stream                      | `manager.subscribe_events()` → `Subscriber<ResourceEvent>` (re-exported from `nebula_resource`)    |
 | Async background cleanup                    | `ReleaseQueue` (owned by `Manager`, transparent to callers)   |
 | Atomic operation counters                   | `manager.metrics()` → `Option<&ResourceOpsMetrics>`           |
 

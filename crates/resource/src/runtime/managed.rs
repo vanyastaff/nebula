@@ -110,7 +110,7 @@ impl<R: Resource> ManagedResource<R> {
     /// resource to `Failed` so callers cannot subsequently acquire a
     /// resource the manager has already declared bankrupt. Per-resource
     /// `HealthChanged{healthy:false}` event emission is owned by the
-    /// manager because it holds the broadcast channel.
+    /// manager because it holds the event bus.
     pub(crate) fn set_failed(&self, error: impl Into<String>) {
         let next = ResourceStatus {
             phase: ResourcePhase::Failed,
@@ -211,6 +211,14 @@ impl<R: Resource> ManagedResource<R> {
     /// The `refresh` flag selects the hook exactly once per topology arm
     /// (mirroring the pool selector); both directions share identical
     /// per-topology runtime-borrow semantics.
+    ///
+    /// # Cancel Safety
+    ///
+    /// This method is cancel-safe. The resource taint and revoke-epoch
+    /// bump are performed synchronously by the caller before this future
+    /// is polled. Dropping the returned future after taint leaves the
+    /// resource consistently marked as tainted — no partial-taint state
+    /// is possible and new acquires remain rejected.
     pub(crate) async fn dispatch_slot_hook(&self, slot: &str, refresh: bool) -> Result<(), Error> {
         match &self.topology {
             // Reconcile-aware (per-resource revoke deferral / #680): serialises
