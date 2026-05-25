@@ -83,7 +83,7 @@ pub enum ResolveResult<S, P: PendingState = NoPendingState> {
     Pending { state: P, interaction: InteractionRequest },
     Retry { after: Duration },
 
-    /// Server will callback when ready (webhook/push model)
+    /// Server will call back when ready (webhook/push model)
     ServerContinuation {
         state: P,
         callback_hint: String,
