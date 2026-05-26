@@ -103,16 +103,6 @@ implementation_plan.json
 project_index.json
 init.sh
 
-# AI Factory transient state
-.ai-factory/PLAN.md
-.ai-factory/FIX_PLAN.md
-.ai-factory/plans/
-.ai-factory/qa/
-.ai-factory/patches/
-.ai-factory/evolutions/
-.ai-factory/evolution/
-.ai-factory/*.update.json
-
 # ============================================================================
 # WORKTREES (large, duplicate file trees) — `.claude/worktrees/` is
 # already listed under the Claude per-user-state block above.
