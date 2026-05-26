@@ -75,6 +75,7 @@ credentials/
 !.pi/conventions.json
 !.pi/codebase-wiki.json
 !.pi/wiki/
+!.pi/wiki/**
 .atl/
 
 # Compound Engineering per-project secrets / preferences

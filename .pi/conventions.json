@@ -87,7 +87,7 @@
     },
     "dependencies": {
       "mode": "warn",
-      "description": "Layer-boundary enforcement is mechanical via deny.toml [[bans.deny]].wrappers — see CLAUDE.md § Layered Dependency Map. This convention here is advisory and complements (not replaces) cargo deny check.",
+      "description": "Layer-boundary enforcement is mechanical via the `wrappers` allowlists on the `[bans].deny` entries in `deny.toml` — see CLAUDE.md § Layered Dependency Map. This convention here is advisory and complements (not replaces) `cargo deny check`.",
       "rules": [
         {
           "id": "deps.core-not-business",
