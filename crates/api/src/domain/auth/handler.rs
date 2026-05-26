@@ -11,7 +11,7 @@
 use std::sync::Arc;
 
 use axum::{
-    Json,
+    Extension, Json,
     extract::{Path, Query, State},
     http::{HeaderMap, HeaderValue, StatusCode, header::SET_COOKIE},
     response::IntoResponse,
@@ -23,8 +23,8 @@ use crate::{
     domain::{
         auth::backend::{
             AuthBackend, AuthError, CSRF_COOKIE, ForgotPasswordRequest, LoginRequest,
-            LoginResponse, MfaChallengeResponse, MfaEnrollResponse, MfaVerifyRequest,
-            MfaVerifyResponse, OAuthProvider, OAuthStartResponse, PasswordOutcome,
+            LoginResponse, MfaChallengeResponse, MfaConfirmEnrollRequest, MfaEnrollResponse,
+            MfaLoginCompleteRequest, OAuthProvider, OAuthStartResponse, PasswordOutcome,
             ResetPasswordRequest, SESSION_COOKIE, SignupRequest, SignupResponse, UserProfile,
             VerifyEmailRequest, cleared_cookie, csrf_cookie, session_cookie,
         },
@@ -62,18 +62,6 @@ fn extract_session_id(headers: &HeaderMap) -> Option<String> {
         }
     }
     None
-}
-
-async fn principal_from_cookie(
-    headers: &HeaderMap,
-    backend: &Arc<dyn AuthBackend>,
-) -> Result<Principal, ApiError> {
-    let session_id = extract_session_id(headers)
-        .ok_or_else(|| ApiError::Unauthorized("session cookie required".to_owned()))?;
-    backend
-        .get_principal_by_session(&session_id)
-        .await?
-        .ok_or_else(|| ApiError::Unauthorized("session expired".to_owned()))
 }
 
 fn user_id_from_principal(principal: &Principal) -> Result<String, ApiError> {
@@ -282,29 +270,31 @@ pub async fn verify_email(
 
 /// `POST /api/v1/auth/mfa/enroll` — return otpauth URI + base32 secret.
 ///
-/// Requires a valid `nebula_session` cookie — extracted inline to avoid
-/// applying the full auth middleware to the unauthenticated `/auth/*`
-/// route group.
+/// Session-bearing; mounted on the CSRF-gated `auth_mfa_session_router`
+/// (see `crate::domain::auth::routes::mfa_session_router`). The principal
+/// is read from the `AuthContext` populated by `auth_middleware`, so any
+/// auth method that produces a `Principal::User` is accepted (session
+/// cookie, JWT, PAT, API key). PAT and API-key callers stay CSRF-exempt
+/// inside `csrf_middleware` as usual.
 #[utoipa::path(
     post,
     path = "/auth/mfa/enroll",
     tag = "auth",
-    security(()),
+    security(("bearer" = []), ("api_key" = [])),
     responses(
         (status = 200, description = "Enrollment payload — display the otpauth URI as a QR code; the user must confirm via `/auth/mfa/verify`.", body = MfaEnrollResponse),
-        (status = 401, description = "Session cookie is missing or expired.", body = ProblemDetails),
+        (status = 401, description = "Authentication required (no valid session/bearer/api-key).", body = ProblemDetails),
         (status = 403, description = "Authenticated principal is not a user (e.g. service account).", body = ProblemDetails),
         (status = 503, description = "Auth backend is not configured.", body = ProblemDetails),
     ),
 )]
-#[tracing::instrument(level = "info", skip(state, headers))]
+#[tracing::instrument(level = "info", skip(state, auth))]
 pub async fn mfa_enroll(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    Extension(auth): Extension<AuthContext>,
 ) -> ApiResult<Json<MfaEnrollResponse>> {
     let backend = backend(&state)?;
-    let principal = principal_from_cookie(&headers, backend).await?;
-    let user_id = user_id_from_principal(&principal)?;
+    let user_id = user_id_from_principal(&auth.principal)?;
     let enroll = backend
         .start_mfa_enrollment(&user_id)
         .await
@@ -315,48 +305,70 @@ pub async fn mfa_enroll(
     }))
 }
 
-/// `POST /api/v1/auth/mfa/verify` — confirm enrollment OR complete a login.
+/// `POST /api/v1/auth/mfa/verify` — confirm enrollment for the current user.
 ///
-/// If the request includes a `challenge_token`, the handler treats it as
-/// the second-factor step of an in-flight login and mints a session on
-/// success. Without the token, it confirms enrollment for the user
-/// resolved via the session cookie.
+/// Session-bearing; CSRF-gated by `csrf_middleware` (the route lives in the
+/// session-required sub-group `auth_mfa_session_router`). The second-factor
+/// login-completion path now lives at [`mfa_complete_login`]
+/// (`POST /auth/login/mfa`) because it is cookie-less and therefore
+/// CSRF-exempt by construction.
 #[utoipa::path(
     post,
     path = "/auth/mfa/verify",
     tag = "auth",
-    security(()),
-    request_body = MfaVerifyRequest,
+    security(("bearer" = []), ("api_key" = [])),
+    request_body = MfaConfirmEnrollRequest,
     responses(
-        (status = 200, description = "Either the second factor for an in-flight login (with `challenge_token`) succeeded — body is `LoginResponse` with session/CSRF cookies — OR the enrolled user confirmed their authenticator (without `challenge_token`) — body is `AckResponse`. The OpenAPI body advertises `oneOf` via the `MfaVerifyResponse` untagged enum so client generators receive both shapes.", body = MfaVerifyResponse),
-        (status = 401, description = "Invalid TOTP code, missing session, or expired challenge token.", body = ProblemDetails),
+        (status = 200, description = "Enrollment confirmed; the account now requires MFA at login.", body = AckResponse),
+        (status = 401, description = "Invalid TOTP code or missing session.", body = ProblemDetails),
         (status = 403, description = "Authenticated principal is not a user.", body = ProblemDetails),
         (status = 503, description = "Auth backend is not configured.", body = ProblemDetails),
     ),
 )]
-#[tracing::instrument(level = "info", skip(state, headers, body))]
+#[tracing::instrument(level = "info", skip(state, auth, body))]
 pub async fn mfa_verify(
     State(state): State<AppState>,
-    headers: HeaderMap,
-    Json(body): Json<MfaVerifyRequest>,
+    Extension(auth): Extension<AuthContext>,
+    Json(body): Json<MfaConfirmEnrollRequest>,
+) -> ApiResult<Json<AckResponse>> {
+    let backend = backend(&state)?;
+    let user_id = user_id_from_principal(&auth.principal)?;
+    backend
+        .confirm_mfa_enrollment(&user_id, &body.code)
+        .await
+        .map_err(ApiError::from)?;
+    Ok(Json(AckResponse::ok()))
+}
+
+/// `POST /api/v1/auth/login/mfa` — complete a second-factor login.
+///
+/// Cookie-less by design: the caller has no session yet, so this route is
+/// CSRF-exempt by construction and lives on the flat unauthenticated
+/// `/auth/*` sub-router. The `challenge_token` issued by the password step
+/// in `/auth/login` is the sole authority.
+#[utoipa::path(
+    post,
+    path = "/auth/login/mfa",
+    tag = "auth",
+    security(()),
+    request_body = MfaLoginCompleteRequest,
+    responses(
+        (status = 200, description = "Second factor accepted; session and CSRF cookies issued.", body = LoginResponse),
+        (status = 401, description = "Invalid TOTP code or expired challenge token.", body = ProblemDetails),
+        (status = 503, description = "Auth backend is not configured.", body = ProblemDetails),
+    ),
+)]
+#[tracing::instrument(level = "info", skip(state, body))]
+pub async fn mfa_complete_login(
+    State(state): State<AppState>,
+    Json(body): Json<MfaLoginCompleteRequest>,
 ) -> ApiResult<axum::response::Response> {
     let backend = backend(&state)?;
-    if let Some(challenge_token) = body.challenge_token {
-        let user = backend
-            .verify_mfa(&challenge_token, &body.code)
-            .await
-            .map_err(ApiError::from)?;
-        let response = mint_session_response(backend, user).await?;
-        Ok(response)
-    } else {
-        let principal = principal_from_cookie(&headers, backend).await?;
-        let user_id = user_id_from_principal(&principal)?;
-        backend
-            .confirm_mfa_enrollment(&user_id, &body.code)
-            .await
-            .map_err(ApiError::from)?;
-        Ok((StatusCode::OK, Json(AckResponse::ok())).into_response())
-    }
+    let user = backend
+        .verify_mfa(&body.challenge_token, &body.code)
+        .await
+        .map_err(ApiError::from)?;
+    mint_session_response(backend, user).await
 }
 
 /// `GET /api/v1/auth/oauth/{provider}` — start a Plane-A sign-in flow.

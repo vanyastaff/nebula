@@ -71,8 +71,33 @@ pub fn create_routes(state: AppState, _config: &ApiConfig) -> (Router, OpenApi) 
 fn build_openapi_router(state: &AppState) -> OpenApiRouter<AppState> {
     use utoipa::OpenApi as _;
 
-    // Auth routes — no auth middleware, no tenant scope.
+    // Auth routes — not behind `auth_middleware` / `csrf_middleware`.
+    //
+    // signup / login / forgot-password / reset-password / verify-email /
+    // login-second-step / oauth-* never carry a pre-existing session
+    // cookie, so neither layer applies.
+    //
+    // `logout` IS session-bearing (it revokes `nebula_session` when
+    // present) but is intentionally kept CSRF-exempt: the worst a
+    // CSRF attacker can achieve is forcing a logout, which is
+    // annoying but not a confidentiality / integrity breach. Keeping
+    // logout reachable without a matching CSRF cookie also makes the
+    // endpoint robust when the CSRF cookie has been cleared or has
+    // drifted (e.g. cookie-jar resets).
     let auth_routes = auth::routes::router();
+
+    // MFA session-bearing routes — `/auth/mfa/enroll` + `/auth/mfa/verify`
+    // (enrollment-confirm). Both require a valid session cookie, so they
+    // get `auth_middleware` (sets `AuthContext` extension) followed by
+    // `csrf_middleware` (reads it). The cookie-less second-factor login
+    // completion lives on `auth_routes` as `/auth/login/mfa` and is
+    // CSRF-exempt by construction.
+    let auth_mfa_session_routes = auth::routes::mfa_session_router()
+        .layer(middleware::from_fn(csrf_middleware))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth_middleware,
+        ));
 
     // Webhook routes (webhook activation): mounted by `transport.router()`
     // in `app::build_app` directly. The legacy `routes::webhook`
@@ -111,11 +136,17 @@ fn build_openapi_router(state: &AppState) -> OpenApiRouter<AppState> {
             auth_middleware,
         ));
 
-    // Credential OAuth callback routes (Plane B — API-owned OAuth flow).
-    let credential_routes = credential::routes::router().layer(middleware::from_fn_with_state(
-        state.clone(),
-        auth_middleware,
-    ));
+    // Credential routes (Plane B — credential CRUD + API-owned OAuth flow).
+    //
+    // CSRF is enforced on state-changing methods because the write
+    // endpoints are session/JWT-reachable; PAT/ApiKey requests stay
+    // exempt by construction inside `csrf_middleware`.
+    let credential_routes = credential::routes::router()
+        .layer(middleware::from_fn(csrf_middleware))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth_middleware,
+        ));
 
     // Compose `/api/v1` group. The OpenAPI spec endpoint
     // (`/api/v1/openapi.json`) and the Swagger UI (`/api/v1/docs/`) are
@@ -125,6 +156,7 @@ fn build_openapi_router(state: &AppState) -> OpenApiRouter<AppState> {
     // itself, not application content).
     let api_v1 = OpenApiRouter::new()
         .merge(auth_routes)
+        .merge(auth_mfa_session_routes)
         .merge(me_routes)
         .merge(catalog_routes)
         .merge(credential_routes)

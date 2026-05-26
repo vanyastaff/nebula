@@ -188,6 +188,113 @@ async fn create_credential_503_when_port_unconfigured_never_persists() {
     );
 }
 
+// ── CSRF wiring on credential write paths (M3.1 box 2) ────────────────────
+//
+// `csrf_middleware` is layered on `credential_routes` in `domain/mod.rs`.
+// JWT auth is a cookie-bearing auth method, so the double-submit
+// `X-CSRF-Token` header MUST match the `nebula_csrf` cookie for any
+// state-changing request to reach the handler.
+
+fn json_with_csrf_headers(
+    method: &str,
+    uri: &str,
+    token: &str,
+    body: &serde_json::Value,
+    csrf_header: Option<&str>,
+    csrf_cookie: Option<&str>,
+) -> Request<Body> {
+    let mut b = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {token}"));
+    if let Some(h) = csrf_header {
+        b = b.header("x-csrf-token", h);
+    }
+    if let Some(c) = csrf_cookie {
+        b = b.header("cookie", c);
+    }
+    b.body(Body::from(serde_json::to_vec(body).unwrap()))
+        .unwrap()
+}
+
+#[tokio::test]
+async fn create_credential_returns_403_when_csrf_header_missing() {
+    // Cookie-bearing JWT auth + state-changing method + missing CSRF header
+    // ⇒ csrf_middleware rejects with 403 *before* the handler runs (and
+    // therefore *before* any credential-schema validation).
+    let (state, _q) = create_state_with_queue().await;
+    let state = state.with_credential_schema(Arc::new(RequireApiKeyPort));
+    let config = ApiConfig::for_test();
+    let token = create_test_jwt();
+    let app = app::build_app(state, &config);
+
+    let body = serde_json::json!({
+        "credential_key": "api_key",
+        "name": "csrf-missing",
+        "data": { "api_key": "k-1" },
+        "tags": {}
+    });
+    let resp = app
+        .oneshot(json_with_csrf_headers(
+            "POST",
+            &ws_path("/credentials"),
+            &token,
+            &body,
+            None,
+            Some(TEST_CSRF_COOKIE),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "missing X-CSRF-Token on a cookie-auth write must be rejected by csrf_middleware"
+    );
+    let text = body_string(resp).await;
+    assert!(
+        text.to_lowercase().contains("csrf"),
+        "403 body should mention CSRF; got: {text}"
+    );
+}
+
+#[tokio::test]
+async fn create_credential_returns_403_when_csrf_header_mismatches_cookie() {
+    let (state, _q) = create_state_with_queue().await;
+    let state = state.with_credential_schema(Arc::new(RequireApiKeyPort));
+    let config = ApiConfig::for_test();
+    let token = create_test_jwt();
+    let app = app::build_app(state, &config);
+
+    let body = serde_json::json!({
+        "credential_key": "api_key",
+        "name": "csrf-mismatch",
+        "data": { "api_key": "k-2" },
+        "tags": {}
+    });
+    let resp = app
+        .oneshot(json_with_csrf_headers(
+            "POST",
+            &ws_path("/credentials"),
+            &token,
+            &body,
+            Some("different-from-cookie"),
+            Some(TEST_CSRF_COOKIE),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "X-CSRF-Token / cookie mismatch on a cookie-auth write must be rejected"
+    );
+    let text = body_string(resp).await;
+    assert!(
+        text.to_lowercase().contains("csrf"),
+        "403 body should mention CSRF; got: {text}"
+    );
+}
+
 #[tokio::test]
 async fn update_credential_rejects_invalid_data_secret_safe() {
     // credential-schema validation: the V2 gate also covers the update path (validates the
