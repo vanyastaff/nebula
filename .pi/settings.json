@@ -1,29 +1,64 @@
 {
+  "_comment": "Nebula per-project Pi settings. См. CLAUDE.md § AI Context Files.",
+
   "subagents": {
+    "_comment": "Per-project overrides для встроенных pi-subagents агентов. Стратегия: дешёвые сонеты для разведки, опус для запиcи и ревью, xhigh для планирования.",
     "agentOverrides": {
       "scout": {
-        "model": "anthropic/claude-sonnet-4",
+        "model": "claude-sonnet-4-5",
         "thinking": "medium"
       },
       "context-builder": {
-        "model": "anthropic/claude-sonnet-4",
+        "model": "claude-sonnet-4-5",
+        "thinking": "medium"
+      },
+      "researcher": {
+        "model": "claude-sonnet-4-5",
         "thinking": "medium"
       },
       "reviewer": {
-        "model": "anthropic/claude-opus-4-7",
-        "thinking": "high"
+        "model": "claude-opus-4-7",
+        "thinking": "high",
+        "inheritProjectContext": true
       },
       "worker": {
-        "model": "anthropic/claude-opus-4-7",
-        "thinking": "high"
+        "model": "claude-opus-4-7",
+        "thinking": "high",
+        "inheritProjectContext": true
       },
       "planner": {
-        "model": "anthropic/claude-opus-4-7",
+        "model": "claude-opus-4-7",
         "thinking": "xhigh"
       },
       "oracle": {
-        "model": "anthropic/claude-opus-4-7",
+        "model": "claude-opus-4-7",
         "thinking": "xhigh"
+      }
+    }
+  },
+
+  "vstack": {
+    "extensionManager": {
+      "config": {
+        "@vanillagreen/pi-hooks": {
+          "_comment": "Nebula tuning: убираем дубли с lefthook.yml + .claude/hooks/. Workspace-wide clippy после каждого edit на 60+ крейтах = 30-60с тормозов. Оставляем cheap-and-useful (bare cd block) + одну фоновую проверку в конце хода.",
+          "enabled": true,
+          "blockBareCd": true,
+          "preCommitCheck": false,
+          "postEditLint": false,
+          "taskCompletedCheck": true,
+          "clippyTimeoutMs": 90000
+        },
+
+        "@vanillagreen/pi-output-policy": {
+          "_comment": "В крупном Rust workspace вывод cargo/clippy легко уходит в сотни KB. balanced (default) уже хорошо, но дадим чуть больше bytes для развёрнутых clippy ошибок.",
+          "policyMode": "balanced",
+          "spillThresholdKb": 64,
+          "inlineTailKb": 20,
+          "inlineTailLines": 500,
+          "maxBlockKb": 32,
+          "maxLines": 500
+        }
       }
     }
   }

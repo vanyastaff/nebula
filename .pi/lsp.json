@@ -1,0 +1,44 @@
+{
+  "$schema": "https://unpkg.com/@narumitw/pi-lsp/lsp.schema.json",
+  "timeout": 30000,
+  "servers": {
+    "rust-analyzer": {
+      "command": ["rust-analyzer"],
+      "extensions": [".rs"],
+      "initialization": {
+        "settings": {
+          "rust-analyzer": {
+            "cargo": {
+              "buildScripts": { "enable": true },
+              "features": "all"
+            },
+            "check": {
+              "command": "clippy",
+              "extraArgs": ["--", "-D", "warnings"]
+            },
+            "checkOnSave": false,
+            "diagnostics": {
+              "disabled": ["unresolved-proc-macro"]
+            },
+            "files": {
+              "excludeDirs": [
+                "target",
+                ".worktrees",
+                ".claude/worktrees",
+                ".pi-audit-2026-05"
+              ]
+            },
+            "procMacro": { "enable": true },
+            "rustfmt": {
+              "extraArgs": ["--edition", "2024"]
+            }
+          }
+        }
+      }
+    },
+    "taplo": {
+      "command": ["taplo", "lsp", "stdio"],
+      "extensions": [".toml"]
+    }
+  }
+}

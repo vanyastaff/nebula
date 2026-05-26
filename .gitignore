@@ -247,8 +247,11 @@ crates/*/fuzz/Cargo.lock
 !.pi/settings.json
 !.pi/conventions.json
 !.pi/codebase-wiki.json
+!.pi/lsp.json
 !.pi/wiki/
 !.pi/wiki/**
+!.pi/extensions/
+!.pi/extensions/**.json
 
 # Local audit drops (point-in-time snapshots, not durable docs)
 .pi-audit-*/

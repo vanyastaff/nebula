@@ -1,0 +1,62 @@
+{
+  "_comment": "Nebula project — pi-permission-system policy. Tuned for daily dev flow: широкий allow для повседневных команд, ask только на необратимое (publish/force-push/hard-reset), deny на реально опасное. См. CLAUDE.md § AI Context Files.",
+  "permission": {
+    "*": "allow",
+
+    "path": {
+      "*": "allow",
+
+      ".env": "deny",
+      "**/.env": "deny",
+      ".env.*": "deny",
+      "**/.env.*": "deny",
+      ".env.example": "allow",
+      "**/.env.example": "allow",
+
+      "**/.ssh/**": "deny",
+      "**/.cargo/credentials*": "deny",
+      "**/id_rsa": "deny",
+      "**/id_ed25519": "deny",
+      "**/id_dsa": "deny",
+      "**/id_ecdsa": "deny"
+    },
+
+    "bash": {
+      "*": "allow",
+
+      "sudo *": "deny",
+      "rm -rf /*": "deny",
+      "rm -rf ~*": "deny",
+      "rm -rf target*": "deny",
+      "rm -rf .git*": "deny",
+      "rm -rf .worktrees*": "deny",
+      "rm -rf .pi*": "deny",
+
+      "git commit *--no-verify*": "deny",
+      "git push --no-verify*": "deny",
+      "cargo fmt --all*": "deny",
+
+      "git push *--force*": "ask",
+      "git push *--force-with-lease*": "ask",
+      "git push *-f *": "ask",
+      "git push *-f": "ask",
+      "git reset --hard*": "ask",
+      "git rebase --abort": "allow",
+      "git merge --abort": "allow",
+
+      "cargo publish*": "ask",
+      "cargo yank*": "ask",
+
+      "npm publish*": "ask",
+      "pnpm publish*": "ask",
+      "bun publish*": "ask",
+
+      "gh release create*": "ask",
+      "gh release delete*": "ask",
+      "gh pr merge*": "ask",
+      "gh pr close*": "ask"
+    },
+
+    "external_directory": "allow"
+  }
+}
