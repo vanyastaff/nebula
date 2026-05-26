@@ -36,8 +36,9 @@ Most automation platforms are runtime-interpreted, dynamically typed, and treat 
 
 ```
 API / Public    api (HTTP + webhook module) · sdk (integration author façade)
-Exec            engine · storage · storage-loom-probe · sandbox · plugin-sdk
+Exec            engine · storage · storage-loom-probe
 Business        credential · credential-builtin · credential-vault · credential-runtime · credential-testutil · resource · action · plugin · tenancy
+Plugin-Proto    plugin-sdk · sandbox
 Core            core · validator · expression · workflow · execution · schema · metadata · storage-port
 Cross-cutting   log · eventbus · metrics · resilience · error
 ```
@@ -83,8 +84,8 @@ Source of truth: workspace members in `Cargo.toml`.
 | **Exec**          | `engine`             | Frontier loop, lease lifecycle, node scheduling, control consumer (ADR-0008)         |
 |                   | `storage`            | Persistence trait family + in-memory + Postgres (SQLite local path planned)          |
 |                   | `storage-loom-probe` | `loom`-checked concurrency probe for storage paths                                   |
-|                   | `sandbox`            | Process-isolated action execution (capability allowlist planned)                     |
-|                   | `plugin-sdk`         | Out-of-process plugin protocol (`run_duplex`)                                        |
+| **Plugin-Proto**  | `plugin-sdk`         | Out-of-process plugin protocol (`run_duplex`)                                        |
+|                   | `sandbox`            | Process-isolated action execution + duplex transport (capability allowlist planned)  |
 | **API / Public**  | `api`                | REST server, webhook transport, middleware                                           |
 |                   | `sdk`                | **Integration author façade** — re-exports + `WorkflowBuilder` + `TestRuntime`       |
 | **Cross-cutting** | `error`              | `NebulaError<E>`, `Classify` trait, derive macro                                     |
