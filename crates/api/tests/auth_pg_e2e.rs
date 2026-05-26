@@ -47,7 +47,17 @@ use nebula_api::{
     },
     ports::email::{EchoSink, EmailKind, EmailPort},
 };
+use nebula_core::UserId;
 use sqlx::{Pool, Postgres, postgres::PgPoolOptions};
+
+/// Mirrors `nebula_storage::pg::user::LOCKOUT_THRESHOLD` (the module is
+/// `pub(crate)` so the constant is not re-exported from
+/// `nebula-storage`). If the storage-side value changes from 5, this
+/// constant must change with it; the lockout assertions below will
+/// otherwise fail loudly (off-by-one between the test loop bound and
+/// the storage-side CASE check) — which is the desired regression
+/// signal. Source: `crates/storage/src/pg/user.rs:34`.
+const LOCKOUT_THRESHOLD_LOCAL: u32 = 5;
 
 // `sqlx::migrate!` resolves paths relative to the calling crate's
 // `CARGO_MANIFEST_DIR` (`crates/api`); the production schema lives in
@@ -538,5 +548,274 @@ async fn pg_auth_backend_complete_oauth_does_not_burn_cross_provider_state() {
     assert!(
         matches!(correct_err, AuthError::NotImplemented(_)),
         "expected NotImplemented after successful consume, got: {correct_err:?}"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Lockout coverage (M3.1 follow-up)
+//
+// Storage-layer logic in `crates/storage/src/pg/user.rs`
+// (`record_login_failure` arms `locked_until` once
+// `failed_login_count + 1 >= LOCKOUT_THRESHOLD`) and
+// `PgAuthBackend::authenticate_password` returns `AuthError::AccountLocked`
+// when `users.locked_until > NOW()`. Both surfaces have unit-test
+// coverage in their owning crates; the three tests below drive the
+// end-to-end flow through the backend trait so a future refactor that
+// breaks the wiring is caught against the production code path.
+//
+// The current rate-limit middleware (`crates/api/src/middleware/rate_limit.rs`)
+// is per-IP only; a per-account dimension is explicitly out of scope
+// of this follow-up — the lockout column is the auth-aware throttle
+// surface for 1.0.
+// ─────────────────────────────────────────────────────────────────────
+
+/// Convert the `UserProfile::user_id` String back into the 16-byte
+/// payload that the `users` PG table indexes on.
+fn user_id_bytes(user_id: &str) -> [u8; 16] {
+    user_id
+        .parse::<UserId>()
+        .expect("user_id must round-trip through ULID parser")
+        .as_bytes()
+}
+
+/// Run an authenticated `register_user` + `verify_email` flow so the
+/// account is in the same state every lockout test starts from.
+async fn verified_user(
+    backend: &Arc<PgAuthBackend>,
+    sink: &Arc<EchoSink>,
+    email: &str,
+) -> nebula_api::domain::auth::backend::UserProfile {
+    let profile = backend
+        .register_user(signup_for(email))
+        .await
+        .expect("register_user");
+    let verification_token = {
+        let drained = sink.drain();
+        assert_eq!(
+            drained.len(),
+            1,
+            "register_user must enqueue exactly one verification email"
+        );
+        assert_eq!(drained[0].kind, EmailKind::Verification);
+        drained[0].body.clone()
+    };
+    backend
+        .verify_email(&verification_token)
+        .await
+        .expect("verify_email");
+    profile
+}
+
+/// Read `(failed_login_count, locked_until)` directly from the row so
+/// the test can assert the storage-layer state independent of the
+/// backend's read path.
+async fn lockout_state(
+    pool: &Pool<Postgres>,
+    user_id: &str,
+) -> (i32, Option<chrono::DateTime<chrono::Utc>>) {
+    let id_bytes = user_id_bytes(user_id);
+    sqlx::query_as::<_, (i32, Option<chrono::DateTime<chrono::Utc>>)>(
+        "SELECT failed_login_count, locked_until FROM users WHERE id = $1",
+    )
+    .bind(&id_bytes[..])
+    .fetch_one(pool)
+    .await
+    .expect("SELECT lockout state")
+}
+
+/// Force-expire the lockout window without sleeping for 15 minutes.
+/// Mirrors what a future operator unlock RPC would do, but the test
+/// owns the manipulation explicitly so the production code path stays
+/// untouched. Asserts the row exists so a typo'd id fails loudly.
+async fn expire_lockout(pool: &Pool<Postgres>, user_id: &str) {
+    let id_bytes = user_id_bytes(user_id);
+    let rows = sqlx::query(
+        "UPDATE users \
+             SET locked_until = NOW() - INTERVAL '1 second' \
+             WHERE id = $1 AND locked_until IS NOT NULL",
+    )
+    .bind(&id_bytes[..])
+    .execute(pool)
+    .await
+    .expect("UPDATE locked_until")
+    .rows_affected();
+    assert_eq!(
+        rows, 1,
+        "expire_lockout must touch exactly one armed lock; got {rows}"
+    );
+}
+
+/// Lockout fires once `record_login_failure` crosses
+/// `LOCKOUT_THRESHOLD`. The Nth wrong-password attempt still returns
+/// `InvalidCredentials` (the lock arms on the same call but the
+/// pre-check guard already let it through); the (N+1)th attempt
+/// observes the armed lock and short-circuits to `AccountLocked`.
+#[tokio::test]
+async fn pg_auth_backend_locks_after_threshold_failures() {
+    let Some(pool) = pool().await else { return };
+    let (backend, sink) = build_backend(pool.clone());
+    let email = unique_email("lockout");
+    let profile = verified_user(&backend, &sink, &email).await;
+
+    // Drive N wrong-password attempts. Each is `InvalidCredentials`;
+    // the Nth call records the failure that arms `locked_until`.
+    for attempt in 1..=LOCKOUT_THRESHOLD_LOCAL {
+        let err = backend
+            .authenticate_password(&email, "wrong-password", None)
+            .await
+            .expect_err("wrong password must reject before lockout");
+        assert!(
+            matches!(err, AuthError::InvalidCredentials),
+            "attempt {attempt}/{LOCKOUT_THRESHOLD_LOCAL} must surface InvalidCredentials, got: {err:?}"
+        );
+    }
+
+    // Storage row reflects the armed lockout immediately.
+    let (count_at_lock, locked_until) = lockout_state(&pool, &profile.user_id).await;
+    assert_eq!(
+        count_at_lock, LOCKOUT_THRESHOLD_LOCAL as i32,
+        "failed_login_count must equal the threshold after N rejected attempts"
+    );
+    let lock_deadline = locked_until.expect("locked_until must be armed");
+    assert!(
+        lock_deadline > chrono::Utc::now(),
+        "locked_until ({lock_deadline}) must be in the future immediately after the Nth failure"
+    );
+
+    // The (N+1)th attempt — even with the CORRECT password — must be
+    // rejected with AccountLocked, NOT InvalidCredentials. This is the
+    // pre-password lockout guard at `pg.rs:authenticate_password`.
+    let locked_err = backend
+        .authenticate_password(&email, "hunter22", None)
+        .await
+        .expect_err("correct password during lockout window must reject");
+    assert!(
+        matches!(locked_err, AuthError::AccountLocked),
+        "locked account must surface AccountLocked, got: {locked_err:?}"
+    );
+
+    // The wrong password during the lockout window also surfaces
+    // AccountLocked — proves the guard runs before the password check
+    // (no `record_login_failure` side-effect; counter does not
+    // increment past the threshold).
+    let wrong_during_lock = backend
+        .authenticate_password(&email, "still-wrong", None)
+        .await
+        .expect_err("wrong password during lockout window must reject");
+    assert!(
+        matches!(wrong_during_lock, AuthError::AccountLocked),
+        "wrong password during lockout must surface AccountLocked, got: {wrong_during_lock:?}"
+    );
+    let (count_after_locked_attempts, _) = lockout_state(&pool, &profile.user_id).await;
+    assert_eq!(
+        count_after_locked_attempts, LOCKOUT_THRESHOLD_LOCAL as i32,
+        "failed_login_count must not grow once the lockout pre-check fires"
+    );
+}
+
+/// Once the lockout window expires, a correct-password login must
+/// succeed and `record_login_success` must clear both the failure
+/// counter and `locked_until`.
+#[tokio::test]
+async fn pg_auth_backend_lockout_window_expiry_allows_login() {
+    let Some(pool) = pool().await else { return };
+    let (backend, sink) = build_backend(pool.clone());
+    let email = unique_email("lockout-expire");
+    let profile = verified_user(&backend, &sink, &email).await;
+
+    // Drive the account into the locked state.
+    for _ in 0..LOCKOUT_THRESHOLD_LOCAL {
+        let _ = backend
+            .authenticate_password(&email, "wrong-password", None)
+            .await
+            .expect_err("wrong password must reject");
+    }
+    let (_, locked_until) = lockout_state(&pool, &profile.user_id).await;
+    assert!(
+        locked_until.is_some(),
+        "sanity: account must be locked before we expire the window"
+    );
+
+    // Force-expire the window without waiting 15 minutes.
+    expire_lockout(&pool, &profile.user_id).await;
+
+    // Correct password during the expired window succeeds. The user
+    // has no MFA enabled, so the outcome is Authenticated.
+    match backend
+        .authenticate_password(&email, "hunter22", None)
+        .await
+        .expect("authenticate_password after lockout expiry")
+    {
+        PasswordOutcome::Authenticated(p) => {
+            assert_eq!(p.user_id, profile.user_id);
+        },
+        PasswordOutcome::MfaRequired { .. } => {
+            panic!("MFA is not enabled on the lockout fixture")
+        },
+    }
+
+    // record_login_success cleared both columns.
+    let (final_count, final_lock) = lockout_state(&pool, &profile.user_id).await;
+    assert_eq!(
+        final_count, 0,
+        "successful auth must reset failed_login_count to 0"
+    );
+    assert!(
+        final_lock.is_none(),
+        "successful auth must clear locked_until, got: {final_lock:?}"
+    );
+}
+
+/// Negative control: below-threshold failures followed by a single
+/// success must clear the counter without ever arming the lock. This
+/// covers the `record_login_success` side-effect on the happy path
+/// and proves the threshold check is `>=` not `>`.
+#[tokio::test]
+async fn pg_auth_backend_success_clears_subthreshold_failures() {
+    let Some(pool) = pool().await else { return };
+    let (backend, sink) = build_backend(pool.clone());
+    let email = unique_email("lockout-clears");
+    let profile = verified_user(&backend, &sink, &email).await;
+
+    // Drive THRESHOLD - 1 wrong-password attempts. Each is
+    // InvalidCredentials; the lock must NOT arm.
+    let below_threshold = LOCKOUT_THRESHOLD_LOCAL - 1;
+    for attempt in 1..=below_threshold {
+        let err = backend
+            .authenticate_password(&email, "wrong-password", None)
+            .await
+            .expect_err("sub-threshold wrong password must reject");
+        assert!(
+            matches!(err, AuthError::InvalidCredentials),
+            "sub-threshold attempt {attempt} must surface InvalidCredentials, got: {err:?}"
+        );
+    }
+    let (mid_count, mid_lock) = lockout_state(&pool, &profile.user_id).await;
+    assert_eq!(
+        mid_count, below_threshold as i32,
+        "failed_login_count must reflect each below-threshold failure"
+    );
+    assert!(
+        mid_lock.is_none(),
+        "sub-threshold failures must never arm locked_until, got: {mid_lock:?}"
+    );
+
+    // One successful authentication wipes the counter.
+    match backend
+        .authenticate_password(&email, "hunter22", None)
+        .await
+        .expect("correct password below threshold must succeed")
+    {
+        PasswordOutcome::Authenticated(p) => assert_eq!(p.user_id, profile.user_id),
+        PasswordOutcome::MfaRequired { .. } => panic!("MFA is not enabled"),
+    }
+    let (after_count, after_lock) = lockout_state(&pool, &profile.user_id).await;
+    assert_eq!(
+        after_count, 0,
+        "successful auth must reset failed_login_count, got: {after_count}"
+    );
+    assert!(
+        after_lock.is_none(),
+        "successful auth must keep locked_until null when never armed, got: {after_lock:?}"
     );
 }
