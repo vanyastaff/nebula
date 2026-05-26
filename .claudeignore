@@ -6,7 +6,9 @@ target/debug/incremental/
 target/criterion/
 target/debug/coverage/
 target/doc/
-Cargo.lock
+# Cargo.lock is committed (workspace ships binaries: apps/server,
+# crates/*-cli). Keep it visible to Claude so dep audits / pin
+# investigations can see pinned versions.
 
 # IDE files
 .idea/
@@ -35,10 +37,12 @@ temp/
 # Log files
 *.log
 
-# Environment files
+# Environment files — mirrors .gitignore policy
 .env
-.env.local
-.env.*.local
+.env.*
+!.env.example
+.envrc
+deploy/.env
 
 # Database files
 *.db
@@ -65,12 +69,23 @@ temp/
 *.json.gz
 *.parquet
 
-# Security sensitive (just in case)
+# Security sensitive (just in case) — mirrors .gitignore / .cursorignore
 secrets/
 credentials/
 *.key
 *.pem
 *.crt
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.asc
+*.gpg
+id_rsa
+id_dsa
+id_ecdsa
+id_ed25519
+.npmrc
 
 # Claude local / machine-specific
 .claude/settings.local.json
@@ -78,12 +93,34 @@ credentials/
 .claude/agent-memory-local/
 .claude/worktrees/
 .worktrees/
-.mcp.json
+# `.mcp.json` is committed at the repo root (shared filesystem MCP
+# server config) — keep it visible to Claude so the agent honours its
+# own MCP registry.
 .serena/
 .code-review-graph/
 .auto-claude/
 .auto-claude-security.json
 .claude_settings.json
+
+# AI tool runtime dirs — mirrors .gitignore
+.codex/
+.atl/
+.pi/
+.pi-audit-*/
+.compound-engineering/*.local.yaml
+
+# Other AI tool noise
+.junie/
+.qoder/
+!.qoder/repowiki/
+.specify/
+.aider*
+.history/
+*.vsix
+flamegraph.svg
+perf.data
+perf.data.old
+node_modules/
 
 # Generated reports / reviews
 review_report.md

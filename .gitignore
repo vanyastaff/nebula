@@ -103,9 +103,11 @@ doc/
 # ENVIRONMENT & SECRETS
 # ============================================================================
 
+# All .env files except the public .env.example template. This covers
+# .env.local, .env.production, .env.staging, .env.development, etc.
 .env
-.env.local
-.env.*.local
+.env.*
+!.env.example
 .envrc
 deploy/.env
 
@@ -115,6 +117,15 @@ deploy/.env
 *.crt
 *.p12
 *.pfx
+*.jks
+*.keystore
+*.asc
+*.gpg
+id_rsa
+id_dsa
+id_ecdsa
+id_ed25519
+.npmrc
 secrets/
 credentials/
 !apps/desktop/src/features/credentials/
@@ -241,3 +252,16 @@ targets/
 # Fuzz crate lockfiles — not redistributed and trip dep-review's
 # license check on libfuzzer-sys (`(MIT OR Apache-2.0) AND NCSA`).
 crates/*/fuzz/Cargo.lock
+
+# ============================================================================
+# AI HARNESS RUNTIME STATE — symmetric with .codex/ above. Per-user, not
+# shared. `.atl/` holds the gentle-pi skill-registry cache; `.pi/` holds
+# per-project Pi settings / session state. Add new harness dirs here, not
+# scattered through the file.
+# ============================================================================
+
+.atl/
+.pi/
+
+# Local audit drops (point-in-time snapshots, not durable docs)
+.pi-audit-*/

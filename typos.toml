@@ -7,6 +7,15 @@ extend-exclude = [
   "crates/action/docs",
   "docs/plans/archive",
   "docs/guidelines/research",
+  # Lockfiles — dense hashes / version strings, no prose worth checking.
+  "*.lock",
+  "skills-lock.json",
+  # External vocabularies (release notes, SQL identifiers, license
+  # expression strings) live in files where line-level allow rules
+  # would be too noisy.
+  "CHANGELOG.md",
+  "migrations/",
+  "deny.toml",
   # Spike iterations — reference-only artefacts, not production code.
   "spike-iter-1-2",
   "spike-iter-3",
