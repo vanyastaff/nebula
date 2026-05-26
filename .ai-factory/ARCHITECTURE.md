@@ -2,17 +2,18 @@
 
 > Agent-actionable subset. The **canonical layer map lives in
 > [`CLAUDE.md`](../CLAUDE.md) § "Layered Dependency Map"** and is mechanically
-> enforced by `cargo deny` against `deny.toml [[bans]] wrappers`. The README
-> at the repo root is the product-facing crate map. If those disagree with
-> anything below, **CLAUDE.md / README / `deny.toml` win** — fix this file,
-> never the canon.
+> enforced by `cargo deny check` against the `wrappers` allowlists on the
+> `[bans].deny` entries in `deny.toml`. The README at the repo root is the
+> product-facing crate map. If those disagree with anything below, **CLAUDE.md
+> / README / `deny.toml` win** — fix this file, never the canon.
 
 ## Overview
 
 Nebula is a **layered modular monolith** built as a Cargo workspace. Every
 crate lives in exactly one layer, and inter-layer dependencies are enforced
-**mechanically** by `cargo deny check` against the `[[bans]] wrappers` rules
-in `deny.toml` — a missing entry fails CI before review. The result is the
+**mechanically** by `cargo deny check` against the `wrappers` allowlists on
+the `[bans].deny` entries in `deny.toml` — a missing entry fails CI before
+review. The result is the
 simple operational profile of a monolith with the modular discipline of
 microservices: any individual crate can be embedded independently, but the
 team ships one repo, one toolchain, one CI, one release cadence.
@@ -32,20 +33,22 @@ tests, typed events for cross-crate seams.**
 - **Team / scaling profile:** small core team, embeddable by external
   teams → modular discipline matters more than independent deploy.
 - **Key factor:** modularity is a hard product constraint (see README "Why
-  Nebula") — `cargo deny [wrappers]` makes the layer boundaries cheap to
-  enforce and impossible to drift quietly past.
+  Nebula") — the `wrappers` allowlists in `deny.toml` make the layer
+  boundaries cheap to enforce and impossible to drift quietly past.
 
 ## What agents need to know on top of CLAUDE.md / README / deny.toml
 
 - Each layer depends only on layers below it; cross-cutting crates are
-  importable at any level. The exact wrapper allowlist is in `deny.toml`.
+  importable at any level. The exact allowlist is each
+  `[bans].deny[].wrappers` field in `deny.toml`.
 - Cross-crate communication between siblings at the same layer goes through
   `nebula-eventbus`, not direct imports.
 - **`nebula-credential` is shared infrastructure**, not a single-tier
   Business crate. Exec / Business / API tiers and the first-party backends
   (`credential-builtin`, `credential-vault`, `credential-runtime`,
   `credential-testutil`) all consume the credential contract directly. The
-  exact consumer set is locked in `deny.toml [wrappers]`.
+  exact consumer set is locked in `deny.toml` under the
+  `nebula-credential` entry's `wrappers` field.
 - **`nebula-storage-port`** (Core) is the object-safe storage seam every
   storage consumer depends on. **`nebula-storage`** (Exec) is the sole
   adapter implementation. **`nebula-tenancy`** (Business) is the
@@ -95,14 +98,17 @@ proc-macro build cost out of the runtime crate.
 - ✅ A crate's `macros/` sub-crate may depend on its parent contract crate
   only as a `dev-dependency` for tests.
 
-### Forbidden (enforced by `deny.toml [[bans]] wrappers`)
+### Forbidden (enforced by the `wrappers` allowlists on the `[bans].deny` entries in `deny.toml`)
 
 - ❌ Cross-cutting crates may **not** depend on Core / Business / Exec / API.
 - ❌ Core crates may **not** depend on Business / Exec / API.
 - ❌ Business crates may **not** depend on Exec / API.
 - ❌ Exec crates may **not** depend on API. **Exception (allowlisted):**
-  `nebula-engine` may be wrapped by `nebula-cli` and (dev-only) by
-  `crates/api/tests/knife.rs` — see `deny.toml` rationale.
+  `nebula-engine` may be wrapped by `apps/server` (`nebula-server`) and by
+  `nebula-credential-runtime` (acyclic edge per ADR-0081); dev-only by
+  `crates/api/tests/knife.rs`. The allowlist also reserves an entry for the
+  planned `nebula-cli` binary, which does not exist in the workspace yet.
+  See `deny.toml` for the full rationale comments.
 - ❌ Sibling crates at the same layer may **not** import each other
   directly — cross-crate communication goes through `nebula-eventbus`
   (typed events) or through a shared lower-layer contract crate.
@@ -130,8 +136,8 @@ paths, `CODEOWNERS` sign-off).
 - **Cross-cutting concerns (logging, metrics, errors) are imported, not
   wrapped.** Use `tracing` directly; do not invent crate-local façades.
 - **Public extension surface = `nebula-sdk` + `nebula-plugin-sdk`.**
-  Third-party integrators depend on these two crates only; the `[wrappers]`
-  rules pin who is allowed to depend on each.
+  Third-party integrators depend on these two crates only; the `wrappers`
+  allowlists in `deny.toml` pin who is allowed to depend on each.
 - **Composition roots.** Wiring concrete impls happens in `apps/server`
   (binary) or, for in-process integration tests, in `crates/api/tests/`.
   Library crates do not perform global wiring.
@@ -139,9 +145,9 @@ paths, `CODEOWNERS` sign-off).
 ## Key Principles
 
 1. **Crates are modules; layers are enforced at compile time.** A merge
-   that widens a layer boundary either updates `deny.toml [[bans]] wrappers`
-   with a `reason` (and review) or fails CI. There is no soft "gentle
-   reminder" path.
+   that widens a layer boundary either updates the relevant
+   `[bans].deny[].wrappers` entry in `deny.toml` with a `reason` (and
+   review) or fails CI. There is no soft "gentle reminder" path.
 2. **Types over tests.** Workflow shape, action I/O, parameter schemas, and
    auth patterns are Rust types. If it compiles, the shape is valid. Tests
    verify behaviour, not type safety.

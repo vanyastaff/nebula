@@ -185,7 +185,7 @@ Besides the **integration** reference crates (§3.6–§3.9), the workspace ship
 - **`nebula-error`** — **`Classify`**, **`NebulaError`**, categories/codes, structured details — **one** error taxonomy at boundaries instead of ad hoc strings.
 - **`nebula-resilience`** — composable **pipelines** (retry, timeout, circuit breaker, bulkhead, …); pairs with **`ActionError`** / retry hints in **`nebula-action`** (§3.8).
 - **`nebula-validator`** — programmatic validators + declarative **`Rule`**; **`nebula-schema`** embeds rules in **`Field`** definitions.
-- **`nebula-config`** — multi-source, merged, optionally hot-reloaded **host** configuration (binaries/services) — **not** the per-node **`Schema`** story.
+- **`nebula-config`** *(planned, not yet a workspace member)* — multi-source, merged, optionally hot-reloaded **host** configuration (binaries/services) — **not** the per-node **`Schema`** story.
 - **`nebula-log`** — structured **`tracing`** pipeline (init, sinks, optional OTel/Sentry hooks).
 - **`nebula-metrics`** — lock-free in-memory primitives (registry, histograms, label interning) plus **`nebula_*` naming**, adapters, Prometheus-style **export** and label-safety guards. **Absorbs the former `nebula-telemetry` crate** — one metrics path, no two-tier stack (ADR-0046).
 - **`nebula-eventbus`** — typed **broadcast** bus with back-pressure policy; **transport only** — domain **`E`** types live in owning crates.

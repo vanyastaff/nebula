@@ -22,7 +22,8 @@ API layer are in active development. Not production-ready yet.
 - **Workspace:** 29 first-party crates under `crates/` (plus their derive
   sub-crates and `apps/server`). The layered dependency map is canonical in
   **[`CLAUDE.md`](../CLAUDE.md) § "Layered Dependency Map"** and mechanically
-  enforced by `cargo deny [wrappers]`. Do not duplicate the list here.
+  enforced by `cargo deny check` against the `wrappers` allowlists on the
+  `[bans].deny` entries in `deny.toml`. Do not duplicate the list here.
 - **Async runtime:** Tokio (multi-thread).
 - **Serialization:** `serde` / `serde_json`.
 - **Errors:** `thiserror` in libraries, `anyhow` in binaries.
@@ -39,9 +40,9 @@ API layer are in active development. Not production-ready yet.
 
 Layered Modular Workspace (Cargo wrapper-enforced). The exact layer table
 lives in **[`CLAUDE.md`](../CLAUDE.md) § "Layered Dependency Map"** and is
-enforced mechanically by `cargo deny` against `deny.toml [wrappers]`.
-Cross-crate communication goes through `nebula-eventbus`, not direct imports
-between siblings.
+enforced mechanically by `cargo deny check` against the `wrappers` fields
+on the `[bans].deny` entries in `deny.toml`. Cross-crate communication goes
+through `nebula-eventbus`, not direct imports between siblings.
 
 Product framing and design principles live in **README.md**
 ("Why Nebula", "Design Principles", "Architecture").

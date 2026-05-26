@@ -31,9 +31,10 @@
 
 - The **layered dependency map is canonical in
   [`CLAUDE.md`](../../CLAUDE.md) § "Layered Dependency Map"** and mechanically
-  enforced by `cargo deny` against `deny.toml [[bans]] wrappers`. Do **not**
-  duplicate the layer list here — stale copies in agent-context files were
-  the single biggest source of LLM hallucinations before this rule landed.
+  enforced by `cargo deny check` against the `wrappers` allowlists on the
+  `[bans].deny` entries in `deny.toml`. Do **not** duplicate the layer list
+  here — stale copies in agent-context files were the single biggest source
+  of LLM hallucinations before this rule landed.
 - Cross-crate communication between siblings at the same layer goes through
   `nebula-eventbus`, **not** direct imports.
 - Macros live in their own sub-crate (`crates/<crate>/macros/`) to keep

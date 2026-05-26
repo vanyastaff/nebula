@@ -4,7 +4,8 @@
 Modular type-safe Rust workflow engine. Edition 2024, MSRV 1.95, alpha stage.
 Layered architecture (one-way deps, no upward) — canonical map and exact
 allowlist live in [`CLAUDE.md`](../CLAUDE.md) § "Layered Dependency Map";
-mechanically enforced by `cargo deny` against `deny.toml [[bans]] wrappers`.
+mechanically enforced by `cargo deny check` against the `wrappers` fields
+on the `[bans].deny` entries in `deny.toml`.
 Universal data type: serde_json::Value.
 Error handling: thiserror in libs, anyhow in binaries.
 
@@ -40,9 +41,10 @@ the same branch naming and Conventional Commit rules.
 
 1. **Layer violations** — `crates/core/*` importing from `crates/engine/*` etc.
    The exact layer hierarchy is in `CLAUDE.md` § "Layered Dependency Map";
-   `cargo deny check` against `deny.toml [[bans]] wrappers` is the
-   authoritative gate. If a `Cargo.toml` edge crosses a layer boundary
-   without an allowlist entry carrying a `reason`, CI fails before review.
+   `cargo deny check` against the `wrappers` allowlists on the `[bans].deny`
+   entries in `deny.toml` is the authoritative gate. If a `Cargo.toml` edge
+   crosses a layer boundary without an entry carrying a `reason`, CI fails
+   before review.
 2. **Panic in library code** — `unwrap()`, `expect()`, `panic!()`, indexing without bounds check, `unreachable!()` outside exhaustive match.
    Exception: `#[cfg(test)]` and binary crates allowed.
 3. **Silent error suppression** — `let _ = result;` on `Result`, `.ok()` discarding meaningful errors, `.unwrap_or_default()` on fallible IO/parse.
