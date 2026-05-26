@@ -19,8 +19,10 @@ API layer are in active development. Not production-ready yet.
 
 - **Language:** Rust 1.95+ (MSRV pinned via `workspace.package.rust-version`),
   edition 2024, resolver 3.
-- **Workspace:** 35+ crates under `crates/` (see `Cargo.toml` `[workspace]`
-  members) — see `AGENTS.md` for the layered map.
+- **Workspace:** 29 first-party crates under `crates/` (plus their derive
+  sub-crates and `apps/server`). The layered dependency map is canonical in
+  **[`CLAUDE.md`](../CLAUDE.md) § "Layered Dependency Map"** and mechanically
+  enforced by `cargo deny [wrappers]`. Do not duplicate the list here.
 - **Async runtime:** Tokio (multi-thread).
 - **Serialization:** `serde` / `serde_json`.
 - **Errors:** `thiserror` in libraries, `anyhow` in binaries.
@@ -35,26 +37,14 @@ API layer are in active development. Not production-ready yet.
 
 ## Architecture (high-level)
 
-Layered workspace, enforced mechanically by `cargo deny` `[wrappers]` in
-`deny.toml`:
+Layered Modular Workspace (Cargo wrapper-enforced). The exact layer table
+lives in **[`CLAUDE.md`](../CLAUDE.md) § "Layered Dependency Map"** and is
+enforced mechanically by `cargo deny` against `deny.toml [wrappers]`.
+Cross-crate communication goes through `nebula-eventbus`, not direct imports
+between siblings.
 
-```
-API / Public    api · sdk
-Exec            engine · storage · sandbox · plugin-sdk
-Business        credential · resource · action · plugin
-Core            core · validator · expression · workflow · execution · schema · metadata
-Cross-cutting   log · system · eventbus · metrics · resilience · error
-```
-
-Each layer depends only on layers below; cross-cutting crates are importable
-anywhere. Cross-crate communication goes through `nebula-eventbus`, not direct
-imports between siblings.
-
-Detailed architecture and design principles live in **README.md** (sections
-"Why Nebula", "Design Principles", "Architecture") — `.ai-factory/ARCHITECTURE.md`
-captures the agent-actionable subset.
-
-**Pattern:** Layered Modular Workspace (Cargo wrapper-enforced).
+Product framing and design principles live in **README.md**
+("Why Nebula", "Design Principles", "Architecture").
 
 ## Core Features
 

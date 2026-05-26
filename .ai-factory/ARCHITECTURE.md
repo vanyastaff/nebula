@@ -1,23 +1,25 @@
 # Architecture: Layered Modular Workspace (Cargo wrapper-enforced)
 
-> Agent-actionable subset. The README at the repo root remains the canonical
-> product / architecture document. If they disagree, **README wins** — fix
-> this file rather than the README.
+> Agent-actionable subset. The **canonical layer map lives in
+> [`CLAUDE.md`](../CLAUDE.md) § "Layered Dependency Map"** and is mechanically
+> enforced by `cargo deny` against `deny.toml [[bans]] wrappers`. The README
+> at the repo root is the product-facing crate map. If those disagree with
+> anything below, **CLAUDE.md / README / `deny.toml` win** — fix this file,
+> never the canon.
 
 ## Overview
 
 Nebula is a **layered modular monolith** built as a Cargo workspace. Every
-crate lives in exactly one of five layers, and inter-layer dependencies are
-**enforced mechanically** by `cargo deny check` against the `[[bans]]`
-`wrappers` rules in `deny.toml` — a missing entry fails CI before review. The
-result is the simple operational profile of a monolith with the modular
-discipline of microservices: any individual crate can be embedded
-independently, but the team ships one repo, one toolchain, one CI, and one
-release cadence.
+crate lives in exactly one layer, and inter-layer dependencies are enforced
+**mechanically** by `cargo deny check` against the `[[bans]] wrappers` rules
+in `deny.toml` — a missing entry fails CI before review. The result is the
+simple operational profile of a monolith with the modular discipline of
+microservices: any individual crate can be embedded independently, but the
+team ships one repo, one toolchain, one CI, one release cadence.
 
-This is not generic "Clean Architecture" or "DDD". It is a Rust-native pattern:
-**crates as modules, wrapper rules as compile-time architecture tests, and
-typed events for cross-crate seams**.
+This is not generic "Clean Architecture" or "DDD". It is a Rust-native
+pattern: **crates as modules, wrapper rules as compile-time architecture
+tests, typed events for cross-crate seams.**
 
 ## Decision Rationale
 
@@ -25,73 +27,42 @@ typed events for cross-crate seams**.
   credentials, plugins, sandbox, HTTP/webhook surface).
 - **Tech stack:** Rust 1.95+ (edition 2024, resolver 3), Tokio,
   `thiserror` + `tracing`.
-- **Workspace size:** 33 crates under `crates/` (see `Cargo.toml` `[workspace]`).
-- **Team / scaling profile:** small core team, embeddable by external teams →
-  modular discipline matters more than independent deploy.
+- **Workspace size:** 29 first-party crates under `crates/` plus
+  `apps/server` (see `Cargo.toml [workspace.members]`).
+- **Team / scaling profile:** small core team, embeddable by external
+  teams → modular discipline matters more than independent deploy.
 - **Key factor:** modularity is a hard product constraint (see README "Why
   Nebula") — `cargo deny [wrappers]` makes the layer boundaries cheap to
   enforce and impossible to drift quietly past.
 
-## Layer Map
+## What agents need to know on top of CLAUDE.md / README / deny.toml
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│ API / Public        api · sdk                                            │
-├─────────────────────────────────────────────────────────────────────────┤
-│ Exec                engine · storage · storage-loom-probe · sandbox ·    │
-│                     plugin-sdk                                           │
-├─────────────────────────────────────────────────────────────────────────┤
-│ Business            credential · credential-builtin · resource ·         │
-│                     action · plugin                                      │
-├─────────────────────────────────────────────────────────────────────────┤
-│ Core                core · validator · expression · workflow ·           │
-│                     execution · schema · metadata                        │
-├─────────────────────────────────────────────────────────────────────────┤
-│ Cross-cutting       log · system · eventbus · metrics ·      │
-│                     resilience · error                                   │
-└─────────────────────────────────────────────────────────────────────────┘
-```
-
-Each layer depends only on the layers below it. Cross-cutting crates are
-importable at any level.
+- Each layer depends only on layers below it; cross-cutting crates are
+  importable at any level. The exact wrapper allowlist is in `deny.toml`.
+- Cross-crate communication between siblings at the same layer goes through
+  `nebula-eventbus`, not direct imports.
+- **`nebula-credential` is shared infrastructure**, not a single-tier
+  Business crate. Exec / Business / API tiers and the first-party backends
+  (`credential-builtin`, `credential-vault`, `credential-runtime`,
+  `credential-testutil`) all consume the credential contract directly. The
+  exact consumer set is locked in `deny.toml [wrappers]`.
+- **`nebula-storage-port`** (Core) is the object-safe storage seam every
+  storage consumer depends on. **`nebula-storage`** (Exec) is the sole
+  adapter implementation. **`nebula-tenancy`** (Business) is the
+  scope-enforcing decorator that wraps a raw `storage-port` adapter so a
+  tenant scope is substituted on every call before it reaches a handler
+  (ADR-0072).
+- **`nebula-telemetry` is gone** — merged into `nebula-metrics` as the
+  single metrics path (ADR-0046). If you see `nebula-telemetry` referenced
+  anywhere in the working tree, it is drift, not real.
+- **`nebula-system` is gone** — the cross-platform host-probe crate was
+  deleted (#668). There is no process-monitoring crate today.
 
 ## Folder Structure
 
-```
-nebula/
-├── Cargo.toml                # workspace root + pinned deps
-├── deny.toml                 # [[bans]] wrappers — layer enforcement
-├── crates/
-│   ├── core/                 # Core
-│   ├── error/    +/macros/   # Cross-cutting
-│   ├── log/                  # Cross-cutting
-│   ├── system/               # Cross-cutting
-│   ├── eventbus/             # Cross-cutting
-│   ├── telemetry/            # Cross-cutting
-│   ├── metrics/              # Cross-cutting
-│   ├── resilience/           # Cross-cutting
-│   ├── validator/ +/macros/  # Core
-│   ├── expression/           # Core
-│   ├── workflow/             # Core
-│   ├── execution/            # Core
-│   ├── schema/   +/macros/   # Core
-│   ├── metadata/             # Core
-│   ├── credential/ +/macros/ # Business
-│   ├── credential-builtin/   # Business (built-in credential types)
-│   ├── resource/ +/macros/   # Business (shared infra: action, engine, plugin, sandbox, sdk)
-│   ├── action/   +/macros/   # Business
-│   ├── plugin/   +/macros/   # Business
-│   ├── plugin-sdk/           # Exec (out-of-process plugin protocol)
-│   ├── engine/               # Exec
-│   ├── storage/              # Exec (PG / SQLite migrations under storage/migrations/)
-│   ├── storage-loom-probe/   # Exec (loom-checked concurrency probe)
-│   ├── sandbox/              # Exec
-│   ├── api/                  # API / Public (HTTP + webhook module)
-│   └── sdk/      +/macros-support/   # API / Public (integration-author façade)
-└── examples/                 # root-level workspace member (NOT per-crate)
-```
-
-Per-crate layout convention:
+Full workspace member list is in **`Cargo.toml [workspace.members]`**. The
+canonical map of which crate sits in which layer is in **`CLAUDE.md` §
+"Layered Dependency Map"**. Per-crate layout convention:
 
 ```
 crates/<crate>/
@@ -108,14 +79,14 @@ crates/<crate>/
 └── macros/                   # proc-macro sub-crate, if needed
 ```
 
-Macros live in their own sub-crate (`crates/<crate>/macros/`) to keep proc-macro
-build cost out of the runtime crate.
+Macros live in their own sub-crate (`crates/<crate>/macros/`) to keep
+proc-macro build cost out of the runtime crate.
 
 ## Dependency Rules
 
 ### Allowed
 
-- ✅ Any crate may depend on **Cross-cutting** crates (`error`, `log`, `system`,
+- ✅ Any crate may depend on **Cross-cutting** crates (`error`, `log`,
   `eventbus`, `metrics`, `resilience`).
 - ✅ **Core** depends on Cross-cutting only.
 - ✅ **Business** depends on Core + Cross-cutting.
@@ -132,12 +103,12 @@ build cost out of the runtime crate.
 - ❌ Exec crates may **not** depend on API. **Exception (allowlisted):**
   `nebula-engine` may be wrapped by `nebula-cli` and (dev-only) by
   `crates/api/tests/knife.rs` — see `deny.toml` rationale.
-- ❌ Sibling crates at the same layer may **not** import each other directly —
-  cross-crate communication goes through `nebula-eventbus` (typed events) or
-  through a shared lower-layer contract crate.
+- ❌ Sibling crates at the same layer may **not** import each other
+  directly — cross-crate communication goes through `nebula-eventbus`
+  (typed events) or through a shared lower-layer contract crate.
 - ❌ `nebula-resource` is shared infra: only the explicit wrapper allowlist
-  (`action`, `engine`, `plugin`, `sandbox`, `sdk`) may depend on it. API and
-  Core must not.
+  (`action`, `engine`, `plugin`, `sandbox`, `sdk`) may depend on it. API
+  and Core must not.
 - ❌ `nebula-credential-builtin` is a first-party scaffold: plugin authors
   depend on the contract crate `nebula-credential`, **not** on `-builtin`.
 - ❌ Adding a new wrapper without a `reason` string in `deny.toml` is a CI
@@ -150,45 +121,47 @@ paths, `CODEOWNERS` sign-off).
 ## Layer / Module Communication
 
 - **Down the stack: direct typed calls.** API → Exec → Business → Core →
-  Cross-cutting. Inputs are typed; errors are `thiserror` enums; observability
-  spans + metrics are emitted at the call site.
+  Cross-cutting. Inputs are typed; errors are `thiserror` enums;
+  observability spans + metrics are emitted at the call site.
 - **Up the stack: `nebula-eventbus`.** Lower layers publish typed events;
-  higher layers subscribe. No upward direct calls. The eventbus is stable for
-  `CredentialEvent` and used by the engine; `ExecutionEvent` is still on raw
-  `mpsc` (migration tracked separately).
+  higher layers subscribe. No upward direct calls. The eventbus is stable
+  for `CredentialEvent` and used by the engine; `ExecutionEvent` is still
+  on raw `mpsc` (migration tracked separately).
 - **Cross-cutting concerns (logging, metrics, errors) are imported, not
   wrapped.** Use `tracing` directly; do not invent crate-local façades.
 - **Public extension surface = `nebula-sdk` + `nebula-plugin-sdk`.**
   Third-party integrators depend on these two crates only; the `[wrappers]`
   rules pin who is allowed to depend on each.
-- **Composition roots.** Wiring concrete impls happens in `nebula-cli` (binary)
-  or, for in-process integration tests, in `crates/api/tests/`. Library crates
-  do not perform global wiring.
+- **Composition roots.** Wiring concrete impls happens in `apps/server`
+  (binary) or, for in-process integration tests, in `crates/api/tests/`.
+  Library crates do not perform global wiring.
 
 ## Key Principles
 
-1. **Crates are modules; layers are enforced at compile time.** A merge that
-   widens a layer boundary either updates `deny.toml [[bans]] wrappers` with a
-   `reason` (and review) or fails CI. There is no soft "gentle reminder" path.
+1. **Crates are modules; layers are enforced at compile time.** A merge
+   that widens a layer boundary either updates `deny.toml [[bans]] wrappers`
+   with a `reason` (and review) or fails CI. There is no soft "gentle
+   reminder" path.
 2. **Types over tests.** Workflow shape, action I/O, parameter schemas, and
    auth patterns are Rust types. If it compiles, the shape is valid. Tests
    verify behaviour, not type safety.
-3. **Explicit over magic.** No global state, no service locators, no ambient
-   config. Actions receive everything via `Context`. If a dependency is not in
-   the function signature, it does not exist.
-4. **Delete over deprecate (internals).** For internal architecture, replace
-   the wrong API rather than adapt around it. No shims, no bridges, no
-   `legacy_compat` flags. The public `nebula-sdk` and plugin contracts are the
-   exception — they get a clear deprecation path because they are external
-   contracts.
+3. **Explicit over magic.** No global state, no service locators, no
+   ambient config. Actions receive everything via `Context`. If a
+   dependency is not in the function signature, it does not exist.
+4. **Delete over deprecate (internals).** For internal architecture,
+   replace the wrong API rather than adapt around it. No shims, no
+   bridges, no `legacy_compat` flags. The public `nebula-sdk` and plugin
+   contracts are the exception — they get a clear deprecation path because
+   they are external contracts.
 5. **Security by default.** Secrets are encrypted (AES-256-GCM with AAD
    binding), zeroized on `Drop`, redacted in `Debug`. The safe path is the
    only path.
-6. **Observability is part of Definition of Done.** Every new state, error, or
-   hot path ships with a typed error variant **and** a tracing span / event
-   **and** an invariant check — not as a follow-up.
-7. **ADRs are revisable.** Architecture decisions live as ADRs. If following
-   one forces workarounds, **supersede** the ADR — do not patch around it.
+6. **Observability is part of Definition of Done.** Every new state,
+   error, or hot path ships with a typed error variant **and** a tracing
+   span / event **and** an invariant check — not as a follow-up.
+7. **ADRs are revisable.** Architecture decisions live as ADRs. If
+   following one forces workarounds, **supersede** the ADR — do not patch
+   around it.
 
 ## Code Examples
 
@@ -237,8 +210,8 @@ while let Some(evt) = sub.recv().await { /* react */ }
 use nebula_engine::ExecutionContext; // NO — Business depending on Exec
 ```
 
-`cargo deny check bans` flags this and CI fails. Fix: invert via eventbus, or
-move the shared type down to Core / Cross-cutting.
+`cargo deny check bans` flags this and CI fails. Fix: invert via eventbus,
+or move the shared type down to Core / Cross-cutting.
 
 ### Adding a new layer-crossing edge (the only legitimate path)
 
@@ -257,15 +230,16 @@ No `reason` → CI rejects the diff.
 
 ## Anti-Patterns
 
-- ❌ **Sibling-crate `use` at the same layer.** Even if `cargo build` succeeds
-  via a transitive path, route the seam through `nebula-eventbus` or a shared
-  lower-layer crate.
+- ❌ **Sibling-crate `use` at the same layer.** Even if `cargo build`
+  succeeds via a transitive path, route the seam through `nebula-eventbus`
+  or a shared lower-layer crate.
 - ❌ **`Box<dyn Error>` / `anyhow::Error` in library APIs.** Use typed
   `thiserror` errors. `anyhow` is for binaries only.
-- ❌ **`async-trait` on hot paths.** Prefer `#[async_fn_in_trait]` (Rust 1.75+
-  stable) — verify against current 1.95+ idioms.
+- ❌ **`async-trait` on hot paths.** Prefer `#[async_fn_in_trait]` (Rust
+  1.75+ stable) — verify against current 1.95+ idioms.
 - ❌ **`Arc<Mutex<…>>` as the default for shared state.** Reach for
-  `parking_lot::Mutex`, `arc-swap`, `dashmap`, or single-writer designs first.
+  `parking_lot::Mutex`, `arc-swap`, `dashmap`, or single-writer designs
+  first.
 - ❌ **Per-crate `examples/` directories.** Runnable examples live in the
   root-level `examples/` workspace member.
 - ❌ **`unwrap()` / `expect()` / `panic!()` in library code.** Allowed in
@@ -276,6 +250,6 @@ No `reason` → CI rejects the diff.
   Cross-cutting crates are designed to be imported directly.
 - ❌ **Patching around an ADR.** If the ADR forces workarounds, write a
   superseding ADR — do not accumulate compensating code.
-- ❌ **`let _ = transition_node(...)` / silently ignoring `Result`.** Either
-  handle the typed error or propagate it; engine state machines have caused
-  bugs from swallowed transitions.
+- ❌ **`let _ = transition_node(...)` / silently ignoring `Result`.**
+  Either handle the typed error or propagate it; engine state machines
+  have caused bugs from swallowed transitions.
