@@ -53,6 +53,6 @@ pub use org::OrgRepo;
 pub use quota::QuotaRepo;
 pub use resource::{ResourceEntry, ResourceRepo};
 pub use trigger::TriggerRepo;
-pub use user::{PatRepo, SessionRepo, UserRepo};
+pub use user::{OAuthStateRepo, PatRepo, SessionRepo, UserRepo, VerificationTokenRepo};
 pub use webhook_activation::{InMemoryWebhookActivationRepo, WebhookActivationRepo};
 pub use workspace::WorkspaceRepo;

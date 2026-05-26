@@ -18,13 +18,23 @@ use crate::error::StorageError;
 
 mod control_queue;
 mod idempotency;
+mod oauth_state;
 mod org;
+mod pat;
+mod session;
+pub(crate) mod user;
+mod verification_token;
 mod webhook_activation;
 mod workspace;
 
 pub use control_queue::PgControlQueueRepo;
 pub use idempotency::PgIdempotencyStore;
+pub use oauth_state::PgOAuthStateRepo;
 pub use org::PgOrgRepo;
+pub use pat::PgPatRepo;
+pub use session::PgSessionRepo;
+pub use user::PgUserRepo;
+pub use verification_token::PgVerificationTokenRepo;
 pub use webhook_activation::PgWebhookActivationRepo;
 pub use workspace::PgWorkspaceRepo;
 

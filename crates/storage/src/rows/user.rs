@@ -103,3 +103,27 @@ pub struct VerificationTokenRow {
     pub expires_at: DateTime<Utc>,
     pub consumed_at: Option<DateTime<Utc>>,
 }
+
+/// Table: `plane_a_oauth_states`
+///
+/// Server-side PKCE state for Plane-A (sign-in-with-OAuth). Each row
+/// holds the `code_verifier` minted by `start_oauth`; the matching
+/// `complete_oauth` consumes the row atomically to validate the
+/// callback and recover the verifier. Named `plane_a_*` to avoid
+/// clashing with the Plane-B credential OAuth pending-state surface
+/// (`pending_credentials`).
+#[derive(Debug, Clone)]
+pub struct OAuthStateRow {
+    /// Random url-safe state value (primary key). Not a ULID — callers
+    /// generate this with a CSPRNG.
+    pub state: String,
+    /// Provider identifier, e.g. `'google'` / `'github'` / `'microsoft'`.
+    pub provider: String,
+    /// PKCE `code_verifier` to be sent on token exchange.
+    pub code_verifier: String,
+    /// Optional `redirect_uri` requested at authorize time.
+    pub redirect_uri: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+    pub consumed_at: Option<DateTime<Utc>>,
+}
