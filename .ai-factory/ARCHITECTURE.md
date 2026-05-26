@@ -55,11 +55,20 @@ tests, typed events for cross-crate seams.**
   scope-enforcing decorator that wraps a raw `storage-port` adapter so a
   tenant scope is substituted on every call before it reaches a handler
   (ADR-0072).
-- **`nebula-telemetry` is gone** — merged into `nebula-metrics` as the
-  single metrics path (ADR-0046). If you see `nebula-telemetry` referenced
-  anywhere in the working tree, it is drift, not real.
+- **`nebula-telemetry` (the old metric-primitives crate) is gone** —
+  merged into `nebula-metrics` as the single metrics path (ADR-0046). If
+  you see `nebula-telemetry` referenced as a workspace crate, it is drift.
+  The wider observability concept of *telemetry* (OpenTelemetry OTLP
+  distributed tracing, Sentry error reporting) lives in `nebula-log`
+  under the `telemetry` and `sentry` Cargo features respectively, not in
+  a separate crate.
 - **`nebula-system` is gone** — the cross-platform host-probe crate was
   deleted (#668). There is no process-monitoring crate today.
+- **`nebula-config` is gone** — a separate host-configuration crate was
+  considered but never landed and was retired entirely. Workspace
+  configuration today is hand-rolled at the composition root
+  (`apps/server/src/compose.rs` + the `crates/api/src/config/` env-var
+  registry); do not look for a `nebula-config` crate.
 
 ## Folder Structure
 

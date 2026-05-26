@@ -185,9 +185,8 @@ Besides the **integration** reference crates (§3.6–§3.9), the workspace ship
 - **`nebula-error`** — **`Classify`**, **`NebulaError`**, categories/codes, structured details — **one** error taxonomy at boundaries instead of ad hoc strings.
 - **`nebula-resilience`** — composable **pipelines** (retry, timeout, circuit breaker, bulkhead, …); pairs with **`ActionError`** / retry hints in **`nebula-action`** (§3.8).
 - **`nebula-validator`** — programmatic validators + declarative **`Rule`**; **`nebula-schema`** embeds rules in **`Field`** definitions.
-- **`nebula-config`** *(planned, not yet a workspace member)* — multi-source, merged, optionally hot-reloaded **host** configuration (binaries/services) — **not** the per-node **`Schema`** story.
-- **`nebula-log`** — structured **`tracing`** pipeline (init, sinks, optional OTel/Sentry hooks).
-- **`nebula-metrics`** — lock-free in-memory primitives (registry, histograms, label interning) plus **`nebula_*` naming**, adapters, Prometheus-style **export** and label-safety guards. **Absorbs the former `nebula-telemetry` crate** — one metrics path, no two-tier stack (ADR-0046).
+- **`nebula-log`** — structured **`tracing`** pipeline (init, sinks, layers, reload). Cargo features `telemetry` (OpenTelemetry OTLP tracing exporter) and `sentry` ship the distributed-tracing/error-reporting integrations; both are off by default.
+- **`nebula-metrics`** — the single metrics path: lock-free in-memory primitives (`MetricsRegistry`, `Counter`, `Gauge`, `Histogram`, label interning) **plus** `nebula_*` naming, label-safety guards, and Prometheus-style export. Absorbs the former `nebula-telemetry` metric-primitives crate (ADR-0046).
 - **`nebula-eventbus`** — typed **broadcast** bus with back-pressure policy; **transport only** — domain **`E`** types live in owning crates.
 - **`nebula-expression`** — workflow **expression** evaluation (variable access, operators, functions) for dynamic fields — headless, not a UI.
 - **`nebula-workflow`** + **`nebula-execution`** — the execution semantics core: workflow validation/shape and durable execution lifecycle/state transitions. Read these when the question is "what does the engine guarantee at runtime," not just "how integrations are authored."
