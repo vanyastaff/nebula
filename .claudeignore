@@ -111,6 +111,7 @@ id_ed25519
 !.pi/conventions.json
 !.pi/codebase-wiki.json
 !.pi/wiki/
+!.pi/wiki/**
 .pi-audit-*/
 .compound-engineering/*.local.yaml
 
