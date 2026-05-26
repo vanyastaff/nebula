@@ -23,7 +23,7 @@ use super::{
     mfa,
     oauth::{OAUTH_STATE_TTL, OAuthProvider, OAuthStateEntry, expiry_unix, mint_pkce},
     password,
-    pat::{self, MintedPat, PatRecord},
+    pat::{self, MintedPat, PatRecord, compute_pat_expires_at},
     provider::{
         AuthBackend, CreatePatParams, MfaEnrollment, OAuthCompletion, OAuthStart, PasswordOutcome,
         ProfilePatch,
@@ -153,6 +153,8 @@ pub struct EmailEnvelope {
     pub kind: &'static str,
 }
 
+// guard-justified: the `From` impl exists exclusively to feed the
+// deprecated `EmailEnvelope` type and cannot itself avoid touching it.
 #[allow(deprecated, reason = "shim feeds the deprecated public type")]
 impl From<EmailMessage> for EmailEnvelope {
     fn from(m: EmailMessage) -> Self {
@@ -196,6 +198,8 @@ impl InMemoryAuthBackend {
     /// Returns an empty vector when [`Self::with_email_port`] has
     /// swapped the default [`EchoSink`] for a custom transport; the
     /// in-process inbox is only meaningful for the default port.
+    // guard-justified: this accessor IS the back-compat shim and must
+    // return the deprecated `EmailEnvelope` type by contract.
     #[must_use]
     #[allow(deprecated, reason = "deliberate back-compat shim over EmailEnvelope")]
     pub fn emails(&self) -> Vec<EmailEnvelope> {
@@ -243,7 +247,17 @@ impl InMemoryAuthBackend {
         Ok(token)
     }
 
+    #[tracing::instrument(
+        level = "debug",
+        skip(self, token),
+        fields(email.kind = ?kind, to_len = to.len())
+    )]
     async fn record_email(&self, to: &str, token: &str, kind: EmailKind) -> Result<(), AuthError> {
+        debug_assert!(
+            !to.is_empty() && to.contains('@'),
+            "record_email: recipient address must be a non-empty email-shaped string",
+        );
+        debug_assert!(!token.is_empty(), "record_email: token must not be empty");
         let subject = match kind {
             EmailKind::Verification => "Verify your email",
             EmailKind::PasswordReset => "Reset your password",
@@ -316,6 +330,14 @@ impl AuthBackend for InMemoryAuthBackend {
         let profile = record.profile();
         self.put_user(record);
 
+        // Signup deliberately commits the user record before queueing
+        // the verification email. If email dispatch fails the user
+        // still exists in an unverified state and can recover via
+        // `request_password_reset` — the reset flow does not require
+        // `email_verified` to be set to issue its cooldown-bounded
+        // reset token. Rolling back the user on transient transport
+        // failure would silently destroy the durable account on every
+        // retry and is the wrong default for a bring-up backend.
         let token = self.issue_verification_token(id, VerificationKind::EmailVerify)?;
         self.record_email(&email, &token, EmailKind::Verification)
             .await?;
@@ -544,11 +566,7 @@ impl AuthBackend for InMemoryAuthBackend {
                 "token name must be 1..=128 non-blank characters",
             ));
         }
-        let expires_at = params
-            .ttl_seconds
-            .filter(|s| *s > 0)
-            .and_then(|s| i64::try_from(s).ok())
-            .map(|s| Utc::now() + chrono::Duration::seconds(s));
+        let expires_at = compute_pat_expires_at(params.ttl_seconds)?;
         let minted = pat::mint_pat(parsed, name.to_owned(), params.scopes, expires_at)?;
         self.pats.insert(minted.record.hash, minted.record.clone());
         tracing::info!(user_id = %parsed, pat_id = %minted.record.id, "personal access token created");
@@ -751,6 +769,8 @@ impl AuthBackend for InMemoryAuthBackend {
     }
 }
 
+// guard-justified: the tests below intentionally exercise the
+// deprecated `EmailEnvelope` shim and `emails()` accessor.
 #[cfg(test)]
 #[allow(
     deprecated,
@@ -935,5 +955,38 @@ mod tests {
         let start = b.start_oauth(OAuthProvider::Google).await.unwrap();
         assert!(start.authorize_url.contains("state="));
         assert!(b.oauth_state.contains_key(&start.state));
+    }
+
+    #[tokio::test]
+    async fn with_email_port_routes_through_injected_port() {
+        // Caller-owned EchoSink — the test keeps the Arc so it can
+        // assert the injected port (not the default sink that was
+        // dropped) actually saw the verification email.
+        let custom = Arc::new(EchoSink::default());
+        let custom_port: Arc<dyn EmailPort> = Arc::clone(&custom) as _;
+        let backend = InMemoryAuthBackend::new().with_email_port(custom_port);
+
+        backend
+            .register_user(signup_req("inject@nebula.dev"))
+            .await
+            .expect("register must succeed against the injected port");
+
+        // The injected port received the verification email.
+        let captured = custom.peek();
+        assert_eq!(
+            captured.len(),
+            1,
+            "injected port must receive the verification email"
+        );
+        assert_eq!(captured[0].to, "inject@nebula.dev");
+        assert_eq!(captured[0].kind, EmailKind::Verification);
+
+        // The default echo handle was dropped by `with_email_port`, so
+        // the back-compat `emails()` shim now returns an empty Vec —
+        // proving the default sink is no longer the source of truth.
+        assert!(
+            backend.emails().is_empty(),
+            "with_email_port must drop the default echo: `emails()` should be empty"
+        );
     }
 }

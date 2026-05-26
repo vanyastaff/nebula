@@ -90,9 +90,13 @@ pub enum EmailError {
     Transport(String),
 
     /// The recipient address was rejected before transit (bad format,
-    /// disallowed domain). Detail string carries the offending value so
-    /// operator logs can pinpoint the call site.
-    #[error("invalid email address: {0}")]
+    /// disallowed domain). The variant payload preserves the offending
+    /// recipient for typed inspection by operator tooling, but the
+    /// `Display` impl prints `[redacted]` so the address never leaks
+    /// into logs / `Internal(format!("email: {e}"))` strings / problem-
+    /// details bodies. Pattern-match on the variant to recover the raw
+    /// value when operator forensics genuinely need it.
+    #[error("invalid email address: [redacted]")]
     InvalidAddress(String),
 }
 
@@ -208,7 +212,16 @@ mod tests {
             .send(msg)
             .await
             .expect_err("missing `@` must reject before buffer");
-        assert!(matches!(err, EmailError::InvalidAddress(_)));
+        // The variant payload still carries the raw recipient for typed
+        // forensic inspection by operator tooling.
+        let EmailError::InvalidAddress(captured) = &err else {
+            panic!("expected EmailError::InvalidAddress, got: {err:?}");
+        };
+        assert_eq!(captured, "not-an-email");
+        // But the `Display` impl scrubs the recipient so the value
+        // never reaches `Internal(format!("email: {e}"))` strings or
+        // operator-facing log lines.
+        assert_eq!(err.to_string(), "invalid email address: [redacted]");
         assert!(sink.peek().is_empty(), "rejected message must not buffer");
     }
 

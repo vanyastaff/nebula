@@ -73,6 +73,50 @@ impl PatRecord {
     }
 }
 
+/// Upper bound on a caller-supplied PAT TTL in seconds.
+///
+/// `100 * 365 * 24 * 3600` is far less than `i64::MAX` and far more
+/// than any operationally sensible PAT lifetime, so it forms a safe
+/// ceiling that prevents both the silent `i64::try_from` truncation
+/// and the `chrono::Duration::seconds` / `DateTime::add` overflow
+/// panic.
+pub const PAT_TTL_MAX_SECONDS: u64 = 100 * 365 * 24 * 3600;
+
+/// Resolve a caller-supplied `ttl_seconds` into an explicit
+/// `expires_at`, rejecting values that would silently mint a
+/// non-expiring PAT or panic the `chrono` arithmetic.
+///
+/// Shared by both the in-memory and PG backends so neither path can
+/// regress to the previous silent-overflow shape:
+///
+/// - `None` or `Some(0)` → `Ok(None)` (non-expiring, unchanged contract).
+/// - `Some(n)` with `0 < n <= PAT_TTL_MAX_SECONDS` → `Ok(Some(now + n))`.
+/// - Anything larger, or a value that overflows the `i64` /
+///   `DateTime` arithmetic, is rejected with
+///   [`AuthError::InvalidInput`] instead of being silently coerced
+///   into a non-expiring token.
+pub fn compute_pat_expires_at(
+    ttl_seconds: Option<u64>,
+) -> Result<Option<DateTime<Utc>>, AuthError> {
+    let Some(ttl) = ttl_seconds else {
+        return Ok(None);
+    };
+    if ttl == 0 {
+        return Ok(None);
+    }
+    if ttl > PAT_TTL_MAX_SECONDS {
+        return Err(AuthError::InvalidInput("ttl_seconds out of range"));
+    }
+    let signed =
+        i64::try_from(ttl).map_err(|_| AuthError::InvalidInput("ttl_seconds out of range"))?;
+    let delta = chrono::Duration::try_seconds(signed)
+        .ok_or(AuthError::InvalidInput("ttl_seconds out of range"))?;
+    Utc::now()
+        .checked_add_signed(delta)
+        .map(Some)
+        .ok_or(AuthError::InvalidInput("ttl_seconds out of range"))
+}
+
 /// Mint a new PAT for `user_id` with the given `name` and `scopes`.
 pub fn mint_pat(
     user_id: UserId,
@@ -192,5 +236,39 @@ mod tests {
         let mut m = mint_pat(user(), "ci".to_owned(), vec![], None).unwrap();
         m.record.expires_at = Some(past);
         assert!(!m.record.is_active(Utc::now()));
+    }
+
+    #[test]
+    fn compute_pat_expires_at_none_is_non_expiring() {
+        assert!(compute_pat_expires_at(None).unwrap().is_none());
+    }
+
+    #[test]
+    fn compute_pat_expires_at_zero_is_non_expiring() {
+        // Preserves the previous contract: `Some(0)` is a no-op TTL.
+        assert!(compute_pat_expires_at(Some(0)).unwrap().is_none());
+    }
+
+    #[test]
+    fn compute_pat_expires_at_one_hour_resolves_to_future() {
+        let before = Utc::now();
+        let resolved = compute_pat_expires_at(Some(3600)).unwrap().unwrap();
+        assert!(resolved > before);
+        assert!(resolved <= before + chrono::Duration::seconds(3600 + 5));
+    }
+
+    #[test]
+    fn compute_pat_expires_at_above_ceiling_is_rejected() {
+        let err = compute_pat_expires_at(Some(PAT_TTL_MAX_SECONDS + 1)).unwrap_err();
+        assert!(matches!(err, AuthError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn compute_pat_expires_at_u64_max_is_rejected_not_silently_zero() {
+        // Was the original bug: `i64::try_from(u64::MAX)` returned `Err`,
+        // `.ok()` collapsed to `None`, and the PAT was silently minted
+        // as non-expiring. Now this surfaces `InvalidInput`.
+        let err = compute_pat_expires_at(Some(u64::MAX)).unwrap_err();
+        assert!(matches!(err, AuthError::InvalidInput(_)));
     }
 }
