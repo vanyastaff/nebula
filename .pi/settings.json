@@ -2,37 +2,72 @@
   "_comment": "Nebula per-project Pi settings. См. CLAUDE.md § AI Context Files.",
 
   "subagents": {
-    "_comment": "Per-project overrides для встроенных pi-subagents агентов. Стратегия: дешёвые сонеты для разведки, опус для запиcи и ревью, xhigh для планирования.",
+    "_comment": "Per-project pi-subagents overrides. 3-тирная Anthropic-стратегия с полной провайдер-диверсификацией fallback: каждый слот разный провайдер (anthropic primary → github-copilot → cursor-agent → openai-codex), без повторов провайдеров в одной цепочке. Проверено в веб-поиске 26.05.2026. Cost rules: в Copilot только модели ≤ 1x multiplier (haiku-4-5=0.33x, sonnet-4-5/4-6=1x). ИСКЛЮЧЕНО из Copilot: opus-4-6 (5x), opus-4-7 (7.5x), GPT-5.5 (7.5x) — вместо openai-codex (flat-fee в ChatGPT subscription). Cursor-agent v0.4.4 покрывает sonnet-4-5/4-6 + opus-4-5/4-6/4-6-max (haiku в v0.4.4 НЕТ — в cursor fallback идёт sonnet-4-5 вместо haiku). Thinking levels (Opus 4.7 native scale): medium=recon, high=workhorse, max=no token constraint for architecture/security. Opus 4.7 только adaptive thinking; opus-4-6 поддерживает [low,medium,high] — pi v0.72+ авто-clamp через thinkingLevelMap.",
     "agentOverrides": {
       "scout": {
-        "model": "claude-sonnet-4-5",
+        "model": "claude-haiku-4-5",
+        "fallbackModels": [
+          "github-copilot/claude-haiku-4-5",
+          "cursor-agent/claude-sonnet-4-5",
+          "openai-codex/gpt-5.4-mini"
+        ],
         "thinking": "medium"
       },
       "context-builder": {
-        "model": "claude-sonnet-4-5",
+        "model": "claude-haiku-4-5",
+        "fallbackModels": [
+          "github-copilot/claude-haiku-4-5",
+          "cursor-agent/claude-sonnet-4-5",
+          "openai-codex/gpt-5.4-mini"
+        ],
         "thinking": "medium"
       },
       "researcher": {
-        "model": "claude-sonnet-4-5",
+        "model": "claude-haiku-4-5",
+        "fallbackModels": [
+          "github-copilot/claude-haiku-4-5",
+          "openai-codex/gpt-5.4-mini",
+          "cursor-agent/claude-sonnet-4-5"
+        ],
         "thinking": "medium"
       },
       "reviewer": {
-        "model": "claude-opus-4-7",
+        "model": "claude-sonnet-4-6",
+        "fallbackModels": [
+          "cursor-agent/claude-sonnet-4-6",
+          "github-copilot/claude-sonnet-4-6",
+          "openai-codex/gpt-5.3-codex"
+        ],
         "thinking": "high",
         "inheritProjectContext": true
       },
       "worker": {
-        "model": "claude-opus-4-7",
+        "model": "claude-sonnet-4-6",
+        "fallbackModels": [
+          "cursor-agent/claude-sonnet-4-6",
+          "github-copilot/claude-sonnet-4-6",
+          "openai-codex/gpt-5.3-codex"
+        ],
         "thinking": "high",
         "inheritProjectContext": true
       },
       "planner": {
         "model": "claude-opus-4-7",
-        "thinking": "xhigh"
+        "fallbackModels": [
+          "cursor-agent/claude-opus-4-6-max",
+          "openai-codex/gpt-5.5",
+          "github-copilot/gpt-5.4"
+        ],
+        "thinking": "max"
       },
       "oracle": {
         "model": "claude-opus-4-7",
-        "thinking": "xhigh"
+        "fallbackModels": [
+          "cursor-agent/claude-opus-4-6-max",
+          "openai-codex/gpt-5.5",
+          "github-copilot/gpt-5.4"
+        ],
+        "thinking": "max"
       }
     }
   },
