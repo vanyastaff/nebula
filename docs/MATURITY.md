@@ -36,14 +36,16 @@ Legend:
 | nebula-plugin        | partial  | stable  | stable | stable | n/a |
 | nebula-plugin-sdk    | partial  | stable  | stable | n/a | n/a |
 | nebula-resilience    | stable   | stable  | stable | n/a | n/a |
+| nebula-storage-port  | stable   | stable  | stable | stable (ADR-0072 — object-safe row-model seam; every storage consumer depends on this and not on `nebula-storage`) | n/a |
+| nebula-storage-loom-probe | partial | stable | partial | partial (`loom`-checked concurrency probes for storage critical sections; library, no SLI) | n/a |
+| nebula-tenancy       | stable   | stable  | stable | stable (ADR-0072 scope-enforcing decorator wrapping a raw `storage-port` adapter; substitutes a tenant scope on every call before it reaches a handler) | n/a |
+| nebula-credential-vault | partial | stable | partial | partial (Vault-backed backend implementing the `credential` contract) | n/a |
+| nebula-credential-testutil | stable | stable | stable | n/a (test-only crate — shims for downstream credential consumers, extracted from `nebula-credential` during M12.2) | n/a |
 | nebula-resource      | frontier | stable  | stable | stable for the operational substrate (ADR-0067): lock-free `SlotCell` slot store + `&self`+`&Runtime` refresh/revoke hook, narrow `Manager::{refresh_slot,revoke_slot}(_for)` port, structural slot-identity dedup key closing the cross-tenant `fingerprint()==0` bleed, config CRUD + CAS update + read-only runtime-status API with no HTTP lifecycle (INTEGRATION_MODEL §13.1), ADR-0028 §7 redaction gate green. The engine-side per-slot rotation fan-out **dispatch path is wired and e2e-proven** (2026-05-17): an engine-owned `ResourceFanoutDriver` subscribes the credential-runtime `CredentialEvent::{Refreshed,Revoked}` + `LeaseEvent::LeaseRevoked` buses and drives `dispatch_refresh`/`dispatch_revoke` with per-resource drain + post-taint re-check (#679), a two-phase cancellation-safe revoke port (#681), and rotation-vs-first-acquire epoch reconcile (#680). **Still gating full §M11.5/§M12.4 closure:** *bind-population* — populating the reverse index when a credential resolves into a `#[credential]` slot in production — has no production caller (depends on the still-deferred resource-activation path: plugin-auto-population / a production `ResourceRepo`; rotation-outcome eventbus emission also still deferred per ADR-0067). A real rotation/revoke event now fans out correctly to every *bound* row, but production binds none until activation lands — so this stays `frontier`, not flipped to stable. | n/a |
-| nebula-runtime       | partial  | stable  | stable | stable | partial |
 | nebula-sandbox       | partial  | stable  | stable | partial (process isolation; signing planned) | n/a |
 | nebula-schema        | frontier | stable  | stable | stable | n/a |
 | nebula-sdk           | partial  | stable  | stable | n/a | n/a |
 | nebula-storage       | partial  | stable  | stable | stable | partial |
-| nebula-telemetry     | stable   | stable  | stable | n/a | n/a |
-| nebula-testing       | planned  | n/a     | n/a    | n/a    | n/a |
 | nebula-validator     | frontier | stable  | stable | stable | n/a |
 | nebula-workflow      | stable   | stable  | stable | stable | n/a |
 
@@ -54,7 +56,8 @@ Legend:
 This file is a living dashboard. Reviewers check truthfulness on every PR that touches a crate's public surface, test suite, or docs. Canon §17 DoD includes "MATURITY.md row updated if the PR changes crate state."
 
 Last full sweep: 2026-04-17 (Pass 4 of docs architecture redesign).
-Last targeted revision: 2026-05-20 — **M12.2 nebula-credential + nebula-credential-runtime stabilize sweep:**
+Last targeted revision: 2026-05-26 — **Crate inventory truth pass:** removed ghost rows for crates that no longer exist (`nebula-runtime`, `nebula-telemetry` — merged into `nebula-metrics` per ADR-0046; `nebula-testing` — never landed); added missing rows for crates that do exist (`nebula-storage-port`, `nebula-storage-loom-probe`, `nebula-tenancy`, `nebula-credential-vault`, `nebula-credential-testutil`). README crate map, `.ai-factory/*` layer maps, and `.github/copilot-instructions.md` synced in the same change.
+Prior: 2026-05-20 — **M12.2 nebula-credential + nebula-credential-runtime stabilize sweep:**
 `nebula-credential` API stability `frontier → stable` (error taxonomy reshape, SecretBox migration, ValidatedCredentialBinding, resolve_for_slot seam, fallback-on-interrupt, three-registry probe, dyn-compat probe, AuthStyle moved to scheme::oauth2, testutil extracted, ADR-0084 defers proactive refresh to 1.1). `nebula-credential-runtime` row added at `stable` (ADR-0066 facade extracted; all M12.2 hardening items in production path).
 Prior: 2026-05-15 — **nebula-api Phase 0 structural refactor (behavior-neutral):**
 worktree `restructure` (branch `refactor/api-restructure`) converts `nebula-api` from a
