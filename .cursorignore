@@ -69,8 +69,12 @@ credentials/
 # Codex CLI: OAuth tokens, SQLite session DBs (hundreds of MB), conversation logs
 .codex/
 
-# Pi / Gentle-AI per-user runtime
-.pi/
+# Pi / Gentle-AI per-user runtime (project configs exempted below)
+.pi/*
+!.pi/settings.json
+!.pi/conventions.json
+!.pi/codebase-wiki.json
+!.pi/wiki/
 .atl/
 
 # Compound Engineering per-project secrets / preferences

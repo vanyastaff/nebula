@@ -1,0 +1,133 @@
+{
+  "$schema": "https://unpkg.com/pi-conventions/conventions.schema.json",
+  "extendsGlobal": true,
+  "ignorePaths": [
+    "target/**",
+    ".worktrees/**",
+    ".claude/worktrees/**",
+    "**/fuzz/Cargo.lock",
+    "**/criterion/**",
+    "**/*.generated.rs",
+    ".pi-audit-*/**"
+  ],
+  "policies": {
+    "structure": {
+      "mode": "warn",
+      "editMode": "warn",
+      "sourceRoots": ["crates/", "apps/", "examples/"],
+      "forbiddenSegments": ["utils", "helpers", "common", "misc", "shared"]
+    },
+    "naming": {
+      "rules": [
+        {
+          "id": "naming.rs.snake-case",
+          "prefixes": ["crates/", "apps/"],
+          "pathKinds": ["file", "directory"],
+          "extensions": ["rs"],
+          "requireCase": "snake_case",
+          "forbiddenNames": ["util", "utils", "helper", "helpers", "common", "misc", "shared"]
+        },
+        {
+          "id": "naming.crates.kebab-case",
+          "prefixes": ["crates/"],
+          "pathKinds": ["directory"],
+          "depth": 1,
+          "requireCase": "kebab-case",
+          "requirePrefix": "",
+          "description": "Crate directories under crates/ use kebab-case without the nebula- prefix (the crate name in Cargo.toml carries the prefix)."
+        }
+      ]
+    },
+    "size": {
+      "mode": "warn",
+      "limits": [
+        {
+          "id": "size.rs.module-700",
+          "prefixes": ["crates/", "apps/"],
+          "extensions": ["rs"],
+          "exclude": [
+            "**/tests/**",
+            "**/*test*.rs",
+            "**/probes/**",
+            "**/fuzz/**",
+            "**/golden/**",
+            "**/*.generated.rs"
+          ],
+          "maxLines": 700,
+          "description": "Source modules over 700 lines are usually a sign of god-file drift — split by responsibility (per the action/credential/api refactors in 2026Q2). Tests and fuzz/probes are exempt."
+        },
+        {
+          "id": "size.rs.module-critical-1500",
+          "prefixes": ["crates/", "apps/"],
+          "extensions": ["rs"],
+          "exclude": [
+            "**/tests/**",
+            "**/*test*.rs",
+            "**/probes/**",
+            "**/fuzz/**",
+            "**/golden/**",
+            "**/*.generated.rs"
+          ],
+          "maxLines": 1500,
+          "level": "error",
+          "description": "Hard upper bound. Modules over 1500 lines block merges until split."
+        }
+      ]
+    },
+    "documentation": {
+      "mode": "warn",
+      "rules": [
+        {
+          "id": "docs.crate-readme",
+          "pattern": "crates/*/",
+          "requireFile": "README.md",
+          "description": "Every workspace crate must ship a README.md (Rust API Guidelines C-CRATE-DOC)."
+        }
+      ]
+    },
+    "dependencies": {
+      "mode": "warn",
+      "description": "Layer-boundary enforcement is mechanical via deny.toml [[bans.deny]].wrappers — see CLAUDE.md § Layered Dependency Map. This convention here is advisory and complements (not replaces) cargo deny check.",
+      "rules": [
+        {
+          "id": "deps.core-not-business",
+          "from": "crates/{core,validator,expression,workflow,execution,schema,metadata,storage-port}/",
+          "forbid": [
+            "nebula-engine",
+            "nebula-storage",
+            "nebula-storage-loom-probe",
+            "nebula-sandbox",
+            "nebula-plugin-sdk",
+            "nebula-api",
+            "nebula-sdk",
+            "nebula-action",
+            "nebula-credential-builtin",
+            "nebula-credential-vault",
+            "nebula-credential-runtime",
+            "nebula-resource",
+            "nebula-plugin",
+            "nebula-tenancy"
+          ]
+        },
+        {
+          "id": "deps.business-not-exec-api",
+          "from": "crates/{credential,credential-builtin,credential-vault,credential-runtime,credential-testutil,resource,action,plugin,tenancy}/",
+          "forbid": [
+            "nebula-engine",
+            "nebula-storage",
+            "nebula-storage-loom-probe",
+            "nebula-sandbox",
+            "nebula-plugin-sdk",
+            "nebula-api",
+            "nebula-sdk"
+          ]
+        },
+        {
+          "id": "deps.exec-not-api",
+          "from": "crates/{engine,storage,storage-loom-probe}/",
+          "forbid": ["nebula-api", "nebula-sdk"]
+        }
+      ]
+    }
+  }
+}

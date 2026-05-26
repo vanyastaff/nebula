@@ -102,10 +102,15 @@ id_ed25519
 .auto-claude-security.json
 .claude_settings.json
 
-# AI tool runtime dirs — mirrors .gitignore
+# AI tool runtime dirs — mirrors .gitignore (committed project configs
+# under .pi/ are exempted so Claude indexes the shared tooling config).
 .codex/
 .atl/
-.pi/
+.pi/*
+!.pi/settings.json
+!.pi/conventions.json
+!.pi/codebase-wiki.json
+!.pi/wiki/
 .pi-audit-*/
 .compound-engineering/*.local.yaml
 

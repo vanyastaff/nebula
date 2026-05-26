@@ -189,6 +189,9 @@ between siblings at the same layer.
 | `.claude/hooks/`              | Committed guard hooks (enforced discipline) |
 | `.claude/skills/rust-intel/`  | Vendored LLM-Rust-failure-mode skill — v0.2.2, MIT, advisory (not hook-enforced); `/rust-cc-{audit,fix,plan}` slash commands (see its `UPSTREAM.md`) |
 | `.claude/commands/`           | Slash-command definitions for the vendored skills above |
+| `.pi/settings.json`           | [`pi-subagents`](https://pi.dev/packages/pi-subagents) `agentOverrides` — per-project model + thinking-level overrides for built-in subagents (scout/context-builder on sonnet+medium for cheap recon; reviewer/worker on opus+high; planner/oracle on opus+xhigh) |
+| `.pi/conventions.json`        | [`pi-conventions`](https://pi.dev/packages/pi-conventions) policy — structure / naming / size / dependency rules tuned for this Rust workspace; `/conventions audit` runs the repo scan |
+| `.doctorrc.yml`               | [`pi-auditor`](https://pi.dev/packages/pi-auditor) config — god-file thresholds + ignore paths for `/doctor:audit` and `/doctor:god-files` |
 
 > The AI Factory framework (`.ai-factory/`, `.ai-factory.json`,
 > `.claude/skills/aif-*`, `.github/skills/aif-*`, the `.claude/agents/`
