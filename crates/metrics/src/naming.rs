@@ -192,6 +192,130 @@ pub const NEBULA_API_IDEMPOTENCY_STORE_SATURATION_PPM: &str =
 pub const NEBULA_API_IDEMPOTENCY_LATENCY_MS: &str = "nebula_api_idempotency_latency_ms";
 
 // ---------------------------------------------------------------------------
+// API: auth (Plane-A identity backend)
+// ---------------------------------------------------------------------------
+
+/// Counter: password-authentication attempts.
+///
+/// Labeled by `outcome` (see [`auth_outcome`]). Closed label set — adding
+/// a value permanently inflates the cardinality floor. Covers the full
+/// `authenticate_password` flow including the early `AccountLocked` guard
+/// and the post-success MFA-challenge branch, plus the register / email
+/// verify / password reset attempt families.
+///
+/// `outcome="user_not_found"` is **intentionally absent**: the backend
+/// returns `InvalidCredentials` for a missing email (see
+/// `crates/api/src/domain/auth/backend/pg.rs`) so probe-based user
+/// enumeration cannot read the metric.
+pub const NEBULA_API_AUTH_ATTEMPTS_TOTAL: &str = "nebula_api_auth_attempts_total";
+
+/// Counter: MFA verification attempts (TOTP / challenge-token).
+///
+/// Labeled by `outcome` (see [`auth_outcome`]). Subset of the auth outcome
+/// set: `success`, `invalid_mfa_code`, `token_invalid`, `internal`.
+/// Separated from [`NEBULA_API_AUTH_ATTEMPTS_TOTAL`] so a brute-force on
+/// TOTP is dashboardable independently from a brute-force on passwords.
+pub const NEBULA_API_AUTH_MFA_ATTEMPTS_TOTAL: &str = "nebula_api_auth_mfa_attempts_total";
+
+/// Counter: OAuth flow attempts (start + callback).
+///
+/// Labeled by `outcome` (see [`auth_outcome`]) and `provider` (closed
+/// 3-value set — see [`auth_oauth_provider`] — bounded at compile time by
+/// `OAuthProvider::as_str()`). Operator-bounded cardinality ceiling:
+/// `outcome (<= 6) x provider (3) = 18` series.
+///
+/// `complete_oauth` currently returns `NotImplemented` on the PG backend
+/// (`pg.rs`); emission still fires (as `outcome=internal`) so the
+/// operator dashboard reflects the gap until a follow-up wires the real
+/// provider code-exchange.
+pub const NEBULA_API_AUTH_OAUTH_ATTEMPTS_TOTAL: &str = "nebula_api_auth_oauth_attempts_total";
+
+/// Histogram: auth backend method duration in seconds.
+///
+/// Labeled by `outcome` (see [`auth_outcome`]). Default seconds-shaped
+/// buckets are intentional — auth duration is dominated by Argon2id
+/// (100-500 ms) plus DB round-trips, so the 5 ms ... 10 s default span
+/// is correct. **DO NOT** observe in milliseconds — the
+/// [`NEBULA_API_IDEMPOTENCY_LATENCY_MS`] precedent is a latent
+/// unit/bucket mismatch and must not be copied here.
+pub const NEBULA_API_AUTH_DURATION_SECONDS: &str = "nebula_api_auth_duration_seconds";
+
+/// Outcome labels for the auth counters and histogram.
+///
+/// Closed label set — adding a value permanently inflates cardinality on
+/// every auth series, so the unit test in this module is a CI gate against
+/// silent expansion. The matching `#[test]` in
+/// `crates/api/src/domain/auth/backend/error.rs` is the compile-time gate
+/// that fires when a new `AuthError` variant lacks a mapping here.
+///
+/// `user_not_found` is **intentionally absent**: see the
+/// [`NEBULA_API_AUTH_ATTEMPTS_TOTAL`] doc comment.
+pub mod auth_outcome {
+    /// Authentication succeeded; no MFA challenge pending.
+    pub const SUCCESS: &str = "success";
+    /// Password verify failed, or email unknown (the latter is collapsed
+    /// to this value to prevent user-enumeration via metric exposure —
+    /// a `outcome=user_not_found` series would let an operator dashboard
+    /// reveal whether a probed email exists, which is a security
+    /// regression. The backend code path already returns
+    /// `AuthError::InvalidCredentials` rather than `UserNotFound` at the
+    /// password-verify site, so this collapse is also consistent with
+    /// what the backend actually emits today).
+    pub const INVALID_CREDS: &str = "invalid_creds";
+    /// Caller-supplied input field failed shape validation (blank /
+    /// oversized / malformed). Distinct from [`INVALID_CREDS`] because
+    /// high rates indicate caller bugs, not auth attacks.
+    pub const INVALID_INPUT: &str = "invalid_input";
+    /// MFA TOTP code did not verify.
+    pub const INVALID_MFA_CODE: &str = "invalid_mfa_code";
+    /// Authentication succeeded so far, but a TOTP code is required to
+    /// complete the login. Not a [`SUCCESS`] — the auth has not
+    /// completed.
+    pub const MFA_REQUIRED: &str = "mfa_required";
+    /// One-time token (verification / reset / mfa-challenge / oauth-state)
+    /// is unknown, expired, or already consumed.
+    pub const TOKEN_INVALID: &str = "token_invalid";
+    /// Account is in the post-threshold cooldown window. Fires on
+    /// subsequent attempts during the window, not on the arming event
+    /// (which is invisible to the auth backend without a storage API
+    /// change).
+    pub const LOCKOUT: &str = "lockout";
+    /// Email-verification flow has not completed for this account.
+    pub const EMAIL_UNVERIFIED: &str = "email_unverified";
+    /// Rate limit hit on a sensitive endpoint. Reserved for handler-layer
+    /// middleware rejections that surface through `AuthError::RateLimit`;
+    /// the PG/in-memory backends never produce this outcome today, but
+    /// the value stays in the closed set for forward-compat.
+    pub const RATE_LIMIT: &str = "rate_limit";
+    /// OAuth provider returned an error or state-token verification
+    /// failed.
+    pub const OAUTH_FAILED: &str = "oauth_failed";
+    /// Resource already exists (email already registered on signup).
+    pub const CONFLICT: &str = "conflict";
+    /// Internal backend error (storage failure, crypto failure, lock
+    /// poisoning, unexpected `From<EmailError>` collapse,
+    /// `NotImplemented` on a wired-but-incomplete provider path).
+    pub const INTERNAL: &str = "internal";
+}
+
+/// Provider labels for [`NEBULA_API_AUTH_OAUTH_ATTEMPTS_TOTAL`].
+///
+/// Mirror of `OAuthProvider::as_str()` in
+/// `crates/api/src/domain/auth/backend/oauth.rs`. Closed 3-value set
+/// bounded by the enum at compile time. A user-supplied unknown provider
+/// query param is rejected by `OAuthProvider::from_str` with
+/// `AuthError::OAuthFailed` *before* any metric arm runs, so this set
+/// cannot leak.
+pub mod auth_oauth_provider {
+    /// Sign-in via Google.
+    pub const GOOGLE: &str = "google";
+    /// Sign-in via GitHub.
+    pub const GITHUB: &str = "github";
+    /// Sign-in via Microsoft.
+    pub const MICROSOFT: &str = "microsoft";
+}
+
+// ---------------------------------------------------------------------------
 // Webhook (api crate — transport-layer signature enforcement)
 // ---------------------------------------------------------------------------
 
@@ -644,6 +768,8 @@ mod tests {
     use crate::registry::MetricsRegistry;
 
     use super::{
+        NEBULA_API_AUTH_ATTEMPTS_TOTAL, NEBULA_API_AUTH_DURATION_SECONDS,
+        NEBULA_API_AUTH_MFA_ATTEMPTS_TOTAL, NEBULA_API_AUTH_OAUTH_ATTEMPTS_TOTAL,
         NEBULA_API_IDEMPOTENCY_HITS_TOTAL, NEBULA_API_IDEMPOTENCY_LATENCY_MS,
         NEBULA_API_IDEMPOTENCY_MISSES_TOTAL, NEBULA_API_IDEMPOTENCY_REJECTS_TOTAL,
         NEBULA_API_IDEMPOTENCY_STORE_SATURATION_PPM, NEBULA_CACHE_EVICTIONS, NEBULA_CACHE_HITS,
@@ -667,9 +793,9 @@ mod tests {
         NEBULA_RESOURCE_POOL_EXHAUSTED_TOTAL, NEBULA_RESOURCE_POOL_WAITERS,
         NEBULA_RESOURCE_QUARANTINE_RELEASED_TOTAL, NEBULA_RESOURCE_QUARANTINE_TOTAL,
         NEBULA_RESOURCE_RELEASE_ERROR_TOTAL, NEBULA_RESOURCE_RELEASE_TOTAL,
-        NEBULA_RESOURCE_USAGE_DURATION_SECONDS, idempotency_reject_reason,
-        refresh_coord_claim_outcome, refresh_coord_coalesced_tier, refresh_coord_reclaim_outcome,
-        refresh_coord_sentinel_action, rotation_outcome,
+        NEBULA_RESOURCE_USAGE_DURATION_SECONDS, auth_oauth_provider, auth_outcome,
+        idempotency_reject_reason, refresh_coord_claim_outcome, refresh_coord_coalesced_tier,
+        refresh_coord_reclaim_outcome, refresh_coord_sentinel_action, rotation_outcome,
     };
 
     const RESOURCE_METRIC_NAMES: [&str; 21] = [
@@ -980,6 +1106,105 @@ mod tests {
             }
         }
         assert_eq!(unique.len(), 5);
+    }
+
+    /// API auth metrics (M3.1 follow-up wave §PR-B).
+    ///
+    /// 3 counters + 1 histogram = 4 metric names. Counters are labeled
+    /// per the oracle locked spec: `attempts_total{outcome}` /
+    /// `mfa_attempts_total{outcome}` against the 12-value closed
+    /// [`auth_outcome`] set; `oauth_attempts_total{outcome, provider}`
+    /// adds the 3-value closed [`auth_oauth_provider`] dimension; the
+    /// histogram uses default seconds-shaped buckets keyed by `outcome`.
+    const API_AUTH_METRIC_NAMES: [&str; 4] = [
+        NEBULA_API_AUTH_ATTEMPTS_TOTAL,
+        NEBULA_API_AUTH_MFA_ATTEMPTS_TOTAL,
+        NEBULA_API_AUTH_OAUTH_ATTEMPTS_TOTAL,
+        NEBULA_API_AUTH_DURATION_SECONDS,
+    ];
+
+    #[test]
+    fn api_auth_constants_are_accessible_unique_and_registry_safe() {
+        let registry = MetricsRegistry::new();
+        let mut unique = HashSet::new();
+        for metric_name in API_AUTH_METRIC_NAMES {
+            assert!(!metric_name.is_empty());
+            assert!(metric_name.starts_with("nebula_api_auth_"));
+            assert!(
+                metric_name
+                    .chars()
+                    .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_')
+            );
+            assert!(unique.insert(metric_name));
+
+            if metric_name == NEBULA_API_AUTH_DURATION_SECONDS {
+                let labels = registry.interner().single("outcome", auth_outcome::SUCCESS);
+                let histogram = registry.histogram_labeled(metric_name, &labels).unwrap();
+                histogram.observe(0.05);
+                assert_eq!(histogram.count(), 1);
+            } else if metric_name == NEBULA_API_AUTH_OAUTH_ATTEMPTS_TOTAL {
+                let labels = registry.interner().label_set(&[
+                    ("outcome", auth_outcome::SUCCESS),
+                    ("provider", auth_oauth_provider::GOOGLE),
+                ]);
+                let counter = registry.counter_labeled(metric_name, &labels).unwrap();
+                counter.inc();
+                assert_eq!(counter.get(), 1);
+            } else {
+                let labels = registry.interner().single("outcome", auth_outcome::SUCCESS);
+                let counter = registry.counter_labeled(metric_name, &labels).unwrap();
+                counter.inc();
+                assert_eq!(counter.get(), 1);
+            }
+        }
+        assert_eq!(unique.len(), 4);
+    }
+
+    #[test]
+    fn auth_outcome_labels_are_closed_set() {
+        // Closed label set per the oracle locked spec — adding a value
+        // here permanently inflates cardinality on every auth series so
+        // this test is the CI gate against silent expansion. Mirrors
+        // `idempotency_reject_reason_labels_are_closed_set`.
+        let labels = [
+            auth_outcome::SUCCESS,
+            auth_outcome::INVALID_CREDS,
+            auth_outcome::INVALID_INPUT,
+            auth_outcome::INVALID_MFA_CODE,
+            auth_outcome::MFA_REQUIRED,
+            auth_outcome::TOKEN_INVALID,
+            auth_outcome::LOCKOUT,
+            auth_outcome::EMAIL_UNVERIFIED,
+            auth_outcome::RATE_LIMIT,
+            auth_outcome::OAUTH_FAILED,
+            auth_outcome::CONFLICT,
+            auth_outcome::INTERNAL,
+        ];
+        let unique: HashSet<&str> = labels.iter().copied().collect();
+        assert_eq!(unique.len(), 12, "auth outcome labels must be unique");
+        for label in labels {
+            assert!(!label.is_empty());
+            assert!(label.chars().all(|ch| ch.is_ascii_lowercase() || ch == '_'));
+        }
+    }
+
+    #[test]
+    fn auth_oauth_provider_labels_are_closed_set() {
+        // Bounded at compile time by the `OAuthProvider` enum
+        // (`Google | GitHub | Microsoft`). A user-supplied unknown
+        // provider is rejected by `from_str` with `OAuthFailed` before
+        // any metric arm runs, so the set cannot leak.
+        let labels = [
+            auth_oauth_provider::GOOGLE,
+            auth_oauth_provider::GITHUB,
+            auth_oauth_provider::MICROSOFT,
+        ];
+        let unique: HashSet<&str> = labels.iter().copied().collect();
+        assert_eq!(unique.len(), 3, "auth oauth provider labels must be unique");
+        for label in labels {
+            assert!(!label.is_empty());
+            assert!(label.chars().all(|ch| ch.is_ascii_lowercase() || ch == '_'));
+        }
     }
 
     #[test]

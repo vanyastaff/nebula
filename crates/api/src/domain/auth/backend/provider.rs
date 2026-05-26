@@ -3,6 +3,16 @@
 //! Replaces the older `SessionStore` trait. All auth-domain operations
 //! (signup / login / MFA / OAuth / sessions / PATs) flow through this single
 //! trait so callers never have to ask "which slot is the right one?".
+//!
+//! ## Metrics emission helpers (`metrics_emit`)
+//!
+//! Both [`super::InMemoryAuthBackend`] and (under `feature = "postgres"`)
+//! `super::pg::PgAuthBackend` share the closed-set emission discipline for
+//! the `nebula_api_auth_*` family. The shared helpers live in a private
+//! `metrics_emit` submodule below so the two backends cannot drift on
+//! label key/value strings (the module is `pub(super)` so it is hidden
+//! from the public API surface; its existence is documented here for
+//! the maintainer audience).
 
 use async_trait::async_trait;
 use nebula_core::Principal;
@@ -14,6 +24,124 @@ use super::{
     pat::{MintedPat, PatRecord},
     session::SessionRecord,
 };
+
+/// Shared `nebula_api_auth_*` emission helpers consumed by
+/// [`super::InMemoryAuthBackend`] and `super::pg::PgAuthBackend`
+/// (the latter is feature-gated under `postgres` so an intra-doc
+/// link cannot resolve unconditionally — kept as plain code for that
+/// reason).
+///
+/// The single `run_with_metrics` entry point wraps a backend method's
+/// future, classifies the resolved `Result` into a closed-set
+/// `auth_outcome::*` label, bumps the per-method counter, and observes
+/// the duration histogram in a single place — mirrors the
+/// `record_outcome` / `LatencyGuard` pattern in
+/// `crates/api/src/middleware/idempotency/layer.rs` but lifted into a
+/// helper module so both backends share one wire and cannot drift.
+///
+/// Closed-set guarantee: every emission path here builds labels from
+/// `&'static str` constants in `nebula_metrics::naming::auth_outcome`
+/// / `naming::auth_oauth_provider`; no `format!` / `to_string` value
+/// can reach a label key or value at the call site (oracle locked spec
+/// decision 3 — closed cardinality enforced by-construction at the
+/// call site, no `LabelAllowlist::only(...)`).
+pub(super) mod metrics_emit {
+    use std::sync::Arc;
+
+    use nebula_metrics::{
+        MetricsRegistry,
+        naming::{NEBULA_API_AUTH_DURATION_SECONDS, auth_oauth_provider},
+    };
+
+    use super::{AuthError, OAuthProvider};
+
+    /// Map an [`OAuthProvider`] enum value to its closed-set provider
+    /// label string from
+    /// [`nebula_metrics::naming::auth_oauth_provider`].
+    ///
+    /// Returning the constant directly (not `provider.as_str()`)
+    /// makes the closed-set guarantee visible to the reviewer: the
+    /// `match` cannot produce a non-constant value. If a new
+    /// `OAuthProvider` variant lands without a matching constant, this
+    /// fails compilation.
+    #[must_use]
+    pub(crate) fn oauth_provider_label(provider: OAuthProvider) -> &'static str {
+        match provider {
+            OAuthProvider::Google => auth_oauth_provider::GOOGLE,
+            OAuthProvider::GitHub => auth_oauth_provider::GITHUB,
+            OAuthProvider::Microsoft => auth_oauth_provider::MICROSOFT,
+        }
+    }
+
+    /// Run `body` under the auth metrics wire and return its `Result`.
+    ///
+    /// On completion the resolved `Result` is passed to `classify` to
+    /// pick an `auth_outcome::*` label (the per-method closed-set
+    /// derivation lives at the call site); the resulting outcome is
+    /// then used to:
+    ///
+    /// 1. Bump `counter_name` with labels `{outcome}` (or
+    ///    `{outcome, provider}` if `provider` is `Some`).
+    /// 2. Observe [`NEBULA_API_AUTH_DURATION_SECONDS`] keyed by
+    ///    `{outcome}` only (never `provider`) with the elapsed time
+    ///    in seconds (NOT milliseconds).
+    ///
+    /// When `metrics` is `None`, emission is a no-op and the helper
+    /// returns the inner `Result` unchanged. Mirrors the
+    /// `let Some(reg) = self.metrics.as_ref() else { return; };`
+    /// early-return pattern in `idempotency/layer.rs`.
+    pub(crate) async fn run_with_metrics<T, F, C>(
+        metrics: &Option<Arc<MetricsRegistry>>,
+        counter_name: &'static str,
+        provider: Option<&'static str>,
+        body: F,
+        classify: C,
+    ) -> Result<T, AuthError>
+    where
+        F: Future<Output = Result<T, AuthError>>,
+        C: FnOnce(&Result<T, AuthError>) -> &'static str,
+    {
+        let start = std::time::Instant::now();
+        let result = body.await;
+        let outcome = classify(&result);
+        let Some(registry) = metrics.as_ref() else {
+            return result;
+        };
+
+        // Counter labels: oauth path adds `provider`; everything else
+        // is `outcome` only. All values are `&'static str` constants
+        // — no runtime stringification can reach the label.
+        let counter_labels = match provider {
+            Some(provider_label) => registry
+                .interner()
+                .label_set(&[("outcome", outcome), ("provider", provider_label)]),
+            None => registry.interner().single("outcome", outcome),
+        };
+        if let Ok(counter) = registry.counter_labeled(counter_name, &counter_labels) {
+            counter.inc();
+        }
+
+        // Histogram: outcome-only labels regardless of which counter
+        // family fired — the duration view is always keyed by outcome
+        // to keep the histogram cardinality at the floor of
+        // `len(auth_outcome::*)` series.
+        let hist_labels = if provider.is_some() {
+            registry.interner().single("outcome", outcome)
+        } else {
+            counter_labels
+        };
+        if let Ok(histogram) =
+            registry.histogram_labeled(NEBULA_API_AUTH_DURATION_SECONDS, &hist_labels)
+        {
+            // Seconds, not milliseconds. Default seconds-shaped buckets
+            // span 5 ms ... 10 s which is correct for Argon2id-dominated
+            // auth duration.
+            histogram.observe(start.elapsed().as_secs_f64());
+        }
+
+        result
+    }
+}
 
 /// Partial profile mutation for [`AuthBackend::update_user_profile`].
 ///

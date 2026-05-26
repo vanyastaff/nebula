@@ -64,6 +64,13 @@ use std::{sync::Arc, time::Duration};
 use async_trait::async_trait;
 use chrono::Utc;
 use nebula_core::{Principal, UserId};
+use nebula_metrics::{
+    MetricsRegistry,
+    naming::{
+        NEBULA_API_AUTH_ATTEMPTS_TOTAL, NEBULA_API_AUTH_MFA_ATTEMPTS_TOTAL,
+        NEBULA_API_AUTH_OAUTH_ATTEMPTS_TOTAL, auth_outcome,
+    },
+};
 use sha2::{Digest, Sha256};
 use sqlx::{Pool, Postgres};
 
@@ -82,7 +89,7 @@ use super::{
     pat::{self, MintedPat, PatRecord, compute_pat_expires_at},
     provider::{
         AuthBackend, CreatePatParams, MfaEnrollment, OAuthCompletion, OAuthStart, PasswordOutcome,
-        ProfilePatch,
+        ProfilePatch, metrics_emit,
     },
     session::{self, SESSION_TTL, SessionRecord, expires_at},
 };
@@ -143,15 +150,33 @@ pub struct PgAuthBackend {
     /// here, so the slot is always consumed by exactly the same
     /// transport.
     email_port: Arc<dyn EmailPort>,
+    /// Optional `nebula_api_auth_*` emission seam. `None` skips
+    /// emission (mirrors the `IdempotencyLayer::with_metrics`
+    /// `Option<Arc<MetricsRegistry>>` precedent at
+    /// `crates/api/src/middleware/idempotency/layer.rs`). Production
+    /// composition always populates this with the shared
+    /// `Arc<MetricsRegistry>` so the closed-set counters are observable
+    /// from operator dashboards; tests that don't exercise the emission
+    /// seam pass `None`.
+    metrics: Option<Arc<MetricsRegistry>>,
 }
 
 impl PgAuthBackend {
-    /// Construct a backend from a live `sqlx::Pool<Postgres>` and a
-    /// shared `Arc<dyn EmailPort>`. The five PG identity repos are
-    /// built internally from the pool (each holds its own clone, which
-    /// is cheap — `Pool` is an `Arc` internally).
+    /// Construct a backend from a live `sqlx::Pool<Postgres>`, a
+    /// shared `Arc<dyn EmailPort>`, and an optional `Arc<MetricsRegistry>`
+    /// for the `nebula_api_auth_*` emission seam.
+    ///
+    /// The five PG identity repos are built internally from the pool
+    /// (each holds its own clone, which is cheap — `Pool` is an `Arc`
+    /// internally). `metrics` follows the `IdempotencyLayer::with_metrics`
+    /// precedent: `None` for tests that do not exercise the emission
+    /// path, `Some(_)` from the production composition root.
     #[must_use]
-    pub fn new(pool: Pool<Postgres>, email_port: Arc<dyn EmailPort>) -> Self {
+    pub fn new(
+        pool: Pool<Postgres>,
+        email_port: Arc<dyn EmailPort>,
+        metrics: Option<Arc<MetricsRegistry>>,
+    ) -> Self {
         Self {
             user_repo: Arc::new(PgUserRepo::new(pool.clone())),
             session_repo: Arc::new(PgSessionRepo::new(pool.clone())),
@@ -160,6 +185,7 @@ impl PgAuthBackend {
             oauth_state_repo: Arc::new(PgOAuthStateRepo::new(pool.clone())),
             pool,
             email_port,
+            metrics,
         }
     }
 
@@ -272,110 +298,130 @@ impl AuthBackend for PgAuthBackend {
         fields(display_name_len = req.display_name.len()),
     )]
     async fn register_user(&self, req: SignupRequest) -> Result<UserProfile, AuthError> {
-        let email = req.email.trim().to_lowercase();
-        if email.is_empty() || !email.contains('@') {
-            return Err(AuthError::InvalidCredentials);
-        }
-        if req.password.len() < MIN_PASSWORD_LEN {
-            return Err(AuthError::InvalidCredentials);
-        }
-        let display_name = req.display_name.trim();
-        if display_name.is_empty() || display_name.len() > 128 {
-            return Err(AuthError::InvalidCredentials);
-        }
+        metrics_emit::run_with_metrics(
+            &self.metrics,
+            NEBULA_API_AUTH_ATTEMPTS_TOTAL,
+            None,
+            async move {
+                let email = req.email.trim().to_lowercase();
+                if email.is_empty() || !email.contains('@') {
+                    return Err(AuthError::InvalidCredentials);
+                }
+                if req.password.len() < MIN_PASSWORD_LEN {
+                    return Err(AuthError::InvalidCredentials);
+                }
+                let display_name = req.display_name.trim();
+                if display_name.is_empty() || display_name.len() > 128 {
+                    return Err(AuthError::InvalidCredentials);
+                }
 
-        // Argon2id outside the tx — the work is slow and the row-level
-        // lock window must stay short.
-        let password_hash = password::hash_password(req.password.expose())?;
+                // Argon2id outside the tx — the work is slow and the row-level
+                // lock window must stay short.
+                let password_hash = password::hash_password(req.password.expose())?;
 
-        let user_id = UserId::new();
-        let user_bytes = user_id.as_bytes();
-        let verification_plaintext = session::random_token(24)?;
-        let verification_hash = sha256_token(&verification_plaintext);
-        let now = Utc::now();
-        let expires_at = now + chrono_duration(VERIFICATION_TTL)?;
+                let user_id = UserId::new();
+                let user_bytes = user_id.as_bytes();
+                let verification_plaintext = session::random_token(24)?;
+                let verification_hash = sha256_token(&verification_plaintext);
+                let now = Utc::now();
+                let expires_at = now + chrono_duration(VERIFICATION_TTL)?;
 
-        // Two-step tx bypasses the repo abstraction: orphan-row
-        // prevention requires user + verification-token INSERT
-        // atomicity. The repos are pool-bound; convert to
-        // `Executor`-generic when a fourth multi-step flow appears.
-        let mut tx = self.pool.begin().await.map_err(map_sqlx_err)?;
+                // Two-step tx bypasses the repo abstraction: orphan-row
+                // prevention requires user + verification-token INSERT
+                // atomicity. The repos are pool-bound; convert to
+                // `Executor`-generic when a fourth multi-step flow appears.
+                let mut tx = self.pool.begin().await.map_err(map_sqlx_err)?;
 
-        let user_insert = sqlx::query(
-            "INSERT INTO users \
+                let user_insert = sqlx::query(
+                    "INSERT INTO users \
              (id, email, email_verified_at, display_name, avatar_url, password_hash, \
               created_at, last_login_at, locked_until, failed_login_count, mfa_enabled, \
               mfa_secret, version, deleted_at) \
              VALUES ($1, $2, NULL, $3, NULL, $4, $5, NULL, NULL, 0, FALSE, NULL, 0, NULL)",
-        )
-        .bind(user_bytes.as_slice())
-        .bind(&email)
-        .bind(display_name)
-        .bind(&password_hash)
-        .bind(now)
-        .execute(&mut *tx)
-        .await;
+                )
+                .bind(user_bytes.as_slice())
+                .bind(&email)
+                .bind(display_name)
+                .bind(&password_hash)
+                .bind(now)
+                .execute(&mut *tx)
+                .await;
 
-        if let Err(err) = user_insert {
-            // Roll back implicitly by dropping the tx without commit;
-            // surface a typed conflict for the unique-email index.
-            if is_unique_violation(&err) {
-                return Err(AuthError::EmailAlreadyRegistered);
-            }
-            return Err(map_sqlx_err(err));
-        }
+                if let Err(err) = user_insert {
+                    // Roll back implicitly by dropping the tx without commit;
+                    // surface a typed conflict for the unique-email index.
+                    if is_unique_violation(&err) {
+                        return Err(AuthError::EmailAlreadyRegistered);
+                    }
+                    return Err(map_sqlx_err(err));
+                }
 
-        sqlx::query(
-            "INSERT INTO verification_tokens \
+                sqlx::query(
+                    "INSERT INTO verification_tokens \
              (token_hash, user_id, kind, payload, created_at, expires_at, consumed_at) \
              VALUES ($1, $2, $3, NULL, $4, $5, NULL)",
+                )
+                .bind(verification_hash.as_slice())
+                .bind(user_bytes.as_slice())
+                .bind(KIND_EMAIL_VERIFICATION)
+                .bind(now)
+                .bind(expires_at)
+                .execute(&mut *tx)
+                .await
+                .map_err(map_sqlx_err)?;
+
+                tx.commit().await.map_err(map_sqlx_err)?;
+
+                // Email send happens AFTER the tx commits. A delivery failure
+                // here returns `AuthError::Internal` — the user still exists in
+                // an unverified state and can recover by requesting a password
+                // reset (the reset flow does not require an email-verified
+                // account to issue the cooldown-bounded token).
+                // Signup deliberately commits the user record before queueing
+                // the verification email so a transient transport failure does
+                // not destroy the durable account on retry.
+                if let Err(err) = self
+                    .email_port
+                    .send(EmailMessage {
+                        to: email.clone(),
+                        subject: "Verify your email".to_owned(),
+                        body: verification_plaintext,
+                        kind: EmailKind::Verification,
+                    })
+                    .await
+                {
+                    tracing::error!(
+                        error = %err,
+                        user_id = %user_id,
+                        "failed to deliver verification email after user-create commit",
+                    );
+                    return Err(AuthError::Internal(format!("email: {err}")));
+                }
+
+                tracing::info!(user_id = %user_id, "user registered");
+                Ok(UserProfile {
+                    user_id: user_id.to_string(),
+                    email,
+                    display_name: display_name.to_owned(),
+                    avatar_url: None,
+                    email_verified: false,
+                    mfa_enabled: false,
+                })
+            },
+            |result| match result {
+                Ok(_) => auth_outcome::SUCCESS,
+                Err(AuthError::EmailAlreadyRegistered) => auth_outcome::CONFLICT,
+                // Register-side validation rejections (short password,
+                // missing @, blank display name) come back as
+                // `InvalidCredentials` from the existing implementation;
+                // per oracle locked spec map them to `invalid_creds` on
+                // the attempts counter (no `invalid_input` split for the
+                // register path).
+                Err(AuthError::InvalidCredentials) => auth_outcome::INVALID_CREDS,
+                Err(_) => auth_outcome::INTERNAL,
+            },
         )
-        .bind(verification_hash.as_slice())
-        .bind(user_bytes.as_slice())
-        .bind(KIND_EMAIL_VERIFICATION)
-        .bind(now)
-        .bind(expires_at)
-        .execute(&mut *tx)
         .await
-        .map_err(map_sqlx_err)?;
-
-        tx.commit().await.map_err(map_sqlx_err)?;
-
-        // Email send happens AFTER the tx commits. A delivery failure
-        // here returns `AuthError::Internal` — the user still exists in
-        // an unverified state and can recover by requesting a password
-        // reset (the reset flow does not require an email-verified
-        // account to issue the cooldown-bounded token).
-        // Signup deliberately commits the user record before queueing
-        // the verification email so a transient transport failure does
-        // not destroy the durable account on retry.
-        if let Err(err) = self
-            .email_port
-            .send(EmailMessage {
-                to: email.clone(),
-                subject: "Verify your email".to_owned(),
-                body: verification_plaintext,
-                kind: EmailKind::Verification,
-            })
-            .await
-        {
-            tracing::error!(
-                error = %err,
-                user_id = %user_id,
-                "failed to deliver verification email after user-create commit",
-            );
-            return Err(AuthError::Internal(format!("email: {err}")));
-        }
-
-        tracing::info!(user_id = %user_id, "user registered");
-        Ok(UserProfile {
-            user_id: user_id.to_string(),
-            email,
-            display_name: display_name.to_owned(),
-            avatar_url: None,
-            email_verified: false,
-            mfa_enabled: false,
-        })
     }
 
     #[tracing::instrument(level = "info", skip(self, email, password_input, totp), fields(email_len = email.len()))]
@@ -385,62 +431,78 @@ impl AuthBackend for PgAuthBackend {
         password_input: &str,
         totp: Option<&str>,
     ) -> Result<PasswordOutcome, AuthError> {
-        let user = self
-            .user_repo
-            .get_by_email(email)
-            .await?
-            .ok_or(AuthError::InvalidCredentials)?;
+        metrics_emit::run_with_metrics(
+            &self.metrics,
+            NEBULA_API_AUTH_ATTEMPTS_TOTAL,
+            None,
+            async move {
+                let user = self
+                    .user_repo
+                    .get_by_email(email)
+                    .await?
+                    .ok_or(AuthError::InvalidCredentials)?;
 
-        if let Some(until) = user.locked_until
-            && until > Utc::now()
-        {
-            return Err(AuthError::AccountLocked);
-        }
-
-        let stored_hash = user
-            .password_hash
-            .as_deref()
-            .ok_or(AuthError::InvalidCredentials)?;
-        if !password::verify_password(stored_hash, password_input)? {
-            self.user_repo.record_login_failure(&user.id).await?;
-            return Err(AuthError::InvalidCredentials);
-        }
-
-        // record_login_success ONLY; no `update` call — a profile
-        // update would CAS-conflict with concurrent patches and
-        // spuriously bump `version` on every login.
-        self.user_repo.record_login_success(&user.id).await?;
-
-        if user.mfa_enabled {
-            let secret = decode_mfa_secret(&user)?;
-            if let Some(code) = totp {
-                if !mfa::verify_code(&secret, code)? {
-                    return Err(AuthError::InvalidMfaCode);
+                if let Some(until) = user.locked_until
+                    && until > Utc::now()
+                {
+                    return Err(AuthError::AccountLocked);
                 }
-                Ok(PasswordOutcome::Authenticated(row_to_profile(&user)?))
-            } else {
-                let challenge_plaintext = session::random_token(24)?;
-                let challenge_hash = sha256_token(&challenge_plaintext);
-                let now = Utc::now();
-                let expires_at = now + chrono_duration(MFA_CHALLENGE_TTL)?;
-                self.verification_token_repo
-                    .create(&VerificationTokenRow {
-                        token_hash: challenge_hash.to_vec(),
-                        user_id: user.id.clone(),
-                        kind: KIND_MFA_CHALLENGE.to_owned(),
-                        payload: None,
-                        created_at: now,
-                        expires_at,
-                        consumed_at: None,
-                    })
-                    .await?;
-                Ok(PasswordOutcome::MfaRequired {
-                    challenge_token: challenge_plaintext,
-                })
-            }
-        } else {
-            Ok(PasswordOutcome::Authenticated(row_to_profile(&user)?))
-        }
+
+                let stored_hash = user
+                    .password_hash
+                    .as_deref()
+                    .ok_or(AuthError::InvalidCredentials)?;
+                if !password::verify_password(stored_hash, password_input)? {
+                    self.user_repo.record_login_failure(&user.id).await?;
+                    return Err(AuthError::InvalidCredentials);
+                }
+
+                // record_login_success ONLY; no `update` call — a profile
+                // update would CAS-conflict with concurrent patches and
+                // spuriously bump `version` on every login.
+                self.user_repo.record_login_success(&user.id).await?;
+
+                if user.mfa_enabled {
+                    let secret = decode_mfa_secret(&user)?;
+                    if let Some(code) = totp {
+                        if !mfa::verify_code(&secret, code)? {
+                            return Err(AuthError::InvalidMfaCode);
+                        }
+                        Ok(PasswordOutcome::Authenticated(row_to_profile(&user)?))
+                    } else {
+                        let challenge_plaintext = session::random_token(24)?;
+                        let challenge_hash = sha256_token(&challenge_plaintext);
+                        let now = Utc::now();
+                        let expires_at = now + chrono_duration(MFA_CHALLENGE_TTL)?;
+                        self.verification_token_repo
+                            .create(&VerificationTokenRow {
+                                token_hash: challenge_hash.to_vec(),
+                                user_id: user.id.clone(),
+                                kind: KIND_MFA_CHALLENGE.to_owned(),
+                                payload: None,
+                                created_at: now,
+                                expires_at,
+                                consumed_at: None,
+                            })
+                            .await?;
+                        Ok(PasswordOutcome::MfaRequired {
+                            challenge_token: challenge_plaintext,
+                        })
+                    }
+                } else {
+                    Ok(PasswordOutcome::Authenticated(row_to_profile(&user)?))
+                }
+            },
+            |result| match result {
+                Ok(PasswordOutcome::Authenticated(_)) => auth_outcome::SUCCESS,
+                Ok(PasswordOutcome::MfaRequired { .. }) => auth_outcome::MFA_REQUIRED,
+                Err(AuthError::AccountLocked) => auth_outcome::LOCKOUT,
+                Err(AuthError::InvalidCredentials) => auth_outcome::INVALID_CREDS,
+                Err(AuthError::InvalidMfaCode) => auth_outcome::INVALID_MFA_CODE,
+                Err(_) => auth_outcome::INTERNAL,
+            },
+        )
+        .await
     }
 
     #[tracing::instrument(level = "info", skip(self, challenge_token, code))]
@@ -449,26 +511,40 @@ impl AuthBackend for PgAuthBackend {
         challenge_token: &str,
         code: &str,
     ) -> Result<UserProfile, AuthError> {
-        let challenge_hash = sha256_token(challenge_token);
-        // `consume_by_hash_and_kind` filters on `kind` inside the same
-        // UPDATE so a non-MFA token (e.g. password_reset) sent to this
-        // endpoint does NOT match and is NOT consumed; the row stays
-        // available for the valid follow-up at its real route.
-        let token_row = self
-            .verification_token_repo
-            .consume_by_hash_and_kind(&challenge_hash, KIND_MFA_CHALLENGE)
-            .await?
-            .ok_or(AuthError::InvalidToken)?;
-        let user = self
-            .user_repo
-            .get(&token_row.user_id)
-            .await?
-            .ok_or(AuthError::UserNotFound)?;
-        let secret = decode_mfa_secret(&user)?;
-        if !mfa::verify_code(&secret, code)? {
-            return Err(AuthError::InvalidMfaCode);
-        }
-        row_to_profile(&user)
+        metrics_emit::run_with_metrics(
+            &self.metrics,
+            NEBULA_API_AUTH_MFA_ATTEMPTS_TOTAL,
+            None,
+            async move {
+                let challenge_hash = sha256_token(challenge_token);
+                // `consume_by_hash_and_kind` filters on `kind` inside the same
+                // UPDATE so a non-MFA token (e.g. password_reset) sent to this
+                // endpoint does NOT match and is NOT consumed; the row stays
+                // available for the valid follow-up at its real route.
+                let token_row = self
+                    .verification_token_repo
+                    .consume_by_hash_and_kind(&challenge_hash, KIND_MFA_CHALLENGE)
+                    .await?
+                    .ok_or(AuthError::InvalidToken)?;
+                let user = self
+                    .user_repo
+                    .get(&token_row.user_id)
+                    .await?
+                    .ok_or(AuthError::UserNotFound)?;
+                let secret = decode_mfa_secret(&user)?;
+                if !mfa::verify_code(&secret, code)? {
+                    return Err(AuthError::InvalidMfaCode);
+                }
+                row_to_profile(&user)
+            },
+            |result| match result {
+                Ok(_) => auth_outcome::SUCCESS,
+                Err(AuthError::InvalidMfaCode) => auth_outcome::INVALID_MFA_CODE,
+                Err(AuthError::InvalidToken) => auth_outcome::TOKEN_INVALID,
+                Err(_) => auth_outcome::INTERNAL,
+            },
+        )
+        .await
     }
 
     #[tracing::instrument(level = "info", skip(self), fields(user_id))]
@@ -735,165 +811,228 @@ impl AuthBackend for PgAuthBackend {
         token: &str,
         new_password: &str,
     ) -> Result<(), AuthError> {
-        // Validate length BEFORE the tx so a malformed input never
-        // burns the reset token: the atomic UPDATE that consumes the
-        // token is the serialization point, and we do not want a 400
-        // path to leave the token marked consumed.
-        if new_password.len() < MIN_PASSWORD_LEN {
-            return Err(AuthError::InvalidCredentials);
-        }
-        // Argon2id BEFORE the tx so the slow work stays outside the
-        // row-lock window.
-        let new_hash = password::hash_password(new_password)?;
-        let token_hash = sha256_token(token);
+        metrics_emit::run_with_metrics(
+            &self.metrics,
+            NEBULA_API_AUTH_ATTEMPTS_TOTAL,
+            None,
+            async move {
+                // Validate length BEFORE the tx so a malformed input never
+                // burns the reset token: the atomic UPDATE that consumes the
+                // token is the serialization point, and we do not want a 400
+                // path to leave the token marked consumed.
+                if new_password.len() < MIN_PASSWORD_LEN {
+                    return Err(AuthError::InvalidCredentials);
+                }
+                // Argon2id BEFORE the tx so the slow work stays outside the
+                // row-lock window.
+                let new_hash = password::hash_password(new_password)?;
+                let token_hash = sha256_token(token);
 
-        // Three-step tx bypasses the repo abstraction: the
-        // consume-token / update-password / revoke-siblings sequence
-        // must be atomic so a partial application cannot strand a
-        // burned token against an unchanged password. The repos are
-        // pool-bound; convert to `Executor`-generic when a fourth
-        // multi-step flow appears.
-        let mut tx = self.pool.begin().await.map_err(map_sqlx_err)?;
+                // Three-step tx bypasses the repo abstraction: the
+                // consume-token / update-password / revoke-siblings sequence
+                // must be atomic so a partial application cannot strand a
+                // burned token against an unchanged password. The repos are
+                // pool-bound; convert to `Executor`-generic when a fourth
+                // multi-step flow appears.
+                let mut tx = self.pool.begin().await.map_err(map_sqlx_err)?;
 
-        let consumed: Option<(Vec<u8>,)> = sqlx::query_as(
-            "UPDATE verification_tokens SET consumed_at = NOW() \
+                let consumed: Option<(Vec<u8>,)> = sqlx::query_as(
+                    "UPDATE verification_tokens SET consumed_at = NOW() \
              WHERE token_hash = $1 AND kind = $2 \
                AND consumed_at IS NULL AND expires_at > NOW() \
              RETURNING user_id",
-        )
-        .bind(token_hash.as_slice())
-        .bind(KIND_PASSWORD_RESET)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(map_sqlx_err)?;
+                )
+                .bind(token_hash.as_slice())
+                .bind(KIND_PASSWORD_RESET)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(map_sqlx_err)?;
 
-        let Some((user_id_bytes,)) = consumed else {
-            return Err(AuthError::InvalidToken);
-        };
+                let Some((user_id_bytes,)) = consumed else {
+                    return Err(AuthError::InvalidToken);
+                };
 
-        // No CAS guard inside the tx — the consumed-by-hash row IS
-        // the serialization point: only one caller can successfully
-        // burn the token, so concurrent password-set races are
-        // impossible for the same reset link. `version` is still
-        // bumped so any concurrent reader sees the world advance.
-        let updated = sqlx::query(
-            "UPDATE users SET \
+                // No CAS guard inside the tx — the consumed-by-hash row IS
+                // the serialization point: only one caller can successfully
+                // burn the token, so concurrent password-set races are
+                // impossible for the same reset link. `version` is still
+                // bumped so any concurrent reader sees the world advance.
+                let updated = sqlx::query(
+                    "UPDATE users SET \
                  password_hash = $2, failed_login_count = 0, locked_until = NULL, \
                  version = version + 1 \
              WHERE id = $1 AND deleted_at IS NULL",
-        )
-        .bind(user_id_bytes.as_slice())
-        .bind(&new_hash)
-        .execute(&mut *tx)
-        .await
-        .map_err(map_sqlx_err)?
-        .rows_affected();
-        if updated == 0 {
-            return Err(AuthError::UserNotFound);
-        }
+                )
+                .bind(user_id_bytes.as_slice())
+                .bind(&new_hash)
+                .execute(&mut *tx)
+                .await
+                .map_err(map_sqlx_err)?
+                .rows_affected();
+                if updated == 0 {
+                    return Err(AuthError::UserNotFound);
+                }
 
-        // Revoke any in-flight sibling reset tokens so a stolen second
-        // link cannot be replayed after a successful reset.
-        sqlx::query(
-            "UPDATE verification_tokens SET consumed_at = NOW() \
-             WHERE user_id = $1 AND kind = $2 AND consumed_at IS NULL",
-        )
-        .bind(user_id_bytes.as_slice())
-        .bind(KIND_PASSWORD_RESET)
-        .execute(&mut *tx)
-        .await
-        .map_err(map_sqlx_err)?;
+                // Revoke any in-flight sibling reset tokens so a stolen second
+                // link cannot be replayed after a successful reset.
+                sqlx::query(
+                    "UPDATE verification_tokens SET consumed_at = NOW() \
+                     WHERE user_id = $1 AND kind = $2 AND consumed_at IS NULL",
+                )
+                .bind(user_id_bytes.as_slice())
+                .bind(KIND_PASSWORD_RESET)
+                .execute(&mut *tx)
+                .await
+                .map_err(map_sqlx_err)?;
 
-        tx.commit().await.map_err(map_sqlx_err)?;
-        Ok(())
+                tx.commit().await.map_err(map_sqlx_err)?;
+                Ok(())
+            },
+            |result| match result {
+                Ok(()) => auth_outcome::SUCCESS,
+                Err(AuthError::InvalidToken) => auth_outcome::TOKEN_INVALID,
+                // Per oracle per-method map: `complete_password_reset`
+                // collapses `InvalidCredentials` to `invalid_input`
+                // because the failure is shape-validation of
+                // `new_password` (short / blank), not a credential
+                // mismatch.
+                Err(AuthError::InvalidCredentials) => auth_outcome::INVALID_INPUT,
+                Err(_) => auth_outcome::INTERNAL,
+            },
+        )
+        .await
     }
 
     #[tracing::instrument(level = "info", skip(self, token))]
     async fn verify_email(&self, token: &str) -> Result<(), AuthError> {
-        let token_hash = sha256_token(token);
+        metrics_emit::run_with_metrics(
+            &self.metrics,
+            NEBULA_API_AUTH_ATTEMPTS_TOTAL,
+            None,
+            async move {
+                let token_hash = sha256_token(token);
 
-        // Two-step tx bypasses the repo abstraction: the token-consume
-        // + email-verified flip must be atomic so a CAS-loss or vanished
-        // user row cannot strand a burned verification token against an
-        // unchanged `email_verified_at`. The repos are pool-bound;
-        // convert to `Executor`-generic when a fourth multi-step flow
-        // appears.
-        let mut tx = self.pool.begin().await.map_err(map_sqlx_err)?;
+                // Two-step tx bypasses the repo abstraction: the token-consume
+                // + email-verified flip must be atomic so a CAS-loss or vanished
+                // user row cannot strand a burned verification token against an
+                // unchanged `email_verified_at`. The repos are pool-bound;
+                // convert to `Executor`-generic when a fourth multi-step flow
+                // appears.
+                let mut tx = self.pool.begin().await.map_err(map_sqlx_err)?;
 
-        let consumed: Option<(Vec<u8>,)> = sqlx::query_as(
-            "UPDATE verification_tokens SET consumed_at = NOW() \
+                let consumed: Option<(Vec<u8>,)> = sqlx::query_as(
+                    "UPDATE verification_tokens SET consumed_at = NOW() \
              WHERE token_hash = $1 AND kind = $2 \
                AND consumed_at IS NULL AND expires_at > NOW() \
              RETURNING user_id",
+                )
+                .bind(token_hash.as_slice())
+                .bind(KIND_EMAIL_VERIFICATION)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(map_sqlx_err)?;
+
+                let Some((user_id_bytes,)) = consumed else {
+                    return Err(AuthError::InvalidToken);
+                };
+
+                // No CAS guard inside the tx — the consumed-by-hash row IS
+                // the serialization point for this user's email-verify flow.
+                // Bump `version` so concurrent readers see the world advance.
+                let updated = sqlx::query(
+                    "UPDATE users SET \
+                         email_verified_at = NOW(), \
+                         version = version + 1 \
+                     WHERE id = $1 AND deleted_at IS NULL",
+                )
+                .bind(user_id_bytes.as_slice())
+                .execute(&mut *tx)
+                .await
+                .map_err(map_sqlx_err)?
+                .rows_affected();
+                if updated == 0 {
+                    return Err(AuthError::UserNotFound);
+                }
+
+                tx.commit().await.map_err(map_sqlx_err)?;
+                Ok(())
+            },
+            |result| match result {
+                Ok(()) => auth_outcome::SUCCESS,
+                Err(AuthError::InvalidToken) => auth_outcome::TOKEN_INVALID,
+                Err(_) => auth_outcome::INTERNAL,
+            },
         )
-        .bind(token_hash.as_slice())
-        .bind(KIND_EMAIL_VERIFICATION)
-        .fetch_optional(&mut *tx)
         .await
-        .map_err(map_sqlx_err)?;
-
-        let Some((user_id_bytes,)) = consumed else {
-            return Err(AuthError::InvalidToken);
-        };
-
-        // No CAS guard inside the tx — the consumed-by-hash row IS
-        // the serialization point for this user's email-verify flow.
-        // Bump `version` so concurrent readers see the world advance.
-        let updated = sqlx::query(
-            "UPDATE users SET \
-                 email_verified_at = NOW(), \
-                 version = version + 1 \
-             WHERE id = $1 AND deleted_at IS NULL",
-        )
-        .bind(user_id_bytes.as_slice())
-        .execute(&mut *tx)
-        .await
-        .map_err(map_sqlx_err)?
-        .rows_affected();
-        if updated == 0 {
-            return Err(AuthError::UserNotFound);
-        }
-
-        tx.commit().await.map_err(map_sqlx_err)?;
-        Ok(())
     }
 
     #[tracing::instrument(level = "info", skip(self), fields(user_id))]
     async fn start_mfa_enrollment(&self, user_id: &str) -> Result<MfaEnrollment, AuthError> {
-        let mut row = fetch_user_by_id(&self.user_repo, user_id).await?;
-        let (secret, uri) = mfa::mint_secret(&row.email)?;
-        // Save secret but DO NOT flip mfa_enabled until
-        // confirm_mfa_enrollment. Encryption-at-rest of the MFA secret
-        // is deferred to a follow-up that wires the credential
-        // service's master-key envelope into the identity surface.
-        row.mfa_secret = Some(secret.as_bytes().to_vec());
-        row.mfa_enabled = false;
-        let expected_version = row.version;
-        self.user_repo.update(&row, expected_version).await?;
-        Ok(MfaEnrollment {
-            otpauth_uri: uri,
-            secret_base32: secret,
-        })
+        metrics_emit::run_with_metrics(
+            &self.metrics,
+            NEBULA_API_AUTH_MFA_ATTEMPTS_TOTAL,
+            None,
+            async move {
+                let mut row = fetch_user_by_id(&self.user_repo, user_id).await?;
+                let (secret, uri) = mfa::mint_secret(&row.email)?;
+                // Save secret but DO NOT flip mfa_enabled until
+                // confirm_mfa_enrollment. Encryption-at-rest of the MFA secret
+                // is deferred to a follow-up that wires the credential
+                // service's master-key envelope into the identity surface.
+                row.mfa_secret = Some(secret.as_bytes().to_vec());
+                row.mfa_enabled = false;
+                let expected_version = row.version;
+                self.user_repo.update(&row, expected_version).await?;
+                Ok(MfaEnrollment {
+                    otpauth_uri: uri,
+                    secret_base32: secret,
+                })
+            },
+            |result| match result {
+                Ok(_) => auth_outcome::SUCCESS,
+                Err(_) => auth_outcome::INTERNAL,
+            },
+        )
+        .await
     }
 
     #[tracing::instrument(level = "info", skip(self, code), fields(user_id))]
     async fn confirm_mfa_enrollment(&self, user_id: &str, code: &str) -> Result<(), AuthError> {
-        let mut row = fetch_user_by_id(&self.user_repo, user_id).await?;
-        let secret = decode_mfa_secret(&row).map_err(|_| AuthError::InvalidMfaCode)?;
-        if !mfa::verify_code(&secret, code)? {
-            return Err(AuthError::InvalidMfaCode);
-        }
-        if !row.mfa_enabled {
-            row.mfa_enabled = true;
-            let expected_version = row.version;
-            self.user_repo.update(&row, expected_version).await?;
-        }
-        Ok(())
+        metrics_emit::run_with_metrics(
+            &self.metrics,
+            NEBULA_API_AUTH_MFA_ATTEMPTS_TOTAL,
+            None,
+            async move {
+                let mut row = fetch_user_by_id(&self.user_repo, user_id).await?;
+                let secret = decode_mfa_secret(&row).map_err(|_| AuthError::InvalidMfaCode)?;
+                if !mfa::verify_code(&secret, code)? {
+                    return Err(AuthError::InvalidMfaCode);
+                }
+                if !row.mfa_enabled {
+                    row.mfa_enabled = true;
+                    let expected_version = row.version;
+                    self.user_repo.update(&row, expected_version).await?;
+                }
+                Ok(())
+            },
+            |result| match result {
+                Ok(()) => auth_outcome::SUCCESS,
+                Err(AuthError::InvalidMfaCode) => auth_outcome::INVALID_MFA_CODE,
+                Err(_) => auth_outcome::INTERNAL,
+            },
+        )
+        .await
     }
 
     #[tracing::instrument(level = "info", skip(self), fields(provider = %provider.as_str()))]
     async fn start_oauth(&self, provider: OAuthProvider) -> Result<OAuthStart, AuthError> {
-        let pkce = mint_pkce()?;
+        let provider_label = metrics_emit::oauth_provider_label(provider);
+        metrics_emit::run_with_metrics(
+            &self.metrics,
+            NEBULA_API_AUTH_OAUTH_ATTEMPTS_TOTAL,
+            Some(provider_label),
+            async move {
+                let pkce = mint_pkce()?;
         // Synthetic authorize URL (same shape the in-memory backend
         // uses) — real provider config (client_id/secret, token
         // endpoint) is deferred to a follow-up. See `complete_oauth`
@@ -906,26 +1045,34 @@ impl AuthBackend for PgAuthBackend {
         );
         let now = Utc::now();
         let expires_at = now + chrono_duration(OAUTH_STATE_TTL)?;
-        self.oauth_state_repo
-            .create(&OAuthStateRow {
-                state: pkce.state.clone(),
-                provider: provider.as_str().to_owned(),
-                code_verifier: pkce.code_verifier,
-                // `redirect_uri = None`: the `AuthBackend::start_oauth`
-                // trait signature does not yet accept a `redirect_uri`
-                // parameter. The column stays correctly nullable; a
-                // future trait-signature change picks it up without a
-                // migration.
-                redirect_uri: None,
-                created_at: now,
-                expires_at,
-                consumed_at: None,
-            })
-            .await?;
-        Ok(OAuthStart {
-            authorize_url,
-            state: pkce.state,
-        })
+                self.oauth_state_repo
+                    .create(&OAuthStateRow {
+                        state: pkce.state.clone(),
+                        provider: provider.as_str().to_owned(),
+                        code_verifier: pkce.code_verifier,
+                        // `redirect_uri = None`: the `AuthBackend::start_oauth`
+                        // trait signature does not yet accept a `redirect_uri`
+                        // parameter. The column stays correctly nullable; a
+                        // future trait-signature change picks it up without a
+                        // migration.
+                        redirect_uri: None,
+                        created_at: now,
+                        expires_at,
+                        consumed_at: None,
+                    })
+                    .await?;
+                Ok(OAuthStart {
+                    authorize_url,
+                    state: pkce.state,
+                })
+            },
+            |result| match result {
+                Ok(_) => auth_outcome::SUCCESS,
+                Err(AuthError::OAuthFailed(_)) => auth_outcome::OAUTH_FAILED,
+                Err(_) => auth_outcome::INTERNAL,
+            },
+        )
+        .await
     }
 
     #[tracing::instrument(level = "info", skip(self, state, _code), fields(provider = %provider.as_str(), state_len = state.len()))]
@@ -935,29 +1082,48 @@ impl AuthBackend for PgAuthBackend {
         state: &str,
         _code: &str,
     ) -> Result<OAuthCompletion, AuthError> {
-        // `consume_by_state_and_provider` filters on `provider` inside
-        // the same UPDATE — a state crossed between providers does NOT
-        // match and is NOT consumed; the row stays available for the
-        // valid callback at the correct provider. The single-statement
-        // UPDATE is the PKCE replay defence: a second callback at the
-        // same `(state, provider)` is the loser and sees None.
-        //
-        // The PG path enforces the replay window even though the
-        // actual provider code-exchange is still `NotImplemented`;
-        // when a follow-up wires real provider configs and
-        // `CredentialService::get::<OAuth2Credential>`, it replaces
-        // the `NotImplemented` return with the real exchange without
-        // changing any storage semantics.
-        let _row = self
-            .oauth_state_repo
-            .consume_by_state_and_provider(state, provider.as_str())
-            .await?
-            .ok_or(AuthError::InvalidToken)?;
-        Err(AuthError::NotImplemented(
-            "oauth provider code exchange is not yet wired; complete_oauth \
-             currently consumes the state row but does not exchange the \
-             authorization code",
-        ))
+        let provider_label = metrics_emit::oauth_provider_label(provider);
+        metrics_emit::run_with_metrics(
+            &self.metrics,
+            NEBULA_API_AUTH_OAUTH_ATTEMPTS_TOTAL,
+            Some(provider_label),
+            async move {
+                // `consume_by_state_and_provider` filters on `provider` inside
+                // the same UPDATE — a state crossed between providers does NOT
+                // match and is NOT consumed; the row stays available for the
+                // valid callback at the correct provider. The single-statement
+                // UPDATE is the PKCE replay defence: a second callback at the
+                // same `(state, provider)` is the loser and sees None.
+                //
+                // The PG path enforces the replay window even though the
+                // actual provider code-exchange is still `NotImplemented`;
+                // when a follow-up wires real provider configs and
+                // `CredentialService::get::<OAuth2Credential>`, it replaces
+                // the `NotImplemented` return with the real exchange without
+                // changing any storage semantics.
+                let _row = self
+                    .oauth_state_repo
+                    .consume_by_state_and_provider(state, provider.as_str())
+                    .await?
+                    .ok_or(AuthError::InvalidToken)?;
+                Err(AuthError::NotImplemented(
+                    "oauth provider code exchange is not yet wired; complete_oauth \
+                     currently consumes the state row but does not exchange the \
+                     authorization code",
+                ))
+            },
+            |result| match result {
+                Ok(_) => auth_outcome::SUCCESS,
+                Err(AuthError::InvalidToken) => auth_outcome::TOKEN_INVALID,
+                Err(AuthError::OAuthFailed(_)) => auth_outcome::OAUTH_FAILED,
+                // Per oracle per-method map: `complete_oauth` collapses
+                // `NotImplemented` to `internal` because the PG path is
+                // wired-but-incomplete until PR-C lands the real
+                // provider code-exchange.
+                Err(_) => auth_outcome::INTERNAL,
+            },
+        )
+        .await
     }
 }
 

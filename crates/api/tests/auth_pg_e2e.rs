@@ -93,10 +93,15 @@ fn unique_email(label: &str) -> String {
 
 /// Build a fresh backend wired to the caller's echo sink so the test
 /// can introspect every delivered message against ONE known port.
+///
+/// `metrics: None` keeps the existing lifecycle test orthogonal to the
+/// `nebula_api_auth_*` emission seam; the dedicated
+/// `auth_metrics.rs` test exercises the metrics path against the same
+/// constructor.
 fn build_backend(pool: Pool<Postgres>) -> (Arc<PgAuthBackend>, Arc<EchoSink>) {
     let sink = Arc::new(EchoSink::default());
     let port: Arc<dyn EmailPort> = Arc::clone(&sink) as _;
-    (Arc::new(PgAuthBackend::new(pool, port)), sink)
+    (Arc::new(PgAuthBackend::new(pool, port, None)), sink)
 }
 
 fn signup_for(email: &str) -> SignupRequest {
