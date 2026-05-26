@@ -45,9 +45,13 @@
   tiers, not strictly Business. `nebula-storage-port` (Core) is the storage
   seam every consumer depends on; `nebula-storage` (Exec) is the sole
   adapter; `nebula-tenancy` (Business) is the scope-enforcing decorator that
-  wraps a raw `storage-port` adapter (ADR-0072). `nebula-telemetry` was
-  absorbed into `nebula-metrics` per ADR-0046; `nebula-system` was deleted
-  (#668) — if either is referenced in the working tree, it is drift.
+  wraps a raw `storage-port` adapter (ADR-0072).
+- Retired / gone crates (any reference to these as live workspace crates is
+  drift): `nebula-telemetry` was absorbed into `nebula-metrics` per
+  ADR-0046 (the wider observability concept now lives in `nebula-log` under
+  the `telemetry` and `sentry` Cargo features, not a separate crate);
+  `nebula-system` was deleted (#668); `nebula-config` was retired entirely
+  — host-config wiring lives in `apps/server` + `crates/api/src/config/`.
 
 ## Error Handling
 
