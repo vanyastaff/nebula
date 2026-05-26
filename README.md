@@ -37,9 +37,9 @@ Most automation platforms are runtime-interpreted, dynamically typed, and treat 
 ```
 API / Public    api (HTTP + webhook module) · sdk (integration author façade)
 Exec            engine · storage · storage-loom-probe · sandbox · plugin-sdk
-Business        credential · credential-builtin · resource · action · plugin
-Core            core · validator · expression · workflow · execution · schema · metadata
-Cross-cutting   log · system · eventbus · metrics · resilience · error
+Business        credential · credential-builtin · credential-vault · credential-runtime · credential-testutil · resource · action · plugin · tenancy
+Core            core · validator · expression · workflow · execution · schema · metadata · storage-port
+Cross-cutting   log · eventbus · metrics · resilience · error
 ```
 
 Each layer depends only on layers below it. Cross-cutting crates are importable at any level. Layer boundaries are enforced mechanically by `cargo deny` (see `deny.toml` `wrappers`) — a missing entry fails CI before review.
@@ -70,11 +70,16 @@ Source of truth: workspace members in `Cargo.toml`.
 |                   | `expression`    | Template expression engine                                                           |
 |                   | `workflow`      | `WorkflowDefinition`, DAG structure, activation-time validator                       |
 |                   | `execution`     | Execution state machine + transitions                                                |
+|                   | `storage-port`  | Object-safe storage seam: row-model traits every storage consumer depends on (ADR-0072) |
 | **Business**      | `credential`         | Encrypted storage (AES-256-GCM + AAD), key rotation, 12 universal auth schemes       |
 |                   | `credential-builtin` | First-party scaffold credential types (built on the `credential` contract)           |
+|                   | `credential-vault`   | Vault-backed credential backend (built on the `credential` contract)                 |
+|                   | `credential-runtime` | `CredentialService<B,PS>` facade and slot-binding resolver (ADR-0066)                |
+|                   | `credential-testutil`| Test shims for credential consumers (extracted from the `credential` crate, M12.2)   |
 |                   | `resource`           | External service lifecycle, typed credential refs                                    |
 |                   | `action`             | Action trait family (Stateless / Stateful / Trigger / Resource / Control)            |
 |                   | `plugin`             | In-process plugin trait + registry                                                   |
+|                   | `tenancy`            | Scope-enforcing decorator wrapping `storage-port` so a tenant scope is substituted on every call (ADR-0072) |
 | **Exec**          | `engine`             | Frontier loop, lease lifecycle, node scheduling, control consumer (ADR-0008)         |
 |                   | `storage`            | Persistence trait family + in-memory + Postgres (SQLite local path planned)          |
 |                   | `storage-loom-probe` | `loom`-checked concurrency probe for storage paths                                   |
@@ -86,8 +91,7 @@ Source of truth: workspace members in `Cargo.toml`.
 |                   | `resilience`         | Retry, circuit breaker, rate limiter, hedge, bulkhead                                |
 |                   | `log`                | Structured logging infrastructure                                                    |
 |                   | `eventbus`           | In-memory typed pub/sub for cross-crate signals                                      |
-|                   | `metrics`            | Lock-free primitives + label interning + `nebula_*` naming + Prometheus export (ADR-0046) |
-|                   | `system`             | Process monitoring, system load tracking                                             |
+|                   | `metrics`            | Lock-free primitives + label interning + `nebula_*` naming + Prometheus export (absorbs the former `nebula-telemetry` crate per ADR-0046) |
 
 ## Quick Start
 
