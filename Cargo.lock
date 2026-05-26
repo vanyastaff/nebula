@@ -3461,6 +3461,7 @@ dependencies = [
  "nebula-workflow",
  "oas3",
  "opentelemetry",
+ "opentelemetry-otlp",
  "opentelemetry_sdk",
  "parking_lot",
  "pretty_assertions",

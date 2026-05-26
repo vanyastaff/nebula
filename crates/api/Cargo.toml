@@ -46,6 +46,7 @@ nebula-eventbus = { path = "../eventbus" }
 nebula-credential-runtime = { path = "../credential-runtime" }
 
 opentelemetry = { workspace = true }
+opentelemetry-otlp = { workspace = true }
 opentelemetry_sdk = { workspace = true }
 tracing-opentelemetry = { workspace = true }
 
