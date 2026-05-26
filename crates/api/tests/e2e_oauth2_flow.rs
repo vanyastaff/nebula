@@ -330,6 +330,10 @@ async fn system_level_oauth_callback_post_route_is_disabled() {
     let credential_id = "cred_00000000000000000000000001";
     let callback_uri = format!("/api/v1/credentials/{credential_id}/oauth2/callback");
 
+    // Provide the double-submit CSRF pair: `csrf_middleware` now runs on
+    // `credential_routes` (M3.1 box 2). Without the headers the request
+    // would be rejected with 403 *before* reaching the disabled route,
+    // hiding the 410-GONE contract this test is asserting.
     let callback_response = app
         .oneshot(
             Request::builder()
@@ -337,6 +341,8 @@ async fn system_level_oauth_callback_post_route_is_disabled() {
                 .uri(callback_uri)
                 .header("authorization", format!("Bearer {token}"))
                 .header("content-type", "application/x-www-form-urlencoded")
+                .header("x-csrf-token", common::TEST_CSRF_TOKEN)
+                .header("cookie", common::TEST_CSRF_COOKIE)
                 .body(Body::from(callback_body))
                 .expect("oauth callback POST"),
         )
@@ -346,5 +352,54 @@ async fn system_level_oauth_callback_post_route_is_disabled() {
         callback_response.status(),
         StatusCode::GONE,
         "OAuth form_post callback must also be tenant-scoped"
+    );
+}
+
+/// Direct coverage of the newly-CSRF-gated system-level
+/// `credential::routes::router()` surface (M3.1 box 2).
+///
+/// `seam_credential_write_path_validation` exercises the tenant-scoped
+/// `/orgs/.../workspaces/.../credentials/*` group, which had CSRF
+/// enforcement applied long before this PR. The system-level
+/// `/api/v1/credentials/*` group only got `csrf_middleware` in this PR,
+/// so verify the contract directly: a state-changing POST against
+/// `POST /api/v1/credentials/{id}/oauth2/callback` without the
+/// double-submit pair must be rejected at 403 by `csrf_middleware`
+/// *before* reaching the disabled-route 410 handler.
+#[tokio::test]
+async fn system_level_oauth_callback_post_requires_csrf_pair() {
+    let (state, _queue) = create_state_with_queue().await;
+    let config = ApiConfig::for_test();
+    let app = app::build_app(state, &config);
+    let token = create_test_jwt();
+
+    let callback_body = form_urlencoded::Serializer::new(String::new())
+        .append_pair("code", "unused-auth-code")
+        .append_pair("state", "unused-signed-state")
+        .finish();
+    let credential_id = "cred_00000000000000000000000001";
+    let callback_uri = format!("/api/v1/credentials/{credential_id}/oauth2/callback");
+
+    // No `x-csrf-token` header, no `cookie` header — JWT auth alone.
+    // The expected response is the CSRF 403, NOT the disabled-route 410,
+    // proving that `csrf_middleware` runs before the route handler.
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(callback_uri)
+                .header("authorization", format!("Bearer {token}"))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(callback_body))
+                .expect("oauth callback POST without CSRF"),
+        )
+        .await
+        .expect("oauth callback response");
+    assert_eq!(
+        response.status(),
+        StatusCode::FORBIDDEN,
+        "csrf_middleware must reject the system-level OAuth POST when the \
+         double-submit CSRF pair is absent, even though the route itself \
+         is also disabled (410)"
     );
 }

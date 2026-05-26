@@ -66,38 +66,29 @@ pub struct VerifyEmailRequest {
 #[derive(Debug, Deserialize, Default, ToSchema)]
 pub struct MfaEnrollRequest {}
 
-/// `POST /auth/mfa/verify` request body.
+/// `POST /auth/mfa/verify` request body — enrollment-confirm path.
+///
+/// This endpoint is session-bearing and CSRF-gated; identity comes from
+/// the `nebula_session` cookie. The cookie-less second-factor login
+/// completion path lives at `POST /auth/login/mfa` with
+/// [`MfaLoginCompleteRequest`].
 #[derive(Debug, Deserialize, ToSchema)]
-pub struct MfaVerifyRequest {
+pub struct MfaConfirmEnrollRequest {
     /// 6-digit TOTP code from the user's authenticator app.
     pub code: String,
-    /// Optional MFA-challenge token returned by `login` when MFA is required.
-    /// When present, the verify endpoint completes the login.
-    #[serde(default)]
-    pub challenge_token: Option<String>,
 }
 
-/// `POST /api/v1/auth/mfa/verify` 200-response shape.
+/// `POST /auth/login/mfa` request body — second-factor login completion.
 ///
-/// `mfa_verify` returns one of two bodies depending on whether the
-/// caller is completing a login (with `challenge_token`) or confirming
-/// a fresh enrollment (without it):
-///
-/// - [`Self::Login`] — full [`LoginResponse`] plus session/CSRF cookies.
-/// - [`Self::Enrolled`] — bare [`crate::domain::shared::AckResponse`] for the
-///   enrollment-confirmation branch.
-///
-/// `#[serde(untagged)]` lets the wire format remain backwards-compatible
-/// with each variant's existing JSON shape; OpenAPI 3.1 consumers see a
-/// `oneOf` schema covering both forms.
-#[derive(Debug, Serialize, ToSchema)]
-#[serde(untagged)]
-pub enum MfaVerifyResponse {
-    /// Login completion path (caller passed a `challenge_token`).
-    Login(LoginResponse),
-    /// Enrollment-confirmation path (caller did NOT pass a
-    /// `challenge_token`; identity comes from the session cookie).
-    Enrolled(crate::domain::shared::AckResponse),
+/// This endpoint is cookie-less (the caller has no session yet) and
+/// therefore CSRF-exempt by construction; the `challenge_token` issued by
+/// the password-step `/auth/login` response is the only authority.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct MfaLoginCompleteRequest {
+    /// 6-digit TOTP code from the user's authenticator app.
+    pub code: String,
+    /// MFA-challenge token returned by `/auth/login` when MFA is required.
+    pub challenge_token: String,
 }
 
 /// Response after a successful login (no MFA required).

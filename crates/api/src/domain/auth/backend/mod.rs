@@ -37,10 +37,10 @@ pub mod provider;
 pub mod session;
 
 pub use dto::{
-    ForgotPasswordRequest, LoginRequest, LoginResponse, MfaChallengeResponse, MfaEnrollRequest,
-    MfaEnrollResponse, MfaVerifyRequest, MfaVerifyResponse, OAuthStartResponse,
-    ResetPasswordRequest, SecretString, SignupRequest, SignupResponse, UserProfile,
-    VerifyEmailRequest,
+    ForgotPasswordRequest, LoginRequest, LoginResponse, MfaChallengeResponse,
+    MfaConfirmEnrollRequest, MfaEnrollRequest, MfaEnrollResponse, MfaLoginCompleteRequest,
+    OAuthStartResponse, ResetPasswordRequest, SecretString, SignupRequest, SignupResponse,
+    UserProfile, VerifyEmailRequest,
 };
 pub use error::AuthError;
 pub use in_memory::InMemoryAuthBackend;

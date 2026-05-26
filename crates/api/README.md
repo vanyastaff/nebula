@@ -360,6 +360,45 @@ line at startup so production logs can pin against it. To regenerate
 locally, run any test that calls `nebula_api::build_app` — for example
 `cargo nextest run -p nebula-api --test openapi_spec`.
 
+### CSRF (M3.1)
+
+State-changing endpoints reached over a cookie-bearing authentication
+method (session cookie, JWT) are gated by `csrf_middleware`
+(`crates/api/src/middleware/csrf.rs`). The double-submit-cookie pattern:
+
+- On login the API issues two cookies: `nebula_session` (HttpOnly) and
+  `nebula_csrf` (readable by the SPA, `SameSite=Lax`, `Secure`).
+- Every state-changing request (`POST`/`PUT`/`PATCH`/`DELETE`) must echo
+  the `nebula_csrf` value back in an `X-CSRF-Token` request header.
+- The middleware rejects the request with `403 Forbidden` when the
+  header is missing or does not byte-match the cookie.
+
+**Route table** (verified by `crates/api/tests/{me_e2e,seam_credential_write_path_validation,auth_mfa_csrf}.rs`):
+
+| Route group | Method gate | CSRF | Rationale |
+|---|---|---|---|
+| `/api/v1/me/*` | `POST`/`PUT`/`PATCH`/`DELETE` | **enforced** | session/JWT auth + state-changing |
+| `/api/v1/orgs/{org}/workspaces/{ws}/credentials/*` | `POST`/`PUT`/`PATCH`/`DELETE` | **enforced** | session/JWT auth + state-changing |
+| `/api/v1/orgs/{org}/*` (tenant-scoped) | `POST`/`PUT`/`PATCH`/`DELETE` | **enforced** | session/JWT auth + state-changing |
+| `/api/v1/auth/mfa/enroll` | `POST` | **enforced** | session-bearing |
+| `/api/v1/auth/mfa/verify` | `POST` | **enforced** | session-bearing (enrollment confirm) |
+| `/api/v1/auth/login/mfa` | `POST` | **exempt by construction** | cookie-less second-factor login completion; `challenge_token` is the sole authority |
+| `/api/v1/auth/logout` | `POST` | **exempt by deliberate choice** | revokes `nebula_session` when present; a CSRF attack can only force a sign-out (annoying, not a confidentiality / integrity breach). Keeps logout reachable when the CSRF cookie has drifted / been cleared. |
+| `/api/v1/auth/{signup,login,forgot-password,reset-password,verify-email,oauth/*}` | `POST`/`GET` | **exempt by construction** | request does not carry a pre-existing session cookie |
+| Any request authenticating via PAT (`pat_…`) or `X-API-Key` | any | **exempt by construction** | no cookie ⇒ no CSRF risk; verified inside `csrf_middleware` by reading the `AuthContext::auth_method` extension |
+
+**Middleware order** — `auth_middleware` MUST be layered before
+`csrf_middleware`. The latter reads the `AuthContext` extension that the
+former installs to know whether to skip the gate for PAT/ApiKey callers.
+The Plane-B credential routes wire the pair explicitly in
+`crates/api/src/domain/mod.rs` (`auth_middleware` then `csrf_middleware`).
+
+**Header contract** — callers send the matching token as
+`X-CSRF-Token: <value>`. The middleware compares header against cookie
+byte-for-byte; partial matches and case-normalised matches are rejected.
+Missing header **or** missing cookie yields `403 "CSRF token missing"`;
+mismatch yields `403 "CSRF token mismatch"`.
+
 ### Idempotency-Key (M3.4 / ADR-0048)
 
 Every state-changing endpoint reachable from `build_app` is replay-protected
@@ -639,8 +678,9 @@ above for the enforcement guarantee.
 | `POST`   | `/api/v1/auth/forgot-password`                                            | Initiate password reset                                                    |
 | `POST`   | `/api/v1/auth/reset-password`                                             | Complete password reset                                                    |
 | `POST`   | `/api/v1/auth/verify-email`                                               | Verify email address                                                       |
-| `POST`   | `/api/v1/auth/mfa/enroll`                                                 | Enrol a MFA device                                                         |
-| `POST`   | `/api/v1/auth/mfa/verify`                                                 | Verify a MFA challenge                                                     |
+| `POST`   | `/api/v1/auth/mfa/enroll`                                                 | Enrol a MFA device (session + CSRF)                                        |
+| `POST`   | `/api/v1/auth/mfa/verify`                                                 | Confirm MFA enrollment (session + CSRF)                                    |
+| `POST`   | `/api/v1/auth/login/mfa`                                                  | Complete second-factor login (cookie-less, CSRF-exempt)                    |
 | `GET`    | `/api/v1/auth/oauth/{provider}`                                           | Start OAuth2 login flow                                                    |
 | `GET`    | `/api/v1/auth/oauth/{provider}/callback`                                  | OAuth2 login callback                                                      |
 | `GET`    | `/api/v1/me`                                                              | Current user profile                                                       |
