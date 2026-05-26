@@ -60,7 +60,7 @@ use opentelemetry::{KeyValue, metrics::MeterProvider as _};
 use opentelemetry_otlp::{ExporterBuildError, MetricExporter, WithExportConfig};
 use opentelemetry_sdk::{
     Resource,
-    metrics::{PeriodicReader, SdkMeterProvider, Temporality},
+    metrics::{PeriodicReader, SdkMeterProvider, Temporality, exporter::PushMetricExporter},
 };
 
 use crate::{filter::LabelAllowlist, labels::LabelSet, registry::MetricsRegistry};
@@ -243,7 +243,27 @@ impl OtlpMetricsExporter {
             .with_endpoint(&config.endpoint)
             .with_temporality(config.temporality)
             .build()?;
+        Ok(Self::install_with_exporter(registry, exporter, &config))
+    }
 
+    /// Variant of [`Self::install`] that accepts a pre-built [`PushMetricExporter`].
+    ///
+    /// Production code wires the OTLP gRPC exporter via [`Self::install`]; tests use this
+    /// entry point with an in-memory exporter
+    /// (`opentelemetry_sdk::metrics::InMemoryMetricExporter`) to assert the registry → OTel
+    /// pipeline contract without spinning up a real collector.
+    ///
+    /// The exporter's temporality is decided by the caller (via the concrete exporter type);
+    /// only `config.export_interval`, `config.service_name`, and `config.allowlist` are read
+    /// here. The `config.endpoint` field is ignored.
+    pub fn install_with_exporter<E>(
+        registry: Arc<MetricsRegistry>,
+        exporter: E,
+        config: &OtlpMetricsConfig,
+    ) -> OtlpMetricsGuard
+    where
+        E: PushMetricExporter,
+    {
         let reader = PeriodicReader::builder(exporter)
             .with_interval(config.export_interval)
             .build();
@@ -275,10 +295,10 @@ impl OtlpMetricsExporter {
             Arc::clone(&stop),
         );
 
-        Ok(OtlpMetricsGuard {
+        OtlpMetricsGuard {
             provider: Some(provider),
             stop,
-        })
+        }
     }
 }
 
