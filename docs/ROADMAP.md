@@ -12,10 +12,9 @@
 > are *verifiably* met.
 >
 > **Provenance:** this doc was relocated from the retired `.ai-factory/`
-> tree (AI-Factory is being removed; `ce-*` is the default skill set). It is
-> now the git-tracked roadmap of record under `docs/`. The crate / layer
-> inventory is sourced from [`CLAUDE.md`](../CLAUDE.md) (canonical), not the
-> agent-summary files.
+> tree (the AI Factory framework has been removed from the repository).
+> It is now the git-tracked roadmap of record under `docs/`. The crate /
+> layer inventory is sourced from [`CLAUDE.md`](../CLAUDE.md) (canonical).
 >
 > **Maintenance:** add a milestone with one-line evidence (`file:line` or
 > `#PR`) when a new gap is discovered; tick it off only after the exit

@@ -24,7 +24,6 @@ target
 deploy/.env
 
 # AI tools and agents (not needed in production image)
-.ai-factory/
 .agents/
 .agent/
 .claude/

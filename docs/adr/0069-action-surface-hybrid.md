@@ -46,12 +46,12 @@ downstream crates depend on the removed surface in ~14 files for
 `ActionFactory` alone; `crates/action/src/stateless.rs:247-254`
 `FnStatelessCtxAction` ignores its `_ctx` parameter — silent functional
 bug). No commit message and no ADR explains the rollback rationale; the
-plan that originally proposed finishing it (`/aif-plan` v1) cited only
-"slot-binding DX cost vs. benefit, dispatch complexity, factory layer
+retired planning iteration that originally proposed finishing it cited
+only "slot-binding DX cost vs. benefit, dispatch complexity, factory layer
 became a YAGNI middleman" as a task-description placeholder for this
 ADR, not as substantiated evidence.
 
-`/aif-improve` ran four parallel research tracks 2026-05-13:
+Four parallel research tracks ran on 2026-05-13:
 
 - **ADR archeology** confirmed v4 closed five concrete pain points (§Why
   v4 below) and that the rollback narrative had no documented driver.

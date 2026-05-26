@@ -67,7 +67,6 @@ Gated on M9.2:
 
 ## References
 
-- `.ai-factory/plans/feature-m3-5-tracing-context-propagation.md`
 - `crates/api/src/middleware/trace_w3c.rs`, `crates/api/src/trace_capture.rs`
 - `crates/engine/src/control_trace.rs`, `crates/engine/src/control_consumer.rs`
 - `crates/action/src/context.rs` (resource HTTP spans)

@@ -12,8 +12,7 @@
 ## Project Overview
 
 Nebula is a modular, type-safe **workflow automation engine** in Rust. See
-`README.md` for the product overview and `.ai-factory/DESCRIPTION.md` for the
-agent-facing summary.
+`README.md` for the product overview.
 
 ## Tech Stack
 
@@ -81,12 +80,11 @@ nebula/
 ├── lefthook.yml        # local pre-commit / pre-push (mirrors CI)
 ├── rustfmt.toml        # rustfmt config (stable-only)
 ├── clippy.toml         # lint thresholds (msrv 1.95)
-├── crates/             # 36 workspace members (incl. 8 derive companions)
+├── crates/             # workspace members (see Cargo.toml [workspace.members])
 ├── scripts/            # worktree.sh + lefthook helpers
-├── .ai-factory/        # agent context (DESCRIPTION, ARCHITECTURE, rules/, plans/)
-├── .claude/            # Claude Code: canonical CLAUDE.md, guard hooks, skills, subagents
+├── .claude/            # Claude Code: canonical CLAUDE.md, guard hooks, slash commands, vendored rust-intel skill
 ├── .cursor/rules/      # Cursor rules (defer to CLAUDE.md)
-└── .github/            # CI workflows, CODEOWNERS, PR/issue templates
+└── .github/            # CI workflows, CODEOWNERS, PR/issue templates, copilot-instructions.md
 ```
 
 Per-crate layout: each `crates/<name>/` has `Cargo.toml` and `README.md`;
@@ -186,17 +184,18 @@ between siblings at the same layer.
 |-------------------------------|---------|
 | `CLAUDE.md`                   | **Canonical** agent rules + project map — every AI tool should read this |
 | `AGENTS.md`                   | Thin pointer naming `CLAUDE.md` canonical (cross-tool stub) |
-| `.ai-factory/config.yaml`     | AI Factory settings (language, paths, git, rules) |
-| `.ai-factory/DESCRIPTION.md`  | Agent-facing project summary |
-| `.ai-factory/ARCHITECTURE.md` | Agent-actionable architecture subset |
-| `.ai-factory/rules/base.md`   | Distilled coding rules for agents |
-| `.ai-factory.json`            | AI Factory install manifest (managed by tooling) |
 | `.github/copilot-instructions.md` | GitHub Copilot guidance (defers to `CLAUDE.md`) |
 | `.cursor/rules/*.mdc`         | Cursor project rules that defer to `CLAUDE.md` |
 | `.claude/hooks/`              | Committed guard hooks (enforced discipline) |
-| `.claude/skills/`             | Claude Code `/aif-*` skill definitions |
-| `.claude/skills/rust-intel/`  | Vendored LLM-Rust-failure-mode skill — v0.2.2, MIT, advisory (not hook-enforced); `/rust-cc-{audit,fix,plan}` (see its `UPSTREAM.md`) |
-| `.claude/agents/`             | Subagent definitions (sidecars, workers, loop roles) |
+| `.claude/skills/rust-intel/`  | Vendored LLM-Rust-failure-mode skill — v0.2.2, MIT, advisory (not hook-enforced); `/rust-cc-{audit,fix,plan}` slash commands (see its `UPSTREAM.md`) |
+| `.claude/commands/`           | Slash-command definitions for the vendored skills above |
+
+> The AI Factory framework (`.ai-factory/`, `.ai-factory.json`,
+> `.claude/skills/aif-*`, `.github/skills/aif-*`, the `.claude/agents/`
+> subagent fleet, and the `/aif-*` slash commands) was retired entirely.
+> Project rules now live in this file; coding workflow runs through
+> `task` + `worktree.sh` + guard hooks. Earlier AI Factory artifacts
+> survive in git history.
 
 ## Agent Git Workflow
 

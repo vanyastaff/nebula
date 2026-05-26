@@ -179,11 +179,11 @@ The v4 surface is a hard break per `feedback_no_shims.md` / `feedback_hard_break
 2. **Drop `metadata()` boilerplate from `Self`.** The derive emits a `OnceLock` `metadata()` from the `#[action(key, version, …)]` arguments. Delete the manual `impl Action::metadata` block.
 3. **Replace `dependencies()` macros with field attributes.** Old: a separate `DeclaresDependencies` impl listing `ResourceKey`s and `CredentialKey`s. New: `#[resource(key = "…")]` / `#[credential(key = "…")]` per field on the struct.
 4. **Update sub-trait method signatures** to take `Self::Input` explicitly: `execute(&self, input: SendTelegramInput, ctx)` not `execute(&self, ctx)`.
-5. **Replace `dyn Action` with `Arc<dyn ActionFactory>`** anywhere the engine or plugin loader stored an erased action. Existing transports / SDK harnesses that wrap `Arc<dyn StatelessHandler>` continue to work — see `.ai-factory/PHASE3_BLOCKED.md` for the four production paths that intentionally stay on the legacy handler surface (webhook routing, sandbox discovery, SDK runtime, EventSource adapter).
+5. **Replace `dyn Action` with `Arc<dyn ActionFactory>`** anywhere the engine or plugin loader stored an erased action. Existing transports / SDK harnesses that wrap `Arc<dyn StatelessHandler>` continue to work — four production paths intentionally stay on the legacy handler surface: webhook routing, sandbox discovery, SDK runtime, EventSource adapter. The original architectural rationale survives in `git log` (commits up to the retire-AI-Factory pass).
 6. **For `ResourceAction` impls**, set `type Output = ResourceProduces<Self::Resource>`. The marker auto-derives `HasSchema`.
 7. **For `Resource` impls**, drop `type Credential` (per ADR-0044) and declare credential deps via `#[credential(key = "…")]` field attributes — see `crates/resource/README.md` for the resource-side migration.
 
-The plan archive (`.ai-factory/plans/m6-resource-finalization-integration-audit.md`) captures every architectural decision; the per-phase BLOCKED notes (`PHASE3_BLOCKED.md`, `PHASE4_BLOCKED.md`, `PHASE7_BLOCKED.md`) capture the migration shape and intentional residuals.
+The full architectural rationale and per-phase migration shape for this redesign survive in `git log` only — the original plan and phase-block notes (the retired `.ai-factory/plans/m6-resource-finalization-integration-audit.md` and `PHASE3/4/7_BLOCKED.md` artifacts) were removed with the AI Factory framework.
 
 ## Runnable examples
 
@@ -222,7 +222,7 @@ The examples deliberately wire slot resolution manually (no `#[derive(Action)]`)
 
 See `docs/MATURITY.md` row for `nebula-action`.
 
-- API stability: `frontier` — Variant A trait shape (Sized + type Input/Output + static metadata + slot-binding derive + FromWorkflowNode factory + ErasedAction dispatch) shipped under M6 / §M11 (2026-04-29). The `ActionHandler` enum and per-variant `XxxHandler` traits remain part of the public surface for transports / SDK harnesses / event sources that operate outside the workflow-node dispatch loop (see `.ai-factory/PHASE3_BLOCKED.md`).
+- API stability: `frontier` — Variant A trait shape (Sized + type Input/Output + static metadata + slot-binding derive + FromWorkflowNode factory + ErasedAction dispatch) shipped under M6 / §M11 (2026-04-29). The `ActionHandler` enum and per-variant `XxxHandler` traits remain part of the public surface for transports / SDK harnesses / event sources that operate outside the workflow-node dispatch loop — the four production paths kept on the legacy handler surface are enumerated in the migration recipe above.
 - `#![forbid(unsafe_code)]`, `#![warn(missing_docs)]` enforced.
 - `CheckpointPolicy`: `planned` — not in `ActionMetadata` yet; engine does not consume it end-to-end.
 - DX specializations (`PaginatedAction`, `BatchAction`, `WebhookAction`, `PollAction`) are implemented and tested; cross-action-type integration tests: partial.
