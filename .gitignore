@@ -235,12 +235,18 @@ crates/*/fuzz/Cargo.lock
 # ============================================================================
 # AI HARNESS RUNTIME STATE — symmetric with .codex/ above. Per-user, not
 # shared. `.atl/` holds the gentle-pi skill-registry cache; `.pi/` holds
-# per-project Pi settings / session state. Add new harness dirs here, not
-# scattered through the file.
+# per-project Pi settings / session state. Project-shared Pi configs
+# (conventions, codebase-wiki, etc.) are exempted below so contributors
+# pick up the same tooling on clone.
 # ============================================================================
 
 .atl/
-.pi/
+.pi/*
+
+# Committed project-shared Pi configs
+!.pi/conventions.json
+!.pi/codebase-wiki.json
+!.pi/wiki/
 
 # Local audit drops (point-in-time snapshots, not durable docs)
 .pi-audit-*/
