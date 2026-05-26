@@ -2,7 +2,9 @@
 
 ## Project Context
 Modular type-safe Rust workflow engine. Edition 2024, MSRV 1.95, alpha stage.
-Architecture: Core → Business → Exec → API (one-way deps, no upward).
+Layered architecture (one-way deps, no upward) — canonical map and exact
+allowlist live in [`CLAUDE.md`](../CLAUDE.md) § "Layered Dependency Map";
+mechanically enforced by `cargo deny` against `deny.toml [[bans]] wrappers`.
 Universal data type: serde_json::Value.
 Error handling: thiserror in libs, anyhow in binaries.
 
@@ -37,8 +39,10 @@ the same branch naming and Conventional Commit rules.
 ### Critical (always comment)
 
 1. **Layer violations** — `crates/core/*` importing from `crates/engine/*` etc.
-   Check Cargo.toml dependencies against the layer hierarchy:
-   `core < business (credential/resource/action/plugin) < exec (engine/runtime/storage/sandbox/sdk/plugin-sdk) < api`.
+   The exact layer hierarchy is in `CLAUDE.md` § "Layered Dependency Map";
+   `cargo deny check` against `deny.toml [[bans]] wrappers` is the
+   authoritative gate. If a `Cargo.toml` edge crosses a layer boundary
+   without an allowlist entry carrying a `reason`, CI fails before review.
 2. **Panic in library code** — `unwrap()`, `expect()`, `panic!()`, indexing without bounds check, `unreachable!()` outside exhaustive match.
    Exception: `#[cfg(test)]` and binary crates allowed.
 3. **Silent error suppression** — `let _ = result;` on `Result`, `.ok()` discarding meaningful errors, `.unwrap_or_default()` on fallible IO/parse.
@@ -70,9 +74,14 @@ DO NOT comment on:
 
 ### Metrics
 
-Single path: `nebula-telemetry::MetricsRegistry` → `nebula-metrics` (Prometheus export).
-Domain crates consume via DI: `Option<Arc<MetricsRegistry>>`.
-Flag PRs that introduce alternate metrics stacks.
+Single path through **`nebula-metrics`** for everything: lock-free in-memory
+registry plus Prometheus-style export and label-safety guards. The former
+two-tier `nebula-telemetry` → `nebula-metrics` stack was collapsed (ADR-0046)
+and the `nebula-telemetry` crate is gone — if you see
+`nebula-telemetry::MetricsRegistry` anywhere in the working tree it is drift
+and should be flagged. Domain crates consume via DI:
+`Option<Arc<MetricsRegistry>>`. Flag PRs that introduce alternate metrics
+stacks.
 
 ### Errors
 
