@@ -1,8 +1,9 @@
 ---
 id: 0083
 title: agent-intent-honesty-gate
-status: proposed
+status: accepted
 date: 2026-05-18
+accepted: 2026-05-26
 supersedes: []
 superseded_by: []
 tags: [agent-harness, hooks, anti-reward-hacking, structural-budget, enforced-discipline, observability]

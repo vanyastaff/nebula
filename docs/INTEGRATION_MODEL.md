@@ -185,13 +185,11 @@ Besides the **integration** reference crates (§3.6–§3.9), the workspace ship
 - **`nebula-error`** — **`Classify`**, **`NebulaError`**, categories/codes, structured details — **one** error taxonomy at boundaries instead of ad hoc strings.
 - **`nebula-resilience`** — composable **pipelines** (retry, timeout, circuit breaker, bulkhead, …); pairs with **`ActionError`** / retry hints in **`nebula-action`** (§3.8).
 - **`nebula-validator`** — programmatic validators + declarative **`Rule`**; **`nebula-schema`** embeds rules in **`Field`** definitions.
-- **`nebula-config`** — multi-source, merged, optionally hot-reloaded **host** configuration (binaries/services) — **not** the per-node **`Schema`** story.
+- **`nebula-config`** *(planned, not yet a workspace member)* — multi-source, merged, optionally hot-reloaded **host** configuration (binaries/services) — **not** the per-node **`Schema`** story.
 - **`nebula-log`** — structured **`tracing`** pipeline (init, sinks, optional OTel/Sentry hooks).
-- **`nebula-telemetry`** — in-memory **metric** primitives (registry, histograms, label interning).
-- **`nebula-metrics`** — **`nebula_*` naming**, adapters, Prometheus-style **export** and label-safety guards — sits on top of **`nebula-telemetry`**.
+- **`nebula-metrics`** — lock-free in-memory primitives (registry, histograms, label interning) plus **`nebula_*` naming**, adapters, Prometheus-style **export** and label-safety guards. **Absorbs the former `nebula-telemetry` crate** — one metrics path, no two-tier stack (ADR-0046).
 - **`nebula-eventbus`** — typed **broadcast** bus with back-pressure policy; **transport only** — domain **`E`** types live in owning crates.
 - **`nebula-expression`** — workflow **expression** evaluation (variable access, operators, functions) for dynamic fields — headless, not a UI.
-- **`nebula-system`** — cross-platform **host** probes (CPU/memory/network/disk pressure) for ops and telemetry inputs.
 - **`nebula-workflow`** + **`nebula-execution`** — the execution semantics core: workflow validation/shape and durable execution lifecycle/state transitions. Read these when the question is "what does the engine guarantee at runtime," not just "how integrations are authored."
 
 **Layering:** cross-cutting crates sit **below** API/engine-specific surfaces (see CLAUDE.md boundaries); they must not **depend upward** on integration-only crates. **Canon use:** reuse these crates for their domains instead of duplicating helpers; if something truly belongs in **`nebula-core`** (a new stable identifier or key type), extend it deliberately rather than inventing a parallel type in a leaf crate. New **auth material** types belong in **`nebula-credential`** unless an ADR moves shared vocabulary (as was done for `AuthScheme`/`AuthPattern` → `nebula-core`).

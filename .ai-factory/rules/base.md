@@ -29,18 +29,25 @@
 
 ## Module / Crate Structure
 
-- Layered workspace enforced by `cargo deny` (`deny.toml` `[wrappers]`):
-  - **Cross-cutting**: `log`, `system`, `eventbus`, `metrics`, `resilience`,
-    `error`.
-  - **Core**: `core`, `validator`, `expression`, `workflow`, `execution`,
-    `schema`, `metadata`.
-  - **Business**: `credential`, `resource`, `action`, `plugin`.
-  - **Exec**: `engine`, `storage`, `sandbox`, `plugin-sdk`.
-  - **API / Public**: `api`, `sdk`.
-- Cross-crate communication goes through `nebula-eventbus`, **not** direct
-  imports between sibling crates at the same layer.
-- Macros live in their own sub-crate (`crates/<crate>/macros/`) to keep proc-macro
-  build cost out of the runtime crate.
+- The **layered dependency map is canonical in
+  [`CLAUDE.md`](../../CLAUDE.md) § "Layered Dependency Map"** and mechanically
+  enforced by `cargo deny check` against the `wrappers` allowlists on the
+  `[bans].deny` entries in `deny.toml`. Do **not** duplicate the layer list
+  here — stale copies in agent-context files were the single biggest source
+  of LLM hallucinations before this rule landed.
+- Cross-crate communication between siblings at the same layer goes through
+  `nebula-eventbus`, **not** direct imports.
+- Macros live in their own sub-crate (`crates/<crate>/macros/`) to keep
+  proc-macro build cost out of the runtime crate.
+- Shared-infra notes the layer table alone doesn't capture: `nebula-credential`
+  (with its backends `credential-builtin`, `credential-vault`,
+  `credential-runtime`, `credential-testutil`) is consumable from multiple
+  tiers, not strictly Business. `nebula-storage-port` (Core) is the storage
+  seam every consumer depends on; `nebula-storage` (Exec) is the sole
+  adapter; `nebula-tenancy` (Business) is the scope-enforcing decorator that
+  wraps a raw `storage-port` adapter (ADR-0072). `nebula-telemetry` was
+  absorbed into `nebula-metrics` per ADR-0046; `nebula-system` was deleted
+  (#668) — if either is referenced in the working tree, it is drift.
 
 ## Error Handling
 
