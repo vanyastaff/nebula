@@ -184,7 +184,7 @@ Files (single-line role):
 ### Compose file
 - **[NOT FOUND]** — `deploy/docker/docker-compose.observability.yml` does **not exist**. The `deploy/` directory itself does not exist (`ls C:/Users/vanya/RustroverProjects/nebula/deploy` returns "No such file or directory"). The `task obs:up` target references a file that has not been committed.
 - The sibling compose files (`COMPOSE_LOCAL`, `COMPOSE_SELFHOSTED` at `Taskfile.yml:12-13`) also point at `deploy/docker/...` paths that are absent.
-- Only template compose YAMLs exist under `.claude/skills/aif-dockerize/templates/compose-*.yml` — these are agent templates, not the production stack.
+- (Historical: agent-template compose YAMLs used to live under `.claude/skills/aif-dockerize/templates/`; those AI Factory skill packs were retired entirely, so the only compose-template surface in the tree today is whatever lands under `deploy/` — currently nothing.)
 
 ### `OTEL_EXPORTER_OTLP_ENDPOINT` env handling
 - Read at runtime only in `crates/log/src/telemetry/otel.rs:69` (`resolve_endpoint`).
@@ -215,9 +215,9 @@ W3C / trace-context tests (not OTLP export, but related):
 
 ## 8. Issue #598
 
-- ROADMAP §M9.2 lists "Read #598 + comments to capture the open question" as the **first** unchecked task: `docs/ROADMAP.md:554` and (mirrored) `.ai-factory/ROADMAP.md:734`.
+- ROADMAP §M9.2 lists "Read #598 + comments to capture the open question" as the **first** unchecked task: `docs/ROADMAP.md:554`.
 - ADR-0046 explicitly references it: `docs/adr/0046-metrics-telemetry-boundary.md:8` ("#598 (telemetry: verify OpenTelemetry setup against bridge-pattern guide). Referenced for context — this ADR does **not** claim to close them").
-- **No pinned issue file** (no `docs/issues/598.md`, no `.ai-factory/issues/598.md` — grep returns nothing other than the two roadmap lines and the ADR-0046 line).
+- **No pinned issue file** (no `docs/issues/598.md` — grep returns nothing other than the roadmap line and the ADR-0046 line).
 - The issue exists only as a GitHub issue tracker reference; the open question is "verify OpenTelemetry setup against the bridge-pattern guide", i.e. the same question this recon is mapping.
 
 ---
@@ -238,7 +238,7 @@ W3C / trace-context tests (not OTLP export, but related):
 
 ### ADR-0046 closed-boundary work
 - ADR-0046 — `docs/adr/0046-metrics-telemetry-boundary.md:1-176`. Merged `nebula-telemetry` into `nebula-metrics` as a single observability crate; flat module layout (`docs/adr/0046-metrics-telemetry-boundary.md:46-65`).
-- Status: accepted, status section at `docs/adr/0046-metrics-telemetry-boundary.md:3`. ROADMAP §M9.4 marks the boundary work `[x] DONE 2026-05-06`: `docs/ROADMAP.md:577-581` and `.ai-factory/ROADMAP.md:768-777`.
+- Status: accepted, status section at `docs/adr/0046-metrics-telemetry-boundary.md:3`. ROADMAP §M9.4 marks the boundary work `[x] DONE 2026-05-06`: `docs/ROADMAP.md:577-581`.
 - Exporter impact: ADR-0046 deletes `TelemetryAdapter` and folds primitives + Prometheus exporter into one crate (`adr/0046-metrics-telemetry-boundary.md:71-72, 95-100`). The `MetricsRegistry::snapshot_*` methods are stable and are the documented OTLP-bridge seam (`crates/metrics/src/registry.rs:285`).
 - The next step the ADR explicitly defers ("comprehensive observability re-audit ... after the merge implementation lands" — `adr/0046-metrics-telemetry-boundary.md:10`) is the M9.2 gate this recon supports.
 

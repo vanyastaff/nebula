@@ -56,7 +56,19 @@ Legend:
 This file is a living dashboard. Reviewers check truthfulness on every PR that touches a crate's public surface, test suite, or docs. Canon §17 DoD includes "MATURITY.md row updated if the PR changes crate state."
 
 Last full sweep: 2026-04-17 (Pass 4 of docs architecture redesign).
-Last targeted revision: 2026-05-26 — **Crate inventory truth pass:** removed ghost rows for crates that no longer exist (`nebula-runtime`, `nebula-telemetry` — merged into `nebula-metrics` per ADR-0046; `nebula-testing` — never landed); added missing rows for crates that do exist (`nebula-storage-port`, `nebula-storage-loom-probe`, `nebula-tenancy`, `nebula-credential-vault`, `nebula-credential-testutil`). README crate map, `.ai-factory/*` layer maps, and `.github/copilot-instructions.md` synced in the same change.
+Last targeted revision: 2026-05-26 — **AI Factory retired entirely.**
+The `.ai-factory/` directory, `.ai-factory.json` install manifest,
+`.claude/skills/aif-*` (Claude variant) and `.github/skills/aif-*`
+(Copilot variant) skill packs, and the `.claude/agents/` subagent fleet
+(loop-*, *-sidecar, plan-*, implement-*, commit-preparer, docs-auditor)
+were removed from the repository. Coding workflow now runs through
+`task` + `worktree.sh` + guard hooks; AI tooling rules live in
+`CLAUDE.md`. External references in CLAUDE.md, `crates/action/README.md`,
+`crates/engine/src/lib.rs`, `crates/engine/tests/scoped_resources.rs`,
+`docs/ROADMAP.md`, ADR-0046, ADR-0050, this file, and the recon
+working notes were rewritten in the same change. Earlier AI Factory
+artifacts survive in `git log` only.
+Prior: 2026-05-26 — **Crate inventory truth pass:** removed ghost rows for crates that no longer exist (`nebula-runtime`, `nebula-telemetry` — merged into `nebula-metrics` per ADR-0046; `nebula-testing` — never landed); added missing rows for crates that do exist (`nebula-storage-port`, `nebula-storage-loom-probe`, `nebula-tenancy`, `nebula-credential-vault`, `nebula-credential-testutil`). README crate map and `.github/copilot-instructions.md` synced in the same change.
 Prior: 2026-05-20 — **M12.2 nebula-credential + nebula-credential-runtime stabilize sweep:**
 `nebula-credential` API stability `frontier → stable` (error taxonomy reshape, SecretBox migration, ValidatedCredentialBinding, resolve_for_slot seam, fallback-on-interrupt, three-registry probe, dyn-compat probe, AuthStyle moved to scheme::oauth2, testutil extracted, ADR-0084 defers proactive refresh to 1.1). `nebula-credential-runtime` row added at `stable` (ADR-0066 facade extracted; all M12.2 hardening items in production path).
 Prior: 2026-05-15 — **nebula-api Phase 0 structural refactor (behavior-neutral):**

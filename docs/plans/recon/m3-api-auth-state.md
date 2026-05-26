@@ -287,7 +287,7 @@ There is **no `crates/api/tests/auth_e2e.rs`** (confirmed by `ls`). Auth flows a
 
 ### Metrics
 
-- `nebula_api_auth_*` namespace: `[NOT FOUND]` in implementation. Only `nebula_api_idempotency_*` exists (`crates/api/src/middleware/idempotency/layer.rs:68, 136, 143, 145`). The namespace is **planned** per `docs/ROADMAP.md:220` and `.ai-factory/ROADMAP.md:288` ("`nebula_api_auth_*` metrics family for failed/locked-out attempts") but no counter / gauge / histogram has been registered yet — `rg "auth_failures|auth_attempts|login_failures|locked_out|counter.*auth"` returns no matches.
+- `nebula_api_auth_*` namespace: `[NOT FOUND]` in implementation. Only `nebula_api_idempotency_*` exists (`crates/api/src/middleware/idempotency/layer.rs:68, 136, 143, 145`). The namespace is **planned** per `docs/ROADMAP.md:220` ("`nebula_api_auth_*` metrics family for failed/locked-out attempts") but no counter / gauge / histogram has been registered yet — `rg "auth_failures|auth_attempts|login_failures|locked_out|counter.*auth"` returns no matches.
 
 ### Tracing spans on auth handlers
 

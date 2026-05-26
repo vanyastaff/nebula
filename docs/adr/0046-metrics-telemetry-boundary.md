@@ -7,7 +7,7 @@
 **ROADMAP:** §M9 — Observability + DoD audit pass
 **Issues:** #595 (metrics OTLP label allocation), #598 (telemetry: verify OpenTelemetry setup against bridge-pattern guide). Referenced for context — this ADR does **not** claim to close them. (#591, listed alongside #595 in ROADMAP §M9.3, is the unrelated `nebula-system` `NETWORK_STATS` mutex concern; intentionally excluded from this boundary decision.)
 
-> **Note on prior audits.** Prior audits in `docs/audits/` (May 2026) covering `nebula-metrics`, `nebula-telemetry`, and the joint stack are superseded for the boundary-decision question by this ADR. A comprehensive observability re-audit (covering implementation invariants, cardinality safety, exporter correctness) is deferred to a follow-up `/aif-plan` iteration after the merge implementation lands. Findings from those prior audits are not referenced here; ADR-0046 engages with the boundary question on first principles.
+> **Note on prior audits.** Prior audits in `docs/audits/` (May 2026) covering `nebula-metrics`, `nebula-telemetry`, and the joint stack are superseded for the boundary-decision question by this ADR. A comprehensive observability re-audit (covering implementation invariants, cardinality safety, exporter correctness) is deferred to a follow-up planning iteration after the merge implementation lands. Findings from those prior audits are not referenced here; ADR-0046 engages with the boundary question on first principles.
 
 ## Context
 
@@ -143,7 +143,7 @@ Rejected. Two variants were considered:
 
 ## Next steps
 
-This ADR records the boundary decision. **The implementation lands as a follow-up `/aif-plan` iteration** after this branch (`docs/metrics-telemetry-merge-audit`) is merged. No code changes ship on this branch.
+This ADR records the boundary decision. **The implementation lands as a follow-up planning iteration** after this branch (`docs/metrics-telemetry-merge-audit`) is merged. No code changes ship on this branch.
 
 Suggested follow-up plan slug: `metrics-telemetry-merge-implementation`. Scope:
 
@@ -153,8 +153,7 @@ Suggested follow-up plan slug: `metrics-telemetry-merge-implementation`. Scope:
 - Update doctests (~12 blocks).
 - Delete `crates/telemetry/`.
 - Update `crates/metrics/README.md` to absorb the boundary explanation that lived in `crates/telemetry/README.md`.
-- Update `ARCHITECTURE.md` and `AGENTS.md` Layered Dependency Map (cross-cutting layer drops `telemetry` entry).
-- Update `.ai-factory/DESCRIPTION.md` Tech-Stack section if `nebula-telemetry` is named.
+- Update `CLAUDE.md` Layered Dependency Map (cross-cutting layer drops `telemetry` entry).
 
 The implementation plan should anchor breakage scope and acceptance criteria to this ADR rather than re-deriving them. The Working Hypothesis structure quoted above is the implementation target.
 
@@ -167,5 +166,5 @@ Until that follow-up plan lands, **no code changes ship**: this branch is docume
 - [crates/telemetry/README.md](../../crates/telemetry/README.md) — current `nebula-telemetry` role description, including `[L1-§3.10]` (file deleted by the implementation plan).
 - [crates/metrics/src/lib.rs](../../crates/metrics/src/lib.rs) — the re-export layer that becomes the merged crate's natural surface.
 - [crates/metrics/src/adapter.rs](../../crates/metrics/src/adapter.rs) — `TelemetryAdapter` (deleted by the implementation plan).
-- [.ai-factory/ROADMAP.md](../../.ai-factory/ROADMAP.md) §M9 — Observability + DoD audit pass.
+- [`docs/ROADMAP.md`](../ROADMAP.md) §M9 — Observability + DoD audit pass.
 - ADR-0068 (`docs/adr/0068-layered-retry.md`) — format and rigor reference for this ADR.

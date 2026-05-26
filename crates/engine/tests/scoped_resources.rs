@@ -17,8 +17,7 @@
 //!
 //! These tests exercise the **storage + lifecycle** layer in isolation.
 //! Engine-driver wiring (calling `ResourceAction::configure`/`cleanup` per
-//! frontier branch) is deferred — see `.ai-factory/PHASE7_BLOCKED.md` for
-//! the open architectural decision.
+//! frontier branch) is deferred.
 
 use std::{
     future::Future,

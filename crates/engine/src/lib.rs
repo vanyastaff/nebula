@@ -39,8 +39,8 @@
 //!   global` lookup; closest-ancestor wins.
 //! - `DashScopedResourceMap` / `BranchId` / `ScopedResourceGuard` — Phase 7 (M6.2) per-branch
 //!   storage, RAII cleanup, and inner-to-outer + LIFO destroy ordering with 30s timeout per
-//!   resource. Engine wiring of `ResourceAction::configure`/`cleanup` per branch is deferred (see
-//!   `.ai-factory/PHASE7_BLOCKED.md`); the API surface is in place.
+//!   resource. Engine wiring of `ResourceAction::configure`/`cleanup` per branch is deferred;
+//!   the API surface is in place.
 //!
 //! ## Metrics registry wiring
 //!

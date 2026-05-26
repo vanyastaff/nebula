@@ -238,15 +238,15 @@ complexity/duplication debt accumulate with no observable gate. Therefore:
    `QUALITY_GATES.md` `cognitive_complexity` / `too_many_lines` allowance
    crate-by-crate. The 0083 gate runs throughout, so cleaned crates cannot
    re-accrue debt and the slope cannot reverse.
-3. **AI-Factory removal / `ce-*` default** (own plan in `docs/plans/`, **no
-   new ADR**).
-   `aif-*` skills and the AI-Factory subagent fleet are retired
-   (`project_ai_factory_abandoned` already froze curation); `ce-*` becomes the
-   default skill set. This workstream owns re-pointing 0083's *named*
-   integration hooks (the `SubagentStop` matcher string and the role-based
-   inoculation targets) to the `ce-*` equivalents. The 0083 deterministic
-   core needs **no change** — it never references a skill ecosystem. No shim
-   or aif↔ce bridge: the wrong thing is replaced directly.
+3. **AI-Factory removal** (executed; **no new ADR**).
+   The `aif-*` skills and the AI-Factory subagent fleet (`.ai-factory/`,
+   `.ai-factory.json`, `.claude/skills/aif-*`, `.github/skills/aif-*`,
+   `.claude/agents/`) were retired entirely (`project_ai_factory_abandoned`
+   froze curation; the artifacts came out of the tree in a follow-up
+   chore). The 0083 deterministic core needs **no change** — it never
+   references a skill ecosystem. No shim or compatibility bridge: the
+   wrong thing was removed directly. Any future skill ecosystem this
+   project adopts will inherit 0083's gates unmodified.
 
 Items 2 and 3 are sequenced **after** 0083 and are independent of each other.
 This ADR does **not** design either; it only fixes the order so both are
