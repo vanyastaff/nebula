@@ -42,6 +42,7 @@ temp/
 .env.*
 !.env.example
 .envrc
+deploy/.env
 
 # Database files
 *.db
@@ -78,6 +79,8 @@ credentials/
 *.pfx
 *.jks
 *.keystore
+*.asc
+*.gpg
 id_rsa
 id_dsa
 id_ecdsa
