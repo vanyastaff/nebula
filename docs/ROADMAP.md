@@ -20,7 +20,7 @@
 > `#PR`) when a new gap is discovered; tick it off only after the exit
 > criteria below are verifiably met.
 
-## Status snapshot — 2026-05-18
+## Status snapshot — 2026-05-26
 
 - **Cross-cutting layer** (`error`, `log`, `eventbus`, `metrics`,
   `resilience`) — **stable, no pending breaks**. `nebula-telemetry` was
@@ -66,14 +66,23 @@
   open (M4).
 - **API layer** — fully restructured (`lib` + `apps/server`, domain modules;
   #671) with §4.5-honest stub completion. Auth backend + webhook dispatch +
-  idempotency landed (M3.1 partial / M3.3 ✅ / M3.4 ✅); OpenAPI 3.1
-  closed (M3.2); W3C trace context flows API → control queue → engine
-  (M3.5, #661); PAT-scope access kernel landed (#702); tenant credential
-  security hardened (`b2a59ea8`). Credential write-path validation +
-  port-backed catalog + public projection closed the §4.5 fail-open
-  (ADR-0052 P4 #677). Remaining: production `AuthBackend`, CSRF, OAuth
-  secrets registry (M3.1); full-stack one-root-span trace test + OTLP
-  exporter (M3.5 / M9.2); shift-left validation audit (M3.6).
+  idempotency landed (M3.1 mostly closed / M3.3 ✅ / M3.4 ✅); OpenAPI 3.1
+  closed (M3.2); W3C trace context flows API → control queue → engine and
+  the full-stack one-root-span test is hermetic (M3.5 ✅, #661 + #742);
+  PAT-scope access kernel landed (#702); tenant credential security hardened
+  (`b2a59ea8`). Credential write-path validation + port-backed catalog +
+  public projection closed the §4.5 fail-open (ADR-0052 P4 #677).
+  **PG-backed `AuthBackend` shipped** (#738): five PG identity repos +
+  `VerificationTokenRepo`/`OAuthStateRepo` + `EmailPort` trait +
+  `AuthBackendKind` config + fail-closed composition selector. **CSRF
+  enforcement** wired on credential write paths + `/auth/mfa/*` session
+  routes (#737). **OTLP exporter end-to-end** wired (#742, M9.2 ✅) —
+  traces via `init_api_telemetry`, metrics via the new `otlp` module in
+  `nebula-metrics` on the `MetricsRegistry::snapshot_*` seam, observability stack in
+  `deploy/docker/` ready for `task obs:up`. Remaining: OAuth providers
+  from operator secrets + lockout/rate-limit PG integration tests +
+  `nebula_api_auth_*` metrics family (M3.1 follow-ups); shift-left
+  validation audit (M3.6).
 - **Shared infra** — `nebula-credential` is consumed by Exec + API +
   Business (the `deny.toml` `[wrappers]` allowlist locks the consumer set).
   The `nebula-credential-runtime` crate shipped (ADR-0066, #678):
@@ -205,12 +214,22 @@ The largest 1.0 area. Closure criteria (on top of the global DoD):
       landed** (#702); the API restructure (#671) moved auth into the
       domain-module layout; tenant credential security hardened
       (`b2a59ea8`).
-- [ ] **Production `AuthBackend` impl** — the live backend is the in-memory
-      dev impl (loses state on restart). Ship a PG-backed `AuthBackend`
-      (users, credential hash, sessions, PATs, MFA secrets, OAuth state).
-- [ ] **CSRF enforcement** for state-changing `/auth/*` and `/api/v1/*` —
-      the `csrf_cookie` is issued but no middleware validates the matching
-      `X-CSRF-Token` header.
+- [x] **Production `AuthBackend` impl** — PG-backed `AuthBackend` shipped
+      via #738. Five PG identity repos (`PgUserRepo`/`PgSessionRepo`/
+      `PgPatRepo`/`PgVerificationTokenRepo`/`PgOAuthStateRepo`) plus a
+      composition-root `build_auth_backend` selector that fails closed
+      when `Postgres` is requested without `DATABASE_URL`. Transactional
+      flows (`register_user`, `verify_email`, `complete_password_reset`)
+      use direct `sqlx::Transaction` for atomicity. `EmailPort` trait
+      decouples email delivery from the backend (dev `EchoSink`; SMTP is
+      a separate follow-up).
+- [x] **CSRF enforcement** for state-changing `/auth/*` and `/api/v1/*` —
+      shipped via #737. Existing `csrf_middleware` (double-submit cookie)
+      now layered on credential write paths and on a new session-bearing
+      `auth_mfa_session_router`. The dual-use `mfa_verify` was split into
+      a session+CSRF enrollment-confirm path and a cookie-less
+      `mfa_complete_login` (`POST /auth/login/mfa`) so the login
+      second-step stays CSRF-exempt by construction.
 - [ ] **OAuth providers loaded from operator secrets** — a registry that
       pulls secrets from the credential store at startup (cross-dep with
       M12.3 + the `nebula-credential-runtime` wiring increment).
@@ -261,10 +280,13 @@ The largest 1.0 area. Closure criteria (on top of the global DoD):
 - [x] Engine/action boundary: `ActionRuntimeContext` exposes
       `resource_http_request_span` / `instrument_resource_http_request` for
       outbound resource HTTP.
-- [ ] Integration test: full stack API → engine → action → resource with
-      one root span (engine `control_trace` + lease-takeover cancel path
-      cover subsets today).
-- [ ] OpenTelemetry exporter wired (depends on M9.2 verification).
+- [x] Integration test: full stack API → engine → action → resource with
+      one root span — shipped via #742 as
+      `crates/api/tests/otlp_one_root_span.rs` (hermetic, in-memory OTel
+      exporters; live operator path against `task obs:up` documented in
+      `deploy/docker/README.md`).
+- [x] OpenTelemetry exporter wired — shipped via #742 (M9.2 closed in the
+      same PR).
 
 #### M3.6 Shift-left workflow validation
 
@@ -548,20 +570,29 @@ Closure criteria (on top of the global DoD):
       checklist (grep heuristics for `String` error variants, missing
       `#[instrument]`, missing `debug_assert!` near lock acquisitions).
 
-#### M9.2 OpenTelemetry bridge verification
+#### M9.2 OpenTelemetry bridge verification — ✅ CLOSED 2026-05-26 (#742)
 
-- [ ] Read #598 + comments to capture the open question.
-- [ ] Inventory current OTLP setup in `nebula-metrics` / `nebula-log`:
-      implemented vs documented.
-- [ ] If the bridge is missing: implement an OTLP exporter (metrics +
-      traces) wired into the `MetricsRegistry` snapshot path.
-- [ ] Integration test: trace + metrics flow into a local OTLP collector
-      (`task obs:up`), verified via Jaeger UI probe or collector debug
-      output.
-- [ ] Cross-dep: M3.5 trace-context propagation provides the span tree this
-      exporter ships.
-- [ ] Operator doc: point `OTEL_EXPORTER_OTLP_ENDPOINT` at a real collector
-      + what fields appear (worked example).
+- [x] Read #598 + comments — open question resolved by #742: traces and
+      metrics both flow through `opentelemetry-otlp` (workspace pin
+      extended to include the `metrics` feature).
+- [x] Inventory current OTLP setup in `nebula-metrics` / `nebula-log` —
+      pre-#742 there was NO metrics-side OTLP code; `nebula-log` had a
+      traces-only exporter never installed by `apps/server`.
+- [x] Implement OTLP exporter (metrics + traces) on the
+      `MetricsRegistry::snapshot_*` seam —
+      `crates/metrics/src/otlp.rs::OtlpMetricsExporter::install` +
+      periodic reader + observable instrument registration (histograms
+      decomposed into `_sum`/`_count`/`_bucket` companion counters);
+      traces extended via `crates/api/src/telemetry_init.rs` with an
+      env-gated `SpanExporter` and typed `TelemetryInitError` for
+      fail-closed startup.
+- [x] Integration test: trace + metrics flow into a local OTLP collector —
+      `crates/api/tests/otlp_one_root_span.rs` (hermetic, in-memory
+      exporters; live operator path against `task obs:up` documented).
+- [x] Cross-dep: M3.5 trace-context propagation provides the span tree
+      this exporter ships — verified by the one-root-span test.
+- [x] Operator doc: `deploy/docker/README.md` documents `task obs:up`,
+      port mapping, and the Jaeger UI verification path.
 
 #### M9.3 Hot-path Mutex audit
 
@@ -966,17 +997,29 @@ Closure criteria (on top of the global DoD):
 - [ ] CI gate: file existence + link resolution from per-crate READMEs
       (catches future regressions).
 
-#### M14.2 nebula-eventbus — ExecutionEvent migration
+#### M14.2 nebula-eventbus — ExecutionEvent migration — partial (migration shipped, broadcast test + refinement open)
 
-- [ ] Migrate `ExecutionEvent` from raw `mpsc` to `EventBus<ExecutionEvent>`
-      — it is still on raw mpsc and multi-subscriber consumers reinvent the
-      channel (`nebula-eventbus` is already stable, used by engine for
-      `CredentialEvent`).
-- [ ] Engine publishes via the eventbus; no direct `mpsc::send` from engine
-      to event consumers.
-- [ ] ≥2 subscribers in tests (e.g. metrics emitter + log tailer) verify
-      broadcast semantics.
-- [ ] Refine `Registry` / `Scope` patterns based on actual engine usage.
+- [x] Migrate `ExecutionEvent` from raw `mpsc` to `EventBus<ExecutionEvent>`
+      — already shipped: type alias at `crates/engine/src/engine.rs:65`,
+      field at `crates/engine/src/engine.rs:242`, builder at
+      `crates/engine/src/engine.rs:941-944`. The migration had landed in an
+      earlier PR but the checklist was never ticked; recon during the M3
+      closure slice (#737/#738/#742) surfaced the stale entry.
+- [x] Engine publishes via the eventbus; no direct `mpsc::send` from engine
+      to event consumers — `emit_event` at
+      `crates/engine/src/engine.rs:952-957` is the single publish site,
+      reached from every engine state-change point.
+- [ ] ≥2 subscribers in tests verify broadcast semantics — OPEN. The
+      existing `event_bus.subscribe()` call sites in
+      `crates/engine/tests/lease_takeover.rs:361`,
+      `crates/engine/tests/lease_takeover.rs:573`, and
+      `crates/engine/tests/lease_takeover.rs:810` each create a SINGLE
+      subscriber inside a different test; no test demonstrates one
+      `ExecutionEvent` being delivered to two concurrent subscribers. A
+      dedicated multi-subscriber fan-out test is still required to verify
+      the broadcast contract.
+- [ ] Refine `Registry` / `Scope` patterns based on actual engine usage —
+      remaining design polish for the cross-cutting freeze.
 
 #### M14.3 nebula-sdk — partial → stable (1.0 surface freeze)
 
@@ -1071,8 +1114,9 @@ Not all parallelizable. Suggested ordering (M0–M2, M6, M11 closed
 
 1. **M0 (durability)** — small, foundational, removes false claims. ✅ DONE.
 2. **M3 (API)** in parallel with M0 — biggest user-facing gap; sliceable
-   (M3.1 partial, M3.2 ✅, M3.3 ✅, M3.4 ✅, M3.5 ✅ engine-prop / test +
-   OTLP open, M3.6 open).
+   (M3.1 mostly closed via #737/#738 — only OAuth-secrets-from-operator,
+   lockout integration tests, and `nebula_api_auth_*` metrics remain;
+   M3.2 ✅, M3.3 ✅, M3.4 ✅, M3.5 ✅ via #742, M3.6 open).
 3. **M1, M2 (engine correctness + retry)** after M0 — same `engine.rs`
    paths. ✅ DONE.
 4. **M4, M5 (plugin capability gate + plugin ABI contract)** in parallel
