@@ -161,6 +161,50 @@ impl Default for IdempotencyApiConfig {
     }
 }
 
+/// Authentication backend selection.
+///
+/// Drives composition-root selection between the dev-only
+/// [`InMemoryAuthBackend`] (the production-quality default with Argon2id
+/// passwords, RFC 6238 TOTP, and SHA-256 PAT lookup but per-process
+/// `DashMap` state that is lost on restart) and the durable PG-backed
+/// `PgAuthBackend` shipped in PR2 commit 3.
+///
+/// The composition root MUST fail closed when [`AuthBackendKind::Postgres`]
+/// is selected without a configured `DATABASE_URL`, mirroring the
+/// idempotency backend selector — a publicly-known auth bypass via a
+/// missing identity store is exactly what this knob exists to prevent.
+///
+/// [`InMemoryAuthBackend`]: crate::domain::auth::backend::InMemoryAuthBackend
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum AuthBackendKind {
+    /// Process-local `DashMap` backend. Correct for dev / tests /
+    /// `simple_server`; loses identity state on restart and cannot be
+    /// shared across replicas.
+    #[default]
+    Memory,
+    /// Durable PostgreSQL-backed identity backend (lands in PR2 commit 3).
+    /// Survives restart and is shared across replicas that point at the
+    /// same database.
+    Postgres,
+}
+
+/// Plane-A authentication subsystem configuration.
+///
+/// Parallel to [`IdempotencyApiConfig`]: just the [`AuthBackendKind`]
+/// selector for now. Future PRs (lockout knobs, session TTL overrides,
+/// MFA enforcement) extend this struct without changing the env-binding
+/// shape (`API_AUTH_*` prefix, matching the existing `API_IDEMPOTENCY_*`
+/// convention).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AuthApiConfig {
+    /// Selected identity backend. Defaults to [`AuthBackendKind::Memory`]
+    /// so a missing `API_AUTH_BACKEND` keeps current dev behaviour; the
+    /// composition root flips this for production deployments via
+    /// `API_AUTH_BACKEND=postgres`.
+    pub backend: AuthBackendKind,
+}
+
 /// Webhook subsystem configuration (webhook activation).
 ///
 /// Controls how the slug-routed webhook surface boots. Default is
@@ -348,6 +392,85 @@ mod tests {
         }
 
         clear_env();
+    }
+
+    #[test]
+    fn from_env_auth_backend_defaults_to_memory() {
+        let _g = env_lock();
+        clear_env();
+        // SAFETY: protected by env_lock.
+        unsafe {
+            std::env::set_var("NEBULA_ENV", "production");
+            std::env::set_var("API_JWT_SECRET", "this-is-a-32-byte-minimum-secret!!");
+        }
+
+        let cfg = ApiConfig::from_env().expect("config must load");
+        assert_eq!(cfg.auth.backend, AuthBackendKind::Memory);
+
+        clear_env();
+    }
+
+    #[test]
+    fn from_env_auth_backend_accepts_postgres() {
+        let _g = env_lock();
+        clear_env();
+        // SAFETY: protected by env_lock.
+        unsafe {
+            std::env::set_var("NEBULA_ENV", "production");
+            std::env::set_var("API_JWT_SECRET", "this-is-a-32-byte-minimum-secret!!");
+            std::env::set_var("API_AUTH_BACKEND", "postgres");
+        }
+
+        let cfg = ApiConfig::from_env().expect("config must load");
+        assert_eq!(cfg.auth.backend, AuthBackendKind::Postgres);
+
+        clear_env();
+    }
+
+    #[test]
+    fn from_env_auth_backend_is_case_insensitive() {
+        let _g = env_lock();
+        clear_env();
+        // SAFETY: protected by env_lock.
+        unsafe {
+            std::env::set_var("NEBULA_ENV", "production");
+            std::env::set_var("API_JWT_SECRET", "this-is-a-32-byte-minimum-secret!!");
+            std::env::set_var("API_AUTH_BACKEND", "PostGres");
+        }
+
+        let cfg = ApiConfig::from_env().expect("config must load");
+        assert_eq!(cfg.auth.backend, AuthBackendKind::Postgres);
+
+        clear_env();
+    }
+
+    #[test]
+    fn from_env_auth_backend_rejects_unknown() {
+        let _g = env_lock();
+        clear_env();
+        // SAFETY: protected by env_lock.
+        unsafe {
+            std::env::set_var("NEBULA_ENV", "production");
+            std::env::set_var("API_JWT_SECRET", "this-is-a-32-byte-minimum-secret!!");
+            std::env::set_var("API_AUTH_BACKEND", "ldap");
+        }
+
+        let err = ApiConfig::from_env().expect_err("unknown backend must error");
+        match err {
+            crate::config::ApiConfigError::ParseEnum { var, raw } => {
+                assert_eq!(var, "AUTH_BACKEND");
+                assert_eq!(raw, "ldap");
+            },
+            other => panic!("wrong variant: {other:?}"),
+        }
+
+        clear_env();
+    }
+
+    #[test]
+    fn for_test_auth_backend_defaults_to_memory() {
+        let cfg = ApiConfig::for_test();
+        assert_eq!(cfg.auth.backend, AuthBackendKind::Memory);
     }
 
     #[test]

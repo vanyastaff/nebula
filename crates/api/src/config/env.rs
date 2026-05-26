@@ -89,6 +89,7 @@ pub(crate) mod tests {
                 "API_IDEMPOTENCY_MAX_REQUEST_BODY_BYTES",
                 "API_IDEMPOTENCY_MAX_RESPONSE_BODY_BYTES",
                 "API_IDEMPOTENCY_SWEEP_INTERVAL_SECS",
+                "API_AUTH_BACKEND",
             ] {
                 std::env::remove_var(key);
             }

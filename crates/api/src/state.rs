@@ -290,6 +290,14 @@ pub struct AppState {
     /// the default impl.
     pub auth_backend: Option<Arc<dyn AuthBackend>>,
 
+    /// Optional outbound-email port for verification / password-reset
+    /// flows. Composition roots wire a real transport here; the in-memory
+    /// `InMemoryAuthBackend` keeps its own default
+    /// [`crate::ports::email::EchoSink`] inbox when no port is provided,
+    /// so leaving this `None` preserves legacy behaviour for callers that
+    /// only build the dev backend.
+    pub email_port: Option<Arc<dyn crate::ports::email::EmailPort>>,
+
     /// Optional membership store for RBAC role lookups.
     pub membership_store: Option<Arc<dyn MembershipStore>>,
 
@@ -450,6 +458,7 @@ impl AppState {
             org_resolver: None,
             workspace_resolver: None,
             auth_backend: None,
+            email_port: None,
             membership_store: None,
             allow_insecure_tenant_rbac_bypass: false,
             idempotency_store: None,
@@ -1062,6 +1071,19 @@ impl AppState {
     #[must_use = "builder methods must be chained or built"]
     pub fn with_auth_backend(mut self, backend: Arc<dyn AuthBackend>) -> Self {
         self.auth_backend = Some(backend);
+        self
+    }
+
+    /// Attach an outbound-email port for verification / password-reset
+    /// flows.
+    ///
+    /// The default in-memory `AuthBackend` owns its own dev
+    /// [`crate::ports::email::EchoSink`] inbox when this slot is `None`;
+    /// production composition roots wire a real transport here so a
+    /// storage-backed `AuthBackend` impl can delegate delivery to it.
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_email_port(mut self, port: Arc<dyn crate::ports::email::EmailPort>) -> Self {
+        self.email_port = Some(port);
         self
     }
 

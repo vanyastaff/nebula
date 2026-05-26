@@ -4,7 +4,7 @@
 
 use thiserror::Error;
 
-use crate::error::ApiError;
+use crate::{error::ApiError, ports::email::EmailError};
 
 /// Failure modes for the auth backend.
 #[derive(Debug, Error)]
@@ -68,6 +68,18 @@ pub enum AuthError {
     /// Internal backend error (storage, lock poisoning, etc.).
     #[error("internal: {0}")]
     Internal(String),
+}
+
+impl From<EmailError> for AuthError {
+    /// Collapse every transport-layer failure into
+    /// [`AuthError::Internal`] so handler `?`-propagation stays uniform.
+    /// PR2 commit 3 may revisit this once `PgAuthBackend` lands a richer
+    /// mapping (e.g. distinguishing transient transport failures from
+    /// hard rejects), but for the dev `EchoSink` and the bring-up SMTP
+    /// transport this is the right "never silently swallow" default.
+    fn from(e: EmailError) -> Self {
+        Self::Internal(format!("email: {e}"))
+    }
 }
 
 impl From<AuthError> for ApiError {

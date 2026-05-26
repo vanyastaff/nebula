@@ -16,7 +16,6 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use nebula_core::{Principal, UserId};
-use parking_lot::RwLock;
 
 use super::{
     dto::{SignupRequest, UserProfile},
@@ -31,6 +30,7 @@ use super::{
     },
     session::{self, SESSION_TTL, SessionRecord, expires_at},
 };
+use crate::ports::email::{EchoSink, EmailKind, EmailMessage, EmailPort};
 
 /// Threshold for brute-force lockout.
 const LOCKOUT_THRESHOLD: i32 = 5;
@@ -91,7 +91,6 @@ struct MfaChallenge {
 }
 
 /// In-memory [`AuthBackend`].
-#[derive(Default)]
 pub struct InMemoryAuthBackend {
     users_by_email: DashMap<String, UserId>,
     users: DashMap<UserId, UserRecord>,
@@ -100,27 +99,74 @@ pub struct InMemoryAuthBackend {
     verification_tokens: DashMap<String, VerificationToken>,
     mfa_challenges: DashMap<String, MfaChallenge>,
     oauth_state: DashMap<String, OAuthStateEntry>,
-    /// In-memory capture of outbound emails for tests and local inspection.
-    ///
-    /// Every verification / password-reset email is appended here; there is
-    /// no separate "disabled" mode — use [`Self::emails`] to assert flows.
-    email_sink: Arc<RwLock<Vec<EmailEnvelope>>>,
+    /// Outbound email delivery port. Defaults to a fresh
+    /// [`EchoSink`] (see [`Self::default`]) so `Self::new()` keeps the
+    /// previous in-process inbox semantics; production composition roots
+    /// (and tests that want to assert against a custom transport) inject
+    /// a real port via [`Self::with_email_port`].
+    email_port: Arc<dyn EmailPort>,
+    /// Side handle on the default [`EchoSink`] so [`Self::emails`] can
+    /// still snapshot the in-process inbox without a downcast through
+    /// `Arc<dyn EmailPort>`. `None` once [`Self::with_email_port`] swaps
+    /// in a custom port — callers that need introspection in that mode
+    /// must keep their own `EchoSink` reference.
+    default_echo: Option<Arc<EchoSink>>,
 }
 
-/// Emitted email — captured by the test hook so integration tests can
-/// assert reset / verification flows without a real SMTP transport.
+impl Default for InMemoryAuthBackend {
+    fn default() -> Self {
+        let echo = Arc::new(EchoSink::default());
+        Self {
+            users_by_email: DashMap::default(),
+            users: DashMap::default(),
+            sessions: DashMap::default(),
+            pats: DashMap::default(),
+            verification_tokens: DashMap::default(),
+            mfa_challenges: DashMap::default(),
+            oauth_state: DashMap::default(),
+            email_port: Arc::clone(&echo) as Arc<dyn EmailPort>,
+            default_echo: Some(echo),
+        }
+    }
+}
+
+/// Legacy snapshot shape of an outbound email.
+///
+/// Kept for backward compatibility with tests that still assert on
+/// `EmailEnvelope.token` + `EmailEnvelope.kind` via
+/// [`InMemoryAuthBackend::emails`]. New code SHOULD use
+/// [`crate::ports::email::EmailMessage`] directly through an
+/// [`EchoSink::peek`] call.
 #[derive(Debug, Clone)]
+#[deprecated(
+    since = "0.2.0",
+    note = "Use crate::ports::email::EmailMessage and EchoSink::peek for new code"
+)]
 pub struct EmailEnvelope {
     /// Recipient address.
     pub to: String,
-    /// Token included in the email link.
+    /// Token included in the email link. Mirrors the dev `EchoSink`
+    /// convention of putting the raw token in [`EmailMessage::body`].
     pub token: String,
-    /// Email category — `EmailVerify` or `PasswordReset`.
+    /// Email category label — [`EmailKind::as_str`] output
+    /// (`"EmailVerify"` / `"PasswordReset"`).
     pub kind: &'static str,
 }
 
+#[allow(deprecated, reason = "shim feeds the deprecated public type")]
+impl From<EmailMessage> for EmailEnvelope {
+    fn from(m: EmailMessage) -> Self {
+        Self {
+            to: m.to,
+            token: m.body,
+            kind: m.kind.as_str(),
+        }
+    }
+}
+
 impl InMemoryAuthBackend {
-    /// Construct an empty backend.
+    /// Construct an empty backend with the default in-process
+    /// [`EchoSink`] email port.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -132,10 +178,34 @@ impl InMemoryAuthBackend {
         Arc::new(self)
     }
 
-    /// Snapshot the captured outbound emails — used in tests.
+    /// Replace the default [`EchoSink`] with a custom [`EmailPort`].
+    ///
+    /// Once a custom port is wired, [`Self::emails`] returns an empty
+    /// vector (the in-memory inbox is no longer the source of truth);
+    /// callers that still need introspection must hold their own handle
+    /// to the injected port.
     #[must_use]
+    pub fn with_email_port(mut self, port: Arc<dyn EmailPort>) -> Self {
+        self.email_port = port;
+        self.default_echo = None;
+        self
+    }
+
+    /// Snapshot the captured outbound emails — used in tests.
+    ///
+    /// Returns an empty vector when [`Self::with_email_port`] has
+    /// swapped the default [`EchoSink`] for a custom transport; the
+    /// in-process inbox is only meaningful for the default port.
+    #[must_use]
+    #[allow(deprecated, reason = "deliberate back-compat shim over EmailEnvelope")]
     pub fn emails(&self) -> Vec<EmailEnvelope> {
-        self.email_sink.read().clone()
+        self.default_echo
+            .as_ref()
+            .map(|s| s.peek())
+            .unwrap_or_default()
+            .into_iter()
+            .map(EmailEnvelope::from)
+            .collect()
     }
 
     fn now_secs() -> u64 {
@@ -173,12 +243,25 @@ impl InMemoryAuthBackend {
         Ok(token)
     }
 
-    fn record_email(&self, to: &str, token: &str, kind: &'static str) {
-        self.email_sink.write().push(EmailEnvelope {
+    async fn record_email(&self, to: &str, token: &str, kind: EmailKind) -> Result<(), AuthError> {
+        let subject = match kind {
+            EmailKind::Verification => "Verify your email",
+            EmailKind::PasswordReset => "Reset your password",
+            EmailKind::Generic => "Notification",
+        }
+        .to_owned();
+        let msg = EmailMessage {
             to: to.to_owned(),
-            token: token.to_owned(),
+            subject,
+            // Dev convention: the body is the raw token so tests can
+            // pull it back out via `EchoSink::peek` / `Self::emails`.
+            // Production transports will replace the `EmailPort` impl
+            // with one that renders a real template.
+            body: token.to_owned(),
             kind,
-        });
+        };
+        self.email_port.send(msg).await?;
+        Ok(())
     }
 }
 
@@ -234,7 +317,8 @@ impl AuthBackend for InMemoryAuthBackend {
         self.put_user(record);
 
         let token = self.issue_verification_token(id, VerificationKind::EmailVerify)?;
-        self.record_email(&email, &token, "EmailVerify");
+        self.record_email(&email, &token, EmailKind::Verification)
+            .await?;
 
         tracing::info!(user_id = %id, "user registered");
         Ok(profile)
@@ -497,7 +581,18 @@ impl AuthBackend for InMemoryAuthBackend {
         if let Some(user) = self.lookup_user_by_email(email) {
             match self.issue_verification_token(user.id, VerificationKind::PasswordReset) {
                 Ok(token) => {
-                    self.record_email(&user.email, &token, "PasswordReset");
+                    if let Err(err) = self
+                        .record_email(&user.email, &token, EmailKind::PasswordReset)
+                        .await
+                    {
+                        // Enumeration-safe: never surface delivery failures.
+                        // Logged so operators can correlate transport faults.
+                        tracing::error!(
+                            error = %err,
+                            user_id = %user.id,
+                            "failed to dispatch password reset email",
+                        );
+                    }
                 },
                 Err(err) => {
                     // Do not surface token-mint failures to the caller (enumeration-safe),
@@ -657,6 +752,10 @@ impl AuthBackend for InMemoryAuthBackend {
 }
 
 #[cfg(test)]
+#[allow(
+    deprecated,
+    reason = "tests still assert on the deprecated `EmailEnvelope` back-compat shim"
+)]
 mod tests {
     use super::*;
     use crate::domain::auth::backend::dto::SecretString;
@@ -774,7 +873,10 @@ mod tests {
         let b = InMemoryAuthBackend::new();
         b.register_user(signup_req("p@e.f")).await.unwrap();
         // Drain the verification email so we only see the reset email next.
-        b.email_sink.write().clear();
+        b.default_echo
+            .as_ref()
+            .expect("default echo sink is wired when no custom port is injected")
+            .drain();
         b.request_password_reset("p@e.f").await.unwrap();
         let token = b.emails()[0].token.clone();
         b.complete_password_reset(&token, "newpass1").await.unwrap();
