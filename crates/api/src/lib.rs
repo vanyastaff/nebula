@@ -86,4 +86,4 @@ pub use domain::resource::handler::{
 pub use domain::shared::{CursorParams, PaginatedResponse};
 pub use error::{ApiError, ApiResult, ProblemDetails};
 pub use state::AppState;
-pub use telemetry_init::init_api_telemetry;
+pub use telemetry_init::{TelemetryGuard, TelemetryInitError, init_api_telemetry};

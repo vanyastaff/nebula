@@ -40,6 +40,8 @@ mod filter;
 pub mod naming;
 // export
 mod prometheus;
+// OTLP export (ADR-0046 single seam to the OTel SDK from `nebula-metrics`).
+pub mod otlp;
 // instrumentation
 mod eventbus;
 // error
@@ -55,5 +57,6 @@ pub use gauge::Gauge;
 pub use histogram::{Histogram, HistogramSnapshot};
 pub use labels::{LabelInterner, LabelKey, LabelSet, LabelValue, MetricKey};
 pub use naming::*;
+pub use otlp::{OtlpInitError, OtlpMetricsConfig, OtlpMetricsExporter, OtlpMetricsGuard};
 pub use prometheus::{PrometheusExporter, content_type, snapshot};
 pub use registry::MetricsRegistry;

@@ -9,12 +9,13 @@ use std::{net::SocketAddr, sync::Arc, time::Duration};
 use thiserror::Error;
 
 use nebula_api::{
-    ApiConfig, ApiConfigError, AppState, app,
+    ApiConfig, ApiConfigError, AppState, TelemetryGuard, TelemetryInitError, app,
     config::{AuthBackendKind, IdempotencyBackend},
     domain::auth::backend::{AuthBackend, InMemoryAuthBackend},
     middleware::{IdempotencyStore, InMemoryIdempotencyStore},
     ports::email::{EchoSink, EmailPort},
 };
+use nebula_metrics::{MetricsRegistry, OtlpInitError};
 
 use crate::transport::ServerTransport;
 
@@ -38,6 +39,22 @@ pub enum ServerRunError {
     /// Listener/runtime error from axum server.
     #[error("server failed")]
     Io(#[from] std::io::Error),
+    /// OTLP metrics pipeline failed to attach to the telemetry guard.
+    ///
+    /// Surfacing this as a hard error matches the fail-closed policy of the other OTLP
+    /// install sites — silent fallback would mean operators who set
+    /// `OTEL_EXPORTER_OTLP_ENDPOINT` see no metrics in the collector and no diagnostic in the
+    /// startup log.
+    #[error("OTLP metrics exporter failed to attach")]
+    MetricsExporter(#[source] OtlpInitError),
+    /// Telemetry bootstrap (`init_api_telemetry`) failed. Most likely cause is an
+    /// unreachable / malformed `OTEL_EXPORTER_OTLP_ENDPOINT` that breaks the OTLP
+    /// `SpanExporter` build. Same fail-closed reasoning as [`Self::MetricsExporter`]:
+    /// operators who set the env var explicitly want OTLP, so we refuse to silently fall
+    /// back to an exporter-less tracer. Carries the typed [`TelemetryInitError`] as the
+    /// `source` so the error chain reaches the startup-log formatter intact.
+    #[error("telemetry bootstrap failed")]
+    Telemetry(#[source] TelemetryInitError),
 }
 
 /// Transport-specific initialization failure.
@@ -109,8 +126,18 @@ pub enum TransportInitError {
 }
 
 /// Start a server binary for a selected transport profile.
-pub async fn run_transport<T: ServerTransport>(transport: T) -> Result<(), ServerRunError> {
-    ServerRuntime::new().run_transport(transport).await
+///
+/// The caller passes in the [`TelemetryGuard`] returned from `init_api_telemetry`; the
+/// runtime attaches the OTLP metrics pipeline against the shared [`MetricsRegistry`] once
+/// `AppState` is built and holds the guard until the transport returns so spans and metric
+/// batches are flushed deterministically on shutdown.
+pub async fn run_transport<T: ServerTransport>(
+    transport: T,
+    telemetry_guard: TelemetryGuard,
+) -> Result<(), ServerRunError> {
+    ServerRuntime::new()
+        .run_transport(transport, telemetry_guard)
+        .await
 }
 
 /// Transport runtime orchestrator for binary composition roots.
@@ -126,9 +153,17 @@ impl ServerRuntime {
     pub async fn run_transport<T: ServerTransport>(
         &self,
         transport: T,
+        mut telemetry_guard: TelemetryGuard,
     ) -> Result<(), ServerRunError> {
         let api_config = ApiConfig::from_env()?;
-        let mut state = default_state(&api_config)?;
+        let metrics_registry = Arc::new(MetricsRegistry::new());
+        // Attach the OTLP metrics pipeline against the same registry the API will publish
+        // through. The guard owns the pipeline so it shuts down with the trace exporter when
+        // `axum::serve` returns. A `None` endpoint silently no-ops, matching the trace path.
+        telemetry_guard
+            .attach_metrics_exporter(Arc::clone(&metrics_registry))
+            .map_err(ServerRunError::MetricsExporter)?;
+        let mut state = default_state(&api_config, Arc::clone(&metrics_registry))?;
         let bind_address =
             resolve_bind_address(transport.bind_override_var(), api_config.bind_address)?;
         state = transport.prepare_state(state, bind_address)?;
@@ -178,7 +213,10 @@ impl ServerRuntime {
 /// the async context (so the PG arm can `await` the sqlx pool) and
 /// `default_state` no longer wires an unconditional in-memory backend
 /// — the conditional builder owns the slot now.
-pub fn default_state(api_config: &ApiConfig) -> Result<AppState, TransportInitError> {
+pub fn default_state(
+    api_config: &ApiConfig,
+    metrics_registry: Arc<MetricsRegistry>,
+) -> Result<AppState, TransportInitError> {
     // The execution / workflow / control-queue port wiring (the
     // six-handle in-memory-adapter + `nebula-tenancy`-decorator stack) is
     // the single-source-of-truth `AppState::in_memory`. This composition
@@ -236,7 +274,8 @@ pub fn default_state(api_config: &ApiConfig) -> Result<AppState, TransportInitEr
 
     Ok(AppState::in_memory(api_config.jwt_secret.clone())
         .with_api_keys(api_config.api_keys.clone())
-        .with_credential_schema(credential_schema))
+        .with_credential_schema(credential_schema)
+        .with_metrics_registry(metrics_registry))
 }
 
 /// Construct the Plane-A authentication backend from `api_config.auth`.

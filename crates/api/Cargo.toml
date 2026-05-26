@@ -46,6 +46,7 @@ nebula-eventbus = { path = "../eventbus" }
 nebula-credential-runtime = { path = "../credential-runtime" }
 
 opentelemetry = { workspace = true }
+opentelemetry-otlp = { workspace = true }
 opentelemetry_sdk = { workspace = true }
 tracing-opentelemetry = { workspace = true }
 
@@ -134,6 +135,16 @@ oas3 = { workspace = true }
 # `deny.toml` wrappers for the same reason. `InProcessSandbox` is re-exported
 # through `nebula-engine` so we don't need a direct `nebula-sandbox` dep.
 nebula-engine = { path = "../engine" }
+# `nebula-metrics` is already a normal dep (line 25). Cargo unifies dev-deps
+# with normal-deps for tests, so no need to redeclare it here.
+# OTel SDK `testing` feature exposes `InMemorySpanExporter` /
+# `InMemoryMetricExporter`, used by `crates/api/tests/otlp_one_root_span.rs` to
+# assert the API → engine → action one-root-span trace contract without
+# spinning up a real collector. Dev-only — the production crates never link
+# the `testing` feature.
+# `tracing-opentelemetry` is already a normal dep; Cargo unifies dev-deps
+# with normal-deps for tests, so it is not re-listed here.
+opentelemetry_sdk = { workspace = true, features = ["testing", "metrics"] }
 tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
 hex = { workspace = true }
 hmac = { workspace = true }
@@ -162,7 +173,7 @@ test-util = []
 # is OFF, setting `API_IDEMPOTENCY_BACKEND=postgres` fails closed at startup
 # (per ADR-0048 fail-closed contract).
 #
-# Also links the in-crate `PgAuthBackend` (PR2 commit 3) which owns its own
+# Also links the in-crate `PgAuthBackend` which owns its own
 # `sqlx::Pool<Postgres>` for the two transactional flows (register_user,
 # complete_password_reset) that cannot be expressed inside a single
 # `nebula-storage` repo call.

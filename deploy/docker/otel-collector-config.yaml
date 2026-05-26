@@ -1,0 +1,56 @@
+# OpenTelemetry Collector — minimal local dev pipeline.
+#
+# Accepts OTLP on gRPC (:4317) and HTTP (:4318), forwards spans to Jaeger via
+# OTLP on `jaeger:4317` (Jaeger 1.62+ accepts OTLP when
+# `COLLECTOR_OTLP_ENABLED=true`), and renders incoming traces / metrics / logs
+# to the collector's stdout via the debug exporter (so operators can verify
+# the pipeline without opening the Jaeger UI). Designed to pair 1:1 with
+# `deploy/docker/docker-compose.observability.yml` — the Jaeger service name
+# resolves to the all-in-one container in the same compose network.
+
+file_format: "0.1.0"
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    timeout: 1s
+    send_batch_size: 1024
+
+exporters:
+  debug:
+    verbosity: detailed
+  # Jaeger 1.62+ accepts OTLP on its own :4317 (enabled via
+  # COLLECTOR_OTLP_ENABLED=true on the all-in-one image). The deprecated
+  # `jaeger` exporter that spoke Jaeger native gRPC on :14250 was removed
+  # from otelcol-contrib 0.105+; route to Jaeger's OTLP receiver instead.
+  otlp/jaeger:
+    endpoint: jaeger:4317
+    tls:
+      insecure: true
+
+extensions:
+  zpages:
+    endpoint: 0.0.0.0:55679
+
+service:
+  extensions: [zpages]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp/jaeger, debug]
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [debug]
+    logs:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [debug]
