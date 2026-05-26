@@ -20,6 +20,14 @@ lasso = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 
+# OTLP metrics exporter (ADR-0046 single seam to the OTel SDK from `nebula-metrics`).
+# Workspace pins already gate `metrics` on `opentelemetry-otlp` and `opentelemetry_sdk` so
+# enabling the dep here unlocks the SDK metric data model + push exporter.
+opentelemetry = { workspace = true }
+opentelemetry-otlp = { workspace = true }
+opentelemetry_sdk = { workspace = true }
+tokio = { workspace = true, features = ["time", "rt", "macros"] }
+
 [dev-dependencies]
 insta = { workspace = true }
 pretty_assertions = { workspace = true }

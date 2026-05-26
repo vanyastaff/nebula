@@ -17,14 +17,19 @@ struct Cli {
 #[tokio::main]
 async fn main() -> Result<(), compose::ServerRunError> {
     // The telemetry guard owns the OTel `SdkTracerProvider` when OTLP shipping is enabled
-    // (`OTEL_EXPORTER_OTLP_ENDPOINT` set). Holding it for the lifetime of the runtime ensures
-    // buffered spans are flushed via the batch exporter when the binary exits — dropping the
-    // guard calls `provider.shutdown()` (see ADR-0050 binary init contract).
-    let _telemetry_guard = nebula_api::init_api_telemetry();
+    // (`OTEL_EXPORTER_OTLP_ENDPOINT` set). It is moved into `run_transport` so the metrics
+    // pipeline can be attached against the shared `MetricsRegistry` once `AppState` is
+    // built, and so the whole guard drops only when the transport returns — flushing both
+    // span and metric batches via `provider.shutdown()` (see ADR-0050 binary init contract).
+    let telemetry_guard = nebula_api::init_api_telemetry();
     let cli = Cli::parse();
     match cli.transport {
-        Transport::Api | Transport::All => compose::run_transport(ApiTransport).await,
-        Transport::Webhook => compose::run_transport(WebhookIngressTransport).await,
-        Transport::Realtime => compose::run_transport(RealtimeTransport).await,
+        Transport::Api | Transport::All => {
+            compose::run_transport(ApiTransport, telemetry_guard).await
+        },
+        Transport::Webhook => {
+            compose::run_transport(WebhookIngressTransport, telemetry_guard).await
+        },
+        Transport::Realtime => compose::run_transport(RealtimeTransport, telemetry_guard).await,
     }
 }

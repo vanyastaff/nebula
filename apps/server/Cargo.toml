@@ -20,6 +20,10 @@ nebula-api = { path = "../../crates/api" }
 # PG-backed idempotency store (`nebula_storage::pg::PgIdempotencyStore`,
 # gated by `feature = "postgres"`).
 nebula-storage = { path = "../../crates/storage", features = ["credential-in-memory"] }
+# Composition root wires a process-wide `MetricsRegistry` and attaches the OTLP push
+# pipeline via `TelemetryGuard::attach_metrics_exporter`. Direct dep so the surface stays
+# stable across api re-export refactors.
+nebula-metrics = { path = "../../crates/metrics" }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "net", "time"] }
 tracing = { workspace = true }
 clap = { workspace = true, features = ["derive", "env"] }

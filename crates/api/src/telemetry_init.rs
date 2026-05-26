@@ -22,6 +22,11 @@
 //! boundary keeps OTLP wiring out of `nebula-metrics` (see `nebula_metrics::otlp` for the
 //! metrics-side seam that mirrors this contract).
 
+use std::{sync::Arc, time::Duration};
+
+use nebula_metrics::{
+    MetricsRegistry, OtlpInitError, OtlpMetricsConfig, OtlpMetricsExporter, OtlpMetricsGuard,
+};
 use opentelemetry::{KeyValue, global, trace::TracerProvider as _};
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::{
@@ -51,16 +56,39 @@ const OTLP_ENDPOINT_ENV: &str = "OTEL_EXPORTER_OTLP_ENDPOINT";
 /// fall back to the default so an operator can clear the override without unsetting the var.
 const SERVICE_NAME_ENV: &str = "OTEL_SERVICE_NAME";
 
+/// Optional env var that overrides the default OTLP metrics export interval (in seconds).
+/// Non-numeric / zero / missing values fall back to [`DEFAULT_METRICS_EXPORT_INTERVAL`].
+const METRICS_INTERVAL_ENV: &str = "NEBULA_METRICS_OTLP_INTERVAL_SECS";
+
+/// Fallback metrics export interval applied when the env override is absent or invalid.
+/// Mirrors the OTel SDK default of 60s while still allowing operators to tighten the loop in
+/// development environments via the env var above.
+const DEFAULT_METRICS_EXPORT_INTERVAL: Duration = Duration::from_mins(1);
+
 /// Handle returned from [`init_api_telemetry`] so the binary can deterministically shut down
-/// any installed `SdkTracerProvider` on graceful shutdown.
+/// any installed `SdkTracerProvider` (and, once attached, the OTLP metrics pipeline) on
+/// graceful shutdown.
 ///
-/// When the OTLP exporter is not configured the guard wraps `None` and `Drop` is a no-op; when
+/// When OTLP shipping is not configured the guard wraps `None` and `Drop` is a no-op; when
 /// it *is* configured, dropping the guard calls `provider.shutdown()` which flushes the batch
 /// span processor and tears down the tonic exporter task. Holding the guard in `main` ensures
 /// spans buffered at the moment of shutdown reach the collector before the process exits.
-#[derive(Debug, Default)]
+///
+/// Once a metrics registry is wired via [`TelemetryGuard::attach_metrics_exporter`], the same
+/// guard owns the metrics OTLP pipeline and drops it in the same `Drop` sequence.
+#[derive(Default)]
 pub struct TelemetryGuard {
     provider: Option<SdkTracerProvider>,
+    metrics_guard: Option<OtlpMetricsGuard>,
+}
+
+impl std::fmt::Debug for TelemetryGuard {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TelemetryGuard")
+            .field("traces_attached", &self.provider.is_some())
+            .field("metrics_attached", &self.metrics_guard.is_some())
+            .finish()
+    }
 }
 
 impl TelemetryGuard {
@@ -73,12 +101,51 @@ impl TelemetryGuard {
         self.provider.is_some()
     }
 
-    /// Explicitly shut down the tracer provider, flushing buffered spans.
+    /// Returns `true` if the OTLP metrics pipeline is attached.
+    #[must_use]
+    pub fn has_metrics_exporter(&self) -> bool {
+        self.metrics_guard.is_some()
+    }
+
+    /// Attach an OTLP metrics pipeline backed by `registry`, sharing the same endpoint and
+    /// `service.name` as the trace exporter.
+    ///
+    /// No-op (and `Ok(())`) when `OTEL_EXPORTER_OTLP_ENDPOINT` is unset / opt-out, mirroring
+    /// the trace-side install policy so dev environments without a collector keep working
+    /// without explicit configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OtlpInitError::ExporterBuild`] when the OTLP metric exporter cannot be
+    /// constructed (malformed endpoint, missing tonic runtime).
+    pub fn attach_metrics_exporter(
+        &mut self,
+        registry: Arc<MetricsRegistry>,
+    ) -> Result<(), OtlpInitError> {
+        let Some(endpoint) = resolve_otlp_endpoint() else {
+            return Ok(());
+        };
+        let cfg = OtlpMetricsConfig::new(endpoint)
+            .with_service_name(resolve_service_name())
+            .with_export_interval(resolve_metrics_export_interval());
+        let guard = OtlpMetricsExporter::install(registry, cfg)?;
+        self.metrics_guard = Some(guard);
+        Ok(())
+    }
+
+    /// Explicitly shut down both the tracer provider and the metrics pipeline, flushing any
+    /// buffered exports.
     ///
     /// Called automatically on drop, but exposed so binaries that want a deterministic
-    /// shutdown point (e.g. after the axum server returns) can drain spans before the process
-    /// exits.
+    /// shutdown point (e.g. after the axum server returns) can drain telemetry before the
+    /// process exits.
     pub fn shutdown(&mut self) {
+        // Drop metrics first so the discovery task observes the stop flag before the tracer
+        // pipeline goes away (the two are independent, but ordering keeps shutdown logs
+        // predictable).
+        if let Some(mut metrics) = self.metrics_guard.take() {
+            metrics.shutdown();
+        }
         if let Some(provider) = self.provider.take()
             && let Err(err) = provider.shutdown()
         {
@@ -152,6 +219,7 @@ pub fn init_api_telemetry() -> TelemetryGuard {
 
     TelemetryGuard {
         provider: if otlp_attached { Some(provider) } else { None },
+        metrics_guard: None,
     }
 }
 
@@ -226,6 +294,14 @@ fn resolve_service_name() -> String {
 fn resolve_otlp_endpoint() -> Option<String> {
     let raw = std::env::var(OTLP_ENDPOINT_ENV).ok()?;
     normalise_otlp_endpoint(&raw)
+}
+
+fn resolve_metrics_export_interval() -> Duration {
+    std::env::var(METRICS_INTERVAL_ENV)
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|secs| *secs > 0)
+        .map_or(DEFAULT_METRICS_EXPORT_INTERVAL, Duration::from_secs)
 }
 
 /// Apply the standard opt-in/opt-out rules to a candidate OTLP endpoint string.

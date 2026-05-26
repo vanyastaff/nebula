@@ -3860,9 +3860,13 @@ dependencies = [
  "lasso",
  "nebula-error",
  "nebula-eventbus",
+ "opentelemetry",
+ "opentelemetry-otlp",
+ "opentelemetry_sdk",
  "pretty_assertions",
  "rstest",
  "thiserror",
+ "tokio",
  "tracing",
 ]
 
@@ -4070,6 +4074,7 @@ dependencies = [
  "axum",
  "clap",
  "nebula-api",
+ "nebula-metrics",
  "nebula-storage",
  "serde_json",
  "sqlx",
