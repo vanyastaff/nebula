@@ -25,8 +25,8 @@ mod sub;
 pub use errors::ApiConfigError;
 pub use jwt::JwtSecret;
 pub use sub::{
-    CookieConfig, CorsConfig, IdempotencyApiConfig, IdempotencyBackend, PaginationConfig,
-    TlsConfig, VersioningConfig, WebhookApiConfig,
+    AuthApiConfig, AuthBackendKind, CookieConfig, CorsConfig, IdempotencyApiConfig,
+    IdempotencyBackend, PaginationConfig, TlsConfig, VersioningConfig, WebhookApiConfig,
 };
 
 use std::{net::SocketAddr, sync::OnceLock, time::Duration};
@@ -131,6 +131,15 @@ pub struct ApiConfig {
     #[serde(default)]
     pub idempotency: IdempotencyApiConfig,
 
+    /// Plane-A authentication subsystem configuration.
+    ///
+    /// Drives the composition root's selection between the dev-only
+    /// in-memory `AuthBackend` and the PG-backed `PgAuthBackend`. The
+    /// backend selector is bound to `API_AUTH_BACKEND`
+    /// (case-insensitive `memory` / `postgres`).
+    #[serde(default)]
+    pub auth: AuthApiConfig,
+
     /// Webhook subsystem configuration (webhook activation).
     #[serde(default)]
     pub webhook: WebhookApiConfig,
@@ -157,6 +166,7 @@ impl std::fmt::Debug for ApiConfig {
             .field("versioning", &self.versioning)
             .field("pagination", &self.pagination)
             .field("idempotency", &self.idempotency)
+            .field("auth", &self.auth)
             .finish()
     }
 }
@@ -285,6 +295,8 @@ impl ApiConfig {
             sweep_interval_secs = idempotency.sweep_interval_secs,
             "idempotency: config loaded"
         );
+        let auth = Self::auth_from_env()?;
+        tracing::info!(backend = ?auth.backend, "auth: config loaded");
 
         Ok(Self {
             bind_address,
@@ -308,8 +320,26 @@ impl ApiConfig {
             versioning: VersioningConfig::default(),
             pagination: PaginationConfig::default(),
             idempotency,
+            auth,
             webhook: Self::webhook_from_env()?,
         })
+    }
+
+    fn auth_from_env() -> Result<AuthApiConfig, ApiConfigError> {
+        let backend = match std::env::var("API_AUTH_BACKEND") {
+            Ok(raw) => match raw.trim().to_ascii_lowercase().as_str() {
+                "memory" => AuthBackendKind::Memory,
+                "postgres" => AuthBackendKind::Postgres,
+                _ => {
+                    return Err(ApiConfigError::ParseEnum {
+                        var: "AUTH_BACKEND",
+                        raw,
+                    });
+                },
+            },
+            Err(_) => AuthBackendKind::Memory,
+        };
+        Ok(AuthApiConfig { backend })
     }
 
     fn idempotency_from_env() -> Result<IdempotencyApiConfig, ApiConfigError> {
@@ -389,6 +419,7 @@ impl ApiConfig {
             versioning: VersioningConfig::default(),
             pagination: PaginationConfig::default(),
             idempotency: IdempotencyApiConfig::default(),
+            auth: AuthApiConfig::default(),
             webhook: WebhookApiConfig::default(),
         }
     }

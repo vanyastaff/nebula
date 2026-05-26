@@ -10,8 +10,10 @@ use thiserror::Error;
 
 use nebula_api::{
     ApiConfig, ApiConfigError, AppState, app,
-    config::IdempotencyBackend,
+    config::{AuthBackendKind, IdempotencyBackend},
+    domain::auth::backend::{AuthBackend, InMemoryAuthBackend},
     middleware::{IdempotencyStore, InMemoryIdempotencyStore},
+    ports::email::{EchoSink, EmailPort},
 };
 
 use crate::transport::ServerTransport;
@@ -58,7 +60,7 @@ pub enum TransportInitError {
         not(feature = "postgres"),
         expect(
             dead_code,
-            reason = "constructed only in the postgres-gated build_pg_idempotency_store arm"
+            reason = "constructed only in the postgres-gated build_pg_idempotency_store / build_pg_auth_backend arms"
         )
     )]
     ContextFactory(String),
@@ -73,6 +75,26 @@ pub enum TransportInitError {
         "API_IDEMPOTENCY_BACKEND={requested} requires {requirement}; set API_IDEMPOTENCY_BACKEND=memory or land the missing wiring"
     )]
     IdempotencyBackendUnavailable {
+        /// Backend the operator requested.
+        requested: &'static str,
+        /// What is missing for that backend to work.
+        requirement: &'static str,
+    },
+    /// `API_AUTH_BACKEND` selects an identity backend that the current
+    /// build cannot satisfy.
+    ///
+    /// Today this fires when an operator sets
+    /// `API_AUTH_BACKEND=postgres` without the `nebula-api/postgres`
+    /// cargo feature compiled in, or without `DATABASE_URL` reachable.
+    /// Mirrors the fail-closed posture of
+    /// [`Self::IdempotencyBackendUnavailable`] — silently falling back
+    /// to the in-memory identity backend would be a publicly-known
+    /// auth-bypass surface in any deployment that thought it had
+    /// requested durable identity.
+    #[error(
+        "API_AUTH_BACKEND={requested} requires {requirement}; set API_AUTH_BACKEND=memory or land the missing wiring"
+    )]
+    AuthBackendUnavailable {
         /// Backend the operator requested.
         requested: &'static str,
         /// What is missing for that backend to work.
@@ -117,6 +139,18 @@ impl ServerRuntime {
         // (per ADR-0048).
         let idempotency_store = build_idempotency_store(&api_config).await?;
         state = state.with_idempotency_store(idempotency_store);
+        // Build ONE shared `Arc<dyn EmailPort>` and pass the same Arc
+        // to both `AppState::email_port` and the selected auth backend.
+        // Today this is the dev `EchoSink`; a future SMTP transport
+        // swaps in here without changing either consumer. Forward-compat
+        // non-auth email consumers (org invitations, billing notices)
+        // read from `state.email_port` and work uniformly regardless of
+        // which auth backend is wired.
+        let email_port: Arc<dyn EmailPort> = Arc::new(EchoSink::default());
+        let auth_backend = build_auth_backend(&api_config, Arc::clone(&email_port)).await?;
+        state = state
+            .with_auth_backend(auth_backend)
+            .with_email_port(email_port);
         let app = transport.build_router(state, &api_config)?;
 
         tracing::info!(transport = transport.name(), %bind_address, "starting transport");
@@ -139,7 +173,11 @@ impl ServerRuntime {
 ///
 /// The idempotency store is **not** attached here — it is wired
 /// asynchronously by [`ServerRuntime::run_transport`] so the PG-backed
-/// path can `await` the sqlx pool construction.
+/// path can `await` the sqlx pool construction. The Plane-A auth
+/// backend follows the same pattern: [`build_auth_backend`] runs in
+/// the async context (so the PG arm can `await` the sqlx pool) and
+/// `default_state` no longer wires an unconditional in-memory backend
+/// — the conditional builder owns the slot now.
 pub fn default_state(api_config: &ApiConfig) -> Result<AppState, TransportInitError> {
     // The execution / workflow / control-queue port wiring (the
     // six-handle in-memory-adapter + `nebula-tenancy`-decorator stack) is
@@ -148,17 +186,11 @@ pub fn default_state(api_config: &ApiConfig) -> Result<AppState, TransportInitEr
     // (identity backend, credential-schema, api keys) so the wiring
     // contract cannot drift between the binary and the runnable example.
 
-    // Plane-A identity backend. `InMemoryAuthBackend` is the
-    // production-quality default (Argon2id passwords, RFC 6238 TOTP,
-    // SHA-256 PAT lookup) — the same §4.5-honest "the real impl is the
-    // in-memory one" posture the control queue uses
-    // (`InMemoryControlQueueRepo`). There is no storage-backed
-    // alternative to wire: `nebula_storage` ships no implementation of
-    // `UserRepo` / `PatRepo` / `SessionRepo` (see
-    // `nebula_storage::repos` module docs — those traits are
-    // definition-only). Wiring this makes the `me/*` profile + PAT
-    // endpoints work end-to-end; without it they fail closed with 503.
-    let auth_backend = nebula_api::domain::auth::backend::InMemoryAuthBackend::new().into_arc();
+    // Plane-A identity backend is wired asynchronously by
+    // [`build_auth_backend`] inside [`ServerRuntime::run_transport`]
+    // so the PG-backed arm can `await` the sqlx pool. The selector
+    // (`AuthBackendKind::Memory` vs `Postgres`) is honored there with
+    // the same fail-closed contract `build_idempotency_store` uses.
 
     // NOTE: `membership_store` is intentionally LEFT UNWIRED (`None`) in
     // the default local-first composition.
@@ -204,8 +236,38 @@ pub fn default_state(api_config: &ApiConfig) -> Result<AppState, TransportInitEr
 
     Ok(AppState::in_memory(api_config.jwt_secret.clone())
         .with_api_keys(api_config.api_keys.clone())
-        .with_auth_backend(auth_backend)
         .with_credential_schema(credential_schema))
+}
+
+/// Construct the Plane-A authentication backend from `api_config.auth`.
+///
+/// `Memory` builds an in-process [`InMemoryAuthBackend`] wired to the
+/// shared `email_port` so verification / reset mails flow through the
+/// same transport the rest of the app uses. `Postgres` requires the
+/// `nebula-api/postgres` cargo feature **and** a reachable
+/// `DATABASE_URL`; either missing component fails closed with
+/// [`TransportInitError::AuthBackendUnavailable`] (silent fallback to
+/// in-memory would be an undetected auth-bypass for any operator who
+/// thought they had requested durable identity).
+///
+/// Both arms receive the SAME `Arc<dyn EmailPort>` — the in-memory
+/// backend drops its built-in default echo sink in favour of the
+/// shared transport so callers can introspect deliveries against one
+/// known port instead of guessing which sink owns the inbox.
+///
+/// Today this builder constructs its own `sqlx::Pool<Postgres>`
+/// alongside the idempotency pool; consolidating the two onto one
+/// shared pool is a follow-up.
+pub async fn build_auth_backend(
+    api_config: &ApiConfig,
+    email_port: Arc<dyn EmailPort>,
+) -> Result<Arc<dyn AuthBackend>, TransportInitError> {
+    match api_config.auth.backend {
+        AuthBackendKind::Memory => Ok(Arc::new(
+            InMemoryAuthBackend::new().with_email_port(email_port),
+        )),
+        AuthBackendKind::Postgres => build_pg_auth_backend(email_port).await,
+    }
 }
 
 /// Construct the idempotency store from `api_config.idempotency`.
@@ -297,6 +359,45 @@ async fn build_pg_idempotency_store(
     Err(TransportInitError::IdempotencyBackendUnavailable {
         requested: "postgres",
         requirement: "build with `nebula-api/postgres` cargo feature to link sqlx + PgIdempotencyStore",
+    })
+}
+
+#[cfg(feature = "postgres")]
+async fn build_pg_auth_backend(
+    email_port: Arc<dyn EmailPort>,
+) -> Result<Arc<dyn AuthBackend>, TransportInitError> {
+    use nebula_api::domain::auth::backend::PgAuthBackend;
+    use sqlx::postgres::PgPoolOptions;
+
+    let url =
+        std::env::var("DATABASE_URL").map_err(|_| TransportInitError::AuthBackendUnavailable {
+            requested: "postgres",
+            requirement: "DATABASE_URL must be set when API_AUTH_BACKEND=postgres",
+        })?;
+    let pool = PgPoolOptions::new()
+        .max_connections(8)
+        .connect(&url)
+        .await
+        .map_err(|err| {
+            TransportInitError::ContextFactory(format!(
+                "auth: failed to connect to DATABASE_URL for PG-backed backend: {err}"
+            ))
+        })?;
+    tracing::info!(
+        backend = "postgres",
+        "auth: PG-backed identity backend wired"
+    );
+    let backend: Arc<dyn AuthBackend> = Arc::new(PgAuthBackend::new(pool, email_port));
+    Ok(backend)
+}
+
+#[cfg(not(feature = "postgres"))]
+async fn build_pg_auth_backend(
+    _email_port: Arc<dyn EmailPort>,
+) -> Result<Arc<dyn AuthBackend>, TransportInitError> {
+    Err(TransportInitError::AuthBackendUnavailable {
+        requested: "postgres",
+        requirement: "build with `nebula-api/postgres` cargo feature to link sqlx + PgAuthBackend",
     })
 }
 

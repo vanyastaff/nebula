@@ -2,9 +2,10 @@
 //!
 //! These map cleanly into [`crate::ApiError`] so handlers can `?`-propagate.
 
+use nebula_storage::StorageError;
 use thiserror::Error;
 
-use crate::error::ApiError;
+use crate::{error::ApiError, ports::email::EmailError};
 
 /// Failure modes for the auth backend.
 #[derive(Debug, Error)]
@@ -68,6 +69,42 @@ pub enum AuthError {
     /// Internal backend error (storage, lock poisoning, etc.).
     #[error("internal: {0}")]
     Internal(String),
+}
+
+impl From<EmailError> for AuthError {
+    /// Collapse every transport-layer failure into
+    /// [`AuthError::Internal`] so handler `?`-propagation stays uniform.
+    /// Will be revisited once the storage-backed AuthBackend
+    /// implementation needs a richer error mapping (e.g. distinguishing
+    /// transient transport failures from hard rejects); for the dev
+    /// `EchoSink` and the bring-up SMTP transport this is the right
+    /// "never silently swallow" default.
+    fn from(e: EmailError) -> Self {
+        Self::Internal(format!("email: {e}"))
+    }
+}
+
+impl From<StorageError> for AuthError {
+    /// Translate storage-layer failures returned by the PG identity
+    /// repos into [`AuthError`] so `PgAuthBackend` can `?`-propagate
+    /// cleanly. The mapping is deliberately small:
+    ///
+    /// - `Duplicate { entity: "user", .. }` →
+    ///   [`AuthError::EmailAlreadyRegistered`] (the only unique-key on
+    ///   the auth tables a caller can collide with by sending the same
+    ///   email twice; every other duplicate is an internal bug).
+    /// - Everything else → [`AuthError::Internal`] with the
+    ///   operator-facing detail preserved. The wider 503-mapping
+    ///   (`ApiError::Storage`) is intentionally NOT reused here so the
+    ///   auth backend stays in the 5xx-Internal lane the rest of the
+    ///   auth surface already uses; the storage detail string is
+    ///   carried through `Display` for the operator-side log.
+    fn from(err: StorageError) -> Self {
+        match err {
+            StorageError::Duplicate { entity: "user", .. } => Self::EmailAlreadyRegistered,
+            other => Self::Internal(format!("storage: {other}")),
+        }
+    }
 }
 
 impl From<AuthError> for ApiError {

@@ -4,7 +4,7 @@ use std::future::Future;
 
 use crate::{
     error::StorageError,
-    rows::{PersonalAccessTokenRow, SessionRow, UserRow},
+    rows::{OAuthStateRow, PersonalAccessTokenRow, SessionRow, UserRow, VerificationTokenRow},
 };
 
 /// User account storage.
@@ -92,4 +92,121 @@ pub trait PatRepo: Send + Sync {
         principal_kind: &str,
         principal_id: &[u8],
     ) -> impl Future<Output = Result<Vec<PersonalAccessTokenRow>, StorageError>> + Send;
+}
+
+/// One-time verification tokens (email verification, password reset,
+/// MFA challenges, invitations).
+///
+/// Tokens are stored by SHA-256 hash of the plaintext value; the
+/// plaintext is only available to the caller at mint time and is sent
+/// to the user out-of-band (email link, etc.).
+pub trait VerificationTokenRepo: Send + Sync {
+    /// Insert a new verification token.
+    fn create(
+        &self,
+        token: &VerificationTokenRow,
+    ) -> impl Future<Output = Result<(), StorageError>> + Send;
+
+    /// Atomically mark a token as consumed and return its row. Returns
+    /// `None` if the token does not exist, is already consumed, or has
+    /// expired.
+    ///
+    /// Prefer [`consume_by_hash_and_kind`](Self::consume_by_hash_and_kind)
+    /// for routes that only accept a specific `kind` (e.g. MFA
+    /// challenge) — that variant filters on `kind` inside the same SQL
+    /// statement, so a token of the wrong kind sent to the wrong
+    /// endpoint is rejected as `None` without being burned.
+    fn consume_by_hash(
+        &self,
+        token_hash: &[u8],
+    ) -> impl Future<Output = Result<Option<VerificationTokenRow>, StorageError>> + Send;
+
+    /// Atomically mark a token as consumed **only when both `token_hash`
+    /// AND `kind` match** an unconsumed, unexpired row, and return that
+    /// row. Returns `None` for any mismatch — including a valid token
+    /// presented to the wrong route (where `kind` differs) — so a
+    /// password-reset token sent to the MFA-verify endpoint cannot be
+    /// destroyed by a blind consume.
+    fn consume_by_hash_and_kind(
+        &self,
+        token_hash: &[u8],
+        kind: &str,
+    ) -> impl Future<Output = Result<Option<VerificationTokenRow>, StorageError>> + Send;
+
+    /// Fetch a token by hash without consuming it. Returns `None` if not
+    /// found. Caller is responsible for checking `expires_at` /
+    /// `consumed_at`. Primarily a test helper.
+    fn get_by_hash(
+        &self,
+        token_hash: &[u8],
+    ) -> impl Future<Output = Result<Option<VerificationTokenRow>, StorageError>> + Send;
+
+    /// Delete all expired (`expires_at < now`) tokens. Returns the
+    /// count deleted.
+    fn cleanup_expired(&self) -> impl Future<Output = Result<u64, StorageError>> + Send;
+
+    /// Mark all unconsumed tokens for a user of the given `kind` as
+    /// consumed. Used to invalidate in-flight reset / verification
+    /// links after a successful action (e.g. password change). Returns
+    /// the count revoked.
+    fn revoke_all_for_user(
+        &self,
+        user_id: &[u8],
+        kind: &str,
+    ) -> impl Future<Output = Result<u64, StorageError>> + Send;
+}
+
+/// Server-side storage for Plane-A OAuth PKCE state.
+///
+/// Each `start_oauth` mints a row keyed by the random url-safe state
+/// string; the matching `complete_oauth` atomically consumes the row
+/// to recover the PKCE `code_verifier` and validate the callback.
+/// Distinct from the Plane-B credential OAuth surface, which has its
+/// own state-pending table — see `0008_credentials.sql` family.
+pub trait OAuthStateRepo: Send + Sync {
+    /// Insert a new PKCE state row.
+    fn create(
+        &self,
+        state: &OAuthStateRow,
+    ) -> impl Future<Output = Result<(), StorageError>> + Send;
+
+    /// Atomically mark a PKCE state as consumed and return its row.
+    /// Returns `None` if the state does not exist, is already consumed,
+    /// or has expired. The repo MUST NOT return the row twice for the
+    /// same state value — this is the replay defence.
+    ///
+    /// Prefer
+    /// [`consume_by_state_and_provider`](Self::consume_by_state_and_provider)
+    /// when the caller knows which provider the callback came from —
+    /// that variant filters on `provider` inside the same SQL statement,
+    /// so a state value crossed between providers is rejected as `None`
+    /// without being burned.
+    fn consume_by_state(
+        &self,
+        state: &str,
+    ) -> impl Future<Output = Result<Option<OAuthStateRow>, StorageError>> + Send;
+
+    /// Atomically mark a PKCE state as consumed **only when both `state`
+    /// AND `provider` match** an unconsumed, unexpired row, and return
+    /// that row. Returns `None` on any mismatch (including a state value
+    /// crossed between providers), so a callback presenting the wrong
+    /// provider cannot destroy a valid row.
+    fn consume_by_state_and_provider(
+        &self,
+        state: &str,
+        provider: &str,
+    ) -> impl Future<Output = Result<Option<OAuthStateRow>, StorageError>> + Send;
+
+    /// Delete all expired (`expires_at < now`) rows. Returns the count
+    /// deleted.
+    fn cleanup_expired(&self) -> impl Future<Output = Result<u64, StorageError>> + Send;
+
+    /// Fetch a state row without consuming it. Returns `None` if not
+    /// found. Primarily a test helper — production paths must use
+    /// [`consume_by_state`](Self::consume_by_state) so the row cannot
+    /// be replayed.
+    fn get_by_state(
+        &self,
+        state: &str,
+    ) -> impl Future<Output = Result<Option<OAuthStateRow>, StorageError>> + Send;
 }

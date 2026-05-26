@@ -97,6 +97,20 @@ async-trait = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
 tokio-util = { workspace = true }
 
+# Optional — only linked by `PgAuthBackend` (under `crate::domain::auth::backend::pg`,
+# feature-gated by `postgres`). The composition root constructs the `sqlx::Pool<Postgres>`
+# and passes it in; the PgAuthBackend issues two multi-step transactions directly
+# (`register_user`, `complete_password_reset`) which is why `nebula-storage` cannot
+# encapsulate the dep. Mirrors `apps/server/Cargo.toml`.
+sqlx = { version = "0.8", optional = true, default-features = false, features = [
+  "runtime-tokio",
+  "postgres",
+  "chrono",
+  "macros",
+  "migrate",
+  "tls-rustls-ring-native-roots",
+] }
+
 # Webhook transport
 dashmap = { workspace = true }
 moka = { workspace = true, features = ["future"] }
@@ -147,7 +161,12 @@ test-util = []
 # constructed by the composition root, not by this library. When this feature
 # is OFF, setting `API_IDEMPOTENCY_BACKEND=postgres` fails closed at startup
 # (per ADR-0048 fail-closed contract).
-postgres = ["nebula-storage/postgres"]
+#
+# Also links the in-crate `PgAuthBackend` (PR2 commit 3) which owns its own
+# `sqlx::Pool<Postgres>` for the two transactional flows (register_user,
+# complete_password_reset) that cannot be expressed inside a single
+# `nebula-storage` repo call.
+postgres = ["nebula-storage/postgres", "dep:sqlx"]
 # Note: `credential-oauth` rollout feature gate deleted 2026-04-24 —
 # OAuth ceremony deps (nebula-credential, reqwest, hmac, sha2, zeroize)
 # are now unconditional base deps per ADR-0031 §6 (rollout window closed).

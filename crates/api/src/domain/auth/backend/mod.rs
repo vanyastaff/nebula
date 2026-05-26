@@ -33,6 +33,12 @@ pub mod mfa;
 pub mod oauth;
 pub mod password;
 pub mod pat;
+/// Postgres-backed [`AuthBackend`] implementation. Linked only when
+/// the `postgres` cargo feature is enabled.
+///
+/// [`AuthBackend`]: provider::AuthBackend
+#[cfg(feature = "postgres")]
+pub mod pg;
 pub mod provider;
 pub mod session;
 
@@ -46,6 +52,8 @@ pub use error::AuthError;
 pub use in_memory::InMemoryAuthBackend;
 pub use oauth::OAuthProvider;
 pub use pat::{MintedPat, PAT_PREFIX, PatRecord, hash_for_lookup, hashes_equal, mint_pat};
+#[cfg(feature = "postgres")]
+pub use pg::PgAuthBackend;
 pub use provider::{
     AuthBackend, CreatePatParams, MfaEnrollment, OAuthCompletion, OAuthStart, PasswordOutcome,
     ProfilePatch,
