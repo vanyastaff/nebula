@@ -117,7 +117,7 @@ hand-rolled boundary process" reasoning that removed `resolve_cmd` from
 ## Design
 
 The deterministic structural-budget tier is specified, with code and tests, in
-[`docs/plans/2026-05-18-003-feat-agent-intent-honesty-gate-plan.md`](../plans/2026-05-18-003-feat-agent-intent-honesty-gate-plan.md).
+[`docs/plans/2026-05-18-003a-feat-agent-intent-honesty-gate-plan.md`](../plans/2026-05-18-003a-feat-agent-intent-honesty-gate-plan.md).
 The confidence-gated semantic LLM tier (grounded rubric, out-of-context
 reviewer) is a sequenced follow-up plan in `docs/plans/`. This ADR records the
 **decision**; implementation detail is not duplicated here (0082 convention).

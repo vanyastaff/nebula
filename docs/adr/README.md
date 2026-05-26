@@ -80,7 +80,7 @@ live standalone decisions remain as individual files:
 
 ## Related plans
 
-- `docs/plans/2026-05-18-003-refactor-docs-adr-eviction-plan.md` — this eviction (stubs + 0001–0041 out of tree).
+- `docs/plans/2026-05-18-003b-refactor-docs-adr-eviction-plan.md` — this eviction (stubs + 0001–0041 out of tree).
 - `docs/plans/2026-05-18-001-refactor-docs-stack-contract-consolidation-plan.md` — Wave A/B (agent router + contract ADRs).
 - `docs/plans/2026-05-18-002-refactor-code-doc-citation-cleanup-plan.md` — Wave C (Rust comments).
 - `docs/plans/2026-05-17-001-feat-integrator-flagship-platform-plan.md` — implementation (doc gate cleared).
