@@ -71,6 +71,7 @@ credentials/
 
 # Pi / Gentle-AI per-user runtime (project configs exempted below)
 .pi/*
+!.pi/settings.json
 !.pi/conventions.json
 !.pi/codebase-wiki.json
 !.pi/wiki/

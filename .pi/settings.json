@@ -1,0 +1,30 @@
+{
+  "subagents": {
+    "agentOverrides": {
+      "scout": {
+        "model": "anthropic/claude-sonnet-4",
+        "thinking": "medium"
+      },
+      "context-builder": {
+        "model": "anthropic/claude-sonnet-4",
+        "thinking": "medium"
+      },
+      "reviewer": {
+        "model": "anthropic/claude-opus-4-7",
+        "thinking": "high"
+      },
+      "worker": {
+        "model": "anthropic/claude-opus-4-7",
+        "thinking": "high"
+      },
+      "planner": {
+        "model": "anthropic/claude-opus-4-7",
+        "thinking": "xhigh"
+      },
+      "oracle": {
+        "model": "anthropic/claude-opus-4-7",
+        "thinking": "xhigh"
+      }
+    }
+  }
+}

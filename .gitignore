@@ -244,6 +244,7 @@ crates/*/fuzz/Cargo.lock
 .pi/*
 
 # Committed project-shared Pi configs
+!.pi/settings.json
 !.pi/conventions.json
 !.pi/codebase-wiki.json
 !.pi/wiki/

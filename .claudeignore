@@ -107,6 +107,7 @@ id_ed25519
 .codex/
 .atl/
 .pi/*
+!.pi/settings.json
 !.pi/conventions.json
 !.pi/codebase-wiki.json
 !.pi/wiki/
