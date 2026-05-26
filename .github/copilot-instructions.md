@@ -77,11 +77,16 @@ DO NOT comment on:
 Single path through **`nebula-metrics`** for everything: lock-free in-memory
 registry plus Prometheus-style export and label-safety guards. The former
 two-tier `nebula-telemetry` → `nebula-metrics` stack was collapsed (ADR-0046)
-and the `nebula-telemetry` crate is gone — if you see
-`nebula-telemetry::MetricsRegistry` anywhere in the working tree it is drift
-and should be flagged. Domain crates consume via DI:
+and the `nebula-telemetry` crate is gone. Domain crates consume via DI:
 `Option<Arc<MetricsRegistry>>`. Flag PRs that introduce alternate metrics
 stacks.
+
+Flag `nebula-telemetry` references **only in active code or configuration**
+(`crates/**/*.rs`, `apps/**/*.rs`, `**/*.toml`, build scripts) — those are
+drift that would not compile. Historical references in `docs/adr/0046-*`,
+`docs/MATURITY.md` journal entries, `docs/INTEGRATION_MODEL.md` migration
+notes, `crates/**/README.md`, and the `docs/plans/` archive are
+**intentional** and must NOT be flagged.
 
 ### Errors
 
