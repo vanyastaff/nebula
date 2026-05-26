@@ -6,9 +6,17 @@
 //!
 //! 1. The trace pipeline captures spans for the request handler, the control-queue dispatch,
 //!    and the action execution.
-//! 2. Every captured span shares the same `trace_id`.
-//! 3. That `trace_id` matches the inbound `traceparent` header (preservation across the chain).
+//! 2. At least one captured span carries the inbound `traceparent` trace id (W3C
+//!    propagation reached the per-request span tree).
+//! 3. More than one captured span lands on the inbound trace id (the chain extends past the
+//!    HTTP edge into the engine — a regression where propagation breaks after the edge would
+//!    leave exactly one matching span).
 //! 4. At least one OTLP metric export reaches the in-memory collector (counter or histogram).
+//!
+//! The stricter "no engine span drifts onto a fresh trace id" invariant is covered by
+//! `crates/engine/src/control_trace.rs`'s unit tests; this test fixture legitimately captures
+//! setup-time spans from earlier requests in the same process (workflow activate, etc.)
+//! that originate on their own trace ids, so a strict all-spans assertion would be noisy.
 //!
 //! ## Why an in-memory collector
 //!

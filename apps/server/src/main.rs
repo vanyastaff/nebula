@@ -21,7 +21,8 @@ async fn main() -> Result<(), compose::ServerRunError> {
     // pipeline can be attached against the shared `MetricsRegistry` once `AppState` is
     // built, and so the whole guard drops only when the transport returns — flushing both
     // span and metric batches via `provider.shutdown()` (see ADR-0050 binary init contract).
-    let telemetry_guard = nebula_api::init_api_telemetry();
+    let telemetry_guard =
+        nebula_api::init_api_telemetry().map_err(compose::ServerRunError::Telemetry)?;
     let cli = Cli::parse();
     match cli.transport {
         Transport::Api | Transport::All => {

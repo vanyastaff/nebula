@@ -1,7 +1,8 @@
 # OpenTelemetry Collector — minimal local dev pipeline.
 #
-# Accepts OTLP on gRPC (:4317) and HTTP (:4318), exports spans to Jaeger via
-# its native collector gRPC port, and renders incoming traces / metrics / logs
+# Accepts OTLP on gRPC (:4317) and HTTP (:4318), forwards spans to Jaeger via
+# OTLP on `jaeger:4317` (Jaeger 1.62+ accepts OTLP when
+# `COLLECTOR_OTLP_ENABLED=true`), and renders incoming traces / metrics / logs
 # to the collector's stdout via the debug exporter (so operators can verify
 # the pipeline without opening the Jaeger UI). Designed to pair 1:1 with
 # `deploy/docker/docker-compose.observability.yml` — the Jaeger service name

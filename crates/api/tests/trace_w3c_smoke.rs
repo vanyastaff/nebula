@@ -1,4 +1,4 @@
-//! Smoke test for the M3.5 telemetry composition.
+//! Smoke test for the W3C trace context wiring on the HTTP edge.
 //!
 //! Proves that `nebula_api::init_api_telemetry` actually wires a
 //! `tracing_opentelemetry::OpenTelemetryLayer` into the global Subscriber — without that layer
@@ -27,7 +27,7 @@ use tower_http::trace::{DefaultMakeSpan, MakeSpan, TraceLayer};
 #[tokio::test]
 async fn init_api_telemetry_emits_traceparent_on_response() {
     // Idempotent: safe even if another test in this binary already initialised the subscriber.
-    nebula_api::init_api_telemetry();
+    let _ = nebula_api::init_api_telemetry().expect("init_api_telemetry must succeed in tests");
 
     let app = Router::new()
         .route("/ping", get(|| async { "pong" }))
@@ -67,11 +67,11 @@ async fn init_api_telemetry_emits_traceparent_on_response() {
 
 /// End-to-end: an inbound `traceparent` is extracted, attached as parent of the per-request
 /// span, and the response carries a `traceparent` with the **same** trace id. This is the load-
-/// bearing M3.5 contract that a downstream service can correlate the response with the trace it
+/// bearing the contract that a downstream service can correlate the response with the trace it
 /// initiated upstream.
 #[tokio::test]
 async fn inbound_traceparent_round_trips_with_same_trace_id() {
-    nebula_api::init_api_telemetry();
+    let _ = nebula_api::init_api_telemetry().expect("init_api_telemetry must succeed in tests");
 
     // Production composition: trace_context (extract) → TraceLayer with custom make_span that
     // attaches the inbound parent → response inject. Mirrors `build_app` exactly so any

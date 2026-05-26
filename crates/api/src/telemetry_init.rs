@@ -65,6 +65,27 @@ const METRICS_INTERVAL_ENV: &str = "NEBULA_METRICS_OTLP_INTERVAL_SECS";
 /// development environments via the env var above.
 const DEFAULT_METRICS_EXPORT_INTERVAL: Duration = Duration::from_mins(1);
 
+/// Typed error returned from [`init_api_telemetry`] when an OTLP-related step fails.
+///
+/// When `OTEL_EXPORTER_OTLP_ENDPOINT` is set the binary opted in to OTLP shipping; if the
+/// exporter cannot be built we fail closed so misconfigured production deployments cannot
+/// silently drop traces. The exporter-less path (env unset / `"disabled"`) returns
+/// successfully with a guard that has no provider attached.
+#[derive(Debug, thiserror::Error)]
+pub enum TelemetryInitError {
+    /// OTLP `SpanExporter::builder().build()` failed for the configured endpoint. The
+    /// endpoint string is preserved so operators can debug the misconfiguration without
+    /// having to inspect env state.
+    #[error("OTLP span exporter failed to build for `{endpoint}`: {source}")]
+    SpanExporter {
+        /// Endpoint pulled from `OTEL_EXPORTER_OTLP_ENDPOINT` at init time.
+        endpoint: String,
+        /// Underlying `opentelemetry_otlp` build failure.
+        #[source]
+        source: opentelemetry_otlp::ExporterBuildError,
+    },
+}
+
 /// Handle returned from [`init_api_telemetry`] so the binary can deterministically shut down
 /// any installed `SdkTracerProvider` (and, once attached, the OTLP metrics pipeline) on
 /// graceful shutdown.
@@ -181,10 +202,10 @@ impl Drop for TelemetryGuard {
 /// leaking the background batch processor task.
 ///
 /// `RUST_LOG` is honoured by `EnvFilter`; falls back to `info` when unset or malformed.
-pub fn init_api_telemetry() -> TelemetryGuard {
+pub fn init_api_telemetry() -> Result<TelemetryGuard, TelemetryInitError> {
     global::set_text_map_propagator(TraceContextPropagator::new());
 
-    let (provider, tracer, otlp_attached) = build_tracer_provider();
+    let (provider, tracer, otlp_attached) = build_tracer_provider()?;
 
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     let fmt_layer = tracing_subscriber::fmt::layer().with_filter(filter);
@@ -214,13 +235,13 @@ pub fn init_api_telemetry() -> TelemetryGuard {
                 "nebula_api::init_api_telemetry: unused tracer provider shutdown error: {shutdown_err}"
             );
         }
-        return TelemetryGuard::default();
+        return Ok(TelemetryGuard::default());
     }
 
-    TelemetryGuard {
+    Ok(TelemetryGuard {
         provider: if otlp_attached { Some(provider) } else { None },
         metrics_guard: None,
-    }
+    })
 }
 
 /// Build an [`SdkTracerProvider`] (with the OTLP exporter attached when configured) and the
@@ -230,35 +251,38 @@ pub fn init_api_telemetry() -> TelemetryGuard {
 /// provider in the guard or let it drop immediately. The exporter-less path still returns a
 /// usable tracer so spans get OTel ids and the response `traceparent` header keeps working
 /// even when no collector is configured.
-fn build_tracer_provider() -> (SdkTracerProvider, Tracer, bool) {
+///
+/// Fails closed when `OTEL_EXPORTER_OTLP_ENDPOINT` is set but `SpanExporter::builder().build()`
+/// returns an error — silently falling back to an exporter-less tracer would let a
+/// misconfigured production deployment drop traces without any signal. Mirrors the
+/// fail-closed contract on the metrics-side seam (see
+/// [`TelemetryGuard::attach_metrics_exporter`] / [`OtlpInitError`]).
+fn build_tracer_provider() -> Result<(SdkTracerProvider, Tracer, bool), TelemetryInitError> {
     let resource = build_resource();
     let mut builder = SdkTracerProvider::builder().with_resource(resource);
     let mut otlp_attached = false;
 
     if let Some(endpoint) = resolve_otlp_endpoint() {
-        match build_otlp_span_exporter(&endpoint) {
-            Ok(exporter) => {
-                // Batch export needs an active Tokio runtime — mirror the `nebula_log` fallback
-                // so callers without a runtime (rare, but supported in some test harnesses) get
-                // a simple exporter instead of a runtime panic.
-                if tokio::runtime::Handle::try_current().is_ok() {
-                    builder = builder.with_batch_exporter(exporter);
-                } else {
-                    builder = builder.with_simple_exporter(exporter);
-                }
-                otlp_attached = true;
-            },
-            Err(err) => {
-                eprintln!(
-                    "nebula_api::init_api_telemetry: failed to build OTLP span exporter for `{endpoint}` ({err}) — falling back to exporter-less tracer"
-                );
-            },
+        let exporter = build_otlp_span_exporter(&endpoint).map_err(|source| {
+            TelemetryInitError::SpanExporter {
+                endpoint: endpoint.clone(),
+                source,
+            }
+        })?;
+        // Batch export needs an active Tokio runtime — mirror the `nebula_log` fallback
+        // so callers without a runtime (rare, but supported in some test harnesses) get
+        // a simple exporter instead of a runtime panic.
+        if tokio::runtime::Handle::try_current().is_ok() {
+            builder = builder.with_batch_exporter(exporter);
+        } else {
+            builder = builder.with_simple_exporter(exporter);
         }
+        otlp_attached = true;
     }
 
     let provider = builder.build();
     let tracer = provider.tracer(TRACER_INSTRUMENTATION_NAME);
-    (provider, tracer, otlp_attached)
+    Ok((provider, tracer, otlp_attached))
 }
 
 fn build_otlp_span_exporter(

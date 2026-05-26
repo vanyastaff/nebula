@@ -9,7 +9,7 @@ use std::{net::SocketAddr, sync::Arc, time::Duration};
 use thiserror::Error;
 
 use nebula_api::{
-    ApiConfig, ApiConfigError, AppState, TelemetryGuard, app,
+    ApiConfig, ApiConfigError, AppState, TelemetryGuard, TelemetryInitError, app,
     config::{AuthBackendKind, IdempotencyBackend},
     domain::auth::backend::{AuthBackend, InMemoryAuthBackend},
     middleware::{IdempotencyStore, InMemoryIdempotencyStore},
@@ -47,6 +47,14 @@ pub enum ServerRunError {
     /// startup log.
     #[error("OTLP metrics exporter failed to attach")]
     MetricsExporter(#[source] OtlpInitError),
+    /// Telemetry bootstrap (`init_api_telemetry`) failed. Most likely cause is an
+    /// unreachable / malformed `OTEL_EXPORTER_OTLP_ENDPOINT` that breaks the OTLP
+    /// `SpanExporter` build. Same fail-closed reasoning as [`Self::MetricsExporter`]:
+    /// operators who set the env var explicitly want OTLP, so we refuse to silently fall
+    /// back to an exporter-less tracer. Carries the typed [`TelemetryInitError`] as the
+    /// `source` so the error chain reaches the startup-log formatter intact.
+    #[error("telemetry bootstrap failed")]
+    Telemetry(#[source] TelemetryInitError),
 }
 
 /// Transport-specific initialization failure.

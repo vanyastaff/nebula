@@ -4,12 +4,15 @@
 # trace and metric exporters wired in `crates/api/src/telemetry_init.rs` and
 # `crates/metrics/src/otlp.rs`:
 #
-#   * otelcol-contrib accepts OTLP on :4317 (grpc) and :4318 (http), exports
-#     spans to Jaeger and logs traces / metrics / logs to the collector stdout
-#     for ad-hoc inspection.
-#   * jaeger runs the all-in-one image with the OTLP collector receiver
-#     disabled (the standalone otelcol routes spans to it via Jaeger's native
-#     gRPC ingest), exposing the UI on :16686.
+#   * otelcol-contrib accepts OTLP on :4317 (grpc) and :4318 (http), forwards
+#     spans to Jaeger via OTLP (`jaeger:4317`) over the compose network, and
+#     logs traces / metrics / logs to the collector stdout for ad-hoc
+#     inspection via the `debug` exporter.
+#   * jaeger runs the all-in-one image with the OTLP receiver ENABLED
+#     (`COLLECTOR_OTLP_ENABLED=true`) so the standalone collector can deliver
+#     spans to it. The deprecated Jaeger native gRPC port (`:14250`) is
+#     intentionally unused — the otelcol `jaeger` exporter that spoke it was
+#     removed in v0.105. UI is on :16686.
 #
 # Boot with `task obs:up` (Taskfile.yml :286), tear down with `task obs:down`.
 
@@ -22,8 +25,8 @@ services:
     volumes:
       - ./otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml:ro
     ports:
-      - "4317:4317"   # OTLP gRPC
-      - "4318:4318"   # OTLP HTTP
+      - "4317:4317" # OTLP gRPC
+      - "4318:4318" # OTLP HTTP
       - "55679:55679" # zpages
     depends_on:
       - jaeger

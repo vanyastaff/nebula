@@ -142,8 +142,9 @@ nebula-engine = { path = "../engine" }
 # assert the API → engine → action one-root-span trace contract without
 # spinning up a real collector. Dev-only — the production crates never link
 # the `testing` feature.
+# `tracing-opentelemetry` is already a normal dep; Cargo unifies dev-deps
+# with normal-deps for tests, so it is not re-listed here.
 opentelemetry_sdk = { workspace = true, features = ["testing", "metrics"] }
-tracing-opentelemetry = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
 hex = { workspace = true }
 hmac = { workspace = true }

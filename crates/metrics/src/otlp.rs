@@ -304,18 +304,32 @@ impl OtlpMetricsExporter {
 
 /// Spawn the background discovery task. Wakes at half the export interval (with a floor) and
 /// re-runs [`discover_and_register`]. Stops cleanly when the guard sets `stop`.
+///
+/// Fails closed when no Tokio runtime is available: instead of letting
+/// `tokio::spawn` panic on the library path, the function logs a warning and
+/// returns without spawning. Already-registered instruments still export on the
+/// periodic-reader cycle; only the lazy discovery of *new* `(name, kind)`
+/// pairs is disabled.
 fn spawn_discovery_task(
     meter: opentelemetry::metrics::Meter,
     inner: Arc<ExporterInner>,
     export_interval: Duration,
     stop: Arc<AtomicBool>,
 ) {
+    let Ok(handle) = tokio::runtime::Handle::try_current() else {
+        tracing::warn!(
+            "OTLP metrics exporter installed outside a Tokio runtime; lazy discovery of new \
+             (name, kind) pairs is disabled. Already-registered instruments still export on \
+             the periodic-reader cycle."
+        );
+        return;
+    };
     // Floor of 1s avoids tight loops on absurdly short configured intervals (test harnesses).
     let mut sleep_for = export_interval / 2;
     if sleep_for < Duration::from_secs(1) {
         sleep_for = Duration::from_secs(1);
     }
-    tokio::spawn(async move {
+    handle.spawn(async move {
         loop {
             if stop.load(Ordering::SeqCst) {
                 return;
