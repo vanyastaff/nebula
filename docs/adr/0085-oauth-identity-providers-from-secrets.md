@@ -193,7 +193,7 @@ flag is rejected at boot when the binary is built with the `release`
 feature.
 
 Integration tests against `wiremock` on `127.0.0.1` work via the
-`test-util` feature gate documented in D-14.
+`test_support` module gated by `--cfg nebula_test_util` documented in D-14.
 
 ### D-11 (recon-3 revised) — Reuse `mint_pkce` + `flow::build_authorization_uri` + `OAuthStateRepo`
 
@@ -232,20 +232,92 @@ A future change (1.1 "OAuth-as-stored-credential" surface) will use
 `continue_resolve` independently for Plane B. Both paths coexist without
 conflict.
 
-### D-14 — `nebula-api` `test-util` feature exposes `exchange_code_unchecked`
+### D-14 — `nebula-api` `test_support` module exposes ALL OAuth bypass helpers (🟥 RECON-5 — fixed two architectural defects from PR-757 wave-4 Codex review)
 
 Integration tests against `wiremock` on `127.0.0.1` cannot pass
-`validate_token_endpoint`'s strict policy (D-9). A new `test-util`
-feature on `nebula-api`'s `Cargo.toml` exposes
-`flow::exchange_code_unchecked` (the existing private bypass at
-`flow.rs:330+`) to integration test consumers via `[dev-dependencies]
-nebula-api = { path = "...", features = ["test-util"] }`.
+`validate_token_endpoint`'s strict policy (D-9) and therefore fail on
+**all three** server-side IdP HTTP call sites used by Plane A:
+1. Token endpoint POST (`flow::exchange_code`).
+2. Userinfo endpoint GET (uses `oauth_token_http_client()` directly).
+3. OIDC discovery doc GET (D-15 `fetch_oidc_discovery`, also via
+   `oauth_token_http_client()`).
 
-The `release` feature build rejects the `test-util` feature via a
-compile-time assertion (or CI gate in `lefthook.yml`). Production
-binaries do NOT include `test-util`. This matches the existing
-`nebula-credential-runtime::test_fixtures` precedent at
-`crates/credential-runtime/src/lib.rs:31-35`.
+**Gate mechanism**: use a **custom `cfg`** named `nebula_test_util` (NOT
+a Cargo feature). Tokio-precedent: features are *additive* across the
+dep tree — if any crate in a transitive dependency activates `test-util`,
+production binaries inherit it silently. Custom `cfg` is process-level
+opt-in via `RUSTFLAGS="--cfg nebula_test_util"` and **cannot** be
+transitively activated. Matches the `tokio_unstable` pattern (see
+[`tokio::main` docs on `tokio_unstable`](https://docs.rs/tokio/latest/tokio/#unstable-features)).
+
+**Module shape**:
+
+```rust
+// crates/api/src/lib.rs
+#[cfg(nebula_test_util)]
+pub mod test_support;
+
+// crates/api/src/test_support.rs
+//! Test-only helpers — only compiled with `--cfg nebula_test_util`.
+//!
+//! Production builds (no `RUSTFLAGS` opt-in) do NOT contain this
+//! module, so the helpers cannot leak via transitive feature
+//! activation.
+
+pub use crate::transport::oauth::flow::exchange_code_unchecked;
+
+/// Build an OAuth HTTP client without the `validate_token_endpoint`
+/// anti-SSRF gate. Test-only — used by wiremock integration tests
+/// against `127.0.0.1` listeners.
+pub fn oauth_token_http_client_test_unchecked() -> &'static reqwest::Client {
+    crate::transport::oauth::http::oauth_token_http_client()
+}
+
+/// Fetch OIDC discovery doc without `validate_token_endpoint`.
+/// Test-only.
+pub async fn fetch_oidc_discovery_unchecked(url: &str)
+    -> Result<OidcDiscovery, DiscoveryError> { ... }
+```
+
+**Production-build guard**: a compile-time assertion in
+`crates/api/src/lib.rs` that fires if the `nebula_test_util` cfg is
+active in a release build:
+
+```rust
+#[cfg(all(nebula_test_util, not(debug_assertions)))]
+compile_error!(
+    "nebula_test_util cfg must NOT be active in release builds; \
+     remove --cfg nebula_test_util from RUSTFLAGS"
+);
+```
+
+Note `not(debug_assertions)` is the canonical cfg for release-profile
+detection (set by `cargo build --release` and any `[profile.<name>]
+debug-assertions = false`). The earlier attempt at `cfg(feature =
+"release")` was structurally wrong (release is a Cargo profile, not a
+feature). CI parity: `.github/workflows/ci.yml` runs `cargo build
+--release --workspace` with empty `RUSTFLAGS` to prove the guard
+doesn't fire on the default production build, plus a negative-test job
+that runs `RUSTFLAGS="--cfg nebula_test_util" cargo build --release
+--workspace` and asserts a non-zero exit with the `compile_error!`
+message in stderr.
+
+The `nebula-credential-runtime::test_fixtures` Cargo feature precedent
+at `crates/credential-runtime/src/lib.rs:31-35` is **acceptable for
+that crate** because its surface is limited; for `nebula-api` the
+test-bypass exposes multiple SSRF-sensitive helpers, so custom-cfg
+gating is the safer choice.
+
+> **Why this resolves both Codex wave-4 P2 issues**:
+> - **D-A.1**: `cfg(feature = "release")` is replaced by
+>   `cfg(all(nebula_test_util, not(debug_assertions)))`, which is a
+>   real production-detection cfg and structurally cannot be bypassed
+>   by Cargo feature unification.
+> - **D-A.2**: `test_support` module exposes helpers for all three
+>   server-side OAuth HTTP call sites, not just `exchange_code_unchecked`.
+>   Integration tests can mount wiremock on `127.0.0.1` and exercise
+>   token / userinfo / discovery without bypass code leaking to
+>   production.
 
 ### D-15 — OIDC discovery doc fetch + process-lifetime cache
 
@@ -355,9 +427,12 @@ should reference both this ADR and the relevant recon.
 - Symmetric `InMemoryAuthBackend` impl for both methods.
 - Trait signature change: `AuthBackend::start_oauth(provider, redirect_uri)`
   (redirect_uri auto-derived by the handler from `ApiConfig::public_url`).
-- New `nebula-api` `test-util` feature exposing
-  `flow::exchange_code_unchecked` for integration tests; rejected in
-  `release` builds.
+- New `nebula-api` `test_support` module gated by `#[cfg(nebula_test_util)]`
+  exposing test-only bypass helpers for all three server-side OAuth
+  HTTP call sites (token POST + userinfo GET + OIDC discovery GET);
+  custom-cfg opt-in via `RUSTFLAGS="--cfg nebula_test_util"`
+  (NOT a Cargo feature, to avoid transitive activation); production
+  release builds are guarded by `compile_error!` if the cfg is set.
 
 **Code paths NOT changing:**
 

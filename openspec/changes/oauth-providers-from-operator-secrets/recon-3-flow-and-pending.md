@@ -168,9 +168,20 @@ Net code change in `start_oauth`: ~30 LOC (replace synthetic format string + pip
 
 ### Add D-14 — `nebula-api` `test-util` feature
 
-**Status**: NEW.
+> **🟥 SUPERSEDED by PR-757 wave-5 (Codex P2 on commit `7ee32f11`).**
+> The original D-14 — a Cargo `test-util` feature — has two architectural defects:
+> (1) Cargo features are additive; a transitive dependency activating `test-util`
+> silently includes it in production builds. (2) Exposing only `exchange_code_unchecked`
+> bypasses token POST validation but not userinfo GET / OIDC discovery GET, both of
+> which also hit `validate_token_endpoint`. The canonical D-14 (see ADR-0085 and
+> `design.md` D-14) replaces the Cargo feature with a **custom cfg `nebula_test_util`**
+> (opt-in via `RUSTFLAGS="--cfg nebula_test_util"`, tokio-precedent) and exposes a
+> `test_support` module with bypass helpers for all three IdP HTTP call sites. The
+> historical text below is preserved for audit.
 
-**Decision**: `nebula-api/Cargo.toml` declares a `test-util` feature that:
+**Status**: NEW (→ SUPERSEDED by wave-5).
+
+**Decision (historical)**: `nebula-api/Cargo.toml` declares a `test-util` feature that:
 - Exposes `flow::exchange_code_unchecked` (currently `async fn`, lift to `pub`).
 - Exposes any other helpers the integration tests need (none others identified yet).
 

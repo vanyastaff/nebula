@@ -131,7 +131,7 @@ PKCE plain is structurally impossible per Scenario 2.2 (the `PkceMethod` enum ha
 - **Scenario 3.1 — Happy path mints a session (🟥 RECON-3 + RECON-4 REVISED)**
   - **Given** `start_oauth` returned `state = "abc"` and persisted the `plane_a_oauth_states` row with `redirect_uri = "https://app.example.com/auth/oauth/google/callback"`
   - **And** the IdP redirects with `?state=abc&code=xyz` to the callback URL
-  - **And** `wiremock` (via the `nebula-api/test-util` feature — D-14) is configured to return a 200 token response and a userinfo response containing `email = "alice@example.com"` (verified) and `sub = "google-1"`
+  - **And** `wiremock` (reached via `nebula_api::test_support::*` bypass helpers under `--cfg nebula_test_util` — D-14 wave-5 revision) is configured to return a 200 token response and a userinfo response containing `email = "alice@example.com"` (verified) and `sub = "google-1"`
   - **When** the handler derives the same `redirect_uri` and calls `complete_oauth(OAuthProvider::Google, "abc", "xyz", &redirect_uri)`
   - **Then** the call returns `Ok(Session { ... })`
   - **And** `consume_by_state_and_provider("abc", "google")` returned the row with `consumed_at` now set; a replay would return `None`
