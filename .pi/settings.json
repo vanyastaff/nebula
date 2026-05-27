@@ -1,8 +1,8 @@
 {
-  "_comment": "Nebula per-project Pi settings. См. CLAUDE.md § AI Context Files.",
+  "_comment": "Nebula per-project Pi settings. See CLAUDE.md § AI Context Files.",
 
   "subagents": {
-    "_comment": "Per-project pi-subagents overrides. 3-тирная Anthropic-стратегия с полной провайдер-диверсификацией fallback: каждый слот разный провайдер (anthropic primary → github-copilot → cursor-agent → openai-codex), без повторов провайдеров в одной цепочке. Проверено в веб-поиске 26.05.2026. Cost rules: в Copilot только модели ≤ 1x multiplier (haiku-4-5=0.33x, sonnet-4-5/4-6=1x). ИСКЛЮЧЕНО из Copilot: opus-4-6 (5x), opus-4-7 (7.5x), GPT-5.5 (7.5x) — вместо openai-codex (flat-fee в ChatGPT subscription). Cursor-agent v0.4.4 покрывает sonnet-4-5/4-6 + opus-4-5/4-6/4-6-max (haiku в v0.4.4 НЕТ — в cursor fallback идёт sonnet-4-5 вместо haiku). Thinking levels (Opus 4.7 native scale): medium=recon, high=workhorse, max=no token constraint for architecture/security. Opus 4.7 только adaptive thinking; opus-4-6 поддерживает [low,medium,high] — pi v0.72+ авто-clamp через thinkingLevelMap.",
+    "_comment": "Per-project pi-subagents overrides. Three-tier Anthropic strategy with full provider diversification in fallback chains: each slot uses a different provider (anthropic primary → github-copilot → cursor-agent → openai-codex), no provider repeats within one chain so a single-provider outage burns at most one slot. Verified against the May 2026 model landscape (web search 26.05.2026). Cost rules: in github-copilot only models with multiplier ≤ 1x (haiku-4-5=0.33x, sonnet-4-5/4-6=1x, gpt-5.4=1x). EXCLUDED from copilot: opus-4-6 (5x), opus-4-7 (7.5x), gpt-5.5 (7.5x) — those go through openai-codex (flat-fee in ChatGPT subscription) instead. pi-cursor-agent v0.4.4 maps only sonnet-4-5/4-6 + opus-4-5/4-6/4-6-max (no haiku yet — cursor fallback for haiku tier substitutes sonnet-4-5). Thinking levels follow the Opus 4.7 native scale: medium=recon, high=workhorse, max=no token constraint for architecture / security review. Opus 4.7 only supports adaptive thinking; opus-4-6 supports [low,medium,high]; pi v0.72+ auto-clamps via thinkingLevelMap.",
     "agentOverrides": {
       "scout": {
         "model": "claude-haiku-4-5",
@@ -76,7 +76,7 @@
     "extensionManager": {
       "config": {
         "@vanillagreen/pi-hooks": {
-          "_comment": "Nebula tuning: убираем дубли с lefthook.yml + .claude/hooks/. Workspace-wide clippy после каждого edit на 60+ крейтах = 30-60с тормозов. Оставляем cheap-and-useful (bare cd block) + одну фоновую проверку в конце хода.",
+          "_comment": "Nebula tuning: avoid duplicate work between lefthook.yml + .claude/hooks/ + this package. Workspace-wide clippy after every edit on 60+ crates costs 30-60s of UI-blocking even with sccache. Keep cheap-and-useful (bare-cd block) and one advisory pass at end of turn; let lefthook handle pre-commit per-crate clippy and let lsp_diagnostics (rust-analyzer) cover fast per-file feedback.",
           "enabled": true,
           "blockBareCd": true,
           "preCommitCheck": false,
@@ -86,7 +86,7 @@
         },
 
         "@vanillagreen/pi-output-policy": {
-          "_comment": "В крупном Rust workspace вывод cargo/clippy легко уходит в сотни KB. balanced (default) уже хорошо, но дадим чуть больше bytes для развёрнутых clippy ошибок.",
+          "_comment": "In a large Rust workspace, cargo / clippy output can easily reach hundreds of KB per command. The balanced default mode is fine, but raise the inline tail a little so expanded clippy errors stay legible in chat without spilling to disk for every single failure.",
           "policyMode": "balanced",
           "spillThresholdKb": 64,
           "inlineTailKb": 20,

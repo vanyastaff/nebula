@@ -1,5 +1,5 @@
 {
-  "_comment": "Nebula project — pi-permission-system policy. Tuned for daily dev flow: широкий allow для повседневных команд, ask только на необратимое (publish/force-push/hard-reset), deny на реально опасное. См. CLAUDE.md § AI Context Files.",
+  "_comment": "Nebula project — pi-permission-system policy. Tuned for daily dev flow: broad allow for everyday commands, ask only for irreversible operations (publish / force-push / hard-reset / release / pr-merge), deny only for truly dangerous patterns. Matching is against the raw command string (no shell expansion), so destructive forms are enumerated explicitly. See CLAUDE.md § AI Context Files.",
   "permission": {
     "*": "allow",
 
@@ -27,13 +27,17 @@
       "sudo *": "deny",
       "rm -rf /*": "deny",
       "rm -rf ~*": "deny",
+      "rm -rf .": "deny",
+      "rm -rf .*": "deny",
+      "rm -rf ./*": "deny",
+      "rm -rf $PWD*": "deny",
       "rm -rf target*": "deny",
       "rm -rf .git*": "deny",
       "rm -rf .worktrees*": "deny",
       "rm -rf .pi*": "deny",
 
       "git commit *--no-verify*": "deny",
-      "git push --no-verify*": "deny",
+      "git push *--no-verify*": "deny",
       "cargo fmt --all*": "deny",
 
       "git push *--force*": "ask",

@@ -24,8 +24,7 @@
               "excludeDirs": [
                 "target",
                 ".worktrees",
-                ".claude/worktrees",
-                ".pi-audit-2026-05"
+                ".claude/worktrees"
               ]
             },
             "procMacro": { "enable": true },
