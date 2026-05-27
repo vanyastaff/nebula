@@ -364,7 +364,11 @@ gating is the safer choice.
 
 The original D-15 ran `validate_token_endpoint` only on the `discovery_url` itself (the URL Nebula GETs). The wave-6 P1 SSRF audit (D-9-WAVE6 above) requires that the URLs RETURNED in the discovery JSON (authorize_url / token_url / userinfo_url / jwks_url) are ALSO validated before being cached — a hostile discovery doc could return internal-IP endpoint URLs and bypass the gate.
 
-**Implementation**: `fetch_oidc_discovery(url)` calls `validate_oauth_outbound_url(url)` first (gates the doc fetch itself), then after parsing the JSON response calls `validate_oauth_outbound_url` on each of the returned `authorize_url`, `token_url`, `userinfo_url`, and `jwks_url` (if present). The cache insert is skipped and `DiscoveryError::EndpointSsrfRejected { field: "<token_url|userinfo_url|...>", url_host }` returns to the caller if any child URL fails. No partial cache entries.
+**Implementation** (wave-7 refined per F.2): `fetch_oidc_discovery(url, oauth_allow_insecure_localhost)` calls strict `validate_oauth_outbound_url(url)` first (gates the doc fetch itself — server-side). Then after parsing the JSON response, validates each returned child URL per its threat model:
+- **`token_url`, `userinfo_url`, `jwks_url`** (when present) — strict `validate_oauth_outbound_url` (server-side fetches; anti-SSRF non-negotiable).
+- **`authorize_url`** — flag-aware `validate_oauth_authorize_url(authorize_url, oauth_allow_insecure_localhost, !cfg!(debug_assertions))` (browser-fetched; same posture as static `Manual.authorize_url`).
+
+The cache insert is skipped and `DiscoveryError::EndpointSsrfRejected { field: "<token_url|userinfo_url|...>", url_host }` returns to the caller if any child URL fails its respective validator. No partial cache entries.
 
 Original D-15 text below (still applies to the cache-shape and timing decisions):
 
@@ -495,7 +499,7 @@ should reference both this ADR and the relevant recon.
   `nebula-credential-runtime`, `wiremock` (dev), `jsonwebtoken`, `hmac`,
   `sha2`, `zeroize`) is already present.
 
-**Strict TDD evidence** (per `openspec/config.yaml`): 23 RED tests
+**Strict TDD evidence** (per `openspec/config.yaml`): **27 RED tests** (wave-6 + wave-7 additions for security/data-model)
 anchored across PR-2 (5 tests), PR-3 (5 tests), PR-4 (13 tests). PR-5
 is doc-only; PR-1 (this ADR) is markdown-only.
 

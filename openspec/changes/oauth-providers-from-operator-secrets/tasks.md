@@ -61,7 +61,7 @@
 
 | # | Tag | Description | LOC |
 |---|---|---|---|
-| T3.1 | SCAFFOLD | Create `crates/api/src/transport/oauth/discovery.rs`. Define `OidcDiscovery { authorize_url, token_url, userinfo_url, jwks_url: Option<String> }` (serde Deserialize). Add `static DISCOVERY_CACHE: OnceLock<DashMap<String, OidcDiscovery>>`. Implement `async fn fetch_oidc_discovery(url: &str) -> Result<OidcDiscovery, DiscoveryError>` per D-15-WAVE6: (1) call `validate_oauth_outbound_url(url)` BEFORE the GET; (2) GET via `oauth_token_http_client()` + parse JSON; (3) validate EACH returned child URL (`authorize_url`/`token_url`/`userinfo_url`/`jwks_url` when Some) via `validate_oauth_outbound_url` BEFORE cache insert — hostile discovery doc with internal-IP child URLs fails with `DiscoveryError::EndpointSsrfRejected { field, url_host }`, no partial cache entries. **Also rename `flow::validate_token_endpoint` → `flow::validate_oauth_outbound_url`** (or add an alias) to reflect the generalized scope (D-9-WAVE6); update existing call sites. | ~130 |
+| T3.1 | SCAFFOLD | Create `crates/api/src/transport/oauth/discovery.rs`. Define `OidcDiscovery { authorize_url, token_url, userinfo_url, jwks_url: Option<String> }` (serde Deserialize). Add `static DISCOVERY_CACHE: OnceLock<DashMap<String, OidcDiscovery>>`. Implement `async fn fetch_oidc_discovery(url: &str, oauth_allow_insecure_localhost: bool) -> Result<OidcDiscovery, DiscoveryError>` per D-15-WAVE6 + wave-7 validator split: (1) call **strict** `validate_oauth_outbound_url(url)` BEFORE the GET (server fetches the discovery doc itself); (2) GET via `oauth_token_http_client()` + parse JSON; (3) validate each returned child URL per its threat model: **`token_url` / `userinfo_url` / `jwks_url` via strict `validate_oauth_outbound_url`** (server-side fetches — SSRF-sensitive); **`authorize_url` via flag-aware `validate_oauth_authorize_url(authorize_url, oauth_allow_insecure_localhost, !cfg!(debug_assertions))`** (browser-fetched — same flag posture as static Manual.authorize_url per F.2 wave-7); ANY child URL rejection fails with `DiscoveryError::EndpointSsrfRejected { field, url_host }`, no partial cache entries. **Also rename `flow::validate_token_endpoint` → `flow::validate_oauth_outbound_url`** + add new `validate_oauth_authorize_url` helper per T2.7b; update existing call sites. | ~150 |
 | T3.2 | RED | `discovery_fetches_and_caches_well_known_doc` (unit in `discovery.rs`). Use a mock server. | ~40 |
 | T3.3 | RED | `start_oauth_emits_real_authorize_url_with_pkce_s256_for_oidc_provider` (integration in `crates/api/tests/oauth_provider_e2e.rs` — create file). | ~50 |
 | T3.4 | RED | `start_oauth_emits_real_authorize_url_for_manual_provider_with_explicit_endpoints`. | ~40 |
@@ -133,17 +133,17 @@
 
 ---
 
-## Cumulative summary
+## Cumulative summary (🟥 WAVE-8 updated counts per Codex G.1)
 
 | PR | LOC target | RED tests | Key deliverable |
 |---|---|---|---|
 | 1 | ~180 | 0 | ADR-0085 |
-| 2 | ~330 | 5 | Trait sig + config types + compose validation + test-util feature |
-| 3 | ~150 | 5 | Real authorize URL + OIDC discovery |
-| 4 | ~330 | 13 | Real complete_oauth + external_identities + find-or-create user |
+| 2 | ~360 | 5 | Trait sig + config types + two-validator compose validation + test_support module |
+| 3 | ~170 | 5 | Real authorize URL + OIDC discovery (with per-child-URL validator split) |
+| 4 | ~380 | **17** | Real complete_oauth + external_identities + REQ-oauth-006 short-circuit + find-or-create user + GitHub verified_emails_url |
 | 5 | ~240 | 0 | Docs + ROADMAP flip + 1.1 follow-up |
 
-**Total**: ~1,230 LOC, 23 RED tests (recon-4 said 21; the +2 are T4.4 and T4.5 split into OIDC and Manual happy paths to cover both endpoint shapes — counted as one in recon-4 §6).
+**Total**: ~1,330 LOC, **27 RED tests** (recon-4 baseline 21 + wave-6 additions (+2 for github verified_emails + SSRF defense) + wave-7 additions (+2 for REQ-oauth-006 short-circuit + IdP email change) + wave-3 split (+2 for T4.4/T4.5 OIDC vs Manual happy paths)). The increase reflects the security + data-model additions surfaced by PR-1's multi-wave review.
 
 ## Strict TDD evidence requirements
 
@@ -197,7 +197,7 @@ status: tasks-draft
 executive_summary: |
   5-PR chain decomposed into 65 tasks: PR-1 (ADR, 4 tasks), PR-2 (config + trait + test-util, 15 tasks),
   PR-3 (authorize URL + OIDC discovery, 12 tasks), PR-4 (complete_oauth + external_identities, 22 tasks),
-  PR-5 (docs + ROADMAP, 7 tasks). 23 RED tests anchored. Each task tagged RED/GREEN/TRIANGULATE/
+  PR-5 (docs + ROADMAP, 7 tasks). **27 RED tests** anchored (was 23 baseline; wave-6/-7 added 4 for security/data-model gaps). Each task tagged RED/GREEN/TRIANGULATE/
   REFACTOR/SCAFFOLD/DOC/GATE with LOC estimate. Per-PR ≤ 800 LOC budget. Strict TDD discipline:
   RED commits FIRST, verifiable failure before GREEN. PR-boundary gates enumerated (cargo deny,
   task dev:check, §4.5 grep, ROADMAP visibility). Worker handoff contract requires reading the

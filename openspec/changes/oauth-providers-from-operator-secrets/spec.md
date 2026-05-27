@@ -38,7 +38,10 @@ The server SHALL accept an operator-supplied configuration that maps each suppor
 - `Manual.token_url`, `Manual.userinfo_url`, and (when `Some`) `Manual.verified_emails_url` + `Manual.jwks_url` each pass **strict** `validate_oauth_outbound_url` (server-side fetches — SSRF-sensitive).
 - `Manual.scopes` non-empty.
 - `ApiConfig::public_url` set AND absolute (with scheme). Empty/relative `public_url` is a boot-time error.
-- **Dynamic OIDC URLs** (validated at first `start_oauth` per D-15-WAVE6): the URLs RETURNED in the `.well-known/openid-configuration` JSON (`authorize_url`, `token_url`, `userinfo_url`, `jwks_url`) MUST each pass `validate_oauth_outbound_url` BEFORE the `OidcDiscovery` is cached. A hostile discovery doc with internal-IP child URLs fails with `DiscoveryError::EndpointSsrfRejected { field, url_host }` and the cache stays empty (no partial entries).
+- **Dynamic OIDC URLs** (validated at first `start_oauth` per D-15-WAVE6, refined wave-7 with the two-validator split per F.2): the URLs RETURNED in the `.well-known/openid-configuration` JSON MUST each pass the right validator per its threat model BEFORE the `OidcDiscovery` is cached:
+  - `token_url`, `userinfo_url`, `jwks_url` (when present) — **strict** `validate_oauth_outbound_url` (server-side fetches).
+  - `authorize_url` — **flag-aware** `validate_oauth_authorize_url(url, oauth_allow_insecure_localhost, !cfg!(debug_assertions))` (browser-fetched; same flag posture as static `Manual.authorize_url`).
+  - ANY child URL rejection fails the cache insert with `DiscoveryError::EndpointSsrfRejected { field, url_host }`; the cache stays empty (no partial entries).
 
 **Invariant 2**: Declaring an OAuth provider is sufficient — there is no separate credential row. Boot validates the config; first OAuth-start call resolves endpoints (via `fetch_oidc_discovery` if `Oidc`) and may surface `AuthError::OAuthFailed { cause: "oidc_discovery_failed" }` if the discovery URL is unreachable. Caching is process-wide per discovery URL.
 
