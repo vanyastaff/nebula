@@ -43,5 +43,7 @@ jobs:
           # Mirrors the `[licenses].allow` set in `deny.toml`. Keep both lists
           # aligned — divergence means the same PR can pass dep-review but
           # fail `cargo deny` (or vice versa) and confuse contributors.
-          allow-licenses: Apache-2.0, BSD-2-Clause, BSD-3-Clause, CC0-1.0, CDLA-Permissive-2.0, ISC, MIT, MPL-2.0, Unicode-3.0, Unicode-DFS-2016, Zlib
+          # `0BSD` admits `quoted_printable` (transitive via `lettre` → nebula-server);
+          # OSI-approved, strictly more permissive than MIT (no attribution clause).
+          allow-licenses: 0BSD, Apache-2.0, BSD-2-Clause, BSD-3-Clause, CC0-1.0, CDLA-Permissive-2.0, ISC, MIT, MPL-2.0, Unicode-3.0, Unicode-DFS-2016, Zlib
           comment-summary-in-pr: on-failure

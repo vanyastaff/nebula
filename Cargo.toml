@@ -128,6 +128,14 @@ reqwest = { version = "0.13", features = ["json"], default-features = false }
 axum = { version = "0.8", features = ["json"] }
 tower-http = { version = "0.6", features = ["trace", "cors", "compression-gzip"] }
 
+# SMTP — production email transport (consumed by apps/server's SmtpEmailPort).
+# `default-features = false` strips native-tls / sendmail / file transport;
+# the workspace standard is rustls + tokio, not openssl. `builder` enables
+# the `Message::builder()` typed envelope construction;
+# `smtp-transport` brings `AsyncSmtpTransport<Tokio1Executor>`;
+# `tokio1-rustls-tls` is the only TLS stack we ship (matches reqwest above).
+lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "tokio1-rustls-tls", "builder"] }
+
 # OpenAPI 3.1 spec generation (ADR-0047)
 # `utoipa-axum` is the only mounting path that ties the served `axum::Router`
 # to the generated `OpenApi` value — handlers without `#[utoipa::path]` cannot

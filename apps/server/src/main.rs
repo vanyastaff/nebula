@@ -1,6 +1,7 @@
 //! Nebula server — single composition-root binary. One process, one entry
 //! point: `--transport` selects the ingress (api/webhook/realtime/all).
 mod compose;
+mod email;
 mod transport;
 
 use clap::Parser;

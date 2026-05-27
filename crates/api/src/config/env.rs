@@ -90,6 +90,12 @@ pub(crate) mod tests {
                 "API_IDEMPOTENCY_MAX_RESPONSE_BODY_BYTES",
                 "API_IDEMPOTENCY_SWEEP_INTERVAL_SECS",
                 "API_AUTH_BACKEND",
+                "API_SMTP_HOST",
+                "API_SMTP_PORT",
+                "API_SMTP_USERNAME",
+                "API_SMTP_PASSWORD",
+                "API_SMTP_FROM",
+                "API_SMTP_TLS_MODE",
             ] {
                 std::env::remove_var(key);
             }

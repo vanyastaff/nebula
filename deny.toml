@@ -24,6 +24,7 @@ ignore = [
 
 [licenses]
 allow = [
+  "0BSD",                # quoted_printable (transitive via lettre → nebula-server); OSI-approved, strictly more permissive than MIT (no attribution clause).
   "Apache-2.0",
   "BSD-2-Clause",
   "BSD-3-Clause",

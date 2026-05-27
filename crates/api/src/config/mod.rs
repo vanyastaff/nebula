@@ -26,12 +26,15 @@ pub use errors::ApiConfigError;
 pub use jwt::JwtSecret;
 pub use sub::{
     AuthApiConfig, AuthBackendKind, CookieConfig, CorsConfig, IdempotencyApiConfig,
-    IdempotencyBackend, PaginationConfig, TlsConfig, VersioningConfig, WebhookApiConfig,
+    IdempotencyBackend, PaginationConfig, SmtpEmailConfig, SmtpTlsMode, TlsConfig,
+    VersioningConfig, WebhookApiConfig,
 };
 
 use std::{net::SocketAddr, sync::OnceLock, time::Duration};
 
 use serde::{Deserialize, Serialize};
+
+use secrecy::SecretString;
 
 use self::env::{parse_bool_env, parse_positive_u64_env, parse_u64_env, parse_usize_env};
 use crate::middleware::idempotency::{
@@ -143,6 +146,16 @@ pub struct ApiConfig {
     /// Webhook subsystem configuration (webhook activation).
     #[serde(default)]
     pub webhook: WebhookApiConfig,
+
+    /// Production SMTP transport configuration for the `EmailPort`.
+    ///
+    /// `None` keeps the composition root on the dev `EchoSink` (the
+    /// local-first default); `Some` triggers the `SmtpEmailPort`
+    /// branch in `apps/server::compose`. The sentinel is the
+    /// `API_SMTP_HOST` env var — unset means `None`, present means
+    /// the full struct must validate or `from_env` returns an error.
+    #[serde(default)]
+    pub smtp: Option<SmtpEmailConfig>,
 }
 
 impl std::fmt::Debug for ApiConfig {
@@ -167,6 +180,7 @@ impl std::fmt::Debug for ApiConfig {
             .field("pagination", &self.pagination)
             .field("idempotency", &self.idempotency)
             .field("auth", &self.auth)
+            .field("smtp", &self.smtp)
             .finish()
     }
 }
@@ -297,6 +311,16 @@ impl ApiConfig {
         );
         let auth = Self::auth_from_env()?;
         tracing::info!(backend = ?auth.backend, "auth: config loaded");
+        let smtp = Self::smtp_from_env()?;
+        if let Some(cfg) = smtp.as_ref() {
+            tracing::info!(
+                host = %cfg.host,
+                port = cfg.port,
+                tls = ?cfg.tls,
+                authenticated = cfg.username.is_some(),
+                "smtp: config loaded"
+            );
+        }
 
         Ok(Self {
             bind_address,
@@ -322,6 +346,7 @@ impl ApiConfig {
             idempotency,
             auth,
             webhook: Self::webhook_from_env()?,
+            smtp,
         })
     }
 
@@ -389,6 +414,113 @@ impl ApiConfig {
         })
     }
 
+    /// Load the optional SMTP transport config.
+    ///
+    /// `API_SMTP_HOST` is the sentinel: unset means `None`, present
+    /// means every other knob must validate. The validation policy is
+    /// fail-CLOSED — silently falling back to `EchoSink` when an
+    /// operator who set `API_SMTP_HOST` got the password wrong would
+    /// swallow verification mails in production with no diagnostic.
+    ///
+    /// Validation:
+    /// - `API_SMTP_PORT` defaults to `587` (the submission port).
+    /// - `API_SMTP_USERNAME` is optional; **but** if it is set,
+    ///   `API_SMTP_PASSWORD` MUST also be set (a username without a
+    ///   password is never what an operator means, and the SMTP
+    ///   handshake will silently fail at first send otherwise).
+    /// - `API_SMTP_FROM` is required and must contain `@`. (We do not
+    ///   parse the full RFC 5321 mailbox here; the SMTP transport
+    ///   rejects invalid mailboxes at first send.)
+    /// - `API_SMTP_TLS_MODE` defaults from the port per
+    ///   [`SmtpTlsMode::default_for_port`]; `none` is accepted but
+    ///   the composition root warns at startup.
+    fn smtp_from_env() -> Result<Option<SmtpEmailConfig>, ApiConfigError> {
+        // Fail-closed boundary (PR #754 CodeRabbit review): only `Err` —
+        // i.e. genuinely unset — falls through to `EchoSink`. `Ok(raw)`
+        // where `raw` is empty/whitespace-only is a deliberate (broken)
+        // operator value and must surface as a typed startup error
+        // instead of a silent dev-mode fallback.
+        let host = match std::env::var("API_SMTP_HOST") {
+            Ok(raw) => {
+                let trimmed = raw.trim();
+                if trimmed.is_empty() {
+                    return Err(ApiConfigError::SmtpHostEmpty);
+                }
+                trimmed.to_string()
+            },
+            Err(_) => return Ok(None),
+        };
+
+        let port = match std::env::var("API_SMTP_PORT") {
+            Ok(raw) => raw
+                .parse::<u16>()
+                .map_err(|source| ApiConfigError::ParseInt {
+                    var: "SMTP_PORT",
+                    source,
+                })?,
+            Err(_) => 587,
+        };
+
+        let username = std::env::var("API_SMTP_USERNAME").ok().and_then(|raw| {
+            let trimmed = raw.trim().to_string();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed)
+            }
+        });
+
+        let password = match std::env::var("API_SMTP_PASSWORD") {
+            Ok(raw) if !raw.is_empty() => Some(SecretString::from(raw)),
+            _ => None,
+        };
+
+        // Fail closed: USERNAME without PASSWORD is misconfiguration
+        // a silent `None` cannot rescue. Inverse (PASSWORD without
+        // USERNAME) is also rejected — unauthenticated relays never
+        // need a password and accepting one would mask a typo.
+        if username.is_some() != password.is_some() {
+            return Err(ApiConfigError::SmtpAuthIncomplete);
+        }
+
+        let from_address = std::env::var("API_SMTP_FROM")
+            .map_err(|_| ApiConfigError::SmtpFromMissing)
+            .and_then(|raw| {
+                let trimmed = raw.trim().to_string();
+                if trimmed.is_empty() {
+                    Err(ApiConfigError::SmtpFromMissing)
+                } else if !trimmed.contains('@') {
+                    Err(ApiConfigError::SmtpFromInvalid)
+                } else {
+                    Ok(trimmed)
+                }
+            })?;
+
+        let tls = match std::env::var("API_SMTP_TLS_MODE") {
+            Ok(raw) => match raw.trim().to_ascii_lowercase().as_str() {
+                "none" => SmtpTlsMode::None,
+                "starttls" | "start_tls" | "start-tls" => SmtpTlsMode::StartTls,
+                "implicit" | "smtps" => SmtpTlsMode::Implicit,
+                _ => {
+                    return Err(ApiConfigError::ParseEnum {
+                        var: "SMTP_TLS_MODE",
+                        raw,
+                    });
+                },
+            },
+            Err(_) => SmtpTlsMode::default_for_port(port),
+        };
+
+        Ok(Some(SmtpEmailConfig {
+            host,
+            port,
+            username,
+            password,
+            from_address,
+            tls,
+        }))
+    }
+
     /// Build a config suitable for integration tests.
     ///
     /// Uses a fixed, obviously-test-only secret that bypasses the
@@ -421,6 +553,7 @@ impl ApiConfig {
             idempotency: IdempotencyApiConfig::default(),
             auth: AuthApiConfig::default(),
             webhook: WebhookApiConfig::default(),
+            smtp: None,
         }
     }
 }
