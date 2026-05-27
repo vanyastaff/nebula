@@ -79,10 +79,16 @@
   routes (#737). **OTLP exporter end-to-end** wired (#742, M9.2 ✅) —
   traces via `init_api_telemetry`, metrics via the new `otlp` module in
   `nebula-metrics` on the `MetricsRegistry::snapshot_*` seam, observability stack in
-  `deploy/docker/` ready for `task obs:up`. Remaining: OAuth providers
-  from operator secrets + lockout/rate-limit PG integration tests +
-  `nebula_api_auth_*` metrics family (M3.1 follow-ups); shift-left
-  validation audit (M3.6).
+  `deploy/docker/` ready for `task obs:up`. **M3.1 follow-up wave shipped**
+  (#751/#753/#754): lockout PG e2e tests, `nebula_api_auth_*` metrics
+  family (12-value closed `outcome` set, `AuthError→outcome` exhaustive
+  coverage gate, no-pooling `_duration_seconds` histogram), production
+  SMTP transport via `lettre` 0.11 (fail-closed on empty/invalid
+  `API_SMTP_HOST`, `SecretString`-redacted password). Remaining: OAuth
+  providers from operator secrets (carved out to its own SDD plan — Wave 4
+  credential-stabilize compose-root `CredentialService` instantiation
+  unblocked but not wired; `complete_oauth` still returns
+  `NotImplemented`); shift-left validation audit (M3.6).
 - **Shared infra** — `nebula-credential` is consumed by Exec + API +
   Business (the `deny.toml` `[wrappers]` allowlist locks the consumer set).
   The `nebula-credential-runtime` crate shipped (ADR-0066, #678):
@@ -221,8 +227,9 @@ The largest 1.0 area. Closure criteria (on top of the global DoD):
       when `Postgres` is requested without `DATABASE_URL`. Transactional
       flows (`register_user`, `verify_email`, `complete_password_reset`)
       use direct `sqlx::Transaction` for atomicity. `EmailPort` trait
-      decouples email delivery from the backend (dev `EchoSink`; SMTP is
-      a separate follow-up).
+      decouples email delivery from the backend (dev `EchoSink`;
+      production `SmtpEmailPort` via `lettre` 0.11 shipped via #754 —
+      see follow-up checkbox below).
 - [x] **CSRF enforcement** for state-changing `/auth/*` and `/api/v1/*` —
       shipped via #737. Existing `csrf_middleware` (double-submit cookie)
       now layered on credential write paths and on a new session-bearing
@@ -231,11 +238,62 @@ The largest 1.0 area. Closure criteria (on top of the global DoD):
       `mfa_complete_login` (`POST /auth/login/mfa`) so the login
       second-step stays CSRF-exempt by construction.
 - [ ] **OAuth providers loaded from operator secrets** — a registry that
-      pulls secrets from the credential store at startup (cross-dep with
-      M12.3 + the `nebula-credential-runtime` wiring increment).
-- [ ] **Lockout + rate-limit integration tests** against the PG backend.
-- [ ] **Observability:** typed `AuthError` → `ApiError` mapping audit +
-      `nebula_api_auth_*` metrics family for failed/locked-out attempts.
+      pulls secrets from the credential store at startup. Carved out into
+      its own SDD plan after recon revealed a 6× scope expansion vs the
+      initial follow-up estimate: Wave 4 credential-stabilize set up the
+      `CredentialService` type slot on `AppState` but never instantiated
+      it in `apps/server::compose`; `CredentialService::get` returns
+      `CredentialSnapshot` (no generic `get::<OAuth2Credential>`);
+      `PgAuthBackend::complete_oauth` still returns `NotImplemented` at
+      `crates/api/src/domain/auth/backend/pg.rs:957`; needs a breaking
+      change to `AuthBackend::start_oauth` (`redirect_uri` parameter),
+      `reqwest` as a new direct dep of `nebula-api` for the token
+      endpoint exchange, and an operator-discovery convention decision
+      (cross-dep with M12.3 + the `nebula-credential-runtime` wiring
+      increment).
+- [x] **Lockout + rate-limit integration tests** against the PG backend —
+      shipped via #751. DATABASE_URL-gated `auth_pg_e2e.rs` lockout suite
+      (`pg_auth_backend_locks_after_threshold_failures` +
+      `pg_auth_backend_lockout_window_expiry_allows_login` +
+      `pg_auth_backend_success_clears_subthreshold_failures`) exercises
+      the threshold-cross arming, window-expiry release, and the
+      sub-threshold + success-clears branch end-to-end. Per-account HTTP
+      rate-limit (vs the existing per-IP `RateLimitState`) is a separate
+      enhancement and is not what this follow-up gates.
+- [x] **Observability:** typed `AuthError` → `ApiError` mapping audit +
+      `nebula_api_auth_*` metrics family for failed/locked-out attempts
+      — shipped via #753. Closed 12-value `outcome` set
+      (`success`/`invalid_creds`/`invalid_input`/`invalid_mfa_code`/
+      `mfa_required`/`token_invalid`/`lockout`/`email_unverified`/
+      `rate_limit`/`oauth_failed`/`conflict`/`internal`); `provider`
+      label (3 values, bounded by `OAuthProvider` enum) only on
+      `nebula_api_auth_oauth_*`; closed set enforced by `&'static str`
+      constants in `naming::auth_outcome` /
+      `naming::auth_oauth_provider` (mirrors `idempotency_reject_reason`
+      precedent, NOT a global `LabelAllowlist::only` switch — that
+      would have stripped existing `tenant_id`/`webhook_key_kind`/`tier`/
+      `reason` labels). `_duration_seconds` histogram with default
+      seconds-shaped buckets (the `_LATENCY_MS` idempotency precedent
+      mis-uses ms-shaped observations against seconds-shaped buckets;
+      that is a separate one-line follow-up). `AuthError→outcome` mapping
+      is enforced at compile time by an exhaustive `match` with no
+      catch-all arm in `default_outcome_for`; a `#[test]` visits all 14
+      variants. `UserNotFound→invalid_creds` is a deliberate collapse to
+      prevent user-enumeration via metric exposure.
+- [x] **SMTP transport for `EmailPort`** — shipped via #754.
+      `SmtpEmailPort` lives in `apps/server` (keeps `nebula-api` free of
+      the `lettre` direct dep); `SmtpEmailConfig` env-bound via
+      `API_SMTP_*` mirroring `IdempotencyApiConfig` precedent; compose
+      root branches on `api_config.smtp.is_some()` and fails CLOSED at
+      boot on invalid SMTP config (`SmtpHostEmpty` /
+      `SmtpAuthIncomplete` / `SmtpFromMissing` / `SmtpFromInvalid` /
+      `ParseEnum`) rather than silently falling back to `EchoSink`.
+      Password held in `secrecy::SecretString` on the config side;
+      `lettre::Credentials` owns an internal `String` for the transport
+      lifetime (never re-read, never logged). TLS modes: starttls
+      (default for 587), implicit (default for 465), none (dev only —
+      emits a startup `tracing::warn!`). HTML template rendering and a
+      dev `Mailpit`/`Mailhog` stack are deferred to a future PR.
 
 #### M3.2 OpenAPI 3.1 spec generation — ✅ CLOSED 2026-05-07
 
@@ -1114,8 +1172,8 @@ Not all parallelizable. Suggested ordering (M0–M2, M6, M11 closed
 
 1. **M0 (durability)** — small, foundational, removes false claims. ✅ DONE.
 2. **M3 (API)** in parallel with M0 — biggest user-facing gap; sliceable
-   (M3.1 mostly closed via #737/#738 — only OAuth-secrets-from-operator,
-   lockout integration tests, and `nebula_api_auth_*` metrics remain;
+   (M3.1 mostly closed via #737/#738/#751/#753/#754 — only
+   OAuth-secrets-from-operator remains (carved out to its own SDD plan);
    M3.2 ✅, M3.3 ✅, M3.4 ✅, M3.5 ✅ via #742, M3.6 open).
 3. **M1, M2 (engine correctness + retry)** after M0 — same `engine.rs`
    paths. ✅ DONE.
