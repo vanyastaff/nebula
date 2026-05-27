@@ -1,0 +1,99 @@
+strict_tdd: true
+context: |
+  Nebula is a modular, type-safe workflow automation engine written in Rust
+  (edition 2024, resolver 3, MSRV 1.95). The workspace lives at the repo root
+  with 36 members under `crates/`, plus `apps/`, `examples/`, and `docs/`.
+
+  Layout (canonical: see CLAUDE.md):
+    - Cargo.toml         workspace + pinned deps + [workspace.lints]
+    - Taskfile.yml       task runner; `task --list` for the full catalog
+    - deny.toml          layer wrappers + licenses + advisories (CI gate)
+    - clippy.toml        lint thresholds (msrv 1.95)
+    - rustfmt.toml       rustfmt config (stable-only)
+    - rust-toolchain.toml pinned toolchain
+    - lefthook.yml       local pre-commit / pre-push (mirrors CI)
+    - crates/            workspace members (libs + macros companions)
+    - scripts/worktree.sh canonical worktree helper behind `task wt:*`
+
+  Layered dependency map (enforced by `cargo deny check`):
+    API/Public  -> Exec -> Business -> Plugin-Proto -> Core -> Cross-cutting
+  Cross-crate communication goes through `nebula-eventbus`, not direct
+  sibling imports.
+
+  Tech stack:
+    - Async: Tokio
+    - Errors: thiserror (libs) / anyhow (bins)
+    - Storage backends: PostgreSQL, SQLite (`crates/storage/migrations/`)
+    - Testing: `cargo nextest` + doctests
+    - Build orchestration: Taskfile.yml
+    - Local hooks: lefthook.yml
+
+  Out of scope for detection: `.codex/.tmp/`, `.claude/worktrees/`,
+  `.worktrees/`, `target/`, `node_modules/` (if any), and any vendored
+  third-party plugins. These are not part of the Nebula workspace.
+rules:
+  proposal:
+    require_problem_statement: true
+  spec:
+    require_acceptance_criteria: true
+  design:
+    require_tradeoffs: true
+  tasks:
+    protect_review_workload: true
+  apply:
+    test_command: "cargo nextest run --workspace --no-fail-fast"
+  verify:
+    test_command: "task dev:check"
+testing:
+  detected: "2026-05-26"
+  runner:
+    command: "cargo nextest run --workspace --no-fail-fast"
+    framework: "cargo nextest"
+  layers:
+    unit: "cargo nextest (workspace)"
+    integration: "cargo nextest (workspace, integration tests under crates/<name>/tests/)"
+    e2e: "task ci (full local CI pipeline)"
+  commands:
+    unit:
+      - scope: "."
+        command: "cargo nextest run --workspace --no-fail-fast"
+        framework: "cargo nextest"
+      - scope: "<crate>"
+        command: "cargo nextest run -p <crate>"
+        framework: "cargo nextest (single crate)"
+      - scope: "<crate>"
+        command: "cargo test -p <crate> --doc"
+        framework: "rustdoc doctests"
+    integration:
+      - scope: "."
+        command: "cargo nextest run --workspace --no-fail-fast"
+        framework: "cargo nextest"
+    e2e:
+      - scope: "."
+        command: "task ci"
+        framework: "task (Taskfile.yml)"
+  coverage:
+    command: "cargo llvm-cov --workspace --html"
+    commands:
+      - scope: "."
+        command: "cargo llvm-cov --workspace --html"
+        framework: "cargo-llvm-cov"
+quality:
+  lint: "task clippy"
+  lint_commands:
+    - scope: "."
+      command: "task clippy"
+      framework: "clippy (workspace, -D warnings)"
+  typecheck: "task check"
+  typecheck_commands:
+    - scope: "."
+      command: "task check"
+      framework: "cargo check (workspace, all targets)"
+  format: "task fmt"
+  format_commands:
+    - scope: "."
+      command: "task fmt"
+      framework: "rustfmt (pinned stable toolchain)"
+  pre_pr_gate:
+    command: "task dev:check"
+    framework: "task (fmt + clippy + nextest + doctests + deny)"

@@ -20,6 +20,7 @@ cascade and later work. Numbering starts at **0042** in this directory.
 | **Workflow graph** | 0056 | DAG validation |
 | **Visual canvas** | 0065 | Supply edges |
 | **API & webhooks** | **0082** (absorbs ADR-0047–0049) | OpenAPI, webhooks |
+| **Identity OAuth (Plane A)** | **0085** | Sign-in-with-Google/GitHub/OIDC; operator-secret config |
 | **Observability** | 0046, 0050 | Metrics, traces |
 | **AI (deferred)** | 0057 proposed | STRATEGY.md |
 | **Agent harness** | **0083** | Intent / structural-budget / honesty gate |
@@ -40,7 +41,7 @@ working tree (evicted 2026-05-18). Do not expect `docs/adr/00NN-*.md` to exist.
 | [0081](./0081-m6-resource-credential-integration.md) | M6 resource & credential integration | accepted |
 | [0082](./0082-api-webhooks-idempotency.md) | API edge — OpenAPI, idempotency, webhooks | accepted |
 
-## Index (live standalone, 0046–0072)
+## Index (live standalone, 0046–0085)
 
 Stubs 0042–0067 that Wave B folded into the contract ADRs were evicted
 2026-05-18 (full text in git history; supersession recorded below). Only
@@ -59,6 +60,9 @@ live standalone decisions remain as individual files:
 | [0068](./0068-layered-retry.md) | Layered retry (action-internal vs node-level) | accepted |
 | [0069](./0069-action-surface-hybrid.md) | Action surface hybrid (suffix — shares cascade era with 0052) | accepted |
 | [0072](./0072-nebula-storage-spec16-port-adapter-tenancy.md) | `nebula-storage` spec-16 port / adapter / tenancy | accepted |
+| [0083](./0083-agent-intent-honesty-gate.md) | Agent intent-honesty gate (structural-budget tier) | accepted |
+| [0084](./0084-pre-expiry-credential-refresh-deferred.md) | Pre-expiry credential refresh deferred to 1.1 | accepted |
+| [0085](./0085-oauth-identity-providers-from-secrets.md) | OAuth identity providers from operator secrets (M3.1 Plane A) | accepted |
 
 ## Supersession (audit trail — text-only; superseded bodies in git history)
 
