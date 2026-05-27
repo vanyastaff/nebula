@@ -102,10 +102,25 @@ enum OAuthEndpoints {
 }
 ```
 
-Known providers (Google, Microsoft, Auth0, Okta) ship as `Oidc` defaults
-in `crates/api/src/transport/oauth/known.rs`. GitHub ships as `Manual`
-default (it does not expose `.well-known/openid-configuration`).
-Operator config overrides per-provider.
+Known-provider defaults ship in `crates/api/src/transport/oauth/known.rs`
+for every variant of the live `OAuthProvider` enum at
+`crates/api/src/domain/auth/backend/oauth.rs:28-47`. In 1.0 the enum has
+three variants:
+
+- `Google` — OIDC default (`discovery_url = "https://accounts.google.com/.well-known/openid-configuration"`).
+- `Microsoft` — OIDC default (`discovery_url = "https://login.microsoftonline.com/common/v2.0/.well-known/openid-configuration"`).
+- `GitHub` — Manual default (no `.well-known/openid-configuration` published; explicit endpoints).
+
+Operator config overrides per-provider (e.g. point Google at a staging
+IdP mirror via the `Manual` endpoints arm).
+
+**Extending the enum (Auth0, Okta, generic OIDC, custom OAuth2):**
+adding a new known provider requires extending the `OAuthProvider` enum,
+its `FromStr`, and its `as_str()`, then registering a default in
+`known.rs`. This is a small, mechanical change but **out of 1.0 scope**
+for this ADR. A separate 1.1 follow-up plan tracks the enum extension
+(allowing `Generic { name: String }` for arbitrary operator-named
+providers). The 1.0 chain ships with the existing three variants.
 
 ### D-6 — `AuthError::ProviderNotConfigured { provider }` → HTTP 503
 
@@ -138,7 +153,7 @@ New PG migration:
 
 ```sql
 CREATE TABLE external_identities (
-    user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    user_id     BYTEA NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     provider    TEXT NOT NULL,
     subject     TEXT NOT NULL,
     email       TEXT,
@@ -147,6 +162,13 @@ CREATE TABLE external_identities (
 );
 CREATE INDEX external_identities_user_id_idx ON external_identities (user_id);
 ```
+
+**Note on `user_id BYTEA`** — matches the existing identity-tables
+convention (`0001_users.sql` declares `users.id BYTEA PRIMARY KEY` as a
+16-byte ULID; `0002_user_auth.sql`'s `auth_identities`, `sessions`,
+`personal_access_tokens`, `verification_tokens` all use `BYTEA` FKs to
+`users(id)`). Using `UUID` here would fail FK validation at migration
+apply time.
 
 Primary key `(provider, subject)` because the IdP guarantees `sub` is
 stable per user inside its tenant. `email` is a snapshot at link-time
@@ -274,14 +296,20 @@ a heavy dep to introduce mid-cycle; 1.1 picks the right shape.
 "Known limitations" section per PR-5):
 
 > **OAuth identity login (1.0)**: Nebula ships authorization-code with
-> PKCE for OIDC providers (Google, Microsoft, Auth0, Okta) and OAuth2-only
-> providers (GitHub). The IdP's userinfo endpoint over TLS is the
-> authoritative source for the user's verified email and stable subject
-> identifier. `id_token` signature validation against the IdP's JWKS is
-> **not** performed in 1.0 — a 1.1 hardening pass will add it via the
-> `openidconnect` crate or equivalent. Operators that require strict OIDC
-> compliance now should track issue #TBD (filed alongside the closing
-> PR).
+> PKCE for the three OAuth providers in the live `OAuthProvider` enum:
+> Google + Microsoft (`Oidc`-shaped, via `.well-known/openid-configuration`
+> discovery) and GitHub (`Manual`-shaped, with explicit endpoint URLs
+> because GitHub.com does not publish a `.well-known/openid-configuration`).
+> The IdP's userinfo endpoint over TLS is the authoritative source for
+> the user's verified email and stable subject identifier. `id_token`
+> signature validation against the IdP's JWKS is **not** performed in 1.0
+> — a 1.1 hardening pass will add it via the `openidconnect` crate or
+> equivalent. Adding Auth0 / Okta / generic OIDC / custom OAuth2 providers
+> requires extending the `OAuthProvider` enum at
+> `crates/api/src/domain/auth/backend/oauth.rs:28-47` (small mechanical
+> change, 1.1 follow-up). Operators that require strict OIDC compliance
+> or non-shipped providers now should track issue #TBD (filed alongside
+> the closing PR).
 
 ## Superseded sub-decisions (audit trail)
 

@@ -2,7 +2,9 @@ strict_tdd: true
 context: |
   Nebula is a modular, type-safe workflow automation engine written in Rust
   (edition 2024, resolver 3, MSRV 1.95). The workspace lives at the repo root
-  with 36 members under `crates/`, plus `apps/`, `examples/`, and `docs/`.
+  with ~37 members under `crates/` (libs + per-crate `macros/` companions),
+  plus `apps/server` and `examples/`. The full live list is the `members = [...]`
+  array in the top-level `Cargo.toml`; this number is approximate and will drift.
 
   Layout (canonical: see CLAUDE.md):
     - Cargo.toml         workspace + pinned deps + [workspace.lints]

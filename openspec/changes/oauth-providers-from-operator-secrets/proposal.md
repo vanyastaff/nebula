@@ -32,12 +32,12 @@ The combined effect is a **canon §4.5 false-capability violation**: the OpenAPI
 
 A change that ships **all six** of these in a chained PR series:
 
-1. Real authorization-code + PKCE flow against any compliant OAuth 2.1 / OIDC IdP, mediated by operator-supplied client_id + client_secret + scopes + redirect URI.
-2. Production wiring of `CredentialService` into `AppState` via `compose.rs`, with fail-closed posture when the operator declared OAuth providers but the credential store is unprovisioned (no silent fallback to in-memory).
-3. Trait-level `redirect_uri` plumb so the handler-supplied callback survives the round trip through `oauth_states` and is verified on completion.
-4. **🟥 RECON-2 REVISED**: OAuth flow reuses the existing `OAuth2Credential::initiate_authorization_code` kickoff helper (PKCE + CSRF state generation + redirect_uri validation, already implemented and tested) and the existing `crates/api/src/transport/oauth/http.rs` bounded HTTP client. **No new public surface in `nebula-credential-runtime`.** Operator IdP-client credentials live in `ApiConfig::auth.oauth.providers` as infrastructure config (matching the `SmtpEmailConfig` precedent), NOT in `CredentialService`.
-5. End-to-end PG integration tests against a `wiremock` mock IdP, covering: happy-path session mint, replay rejection, state expiry, state mismatch, redirect_uri mismatch, IdP token-endpoint failure, PKCE round-trip, first-login user creation, existing-user linking by verified-email match, provider-not-configured.
-6. ROADMAP §M3.1 final checkbox flipped; per-crate observability triple (`thiserror` variant + `tracing` span + invariant check) on every new boundary.
+1. Real authorization-code + PKCE flow against any OAuth 2.1 / OIDC IdP supported by the current `OAuthProvider` enum (Google, Microsoft, GitHub in 1.0; enum extension is a 1.1 follow-up), mediated by operator-supplied `client_id` + `client_secret` + `endpoints` (per ADR-0085 D-5 tagged union).
+2. **🟥 RECON-2 + RECON-4 REVISED**: Operator IdP-client credentials live in `ApiConfig::auth.oauth.providers` as infrastructure config (matching the `SmtpEmailConfig` precedent), NOT in `CredentialService`. `compose.rs` validates this config at boot with fail-closed posture on any invalid entry. **No `CredentialService` wiring.**
+3. **🟥 RECON-4 REVISED**: `redirect_uri` is auto-derived from `ApiConfig::public_url` (`API_PUBLIC_URL` env) per ADR-0085 D-3. The trait signature `AuthBackend::start_oauth(provider, redirect_uri)` accepts it as an argument so the handler-derived value round-trips through `OAuthStateRow.redirect_uri` and is re-verified on `complete_oauth`. Operator does NOT supply `redirect_uri` via request or config.
+4. **🟥 RECON-3 REVISED**: OAuth flow reuses the existing `mint_pkce()` + `flow::build_authorization_uri()` + `OAuthStateRepo` (Plane A storage at `plane_a_oauth_states`) for `start_oauth`, and `flow::exchange_code()` for `complete_oauth` token exchange. **No new public surface in `nebula-credential-runtime`.** `OAuth2Credential::initiate_authorization_code` + `AppState::pending_state_store` are NOT consumed by this change (they are Plane B — credential-OAuth — surfaces).
+5. End-to-end integration tests against a `wiremock` mock IdP via the `nebula-api/test-util` feature (D-14), covering: happy-path session mint, replay rejection, state expiry, mismatched-provider, `public_url` change mid-flow, IdP token-endpoint failure, first-login user creation, existing-user linking by verified-email match, account-takeover defense (unverified Nebula email rejects OAuth link), provider-not-configured.
+6. ROADMAP §M3.1 final checkbox flipped; per-crate observability triple (`thiserror` variant + `tracing` span + invariant check) on every new boundary. id_token JWKS signature validation is deferred to 1.1 per ADR-0085 D-16 (userinfo endpoint over TLS is authoritative).
 
 ## 3. Non-goals
 
@@ -98,17 +98,17 @@ A.2 — `start_oauth(provider, redirect_uri)` constructs a real IdP authorize UR
 
 A.3 — **🟥 RECON-4 REVISED**: `complete_oauth` rejects all of: replayed code (state row consumed twice) with `AuthError::InvalidToken`; expired state with `AuthError::InvalidToken`; mismatched state with `AuthError::InvalidToken`; **`public_url` change mid-flow** (derived `redirect_uri` differs from row's persisted `redirect_uri`) with `AuthError::OAuthFailed { cause: "public_url_changed_mid_flow" }`; IdP token-endpoint error (any non-2xx) with `AuthError::OAuthFailed` and a redacted body in the error span. id_token JWKS signature validation rejection paths are deferred to 1.1 (see R-D7).
 
-A.4 — `start_oauth` returns `AuthError::OAuthFailed` (or a new typed variant chosen in design — e.g. `ProviderNotConfigured`) when the operator has not configured the requested provider. The mapping in `AuthError → ApiError` lands the response as HTTP 502 `UpstreamError` or HTTP 503 `ServiceUnavailable` per the design choice. Verified by `start_oauth_returns_provider_not_configured`.
+A.4 — **🟥 RECON-2 RESOLVED** (D-6 closed). `start_oauth` returns `AuthError::ProviderNotConfigured { provider }` when the operator has not configured the requested provider. Maps to HTTP 503 `ServiceUnavailable` per ADR-0085 D-6. Verified by `start_oauth_returns_provider_not_configured`.
 
-A.5 — First-login flow (the IdP userinfo `email` is unknown to Nebula) creates a local user row with `email_verified = true` and the IdP `sub` linked into the `external_identities` table (or equivalent — design-phase). Verified by `complete_oauth_creates_user_on_first_login`.
+A.5 — **🟥 RECON-2 RESOLVED** (D-8 closed). First-login flow (IdP userinfo `email` unknown to Nebula AND IdP-marked `email_verified = true`) creates a local user row with `email_verified = true` and links the IdP `sub` into the `external_identities` table (PK `(provider, subject)`; FK `user_id` BYTEA per `users.id` convention per ADR-0085 D-8). Verified by `complete_oauth_creates_user_on_first_login_verified_email`.
 
-A.6 — Existing-user flow (the IdP userinfo `email` matches an existing user with `email_verified = true`) links the external identity onto the existing user; no duplicate user row created. Verified by `complete_oauth_links_existing_user_on_email_match`.
+A.6 — Existing-user flow (IdP userinfo `email` matches an existing user with `email_verified = true`) links the external identity onto the existing user; no duplicate user row created. Verified by `complete_oauth_links_existing_user_on_email_match`.
 
-A.7 — Existing-user flow with an UN-verified Nebula email rejects the link (returns `AuthError::EmailNotVerified`) to defend against account-takeover via the OAuth path. Verified by `complete_oauth_rejects_link_for_unverified_email`.
+A.7 — Existing-user flow with an UN-verified Nebula email rejects the link (returns `AuthError::EmailNotVerified`) to defend against account-takeover via the OAuth path — even when IdP marks the same email as verified. Verified by `complete_oauth_rejects_link_when_nebula_email_unverified_idp_verified`.
 
 A.8 — **🟥 RECON-2 REVISED**: `compose.rs` validates `ApiConfig::auth.oauth.providers` at boot. Every declared provider must have a non-empty `client_id`, non-empty `client_secret`, ≥ 1 redirect URI, HTTPS endpoints (or `localhost` only when `oauth_allow_insecure_localhost = true` AND the binary is not built with the `release` feature). Failures → `TransportInitError::OAuthProviderConfigInvalid { provider, reason }`. Boot fails closed. **No `CredentialService` wiring required.** Verified by `compose_root_fails_closed_when_oauth_provider_config_invalid` test.
 
-A.9 — **🟥 RECON-2 REVISED**: OAuth flow uses (a) `OAuth2Credential::initiate_authorization_code` at `crates/credential/src/credentials/oauth2.rs:650` for PKCE + CSRF state + redirect_uri validation, (b) `AppState::pending_state_store` at `crates/api/src/state.rs:267` for pending-state persistence, and (c) `crates/api/src/transport/oauth/http.rs` for the bounded `reqwest::Client` against the token endpoint. **No new public surface in `nebula-credential-runtime`. No new HTTP client.** Verified by integration tests that observe the round-trip without inspecting credential-runtime internals.
+A.9 — **🟥 RECON-3 REVISED** (supersedes the earlier RECON-2 wording). OAuth flow uses (a) `mint_pkce()` at `crates/api/src/domain/auth/backend/oauth.rs:~90` for `(state, code_verifier, code_challenge)` generation, (b) `flow::build_authorization_uri` at `crates/api/src/transport/oauth/flow.rs:38-60` for the authorize URL, (c) `OAuthStateRepo` (Plane A) over `plane_a_oauth_states` for pending-state persistence — already wired into `PgAuthBackend`, and (d) `flow::exchange_code` at `flow.rs:79-118` for the token endpoint POST (wraps `oauth_token_http_client()` + `validate_token_endpoint` anti-SSRF + bounded body reading). **`OAuth2Credential::initiate_authorization_code` + `AppState::pending_state_store` are Plane B and NOT consumed by this change.** **No new public surface in `nebula-credential-runtime`. No new HTTP client.** Verified by integration tests that observe the round-trip without inspecting credential-runtime internals.
 
 A.10 — `AuthBackend::start_oauth(provider, redirect_uri)` trait signature is updated. All implementors (`PgAuthBackend`, `InMemoryAuthBackend`, every mock in `crates/api/tests/*`) compile. The handler `crates/api/src/domain/auth/handler.rs:390-421` passes `redirect_uri` from the request query string. Verified by `cargo nextest run --workspace --no-fail-fast`.
 
@@ -121,13 +121,13 @@ A.12 — ROADMAP §M3.1 final checkbox flipped to `[x]`. `cargo deny check` gree
 
 A.13 — **🟥 RECON-4 REVISED**: Per-crate README quality: `crates/api/README.md` gets a new "OAuth provider configuration" section showing the operator-facing minimal config with two examples — one `Oidc { discovery_url }` (Google) and one `Manual { ... }` (GitHub) — plus the env-var binding pattern. The release-notes blurb from D-16 about JWKS validation deferral is also included. The chained-PR squash-merged commits are referenced.
 
-A.14 — Chained-PR boundary respected. Each PR in the 6-PR chain (per §7 below) is ≤ 800 changed lines. The last PR (PR-6) is the only one that flips the ROADMAP checkbox.
+A.14 — **🟥 RECON-3 REVISED** (was 6-PR chain). Chained-PR boundary respected. Each PR in the **5-PR** chain (per §7 below; compressed from 6→5 per recon-3 §5) is ≤ 800 changed lines. The last PR (PR-5) is the only one that flips the ROADMAP checkbox.
 
 ## 6. Risks
 
 R.1 — **🟥 RECON-2 DROPPED**. `AppState::credential_service` is not consumed by Flow A (identity login). The field stays as it is today. Plane B (credential CRUD) may need this risk in a future change; M3.1 does not.
 
-R.6 — **🟥 RECON-4 DROPPED**. `redirect_uri` shape (single vs allow-list) is moot: recon-4 auto-derives from `ApiConfig::public_url` (`API_PUBLIC_URL` env). No allow-list, no config field. Multi-environment operators register multiple OAuth clients per IdP (one per Nebula instance).
+R.6 — **🟥 RECON-4 DROPPED**. The original concern (single `redirect_uri: String` vs allow-list `Vec<String>`) is moot: recon-4 ADOPT (a) auto-derives `redirect_uri` from `ApiConfig::public_url` (`API_PUBLIC_URL` env). No allow-list, no config field, no design choice required. Multi-environment operators register multiple OAuth clients per IdP (one per Nebula instance, each with its own `API_PUBLIC_URL`).
 
 R-D7 — **🟥 RECON-4 NEW**. 1.0 ships **without** id_token JWKS signature validation. The userinfo endpoint over TLS is the source of truth for the user's `email` + `sub`. Mitigation:
 - `validate_token_endpoint` enforces HTTPS + non-localhost on the userinfo URL (same SSRF policy as the token URL).
@@ -200,7 +200,7 @@ These are explicitly NOT in this change but are likely 1.1 surfaces:
 
 **`sdd-spec`** — turn §5 acceptance criteria into formal spec deltas (OpenSpec format: one requirement per criterion, BDD-style scenarios). Pass this proposal as input. Expected output: `openspec/changes/oauth-providers-from-operator-secrets/spec.md`.
 
-After spec is approved, `sdd-design` produces the ADR resolving §4 (operator config convention) and §6 R.1 (generic vs dyn) and §6 R.6 (single vs allow-list redirect_uri). Then `sdd-tasks` decomposes the 6-PR chain.
+After spec is approved, `sdd-design` produces the ADR resolving §4 (operator config convention). R.1 (generic vs dyn) and R.6 (single vs allow-list redirect_uri) were subsequently DROPPED by recon-2/recon-4 (see Risks). Then `sdd-tasks` decomposes the **5-PR** chain (was 6 in the original proposal; compressed by recon-3 §5).
 
 ---
 
@@ -212,7 +212,7 @@ executive_summary: |
   Close M3.1 final §4.5 honesty gap: ship real OAuth authorization-code + PKCE flow
   against any IdP, wired by operator config + secrets. 14 acceptance criteria
   (A.1–A.14), 10 risks (R.1–R.10) with mitigations. Operator-config convention
-  (A/B/C) left to design ADR per user choice. 6-PR chain confirmed (ADR →
+  (A/B/C) left to design ADR per user choice. After recon-3 the chain was compressed to 5 PRs (was 6); see §7. Confirmed (ADR →
   trait+redirect_uri → config+compose → authorize URL → token exchange →
   tests+docs), each ≤ 800 LOC, total ~1,400 LOC. Strict TDD with wiremock mock IdP.
   Non-goals explicit: no vendor packs (M12.3), no IdP token persistence, no
@@ -226,7 +226,7 @@ risks:
   - wiremock dev-dep addition (R.2)
   - PKCE for confidential clients (R.3)
   - decision to NOT persist IdP tokens (R.4) — documented + locked
-  - redirect_uri allow-list shape (R.6) — design picks
+  - redirect_uri shape — CLOSED by recon-4 ADOPT (a): auto-derived from `ApiConfig::public_url`; R.6 dropped
   - subagent dispatch reliability (R.10) — orchestration risk
 skill_resolution: none
 ```

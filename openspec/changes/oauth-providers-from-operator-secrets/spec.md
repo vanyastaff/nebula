@@ -20,7 +20,7 @@ The server SHALL accept an operator-supplied configuration that maps each suppor
 - `client_id: SecretString` (env-bound from `API_AUTH_OAUTH_<PROVIDER>_CLIENT_ID`)
 - `client_secret: SecretString` (env-bound from `API_AUTH_OAUTH_<PROVIDER>_CLIENT_SECRET`)
 - `endpoints: OAuthEndpoints` — tagged union:
-  - `Oidc { discovery_url: String }` for OIDC-compliant providers (Google, Microsoft, Auth0, Okta). Endpoints fetched at runtime from `.well-known/openid-configuration` (D-15). **Scopes hardcoded `"openid email profile"` for `Oidc`.**
+  - `Oidc { discovery_url: String }` for OIDC-compliant providers — in 1.0 this means Google and Microsoft (the only `Oidc`-shaped variants in the live `OAuthProvider` enum at `crates/api/src/domain/auth/backend/oauth.rs:28-47`). Auth0 / Okta / generic OIDC require extending the enum (1.1 follow-up per ADR-0085 D-5). Endpoints fetched at runtime from `.well-known/openid-configuration` (D-15). **Scopes hardcoded `"openid email profile"` for `Oidc`.**
   - `Manual { authorize_url, token_url, userinfo_url, jwks_url: Option<String>, scopes: Vec<String> }` for OAuth2-only providers (GitHub) or operator-customized OIDC. `jwks_url` accepted for forward compat but ignored in 1.0 (D-16). `scopes` MUST be non-empty for `Manual`.
 
 `redirect_uri` is **NOT a configuration field**. It is auto-derived at runtime as `format!("{}/auth/oauth/{}/callback", api_config.public_url, provider.as_str())` from the existing `ApiConfig::public_url` (`API_PUBLIC_URL` env). Operators that need multiple callback URIs deploy multiple Nebula instances (each with its own `API_PUBLIC_URL` and IdP client registration).
@@ -66,29 +66,35 @@ The server SHALL accept an operator-supplied configuration that maps each suppor
 
 **Status**: MODIFIED (replaces the synthetic `https://nebula.local/...` URL behavior).
 
-`PgAuthBackend::start_oauth(provider, redirect_uri)` and `InMemoryAuthBackend::start_oauth(provider, redirect_uri)` SHALL (🟥 RECON-2 REVISED steps):
+`PgAuthBackend::start_oauth(provider, redirect_uri)` and `InMemoryAuthBackend::start_oauth(provider, redirect_uri)` SHALL (🟥 RECON-3 + RECON-4 REVISED steps; supersedes the earlier RECON-2 revision):
 
-1. Look up the operator-supplied `OAuthProviderConfig` for `provider` (per REQ-oauth-001). If absent → `AuthError::ProviderNotConfigured { provider }`.
-2. Verify `redirect_uri` is a member of `provider_config.redirect_uris` (D-3 allow-list). If not → `AuthError::OAuthFailed { cause: "redirect_uri_not_allowlisted" }`.
-3. Build a `FieldValues` map matching `OAuth2Properties` from the provider config: `client_id`, `client_secret`, `auth_url` (from `endpoints.authorize_url` or known-provider default), `token_url`, `grant_type = "authorization_code"`, `scopes`, `redirect_uri`.
-4. Call `OAuth2Credential::initiate_authorization_code(&values)` at `crates/credential/src/credentials/oauth2.rs:650` — receive `OAuth2Pending` with PKCE verifier + anti-CSRF `state` + `redirect_uri`. (Per D-11 — the kickoff helper handles PKCE S256 derivation + state token entropy unconditionally.)
-5. Persist the `OAuth2Pending` via `AppState::pending_state_store` (the existing slot at `crates/api/src/state.rs:267`). The store enforces TTL ≤ 10 min (`OAuth2Pending::expires_in()` in nebula-credential).
-6. Build the authorize URL by URL-encoding `client_id`, `redirect_uri`, `response_type=code`, `scope`, `state=<pending.state>`, `nonce`, `code_challenge=<derived from pending.pkce_verifier>`, `code_challenge_method=S256` against `provider_config.endpoints.authorize_url` (or the known-provider default).
-7. Return `OAuthStart { authorize_url, state: pending.state, expires_at }`.
+1. Look up the validated `OAuthProviderConfig` from `ApiConfig::auth.oauth.providers[provider]`. If absent → `AuthError::ProviderNotConfigured { provider }`.
+2. Derive the canonical `redirect_uri` from `api_config.public_url` per D-3 (recon-4): `format!("{}/auth/oauth/{}/callback", api_config.public_url, provider.as_str())`. The handler-supplied `redirect_uri` argument MUST already equal this derived value (the handler derived it the same way before calling the trait method); a mismatch is a `debug_assert!` at the trait boundary, not a runtime branch.
+3. Resolve the IdP endpoints from `provider_config.endpoints`:
+   - `OAuthEndpoints::Oidc { discovery_url }` — call `fetch_oidc_discovery(discovery_url)` (D-15) to obtain `OidcDiscovery { authorize_url, token_url, userinfo_url, jwks_url? }` (cached process-wide). Hardcoded scopes `"openid email profile"`.
+   - `OAuthEndpoints::Manual { authorize_url, token_url, userinfo_url, jwks_url?, scopes }` — use as-is; operator-supplied `scopes`.
+4. Build the `flow::AuthorizationUriRequest { auth_url, token_url, client_id, client_secret, redirect_uri, scopes, auth_style }` from the resolved endpoints + provider config.
+5. Call `mint_pkce()` at `crates/api/src/domain/auth/backend/oauth.rs:~90` to obtain `(state, code_verifier, code_challenge)` (already wired in `PgAuthBackend::start_oauth`).
+6. Call `flow::build_authorization_uri(&req, &state, &code_challenge)` at `crates/api/src/transport/oauth/flow.rs:38-60` to construct the real authorize URL (PKCE S256 mandatory by the `PkceMethod` enum).
+7. Persist `OAuthStateRow { state, provider, code_verifier, redirect_uri: Some(redirect_uri.to_owned()), created_at, expires_at: now + OAUTH_STATE_TTL, consumed_at: None }` via `self.oauth_state_repo.create(...)` (Plane A `OAuthStateRepo` over the `plane_a_oauth_states` table — NOT `pending_state_store`, which is Plane B).
+8. Return `OAuthStart { authorize_url, state }`.
 
 PKCE plain is structurally impossible per Scenario 2.2 (the `PkceMethod` enum has one variant).
 
+> Why these steps differ from the earlier RECON-2 revision: recon-3 audit (`recon-3-flow-and-pending.md` §6) revealed that `OAuth2Credential::initiate_authorization_code` + `AppState::pending_state_store` are Plane B (credential-OAuth) surfaces; Plane A uses the distinct `OAuthStateRepo` already wired into `PgAuthBackend`. Recon-4 (`recon-4-n8n-and-rust-ecosystem.md`) replaced the `redirect_uris` allow-list with `public_url`-derivation.
+
 **Scenarios**:
 
-- **Scenario 2.1 — Real authorize URL emitted**
-  - **Given** the operator declared `[auth.oauth.providers.google]` with `authorize_url = "https://accounts.google.com/o/oauth2/v2/auth"`
-  - **And** the credential record contains `client_id = "google-client-1"`
-  - **When** the handler calls `start_oauth(OAuthProvider::Google, "https://app.example.com/cb")`
+- **Scenario 2.1 — Real authorize URL emitted (🟥 RECON-3 + RECON-4 REVISED)**
+  - **Given** `[auth.oauth.providers.google]` has `client_id = "google-client-1"`, `client_secret = "..."`, `endpoints = { kind = "oidc", discovery_url = "https://accounts.google.com/.well-known/openid-configuration" }`
+  - **And** `API_PUBLIC_URL = "https://app.example.com"`
+  - **And** the OIDC discovery doc resolves `authorize_url = "https://accounts.google.com/o/oauth2/v2/auth"`
+  - **When** the handler derives `redirect_uri = "https://app.example.com/auth/oauth/google/callback"` and calls `start_oauth(OAuthProvider::Google, &redirect_uri)`
   - **Then** the returned `authorize_url` starts with `https://accounts.google.com/o/oauth2/v2/auth?`
   - **And** the query string contains `client_id=google-client-1`
-  - **And** the query string contains `redirect_uri=https%3A%2F%2Fapp.example.com%2Fcb` (URL-encoded)
+  - **And** the query string contains `redirect_uri=https%3A%2F%2Fapp.example.com%2Fauth%2Foauth%2Fgoogle%2Fcallback` (URL-encoded)
   - **And** the query string contains `code_challenge_method=S256` and a non-empty `code_challenge`
-  - **And** the `oauth_states` row contains the unencoded `code_verifier` (NOT the challenge) and `redirect_uri = "https://app.example.com/cb"`
+  - **And** the `plane_a_oauth_states` row contains the unencoded `code_verifier` (NOT the challenge) and `redirect_uri = "https://app.example.com/auth/oauth/google/callback"`
 
 - **Scenario 2.2 — PKCE plain is structurally impossible** (🟥 RECON-2)
   - **Given** the `PkceMethod` enum at `crates/credential/src/credentials/oauth2_config.rs:48-65` has exactly one variant (`S256`)
@@ -107,12 +113,12 @@ PKCE plain is structurally impossible per Scenario 2.2 (the `PkceMethod` enum ha
 
 `PgAuthBackend::complete_oauth(provider, state, code, redirect_uri)` and `InMemoryAuthBackend::complete_oauth(...)` SHALL (🟥 RECON-2 REVISED steps):
 
-1. Atomically consume the pending row for `state` from `AppState::pending_state_store` (single-use semantics enforced by the existing store). If absent → `AuthError::InvalidToken`.
-2. Verify the row has not expired (TTL enforced by `OAuth2Pending::expires_in()`). If expired → `AuthError::InvalidToken`.
-3. Verify the row's `provider` matches the call's `provider`. If not → `AuthError::InvalidToken`.
-4. Verify the call's `redirect_uri` (handler-supplied) equals the row's `redirect_uri`. If not → `AuthError::OAuthFailed { cause: "redirect_uri_mismatch" }`.
-5. Look up the `OAuthProviderConfig` for `provider` (from `ApiConfig::auth.oauth.providers` — the same config thread used by `start_oauth`). If absent (operator removed it mid-flow) → `AuthError::ProviderNotConfigured`.
-6. Using the shared `reqwest::Client` at `crates/api/src/transport/oauth/http.rs` (per D-12), POST `code`, `code_verifier` (from the consumed pending row), `client_id`, `client_secret`, `redirect_uri`, and `grant_type=authorization_code` to `provider_config.endpoints.token_url`, with `Content-Type: application/x-www-form-urlencoded`, timeout = `oauth_token_timeout_ms` (default 5000), NO retries.
+1. Atomically consume the row for `(state, provider)` via `self.oauth_state_repo.consume_by_state_and_provider(state, provider.as_str())` — single-statement `UPDATE ... WHERE consumed_at IS NULL AND expires_at > NOW() RETURNING ...` over the Plane A `plane_a_oauth_states` table (NOT `pending_state_store`, which is Plane B). If `None` → `AuthError::InvalidToken` (covers absent, already-consumed, expired, or wrong-provider cases).
+2. Derive the canonical `redirect_uri` from `api_config.public_url` per D-3: `format!("{}/auth/oauth/{}/callback", api_config.public_url, provider.as_str())`. If the row's `redirect_uri` (from step 1) differs → `AuthError::OAuthFailed { cause: "public_url_changed_mid_flow" }` (Scenario 3.10). Operator must restart the flow after a `public_url` change.
+3. Look up the `OAuthProviderConfig` for `provider` (from `ApiConfig::auth.oauth.providers` — the same config thread used by `start_oauth`). If absent (operator removed it mid-flow) → `AuthError::ProviderNotConfigured`.
+4. Resolve IdP endpoints (cached `OidcDiscovery` for `Oidc` providers; `Manual` block as-is) to get `token_url` and `userinfo_url`.
+5. Build `flow::TokenExchangeRequest { token_url, client_id, client_secret, code, redirect_uri, code_verifier (from consumed row), auth_style }`.
+6. Call `flow::exchange_code(&req)` (per D-12-RECON3) at `crates/api/src/transport/oauth/flow.rs:79-118`. This wraps `oauth_token_http_client()` + form-encoded body + `validate_token_endpoint` (anti-SSRF) + bounded response reading. Returns `serde_json::Value` on 2xx; `Err(String)` on any failure. Map errors to `AuthError::OAuthFailed { cause: "token_endpoint_<reason>" }`. Timeout follows the bounded client's default (30s); no retries (the authorization code is single-use).
 7. Parse the JSON response into a local typed shape (or `OAuth2Token` if convenient). Any non-2xx HTTP status, malformed JSON, or missing required fields → `AuthError::OAuthFailed { cause: "token_endpoint_<reason>" }` with the IdP body redacted in the structured log.
 8. **🟥 RECON-4 REVISED**: If the provider supplies an `id_token`, the field is logged (`tracing::debug!("id_token present in token response", ...)`) but NOT signature-validated in 1.0 (D-16 defer to 1.1). The presence of `id_token` does NOT affect the rest of the flow.
 9. GET userinfo via `provider_config.endpoints.userinfo_url` (or the OIDC-discovered userinfo endpoint) using the same `oauth_token_http_client()` with `Authorization: Bearer <access_token>`. **The userinfo response is the authoritative source for `email` + `sub`.** Failure (non-2xx, malformed JSON, missing `email` or `sub`) → `AuthError::OAuthFailed { cause: "userinfo_<reason>" }`.
@@ -122,14 +128,14 @@ PKCE plain is structurally impossible per Scenario 2.2 (the `PkceMethod` enum ha
 
 **Scenarios**:
 
-- **Scenario 3.1 — Happy path mints a session**
-  - **Given** a `start_oauth` call returned `state = "abc"` and persisted the row
-  - **And** the IdP redirects with `?state=abc&code=xyz` to the callback
-  - **And** `wiremock` is configured to return a 200 token response with valid `id_token` and `userinfo` containing `email = "alice@example.com"` (verified) and `sub = "google-1"`
-  - **When** the handler calls `complete_oauth(OAuthProvider::Google, "abc", "xyz", redirect_uri = "https://app.example.com/cb")`
+- **Scenario 3.1 — Happy path mints a session (🟥 RECON-3 + RECON-4 REVISED)**
+  - **Given** `start_oauth` returned `state = "abc"` and persisted the `plane_a_oauth_states` row with `redirect_uri = "https://app.example.com/auth/oauth/google/callback"`
+  - **And** the IdP redirects with `?state=abc&code=xyz` to the callback URL
+  - **And** `wiremock` (via the `nebula-api/test-util` feature — D-14) is configured to return a 200 token response and a userinfo response containing `email = "alice@example.com"` (verified) and `sub = "google-1"`
+  - **When** the handler derives the same `redirect_uri` and calls `complete_oauth(OAuthProvider::Google, "abc", "xyz", &redirect_uri)`
   - **Then** the call returns `Ok(Session { ... })`
-  - **And** the `oauth_states` row for `state = "abc"` is deleted
-  - **And** the `tracing::Span` carries `provider = "google"`, `userinfo_email_hash = <stable-hash>`, and NO raw email, NO raw code, NO state token, NO client secret
+  - **And** `consume_by_state_and_provider("abc", "google")` returned the row with `consumed_at` now set; a replay would return `None`
+  - **And** the `tracing::Span` carries `provider = "google"`, `userinfo_email_hash = <stable-hash>`, and NO raw email, NO raw code, NO state token, NO client secret, NO access/refresh/id token
 
 - **Scenario 3.2 — Replay rejection**
   - **Given** Scenario 3.1 just completed successfully
@@ -273,16 +279,15 @@ The handler `crates/api/src/domain/auth/handler.rs::oauth_start` SHALL extract `
 
 **Scenarios**:
 
-- **Scenario auth-backend-001.1 — Handler propagates request-supplied redirect_uri**
-  - **Given** a request `POST /auth/oauth/google/start?redirect_uri=https%3A%2F%2Fapp.example.com%2Fcb`
-  - **When** the handler invokes `backend.start_oauth(OAuthProvider::Google, "https://app.example.com/cb")`
-  - **Then** the resulting `oauth_states` row carries `redirect_uri = "https://app.example.com/cb"`
+- **Scenario auth-backend-001.1 — Handler derives `redirect_uri` from `ApiConfig::public_url` (🟥 RECON-4 REVISED)**
+  - **Given** `API_PUBLIC_URL = "https://app.example.com"`
+  - **And** a request `POST /auth/oauth/google/start` (NO `redirect_uri` query parameter — the handler does not accept one)
+  - **When** the handler computes `redirect_uri = format!("{}/auth/oauth/google/callback", api_config.public_url)` and invokes `backend.start_oauth(OAuthProvider::Google, &redirect_uri)`
+  - **Then** the resulting `plane_a_oauth_states` row carries `redirect_uri = "https://app.example.com/auth/oauth/google/callback"`
+  - **And** the returned `OAuthStart.authorize_url` query string contains `redirect_uri=https%3A%2F%2Fapp.example.com%2Fauth%2Foauth%2Fgoogle%2Fcallback`
 
-- **Scenario auth-backend-001.2 — Missing redirect_uri returns 400**
-  - **Given** a request `POST /auth/oauth/google/start` with no `redirect_uri` parameter
-  - **When** the handler validates the request
-  - **Then** the response is HTTP 400 with `ApiError::Validation` carrying `field = "redirect_uri"`, `reason = "required"`
-  - **And** `backend.start_oauth` is NOT called
+- **Scenario auth-backend-001.2 — 🟥 RECON-4 DELETED**
+  - The original "handler returns 400 when request-supplied `redirect_uri` is missing" scenario is moot: per D-3 recon-4 the handler does not accept a `redirect_uri` parameter; it derives the value unconditionally from `ApiConfig::public_url`. The fail-closed posture for an unset `public_url` lives at boot time per REQ-compose-001 (rejected before any handler runs).
 
 ---
 
@@ -295,7 +300,7 @@ Behavior is fully governed by REQ-oauth-003 through REQ-oauth-005.
 **Scenarios**:
 
 - **Scenario auth-backend-002.1 — §4.5 grep is clean after this change**
-  - **Given** the worktree at the closing PR of the 6-PR chain
+  - **Given** the worktree at the closing PR of the 5-PR chain (per `tasks.md`; was 6-PR pre-recon-3)
   - **When** the gate runs `rg "NotImplemented" crates/api/src/domain/auth/backend/`
   - **Then** the output contains zero matches that reference OAuth (matches for unrelated features, if any, are allowed)
 
@@ -325,13 +330,13 @@ Behavior is fully governed by REQ-oauth-003 through REQ-oauth-005.
 2. If `api_config.auth.oauth.providers` is non-empty: every provider config is validated synchronously at boot:
    - `client_id` non-empty.
    - `client_secret` non-empty (`SecretString`).
-   - `redirect_uris` non-empty; every entry MUST be absolute HTTPS unless `oauth_allow_insecure_localhost = true` AND the entry matches `http://localhost(:port)?(/.*)?`.
+   - `ApiConfig::public_url` set AND absolute (with scheme) — required for the auto-derived `redirect_uri` per D-3 recon-4. Empty/relative `public_url` is a boot-time error.
    - For `Oidc { discovery_url }` endpoints: `discovery_url` absolute HTTPS (no localhost; `validate_token_endpoint` policy). Endpoints fetched at runtime via `fetch_oidc_discovery` (D-15); cache is process-wide.
    - For `Manual { authorize_url, token_url, userinfo_url, jwks_url?, scopes }` endpoints: each URL absolute HTTPS; `scopes` non-empty; `jwks_url` accepted but ignored in 1.0 (D-16).
-   - Known providers (Google, Microsoft, Auth0, Okta, GitHub) ship as defaults in `crates/api/src/transport/oauth/known.rs`; operator config overrides per-provider when present.
+   - Known providers ship as defaults in `crates/api/src/transport/oauth/known.rs` for every `OAuthProvider` enum variant (Google + Microsoft as `Oidc`, GitHub as `Manual` in 1.0); operator config overrides per-provider when present.
 3. Any validation failure → `TransportInitError::OAuthProviderConfigInvalid { provider, reason }` and the process exits non-zero. No silent fallback to dev posture.
 4. The validated config is threaded into `PgAuthBackend::new` (or the equivalent builder) so the backend reads it per request.
-5. `CredentialService` is NOT instantiated for OAuth purposes. `AppState::pending_state_store` (the existing slot at `crates/api/src/state.rs:267`) is the OAuth pending-state storage seam — if the backend is `Postgres`, it must already be PG-backed by the existing wiring; PR-3 verifies this against `crates/storage/src/pg/pending_state.rs` before writing tests.
+5. The Plane A OAuth state storage seam is `OAuthStateRepo` over the `plane_a_oauth_states` table — already wired into `PgAuthBackend` via `self.oauth_state_repo` (`crates/api/src/domain/auth/backend/pg.rs`). `AppState::pending_state_store` is the **Plane B** (credential-OAuth) seam over `pending_credentials` and is NOT consumed by this change. `CredentialService` is NOT instantiated for OAuth purposes.
 
 **Scenarios**:
 
@@ -418,11 +423,11 @@ debug_assert!(!code_verifier.is_empty(), "empty code_verifier reached token exch
 
 ## Spec: `chained-pr-boundary` — ADDED
 
-### REQ-chain-001 — Each PR in the 6-PR chain stays ≤ 800 changed lines
+### REQ-chain-001 — Each PR in the 5-PR chain stays ≤ 800 changed lines (🟥 RECON-3 REVISED — was 6 PRs)
 
 **Status**: ADDED (enforces review workload guard).
 
-Every PR in the chain (PR-1 through PR-6 per `proposal.md` §7) SHALL:
+Every PR in the chain (PR-1 through PR-5 per `proposal.md` §7; chain compressed from 6→5 PRs per recon-3 §5) SHALL:
 
 1. Have `git diff --shortstat main..HEAD` total ≤ 800 changed lines (added + removed combined).
 2. Squash-merge to `main` cleanly with the conventional-commits prefix matching its scope (`docs(adr)`, `refactor(api)`, `feat(api)`, etc.).
@@ -452,7 +457,7 @@ Every PR in the chain (PR-1 through PR-6 per `proposal.md` §7) SHALL:
 | A.6 (existing-user links by email) | REQ-oauth-005 |
 | A.7 (unverified Nebula email rejects link) | REQ-oauth-005 Scenario 5.2 |
 | A.8 (🟥 RECON-2 — compose-root fails closed on invalid OAuth config) | REQ-compose-001 Scenarios compose-001.3 / 001.4 / 001.5 |
-| A.9 (🟥 RECON-2 — reuse `initiate_authorization_code` + `transport/oauth/http.rs`; no new credential-runtime surface) | REQ-oauth-002 + REQ-oauth-003 (implicit — the existing surfaces are used, not extended); REQ-cred-001 DELETED |
+| A.9 (🟥 RECON-3 — reuse `mint_pkce` + `flow::build_authorization_uri` + `OAuthStateRepo` (NOT `initiate_authorization_code` + `pending_state_store` — those are Plane B); use `flow::exchange_code` for token endpoint; no new credential-runtime surface) | REQ-oauth-002 + REQ-oauth-003 (the existing surfaces are used, not extended); REQ-cred-001 DELETED |
 | A.10 (trait signature update) | REQ-auth-backend-001 |
 | A.11 (observability triple) | REQ-obs-001 |
 | A.12 (ROADMAP flip + §4.5 grep clean) | REQ-auth-backend-002 |
@@ -472,7 +477,7 @@ Every PR in the chain (PR-1 through PR-6 per `proposal.md` §7) SHALL:
 - `ProviderNotConfigured` vs reuse of `OAuthFailed`.
 - `OAuth2Token` discard policy lock (Risk R.4 already locked in proposal; design records the ADR for traceability).
 
-After design, `sdd-tasks` decomposes the 6 PRs into ordered tasks with strict-TDD anchors.
+After design, `sdd-tasks` decomposes the **5 PRs** into ordered tasks with strict-TDD anchors (chain was compressed from 6 → 5 by recon-3 §5).
 
 ---
 

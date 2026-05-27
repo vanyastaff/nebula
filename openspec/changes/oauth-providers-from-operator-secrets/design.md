@@ -15,11 +15,20 @@
 
 ## D-1 — Operator-config convention
 
-### Context
+> **🟥 RESHAPED by `recon-2-credential-domain.md` §3 and `recon-4-n8n-and-rust-ecosystem.md` §3 (ADOPT (a)+(b)+(c)).**
+> The original Option A (config-map referencing `credential_id` in `CredentialService` + per-row `redirect_uris` allow-list + per-row `scopes`) was superseded:
+> - recon-2: operator IdP-client config is **infra config**, not a credential row. Drop `credential_id`; store `client_id`/`client_secret` directly as `SecretString` (matches `SmtpEmailConfig` precedent).
+> - recon-4 ADOPT (a): drop `redirect_uris` allow-list. `redirect_uri` is **auto-derived** as `format!("{}/auth/oauth/{}/callback", api_config.public_url, provider.as_str())` from `ApiConfig::public_url` (`API_PUBLIC_URL` env).
+> - recon-4 ADOPT (b): replace flat `authorize_url`/`token_url`/`userinfo_url`/`jwks_url`/`scopes` fields with a tagged `OAuthEndpoints` union — `Oidc { discovery_url }` (endpoints fetched from `.well-known/openid-configuration`; scopes hardcoded `"openid email profile"`) vs `Manual { authorize_url, token_url, userinfo_url, jwks_url?, scopes }` (per-provider scopes; `jwks_url` ignored in 1.0 per D-16).
+> - recon-4 ADOPT (c): drop the `pkce_required` override knob (PKCE S256 is compile-time mandatory per the `PkceMethod` enum).
+>
+> The historical Decision/Rationale/Consequences blocks below remain for audit. The live shape lives in **D-3 (recon-4)**, **D-5 (recon-4)**, and the `OAuthProvidersConfig` types described in `tasks.md` T2.1.
+
+### Context (historical — superseded by recon-4)
 
 Three viable shapes (proposal §4): Option A config-map; Option B credential name convention; Option C new `CredentialKind::OAuth2Provider`.
 
-### Decision
+### Decision (historical — superseded by recon-4)
 
 **Option A — Config-map keyed by `OAuthProvider` variant.**
 
@@ -42,20 +51,20 @@ redirect_uris = ["https://app.example.com/cb"]
 
 Env-binding mirror: `API_AUTH_OAUTH_GOOGLE_CREDENTIAL_ID`, `API_AUTH_OAUTH_GOOGLE_SCOPES` (comma-separated), `API_AUTH_OAUTH_GOOGLE_REDIRECT_URIS` (comma-separated), etc.
 
-### Rationale
+### Rationale (historical — partially superseded)
 
-1. **Smallest blast radius**. `CredentialService::get` stays id-keyed (current public surface). No new `get_by_name` or `list_by_kind` API surface.
-2. **Reversibility**. Option B (name convention) or Option C (`CredentialKind` variant) can layer on top of Option A in 1.1 without breaking Option A consumers — the operator just stops setting `credential_id` and the lookup falls through to the convention/kind path.
-3. **Operator ergonomics**. The config row co-locates scopes + redirect_uris + pkce flag with the credential reference. A separate credential row with a magic-string name plus a separate config table for scopes is more brittle.
-4. **M12.3 sequencing decoupled**. Option C couples M3.1 closure to M12.3 (`nebula-credential-builtin` vendor packs / `GenericOAuth2` builder). We do not want that coupling.
-5. **Matches existing pattern**. `IdempotencyApiConfig` (`crates/api/src/config/sub.rs:91-190`) is the in-tree precedent for typed config sub-structures with env binding. We are not inventing a new shape.
+1. **Smallest blast radius** — still true under the recon-4 reshaping (still no `CredentialService::get_by_name`, no `list_by_kind`).
+2. **Reversibility** — still true; Option B/C remain layerable in 1.1.
+3. **Operator ergonomics** — reshaped: the config row now co-locates `client_id`/`client_secret` + `endpoints` + (for Manual) `scopes` instead of `credential_id` + `scopes` + `redirect_uris`.
+4. **M12.3 sequencing decoupled** — still true.
+5. **Matches existing pattern** — still true (`SmtpEmailConfig` is the right precedent now, not `IdempotencyApiConfig`).
 
-### Consequences
+### Consequences (historical — superseded by recon-4 / tasks.md T2.1)
 
-- New file: `crates/api/src/config/oauth.rs` defines `OAuthProvidersConfig`, `OAuthProviderConfig`, and `OAuthProviderEndpoints` (Generic-only).
+- New file: `crates/api/src/config/oauth.rs` defines `OAuthProvidersConfig`, `OAuthProviderConfig`, `OAuthEndpoints` (tagged union), and the `Manual` arm's nested fields. No `OAuthProviderEndpoints` separate type.
 - `ApiConfig::auth.oauth` becomes `Option<OAuthProvidersConfig>`; `None` keeps current behavior (no OAuth wired).
-- Env parsing follows the `parse_*_env` pattern in `crates/api/src/config/env.rs`.
-- Typo risk on the provider key is mitigated by typed deserialization (TOML key MUST parse into `OAuthProvider` enum via `serde(rename_all = "snake_case")`). `gooogle` fails at config-load.
+- Env parsing follows the `parse_*_env` pattern in `crates/api/src/config/env.rs`. Env vars: `API_AUTH_OAUTH_<PROVIDER>_CLIENT_ID`, `_CLIENT_SECRET`, `_DISCOVERY_URL` (Oidc), `_AUTHORIZE_URL`/`_TOKEN_URL`/`_USERINFO_URL`/`_SCOPES` (Manual).
+- Typo risk on the provider key is mitigated by typed deserialization (TOML key MUST parse into the `OAuthProvider` enum at `crates/api/src/domain/auth/backend/oauth.rs:28-47` via `FromStr`).
 
 ### Alternatives rejected
 
@@ -248,7 +257,7 @@ A public `OAuthProvidersConfig::credential_key_for(provider) -> Option<OAuthProv
 > }
 > ```
 >
-> Known providers (Google, Microsoft, Auth0, Okta, etc.) ship as `Oidc` defaults. GitHub ships as `Manual` default. Operator can override either with explicit endpoints. The historical text below described the flat struct; ignore for implementation.
+> Known providers (in 1.0: Google + Microsoft) ship as `Oidc` defaults. GitHub ships as `Manual` default. Auth0 / Okta / generic OIDC / custom OAuth2 require extending the `OAuthProvider` enum at `crates/api/src/domain/auth/backend/oauth.rs:28-47` and are tracked as a 1.1 follow-up (see ADR-0085 D-5 "Extending the enum"). The historical text below described the flat struct; ignore for implementation.
 
 ### Context (historical — refined)
 
@@ -483,7 +492,7 @@ Spec Scenario cred-001.3 says HTTP-only URLs are rejected in non-test mode. D-3 
 ### Reused (existing) surfaces — NOT modified
 
 - `OAuth2Credential::initiate_authorization_code(&FieldValues) -> Result<OAuth2Pending, _>` at `crates/credential/src/credentials/oauth2.rs:650` — already generates PKCE verifier + anti-CSRF state + redirect_uri validation. **PR-3 uses this verbatim** (D-11).
-- `AppState::pending_state_store` at `crates/api/src/state.rs:267` — already declared. PR-3 persists `OAuth2Pending` here.
+- `OAuthStateRepo` over the `plane_a_oauth_states` table — already wired into `PgAuthBackend::self.oauth_state_repo` at `crates/api/src/domain/auth/backend/pg.rs`. PR-3 persists `OAuthStateRow { state, provider, code_verifier, redirect_uri: Some(...), ... }` here. **`AppState::pending_state_store` is Plane B (credential-OAuth) and is NOT consumed by this change.**
 - `crates/api/src/transport/oauth/http.rs` — bounded `reqwest::Client` for token endpoint. **PR-4 uses this verbatim** (D-12).
 - `crates/api/src/transport/oauth/state.rs` — `OAuthProvider` enum.
 - `crates/api/src/transport/oauth/flow.rs` — OAuth flow ceremony (PR-2 worker reads full file before deciding whether to extend or wrap).
@@ -565,7 +574,7 @@ The security argument:
 
 ### Release-notes blurb (required in PR-5)
 
-> **OAuth identity login (1.0)**: Nebula ships authorization-code with PKCE for known OIDC providers (Google, Microsoft, Auth0, Okta, etc.) and OAuth2-only providers (GitHub). The IdP's userinfo endpoint is the authoritative source for the user's verified email and stable subject identifier. `id_token` signature validation against the IdP's JWKS is **not** performed in 1.0 — a 1.1 hardening pass will add it. Operators that require strict OIDC compliance now should track issue #TBD.
+> **OAuth identity login (1.0)**: Nebula ships authorization-code with PKCE for the three OAuth providers in the live `OAuthProvider` enum: Google + Microsoft (`Oidc` discovery-based) and GitHub (`Manual` explicit endpoints). The IdP's userinfo endpoint is the authoritative source for the user's verified email and stable subject identifier. `id_token` signature validation against the IdP's JWKS is **not** performed in 1.0 — a 1.1 hardening pass will add it. Adding Auth0 / Okta / generic OIDC / custom OAuth2 providers requires extending the enum (small mechanical change, 1.1 follow-up). Operators that require strict OIDC compliance now should track issue #TBD.
 
 ### Consequences
 
@@ -574,33 +583,41 @@ The security argument:
 - `OAuthEndpoints::Manual::jwks_url` becomes `Option<String>` accepted for forward compat but ignored in 1.0.
 - One new risk R-D7 documented in the proposal.
 
-## D-11 — Reuse `OAuth2Credential::initiate_authorization_code`
+## D-11 — Reuse `mint_pkce` + `flow::build_authorization_uri` + `OAuthStateRepo` (recon-3 / recon-4)
 
-### Context
+> **🟥 ORIGINAL D-11 SUPERSEDED by `recon-3-flow-and-pending.md` §6.**
+> The original D-11 said to use `OAuth2Credential::initiate_authorization_code` + persist `OAuth2Pending` via `AppState::pending_state_store`. **Wrong** — those are Plane B (credential-OAuth) surfaces; this change is Plane A (identity login). Plane A has its own dedicated store: `OAuthStateRepo` over the `plane_a_oauth_states` PG table, already wired into `PgAuthBackend` (`self.oauth_state_repo`).
 
-Recon-2 revealed `OAuth2Credential::initiate_authorization_code(values: &FieldValues) -> Result<OAuth2Pending, _>` already exists at `crates/credential/src/credentials/oauth2.rs:650` with tests at lines 1173-1257. It handles PKCE verifier generation, anti-CSRF state token generation (test `initiate_authorization_code_csrf_state_is_unguessable` proves randomness), and redirect_uri presence validation.
+### Context (recon-3 grounded)
+
+- `mint_pkce()` at `crates/api/src/domain/auth/backend/oauth.rs:90+` already generates `state` + `code_verifier` + `code_challenge` (SHA-256 / base64url-no-pad).
+- `flow::build_authorization_uri(req, state, code_challenge)` at `crates/api/src/transport/oauth/flow.rs:38-60` already builds an RFC-compliant authorize URL with `code_challenge_method=S256` + optional scope. Tested at `flow.rs:188+`.
+- `PgAuthBackend::start_oauth` at `pg.rs:1028-1075` already calls `mint_pkce()` and persists an `OAuthStateRow` via `self.oauth_state_repo.create(...)`. The two gaps are: synthetic `https://nebula.local/...` authorize URL (no `flow::build_authorization_uri` call), and `redirect_uri: None` (the trait signature lacks the param).
+- The `OAuthStateRepo` API supports atomic single-statement consume-by-state-and-provider (`UPDATE ... WHERE consumed_at IS NULL AND expires_at > NOW() RETURNING ...`).
 
 ### Decision
 
 `PgAuthBackend::start_oauth(provider, redirect_uri)` and `InMemoryAuthBackend::start_oauth(...)` SHALL:
-1. Look up the validated `OAuthProviderConfig` from `ApiConfig::auth.oauth.providers[provider]`.
-2. Verify `redirect_uri` is a member of `provider_config.redirect_uris` (D-3 allow-list).
-3. Build a `FieldValues` map matching `OAuth2Properties` shape: `client_id`, `client_secret`, `auth_url`, `token_url`, `grant_type = "authorization_code"`, `scopes`, `redirect_uri`.
-4. Call `OAuth2Credential::initiate_authorization_code(&values)` — receive `OAuth2Pending` with PKCE verifier + anti-CSRF state + redirect_uri.
-5. Persist `OAuth2Pending` via `AppState::pending_state_store` (the existing slot at `crates/api/src/state.rs:267`).
-6. Build the authorize URL by URL-encoding `client_id`, `redirect_uri`, `response_type=code`, `scope`, `state=<csrf_token>`, `nonce`, `code_challenge=<derived>`, `code_challenge_method=S256` against the operator's `authorize_url`.
-7. Return `OAuthStart`.
+
+1. Look up the validated `OAuthProviderConfig` from `ApiConfig::auth.oauth.providers[provider]`. If absent → `AuthError::ProviderNotConfigured { provider }`.
+2. Derive the canonical `redirect_uri` from `api_config.public_url` per D-3 (`format!("{}/auth/oauth/{}/callback", public_url, provider.as_str())`). The handler-supplied `redirect_uri` arg MUST already equal this value (the handler derived it the same way before calling `start_oauth`); a mismatch is a debug-assert at the trait boundary.
+3. For `Oidc { discovery_url }`: call `fetch_oidc_discovery(discovery_url)` (D-15) to obtain `authorize_url`/`token_url`/`userinfo_url`. For `Manual { authorize_url, ... }`: use the operator-supplied URLs directly. Construct `flow::AuthorizationUriRequest` (client_id, token_url, client_secret, redirect_uri, scopes, auth_style).
+4. Call `mint_pkce()` to get `(state, code_verifier, code_challenge)`.
+5. Call `flow::build_authorization_uri(&req, &state, &code_challenge)` to construct the real authorize URL.
+6. Persist `OAuthStateRow { state, provider, code_verifier, redirect_uri: Some(redirect_uri.to_owned()), created_at, expires_at, consumed_at: None }` via `self.oauth_state_repo.create(...)`. TTL = `OAUTH_STATE_TTL` (10 min).
+7. Return `OAuthStart { authorize_url, state }`.
 
 ### Rationale
 
-1. **Zero duplication**. PKCE generation, CSRF state generation, redirect_uri validation, and pending-state persistence are already implemented and tested. The API only builds the authorize URL on top.
-2. **Test inheritance**. The existing tests at `oauth2.rs:1173-1257` already cover the kickoff invariants — PR-3 only adds the auth-backend-level wire-up tests.
-3. **Consistency with Flow B**. Flow B (credential-as-OAuth, 1.1) uses the same kickoff helper — the auth-login path and the future credential-store path share the same PKCE + state generation logic.
+1. **Plane-A storage seam is `OAuthStateRepo`, not `pending_state_store`.** `plane_a_oauth_states` is the dedicated PG table; `pending_credentials` is Plane B.
+2. **`OAuth2Credential::initiate_authorization_code` is not reachable from Plane A.** It produces `OAuth2Pending` (Plane B shape with `client_secret: SecretString`, `grant_type`, `device_code`, `interval`, etc.) and is persisted via `PendingStateStore`. The Plane-A flow needs only `(state, provider, code_verifier, redirect_uri)` — a strict subset.
+3. **Zero duplication**. `mint_pkce` + `flow::build_authorization_uri` + `OAuthStateRepo` already exist, tested, and wired into `PgAuthBackend`. PR-3 only replaces the synthetic URL construction + plumbs the `redirect_uri` parameter through the existing skeleton.
 
 ### Consequences
 
 - No new PKCE / CSRF code in `nebula-api`.
-- PR-3 of the revised 5-PR chain becomes "plumb `initiate_authorization_code` into `start_oauth` + build authorize URL" — much smaller than the original PR-4 "new typed-decode seam + new authorize URL builder".
+- No new pending-state surface; `AppState::pending_state_store` (Plane B slot) is **not** consumed by Plane A.
+- PR-3 of the 5-PR chain becomes "plumb `flow::build_authorization_uri` into `start_oauth` + populate `OAuthStateRow.redirect_uri`" — much smaller than even the recon-2 estimate.
 
 ## D-12 — Reuse `crates/api/src/transport/oauth/http.rs`
 
@@ -634,8 +651,8 @@ But `continue_resolve` is designed to **persist** the resolved `OAuth2State` as 
 
 ### Decision
 
-`PgAuthBackend::complete_oauth` performs the token exchange + userinfo fetch **without** invoking `Interactive::continue_resolve`. The function:
-1. Loads the `OAuth2Pending` from `AppState::pending_state_store` keyed by `state_token`. Atomic CAS consume (delete-after-read).
+`PgAuthBackend::complete_oauth` performs the token exchange + userinfo fetch **without** invoking `Interactive::continue_resolve`. Per D-16 (recon-4), id_token JWKS signature validation is **deferred to 1.1**; the function only logs `id_token` presence and treats the userinfo endpoint as authoritative. The function:
+1. Loads the `OAuthStateRow` (NOT `OAuth2Pending` — that's Plane B) via `self.oauth_state_repo.consume_by_state_and_provider(state, provider.as_str())` — single-statement atomic UPDATE-RETURNING on `plane_a_oauth_states` (covers absent, already-consumed, expired, and wrong-provider in one query).
 2. POSTs to the token endpoint via `transport/oauth/http.rs`.
 3. Parses `OAuth2Token` (or a private equivalent) from the response.
 4. If `id_token` present: validates signature against the operator's `jwks_url` (PR-4 adds a small JWKS helper if `nebula-credential` does not export one — verify in PR-4).
@@ -668,7 +685,7 @@ No credential row is created. The PG `external_identities` row links the IdP `su
 
 ### Context
 
-`openspec/config.yaml` declares strict TDD active. The 6-PR chain must reflect RED → GREEN → TRIANGULATE → REFACTOR evidence per PR.
+`openspec/config.yaml` declares strict TDD active. The 5-PR chain (compressed from 6 per recon-3 §5) must reflect RED → GREEN → TRIANGULATE → REFACTOR evidence per PR.
 
 ### Decision
 
@@ -678,7 +695,7 @@ Per-PR TDD anchors:
 |---|---|---|---|---|
 | 1 (ADR) | n/a (markdown only) | n/a | n/a | n/a |
 | 2 (trait + config + redirect_uri + compose validation) | `start_oauth_handler_extracts_redirect_uri`, `start_oauth_handler_returns_400_when_redirect_uri_missing`, `compose_root_fails_closed_when_oauth_provider_config_invalid`, `oauth_provider_config_rejects_empty_redirect_uris`, `oauth_provider_config_rejects_http_url_in_prod_mode` | trait sig + handler change + config types + env binding + compose-root validation | env-binding round-trip; generic-provider missing endpoints rejected | inline cleanup |
-| 3 (authorize URL via initiate_authorization_code) | `start_oauth_emits_real_authorize_url_with_pkce_and_state`, `start_oauth_persists_pending_with_redirect_uri`, `start_oauth_returns_provider_not_configured_when_absent`, `start_oauth_rejects_non_allowlisted_redirect_uri` | both backends call `OAuth2Credential::initiate_authorization_code`; build authorize URL; persist `OAuth2Pending` via `pending_state_store`; metrics emitted | URL-encode invariants; PKCE method=S256 in query string | inline cleanup |
+| 3 (authorize URL via flow::build_authorization_uri) | `start_oauth_emits_real_authorize_url_with_pkce_and_state`, `start_oauth_persists_redirect_uri_into_oauth_state_row`, `start_oauth_returns_provider_not_configured_when_absent` | both backends call `mint_pkce` + `flow::build_authorization_uri(req, state, code_challenge)`; persist `OAuthStateRow` (with `redirect_uri: Some(...)`) via existing `OAuthStateRepo`; metrics emitted | URL-encode invariants; PKCE method=S256 in query string; OIDC discovery cache hit on second call | inline cleanup |
 | 4 (token exchange + external_identities + find-or-create) | `complete_oauth_succeeds_with_valid_code`, `complete_oauth_rejects_replay`, `complete_oauth_rejects_expired_pending`, `complete_oauth_rejects_mismatched_state`, `complete_oauth_rejects_redirect_uri_mismatch`, `complete_oauth_handles_idp_token_endpoint_500`, `complete_oauth_rejects_malformed_token_response`, `complete_oauth_rejects_id_token_signature_invalid`, `complete_oauth_rejects_id_token_nonce_mismatch`, `complete_oauth_token_endpoint_timeout`, `complete_oauth_creates_user_on_first_login_verified_email`, `complete_oauth_rejects_first_login_unverified_email`, `complete_oauth_links_existing_user_on_email_match`, `complete_oauth_rejects_link_for_unverified_nebula_email` | full complete_oauth implementation in both backends — token POST via `transport/oauth/http.rs`, userinfo GET, JWKS validation if id_token present, find-or-create user, link external_identities, mint session, drop tokens; PG migration + repo | wiremock chaos: 200 with empty body, 200 with garbage JSON; userinfo-only flow (no id_token); CASCADE delete invariant | inline cleanup |
 | 5 (tests + docs + roadmap) | n/a (prior PRs hold tests; PR-5 adds README doctest snippets) | docs prose + README OAuth section + ROADMAP checkbox | section-by-section README doctest | n/a |
 
@@ -735,29 +752,36 @@ New risks introduced by recon-2:
 
 ---
 
-## Result envelope
+## Result envelope (REVISED per recon-2 + recon-3 + recon-4)
 
 ```yaml
 status: design-draft
 executive_summary: |
-  9 design decisions resolved: D-1 Option A (config-map); D-2 dyn-erase via
-  CredentialServiceErased; D-3 redirect_uris allow-list; D-4 OAuthProviderCredentialKey
-  newtype with pub(crate) constructor; D-5 Generic requires endpoints, known providers
-  may override; D-6 new ProviderNotConfigured variant → HTTP 503; D-7 IdP tokens
-  discarded after session mint (R.4 re-locked); D-8 external_identities table schema
-  with (provider, subject) PK; D-9 oauth_allow_insecure_localhost flag with
-  release-feature rejection. D-10 enumerates per-PR RED test anchors. New risks:
-  R-D1 (constructor leak), R-D2 (object-safety), R-D3 (localhost-flag prod leak) all
-  mitigated. Public-surface diff section is the canonical handoff for sdd-tasks.
+  13 live design decisions after three recon waves: D-1 Option A reshaped (env-managed
+  config-map with client_id/client_secret in ApiConfig, no credential_id); D-3 (recon-4)
+  redirect_uri auto-derived from public_url, no allow-list; D-5 (recon-4) OAuthEndpoints
+  tagged union Oidc { discovery_url } vs Manual { authorize_url, token_url, userinfo_url,
+  jwks_url?, scopes }; D-6 new ProviderNotConfigured variant → HTTP 503; D-7 IdP tokens
+  discarded after session mint; D-8 external_identities table BYTEA user_id matching
+  existing 0001_users.sql convention; D-9 (recon-3) oauth_allow_insecure_localhost scope
+  narrowed (token_url stays strict); D-11 (recon-3) reuse mint_pkce + flow::build_authorization_uri
+  + OAuthStateRepo for Plane A (NOT initiate_authorization_code + pending_state_store);
+  D-12 (recon-3) use flow::exchange_code; D-13 do NOT route Plane A through
+  Interactive::continue_resolve; D-14 nebula-api test-util feature; D-15 OIDC discovery
+  cache; D-16 JWKS id_token validation deferred to 1.1. Superseded: D-2 dyn-erase
+  (recon-2), D-4 OAuthProviderCredentialKey (recon-2), D-3 original allow-list (recon-4),
+  D-11/D-12 original phrasings (recon-3). 5-PR chain (was 6) per recon-3 §5.
 artifacts:
   - openspec/changes/oauth-providers-from-operator-secrets/explore.md
   - openspec/changes/oauth-providers-from-operator-secrets/proposal.md
   - openspec/changes/oauth-providers-from-operator-secrets/spec.md
   - openspec/changes/oauth-providers-from-operator-secrets/design.md
-next_recommended: sdd-tasks
+  - openspec/changes/oauth-providers-from-operator-secrets/recon-{2,3,4}-*.md
+  - openspec/changes/oauth-providers-from-operator-secrets/tasks.md
+next_recommended: sdd-tasks (already produced; sdd-apply PR-1 is this ADR)
 risks:
-  - R-D1 OAuthProviderCredentialKey constructor leak (mitigated by clippy + review)
-  - R-D2 CredentialServiceErased object-safety regression (mitigated by trybuild)
   - R-D3 oauth_allow_insecure_localhost prod leak (mitigated by release feature gate)
+  - R-D6 nebula-api test-util feature must not leak into release builds
+  - R-D7 1.0 ships without id_token JWKS signature validation; userinfo authoritative
 skill_resolution: none
 ```

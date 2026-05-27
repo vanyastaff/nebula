@@ -1,5 +1,31 @@
 # SDD Explore — OAuth providers from operator secrets
 
+> **🟥 HISTORICAL ARTIFACT** — this is the initial exploration produced
+> during the SDD planning lifecycle. Three reconnaissance waves
+> (`recon-2-credential-domain.md`, `recon-3-flow-and-pending.md`,
+> `recon-4-n8n-and-rust-ecosystem.md`) substantially reshaped the
+> decisions captured here. The **canonical live design** is
+> [`docs/adr/0085-oauth-identity-providers-from-secrets.md`](../../../docs/adr/0085-oauth-identity-providers-from-secrets.md).
+> Where the body below mentions a 6-PR chain, `redirect_uris` allow-list,
+> typed-decode seam, or `CredentialService` consumption — read those as
+> the starting hypothesis, not the final plan. Specifically:
+> - **6-PR chain → 5-PR chain** (recon-3 collapsed PR-3+PR-4 by
+>   discovering `flow::build_authorization_uri` + `flow::exchange_code`
+>   already exist).
+> - **`redirect_uris: Vec<String>` allow-list → auto-derive from
+>   `ApiConfig::public_url`** (recon-4 ADOPT (a) matching n8n's
+>   `{instanceBaseUrl}/rest/sso/oidc/callback` pattern).
+> - **Typed-decode seam in `nebula-credential-runtime` → DELETED**
+>   (recon-2: operator IdP-client config is infra config, not a
+>   credential row).
+> - **Plane A storage = `OAuthStateRepo` (`plane_a_oauth_states` table),
+>   NOT `AppState::pending_state_store`** (recon-3: the latter is Plane B
+>   for credential-OAuth).
+>
+> Use this document for the original code-map, scope estimate, and
+> question framing. Use ADR-0085 + `design.md` + `spec.md` + `tasks.md`
+> for what to actually build.
+
 - **Change slug**: `oauth-providers-from-operator-secrets`
 - **Origin**: ROADMAP §M3.1 residual; explicitly carved out as its own SDD plan in `docs/plans/2026-05-26-001-feat-api-m3.1-followup-wave-plan.md` §"Out of scope" (PR-C).
 - **Date**: 2026-05-27
