@@ -627,11 +627,15 @@ async fn lockout_state(
 /// Mirrors what a future operator unlock RPC would do, but the test
 /// owns the manipulation explicitly so the production code path stays
 /// untouched. Asserts the row exists so a typo'd id fails loudly.
+///
+/// Uses `INTERVAL '1 hour'` instead of `'1 second'` so a PG-vs-test
+/// process clock skew >1 s (common in containerised CI) cannot leave
+/// the row still locked when the test next probes (#751 Copilot review).
 async fn expire_lockout(pool: &Pool<Postgres>, user_id: &str) {
     let id_bytes = user_id_bytes(user_id);
     let rows = sqlx::query(
         "UPDATE users \
-             SET locked_until = NOW() - INTERVAL '1 second' \
+             SET locked_until = NOW() - INTERVAL '1 hour' \
              WHERE id = $1 AND locked_until IS NOT NULL",
     )
     .bind(&id_bytes[..])
@@ -677,8 +681,13 @@ async fn pg_auth_backend_locks_after_threshold_failures() {
         "failed_login_count must equal the threshold after N rejected attempts"
     );
     let lock_deadline = locked_until.expect("locked_until must be armed");
+    // Allow 5 s of negative skew: PG and the test process can disagree on
+    // wall-clock time by ~1 s in containerised CI; treating the lock as
+    // armed if `lock_deadline` is at least "recent" past gives the test
+    // headroom without weakening the assertion (LOCKOUT_DURATION is 15 min
+    // so a 5 s skew is still ~0.5% of the window) (#751 Copilot review).
     assert!(
-        lock_deadline > chrono::Utc::now(),
+        lock_deadline > chrono::Utc::now() - chrono::Duration::seconds(5),
         "locked_until ({lock_deadline}) must be in the future immediately after the Nth failure"
     );
 
