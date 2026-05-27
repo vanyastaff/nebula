@@ -202,7 +202,11 @@ No `tenant_scope` column — external identity is global per
 
 3. **Test bypass** (wave-5 D-14): `nebula_test_util` cfg gates the bypass for ALL three (now four with verified_emails_url) HTTP call sites uniformly via the `test_support` module helpers.
 
-4. **`oauth_allow_insecure_localhost` flag** (original D-9 narrowed scope): applies ONLY to `authorize_url` (browser-fetched; no server-side SSRF surface) per the original recon-3 narrowing. For `token_url` / `userinfo_url` / `verified_emails_url` / `jwks_url` / `discovery_url`, the strict policy is non-negotiable. Production builds (no `nebula_test_util` cfg) reject any non-HTTPS or loopback/private URL on these fields.
+4. **`oauth_allow_insecure_localhost` flag** (original D-9 narrowed scope; wave-7 refined per Codex F.2): applies ONLY to `authorize_url` (browser-fetched; no server-side SSRF surface). For the implementation, this means **two complementary validator functions**:
+   - **Strict**: `validate_oauth_outbound_url(url)` — the generalized rename from `validate_token_endpoint`. HTTPS-only, no localhost/private/loopback. Used for `token_url` / `userinfo_url` / `verified_emails_url` / `jwks_url` / `discovery_url`.
+   - **Flag-aware**: `validate_oauth_authorize_url(url, flag, in_release)` (new wave-7 helper in `crates/api/src/transport/oauth/flow.rs`) — wraps the strict gate but accepts `http://localhost(:port)?` when `flag == true AND !in_release`. Used ONLY for `Manual.authorize_url` (and the OIDC-discovered authorize URL when the start_oauth handler emits it).
+
+   Production builds (release profile, no `nebula_test_util` cfg) reject any non-HTTPS or loopback/private URL on server-side fields. Dev / integration env can opt-in to localhost for the redirect step via the flag without weakening the server-side anti-SSRF policy.
 
 **Why this resolves the P1 SSRF**:
 

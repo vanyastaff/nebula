@@ -21,15 +21,21 @@ The server SHALL accept an operator-supplied configuration that maps each suppor
 - `client_secret: SecretString` (env-bound from `API_AUTH_OAUTH_<PROVIDER>_CLIENT_SECRET`)
 - `endpoints: OAuthEndpoints` — tagged union:
   - `Oidc { discovery_url: String }` for OIDC-compliant providers — in 1.0 this means Google and Microsoft (the only `Oidc`-shaped variants in the live `OAuthProvider` enum at `crates/api/src/domain/auth/backend/oauth.rs:28-47`). Auth0 / Okta / generic OIDC require extending the enum (1.1 follow-up per ADR-0085 D-5). Endpoints fetched at runtime from `.well-known/openid-configuration` (D-15). **Scopes hardcoded `"openid email profile"` for `Oidc`.**
-  - `Manual { authorize_url, token_url, userinfo_url, jwks_url: Option<String>, scopes: Vec<String> }` for OAuth2-only providers (GitHub) or operator-customized OIDC. `jwks_url` accepted for forward compat but ignored in 1.0 (D-16). `scopes` MUST be non-empty for `Manual`.
+  - `Manual { authorize_url, token_url, userinfo_url, verified_emails_url: Option<String>, jwks_url: Option<String>, scopes: Vec<String> }` for OAuth2-only providers (GitHub) or operator-customized OIDC. `jwks_url` accepted for forward compat but ignored in 1.0 (D-16). `scopes` MUST be non-empty for `Manual`. **`verified_emails_url`** (🟥 WAVE-6 P2 addition for GitHub) is required when the provider's `userinfo_url` response does NOT include an `email_verified` claim; PR-4 fetches this second endpoint after `userinfo_url` and picks the entry with `primary == true AND verified == true`. GitHub default: `userinfo_url = "https://api.github.com/user"`, `verified_emails_url = Some("https://api.github.com/user/emails")`. For OIDC providers (Google, Microsoft), `verified_emails_url = None` (the `email_verified` claim is in the userinfo response itself).
 
 `redirect_uri` is **NOT a configuration field**. It is auto-derived at runtime as `format!("{}/auth/oauth/{}/callback", api_config.public_url, provider.as_str())` from the existing `ApiConfig::public_url` (`API_PUBLIC_URL` env). Operators that need multiple callback URIs deploy multiple Nebula instances (each with its own `API_PUBLIC_URL` and IdP client registration).
 
-**Invariant 1** (🟥 WAVE-6 anti-SSRF hardening per D-9-WAVE6): Each provider config MUST validate at boot via the generalized **`validate_oauth_outbound_url`** function (renamed from `validate_token_endpoint` in wave-6 to signal coverage of ALL server-side OAuth fetches, not just the token endpoint):
+**Invariant 1** (🟥 WAVE-6 anti-SSRF hardening per D-9-WAVE6, refined wave-7 with two validator scopes per Codex F.2): Each provider config MUST validate at boot via TWO complementary validator functions per D-9-WAVE6:
+
+**Strict gate** — **`validate_oauth_outbound_url`** (renamed from `validate_token_endpoint` in wave-6). HTTPS-only, no localhost / private / loopback / link-local / multicast IPs. Applies to ALL **server-side** OAuth fetches because the server makes the HTTP call and a hostile URL becomes a SSRF vector.
+
+**Flag-aware gate** — **`validate_oauth_authorize_url`** (NEW wave-7). Same defaults as the strict gate BUT respects the existing `oauth_allow_insecure_localhost` flag (D-9 original recon-3 narrowing): when the flag is `true` AND the binary is NOT a release build (debug_assertions enabled), `http://localhost(:port)?(/.*)?` is accepted. Applies ONLY to `Manual.authorize_url` (and the corresponding URL derived from OIDC discovery for the start_oauth handler's authorize URL emission). Rationale: the **browser** fetches the authorize URL, not the server — no SSRF surface. The relaxation enables dev-mode integration against a localhost mock IdP for the redirect step.
+
+**Per-field validation matrix**:
 - `client_id` non-empty; `client_secret` non-empty.
-- `Oidc.discovery_url` passes `validate_oauth_outbound_url` (HTTPS + no localhost/private/loopback/link-local/multicast).
-- `Manual.authorize_url` passes the same gate (operator-config controlled, cheap insurance even though browser fetches it).
-- `Manual.token_url`, `Manual.userinfo_url`, and (when `Some`) `Manual.verified_emails_url` + `Manual.jwks_url` each pass `validate_oauth_outbound_url` (server-side fetches — strict policy non-negotiable).
+- `Oidc.discovery_url` passes **strict** `validate_oauth_outbound_url` (server fetches it).
+- `Manual.authorize_url` passes **flag-aware** `validate_oauth_authorize_url` (browser fetches it; relaxable for dev under the flag).
+- `Manual.token_url`, `Manual.userinfo_url`, and (when `Some`) `Manual.verified_emails_url` + `Manual.jwks_url` each pass **strict** `validate_oauth_outbound_url` (server-side fetches — SSRF-sensitive).
 - `Manual.scopes` non-empty.
 - `ApiConfig::public_url` set AND absolute (with scheme). Empty/relative `public_url` is a boot-time error.
 - **Dynamic OIDC URLs** (validated at first `start_oauth` per D-15-WAVE6): the URLs RETURNED in the `.well-known/openid-configuration` JSON (`authorize_url`, `token_url`, `userinfo_url`, `jwks_url`) MUST each pass `validate_oauth_outbound_url` BEFORE the `OidcDiscovery` is cached. A hostile discovery doc with internal-IP child URLs fails with `DiscoveryError::EndpointSsrfRejected { field, url_host }` and the cache stays empty (no partial entries).
@@ -125,7 +131,7 @@ PKCE plain is structurally impossible per Scenario 2.2 (the `PkceMethod` enum ha
 7. Parse the JSON response into a local typed shape (or `OAuth2Token` if convenient). Any non-2xx HTTP status, malformed JSON, or missing required fields → `AuthError::OAuthFailed { cause: "token_endpoint_<reason>" }` with the IdP body redacted in the structured log.
 8. **🟥 RECON-4 REVISED**: If the provider supplies an `id_token`, the field is logged (`tracing::debug!("id_token present in token response", ...)`) but NOT signature-validated in 1.0 (D-16 defer to 1.1). The presence of `id_token` does NOT affect the rest of the flow.
 9. GET userinfo via `provider_config.endpoints.userinfo_url` (or the OIDC-discovered userinfo endpoint) using the same `oauth_token_http_client()` with `Authorization: Bearer <access_token>`. **The userinfo response is the authoritative source for `email` + `sub`.** Failure (non-2xx, malformed JSON, missing `email` or `sub`) → `AuthError::OAuthFailed { cause: "userinfo_<reason>" }`.
-10. Apply REQ-oauth-004 / REQ-oauth-005 / REQ-oauth-007 to resolve the local user via the `external_identities` table (D-8).
+10. Apply REQ-oauth-004 / REQ-oauth-005 / REQ-oauth-006 to resolve the local user via the `external_identities` table (D-8). REQ-oauth-006 (🟥 WAVE-7 added per Codex F.1) governs the already-linked case (most common after first login); -004 governs first-login; -005 governs cross-link onto an existing local account.
 11. Mint a Nebula session via the same path used by password auth. Return the session.
 12. **Per D-13**: the function does NOT route through `Interactive::continue_resolve`. IdP-issued tokens are local variables that Rust's borrow checker drops at function exit. No credential row is created.
 
@@ -184,6 +190,44 @@ PKCE plain is structurally impossible per Scenario 2.2 (the `PkceMethod` enum ha
   - **Then** the row's `redirect_uri` does not match the derived one
   - **And** the call returns `AuthError::OAuthFailed` with `cause = "public_url_changed_mid_flow"`
   - **And** no token endpoint POST is made
+
+---
+
+### REQ-oauth-006 — Already-linked external identity mints session directly (🟥 WAVE-7 added per Codex F.1)
+
+**Status**: ADDED.
+
+When `complete_oauth` validates the IdP response and the `(provider, sub)` pair already has a row in the `external_identities` table (the user has previously logged in via this IdP), the backend SHALL:
+
+1. Look up the linked `user_id` via `self.external_identity_repo.find_user_by_external(provider.as_str(), &userinfo.sub)`.
+2. If found AND the linked user row exists (FK guarantees existence by `ON DELETE CASCADE`): mint a Nebula session for that `user_id` and return.
+3. **Skip the email truth-table** (REQ-oauth-004/-005). The `(provider, sub)` link is the source of truth — the user's IdP-side email may have changed since first link (e.g. Google account email rotation), and the existing linkage takes precedence. The IdP `sub` is stable per IdP guarantee; the link captures "this is the same human as before".
+4. The `external_identities.email` snapshot column is NOT updated on each login (it's a link-time audit field only). If the operator wants to refresh, a separate "resync external identity" admin endpoint is a 1.1 surface (out of scope).
+
+If `find_user_by_external` returns `None`: fall through to REQ-oauth-004 (first-login) or REQ-oauth-005 (existing-user link by email) per the truth tables.
+
+**Scenarios**:
+
+- **Scenario 6.1 — Repeated login via same IdP mints session directly**
+  - **Given** a user exists with `email = "alice@example.com"`, `email_verified = true`
+  - **And** an `external_identities` row already links `(provider = google, subject = google-1) -> alice's user_id`
+  - **And** IdP userinfo returns `{ email: "alice@example.com", email_verified: true, sub: "google-1" }`
+  - **When** `complete_oauth` succeeds
+  - **Then** the call returns `Ok(Session { user_id = <alice's id>, ... })`
+  - **And** NO new `external_identities` row is created
+  - **And** NO duplicate user row is created
+  - **And** the email truth-table (REQ-oauth-004/-005) is NOT consulted
+  - **And** the structured log records `cause = "existing_external_identity_linked"`
+
+- **Scenario 6.2 — Repeated login still succeeds when IdP email changed since first link**
+  - **Given** the `external_identities` row links `(google, google-1) -> alice's user_id`
+  - **And** the row's snapshot `email = "alice@old-domain.com"`
+  - **And** Nebula's `users.email = "alice@example.com"` (current Nebula-side email)
+  - **And** IdP userinfo NOW returns `{ email: "alice@new-domain.com", email_verified: true, sub: "google-1" }` (user changed their Google email)
+  - **When** `complete_oauth` succeeds
+  - **Then** the call returns `Ok(Session { user_id = <alice's id>, ... })` — the `sub` linkage takes precedence over the email
+  - **And** the `external_identities.email` snapshot column is NOT updated (link-time audit only)
+  - **And** `users.email` is NOT updated
 
 ---
 
@@ -459,7 +503,7 @@ Every PR in the chain (PR-1 through PR-5 per `proposal.md` §7; chain compressed
 | A.2 (real authorize URL + PKCE) | REQ-oauth-002 |
 | A.3 (replay / expiry / mismatch / redirect_uri / IdP error) | REQ-oauth-003 scenarios 3.2–3.6, 3.9 |
 | A.4 (provider not configured) | REQ-oauth-001 Invariant 2 + Scenario 1.3 |
-| A.5 (first-login creates user) | REQ-oauth-004 |
+| A.5 (first-login creates user) | REQ-oauth-004 + **REQ-oauth-006** (already-linked short-circuit — 🟥 WAVE-7 added) |
 | A.6 (existing-user links by email) | REQ-oauth-005 |
 | A.7 (unverified Nebula email rejects link) | REQ-oauth-005 Scenario 5.2 |
 | A.8 (🟥 RECON-2 — compose-root fails closed on invalid OAuth config) | REQ-compose-001 Scenarios compose-001.3 / 001.4 / 001.5 |
