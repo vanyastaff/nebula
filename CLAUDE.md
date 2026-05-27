@@ -189,7 +189,10 @@ between siblings at the same layer.
 | `.claude/hooks/`              | Committed guard hooks (enforced discipline) |
 | `.claude/skills/rust-intel/`  | Vendored LLM-Rust-failure-mode skill — v0.2.2, MIT, advisory (not hook-enforced); `/rust-cc-{audit,fix,plan}` slash commands (see its `UPSTREAM.md`) |
 | `.claude/commands/`           | Slash-command definitions for the vendored skills above |
-| `.pi/settings.json`           | [`pi-subagents`](https://pi.dev/packages/pi-subagents) `agentOverrides` — per-project model + thinking-level overrides for built-in subagents (scout/context-builder on sonnet+medium for cheap recon; reviewer/worker on opus+high; planner/oracle on opus+xhigh) |
+| `.pi/settings.json`           | [`pi-subagents`](https://pi.dev/packages/pi-subagents) `agentOverrides` (3-tier Anthropic strategy with cross-provider fallback chains: scout/context-builder/researcher on `claude-haiku-4-5` + medium for cheap recon; reviewer/worker on `claude-sonnet-4-6` + high with inherited project context; planner/oracle on `claude-opus-4-7` + **max** effort — no token constraint for architecture / security review). Fallback order across providers: `anthropic` → `github-copilot` → `cursor-agent` → `openai-codex`. **and** vstack-namespaced per-project overrides for [`@vanillagreen/pi-hooks`](https://pi.dev/packages/%40vanillagreen/pi-hooks) (see Pi Hook Strategy below) and [`@vanillagreen/pi-output-policy`](https://pi.dev/packages/%40vanillagreen/pi-output-policy) tuning |
+| `.pi/lsp.json`                | [`@narumitw/pi-lsp`](https://pi.dev/packages/%40narumitw/pi-lsp) server map — `rust-analyzer` for `.rs` (clippy on `check`, all features, target/ excluded) and `taplo` for `.toml`; powers `lsp_diagnostics` / `lsp_fix` tools |
+| `.pi/extensions/guardrails.json` | [`@aliou/pi-guardrails`](https://pi.dev/packages/%40aliou/pi-guardrails) **file-policy only** (`pathAccess` and `permissionGate` features disabled here to avoid duplicate prompts with pi-permission-system) — `.env*` (except `.env.example`) `noAccess`, `.pi-audit-*` `readOnly`, `~/.ssh` and `~/.cargo/credentials*` `noAccess` |
+| `.pi/extensions/pi-permission-system/config.json` | [`@gotgenes/pi-permission-system`](https://pi.dev/packages/%40gotgenes/pi-permission-system) **bash + external_directory** gate — catch-all `allow`; `deny` for `sudo`, `rm -rf` against project / repo / home roots (`.`, `./*`, `$PWD`, `/`, `~`, `target`, `.git`, `.worktrees`, `.pi`), `git {commit,push} --no-verify` (any flag position), and `cargo fmt --all` (Windows OS error 206); `ask` only for irreversible operations (`cargo publish`/`yank`, `git push --force[-with-lease]`, `git reset --hard`, `gh release create/delete`, `gh pr merge/close`, `npm`/`pnpm`/`bun publish`); `external_directory: allow` (path-deny rules above still guard `.env`, `~/.ssh`, `~/.cargo/credentials*`) |
 | `.pi/conventions.json`        | [`pi-conventions`](https://pi.dev/packages/pi-conventions) policy — structure / naming / size / dependency rules tuned for this Rust workspace; `/conventions audit` runs the repo scan |
 | `.doctorrc.yml`               | [`pi-auditor`](https://pi.dev/packages/pi-auditor) config — god-file thresholds + ignore paths for `/doctor:audit` and `/doctor:god-files` |
 
@@ -261,6 +264,23 @@ follow these branch/commit rules — CI and lefthook are the gate.
 - Do not rely on Claude's default `--worktree` location for persistent repo
   work unless the user explicitly asks for a disposable Claude-managed
   worktree.
+
+## Pi Hook Strategy (vs lefthook vs Claude hooks)
+
+Three hook layers, each scoped to a different runtime so dups are minimized:
+
+| Layer | Trigger | Source | Authoritative for |
+|-------|---------|--------|--------------------|
+| `.claude/hooks/*.sh` | Claude Code only (UserPromptSubmit / PreTool / PostTool / Stop / SubagentStop) | this repo | Per-turn no-cheat: D10 stack (edit-guard + record + stop-gate + intent-gate) |
+| `lefthook.yml` | `git commit` / `git push` (any harness or shell) | this repo | Pre-commit per-crate fmt-check + clippy + typos + taplo + deny; pre-push full-workspace clippy + crate-diff nextest |
+| [`@vanillagreen/pi-hooks`](https://pi.dev/packages/%40vanillagreen/pi-hooks) | Inside Pi sessions only (tool_call / tool_result / turn_end) | global package, project-tuned via `.pi/settings.json` | Pi-side end-of-turn `cargo clippy` advisory + bare-`cd` block |
+
+**Per-project tuning** (in `.pi/settings.json` `vstack.extensionManager.config["@vanillagreen/pi-hooks"]`):
+
+- `blockBareCd: true` — cheap, no overlap.
+- `preCommitCheck: false` — `lefthook` already runs per-crate fmt+clippy on `git commit`; running both blocks the agent twice.
+- `postEditLint: false` — workspace clippy after every `.rs` edit on 60+ crates is 30-60s of UI-blocking even with sccache. The agent gets fast feedback from `lsp_diagnostics` (rust-analyzer) and per-crate `cargo check -p <name>` instead.
+- `taskCompletedCheck: true` with `clippyTimeoutMs: 90000` — one advisory workspace clippy at end of turn; surfaces broken builds without blocking the conversation. CI/lefthook remain the authoritative gate.
 
 ## Enforced Discipline (guard hooks)
 
