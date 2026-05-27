@@ -182,7 +182,12 @@ impl ServerRuntime {
         // read from `state.email_port` and work uniformly regardless of
         // which auth backend is wired.
         let email_port: Arc<dyn EmailPort> = Arc::new(EchoSink::default());
-        let auth_backend = build_auth_backend(&api_config, Arc::clone(&email_port)).await?;
+        let auth_backend = build_auth_backend(
+            &api_config,
+            Arc::clone(&email_port),
+            Some(Arc::clone(&metrics_registry)),
+        )
+        .await?;
         state = state
             .with_auth_backend(auth_backend)
             .with_email_port(email_port);
@@ -300,12 +305,15 @@ pub fn default_state(
 pub async fn build_auth_backend(
     api_config: &ApiConfig,
     email_port: Arc<dyn EmailPort>,
+    metrics_registry: Option<Arc<MetricsRegistry>>,
 ) -> Result<Arc<dyn AuthBackend>, TransportInitError> {
     match api_config.auth.backend {
         AuthBackendKind::Memory => Ok(Arc::new(
-            InMemoryAuthBackend::new().with_email_port(email_port),
+            InMemoryAuthBackend::new()
+                .with_email_port(email_port)
+                .with_metrics(metrics_registry),
         )),
-        AuthBackendKind::Postgres => build_pg_auth_backend(email_port).await,
+        AuthBackendKind::Postgres => build_pg_auth_backend(email_port, metrics_registry).await,
     }
 }
 
@@ -404,6 +412,7 @@ async fn build_pg_idempotency_store(
 #[cfg(feature = "postgres")]
 async fn build_pg_auth_backend(
     email_port: Arc<dyn EmailPort>,
+    metrics_registry: Option<Arc<MetricsRegistry>>,
 ) -> Result<Arc<dyn AuthBackend>, TransportInitError> {
     use nebula_api::domain::auth::backend::PgAuthBackend;
     use sqlx::postgres::PgPoolOptions;
@@ -426,13 +435,15 @@ async fn build_pg_auth_backend(
         backend = "postgres",
         "auth: PG-backed identity backend wired"
     );
-    let backend: Arc<dyn AuthBackend> = Arc::new(PgAuthBackend::new(pool, email_port));
+    let backend: Arc<dyn AuthBackend> =
+        Arc::new(PgAuthBackend::new(pool, email_port, metrics_registry));
     Ok(backend)
 }
 
 #[cfg(not(feature = "postgres"))]
 async fn build_pg_auth_backend(
     _email_port: Arc<dyn EmailPort>,
+    _metrics_registry: Option<Arc<MetricsRegistry>>,
 ) -> Result<Arc<dyn AuthBackend>, TransportInitError> {
     Err(TransportInitError::AuthBackendUnavailable {
         requested: "postgres",

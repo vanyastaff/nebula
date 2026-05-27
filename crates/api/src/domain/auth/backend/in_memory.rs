@@ -16,6 +16,13 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use nebula_core::{Principal, UserId};
+use nebula_metrics::{
+    MetricsRegistry,
+    naming::{
+        NEBULA_API_AUTH_ATTEMPTS_TOTAL, NEBULA_API_AUTH_MFA_ATTEMPTS_TOTAL,
+        NEBULA_API_AUTH_OAUTH_ATTEMPTS_TOTAL, auth_outcome,
+    },
+};
 
 use super::{
     dto::{SignupRequest, UserProfile},
@@ -26,7 +33,7 @@ use super::{
     pat::{self, MintedPat, PatRecord, compute_pat_expires_at},
     provider::{
         AuthBackend, CreatePatParams, MfaEnrollment, OAuthCompletion, OAuthStart, PasswordOutcome,
-        ProfilePatch,
+        ProfilePatch, metrics_emit,
     },
     session::{self, SESSION_TTL, SessionRecord, expires_at},
 };
@@ -111,6 +118,13 @@ pub struct InMemoryAuthBackend {
     /// in a custom port — callers that need introspection in that mode
     /// must keep their own `EchoSink` reference.
     default_echo: Option<Arc<EchoSink>>,
+    /// Optional `nebula_api_auth_*` emission seam (mirror of the
+    /// `PgAuthBackend` slot so the trait-level contract stays uniform).
+    /// `None` skips emission. Production composition root threads in
+    /// the shared `Arc<MetricsRegistry>`; the existing in-memory test
+    /// surface keeps `None` to preserve the previous no-emission
+    /// semantics.
+    metrics: Option<Arc<MetricsRegistry>>,
 }
 
 impl Default for InMemoryAuthBackend {
@@ -126,6 +140,7 @@ impl Default for InMemoryAuthBackend {
             oauth_state: DashMap::default(),
             email_port: Arc::clone(&echo) as Arc<dyn EmailPort>,
             default_echo: Some(echo),
+            metrics: None,
         }
     }
 }
@@ -190,6 +205,18 @@ impl InMemoryAuthBackend {
     pub fn with_email_port(mut self, port: Arc<dyn EmailPort>) -> Self {
         self.email_port = port;
         self.default_echo = None;
+        self
+    }
+
+    /// Wire an optional [`MetricsRegistry`] so the backend records
+    /// `nebula_api_auth_*` counters / histogram on every outcome
+    /// branch. Mirrors the `IdempotencyLayer::with_metrics` precedent
+    /// and the constructor injection on `super::pg::PgAuthBackend`
+    /// (feature-gated under `postgres`); tests that don't care opt
+    /// out by passing `None` (the default).
+    #[must_use]
+    pub fn with_metrics(mut self, metrics: Option<Arc<MetricsRegistry>>) -> Self {
+        self.metrics = metrics;
         self
     }
 
@@ -299,51 +326,65 @@ impl AuthBackend for InMemoryAuthBackend {
     }
 
     async fn register_user(&self, req: SignupRequest) -> Result<UserProfile, AuthError> {
-        let email = req.email.trim().to_lowercase();
-        if email.is_empty() || !email.contains('@') {
-            return Err(AuthError::InvalidCredentials);
-        }
-        if req.password.len() < 8 {
-            return Err(AuthError::InvalidCredentials);
-        }
-        let display_name = req.display_name.trim();
-        if display_name.is_empty() || display_name.len() > 128 {
-            return Err(AuthError::InvalidCredentials);
-        }
-        if self.users_by_email.contains_key(&email) {
-            return Err(AuthError::EmailAlreadyRegistered);
-        }
-        let hash = password::hash_password(req.password.expose())?;
-        let id = UserId::new();
-        let record = UserRecord {
-            id,
-            email: email.clone(),
-            display_name: display_name.to_owned(),
-            avatar_url: None,
-            password_hash: Some(hash),
-            email_verified: false,
-            failed_login_count: 0,
-            locked_until: None,
-            mfa_secret: None,
-            mfa_enabled: false,
-        };
-        let profile = record.profile();
-        self.put_user(record);
+        metrics_emit::run_with_metrics(
+            &self.metrics,
+            NEBULA_API_AUTH_ATTEMPTS_TOTAL,
+            None,
+            async move {
+                let email = req.email.trim().to_lowercase();
+                if email.is_empty() || !email.contains('@') {
+                    return Err(AuthError::InvalidCredentials);
+                }
+                if req.password.len() < 8 {
+                    return Err(AuthError::InvalidCredentials);
+                }
+                let display_name = req.display_name.trim();
+                if display_name.is_empty() || display_name.len() > 128 {
+                    return Err(AuthError::InvalidCredentials);
+                }
+                if self.users_by_email.contains_key(&email) {
+                    return Err(AuthError::EmailAlreadyRegistered);
+                }
+                let hash = password::hash_password(req.password.expose())?;
+                let id = UserId::new();
+                let record = UserRecord {
+                    id,
+                    email: email.clone(),
+                    display_name: display_name.to_owned(),
+                    avatar_url: None,
+                    password_hash: Some(hash),
+                    email_verified: false,
+                    failed_login_count: 0,
+                    locked_until: None,
+                    mfa_secret: None,
+                    mfa_enabled: false,
+                };
+                let profile = record.profile();
+                self.put_user(record);
 
-        // Signup deliberately commits the user record before queueing
-        // the verification email. If email dispatch fails the user
-        // still exists in an unverified state and can recover via
-        // `request_password_reset` — the reset flow does not require
-        // `email_verified` to be set to issue its cooldown-bounded
-        // reset token. Rolling back the user on transient transport
-        // failure would silently destroy the durable account on every
-        // retry and is the wrong default for a bring-up backend.
-        let token = self.issue_verification_token(id, VerificationKind::EmailVerify)?;
-        self.record_email(&email, &token, EmailKind::Verification)
-            .await?;
+                // Signup deliberately commits the user record before queueing
+                // the verification email. If email dispatch fails the user
+                // still exists in an unverified state and can recover via
+                // `request_password_reset` — the reset flow does not require
+                // `email_verified` to be set to issue its cooldown-bounded
+                // reset token. Rolling back the user on transient transport
+                // failure would silently destroy the durable account on every
+                // retry and is the wrong default for a bring-up backend.
+                let token = self.issue_verification_token(id, VerificationKind::EmailVerify)?;
+                self.record_email(&email, &token, EmailKind::Verification)
+                    .await?;
 
-        tracing::info!(user_id = %id, "user registered");
-        Ok(profile)
+                tracing::info!(user_id = %id, "user registered");
+                Ok(profile)
+            },
+            |result| match result {
+                Ok(_) => auth_outcome::SUCCESS,
+                Err(AuthError::EmailAlreadyRegistered) => auth_outcome::CONFLICT,
+                Err(AuthError::InvalidCredentials) => auth_outcome::INVALID_CREDS,
+                Err(_) => auth_outcome::INTERNAL,
+            },
+        )
+        .await
     }
 
     async fn authenticate_password(
@@ -352,64 +393,79 @@ impl AuthBackend for InMemoryAuthBackend {
         password_input: &str,
         totp: Option<&str>,
     ) -> Result<PasswordOutcome, AuthError> {
-        let user = self
-            .lookup_user_by_email(email)
-            .ok_or(AuthError::InvalidCredentials)?;
+        metrics_emit::run_with_metrics(
+            &self.metrics,
+            NEBULA_API_AUTH_ATTEMPTS_TOTAL,
+            None,
+            async move {
+                let user = self
+                    .lookup_user_by_email(email)
+                    .ok_or(AuthError::InvalidCredentials)?;
 
-        if let Some(until) = user.locked_until
-            && until > Utc::now()
-        {
-            return Err(AuthError::AccountLocked);
-        }
-
-        let stored_hash = user
-            .password_hash
-            .as_ref()
-            .ok_or(AuthError::InvalidCredentials)?;
-        if !password::verify_password(stored_hash, password_input)? {
-            self.users.alter(&user.id, |_, mut u| {
-                u.failed_login_count += 1;
-                if u.failed_login_count >= LOCKOUT_THRESHOLD {
-                    let until =
-                        Utc::now() + chrono::Duration::from_std(LOCKOUT_TTL).unwrap_or_default();
-                    u.locked_until = Some(until);
+                if let Some(until) = user.locked_until
+                    && until > Utc::now()
+                {
+                    return Err(AuthError::AccountLocked);
                 }
-                u
-            });
-            return Err(AuthError::InvalidCredentials);
-        }
 
-        // Reset failure counter on success.
-        self.users.alter(&user.id, |_, mut u| {
-            u.failed_login_count = 0;
-            u.locked_until = None;
-            u
-        });
-
-        if user.mfa_enabled {
-            if let Some(code) = totp {
-                let secret = user
-                    .mfa_secret
-                    .as_deref()
-                    .ok_or_else(|| AuthError::Internal("mfa enabled without secret".to_owned()))?;
-                if !mfa::verify_code(secret, code)? {
-                    return Err(AuthError::InvalidMfaCode);
+                let stored_hash = user
+                    .password_hash
+                    .as_ref()
+                    .ok_or(AuthError::InvalidCredentials)?;
+                if !password::verify_password(stored_hash, password_input)? {
+                    self.users.alter(&user.id, |_, mut u| {
+                        u.failed_login_count += 1;
+                        if u.failed_login_count >= LOCKOUT_THRESHOLD {
+                            let until = Utc::now()
+                                + chrono::Duration::from_std(LOCKOUT_TTL).unwrap_or_default();
+                            u.locked_until = Some(until);
+                        }
+                        u
+                    });
+                    return Err(AuthError::InvalidCredentials);
                 }
-                Ok(PasswordOutcome::Authenticated(user.profile()))
-            } else {
-                let challenge_token = session::random_token(24)?;
-                self.mfa_challenges.insert(
-                    challenge_token.clone(),
-                    MfaChallenge {
-                        user_id: user.id,
-                        expires_at: Self::now_secs() + MFA_CHALLENGE_TTL.as_secs(),
-                    },
-                );
-                Ok(PasswordOutcome::MfaRequired { challenge_token })
-            }
-        } else {
-            Ok(PasswordOutcome::Authenticated(user.profile()))
-        }
+
+                // Reset failure counter on success.
+                self.users.alter(&user.id, |_, mut u| {
+                    u.failed_login_count = 0;
+                    u.locked_until = None;
+                    u
+                });
+
+                if user.mfa_enabled {
+                    if let Some(code) = totp {
+                        let secret = user.mfa_secret.as_deref().ok_or_else(|| {
+                            AuthError::Internal("mfa enabled without secret".to_owned())
+                        })?;
+                        if !mfa::verify_code(secret, code)? {
+                            return Err(AuthError::InvalidMfaCode);
+                        }
+                        Ok(PasswordOutcome::Authenticated(user.profile()))
+                    } else {
+                        let challenge_token = session::random_token(24)?;
+                        self.mfa_challenges.insert(
+                            challenge_token.clone(),
+                            MfaChallenge {
+                                user_id: user.id,
+                                expires_at: Self::now_secs() + MFA_CHALLENGE_TTL.as_secs(),
+                            },
+                        );
+                        Ok(PasswordOutcome::MfaRequired { challenge_token })
+                    }
+                } else {
+                    Ok(PasswordOutcome::Authenticated(user.profile()))
+                }
+            },
+            |result| match result {
+                Ok(PasswordOutcome::Authenticated(_)) => auth_outcome::SUCCESS,
+                Ok(PasswordOutcome::MfaRequired { .. }) => auth_outcome::MFA_REQUIRED,
+                Err(AuthError::AccountLocked) => auth_outcome::LOCKOUT,
+                Err(AuthError::InvalidCredentials) => auth_outcome::INVALID_CREDS,
+                Err(AuthError::InvalidMfaCode) => auth_outcome::INVALID_MFA_CODE,
+                Err(_) => auth_outcome::INTERNAL,
+            },
+        )
+        .await
     }
 
     async fn verify_mfa(
@@ -417,28 +473,41 @@ impl AuthBackend for InMemoryAuthBackend {
         challenge_token: &str,
         code: &str,
     ) -> Result<UserProfile, AuthError> {
-        let now = Self::now_secs();
-        let entry = self
-            .mfa_challenges
-            .remove(challenge_token)
-            .ok_or(AuthError::InvalidToken)?
-            .1;
-        if entry.expires_at <= now {
-            return Err(AuthError::InvalidToken);
-        }
-        let user = self
-            .users
-            .get(&entry.user_id)
-            .ok_or(AuthError::UserNotFound)?
-            .clone();
-        let secret = user
-            .mfa_secret
-            .as_deref()
-            .ok_or_else(|| AuthError::Internal("mfa challenge for non-mfa user".to_owned()))?;
-        if !mfa::verify_code(secret, code)? {
-            return Err(AuthError::InvalidMfaCode);
-        }
-        Ok(user.profile())
+        metrics_emit::run_with_metrics(
+            &self.metrics,
+            NEBULA_API_AUTH_MFA_ATTEMPTS_TOTAL,
+            None,
+            async move {
+                let now = Self::now_secs();
+                let entry = self
+                    .mfa_challenges
+                    .remove(challenge_token)
+                    .ok_or(AuthError::InvalidToken)?
+                    .1;
+                if entry.expires_at <= now {
+                    return Err(AuthError::InvalidToken);
+                }
+                let user = self
+                    .users
+                    .get(&entry.user_id)
+                    .ok_or(AuthError::UserNotFound)?
+                    .clone();
+                let secret = user.mfa_secret.as_deref().ok_or_else(|| {
+                    AuthError::Internal("mfa challenge for non-mfa user".to_owned())
+                })?;
+                if !mfa::verify_code(secret, code)? {
+                    return Err(AuthError::InvalidMfaCode);
+                }
+                Ok(user.profile())
+            },
+            |result| match result {
+                Ok(_) => auth_outcome::SUCCESS,
+                Err(AuthError::InvalidMfaCode) => auth_outcome::INVALID_MFA_CODE,
+                Err(AuthError::InvalidToken) => auth_outcome::TOKEN_INVALID,
+                Err(_) => auth_outcome::INTERNAL,
+            },
+        )
+        .await
     }
 
     async fn create_session(&self, user_id: &str) -> Result<SessionRecord, AuthError> {
@@ -632,118 +701,188 @@ impl AuthBackend for InMemoryAuthBackend {
         token: &str,
         new_password: &str,
     ) -> Result<(), AuthError> {
-        let entry = self
-            .verification_tokens
-            .remove(token)
-            .ok_or(AuthError::InvalidToken)?
-            .1;
-        if entry.kind != VerificationKind::PasswordReset {
-            return Err(AuthError::InvalidToken);
-        }
-        if entry.expires_at <= Self::now_secs() {
-            return Err(AuthError::InvalidToken);
-        }
-        if new_password.len() < 8 {
-            return Err(AuthError::InvalidCredentials);
-        }
-        let new_hash = password::hash_password(new_password)?;
-        self.users.alter(&entry.user_id, |_, mut u| {
-            u.password_hash = Some(new_hash.clone());
-            u.failed_login_count = 0;
-            u.locked_until = None;
-            u
-        });
-        Ok(())
+        metrics_emit::run_with_metrics(
+            &self.metrics,
+            NEBULA_API_AUTH_ATTEMPTS_TOTAL,
+            None,
+            async move {
+                let entry = self
+                    .verification_tokens
+                    .remove(token)
+                    .ok_or(AuthError::InvalidToken)?
+                    .1;
+                if entry.kind != VerificationKind::PasswordReset {
+                    return Err(AuthError::InvalidToken);
+                }
+                if entry.expires_at <= Self::now_secs() {
+                    return Err(AuthError::InvalidToken);
+                }
+                if new_password.len() < 8 {
+                    return Err(AuthError::InvalidCredentials);
+                }
+                let new_hash = password::hash_password(new_password)?;
+                self.users.alter(&entry.user_id, |_, mut u| {
+                    u.password_hash = Some(new_hash.clone());
+                    u.failed_login_count = 0;
+                    u.locked_until = None;
+                    u
+                });
+                Ok(())
+            },
+            |result| match result {
+                Ok(()) => auth_outcome::SUCCESS,
+                Err(AuthError::InvalidToken) => auth_outcome::TOKEN_INVALID,
+                // Per oracle per-method map: `complete_password_reset`
+                // collapses `InvalidCredentials` to `invalid_input`
+                // because the failure is shape-validation of
+                // `new_password` (short / blank).
+                Err(AuthError::InvalidCredentials) => auth_outcome::INVALID_INPUT,
+                Err(_) => auth_outcome::INTERNAL,
+            },
+        )
+        .await
     }
 
     async fn verify_email(&self, token: &str) -> Result<(), AuthError> {
-        let entry = self
-            .verification_tokens
-            .remove(token)
-            .ok_or(AuthError::InvalidToken)?
-            .1;
-        if entry.kind != VerificationKind::EmailVerify {
-            return Err(AuthError::InvalidToken);
-        }
-        if entry.expires_at <= Self::now_secs() {
-            return Err(AuthError::InvalidToken);
-        }
-        self.users.alter(&entry.user_id, |_, mut u| {
-            u.email_verified = true;
-            u
-        });
-        Ok(())
+        metrics_emit::run_with_metrics(
+            &self.metrics,
+            NEBULA_API_AUTH_ATTEMPTS_TOTAL,
+            None,
+            async move {
+                let entry = self
+                    .verification_tokens
+                    .remove(token)
+                    .ok_or(AuthError::InvalidToken)?
+                    .1;
+                if entry.kind != VerificationKind::EmailVerify {
+                    return Err(AuthError::InvalidToken);
+                }
+                if entry.expires_at <= Self::now_secs() {
+                    return Err(AuthError::InvalidToken);
+                }
+                self.users.alter(&entry.user_id, |_, mut u| {
+                    u.email_verified = true;
+                    u
+                });
+                Ok(())
+            },
+            |result| match result {
+                Ok(()) => auth_outcome::SUCCESS,
+                Err(AuthError::InvalidToken) => auth_outcome::TOKEN_INVALID,
+                Err(_) => auth_outcome::INTERNAL,
+            },
+        )
+        .await
     }
 
     async fn start_mfa_enrollment(&self, user_id: &str) -> Result<MfaEnrollment, AuthError> {
-        let parsed: UserId = user_id
-            .parse()
-            .map_err(|_| AuthError::Internal("invalid user_id".to_owned()))?;
-        let user_email = self
-            .users
-            .get(&parsed)
-            .ok_or(AuthError::UserNotFound)?
-            .email
-            .clone();
-        let (secret, uri) = mfa::mint_secret(&user_email)?;
-        // Save secret but DO NOT flip mfa_enabled until confirm_mfa_enrollment.
-        self.users.alter(&parsed, |_, mut u| {
-            u.mfa_secret = Some(secret.clone());
-            u.mfa_enabled = false;
-            u
-        });
-        Ok(MfaEnrollment {
-            otpauth_uri: uri,
-            secret_base32: secret,
-        })
+        metrics_emit::run_with_metrics(
+            &self.metrics,
+            NEBULA_API_AUTH_MFA_ATTEMPTS_TOTAL,
+            None,
+            async move {
+                let parsed: UserId = user_id
+                    .parse()
+                    .map_err(|_| AuthError::Internal("invalid user_id".to_owned()))?;
+                let user_email = self
+                    .users
+                    .get(&parsed)
+                    .ok_or(AuthError::UserNotFound)?
+                    .email
+                    .clone();
+                let (secret, uri) = mfa::mint_secret(&user_email)?;
+                // Save secret but DO NOT flip mfa_enabled until confirm_mfa_enrollment.
+                self.users.alter(&parsed, |_, mut u| {
+                    u.mfa_secret = Some(secret.clone());
+                    u.mfa_enabled = false;
+                    u
+                });
+                Ok(MfaEnrollment {
+                    otpauth_uri: uri,
+                    secret_base32: secret,
+                })
+            },
+            |result| match result {
+                Ok(_) => auth_outcome::SUCCESS,
+                Err(_) => auth_outcome::INTERNAL,
+            },
+        )
+        .await
     }
 
     async fn confirm_mfa_enrollment(&self, user_id: &str, code: &str) -> Result<(), AuthError> {
-        let parsed: UserId = user_id
-            .parse()
-            .map_err(|_| AuthError::Internal("invalid user_id".to_owned()))?;
-        let user = self
-            .users
-            .get(&parsed)
-            .ok_or(AuthError::UserNotFound)?
-            .clone();
-        let secret = user
-            .mfa_secret
-            .as_deref()
-            .ok_or(AuthError::InvalidMfaCode)?;
-        if !mfa::verify_code(secret, code)? {
-            return Err(AuthError::InvalidMfaCode);
-        }
-        self.users.alter(&parsed, |_, mut u| {
-            u.mfa_enabled = true;
-            u
-        });
-        Ok(())
+        metrics_emit::run_with_metrics(
+            &self.metrics,
+            NEBULA_API_AUTH_MFA_ATTEMPTS_TOTAL,
+            None,
+            async move {
+                let parsed: UserId = user_id
+                    .parse()
+                    .map_err(|_| AuthError::Internal("invalid user_id".to_owned()))?;
+                let user = self
+                    .users
+                    .get(&parsed)
+                    .ok_or(AuthError::UserNotFound)?
+                    .clone();
+                let secret = user
+                    .mfa_secret
+                    .as_deref()
+                    .ok_or(AuthError::InvalidMfaCode)?;
+                if !mfa::verify_code(secret, code)? {
+                    return Err(AuthError::InvalidMfaCode);
+                }
+                self.users.alter(&parsed, |_, mut u| {
+                    u.mfa_enabled = true;
+                    u
+                });
+                Ok(())
+            },
+            |result| match result {
+                Ok(()) => auth_outcome::SUCCESS,
+                Err(AuthError::InvalidMfaCode) => auth_outcome::INVALID_MFA_CODE,
+                Err(_) => auth_outcome::INTERNAL,
+            },
+        )
+        .await
     }
 
     async fn start_oauth(&self, provider: OAuthProvider) -> Result<OAuthStart, AuthError> {
-        let pkce = mint_pkce()?;
-        // No real provider config in the in-memory backend — return a
-        // synthetic authorize URL so tests can verify the contract.
-        let authorize_url = format!(
-            "https://nebula.local/oauth/{}/authorize?state={}&code_challenge={}&code_challenge_method=S256",
-            provider.as_str(),
-            pkce.state,
-            pkce.code_challenge,
-        );
-        self.oauth_state.insert(
-            pkce.state.clone(),
-            OAuthStateEntry {
-                provider,
-                code_verifier: pkce.code_verifier,
-                expires_at: expiry_unix(OAUTH_STATE_TTL),
-                consumed: false,
+        let provider_label = metrics_emit::oauth_provider_label(provider);
+        metrics_emit::run_with_metrics(
+            &self.metrics,
+            NEBULA_API_AUTH_OAUTH_ATTEMPTS_TOTAL,
+            Some(provider_label),
+            async move {
+                let pkce = mint_pkce()?;
+                // No real provider config in the in-memory backend — return a
+                // synthetic authorize URL so tests can verify the contract.
+                let authorize_url = format!(
+                    "https://nebula.local/oauth/{}/authorize?state={}&code_challenge={}&code_challenge_method=S256",
+                    provider.as_str(),
+                    pkce.state,
+                    pkce.code_challenge,
+                );
+                self.oauth_state.insert(
+                    pkce.state.clone(),
+                    OAuthStateEntry {
+                        provider,
+                        code_verifier: pkce.code_verifier,
+                        expires_at: expiry_unix(OAUTH_STATE_TTL),
+                        consumed: false,
+                    },
+                );
+                Ok(OAuthStart {
+                    authorize_url,
+                    state: pkce.state,
+                })
             },
-        );
-        Ok(OAuthStart {
-            authorize_url,
-            state: pkce.state,
-        })
+            |result| match result {
+                Ok(_) => auth_outcome::SUCCESS,
+                Err(AuthError::OAuthFailed(_)) => auth_outcome::OAUTH_FAILED,
+                Err(_) => auth_outcome::INTERNAL,
+            },
+        )
+        .await
     }
 
     async fn complete_oauth(
@@ -752,20 +891,38 @@ impl AuthBackend for InMemoryAuthBackend {
         state: &str,
         _code: &str,
     ) -> Result<OAuthCompletion, AuthError> {
-        let entry = self
-            .oauth_state
-            .get_mut(state)
-            .ok_or(AuthError::InvalidToken)?;
-        if entry.consumed || entry.expires_at <= Self::now_secs() || entry.provider != provider {
-            return Err(AuthError::InvalidToken);
-        }
-        // The in-memory backend cannot actually exchange a code with a
-        // real provider; return NotImplemented so callers know they need
-        // a configured backend.
-        drop(entry);
-        Err(AuthError::NotImplemented(
-            "complete_oauth requires a configured provider backend",
-        ))
+        let provider_label = metrics_emit::oauth_provider_label(provider);
+        metrics_emit::run_with_metrics(
+            &self.metrics,
+            NEBULA_API_AUTH_OAUTH_ATTEMPTS_TOTAL,
+            Some(provider_label),
+            async move {
+                let entry = self
+                    .oauth_state
+                    .get_mut(state)
+                    .ok_or(AuthError::InvalidToken)?;
+                if entry.consumed
+                    || entry.expires_at <= Self::now_secs()
+                    || entry.provider != provider
+                {
+                    return Err(AuthError::InvalidToken);
+                }
+                // The in-memory backend cannot actually exchange a code with a
+                // real provider; return NotImplemented so callers know they need
+                // a configured backend.
+                drop(entry);
+                Err(AuthError::NotImplemented(
+                    "complete_oauth requires a configured provider backend",
+                ))
+            },
+            |result| match result {
+                Ok(_) => auth_outcome::SUCCESS,
+                Err(AuthError::InvalidToken) => auth_outcome::TOKEN_INVALID,
+                Err(AuthError::OAuthFailed(_)) => auth_outcome::OAUTH_FAILED,
+                Err(_) => auth_outcome::INTERNAL,
+            },
+        )
+        .await
     }
 }
 

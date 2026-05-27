@@ -141,12 +141,99 @@ impl From<AuthError> for ApiError {
 #[cfg(test)]
 mod tests {
     use axum::http::StatusCode;
+    use nebula_metrics::naming::auth_outcome;
 
     use super::*;
 
     fn status(e: AuthError) -> StatusCode {
         let api: ApiError = e.into();
         api.to_problem_details().0
+    }
+
+    /// Exhaustive mapping from [`AuthError`] to a closed
+    /// `nebula_metrics::naming::auth_outcome::*` label.
+    ///
+    /// **This is the compile-time gate for the auth metrics cardinality
+    /// budget.** The `match` deliberately has no catch-all arm: adding
+    /// a new [`AuthError`] variant fails compilation here until it has
+    /// a closed-set mapping. Per-method emission sites in
+    /// `crates/api/src/domain/auth/backend/{pg,in_memory}.rs` use their
+    /// own narrower `match`es to capture per-method overrides (e.g.
+    /// `complete_password_reset` collapses `InvalidCredentials` to
+    /// `invalid_input`, not the default `invalid_creds`); this function
+    /// is the safety net that guarantees *every* variant has at least
+    /// one valid label, not the source of truth for every emission site.
+    ///
+    /// Notable collapses documented in the oracle locked spec:
+    /// - `UserNotFound` -> `invalid_creds` (user-enumeration defence;
+    ///   see [`auth_outcome::INVALID_CREDS`] doc comment).
+    /// - `NotImplemented` / `Crypto` / `Internal` -> `internal`
+    ///   (operator-side, not caller-side).
+    fn default_outcome_for(err: &AuthError) -> &'static str {
+        match err {
+            AuthError::NotImplemented(_) => auth_outcome::INTERNAL,
+            AuthError::EmailAlreadyRegistered => auth_outcome::CONFLICT,
+            AuthError::UserNotFound => auth_outcome::INVALID_CREDS,
+            AuthError::InvalidCredentials => auth_outcome::INVALID_CREDS,
+            AuthError::InvalidInput(_) => auth_outcome::INVALID_INPUT,
+            AuthError::AccountLocked => auth_outcome::LOCKOUT,
+            AuthError::EmailNotVerified => auth_outcome::EMAIL_UNVERIFIED,
+            AuthError::MfaRequired => auth_outcome::MFA_REQUIRED,
+            AuthError::InvalidMfaCode => auth_outcome::INVALID_MFA_CODE,
+            AuthError::InvalidToken => auth_outcome::TOKEN_INVALID,
+            AuthError::RateLimit => auth_outcome::RATE_LIMIT,
+            AuthError::OAuthFailed(_) => auth_outcome::OAUTH_FAILED,
+            AuthError::Crypto(_) => auth_outcome::INTERNAL,
+            AuthError::Internal(_) => auth_outcome::INTERNAL,
+        }
+    }
+
+    #[test]
+    fn every_auth_error_variant_has_a_closed_outcome_label() {
+        // Enumerates all 14 `AuthError` variants and confirms each maps
+        // to a closed `auth_outcome::*` constant. The compile-time gate
+        // is `default_outcome_for`'s exhaustive `match`; this test
+        // additionally verifies the label values are non-empty closed
+        // strings.
+        let cases: [(&str, AuthError); 14] = [
+            ("NotImplemented", AuthError::NotImplemented("x")),
+            ("EmailAlreadyRegistered", AuthError::EmailAlreadyRegistered),
+            ("UserNotFound", AuthError::UserNotFound),
+            ("InvalidCredentials", AuthError::InvalidCredentials),
+            ("InvalidInput", AuthError::InvalidInput("x")),
+            ("AccountLocked", AuthError::AccountLocked),
+            ("EmailNotVerified", AuthError::EmailNotVerified),
+            ("MfaRequired", AuthError::MfaRequired),
+            ("InvalidMfaCode", AuthError::InvalidMfaCode),
+            ("InvalidToken", AuthError::InvalidToken),
+            ("RateLimit", AuthError::RateLimit),
+            ("OAuthFailed", AuthError::OAuthFailed("x".into())),
+            ("Crypto", AuthError::Crypto("x".into())),
+            ("Internal", AuthError::Internal("x".into())),
+        ];
+        for (name, err) in &cases {
+            let outcome = default_outcome_for(err);
+            assert!(!outcome.is_empty(), "{name} produced empty outcome label");
+            // Verify the outcome is one of the 12 closed-set values.
+            let closed = [
+                auth_outcome::SUCCESS,
+                auth_outcome::INVALID_CREDS,
+                auth_outcome::INVALID_INPUT,
+                auth_outcome::INVALID_MFA_CODE,
+                auth_outcome::MFA_REQUIRED,
+                auth_outcome::TOKEN_INVALID,
+                auth_outcome::LOCKOUT,
+                auth_outcome::EMAIL_UNVERIFIED,
+                auth_outcome::RATE_LIMIT,
+                auth_outcome::OAUTH_FAILED,
+                auth_outcome::CONFLICT,
+                auth_outcome::INTERNAL,
+            ];
+            assert!(
+                closed.contains(&outcome),
+                "{name} -> {outcome:?} is not in the auth_outcome closed set",
+            );
+        }
     }
 
     #[test]
