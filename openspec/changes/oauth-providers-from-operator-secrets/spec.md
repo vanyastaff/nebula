@@ -25,11 +25,14 @@ The server SHALL accept an operator-supplied configuration that maps each suppor
 
 `redirect_uri` is **NOT a configuration field**. It is auto-derived at runtime as `format!("{}/auth/oauth/{}/callback", api_config.public_url, provider.as_str())` from the existing `ApiConfig::public_url` (`API_PUBLIC_URL` env). Operators that need multiple callback URIs deploy multiple Nebula instances (each with its own `API_PUBLIC_URL` and IdP client registration).
 
-**Invariant 1**: Each provider config MUST validate at boot:
+**Invariant 1** (🟥 WAVE-6 anti-SSRF hardening per D-9-WAVE6): Each provider config MUST validate at boot via the generalized **`validate_oauth_outbound_url`** function (renamed from `validate_token_endpoint` in wave-6 to signal coverage of ALL server-side OAuth fetches, not just the token endpoint):
 - `client_id` non-empty; `client_secret` non-empty.
-- `Oidc.discovery_url` absolute HTTPS (no `http://localhost` per `flow::validate_token_endpoint`).
-- `Manual.authorize_url`, `Manual.token_url`, `Manual.userinfo_url` each absolute HTTPS. `Manual.scopes` non-empty.
+- `Oidc.discovery_url` passes `validate_oauth_outbound_url` (HTTPS + no localhost/private/loopback/link-local/multicast).
+- `Manual.authorize_url` passes the same gate (operator-config controlled, cheap insurance even though browser fetches it).
+- `Manual.token_url`, `Manual.userinfo_url`, and (when `Some`) `Manual.verified_emails_url` + `Manual.jwks_url` each pass `validate_oauth_outbound_url` (server-side fetches — strict policy non-negotiable).
+- `Manual.scopes` non-empty.
 - `ApiConfig::public_url` set AND absolute (with scheme). Empty/relative `public_url` is a boot-time error.
+- **Dynamic OIDC URLs** (validated at first `start_oauth` per D-15-WAVE6): the URLs RETURNED in the `.well-known/openid-configuration` JSON (`authorize_url`, `token_url`, `userinfo_url`, `jwks_url`) MUST each pass `validate_oauth_outbound_url` BEFORE the `OidcDiscovery` is cached. A hostile discovery doc with internal-IP child URLs fails with `DiscoveryError::EndpointSsrfRejected { field, url_host }` and the cache stays empty (no partial entries).
 
 **Invariant 2**: Declaring an OAuth provider is sufficient — there is no separate credential row. Boot validates the config; first OAuth-start call resolves endpoints (via `fetch_oidc_discovery` if `Oidc`) and may surface `AuthError::OAuthFailed { cause: "oidc_discovery_failed" }` if the discovery URL is unreachable. Caching is process-wide per discovery URL.
 

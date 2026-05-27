@@ -92,10 +92,18 @@ enum OAuthEndpoints {
     /// OAuth2-only provider (e.g. GitHub) or operator-customized OIDC.
     /// `jwks_url` accepted for forward compat but ignored in 1.0 (see D-16).
     /// `scopes` MUST be non-empty for Manual.
+    /// `verified_emails_url` (wave-6 addition for P2 review) is required
+    /// for providers like GitHub whose `userinfo_url` returns no
+    /// `email_verified` flag — PR-4 fetches it after `userinfo_url` and
+    /// picks the primary-and-verified email. For providers that return
+    /// `email_verified` in the userinfo response itself (most OIDC),
+    /// `verified_emails_url` is `None` and PR-4 reads `email_verified`
+    /// from the userinfo body.
     Manual {
         authorize_url: String,
         token_url: String,
         userinfo_url: String,
+        verified_emails_url: Option<String>,
         jwks_url: Option<String>,
         scopes: Vec<String>,
     },
@@ -107,9 +115,9 @@ for every variant of the live `OAuthProvider` enum at
 `crates/api/src/domain/auth/backend/oauth.rs:28-47`. In 1.0 the enum has
 three variants:
 
-- `Google` — OIDC default (`discovery_url = "https://accounts.google.com/.well-known/openid-configuration"`).
-- `Microsoft` — OIDC default (`discovery_url = "https://login.microsoftonline.com/common/v2.0/.well-known/openid-configuration"`).
-- `GitHub` — Manual default (no `.well-known/openid-configuration` published; explicit endpoints).
+- `Google` — OIDC default (`discovery_url = "https://accounts.google.com/.well-known/openid-configuration"`). `email_verified` claim is in the userinfo response.
+- `Microsoft` — OIDC default (`discovery_url = "https://login.microsoftonline.com/common/v2.0/.well-known/openid-configuration"`). `email_verified` claim is in the userinfo response.
+- `GitHub` — Manual default. GitHub.com does NOT publish a `.well-known/openid-configuration` AND its primary userinfo endpoint (`/user`) does NOT return `email_verified`. Per the wave-6 Codex P2 review, the Manual shape must therefore carry a **second userinfo endpoint** for the verified-email lookup. GitHub defaults: `userinfo_url = "https://api.github.com/user"` (returns `sub` = `id` as string), `verified_emails_url = Some("https://api.github.com/user/emails")` (returns `[{ email, primary, verified, ... }]`; PR-4 picks the entry where `primary == true AND verified == true`).
 
 Operator config overrides per-provider (e.g. point Google at a staging
 IdP mirror via the `Manual` endpoints arm).
@@ -177,7 +185,36 @@ for audit; `users.email` is the authoritative source for "user's email".
 No `tenant_scope` column — external identity is global per
 `(provider, sub)` because IdPs do not respect Nebula's tenancy.
 
-### D-9 (recon-3 narrowed) — `oauth_allow_insecure_localhost` flag scope
+### D-9-WAVE6 — Anti-SSRF gate applies to ALL server-side OAuth HTTP fetches (🟥 WAVE-6 P1 SECURITY FIX)
+
+**Trigger**: Codex P1 (`6ad880d4` review, 22:51:42Z): the original D-9 + D-12 + D-15 framing only ran `validate_token_endpoint` on the token endpoint URL itself. PR-4's userinfo GET (direct `oauth_token_http_client()` call) and PR-3's OIDC discovery doc GET (`fetch_oidc_discovery`) bypassed the anti-SSRF gate. A hostile or misconfigured discovery document could return `userinfo_url = "http://10.0.0.5/admin"` and Nebula would fetch it server-side. **This is a real SSRF hole that must close before any production OAuth code lands.**
+
+**Decision** (replaces the narrower D-9 framing below):
+
+1. **Rename for clarity**: the existing `flow::validate_token_endpoint` function is renamed (or aliased) to `validate_oauth_outbound_url` to signal that its anti-SSRF policy applies to ANY server-side OAuth-related HTTP call, not just the token endpoint. The implementation is unchanged.
+
+2. **Apply at every server-side fetch site**:
+   - **Token endpoint POST** (`flow::exchange_code`) — already validated; no change.
+   - **OIDC discovery doc GET** (D-15 `fetch_oidc_discovery`) — validate `discovery_url` BEFORE the GET.
+   - **Discovery-returned endpoints** — after parsing the discovery JSON, validate `authorize_url`, `token_url`, `userinfo_url`, and `jwks_url` (if present) BEFORE caching the `OidcDiscovery` value. A hostile discovery doc returning internal-IP URLs fails the cache insert with `DiscoveryError::EndpointSsrfRejected { field, url_host }`.
+   - **Userinfo GET** (PR-4 `complete_oauth`) — validate `userinfo_url` BEFORE the GET. For OIDC providers, the URL came from the validated cached discovery (already vetted in step above). For Manual providers, the URL came from operator config (validated at boot per REQ-compose-001).
+   - **Verified-emails GET** (wave-6 GitHub addition; see Manual.verified_emails_url) — same gate as userinfo GET.
+
+3. **Test bypass** (wave-5 D-14): `nebula_test_util` cfg gates the bypass for ALL three (now four with verified_emails_url) HTTP call sites uniformly via the `test_support` module helpers.
+
+4. **`oauth_allow_insecure_localhost` flag** (original D-9 narrowed scope): applies ONLY to `authorize_url` (browser-fetched; no server-side SSRF surface) per the original recon-3 narrowing. For `token_url` / `userinfo_url` / `verified_emails_url` / `jwks_url` / `discovery_url`, the strict policy is non-negotiable. Production builds (no `nebula_test_util` cfg) reject any non-HTTPS or loopback/private URL on these fields.
+
+**Why this resolves the P1 SSRF**:
+
+- Static analysis of PR-4's flow: every server-side OAuth HTTP call passes through `validate_oauth_outbound_url` before the wire request. No bypass path exists in production.
+- Discovery-doc poisoning is closed: even a valid HTTPS discovery URL cannot smuggle internal-IP child URLs through, because the child URLs are re-validated.
+- The integration-test bypass surface (`test_support`) is the SAME code path used in production but with the validator stubbed; production builds without the cfg cannot reach the stub.
+
+**Spec impact**: REQ-oauth-003 step 5 (userinfo GET) and REQ-oauth-002 step 3 (resolve OIDC discovery) gain explicit `validate_oauth_outbound_url` calls. REQ-compose-001 validation Invariant 1 carries the same gate for static (config-supplied) URLs.
+
+---
+
+### D-9 (recon-3 narrowed — historical context for D-9-WAVE6 above) — `oauth_allow_insecure_localhost` flag scope
 
 The flag scope is narrower than the original design proposed. Existing
 in-tree code at `crates/api/src/transport/oauth/flow.rs::validate_token_endpoint`
@@ -318,6 +355,14 @@ gating is the safer choice.
 >   Integration tests can mount wiremock on `127.0.0.1` and exercise
 >   token / userinfo / discovery without bypass code leaking to
 >   production.
+
+### D-15-WAVE6 — OIDC discovery doc fetch + process-lifetime cache (🟥 WAVE-6 hardened with post-discovery URL validation)
+
+The original D-15 ran `validate_token_endpoint` only on the `discovery_url` itself (the URL Nebula GETs). The wave-6 P1 SSRF audit (D-9-WAVE6 above) requires that the URLs RETURNED in the discovery JSON (authorize_url / token_url / userinfo_url / jwks_url) are ALSO validated before being cached — a hostile discovery doc could return internal-IP endpoint URLs and bypass the gate.
+
+**Implementation**: `fetch_oidc_discovery(url)` calls `validate_oauth_outbound_url(url)` first (gates the doc fetch itself), then after parsing the JSON response calls `validate_oauth_outbound_url` on each of the returned `authorize_url`, `token_url`, `userinfo_url`, and `jwks_url` (if present). The cache insert is skipped and `DiscoveryError::EndpointSsrfRejected { field: "<token_url|userinfo_url|...>", url_host }` returns to the caller if any child URL fails. No partial cache entries.
+
+Original D-15 text below (still applies to the cache-shape and timing decisions):
 
 ### D-15 — OIDC discovery doc fetch + process-lifetime cache
 
