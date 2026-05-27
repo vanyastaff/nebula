@@ -1,3 +1,4 @@
+use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 
 use crate::middleware::idempotency::{
@@ -229,6 +230,93 @@ impl Default for WebhookApiConfig {
             bootstrap_from_storage: true,
         }
     }
+}
+
+/// TLS posture for the SMTP transport.
+///
+/// Mirrors the SMTP submission-port convention: port 587 negotiates TLS
+/// via `STARTTLS` on top of an initially-plaintext connection (the
+/// modern submission default), port 465 uses TLS from the first byte
+/// (legacy "SMTPS" / implicit TLS), and `None` is a plaintext build
+/// reserved for in-cluster dev only — the composition root emits a
+/// `tracing::warn!` when this variant is selected so an operator who
+/// reaches for `None` in production sees it in the startup log.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SmtpTlsMode {
+    /// Plaintext SMTP. **Dev only.** Composition root warns on startup.
+    None,
+    /// Opportunistic upgrade via `STARTTLS` — the standard for the
+    /// SMTP submission port (587).
+    StartTls,
+    /// Implicit TLS from the first byte — the standard for the legacy
+    /// SMTPS port (465).
+    Implicit,
+}
+
+impl SmtpTlsMode {
+    /// Pick a sensible default TLS mode for `port`.
+    ///
+    /// - `465` → [`Self::Implicit`] (SMTPS)
+    /// - `587` → [`Self::StartTls`] (submission)
+    /// - anything else → [`Self::None`] (plaintext; composition root warns)
+    #[must_use]
+    pub const fn default_for_port(port: u16) -> Self {
+        match port {
+            465 => Self::Implicit,
+            587 => Self::StartTls,
+            _ => Self::None,
+        }
+    }
+}
+
+/// Production SMTP transport configuration for the `EmailPort`.
+///
+/// Populated only when the operator sets `API_SMTP_HOST`; absence keeps
+/// the composition root on the dev-only `EchoSink` so the local-first
+/// `simple_server` boot path stays unchanged. When present, the
+/// composition root constructs an `SmtpEmailPort` in `apps/server` and
+/// fails CLOSED on any malformed value (missing password while
+/// `username` is set, missing `from_address`, etc.) — silently falling
+/// back to `EchoSink` would silently swallow verification mails in a
+/// deployment that explicitly requested SMTP.
+///
+/// `password` is wrapped in `secrecy::SecretString` so the auto-derived
+/// `Debug` redacts the value and zeroizes the buffer on drop; the
+/// `Display` impl on `EmailError` already prints `[redacted]` for the
+/// rejected-address path, and the SMTP transport mapping mirrors that
+/// discipline so no credential ever reaches a `tracing::error!` line or
+/// a `problem-details` body.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SmtpEmailConfig {
+    /// SMTP server host (e.g. `"smtp.example.com"`).
+    pub host: String,
+    /// SMTP server port. Conventionally `587` (submission/STARTTLS),
+    /// `465` (SMTPS/implicit TLS), or `25` (plaintext relay).
+    pub port: u16,
+    /// SASL username. `None` means an unauthenticated relay — useful in
+    /// in-cluster dev where the SMTP server trusts the source IP; rare
+    /// in production. When `Some`, `password` MUST also be `Some` or
+    /// the env-binding parser rejects the config at startup.
+    pub username: Option<String>,
+    /// SASL password. Wrapped in `SecretString` so `Debug` redacts the
+    /// value and zeroizes on drop. Required iff `username` is `Some`.
+    ///
+    /// `#[serde(skip)]` because the field is only ever populated from
+    /// the environment (`API_SMTP_PASSWORD`); serializing a credential
+    /// to a JSON snapshot would silently leak it through `tracing` /
+    /// `problem-details` paths that round-trip the `ApiConfig` value
+    /// for diagnostics. Deserialising always leaves it `None`; the
+    /// `from_env` path repopulates from the env var.
+    #[serde(skip)]
+    pub password: Option<SecretString>,
+    /// Canonical `From` header (e.g. `"noreply@example.com"`). Applied
+    /// to every outbound mail regardless of `EmailMessage` content, so
+    /// a misconfigured caller cannot smuggle a different sender. The
+    /// env-binding parser rejects values without an `@` at startup.
+    pub from_address: String,
+    /// TLS posture — see [`SmtpTlsMode`] for the per-variant semantics.
+    pub tls: SmtpTlsMode,
 }
 
 /// Pagination configuration.
@@ -470,6 +558,173 @@ mod tests {
     fn for_test_auth_backend_defaults_to_memory() {
         let cfg = ApiConfig::for_test();
         assert_eq!(cfg.auth.backend, AuthBackendKind::Memory);
+    }
+
+    // ---- SMTP env binding (`API_SMTP_*`) ---------------------------------
+
+    #[test]
+    fn from_env_smtp_absent_keeps_none() {
+        let _g = env_lock();
+        clear_env();
+        // SAFETY: protected by env_lock.
+        unsafe {
+            std::env::set_var("NEBULA_ENV", "production");
+            std::env::set_var("API_JWT_SECRET", "this-is-a-32-byte-minimum-secret!!");
+        }
+        let cfg = ApiConfig::from_env().expect("config must load");
+        assert!(cfg.smtp.is_none(), "missing API_SMTP_HOST must yield None");
+        clear_env();
+    }
+
+    #[test]
+    fn from_env_smtp_present_populates_full_config_with_defaults() {
+        let _g = env_lock();
+        clear_env();
+        // SAFETY: protected by env_lock.
+        unsafe {
+            std::env::set_var("NEBULA_ENV", "production");
+            std::env::set_var("API_JWT_SECRET", "this-is-a-32-byte-minimum-secret!!");
+            std::env::set_var("API_SMTP_HOST", "smtp.example.com");
+            std::env::set_var("API_SMTP_FROM", "noreply@example.com");
+            // PORT, USERNAME, PASSWORD, TLS_MODE all unset — defaults apply.
+        }
+        let cfg = ApiConfig::from_env().expect("config must load");
+        let smtp = cfg.smtp.as_ref().expect("smtp must be populated");
+        assert_eq!(smtp.host, "smtp.example.com");
+        assert_eq!(smtp.port, 587, "default port is 587 (submission)");
+        assert_eq!(smtp.from_address, "noreply@example.com");
+        assert!(smtp.username.is_none());
+        assert!(smtp.password.is_none());
+        assert_eq!(
+            smtp.tls,
+            SmtpTlsMode::StartTls,
+            "port 587 must default to STARTTLS"
+        );
+        clear_env();
+    }
+
+    #[test]
+    fn from_env_smtp_465_defaults_to_implicit_tls() {
+        let _g = env_lock();
+        clear_env();
+        // SAFETY: protected by env_lock.
+        unsafe {
+            std::env::set_var("NEBULA_ENV", "production");
+            std::env::set_var("API_JWT_SECRET", "this-is-a-32-byte-minimum-secret!!");
+            std::env::set_var("API_SMTP_HOST", "smtp.example.com");
+            std::env::set_var("API_SMTP_PORT", "465");
+            std::env::set_var("API_SMTP_FROM", "noreply@example.com");
+        }
+        let cfg = ApiConfig::from_env().expect("config must load");
+        assert_eq!(
+            cfg.smtp.as_ref().unwrap().tls,
+            SmtpTlsMode::Implicit,
+            "port 465 must default to implicit TLS"
+        );
+        clear_env();
+    }
+
+    #[test]
+    fn from_env_smtp_rejects_username_without_password() {
+        let _g = env_lock();
+        clear_env();
+        // SAFETY: protected by env_lock.
+        unsafe {
+            std::env::set_var("NEBULA_ENV", "production");
+            std::env::set_var("API_JWT_SECRET", "this-is-a-32-byte-minimum-secret!!");
+            std::env::set_var("API_SMTP_HOST", "smtp.example.com");
+            std::env::set_var("API_SMTP_FROM", "noreply@example.com");
+            std::env::set_var("API_SMTP_USERNAME", "noreply@example.com");
+            // PASSWORD intentionally omitted.
+        }
+        let err = ApiConfig::from_env().expect_err("USERNAME without PASSWORD must fail closed");
+        assert!(
+            matches!(err, crate::config::ApiConfigError::SmtpAuthIncomplete),
+            "wrong variant: {err:?}"
+        );
+        clear_env();
+    }
+
+    #[test]
+    fn from_env_smtp_rejects_password_without_username() {
+        let _g = env_lock();
+        clear_env();
+        // SAFETY: protected by env_lock.
+        unsafe {
+            std::env::set_var("NEBULA_ENV", "production");
+            std::env::set_var("API_JWT_SECRET", "this-is-a-32-byte-minimum-secret!!");
+            std::env::set_var("API_SMTP_HOST", "smtp.example.com");
+            std::env::set_var("API_SMTP_FROM", "noreply@example.com");
+            std::env::set_var("API_SMTP_PASSWORD", "sekret");
+            // USERNAME intentionally omitted.
+        }
+        let err = ApiConfig::from_env().expect_err("PASSWORD without USERNAME must fail closed");
+        assert!(
+            matches!(err, crate::config::ApiConfigError::SmtpAuthIncomplete),
+            "wrong variant: {err:?}"
+        );
+        clear_env();
+    }
+
+    #[test]
+    fn from_env_smtp_rejects_missing_from() {
+        let _g = env_lock();
+        clear_env();
+        // SAFETY: protected by env_lock.
+        unsafe {
+            std::env::set_var("NEBULA_ENV", "production");
+            std::env::set_var("API_JWT_SECRET", "this-is-a-32-byte-minimum-secret!!");
+            std::env::set_var("API_SMTP_HOST", "smtp.example.com");
+            // FROM intentionally omitted.
+        }
+        let err = ApiConfig::from_env().expect_err("missing API_SMTP_FROM must error");
+        assert!(
+            matches!(err, crate::config::ApiConfigError::SmtpFromMissing),
+            "wrong variant: {err:?}"
+        );
+        clear_env();
+    }
+
+    #[test]
+    fn from_env_smtp_rejects_from_without_at() {
+        let _g = env_lock();
+        clear_env();
+        // SAFETY: protected by env_lock.
+        unsafe {
+            std::env::set_var("NEBULA_ENV", "production");
+            std::env::set_var("API_JWT_SECRET", "this-is-a-32-byte-minimum-secret!!");
+            std::env::set_var("API_SMTP_HOST", "smtp.example.com");
+            std::env::set_var("API_SMTP_FROM", "not-an-email");
+        }
+        let err = ApiConfig::from_env().expect_err("invalid API_SMTP_FROM must error");
+        assert!(
+            matches!(err, crate::config::ApiConfigError::SmtpFromInvalid),
+            "wrong variant: {err:?}"
+        );
+        clear_env();
+    }
+
+    #[test]
+    fn from_env_smtp_rejects_unknown_tls_mode() {
+        let _g = env_lock();
+        clear_env();
+        // SAFETY: protected by env_lock.
+        unsafe {
+            std::env::set_var("NEBULA_ENV", "production");
+            std::env::set_var("API_JWT_SECRET", "this-is-a-32-byte-minimum-secret!!");
+            std::env::set_var("API_SMTP_HOST", "smtp.example.com");
+            std::env::set_var("API_SMTP_FROM", "noreply@example.com");
+            std::env::set_var("API_SMTP_TLS_MODE", "weird");
+        }
+        let err = ApiConfig::from_env().expect_err("unknown TLS mode must error");
+        match err {
+            crate::config::ApiConfigError::ParseEnum { var, raw } => {
+                assert_eq!(var, "SMTP_TLS_MODE");
+                assert_eq!(raw, "weird");
+            },
+            other => panic!("wrong variant: {other:?}"),
+        }
+        clear_env();
     }
 
     #[test]

@@ -31,6 +31,13 @@ axum = { workspace = true }
 serde_json = { workspace = true }
 url = { workspace = true }
 thiserror = { workspace = true }
+async-trait = { workspace = true }
+secrecy = { workspace = true }
+# Production SMTP transport for the `EmailPort`. The trait + dev EchoSink live
+# in nebula-api; the lettre-backed impl lives here so the api crate stays free
+# of the lettre direct dep (and library consumers of nebula-api do not pull
+# lettre transitively).
+lettre = { workspace = true }
 # Optional — only linked by the PG-backed idempotency path in
 # `compose::build_pg_idempotency_store` (gated by `feature = "postgres"`).
 # Mirrors `crates/api/Cargo.toml` exactly so the verbatim `use sqlx::...`

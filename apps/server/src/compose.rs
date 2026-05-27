@@ -10,14 +10,17 @@ use thiserror::Error;
 
 use nebula_api::{
     ApiConfig, ApiConfigError, AppState, TelemetryGuard, TelemetryInitError, app,
-    config::{AuthBackendKind, IdempotencyBackend},
+    config::{AuthBackendKind, IdempotencyBackend, SmtpTlsMode},
     domain::auth::backend::{AuthBackend, InMemoryAuthBackend},
     middleware::{IdempotencyStore, InMemoryIdempotencyStore},
     ports::email::{EchoSink, EmailPort},
 };
 use nebula_metrics::{MetricsRegistry, OtlpInitError};
 
-use crate::transport::ServerTransport;
+use crate::{
+    email::{SmtpEmailPort, SmtpEmailPortBuildError},
+    transport::ServerTransport,
+};
 
 /// Runtime errors for transport binaries.
 #[derive(Debug, Error)]
@@ -123,6 +126,20 @@ pub enum TransportInitError {
     /// dependency (the typed `RegisterError` stays inside `nebula-api`).
     #[error("credential-schema port init failed: {0}")]
     CredentialSchemaInit(String),
+    /// `API_SMTP_HOST` is set but the `SmtpEmailPort` constructor
+    /// rejected the resolved config (invalid `from_address` mailbox,
+    /// lettre TLS-parameter construction error, etc.).
+    ///
+    /// Per the fail-closed contract in [`nebula_api::ApiConfig::smtp`]:
+    /// silently falling back to `EchoSink` when an operator explicitly
+    /// asked for SMTP would swallow verification mails in production
+    /// with no diagnostic. We refuse to boot instead.
+    #[error("SMTP email transport init failed: {source}")]
+    SmtpEmailPortInit {
+        /// Underlying `SmtpEmailPortBuildError` from the constructor.
+        #[source]
+        source: SmtpEmailPortBuildError,
+    },
 }
 
 /// Start a server binary for a selected transport profile.
@@ -176,12 +193,13 @@ impl ServerRuntime {
         state = state.with_idempotency_store(idempotency_store);
         // Build ONE shared `Arc<dyn EmailPort>` and pass the same Arc
         // to both `AppState::email_port` and the selected auth backend.
-        // Today this is the dev `EchoSink`; a future SMTP transport
-        // swaps in here without changing either consumer. Forward-compat
-        // non-auth email consumers (org invitations, billing notices)
-        // read from `state.email_port` and work uniformly regardless of
-        // which auth backend is wired.
-        let email_port: Arc<dyn EmailPort> = Arc::new(EchoSink::default());
+        // `API_SMTP_HOST` unset → dev `EchoSink` (unchanged local-first
+        // default); set → production `SmtpEmailPort` (fails CLOSED on
+        // malformed config per the policy on `ApiConfig::smtp`).
+        // Forward-compat non-auth email consumers (org invitations,
+        // billing notices) read from `state.email_port` and work
+        // uniformly regardless of which transport is wired.
+        let email_port = build_email_port(&api_config)?;
         let auth_backend = build_auth_backend(
             &api_config,
             Arc::clone(&email_port),
@@ -281,6 +299,39 @@ pub fn default_state(
         .with_api_keys(api_config.api_keys.clone())
         .with_credential_schema(credential_schema)
         .with_metrics_registry(metrics_registry))
+}
+
+/// Build the shared `Arc<dyn EmailPort>` from `api_config.smtp`.
+///
+/// `None` keeps the dev `EchoSink` (`API_SMTP_HOST` unset). `Some`
+/// instantiates an [`SmtpEmailPort`] and fails CLOSED on construction
+/// errors (invalid `from_address`, malformed TLS parameters) so an
+/// operator who set `API_SMTP_HOST` never silently boots with the
+/// in-process echo sink. `SmtpTlsMode::None` emits a startup
+/// `tracing::warn!` because plaintext SMTP is a dev-only posture.
+pub fn build_email_port(api_config: &ApiConfig) -> Result<Arc<dyn EmailPort>, TransportInitError> {
+    if let Some(smtp_cfg) = api_config.smtp.as_ref() {
+        if matches!(smtp_cfg.tls, SmtpTlsMode::None) {
+            tracing::warn!(
+                host = %smtp_cfg.host,
+                port = smtp_cfg.port,
+                "smtp: TLS disabled (API_SMTP_TLS_MODE=none) — credentials and mail bodies travel in plaintext; this is acceptable only for in-cluster dev"
+            );
+        }
+        let port = SmtpEmailPort::new(smtp_cfg)
+            .map_err(|source| TransportInitError::SmtpEmailPortInit { source })?;
+        tracing::info!(
+            host = %smtp_cfg.host,
+            port = smtp_cfg.port,
+            tls = ?smtp_cfg.tls,
+            authenticated = smtp_cfg.username.is_some(),
+            "email: SMTP transport wired"
+        );
+        Ok(Arc::new(port))
+    } else {
+        tracing::info!("email: EchoSink (dev) wired — set API_SMTP_HOST to enable SMTP");
+        Ok(Arc::new(EchoSink::default()))
+    }
 }
 
 /// Construct the Plane-A authentication backend from `api_config.auth`.

@@ -94,6 +94,10 @@ argon2 = { workspace = true }
 totp-rs = { workspace = true }
 parking_lot = { workspace = true }
 zeroize = { version = "1.8.2", features = ["zeroize_derive"] }
+# SmtpEmailConfig wraps the SMTP password in `SecretString` so the
+# `Debug` impl auto-redacts and the value zeroizes on drop. Already
+# in the workspace deps; `nebula-credential` is the other consumer.
+secrecy = { workspace = true }
 async-trait = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
 tokio-util = { workspace = true }
