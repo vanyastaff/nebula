@@ -275,7 +275,7 @@ Every implementor of `AuthBackend` MUST update. Today's implementors:
 - `InMemoryAuthBackend` (`crates/api/src/domain/auth/backend/in_memory.rs`)
 - All test-only mocks under `crates/api/tests/`
 
-The handler `crates/api/src/domain/auth/handler.rs::oauth_start` SHALL extract `redirect_uri` from the request (query string or form parameter — design ADR picks) and pass it through.
+The handler `crates/api/src/domain/auth/handler.rs::oauth_start` (and `oauth_callback`) SHALL **derive** `redirect_uri` from `ApiConfig::public_url` per D-3 recon-4 — `format!("{}/auth/oauth/{}/callback", api_config.public_url, provider.as_str())` — and pass the derived value to the backend method. The handler does NOT accept `redirect_uri` as a request parameter (query string, form, or otherwise); the operator does not get to override it per-request. The same derivation formula MUST be used at both endpoints (a shared private helper in the handler module or a `OAuthProviderConfig::derived_redirect_uri(public_url, provider)` accessor) so the value round-trips identically through `OAuthStateRow.redirect_uri` and is re-verified on `complete_oauth` (Scenario 3.10).
 
 **Scenarios**:
 
@@ -345,27 +345,30 @@ Behavior is fully governed by REQ-oauth-003 through REQ-oauth-005.
   - **When** the server boots with any backend
   - **Then** boot succeeds, no OAuth-related validation occurs
 
-- **Scenario compose-001.2 — Boot succeeds with valid OAuth config**
-  - **Given** `api_config.auth.oauth.providers` declares one Google provider with valid `client_id`, `client_secret`, HTTPS `redirect_uris = ["https://app.example.com/cb"]`
+- **Scenario compose-001.2 — Boot succeeds with valid OAuth config (🟥 RECON-4 REVISED)**
+  - **Given** `api_config.auth.oauth.providers` declares one Google provider with valid `client_id`, `client_secret`, and `endpoints = { kind = "oidc", discovery_url = "https://accounts.google.com/.well-known/openid-configuration" }`
+  - **And** `API_PUBLIC_URL = "https://app.example.com"` is set (required for `redirect_uri` auto-derivation)
   - **And** `API_AUTH_BACKEND=postgres` and `DATABASE_URL` reachable
   - **When** the server boots
-  - **Then** boot succeeds and the server opens its listening port
+  - **Then** boot succeeds and the server opens its listening port (no `.well-known/openid-configuration` fetch at boot — lazy per D-15)
 
 - **Scenario compose-001.3 — Boot fails closed on empty `client_secret`**
   - **Given** an OAuth provider config has `client_secret = ""`
   - **When** the server attempts to boot
   - **Then** boot fails with `TransportInitError::OAuthProviderConfigInvalid { provider: "google", reason: "client_secret_required" }`
 
-- **Scenario compose-001.4 — Boot fails closed on HTTP redirect_uri in release build**
-  - **Given** an OAuth provider config has `redirect_uris = ["http://app.example.com/cb"]`
+- **Scenario compose-001.4 — Boot fails closed on HTTP endpoint URL in release build (🟥 RECON-4 REVISED)**
+  - **Given** an OAuth provider config has `endpoints = { kind = "manual", authorize_url = "http://github.com/login/oauth/authorize", ... }` (HTTP instead of HTTPS)
   - **And** the binary is built with the `release` feature
   - **When** the server attempts to boot
-  - **Then** boot fails with `TransportInitError::OAuthProviderConfigInvalid { provider, reason: "redirect_uri_must_be_https" }`
+  - **Then** boot fails with `TransportInitError::OAuthProviderConfigInvalid { provider, reason: "endpoint_url_must_be_https" }`
 
-- **Scenario compose-001.5 — Boot fails closed on Generic provider missing endpoints**
-  - **Given** a `Generic` OAuth provider config without an `endpoints` block
+- **Scenario compose-001.5 — Boot fails closed on `Manual` provider missing required endpoint URL (🟥 RECON-4 REVISED, was "Generic provider")**
+  - **Given** a `Manual` OAuth provider config with `userinfo_url` empty (missing)
   - **When** the server attempts to boot
-  - **Then** boot fails with `TransportInitError::OAuthProviderConfigInvalid { provider, reason: "endpoints_required_for_generic" }`
+  - **Then** boot fails with `TransportInitError::OAuthProviderConfigInvalid { provider, reason: "manual_userinfo_url_required" }`
+
+> Note: a "Generic" provider variant is **out of 1.0 scope** — the live `OAuthProvider` enum at `crates/api/src/domain/auth/backend/oauth.rs:28-47` has only Google/Microsoft/GitHub. Adding a Generic variant (or `Generic { name: String }` for arbitrary operator-named providers) is a 1.1 enum-extension follow-up per ADR-0085 D-5. Within 1.0, any IdP not in the enum cannot be configured at all (the TOML key fails `FromStr` at config-load), so a "Generic provider config missing endpoints" scenario is unrepresentable.
 
 ---
 
