@@ -258,6 +258,72 @@ pub async fn fetch_oidc_discovery(
     Ok(discovery)
 }
 
+/// Resolved authorize / token / userinfo / scopes triple from an
+/// [`OAuthProviderConfig`]. The OAuth `start_oauth` and
+/// `complete_oauth` paths consume this uniformly regardless of
+/// whether the provider is configured as Oidc or Manual.
+///
+/// PR-3 consumes `authorize_url` + `scopes` for the authorize-URL
+/// emission; PR-4 consumes `token_url` + `userinfo_url` for the
+/// code exchange + userinfo lookup.
+#[derive(Debug, Clone)]
+pub struct ResolvedEndpoints {
+    /// Browser-fetched authorize URL.
+    pub authorize_url: String,
+    /// Server-side token endpoint URL.
+    pub token_url: String,
+    /// Server-side userinfo endpoint URL.
+    pub userinfo_url: String,
+    /// Optional second userinfo endpoint for verified-email lookup
+    /// (e.g. GitHub's `/user/emails`). PR-4 consumes when `Some`.
+    pub verified_emails_url: Option<String>,
+    /// Space-joined scopes string for the authorize URL.
+    pub scopes: String,
+}
+
+/// Resolve a provider's endpoints into the runtime-uniform
+/// [`ResolvedEndpoints`] shape. For Oidc providers this fetches the
+/// discovery doc (cache-served after first hit) and runs the
+/// post-fetch SSRF re-validation; for Manual providers it returns
+/// the operator-configured URLs as-is (already validated at boot).
+///
+/// # Errors
+///
+/// Returns the underlying [`DiscoveryError`] for Oidc providers when
+/// the discovery doc fetch or post-fetch validation fails.
+pub async fn resolve_provider_endpoints(
+    cfg: &crate::config::OAuthProviderConfig,
+    oauth_allow_insecure_localhost: bool,
+) -> Result<ResolvedEndpoints, DiscoveryError> {
+    use crate::config::OAuthEndpoints;
+
+    match &cfg.endpoints {
+        OAuthEndpoints::Oidc { discovery_url } => {
+            let doc = fetch_oidc_discovery(discovery_url, oauth_allow_insecure_localhost).await?;
+            Ok(ResolvedEndpoints {
+                authorize_url: doc.authorize_url,
+                token_url: doc.token_url,
+                userinfo_url: doc.userinfo_url,
+                verified_emails_url: None,
+                scopes: cfg.endpoints.scopes().join(" "),
+            })
+        },
+        OAuthEndpoints::Manual {
+            authorize_url,
+            token_url,
+            userinfo_url,
+            verified_emails_url,
+            ..
+        } => Ok(ResolvedEndpoints {
+            authorize_url: authorize_url.clone(),
+            token_url: token_url.clone(),
+            userinfo_url: userinfo_url.clone(),
+            verified_emails_url: verified_emails_url.clone(),
+            scopes: cfg.endpoints.scopes().join(" "),
+        }),
+    }
+}
+
 /// Test-only: clear the cache so tests can exercise the fetch path
 /// without inter-test contamination. `pub(crate)` so the unit-test
 /// module + the `nebula_test_util` cfg-gated `test_support` module

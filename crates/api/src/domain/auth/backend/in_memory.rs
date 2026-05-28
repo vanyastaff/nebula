@@ -125,6 +125,13 @@ pub struct InMemoryAuthBackend {
     /// surface keeps `None` to preserve the previous no-emission
     /// semantics.
     metrics: Option<Arc<MetricsRegistry>>,
+    /// Operator OAuth providers config (Plane A). Same shape as
+    /// `PgAuthBackend.oauth_providers`. Defaults to empty so existing
+    /// tests that construct the backend via `InMemoryAuthBackend::new`
+    /// without OAuth config keep working (start_oauth returns
+    /// `ProviderNotConfigured`); tests that exercise OAuth call
+    /// [`InMemoryAuthBackend::with_oauth_providers`] explicitly.
+    oauth_providers: Arc<crate::config::OAuthProvidersConfig>,
 }
 
 impl Default for InMemoryAuthBackend {
@@ -141,6 +148,7 @@ impl Default for InMemoryAuthBackend {
             email_port: Arc::clone(&echo) as Arc<dyn EmailPort>,
             default_echo: Some(echo),
             metrics: None,
+            oauth_providers: Arc::new(crate::config::OAuthProvidersConfig::default()),
         }
     }
 }
@@ -217,6 +225,19 @@ impl InMemoryAuthBackend {
     #[must_use]
     pub fn with_metrics(mut self, metrics: Option<Arc<MetricsRegistry>>) -> Self {
         self.metrics = metrics;
+        self
+    }
+
+    /// Attach the operator OAuth providers config. Mirrors
+    /// `PgAuthBackend::with_oauth_providers`. Tests that exercise the
+    /// real authorize-URL emission path (PR-3) wire this; tests that
+    /// only need the trait surface keep the empty default.
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_oauth_providers(
+        mut self,
+        providers: Arc<crate::config::OAuthProvidersConfig>,
+    ) -> Self {
+        self.oauth_providers = providers;
         self
     }
 
@@ -846,30 +867,60 @@ impl AuthBackend for InMemoryAuthBackend {
         .await
     }
 
-    // PR-2 T2.9: trait sig gained `redirect_uri: &str` per ADR-0085
-    // D-3 recon-4. Handler derives from `ApiConfig::public_url`; we
-    // accept and currently ignore the arg until PR-3 wires it into the
-    // OAuthStateEntry.
+    // PR-3 T3.9 GREEN: rewrite to emit a REAL authorize URL via
+    // `flow::build_authorization_uri` after resolving the provider's
+    // endpoints. Symmetric to `PgAuthBackend::start_oauth`; the only
+    // difference is the OAuth state row goes into the DashMap (with
+    // `redirect_uri` captured in the entry for PR-4 verification).
     async fn start_oauth(
         &self,
         provider: OAuthProvider,
-        _redirect_uri: &str,
+        redirect_uri: &str,
     ) -> Result<OAuthStart, AuthError> {
+        use secrecy::ExposeSecret;
+
+        use crate::transport::oauth::{
+            discovery::resolve_provider_endpoints,
+            flow::{AuthorizationUriRequest, build_authorization_uri},
+        };
+
         let provider_label = metrics_emit::oauth_provider_label(provider);
+        let redirect_uri = redirect_uri.to_owned();
+        let oauth_providers = Arc::clone(&self.oauth_providers);
         metrics_emit::run_with_metrics(
             &self.metrics,
             NEBULA_API_AUTH_OAUTH_ATTEMPTS_TOTAL,
             Some(provider_label),
             async move {
+                let provider_cfg = oauth_providers.providers.get(&provider).ok_or_else(|| {
+                    AuthError::ProviderNotConfigured {
+                        provider: provider.as_str().to_owned(),
+                    }
+                })?;
+                let endpoints = resolve_provider_endpoints(
+                    provider_cfg,
+                    oauth_providers.oauth_allow_insecure_localhost,
+                )
+                .await
+                .map_err(|e| AuthError::OAuthFailed(e.to_string()))?;
                 let pkce = mint_pkce()?;
-                // No real provider config in the in-memory backend — return a
-                // synthetic authorize URL so tests can verify the contract.
-                let authorize_url = format!(
-                    "https://nebula.local/oauth/{}/authorize?state={}&code_challenge={}&code_challenge_method=S256",
-                    provider.as_str(),
-                    pkce.state,
-                    pkce.code_challenge,
-                );
+                let auth_req = AuthorizationUriRequest {
+                    auth_url: endpoints.authorize_url.clone(),
+                    token_url: endpoints.token_url.clone(),
+                    client_id: provider_cfg.client_id.expose_secret().to_owned(),
+                    client_secret: provider_cfg.client_secret.expose_secret().to_owned(),
+                    redirect_uri: redirect_uri.clone(),
+                    scopes: Some(endpoints.scopes),
+                    auth_style: None,
+                };
+                let authorize_url =
+                    build_authorization_uri(&auth_req, &pkce.state, &pkce.code_challenge)
+                        .map_err(|e| {
+                            AuthError::OAuthFailed(format!(
+                                "authorize URL construction failed: {e}"
+                            ))
+                        })?
+                        .to_string();
                 self.oauth_state.insert(
                     pkce.state.clone(),
                     OAuthStateEntry {
@@ -877,6 +928,10 @@ impl AuthBackend for InMemoryAuthBackend {
                         code_verifier: pkce.code_verifier,
                         expires_at: expiry_unix(OAUTH_STATE_TTL),
                         consumed: false,
+                        // PR-3: capture handler-derived redirect_uri
+                        // for PR-4 to re-verify against the user's
+                        // callback.
+                        redirect_uri: Some(redirect_uri),
                     },
                 );
                 Ok(OAuthStart {
@@ -1121,7 +1176,37 @@ mod tests {
 
     #[tokio::test]
     async fn oauth_start_persists_state_entry() {
-        let b = InMemoryAuthBackend::new();
+        // PR-3: start_oauth now requires a configured provider per
+        // ADR-0085 D-6. The legacy synthetic-URL path is gone;
+        // declare a Manual provider with localhost endpoints so the
+        // test exercises the real authorize-URL emission against the
+        // operator-config path.
+        use std::collections::HashMap;
+
+        use crate::config::{OAuthEndpoints, OAuthProviderConfig, OAuthProvidersConfig};
+        use secrecy::SecretString;
+
+        let mut providers = HashMap::new();
+        providers.insert(
+            OAuthProvider::Google,
+            OAuthProviderConfig {
+                client_id: SecretString::new("test-client".into()),
+                client_secret: SecretString::new("test-secret".into()),
+                endpoints: OAuthEndpoints::Manual {
+                    authorize_url: "https://example.invalid/authorize".to_owned(),
+                    token_url: "https://example.invalid/token".to_owned(),
+                    userinfo_url: "https://example.invalid/userinfo".to_owned(),
+                    verified_emails_url: None,
+                    jwks_url: None,
+                    scopes: vec!["openid".to_owned(), "email".to_owned()],
+                },
+            },
+        );
+        let cfg = Arc::new(OAuthProvidersConfig {
+            providers,
+            oauth_allow_insecure_localhost: false,
+        });
+        let b = InMemoryAuthBackend::new().with_oauth_providers(cfg);
         let start = b
             .start_oauth(
                 OAuthProvider::Google,
@@ -1129,8 +1214,149 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(start.authorize_url.contains("state="));
+        assert!(
+            start.authorize_url.contains("state="),
+            "authorize URL must include state query param: {}",
+            start.authorize_url
+        );
+        assert!(
+            start.authorize_url.contains("code_challenge_method=S256"),
+            "authorize URL must include PKCE S256 marker"
+        );
         assert!(b.oauth_state.contains_key(&start.state));
+        let entry = b.oauth_state.get(&start.state).unwrap();
+        assert_eq!(
+            entry.redirect_uri.as_deref(),
+            Some("https://nebula.test/auth/oauth/google/callback"),
+            "PR-3 must persist the handler-derived redirect_uri"
+        );
+    }
+
+    /// T3.6 RED-then-GREEN: start_oauth returns ProviderNotConfigured
+    /// when the provider is absent from `oauth.providers` map.
+    #[tokio::test]
+    async fn start_oauth_returns_provider_not_configured_when_provider_absent() {
+        let b = InMemoryAuthBackend::new();
+        let err = b
+            .start_oauth(
+                OAuthProvider::Google,
+                "https://nebula.test/auth/oauth/google/callback",
+            )
+            .await
+            .expect_err("missing provider config must error");
+        match err {
+            AuthError::ProviderNotConfigured { provider } => {
+                assert_eq!(provider, "google");
+            },
+            other => panic!("expected ProviderNotConfigured, got: {other:?}"),
+        }
+    }
+
+    /// T3.3 RED-then-GREEN: OIDC provider returns real authorize URL
+    /// via the flow helper (PKCE S256 markers + state query param).
+    #[tokio::test]
+    async fn start_oauth_emits_real_authorize_url_with_pkce_s256_for_oidc_provider() {
+        use std::collections::HashMap;
+
+        use crate::config::{OAuthEndpoints, OAuthProviderConfig, OAuthProvidersConfig};
+        use secrecy::SecretString;
+
+        // Oidc arm bypassed via a Manual fixture pointing at a fake
+        // domain — the test does not actually fetch the discovery
+        // doc (that's the discovery::tests path); it exercises the
+        // authorize-URL construction step which is identical for both
+        // arms after `resolve_provider_endpoints` returns.
+        let mut providers = HashMap::new();
+        providers.insert(
+            OAuthProvider::Microsoft,
+            OAuthProviderConfig {
+                client_id: SecretString::new("my-client-id".into()),
+                client_secret: SecretString::new("my-client-secret".into()),
+                endpoints: OAuthEndpoints::Manual {
+                    authorize_url: "https://login.microsoftonline.com/common/oauth2/v2.0/authorize"
+                        .to_owned(),
+                    token_url: "https://login.microsoftonline.com/common/oauth2/v2.0/token"
+                        .to_owned(),
+                    userinfo_url: "https://graph.microsoft.com/oidc/userinfo".to_owned(),
+                    verified_emails_url: None,
+                    jwks_url: None,
+                    scopes: vec![
+                        "openid".to_owned(),
+                        "email".to_owned(),
+                        "profile".to_owned(),
+                    ],
+                },
+            },
+        );
+        let cfg = Arc::new(OAuthProvidersConfig {
+            providers,
+            oauth_allow_insecure_localhost: false,
+        });
+        let b = InMemoryAuthBackend::new().with_oauth_providers(cfg);
+        let start = b
+            .start_oauth(
+                OAuthProvider::Microsoft,
+                "https://nebula.test/auth/oauth/microsoft/callback",
+            )
+            .await
+            .unwrap();
+        let url = start.authorize_url;
+        assert!(url.starts_with("https://login.microsoftonline.com"));
+        assert!(url.contains("client_id=my-client-id"));
+        assert!(url.contains("code_challenge="));
+        assert!(url.contains("code_challenge_method=S256"));
+        assert!(url.contains("response_type=code"));
+        assert!(
+            url.contains("scope=openid+email+profile")
+                || url.contains("scope=openid%20email%20profile"),
+            "scopes joined: {url}"
+        );
+        assert!(url.contains("state="));
+    }
+
+    /// T3.4 RED-then-GREEN: Manual provider with explicit endpoints
+    /// builds authorize URL against the operator-configured
+    /// `authorize_url` (e.g. GitHub).
+    #[tokio::test]
+    async fn start_oauth_emits_real_authorize_url_for_manual_provider_with_explicit_endpoints() {
+        use std::collections::HashMap;
+
+        use crate::config::{OAuthEndpoints, OAuthProviderConfig, OAuthProvidersConfig};
+        use secrecy::SecretString;
+
+        let mut providers = HashMap::new();
+        providers.insert(
+            OAuthProvider::GitHub,
+            OAuthProviderConfig {
+                client_id: SecretString::new("gh-app-id".into()),
+                client_secret: SecretString::new("gh-app-secret".into()),
+                endpoints: OAuthEndpoints::Manual {
+                    authorize_url: "https://github.com/login/oauth/authorize".to_owned(),
+                    token_url: "https://github.com/login/oauth/access_token".to_owned(),
+                    userinfo_url: "https://api.github.com/user".to_owned(),
+                    verified_emails_url: Some("https://api.github.com/user/emails".to_owned()),
+                    jwks_url: None,
+                    scopes: vec!["user:email".to_owned()],
+                },
+            },
+        );
+        let cfg = Arc::new(OAuthProvidersConfig {
+            providers,
+            oauth_allow_insecure_localhost: false,
+        });
+        let b = InMemoryAuthBackend::new().with_oauth_providers(cfg);
+        let start = b
+            .start_oauth(
+                OAuthProvider::GitHub,
+                "https://nebula.test/auth/oauth/github/callback",
+            )
+            .await
+            .unwrap();
+        let url = start.authorize_url;
+        assert!(url.starts_with("https://github.com/login/oauth/authorize"));
+        assert!(url.contains("client_id=gh-app-id"));
+        assert!(url.contains("scope=user%3Aemail"));
+        assert!(url.contains("code_challenge_method=S256"));
     }
 
     #[tokio::test]

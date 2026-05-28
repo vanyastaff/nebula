@@ -159,6 +159,19 @@ pub struct PgAuthBackend {
     /// from operator dashboards; tests that don't exercise the emission
     /// seam pass `None`.
     metrics: Option<Arc<MetricsRegistry>>,
+    /// Operator-supplied OAuth providers config (Plane A). Defaults
+    /// to empty per `OAuthProvidersConfig::default()` so backends
+    /// constructed without an explicit `with_oauth_providers` call
+    /// behave as if no provider is declared (start_oauth returns
+    /// `ProviderNotConfigured`, matching the boot fail-closed
+    /// posture of REQ-compose-001 Invariant 1). Production
+    /// composition root wires it from `api_config.auth.oauth`.
+    ///
+    /// Wrapped in `Arc` because the backend itself is wrapped in an
+    /// `Arc<dyn AuthBackend>` and the config is read-only at runtime
+    /// — sharing one allocation across the backend's clones avoids
+    /// repeated deep-copies of the secrets map.
+    oauth_providers: Arc<crate::config::OAuthProvidersConfig>,
 }
 
 impl PgAuthBackend {
@@ -186,7 +199,23 @@ impl PgAuthBackend {
             pool,
             email_port,
             metrics,
+            oauth_providers: Arc::new(crate::config::OAuthProvidersConfig::default()),
         }
+    }
+
+    /// Attach the operator OAuth providers config. Composition root
+    /// calls this with `Arc::new(api_config.auth.oauth.clone())` so
+    /// the backend can serve real authorize URLs (PR-3) and complete
+    /// OAuth flows (PR-4). Tests skip this when they don't exercise
+    /// OAuth — the default empty config makes start_oauth return
+    /// `ProviderNotConfigured` for any provider.
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_oauth_providers(
+        mut self,
+        providers: Arc<crate::config::OAuthProvidersConfig>,
+    ) -> Self {
+        self.oauth_providers = providers;
+        self
     }
 
     /// Wrap into an `Arc<dyn AuthBackend>` for [`crate::AppState`].
@@ -1024,46 +1053,87 @@ impl AuthBackend for PgAuthBackend {
         .await
     }
 
-    #[tracing::instrument(level = "info", skip(self), fields(provider = %provider.as_str()))]
-    // PR-2 T2.9: trait sig gained `redirect_uri: &str`. PR-3 wires it
-    // into the AuthorizationUriRequest + persists into the
-    // OAuthStateRow; for now the param is accepted and ignored so the
-    // trait compiles — behavior is still the synthetic URL until PR-3.
+    #[tracing::instrument(level = "info", skip(self, redirect_uri), fields(provider = %provider.as_str()))]
+    // PR-3 T3.8 GREEN: rewrite to emit a REAL authorize URL via
+    // `flow::build_authorization_uri` after resolving the provider's
+    // endpoints (Oidc → discovery doc cache; Manual → operator
+    // config). Replaces the synthetic `https://nebula.local/...`
+    // placeholder from before PR-3.
     async fn start_oauth(
         &self,
         provider: OAuthProvider,
-        _redirect_uri: &str,
+        redirect_uri: &str,
     ) -> Result<OAuthStart, AuthError> {
+        use secrecy::ExposeSecret;
+
+        use crate::transport::oauth::{
+            discovery::resolve_provider_endpoints,
+            flow::{AuthorizationUriRequest, build_authorization_uri},
+        };
+
         let provider_label = metrics_emit::oauth_provider_label(provider);
+        let redirect_uri = redirect_uri.to_owned();
+        let oauth_providers = Arc::clone(&self.oauth_providers);
         metrics_emit::run_with_metrics(
             &self.metrics,
             NEBULA_API_AUTH_OAUTH_ATTEMPTS_TOTAL,
             Some(provider_label),
             async move {
+                // Step 1: lookup the operator config for `provider`;
+                // 503 ProviderNotConfigured per ADR-0085 D-6 if absent.
+                let provider_cfg = oauth_providers.providers.get(&provider).ok_or_else(|| {
+                    AuthError::ProviderNotConfigured {
+                        provider: provider.as_str().to_owned(),
+                    }
+                })?;
+
+                // Step 2: resolve endpoints (Oidc → discovery cache;
+                // Manual → operator config). Any SSRF / fetch failure
+                // bubbles up as AuthError::OAuthFailed with the
+                // typed DiscoveryError formatted.
+                let endpoints = resolve_provider_endpoints(
+                    provider_cfg,
+                    oauth_providers.oauth_allow_insecure_localhost,
+                )
+                .await
+                .map_err(|e| AuthError::OAuthFailed(e.to_string()))?;
+
+                // Step 3: mint PKCE pair.
                 let pkce = mint_pkce()?;
-        // Synthetic authorize URL (same shape the in-memory backend
-        // uses) — real provider config (client_id/secret, token
-        // endpoint) is deferred to a follow-up. See `complete_oauth`
-        // for the `NotImplemented` punt.
-        let authorize_url = format!(
-            "https://nebula.local/oauth/{}/authorize?state={}&code_challenge={}&code_challenge_method=S256",
-            provider.as_str(),
-            pkce.state,
-            pkce.code_challenge,
-        );
-        let now = Utc::now();
-        let expires_at = now + chrono_duration(OAUTH_STATE_TTL)?;
+
+                // Step 4: build the authorize URL with PKCE S256
+                // params. `build_authorization_uri` is the same
+                // helper Plane-B uses, ensuring uniform query-string
+                // construction across the two planes.
+                let auth_req = AuthorizationUriRequest {
+                    auth_url: endpoints.authorize_url.clone(),
+                    token_url: endpoints.token_url.clone(),
+                    client_id: provider_cfg.client_id.expose_secret().to_owned(),
+                    client_secret: provider_cfg.client_secret.expose_secret().to_owned(),
+                    redirect_uri: redirect_uri.clone(),
+                    scopes: Some(endpoints.scopes.clone()),
+                    auth_style: None,
+                };
+                let authorize_url =
+                    build_authorization_uri(&auth_req, &pkce.state, &pkce.code_challenge)
+                        .map_err(|e| {
+                            AuthError::OAuthFailed(format!(
+                                "authorize URL construction failed: {e}"
+                            ))
+                        })?
+                        .to_string();
+
+                // Step 5: persist the OAuth state row with the
+                // handler-derived redirect_uri so complete_oauth can
+                // re-verify it (Scenario 3.10 public_url_changed_mid_flow).
+                let now = Utc::now();
+                let expires_at = now + chrono_duration(OAUTH_STATE_TTL)?;
                 self.oauth_state_repo
                     .create(&OAuthStateRow {
                         state: pkce.state.clone(),
                         provider: provider.as_str().to_owned(),
                         code_verifier: pkce.code_verifier,
-                        // `redirect_uri = None`: the `AuthBackend::start_oauth`
-                        // trait signature does not yet accept a `redirect_uri`
-                        // parameter. The column stays correctly nullable; a
-                        // future trait-signature change picks it up without a
-                        // migration.
-                        redirect_uri: None,
+                        redirect_uri: Some(redirect_uri),
                         created_at: now,
                         expires_at,
                         consumed_at: None,

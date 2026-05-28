@@ -82,6 +82,13 @@ pub struct OAuthStateEntry {
     pub expires_at: u64,
     /// Set on first `complete` call to prevent replay.
     pub consumed: bool,
+    /// Handler-derived redirect_uri persisted at `start_oauth` time
+    /// so `complete_oauth` can re-verify it against the user's
+    /// callback per ADR-0085 REQ-oauth-003 Scenario 3.10
+    /// (`public_url_changed_mid_flow` defense). `None` for entries
+    /// minted before PR-3 wired the field (left to support legacy
+    /// test fixtures that constructed the entry directly).
+    pub redirect_uri: Option<String>,
 }
 
 /// PKCE pair — `state` plus `code_verifier`/`code_challenge`.
