@@ -24,6 +24,7 @@
 use futures::StreamExt;
 use serde::Deserialize;
 use thiserror::Error;
+use url::Url;
 
 use super::flow::validate_oauth_outbound_url;
 use super::http::{OAUTH_TOKEN_HTTP_MAX_RESPONSE_BYTES, oauth_token_http_client};
@@ -118,6 +119,7 @@ pub struct UserinfoClaims {
 ///
 /// Returns [`UserinfoError`] on any of: URL rejected, network /
 /// non-2xx response, body too large, parse failure, or missing `sub`.
+#[tracing::instrument(level = "debug", skip(access_token), fields(url_host = Url::parse(url).ok().and_then(|u| u.host_str().map(str::to_owned)).unwrap_or_default()))]
 pub async fn fetch_userinfo(
     url: &str,
     access_token: &str,
@@ -154,13 +156,19 @@ pub async fn fetch_userinfo(
 
     // `sub` is required. OIDC providers return `sub`; GitHub `/user`
     // returns `id` as an integer instead \u2014 we accept either.
+    // Per CodeRabbit wave-1 H.2: restrict the `id` fallback to scalar
+    // values (string or number) only — a JSON object/array/bool would
+    // otherwise stringify to garbage like `"true"` or `"{...}"` and
+    // create an invalid (provider, subject) link.
+    let sub_from_id = raw.get("id").and_then(|v| match v {
+        serde_json::Value::String(s) => Some(s.clone()),
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        _ => None,
+    });
     let sub = raw
         .get("sub")
         .and_then(|v| v.as_str().map(str::to_owned))
-        .or_else(|| {
-            raw.get("id")
-                .map(|v| v.to_string().trim_matches('"').to_owned())
-        })
+        .or(sub_from_id)
         .filter(|s| !s.is_empty())
         .ok_or_else(|| UserinfoError::MissingSub {
             url: url.to_owned(),
@@ -204,6 +212,7 @@ struct VerifiedEmailEntry {
 ///
 /// Returns [`UserinfoError`] on URL rejection, HTTP failure, body
 /// too large, parse failure, or no primary+verified entry.
+#[tracing::instrument(level = "debug", skip(access_token), fields(url_host = Url::parse(url).ok().and_then(|u| u.host_str().map(str::to_owned)).unwrap_or_default()))]
 pub async fn fetch_primary_verified_email(
     url: &str,
     access_token: &str,

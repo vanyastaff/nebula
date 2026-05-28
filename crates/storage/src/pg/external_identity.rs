@@ -1,6 +1,6 @@
 //! Postgres implementation of [`ExternalIdentityRepo`].
 //!
-//! Schema: migration `0021_external_identities.sql`. Holds the
+//! Schema: migration `0029_external_identities.sql`. Holds the
 //! Plane-A `(provider, subject) → user_id` linkage per ADR-0085 D-8.
 //!
 //! # Atomicity

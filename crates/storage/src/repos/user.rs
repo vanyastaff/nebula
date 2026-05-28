@@ -233,8 +233,10 @@ pub trait ExternalIdentityRepo: Send + Sync {
 
     /// Establish a new `(provider, subject) -> user_id` link. The PK
     /// constraint rejects duplicate inserts; callers race only on the
-    /// first-login path and the loser sees a `StorageError::Conflict`
-    /// (typically resolved by retrying the read path).
+    /// first-login path and the loser sees a `StorageError::Duplicate`
+    /// (typically resolved by retrying the read path). Per CodeRabbit
+    /// wave-1 H.4: the Postgres `map_db_err` helper emits
+    /// `Duplicate` (not `Conflict`) on SQLSTATE 23505.
     ///
     /// `email` is the IdP-side email AT LINK TIME (audit only). NOT
     /// updated on subsequent logins per Scenario 6.2.
