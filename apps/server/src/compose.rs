@@ -126,6 +126,28 @@ pub enum TransportInitError {
     /// dependency (the typed `RegisterError` stays inside `nebula-api`).
     #[error("credential-schema port init failed: {0}")]
     CredentialSchemaInit(String),
+    /// An OAuth identity-provider config entry failed boot-time
+    /// validation per ADR-0085 REQ-compose-001 Invariant 1.
+    ///
+    /// Failure cases include: empty `client_id` / `client_secret`,
+    /// non-HTTPS server-side URL (token / userinfo /
+    /// verified_emails / jwks / discovery), HTTP-localhost authorize
+    /// URL in a release build, empty `Manual.scopes`, missing
+    /// `ApiConfig::public_url` when any OAuth provider is declared.
+    /// `provider` is the snake-case enum string (`"google"` /
+    /// `"microsoft"` / `"github"`); `reason` is a short stable
+    /// keyword the operator can grep for in the docs.
+    #[error(
+        "OAuth provider `{provider}` config invalid: {reason}; fix the API_AUTH_OAUTH_{provider}_* env vars or remove the provider"
+    )]
+    OAuthProviderConfigInvalid {
+        /// Provider name (snake_case OAuthProvider enum variant).
+        provider: String,
+        /// Stable reason keyword (`client_secret_required`,
+        /// `endpoint_url_must_be_https`, `manual_scopes_required`,
+        /// `public_url_required`, etc.).
+        reason: &'static str,
+    },
     /// `API_SMTP_HOST` is set but the `SmtpEmailPort` constructor
     /// rejected the resolved config (invalid `from_address` mailbox,
     /// lettre TLS-parameter construction error, etc.).
@@ -295,13 +317,28 @@ pub fn default_state(
         nebula_api::ports::credential_schema_registry::try_default_registry_port()
             .map_err(|e| TransportInitError::CredentialSchemaInit(e.to_string()))?;
 
+    // PR-2 T2.8 GREEN: validate Plane-A OAuth providers config at boot
+    // per ADR-0085 REQ-compose-001 Invariant 1. Empty providers map is
+    // a no-op; any declared provider triggers strict + flag-aware URL
+    // gates and `public_url` validation. Fails closed by mapping the
+    // typed `OAuthConfigValidationError` to
+    // `TransportInitError::OAuthProviderConfigInvalid`.
+    api_config
+        .auth
+        .oauth
+        .validate_at_load(&api_config.public_url, !cfg!(debug_assertions))
+        .map_err(|e| TransportInitError::OAuthProviderConfigInvalid {
+            provider: e.provider,
+            reason: e.reason,
+        })?;
+
     Ok(AppState::in_memory(api_config.jwt_secret.clone())
         .with_api_keys(api_config.api_keys.clone())
         .with_credential_schema(credential_schema)
         .with_metrics_registry(metrics_registry)
         // Public URL is required for Plane-A OAuth `redirect_uri`
         // derivation per ADR-0085 D-3 (recon-4). Boot-time validation
-        // in T2.8 rejects empty/relative values when
+        // above (T2.8) rejects empty/relative values when
         // `auth.oauth.providers` is non-empty.
         .with_public_url(api_config.public_url.clone()))
 }

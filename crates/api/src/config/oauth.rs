@@ -192,6 +192,165 @@ pub enum OAuthEndpoints {
     },
 }
 
+/// Failure reason from [`OAuthProvidersConfig::validate_at_load`].
+///
+/// Stable keyword strings the operator can grep for in docs. Mapped to
+/// `TransportInitError::OAuthProviderConfigInvalid { provider, reason }`
+/// in the composition root.
+#[derive(Debug, PartialEq, Eq)]
+pub struct OAuthConfigValidationError {
+    /// Provider name (snake_case OAuthProvider enum variant).
+    pub provider: String,
+    /// Stable reason keyword.
+    pub reason: &'static str,
+}
+
+impl OAuthProvidersConfig {
+    /// Validate every declared provider at boot per ADR-0085
+    /// REQ-compose-001 Invariant 1 (recon-4 + wave-6/-7 hardening).
+    ///
+    /// Returns the FIRST validation failure (boot is fail-fast — the
+    /// operator gets one error at a time and fixes them in order).
+    /// When the config is empty (default), returns `Ok(())` without
+    /// any work — OAuth is opt-in.
+    ///
+    /// `public_url` is the value from `ApiConfig::public_url` (handed
+    /// in so this method has no implicit dependency on the wider
+    /// `ApiConfig` shape). When the providers map is non-empty,
+    /// `public_url` MUST be non-empty AND absolute (with scheme);
+    /// the boot-derived `redirect_uri` per ADR-0085 D-3 depends on it.
+    ///
+    /// `in_release_build` is `cfg!(not(debug_assertions))` at the call
+    /// site, threaded explicitly so this function stays unit-testable
+    /// without recompiling under release profile.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OAuthConfigValidationError`] on the first invalid
+    /// field. See the type's `reason` doc for the stable keyword set.
+    pub fn validate_at_load(
+        &self,
+        public_url: &str,
+        in_release_build: bool,
+    ) -> Result<(), OAuthConfigValidationError> {
+        if self.providers.is_empty() {
+            return Ok(());
+        }
+
+        // `public_url` is required for the auto-derived `redirect_uri`
+        // formula per D-3 recon-4. Empty or scheme-less values are a
+        // boot-time error because every OAuth flow would build a
+        // broken redirect URL otherwise.
+        let trimmed_pub = public_url.trim();
+        if trimmed_pub.is_empty()
+            || !(trimmed_pub.starts_with("http://") || trimmed_pub.starts_with("https://"))
+        {
+            // Use first provider name for the error — the issue is
+            // global but reporting against a concrete provider helps
+            // the operator find their env-var set.
+            let provider = self
+                .providers
+                .keys()
+                .next()
+                .map(|p| p.as_str().to_owned())
+                .unwrap_or_else(|| "<unknown>".to_owned());
+            return Err(OAuthConfigValidationError {
+                provider,
+                reason: "public_url_required",
+            });
+        }
+
+        for (provider, cfg) in &self.providers {
+            let p = provider.as_str().to_owned();
+            cfg.validate(&p, self.oauth_allow_insecure_localhost, in_release_build)?;
+        }
+        Ok(())
+    }
+}
+
+impl OAuthProviderConfig {
+    /// Validate a single provider config at boot. Called by
+    /// [`OAuthProvidersConfig::validate_at_load`].
+    fn validate(
+        &self,
+        provider: &str,
+        oauth_allow_insecure_localhost: bool,
+        in_release_build: bool,
+    ) -> Result<(), OAuthConfigValidationError> {
+        use secrecy::ExposeSecret;
+
+        if self.client_id.expose_secret().is_empty() {
+            return Err(OAuthConfigValidationError {
+                provider: provider.to_owned(),
+                reason: "client_id_required",
+            });
+        }
+        if self.client_secret.expose_secret().is_empty() {
+            return Err(OAuthConfigValidationError {
+                provider: provider.to_owned(),
+                reason: "client_secret_required",
+            });
+        }
+        self.endpoints
+            .validate(provider, oauth_allow_insecure_localhost, in_release_build)?;
+        Ok(())
+    }
+}
+
+impl OAuthEndpoints {
+    /// Validate per-endpoint per its threat model per ADR-0085
+    /// D-9-WAVE6 + D-15-WAVE6 + F.2 wave-7:
+    /// - Strict gate (`validate_oauth_outbound_url`) for server-side
+    ///   fetches: token / userinfo / verified_emails / jwks / discovery.
+    /// - Flag-aware gate (`validate_oauth_authorize_url`) for the
+    ///   browser-fetched `Manual.authorize_url`.
+    fn validate(
+        &self,
+        provider: &str,
+        oauth_allow_insecure_localhost: bool,
+        in_release_build: bool,
+    ) -> Result<(), OAuthConfigValidationError> {
+        use crate::transport::oauth::flow::{
+            validate_oauth_authorize_url, validate_oauth_outbound_url,
+        };
+
+        // Strict gate for ALL server-side URLs.
+        for url in self.server_side_urls() {
+            validate_oauth_outbound_url(url).map_err(|_| OAuthConfigValidationError {
+                provider: provider.to_owned(),
+                reason: "endpoint_url_must_be_https",
+            })?;
+        }
+
+        // Flag-aware gate for the browser-fetched Manual.authorize_url
+        // (Oidc.authorize_url is discovered at runtime per D-15-WAVE6
+        // and validated then; not represented in operator config).
+        if let Some(authorize_url) = self.authorize_url() {
+            validate_oauth_authorize_url(
+                authorize_url,
+                oauth_allow_insecure_localhost,
+                in_release_build,
+            )
+            .map_err(|_| OAuthConfigValidationError {
+                provider: provider.to_owned(),
+                reason: "authorize_url_invalid_or_localhost_in_release",
+            })?;
+        }
+
+        // Manual.scopes must be non-empty.
+        if let Self::Manual { scopes, .. } = self
+            && scopes.is_empty()
+        {
+            return Err(OAuthConfigValidationError {
+                provider: provider.to_owned(),
+                reason: "manual_scopes_required",
+            });
+        }
+
+        Ok(())
+    }
+}
+
 impl OAuthEndpoints {
     /// Strict-gate helper: collect every server-side URL that
     /// `validate_oauth_outbound_url` must approve at boot. Per ADR-0085
@@ -243,5 +402,195 @@ impl OAuthEndpoints {
                 .collect(),
             Self::Manual { scopes, .. } => scopes.clone(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::auth::backend::oauth::OAuthProvider;
+
+    fn mk_oidc(discovery_url: &str) -> OAuthProviderConfig {
+        OAuthProviderConfig {
+            client_id: SecretString::new("client".into()),
+            client_secret: SecretString::new("secret".into()),
+            endpoints: OAuthEndpoints::Oidc {
+                discovery_url: discovery_url.to_owned(),
+            },
+        }
+    }
+
+    fn mk_manual(
+        authorize_url: &str,
+        token_url: &str,
+        userinfo_url: &str,
+        scopes: Vec<String>,
+    ) -> OAuthProviderConfig {
+        OAuthProviderConfig {
+            client_id: SecretString::new("client".into()),
+            client_secret: SecretString::new("secret".into()),
+            endpoints: OAuthEndpoints::Manual {
+                authorize_url: authorize_url.to_owned(),
+                token_url: token_url.to_owned(),
+                userinfo_url: userinfo_url.to_owned(),
+                verified_emails_url: None,
+                jwks_url: None,
+                scopes,
+            },
+        }
+    }
+
+    fn cfg_with(provider: OAuthProvider, entry: OAuthProviderConfig) -> OAuthProvidersConfig {
+        let mut cfg = OAuthProvidersConfig::default();
+        cfg.providers.insert(provider, entry);
+        cfg
+    }
+
+    /// T2.3 RED-then-GREEN: OIDC providers require an HTTPS discovery_url
+    /// per ADR-0085 REQ-compose-001 Invariant 1.
+    #[test]
+    fn oauth_provider_config_validates_oidc_requires_https_discovery_url() {
+        let cfg = cfg_with(
+            OAuthProvider::Google,
+            mk_oidc("http://accounts.google.com/.well-known/openid-configuration"),
+        );
+        let err = cfg
+            .validate_at_load("https://app.example.com", false)
+            .expect_err("HTTP discovery_url must be rejected by the strict gate");
+        assert_eq!(err.provider, "google");
+        assert_eq!(err.reason, "endpoint_url_must_be_https");
+    }
+
+    /// T2.4 RED-then-GREEN: Manual providers require non-empty scopes.
+    #[test]
+    fn oauth_provider_config_validates_manual_requires_non_empty_scopes() {
+        let cfg = cfg_with(
+            OAuthProvider::GitHub,
+            mk_manual(
+                "https://github.com/login/oauth/authorize",
+                "https://github.com/login/oauth/access_token",
+                "https://api.github.com/user",
+                vec![],
+            ),
+        );
+        let err = cfg
+            .validate_at_load("https://app.example.com", false)
+            .expect_err("Manual provider with empty scopes must be rejected");
+        assert_eq!(err.provider, "github");
+        assert_eq!(err.reason, "manual_scopes_required");
+    }
+
+    /// T2.5(a) RED-then-GREEN: server-side URLs go through STRICT
+    /// `validate_oauth_outbound_url` regardless of the
+    /// `oauth_allow_insecure_localhost` flag.
+    #[test]
+    fn oauth_provider_config_rejects_http_endpoint_for_all_server_side_urls() {
+        let cfg = cfg_with(
+            OAuthProvider::GitHub,
+            mk_manual(
+                "https://github.com/login/oauth/authorize",
+                "http://github.com/login/oauth/access_token", // HTTP — must be rejected even with flag ON
+                "https://api.github.com/user",
+                vec!["user:email".to_owned()],
+            ),
+        );
+        let mut providers = cfg;
+        providers.oauth_allow_insecure_localhost = true; // flag has no effect on token_url
+        let err = providers
+            .validate_at_load("https://app.example.com", false)
+            .expect_err("HTTP token_url rejected by strict gate even with localhost flag set");
+        assert_eq!(err.reason, "endpoint_url_must_be_https");
+    }
+
+    /// T2.5(b) RED-then-GREEN: `Manual.authorize_url` uses the FLAG-AWARE
+    /// `validate_oauth_authorize_url` which accepts `http://localhost`
+    /// when the flag is set AND the binary is not a release build.
+    #[test]
+    fn oauth_provider_config_authorize_url_uses_flag_aware_validator() {
+        let cfg = cfg_with(
+            OAuthProvider::GitHub,
+            mk_manual(
+                "http://localhost:8088/authorize", // would fail strict gate
+                "https://github.com/login/oauth/access_token",
+                "https://api.github.com/user",
+                vec!["user:email".to_owned()],
+            ),
+        );
+        let mut providers = cfg;
+        providers.oauth_allow_insecure_localhost = true;
+        // in_release_build = false simulates `cfg!(debug_assertions)`.
+        providers
+            .validate_at_load("https://app.example.com", false)
+            .expect("flag-aware gate must accept localhost authorize_url in dev mode");
+    }
+
+    /// T2.5(c) RED-then-GREEN: the localhost flag has NO effect in
+    /// release builds — `validate_oauth_authorize_url` rejects.
+    #[test]
+    fn oauth_authorize_url_strict_in_release_build() {
+        let cfg = cfg_with(
+            OAuthProvider::GitHub,
+            mk_manual(
+                "http://localhost:8088/authorize",
+                "https://github.com/login/oauth/access_token",
+                "https://api.github.com/user",
+                vec!["user:email".to_owned()],
+            ),
+        );
+        let mut providers = cfg;
+        providers.oauth_allow_insecure_localhost = true;
+        let err = providers
+            .validate_at_load("https://app.example.com", true) // release build
+            .expect_err("flag must have no effect in release builds");
+        assert_eq!(err.reason, "authorize_url_invalid_or_localhost_in_release");
+    }
+
+    /// T2.6 RED-then-GREEN: compose-root MUST fail closed when OAuth is
+    /// declared but `ApiConfig::public_url` is empty.
+    #[test]
+    fn validate_at_load_fails_closed_when_public_url_unset_with_oauth_declared() {
+        let cfg = cfg_with(
+            OAuthProvider::Google,
+            mk_oidc("https://accounts.google.com/.well-known/openid-configuration"),
+        );
+        let err = cfg
+            .validate_at_load("", false)
+            .expect_err("empty public_url with OAuth declared must fail closed");
+        assert_eq!(err.reason, "public_url_required");
+    }
+
+    /// Sanity: empty providers map is a no-op (OAuth is opt-in).
+    #[test]
+    fn validate_at_load_noop_when_providers_empty() {
+        let cfg = OAuthProvidersConfig::default();
+        cfg.validate_at_load("", false)
+            .expect("empty providers is opt-in, no validation needed");
+    }
+
+    /// REQ-oauth-001 Invariant 1 coverage for the OIDC scope hardcoding
+    /// (recon-4 ADOPT (c)): OIDC providers ALWAYS expose
+    /// `["openid","email","profile"]` regardless of any operator-supplied
+    /// scopes (Oidc variant has no scopes field by construction).
+    #[test]
+    fn oidc_endpoints_always_emit_hardcoded_scopes() {
+        let endpoints = OAuthEndpoints::Oidc {
+            discovery_url: "https://accounts.google.com/.well-known/openid-configuration"
+                .to_owned(),
+        };
+        assert_eq!(endpoints.scopes(), vec!["openid", "email", "profile"]);
+    }
+
+    /// Manual providers honor operator-supplied scopes verbatim.
+    #[test]
+    fn manual_endpoints_emit_operator_supplied_scopes() {
+        let endpoints = OAuthEndpoints::Manual {
+            authorize_url: "https://github.com/login/oauth/authorize".to_owned(),
+            token_url: "https://github.com/login/oauth/access_token".to_owned(),
+            userinfo_url: "https://api.github.com/user".to_owned(),
+            verified_emails_url: Some("https://api.github.com/user/emails".to_owned()),
+            jwks_url: None,
+            scopes: vec!["user:email".to_owned(), "read:user".to_owned()],
+        };
+        assert_eq!(endpoints.scopes(), vec!["user:email", "read:user"]);
     }
 }
