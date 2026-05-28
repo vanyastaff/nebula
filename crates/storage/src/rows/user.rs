@@ -127,3 +127,31 @@ pub struct OAuthStateRow {
     pub expires_at: DateTime<Utc>,
     pub consumed_at: Option<DateTime<Utc>>,
 }
+
+/// External identity row: a stable per-IdP linkage between
+/// `(provider, subject)` (the IdP's `sub` claim is the source of
+/// truth for "same human") and a Nebula `user_id`.
+///
+/// Per ADR-0085 D-8: PK is `(provider, subject)`; `user_id` is the
+/// FK with `ON DELETE CASCADE`, so deleting a user atomically purges
+/// every external link. `email` is the IdP-side email captured at
+/// link time — audit only, NOT refreshed on subsequent logins per
+/// REQ-oauth-006 Scenario 6.2.
+#[derive(Debug, Clone)]
+pub struct ExternalIdentityRow {
+    /// IdP identifier, e.g. `'google'` / `'github'` / `'microsoft'`.
+    /// Snake-case matches the `OAuthProvider` enum serialization.
+    pub provider: String,
+    /// IdP `sub` claim. Opaque to Nebula; treated as a stable string.
+    pub subject: String,
+    /// Nebula `user_id` (16-byte ULID, raw bytes — matches `users.id`).
+    /// `Vec<u8>` because the repos layer is generic over storage shape
+    /// and `users.id` is `BYTEA` per `0001_users.sql`.
+    pub user_id: Vec<u8>,
+    /// IdP-side email at link time (NULL when the IdP did not return
+    /// one, e.g. GitHub with no `user:email` scope). NOT refreshed on
+    /// subsequent logins.
+    pub email: Option<String>,
+    /// When the link was first established.
+    pub linked_at: DateTime<Utc>,
+}

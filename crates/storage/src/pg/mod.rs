@@ -17,6 +17,7 @@ use sqlx::Error as SqlxError;
 use crate::error::StorageError;
 
 mod control_queue;
+mod external_identity;
 mod idempotency;
 mod oauth_state;
 mod org;
@@ -28,6 +29,7 @@ mod webhook_activation;
 mod workspace;
 
 pub use control_queue::PgControlQueueRepo;
+pub use external_identity::PgExternalIdentityRepo;
 pub use idempotency::PgIdempotencyStore;
 pub use oauth_state::PgOAuthStateRepo;
 pub use org::PgOrgRepo;

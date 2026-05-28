@@ -106,6 +106,14 @@ pub struct InMemoryAuthBackend {
     verification_tokens: DashMap<String, VerificationToken>,
     mfa_challenges: DashMap<String, MfaChallenge>,
     oauth_state: DashMap<String, OAuthStateEntry>,
+    /// In-memory mirror of the PG `external_identities` table per
+    /// ADR-0085 D-8. Keyed by `(provider, subject)` to match the PG
+    /// PK; value is the linked Nebula `user_id` (16-byte ULID raw
+    /// bytes, same shape as `users.id` in PG). PR-4
+    /// `complete_oauth` consumes this on the REQ-oauth-006
+    /// short-circuit + writes to it on first-login / cross-link
+    /// branches.
+    external_identities: DashMap<(String, String), Vec<u8>>,
     /// Outbound email delivery port. Defaults to a fresh
     /// [`EchoSink`] (see [`Self::default`]) so `Self::new()` keeps the
     /// previous in-process inbox semantics; production composition roots
@@ -145,6 +153,7 @@ impl Default for InMemoryAuthBackend {
             verification_tokens: DashMap::default(),
             mfa_challenges: DashMap::default(),
             oauth_state: DashMap::default(),
+            external_identities: DashMap::default(),
             email_port: Arc::clone(&echo) as Arc<dyn EmailPort>,
             default_echo: Some(echo),
             metrics: None,
@@ -955,45 +964,264 @@ impl AuthBackend for InMemoryAuthBackend {
         .await
     }
 
-    // PR-2 T2.9: trait sig gained `redirect_uri: &str`. PR-4 verifies
-    // it against the OAuthStateEntry's stored redirect_uri (Scenario
-    // 3.10 public_url_changed_mid_flow). For now the param is accepted
-    // and ignored — complete_oauth still returns NotImplemented.
+    // PR-4 T4.18 GREEN: real complete_oauth via token POST + userinfo
+    // GET + REQ-oauth-006 short-circuit + email truth-table. See
+    // crates/api/src/domain/auth/backend/pg.rs for the matching PG
+    // impl; the two share the same shape (resolve endpoints →
+    // exchange code → fetch userinfo → maybe fetch verified emails
+    // → REQ-oauth-006 lookup → email truth-table → mint session) and
+    // differ only in where state/identity rows live (DashMap vs PG).
     async fn complete_oauth(
         &self,
         provider: OAuthProvider,
         state: &str,
-        _code: &str,
-        _redirect_uri: &str,
+        code: &str,
+        redirect_uri: &str,
     ) -> Result<OAuthCompletion, AuthError> {
+        use secrecy::ExposeSecret;
+
+        use crate::transport::oauth::{
+            discovery::resolve_provider_endpoints,
+            flow::{TokenExchangeRequest, exchange_code},
+            userinfo::{UserinfoClaims, fetch_primary_verified_email, fetch_userinfo},
+        };
+
         let provider_label = metrics_emit::oauth_provider_label(provider);
+        let redirect_uri = redirect_uri.to_owned();
+        let code = code.to_owned();
+        let state = state.to_owned();
+        let oauth_providers = Arc::clone(&self.oauth_providers);
         metrics_emit::run_with_metrics(
             &self.metrics,
             NEBULA_API_AUTH_OAUTH_ATTEMPTS_TOTAL,
             Some(provider_label),
             async move {
-                let entry = self
-                    .oauth_state
-                    .get_mut(state)
-                    .ok_or(AuthError::InvalidToken)?;
-                if entry.consumed
-                    || entry.expires_at <= Self::now_secs()
-                    || entry.provider != provider
-                {
-                    return Err(AuthError::InvalidToken);
+                // Step 1: atomically consume the state entry. Mirror
+                // the PG `consume_by_state_and_provider` semantics:
+                // returns InvalidToken on missing / expired / replayed
+                // / cross-provider. Mark consumed in-place so a
+                // second `complete_oauth` with the same `state`
+                // fails.
+                let entry = {
+                    let mut entry = self
+                        .oauth_state
+                        .get_mut(&state)
+                        .ok_or(AuthError::InvalidToken)?;
+                    if entry.consumed
+                        || entry.expires_at <= Self::now_secs()
+                        || entry.provider != provider
+                    {
+                        return Err(AuthError::InvalidToken);
+                    }
+                    entry.consumed = true;
+                    entry.clone()
+                };
+
+                // Step 2: verify the row's redirect_uri matches the
+                // handler-derived value (Scenario 3.10
+                // public_url_changed_mid_flow defense per
+                // REQ-oauth-003).
+                match entry.redirect_uri.as_deref() {
+                    Some(stored) if stored == redirect_uri => {},
+                    _ => {
+                        return Err(AuthError::OAuthFailed(
+                            "public_url_changed_mid_flow".to_owned(),
+                        ));
+                    },
                 }
-                // The in-memory backend cannot actually exchange a code with a
-                // real provider; return NotImplemented so callers know they need
-                // a configured backend.
-                drop(entry);
-                Err(AuthError::NotImplemented(
-                    "complete_oauth requires a configured provider backend",
-                ))
+
+                // Step 3: lookup provider config. The state entry was
+                // valid so the provider was configured at start_oauth
+                // time — a config removed between start and complete
+                // surfaces as ProviderNotConfigured.
+                let provider_cfg = oauth_providers.providers.get(&provider).ok_or_else(|| {
+                    AuthError::ProviderNotConfigured {
+                        provider: provider.as_str().to_owned(),
+                    }
+                })?;
+
+                // Step 4: resolve endpoints (Oidc → cached discovery
+                // doc; Manual → operator config). Same helper as
+                // start_oauth (PR-3) keeps the two paths in lockstep.
+                let endpoints = resolve_provider_endpoints(
+                    provider_cfg,
+                    oauth_providers.oauth_allow_insecure_localhost,
+                )
+                .await
+                .map_err(|e| AuthError::OAuthFailed(e.to_string()))?;
+
+                // Step 5: exchange code for token via `flow::exchange_code`.
+                // The token endpoint goes through the strict
+                // anti-SSRF gate inside exchange_code per D-9-WAVE6.
+                let token_req = TokenExchangeRequest {
+                    token_url: endpoints.token_url.clone(),
+                    client_id: provider_cfg.client_id.expose_secret().to_owned(),
+                    client_secret: provider_cfg.client_secret.expose_secret().to_owned(),
+                    code: code.clone(),
+                    redirect_uri: redirect_uri.clone(),
+                    code_verifier: entry.code_verifier.clone(),
+                    auth_style: nebula_credential::AuthStyle::Header,
+                };
+                let token_response = exchange_code(&token_req)
+                    .await
+                    .map_err(AuthError::OAuthFailed)?;
+
+                // Step 6: extract access_token; log id_token presence
+                // only (NO JWKS validation per D-16 — userinfo is
+                // authoritative).
+                let access_token = token_response
+                    .get("access_token")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| {
+                        AuthError::OAuthFailed("token response missing access_token".to_owned())
+                    })?
+                    .to_owned();
+                let id_token_present = token_response
+                    .get("id_token")
+                    .map(|v| !v.is_null())
+                    .unwrap_or(false);
+                tracing::debug!(
+                    provider = %provider.as_str(),
+                    id_token_present,
+                    "OAuth complete: token exchange succeeded"
+                );
+
+                // Step 7: GET userinfo. Strict anti-SSRF gate inside
+                // fetch_userinfo per D-9-WAVE6.
+                let UserinfoClaims {
+                    sub,
+                    email,
+                    email_verified,
+                } = fetch_userinfo(&endpoints.userinfo_url, &access_token)
+                    .await
+                    .map_err(|e| AuthError::OAuthFailed(e.to_string()))?;
+
+                // Step 8: REQ-oauth-006 short-circuit BEFORE the
+                // verified-emails fallback fetch — for repeat logins
+                // we don't need to re-resolve the email; the
+                // (provider, sub) linkage is the source of truth.
+                let provider_key = provider.as_str().to_owned();
+                let link_key = (provider_key.clone(), sub.clone());
+                let linked_user_id = self
+                    .external_identities
+                    .get(&link_key)
+                    .map(|r| r.value().clone());
+                if let Some(user_id_bytes) = linked_user_id {
+                    drop(access_token);
+                    let user_id =
+                        UserId::from_bytes(user_id_bytes.as_slice().try_into().map_err(|_| {
+                            AuthError::Internal(
+                                "linked user_id has unexpected byte length".to_owned(),
+                            )
+                        })?);
+                    let record = self.users.get(&user_id).map(|r| r.clone()).ok_or_else(|| {
+                        AuthError::Internal(
+                            "external_identities link references missing user (CASCADE skipped?)"
+                                .to_owned(),
+                        )
+                    })?;
+                    let session = self.create_session(&record.id.to_string()).await?;
+                    tracing::info!(
+                        provider = %provider.as_str(),
+                        cause = "existing_external_identity_linked",
+                        "OAuth complete: REQ-oauth-006 short-circuit"
+                    );
+                    return Ok(OAuthCompletion {
+                        user: record.profile(),
+                        session,
+                    });
+                }
+
+                // Step 9: GitHub-style fallback for providers whose
+                // userinfo does not include email_verified — fetch the
+                // verified_emails endpoint and pick the
+                // primary+verified entry per ADR-0085 D-5 wave-6.
+                // Only reached on first-login / cross-link branches
+                // (the REQ-oauth-006 short-circuit above already
+                // returned for repeat logins).
+                let (resolved_email, resolved_verified) = match (email_verified, email) {
+                    (Some(true), Some(e)) => (e, true),
+                    (Some(false), Some(e)) => (e, false),
+                    (Some(_), None) => {
+                        return Err(AuthError::OAuthFailed(
+                            "IdP userinfo missing email".to_owned(),
+                        ));
+                    },
+                    (None, fallback_email) => match endpoints.verified_emails_url.as_deref() {
+                        Some(url) => {
+                            let e = fetch_primary_verified_email(url, &access_token)
+                                .await
+                                .map_err(|e| AuthError::OAuthFailed(e.to_string()))?;
+                            (e, true)
+                        },
+                        None => (fallback_email.unwrap_or_default(), false),
+                    },
+                };
+                drop(access_token);
+
+                // Step 10: email truth-table (REQ-oauth-004 +
+                // REQ-oauth-005). Both branches require
+                // `resolved_verified == true`; an unverified IdP email
+                // fails closed per the account-takeover defense.
+                if !resolved_verified || resolved_email.is_empty() {
+                    return Err(AuthError::EmailNotVerified);
+                }
+                let normalized_email = resolved_email.trim().to_lowercase();
+                let existing = self.lookup_user_by_email(&normalized_email);
+                let record = match existing {
+                    None => {
+                        // REQ-oauth-004: first login — create a new
+                        // user with email_verified = true (IdP
+                        // attested) and no password (OAuth-only).
+                        let id = UserId::new();
+                        let record = UserRecord {
+                            id,
+                            email: normalized_email.clone(),
+                            display_name: normalized_email.clone(),
+                            avatar_url: None,
+                            password_hash: None,
+                            email_verified: true,
+                            failed_login_count: 0,
+                            locked_until: None,
+                            mfa_secret: None,
+                            mfa_enabled: false,
+                        };
+                        self.put_user(record.clone());
+                        record
+                    },
+                    Some(existing_record) => {
+                        // REQ-oauth-005: link onto an existing user.
+                        // Account-takeover defense (Scenario 5.2):
+                        // if Nebula's email_verified is false even
+                        // though the IdP attests verified, reject.
+                        if !existing_record.email_verified {
+                            return Err(AuthError::EmailNotVerified);
+                        }
+                        existing_record
+                    },
+                };
+
+                // Step 11: persist the (provider, sub) -> user_id
+                // link. The DashMap insert is idempotent at the
+                // primary-key level for the in-memory backend; PG's
+                // PK rejects duplicates via SQLSTATE 23505.
+                self.external_identities
+                    .insert(link_key, record.id.as_bytes().to_vec());
+
+                // Step 12: mint a session.
+                let session = self.create_session(&record.id.to_string()).await?;
+                Ok(OAuthCompletion {
+                    user: record.profile(),
+                    session,
+                })
             },
             |result| match result {
                 Ok(_) => auth_outcome::SUCCESS,
                 Err(AuthError::InvalidToken) => auth_outcome::TOKEN_INVALID,
-                Err(AuthError::OAuthFailed(_)) => auth_outcome::OAUTH_FAILED,
+                Err(AuthError::EmailNotVerified) => auth_outcome::EMAIL_UNVERIFIED,
+                Err(AuthError::OAuthFailed(_) | AuthError::ProviderNotConfigured { .. }) => {
+                    auth_outcome::OAUTH_FAILED
+                },
                 Err(_) => auth_outcome::INTERNAL,
             },
         )
@@ -1397,5 +1625,368 @@ mod tests {
             backend.emails().is_empty(),
             "with_email_port must drop the default echo: `emails()` should be empty"
         );
+    }
+}
+
+// PR-4 stage C: RED tests for `complete_oauth` using a TcpListener
+// fake responder that serves the token endpoint POST + userinfo GET
+// + optional GitHub-style `/user/emails` GET. The pattern mirrors
+// `transport::oauth::discovery::tests` (PR-3 wave-1).
+#[cfg(test)]
+mod complete_oauth_tests {
+    use super::*;
+    use crate::config::{OAuthEndpoints, OAuthProviderConfig, OAuthProvidersConfig};
+    use crate::domain::auth::backend::oauth::OAuthProvider;
+    use ::secrecy::SecretString as RealSecretString;
+    use std::collections::HashMap;
+    use std::io::Write;
+    use std::sync::Arc;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    async fn spawn_idp_responder(
+        token_body: Vec<u8>,
+        userinfo_body: Vec<u8>,
+        emails_body: Option<Vec<u8>>,
+    ) -> (String, String, String) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let token_url = format!("http://{addr}/token");
+        let userinfo_url = format!("http://{addr}/userinfo");
+        let emails_url = format!("http://{addr}/emails");
+
+        tokio::spawn(async move {
+            for _ in 0..3_u8 {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    return;
+                };
+                let mut buf = vec![0u8; 8192];
+                let n = sock.read(&mut buf).await.unwrap_or(0);
+                let req = std::str::from_utf8(&buf[..n]).unwrap_or("");
+                let body = if req.contains("/token") {
+                    token_body.clone()
+                } else if req.contains("/userinfo") {
+                    userinfo_body.clone()
+                } else if req.contains("/emails") && emails_body.is_some() {
+                    emails_body.clone().unwrap()
+                } else {
+                    let nf = b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
+                    let _ = sock.write_all(nf).await;
+                    let _ = sock.shutdown().await;
+                    continue;
+                };
+                let _ = sock.write_all(&body).await;
+                let _ = sock.shutdown().await;
+            }
+        });
+
+        (token_url, userinfo_url, emails_url)
+    }
+
+    fn http_json(body: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        write!(
+            &mut out,
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        )
+        .unwrap();
+        out.extend_from_slice(body);
+        out
+    }
+
+    fn cfg_pointing_at(
+        provider: OAuthProvider,
+        token_url: &str,
+        userinfo_url: &str,
+        verified_emails_url: Option<&str>,
+    ) -> Arc<OAuthProvidersConfig> {
+        let mut providers = HashMap::new();
+        providers.insert(
+            provider,
+            OAuthProviderConfig {
+                client_id: RealSecretString::new("test-client".into()),
+                client_secret: RealSecretString::new("test-secret".into()),
+                endpoints: OAuthEndpoints::Manual {
+                    // Authorize URL not fetched by these tests; flag-aware
+                    // gate runs at validate_at_load time (PR-2) which we
+                    // bypass here by constructing the config directly.
+                    authorize_url: "https://idp.example.com/authorize".to_owned(),
+                    token_url: token_url.to_owned(),
+                    userinfo_url: userinfo_url.to_owned(),
+                    verified_emails_url: verified_emails_url.map(str::to_owned),
+                    jwks_url: None,
+                    scopes: vec!["openid".to_owned()],
+                },
+            },
+        );
+        Arc::new(OAuthProvidersConfig {
+            providers,
+            oauth_allow_insecure_localhost: true,
+        })
+    }
+
+    fn seed_started_flow(
+        backend: &InMemoryAuthBackend,
+        state: &str,
+        provider: OAuthProvider,
+        redirect_uri: &str,
+    ) {
+        backend.oauth_state.insert(
+            state.to_owned(),
+            OAuthStateEntry {
+                provider,
+                code_verifier: "verifier-1234567890abcdef".to_owned(),
+                expires_at: InMemoryAuthBackend::now_secs() + 600,
+                consumed: false,
+                redirect_uri: Some(redirect_uri.to_owned()),
+            },
+        );
+    }
+
+    fn token_response(access: &str, with_id_token: bool) -> Vec<u8> {
+        let body = if with_id_token {
+            format!(
+                "{{\"access_token\":\"{access}\",\"token_type\":\"Bearer\",\"id_token\":\"x.y.z\"}}"
+            )
+        } else {
+            format!("{{\"access_token\":\"{access}\",\"token_type\":\"Bearer\"}}")
+        };
+        http_json(body.as_bytes())
+    }
+
+    fn userinfo_response(sub: &str, email: Option<&str>, email_verified: Option<bool>) -> Vec<u8> {
+        let mut body = serde_json::Map::new();
+        body.insert("sub".to_owned(), serde_json::Value::String(sub.to_owned()));
+        if let Some(e) = email {
+            body.insert("email".to_owned(), serde_json::Value::String(e.to_owned()));
+        }
+        if let Some(v) = email_verified {
+            body.insert("email_verified".to_owned(), serde_json::Value::Bool(v));
+        }
+        http_json(serde_json::to_string(&body).unwrap().as_bytes())
+    }
+
+    fn emails_response(entries: &[(&str, bool, bool)]) -> Vec<u8> {
+        let arr: Vec<serde_json::Value> = entries
+            .iter()
+            .map(|(e, primary, verified)| {
+                serde_json::json!({
+                    "email": e, "primary": primary, "verified": verified,
+                })
+            })
+            .collect();
+        http_json(serde_json::to_string(&arr).unwrap().as_bytes())
+    }
+
+    /// T4.4 RED-then-GREEN: first-login via OIDC provider where the
+    /// userinfo response includes `email_verified: true` inline.
+    #[tokio::test]
+    async fn complete_oauth_succeeds_with_valid_code_oidc_provider_first_login() {
+        let token = token_response("at-1", true);
+        let userinfo = userinfo_response("oidc-sub-1", Some("alice@example.com"), Some(true));
+        let (token_url, userinfo_url, _) = spawn_idp_responder(token, userinfo, None).await;
+        let cfg = cfg_pointing_at(OAuthProvider::Google, &token_url, &userinfo_url, None);
+
+        let b = InMemoryAuthBackend::new().with_oauth_providers(cfg);
+        let redirect = "https://nebula.test/auth/oauth/google/callback";
+        seed_started_flow(&b, "state-1", OAuthProvider::Google, redirect);
+
+        let result = b
+            .complete_oauth(OAuthProvider::Google, "state-1", "code-1", redirect)
+            .await
+            .expect("happy path must succeed");
+        assert_eq!(result.user.email, "alice@example.com");
+        assert!(result.user.email_verified);
+        assert!(
+            b.external_identities
+                .contains_key(&("google".to_owned(), "oidc-sub-1".to_owned()))
+        );
+    }
+
+    /// T4.5 + T4.13b RED-then-GREEN: GitHub-style Manual provider
+    /// triggers `/user/emails` fallback per ADR-0085 D-5 wave-6.
+    #[tokio::test]
+    async fn complete_oauth_succeeds_with_valid_code_manual_provider_github() {
+        let token = token_response("gh-at-1", false);
+        let userinfo = userinfo_response("gh-sub-1", Some("charlie@example.com"), None);
+        let emails = emails_response(&[
+            ("charlie-old@example.com", false, true),
+            ("charlie@example.com", true, true),
+        ]);
+        let (token_url, userinfo_url, emails_url) =
+            spawn_idp_responder(token, userinfo, Some(emails)).await;
+        let cfg = cfg_pointing_at(
+            OAuthProvider::GitHub,
+            &token_url,
+            &userinfo_url,
+            Some(&emails_url),
+        );
+        let b = InMemoryAuthBackend::new().with_oauth_providers(cfg);
+        let redirect = "https://nebula.test/auth/oauth/github/callback";
+        seed_started_flow(&b, "state-gh", OAuthProvider::GitHub, redirect);
+
+        let result = b
+            .complete_oauth(OAuthProvider::GitHub, "state-gh", "code-gh", redirect)
+            .await
+            .expect("GitHub flow must succeed");
+        assert_eq!(result.user.email, "charlie@example.com");
+        assert!(result.user.email_verified);
+    }
+
+    /// T4.6 RED-then-GREEN: replay rejection.
+    #[tokio::test]
+    async fn complete_oauth_rejects_replay() {
+        let token = token_response("at-r", false);
+        let userinfo = userinfo_response("sub-r", Some("dave@example.com"), Some(true));
+        let (t1, u1, _) = spawn_idp_responder(token, userinfo, None).await;
+        let cfg = cfg_pointing_at(OAuthProvider::Google, &t1, &u1, None);
+        let b = InMemoryAuthBackend::new().with_oauth_providers(cfg);
+        let redirect = "https://nebula.test/auth/oauth/google/callback";
+        seed_started_flow(&b, "state-r", OAuthProvider::Google, redirect);
+
+        let _ = b
+            .complete_oauth(OAuthProvider::Google, "state-r", "code-r", redirect)
+            .await
+            .expect("first call must succeed");
+        let replay = b
+            .complete_oauth(OAuthProvider::Google, "state-r", "code-r", redirect)
+            .await
+            .expect_err("replay must be rejected");
+        assert!(matches!(replay, AuthError::InvalidToken));
+    }
+
+    /// T4.8 RED-then-GREEN: unknown state value rejected.
+    #[tokio::test]
+    async fn complete_oauth_rejects_mismatched_state_token() {
+        let cfg = cfg_pointing_at(
+            OAuthProvider::Google,
+            "https://idp.example.com/token",
+            "https://idp.example.com/userinfo",
+            None,
+        );
+        let b = InMemoryAuthBackend::new().with_oauth_providers(cfg);
+        let err = b
+            .complete_oauth(
+                OAuthProvider::Google,
+                "state-never-seen",
+                "code-x",
+                "https://nebula.test/auth/oauth/google/callback",
+            )
+            .await
+            .expect_err("unknown state must be rejected");
+        assert!(matches!(err, AuthError::InvalidToken));
+    }
+
+    /// T4.9 RED-then-GREEN: cross-provider state replay defense.
+    #[tokio::test]
+    async fn complete_oauth_rejects_mismatched_provider() {
+        let cfg = cfg_pointing_at(
+            OAuthProvider::GitHub,
+            "https://idp.example.com/token",
+            "https://idp.example.com/userinfo",
+            None,
+        );
+        let b = InMemoryAuthBackend::new().with_oauth_providers(cfg);
+        let redirect = "https://nebula.test/auth/oauth/google/callback";
+        seed_started_flow(&b, "state-cross", OAuthProvider::Google, redirect);
+        let err = b
+            .complete_oauth(OAuthProvider::GitHub, "state-cross", "code-x", redirect)
+            .await
+            .expect_err("cross-provider state must be rejected");
+        assert!(matches!(err, AuthError::InvalidToken));
+        let entry = b.oauth_state.get("state-cross").unwrap();
+        assert!(!entry.consumed);
+    }
+
+    /// T4.10 RED-then-GREEN: public_url_changed_mid_flow defense
+    /// (Scenario 3.10).
+    #[tokio::test]
+    async fn complete_oauth_rejects_public_url_changed_mid_flow() {
+        let cfg = cfg_pointing_at(
+            OAuthProvider::Google,
+            "https://idp.example.com/token",
+            "https://idp.example.com/userinfo",
+            None,
+        );
+        let b = InMemoryAuthBackend::new().with_oauth_providers(cfg);
+        seed_started_flow(
+            &b,
+            "state-pu",
+            OAuthProvider::Google,
+            "https://nebula.test/auth/oauth/google/callback",
+        );
+        let err = b
+            .complete_oauth(
+                OAuthProvider::Google,
+                "state-pu",
+                "code-pu",
+                "https://nebula-CHANGED.test/auth/oauth/google/callback",
+            )
+            .await
+            .expect_err("mismatched redirect_uri must fail closed");
+        match err {
+            AuthError::OAuthFailed(cause) => {
+                assert_eq!(cause, "public_url_changed_mid_flow");
+            },
+            other => panic!("expected OAuthFailed, got: {other:?}"),
+        }
+    }
+
+    /// T4.11 RED-then-GREEN: token endpoint 500 → OAuthFailed.
+    #[tokio::test]
+    async fn complete_oauth_handles_idp_token_endpoint_500_with_redacted_log() {
+        let token_err = b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n".to_vec();
+        let userinfo_dummy = http_json(b"{}");
+        let (t1, u1, _) = spawn_idp_responder(token_err, userinfo_dummy, None).await;
+        let cfg = cfg_pointing_at(OAuthProvider::Google, &t1, &u1, None);
+        let b = InMemoryAuthBackend::new().with_oauth_providers(cfg);
+        let redirect = "https://nebula.test/auth/oauth/google/callback";
+        seed_started_flow(&b, "state-500", OAuthProvider::Google, redirect);
+        let err = b
+            .complete_oauth(OAuthProvider::Google, "state-500", "code-500", redirect)
+            .await
+            .expect_err("token endpoint 500 must propagate as OAuthFailed");
+        assert!(matches!(err, AuthError::OAuthFailed(_)));
+    }
+
+    /// T4.12 RED-then-GREEN: token response missing access_token.
+    #[tokio::test]
+    async fn complete_oauth_rejects_malformed_token_response_missing_access_token() {
+        let bad_token = http_json(br#"{"token_type":"Bearer"}"#);
+        let userinfo = userinfo_response("x", Some("e@e.com"), Some(true));
+        let (t1, u1, _) = spawn_idp_responder(bad_token, userinfo, None).await;
+        let cfg = cfg_pointing_at(OAuthProvider::Google, &t1, &u1, None);
+        let b = InMemoryAuthBackend::new().with_oauth_providers(cfg);
+        let redirect = "https://nebula.test/auth/oauth/google/callback";
+        seed_started_flow(&b, "state-mt", OAuthProvider::Google, redirect);
+        let err = b
+            .complete_oauth(OAuthProvider::Google, "state-mt", "code-mt", redirect)
+            .await
+            .expect_err("missing access_token must error");
+        match err {
+            AuthError::OAuthFailed(msg) => {
+                assert!(msg.contains("access_token"), "msg: {msg}");
+            },
+            other => panic!("expected OAuthFailed, got: {other:?}"),
+        }
+    }
+
+    /// T4.14 RED-then-GREEN: first-login rejected when IdP says
+    /// `email_verified: false` AND no verified_emails_url fallback.
+    #[tokio::test]
+    async fn complete_oauth_rejects_first_login_when_idp_email_unverified() {
+        let token = token_response("at-uv", false);
+        let userinfo = userinfo_response("sub-uv", Some("erin@example.com"), Some(false));
+        let (t1, u1, _) = spawn_idp_responder(token, userinfo, None).await;
+        let cfg = cfg_pointing_at(OAuthProvider::Google, &t1, &u1, None);
+        let b = InMemoryAuthBackend::new().with_oauth_providers(cfg);
+        let redirect = "https://nebula.test/auth/oauth/google/callback";
+        seed_started_flow(&b, "state-uv", OAuthProvider::Google, redirect);
+        let err = b
+            .complete_oauth(OAuthProvider::Google, "state-uv", "code-uv", redirect)
+            .await
+            .expect_err("unverified IdP email must reject");
+        assert!(matches!(err, AuthError::EmailNotVerified));
     }
 }
