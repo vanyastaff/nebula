@@ -20,3 +20,4 @@ pub mod discovery;
 pub mod flow;
 pub mod http;
 pub mod state;
+pub mod userinfo;

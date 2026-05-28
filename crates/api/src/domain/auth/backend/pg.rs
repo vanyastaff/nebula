@@ -75,7 +75,10 @@ use sha2::{Digest, Sha256};
 use sqlx::{Pool, Postgres};
 
 use nebula_storage::{
-    pg::{PgOAuthStateRepo, PgPatRepo, PgSessionRepo, PgUserRepo, PgVerificationTokenRepo},
+    pg::{
+        PgExternalIdentityRepo, PgOAuthStateRepo, PgPatRepo, PgSessionRepo, PgUserRepo,
+        PgVerificationTokenRepo,
+    },
     repos::{OAuthStateRepo, PatRepo, SessionRepo, UserRepo, VerificationTokenRepo},
     rows::{OAuthStateRow, PersonalAccessTokenRow, SessionRow, UserRow, VerificationTokenRow},
 };
@@ -172,6 +175,14 @@ pub struct PgAuthBackend {
     /// — sharing one allocation across the backend's clones avoids
     /// repeated deep-copies of the secrets map.
     oauth_providers: Arc<crate::config::OAuthProvidersConfig>,
+    /// Repository for the `external_identities` table (Plane-A OAuth
+    /// provider ↔ Nebula user linkage). Per ADR-0085 D-8 +
+    /// REQ-oauth-005 / REQ-oauth-006. PR-4 consumes this on the
+    /// `complete_oauth` path: REQ-oauth-006 short-circuit checks
+    /// `find_user_by_external` first (repeat-login → mint session
+    /// directly); first-login + cross-link branches call
+    /// `link_external` after the user row is created or located.
+    external_identity_repo: Arc<PgExternalIdentityRepo>,
 }
 
 impl PgAuthBackend {
@@ -196,6 +207,7 @@ impl PgAuthBackend {
             pat_repo: Arc::new(PgPatRepo::new(pool.clone())),
             verification_token_repo: Arc::new(PgVerificationTokenRepo::new(pool.clone())),
             oauth_state_repo: Arc::new(PgOAuthStateRepo::new(pool.clone())),
+            external_identity_repo: Arc::new(PgExternalIdentityRepo::new(pool.clone())),
             pool,
             email_port,
             metrics,
@@ -1162,53 +1174,229 @@ impl AuthBackend for PgAuthBackend {
         .await
     }
 
-    // PR-2 T2.9: trait sig gained `redirect_uri: &str`. PR-4 verifies
-    // it against the OAuthStateRow's persisted redirect_uri to close
-    // the `public_url_changed_mid_flow` defense (REQ-oauth-003
-    // Scenario 3.10). For now the param is accepted and ignored —
-    // complete_oauth still returns NotImplemented until PR-4.
-    #[tracing::instrument(level = "info", skip(self, state, _code, _redirect_uri), fields(provider = %provider.as_str(), state_len = state.len()))]
+    // PR-4 T4.17 GREEN: real complete_oauth via token POST + userinfo
+    // GET + REQ-oauth-006 short-circuit + email truth-table. See
+    // crates/api/src/domain/auth/backend/in_memory.rs for the matching
+    // InMemory impl. The two share the same shape; PG differs in
+    // using repo / sqlx access instead of DashMap.
+    #[tracing::instrument(level = "info", skip(self, state, code, redirect_uri), fields(provider = %provider.as_str(), state_len = state.len()))]
     async fn complete_oauth(
         &self,
         provider: OAuthProvider,
         state: &str,
-        _code: &str,
-        _redirect_uri: &str,
+        code: &str,
+        redirect_uri: &str,
     ) -> Result<OAuthCompletion, AuthError> {
+        use nebula_storage::repos::{ExternalIdentityRepo, UserRepo};
+        use nebula_storage::rows::UserRow;
+        use secrecy::ExposeSecret;
+
+        use crate::transport::oauth::{
+            discovery::resolve_provider_endpoints,
+            flow::{TokenExchangeRequest, exchange_code},
+            userinfo::{UserinfoClaims, fetch_primary_verified_email, fetch_userinfo},
+        };
+
         let provider_label = metrics_emit::oauth_provider_label(provider);
+        let redirect_uri = redirect_uri.to_owned();
+        let code = code.to_owned();
+        let state = state.to_owned();
+        let oauth_providers = Arc::clone(&self.oauth_providers);
         metrics_emit::run_with_metrics(
             &self.metrics,
             NEBULA_API_AUTH_OAUTH_ATTEMPTS_TOTAL,
             Some(provider_label),
             async move {
-                // `consume_by_state_and_provider` filters on `provider` inside
-                // the same UPDATE — a state crossed between providers does NOT
-                // match and is NOT consumed; the row stays available for the
-                // valid callback at the correct provider. The single-statement
-                // UPDATE is the PKCE replay defence: a second callback at the
-                // same `(state, provider)` is the loser and sees None.
-                //
-                // The PG path enforces the replay window even though the
-                // actual provider code-exchange is still `NotImplemented`;
-                // when a follow-up wires real provider configs and
-                // `CredentialService::get::<OAuth2Credential>`, it replaces
-                // the `NotImplemented` return with the real exchange without
-                // changing any storage semantics.
-                let _row = self
+                // Step 1: atomically consume the state row
+                // (consume_by_state_and_provider filters on provider
+                // inside the UPDATE — cross-provider replay rejected).
+                let row = self
                     .oauth_state_repo
-                    .consume_by_state_and_provider(state, provider.as_str())
+                    .consume_by_state_and_provider(&state, provider.as_str())
                     .await?
                     .ok_or(AuthError::InvalidToken)?;
-                Err(AuthError::NotImplemented(
-                    "oauth provider code exchange is not yet wired; complete_oauth \
-                     currently consumes the state row but does not exchange the \
-                     authorization code",
-                ))
+
+                // Step 2: verify the row's redirect_uri matches the
+                // handler-derived value (Scenario 3.10
+                // public_url_changed_mid_flow defense).
+                match row.redirect_uri.as_deref() {
+                    Some(stored) if stored == redirect_uri => {},
+                    _ => {
+                        return Err(AuthError::OAuthFailed(
+                            "public_url_changed_mid_flow".to_owned(),
+                        ));
+                    },
+                }
+
+                // Step 3: lookup provider config.
+                let provider_cfg = oauth_providers.providers.get(&provider).ok_or_else(|| {
+                    AuthError::ProviderNotConfigured {
+                        provider: provider.as_str().to_owned(),
+                    }
+                })?;
+
+                // Step 4: resolve endpoints.
+                let endpoints = resolve_provider_endpoints(
+                    provider_cfg,
+                    oauth_providers.oauth_allow_insecure_localhost,
+                )
+                .await
+                .map_err(|e| AuthError::OAuthFailed(e.to_string()))?;
+
+                // Step 5: exchange code for token.
+                let token_req = TokenExchangeRequest {
+                    token_url: endpoints.token_url.clone(),
+                    client_id: provider_cfg.client_id.expose_secret().to_owned(),
+                    client_secret: provider_cfg.client_secret.expose_secret().to_owned(),
+                    code: code.clone(),
+                    redirect_uri: redirect_uri.clone(),
+                    code_verifier: row.code_verifier.clone(),
+                    auth_style: nebula_credential::AuthStyle::Header,
+                };
+                let token_response = exchange_code(&token_req)
+                    .await
+                    .map_err(AuthError::OAuthFailed)?;
+                let access_token = token_response
+                    .get("access_token")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| {
+                        AuthError::OAuthFailed("token response missing access_token".to_owned())
+                    })?
+                    .to_owned();
+                let id_token_present = token_response
+                    .get("id_token")
+                    .map(|v| !v.is_null())
+                    .unwrap_or(false);
+                tracing::debug!(
+                    provider = %provider.as_str(),
+                    id_token_present,
+                    "OAuth complete: token exchange succeeded"
+                );
+
+                // Step 6: GET userinfo.
+                let UserinfoClaims {
+                    sub,
+                    email,
+                    email_verified,
+                } = fetch_userinfo(&endpoints.userinfo_url, &access_token)
+                    .await
+                    .map_err(|e| AuthError::OAuthFailed(e.to_string()))?;
+
+                // Step 7: REQ-oauth-006 short-circuit BEFORE the
+                // verified-emails fallback fetch (mirrors InMemory).
+                if let Some(user_id_bytes) = self
+                    .external_identity_repo
+                    .find_user_by_external(provider.as_str(), &sub)
+                    .await?
+                {
+                    drop(access_token);
+                    let user_row = self.user_repo.get(&user_id_bytes).await?.ok_or_else(|| {
+                        AuthError::Internal(
+                            "external_identities link references missing user (CASCADE skipped?)"
+                                .to_owned(),
+                        )
+                    })?;
+                    let user_id_str = user_id_from_bytes(&user_row.id)?.to_string();
+                    let session = self.create_session(&user_id_str).await?;
+                    tracing::info!(
+                        provider = %provider.as_str(),
+                        cause = "existing_external_identity_linked",
+                        "OAuth complete: REQ-oauth-006 short-circuit"
+                    );
+                    return Ok(OAuthCompletion {
+                        user: row_to_profile(&user_row)?,
+                        session,
+                    });
+                }
+
+                // Step 8: GitHub-style verified_emails fallback (per
+                // ADR-0085 D-5 wave-6).
+                let (resolved_email, resolved_verified) = match (email_verified, email) {
+                    (Some(true), Some(e)) => (e, true),
+                    (Some(false), Some(e)) => (e, false),
+                    (Some(_), None) => {
+                        return Err(AuthError::OAuthFailed(
+                            "IdP userinfo missing email".to_owned(),
+                        ));
+                    },
+                    (None, fallback_email) => match endpoints.verified_emails_url.as_deref() {
+                        Some(url) => {
+                            let e = fetch_primary_verified_email(url, &access_token)
+                                .await
+                                .map_err(|e| AuthError::OAuthFailed(e.to_string()))?;
+                            (e, true)
+                        },
+                        None => (fallback_email.unwrap_or_default(), false),
+                    },
+                };
+                drop(access_token);
+
+                // Step 9: email truth-table (REQ-oauth-004 + -005).
+                if !resolved_verified || resolved_email.is_empty() {
+                    return Err(AuthError::EmailNotVerified);
+                }
+                let normalized_email = resolved_email.trim().to_lowercase();
+                let existing = self.user_repo.get_by_email(&normalized_email).await?;
+                let user_row = match existing {
+                    None => {
+                        // REQ-oauth-004 first login: create user with
+                        // email_verified_at = NOW(), no password.
+                        let new_id = UserId::new();
+                        let now = Utc::now();
+                        let row = UserRow {
+                            id: new_id.as_bytes().to_vec(),
+                            email: normalized_email.clone(),
+                            email_verified_at: Some(now),
+                            display_name: normalized_email.clone(),
+                            avatar_url: None,
+                            password_hash: None,
+                            created_at: now,
+                            last_login_at: None,
+                            locked_until: None,
+                            failed_login_count: 0,
+                            mfa_enabled: false,
+                            mfa_secret: None,
+                            version: 0,
+                            deleted_at: None,
+                        };
+                        self.user_repo.create(&row).await?;
+                        row
+                    },
+                    Some(existing_row) => {
+                        // REQ-oauth-005 account-takeover defense:
+                        // reject when Nebula's email is unverified.
+                        if existing_row.email_verified_at.is_none() {
+                            return Err(AuthError::EmailNotVerified);
+                        }
+                        existing_row
+                    },
+                };
+
+                // Step 10: link (provider, sub) -> user_id.
+                self.external_identity_repo
+                    .link_external(
+                        &user_row.id,
+                        provider.as_str(),
+                        &sub,
+                        Some(normalized_email.as_str()),
+                    )
+                    .await?;
+
+                // Step 11: mint session.
+                let user_id_str = user_id_from_bytes(&user_row.id)?.to_string();
+                let session = self.create_session(&user_id_str).await?;
+                Ok(OAuthCompletion {
+                    user: row_to_profile(&user_row)?,
+                    session,
+                })
             },
             |result| match result {
                 Ok(_) => auth_outcome::SUCCESS,
                 Err(AuthError::InvalidToken) => auth_outcome::TOKEN_INVALID,
-                Err(AuthError::OAuthFailed(_)) => auth_outcome::OAUTH_FAILED,
+                Err(AuthError::EmailNotVerified) => auth_outcome::EMAIL_UNVERIFIED,
+                Err(AuthError::OAuthFailed(_) | AuthError::ProviderNotConfigured { .. }) => {
+                    auth_outcome::OAUTH_FAILED
+                },
                 // Per oracle per-method map: `complete_oauth` collapses
                 // `NotImplemented` to `internal` because the PG path is
                 // wired-but-incomplete until PR-C lands the real

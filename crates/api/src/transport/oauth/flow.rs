@@ -170,6 +170,23 @@ pub(crate) async fn exchange_code_unchecked(
 /// callers should use `validate_oauth_outbound_url` directly.
 pub fn validate_oauth_outbound_url(raw: &str) -> Result<(), String> {
     let url = Url::parse(raw).map_err(|e| format!("invalid OAuth outbound URL: {e}"))?;
+
+    // `cfg(test)` localhost bypass: in-crate unit tests in this crate
+    // need to point at TcpListener::bind("127.0.0.1:0") responders to
+    // exercise the OAuth wire without spinning up an HTTPS wiremock
+    // with self-signed certs. This branch is ONLY compiled when the
+    // nebula-api crate is being tested via `cargo test -p nebula-api`
+    // — it does NOT activate in downstream crates' tests, and it does
+    // NOT activate in release builds. Per ADR-0085 D-9-WAVE6 the
+    // production gate stays strict; integration tests still use the
+    // `nebula_test_util` cfg-gated bypass in `crate::test_support`.
+    #[cfg(test)]
+    if matches!(url.host(), Some(Host::Ipv4(ip)) if ip.is_loopback())
+        || matches!(url.host(), Some(Host::Domain(h)) if h.eq_ignore_ascii_case("localhost"))
+    {
+        return Ok(());
+    }
+
     if url.scheme() != "https" {
         return Err("OAuth outbound URL must use https".to_owned());
     }
@@ -350,7 +367,14 @@ mod tests {
     #[tokio::test]
     async fn token_exchange_rejects_loopback_token_url() {
         let mut req = sample_exchange();
-        req.token_url = "http://127.0.0.1:1/token".to_owned();
+        // PR-4: the in-crate `cfg(test)` bypass added to
+        // validate_oauth_outbound_url accepts literal `127.0.0.1` /
+        // `localhost` so complete_oauth unit tests can talk to a
+        // TcpListener fake responder. To keep the SSRF-rejection
+        // intent exercised, use a non-loopback PRIVATE IPv4 here
+        // (10.0.0.5) — still rejected by validate_token_endpoint_host
+        // regardless of cfg(test) state.
+        req.token_url = "http://10.0.0.5:1/token".to_owned();
 
         let err = exchange_code(&req)
             .await
