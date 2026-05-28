@@ -99,14 +99,31 @@ pub struct OidcDiscovery {
     pub jwks_url: Option<String>,
 }
 
-/// Process-wide cache keyed by the operator-configured `discovery_url`.
-/// Single-process scope — multi-replica deployments re-fetch per
-/// replica on first use. Stale-cache risk is bounded by process
-/// restart cadence; discovery docs change rarely. No TTL: a cached
-/// entry lives until the process restarts.
-static DISCOVERY_CACHE: OnceLock<DashMap<String, OidcDiscovery>> = OnceLock::new();
+/// Composite cache key.
+///
+/// Per CodeRabbit wave-2 G.2: the cache MUST vary with the
+/// `oauth_allow_insecure_localhost` flag. A discovery doc whose
+/// `authorize_url` is `http://localhost` passes the flag-aware gate
+/// only when the flag is `true`. If the cache were keyed by URL
+/// alone, a flag=true fetch would populate the cache with a
+/// localhost-authorize entry, and a subsequent flag=false caller
+/// (which would have been rejected) would receive the cached unsafe
+/// value — a cross-flag cache-poisoning surface.
+#[derive(Hash, PartialEq, Eq, Clone)]
+struct DiscoveryCacheKey {
+    url: String,
+    allow_localhost: bool,
+}
 
-fn cache() -> &'static DashMap<String, OidcDiscovery> {
+/// Process-wide cache keyed by the operator-configured `discovery_url`
+/// AND the `oauth_allow_insecure_localhost` flag (CodeRabbit wave-2
+/// G.2 — see [`DiscoveryCacheKey`]). Single-process scope; multi-
+/// replica deployments re-fetch per replica on first use. Stale-cache
+/// risk is bounded by process restart cadence; discovery docs change
+/// rarely. No TTL: a cached entry lives until the process restarts.
+static DISCOVERY_CACHE: OnceLock<DashMap<DiscoveryCacheKey, OidcDiscovery>> = OnceLock::new();
+
+fn cache() -> &'static DashMap<DiscoveryCacheKey, OidcDiscovery> {
     DISCOVERY_CACHE.get_or_init(DashMap::new)
 }
 
@@ -252,7 +269,14 @@ async fn fetch_oidc_discovery_inner(
     }
 
     // Step 2: cache check (entry lives until process restart).
-    if let Some(cached) = cache().get(url) {
+    // Key includes `oauth_allow_insecure_localhost` per CodeRabbit
+    // wave-2 G.2 — see [`DiscoveryCacheKey`] for the poisoning
+    // scenario being defended against.
+    let key = DiscoveryCacheKey {
+        url: url.to_owned(),
+        allow_localhost: oauth_allow_insecure_localhost,
+    };
+    if let Some(cached) = cache().get(&key) {
         return Ok(cached.clone());
     }
 
@@ -356,8 +380,8 @@ async fn fetch_oidc_discovery_inner(
         })?;
     }
 
-    // Step 6: cache insert + return.
-    cache().insert(url.to_owned(), discovery.clone());
+    // Step 6: cache insert + return. Key includes the flag per G.2.
+    cache().insert(key, discovery.clone());
     Ok(discovery)
 }
 
@@ -429,6 +453,13 @@ pub async fn resolve_provider_endpoints(
     }
 }
 
+// guard-justified: the `#[allow(dead_code)]` directly below is needed
+// because this helper is reached through two mutually-exclusive
+// surfaces — (a) the `#[cfg(test)]` unit-tests in this module, and (b)
+// the `#[cfg(nebula_test_util)]` re-export in `test_support.rs` for
+// integration tests. In a vanilla `cargo build` neither surface is
+// compiled, so the function looks dead to the lint without the
+// directive. Per CodeRabbit wave-2 G.1.
 /// Test-only: clear the cache so tests can exercise the fetch path
 /// without inter-test contamination. `pub(crate)` so the unit-test
 /// module + the `nebula_test_util` cfg-gated `test_support` module

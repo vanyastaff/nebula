@@ -941,7 +941,14 @@ impl AuthBackend for InMemoryAuthBackend {
             },
             |result| match result {
                 Ok(_) => auth_outcome::SUCCESS,
-                Err(AuthError::OAuthFailed(_)) => auth_outcome::OAUTH_FAILED,
+                // PR-3 wave-2 (CodeRabbit G.6): include
+                // `ProviderNotConfigured` in the OAUTH_FAILED bucket
+                // so the in-memory backend's metrics labels match the
+                // PG backend (G.5) and the `default_outcome_for`
+                // exhaustive table.
+                Err(AuthError::OAuthFailed(_) | AuthError::ProviderNotConfigured { .. }) => {
+                    auth_outcome::OAUTH_FAILED
+                },
                 Err(_) => auth_outcome::INTERNAL,
             },
         )

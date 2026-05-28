@@ -1146,7 +1146,16 @@ impl AuthBackend for PgAuthBackend {
             },
             |result| match result {
                 Ok(_) => auth_outcome::SUCCESS,
-                Err(AuthError::OAuthFailed(_)) => auth_outcome::OAUTH_FAILED,
+                // PR-3 wave-2 (CodeRabbit G.5): classify the new
+                // fail-closed `ProviderNotConfigured` variant as
+                // OAUTH_FAILED in the inline closure too, mirroring
+                // the `default_outcome_for` table in error.rs. Without
+                // this, an unconfigured-provider error gets the
+                // `internal` label and looks like a server bug in
+                // dashboards instead of a deployment-state issue.
+                Err(AuthError::OAuthFailed(_) | AuthError::ProviderNotConfigured { .. }) => {
+                    auth_outcome::OAUTH_FAILED
+                },
                 Err(_) => auth_outcome::INTERNAL,
             },
         )
