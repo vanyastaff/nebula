@@ -134,6 +134,23 @@ pub(crate) async fn exchange_code_unchecked(
 /// and obvious loopback / private / link-local / multicast hosts
 /// before `reqwest` can reach internal services (anti-SSRF).
 ///
+/// ## Defense-in-depth limitation (CodeRabbit wave-1 major)
+///
+/// This function inspects only the **literal host** in the URL. An
+/// attacker-controlled DNS record (`internal.evil.example.com
+/// A 10.0.0.5`) passes this gate because the host string is not an
+/// IP literal at parse time. The full fix requires a `reqwest::Client`
+/// configured with a custom resolver that re-validates resolved IPs
+/// post-DNS-resolution. That is a follow-up scheduled with PR-3 / PR-4
+/// where the production OAuth HTTP path actually runs; for now this
+/// validator is the first of two defenses (the second is network
+/// segmentation in the deployment topology, and the third will be
+/// the post-DNS resolver gate).
+///
+/// PR-2 scope: catch the operator-typo cases (literal IP, `localhost`,
+/// HTTP scheme) at boot time, where the cost is zero and the error
+/// message is actionable.
+///
 /// Per ADR-0085 D-9-WAVE6, this strict gate applies to:
 /// - Token endpoint POST.
 /// - Userinfo endpoint GET.

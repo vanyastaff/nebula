@@ -138,7 +138,7 @@ pub enum TransportInitError {
     /// `"microsoft"` / `"github"`); `reason` is a short stable
     /// keyword the operator can grep for in the docs.
     #[error(
-        "OAuth provider `{provider}` config invalid: {reason}; fix the API_AUTH_OAUTH_{provider}_* env vars or remove the provider"
+        "OAuth provider `{provider}` config invalid: {reason}; fix the API_AUTH_OAUTH_<UPPERCASE_PROVIDER>_* env vars (e.g. API_AUTH_OAUTH_GOOGLE_CLIENT_ID) or remove the provider"
     )]
     OAuthProviderConfigInvalid {
         /// Provider name (snake_case OAuthProvider enum variant).

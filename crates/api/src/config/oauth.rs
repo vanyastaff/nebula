@@ -37,7 +37,21 @@ use std::collections::HashMap;
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 
+use super::errors::ApiConfigError;
 use crate::domain::auth::backend::oauth::OAuthProvider;
+
+/// Split the `API_AUTH_OAUTH_<PROVIDER>_SCOPES` env value on whitespace
+/// AND commas, dropping empties. Operator-friendly: accepts
+/// `"user:email read:user"` or `"user:email,read:user"` or mixes.
+fn parse_scopes_env(var: &str) -> Vec<String> {
+    std::env::var(var)
+        .unwrap_or_default()
+        .split(|c: char| c.is_whitespace() || c == ',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
 
 /// OIDC scopes are hardcoded per ADR-0085 D-5 recon-4 ADOPT (c). Per-provider
 /// scope customization belongs to the operator config only for the
@@ -62,16 +76,18 @@ pub struct OAuthProvidersConfig {
 
     /// Test/dev-only: relax `validate_oauth_authorize_url` to accept
     /// `http://localhost(:port)?` for the **browser-fetched** authorize
-    /// URL. Defaults to `false`. Per ADR-0085 D-9-WAVE6 the flag is
-    /// scope-narrowed to authorize URLs only — server-side fetches
+    /// URL ONLY in dev builds. Defaults to `false`. Per ADR-0085
+    /// D-9-WAVE6 the flag is scope-narrowed to authorize URLs only —
+    /// server-side fetches
     /// (token / userinfo / verified_emails / jwks / discovery) keep the
     /// strict `validate_oauth_outbound_url` policy regardless.
     ///
     /// Env var: `API_AUTH_OAUTH_ALLOW_INSECURE_LOCALHOST`
     /// (`true` / `false`; default `false`). Production builds (release
-    /// profile, `not(debug_assertions)`) reject the relaxation even when
-    /// the flag is set — see `crates/api/src/lib.rs` release guard
-    /// (PR-2 T2.12).
+    /// profile — `cfg!(debug_assertions) == false`) reject the
+    /// relaxation even when the flag is set; the flag only takes
+    /// effect in dev builds where `cfg!(debug_assertions) == true`.
+    /// See `crates/api/src/lib.rs` release guard (PR-2 T2.12).
     #[serde(default)]
     pub oauth_allow_insecure_localhost: bool,
 }
@@ -205,7 +221,117 @@ pub struct OAuthConfigValidationError {
     pub reason: &'static str,
 }
 
+/// All `OAuthProvider` enum variants supported in 1.0. Used by
+/// [`OAuthProvidersConfig::from_env`] to drive the per-provider env
+/// scan. Adding a variant to the enum + this slice is the entire
+/// surface for a 1.1 enum-extension follow-up per ADR-0085 D-5.
+const KNOWN_PROVIDERS: &[OAuthProvider] = &[
+    OAuthProvider::Google,
+    OAuthProvider::Microsoft,
+    OAuthProvider::GitHub,
+];
+
 impl OAuthProvidersConfig {
+    /// Discover declared OAuth providers from environment variables.
+    ///
+    /// For each `OAuthProvider` enum variant the loader looks for the
+    /// `API_AUTH_OAUTH_<PROVIDER>_CLIENT_ID` env var as the
+    /// declaration sentinel. If present (non-empty after trim), the
+    /// provider is added to the map with the rest of the per-provider
+    /// env vars consumed:
+    ///
+    /// - `API_AUTH_OAUTH_<PROVIDER>_CLIENT_ID` — required.
+    /// - `API_AUTH_OAUTH_<PROVIDER>_CLIENT_SECRET` — required.
+    /// - **Discriminator**: `DISCOVERY_URL` set →
+    ///   [`OAuthEndpoints::Oidc`]; otherwise [`OAuthEndpoints::Manual`].
+    /// - Oidc: `DISCOVERY_URL` required.
+    /// - Manual: `AUTHORIZE_URL` / `TOKEN_URL` / `USERINFO_URL`
+    ///   required; `VERIFIED_EMAILS_URL` / `JWKS_URL` optional;
+    ///   `SCOPES` required (whitespace- or comma-separated).
+    ///
+    /// Plus the global flag
+    /// `API_AUTH_OAUTH_ALLOW_INSECURE_LOCALHOST` (`true`/`false`,
+    /// default `false`).
+    ///
+    /// Provider keys not in [`KNOWN_PROVIDERS`] (e.g. typos like
+    /// `API_AUTH_OAUTH_GOOOGLE_CLIENT_ID`) are silently ignored at
+    /// the env-loader level — the OAuthProvider enum has no parser for
+    /// them so a typo simply never matches any iteration. Boot-time
+    /// validation in [`Self::validate_at_load`] catches
+    /// half-populated configs (CLIENT_ID set but neither discovery nor
+    /// authorize URL).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiConfigError::ParseEnum`] when a provider has
+    /// `CLIENT_ID` set but neither `DISCOVERY_URL` nor `AUTHORIZE_URL`
+    /// (ambiguous shape — cannot pick Oidc vs Manual).
+    pub fn from_env() -> Result<Self, ApiConfigError> {
+        let allow_localhost =
+            super::env::parse_bool_env("AUTH_OAUTH_ALLOW_INSECURE_LOCALHOST", false)?;
+        let mut providers = HashMap::new();
+
+        for provider in KNOWN_PROVIDERS {
+            let upper = provider.as_str().to_ascii_uppercase();
+            let prefix = format!("API_AUTH_OAUTH_{upper}");
+            let client_id_var = format!("{prefix}_CLIENT_ID");
+            let raw_client_id = std::env::var(&client_id_var).unwrap_or_default();
+            if raw_client_id.trim().is_empty() {
+                // Provider not declared. Move on.
+                continue;
+            }
+            let raw_client_secret =
+                std::env::var(format!("{prefix}_CLIENT_SECRET")).unwrap_or_default();
+
+            let discovery_url = std::env::var(format!("{prefix}_DISCOVERY_URL"))
+                .ok()
+                .filter(|s| !s.trim().is_empty());
+            let authorize_url = std::env::var(format!("{prefix}_AUTHORIZE_URL"))
+                .ok()
+                .filter(|s| !s.trim().is_empty());
+
+            let endpoints = match (discovery_url, authorize_url) {
+                (Some(url), _) => OAuthEndpoints::Oidc { discovery_url: url },
+                (None, Some(authorize_url)) => OAuthEndpoints::Manual {
+                    authorize_url,
+                    token_url: std::env::var(format!("{prefix}_TOKEN_URL")).unwrap_or_default(),
+                    userinfo_url: std::env::var(format!("{prefix}_USERINFO_URL"))
+                        .unwrap_or_default(),
+                    verified_emails_url: std::env::var(format!("{prefix}_VERIFIED_EMAILS_URL"))
+                        .ok()
+                        .filter(|s| !s.trim().is_empty()),
+                    jwks_url: std::env::var(format!("{prefix}_JWKS_URL"))
+                        .ok()
+                        .filter(|s| !s.trim().is_empty()),
+                    scopes: parse_scopes_env(&format!("{prefix}_SCOPES")),
+                },
+                (None, None) => {
+                    return Err(ApiConfigError::ParseEnum {
+                        var: "AUTH_OAUTH_*_DISCOVERY_URL_or_AUTHORIZE_URL",
+                        raw: format!(
+                            "provider `{}` has {prefix}_CLIENT_ID set but neither {prefix}_DISCOVERY_URL nor {prefix}_AUTHORIZE_URL; declare exactly one to pick the OAuthEndpoints arm",
+                            provider.as_str()
+                        ),
+                    });
+                },
+            };
+
+            providers.insert(
+                *provider,
+                OAuthProviderConfig {
+                    client_id: SecretString::new(raw_client_id.into_boxed_str()),
+                    client_secret: SecretString::new(raw_client_secret.into_boxed_str()),
+                    endpoints,
+                },
+            );
+        }
+
+        Ok(Self {
+            providers,
+            oauth_allow_insecure_localhost: allow_localhost,
+        })
+    }
+
     /// Validate every declared provider at boot per ADR-0085
     /// REQ-compose-001 Invariant 1 (recon-4 + wave-6/-7 hardening).
     ///
@@ -240,11 +366,17 @@ impl OAuthProvidersConfig {
         // `public_url` is required for the auto-derived `redirect_uri`
         // formula per D-3 recon-4. Empty or scheme-less values are a
         // boot-time error because every OAuth flow would build a
-        // broken redirect URL otherwise.
+        // broken redirect URL otherwise. Per CodeRabbit / Codex / Copilot
+        // wave-1 review: parse via `url::Url` rather than a prefix check
+        // so malformed values like `"https://"` (no host) AND opaque
+        // schemes like `"data:..."` are rejected up front.
         let trimmed_pub = public_url.trim();
-        if trimmed_pub.is_empty()
-            || !(trimmed_pub.starts_with("http://") || trimmed_pub.starts_with("https://"))
-        {
+        let parsed = url::Url::parse(trimmed_pub);
+        let public_url_ok = match parsed {
+            Ok(ref u) => (u.scheme() == "http" || u.scheme() == "https") && u.has_host(),
+            Err(_) => false,
+        };
+        if !public_url_ok {
             // Use first provider name for the error — the issue is
             // global but reporting against a concrete provider helps
             // the operator find their env-var set.
@@ -578,6 +710,65 @@ mod tests {
                 .to_owned(),
         };
         assert_eq!(endpoints.scopes(), vec!["openid", "email", "profile"]);
+    }
+
+    /// T2.13 TRIANGULATE: `validate_at_load` rejects a `public_url`
+    /// that has a scheme but no host (e.g. `"https://"`). Closes the
+    /// Url-parse path that the wave-1 review flagged as a major gap.
+    #[test]
+    fn validate_at_load_rejects_public_url_with_no_host() {
+        let cfg = cfg_with(
+            OAuthProvider::Google,
+            mk_oidc("https://accounts.google.com/.well-known/openid-configuration"),
+        );
+        let err = cfg
+            .validate_at_load("https://", false)
+            .expect_err("scheme without host must be rejected");
+        assert_eq!(err.reason, "public_url_required");
+    }
+
+    /// T2.13 TRIANGULATE: opaque-scheme `public_url` is rejected (the
+    /// boot-time gate must NOT accept `data:` / `file:` / `javascript:`
+    /// for the OAuth redirect base — those don't form a server URL).
+    #[test]
+    fn validate_at_load_rejects_public_url_with_opaque_scheme() {
+        let cfg = cfg_with(
+            OAuthProvider::Google,
+            mk_oidc("https://accounts.google.com/.well-known/openid-configuration"),
+        );
+        let err = cfg
+            .validate_at_load("javascript:alert(1)", false)
+            .expect_err("opaque scheme rejected");
+        assert_eq!(err.reason, "public_url_required");
+    }
+
+    /// T2.13 TRIANGULATE: `parse_scopes_env` accepts both whitespace-
+    /// and comma-separated forms (operator-friendly).
+    #[test]
+    #[allow(
+        unsafe_code,
+        reason = "edition 2024 marks env::{set,remove}_var as unsafe; this test uses a unique var name so no concurrent reader observes the mutation"
+    )]
+    fn parse_scopes_env_accepts_whitespace_and_commas() {
+        let var = "API_AUTH_OAUTH_TEST_T213_SCOPES_PARSE";
+        // SAFETY: unique var name; only this test reads or writes it.
+        unsafe {
+            std::env::set_var(var, "user:email read:user,write:repo  openid");
+        }
+        let scopes = parse_scopes_env(var);
+        // SAFETY: same uniqueness invariant; symmetric cleanup.
+        unsafe {
+            std::env::remove_var(var);
+        }
+        assert_eq!(
+            scopes,
+            vec![
+                "user:email".to_owned(),
+                "read:user".to_owned(),
+                "write:repo".to_owned(),
+                "openid".to_owned()
+            ]
+        );
     }
 
     /// Manual providers honor operator-supplied scopes verbatim.

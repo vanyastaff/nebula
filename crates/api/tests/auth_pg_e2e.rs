@@ -554,13 +554,17 @@ async fn pg_auth_backend_complete_oauth_does_not_burn_cross_provider_state() {
         .await
         .expect("start_oauth");
 
-    // Wrong provider — must not consume the row.
+    // Wrong provider — must not consume the row. Per CodeRabbit wave-1
+    // review: pass the SAME redirect_uri used at start so the
+    // regression tests one dimension (provider mismatch) without
+    // entangling the redirect_uri mismatch defense (Scenario 3.10 —
+    // separate test in PR-4).
     let wrong_provider_err = backend
         .complete_oauth(
             OAuthProvider::GitHub,
             &start.state,
             "fake-code",
-            "https://nebula.test/auth/oauth/github/callback",
+            "https://nebula.test/auth/oauth/google/callback",
         )
         .await
         .expect_err("cross-provider state must reject");

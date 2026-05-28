@@ -366,14 +366,12 @@ impl ApiConfig {
             },
             Err(_) => AuthBackendKind::Memory,
         };
-        // OAuth providers config defaults to empty; future PR-2 task
-        // T2.2 will populate `oauth.providers` via env discovery scan
-        // (one provider per `OAuthProvider` enum variant). For now
-        // empty default keeps the existing AuthApiConfig surface
-        // unchanged behaviourally — no OAuth providers declared, the
-        // `/auth/oauth/{provider}/start` endpoints return
-        // `ProviderNotConfigured` per ADR-0085 D-6.
-        let oauth = OAuthProvidersConfig::default();
+        // OAuth providers config: scan env vars per OAuthProvider
+        // variant for `API_AUTH_OAUTH_<PROVIDER>_*` (T2.2). Returns
+        // empty when no provider is declared, so existing operators
+        // who never set the env vars keep the legacy behavior
+        // (start_oauth returns ProviderNotConfigured per ADR-0085 D-6).
+        let oauth = OAuthProvidersConfig::from_env()?;
         Ok(AuthApiConfig { backend, oauth })
     }
 
