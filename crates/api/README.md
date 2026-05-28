@@ -194,10 +194,12 @@ is also set the OIDC arm is chosen, otherwise Manual.
 
 The Plane-A OAuth flow derives `redirect_uri` from `API_PUBLIC_URL`
 (NOT a per-provider config) per ADR-0085 D-3 (recon-4):
-`{API_PUBLIC_URL}/auth/oauth/{provider}/callback`. Operators that need
-multiple callback URIs deploy multiple Nebula instances. Boot fails
-closed if `API_PUBLIC_URL` is empty / relative / scheme-less while
-any provider is declared (REQ-compose-001 Invariant 1).
+`{API_PUBLIC_URL}/api/v1/auth/oauth/{provider}/callback`. The
+`/api/v1` prefix matches the actual router mount point in
+`crates/api/src/domain/mod.rs`. Operators that need multiple callback
+URIs deploy multiple Nebula instances. Boot fails closed if
+`API_PUBLIC_URL` is empty / relative / scheme-less while any provider
+is declared (REQ-compose-001 Invariant 1).
 
 ### Example: Google + GitHub side-by-side
 

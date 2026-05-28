@@ -9,6 +9,24 @@ changes are expected between minor releases — call them out here.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Plane-A OAuth `redirect_uri` missing `/api/v1` prefix (P2,
+  surfaced by PR-5 wave-1 Codex review)** — the
+  `derive_oauth_redirect_uri` helper in PRs #758 / #759 / #761
+  produced `{public_url}/auth/oauth/{provider}/callback` while the
+  actual Plane-A router is nested under `/api/v1/` in
+  `crates/api/src/domain/mod.rs:170`. In production the IdP would
+  have redirected to a 404 (no handler mounted at the un-prefixed
+  path). Fixed in PR-5 by adding the `/api/v1` prefix to the
+  derivation formula AND updating the spec.md / ADR-0085 / README
+  documented examples so the operator-visible redirect_uri matches
+  what they need to register with the IdP. No state-row data
+  migration needed because no real Plane-A OAuth flow ran on
+  affected commits (PR-1..4 implementation gated by
+  `ProviderNotConfigured` for any non-configured provider; the
+  fix lands before any operator wires real env vars).
+
 ### Added
 
 - **Plane-A OAuth identity providers from operator secrets (ROADMAP

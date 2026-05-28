@@ -68,7 +68,7 @@ extension; Nebula has no admin UI for SSO config yet.
 
 `redirect_uri` is **NOT a configuration field**. It is auto-derived at
 runtime as
-`format!("{}/auth/oauth/{}/callback", api_config.public_url, provider.as_str())`
+`format!("{}/api/v1/auth/oauth/{}/callback", api_config.public_url, provider.as_str())` (the `/api/v1` prefix matches the actual nested router mount point in `crates/api/src/domain/mod.rs` — the earlier formula in this doc omitted the prefix and was corrected in PR-5 wave-1 after Codex P2 surfaced the gap)
 from the existing `ApiConfig::public_url` (`API_PUBLIC_URL` env, declared
 at `crates/api/src/config/mod.rs:107`).
 

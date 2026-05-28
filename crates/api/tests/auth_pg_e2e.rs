@@ -375,7 +375,7 @@ async fn pg_auth_backend_full_lifecycle() {
     let oauth_start = backend
         .start_oauth(
             OAuthProvider::Google,
-            "https://nebula.test/auth/oauth/google/callback",
+            "https://nebula.test/api/v1/auth/oauth/google/callback",
         )
         .await
         .expect("start_oauth");
@@ -391,7 +391,7 @@ async fn pg_auth_backend_full_lifecycle() {
             OAuthProvider::Google,
             &oauth_start.state,
             "fake-code",
-            "https://nebula.test/auth/oauth/google/callback",
+            "https://nebula.test/api/v1/auth/oauth/google/callback",
         )
         .await
         .expect_err("complete_oauth must return NotImplemented");
@@ -406,7 +406,7 @@ async fn pg_auth_backend_full_lifecycle() {
             OAuthProvider::Google,
             &oauth_start.state,
             "fake-code",
-            "https://nebula.test/auth/oauth/google/callback",
+            "https://nebula.test/api/v1/auth/oauth/google/callback",
         )
         .await
         .expect_err("oauth state replay must reject");
@@ -549,7 +549,7 @@ async fn pg_auth_backend_complete_oauth_does_not_burn_cross_provider_state() {
     let start = backend
         .start_oauth(
             OAuthProvider::Google,
-            "https://nebula.test/auth/oauth/google/callback",
+            "https://nebula.test/api/v1/auth/oauth/google/callback",
         )
         .await
         .expect("start_oauth");
@@ -564,7 +564,7 @@ async fn pg_auth_backend_complete_oauth_does_not_burn_cross_provider_state() {
             OAuthProvider::GitHub,
             &start.state,
             "fake-code",
-            "https://nebula.test/auth/oauth/google/callback",
+            "https://nebula.test/api/v1/auth/oauth/google/callback",
         )
         .await
         .expect_err("cross-provider state must reject");
@@ -576,7 +576,7 @@ async fn pg_auth_backend_complete_oauth_does_not_burn_cross_provider_state() {
             OAuthProvider::Google,
             &start.state,
             "fake-code",
-            "https://nebula.test/auth/oauth/google/callback",
+            "https://nebula.test/api/v1/auth/oauth/google/callback",
         )
         .await
         .expect_err("complete_oauth still returns NotImplemented after consume");

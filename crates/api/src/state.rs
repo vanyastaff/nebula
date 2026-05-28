@@ -302,7 +302,7 @@ pub struct AppState {
     /// from `ApiConfig::public_url` (`API_PUBLIC_URL` env). Required by
     /// the Plane-A OAuth handler to derive the canonical
     /// `redirect_uri` per ADR-0085 D-3 (recon-4) —
-    /// `format!("{}/auth/oauth/{}/callback", public_url, provider)`.
+    /// `format!("{}/api/v1/auth/oauth/{}/callback", public_url, provider)`.
     ///
     /// Defaults to an empty string when constructed via
     /// [`Self::in_memory`]; the composition root (`build_state`) sets
