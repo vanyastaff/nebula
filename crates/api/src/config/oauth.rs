@@ -225,7 +225,13 @@ pub struct OAuthConfigValidationError {
 /// [`OAuthProvidersConfig::from_env`] to drive the per-provider env
 /// scan. Adding a variant to the enum + this slice is the entire
 /// surface for a 1.1 enum-extension follow-up per ADR-0085 D-5.
-const KNOWN_PROVIDERS: &[OAuthProvider] = &[
+///
+/// `pub(crate)` so the rustdoc intra-doc link in `from_env`'s public
+/// doc-block resolves (private items cannot be linked from public
+/// doc); production callers should not reach for this directly — use
+/// `OAuthProvider` enum iteration or [`OAuthProvidersConfig::from_env`]
+/// instead.
+pub(crate) const KNOWN_PROVIDERS: &[OAuthProvider] = &[
     OAuthProvider::Google,
     OAuthProvider::Microsoft,
     OAuthProvider::GitHub,
@@ -253,7 +259,7 @@ impl OAuthProvidersConfig {
     /// `API_AUTH_OAUTH_ALLOW_INSECURE_LOCALHOST` (`true`/`false`,
     /// default `false`).
     ///
-    /// Provider keys not in [`KNOWN_PROVIDERS`] (e.g. typos like
+    /// Provider keys not in the KNOWN_PROVIDERS slice (e.g. typos like
     /// `API_AUTH_OAUTH_GOOOGLE_CLIENT_ID`) are silently ignored at
     /// the env-loader level — the OAuthProvider enum has no parser for
     /// them so a typo simply never matches any iteration. Boot-time
@@ -366,16 +372,25 @@ impl OAuthProvidersConfig {
         // `public_url` is required for the auto-derived `redirect_uri`
         // formula per D-3 recon-4. Empty or scheme-less values are a
         // boot-time error because every OAuth flow would build a
-        // broken redirect URL otherwise. Per CodeRabbit / Codex / Copilot
-        // wave-1 review: parse via `url::Url` rather than a prefix check
-        // so malformed values like `"https://"` (no host) AND opaque
-        // schemes like `"data:..."` are rejected up front.
-        let trimmed_pub = public_url.trim();
-        let parsed = url::Url::parse(trimmed_pub);
-        let public_url_ok = match parsed {
-            Ok(ref u) => (u.scheme() == "http" || u.scheme() == "https") && u.has_host(),
-            Err(_) => false,
-        };
+        // broken redirect URL otherwise.
+        //
+        // Wave-1 review (Codex / Copilot / CodeRabbit): parse via
+        // `url::Url` rather than a prefix check so malformed values like
+        // `"https://"` (no host) AND opaque schemes like `"data:..."`
+        // are rejected.
+        //
+        // Wave-2 review (Codex P2): do NOT silently trim. The value
+        // validated here is also what `AppState.public_url` carries at
+        // runtime; trimming on validate but storing the un-trimmed
+        // value would diverge, and a leading space would break the
+        // `redirect_uri` round-trip on `complete_oauth`. Reject
+        // whitespace explicitly so the operator fixes the env var.
+        let parsed = url::Url::parse(public_url);
+        let public_url_ok = public_url == public_url.trim()
+            && match parsed {
+                Ok(ref u) => (u.scheme() == "http" || u.scheme() == "https") && u.has_host(),
+                Err(_) => false,
+            };
         if !public_url_ok {
             // Use first provider name for the error — the issue is
             // global but reporting against a concrete provider helps
@@ -724,6 +739,28 @@ mod tests {
         let err = cfg
             .validate_at_load("https://", false)
             .expect_err("scheme without host must be rejected");
+        assert_eq!(err.reason, "public_url_required");
+    }
+
+    /// T2.13 TRIANGULATE wave-2 (Codex P2): whitespace-padded
+    /// `public_url` rejected explicitly — do NOT silently trim because
+    /// the validated value and the value stored in `AppState` must
+    /// match exactly, or the `redirect_uri` round-trip on
+    /// `complete_oauth` will diverge.
+    #[test]
+    fn validate_at_load_rejects_whitespace_padded_public_url() {
+        let cfg = cfg_with(
+            OAuthProvider::Google,
+            mk_oidc("https://accounts.google.com/.well-known/openid-configuration"),
+        );
+        let err = cfg
+            .validate_at_load(" https://app.example.com", false)
+            .expect_err("leading whitespace must be rejected");
+        assert_eq!(err.reason, "public_url_required");
+
+        let err = cfg
+            .validate_at_load("https://app.example.com\n", false)
+            .expect_err("trailing whitespace / newline must be rejected");
         assert_eq!(err.reason, "public_url_required");
     }
 
