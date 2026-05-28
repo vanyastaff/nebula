@@ -373,7 +373,10 @@ async fn pg_auth_backend_full_lifecycle() {
 
     // ── 11. start OAuth (persists row) ────────────────────────────────
     let oauth_start = backend
-        .start_oauth(OAuthProvider::Google)
+        .start_oauth(
+            OAuthProvider::Google,
+            "https://nebula.test/auth/oauth/google/callback",
+        )
         .await
         .expect("start_oauth");
     assert!(oauth_start.authorize_url.contains("state="));
@@ -384,7 +387,12 @@ async fn pg_auth_backend_full_lifecycle() {
     // follow-up — the PG path consumes the state row atomically
     // (replay defence) and then returns NotImplemented.
     let not_impl = backend
-        .complete_oauth(OAuthProvider::Google, &oauth_start.state, "fake-code")
+        .complete_oauth(
+            OAuthProvider::Google,
+            &oauth_start.state,
+            "fake-code",
+            "https://nebula.test/auth/oauth/google/callback",
+        )
         .await
         .expect_err("complete_oauth must return NotImplemented");
     assert!(
@@ -394,7 +402,12 @@ async fn pg_auth_backend_full_lifecycle() {
     // Replay: the row was consumed by the first call, so a second one
     // returns InvalidToken (atomic single-shot).
     let replay_err = backend
-        .complete_oauth(OAuthProvider::Google, &oauth_start.state, "fake-code")
+        .complete_oauth(
+            OAuthProvider::Google,
+            &oauth_start.state,
+            "fake-code",
+            "https://nebula.test/auth/oauth/google/callback",
+        )
         .await
         .expect_err("oauth state replay must reject");
     assert!(matches!(replay_err, AuthError::InvalidToken));
@@ -534,20 +547,33 @@ async fn pg_auth_backend_complete_oauth_does_not_burn_cross_provider_state() {
     let (backend, _sink) = build_backend(pool);
 
     let start = backend
-        .start_oauth(OAuthProvider::Google)
+        .start_oauth(
+            OAuthProvider::Google,
+            "https://nebula.test/auth/oauth/google/callback",
+        )
         .await
         .expect("start_oauth");
 
     // Wrong provider — must not consume the row.
     let wrong_provider_err = backend
-        .complete_oauth(OAuthProvider::GitHub, &start.state, "fake-code")
+        .complete_oauth(
+            OAuthProvider::GitHub,
+            &start.state,
+            "fake-code",
+            "https://nebula.test/auth/oauth/github/callback",
+        )
         .await
         .expect_err("cross-provider state must reject");
     assert!(matches!(wrong_provider_err, AuthError::InvalidToken));
 
     // Correct provider — the state row is still consumable.
     let correct_err = backend
-        .complete_oauth(OAuthProvider::Google, &start.state, "fake-code")
+        .complete_oauth(
+            OAuthProvider::Google,
+            &start.state,
+            "fake-code",
+            "https://nebula.test/auth/oauth/google/callback",
+        )
         .await
         .expect_err("complete_oauth still returns NotImplemented after consume");
     assert!(

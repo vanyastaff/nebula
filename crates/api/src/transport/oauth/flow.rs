@@ -338,8 +338,13 @@ mod tests {
         let err = exchange_code(&req)
             .await
             .expect_err("loopback token URLs must fail before any request");
+        // Error message updated in PR-2 from "token endpoint" to
+        // "outbound URL" after the validate_token_endpoint ->
+        // validate_oauth_outbound_url rename (ADR-0085 D-9-WAVE6
+        // generalized the gate to all server-side OAuth fetches).
+        let lower = err.to_lowercase();
         assert!(
-            err.to_lowercase().contains("token endpoint"),
+            lower.contains("outbound url") || lower.contains("must use https"),
             "expected endpoint validation error, got: {err}"
         );
     }
@@ -355,8 +360,12 @@ mod tests {
         ] {
             let err = validate_oauth_outbound_url(raw)
                 .expect_err("private IPv4-mapped and local IPv6 addresses must be rejected");
+            // PR-2: error message text changed with the rename per D-9-WAVE6.
+            let lower = err.to_lowercase();
             assert!(
-                err.to_lowercase().contains("token endpoint"),
+                lower.contains("outbound url")
+                    || lower.contains("private or local")
+                    || lower.contains("must include a host"),
                 "expected endpoint validation error for {raw}, got: {err}"
             );
         }

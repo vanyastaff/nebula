@@ -298,6 +298,19 @@ pub struct AppState {
     /// only build the dev backend.
     pub email_port: Option<Arc<dyn crate::ports::email::EmailPort>>,
 
+    /// Publicly-reachable base URL for this Nebula instance, sourced
+    /// from `ApiConfig::public_url` (`API_PUBLIC_URL` env). Required by
+    /// the Plane-A OAuth handler to derive the canonical
+    /// `redirect_uri` per ADR-0085 D-3 (recon-4) —
+    /// `format!("{}/auth/oauth/{}/callback", public_url, provider)`.
+    ///
+    /// Defaults to an empty string when constructed via
+    /// [`Self::in_memory`]; the composition root (`build_state`) sets
+    /// it from the parsed `ApiConfig`. Empty / relative values are
+    /// rejected at boot when `auth.oauth.providers` is non-empty (T2.8
+    /// REQ-compose-001 Invariant 1).
+    pub public_url: Arc<str>,
+
     /// Optional membership store for RBAC role lookups.
     pub membership_store: Option<Arc<dyn MembershipStore>>,
 
@@ -459,6 +472,7 @@ impl AppState {
             workspace_resolver: None,
             auth_backend: None,
             email_port: None,
+            public_url: Arc::from(""),
             membership_store: None,
             allow_insecure_tenant_rbac_bypass: false,
             idempotency_store: None,
@@ -1084,6 +1098,16 @@ impl AppState {
     #[must_use = "builder methods must be chained or built"]
     pub fn with_email_port(mut self, port: Arc<dyn crate::ports::email::EmailPort>) -> Self {
         self.email_port = Some(port);
+        self
+    }
+
+    /// Set the publicly-reachable base URL for this Nebula instance.
+    /// Required for Plane-A OAuth `redirect_uri` derivation per
+    /// ADR-0085 D-3 (recon-4). Composition roots call this with
+    /// `ApiConfig::public_url`. Tests can pass any absolute URL.
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_public_url(mut self, public_url: impl Into<Arc<str>>) -> Self {
+        self.public_url = public_url.into();
         self
     }
 

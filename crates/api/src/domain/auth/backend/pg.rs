@@ -1025,7 +1025,15 @@ impl AuthBackend for PgAuthBackend {
     }
 
     #[tracing::instrument(level = "info", skip(self), fields(provider = %provider.as_str()))]
-    async fn start_oauth(&self, provider: OAuthProvider) -> Result<OAuthStart, AuthError> {
+    // PR-2 T2.9: trait sig gained `redirect_uri: &str`. PR-3 wires it
+    // into the AuthorizationUriRequest + persists into the
+    // OAuthStateRow; for now the param is accepted and ignored so the
+    // trait compiles — behavior is still the synthetic URL until PR-3.
+    async fn start_oauth(
+        &self,
+        provider: OAuthProvider,
+        _redirect_uri: &str,
+    ) -> Result<OAuthStart, AuthError> {
         let provider_label = metrics_emit::oauth_provider_label(provider);
         metrics_emit::run_with_metrics(
             &self.metrics,
@@ -1075,12 +1083,18 @@ impl AuthBackend for PgAuthBackend {
         .await
     }
 
-    #[tracing::instrument(level = "info", skip(self, state, _code), fields(provider = %provider.as_str(), state_len = state.len()))]
+    // PR-2 T2.9: trait sig gained `redirect_uri: &str`. PR-4 verifies
+    // it against the OAuthStateRow's persisted redirect_uri to close
+    // the `public_url_changed_mid_flow` defense (REQ-oauth-003
+    // Scenario 3.10). For now the param is accepted and ignored —
+    // complete_oauth still returns NotImplemented until PR-4.
+    #[tracing::instrument(level = "info", skip(self, state, _code, _redirect_uri), fields(provider = %provider.as_str(), state_len = state.len()))]
     async fn complete_oauth(
         &self,
         provider: OAuthProvider,
         state: &str,
         _code: &str,
+        _redirect_uri: &str,
     ) -> Result<OAuthCompletion, AuthError> {
         let provider_label = metrics_emit::oauth_provider_label(provider);
         metrics_emit::run_with_metrics(

@@ -371,6 +371,23 @@ pub async fn mfa_complete_login(
     mint_session_response(backend, user).await
 }
 
+/// Derive the canonical Plane-A OAuth `redirect_uri` per ADR-0085 D-3
+/// (recon-4): `format!("{}/auth/oauth/{}/callback", public_url,
+/// provider.as_str())`.
+///
+/// Shared by `oauth_start` and `oauth_callback` so the value persisted
+/// in the OAuth state row at start_oauth time matches the value
+/// re-derived at callback time (`public_url_changed_mid_flow` defense
+/// per REQ-oauth-003 Scenario 3.10 — PR-4 wires the comparison).
+#[must_use]
+pub(crate) fn derive_oauth_redirect_uri(public_url: &str, provider: OAuthProvider) -> String {
+    // Trim trailing slash so we always emit a single `/` separator. The
+    // boot-time validation (T2.8) ensures `public_url` is absolute with
+    // a scheme; here we only normalize the slash.
+    let base = public_url.trim_end_matches('/');
+    format!("{base}/auth/oauth/{}/callback", provider.as_str())
+}
+
 /// `GET /api/v1/auth/oauth/{provider}` — start a Plane-A sign-in flow.
 #[utoipa::path(
     get,
@@ -393,8 +410,9 @@ pub async fn oauth_start(
 ) -> ApiResult<Json<OAuthStartResponse>> {
     let backend = backend(&state)?;
     let provider: OAuthProvider = provider.parse().map_err(ApiError::from)?;
+    let redirect_uri = derive_oauth_redirect_uri(&state.public_url, provider);
     let start = backend
-        .start_oauth(provider)
+        .start_oauth(provider, &redirect_uri)
         .await
         .map_err(ApiError::from)?;
     Ok(Json(OAuthStartResponse {
@@ -429,8 +447,9 @@ pub async fn oauth_callback(
 ) -> ApiResult<axum::response::Response> {
     let backend = backend(&state)?;
     let provider: OAuthProvider = provider.parse().map_err(ApiError::from)?;
+    let redirect_uri = derive_oauth_redirect_uri(&state.public_url, provider);
     let result = backend
-        .complete_oauth(provider, &params.state, &params.code)
+        .complete_oauth(provider, &params.state, &params.code, &redirect_uri)
         .await;
 
     match result {

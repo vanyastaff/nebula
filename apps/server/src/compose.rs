@@ -298,7 +298,12 @@ pub fn default_state(
     Ok(AppState::in_memory(api_config.jwt_secret.clone())
         .with_api_keys(api_config.api_keys.clone())
         .with_credential_schema(credential_schema)
-        .with_metrics_registry(metrics_registry))
+        .with_metrics_registry(metrics_registry)
+        // Public URL is required for Plane-A OAuth `redirect_uri`
+        // derivation per ADR-0085 D-3 (recon-4). Boot-time validation
+        // in T2.8 rejects empty/relative values when
+        // `auth.oauth.providers` is non-empty.
+        .with_public_url(api_config.public_url.clone()))
 }
 
 /// Build the shared `Arc<dyn EmailPort>` from `api_config.smtp`.
