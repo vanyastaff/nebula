@@ -23,7 +23,7 @@ use crate::{
     transport::oauth::{
         flow::{
             AuthorizationUriRequest, TokenExchangeRequest, build_authorization_uri,
-            validate_token_endpoint,
+            validate_oauth_outbound_url,
         },
         state::{OAuthStateSigner, build_signed_state},
     },
@@ -75,7 +75,7 @@ pub async fn get_oauth2_authorize_url_for_owner(
     query: AuthorizationUriRequest,
     owner_id: Option<String>,
 ) -> ApiResult<Json<AuthorizationUriResponse>> {
-    validate_token_endpoint(&query.token_url).map_err(ApiError::validation_message)?;
+    validate_oauth_outbound_url(&query.token_url).map_err(ApiError::validation_message)?;
     let expected_version = if let Some(owner_id) = owner_id.as_deref() {
         Some(prepare_oauth_credential(state, owner_id, credential_id).await?)
     } else {

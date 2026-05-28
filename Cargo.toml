@@ -216,10 +216,17 @@ redundant_lifetimes = "warn"
 # - `let_underscore_drop` — `let _ = tokio::spawn(...)` / `let _ = tx.send(_)`
 #   is the standard idiom for fire-and-forget; forcing `drop(x)` hurts clarity.
 #
-# `cfg(loom)` is set by nebula-resilience's loom harness; keep the check-cfg
-# entry at workspace level so every crate can switch `workspace = true` on
-# without re-declaring it locally.
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+# Custom cfgs known across the workspace:
+# - `cfg(loom)` is set by nebula-resilience's loom harness.
+# - `cfg(nebula_test_util)` is set by `nebula-api` integration tests per
+#   ADR-0085 D-14 (PR-2 T2.11). It gates the `nebula_api::test_support`
+#   module that exposes bypass helpers for localhost wiremock IdPs;
+#   opt-in only via `RUSTFLAGS="--cfg nebula_test_util"`, tokio-precedent.
+#   Production release builds reject the cfg via a `compile_error!`
+#   guard in `crates/api/src/lib.rs`.
+# Keeping every custom cfg here at workspace level so every crate can
+# switch `workspace = true` on without re-declaring it locally.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)', 'cfg(nebula_test_util)'] }
 
 [workspace.lints.clippy]
 # Opt into the big batteries. `priority = -1` lets individual `allow = ...`

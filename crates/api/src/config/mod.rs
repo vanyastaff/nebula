@@ -20,10 +20,12 @@
 mod env;
 mod errors;
 mod jwt;
+pub mod oauth;
 mod sub;
 
 pub use errors::ApiConfigError;
 pub use jwt::JwtSecret;
+pub use oauth::{OAuthEndpoints, OAuthProviderConfig, OAuthProvidersConfig, OIDC_HARDCODED_SCOPES};
 pub use sub::{
     AuthApiConfig, AuthBackendKind, CookieConfig, CorsConfig, IdempotencyApiConfig,
     IdempotencyBackend, PaginationConfig, SmtpEmailConfig, SmtpTlsMode, TlsConfig,
@@ -364,7 +366,15 @@ impl ApiConfig {
             },
             Err(_) => AuthBackendKind::Memory,
         };
-        Ok(AuthApiConfig { backend })
+        // OAuth providers config defaults to empty; future PR-2 task
+        // T2.2 will populate `oauth.providers` via env discovery scan
+        // (one provider per `OAuthProvider` enum variant). For now
+        // empty default keeps the existing AuthApiConfig surface
+        // unchanged behaviourally — no OAuth providers declared, the
+        // `/auth/oauth/{provider}/start` endpoints return
+        // `ProviderNotConfigured` per ADR-0085 D-6.
+        let oauth = OAuthProvidersConfig::default();
+        Ok(AuthApiConfig { backend, oauth })
     }
 
     fn idempotency_from_env() -> Result<IdempotencyApiConfig, ApiConfigError> {

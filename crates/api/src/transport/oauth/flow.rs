@@ -80,11 +80,18 @@ pub struct TokenExchangeRequest {
 
 /// Exchange authorization code for tokens.
 pub async fn exchange_code(req: &TokenExchangeRequest) -> Result<serde_json::Value, String> {
-    validate_token_endpoint(&req.token_url)?;
+    validate_oauth_outbound_url(&req.token_url)?;
     exchange_code_unchecked(req).await
 }
 
-async fn exchange_code_unchecked(req: &TokenExchangeRequest) -> Result<serde_json::Value, String> {
+// `pub(crate)` so the test-only `crate::test_support` module (gated by
+// `#[cfg(nebula_test_util)]`) can `pub use` this for integration tests
+// against localhost wiremock IdPs per ADR-0085 D-14. Production builds
+// without the cfg never compile `test_support`, so the symbol stays
+// effectively private to flow.rs internals.
+pub(crate) async fn exchange_code_unchecked(
+    req: &TokenExchangeRequest,
+) -> Result<serde_json::Value, String> {
     let client = oauth_token_http_client();
 
     let mut form: Vec<(&str, &str)> = vec![
@@ -120,19 +127,102 @@ async fn exchange_code_unchecked(req: &TokenExchangeRequest) -> Result<serde_jso
         .map_err(|e| e.to_string())
 }
 
-/// Validate that an OAuth token endpoint is safe for server-side exchange.
+/// Validate that an OAuth outbound (server-side fetched) URL is safe.
 ///
-/// API callers control this URL during interactive OAuth setup, so the
-/// backend rejects non-HTTPS URLs and obvious loopback/private/link-local
-/// hosts before `reqwest` can reach internal services.
-pub fn validate_token_endpoint(raw: &str) -> Result<(), String> {
-    let url = Url::parse(raw).map_err(|e| format!("invalid OAuth token endpoint URL: {e}"))?;
+/// API callers control these URLs via operator config or via OIDC
+/// discovery doc parsing. This strict gate rejects non-HTTPS schemes
+/// and obvious loopback / private / link-local / multicast hosts
+/// before `reqwest` can reach internal services (anti-SSRF).
+///
+/// Per ADR-0085 D-9-WAVE6, this strict gate applies to:
+/// - Token endpoint POST.
+/// - Userinfo endpoint GET.
+/// - GitHub-style verified-emails endpoint GET (per D-5 wave-6).
+/// - JWKS endpoint (D-16 deferred but URL still validated when present).
+/// - OIDC discovery doc GET, AND each URL returned in the discovery
+///   response before the cache insert (D-15-WAVE6).
+///
+/// The browser-fetched authorize URL goes through the **flag-aware**
+/// [`validate_oauth_authorize_url`] instead, which respects
+/// `oauth_allow_insecure_localhost` for dev convenience without
+/// weakening server-side anti-SSRF.
+///
+/// Renamed from `validate_token_endpoint` in wave-6 to signal the
+/// generalized scope. A `validate_token_endpoint` shim is kept below
+/// for backward source-compat during the PR-2..PR-4 transition; new
+/// callers should use `validate_oauth_outbound_url` directly.
+pub fn validate_oauth_outbound_url(raw: &str) -> Result<(), String> {
+    let url = Url::parse(raw).map_err(|e| format!("invalid OAuth outbound URL: {e}"))?;
     if url.scheme() != "https" {
-        return Err("OAuth token endpoint must use https".to_owned());
+        return Err("OAuth outbound URL must use https".to_owned());
     }
 
     validate_token_endpoint_host(url.host())?;
     Ok(())
+}
+
+/// Deprecated alias — use [`validate_oauth_outbound_url`].
+///
+/// Kept as a shim during the PR-2..PR-4 wave-6/-7 transition so existing
+/// call sites compile while they migrate. New code MUST call
+/// `validate_oauth_outbound_url` directly.
+#[deprecated(
+    since = "0.1.0",
+    note = "renamed to validate_oauth_outbound_url per ADR-0085 D-9-WAVE6; the rename signals the gate covers ALL server-side OAuth fetches, not just the token endpoint"
+)]
+pub fn validate_token_endpoint(raw: &str) -> Result<(), String> {
+    validate_oauth_outbound_url(raw)
+}
+
+/// Flag-aware validator for the **browser-fetched** OAuth authorize URL.
+///
+/// Per ADR-0085 D-9-WAVE6 wave-7 split (Codex F.2): the authorize URL
+/// is fetched by the user's browser, NOT the server, so it has no
+/// SSRF surface. To enable localhost-IdP dev workflows (e.g. wiremock
+/// on `127.0.0.1` serving the authorize page), this validator accepts
+/// `http://localhost(:port)?(/.*)?` when the operator opts in via the
+/// `oauth_allow_insecure_localhost` flag AND the binary is NOT a
+/// release build (`debug_assertions` enabled).
+///
+/// Production builds (`!cfg!(debug_assertions)`) reject the relaxation
+/// regardless of the flag, mirroring the `nebula_test_util` cfg's
+/// release-build guard in `crates/api/src/lib.rs`.
+///
+/// This gate is intended ONLY for `OAuthEndpoints::Manual.authorize_url`
+/// (static operator config) and the dynamic `authorize_url` returned
+/// inside an [`crate::config::OAuthEndpoints::Oidc`] discovery
+/// response. All other URL fields must go through the strict
+/// [`validate_oauth_outbound_url`].
+pub fn validate_oauth_authorize_url(
+    raw: &str,
+    oauth_allow_insecure_localhost: bool,
+    in_release_build: bool,
+) -> Result<(), String> {
+    let url = Url::parse(raw).map_err(|e| format!("invalid OAuth authorize URL: {e}"))?;
+
+    let scheme = url.scheme();
+    let is_localhost_http = scheme == "http"
+        && matches!(url.host(), Some(Host::Domain(h)) if h.eq_ignore_ascii_case("localhost"));
+
+    if scheme == "https" {
+        validate_token_endpoint_host(url.host())?;
+        return Ok(());
+    }
+
+    if is_localhost_http && oauth_allow_insecure_localhost && !in_release_build {
+        // Browser-fetched URL on localhost during dev/integration runs.
+        // No SSRF surface; explicit operator opt-in.
+        return Ok(());
+    }
+
+    if is_localhost_http && in_release_build {
+        return Err(
+            "OAuth authorize URL: oauth_allow_insecure_localhost has no effect in release builds"
+                .to_owned(),
+        );
+    }
+
+    Err("OAuth authorize URL must use https (or http://localhost when oauth_allow_insecure_localhost = true in dev builds)".to_owned())
 }
 
 fn validate_token_endpoint_host(host: Option<Host<&str>>) -> Result<(), String> {
@@ -263,7 +353,7 @@ mod tests {
             "https://[ff02::1]/token",
             "https://[fec0::1]/token",
         ] {
-            let err = validate_token_endpoint(raw)
+            let err = validate_oauth_outbound_url(raw)
                 .expect_err("private IPv4-mapped and local IPv6 addresses must be rejected");
             assert!(
                 err.to_lowercase().contains("token endpoint"),
