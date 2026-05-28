@@ -31,16 +31,46 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use dashmap::DashMap;
+use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use super::flow::{validate_oauth_authorize_url, validate_oauth_outbound_url};
-use super::http::oauth_token_http_client;
 
 /// Time budget for the discovery doc GET. Matches the token-endpoint
 /// 5000ms default per REQ-obs-001; the discovery doc is small JSON
 /// and shouldn't take longer.
 const DISCOVERY_FETCH_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Response body cap for OIDC discovery (256 KiB).
+///
+/// Mirrors [`super::http::OAUTH_TOKEN_HTTP_MAX_RESPONSE_BYTES`] so a
+/// hostile / misconfigured IdP cannot DoS the server by serving an
+/// unbounded JSON blob through the discovery channel. Real discovery
+/// docs are small (~2-10 KiB).
+const DISCOVERY_MAX_RESPONSE_BYTES: usize = 256 * 1024;
+
+/// HTTP client used ONLY for OIDC discovery fetches.
+///
+/// Separate from [`super::http::oauth_token_http_client`] because
+/// discovery has a stricter posture:
+/// - **Redirects disabled** (`Policy::none()`): a valid HTTPS
+///   `discovery_url` cannot be allowed to redirect Nebula to
+///   `http://localhost` / a private IP. Without redirects there is
+///   no post-validation TOCTOU surface (Copilot wave-1 review).
+/// - Same connect / read timeouts as the token client.
+static OAUTH_DISCOVERY_HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+
+fn oauth_discovery_http_client() -> &'static reqwest::Client {
+    OAUTH_DISCOVERY_HTTP_CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(DISCOVERY_FETCH_TIMEOUT)
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("nebula: oauth discovery http client must build")
+    })
+}
 
 /// Parsed `.well-known/openid-configuration` document. Only the four
 /// fields Plane A consumes are deserialized; unknown fields are
@@ -121,6 +151,17 @@ pub enum DiscoveryError {
         #[source]
         source: serde_json::Error,
     },
+    /// Discovery response body exceeded the
+    /// `DISCOVERY_MAX_RESPONSE_BYTES` ceiling (256 KiB). Hostile / misconfigured
+    /// IdP tried to serve an unbounded JSON blob through the discovery
+    /// channel.
+    #[error("OIDC discovery `{url}` body exceeded {max} bytes")]
+    BodyTooLarge {
+        /// The URL being fetched.
+        url: String,
+        /// The byte cap that was hit.
+        max: usize,
+    },
     /// A URL RETURNED in the discovery response failed the post-fetch
     /// SSRF re-validation (D-15-WAVE6). Hostile / misconfigured IdP
     /// tried to point Nebula at an internal address via the
@@ -164,22 +205,62 @@ pub async fn fetch_oidc_discovery(
     url: &str,
     oauth_allow_insecure_localhost: bool,
 ) -> Result<OidcDiscovery, DiscoveryError> {
-    // Step 1: strict gate on the discovery URL itself.
-    validate_oauth_outbound_url(url).map_err(|reason| DiscoveryError::DiscoveryUrlRejected {
-        url: url.to_owned(),
-        reason,
-    })?;
+    fetch_oidc_discovery_inner(url, oauth_allow_insecure_localhost, true).await
+}
+
+/// Test-only escape hatch (gated by `#[cfg(any(test, nebula_test_util))]`)
+/// that runs the same fetch flow but **skips** the strict gate on the
+/// `discovery_url` itself — so wiremock fixtures on `127.0.0.1` can
+/// publish a `.well-known/openid-configuration` URL.
+///
+/// Per Codex / Copilot wave-1 review: the PR-2 `fetch_oidc_discovery_unchecked`
+/// shim that just delegated to the production path was broken for the
+/// documented localhost wiremock use case because the discovery URL
+/// itself was rejected before the discovery JSON could even be
+/// fetched. This split fixes that while preserving:
+/// - Bounded body cap (256 KiB).
+/// - Disabled redirects.
+/// - Post-fetch child-URL re-validation — with the flag-aware
+///   authorize gate threaded through so the discovery-served
+///   `authorize_url` can be `http://localhost:PORT/...` in dev.
+/// - Strict gate on token / userinfo / jwks (those are server-side
+///   fetches; wiremock fixtures MUST serve HTTPS-with-self-signed-cert
+///   for them OR the test reaches them via `oauth_token_http_client_test_unchecked`).
+#[cfg(any(test, nebula_test_util))]
+pub async fn fetch_oidc_discovery_skipping_url_gate(
+    url: &str,
+    oauth_allow_insecure_localhost: bool,
+) -> Result<OidcDiscovery, DiscoveryError> {
+    fetch_oidc_discovery_inner(url, oauth_allow_insecure_localhost, false).await
+}
+
+async fn fetch_oidc_discovery_inner(
+    url: &str,
+    oauth_allow_insecure_localhost: bool,
+    gate_discovery_url: bool,
+) -> Result<OidcDiscovery, DiscoveryError> {
+    // Step 1: strict gate on the discovery URL itself — unless the
+    // test-only bypass set `gate_discovery_url = false` so wiremock
+    // can serve the doc from `127.0.0.1`.
+    if gate_discovery_url {
+        validate_oauth_outbound_url(url).map_err(|reason| {
+            DiscoveryError::DiscoveryUrlRejected {
+                url: url.to_owned(),
+                reason,
+            }
+        })?;
+    }
 
     // Step 2: cache check (entry lives until process restart).
     if let Some(cached) = cache().get(url) {
         return Ok(cached.clone());
     }
 
-    // Step 3: GET with bounded timeout via the shared OAuth HTTP
-    // client (per ADR-0085 D-7: same client + policy as token POST).
-    let response = oauth_token_http_client()
+    // Step 3: GET with bounded timeout via the discovery-only client
+    // (redirects disabled per Copilot wave-1: a valid HTTPS
+    // discovery_url MUST NOT redirect us to an unvalidated host).
+    let response = oauth_discovery_http_client()
         .get(url)
-        .timeout(DISCOVERY_FETCH_TIMEOUT)
         .send()
         .await
         .map_err(|source| DiscoveryError::HttpError {
@@ -193,17 +274,39 @@ pub async fn fetch_oidc_discovery(
             status: status.as_u16(),
         });
     }
-    let body = response
-        .bytes()
-        .await
-        .map_err(|source| DiscoveryError::HttpError {
+
+    // Body size cap (Copilot wave-1): mirror the token POST 256 KiB
+    // ceiling so a hostile IdP cannot serve an unbounded JSON blob
+    // through the discovery channel. Streaming check covers both
+    // `Content-Length`-honest and chunked-no-length adversarial
+    // responses.
+    if let Some(claimed) = response.content_length()
+        && claimed > DISCOVERY_MAX_RESPONSE_BYTES as u64
+    {
+        return Err(DiscoveryError::BodyTooLarge {
+            url: url.to_owned(),
+            max: DISCOVERY_MAX_RESPONSE_BYTES,
+        });
+    }
+    let mut buf: Vec<u8> = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|source| DiscoveryError::HttpError {
             url: url.to_owned(),
             source,
         })?;
+        if buf.len().saturating_add(chunk.len()) > DISCOVERY_MAX_RESPONSE_BYTES {
+            return Err(DiscoveryError::BodyTooLarge {
+                url: url.to_owned(),
+                max: DISCOVERY_MAX_RESPONSE_BYTES,
+            });
+        }
+        buf.extend_from_slice(&chunk);
+    }
 
     // Step 4: parse JSON.
     let discovery: OidcDiscovery =
-        serde_json::from_slice(&body).map_err(|source| DiscoveryError::ParseError {
+        serde_json::from_slice(&buf).map_err(|source| DiscoveryError::ParseError {
             url: url.to_owned(),
             source,
         })?;
@@ -259,7 +362,9 @@ pub async fn fetch_oidc_discovery(
 }
 
 /// Resolved authorize / token / userinfo / scopes triple from an
-/// [`OAuthProviderConfig`]. The OAuth `start_oauth` and
+/// `OAuthProviderConfig` (intentional bare-name to avoid an intra-doc
+/// link target that's outside this module's scope). The OAuth
+/// `start_oauth` and
 /// `complete_oauth` paths consume this uniformly regardless of
 /// whether the provider is configured as Oidc or Manual.
 ///
@@ -335,4 +440,154 @@ pub async fn resolve_provider_endpoints(
 )]
 pub(crate) fn clear_discovery_cache_for_tests() {
     cache().clear();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use std::sync::OnceLock;
+    use tokio::io::AsyncWriteExt;
+    use tokio::net::TcpListener;
+
+    /// Wave-1 Copilot: cover the strict gate that rejects unsafe
+    /// discovery URLs BEFORE any HTTP call.
+    #[tokio::test]
+    async fn discovery_rejects_unsafe_discovery_url_via_strict_gate() {
+        let err = fetch_oidc_discovery("http://10.0.0.5/.well-known/openid-configuration", false)
+            .await
+            .expect_err("HTTP + private IP must be rejected");
+        assert!(matches!(err, DiscoveryError::DiscoveryUrlRejected { .. }));
+    }
+
+    /// Spin up a tiny TCP listener that responds with a fixed HTTP/1.1
+    /// payload to the first request. Returns the bound URL.
+    async fn spawn_oneshot_responder(payload: Vec<u8>) -> String {
+        // Use a guaranteed-unique env-derived test target so this
+        // function works under concurrent nextest runs.
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let url = format!("http://{addr}/.well-known/openid-configuration");
+
+        tokio::spawn(async move {
+            if let Ok((mut sock, _)) = listener.accept().await {
+                // Drain request line (best-effort; small).
+                let mut throwaway = [0u8; 4096];
+                let _ = tokio::io::AsyncReadExt::read(&mut sock, &mut throwaway).await;
+                let _ = sock.write_all(&payload).await;
+                let _ = sock.shutdown().await;
+            }
+        });
+
+        url
+    }
+
+    fn http_response_with_body(body: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        write!(
+            &mut out,
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        )
+        .unwrap();
+        out.extend_from_slice(body);
+        out
+    }
+
+    /// Wave-1 Copilot E.5: cover the cache-hit path and the post-fetch
+    /// child-URL validation.
+    ///
+    /// Uses the `fetch_oidc_discovery_skipping_url_gate` test bypass
+    /// to point at `127.0.0.1` (production gate would reject the
+    /// loopback discovery URL before any network call).
+    #[tokio::test]
+    async fn discovery_caches_doc_and_serves_subsequent_calls_from_cache() {
+        // Each test gets a fresh cache to avoid cross-test leakage.
+        static GUARD: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+        let _lock = GUARD
+            .get_or_init(|| tokio::sync::Mutex::new(()))
+            .lock()
+            .await;
+        clear_discovery_cache_for_tests();
+
+        let doc = serde_json::json!({
+            "authorization_endpoint": "https://login.example.com/oauth/authorize",
+            "token_endpoint": "https://login.example.com/oauth/token",
+            "userinfo_endpoint": "https://login.example.com/oauth/userinfo"
+        })
+        .to_string();
+        let url = spawn_oneshot_responder(http_response_with_body(doc.as_bytes())).await;
+
+        // First call performs the actual GET.
+        let first = fetch_oidc_discovery_skipping_url_gate(&url, true)
+            .await
+            .expect("first fetch must succeed");
+        assert_eq!(first.token_url, "https://login.example.com/oauth/token");
+
+        // Second call returns the cached copy without spawning a
+        // second listener — verified by the fact that no second
+        // responder is running on the URL.
+        let second = fetch_oidc_discovery_skipping_url_gate(&url, true)
+            .await
+            .expect("second fetch must hit cache");
+        assert_eq!(second.token_url, first.token_url);
+    }
+
+    /// Wave-1 Copilot E.5: cover the post-fetch child-URL re-validation
+    /// when a discovery doc returns an unsafe internal-IP endpoint.
+    #[tokio::test]
+    async fn discovery_rejects_child_url_pointing_at_internal_ip() {
+        static GUARD: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+        let _lock = GUARD
+            .get_or_init(|| tokio::sync::Mutex::new(()))
+            .lock()
+            .await;
+        clear_discovery_cache_for_tests();
+
+        // Hostile discovery doc: valid authorize_url but internal-IP
+        // token_endpoint (post-fetch strict gate must reject).
+        let doc = serde_json::json!({
+            "authorization_endpoint": "https://login.example.com/oauth/authorize",
+            "token_endpoint": "http://10.0.0.5/internal-token",
+            "userinfo_endpoint": "https://login.example.com/oauth/userinfo"
+        })
+        .to_string();
+        let url = spawn_oneshot_responder(http_response_with_body(doc.as_bytes())).await;
+        let err = fetch_oidc_discovery_skipping_url_gate(&url, true)
+            .await
+            .expect_err("internal-IP child URL must be rejected");
+        match err {
+            DiscoveryError::EndpointSsrfRejected { field, .. } => {
+                assert_eq!(field, "token_url");
+            },
+            other => panic!("expected EndpointSsrfRejected, got: {other:?}"),
+        }
+    }
+
+    /// Wave-1 Copilot E.2: cover the body-size cap.
+    #[tokio::test]
+    async fn discovery_rejects_oversized_body_via_content_length() {
+        static GUARD: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+        let _lock = GUARD
+            .get_or_init(|| tokio::sync::Mutex::new(()))
+            .lock()
+            .await;
+        clear_discovery_cache_for_tests();
+
+        // Claim a body length over the 256 KiB cap. The gate trips
+        // before any chunk read.
+        let body_len = DISCOVERY_MAX_RESPONSE_BYTES + 1;
+        let mut response = Vec::new();
+        write!(
+            &mut response,
+            "HTTP/1.1 200 OK\r\nContent-Length: {body_len}\r\n\r\n"
+        )
+        .unwrap();
+        // No body bytes follow — we never get past the size gate.
+        let url = spawn_oneshot_responder(response).await;
+        let err = fetch_oidc_discovery_skipping_url_gate(&url, true)
+            .await
+            .expect_err("oversized Content-Length must be rejected");
+        assert!(matches!(err, DiscoveryError::BodyTooLarge { .. }));
+    }
 }

@@ -91,7 +91,12 @@ pub fn oauth_token_http_client_test_unchecked() -> &'static reqwest::Client {
 pub async fn fetch_oidc_discovery_unchecked(
     url: &str,
 ) -> Result<OidcDiscovery, FetchDiscoveryError> {
-    crate::transport::oauth::discovery::fetch_oidc_discovery(url, true).await
+    // Per Codex / Copilot wave-1 PR-3 review: must skip the strict
+    // gate on the discovery URL itself so wiremock on `127.0.0.1`
+    // works; production `fetch_oidc_discovery` always strict-gates
+    // the discovery URL. Body cap / disabled redirects / child-URL
+    // re-validation all stay in force.
+    crate::transport::oauth::discovery::fetch_oidc_discovery_skipping_url_gate(url, true).await
 }
 
 /// Test-only: clear the process-wide discovery cache so tests can
