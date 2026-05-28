@@ -332,15 +332,37 @@ pub trait AuthBackend: Send + Sync {
     async fn confirm_mfa_enrollment(&self, user_id: &str, code: &str) -> Result<(), AuthError>;
 
     /// Begin a Plane-A OAuth sign-in.
-    async fn start_oauth(&self, provider: OAuthProvider) -> Result<OAuthStart, AuthError>;
+    ///
+    /// `redirect_uri` is **handler-derived** from `ApiConfig::public_url`
+    /// per ADR-0085 D-3 (recon-4) —
+    /// `format!("{}/auth/oauth/{}/callback", api_config.public_url,
+    /// provider.as_str())`. The trait accepts it as an argument so the
+    /// derived value round-trips through the implementation's state row
+    /// and is re-verified on `complete_oauth` against the row's stored
+    /// value (closes the `public_url_changed_mid_flow` defense per
+    /// REQ-oauth-003 Scenario 3.10). Implementations MUST NOT derive
+    /// the redirect_uri themselves; the handler is the single source of
+    /// truth (T2.10 shared helper).
+    async fn start_oauth(
+        &self,
+        provider: OAuthProvider,
+        redirect_uri: &str,
+    ) -> Result<OAuthStart, AuthError>;
 
     /// Complete a Plane-A OAuth sign-in. The implementation exchanges the
     /// provider's `code` for an access token, fetches the user profile,
     /// upserts the user, and mints a session.
+    ///
+    /// `redirect_uri` is **handler-derived** per the same formula as
+    /// [`Self::start_oauth`]. The implementation MUST compare it against
+    /// the persisted state-row value and return
+    /// `AuthError::OAuthFailed { cause: "public_url_changed_mid_flow" }`
+    /// on mismatch (Scenario 3.10).
     async fn complete_oauth(
         &self,
         provider: OAuthProvider,
         state: &str,
         code: &str,
+        redirect_uri: &str,
     ) -> Result<OAuthCompletion, AuthError>;
 }

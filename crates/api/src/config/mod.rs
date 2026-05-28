@@ -20,10 +20,12 @@
 mod env;
 mod errors;
 mod jwt;
+pub mod oauth;
 mod sub;
 
 pub use errors::ApiConfigError;
 pub use jwt::JwtSecret;
+pub use oauth::{OAuthEndpoints, OAuthProviderConfig, OAuthProvidersConfig, OIDC_HARDCODED_SCOPES};
 pub use sub::{
     AuthApiConfig, AuthBackendKind, CookieConfig, CorsConfig, IdempotencyApiConfig,
     IdempotencyBackend, PaginationConfig, SmtpEmailConfig, SmtpTlsMode, TlsConfig,
@@ -364,7 +366,13 @@ impl ApiConfig {
             },
             Err(_) => AuthBackendKind::Memory,
         };
-        Ok(AuthApiConfig { backend })
+        // OAuth providers config: scan env vars per OAuthProvider
+        // variant for `API_AUTH_OAUTH_<PROVIDER>_*` (T2.2). Returns
+        // empty when no provider is declared, so existing operators
+        // who never set the env vars keep the legacy behavior
+        // (start_oauth returns ProviderNotConfigured per ADR-0085 D-6).
+        let oauth = OAuthProvidersConfig::from_env()?;
+        Ok(AuthApiConfig { backend, oauth })
     }
 
     fn idempotency_from_env() -> Result<IdempotencyApiConfig, ApiConfigError> {

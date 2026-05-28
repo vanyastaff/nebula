@@ -24,7 +24,16 @@ use super::error::AuthError;
 pub const OAUTH_STATE_TTL: Duration = Duration::from_mins(10);
 
 /// Supported Plane-A OAuth providers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+///
+/// Serialize/Deserialize derived so `OAuthProvidersConfig` can use
+/// `HashMap<OAuthProvider, OAuthProviderConfig>` keyed by enum value
+/// (per ADR-0085 D-5). `serde(rename_all = "snake_case")` so TOML keys
+/// like `[auth.oauth.providers.google]` deserialize directly into the
+/// enum without a custom `Deserialize` impl. Drift between `FromStr`
+/// and `Deserialize` is closed because both use the same lowercase
+/// strings (verified by a unit test).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum OAuthProvider {
     /// Sign in with Google.
     Google,

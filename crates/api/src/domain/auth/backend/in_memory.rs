@@ -846,7 +846,15 @@ impl AuthBackend for InMemoryAuthBackend {
         .await
     }
 
-    async fn start_oauth(&self, provider: OAuthProvider) -> Result<OAuthStart, AuthError> {
+    // PR-2 T2.9: trait sig gained `redirect_uri: &str` per ADR-0085
+    // D-3 recon-4. Handler derives from `ApiConfig::public_url`; we
+    // accept and currently ignore the arg until PR-3 wires it into the
+    // OAuthStateEntry.
+    async fn start_oauth(
+        &self,
+        provider: OAuthProvider,
+        _redirect_uri: &str,
+    ) -> Result<OAuthStart, AuthError> {
         let provider_label = metrics_emit::oauth_provider_label(provider);
         metrics_emit::run_with_metrics(
             &self.metrics,
@@ -885,11 +893,16 @@ impl AuthBackend for InMemoryAuthBackend {
         .await
     }
 
+    // PR-2 T2.9: trait sig gained `redirect_uri: &str`. PR-4 verifies
+    // it against the OAuthStateEntry's stored redirect_uri (Scenario
+    // 3.10 public_url_changed_mid_flow). For now the param is accepted
+    // and ignored — complete_oauth still returns NotImplemented.
     async fn complete_oauth(
         &self,
         provider: OAuthProvider,
         state: &str,
         _code: &str,
+        _redirect_uri: &str,
     ) -> Result<OAuthCompletion, AuthError> {
         let provider_label = metrics_emit::oauth_provider_label(provider);
         metrics_emit::run_with_metrics(
@@ -1109,7 +1122,13 @@ mod tests {
     #[tokio::test]
     async fn oauth_start_persists_state_entry() {
         let b = InMemoryAuthBackend::new();
-        let start = b.start_oauth(OAuthProvider::Google).await.unwrap();
+        let start = b
+            .start_oauth(
+                OAuthProvider::Google,
+                "https://nebula.test/auth/oauth/google/callback",
+            )
+            .await
+            .unwrap();
         assert!(start.authorize_url.contains("state="));
         assert!(b.oauth_state.contains_key(&start.state));
     }

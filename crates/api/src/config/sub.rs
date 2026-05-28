@@ -203,6 +203,16 @@ pub struct AuthApiConfig {
     /// composition root flips this for production deployments via
     /// `API_AUTH_BACKEND=postgres`.
     pub backend: AuthBackendKind,
+
+    /// Operator-supplied OAuth identity-provider configuration (Plane A).
+    ///
+    /// Empty by default — no OAuth providers declared, the
+    /// `/auth/oauth/{provider}/start` endpoints return
+    /// `AuthError::ProviderNotConfigured` per ADR-0085 D-6. When
+    /// non-empty, every entry is validated synchronously at boot per
+    /// REQ-compose-001 (PR-2 T2.8).
+    #[serde(default)]
+    pub oauth: super::oauth::OAuthProvidersConfig,
 }
 
 /// Webhook subsystem configuration (webhook activation).
