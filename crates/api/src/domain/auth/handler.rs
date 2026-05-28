@@ -372,8 +372,17 @@ pub async fn mfa_complete_login(
 }
 
 /// Derive the canonical Plane-A OAuth `redirect_uri` per ADR-0085 D-3
-/// (recon-4): `format!("{}/auth/oauth/{}/callback", public_url,
-/// provider.as_str())`.
+/// (recon-4).
+///
+/// The Plane-A auth router is nested under `/api/v1/` in
+/// `crates/api/src/domain/mod.rs:170`, so the **full** callback URL
+/// the IdP redirects back to is
+/// `{public_url}/api/v1/auth/oauth/{provider}/callback`. The earlier
+/// formula in PRs #758 / #759 / #761 erroneously omitted the
+/// `/api/v1` prefix — a production bug surfaced by Codex P2 review on
+/// PR #762; in production the IdP would have redirected to a 404
+/// because no handler is mounted at `/auth/oauth/.../callback` (only
+/// the v1-prefixed variant).
 ///
 /// Shared by `oauth_start` and `oauth_callback` so the value persisted
 /// in the OAuth state row at start_oauth time matches the value
@@ -385,7 +394,7 @@ pub(crate) fn derive_oauth_redirect_uri(public_url: &str, provider: OAuthProvide
     // boot-time validation (T2.8) ensures `public_url` is absolute with
     // a scheme; here we only normalize the slash.
     let base = public_url.trim_end_matches('/');
-    format!("{base}/auth/oauth/{}/callback", provider.as_str())
+    format!("{base}/api/v1/auth/oauth/{}/callback", provider.as_str())
 }
 
 /// `GET /api/v1/auth/oauth/{provider}` — start a Plane-A sign-in flow.

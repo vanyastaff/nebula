@@ -21,7 +21,9 @@
 //! ## `redirect_uri` (recon-4 ADOPT (a))
 //!
 //! NOT a configuration field. Auto-derived at runtime as
-//! `format!("{base}/auth/oauth/{provider}/callback", base = api_config.public_url)`.
+//! `format!("{base}/api/v1/auth/oauth/{provider}/callback", base = api_config.public_url)`
+//! (the Plane-A router is nested under `/api/v1/` per
+//! `crates/api/src/domain/mod.rs`).
 //! Operators that need multiple callback URIs deploy multiple Nebula
 //! instances. Matches n8n's `{instanceBaseUrl}/rest/sso/oidc/callback`
 //! pattern.

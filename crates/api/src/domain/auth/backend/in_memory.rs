@@ -1445,7 +1445,7 @@ mod tests {
         let start = b
             .start_oauth(
                 OAuthProvider::Google,
-                "https://nebula.test/auth/oauth/google/callback",
+                "https://nebula.test/api/v1/auth/oauth/google/callback",
             )
             .await
             .unwrap();
@@ -1462,7 +1462,7 @@ mod tests {
         let entry = b.oauth_state.get(&start.state).unwrap();
         assert_eq!(
             entry.redirect_uri.as_deref(),
-            Some("https://nebula.test/auth/oauth/google/callback"),
+            Some("https://nebula.test/api/v1/auth/oauth/google/callback"),
             "PR-3 must persist the handler-derived redirect_uri"
         );
     }
@@ -1475,7 +1475,7 @@ mod tests {
         let err = b
             .start_oauth(
                 OAuthProvider::Google,
-                "https://nebula.test/auth/oauth/google/callback",
+                "https://nebula.test/api/v1/auth/oauth/google/callback",
             )
             .await
             .expect_err("missing provider config must error");
@@ -1531,7 +1531,7 @@ mod tests {
         let start = b
             .start_oauth(
                 OAuthProvider::Microsoft,
-                "https://nebula.test/auth/oauth/microsoft/callback",
+                "https://nebula.test/api/v1/auth/oauth/microsoft/callback",
             )
             .await
             .unwrap();
@@ -1583,7 +1583,7 @@ mod tests {
         let start = b
             .start_oauth(
                 OAuthProvider::GitHub,
-                "https://nebula.test/auth/oauth/github/callback",
+                "https://nebula.test/api/v1/auth/oauth/github/callback",
             )
             .await
             .unwrap();
@@ -1789,7 +1789,7 @@ mod complete_oauth_tests {
         let cfg = cfg_pointing_at(OAuthProvider::Google, &token_url, &userinfo_url, None);
 
         let b = InMemoryAuthBackend::new().with_oauth_providers(cfg);
-        let redirect = "https://nebula.test/auth/oauth/google/callback";
+        let redirect = "https://nebula.test/api/v1/auth/oauth/google/callback";
         seed_started_flow(&b, "state-1", OAuthProvider::Google, redirect);
 
         let result = b
@@ -1823,7 +1823,7 @@ mod complete_oauth_tests {
             Some(&emails_url),
         );
         let b = InMemoryAuthBackend::new().with_oauth_providers(cfg);
-        let redirect = "https://nebula.test/auth/oauth/github/callback";
+        let redirect = "https://nebula.test/api/v1/auth/oauth/github/callback";
         seed_started_flow(&b, "state-gh", OAuthProvider::GitHub, redirect);
 
         let result = b
@@ -1842,7 +1842,7 @@ mod complete_oauth_tests {
         let (t1, u1, _) = spawn_idp_responder(token, userinfo, None).await;
         let cfg = cfg_pointing_at(OAuthProvider::Google, &t1, &u1, None);
         let b = InMemoryAuthBackend::new().with_oauth_providers(cfg);
-        let redirect = "https://nebula.test/auth/oauth/google/callback";
+        let redirect = "https://nebula.test/api/v1/auth/oauth/google/callback";
         seed_started_flow(&b, "state-r", OAuthProvider::Google, redirect);
 
         let _ = b
@@ -1871,7 +1871,7 @@ mod complete_oauth_tests {
                 OAuthProvider::Google,
                 "state-never-seen",
                 "code-x",
-                "https://nebula.test/auth/oauth/google/callback",
+                "https://nebula.test/api/v1/auth/oauth/google/callback",
             )
             .await
             .expect_err("unknown state must be rejected");
@@ -1888,7 +1888,7 @@ mod complete_oauth_tests {
             None,
         );
         let b = InMemoryAuthBackend::new().with_oauth_providers(cfg);
-        let redirect = "https://nebula.test/auth/oauth/google/callback";
+        let redirect = "https://nebula.test/api/v1/auth/oauth/google/callback";
         seed_started_flow(&b, "state-cross", OAuthProvider::Google, redirect);
         let err = b
             .complete_oauth(OAuthProvider::GitHub, "state-cross", "code-x", redirect)
@@ -1914,14 +1914,14 @@ mod complete_oauth_tests {
             &b,
             "state-pu",
             OAuthProvider::Google,
-            "https://nebula.test/auth/oauth/google/callback",
+            "https://nebula.test/api/v1/auth/oauth/google/callback",
         );
         let err = b
             .complete_oauth(
                 OAuthProvider::Google,
                 "state-pu",
                 "code-pu",
-                "https://nebula-CHANGED.test/auth/oauth/google/callback",
+                "https://nebula-CHANGED.test/api/v1/auth/oauth/google/callback",
             )
             .await
             .expect_err("mismatched redirect_uri must fail closed");
@@ -1941,7 +1941,7 @@ mod complete_oauth_tests {
         let (t1, u1, _) = spawn_idp_responder(token_err, userinfo_dummy, None).await;
         let cfg = cfg_pointing_at(OAuthProvider::Google, &t1, &u1, None);
         let b = InMemoryAuthBackend::new().with_oauth_providers(cfg);
-        let redirect = "https://nebula.test/auth/oauth/google/callback";
+        let redirect = "https://nebula.test/api/v1/auth/oauth/google/callback";
         seed_started_flow(&b, "state-500", OAuthProvider::Google, redirect);
         let err = b
             .complete_oauth(OAuthProvider::Google, "state-500", "code-500", redirect)
@@ -1958,7 +1958,7 @@ mod complete_oauth_tests {
         let (t1, u1, _) = spawn_idp_responder(bad_token, userinfo, None).await;
         let cfg = cfg_pointing_at(OAuthProvider::Google, &t1, &u1, None);
         let b = InMemoryAuthBackend::new().with_oauth_providers(cfg);
-        let redirect = "https://nebula.test/auth/oauth/google/callback";
+        let redirect = "https://nebula.test/api/v1/auth/oauth/google/callback";
         seed_started_flow(&b, "state-mt", OAuthProvider::Google, redirect);
         let err = b
             .complete_oauth(OAuthProvider::Google, "state-mt", "code-mt", redirect)
@@ -1981,7 +1981,7 @@ mod complete_oauth_tests {
         let (t1, u1, _) = spawn_idp_responder(token, userinfo, None).await;
         let cfg = cfg_pointing_at(OAuthProvider::Google, &t1, &u1, None);
         let b = InMemoryAuthBackend::new().with_oauth_providers(cfg);
-        let redirect = "https://nebula.test/auth/oauth/google/callback";
+        let redirect = "https://nebula.test/api/v1/auth/oauth/google/callback";
         seed_started_flow(&b, "state-uv", OAuthProvider::Google, redirect);
         let err = b
             .complete_oauth(OAuthProvider::Google, "state-uv", "code-uv", redirect)

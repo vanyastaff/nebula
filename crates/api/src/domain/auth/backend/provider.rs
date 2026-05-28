@@ -335,7 +335,7 @@ pub trait AuthBackend: Send + Sync {
     ///
     /// `redirect_uri` is **handler-derived** from `ApiConfig::public_url`
     /// per ADR-0085 D-3 (recon-4) —
-    /// `format!("{}/auth/oauth/{}/callback", api_config.public_url,
+    /// `format!("{}/api/v1/auth/oauth/{}/callback", api_config.public_url,
     /// provider.as_str())`. The trait accepts it as an argument so the
     /// derived value round-trips through the implementation's state row
     /// and is re-verified on `complete_oauth` against the row's stored

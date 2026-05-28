@@ -145,7 +145,7 @@ pub credential_service: Option<Arc<dyn CredentialServiceErased>>,
 
 > **🟥 SUPERSEDED by `recon-4-n8n-and-rust-ecosystem.md` §3 (ADOPT (a)).**
 >
-> `redirect_uri` is **auto-derived** from the existing `ApiConfig::public_url` field (`API_PUBLIC_URL` env, at `crates/api/src/config/mod.rs:107`). Formula: `format!("{}/auth/oauth/{}/callback", api_config.public_url, provider.as_str())`. The `redirect_uris: Vec<String>` config field is dropped from `OAuthProviderConfig`. The allow-list semantics is moot. Multi-environment deployments (dev / staging / prod) each have their own `API_PUBLIC_URL` and their own OAuth client registration at the IdP. Matches n8n's `{instanceBaseUrl}/rest/sso/oidc/callback` pattern.
+> `redirect_uri` is **auto-derived** from the existing `ApiConfig::public_url` field (`API_PUBLIC_URL` env, at `crates/api/src/config/mod.rs:107`). Formula: `format!("{}/api/v1/auth/oauth/{}/callback", api_config.public_url, provider.as_str())` (PR-5 wave-1 correction: the original formula omitted the `/api/v1` prefix; the Plane-A router is nested under `/api/v1` in `crates/api/src/domain/mod.rs:170` so the prefix is mandatory or the IdP redirects to a 404). The `redirect_uris: Vec<String>` config field is dropped from `OAuthProviderConfig`. The allow-list semantics is moot. Multi-environment deployments (dev / staging / prod) each have their own `API_PUBLIC_URL` and their own OAuth client registration at the IdP. Matches n8n's `{instanceBaseUrl}/rest/sso/oidc/callback` pattern.
 >
 > The text below is kept for audit only; ignore for implementation.
 
@@ -601,7 +601,7 @@ The security argument:
 `PgAuthBackend::start_oauth(provider, redirect_uri)` and `InMemoryAuthBackend::start_oauth(...)` SHALL:
 
 1. Look up the validated `OAuthProviderConfig` from `ApiConfig::auth.oauth.providers[provider]`. If absent → `AuthError::ProviderNotConfigured { provider }`.
-2. Derive the canonical `redirect_uri` from `api_config.public_url` per D-3 (`format!("{}/auth/oauth/{}/callback", public_url, provider.as_str())`). The handler-supplied `redirect_uri` arg MUST already equal this value (the handler derived it the same way before calling `start_oauth`); a mismatch is a debug-assert at the trait boundary.
+2. Derive the canonical `redirect_uri` from `api_config.public_url` per D-3 (`format!("{}/api/v1/auth/oauth/{}/callback", public_url, provider.as_str())` — PR-5 wave-1 corrected). The handler-supplied `redirect_uri` arg MUST already equal this value (the handler derived it the same way before calling `start_oauth`); a mismatch is a debug-assert at the trait boundary.
 3. For `Oidc { discovery_url }`: call `fetch_oidc_discovery(discovery_url)` (D-15) to obtain `authorize_url`/`token_url`/`userinfo_url`. For `Manual { authorize_url, ... }`: use the operator-supplied URLs directly. Construct `flow::AuthorizationUriRequest` (client_id, token_url, client_secret, redirect_uri, scopes, auth_style).
 4. Call `mint_pkce()` to get `(state, code_verifier, code_challenge)`.
 5. Call `flow::build_authorization_uri(&req, &state, &code_challenge)` to construct the real authorize URL.

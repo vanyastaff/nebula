@@ -23,7 +23,7 @@ The server SHALL accept an operator-supplied configuration that maps each suppor
   - `Oidc { discovery_url: String }` for OIDC-compliant providers — in 1.0 this means Google and Microsoft (the only `Oidc`-shaped variants in the live `OAuthProvider` enum at `crates/api/src/domain/auth/backend/oauth.rs:28-47`). Auth0 / Okta / generic OIDC require extending the enum (1.1 follow-up per ADR-0085 D-5). Endpoints fetched at runtime from `.well-known/openid-configuration` (D-15). **Scopes hardcoded `"openid email profile"` for `Oidc`.**
   - `Manual { authorize_url, token_url, userinfo_url, verified_emails_url: Option<String>, jwks_url: Option<String>, scopes: Vec<String> }` for OAuth2-only providers (GitHub) or operator-customized OIDC. `jwks_url` accepted for forward compat but ignored in 1.0 (D-16). `scopes` MUST be non-empty for `Manual`. **`verified_emails_url`** (🟥 WAVE-6 P2 addition for GitHub) is required when the provider's `userinfo_url` response does NOT include an `email_verified` claim; PR-4 fetches this second endpoint after `userinfo_url` and picks the entry with `primary == true AND verified == true`. GitHub default: `userinfo_url = "https://api.github.com/user"`, `verified_emails_url = Some("https://api.github.com/user/emails")`. For OIDC providers (Google, Microsoft), `verified_emails_url = None` (the `email_verified` claim is in the userinfo response itself).
 
-`redirect_uri` is **NOT a configuration field**. It is auto-derived at runtime as `format!("{}/auth/oauth/{}/callback", api_config.public_url, provider.as_str())` from the existing `ApiConfig::public_url` (`API_PUBLIC_URL` env). Operators that need multiple callback URIs deploy multiple Nebula instances (each with its own `API_PUBLIC_URL` and IdP client registration).
+`redirect_uri` is **NOT a configuration field**. It is auto-derived at runtime as `format!("{}/api/v1/auth/oauth/{}/callback", api_config.public_url, provider.as_str())` from the existing `ApiConfig::public_url` (`API_PUBLIC_URL` env). Operators that need multiple callback URIs deploy multiple Nebula instances (each with its own `API_PUBLIC_URL` and IdP client registration).
 
 **Invariant 1** (🟥 WAVE-6 anti-SSRF hardening per D-9-WAVE6, refined wave-7 with two validator scopes per Codex F.2): Each provider config MUST validate at boot via TWO complementary validator functions per D-9-WAVE6:
 
@@ -81,7 +81,7 @@ The server SHALL accept an operator-supplied configuration that maps each suppor
 `PgAuthBackend::start_oauth(provider, redirect_uri)` and `InMemoryAuthBackend::start_oauth(provider, redirect_uri)` SHALL (🟥 RECON-3 + RECON-4 REVISED steps; supersedes the earlier RECON-2 revision):
 
 1. Look up the validated `OAuthProviderConfig` from `ApiConfig::auth.oauth.providers[provider]`. If absent → `AuthError::ProviderNotConfigured { provider }`.
-2. Derive the canonical `redirect_uri` from `api_config.public_url` per D-3 (recon-4): `format!("{}/auth/oauth/{}/callback", api_config.public_url, provider.as_str())`. The handler-supplied `redirect_uri` argument MUST already equal this derived value (the handler derived it the same way before calling the trait method); a mismatch is a `debug_assert!` at the trait boundary, not a runtime branch.
+2. Derive the canonical `redirect_uri` from `api_config.public_url` per D-3 (recon-4): `format!("{}/api/v1/auth/oauth/{}/callback", api_config.public_url, provider.as_str())`. The handler-supplied `redirect_uri` argument MUST already equal this derived value (the handler derived it the same way before calling the trait method); a mismatch is a `debug_assert!` at the trait boundary, not a runtime branch.
 3. Resolve the IdP endpoints from `provider_config.endpoints`:
    - `OAuthEndpoints::Oidc { discovery_url }` — call `fetch_oidc_discovery(discovery_url)` (D-15) to obtain `OidcDiscovery { authorize_url, token_url, userinfo_url, jwks_url? }` (cached process-wide). Hardcoded scopes `"openid email profile"`.
    - `OAuthEndpoints::Manual { authorize_url, token_url, userinfo_url, jwks_url?, scopes }` — use as-is; operator-supplied `scopes`.
@@ -101,12 +101,12 @@ PKCE plain is structurally impossible per Scenario 2.2 (the `PkceMethod` enum ha
   - **Given** `[auth.oauth.providers.google]` has `client_id = "google-client-1"`, `client_secret = "..."`, `endpoints = { kind = "oidc", discovery_url = "https://accounts.google.com/.well-known/openid-configuration" }`
   - **And** `API_PUBLIC_URL = "https://app.example.com"`
   - **And** the OIDC discovery doc resolves `authorize_url = "https://accounts.google.com/o/oauth2/v2/auth"`
-  - **When** the handler derives `redirect_uri = "https://app.example.com/auth/oauth/google/callback"` and calls `start_oauth(OAuthProvider::Google, &redirect_uri)`
+  - **When** the handler derives `redirect_uri = "https://app.example.com/api/v1/auth/oauth/google/callback"` and calls `start_oauth(OAuthProvider::Google, &redirect_uri)`
   - **Then** the returned `authorize_url` starts with `https://accounts.google.com/o/oauth2/v2/auth?`
   - **And** the query string contains `client_id=google-client-1`
   - **And** the query string contains `redirect_uri=https%3A%2F%2Fapp.example.com%2Fauth%2Foauth%2Fgoogle%2Fcallback` (URL-encoded)
   - **And** the query string contains `code_challenge_method=S256` and a non-empty `code_challenge`
-  - **And** the `plane_a_oauth_states` row contains the unencoded `code_verifier` (NOT the challenge) and `redirect_uri = "https://app.example.com/auth/oauth/google/callback"`
+  - **And** the `plane_a_oauth_states` row contains the unencoded `code_verifier` (NOT the challenge) and `redirect_uri = "https://app.example.com/api/v1/auth/oauth/google/callback"`
 
 - **Scenario 2.2 — PKCE plain is structurally impossible** (🟥 RECON-2)
   - **Given** the `PkceMethod` enum at `crates/credential/src/credentials/oauth2_config.rs:48-65` has exactly one variant (`S256`)
@@ -141,7 +141,7 @@ PKCE plain is structurally impossible per Scenario 2.2 (the `PkceMethod` enum ha
 **Scenarios**:
 
 - **Scenario 3.1 — Happy path mints a session (🟥 RECON-3 + RECON-4 REVISED)**
-  - **Given** `start_oauth` returned `state = "abc"` and persisted the `plane_a_oauth_states` row with `redirect_uri = "https://app.example.com/auth/oauth/google/callback"`
+  - **Given** `start_oauth` returned `state = "abc"` and persisted the `plane_a_oauth_states` row with `redirect_uri = "https://app.example.com/api/v1/auth/oauth/google/callback"`
   - **And** the IdP redirects with `?state=abc&code=xyz` to the callback URL
   - **And** `wiremock` (reached via `nebula_api::test_support::*` bypass helpers under `--cfg nebula_test_util` — D-14 wave-5 revision) is configured to return a 200 token response and a userinfo response containing `email = "alice@example.com"` (verified) and `sub = "google-1"`
   - **When** the handler derives the same `redirect_uri` and calls `complete_oauth(OAuthProvider::Google, "abc", "xyz", &redirect_uri)`
@@ -187,9 +187,9 @@ PKCE plain is structurally impossible per Scenario 2.2 (the `PkceMethod` enum ha
   - **Then** the call returns `AuthError::OAuthFailed` with `cause = "token_endpoint_timeout"` within `oauth_token_timeout_ms + 500 ms`
 
 - **Scenario 3.10 — `public_url` change mid-flow rejected** (🟥 RECON-4 NEW)
-  - **Given** `start_oauth` was called when `API_PUBLIC_URL=https://a.example.com`, persisting `redirect_uri="https://a.example.com/auth/oauth/google/callback"` in `OAuthStateRow`
+  - **Given** `start_oauth` was called when `API_PUBLIC_URL=https://a.example.com`, persisting `redirect_uri="https://a.example.com/api/v1/auth/oauth/google/callback"` in `OAuthStateRow`
   - **And** the operator changed `API_PUBLIC_URL=https://b.example.com` and restarted the server
-  - **When** the callback arrives and `complete_oauth` derives `redirect_uri="https://b.example.com/auth/oauth/google/callback"`
+  - **When** the callback arrives and `complete_oauth` derives `redirect_uri="https://b.example.com/api/v1/auth/oauth/google/callback"`
   - **Then** the row's `redirect_uri` does not match the derived one
   - **And** the call returns `AuthError::OAuthFailed` with `cause = "public_url_changed_mid_flow"`
   - **And** no token endpoint POST is made
@@ -325,15 +325,15 @@ Every implementor of `AuthBackend` MUST update. Today's implementors:
 - `InMemoryAuthBackend` (`crates/api/src/domain/auth/backend/in_memory.rs`)
 - All test-only mocks under `crates/api/tests/`
 
-The handler `crates/api/src/domain/auth/handler.rs::oauth_start` (and `oauth_callback`) SHALL **derive** `redirect_uri` from `ApiConfig::public_url` per D-3 recon-4 — `format!("{}/auth/oauth/{}/callback", api_config.public_url, provider.as_str())` — and pass the derived value to the backend method. The handler does NOT accept `redirect_uri` as a request parameter (query string, form, or otherwise); the operator does not get to override it per-request. The same derivation formula MUST be used at both endpoints (a shared private helper in the handler module or a `OAuthProviderConfig::derived_redirect_uri(public_url, provider)` accessor) so the value round-trips identically through `OAuthStateRow.redirect_uri` and is re-verified on `complete_oauth` (Scenario 3.10).
+The handler `crates/api/src/domain/auth/handler.rs::oauth_start` (and `oauth_callback`) SHALL **derive** `redirect_uri` from `ApiConfig::public_url` per D-3 recon-4 — `format!("{}/api/v1/auth/oauth/{}/callback", api_config.public_url, provider.as_str())` — and pass the derived value to the backend method. The handler does NOT accept `redirect_uri` as a request parameter (query string, form, or otherwise); the operator does not get to override it per-request. The same derivation formula MUST be used at both endpoints (a shared private helper in the handler module or a `OAuthProviderConfig::derived_redirect_uri(public_url, provider)` accessor) so the value round-trips identically through `OAuthStateRow.redirect_uri` and is re-verified on `complete_oauth` (Scenario 3.10).
 
 **Scenarios**:
 
 - **Scenario auth-backend-001.1 — Handler derives `redirect_uri` from `ApiConfig::public_url` (🟥 RECON-4 REVISED)**
   - **Given** `API_PUBLIC_URL = "https://app.example.com"`
   - **And** a request `POST /auth/oauth/google/start` (NO `redirect_uri` query parameter — the handler does not accept one)
-  - **When** the handler computes `redirect_uri = format!("{}/auth/oauth/google/callback", api_config.public_url)` and invokes `backend.start_oauth(OAuthProvider::Google, &redirect_uri)`
-  - **Then** the resulting `plane_a_oauth_states` row carries `redirect_uri = "https://app.example.com/auth/oauth/google/callback"`
+  - **When** the handler computes `redirect_uri = format!("{}/api/v1/auth/oauth/google/callback", api_config.public_url)` and invokes `backend.start_oauth(OAuthProvider::Google, &redirect_uri)`
+  - **Then** the resulting `plane_a_oauth_states` row carries `redirect_uri = "https://app.example.com/api/v1/auth/oauth/google/callback"`
   - **And** the returned `OAuthStart.authorize_url` query string contains `redirect_uri=https%3A%2F%2Fapp.example.com%2Fauth%2Foauth%2Fgoogle%2Fcallback`
 
 - **Scenario auth-backend-001.2 — 🟥 RECON-4 DELETED**
