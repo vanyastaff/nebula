@@ -16,6 +16,7 @@
 //!
 //! Part of `nebula-api` base deps (rollout window closed 2026-04-24).
 
+pub mod discovery;
 pub mod flow;
 pub mod http;
 pub mod state;

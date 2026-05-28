@@ -64,34 +64,44 @@ pub fn oauth_token_http_client_test_unchecked() -> &'static reqwest::Client {
     oauth_token_http_client()
 }
 
-/// Failure modes for [`fetch_oidc_discovery_unchecked`].
+/// Test-only OIDC discovery fetcher: same code path as production but
+/// with `oauth_allow_insecure_localhost = true` forced so wiremock
+/// listeners on `127.0.0.1`/`localhost` are accepted by the
+/// flag-aware gate on the discovery-returned authorize URL.
 ///
-/// Typed (not stringly) error per the public-API discipline — tests
-/// can `match` on a variant instead of substring-grepping a message.
-/// PR-3 lands the real fetch behavior; this typed shape is forward-
-/// compatible.
-#[derive(Debug, Error)]
-pub enum DiscoveryUncheckedError {
-    /// The discovery fetch is not yet wired up. Returned by the PR-2
-    /// placeholder; PR-3 replaces this variant with real fetch / parse
-    /// errors.
-    #[error(
-        "fetch_oidc_discovery_unchecked: PR-3 has not yet landed (openspec T3.1); the placeholder always returns this variant"
-    )]
-    PlaceholderUntilPr3,
-}
-
-/// Placeholder for the OIDC discovery doc fetcher bypass, to be wired
-/// in PR-3 once `crates/api/src/transport/oauth/discovery.rs` lands
-/// per T3.1. Defined here in PR-2 so the integration test crate has a
-/// stable module path to import. Returns
-/// [`DiscoveryUncheckedError::PlaceholderUntilPr3`] until PR-3 fills it
-/// in.
+/// Server-side fetched URLs (token / userinfo / jwks) still go through
+/// the STRICT `validate_oauth_outbound_url` gate — wiremock setups
+/// MUST publish endpoint URLs as HTTPS-with-self-signed-cert when
+/// using this helper for end-to-end fixtures. Most integration
+/// fixtures point the discovery doc at a wiremock-served
+/// `.well-known/openid-configuration` whose returned
+/// `authorization_endpoint` is `http://localhost:PORT/authorize` and
+/// whose `token_endpoint` / `userinfo_endpoint` go through
+/// `oauth_token_http_client_test_unchecked` (which bypasses
+/// `validate_oauth_outbound_url` entirely).
+///
+/// PR-3 wire-up: was a `PlaceholderUntilPr3` placeholder; now
+/// delegates to the real cache.
 ///
 /// # Errors
 ///
-/// Always returns `Err(PlaceholderUntilPr3)` until PR-3 lands the
-/// discovery cache.
-pub async fn fetch_oidc_discovery_unchecked(_url: &str) -> Result<(), DiscoveryUncheckedError> {
-    Err(DiscoveryUncheckedError::PlaceholderUntilPr3)
+/// Returns the same [`FetchDiscoveryError`] (alias of
+/// `crate::transport::oauth::discovery::DiscoveryError`) as the
+/// production path.
+pub async fn fetch_oidc_discovery_unchecked(
+    url: &str,
+) -> Result<OidcDiscovery, FetchDiscoveryError> {
+    // Per Codex / Copilot wave-1 PR-3 review: must skip the strict
+    // gate on the discovery URL itself so wiremock on `127.0.0.1`
+    // works; production `fetch_oidc_discovery` always strict-gates
+    // the discovery URL. Body cap / disabled redirects / child-URL
+    // re-validation all stay in force.
+    crate::transport::oauth::discovery::fetch_oidc_discovery_skipping_url_gate(url, true).await
+}
+
+/// Test-only: clear the process-wide discovery cache so tests can
+/// exercise the fetch path repeatedly without cross-test
+/// contamination.
+pub fn clear_discovery_cache_for_tests() {
+    crate::transport::oauth::discovery::clear_discovery_cache_for_tests();
 }

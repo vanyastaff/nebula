@@ -400,13 +400,20 @@ pub async fn build_auth_backend(
     email_port: Arc<dyn EmailPort>,
     metrics_registry: Option<Arc<MetricsRegistry>>,
 ) -> Result<Arc<dyn AuthBackend>, TransportInitError> {
+    // PR-3 T3.8 / T3.9: thread the validated OAuth providers config
+    // into both backends so `start_oauth` can emit real authorize
+    // URLs. The Arc share is cheap and read-only at runtime.
+    let oauth_providers = Arc::new(api_config.auth.oauth.clone());
     match api_config.auth.backend {
         AuthBackendKind::Memory => Ok(Arc::new(
             InMemoryAuthBackend::new()
                 .with_email_port(email_port)
-                .with_metrics(metrics_registry),
+                .with_metrics(metrics_registry)
+                .with_oauth_providers(oauth_providers),
         )),
-        AuthBackendKind::Postgres => build_pg_auth_backend(email_port, metrics_registry).await,
+        AuthBackendKind::Postgres => {
+            build_pg_auth_backend(email_port, metrics_registry, oauth_providers).await
+        },
     }
 }
 
@@ -506,6 +513,7 @@ async fn build_pg_idempotency_store(
 async fn build_pg_auth_backend(
     email_port: Arc<dyn EmailPort>,
     metrics_registry: Option<Arc<MetricsRegistry>>,
+    oauth_providers: Arc<nebula_api::config::OAuthProvidersConfig>,
 ) -> Result<Arc<dyn AuthBackend>, TransportInitError> {
     use nebula_api::domain::auth::backend::PgAuthBackend;
     use sqlx::postgres::PgPoolOptions;
@@ -528,8 +536,10 @@ async fn build_pg_auth_backend(
         backend = "postgres",
         "auth: PG-backed identity backend wired"
     );
-    let backend: Arc<dyn AuthBackend> =
-        Arc::new(PgAuthBackend::new(pool, email_port, metrics_registry));
+    let backend: Arc<dyn AuthBackend> = Arc::new(
+        PgAuthBackend::new(pool, email_port, metrics_registry)
+            .with_oauth_providers(oauth_providers),
+    );
     Ok(backend)
 }
 
@@ -537,6 +547,7 @@ async fn build_pg_auth_backend(
 async fn build_pg_auth_backend(
     _email_port: Arc<dyn EmailPort>,
     _metrics_registry: Option<Arc<MetricsRegistry>>,
+    _oauth_providers: Arc<nebula_api::config::OAuthProvidersConfig>,
 ) -> Result<Arc<dyn AuthBackend>, TransportInitError> {
     Err(TransportInitError::AuthBackendUnavailable {
         requested: "postgres",

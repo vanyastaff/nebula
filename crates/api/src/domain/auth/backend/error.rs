@@ -14,6 +14,23 @@ pub enum AuthError {
     #[error("auth capability not implemented: {0}")]
     NotImplemented(&'static str),
 
+    /// Operator has not declared an OAuth identity provider for the
+    /// requested key.
+    ///
+    /// Per ADR-0085 D-6: returned when `start_oauth` / `complete_oauth`
+    /// runs for a `provider` that is absent from
+    /// `ApiConfig::auth.oauth.providers` (env var
+    /// `API_AUTH_OAUTH_<PROVIDER>_CLIENT_ID` is unset). Maps to
+    /// HTTP 503 Service Unavailable (NOT 400) because the operator can
+    /// fix it by setting the env vars without any code change — it's
+    /// a deployment state, not a caller error.
+    #[error("OAuth provider `{provider}` is not configured on this Nebula instance")]
+    ProviderNotConfigured {
+        /// Snake_case provider key (matches the `OAuthProvider` enum
+        /// variant).
+        provider: String,
+    },
+
     /// Email already registered.
     #[error("email already registered")]
     EmailAlreadyRegistered,
@@ -113,6 +130,10 @@ impl From<AuthError> for ApiError {
             AuthError::NotImplemented(what) => {
                 ApiError::ServiceUnavailable(format!("not implemented: {what}"))
             },
+            AuthError::ProviderNotConfigured { provider } => ApiError::ServiceUnavailable(format!(
+                "OAuth provider `{provider}` is not configured; set API_AUTH_OAUTH_{}_CLIENT_ID and related env vars",
+                provider.to_ascii_uppercase()
+            )),
             AuthError::EmailAlreadyRegistered => {
                 ApiError::Conflict("email already registered".to_owned())
             },
@@ -172,6 +193,7 @@ mod tests {
     fn default_outcome_for(err: &AuthError) -> &'static str {
         match err {
             AuthError::NotImplemented(_) => auth_outcome::INTERNAL,
+            AuthError::ProviderNotConfigured { .. } => auth_outcome::OAUTH_FAILED,
             AuthError::EmailAlreadyRegistered => auth_outcome::CONFLICT,
             AuthError::UserNotFound => auth_outcome::INVALID_CREDS,
             AuthError::InvalidCredentials => auth_outcome::INVALID_CREDS,
@@ -195,8 +217,14 @@ mod tests {
         // is `default_outcome_for`'s exhaustive `match`; this test
         // additionally verifies the label values are non-empty closed
         // strings.
-        let cases: [(&str, AuthError); 14] = [
+        let cases: [(&str, AuthError); 15] = [
             ("NotImplemented", AuthError::NotImplemented("x")),
+            (
+                "ProviderNotConfigured",
+                AuthError::ProviderNotConfigured {
+                    provider: "google".to_owned(),
+                },
+            ),
             ("EmailAlreadyRegistered", AuthError::EmailAlreadyRegistered),
             ("UserNotFound", AuthError::UserNotFound),
             ("InvalidCredentials", AuthError::InvalidCredentials),
