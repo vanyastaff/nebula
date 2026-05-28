@@ -9,6 +9,25 @@ changes are expected between minor releases — call them out here.
 
 ## [Unreleased]
 
+### Added
+
+- **Plane-A OAuth identity providers from operator secrets (ROADMAP
+  §M3.1)** — shipped via 5-PR chain (#757 ADR-0085 + #758 trait +
+  #759 real authorize URL + OIDC discovery + #761 real
+  `complete_oauth` + `external_identities` + #*** docs). Operators
+  configure IdP-client credentials via
+  `API_AUTH_OAUTH_<PROVIDER>_*` env vars; `PgAuthBackend::complete_oauth`
+  no longer returns `NotImplemented` — it runs the canonical OAuth
+  flow (code exchange → userinfo → REQ-oauth-006 short-circuit →
+  email truth-table → session mint). New migration
+  `0029_external_identities.sql` adds the `(provider, subject) →
+  user_id` linkage with `ON DELETE CASCADE`. Three providers in 1.0:
+  `google`, `microsoft`, `github`. GitHub triggers a second
+  `/user/emails` fetch to resolve verified email per ADR-0085 D-5
+  wave-6. id_token JWKS signature validation deferred to 1.1 (D-16);
+  userinfo response is authoritative. See `crates/api/README.md`
+  "OAuth identity providers (Plane A)" for operator setup.
+
 ### Changed
 
 - **`nebula-resource`:** crate documentation scrubbed of plan-IDs, ADR

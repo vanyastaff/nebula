@@ -164,6 +164,107 @@ Every rejection increments `nebula_webhook_signature_failures_total` with
 attached via `WebhookTransport::with_metrics`. The counter is low cardinality
 by design (three static reason labels, no per-trigger dimension).
 
+## OAuth identity providers (Plane A)
+
+Per [ADR-0085](../../docs/adr/0085-oauth-identity-providers-from-secrets.md):
+operator IdP-client credentials are configured via environment
+variables (NOT a database table, NOT the credential store). Declaring
+a provider is opt-in; an undeclared provider returns
+`AuthError::ProviderNotConfigured` → HTTP 503 from
+`/auth/oauth/{provider}/start`.
+
+Supported providers in 1.0 (`OAuthProvider` enum):
+`google`, `microsoft`, `github`. Auth0 / Okta / generic OIDC require
+extending the enum (tracked as a 1.1 follow-up).
+
+### Configuration shape
+
+Each provider exposes one of two endpoint shapes:
+
+| Shape | When to use | Required env vars |
+|---|---|---|
+| **OIDC** (`Google`, `Microsoft`) | IdP publishes `.well-known/openid-configuration` | `CLIENT_ID`, `CLIENT_SECRET`, `DISCOVERY_URL` |
+| **Manual** (`GitHub`) | No discovery doc OR operator pins endpoints | `CLIENT_ID`, `CLIENT_SECRET`, `AUTHORIZE_URL`, `TOKEN_URL`, `USERINFO_URL`, `SCOPES` (+ optional `VERIFIED_EMAILS_URL`, `JWKS_URL`) |
+
+All env vars are prefixed `API_AUTH_OAUTH_<UPPERCASE_PROVIDER>_*`.
+A provider is "declared" if its `CLIENT_ID` is set; if `DISCOVERY_URL`
+is also set the OIDC arm is chosen, otherwise Manual.
+
+### `API_PUBLIC_URL`
+
+The Plane-A OAuth flow derives `redirect_uri` from `API_PUBLIC_URL`
+(NOT a per-provider config) per ADR-0085 D-3 (recon-4):
+`{API_PUBLIC_URL}/auth/oauth/{provider}/callback`. Operators that need
+multiple callback URIs deploy multiple Nebula instances. Boot fails
+closed if `API_PUBLIC_URL` is empty / relative / scheme-less while
+any provider is declared (REQ-compose-001 Invariant 1).
+
+### Example: Google + GitHub side-by-side
+
+```bash
+# Required by all Plane-A OAuth flows.
+export API_PUBLIC_URL=https://app.example.com
+
+# Google — OIDC arm.
+export API_AUTH_OAUTH_GOOGLE_CLIENT_ID="..."
+export API_AUTH_OAUTH_GOOGLE_CLIENT_SECRET="..."
+export API_AUTH_OAUTH_GOOGLE_DISCOVERY_URL="https://accounts.google.com/.well-known/openid-configuration"
+
+# GitHub — Manual arm (no discovery doc; userinfo lacks email_verified
+# so verified_emails_url is required for the truth-table to pass).
+export API_AUTH_OAUTH_GITHUB_CLIENT_ID="Iv1.xxxxxxxx"
+export API_AUTH_OAUTH_GITHUB_CLIENT_SECRET="..."
+export API_AUTH_OAUTH_GITHUB_AUTHORIZE_URL="https://github.com/login/oauth/authorize"
+export API_AUTH_OAUTH_GITHUB_TOKEN_URL="https://github.com/login/oauth/access_token"
+export API_AUTH_OAUTH_GITHUB_USERINFO_URL="https://api.github.com/user"
+export API_AUTH_OAUTH_GITHUB_VERIFIED_EMAILS_URL="https://api.github.com/user/emails"
+export API_AUTH_OAUTH_GITHUB_SCOPES="user:email"
+```
+
+### Flow
+
+1. Client `GET /api/v1/auth/oauth/{provider}` → server derives
+   `redirect_uri`, mints PKCE pair, persists `OAuthStateRow`,
+   returns the IdP `authorize_url` + opaque `state`.
+2. Client redirects user's browser to `authorize_url`.
+3. IdP redirects back to `{redirect_uri}?state=...&code=...`.
+4. Client posts to `GET /api/v1/auth/oauth/{provider}/callback`.
+5. Server consumes the state row atomically, verifies `redirect_uri`
+   match, exchanges code at the IdP token endpoint, fetches
+   userinfo (+ verified emails for GitHub), applies the
+   REQ-oauth-004/-005/-006 truth table, mints a Nebula session.
+
+### Security posture (REQ-obs-001)
+
+- **Anti-SSRF**: every server-side OAuth HTTP URL passes
+  `validate_oauth_outbound_url` (HTTPS-only; rejects loopback /
+  private / link-local / multicast). Browser-fetched authorize URLs
+  use the flag-aware `validate_oauth_authorize_url` which accepts
+  `http://localhost` only when `oauth_allow_insecure_localhost` is
+  set AND the binary is built with debug assertions (dev mode).
+- **Body caps**: token endpoint and userinfo / verified-emails GETs
+  are capped at 256 KiB so a hostile IdP cannot DoS via unbounded
+  responses.
+- **Discovery cache**: process-wide; key includes the
+  `oauth_allow_insecure_localhost` flag so flag=true and flag=false
+  callers never share a cache entry.
+- **Tokens discarded**: per D-7, access / id / refresh tokens are
+  dropped after the userinfo lookup; only the
+  `(provider, subject) → user_id` link and the minted Nebula session
+  are persisted.
+- **id_token JWKS signature validation**: deferred to 1.1 per D-16.
+  Userinfo response is authoritative for `(email, sub)`. The TLS
+  trust chain to the IdP is the integrity boundary.
+- **Account-takeover defense**: a user whose Nebula `email_verified`
+  is `false` cannot link an OAuth identity even if the IdP attests
+  `email_verified = true` (Scenario 5.2). The unverified user must
+  complete email verification through the password flow first.
+- **Observability**: `nebula_api_auth_oauth_attempts_total` carries
+  closed-set `outcome` + `provider` labels;
+  `nebula_api_auth_duration_seconds` histogram keyed by `outcome`
+  only (provider stripped to keep histogram cardinality at the
+  floor of `len(auth_outcome::*)` series).
+
 ## Machine-Readable API
 
 `nebula-api` publishes its full route surface as an **OpenAPI 3.1**

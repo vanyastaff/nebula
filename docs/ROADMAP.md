@@ -237,20 +237,26 @@ The largest 1.0 area. Closure criteria (on top of the global DoD):
       a session+CSRF enrollment-confirm path and a cookie-less
       `mfa_complete_login` (`POST /auth/login/mfa`) so the login
       second-step stays CSRF-exempt by construction.
-- [ ] **OAuth providers loaded from operator secrets** — a registry that
-      pulls secrets from the credential store at startup. Carved out into
-      its own SDD plan after recon revealed a 6× scope expansion vs the
-      initial follow-up estimate: Wave 4 credential-stabilize set up the
-      `CredentialService` type slot on `AppState` but never instantiated
-      it in `apps/server::compose`; `CredentialService::get` returns
-      `CredentialSnapshot` (no generic `get::<OAuth2Credential>`);
-      `PgAuthBackend::complete_oauth` still returns `NotImplemented` at
-      `crates/api/src/domain/auth/backend/pg.rs:957`; needs a breaking
-      change to `AuthBackend::start_oauth` (`redirect_uri` parameter),
-      `reqwest` as a new direct dep of `nebula-api` for the token
-      endpoint exchange, and an operator-discovery convention decision
-      (cross-dep with M12.3 + the `nebula-credential-runtime` wiring
-      increment).
+- [x] **OAuth providers loaded from operator secrets** — **SHIPPED via
+      5-PR chain** PR #757 (ADR-0085) + #758 (trait + config + compose
+      validation) + #759 (real authorize URL + OIDC discovery cache) +
+      #761 (real `complete_oauth` + `external_identities` +
+      REQ-oauth-006 short-circuit). Per [ADR-0085](adr/0085-oauth-identity-providers-from-secrets.md):
+      operator IdP-client credentials live in
+      `ApiConfig::auth.oauth.providers` (env-managed via
+      `API_AUTH_OAUTH_<PROVIDER>_*`); `complete_oauth` no longer returns
+      `NotImplemented` — it exchanges the authorization code via
+      `flow::exchange_code`, fetches userinfo, applies the
+      REQ-oauth-004/-005/-006 truth table, persists the
+      `(provider, subject) → user_id` link in `external_identities`,
+      and mints a Nebula session. Recon-2/3/4 corrections caught
+      design drift early; recon-2 dropped the `CredentialService::get::<OAuth2Credential>`
+      cross-dep that the original follow-up estimated (Plane A and
+      Plane B credentials are now cleanly separated). 1.1 follow-ups
+      tracked in `docs/plans/2026-05-28-001-feat-oauth-1.1-followups-plan.md`:
+      id_token JWKS signature validation (D-16 deferred), DNS-resolver
+      SSRF defense-in-depth (`reqwest::Client` custom resolver gate),
+      Auth0 / Okta `OAuthProvider` enum extension.
 - [x] **Lockout + rate-limit integration tests** against the PG backend —
       shipped via #751. DATABASE_URL-gated `auth_pg_e2e.rs` lockout suite
       (`pg_auth_backend_locks_after_threshold_failures` +
