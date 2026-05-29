@@ -103,7 +103,7 @@ any level.
 | Business     | `credential-builtin`, `resource`, `action`, `plugin`, `tenancy` |
 | Plugin-Proto | `plugin-sdk`, `sandbox` |
 | Core         | `core`, `validator`, `expression`, `workflow`, `execution`, `schema`, `metadata`, `storage-port` |
-| Cross-cutting| `log`, `eventbus`, `metrics`, `resilience`, `error` |
+| Cross-cutting| `log`, `eventbus`, `metrics`, `resilience`, `error`, `env` |
 
 **Plugin-Proto** is a leaf tier between Core and Business: the
 out-of-process plugin protocol (`plugin-sdk`) and the duplex transport
