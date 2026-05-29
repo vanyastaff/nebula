@@ -271,10 +271,11 @@ impl Resident for SecretBearingResource {
     }
 }
 
-/// Drains the `ResourceEvent` broadcast sink, returning every event's
-/// Debug **and** Display rendering joined into one haystack. Asserts the
-/// expected slot variants were observed so the event surface is proven
-/// non-empty (not trivially redaction-clean by emitting nothing).
+/// Drains the `ResourceEvent` subscriber, joining every event's Debug
+/// rendering into one haystack (`ResourceEvent` derives `Debug` only, no
+/// `Display`). Asserts the expected slot variants were observed so the event
+/// surface is proven non-empty (not trivially redaction-clean by emitting
+/// nothing).
 struct EventSink {
     rx: nebula_eventbus::Subscriber<ResourceEvent>,
 }
@@ -293,12 +294,13 @@ impl EventSink {
         // The drain MUST be loud on a dropped event: a silent stop on
         // `Lagged` would skip an event that may have carried credential
         // material, yielding a false-clean from this security gate. The
-        // broadcast channel is a fixed 256-slot buffer (constructed
-        // internally by `Manager`; capacity is not caller-controllable
-        // here) and this gate emits ≤2 events per direction, so `Lagged`
-        // cannot trigger under load — the `Subscriber` wrapper
-        // automatically skips lagged events and continues, so we drain
-        // until `None` (empty or closed).
+        // event bus is a fixed 256-slot buffer (constructed internally by
+        // `Manager`; capacity is not caller-controllable here) and this gate
+        // emits ≤2 events per direction, so lag cannot trigger under load —
+        // the `Subscriber` wrapper automatically skips lagged events and
+        // continues, so we drain until `None` (empty or closed). The
+        // `lagged_count() == 0` assertion after the loop fails the gate if
+        // any event was nonetheless skipped.
         while let Some(evt) = self.rx.try_recv() {
             // `ResourceEvent` derives `Debug` (no `Display`); the
             // Debug rendering expands every struct field name +

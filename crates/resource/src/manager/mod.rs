@@ -252,11 +252,13 @@
 //! work). Deferred: `ErrorKind` ≈ `nebula_error::ErrorCategory`
 //! reconciliation; hardcoded acquire backoff vs
 //! `nebula_resilience::BackoffConfig`; relocating the live `RecoveryGate` +
-//! `ReleaseQueue` to `nebula-resilience`; `events.rs` raw `broadcast` →
-//! `nebula_eventbus::EventBus`; unifying `CreateGuard`/`SessionGuard` into
-//! one `DefuseGuard<T>`; revisiting the `register_resolved` JSON/`{{ }}`
-//! expression coupling and its engine-ABI positional shape (see the
-//! accepted-exception note below).
+//! `ReleaseQueue` to `nebula-resilience`; unifying
+//! `CreateGuard`/`SessionGuard` into one `DefuseGuard<T>`; revisiting the
+//! `register_resolved` JSON/`{{ }}` expression coupling and its engine-ABI
+//! positional shape (see the accepted-exception note below). The
+//! `events.rs` `broadcast` → `nebula_eventbus::EventBus` migration listed
+//! here originally has since **landed** (wired through `Manager`,
+//! `ResourceGuard`, and `RecoveryGate`).
 //!
 //! ## Further `Manager` code-line reduction — LOW ([#719])
 //!
@@ -502,11 +504,12 @@ pub struct Manager {
     pub(super) registry: Registry,
     pub(super) cancel: CancellationToken,
     pub(super) metrics: Option<ResourceOpsMetrics>,
-    /// Shared lifecycle-event sink. Held behind `Arc` so the same bus can be
-    /// wired into per-resource [`RecoveryGate`](crate::recovery::gate::RecoveryGate)s
-    /// and into each [`ResourceGuard`](crate::guard::ResourceGuard) (for its
-    /// `Released`-on-drop emit) without exposing the underlying broadcast
-    /// sender across module boundaries.
+    /// Shared lifecycle-event sink. Held behind `Arc` so the same
+    /// [`EventBus`] can be wired into per-resource
+    /// [`RecoveryGate`](crate::recovery::gate::RecoveryGate)s and into each
+    /// [`ResourceGuard`](crate::guard::ResourceGuard) (for its
+    /// `Released`-on-drop emit) without exposing the bus's internal transport
+    /// across module boundaries.
     pub(super) event_bus: Arc<EventBus<ResourceEvent>>,
     pub(super) release_queue: Arc<ReleaseQueue>,
     pub(super) release_queue_handle: tokio::sync::Mutex<Option<ReleaseQueueHandle>>,

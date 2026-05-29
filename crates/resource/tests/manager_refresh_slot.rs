@@ -577,7 +577,7 @@ async fn revoke_failure_emits_slot_revoke_failed_not_refresh() {
         "revoke_slot must surface the hook error, got: {err}"
     );
 
-    // Drain the broadcast channel and assert the failure event is the
+    // Drain the event subscriber and assert the failure event is the
     // revoke variant, never the refresh one.
     let mut saw_revoke_failed = false;
     while let Some(evt) = events.try_recv() {

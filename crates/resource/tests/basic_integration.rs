@@ -1225,26 +1225,30 @@ async fn recovery_gate_transition_emits_event_via_manager_bus() {
 
     let mut rx = manager.subscribe_events();
 
-    // Drive the gate Idle -> InProgress; the CAS publishes the transition
-    // through the sink the manager wired at registration time.
+    // Drive the gate Idle -> InProgress and assert *that* transition is
+    // observed before resolving — pinning the `try_begin` emission to the
+    // manager-wired sink specifically, not merely the later resolve-side
+    // InProgress -> Idle event (which would pass even with broken wiring of
+    // the begin path).
     let ticket = gate.try_begin().expect("gate starts idle");
-    ticket.resolve();
 
-    let mut saw_gate_change = false;
+    let mut saw_in_progress = false;
     while let Some(event) = rx.try_recv() {
-        if matches!(
-            &event,
-            nebula_resource::ResourceEvent::RecoveryGateChanged { key, .. }
-                if key == &resource_key!("test-resident")
-        ) {
-            saw_gate_change = true;
+        if let nebula_resource::ResourceEvent::RecoveryGateChanged { key, state } = &event
+            && key == &resource_key!("test-resident")
+            && state.contains("in_progress")
+        {
+            saw_in_progress = true;
             break;
         }
     }
     assert!(
-        saw_gate_change,
-        "expected a RecoveryGateChanged event after the gate transitioned",
+        saw_in_progress,
+        "expected a RecoveryGateChanged(in_progress) event after gate.try_begin()",
     );
+
+    // Resolve to leave the gate idle for any later reuse; not asserted here.
+    ticket.resolve();
 }
 
 // ---------------------------------------------------------------------------
@@ -4514,7 +4518,7 @@ async fn graceful_shutdown_abort_marks_resources_failed_not_ready() {
     );
 
     // Assertion: per-resource HealthChanged{healthy:false} was
-    // emitted. Drain through the channel until we find it (other
+    // emitted. Drain the event subscriber until we find it (other
     // events like `Registered` and `AcquireSuccess` were also emitted
     // earlier).
     let mut saw_health_change = false;
