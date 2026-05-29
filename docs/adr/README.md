@@ -24,6 +24,7 @@ cascade and later work. Numbering starts at **0042** in this directory.
 | **Observability** | 0046, 0050 | Metrics, traces |
 | **AI (deferred)** | 0057 proposed | STRATEGY.md |
 | **Agent harness** | **0083** | Intent / structural-budget / honesty gate |
+| **Environment config** | **0086** | `nebula-env` cross-cutting typed env reader |
 
 ## Historical ADRs (0001–0041)
 

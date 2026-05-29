@@ -5,10 +5,30 @@
 # Environment-variable handling — cross-crate audit & refactor handoff
 
 **Owner**: TBD on pickup
-**Status**: Handoff / Plan (audit complete, **no implementation work done**)
+**Status**: In progress — foundation + first migrations landed (see §0)
 **Branch of record**: `claude/crates-env-refactor-HcuWE`
 **Author of plan**: agent handoff — env-handling sweep
 **Date**: 2026-05-29
+**ADR**: `docs/adr/0086-nebula-env-cross-cutting-reader.md`
+
+## 0. Progress (landed on this branch)
+
+- **`nebula-env` crate created** (cross-cutting; `var`/`var_opt`/`parse`/
+  `parse_or`/`flag`/`flag_or`/`list` + typed `EnvError` + `testing::EnvGuard`).
+  Tested, clippy-clean. Registered in the `CLAUDE.md` layer map and
+  `[workspace.dependencies]`; ADR-0086 records the conventions + the
+  bool-semantics decision (strict, fail-closed — resolves F3 / Q5).
+- **`nebula-log`**: config-precedence test migrated to `EnvGuard` (dropped a
+  hand-rolled `Mutex` lock + 3 raw `unsafe` blocks + the crate `#![allow]`).
+- **`nebula-api`**: OAuth scopes splitter → `nebula_env::list` (1:1);
+  `parse_bool_env` → `nebula_env::flag` (behavior-preserving). All 42 config
+  unit tests green.
+
+**Still open** (this plan, below): log `NEBULA_LOG_COLORS=auto` tri-state
+decision (Q2/Q5 — see ADR-0086 deferred list), api `clear_env` + storage/log
+test-helper convergence on `EnvGuard` (F5 / Phase 3), the registry + drift
+test (Phase 0 / F1), and generated `.env.example` (Phase 4). The api int
+parsers keep their typed `ParseIntError` source (delegation would be lossy).
 
 > **Scope discipline**: this is an audit + refactor plan only. No code in
 > `crates/` or `apps/` was changed. Every finding below cites the
