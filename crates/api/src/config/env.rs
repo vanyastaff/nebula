@@ -53,54 +53,47 @@ pub(super) fn parse_bool_env(suffix: &'static str, default: bool) -> Result<bool
 }
 
 #[cfg(test)]
-#[allow(
-    unsafe_code,
-    reason = "env::{set_var, remove_var} are unsafe under edition 2024"
-)]
 pub(crate) mod tests {
-    /// Serializes env-var manipulation across tests in this module so
-    /// parallel nextest execution does not clobber shared state. We do
-    /// not pull in `temp-env`/`serial_test` just for this.
-    pub(crate) fn env_lock() -> std::sync::MutexGuard<'static, ()> {
-        use std::sync::{Mutex, OnceLock};
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
+    use nebula_env::testing::EnvGuard;
 
-    /// Clears every env var `from_env` reads. Must be called inside
-    /// the lock.
-    pub(crate) fn clear_env() {
-        // SAFETY: protected by `env_lock()` — caller holds the guard.
-        unsafe {
-            for key in [
-                "NEBULA_ENV",
-                "API_JWT_SECRET",
-                "API_BIND_ADDRESS",
-                "API_REQUEST_TIMEOUT",
-                "API_MAX_BODY_SIZE",
-                "API_CORS_ORIGINS",
-                "API_ENABLE_COMPRESSION",
-                "API_ENABLE_TRACING",
-                "API_RATE_LIMIT",
-                "API_KEYS",
-                "API_IDEMPOTENCY_BACKEND",
-                "API_IDEMPOTENCY_TTL_SECS",
-                "API_IDEMPOTENCY_MAX_ENTRIES",
-                "API_IDEMPOTENCY_MAX_REQUEST_BODY_BYTES",
-                "API_IDEMPOTENCY_MAX_RESPONSE_BODY_BYTES",
-                "API_IDEMPOTENCY_SWEEP_INTERVAL_SECS",
-                "API_AUTH_BACKEND",
-                "API_SMTP_HOST",
-                "API_SMTP_PORT",
-                "API_SMTP_USERNAME",
-                "API_SMTP_PASSWORD",
-                "API_SMTP_FROM",
-                "API_SMTP_TLS_MODE",
-            ] {
-                std::env::remove_var(key);
-            }
+    /// Every env var the `from_env` readers consult. Cleared before each test
+    /// so the ambient process environment cannot leak into assertions;
+    /// [`EnvGuard`] records the prior values and restores them on drop.
+    const KNOWN_VARS: &[&str] = &[
+        "NEBULA_ENV",
+        "API_JWT_SECRET",
+        "API_BIND_ADDRESS",
+        "API_REQUEST_TIMEOUT",
+        "API_MAX_BODY_SIZE",
+        "API_CORS_ORIGINS",
+        "API_ENABLE_COMPRESSION",
+        "API_ENABLE_TRACING",
+        "API_RATE_LIMIT",
+        "API_KEYS",
+        "API_IDEMPOTENCY_BACKEND",
+        "API_IDEMPOTENCY_TTL_SECS",
+        "API_IDEMPOTENCY_MAX_ENTRIES",
+        "API_IDEMPOTENCY_MAX_REQUEST_BODY_BYTES",
+        "API_IDEMPOTENCY_MAX_RESPONSE_BODY_BYTES",
+        "API_IDEMPOTENCY_SWEEP_INTERVAL_SECS",
+        "API_AUTH_BACKEND",
+        "API_SMTP_HOST",
+        "API_SMTP_PORT",
+        "API_SMTP_USERNAME",
+        "API_SMTP_PASSWORD",
+        "API_SMTP_FROM",
+        "API_SMTP_TLS_MODE",
+    ];
+
+    /// Acquire an [`EnvGuard`] with every [`KNOWN_VARS`] entry cleared
+    /// (recorded for restoration on drop). The guard's process-global lock
+    /// serializes env mutation across this module's tests, replacing the
+    /// former hand-rolled `env_lock` + `clear_env` pair and their `unsafe`.
+    pub(crate) fn env_guard() -> EnvGuard {
+        let mut guard = EnvGuard::acquire();
+        for key in KNOWN_VARS {
+            guard.remove(key);
         }
+        guard
     }
 }

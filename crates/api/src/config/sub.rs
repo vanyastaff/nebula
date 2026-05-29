@@ -348,24 +348,16 @@ impl Default for PaginationConfig {
 }
 
 #[cfg(test)]
-#[allow(
-    unsafe_code,
-    reason = "env::{set_var, remove_var} are unsafe under edition 2024"
-)]
 mod tests {
     use super::*;
     use crate::config::ApiConfig;
-    use crate::config::env::tests::{clear_env, env_lock};
+    use crate::config::env::tests::env_guard;
 
     #[test]
     fn from_env_idempotency_defaults_to_memory() {
-        let _g = env_lock();
-        clear_env();
-        // SAFETY: protected by env_lock.
-        unsafe {
-            std::env::set_var("NEBULA_ENV", "production");
-            std::env::set_var("API_JWT_SECRET", "this-is-a-32-byte-minimum-secret!!");
-        }
+        let mut env = env_guard();
+        env.set("NEBULA_ENV", "production");
+        env.set("API_JWT_SECRET", "this-is-a-32-byte-minimum-secret!!");
 
         let cfg = ApiConfig::from_env().expect("config must load");
         assert_eq!(cfg.idempotency.backend, IdempotencyBackend::Memory);
@@ -375,58 +367,40 @@ mod tests {
             cfg.idempotency.sweep_interval_secs,
             IdempotencyApiConfig::DEFAULT_SWEEP_INTERVAL_SECS
         );
-
-        clear_env();
     }
 
     #[test]
     fn from_env_idempotency_accepts_postgres_backend() {
-        let _g = env_lock();
-        clear_env();
-        // SAFETY: protected by env_lock.
-        unsafe {
-            std::env::set_var("NEBULA_ENV", "production");
-            std::env::set_var("API_JWT_SECRET", "this-is-a-32-byte-minimum-secret!!");
-            std::env::set_var("API_IDEMPOTENCY_BACKEND", "postgres");
-            std::env::set_var("API_IDEMPOTENCY_TTL_SECS", "3600");
-            std::env::set_var("API_IDEMPOTENCY_SWEEP_INTERVAL_SECS", "120");
-        }
+        let mut env = env_guard();
+        env.set("NEBULA_ENV", "production");
+        env.set("API_JWT_SECRET", "this-is-a-32-byte-minimum-secret!!");
+        env.set("API_IDEMPOTENCY_BACKEND", "postgres");
+        env.set("API_IDEMPOTENCY_TTL_SECS", "3600");
+        env.set("API_IDEMPOTENCY_SWEEP_INTERVAL_SECS", "120");
 
         let cfg = ApiConfig::from_env().expect("config must load");
         assert_eq!(cfg.idempotency.backend, IdempotencyBackend::Postgres);
         assert_eq!(cfg.idempotency.ttl_secs, 3600);
         assert_eq!(cfg.idempotency.sweep_interval_secs, 120);
-
-        clear_env();
     }
 
     #[test]
     fn from_env_idempotency_backend_is_case_insensitive() {
-        let _g = env_lock();
-        clear_env();
-        // SAFETY: protected by env_lock.
-        unsafe {
-            std::env::set_var("NEBULA_ENV", "production");
-            std::env::set_var("API_JWT_SECRET", "this-is-a-32-byte-minimum-secret!!");
-            std::env::set_var("API_IDEMPOTENCY_BACKEND", "POSTGRES");
-        }
+        let mut env = env_guard();
+        env.set("NEBULA_ENV", "production");
+        env.set("API_JWT_SECRET", "this-is-a-32-byte-minimum-secret!!");
+        env.set("API_IDEMPOTENCY_BACKEND", "POSTGRES");
 
         let cfg = ApiConfig::from_env().expect("config must load");
         assert_eq!(cfg.idempotency.backend, IdempotencyBackend::Postgres);
-
-        clear_env();
     }
 
     #[test]
     fn from_env_idempotency_rejects_unknown_backend() {
-        let _g = env_lock();
-        clear_env();
-        // SAFETY: protected by env_lock.
-        unsafe {
-            std::env::set_var("NEBULA_ENV", "production");
-            std::env::set_var("API_JWT_SECRET", "this-is-a-32-byte-minimum-secret!!");
-            std::env::set_var("API_IDEMPOTENCY_BACKEND", "redis");
-        }
+        let mut env = env_guard();
+        env.set("NEBULA_ENV", "production");
+        env.set("API_JWT_SECRET", "this-is-a-32-byte-minimum-secret!!");
+        env.set("API_IDEMPOTENCY_BACKEND", "redis");
 
         let err = ApiConfig::from_env().expect_err("unknown backend must error");
         match err {
@@ -436,20 +410,14 @@ mod tests {
             },
             other => panic!("wrong variant: {other:?}"),
         }
-
-        clear_env();
     }
 
     #[test]
     fn from_env_idempotency_rejects_invalid_ttl() {
-        let _g = env_lock();
-        clear_env();
-        // SAFETY: protected by env_lock.
-        unsafe {
-            std::env::set_var("NEBULA_ENV", "production");
-            std::env::set_var("API_JWT_SECRET", "this-is-a-32-byte-minimum-secret!!");
-            std::env::set_var("API_IDEMPOTENCY_TTL_SECS", "not-a-number");
-        }
+        let mut env = env_guard();
+        env.set("NEBULA_ENV", "production");
+        env.set("API_JWT_SECRET", "this-is-a-32-byte-minimum-secret!!");
+        env.set("API_IDEMPOTENCY_TTL_SECS", "not-a-number");
 
         let err = ApiConfig::from_env().expect_err("non-numeric TTL must error");
         match err {
@@ -458,8 +426,6 @@ mod tests {
             },
             other => panic!("wrong variant: {other:?}"),
         }
-
-        clear_env();
     }
 
     #[test]
@@ -471,14 +437,10 @@ mod tests {
 
     #[test]
     fn from_env_idempotency_rejects_zero_ttl_secs() {
-        let _g = env_lock();
-        clear_env();
-        // SAFETY: protected by env_lock.
-        unsafe {
-            std::env::set_var("NEBULA_ENV", "production");
-            std::env::set_var("API_JWT_SECRET", "this-is-a-32-byte-minimum-secret!!");
-            std::env::set_var("API_IDEMPOTENCY_TTL_SECS", "0");
-        }
+        let mut env = env_guard();
+        env.set("NEBULA_ENV", "production");
+        env.set("API_JWT_SECRET", "this-is-a-32-byte-minimum-secret!!");
+        env.set("API_IDEMPOTENCY_TTL_SECS", "0");
 
         let err = ApiConfig::from_env().expect_err("ttl_secs=0 must error");
         match err {
@@ -487,70 +449,46 @@ mod tests {
             },
             other => panic!("wrong variant: {other:?}"),
         }
-
-        clear_env();
     }
 
     #[test]
     fn from_env_auth_backend_defaults_to_memory() {
-        let _g = env_lock();
-        clear_env();
-        // SAFETY: protected by env_lock.
-        unsafe {
-            std::env::set_var("NEBULA_ENV", "production");
-            std::env::set_var("API_JWT_SECRET", "this-is-a-32-byte-minimum-secret!!");
-        }
+        let mut env = env_guard();
+        env.set("NEBULA_ENV", "production");
+        env.set("API_JWT_SECRET", "this-is-a-32-byte-minimum-secret!!");
 
         let cfg = ApiConfig::from_env().expect("config must load");
         assert_eq!(cfg.auth.backend, AuthBackendKind::Memory);
-
-        clear_env();
     }
 
     #[test]
     fn from_env_auth_backend_accepts_postgres() {
-        let _g = env_lock();
-        clear_env();
-        // SAFETY: protected by env_lock.
-        unsafe {
-            std::env::set_var("NEBULA_ENV", "production");
-            std::env::set_var("API_JWT_SECRET", "this-is-a-32-byte-minimum-secret!!");
-            std::env::set_var("API_AUTH_BACKEND", "postgres");
-        }
+        let mut env = env_guard();
+        env.set("NEBULA_ENV", "production");
+        env.set("API_JWT_SECRET", "this-is-a-32-byte-minimum-secret!!");
+        env.set("API_AUTH_BACKEND", "postgres");
 
         let cfg = ApiConfig::from_env().expect("config must load");
         assert_eq!(cfg.auth.backend, AuthBackendKind::Postgres);
-
-        clear_env();
     }
 
     #[test]
     fn from_env_auth_backend_is_case_insensitive() {
-        let _g = env_lock();
-        clear_env();
-        // SAFETY: protected by env_lock.
-        unsafe {
-            std::env::set_var("NEBULA_ENV", "production");
-            std::env::set_var("API_JWT_SECRET", "this-is-a-32-byte-minimum-secret!!");
-            std::env::set_var("API_AUTH_BACKEND", "PostGres");
-        }
+        let mut env = env_guard();
+        env.set("NEBULA_ENV", "production");
+        env.set("API_JWT_SECRET", "this-is-a-32-byte-minimum-secret!!");
+        env.set("API_AUTH_BACKEND", "PostGres");
 
         let cfg = ApiConfig::from_env().expect("config must load");
         assert_eq!(cfg.auth.backend, AuthBackendKind::Postgres);
-
-        clear_env();
     }
 
     #[test]
     fn from_env_auth_backend_rejects_unknown() {
-        let _g = env_lock();
-        clear_env();
-        // SAFETY: protected by env_lock.
-        unsafe {
-            std::env::set_var("NEBULA_ENV", "production");
-            std::env::set_var("API_JWT_SECRET", "this-is-a-32-byte-minimum-secret!!");
-            std::env::set_var("API_AUTH_BACKEND", "ldap");
-        }
+        let mut env = env_guard();
+        env.set("NEBULA_ENV", "production");
+        env.set("API_JWT_SECRET", "this-is-a-32-byte-minimum-secret!!");
+        env.set("API_AUTH_BACKEND", "ldap");
 
         let err = ApiConfig::from_env().expect_err("unknown backend must error");
         match err {
@@ -560,8 +498,6 @@ mod tests {
             },
             other => panic!("wrong variant: {other:?}"),
         }
-
-        clear_env();
     }
 
     #[test]
@@ -574,30 +510,21 @@ mod tests {
 
     #[test]
     fn from_env_smtp_absent_keeps_none() {
-        let _g = env_lock();
-        clear_env();
-        // SAFETY: protected by env_lock.
-        unsafe {
-            std::env::set_var("NEBULA_ENV", "production");
-            std::env::set_var("API_JWT_SECRET", "this-is-a-32-byte-minimum-secret!!");
-        }
+        let mut env = env_guard();
+        env.set("NEBULA_ENV", "production");
+        env.set("API_JWT_SECRET", "this-is-a-32-byte-minimum-secret!!");
         let cfg = ApiConfig::from_env().expect("config must load");
         assert!(cfg.smtp.is_none(), "missing API_SMTP_HOST must yield None");
-        clear_env();
     }
 
     #[test]
     fn from_env_smtp_present_populates_full_config_with_defaults() {
-        let _g = env_lock();
-        clear_env();
-        // SAFETY: protected by env_lock.
-        unsafe {
-            std::env::set_var("NEBULA_ENV", "production");
-            std::env::set_var("API_JWT_SECRET", "this-is-a-32-byte-minimum-secret!!");
-            std::env::set_var("API_SMTP_HOST", "smtp.example.com");
-            std::env::set_var("API_SMTP_FROM", "noreply@example.com");
-            // PORT, USERNAME, PASSWORD, TLS_MODE all unset — defaults apply.
-        }
+        let mut env = env_guard();
+        env.set("NEBULA_ENV", "production");
+        env.set("API_JWT_SECRET", "this-is-a-32-byte-minimum-secret!!");
+        env.set("API_SMTP_HOST", "smtp.example.com");
+        env.set("API_SMTP_FROM", "noreply@example.com");
+        // PORT, USERNAME, PASSWORD, TLS_MODE all unset — defaults apply.
         let cfg = ApiConfig::from_env().expect("config must load");
         let smtp = cfg.smtp.as_ref().expect("smtp must be populated");
         assert_eq!(smtp.host, "smtp.example.com");
@@ -610,122 +537,92 @@ mod tests {
             SmtpTlsMode::StartTls,
             "port 587 must default to STARTTLS"
         );
-        clear_env();
     }
 
     #[test]
     fn from_env_smtp_465_defaults_to_implicit_tls() {
-        let _g = env_lock();
-        clear_env();
-        // SAFETY: protected by env_lock.
-        unsafe {
-            std::env::set_var("NEBULA_ENV", "production");
-            std::env::set_var("API_JWT_SECRET", "this-is-a-32-byte-minimum-secret!!");
-            std::env::set_var("API_SMTP_HOST", "smtp.example.com");
-            std::env::set_var("API_SMTP_PORT", "465");
-            std::env::set_var("API_SMTP_FROM", "noreply@example.com");
-        }
+        let mut env = env_guard();
+        env.set("NEBULA_ENV", "production");
+        env.set("API_JWT_SECRET", "this-is-a-32-byte-minimum-secret!!");
+        env.set("API_SMTP_HOST", "smtp.example.com");
+        env.set("API_SMTP_PORT", "465");
+        env.set("API_SMTP_FROM", "noreply@example.com");
         let cfg = ApiConfig::from_env().expect("config must load");
         assert_eq!(
             cfg.smtp.as_ref().unwrap().tls,
             SmtpTlsMode::Implicit,
             "port 465 must default to implicit TLS"
         );
-        clear_env();
     }
 
     #[test]
     fn from_env_smtp_rejects_username_without_password() {
-        let _g = env_lock();
-        clear_env();
-        // SAFETY: protected by env_lock.
-        unsafe {
-            std::env::set_var("NEBULA_ENV", "production");
-            std::env::set_var("API_JWT_SECRET", "this-is-a-32-byte-minimum-secret!!");
-            std::env::set_var("API_SMTP_HOST", "smtp.example.com");
-            std::env::set_var("API_SMTP_FROM", "noreply@example.com");
-            std::env::set_var("API_SMTP_USERNAME", "noreply@example.com");
-            // PASSWORD intentionally omitted.
-        }
+        let mut env = env_guard();
+        env.set("NEBULA_ENV", "production");
+        env.set("API_JWT_SECRET", "this-is-a-32-byte-minimum-secret!!");
+        env.set("API_SMTP_HOST", "smtp.example.com");
+        env.set("API_SMTP_FROM", "noreply@example.com");
+        env.set("API_SMTP_USERNAME", "noreply@example.com");
+        // PASSWORD intentionally omitted.
         let err = ApiConfig::from_env().expect_err("USERNAME without PASSWORD must fail closed");
         assert!(
             matches!(err, crate::config::ApiConfigError::SmtpAuthIncomplete),
             "wrong variant: {err:?}"
         );
-        clear_env();
     }
 
     #[test]
     fn from_env_smtp_rejects_password_without_username() {
-        let _g = env_lock();
-        clear_env();
-        // SAFETY: protected by env_lock.
-        unsafe {
-            std::env::set_var("NEBULA_ENV", "production");
-            std::env::set_var("API_JWT_SECRET", "this-is-a-32-byte-minimum-secret!!");
-            std::env::set_var("API_SMTP_HOST", "smtp.example.com");
-            std::env::set_var("API_SMTP_FROM", "noreply@example.com");
-            std::env::set_var("API_SMTP_PASSWORD", "sekret");
-            // USERNAME intentionally omitted.
-        }
+        let mut env = env_guard();
+        env.set("NEBULA_ENV", "production");
+        env.set("API_JWT_SECRET", "this-is-a-32-byte-minimum-secret!!");
+        env.set("API_SMTP_HOST", "smtp.example.com");
+        env.set("API_SMTP_FROM", "noreply@example.com");
+        env.set("API_SMTP_PASSWORD", "sekret");
+        // USERNAME intentionally omitted.
         let err = ApiConfig::from_env().expect_err("PASSWORD without USERNAME must fail closed");
         assert!(
             matches!(err, crate::config::ApiConfigError::SmtpAuthIncomplete),
             "wrong variant: {err:?}"
         );
-        clear_env();
     }
 
     #[test]
     fn from_env_smtp_rejects_missing_from() {
-        let _g = env_lock();
-        clear_env();
-        // SAFETY: protected by env_lock.
-        unsafe {
-            std::env::set_var("NEBULA_ENV", "production");
-            std::env::set_var("API_JWT_SECRET", "this-is-a-32-byte-minimum-secret!!");
-            std::env::set_var("API_SMTP_HOST", "smtp.example.com");
-            // FROM intentionally omitted.
-        }
+        let mut env = env_guard();
+        env.set("NEBULA_ENV", "production");
+        env.set("API_JWT_SECRET", "this-is-a-32-byte-minimum-secret!!");
+        env.set("API_SMTP_HOST", "smtp.example.com");
+        // FROM intentionally omitted.
         let err = ApiConfig::from_env().expect_err("missing API_SMTP_FROM must error");
         assert!(
             matches!(err, crate::config::ApiConfigError::SmtpFromMissing),
             "wrong variant: {err:?}"
         );
-        clear_env();
     }
 
     #[test]
     fn from_env_smtp_rejects_from_without_at() {
-        let _g = env_lock();
-        clear_env();
-        // SAFETY: protected by env_lock.
-        unsafe {
-            std::env::set_var("NEBULA_ENV", "production");
-            std::env::set_var("API_JWT_SECRET", "this-is-a-32-byte-minimum-secret!!");
-            std::env::set_var("API_SMTP_HOST", "smtp.example.com");
-            std::env::set_var("API_SMTP_FROM", "not-an-email");
-        }
+        let mut env = env_guard();
+        env.set("NEBULA_ENV", "production");
+        env.set("API_JWT_SECRET", "this-is-a-32-byte-minimum-secret!!");
+        env.set("API_SMTP_HOST", "smtp.example.com");
+        env.set("API_SMTP_FROM", "not-an-email");
         let err = ApiConfig::from_env().expect_err("invalid API_SMTP_FROM must error");
         assert!(
             matches!(err, crate::config::ApiConfigError::SmtpFromInvalid),
             "wrong variant: {err:?}"
         );
-        clear_env();
     }
 
     #[test]
     fn from_env_smtp_rejects_unknown_tls_mode() {
-        let _g = env_lock();
-        clear_env();
-        // SAFETY: protected by env_lock.
-        unsafe {
-            std::env::set_var("NEBULA_ENV", "production");
-            std::env::set_var("API_JWT_SECRET", "this-is-a-32-byte-minimum-secret!!");
-            std::env::set_var("API_SMTP_HOST", "smtp.example.com");
-            std::env::set_var("API_SMTP_FROM", "noreply@example.com");
-            std::env::set_var("API_SMTP_TLS_MODE", "weird");
-        }
+        let mut env = env_guard();
+        env.set("NEBULA_ENV", "production");
+        env.set("API_JWT_SECRET", "this-is-a-32-byte-minimum-secret!!");
+        env.set("API_SMTP_HOST", "smtp.example.com");
+        env.set("API_SMTP_FROM", "noreply@example.com");
+        env.set("API_SMTP_TLS_MODE", "weird");
         let err = ApiConfig::from_env().expect_err("unknown TLS mode must error");
         match err {
             crate::config::ApiConfigError::ParseEnum { var, raw } => {
@@ -734,19 +631,14 @@ mod tests {
             },
             other => panic!("wrong variant: {other:?}"),
         }
-        clear_env();
     }
 
     #[test]
     fn from_env_idempotency_rejects_zero_max_entries() {
-        let _g = env_lock();
-        clear_env();
-        // SAFETY: protected by env_lock.
-        unsafe {
-            std::env::set_var("NEBULA_ENV", "production");
-            std::env::set_var("API_JWT_SECRET", "this-is-a-32-byte-minimum-secret!!");
-            std::env::set_var("API_IDEMPOTENCY_MAX_ENTRIES", "0");
-        }
+        let mut env = env_guard();
+        env.set("NEBULA_ENV", "production");
+        env.set("API_JWT_SECRET", "this-is-a-32-byte-minimum-secret!!");
+        env.set("API_IDEMPOTENCY_MAX_ENTRIES", "0");
 
         let err = ApiConfig::from_env().expect_err("max_entries=0 must error");
         match err {
@@ -755,7 +647,5 @@ mod tests {
             },
             other => panic!("wrong variant: {other:?}"),
         }
-
-        clear_env();
     }
 }
