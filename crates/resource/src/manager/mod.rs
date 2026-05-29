@@ -2575,13 +2575,16 @@ impl Manager {
         result: &Result<crate::guard::ResourceGuard<R>, Error>,
         started: Instant,
     ) {
+        // Resolve the resource key once: `R::key()` re-validates and re-interns
+        // the literal on each call, and the error path emits up to two events.
+        let key = R::key();
         match result {
             Ok(_) => {
                 if let Some(m) = &self.metrics {
                     m.record_acquire();
                 }
                 self.emit(ResourceEvent::AcquireSuccess {
-                    key: R::key(),
+                    key,
                     duration: started.elapsed(),
                 });
             },
@@ -2597,10 +2600,10 @@ impl Manager {
                 // `AcquireFailed` stream remains the canonical "acquire
                 // didn't succeed" feed.
                 if matches!(e.kind(), crate::error::ErrorKind::Backpressure) {
-                    self.emit(ResourceEvent::BackpressureDetected { key: R::key() });
+                    self.emit(ResourceEvent::BackpressureDetected { key: key.clone() });
                 }
                 self.emit(ResourceEvent::AcquireFailed {
-                    key: R::key(),
+                    key,
                     error: e.to_string(),
                 });
             },
