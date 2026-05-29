@@ -502,7 +502,12 @@ pub struct Manager {
     pub(super) registry: Registry,
     pub(super) cancel: CancellationToken,
     pub(super) metrics: Option<ResourceOpsMetrics>,
-    pub(super) event_bus: EventBus<ResourceEvent>,
+    /// Shared lifecycle-event sink. Held behind `Arc` so the same bus can be
+    /// wired into per-resource [`RecoveryGate`](crate::recovery::gate::RecoveryGate)s
+    /// and into each [`ResourceGuard`](crate::guard::ResourceGuard) (for its
+    /// `Released`-on-drop emit) without exposing the underlying broadcast
+    /// sender across module boundaries.
+    pub(super) event_bus: Arc<EventBus<ResourceEvent>>,
     pub(super) release_queue: Arc<ReleaseQueue>,
     pub(super) release_queue_handle: tokio::sync::Mutex<Option<ReleaseQueueHandle>>,
     /// Tracks active `ResourceGuard`s for drain-aware shutdown.
@@ -523,7 +528,7 @@ impl Manager {
 
     /// Creates a new empty manager with the given configuration.
     pub fn with_config(config: ManagerConfig) -> Self {
-        let event_bus = EventBus::new(256);
+        let event_bus = Arc::new(EventBus::new(256));
         let cancel = CancellationToken::new();
         let (release_queue, release_queue_handle) =
             ReleaseQueue::with_cancel(config.release_queue_workers, cancel.clone());
@@ -568,9 +573,14 @@ impl Manager {
 
     /// Subscribes to resource lifecycle events.
     ///
-    /// Returns a [`Subscriber`] that receives [`ResourceEvent`]s
-    /// emitted during registration, removal, and acquisition. Slow consumers
-    /// that fall behind the 256-event buffer will observe lagged events.
+    /// Returns a [`Subscriber`](crate::Subscriber) that receives
+    /// [`ResourceEvent`]s emitted during registration, removal, and
+    /// acquisition. The buffer is fixed at 256 events: a slow consumer that
+    /// falls behind has the *oldest* unread events skipped (the subscriber
+    /// auto-recovers and re-positions to the latest event — it never returns
+    /// a lag error). Use
+    /// [`Subscriber::lagged_count`](crate::Subscriber::lagged_count) to
+    /// observe how many events were skipped.
     pub fn subscribe_events(&self) -> crate::Subscriber<ResourceEvent> {
         self.event_bus.subscribe()
     }
@@ -688,6 +698,17 @@ impl Manager {
         // it *before* building the runtime.)
 
         let key = R::key();
+
+        // Wire the manager's event bus into the optional recovery gate so its
+        // state transitions emit `ResourceEvent::RecoveryGateChanged`.
+        // Idempotent at the `RecoveryGate` end: a gate handed to a second
+        // manager (test composition, scoped registry) keeps its first sink
+        // and ignores this call. Cheap and lock-free — `OnceLock::set` is one
+        // CAS over a cloned `Arc`.
+        if let Some(gate) = recovery_gate.as_deref() {
+            gate.set_event_sink(Arc::clone(&self.event_bus), key.clone());
+        }
+
         let managed = Arc::new(ManagedResource {
             resource,
             config: arc_swap::ArcSwap::from_pointee(config),
@@ -2025,6 +2046,29 @@ impl Manager {
         self.reject_if_tainted_or_shutting_down_post_count::<R>(&managed)?;
         let gate_admission = admit_through_gate(&managed.recovery_gate)?;
 
+        // Publish a `RetryAttempt` event when this acquire is the recovery
+        // probe (the CAS-claimed single-probe slot that follows a transient
+        // backend failure). `backoff_on_fail` carries the delay the gate
+        // would impose *if this probe fails again* — the next caller's wait,
+        // not a wait this acquire incurs. Emitted **before** `dispatch()` so
+        // observers see the attempt go out rather than only the result. The
+        // error field carries the prior failure message snapshotted in
+        // `admit_through_gate` before the CAS rotated the gate.
+        if let gate::GateAdmission::Probe {
+            attempt,
+            backoff_on_fail,
+            last_failure,
+            ..
+        } = &gate_admission
+        {
+            let _ = self.event_bus.emit(ResourceEvent::RetryAttempt {
+                key: R::key(),
+                attempt: *attempt,
+                backoff: *backoff_on_fail,
+                error: last_failure.clone().unwrap_or_default(),
+            });
+        }
+
         let result = dispatch().await;
 
         // Settle the gate ticket based on the acquire result. #322: this
@@ -2035,7 +2079,13 @@ impl Manager {
         settle_gate_admission(gate_admission, &result);
         self.record_acquire_result(&result, started);
         match result {
-            Ok(h) => Ok(h.with_drain_tracker(in_flight.release_to_guard())),
+            // Attach the manager's event bus so the guard's `Drop` emits
+            // `ResourceEvent::Released`. Done here, on the success path only,
+            // because failed acquires never minted a guard to begin with —
+            // there is nothing to release.
+            Ok(h) => Ok(h
+                .with_drain_tracker(in_flight.release_to_guard())
+                .with_event_bus(Arc::clone(&self.event_bus))),
             Err(e) => Err(e),
         }
     }

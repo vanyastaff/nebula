@@ -1142,6 +1142,111 @@ async fn acquire_emits_success_event() {
     );
 }
 
+/// Dropping a manager-minted guard must emit `ResourceEvent::Released`.
+///
+/// Regression guard for the EventBus migration: the guard's release sink is
+/// wired by `Manager::run_acquire` (`with_event_bus`). If that wiring is
+/// dropped, acquires still succeed and every other test stays green — only
+/// this assertion fails — so the `Released` lifecycle signal is pinned here.
+#[tokio::test]
+async fn drop_guard_emits_released_event() {
+    let manager = Manager::new();
+    let resource = ResidentTestResource::new();
+    let resident_rt =
+        ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
+
+    manager
+        .register(RegistrationSpec {
+            resource,
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident_for::<ResidentTestResource>(),
+            recovery_gate: None,
+        })
+        .unwrap();
+
+    let mut rx = manager.subscribe_events();
+
+    let ctx = test_ctx();
+    let handle: ResourceGuard<ResidentTestResource> = manager
+        .acquire_resident(&ctx, &AcquireOptions::default())
+        .await
+        .expect("acquire should succeed");
+
+    // Drop the guard — its `Drop` impl runs the release pathway and emits
+    // `Released` after the recycle/destroy effect.
+    drop(handle);
+
+    let mut saw_released = false;
+    while let Some(event) = rx.try_recv() {
+        if matches!(
+            &event,
+            nebula_resource::ResourceEvent::Released { key, .. }
+                if key == &resource_key!("test-resident")
+        ) {
+            saw_released = true;
+            break;
+        }
+    }
+    assert!(
+        saw_released,
+        "expected a Released event after the guard was dropped",
+    );
+}
+
+/// Registering a resource with a recovery gate must wire the manager's event
+/// bus into that gate, so its state transitions surface as
+/// `ResourceEvent::RecoveryGateChanged`.
+///
+/// Regression guard for the EventBus migration: the sink is attached in
+/// `Manager::register` (`gate.set_event_sink`). If that wiring is dropped the
+/// gate still functions but goes silent — only this assertion catches it.
+#[tokio::test]
+async fn recovery_gate_transition_emits_event_via_manager_bus() {
+    let manager = Manager::new();
+    let resource = ResidentTestResource::new();
+    let resident_rt =
+        ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
+    let gate = Arc::new(RecoveryGate::new(RecoveryGateConfig::default()));
+
+    manager
+        .register(RegistrationSpec {
+            resource,
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident_for::<ResidentTestResource>(),
+            recovery_gate: Some(Arc::clone(&gate)),
+        })
+        .unwrap();
+
+    let mut rx = manager.subscribe_events();
+
+    // Drive the gate Idle -> InProgress; the CAS publishes the transition
+    // through the sink the manager wired at registration time.
+    let ticket = gate.try_begin().expect("gate starts idle");
+    ticket.resolve();
+
+    let mut saw_gate_change = false;
+    while let Some(event) = rx.try_recv() {
+        if matches!(
+            &event,
+            nebula_resource::ResourceEvent::RecoveryGateChanged { key, .. }
+                if key == &resource_key!("test-resident")
+        ) {
+            saw_gate_change = true;
+            break;
+        }
+    }
+    assert!(
+        saw_gate_change,
+        "expected a RecoveryGateChanged event after the gate transitioned",
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Pool concurrency scenarios
 // ---------------------------------------------------------------------------

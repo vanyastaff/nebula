@@ -53,11 +53,8 @@ pub(super) enum GateAdmission {
     /// without re-reading state (which would race the ticket).
     Probe {
         ticket: RecoveryTicket,
-        #[allow(dead_code)]
         attempt: u32,
-        #[allow(dead_code)]
         backoff_on_fail: Duration,
-        #[allow(dead_code)]
         last_failure: Option<String>,
     },
 }
