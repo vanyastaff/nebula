@@ -23,11 +23,11 @@ pub use nebula_validator::{Predicate, Rule};
 pub use crate::{
     BooleanField, CodeField, ComputedField, ComputedReturn, DynamicField, EvalFuture, Expression,
     ExpressionContext, ExpressionMode, Field, FieldKey, FieldPath, FieldValue, FieldValues,
-    FileField, HasSchema, HasSelectOptions, InputHint, KdfParams, ListField, LoaderContext,
-    LoaderRegistry, ModeField, ModeVariant, NoticeField, NoticeSeverity, NumberField, ObjectField,
-    RequiredMode, ResolvedValues, Schema, SchemaBuilder, SecretField, SecretValue, SecretWire,
-    SelectField, SelectOption, Severity, StringField, Transformer, ValidSchema, ValidValues,
-    ValidationError, ValidationReport, VisibilityMode, builder::FieldCollector, field_key,
+    FileField, HasSchema, HasSelectOptions, InputHint, ListField, LoaderContext, LoaderRegistry,
+    ModeField, ModeVariant, NoticeField, NoticeSeverity, NumberField, ObjectField, RequiredMode,
+    ResolvedValues, Schema, SchemaBuilder, SecretField, SecretValue, SecretWire, SelectField,
+    SelectOption, Severity, StringField, Transformer, ValidSchema, ValidValues, ValidationError,
+    ValidationReport, VisibilityMode, builder::FieldCollector, field_key,
 };
 
 #[cfg(test)]
@@ -57,8 +57,7 @@ mod coverage_smoke {
         // Rule-building.
         let _: Option<Rule> = None;
         let _: Option<Predicate> = None;
-        // Secret / KDF.
-        let _: Option<KdfParams> = None;
+        // Secret material.
         let _: Option<SecretValue> = None;
         {
             use crate::SecretString;

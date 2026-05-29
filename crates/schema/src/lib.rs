@@ -158,7 +158,7 @@ pub mod prelude;
 pub(crate) mod rule_ref;
 /// Top-level schema aggregate.
 pub mod schema;
-/// Secret value types, optional KDF, and `SecretWire`.
+/// Secret value types and `SecretWire`.
 pub mod secret;
 /// Value transformer definitions.
 pub mod transformer;
@@ -232,9 +232,7 @@ pub use nebula_validator::{Predicate, Rule};
 pub use option::SelectOption;
 pub use path::{FieldPath, PathSegment};
 pub use schema::{Schema, SchemaBuilder};
-pub use secret::{
-    KdfError, KdfParams, SECRET_REDACTED, SecretBytes, SecretString, SecretValue, SecretWire,
-};
+pub use secret::{SECRET_REDACTED, SecretBytes, SecretString, SecretValue, SecretWire};
 pub use transformer::Transformer;
 pub use validated::{
     FieldHandle, ResolvedLookup, ResolvedValues, SchemaFlags, ValidSchema, ValidValues,
@@ -253,5 +251,10 @@ pub mod __private {
     //! Re-exports used by `nebula-schema-macros`-generated code.
     //!
     //! Not part of the stable API. Do not depend on these from user code.
-    pub use tracing;
+    //!
+    //! `serde_json` is re-exported here so derive output can reach it via
+    //! `nebula_schema::__private::serde_json` instead of a bare `::serde_json`
+    //! path — the latter only resolves if the deriving crate happens to have an
+    //! unrenamed `serde_json` dependency of its own.
+    pub use {serde_json, tracing};
 }

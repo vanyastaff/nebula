@@ -66,6 +66,7 @@ pub(crate) fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
 
     let ty_name_str = ty_name.to_string();
     Ok(quote! {
+        #[automatically_derived]
         impl #impl_g #crate_path::HasSchema for #ty_name #ty_g #where_g {
             fn schema() -> #crate_path::ValidSchema {
                 static __CACHE: ::std::sync::OnceLock<#crate_path::ValidSchema> =
@@ -241,7 +242,11 @@ fn build_field_expr(
         if field_attr.enum_select {
             match default {
                 DefaultLit::Str(s) => {
-                    expr = quote! { #expr.default(::serde_json::Value::String(#s.to_owned())) };
+                    expr = quote! {
+                        #expr.default(
+                            #crate_path::__private::serde_json::Value::String(#s.to_owned())
+                        )
+                    };
                 },
                 _ => {
                     return Err(syn::Error::new_spanned(
@@ -251,7 +256,7 @@ fn build_field_expr(
                 },
             }
         } else {
-            let default_tokens = default_lit_tokens(default, inner, field_name)?;
+            let default_tokens = default_lit_tokens(default, inner, field_name, crate_path)?;
             expr = quote! { #expr.default(#default_tokens) };
         }
     }
@@ -399,6 +404,7 @@ fn default_lit_tokens(
     lit: &DefaultLit,
     inner: &FieldKind,
     field_name: &Ident,
+    crate_path: &TokenStream2,
 ) -> syn::Result<TokenStream2> {
     let mismatch = |expected: &str, got: &str| {
         syn::Error::new_spanned(
@@ -409,30 +415,34 @@ fn default_lit_tokens(
     match (inner, lit) {
         // String-ish targets accept only string defaults.
         (FieldKind::String, DefaultLit::Str(s)) => Ok(quote! {
-            ::serde_json::Value::String(#s.to_owned())
+            #crate_path::__private::serde_json::Value::String(#s.to_owned())
         }),
         (FieldKind::String, _) => Err(mismatch("a string literal", "non-string literal")),
 
         // Integer targets accept integer defaults.
         (FieldKind::IntegerNumber, DefaultLit::Int(i)) => Ok(quote! {
-            ::serde_json::Value::Number(::serde_json::Number::from(#i))
+            #crate_path::__private::serde_json::Value::Number(
+                #crate_path::__private::serde_json::Number::from(#i)
+            )
         }),
         (FieldKind::IntegerNumber, _) => Err(mismatch("an integer literal", "non-integer literal")),
 
         // Float targets accept both integer (coerced) and float literals.
         (FieldKind::FloatNumber, DefaultLit::Float(f)) => Ok(quote! {
-            ::serde_json::Value::Number(
-                ::serde_json::Number::from_f64(#f)
+            #crate_path::__private::serde_json::Value::Number(
+                #crate_path::__private::serde_json::Number::from_f64(#f)
                     .expect("derive-provided float default is finite")
             )
         }),
         (FieldKind::FloatNumber, DefaultLit::Int(i)) => Ok(quote! {
-            ::serde_json::Value::Number(::serde_json::Number::from(#i))
+            #crate_path::__private::serde_json::Value::Number(
+                #crate_path::__private::serde_json::Number::from(#i)
+            )
         }),
         (FieldKind::FloatNumber, _) => Err(mismatch("a numeric literal", "non-numeric literal")),
 
         (FieldKind::Boolean, DefaultLit::Bool(b)) => Ok(quote! {
-            ::serde_json::Value::Bool(#b)
+            #crate_path::__private::serde_json::Value::Bool(#b)
         }),
         (FieldKind::Boolean, _) => Err(mismatch("a bool literal", "non-bool literal")),
 

@@ -44,6 +44,13 @@ pub trait ExpressionContext: Send + Sync {
     /// Evaluate a parsed expression AST and return the resulting JSON value.
     ///
     /// Errors should use code `"expression.runtime"`.
+    ///
+    /// cancel-safe: implementors SHOULD be cancel-safe.
+    /// [`ValidValues::resolve`](crate::ValidValues::resolve) drives this future
+    /// under the caller's executor and may drop it at the `.await` if the
+    /// surrounding task is cancelled, so an `evaluate` impl that
+    /// performs external side effects must tolerate being dropped mid-flight
+    /// (e.g. be idempotent or detach durable work via its own `spawn`).
     fn evaluate<'a>(&'a self, ast: &'a ExpressionAst) -> EvalFuture<'a>;
 }
 

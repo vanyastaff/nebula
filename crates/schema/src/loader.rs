@@ -122,6 +122,10 @@ fn redact_secrets_in_value_for_loader(field: &Field, value: &mut FieldValue) {
             },
         ) => {
             let Some(var) = mode.variants.iter().find(|v| v.key == mode_key.as_str()) else {
+                // Active variant cannot be determined: over-redact the payload
+                // rather than risk handing nested secret material to a loader.
+                // Symmetric with the `Field::Mode` + `Object` arm below.
+                **mv = FieldValue::Literal(Json::String(SECRET_REDACTED.to_owned()));
                 return;
             };
             redact_secrets_in_value_for_loader(&var.field, mv.as_mut());
@@ -150,6 +154,27 @@ fn redact_secrets_in_value_for_loader(field: &Field, value: &mut FieldValue) {
             };
             redact_secrets_in_value_for_loader(&var.field, mv);
         },
+        // A structured-typed secret-bearing field whose value is not the
+        // matching structured shape (e.g. a `Literal` blob handed to an
+        // `Object`/`List`/`Mode` field via the unvalidated `FieldValues::set`):
+        // over-redact the whole value. The blob's serialized form could carry a
+        // nested secret's plaintext, and recursion can't descend a non-matching
+        // shape. Mirrors `context::strip_secret_value`'s blob-bypass defense.
+        //
+        // Scope note: the matching-shape arms above redact every *declared*
+        // `Field::Secret` leaf, and this arm collapses non-matching blobs. They
+        // do NOT drop *undeclared* sibling keys inside a matching `Object`/`List`
+        // (which `context::strip_secrets_scope` does, via `keep_undeclared=false`,
+        // to stop predicate-path smuggling). That divergence is deliberate: an
+        // undeclared key holds caller-supplied non-schema data, not a declared
+        // secret (the declared secret is already redacted), so passing it to a
+        // loader is not a secret leak — the predicate-context boundary has a
+        // stricter need that does not apply here.
+        (Field::Object(_) | Field::List(_) | Field::Mode(_), _)
+            if crate::context::field_subtree_has_secret(field) =>
+        {
+            *value = FieldValue::Literal(Json::String(SECRET_REDACTED.to_owned()));
+        },
         _ => {},
     }
 }
@@ -174,6 +199,10 @@ impl<T: Send + 'static> Loader<T> {
     /// # Errors
     ///
     /// Returns any [`ValidationError`] produced by the wrapped loader.
+    ///
+    /// cancel-safe: depends on the wrapped closure. `call` holds no state and
+    /// only awaits the loader future, so cancellation simply drops that future;
+    /// any side-effect cleanup is the loader author's responsibility.
     pub async fn call(&self, context: LoaderContext) -> Result<LoaderResult<T>, ValidationError> {
         (self.0)(context).await
     }
@@ -315,6 +344,9 @@ impl LoaderRegistry {
     /// Returns `ValidationError` with code `loader.not_registered` when `key`
     /// is not registered, or `loader.failed` if the loader returns an error.
     /// Both errors carry the requesting field's path (from `context.field_key`).
+    ///
+    /// cancel-safe: the registry holds no mutable state; a cancelled call drops
+    /// the in-flight loader future (see [`Loader::call`]).
     #[tracing::instrument(
         level = "info",
         target = "nebula_schema::loader",
@@ -362,6 +394,9 @@ impl LoaderRegistry {
     /// Returns `ValidationError` with code `loader.not_registered` when `key`
     /// is not registered, or `loader.failed` if the loader returns an error.
     /// Both errors carry the requesting field's path (from `context.field_key`).
+    ///
+    /// cancel-safe: the registry holds no mutable state; a cancelled call drops
+    /// the in-flight loader future (see [`Loader::call`]).
     #[tracing::instrument(
         level = "info",
         target = "nebula_schema::loader",
@@ -668,5 +703,73 @@ mod tests {
         let ctx = LoaderContext::new("k", values).with_secrets_redacted(&schema);
         let v = ctx.values.get_by_str("api_key").expect("api_key");
         assert_eq!(*v, redacted_literal());
+    }
+
+    #[test]
+    fn with_secrets_redacted_object_literal_blob_is_over_redacted() {
+        // A secret-bearing `Field::Object` whose value arrives as a `Literal`
+        // JSON blob (reachable via the unvalidated `FieldValues::set`, never via
+        // `from_json`) must be over-redacted wholesale: recursion can't descend a
+        // non-matching shape, so a nested secret's plaintext would otherwise reach
+        // the loader. Loader-side mirror of context.rs's
+        // `structured_field_with_literal_blob_does_not_leak_nested_secret`.
+        let schema = Schema::builder()
+            .add(
+                Field::object(field_key!("cfg"))
+                    .add(Field::secret(field_key!("api_key")))
+                    .add(Field::string(field_key!("label"))),
+            )
+            .build()
+            .expect("valid schema");
+        let mut values = FieldValues::new();
+        values.set(
+            k("cfg"),
+            FieldValue::Literal(json!({ "api_key": "PLAINTEXT-LEAK", "label": "x" })),
+        );
+        let ctx = LoaderContext::new("k", values).with_secrets_redacted(&schema);
+        let cfg = ctx.values.get_by_str("cfg").expect("cfg");
+        assert_eq!(*cfg, redacted_literal());
+        assert!(
+            !format!("{cfg:?}").contains("PLAINTEXT-LEAK"),
+            "blob plaintext reached the loader: {cfg:?}"
+        );
+    }
+
+    #[test]
+    fn with_secrets_redacted_typed_mode_unknown_variant_over_redacts() {
+        // A typed `FieldValue::Mode` envelope whose mode key matches no declared
+        // variant: the payload must be over-redacted (the active variant — and
+        // thus which leaves are secret — cannot be determined). Covers the typed
+        // `Mode { value: Some(..) }` unknown-variant arm; the `Field::Mode` +
+        // `Object` envelope path is covered by the tests above.
+        let schema = Schema::builder()
+            .add(Field::mode(field_key!("auth")).variant(
+                "oauth",
+                "OAuth",
+                Field::object(field_key!("creds")).add(Field::secret(field_key!("client_secret"))),
+            ))
+            .build()
+            .expect("valid schema");
+        let mut values = FieldValues::new();
+        values.set(
+            k("auth"),
+            FieldValue::Mode {
+                mode: k("nonexistent"),
+                value: Some(Box::new(FieldValue::from_json(
+                    json!({ "client_secret": "PLAINTEXT-LEAK" }),
+                ))),
+            },
+        );
+        let ctx = LoaderContext::new("k", values).with_secrets_redacted(&schema);
+        let auth = ctx.values.get_by_str("auth").expect("auth");
+        let FieldValue::Mode {
+            value: Some(payload),
+            ..
+        } = auth
+        else {
+            panic!("expected mode envelope, got {auth:?}");
+        };
+        assert_eq!(**payload, redacted_literal());
+        assert!(!format!("{auth:?}").contains("PLAINTEXT-LEAK"));
     }
 }

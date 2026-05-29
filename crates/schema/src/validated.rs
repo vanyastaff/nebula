@@ -10,7 +10,6 @@ use std::{
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
-use zeroize::Zeroize;
 
 use crate::{
     error::{Severity, ValidationError, ValidationReport},
@@ -319,7 +318,6 @@ impl ValidSchema {
     /// let full = FieldValues::from_json(json!({"name": "Alice"})).unwrap();
     /// assert!(schema.validate(&full).is_ok());
     /// ```
-    #[allow(clippy::result_large_err)]
     #[tracing::instrument(
         level = "debug",
         target = "nebula_schema::validate",
@@ -455,22 +453,29 @@ impl ValidValues {
 
     /// Resolve all `FieldValue::Expression` entries by evaluating them through
     /// `ctx`, then **promote** `Field::Secret` string literals to
-    /// `FieldValue::SecretLiteral` (and optional KDF) before the final
-    /// schema-validate pass.
+    /// `FieldValue::SecretLiteral` before the final schema-validate pass.
     ///
     /// **Expression fast path:** when `schema.flags().uses_expressions == false`,
     /// expression resolution is skipped; **secret promotion still runs** so
     /// `ResolvedValues` is consistent for secret fields.
     ///
     /// After evaluating each expression the tree is re-validated on resolved
-    /// literals. If any expression evaluation, KDF, or post-resolve type/rule
-    /// check fails, errors are returned as a [`ValidationReport`].
+    /// literals. If any expression evaluation or post-resolve type/rule check
+    /// fails, errors are returned as a [`ValidationReport`].
     ///
     /// # Errors
     ///
     /// Returns `Err(ValidationReport)` when any expression evaluation fails
     /// or when a resolved value violates a field rule.
-    #[allow(clippy::result_large_err)]
+    ///
+    /// # Cancellation
+    ///
+    /// cancel-safe: yes. `resolve` performs no external side effects of its own
+    /// — it rewrites an owned in-memory value tree and accumulates a report — so
+    /// dropping the future at any `.await` discards the partially-resolved tree
+    /// with nothing persisted. The only `.await` points are calls into the
+    /// caller-supplied [`ExpressionContext::evaluate`]; any side effects there
+    /// are that impl's responsibility (see the trait's cancel-safety note).
     #[tracing::instrument(
         level = "debug",
         target = "nebula_schema::resolve",
@@ -780,8 +785,8 @@ const fn field_value_shape_for_errors(v: &FieldValue) -> &'static str {
     }
 }
 
-/// Promote string literals to [`FieldValue::SecretLiteral`] for secret fields, invoking KDFs when
-/// configured. Recurses through object/list/mode containers.
+/// Promote string literals to [`FieldValue::SecretLiteral`] for secret fields.
+/// Recurses through object/list/mode containers.
 fn promote_secrets_in_value(
     field: &Field,
     value: &mut FieldValue,
@@ -789,7 +794,7 @@ fn promote_secrets_in_value(
     report: &mut ValidationReport,
 ) {
     match (field, &mut *value) {
-        (Field::Secret(secret), v) => promote_secret_value(secret, v, path, report),
+        (Field::Secret(_), v) => promote_secret_value(v, path, report),
         (Field::Object(obj), FieldValue::Object(map)) => {
             for ch in &obj.fields {
                 if let Some(v) = map.get_mut(ch.key()) {
@@ -845,36 +850,17 @@ fn promote_secrets_in_value(
     }
 }
 
-fn promote_secret_value(
-    secret: &crate::field::SecretField,
-    value: &mut FieldValue,
-    path: &FieldPath,
-    report: &mut ValidationReport,
-) {
+fn promote_secret_value(value: &mut FieldValue, path: &FieldPath, report: &mut ValidationReport) {
     use serde_json::Value;
     match value {
         FieldValue::Literal(Value::String(s)) => {
-            let mut password = std::mem::take(s);
-            *value = if let Some(kdf) = &secret.kdf {
-                match kdf.hash_password(password.as_bytes()) {
-                    Ok(sv) => {
-                        password.zeroize();
-                        FieldValue::SecretLiteral(sv)
-                    },
-                    Err(e) => {
-                        *s = password;
-                        report.push(
-                            ValidationError::builder("secret.kdf")
-                                .at(path.clone())
-                                .message(e.to_string())
-                                .build(),
-                        );
-                        return;
-                    },
-                }
-            } else {
-                FieldValue::SecretLiteral(SecretValue::string(password))
-            };
+            // Move the plaintext out of the JSON literal into a zeroizing
+            // `SecretString` (no copy left behind: `mem::take` empties the
+            // source `String`, which is then dropped as part of the replaced
+            // `Literal`). Hashing/KDF is a credential-layer concern
+            // (`nebula-credential`), not the schema layer's.
+            let password = std::mem::take(s);
+            *value = FieldValue::SecretLiteral(SecretValue::string(password));
         },
         FieldValue::Literal(_) => report.push(
             ValidationError::builder("type_mismatch")

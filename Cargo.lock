@@ -4064,7 +4064,6 @@ dependencies = [
 name = "nebula-schema"
 version = "0.1.0"
 dependencies = [
- "argon2",
  "codspeed-criterion-compat",
  "hex",
  "indexmap",
@@ -4081,7 +4080,6 @@ dependencies = [
  "serde_json",
  "smallvec",
  "subtle",
- "thiserror",
  "tokio",
  "tracing",
  "trybuild",

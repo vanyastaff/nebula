@@ -1,143 +1,21 @@
-//! Secret material and optional KDF parameters for `Field::Secret`.
+//! Secret material types for `Field::Secret`.
 //!
-//! `SecretValue` is **not** encryption-at-rest (that is `nebula-credential` /
-//! storage). It **does** provide zeroizing buffers, redacted `Debug` /
-//! `Display` / `Serialize` defaults, an audited [`SecretString::expose`] /
-//! [`SecretBytes::expose`], and an explicit [`SecretWire`] for callers that
-//! must persist plaintext to an already-encrypted channel.
-//!
-//! KDF cost / salt bounds align with **RFC 9106 §4** ("Recommended values"
-//! for Argon2id at server-side cost). See `MIN_KDF_MEMORY_KIB` /
-//! `MAX_KDF_MEMORY_KIB` (and the matching `*_TIME_COST`, `*_PARALLELISM`,
-//! `*_SALT_BYTES`, `*_OUTPUT_BYTES` constants exported from this module).
+//! `SecretValue` is **not** encryption-at-rest, and **not** a key-derivation
+//! layer — both belong to `nebula-credential` / storage, which own the
+//! AES-256-GCM + Argon2id pipeline. This module provides only the in-memory
+//! hygiene a schema layer needs: zeroizing buffers, redacted `Debug` /
+//! `Display` / `Serialize` defaults, a constant-time `PartialEq`, an audited
+//! [`SecretString::expose`] / [`SecretBytes::expose`], and an explicit
+//! [`SecretWire`] for callers that must serialize plaintext to an
+//! already-encrypted channel.
 
 use std::fmt;
 
-use argon2::{Argon2, Params};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use thiserror::Error;
 use zeroize::Zeroizing;
 
 /// String returned by JSON helpers when a secret must not be leaked on the wire.
 pub const SECRET_REDACTED: &str = "<redacted>";
-
-// ── KDF error + salt ---------------------------------------------------------
-
-/// Failure while hashing a secret at resolve time.
-#[derive(Debug, Error)]
-pub enum KdfError {
-    /// User-facing misconfiguration in `KdfParams` (including invalid salt
-    /// length/parity) when the failure is not a [`hex::FromHexError`].
-    #[error("invalid KDF parameters: {0}")]
-    InvalidParams(String),
-    /// Invalid hex in `salt_hex` (chained from [`hex::FromHexError`]).
-    #[error("invalid KDF parameters: {0}")]
-    InvalidSaltHex(#[from] hex::FromHexError),
-    /// Argon2 `Params` construction failed (e.g. cost tuple out of range for the
-    /// underlying CSPRNG parameters).
-    #[error("invalid KDF parameters: {0}")]
-    Argon2Params(#[source] argon2::Error),
-    /// Argon2 hashing failed (e.g. from `Argon2::hash_password_into`).
-    #[error("KDF operation failed: {0}")]
-    KdfHash(#[source] argon2::Error),
-}
-
-fn decode_salt(salt_hex: &str) -> Result<Vec<u8>, KdfError> {
-    let s = salt_hex.trim().trim_start_matches("0x");
-    if !s.len().is_multiple_of(2) {
-        return Err(KdfError::InvalidParams(
-            "KDF salt_hex must be even-length".into(),
-        ));
-    }
-    let bytes = hex::decode(s).map_err(KdfError::InvalidSaltHex)?;
-    if !(MIN_KDF_SALT_BYTES..=MAX_KDF_SALT_BYTES).contains(&bytes.len()) {
-        return Err(KdfError::InvalidParams(format!(
-            "KDF salt must decode to {MIN_KDF_SALT_BYTES}–{MAX_KDF_SALT_BYTES} bytes after hex decode"
-        )));
-    }
-    Ok(bytes)
-}
-
-// ── KDF parameters (schema wire / builder) ---------------------------------
-
-/// Key-derivation parameters for an optional post-input hashing step.
-///
-/// When set on a [`super::field::SecretField`], the resolve pipeline replaces a
-/// user `string` secret with [`SecretValue::Bytes`] (never the KDF *password*
-/// in resolved storage).
-#[non_exhaustive]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "algorithm", rename_all = "snake_case", deny_unknown_fields)]
-pub enum KdfParams {
-    /// Argon2id (RFC 9106) using the `argon2` crate.
-    ///
-    /// Cost parameters must satisfy
-    /// `MIN_KDF_MEMORY_KIB ≤ memory_kib ≤ MAX_KDF_MEMORY_KIB`,
-    /// `MIN_KDF_TIME_COST ≤ time_cost ≤ MAX_KDF_TIME_COST`, and
-    /// `MIN_KDF_PARALLELISM ≤ parallelism ≤ MAX_KDF_PARALLELISM`.
-    /// Salt must decode to `MIN_KDF_SALT_BYTES..=MAX_KDF_SALT_BYTES`
-    /// bytes. The optional `output_bytes` may set the derived-key length
-    /// in `MIN_KDF_OUTPUT_BYTES..=MAX_KDF_OUTPUT_BYTES`; default 32.
-    /// Bounds align with RFC 9106 §4 ("Recommended values") for
-    /// interactive Argon2id at server-side cost.
-    Argon2id {
-        /// Salt as even-length hex (no `0x`); RFC 9106 §3.1 recommends
-        /// at least 16 bytes. See [`MIN_KDF_SALT_BYTES`].
-        salt_hex: String,
-        /// `m` cost (memory, `KiB`). RFC 9106 §4 recommends at least
-        /// 8 MiB (8192 KiB) for interactive use.
-        memory_kib: u32,
-        /// `t` cost (iterations). Minimum 1.
-        time_cost: u32,
-        /// `p` cost (parallelism / lanes). Must be at least 1.
-        #[serde(default = "default_p_cost")]
-        parallelism: u8,
-        /// Optional length of the derived key in bytes. Defaults to 32.
-        /// Must be within `MIN_KDF_OUTPUT_BYTES..=MAX_KDF_OUTPUT_BYTES`.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        output_bytes: Option<u8>,
-    },
-}
-
-const fn default_p_cost() -> u8 {
-    1
-}
-
-// Product-level guardrails for resolve-time KDF cost to prevent runaway
-// resource usage from unbounded user-supplied schema parameters.
-//
-// Lower bounds match RFC 9106 §4 ("Recommended values") for interactive
-// Argon2id at server-side cost. Upper bounds cap a single hash to
-// roughly the same envelope as the upstream `argon2` crate's defaults
-// for batch use; multi-tenant deployments that need stricter caps
-// should wrap `KdfParams::hash_password` and reject before invocation.
-
-/// Minimum salt length in bytes (RFC 9106 §3.1).
-pub const MIN_KDF_SALT_BYTES: usize = 16;
-/// Maximum salt length in bytes.
-pub const MAX_KDF_SALT_BYTES: usize = 64;
-
-/// Minimum Argon2id memory cost in KiB (8 MiB, per RFC 9106 §4).
-pub const MIN_KDF_MEMORY_KIB: u32 = 8 * 1024;
-/// Maximum Argon2id memory cost in KiB (256 MiB).
-pub const MAX_KDF_MEMORY_KIB: u32 = 256 * 1024;
-
-/// Minimum Argon2id iteration count.
-pub const MIN_KDF_TIME_COST: u32 = 1;
-/// Maximum Argon2id iteration count.
-pub const MAX_KDF_TIME_COST: u32 = 10;
-
-/// Minimum Argon2id parallelism (lanes).
-pub const MIN_KDF_PARALLELISM: u8 = 1;
-/// Maximum Argon2id parallelism (lanes).
-pub const MAX_KDF_PARALLELISM: u8 = 16;
-
-/// Minimum derived-key length in bytes.
-pub const MIN_KDF_OUTPUT_BYTES: u8 = 16;
-/// Maximum derived-key length in bytes.
-pub const MAX_KDF_OUTPUT_BYTES: u8 = 64;
-/// Default derived-key length in bytes when `output_bytes` is unset.
-pub const DEFAULT_KDF_OUTPUT_BYTES: u8 = 32;
 
 // ── SecretString / SecretBytes / SecretValue --------------------------------
 
@@ -220,8 +98,8 @@ impl Serialize for SecretString {
 // - Schema definitions (`Field::Secret`) flow over `serde` for catalog / plugin manifests; allowing
 //   `SecretString` here would let a default value or a leaked test fixture round-trip plaintext
 //   through schema storage.
-// - Resolved secret values are always introduced by the resolve pipeline (via `SecretValue::string`
-//   / `KdfParams::hash_password`), not by parsing wire JSON.
+// - Resolved secret values are always introduced by the resolve pipeline (via `SecretValue::string`),
+//   not by parsing wire JSON.
 //
 // As a result, `Schema` definitions must NOT contain a `default` for a
 // `Field::Secret`; the lint pass in `crate::lint` enforces this with the
@@ -246,15 +124,11 @@ impl PartialEq for SecretString {
 
 impl Eq for SecretString {}
 
-/// Opaque byte secret (hashed outputs, binary tokens).
+/// Opaque byte secret (binary tokens, externally-hashed outputs).
 #[derive(Clone)]
 pub struct SecretBytes(Zeroizing<Vec<u8>>);
 
 impl SecretBytes {
-    pub(crate) fn from_vec_unchecked(v: Vec<u8>) -> Self {
-        Self(Zeroizing::new(v))
-    }
-
     /// Return raw bytes.
     ///
     /// Emits a `tracing::trace!` line with a caller location for diagnostics.
@@ -388,88 +262,6 @@ impl Serialize for SecretWire<'_> {
     }
 }
 
-impl KdfParams {
-    /// Run the configured KDF over `password` and return hashed secret bytes.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`KdfError`] when parameters are invalid, salt decoding fails, or
-    /// hashing fails.
-    #[tracing::instrument(skip_all, fields(algo = "Argon2id"))]
-    pub fn hash_password(&self, password: &[u8]) -> Result<SecretValue, KdfError> {
-        match self {
-            Self::Argon2id {
-                salt_hex,
-                memory_kib,
-                time_cost,
-                parallelism,
-                output_bytes,
-            } => {
-                if *memory_kib < MIN_KDF_MEMORY_KIB {
-                    return Err(KdfError::InvalidParams(format!(
-                        "Argon2 memory_kib must be >= {MIN_KDF_MEMORY_KIB} (RFC 9106 §4)"
-                    )));
-                }
-                if *memory_kib > MAX_KDF_MEMORY_KIB {
-                    return Err(KdfError::InvalidParams(format!(
-                        "Argon2 memory_kib must be <= {MAX_KDF_MEMORY_KIB}"
-                    )));
-                }
-                if *time_cost < MIN_KDF_TIME_COST {
-                    return Err(KdfError::InvalidParams(format!(
-                        "Argon2 time_cost must be >= {MIN_KDF_TIME_COST}"
-                    )));
-                }
-                if *time_cost > MAX_KDF_TIME_COST {
-                    return Err(KdfError::InvalidParams(format!(
-                        "Argon2 time_cost must be <= {MAX_KDF_TIME_COST}"
-                    )));
-                }
-                if *parallelism < MIN_KDF_PARALLELISM {
-                    return Err(KdfError::InvalidParams(format!(
-                        "Argon2 parallelism must be >= {MIN_KDF_PARALLELISM}"
-                    )));
-                }
-                if *parallelism > MAX_KDF_PARALLELISM {
-                    return Err(KdfError::InvalidParams(format!(
-                        "Argon2 parallelism must be <= {MAX_KDF_PARALLELISM}"
-                    )));
-                }
-                let out_bytes = output_bytes.unwrap_or(DEFAULT_KDF_OUTPUT_BYTES);
-                if !(MIN_KDF_OUTPUT_BYTES..=MAX_KDF_OUTPUT_BYTES).contains(&out_bytes) {
-                    return Err(KdfError::InvalidParams(format!(
-                        "Argon2 output_bytes must be in {MIN_KDF_OUTPUT_BYTES}..={MAX_KDF_OUTPUT_BYTES}"
-                    )));
-                }
-                let salt = decode_salt(salt_hex)?;
-                let out_len = usize::from(out_bytes);
-                tracing::debug!(
-                    target: "nebula_schema::secret::kdf",
-                    memory_kib = *memory_kib,
-                    time_cost = *time_cost,
-                    parallelism = *parallelism,
-                    out_len,
-                    "running Argon2id"
-                );
-                let params = Params::new(
-                    *memory_kib,
-                    *time_cost,
-                    u32::from(*parallelism),
-                    Some(out_len),
-                )
-                .map_err(KdfError::Argon2Params)?;
-                let argon2 =
-                    Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
-                let mut out = vec![0u8; out_len];
-                argon2
-                    .hash_password_into(password, &salt, &mut out)
-                    .map_err(KdfError::KdfHash)?;
-                Ok(SecretValue::Bytes(SecretBytes::from_vec_unchecked(out)))
-            },
-        }
-    }
-}
-
 // `Zeroizing<Vec<u8>>` already zeroizes the heap buffer via its blanket
 // `Drop` impl — no manual `Drop` needed here. (Symmetric with
 // `SecretString` which relies on `Zeroizing<String>` for the same
@@ -479,178 +271,144 @@ impl KdfParams {
 mod tests {
     use super::*;
 
+    // ── SecretString ────────────────────────────────────────────────────────
+
+    #[test]
+    fn string_expose_returns_plaintext() {
+        let s = SecretString::new("hunter2".to_owned());
+        assert_eq!(s.expose(), "hunter2");
+        assert!(!s.is_empty());
+        assert!(SecretString::new(String::new()).is_empty());
+    }
+
     #[test]
     fn string_debug_does_not_echo_plaintext() {
         let s = SecretString::new("hunter2".to_owned());
-        let dbg = format!("{s:?}");
-        assert!(!dbg.contains("hunter2"));
+        assert_eq!(format!("{s:?}"), "SecretString(<redacted>)");
+        assert!(!format!("{s:?}").contains("hunter2"));
+    }
+
+    #[test]
+    fn string_display_redacts() {
+        let s = SecretString::new("hunter2".to_owned());
+        assert_eq!(format!("{s}"), SECRET_REDACTED);
+        assert!(!format!("{s}").contains("hunter2"));
     }
 
     #[test]
     fn string_serialize_redacts() {
         let s = SecretString::new("hunter2".to_owned());
-        let j = serde_json::to_value(&s).expect("json");
-        assert_eq!(j, json_redacted());
+        assert_eq!(serde_json::to_value(&s).expect("json"), redacted());
     }
 
-    fn json_redacted() -> serde_json::Value {
-        serde_json::Value::String(SECRET_REDACTED.to_owned())
+    #[test]
+    fn string_eq_is_value_consistent() {
+        let a = SecretString::new("same".to_owned());
+        let b = SecretString::new("same".to_owned());
+        let c = SecretString::new("different".to_owned());
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn string_deserialize_is_rejected() {
+        assert!(serde_json::from_str::<SecretString>("\"x\"").is_err());
+    }
+
+    // ── SecretBytes ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn bytes_expose_returns_raw() {
+        let v = SecretValue::bytes(vec![1u8, 2, 3]);
+        let SecretValue::Bytes(b) = &v else {
+            panic!("expected bytes");
+        };
+        assert_eq!(b.expose(), &[1, 2, 3]);
+        assert!(!b.is_empty());
+    }
+
+    #[test]
+    fn bytes_debug_does_not_echo_plaintext() {
+        let v = SecretValue::bytes(vec![0xde, 0xad]);
+        let SecretValue::Bytes(b) = &v else {
+            panic!("expected bytes");
+        };
+        assert_eq!(format!("{b:?}"), "SecretBytes(<redacted>)");
+    }
+
+    #[test]
+    fn bytes_serialize_redacts_not_hex() {
+        // Bare `SecretBytes` serialization must redact — only `SecretWire`
+        // emits the hex plaintext form.
+        let v = SecretValue::bytes(vec![0x61, 0x62]);
+        let SecretValue::Bytes(b) = &v else {
+            panic!("expected bytes");
+        };
+        assert_eq!(serde_json::to_value(b).expect("json"), redacted());
+    }
+
+    #[test]
+    fn bytes_eq_is_value_consistent() {
+        let a = SecretValue::bytes(vec![1u8, 2, 3]);
+        let b = SecretValue::bytes(vec![1u8, 2, 3]);
+        let c = SecretValue::bytes(vec![9u8]);
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn bytes_deserialize_is_rejected() {
+        assert!(serde_json::from_str::<SecretBytes>("\"x\"").is_err());
+    }
+
+    // ── SecretValue ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn value_is_empty_tracks_inner() {
+        assert!(SecretValue::string(String::new()).is_empty());
+        assert!(!SecretValue::string("x".to_owned()).is_empty());
+        assert!(SecretValue::bytes(Vec::new()).is_empty());
+        assert!(!SecretValue::bytes(vec![0u8]).is_empty());
+    }
+
+    #[test]
+    fn value_to_json_and_serialize_redact_both_variants() {
+        assert_eq!(SecretValue::string("s".to_owned()).to_json(), redacted());
+        assert_eq!(SecretValue::bytes(vec![1u8]).to_json(), redacted());
+        assert_eq!(
+            serde_json::to_value(SecretValue::string("s".to_owned())).expect("json"),
+            redacted()
+        );
+    }
+
+    // ── SecretWire ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn wire_serializes_string_plaintext() {
+        let v = SecretValue::string("plaintext".to_owned());
+        assert_eq!(
+            serde_json::to_value(SecretWire(&v)).expect("json"),
+            serde_json::Value::String("plaintext".into())
+        );
     }
 
     #[test]
     fn wire_serializes_bytes_as_hex() {
-        let b = SecretBytes::from_vec_unchecked(vec![0x61, 0x62, 0x63]);
-        let v = SecretValue::Bytes(b);
-        let ser = serde_json::to_value(SecretWire(&v)).expect("json");
-        assert_eq!(ser, serde_json::Value::String("616263".into()));
-    }
-
-    /// Helper: build a 16-byte hex salt for tests where exact contents
-    /// don't matter.
-    fn test_salt_hex() -> String {
-        "00112233445566778899aabbccddeeff".to_owned()
+        let v = SecretValue::bytes(vec![0x61, 0x62, 0x63]);
+        assert_eq!(
+            serde_json::to_value(SecretWire(&v)).expect("json"),
+            serde_json::Value::String("616263".into())
+        );
     }
 
     #[test]
-    fn kdf_invalid_salt_hex_chains_from_hex_error() {
-        let kdf = KdfParams::Argon2id {
-            // Even length but non-hex characters → `hex::FromHexError`.
-            salt_hex: "gggggggggggggggggggggggggggggggg".to_owned(),
-            memory_kib: MIN_KDF_MEMORY_KIB,
-            time_cost: 1,
-            parallelism: 1,
-            output_bytes: None,
-        };
-        let err = kdf.hash_password(b"pw").expect_err("invalid hex");
-        let KdfError::InvalidSaltHex(_) = &err else {
-            panic!("expected InvalidSaltHex, got {err:?}");
-        };
-        assert!(std::error::Error::source(&err).is_some());
-        let msg = err.to_string();
-        assert!(msg.contains("invalid KDF parameters"), "msg was: {msg}");
+    fn wire_debug_does_not_echo_plaintext() {
+        let v = SecretValue::string("topsecret".to_owned());
+        assert_eq!(format!("{:?}", SecretWire(&v)), "SecretWire(<plaintext>)");
+        assert!(!format!("{:?}", SecretWire(&v)).contains("topsecret"));
     }
 
-    #[test]
-    fn kdf_rejects_short_salt_below_min() {
-        // 8 bytes hex (16 hex chars) — below MIN_KDF_SALT_BYTES (16).
-        let kdf = KdfParams::Argon2id {
-            salt_hex: "0011223344556677".to_owned(),
-            memory_kib: MIN_KDF_MEMORY_KIB,
-            time_cost: 1,
-            parallelism: 1,
-            output_bytes: None,
-        };
-        let err = kdf
-            .hash_password(b"pw")
-            .expect_err("must reject short salt");
-        assert!(matches!(err, KdfError::InvalidParams(_)));
-    }
-
-    #[test]
-    fn kdf_rejects_excessive_resource_costs() {
-        let kdf = KdfParams::Argon2id {
-            salt_hex: test_salt_hex(),
-            memory_kib: MAX_KDF_MEMORY_KIB + 1,
-            time_cost: 1,
-            parallelism: 1,
-            output_bytes: None,
-        };
-        let err = kdf
-            .hash_password(b"pw")
-            .expect_err("must reject high memory");
-        assert!(matches!(err, KdfError::InvalidParams(_)));
-
-        let kdf = KdfParams::Argon2id {
-            salt_hex: test_salt_hex(),
-            memory_kib: MIN_KDF_MEMORY_KIB,
-            time_cost: MAX_KDF_TIME_COST + 1,
-            parallelism: 1,
-            output_bytes: None,
-        };
-        let err = kdf
-            .hash_password(b"pw")
-            .expect_err("must reject high time_cost");
-        assert!(matches!(err, KdfError::InvalidParams(_)));
-
-        let kdf = KdfParams::Argon2id {
-            salt_hex: test_salt_hex(),
-            memory_kib: MIN_KDF_MEMORY_KIB,
-            time_cost: 1,
-            parallelism: MAX_KDF_PARALLELISM + 1,
-            output_bytes: None,
-        };
-        let err = kdf
-            .hash_password(b"pw")
-            .expect_err("must reject high parallelism");
-        assert!(matches!(err, KdfError::InvalidParams(_)));
-    }
-
-    #[test]
-    fn kdf_rejects_subminimum_costs() {
-        // memory_kib below RFC 9106 §4 minimum (8 MiB).
-        let kdf = KdfParams::Argon2id {
-            salt_hex: test_salt_hex(),
-            memory_kib: MIN_KDF_MEMORY_KIB - 1,
-            time_cost: 1,
-            parallelism: 1,
-            output_bytes: None,
-        };
-        let err = kdf
-            .hash_password(b"pw")
-            .expect_err("must reject below-min memory");
-        assert!(matches!(err, KdfError::InvalidParams(_)));
-
-        // time_cost = 0 below MIN_KDF_TIME_COST.
-        let kdf = KdfParams::Argon2id {
-            salt_hex: test_salt_hex(),
-            memory_kib: MIN_KDF_MEMORY_KIB,
-            time_cost: 0,
-            parallelism: 1,
-            output_bytes: None,
-        };
-        let err = kdf
-            .hash_password(b"pw")
-            .expect_err("must reject zero time_cost");
-        assert!(matches!(err, KdfError::InvalidParams(_)));
-
-        // parallelism = 0 below MIN_KDF_PARALLELISM.
-        let kdf = KdfParams::Argon2id {
-            salt_hex: test_salt_hex(),
-            memory_kib: MIN_KDF_MEMORY_KIB,
-            time_cost: 1,
-            parallelism: 0,
-            output_bytes: None,
-        };
-        let err = kdf
-            .hash_password(b"pw")
-            .expect_err("must reject zero parallelism");
-        assert!(matches!(err, KdfError::InvalidParams(_)));
-    }
-
-    #[test]
-    fn kdf_rejects_output_bytes_outside_range() {
-        let kdf = KdfParams::Argon2id {
-            salt_hex: test_salt_hex(),
-            memory_kib: MIN_KDF_MEMORY_KIB,
-            time_cost: 1,
-            parallelism: 1,
-            output_bytes: Some(MIN_KDF_OUTPUT_BYTES - 1),
-        };
-        let err = kdf
-            .hash_password(b"pw")
-            .expect_err("must reject sub-min output_bytes");
-        assert!(matches!(err, KdfError::InvalidParams(_)));
-
-        let kdf = KdfParams::Argon2id {
-            salt_hex: test_salt_hex(),
-            memory_kib: MIN_KDF_MEMORY_KIB,
-            time_cost: 1,
-            parallelism: 1,
-            output_bytes: Some(MAX_KDF_OUTPUT_BYTES + 1),
-        };
-        let err = kdf
-            .hash_password(b"pw")
-            .expect_err("must reject above-max output_bytes");
-        assert!(matches!(err, KdfError::InvalidParams(_)));
+    fn redacted() -> serde_json::Value {
+        serde_json::Value::String(SECRET_REDACTED.to_owned())
     }
 }

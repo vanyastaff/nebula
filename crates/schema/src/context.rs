@@ -133,7 +133,10 @@ pub(crate) fn root_predicate_context_from_json(
 /// A pure schema property — independent of the value tree and of any
 /// JSON-vs-schema key divergence (mode envelopes use `mode`/`value` JSON keys,
 /// not variant keys), so the secret decision is always sound.
-fn field_subtree_has_secret(field: &Field) -> bool {
+///
+/// Shared with `loader::redact_secrets_in_value_for_loader` so the loader
+/// boundary applies the same blob-bypass defense this module does.
+pub(crate) fn field_subtree_has_secret(field: &Field) -> bool {
     match field {
         Field::Secret(_) => true,
         Field::Object(o) => o.fields.iter().any(field_subtree_has_secret),
