@@ -22,7 +22,8 @@ use std::{
 
 use arc_swap::ArcSwap;
 use nebula_core::ResourceKey;
-use tokio::sync::{Notify, broadcast};
+use nebula_eventbus::EventBus;
+use tokio::sync::Notify;
 
 use crate::events::ResourceEvent;
 
@@ -34,7 +35,7 @@ const MAX_BACKOFF: Duration = Duration::from_mins(5);
 /// (see [`RecoveryGate::set_event_sink`]).
 #[derive(Debug)]
 struct EventSink {
-    tx: broadcast::Sender<ResourceEvent>,
+    bus: Arc<EventBus<ResourceEvent>>,
     key: ResourceKey,
 }
 
@@ -280,17 +281,15 @@ struct RecoveryGateInner {
 
 impl RecoveryGateInner {
     /// Best-effort emit of [`ResourceEvent::RecoveryGateChanged`] for the
-    /// new state. Silently drops the broadcast result when no subscribers
-    /// are attached — same fail-open contract as every other
-    /// `event_tx.send(...)` site in the manager.
+    /// new state. The `EventBus` `PublishOutcome` is intentionally discarded
+    /// when no subscribers are attached — same fail-open contract as every
+    /// other event-emit site in the manager.
     fn emit_state(&self, new_state: &GateState) {
         if let Some(sink) = self.event_sink.get() {
-            sink.tx
-                .send(ResourceEvent::RecoveryGateChanged {
-                    key: sink.key.clone(),
-                    state: gate_state_label(new_state),
-                })
-                .ok();
+            let _ = sink.bus.emit(ResourceEvent::RecoveryGateChanged {
+                key: sink.key.clone(),
+                state: gate_state_label(new_state),
+            });
         }
     }
 }
@@ -363,8 +362,8 @@ impl RecoveryGate {
     /// [`ResourceEvent::RecoveryGateChanged`]. Wired by
     /// [`Manager::register`](crate::Manager::register) at registration
     /// time; not part of the public crate surface — the
-    /// `broadcast::Sender` is an internal transport detail the manager
-    /// owns.
+    /// `Arc<EventBus<ResourceEvent>>` is an internal transport detail the
+    /// manager owns.
     ///
     /// **Idempotent** — the first call wins; subsequent calls silently
     /// no-op so a gate handed to multiple registries does not flip
@@ -377,11 +376,11 @@ impl RecoveryGate {
     /// `set_event_sink` is a no-op by design. Treat one
     /// `Arc<RecoveryGate>` as belonging to one resource registration; if
     /// recovery-group sharing matters, give each resource its own gate.
-    pub(crate) fn set_event_sink(&self, tx: broadcast::Sender<ResourceEvent>, key: ResourceKey) {
+    pub(crate) fn set_event_sink(&self, bus: Arc<EventBus<ResourceEvent>>, key: ResourceKey) {
         // OnceLock::set returns Err on second call — we treat that as
         // a no-op rather than a programming error, since the manager
         // may re-register a resource that already had a gate wired.
-        self.inner.event_sink.set(EventSink { tx, key }).ok();
+        self.inner.event_sink.set(EventSink { bus, key }).ok();
     }
 
     /// Attempts to begin a recovery.

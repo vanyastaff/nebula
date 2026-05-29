@@ -144,6 +144,14 @@ pub trait AnyManagedResource: sealed::Sealed + Send + Sync + 'static {
     /// RPITIT method. Forwards to `ManagedResource::dispatch_slot_hook`
     /// with `refresh = true`, which borrows the live runtime per topology
     /// and invokes the resource's `&self` hook.
+    ///
+    /// # Cancel Safety
+    ///
+    /// This method is cancel-safe. The resource taint and revoke-epoch
+    /// bump are applied synchronously by the caller before this future is
+    /// polled. Dropping the returned future after taint leaves the
+    /// resource consistently marked as tainted — no partial-taint state
+    /// is possible and new acquires remain rejected.
     fn dispatch_on_refresh_erased<'a>(
         &'a self,
         slot: &'a str,
@@ -152,6 +160,15 @@ pub trait AnyManagedResource: sealed::Sealed + Send + Sync + 'static {
     /// Type-erased per-slot revoke dispatch (boxed for the same reason as
     /// [`Self::dispatch_on_refresh_erased`]; forwards to
     /// `ManagedResource::dispatch_slot_hook` with `refresh = false`).
+    ///
+    /// # Cancel Safety
+    ///
+    /// This method is cancel-safe. The resource taint and revoke-epoch
+    /// bump are performed synchronously before any `.await` point (in the
+    /// caller's `taint_slot_for_identity` phase). Dropping the returned
+    /// future after taint leaves the resource consistently marked as
+    /// tainted — no partial-taint state is possible, new acquires are
+    /// still rejected, and the credential is never silently un-revoked.
     fn dispatch_on_revoke_erased<'a>(
         &'a self,
         slot: &'a str,

@@ -79,6 +79,9 @@ pub use manager::{
 };
 pub use metrics::{OutcomeCountersSnapshot, ResourceOpsMetrics, ResourceOpsSnapshot};
 pub use nebula_core::{ExecutionId, ResourceKey, ScopeLevel, WorkflowId, resource_key};
+/// Re-export [`Subscriber`] so callers of [`Manager::subscribe_events`] do not
+/// need a direct `nebula-eventbus` dependency.
+pub use nebula_eventbus::Subscriber;
 // Credential surface re-exported so resource consumers don't need a
 // direct nebula-credential dep for trait shape.
 //

@@ -199,39 +199,41 @@
 //! The topology collapse + cross-tenant-barrier + latent-bug closure that
 //! produced this module deliberately did **not** fix every issue it
 //! surfaced. This ledger is the durable record of what was consciously left
-//! for separate work, so nothing is silently inherited. Severity is the
-//! item's own risk, independent of when it is scheduled.
+//! for separate work, so nothing is silently inherited once the originating
+//! plan is gone. Every item is also filed as a tracked issue (linked); this
+//! ledger is the in-tree index, not the sole record. Severity is the item's
+//! own risk, independent of when it is scheduled.
 //!
 //! ## Latent bugs surfaced but out of scope
 //!
-//! - **`reload_config` never drains/rebuilds the live runtime — MED-HIGH.**
-//!   `reload_config` swaps the config `ArcSwap` (and the Pool
+//! - **`reload_config` never drains/rebuilds the live runtime — MED-HIGH**
+//!   ([#712]). `reload_config` swaps the config `ArcSwap` (and the Pool
 //!   fingerprint) but never drains in-flight work or rebuilds the
 //!   caller-supplied live `Arc<R::Runtime>` for any topology, so a reload
 //!   that should rotate the running runtime is silently not applied to it.
 //!   Deferred because the reload redesign (drain-then-rebuild + a truthful
 //!   outcome contract) is a separate concern; see the **accepted relabel**
 //!   note below for why this is a preserved no-op, not a regression.
-//! - **Pool `CreateGuard` cancel-drop leaks the runtime — MED.**
+//! - **Pool `CreateGuard` cancel-drop leaks the runtime — MED** ([#713]).
 //!   A *cancelled* acquire whose in-flight `create` already built a runtime
 //!   drops it synchronously without the async `destroy()`, leaking the
 //!   server-side handle. (The *other* `CreateGuard` race — an in-flight
 //!   create completing *after a revoke* — is the same isolation defect as
 //!   the revoke→recycle TOCTOU and **was fixed** by the pooled revoke-epoch
 //!   fence; only the cancelled-acquire leak remains.)
-//! - **Resident recreate `take()`+destroy-under-lock vs dispatch — MED.**
-//!   The resident recreate clears the slot then destroys under the
+//! - **Resident recreate `take()`+destroy-under-lock vs dispatch — MED**
+//!   ([#714]). The resident recreate clears the slot then destroys under the
 //!   lock; a concurrent revoke/refresh dispatch in that window can run
 //!   against the absent/old runtime, losing the revoke for that window.
 //!   Resident internals, out of the collapse seam.
 //! - **`graceful_shutdown` phase-4 detached workers can outlive
-//!   `release_queue_timeout` — LOW.** The timeout bounds the wait,
+//!   `release_queue_timeout` — LOW** ([#715]). The timeout bounds the wait,
 //!   not the detached release work; it eventually drains. shutdown.rs was
 //!   not opened by the collapse.
-//! - **`RecoveryTicket` Drop counts a panicked probe as an attempt — LOW.**
-//!   A defensible-but-untested default; recovery internals.
+//! - **`RecoveryTicket` Drop counts a panicked probe as an attempt — LOW**
+//!   ([#716]). A defensible-but-untested default; recovery internals.
 //!
-//! ## Separable acquire-path perf micro-folds — LOW
+//! ## Separable acquire-path perf micro-folds — LOW ([#717])
 //!
 //! The collapse took only the perf wins **inseparable** from it (one
 //! generic acquire pipeline instead of five byte-identical ones; a single
@@ -244,18 +246,21 @@
 //! regardless; any ordering tuning is a separate reviewed change with a
 //! re-stated memory-model proof.
 //!
-//! ## Cross-crate dedup / layer placement — LOW
+//! ## Cross-crate dedup / layer placement — LOW ([#718])
 //!
-//! Cross-layer type relocation was explicitly out of scope. Deferred:
-//! `ErrorKind` ≈ `nebula_error::ErrorCategory` reconciliation; hardcoded
-//! acquire backoff vs `nebula_resilience::BackoffConfig`; relocating the
-//! live `RecoveryGate` + `ReleaseQueue` to `nebula-resilience`;
-//! `events.rs` raw `broadcast` → `nebula_eventbus::EventBus`; unifying
+//! Cross-layer type relocation was explicitly out of scope (no ADR in this
+//! work). Deferred: `ErrorKind` ≈ `nebula_error::ErrorCategory`
+//! reconciliation; hardcoded acquire backoff vs
+//! `nebula_resilience::BackoffConfig`; relocating the live `RecoveryGate` +
+//! `ReleaseQueue` to `nebula-resilience`; unifying
 //! `CreateGuard`/`SessionGuard` into one `DefuseGuard<T>`; revisiting the
 //! `register_resolved` JSON/`{{ }}` expression coupling and its engine-ABI
-//! positional shape (see the accepted-exception note below).
+//! positional shape (see the accepted-exception note below). The
+//! `events.rs` `broadcast` → `nebula_eventbus::EventBus` migration listed
+//! here originally has since **landed** (wired through `Manager`,
+//! `ResourceGuard`, and `RecoveryGate`).
 //!
-//! ## Further `Manager` code-line reduction — LOW
+//! ## Further `Manager` code-line reduction — LOW ([#719])
 //!
 //! `crates/resource/src/manager/mod.rs` is 2552 lines: ~1224 comment/doc,
 //! ~117 blank, ~1211 code. The structural de-spaghettification root-cause
@@ -281,30 +286,49 @@
 //!   `ReloadOutcome::SwappedImmediately` for every variant. This is **only
 //!   an enum label change**: `reload_config` never drained or rebuilt the
 //!   live runtime for that topology under either label (that missing
-//!   behavior is the deferred `reload_config` redesign listed above). A
-//!   characterization net pins the per-topology `reload_config` outcome
-//!   so the relabel is auditable as a preserved no-op, not a silent
-//!   behavior change. The now-unreachable draining variant was removed
-//!   from `ReloadOutcome` once that net landed.
+//!   behavior is exactly [#712]). A characterization net pins the
+//!   per-topology `reload_config` outcome so the relabel is auditable as a
+//!   preserved no-op, not a silent behavior change. The now-unreachable
+//!   draining variant was removed from `ReloadOutcome` once that net
+//!   landed.
 //! - **`register_resolved` carries one `// guard-justified:`
 //!   `#[allow(clippy::too_many_arguments)]`.** The four register-chain
 //!   `too_many_arguments` allows the collapse targeted are gone; this last
 //!   one is the irreducible engine ABI — the production engine registrar
-//!   dispatches into `register_resolved` positionally with an 8-param
-//!   JSON-driven shape (down from 9 after the `AcquireResilience` wrapper
-//!   was dropped manager-side), and collapsing it into a struct would
-//!   re-introduce the navigation hop the single register funnel removed
-//!   for the one erased call site. It is a candidate for the
-//!   cross-crate-dedup follow-up, not a defect. (The three
-//!   `too_many_arguments` allows in `runtime/pool.rs` are pre-existing
-//!   pool internals untouched by this work.)
-//! - **Cross-tenant fixes were latent, not live.** The original 64-bit
-//!   `DefaultHasher` barrier defect (structurally fixed here via the
-//!   collision-free `SlotIdentity` structural set) and the pooled
-//!   revoke→recycle TOCTOU were not reachable in production (this crate is
-//!   `frontier`; there is no production credential→slot resolver), which
-//!   is why seam-coupled remediation was acceptable over a standalone
-//!   hotfix.
+//!   dispatches into `register_resolved` positionally with a 9-param
+//!   JSON-driven shape, and collapsing it into a struct would re-introduce
+//!   the navigation hop the single register funnel removed for the one
+//!   erased call site. It is a candidate for the cross-crate-dedup
+//!   follow-up ([#718]), not a defect. (The three `too_many_arguments`
+//!   allows in `runtime/pool.rs` are pre-existing pool internals untouched
+//!   by this work.)
+//! - **R15/R16 cross-tenant fixes were latent, not live.** The original
+//!   64-bit `DefaultHasher` barrier defect ([#684], **closed** —
+//!   structurally fixed here via the collision-free `SlotIdentity`
+//!   structural set) and the pooled revoke→recycle TOCTOU were not
+//!   reachable in production (this crate is `frontier`; there is no
+//!   production credential→slot resolver), which is why seam-coupled
+//!   remediation was acceptable over a standalone hotfix.
+//!
+//! ## Consumer-migration history (honest record)
+//!
+//! The expand-contract migration of in-tree consumers initially named, but
+//! did **not** migrate, the three `m6_*` example binaries
+//! (`m6_postgres_pool`, `m6_resident_http`, `m6_telegram_multi_workflow`);
+//! they were migrated to `RegistrationSpec` / the structural `SlotIdentity`
+//! in a later, separately-committed step before the old surface was
+//! deleted. Recorded so the migration history is not misread as
+//! single-step.
+//!
+//! [#684]: https://github.com/vanyastaff/nebula/issues/684
+//! [#712]: https://github.com/vanyastaff/nebula/issues/712
+//! [#713]: https://github.com/vanyastaff/nebula/issues/713
+//! [#714]: https://github.com/vanyastaff/nebula/issues/714
+//! [#715]: https://github.com/vanyastaff/nebula/issues/715
+//! [#716]: https://github.com/vanyastaff/nebula/issues/716
+//! [#717]: https://github.com/vanyastaff/nebula/issues/717
+//! [#718]: https://github.com/vanyastaff/nebula/issues/718
+//! [#719]: https://github.com/vanyastaff/nebula/issues/719
 
 use std::{
     future::Future,
@@ -316,7 +340,8 @@ use std::{
 };
 
 use nebula_core::{Context, LayerLifecycle, ResourceKey, ScopeLevel};
-use tokio::sync::{Notify, broadcast};
+use nebula_eventbus::EventBus;
+use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -479,7 +504,13 @@ pub struct Manager {
     pub(super) registry: Registry,
     pub(super) cancel: CancellationToken,
     pub(super) metrics: Option<ResourceOpsMetrics>,
-    pub(super) event_tx: broadcast::Sender<ResourceEvent>,
+    /// Shared lifecycle-event sink. Held behind `Arc` so the same
+    /// [`EventBus`] can be wired into per-resource
+    /// [`RecoveryGate`](crate::recovery::gate::RecoveryGate)s and into each
+    /// [`ResourceGuard`](crate::guard::ResourceGuard) (for its
+    /// `Released`-on-drop emit) without exposing the bus's internal transport
+    /// across module boundaries.
+    pub(super) event_bus: Arc<EventBus<ResourceEvent>>,
     pub(super) release_queue: Arc<ReleaseQueue>,
     pub(super) release_queue_handle: tokio::sync::Mutex<Option<ReleaseQueueHandle>>,
     /// Tracks active `ResourceGuard`s for drain-aware shutdown.
@@ -500,7 +531,7 @@ impl Manager {
 
     /// Creates a new empty manager with the given configuration.
     pub fn with_config(config: ManagerConfig) -> Self {
-        let (event_tx, _) = broadcast::channel(256);
+        let event_bus = Arc::new(EventBus::new(256));
         let cancel = CancellationToken::new();
         let (release_queue, release_queue_handle) =
             ReleaseQueue::with_cancel(config.release_queue_workers, cancel.clone());
@@ -519,7 +550,7 @@ impl Manager {
             registry: Registry::new(),
             cancel,
             metrics,
-            event_tx,
+            event_bus,
             release_queue: Arc::new(release_queue),
             release_queue_handle: tokio::sync::Mutex::new(Some(release_queue_handle)),
             drain_tracker: Arc::new((AtomicU64::new(0), Notify::new())),
@@ -545,13 +576,16 @@ impl Manager {
 
     /// Subscribes to resource lifecycle events.
     ///
-    /// Returns a [`broadcast::Receiver`] that receives [`ResourceEvent`]s
-    /// emitted during registration, removal, and acquisition. Slow consumers
-    /// that fall behind the 256-event buffer will receive a
-    /// [`RecvError::Lagged`](broadcast::error::RecvError::Lagged) on the
-    /// next recv.
-    pub fn subscribe_events(&self) -> broadcast::Receiver<ResourceEvent> {
-        self.event_tx.subscribe()
+    /// Returns a [`Subscriber`](crate::Subscriber) that receives
+    /// [`ResourceEvent`]s emitted during registration, removal, and
+    /// acquisition. The buffer is fixed at 256 events: a slow consumer that
+    /// falls behind has the *oldest* unread events skipped (the subscriber
+    /// auto-recovers and re-positions to the latest event — it never returns
+    /// a lag error). Use
+    /// [`Subscriber::lagged_count`](crate::Subscriber::lagged_count) to
+    /// observe how many events were skipped.
+    pub fn subscribe_events(&self) -> crate::Subscriber<ResourceEvent> {
+        self.event_bus.subscribe()
     }
 
     /// Erased acquire hook for a resident row.
@@ -638,14 +672,7 @@ impl Manager {
     ///
     /// # Errors
     ///
-    /// - [`ErrorKind::Permanent`](crate::error::ErrorKind::Permanent) if
-    ///   [`ResourceConfig::validate`](crate::ResourceConfig::validate)
-    ///   returns an error on the provided config.
-    /// - [`ErrorKind::Permanent`](crate::error::ErrorKind::Permanent) if
-    ///   the supplied [`TopologyRuntime`] variant does not match the
-    ///   resource's topology trait (e.g., `TopologyRuntime::Pool` for a
-    ///   `Resource` that does not implement
-    ///   [`Pooled`](crate::topology::pooled::Pooled)).
+    /// Returns an error if config validation fails on the provided config.
     pub fn register<R: Resource>(&self, spec: RegistrationSpec<R>) -> Result<(), Error> {
         use crate::resource::ResourceConfig as _;
 
@@ -661,27 +688,28 @@ impl Manager {
 
         config.validate()?;
 
-        // Pool min/max sanity is enforced at `PoolRuntime` construction,
-        // which the caller has already invoked to build the
+        // #390 (pool min/max sanity) is enforced at `PoolRuntime`
+        // construction, which the caller has already invoked to build the
         // `TopologyRuntime::Pool` handed in here. No separate
         // register-time pool-config check is needed: an invalid
         // `(min_size, max_size)` from operator/JSON config is rejected by
         // the fallible `PoolRuntime::try_new` (typed `Error::permanent`)
         // that the engine registrar uses to construct the runtime, so the
         // failure surfaces *before* this funnel as a registration error
-        // rather than an abort.
+        // rather than an abort. (The deleted `register_pooled[_with]`
+        // shorthands re-validated the raw config only because they took
+        // it *before* building the runtime.)
 
         let key = R::key();
 
-        // Wire the manager's broadcast sink into the optional recovery
-        // gate so its state transitions emit
-        // `ResourceEvent::RecoveryGateChanged`. Idempotent at the
-        // `RecoveryGate` end: a gate handed to a second manager (test
-        // composition, scoped registry) keeps its first sink and
-        // ignores this call. Cheap and lock-free — `OnceLock::set`
-        // is one CAS.
+        // Wire the manager's event bus into the optional recovery gate so its
+        // state transitions emit `ResourceEvent::RecoveryGateChanged`.
+        // Idempotent at the `RecoveryGate` end: a gate handed to a second
+        // manager (test composition, scoped registry) keeps its first sink
+        // and ignores this call. Cheap and lock-free — `OnceLock::set` is one
+        // CAS over a cloned `Arc`.
         if let Some(gate) = recovery_gate.as_deref() {
-            gate.set_event_sink(self.event_tx.clone(), key.clone());
+            gate.set_event_sink(Arc::clone(&self.event_bus), key.clone());
         }
 
         let managed = Arc::new(ManagedResource {
@@ -715,9 +743,7 @@ impl Manager {
         if let Some(m) = &self.metrics {
             m.record_create();
         }
-        let _ = self
-            .event_tx
-            .send(ResourceEvent::Registered { key: key.clone() });
+        self.emit(ResourceEvent::Registered { key: key.clone() });
 
         tracing::debug!(%key, "resource registered");
         Ok(())
@@ -852,7 +878,7 @@ impl Manager {
     ///
     /// `nebula-resource → nebula-expression` is allowed under deny.toml's
     /// `[[bans]]` `nebula-resource` wrapper allowlist (Business → Core layer
-    /// edge per typed ref fields).
+    /// edge per typed ref fields / Phase 9, R-040 R8).
     ///
     /// # Errors
     ///
@@ -1284,7 +1310,7 @@ impl Manager {
                 if let Some(m) = &self.metrics {
                     m.record_slot_refresh_outcome(crate::metrics::SlotDispatchOutcome::Success);
                 }
-                let _ = self.event_tx.send(ResourceEvent::SlotRefreshed {
+                self.emit(ResourceEvent::SlotRefreshed {
                     key: key.clone(),
                     slot: slot.to_owned(),
                 });
@@ -1294,7 +1320,7 @@ impl Manager {
                 if let Some(m) = &self.metrics {
                     m.record_slot_refresh_outcome(crate::metrics::SlotDispatchOutcome::Failed);
                 }
-                let _ = self.event_tx.send(ResourceEvent::SlotRefreshFailed {
+                self.emit(ResourceEvent::SlotRefreshFailed {
                     key: key.clone(),
                     slot: slot.to_owned(),
                     error: e.to_string(),
@@ -1848,18 +1874,7 @@ impl Manager {
     ///   [`acquire_pooled_for_identity`](Self::acquire_pooled_for_identity)
     ///   when the resolved slot identity is known; this identity-agnostic
     ///   path stays fail-closed for the no-identity caller.
-    /// - Propagates pool-specific acquire errors
-    ///   ([`Backpressure`](crate::error::ErrorKind::Backpressure) on
-    ///   semaphore exhaustion, [`Transient`](crate::error::ErrorKind::Transient)
-    ///   on `Resource::create` failure, etc.).
-    ///
-    /// # Cancellation
-    ///
-    /// Cancel-safe: a cancelled acquire (`ctx.cancel_token()` fired, or
-    /// the manager-wide cancel token cancelled) decrements both the
-    /// manager-wide drain tracker and the per-resource in-flight counter
-    /// via `InFlightCounter`'s `Drop` impl before returning, so no
-    /// in-flight runtime is leaked.
+    /// - Propagates pool-specific acquire errors.
     pub async fn acquire_pooled<R>(
         &self,
         ctx: &ResourceContext,
@@ -2033,14 +2048,12 @@ impl Manager {
         let gate_admission = admit_through_gate(&managed.recovery_gate)?;
 
         // Publish a `RetryAttempt` event when this acquire is the recovery
-        // probe (the CAS-claimed single-probe slot that follows a
-        // transient backend failure). The `backoff_on_fail` field carries
-        // the delay the gate would impose *if this probe fails again* —
-        // the next caller's wait, not a wait this acquire incurs. The
-        // event is emitted **before** `dispatch()` so observers see the
-        // attempt go out rather than only the result. The error field is
-        // populated with the prior failure message from the
-        // soon-to-be-retired `Failed` state, snapshotted in
+        // probe (the CAS-claimed single-probe slot that follows a transient
+        // backend failure). `backoff_on_fail` carries the delay the gate
+        // would impose *if this probe fails again* — the next caller's wait,
+        // not a wait this acquire incurs. Emitted **before** `dispatch()` so
+        // observers see the attempt go out rather than only the result. The
+        // error field carries the prior failure message snapshotted in
         // `admit_through_gate` before the CAS rotated the gate.
         if let gate::GateAdmission::Probe {
             attempt,
@@ -2049,14 +2062,12 @@ impl Manager {
             ..
         } = &gate_admission
         {
-            self.event_tx
-                .send(ResourceEvent::RetryAttempt {
-                    key: R::key(),
-                    attempt: *attempt,
-                    backoff: *backoff_on_fail,
-                    error: last_failure.clone().unwrap_or_default(),
-                })
-                .ok();
+            self.emit(ResourceEvent::RetryAttempt {
+                key: R::key(),
+                attempt: *attempt,
+                backoff: *backoff_on_fail,
+                error: last_failure.clone().unwrap_or_default(),
+            });
         }
 
         let result = dispatch().await;
@@ -2069,13 +2080,13 @@ impl Manager {
         settle_gate_admission(gate_admission, &result);
         self.record_acquire_result(&result, started);
         match result {
-            // Attach the manager's broadcast sender so the guard's `Drop`
-            // emits `ResourceEvent::Released`. Done here, on the success
-            // path only, because failed acquires never minted a guard
-            // to begin with — there is nothing to release.
+            // Attach the manager's event bus so the guard's `Drop` emits
+            // `ResourceEvent::Released`. Done here, on the success path only,
+            // because failed acquires never minted a guard to begin with —
+            // there is nothing to release.
             Ok(h) => Ok(h
                 .with_drain_tracker(in_flight.release_to_guard())
-                .with_event_tx(self.event_tx.clone())),
+                .with_event_bus(Arc::clone(&self.event_bus))),
             Err(e) => Err(e),
         }
     }
@@ -2086,19 +2097,9 @@ impl Manager {
     ///
     /// - [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound) if no resource of type `R` is
     ///   registered.
-    /// - [`ErrorKind::Cancelled`](crate::error::ErrorKind::Cancelled) if the manager is shutting
-    ///   down.
     /// - [`ErrorKind::Permanent`](crate::error::ErrorKind::Permanent) if the resource is not using
     ///   resident topology.
-    /// - Propagates resident-specific acquire errors (notably
-    ///   [`Transient`](crate::error::ErrorKind::Transient) on first-acquire
-    ///   `Resource::create` failure).
-    ///
-    /// # Cancellation
-    ///
-    /// Cancel-safe in the same way as
-    /// [`acquire_pooled`](Self::acquire_pooled): both drain trackers are
-    /// decremented via RAII before returning, no runtime leaks.
+    /// - Propagates resident-specific acquire errors.
     pub async fn acquire_resident<R>(
         &self,
         ctx: &ResourceContext,
@@ -2218,16 +2219,7 @@ impl Manager {
     ///   bounded topology.
     /// - [`ErrorKind::Ambiguous`](crate::error::ErrorKind::Ambiguous) if more
     ///   than one resolved-credential registration exists for `(R, scope)`.
-    /// - Propagates the cap's acquire errors
-    ///   ([`Backpressure`](crate::error::ErrorKind::Backpressure) on
-    ///   permit timeout, [`Cancelled`](crate::error::ErrorKind::Cancelled)
-    ///   on closed semaphore).
-    ///
-    /// # Cancellation
-    ///
-    /// Cancel-safe in the same way as
-    /// [`acquire_pooled`](Self::acquire_pooled): both drain trackers are
-    /// decremented via RAII before returning.
+    /// - Propagates the cap's acquire errors (permit timeout / closed).
     pub async fn acquire_bounded<R>(
         &self,
         ctx: &ResourceContext,
@@ -2466,9 +2458,7 @@ impl Manager {
         // so `status()` snapshots stay self-consistent.
         managed.set_phase(crate::state::ResourcePhase::Ready);
 
-        let _ = self
-            .event_tx
-            .send(ResourceEvent::ConfigReloaded { key: R::key() });
+        self.emit(ResourceEvent::ConfigReloaded { key: R::key() });
 
         // Reload outcome. `reload_config` swaps the config `ArcSwap`
         // without rebuilding the caller-supplied live `Arc<R::Runtime>` for
@@ -2476,7 +2466,7 @@ impl Manager {
         // the honest outcome is `SwappedImmediately` for every variant: the
         // config is swapped, the live runtime is not rebuilt. The genuine
         // "drain + rebuild the live runtime on reload" behavior is the
-        // separately-tracked deferred `reload_config` redesign.
+        // separately-tracked deferred `reload_config` redesign ([#712]).
         let outcome = ReloadOutcome::SwappedImmediately;
 
         tracing::info!(key = %R::key(), ?outcome, "resource config reloaded");
@@ -2497,9 +2487,7 @@ impl Manager {
         if let Some(m) = &self.metrics {
             m.record_destroy();
         }
-        let _ = self
-            .event_tx
-            .send(ResourceEvent::Removed { key: key.clone() });
+        self.emit(ResourceEvent::Removed { key: key.clone() });
         tracing::debug!(%key, "resource removed");
         Ok(())
     }
@@ -2590,13 +2578,16 @@ impl Manager {
         result: &Result<crate::guard::ResourceGuard<R>, Error>,
         started: Instant,
     ) {
+        // Resolve the resource key once: `R::key()` re-validates and re-interns
+        // the literal on each call, and the error path emits up to two events.
+        let key = R::key();
         match result {
             Ok(_) => {
                 if let Some(m) = &self.metrics {
                     m.record_acquire();
                 }
-                let _ = self.event_tx.send(ResourceEvent::AcquireSuccess {
-                    key: R::key(),
+                self.emit(ResourceEvent::AcquireSuccess {
+                    key,
                     duration: started.elapsed(),
                 });
             },
@@ -2612,36 +2603,20 @@ impl Manager {
                 // `AcquireFailed` stream remains the canonical "acquire
                 // didn't succeed" feed.
                 if matches!(e.kind(), crate::error::ErrorKind::Backpressure) {
-                    self.event_tx
-                        .send(ResourceEvent::BackpressureDetected { key: R::key() })
-                        .ok();
+                    self.emit(ResourceEvent::BackpressureDetected { key: key.clone() });
                 }
-                self.event_tx
-                    .send(ResourceEvent::AcquireFailed {
-                        key: R::key(),
-                        error: e.to_string(),
-                    })
-                    .ok();
+                self.emit(ResourceEvent::AcquireFailed {
+                    key,
+                    error: e.to_string(),
+                });
             },
         }
     }
 
-    /// Broadcasts a [`ResourceEvent`] to current subscribers.
-    ///
-    /// `broadcast::Sender::send` only returns `Err` when there are **zero**
-    /// receivers — an expected, non-error condition (events are a passive
-    /// observability stream, not a delivery guarantee). This helper names
-    /// that contract in one place so the absence of a subscriber is
-    /// explicitly a deliberate no-op rather than a silently discarded
-    /// `Result` at the emit site.
+    /// Best-effort event emission. The `PublishOutcome` is intentionally
+    /// discarded — events are observability aids, not delivery guarantees.
     fn emit(&self, event: ResourceEvent) {
-        match self.event_tx.send(event) {
-            Ok(_subscribers) => {},
-            // No subscribers attached — the event stream is best-effort
-            // observability, so this is the documented normal case, not a
-            // failure to propagate.
-            Err(broadcast::error::SendError(_dropped)) => {},
-        }
+        let _ = self.event_bus.emit(event);
     }
 }
 

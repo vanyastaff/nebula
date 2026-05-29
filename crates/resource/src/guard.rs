@@ -16,7 +16,8 @@ use std::{
 };
 
 use nebula_core::ResourceKey;
-use tokio::sync::{Notify, OwnedSemaphorePermit, broadcast};
+use nebula_eventbus::EventBus;
+use tokio::sync::{Notify, OwnedSemaphorePermit};
 
 use crate::{events::ResourceEvent, resource::Resource, topology_tag::TopologyTag};
 
@@ -103,15 +104,15 @@ pub struct ResourceGuard<R: Resource> {
     /// See the [`manager`](crate::manager) module docs for the canonical
     /// invariant.
     drain_counters: Option<DrainTrackers>,
-    /// Optional manager broadcast sender for emitting
-    /// [`ResourceEvent::Released`] on drop. Attached by
+    /// Optional manager event bus for emitting [`ResourceEvent::Released`]
+    /// on drop. Attached by
     /// [`Manager::run_acquire`](crate::manager::Manager) right after the
     /// underlying topology runtime hands back the guard. `None` for
     /// guards minted outside the manager funnel (tests, fixtures, ad-hoc
     /// owned guards) — in that case the released event is silently
-    /// skipped, matching the existing best-effort
-    /// `event_tx.send(...).ok()` contract elsewhere in the crate.
-    event_tx: Option<broadcast::Sender<ResourceEvent>>,
+    /// skipped, matching the existing best-effort emit contract elsewhere
+    /// in the crate.
+    event_bus: Option<Arc<EventBus<ResourceEvent>>>,
 }
 
 enum GuardInner<R: Resource> {
@@ -140,7 +141,7 @@ impl<R: Resource> ResourceGuard<R> {
             topology_tag,
             acquired_at: Instant::now(),
             drain_counters: None,
-            event_tx: None,
+            event_bus: None,
         }
     }
 
@@ -189,7 +190,7 @@ impl<R: Resource> ResourceGuard<R> {
             topology_tag,
             acquired_at: Instant::now(),
             drain_counters: None,
-            event_tx: None,
+            event_bus: None,
         }
     }
 
@@ -212,7 +213,7 @@ impl<R: Resource> ResourceGuard<R> {
             topology_tag,
             acquired_at: Instant::now(),
             drain_counters: None,
-            event_tx: None,
+            event_bus: None,
         }
     }
 
@@ -234,14 +235,14 @@ impl<R: Resource> ResourceGuard<R> {
         self
     }
 
-    /// Attaches the manager's broadcast sender so this guard emits
+    /// Attaches the manager's event bus so this guard emits
     /// [`ResourceEvent::Released`] on drop. Wired by
     /// [`Manager::run_acquire`](crate::manager::Manager) right after the
     /// topology runtime hands back the guard. Without this, the guard
-    /// silently skips the released event — the existing best-effort
-    /// `event_tx.send(...).ok()` discipline applies here too.
-    pub(crate) fn with_event_tx(mut self, event_tx: broadcast::Sender<ResourceEvent>) -> Self {
-        self.event_tx = Some(event_tx);
+    /// silently skips the released event — the existing best-effort emit
+    /// discipline applies here too.
+    pub(crate) fn with_event_bus(mut self, event_bus: Arc<EventBus<ResourceEvent>>) -> Self {
+        self.event_bus = Some(event_bus);
         self
     }
 
@@ -422,11 +423,11 @@ impl<R: Resource> Drop for ResourceGuard<R> {
         }
 
         // Best-effort `Released` event — wired by `Manager::run_acquire`
-        // via `with_event_tx`. Emitted **after** the release callback runs
+        // via `with_event_bus`. Emitted **after** the release callback runs
         // so observers see the event in the same order as the underlying
-        // recycle/destroy effect. Send failures (no subscribers) are
-        // expected and silently dropped via `.ok()`, matching every other
-        // event sink in the crate.
+        // recycle/destroy effect. The `PublishOutcome` is intentionally
+        // discarded (no subscribers is the expected normal case), matching
+        // every other event sink in the crate.
         //
         // Skip the emit when `inner` is `None` — that state is only
         // produced by `detach()`, which hands the lease to the caller
@@ -434,14 +435,13 @@ impl<R: Resource> Drop for ResourceGuard<R> {
         // here would be a false lifecycle signal: subscribers would see a
         // release for a lease that is still live in caller ownership.
         if self.inner.is_some()
-            && let Some(tx) = self.event_tx.take()
+            && let Some(bus) = self.event_bus.take()
         {
-            tx.send(ResourceEvent::Released {
+            let _ = bus.emit(ResourceEvent::Released {
                 key: self.resource_key.clone(),
                 held,
                 tainted: event_tainted,
-            })
-            .ok();
+            });
         }
     }
 }

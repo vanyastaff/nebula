@@ -230,21 +230,16 @@ pub fn scope_to_level(scope: &Scope) -> ScopeLevel {
 /// rows registered at those levels remain reachable without falling through to
 /// an unrelated Global row.
 pub fn scope_levels_for_acquire(scope: &Scope) -> Vec<ScopeLevel> {
-    let mut levels = Vec::with_capacity(5);
-    if let Some(id) = scope.execution_id {
-        levels.push(ScopeLevel::Execution(id));
-    }
-    if let Some(id) = scope.workflow_id {
-        levels.push(ScopeLevel::Workflow(id));
-    }
-    if let Some(id) = scope.workspace_id {
-        levels.push(ScopeLevel::Workspace(id));
-    }
-    if let Some(id) = scope.org_id {
-        levels.push(ScopeLevel::Organization(id));
-    }
-    levels.push(ScopeLevel::Global);
-    levels
+    [
+        scope.execution_id.map(ScopeLevel::Execution),
+        scope.workflow_id.map(ScopeLevel::Workflow),
+        scope.workspace_id.map(ScopeLevel::Workspace),
+        scope.org_id.map(ScopeLevel::Organization),
+        Some(ScopeLevel::Global),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
 }
 
 /// Builds a minimal [`Scope`] bag containing only the given level's id field.

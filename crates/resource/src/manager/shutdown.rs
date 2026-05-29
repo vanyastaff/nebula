@@ -317,13 +317,13 @@ impl Manager {
     /// `lookup` rejected acquires via the cancel token — the exact "phase
     /// corruption" failure mode this method closes.
     ///
-    /// Broadcast send errors (no live subscribers) are intentionally
-    /// ignored, matching the rest of the manager's event-emission policy.
+    /// Emission is best-effort (no live subscribers is a no-op), matching the
+    /// rest of the manager's event-emission policy via the `emit` helper.
     pub(super) fn set_phase_all_failed(&self, error: &ShutdownError) {
         let reason = error.to_string();
         for managed in self.registry.all_managed() {
             managed.set_failed_erased(&reason);
-            let _ = self.event_tx.send(ResourceEvent::HealthChanged {
+            self.emit(ResourceEvent::HealthChanged {
                 key: managed.resource_key(),
                 healthy: false,
             });
