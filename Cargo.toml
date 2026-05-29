@@ -12,6 +12,7 @@ members = [
   "crates/credential-vault",
   "crates/credential-runtime",
   "crates/engine",
+  "crates/env",
   "crates/eventbus",
   "crates/execution",
   "crates/expression",

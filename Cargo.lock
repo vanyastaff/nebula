@@ -3738,6 +3738,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "nebula-env"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
+]
+
+[[package]]
 name = "nebula-error"
 version = "0.1.0"
 dependencies = [
