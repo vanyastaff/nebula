@@ -18,9 +18,10 @@
 //!
 //! ## Testing
 //!
-//! Enable the `testing` feature for [`testing::EnvGuard`], an RAII guard that
+//! Enable the `testing` feature for `testing::EnvGuard`, an RAII guard that
 //! serializes env mutation behind a process-global lock and restores prior
-//! values on drop.
+//! values on drop. (Not an intra-doc link: the module is feature-gated, so it
+//! is absent from the default doc build.)
 //!
 //! ## Examples
 //!
