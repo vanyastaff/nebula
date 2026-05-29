@@ -740,9 +740,7 @@ impl Manager {
         if let Some(m) = &self.metrics {
             m.record_create();
         }
-        let _ = self
-            .event_bus
-            .emit(ResourceEvent::Registered { key: key.clone() });
+        self.emit(ResourceEvent::Registered { key: key.clone() });
 
         tracing::debug!(%key, "resource registered");
         Ok(())
@@ -1309,7 +1307,7 @@ impl Manager {
                 if let Some(m) = &self.metrics {
                     m.record_slot_refresh_outcome(crate::metrics::SlotDispatchOutcome::Success);
                 }
-                let _ = self.event_bus.emit(ResourceEvent::SlotRefreshed {
+                self.emit(ResourceEvent::SlotRefreshed {
                     key: key.clone(),
                     slot: slot.to_owned(),
                 });
@@ -1319,7 +1317,7 @@ impl Manager {
                 if let Some(m) = &self.metrics {
                     m.record_slot_refresh_outcome(crate::metrics::SlotDispatchOutcome::Failed);
                 }
-                let _ = self.event_bus.emit(ResourceEvent::SlotRefreshFailed {
+                self.emit(ResourceEvent::SlotRefreshFailed {
                     key: key.clone(),
                     slot: slot.to_owned(),
                     error: e.to_string(),
@@ -2061,7 +2059,7 @@ impl Manager {
             ..
         } = &gate_admission
         {
-            let _ = self.event_bus.emit(ResourceEvent::RetryAttempt {
+            self.emit(ResourceEvent::RetryAttempt {
                 key: R::key(),
                 attempt: *attempt,
                 backoff: *backoff_on_fail,
@@ -2457,9 +2455,7 @@ impl Manager {
         // so `status()` snapshots stay self-consistent.
         managed.set_phase(crate::state::ResourcePhase::Ready);
 
-        let _ = self
-            .event_bus
-            .emit(ResourceEvent::ConfigReloaded { key: R::key() });
+        self.emit(ResourceEvent::ConfigReloaded { key: R::key() });
 
         // Reload outcome. `reload_config` swaps the config `ArcSwap`
         // without rebuilding the caller-supplied live `Arc<R::Runtime>` for
@@ -2488,9 +2484,7 @@ impl Manager {
         if let Some(m) = &self.metrics {
             m.record_destroy();
         }
-        let _ = self
-            .event_bus
-            .emit(ResourceEvent::Removed { key: key.clone() });
+        self.emit(ResourceEvent::Removed { key: key.clone() });
         tracing::debug!(%key, "resource removed");
         Ok(())
     }
@@ -2586,7 +2580,7 @@ impl Manager {
                 if let Some(m) = &self.metrics {
                     m.record_acquire();
                 }
-                let _ = self.event_bus.emit(ResourceEvent::AcquireSuccess {
+                self.emit(ResourceEvent::AcquireSuccess {
                     key: R::key(),
                     duration: started.elapsed(),
                 });
@@ -2603,11 +2597,9 @@ impl Manager {
                 // `AcquireFailed` stream remains the canonical "acquire
                 // didn't succeed" feed.
                 if matches!(e.kind(), crate::error::ErrorKind::Backpressure) {
-                    let _ = self
-                        .event_bus
-                        .emit(ResourceEvent::BackpressureDetected { key: R::key() });
+                    self.emit(ResourceEvent::BackpressureDetected { key: R::key() });
                 }
-                let _ = self.event_bus.emit(ResourceEvent::AcquireFailed {
+                self.emit(ResourceEvent::AcquireFailed {
                     key: R::key(),
                     error: e.to_string(),
                 });
