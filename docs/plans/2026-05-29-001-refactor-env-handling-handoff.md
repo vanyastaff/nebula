@@ -1,3 +1,7 @@
+<!--
+# budget-justified: handoff doc is an inventory table of env-var read sites across all crates; intentionally one contiguous reference document, not decomposable code.
+-->
+
 # Environment-variable handling — cross-crate audit & refactor handoff
 
 **Owner**: TBD on pickup
