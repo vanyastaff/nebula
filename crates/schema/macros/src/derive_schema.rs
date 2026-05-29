@@ -428,12 +428,25 @@ fn default_lit_tokens(
         (FieldKind::IntegerNumber, _) => Err(mismatch("an integer literal", "non-integer literal")),
 
         // Float targets accept both integer (coerced) and float literals.
-        (FieldKind::FloatNumber, DefaultLit::Float(f)) => Ok(quote! {
-            #crate_path::__private::serde_json::Value::Number(
-                #crate_path::__private::serde_json::Number::from_f64(#f)
-                    .expect("derive-provided float default is finite")
-            )
-        }),
+        (FieldKind::FloatNumber, DefaultLit::Float(f)) => {
+            // Reject non-finite defaults at EXPANSION time. A float literal can
+            // overflow to infinity (e.g. `1e400` parses to `f64::INFINITY`), and
+            // `serde_json::Number::from_f64` returns `None` for NaN/±inf — so
+            // emitting a runtime `.expect()` would panic in the consuming crate.
+            // Surface it as a spanned compile error instead (never panic in
+            // generated code).
+            if !f.is_finite() {
+                return Err(syn::Error::new_spanned(
+                    field_name,
+                    "#[field(default = ..)]: float default must be finite (NaN / infinity are not valid JSON numbers)",
+                ));
+            }
+            // `Value::from(f64)` yields `Value::Number` for a finite value (and
+            // is itself non-panicking — it maps non-finite to `Null`).
+            Ok(quote! {
+                #crate_path::__private::serde_json::Value::from(#f)
+            })
+        },
         (FieldKind::FloatNumber, DefaultLit::Int(i)) => Ok(quote! {
             #crate_path::__private::serde_json::Value::Number(
                 #crate_path::__private::serde_json::Number::from(#i)
