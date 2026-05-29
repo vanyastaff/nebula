@@ -53,7 +53,10 @@ pub(crate) fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
         let label = field_attr.label.unwrap_or_else(|| variant_name.to_string());
         let description = field_attr.description;
         let mut expr = quote! {
-            #crate_path::SelectOption::new(::serde_json::Value::String(#value.to_owned()), #label)
+            #crate_path::SelectOption::new(
+                #crate_path::__private::serde_json::Value::String(#value.to_owned()),
+                #label,
+            )
         };
         if let Some(desc) = description {
             expr = quote! { #expr.with_description(#desc) };
@@ -62,6 +65,7 @@ pub(crate) fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
     }
 
     Ok(quote! {
+        #[automatically_derived]
         impl #impl_g #crate_path::HasSelectOptions for #ty_name #ty_g #where_g {
             fn select_options() -> ::std::vec::Vec<#crate_path::SelectOption> {
                 ::std::vec![

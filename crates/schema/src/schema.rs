@@ -81,6 +81,14 @@ impl Schema {
     #[must_use]
     pub fn lint(&self) -> ValidationReport {
         let mut report = ValidationReport::new();
+        // Same self-bounded depth/fan-out guard `build()` runs, BEFORE the
+        // unbounded `lint_tree` recursion — so a `Schema` constructed or
+        // deserialized outside the builder cannot drive lint into a stack
+        // overflow. Stop on a structural error rather than recursing.
+        validate_index_limits(&self.fields, &FieldPath::root(), 0, &mut report);
+        if report.has_errors() {
+            return report;
+        }
         crate::lint::lint_tree(&self.fields, &FieldPath::root(), &mut report);
         report
     }
@@ -498,11 +506,21 @@ impl SchemaBuilder {
         let mut fields = self.fields;
         let mut report = ValidationReport::new();
 
+        // Depth / sibling-count bounds FIRST. `validate_index_limits` is
+        // self-bounded — it stops recursing past `u8::MAX` depth via
+        // `checked_add` — so it cannot overflow the stack. The structural lint
+        // passes below recurse on the raw nesting depth with no internal cap, so
+        // an over-deep tree must be rejected here before they run. This mirrors
+        // the explicit `MAX_VALUE_DEPTH` guard the value tree already has.
+        validate_index_limits(&fields, &FieldPath::root(), 0, &mut report);
+        if report.has_errors() {
+            return Err(report);
+        }
+
         crate::lint::lint_tree(&fields, &FieldPath::root(), &mut report);
         // Root-rule diagnostics are best-effort while structural lint errors
         // are present; build still stops before indexing when any error exists.
         crate::lint::lint_root_rules(&self.root_rules, &fields, &mut report);
-        validate_index_limits(&fields, &FieldPath::root(), 0, &mut report);
 
         if report.has_errors() {
             return Err(report);
@@ -655,110 +673,134 @@ fn build_index(
     });
 }
 
+/// Maximum schema-tree nesting depth accepted by [`SchemaBuilder::build`] and
+/// [`Schema::lint`].
+///
+/// The schema-tree analogue of [`crate::value::MAX_VALUE_DEPTH`]. Enforced by
+/// `validate_index_limits`, which runs **before** the recursive lint passes in
+/// `build()` / `lint()`, so an over-deep schema is rejected with
+/// `schema.depth_limit` before any unbounded recursion (lint cycle DFS,
+/// `validate_field`, `promote_secrets_in_value`) can overflow the stack. The
+/// guard walks every nested field shape — object fields, list items of any kind
+/// (`List<List<…>>`, `List<Mode<…>>`, not just `List<Object>`), and mode-variant
+/// payloads. A schema deeper than this could not have its values validated
+/// anyway — `FieldValue` parsing caps at the same `MAX_VALUE_DEPTH`.
+///
+/// This guards the *logical* tree once it has been deserialized. Untrusted
+/// schema bytes reach the system as JSON (plugin protocol, API), whose parser
+/// self-limits recursion; a non-self-limiting binary deserializer
+/// (`StorageFormat::MessagePack`, off by default) is only used for trusted
+/// at-rest data and is not fed attacker-controlled schema trees.
+pub const MAX_SCHEMA_DEPTH: u8 = 64;
+
+/// Per-level fan-out cap: the field-handle cursor is `u16`, so a single level
+/// can index at most `u16::MAX + 1` siblings / variants.
+const MAX_INDEXABLE_SIBLINGS: usize = u16::MAX as usize + 1;
+
+fn schema_depth_limit_error(path: &FieldPath) -> ValidationError {
+    ValidationError::builder("schema.depth_limit")
+        .at(path.clone())
+        .param("limit", Value::from(MAX_SCHEMA_DEPTH))
+        .message(format!(
+            "schema nesting depth exceeds the {MAX_SCHEMA_DEPTH}-level limit at `{path}`"
+        ))
+        .build()
+}
+
+fn sibling_overflow_error(path: &FieldPath, kind: &str, actual: usize) -> ValidationError {
+    ValidationError::builder("schema.index_overflow")
+        .at(path.clone())
+        .param("limit", Value::from(MAX_INDEXABLE_SIBLINGS))
+        .param("actual", Value::from(actual))
+        .message(format!(
+            "too many {kind} at `{path}`: {actual} > {MAX_INDEXABLE_SIBLINGS}"
+        ))
+        .build()
+}
+
+/// Bound schema-tree depth and per-level sibling/variant counts BEFORE the
+/// unbounded recursive lint / validate / resolve passes run.
+///
+/// Walks **every** nested field shape those passes can traverse — object
+/// fields, list items of any kind (including `List<List<…>>` and
+/// `List<Mode<…>>`, not just `List<Object>`), and mode-variant payloads — so no
+/// nesting path escapes `MAX_SCHEMA_DEPTH`.
 fn validate_index_limits(
     fields: &[Field],
     path: &FieldPath,
     depth: u8,
     report: &mut ValidationReport,
 ) {
-    let max_indexable_siblings = usize::from(u16::MAX) + 1;
-    if fields.len() > max_indexable_siblings {
-        report.push(
-            ValidationError::builder("schema.index_overflow")
-                .at(path.clone())
-                .param("limit", Value::from(max_indexable_siblings))
-                .param("actual", Value::from(fields.len()))
-                .message(format!(
-                    "too many sibling fields at `{path}`: {} > {}",
-                    fields.len(),
-                    max_indexable_siblings
-                ))
-                .build(),
-        );
+    if depth > MAX_SCHEMA_DEPTH {
+        report.push(schema_depth_limit_error(path));
+        return;
     }
-
+    if fields.len() > MAX_INDEXABLE_SIBLINGS {
+        report.push(sibling_overflow_error(path, "sibling fields", fields.len()));
+    }
     for field in fields {
         let child_path = path.clone().join(field.key().clone());
-        let Some(next_depth) = depth.checked_add(1) else {
-            report.push(
-                ValidationError::builder("schema.depth_limit")
-                    .at(child_path)
-                    .param("limit", Value::from(u8::MAX))
-                    .message("schema nesting depth exceeds supported index range")
-                    .build(),
-            );
-            continue;
-        };
-
-        validate_indexable_field_children(field, &child_path, next_depth, report);
+        validate_field_subtree_limits(field, &child_path, depth, report);
     }
 }
 
-fn validate_indexable_field_children(
+/// Recurse a single field (at nesting level `depth`) into every container kind,
+/// bounding depth and fan-out. Mirrors the structural recursion the lint /
+/// `validate_field` / `promote_secrets_in_value` passes perform, so the cap
+/// covers exactly the paths those unbounded passes can take.
+fn validate_field_subtree_limits(
     field: &Field,
     path: &FieldPath,
     depth: u8,
     report: &mut ValidationReport,
 ) {
+    if depth > MAX_SCHEMA_DEPTH {
+        report.push(schema_depth_limit_error(path));
+        return;
+    }
+    let Some(child_depth) = depth.checked_add(1) else {
+        // Unreachable while MAX_SCHEMA_DEPTH < u8::MAX, but keep the backstop so
+        // a future cap raise cannot silently overflow the u8 depth counter.
+        report.push(schema_depth_limit_error(path));
+        return;
+    };
     match field {
         Field::Object(object) => {
-            validate_index_limits(&object.fields, path, depth, report);
+            if object.fields.len() > MAX_INDEXABLE_SIBLINGS {
+                report.push(sibling_overflow_error(
+                    path,
+                    "sibling fields",
+                    object.fields.len(),
+                ));
+            }
+            for child in &object.fields {
+                let child_path = path.clone().join(child.key().clone());
+                validate_field_subtree_limits(child, &child_path, child_depth, report);
+            }
         },
         Field::List(list) => {
-            if let Some(Field::Object(object)) = list.item.as_deref() {
-                validate_index_limits(&object.fields, path, depth, report);
+            // A list item is one nesting level deeper and may be ANY field kind;
+            // descend it so `List<List<…>>` / `List<Mode<…>>` cannot bypass the cap.
+            if let Some(item) = list.item.as_deref() {
+                validate_field_subtree_limits(item, path, child_depth, report);
             }
         },
         Field::Mode(mode) => {
-            validate_mode_variant_index_limits(mode, path, depth, report);
+            if mode.variants.len() > MAX_INDEXABLE_SIBLINGS {
+                report.push(sibling_overflow_error(
+                    path,
+                    "mode variants",
+                    mode.variants.len(),
+                ));
+            }
+            for variant in &mode.variants {
+                let Some(variant_path) = mode_variant_path(path, variant.key.as_str()) else {
+                    continue;
+                };
+                validate_field_subtree_limits(&variant.field, &variant_path, child_depth, report);
+            }
         },
         _ => {},
-    }
-}
-
-fn validate_mode_variant_index_limits(
-    mode: &crate::field::ModeField,
-    path: &FieldPath,
-    depth: u8,
-    report: &mut ValidationReport,
-) {
-    let max_indexable_siblings = usize::from(u16::MAX) + 1;
-    if mode.variants.len() > max_indexable_siblings {
-        report.push(
-            ValidationError::builder("schema.index_overflow")
-                .at(path.clone())
-                .param("limit", Value::from(max_indexable_siblings))
-                .param("actual", Value::from(mode.variants.len()))
-                .message(format!(
-                    "too many mode variants at `{path}`: {} > {}",
-                    mode.variants.len(),
-                    max_indexable_siblings
-                ))
-                .build(),
-        );
-    }
-
-    let Some(variant_depth) = depth.checked_add(1) else {
-        report.push(
-            ValidationError::builder("schema.depth_limit")
-                .at(path.clone())
-                .param("limit", Value::from(u8::MAX))
-                .message("schema mode variant depth exceeds supported index range")
-                .build(),
-        );
-        return;
-    };
-
-    for variant in &mode.variants {
-        let Some(variant_path) = mode_variant_path(path, variant.key.as_str()) else {
-            continue;
-        };
-        validate_indexable_field_children(
-            variant.field.as_ref(),
-            &variant_path,
-            variant_depth,
-            report,
-        );
     }
 }
 
@@ -843,6 +885,97 @@ mod tests {
         let result = Schema::builder().add(nested_object(260)).build();
         let report = result.expect_err("deep schema should be rejected");
         assert!(report.errors().any(|e| e.code == "schema.depth_limit"));
+    }
+
+    #[test]
+    fn build_rejects_schema_just_beyond_max_depth() {
+        fn nested_object(depth: usize) -> Field {
+            let mut current: Field = Field::string(fk("leaf")).into();
+            for i in (0..depth).rev() {
+                current = Field::object(fk(&format!("n{i}"))).add(current).into();
+            }
+            current
+        }
+        // One level past the explicit cap must be rejected (pins MAX_SCHEMA_DEPTH,
+        // not just the old u8::MAX backstop).
+        let result = Schema::builder()
+            .add(nested_object(usize::from(MAX_SCHEMA_DEPTH) + 2))
+            .build();
+        let report = result.expect_err("over-deep schema should be rejected");
+        assert!(report.errors().any(|e| e.code == "schema.depth_limit"));
+    }
+
+    #[test]
+    fn deserialize_rejects_deeply_nested_schema_via_from_value() {
+        // `ValidSchema::deserialize` from an already-materialized `Value` — the
+        // `serde_json::from_value` path has no streaming-parser recursion cap
+        // (unlike `from_str`/`from_slice`, which self-limit at 128) — must be
+        // rejected by the build-time depth guard rather than recursing unbounded
+        // through the lint passes. Schema-tree analogue of value.rs's
+        // `field_value_deserialize_rejects_deeply_nested_input`.
+        fn nested_object(depth: usize) -> Field {
+            let mut current: Field = Field::string(fk("leaf")).into();
+            for i in (0..depth).rev() {
+                current = Field::object(fk(&format!("n{i}"))).add(current).into();
+            }
+            current
+        }
+        // Serialize a too-deep field to obtain the exact wire shape, then feed it
+        // back through `from_value` inside a `ValidSchema` envelope.
+        let deep = nested_object(usize::from(MAX_SCHEMA_DEPTH) + 5);
+        let wire = serde_json::json!({
+            "fields": [serde_json::to_value(&deep).expect("serialize field")]
+        });
+        let err = serde_json::from_value::<ValidSchema>(wire).expect_err("must reject");
+        assert!(
+            err.to_string().contains("depth"),
+            "expected depth-limit rejection, got: {err}"
+        );
+    }
+
+    #[test]
+    fn build_rejects_deep_list_of_lists() {
+        // `List<List<List<…>>>` with no object anywhere: the depth guard must
+        // descend non-object list items, not just `List<Object>`. A list-only
+        // deep schema would otherwise bypass MAX_SCHEMA_DEPTH and still drive the
+        // unbounded lint/validate/promote recursion.
+        fn nested_list(depth: usize) -> Field {
+            let mut current: Field = Field::string(fk("leaf")).into();
+            for i in (0..depth).rev() {
+                current = Field::list(fk(&format!("l{i}"))).item(current).into();
+            }
+            current
+        }
+        let result = Schema::builder()
+            .add(nested_list(usize::from(MAX_SCHEMA_DEPTH) + 5))
+            .build();
+        let report = result.expect_err("deep list-of-lists must be rejected");
+        assert!(
+            report.errors().any(|e| e.code == "schema.depth_limit"),
+            "expected schema.depth_limit, got: {report:?}"
+        );
+    }
+
+    #[test]
+    fn lint_rejects_deeply_nested_schema_without_builder() {
+        // `Schema::lint()` runs `lint_tree` directly; it must apply the same
+        // depth guard so a `Schema` built/deserialized outside the builder cannot
+        // enter the unbounded lint recursion.
+        fn nested_object(depth: usize) -> Field {
+            let mut current: Field = Field::string(fk("leaf")).into();
+            for i in (0..depth).rev() {
+                current = Field::object(fk(&format!("n{i}"))).add(current).into();
+            }
+            current
+        }
+        let schema = Schema {
+            fields: vec![nested_object(usize::from(MAX_SCHEMA_DEPTH) + 5)],
+        };
+        let report = schema.lint();
+        assert!(
+            report.errors().any(|e| e.code == "schema.depth_limit"),
+            "Schema::lint must reject an over-deep tree, got: {report:?}"
+        );
     }
 
     #[test]

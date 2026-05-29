@@ -42,7 +42,7 @@ impl FieldKey {
         if value.is_empty() {
             return Err(Self::err(value, "key cannot be empty"));
         }
-        if value.len() > 64 {
+        if value.chars().count() > 64 {
             return Err(Self::err(value, "key max 64 chars"));
         }
         let first = bytes[0] as char;

@@ -12,6 +12,20 @@ covers the full set of issues raised in the nebula-schema code review.
 
 ### ⚠ Breaking Changes
 
+- **KDF removed from the schema layer.**  `KdfParams`, `KdfError`, the
+  `MIN_KDF_*` / `MAX_KDF_*` / `DEFAULT_KDF_OUTPUT_BYTES` constants,
+  `KdfParams::hash_password`, and `SecretField::kdf(...)` are deleted, along
+  with the `argon2` and `thiserror` dependencies.  Key derivation /
+  password hashing is a credential-layer concern: `nebula-credential` already
+  owns the AES-256-GCM + Argon2id pipeline (with per-record salting and AAD).
+  The schema copy was a weaker (static-salt, no AEAD), zero-consumer duplicate
+  whose synchronous Argon2 call ran on the async executor inside
+  `ValidValues::resolve` (a worker-blocking hazard under load).  Secret string
+  literals are still promoted to a zeroizing `SecretValue::String` during
+  `resolve`; configure hashing on the credential side instead.
+  `SecretValue::Bytes` / `SecretBytes` / `SecretWire` are unchanged (binary
+  tokens and externally-hashed material still round-trip).
+
 - **`ExpressionContext::evaluate` signature changed (T01).**  The trait no
   longer uses `#[async_trait::async_trait]`; impls now write
   ```rust
@@ -38,23 +52,22 @@ covers the full set of issues raised in the nebula-schema code review.
   violated the `PartialEq` contract.  Loaders are not value-comparable; if
   identity comparison is required, use `Arc::ptr_eq` on the inner handle.
 
-- **`KdfParams::Argon2id` gained a new `output_bytes` field (T06).**  The
-  variant is `#[non_exhaustive]`, so wire JSON without the field continues
-  to deserialize (default `32`).  In-code constructors must add
-  `output_bytes: None` (or `Some(n)`).
-
 ### Added
-
-- **KDF guardrails (T06).**  Public consts `MIN_KDF_*` / `MAX_KDF_*` /
-  `DEFAULT_KDF_OUTPUT_BYTES` for Argon2id memory, time, parallelism, salt
-  length, and output length, aligned to RFC 9106 §4 ("Recommended values"
-  for interactive use).  `KdfParams::hash_password` now rejects sub-minimum
-  costs in addition to over-maximum ones.
 
 - **`recursion_limit` STANDARD_CODE (T07).**  `FieldValues::from_json` and
   `try_set_raw` reject deeply-nested user JSON with the new
   `recursion_limit` code (`MAX_VALUE_DEPTH = 64`).  Closes a stack-overflow
   vector against adversarial wire payloads.
+
+- **`MAX_SCHEMA_DEPTH` schema-tree depth cap.**  New public const
+  (`= 64`, the schema-tree analogue of `MAX_VALUE_DEPTH`).
+  `validate_index_limits` now rejects schemas nested beyond it with
+  `schema.depth_limit` **before** the recursive lint passes run, so an
+  over-deep schema (including one deserialized through `serde_json::from_value`,
+  which has no streaming-parser recursion cap) cannot drive the lint/validate
+  recursion into a stack overflow.  Replaces the previous implicit `u8::MAX`
+  bound with an explicit, conservative one; schemas deeper than 64 were already
+  unusable (their values cannot validate past `MAX_VALUE_DEPTH`).
 
 - **`secret.default_forbidden` STANDARD_CODE (T18).**  Lint pass now
   hard-rejects `Field::Secret { default: Some(_) }`.  Symmetric with
@@ -70,7 +83,7 @@ covers the full set of issues raised in the nebula-schema code review.
 - **`tracing::instrument` spans on every hot-path entry point (T10).**
   Covers `ValidSchema::validate`, `ValidValues::resolve`,
   `ValidSchema::json_schema`, `LoaderRegistry::load_options` /
-  `load_records`, `lint::lint_tree`, `KdfParams::hash_password`.
+  `load_records`, and `lint::lint_tree`.
   All emit structured fields (field counts, mode flags, error counts).
 
 - **Per-crate `clippy.toml` (T17).**  `crates/schema/clippy.toml` bans

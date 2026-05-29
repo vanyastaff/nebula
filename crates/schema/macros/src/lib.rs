@@ -90,7 +90,7 @@ fn validate(value: &str) -> Result<(), &'static str> {
     if value.is_empty() {
         return Err("key cannot be empty");
     }
-    if value.len() > 64 {
+    if value.chars().count() > 64 {
         return Err("key max 64 chars");
     }
     let mut chars = value.chars();
