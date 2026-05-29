@@ -36,6 +36,42 @@ fn parse_format(value: &str) -> Option<Format> {
     }
 }
 
+/// Tri-state colour selection parsed from `NEBULA_LOG_COLORS`.
+///
+/// The documented contract is `auto | always | never`; bool-style aliases
+/// (`true/1/yes/on`, `false/0/no/off`) are also accepted for back-compat.
+/// `auto` and any unrecognized value resolve to [`ColorMode::Auto`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ColorMode {
+    Auto,
+    Always,
+    Never,
+}
+
+impl ColorMode {
+    fn parse(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "always" | "true" | "1" | "yes" | "on" => Self::Always,
+            "never" | "false" | "0" | "no" | "off" => Self::Never,
+            // "auto" and anything unrecognized fall back to TTY auto-detect.
+            _ => Self::Auto,
+        }
+    }
+
+    /// Resolve to a concrete ANSI on/off. `Auto` enables colours only when
+    /// stderr is a terminal; every arm still requires the `ansi` feature to
+    /// emit codes, matching `DisplayConfig`'s default derivation.
+    fn resolve(self) -> bool {
+        match self {
+            Self::Always => cfg!(feature = "ansi"),
+            Self::Never => false,
+            Self::Auto => {
+                cfg!(feature = "ansi") && std::io::IsTerminal::is_terminal(&std::io::stderr())
+            },
+        }
+    }
+}
+
 impl Config {
     /// Apply environment variable overrides to an existing configuration.
     ///
@@ -67,7 +103,7 @@ impl Config {
             applied = true;
         }
         if let Ok(v) = std::env::var("NEBULA_LOG_COLORS") {
-            self.display.colors = parse_bool(&v);
+            self.display.colors = ColorMode::parse(&v).resolve();
             applied = true;
         }
 
@@ -107,5 +143,40 @@ impl Config {
                 source: ResolvedSource::Preset,
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ColorMode;
+
+    #[test]
+    fn color_mode_parses_documented_contract() {
+        assert_eq!(ColorMode::parse("auto"), ColorMode::Auto);
+        assert_eq!(ColorMode::parse("always"), ColorMode::Always);
+        assert_eq!(ColorMode::parse("never"), ColorMode::Never);
+    }
+
+    #[test]
+    fn color_mode_accepts_bool_aliases_case_insensitively() {
+        for on in ["true", "1", "YES", "On"] {
+            assert_eq!(ColorMode::parse(on), ColorMode::Always, "{on}");
+        }
+        for off in ["false", "0", "no", "OFF", "FALSE"] {
+            assert_eq!(ColorMode::parse(off), ColorMode::Never, "{off}");
+        }
+    }
+
+    #[test]
+    fn color_mode_unrecognized_falls_back_to_auto() {
+        assert_eq!(ColorMode::parse("maybe"), ColorMode::Auto);
+        assert_eq!(ColorMode::parse(""), ColorMode::Auto);
+    }
+
+    #[test]
+    fn never_resolves_to_disabled() {
+        // Regression: the old `parse_bool` returned `true` for "never"
+        // (it is not in the false-set), silently enabling colours.
+        assert!(!ColorMode::Never.resolve());
     }
 }

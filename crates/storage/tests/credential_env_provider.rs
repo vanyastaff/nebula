@@ -1,51 +1,21 @@
-#![allow(
-    unsafe_code,
-    reason = "env::{set_var, remove_var} are unsafe under edition 2024"
-)]
-
 //! Integration test for [`EnvKeyProvider::from_env`].
 //!
 //! Lives outside the crate proper because the crate applies
-//! `#![forbid(unsafe_code)]` and `std::env::set_var` / `std::env::remove_var`
-//! are `unsafe` under the Rust 2024 edition. The in-crate unit tests cover
-//! the validation logic via `from_base64`; this binary exercises the env
-//! lookup itself and verifies the fail-closed contract against a missing
+//! `#![forbid(unsafe_code)]`; the unsafe env-mutation boundary is centralized
+//! behind [`nebula_env::testing::EnvGuard`], which serializes mutation under a
+//! process-global lock and restores prior values on drop. The in-crate unit
+//! tests cover the validation logic via `from_base64`; this binary exercises
+//! the env lookup itself and the fail-closed contract against a missing
 //! `NEBULA_CRED_MASTER_KEY`.
 
 use base64::Engine;
+use nebula_env::testing::EnvGuard;
 use nebula_storage::credential::{EnvKeyProvider, ProviderError};
-
-/// Serialize env-var manipulation across tests in this binary so parallel
-/// nextest execution does not clobber shared state.
-fn env_lock() -> std::sync::MutexGuard<'static, ()> {
-    use std::sync::{Mutex, OnceLock};
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
-fn clear_env() {
-    // SAFETY: the env_lock() mutex serialises env mutations across this
-    // binary's tests, so no other test thread reads or writes the var while
-    // we mutate it. This is the same pattern used in
-    // `crates/api/src/config.rs` tests.
-    unsafe {
-        std::env::remove_var(EnvKeyProvider::ENV_VAR);
-    }
-}
-
-fn set_env(value: &str) {
-    // SAFETY: see clear_env() — env_lock() holds the invariant.
-    unsafe {
-        std::env::set_var(EnvKeyProvider::ENV_VAR, value);
-    }
-}
 
 #[test]
 fn from_env_missing_var_fails_closed() {
-    let _g = env_lock();
-    clear_env();
+    let mut env = EnvGuard::acquire();
+    env.remove(EnvKeyProvider::ENV_VAR);
 
     let err = EnvKeyProvider::from_env().expect_err("missing var must error");
     match err {
@@ -54,41 +24,32 @@ fn from_env_missing_var_fails_closed() {
         },
         other => panic!("wrong variant: {other:?}"),
     }
-
-    clear_env();
 }
 
 #[test]
 fn from_env_dev_placeholder_rejected() {
-    let _g = env_lock();
-    clear_env();
-    set_env(EnvKeyProvider::DEV_PLACEHOLDER);
+    let mut env = EnvGuard::acquire();
+    env.set(EnvKeyProvider::ENV_VAR, EnvKeyProvider::DEV_PLACEHOLDER);
 
     let err = EnvKeyProvider::from_env().expect_err("dev placeholder must error");
     assert!(matches!(err, ProviderError::DevPlaceholder));
-
-    clear_env();
 }
 
 #[test]
 fn from_env_short_value_rejected() {
-    let _g = env_lock();
-    clear_env();
+    let mut env = EnvGuard::acquire();
     let short = base64::engine::general_purpose::STANDARD.encode([0x42u8; 16]);
-    set_env(&short);
+    env.set(EnvKeyProvider::ENV_VAR, &short);
 
     let err = EnvKeyProvider::from_env().expect_err("short key must error");
     assert!(matches!(err, ProviderError::KeyMaterialRejected { .. }));
-
-    clear_env();
 }
 
 #[test]
 fn from_env_valid_key_round_trips() {
-    let _g = env_lock();
-    clear_env();
+    let mut env = EnvGuard::acquire();
     let valid = base64::engine::general_purpose::STANDARD.encode([0x11u8; 32]);
-    set_env(&valid);
+    env.set(EnvKeyProvider::ENV_VAR, &valid);
 
     let provider = EnvKeyProvider::from_env().expect("valid key must succeed");
     let version = nebula_storage::credential::KeyProvider::version(&provider);
@@ -102,6 +63,4 @@ fn from_env_valid_key_round_trips() {
         "env:".len() + 16,
         "version has 16-char fingerprint tail; got {version}"
     );
-
-    clear_env();
 }

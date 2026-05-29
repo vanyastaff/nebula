@@ -13,6 +13,7 @@ documentation.workspace = true
 
 [dependencies]
 nebula-core = { path = "../core" }
+nebula-env = { workspace = true }
 nebula-credential = { path = "../credential" }
 nebula-storage-port = { path = "../storage-port" }
 
@@ -107,6 +108,8 @@ s3 = ["dep:aws-config", "dep:aws-sdk-s3"]
 msgpack-storage = ["dep:rmp-serde"]
 
 [dev-dependencies]
+# `testing` feature provides EnvGuard for the env-provider integration test.
+nebula-env = { workspace = true, features = ["testing"] }
 tokio = { workspace = true, features = ["full", "test-util"] }
 # Used by FileKeyProvider tests (key_provider.rs).
 tempfile = { workspace = true }

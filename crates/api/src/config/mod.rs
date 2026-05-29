@@ -567,39 +567,27 @@ impl ApiConfig {
 }
 
 #[cfg(test)]
-#[allow(
-    unsafe_code,
-    reason = "env::{set_var, remove_var} are unsafe under edition 2024"
-)]
 mod tests {
     use super::*;
-    use crate::config::env::tests::{clear_env, env_lock};
+    use crate::config::env::tests::env_guard;
 
     #[test]
     fn from_env_rejects_missing_secret_in_production() {
-        let _g = env_lock();
-        clear_env();
-        // SAFETY: protected by env_lock.
-        unsafe { std::env::set_var("NEBULA_ENV", "production") };
+        let mut env = env_guard();
+        env.set("NEBULA_ENV", "production");
 
         let err = ApiConfig::from_env().expect_err("production + missing must error");
         match err {
             ApiConfigError::MissingJwtSecret(mode) => assert_eq!(mode, "production"),
             other => panic!("wrong variant: {other:?}"),
         }
-
-        clear_env();
     }
 
     #[test]
     fn from_env_rejects_short_secret() {
-        let _g = env_lock();
-        clear_env();
-        // SAFETY: protected by env_lock.
-        unsafe {
-            std::env::set_var("NEBULA_ENV", "production");
-            std::env::set_var("API_JWT_SECRET", "short");
-        }
+        let mut env = env_guard();
+        env.set("NEBULA_ENV", "production");
+        env.set("API_JWT_SECRET", "short");
 
         let err = ApiConfig::from_env().expect_err("short secret must error");
         match err {
@@ -609,32 +597,22 @@ mod tests {
             },
             other => panic!("wrong variant: {other:?}"),
         }
-
-        clear_env();
     }
 
     #[test]
     fn from_env_rejects_dev_placeholder() {
-        let _g = env_lock();
-        clear_env();
-        // SAFETY: protected by env_lock.
-        unsafe {
-            std::env::set_var("NEBULA_ENV", "production");
-            std::env::set_var("API_JWT_SECRET", JwtSecret::DEV_PLACEHOLDER);
-        }
+        let mut env = env_guard();
+        env.set("NEBULA_ENV", "production");
+        env.set("API_JWT_SECRET", JwtSecret::DEV_PLACEHOLDER);
 
         let err = ApiConfig::from_env().expect_err("dev placeholder must error");
         assert!(matches!(err, ApiConfigError::JwtSecretIsDevPlaceholder));
-
-        clear_env();
     }
 
     #[test]
     fn from_env_generates_ephemeral_in_dev() {
-        let _g = env_lock();
-        clear_env();
-        // SAFETY: protected by env_lock.
-        unsafe { std::env::set_var("NEBULA_ENV", "development") };
+        let mut env = env_guard();
+        env.set("NEBULA_ENV", "development");
 
         let cfg1 = ApiConfig::from_env().expect("dev mode must succeed");
         let cfg2 = ApiConfig::from_env().expect("dev mode must succeed");
@@ -643,36 +621,27 @@ mod tests {
         // secret so auth state remains stable until restart.
         assert_eq!(cfg1.jwt_secret.as_bytes(), cfg2.jwt_secret.as_bytes());
         assert!(cfg1.jwt_secret.as_bytes().len() >= JwtSecret::MIN_BYTES);
-
-        clear_env();
     }
 
     #[test]
     fn from_env_missing_secret_without_env_fails_closed() {
-        let _g = env_lock();
-        clear_env();
+        let _env = env_guard();
 
         let err = ApiConfig::from_env().expect_err("unset NEBULA_ENV must fail closed");
         match err {
             ApiConfigError::MissingJwtSecret(mode) => assert_eq!(mode, "production"),
             other => panic!("wrong variant: {other:?}"),
         }
-
-        clear_env();
     }
 
     #[test]
     fn from_env_typo_in_env_mode_does_not_fall_through() {
         // "developmnt" (typo) must NOT be treated as dev. This is the
         // security-lead's explicit ask: unknown env modes fail closed.
-        let _g = env_lock();
-        clear_env();
-        // SAFETY: protected by env_lock.
-        unsafe { std::env::set_var("NEBULA_ENV", "developmnt") };
+        let mut env = env_guard();
+        env.set("NEBULA_ENV", "developmnt");
 
         let err = ApiConfig::from_env().expect_err("typo must not fall through to dev");
         assert!(matches!(err, ApiConfigError::MissingJwtSecret(_)));
-
-        clear_env();
     }
 }

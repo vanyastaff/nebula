@@ -12,6 +12,7 @@ members = [
   "crates/credential-vault",
   "crates/credential-runtime",
   "crates/engine",
+  "crates/env",
   "crates/eventbus",
   "crates/execution",
   "crates/expression",
@@ -185,6 +186,7 @@ compact_str = { version = "0.7", features = ["serde"] }
 static_assertions = "1"
 
 # Nebula internal
+nebula-env = { path = "crates/env" }
 nebula-error = { path = "crates/error" }
 nebula-error-macros = { path = "crates/error/macros" }
 

@@ -1,17 +1,11 @@
-#![allow(
-    unsafe_code,
-    reason = "env::{set_var, remove_var} are unsafe under edition 2024"
-)]
-
-use std::sync::{LazyLock, Mutex};
-
+use nebula_env::testing::EnvGuard;
 use nebula_log::{Config, LogError, LoggerBuilder};
-
-static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 #[test]
 fn explicit_config_has_highest_precedence() {
-    let _guard = ENV_LOCK.lock().expect("env lock poisoned");
+    // Hold the guard so this test is serialized against the env-mutating one
+    // below, even though it does not touch the environment itself.
+    let _env = EnvGuard::acquire();
 
     let explicit = Config {
         level: "trace".to_string(),
@@ -24,16 +18,13 @@ fn explicit_config_has_highest_precedence() {
 
 #[test]
 fn environment_overrides_preset_when_explicit_absent() {
-    let _guard = ENV_LOCK.lock().expect("env lock poisoned");
-
-    // SAFETY: tests are serialized by ENV_LOCK for process-wide env changes.
-    unsafe { std::env::set_var("NEBULA_LOG", "warn") };
+    let mut env = EnvGuard::acquire();
+    env.set("NEBULA_LOG", "warn");
 
     let resolved = Config::resolve_startup(None);
     assert_eq!(resolved.config.level, "warn");
 
-    // SAFETY: tests are serialized by ENV_LOCK for process-wide env changes.
-    unsafe { std::env::remove_var("NEBULA_LOG") };
+    // `NEBULA_LOG` is restored to its prior value (or unset) when `env` drops.
 }
 
 #[test]

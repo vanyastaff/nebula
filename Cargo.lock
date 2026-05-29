@@ -3490,6 +3490,7 @@ dependencies = [
  "nebula-credential",
  "nebula-credential-runtime",
  "nebula-engine",
+ "nebula-env",
  "nebula-error",
  "nebula-eventbus",
  "nebula-execution",
@@ -3738,6 +3739,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "nebula-env"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
+]
+
+[[package]]
 name = "nebula-error"
 version = "0.1.0"
 dependencies = [
@@ -3845,6 +3853,7 @@ dependencies = [
  "codspeed-criterion-compat",
  "flate2",
  "insta",
+ "nebula-env",
  "nebula-error",
  "opentelemetry",
  "opentelemetry-otlp",
@@ -4146,6 +4155,7 @@ dependencies = [
  "moka",
  "nebula-core",
  "nebula-credential",
+ "nebula-env",
  "nebula-storage-port",
  "nebula-tenancy",
  "parking_lot",

@@ -196,7 +196,7 @@ impl EnvKeyProvider {
     /// - [`ProviderError::Decode`] on base64-decode failure.
     /// - [`ProviderError::KeyMaterialRejected`] on wrong decoded length.
     pub fn from_env() -> Result<Self, ProviderError> {
-        let raw = std::env::var(Self::ENV_VAR).map_err(|_| ProviderError::NotConfigured {
+        let raw = nebula_env::var(Self::ENV_VAR).map_err(|_| ProviderError::NotConfigured {
             name: Self::ENV_VAR.to_string(),
         })?;
         let raw = Zeroizing::new(raw);
@@ -503,11 +503,12 @@ mod tests {
         base64::engine::general_purpose::STANDARD.encode([0x42u8; 32])
     }
 
-    // Env-var manipulation (`std::env::set_var` / `remove_var`) is marked
-    // `unsafe` in Rust 2024 edition and is forbidden by this crate's
-    // `#![forbid(unsafe_code)]`. `EnvKeyProvider::from_env` is covered by the
-    // integration test at `tests/env_provider.rs`, which lives in a separate
-    // test-binary crate without that forbid. Validation-logic coverage for
+    // Env-var manipulation is forbidden by this crate's
+    // `#![forbid(unsafe_code)]` (`set_var` / `remove_var` are `unsafe` in the
+    // 2024 edition). `EnvKeyProvider::from_env` is covered by the integration
+    // test at `tests/credential_env_provider.rs`, which uses
+    // `nebula_env::testing::EnvGuard` to centralize the unsafe boundary.
+    // Validation-logic coverage for
     // dev-placeholder / wrong-length / decode-failure paths lives here via
     // `from_base64`, which exercises the same validators minus the env lookup
     // itself.
