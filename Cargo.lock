@@ -4155,6 +4155,7 @@ dependencies = [
  "moka",
  "nebula-core",
  "nebula-credential",
+ "nebula-env",
  "nebula-storage-port",
  "nebula-tenancy",
  "parking_lot",
