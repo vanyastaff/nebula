@@ -12,6 +12,7 @@ homepage.workspace = true
 documentation.workspace = true
 
 [dependencies]
+nebula-env = { workspace = true }
 nebula-error = { workspace = true, features = ["derive"] }
 nebula-storage = { path = "../storage", features = ["credential-in-memory"] }
 nebula-storage-port = { path = "../storage-port" }
@@ -131,6 +132,8 @@ utoipa-swagger-ui = { workspace = true }
 
 [dev-dependencies]
 nebula-api = { path = ".", features = ["test-util"] }
+# `testing` feature adds EnvGuard for the config env-precedence unit tests.
+nebula-env = { workspace = true, features = ["testing"] }
 # Spec validation in tests — typed 3.1 parser (ADR-0047). Round-trip via
 # `oas3::OpenApi::deserialize(&served_json)` is hermetic, no fixture management.
 oas3 = { workspace = true }

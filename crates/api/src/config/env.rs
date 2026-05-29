@@ -40,12 +40,14 @@ pub(super) fn parse_usize_env(
 /// Parse a boolean from `API_<suffix>`. Accepts `true` / `false` /
 /// `1` / `0` (case-insensitive). Empty or unset → `default`.
 pub(super) fn parse_bool_env(suffix: &'static str, default: bool) -> Result<bool, ApiConfigError> {
-    match std::env::var(format!("API_{suffix}")) {
-        Ok(raw) => match raw.trim().to_ascii_lowercase().as_str() {
-            "true" | "1" | "yes" | "on" => Ok(true),
-            "false" | "0" | "no" | "off" => Ok(false),
-            _ => Err(ApiConfigError::ParseEnum { var: suffix, raw }),
-        },
+    match nebula_env::flag(&format!("API_{suffix}")) {
+        Ok(parsed) => Ok(parsed.unwrap_or(default)),
+        Err(nebula_env::EnvError::Invalid { value, .. }) => Err(ApiConfigError::ParseEnum {
+            var: suffix,
+            raw: value,
+        }),
+        // Unset / non-Unicode: fall back to the default, matching the prior
+        // `std::env::var(..).is_err()` behaviour.
         Err(_) => Ok(default),
     }
 }

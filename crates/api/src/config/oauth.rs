@@ -42,19 +42,6 @@ use serde::{Deserialize, Serialize};
 use super::errors::ApiConfigError;
 use crate::domain::auth::backend::oauth::OAuthProvider;
 
-/// Split the `API_AUTH_OAUTH_<PROVIDER>_SCOPES` env value on whitespace
-/// AND commas, dropping empties. Operator-friendly: accepts
-/// `"user:email read:user"` or `"user:email,read:user"` or mixes.
-fn parse_scopes_env(var: &str) -> Vec<String> {
-    std::env::var(var)
-        .unwrap_or_default()
-        .split(|c: char| c.is_whitespace() || c == ',')
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_owned)
-        .collect()
-}
-
 /// OIDC scopes are hardcoded per ADR-0085 D-5 recon-4 ADOPT (c). Per-provider
 /// scope customization belongs to the operator config only for the
 /// [`OAuthEndpoints::Manual`] arm (OAuth2-only providers like GitHub).
@@ -311,7 +298,7 @@ impl OAuthProvidersConfig {
                     jwks_url: std::env::var(format!("{prefix}_JWKS_URL"))
                         .ok()
                         .filter(|s| !s.trim().is_empty()),
-                    scopes: parse_scopes_env(&format!("{prefix}_SCOPES")),
+                    scopes: nebula_env::list(&format!("{prefix}_SCOPES")),
                 },
                 (None, None) => {
                     return Err(ApiConfigError::ParseEnum {
@@ -781,24 +768,14 @@ mod tests {
         assert_eq!(err.reason, "public_url_required");
     }
 
-    /// T2.13 TRIANGULATE: `parse_scopes_env` accepts both whitespace-
-    /// and comma-separated forms (operator-friendly).
+    /// T2.13 TRIANGULATE: the scopes env value (parsed via `nebula_env::list`)
+    /// accepts both whitespace- and comma-separated forms (operator-friendly).
     #[test]
-    #[allow(
-        unsafe_code,
-        reason = "edition 2024 marks env::{set,remove}_var as unsafe; this test uses a unique var name so no concurrent reader observes the mutation"
-    )]
     fn parse_scopes_env_accepts_whitespace_and_commas() {
         let var = "API_AUTH_OAUTH_TEST_T213_SCOPES_PARSE";
-        // SAFETY: unique var name; only this test reads or writes it.
-        unsafe {
-            std::env::set_var(var, "user:email read:user,write:repo  openid");
-        }
-        let scopes = parse_scopes_env(var);
-        // SAFETY: same uniqueness invariant; symmetric cleanup.
-        unsafe {
-            std::env::remove_var(var);
-        }
+        let mut env = nebula_env::testing::EnvGuard::acquire();
+        env.set(var, "user:email read:user,write:repo  openid");
+        let scopes = nebula_env::list(var);
         assert_eq!(
             scopes,
             vec![
