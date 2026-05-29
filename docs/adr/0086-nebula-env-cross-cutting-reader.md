@@ -60,12 +60,17 @@ importable anywhere), so `nebula-env` adds none. It is listed in the
   contract already matches (api OAuth scopes → `list`; api `parse_bool_env`
   → `flag`; log precedence test → `EnvGuard`, all landed).
 
+### Resolved after the initial decision
+
+- **log `NEBULA_LOG_COLORS`**: now a real `ColorMode { Auto, Always, Never }`
+  (private to `log::config::env`). `auto` honours TTY detection; `never`
+  disables colours (regression fix — the old lenient `parse_bool` returned
+  `true` for `never`, silently enabling them); bool aliases stay accepted
+  for back-compat. The `colors: bool` field is unchanged — `ColorMode`
+  resolves to it at env-override time.
+
 ### Deferred (follow-ups, see handoff plan)
 
-- **log `NEBULA_LOG_COLORS=auto`**: the documented `auto` value is a
-  tri-state, not a bool. Migrating log's display flags to strict `flag`
-  needs a `ColorMode { Auto, Always, Never }` decision first — NOT a
-  behavior change to slip in silently. Deferred.
 - **api `parse_u64_env` / `parse_usize_env`**: keep their typed
   `ParseIntError` source; `nebula_env::parse` returns a `String` message, so
   delegating would be lossy. Left as-is.

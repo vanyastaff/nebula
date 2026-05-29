@@ -24,9 +24,14 @@
   `parse_bool_env` → `nebula_env::flag` (behavior-preserving). All 42 config
   unit tests green.
 
-**Still open** (this plan, below): log `NEBULA_LOG_COLORS=auto` tri-state
-decision (Q2/Q5 — see ADR-0086 deferred list), api `clear_env` + storage/log
-test-helper convergence on `EnvGuard` (F5 / Phase 3), the registry + drift
+Also landed: api config test harness migrated to `EnvGuard` (env.rs/sub.rs/
+mod.rs — removed ~25 `unsafe` blocks + 3 module `#![allow]` + the drift-prone
+`clear_env` list, F5/Phase 3 for api), storage env-provider test on `EnvGuard`,
+and `log` `NEBULA_LOG_COLORS` is now a real `ColorMode { Auto, Always, Never }`
+(fixes the `never`→colours-on regression; resolves Q2/Q5 for colours).
+
+**Still open** (this plan, below): the remaining hand-rolled env test
+harnesses outside api/log/storage (if any), a workspace-wide registry + drift
 test (Phase 0 / F1), and generated `.env.example` (Phase 4). The api int
 parsers keep their typed `ParseIntError` source (delegation would be lossy).
 
