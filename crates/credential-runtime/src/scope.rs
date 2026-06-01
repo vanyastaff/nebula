@@ -4,10 +4,13 @@
 //! closed by type: no operation is callable without a `&TenantScope`.
 
 use nebula_credential::ScopeResolver;
+use nebula_storage_port::Scope;
 
-/// Tenant identity for a credential operation. `owner_id` =
-/// `"{org}/{workspace}"` — the value persisted in
-/// `StoredCredential.metadata["owner_id"]` and matched by `ScopeLayer`.
+/// Tenant identity for a credential operation. `owner_id` is the canonical
+/// [`Scope::credential_owner_id`] key — the value persisted in
+/// `StoredCredential.metadata["owner_id"]` and matched by `ScopeLayer`,
+/// derived through the **single** shared derivation (ADR-0088 D7) so the
+/// runtime plane and the API edge key the same tenant identically.
 ///
 /// An optional `session_id` carries the interactive-flow session: the
 /// `PendingStateStore` binds pending acquisitions on
@@ -27,8 +30,10 @@ impl TenantScope {
     /// before driving an interactive acquisition.
     #[must_use]
     pub fn new(org: impl AsRef<str>, workspace: impl AsRef<str>) -> Self {
+        // Route through the one canonical derivation (note `Scope::new` takes
+        // workspace first, then org).
         Self {
-            owner_id: format!("{}/{}", org.as_ref(), workspace.as_ref()),
+            owner_id: Scope::new(workspace.as_ref(), org.as_ref()).credential_owner_id(),
             session_id: None,
         }
     }
@@ -83,33 +88,46 @@ impl ScopeResolver for FixedScopeResolver {
 
 #[cfg(test)]
 mod tests {
+    use nebula_storage_port::Scope;
+
     use super::TenantScope;
 
     #[test]
-    fn owner_id_is_org_slash_workspace() {
-        let s = TenantScope::new("org-1", "ws-2");
-        assert_eq!(s.owner_id(), "org-1/ws-2");
+    fn owner_id_matches_canonical_derivation() {
+        let scope = TenantScope::new("org-1", "ws-2");
+        // The owner key is the canonical `Scope::credential_owner_id`, derived
+        // identically by the API edge — not a runtime-local `{org}/{ws}` form.
+        assert_eq!(
+            scope.owner_id(),
+            Scope::new("ws-2", "org-1").credential_owner_id()
+        );
     }
 
     #[test]
     fn new_scope_has_no_session() {
-        let s = TenantScope::new("org-1", "ws-2");
-        assert_eq!(s.session_id(), None);
+        let scope = TenantScope::new("org-1", "ws-2");
+        assert_eq!(scope.session_id(), None);
     }
 
     #[test]
     fn with_session_threads_session_without_changing_owner() {
-        let s = TenantScope::new("org-1", "ws-2").with_session("sess-7");
-        assert_eq!(s.session_id(), Some("sess-7"));
+        let scope = TenantScope::new("org-1", "ws-2").with_session("sess-7");
+        assert_eq!(scope.session_id(), Some("sess-7"));
         // Owner derivation is unchanged by the session.
-        assert_eq!(s.owner_id(), "org-1/ws-2");
+        assert_eq!(
+            scope.owner_id(),
+            Scope::new("ws-2", "org-1").credential_owner_id()
+        );
     }
 
     #[test]
     fn scope_resolver_returns_owner() {
         use nebula_credential::ScopeResolver;
-        let s = TenantScope::new("o", "w");
-        let r = s.resolver();
-        assert_eq!(r.current_owner(), Some("o/w"));
+        let scope = TenantScope::new("o", "w");
+        let resolver = scope.resolver();
+        assert_eq!(
+            resolver.current_owner(),
+            Some(Scope::new("w", "o").credential_owner_id().as_str())
+        );
     }
 }

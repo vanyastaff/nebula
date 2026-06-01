@@ -261,6 +261,22 @@ is already shared infra importable from Exec/Business/API). **The merge must lan
 together with D3 (registry collapse) and D7 (scope dedup)** — merging the crate as-is
 would only relocate the duplication.
 
+> **Amended 2026-06-01 — the crate merge is INFEASIBLE; superseded.** Verified
+> against the dependency graph: `nebula-credential-runtime` depends on
+> `nebula-engine` + `nebula-storage` (both **Exec**) — it composes the engine
+> resolver and the storage `EncryptionLayer`/`CacheLayer`/`AuditLayer` stack.
+> `nebula-credential` is **Core**. Merging the facade *into* Core would require a
+> Core→Exec edge, which `cargo deny` `[bans]` wrappers forbid (and rightly: it
+> inverts the layer graph). The ADR's premise — "`nebula-credential` is shared infra importable
+> from Exec/Business/API, so the merge buys no layering harm" — confused
+> *importable from* higher tiers with *able to import* higher tiers; the facade
+> needs to import **up**, which Core cannot. **Resolution:** the facade stays a
+> separate Exec-tier crate. The non-generic-`Arc<dyn>` `CredentialService`
+> redesign (the first paragraph of D4) is still valid and can land **in place**
+> in `nebula-credential-runtime`; only the crate *merge* is dropped. The
+> duplication D4 worried about is addressed by D3 (registry collapse, done) and
+> D7 (scope-derivation dedup, below) without relocating the crate.
+
 ### D5 — consumer side preserved; bind to the output scheme
 
 Action and resource **authoring barely changes** — the consumer ergonomics are already
@@ -329,8 +345,35 @@ resolve  (engine):   validate_binding(scope,id) → Protocol.acquire/refresh →
 | Core | **`nebula-credential`** | `Protocol` + `CredentialScheme` + `CredentialPolicy`/`RefreshStrategy` + `CredentialState` + scheme types + `CredentialError` (domain) + events + guards + **one registry** + rotation **data** types (moved from engine) + executor + capability dispatch + state projection + token transport (reqwest behind a feature) + the **facade module** (merged runtime). |
 | Exec | `nebula-storage` | `EncryptionLayer`/`CacheLayer`/`AuditLayer` decorators + `KeyProvider` + `RefreshClaimRepo` port-adapter (the one correctly port-shaped concern — the template). **Delete the dead `CredentialRepo`/`CredentialRow`/migrations 0008+0017.** |
 | Exec | `nebula-engine` | Orchestration only: `RefreshCoordinator` (L1/L2 coalesce), reclaim/sentinel, lease scheduler, `ResourceFanout`. **Expose a public forced-refresh** so the facade stops re-implementing CAS. Delete the `#[deprecated]` String-id L1 surface. |
-| Business | `nebula-tenancy` | `ScopeLayer` becomes **the** single tenant-scope enforcement point (composed into the layered store). Delete the runtime + api copies; fix the `{org}/{ws}`↔`{org}:{ws}` format drift. |
+| Business | `nebula-tenancy` | `ScopeLayer` is the api-plane tenant-scope enforcement point (composed into the layered store). Fix the `{org}/{ws}`↔`{org}:{ws}` format drift (see amendment below). |
 | API | `nebula-api` | Thin edge only (handlers/dto/extractors/schema-projection/`CredentialSchemaPort` trait). **Move OAuth2 acquisition into `nebula-credential`** (engine-dispatched `acquire`/continue). One persistence path through the typed facade — delete the raw-store fallback, the split-brain second store, and the `classify` taxonomy dup. Relocate shared OAuth ceremony (flow/discovery/userinfo/state-signing) into one module consumed by both planes. |
+
+> **Amended 2026-06-01 — format-drift fix shipped; "single enforcement point" restated.**
+>
+> - **One canonical owner_id DERIVATION (shipped):** `Scope::credential_owner_id`
+>   in `nebula-storage-port` (Core) is the sole derivation. Both producers — the
+>   API edge (`owner_id_from_scope`) and the credential-runtime `TenantScope` —
+>   route through it. The drift was **latent** (the two planes do not yet share a
+>   backend: `AppState::with_credential_service` has zero callers, and the
+>   runtime `CredentialService` is only built in tests), but it would have become
+>   a silent **mutual-invisibility** bug — a tenant's credentials written by one
+>   plane unreadable by the other — the instant the facade is wired. Fixed as
+>   hardening-before-it-bites.
+> - **Encoding:** `org_id`/`workspace_id` are unvalidated free strings, so **no
+>   single separator is safe** (`org="a",ws="b:c"` vs `org="a:b",ws="c"` collide
+>   under `:`; `/` is identical). The owner segment is **length-prefixed**
+>   (`{org_len}␞{org}␞{ws}`), making the `(org, workspace)` → key map injective.
+> - **"Single enforcement point" is HALF-true (restated):** the *derivation*
+>   collapses to one function. The *enforcement* cannot collapse to one physical
+>   `nebula_tenancy::ScopeLayer` instance: tenancy is **Business** and
+>   `nebula-credential-runtime` is **Exec**, and Exec→Business is forbidden by
+>   `cargo deny`. So the api plane enforces via `ScopeLayer`; the runtime plane
+>   enforces the same invariant in-Exec via its facade owner checks
+>   (`owner_matches`/`load_owned`). Collapsing to a single physical enforcer would
+>   require relocating `ScopeLayer` to a Core/Exec crate — its own ADR, the same
+>   layer barrier that made the D4 crate-merge infeasible. The runtime + api
+>   *derivation* copies are deleted; the api manual-enforcement `CredentialStoreHandle::Layered`
+>   arm (dead while the facade is unwired) is a follow-up deletion.
 
 ## Layering (binding rules)
 

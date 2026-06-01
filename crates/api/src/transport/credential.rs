@@ -112,7 +112,10 @@ impl ScopeResolver for RequestCredentialOwner {
 }
 
 pub(crate) fn owner_id_from_scope(scope: &Scope) -> String {
-    format!("{}:{}", scope.org_id, scope.workspace_id)
+    // The single canonical derivation (ADR-0088 D7) — shared with the
+    // credential-runtime plane so both key the same tenant identically. Was a
+    // local `format!("{}:{}", …)` that drifted from the runtime's `/` form.
+    scope.credential_owner_id()
 }
 
 /// The credential store selection for CRUD operations.

@@ -128,8 +128,9 @@ deny = [
     "nebula-tenancy",
     "nebula-engine",
     "nebula-api",
+    "nebula-credential-runtime",
     "nebula-credential-vault",
-  ], reason = "Storage port is a Core-tier contract; the adapter, tenancy decorator, exec/api consumers, and the credential-vault dev-dep may depend on it" },
+  ], reason = "Storage port is a Core-tier contract; the adapter, tenancy decorator, exec/api consumers (incl. the credential-runtime facade, which derives the canonical Scope::credential_owner_id), and the credential-vault dev-dep may depend on it" },
 
   # nebula-tenancy is the Business-tier multi-tenancy security boundary: it
   # owns the policy (resolve `Scope` from a `Principal`, inject it, enforce
