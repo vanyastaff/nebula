@@ -203,8 +203,33 @@ fn expand_inner(args: TokenStream2, input: TokenStream) -> syn::Result<TokenStre
         ));
     }
 
+    // A leased/dynamic credential's expiry and renewability live in its state
+    // (lease id + duration), which the macro cannot read. A synthesized
+    // `RefreshStrategy::Lease` policy would therefore carry `lease: None` and
+    // report the credential as non-expiring / non-renewable — a lie for a
+    // Vault/k8s-style secret. Require an explicit `fn policy` in that case.
+    if items.release.is_some() && items.policy.is_none() {
+        return Err(diag::error_spanned(
+            &item.self_ty,
+            "a credential with `fn release` (Dynamic/leased) must hand-write `fn policy` — \
+             the macro cannot infer the lease id/duration from state, so it cannot synthesize \
+             a correct `RefreshStrategy::Lease` policy (set `lease: Some(LeaseRef { … })`)",
+        ));
+    }
+
     let self_ty = &item.self_ty;
     let (impl_generics, _ty_generics, where_clause) = item.generics.split_for_impl();
+
+    // Forward the author's outer attributes (e.g. `#[cfg(...)]`,
+    // `#[allow(...)]`) — minus doc comments — onto every generated impl, so a
+    // cfg-gated or lint-configured annotated block yields cfg-gated /
+    // lint-configured trait impls rather than silently unconditional ones.
+    let outer_attrs: Vec<&Attribute> = item
+        .attrs
+        .iter()
+        .filter(|a| !a.path().is_ident("doc"))
+        .collect();
+    let fwd = quote! { #(#outer_attrs)* };
 
     // ── metadata: relocate the author's, or synthesize from args ──────────
     let metadata_fn = if let Some(m) = &items.metadata {
@@ -219,27 +244,52 @@ fn expand_inner(args: TokenStream2, input: TokenStream) -> syn::Result<TokenStre
             )
         })?;
         let description = description.as_deref().unwrap_or(name);
-        let scheme_ty = assoc_type(scheme);
-        let mut builder = quote! {
-            ::nebula_credential::CredentialMetadata::builder()
-                .key(::nebula_core::credential_key!(#key))
-                .name(#name)
-                .description(#description)
-                .schema(::nebula_credential::schema_of::<Self::Properties>())
-                .pattern(<#scheme_ty as ::nebula_credential::AuthScheme>::pattern())
-        };
-        if let Some(icon) = &icon {
-            builder = quote! { #builder .icon(#icon) };
-        }
-        if let Some(url) = &doc_url {
-            builder = quote! { #builder .documentation_url(#url) };
-        }
-        quote! {
-            fn metadata() -> ::nebula_credential::CredentialMetadata
-            where
-                Self: Sized,
-            {
-                #builder .build().expect("credential metadata is valid")
+        let scheme_ty = assoc_type(scheme)?;
+        if icon.is_none() && doc_url.is_none() {
+            // No icon / doc_url ⇒ the infallible `for_credential` constructor,
+            // so the common synthesized case emits no `expect(...)` into
+            // library code. (`credential_key!` is re-exported from
+            // `nebula_credential`, so a consumer that does not directly depend
+            // on `nebula-core` still resolves the path.)
+            quote! {
+                fn metadata() -> ::nebula_credential::CredentialMetadata
+                where
+                    Self: Sized,
+                {
+                    ::nebula_credential::CredentialMetadata::for_credential::<Self>(
+                        ::nebula_credential::credential_key!(#key),
+                        #name,
+                        #description,
+                        <#scheme_ty as ::nebula_credential::AuthScheme>::pattern(),
+                    )
+                }
+            }
+        } else {
+            // Icon / doc_url require the builder, whose `build()` is fallible;
+            // the `expect` here mirrors the hand-written built-ins and the
+            // legacy `#[derive(Credential)]` (the `metadata()` trait method is
+            // infallible, and the builder is the only icon/doc_url path).
+            let mut builder = quote! {
+                ::nebula_credential::CredentialMetadata::builder()
+                    .key(::nebula_credential::credential_key!(#key))
+                    .name(#name)
+                    .description(#description)
+                    .schema(::nebula_credential::schema_of::<Self::Properties>())
+                    .pattern(<#scheme_ty as ::nebula_credential::AuthScheme>::pattern())
+            };
+            if let Some(icon) = &icon {
+                builder = quote! { #builder .icon(#icon) };
+            }
+            if let Some(url) = &doc_url {
+                builder = quote! { #builder .documentation_url(#url) };
+            }
+            quote! {
+                fn metadata() -> ::nebula_credential::CredentialMetadata
+                where
+                    Self: Sized,
+                {
+                    #builder .build().expect("credential metadata is valid")
+                }
             }
         }
     };
@@ -251,6 +301,7 @@ fn expand_inner(args: TokenStream2, input: TokenStream) -> syn::Result<TokenStre
     let resolve_fn = trait_item(resolve.clone());
 
     let credential_impl = quote! {
+        #fwd
         impl #impl_generics ::nebula_credential::Credential for #self_ty #where_clause {
             #properties_ty
             #scheme_item
@@ -269,6 +320,7 @@ fn expand_inner(args: TokenStream2, input: TokenStream) -> syn::Result<TokenStre
         let refresh_policy = items.refresh_policy.clone().map(trait_item);
         let refresh = trait_item(refresh.clone());
         quote! {
+            #fwd
             impl #impl_generics ::nebula_credential::Refreshable for #self_ty #where_clause {
                 #refresh_policy
                 #refresh
@@ -278,6 +330,7 @@ fn expand_inner(args: TokenStream2, input: TokenStream) -> syn::Result<TokenStre
     let revocable_impl = items.revoke.as_ref().map(|revoke| {
         let revoke = trait_item(revoke.clone());
         quote! {
+            #fwd
             impl #impl_generics ::nebula_credential::Revocable for #self_ty #where_clause {
                 #revoke
             }
@@ -286,6 +339,7 @@ fn expand_inner(args: TokenStream2, input: TokenStream) -> syn::Result<TokenStre
     let testable_impl = items.test.as_ref().map(|test| {
         let test = trait_item(test.clone());
         quote! {
+            #fwd
             impl #impl_generics ::nebula_credential::Testable for #self_ty #where_clause {
                 #test
             }
@@ -295,6 +349,7 @@ fn expand_inner(args: TokenStream2, input: TokenStream) -> syn::Result<TokenStre
         let pending = items.pending.clone().map(trait_item);
         let cont = trait_item(cont.clone());
         quote! {
+            #fwd
             impl #impl_generics ::nebula_credential::Interactive for #self_ty #where_clause {
                 #pending
                 #cont
@@ -305,6 +360,7 @@ fn expand_inner(args: TokenStream2, input: TokenStream) -> syn::Result<TokenStre
         let lease_ttl = items.lease_ttl.clone().map(trait_item);
         let release = trait_item(release.clone());
         quote! {
+            #fwd
             impl #impl_generics ::nebula_credential::Dynamic for #self_ty #where_clause {
                 #lease_ttl
                 #release
@@ -319,22 +375,27 @@ fn expand_inner(args: TokenStream2, input: TokenStream) -> syn::Result<TokenStre
     let is_testable = items.test.is_some();
     let is_dynamic = items.release.is_some();
     let capability_impls = quote! {
+        #fwd
         impl #impl_generics
             ::nebula_credential::contract::plugin_capability_report::IsInteractive
             for #self_ty #where_clause
         { const VALUE: bool = #is_interactive; }
+        #fwd
         impl #impl_generics
             ::nebula_credential::contract::plugin_capability_report::IsRefreshable
             for #self_ty #where_clause
         { const VALUE: bool = #is_refreshable; }
+        #fwd
         impl #impl_generics
             ::nebula_credential::contract::plugin_capability_report::IsRevocable
             for #self_ty #where_clause
         { const VALUE: bool = #is_revocable; }
+        #fwd
         impl #impl_generics
             ::nebula_credential::contract::plugin_capability_report::IsTestable
             for #self_ty #where_clause
         { const VALUE: bool = #is_testable; }
+        #fwd
         impl #impl_generics
             ::nebula_credential::contract::plugin_capability_report::IsDynamic
             for #self_ty #where_clause
@@ -345,6 +406,7 @@ fn expand_inner(args: TokenStream2, input: TokenStream) -> syn::Result<TokenStre
     let lifecycle_impl = if let Some(policy) = &items.policy {
         let policy = trait_item(policy.clone());
         quote! {
+            #fwd
             impl #impl_generics ::nebula_credential::CredentialLifecycle
                 for #self_ty #where_clause
             {
@@ -366,6 +428,7 @@ fn expand_inner(args: TokenStream2, input: TokenStream) -> syn::Result<TokenStre
             quote! { ::nebula_credential::RevokeStrategy::None }
         };
         quote! {
+            #fwd
             impl #impl_generics ::nebula_credential::CredentialLifecycle
                 for #self_ty #where_clause
             {
@@ -530,14 +593,17 @@ fn trait_item(mut it: ImplItem) -> ImplItem {
 
 /// Extract the right-hand-side type of an `ImplItem::Type` (the `X` in
 /// `type Scheme = X;`) for use in generated metadata bounds.
-fn assoc_type(it: &ImplItem) -> &syn::Type {
+///
+/// `classify_items` only ever routes `type Scheme` here, so the non-type case
+/// is a macro-internal invariant violation — surfaced as a normal `syn::Error`
+/// (a proper diagnostic) rather than a proc-macro panic.
+fn assoc_type(it: &ImplItem) -> syn::Result<&syn::Type> {
     match it {
-        ImplItem::Type(t) => &t.ty,
-        // Only ever called on `out.scheme`, which `classify_items` guarantees
-        // is an `ImplItem::Type`.
-        // guard-justified: classify_items routes `type Scheme` exclusively to
-        // ImplItem::Type; any other variant here is a macro-internal bug, not
-        // reachable from user input.
-        _ => unreachable!("assoc_type called on a non-type item"),
+        ImplItem::Type(t) => Ok(&t.ty),
+        other => Err(diag::error_spanned(
+            other,
+            "internal error: `type Scheme` was not classified as an associated type — \
+             please report this as a `#[credential]` macro bug",
+        )),
     }
 }

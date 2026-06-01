@@ -16,3 +16,9 @@ fn compile_fail_credential_attr_continue_resolve_without_pending() {
     let t = trybuild::TestCases::new();
     t.compile_fail("tests/probes/cred_attr_continue_resolve_without_pending.rs");
 }
+
+#[test]
+fn compile_fail_credential_attr_pending_without_continue_resolve() {
+    let t = trybuild::TestCases::new();
+    t.compile_fail("tests/probes/cred_attr_pending_without_continue_resolve.rs");
+}
