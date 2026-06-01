@@ -38,7 +38,14 @@ pub enum CredentialCategory {
     SignedRequest,
     /// Bearer token carrying its own expiry, no refresh pair — short-lived JWT.
     BearerWithExp,
-    /// Access token + refresh token — OAuth2 authorization-code / refresh grant.
+    /// OAuth2 authorization-code / refresh-grant shape — an access token,
+    /// usually paired with a refresh token.
+    ///
+    /// This is the structural **kind**, fixed for the credential type. A given
+    /// instance may lack a refresh token (the provider issued none): it stays
+    /// `RefreshPair`, but its [`RefreshStrategy`] is computed from live state and
+    /// degrades to [`RefreshStrategy::ReAcquire`]. Category = the type; strategy =
+    /// the state-derived behaviour.
     RefreshPair,
     /// Input credential exchanged for a scoped, shorter-lived output —
     /// AWS STS AssumeRole, GCP workload-identity-federation, RFC 8693 token exchange.
