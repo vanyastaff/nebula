@@ -172,6 +172,23 @@ impl CredentialPolicy {
     }
 }
 
+/// A credential type's lifecycle policy, computed from its stored state.
+///
+/// The `#[nebula::credential]` macro (ADR-0088 D1) will derive this — the
+/// [`RefreshStrategy`] / [`RevokeStrategy`] from which capability methods the
+/// author wrote, so the policy data cannot disagree with the compile-gated
+/// capability impls. Until the macro lands, credentials implement it by hand.
+///
+/// The policy is *computed*, never persisted, so it can reflect live state (e.g.
+/// an OAuth2 credential reporting [`RefreshStrategy::RefreshToken`] only while it
+/// actually holds a refresh token, and [`RefreshStrategy::ReAcquire`] otherwise).
+pub trait CredentialLifecycle: crate::Credential {
+    /// Compute the lifecycle policy for the given stored state.
+    fn policy(state: &Self::State) -> CredentialPolicy
+    where
+        Self: Sized;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
