@@ -20,8 +20,7 @@ This crate is the production implementation of the ADR-0066 facade contract. It 
 - **`ValidatedCredentialBinding`** — a crate-private-constructor newtype that closes the `slot_bindings` confused-deputy non-goal from the ADR-0052 cascade. Only `CredentialService::resolve_for_slot` may produce a binding; engine dispatch consumers receive the sealed value.
 - **`resolve_for_slot`** — the production bind-population seam. This is the sole entry point for `register_and_bind` callers in `nebula-resource`; it closes the `§M11.5 quiesce contract with zero callers` gap.
 - **Fallback-on-interrupt** — on transient provider refresh failure with a non-expired cached snapshot, the service returns the cached material rather than propagating the failure (aws-credential-types resilience pattern). Callers see a `RefreshFallback` diagnostic event on the tracing span.
-- **Three-registry sync invariant probe** — a deterministic test-time assertion that `CredentialRegistry`, `StateProjectionRegistry`, and `CredentialDispatch` remain in sync after every mutation. Closes the silent-drift vector.
-- **`register_credential_complete`** — composite atomic registration that drives all three registries in one call, eliminating partial-registration windows.
+- **Single capability source** — capability (refreshable / testable / revocable / interactive / dynamic) is read from the `nebula_credential::CredentialRegistry` `Capabilities` bitflag, computed once from sub-trait membership at `register::<C>()`. The former parallel `StateProjectionRegistry` (engine) + `CredentialDispatch` (runtime) flag tables and their sync invariant were removed in ADR-0088 D3 — one table cannot drift from itself. `DispatchOps<B,PS>` remains as the type-erased async **operation**-closure table (it must be generic over the store/pending types).
 
 ## Role in the dependency graph
 
@@ -42,7 +41,7 @@ This crate was created as part of the M12.2 `nebula-credential` stabilize sweep.
 - `ValidatedCredentialBinding` confused-deputy closure
 - `resolve_for_slot` bind-population seam (production caller for `register_and_bind`)
 - Fallback-on-interrupt for transient refresh failures
-- Three-registry sync invariant + composite registration
+- Single capability source (the `CredentialRegistry` bitflag; the parallel dispatch/projection flag tables were removed in ADR-0088 D3)
 
 ## Out of scope
 

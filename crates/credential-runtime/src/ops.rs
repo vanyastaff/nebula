@@ -1,17 +1,14 @@
 //! Type-erased credential *operation* closures keyed by
 //! `Credential::KEY`, parameterised by the pending store `PS`.
 //!
-//! [`CredentialDispatch`](crate::dispatch::CredentialDispatch) owns the
-//! key→capability bookkeeping but is generic-free, so it cannot hold the
-//! operation closures: `resolve` threads the `PS` pending store through
-//! [`nebula_engine::credential::execute_resolve`], which is generic over
-//! `PS`. This table carries those monomorphised closures.
-//!
-//! Mirrors the erasure shape of
-//! [`nebula_engine::credential::StateProjectionRegistry`]: a runtime
-//! string key selects a boxed closure that captures a concrete `C`, so
-//! `Credential::resolve` / `Credential::project` run without reflection.
-//! Registration is fail-closed on a duplicate `KEY`.
+//! Capability is read from the
+//! [`CredentialRegistry`](nebula_credential::CredentialRegistry) bitflag
+//! (ADR-0088 D3); this table holds only the operation closures, which cannot
+//! live on the generic-free registry: `resolve` threads the `PS` pending store
+//! through [`nebula_engine::credential::execute_resolve`], which is generic
+//! over `PS`. A runtime string key selects a boxed closure that captures a
+//! concrete `C`, so `Credential::resolve` / `Credential::project` run without
+//! reflection. Registration is fail-closed on a duplicate `KEY`.
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -237,8 +234,8 @@ struct OpsEntry<PS> {
     continue_fn: Option<ContinueFn<PS>>,
 }
 
-/// Key → erased operation closures. Built alongside
-/// [`CredentialDispatch`](crate::dispatch::CredentialDispatch) and
+/// Key → erased operation closures. Built alongside the
+/// [`CredentialRegistry`](nebula_credential::CredentialRegistry) and
 /// `register_builtins` at the composition root.
 ///
 /// `B` is the raw backend type the owning service is generic over; it

@@ -59,11 +59,11 @@ bounded concurrency.
 - `ExecutionEvent` — broadcast event type emitted via `nebula-eventbus`.
 - `EngineCredentialAccessor` — scoped credential accessor injected into action contexts.
 - `credential` module — engine-owned credential runtime surface:
-  - `CredentialResolver`, `ResolveError`
-  - `StateProjectionRegistry`, `StateProjectionError` — engine-side
-    `state_kind`-keyed projection dispatcher (deserialize stored bytes
-    → project to `Scheme`). Distinct from the canonical KEY-keyed
-    `nebula_credential::CredentialRegistry` (Tech Spec §3.1, §15.6).
+  - `CredentialResolver`, `ResolveError` — the resolver is generic over the
+    concrete credential type `C` and calls `C::project(&state)` directly, so
+    no type-erased projection registry is needed (the former
+    `StateProjectionRegistry` was vestigial and was removed in ADR-0088 D3;
+    capability + metadata live solely on `nebula_credential::CredentialRegistry`).
   - `execute_resolve`, `execute_continue`, `ResolveResponse`, `ExecutorError`
   - `rotation` (feature-gated) orchestration facade
 - `EngineResourceAccessor` — scoped resource accessor injected into action contexts.

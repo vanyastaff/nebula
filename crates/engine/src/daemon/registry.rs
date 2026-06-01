@@ -17,8 +17,8 @@
 //!
 //! # Fail-closed registration
 //!
-//! Mirrors the `crate::credential::StateProjectionRegistry` policy from
-//! / Tech Spec N7 mitigation: duplicate
+//! Mirrors the `CredentialRegistry` fail-closed-on-duplicate policy
+//! (Tech Spec N7 mitigation): duplicate
 //! `D::key()` registration returns
 //! [`DaemonError::DuplicateKey`] rather than overwriting. Operators resolve
 //! the collision by renaming the daemon's `Resource::key`.
