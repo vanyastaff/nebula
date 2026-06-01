@@ -117,37 +117,61 @@ The full digests live in memory (`reference_credential_redesign_research`,
 Rewrite the credential subsystem around **code-per-protocol, config-per-provider,
 policy-as-data**, and re-layer the crates so each responsibility has exactly one home.
 
-### D1 — `Protocol` trait + `CredentialScheme` enum + provider-config-as-data
+### D1 — `#[nebula::credential]` attribute macro: one declaration site, compile-safe capabilities, provider-config-as-data
 
-Replace `Credential` + five sub-traits with **one** `Protocol` trait (≈10 impls total,
-one per structural category) and a bounded `CredentialScheme` enum. Per-provider
-variation is a **config record**, not a type.
+> **Revised 2026-06-01** (supersedes the original pure runtime-gated `Protocol` trait, kept below for the record). A pure policy-as-data `refresh` with a default body would move the "declared a capability but never implemented it" check from **compile time** (`E0046` — the exact property the capability sub-trait split + the removal of `RefreshOutcome::NotSupported` were built to guarantee) to **runtime**. To keep that guarantee *and* kill the authoring boilerplate, capability **code stays compile-gated**, and an **attribute macro is the single declaration site** that **derives the lifecycle policy from which methods the author wrote** — so the policy data can never disagree with the implemented capabilities.
+
+The author writes ONE `impl` block; the macro reads the methods present and generates the
+base `Credential` impl, the capability sub-trait impls for the methods supplied
+(`Refreshable` / `Revocable` / `Testable` / `Dynamic` / `Interactive`), and a
+`CredentialLifecycle::policy()` whose `RefreshStrategy` / `RevokeStrategy` reflect exactly
+those methods. Declaring refresh capability without a `refresh` method is impossible — the
+macro only emits `RefreshStrategy::RefreshToken` when a `refresh` method is present, so the
+compile-time guarantee and the runtime data agree by construction.
 
 ```rust
-/// ~10 structural categories — the lifecycle-shape axis, not the 35 wire schemes.
-pub enum CredentialScheme {
-    StaticSecret, SignedRequest, BearerWithExp, RefreshPair, FederatedExchange,
-    InteractiveRedirect, KeyPair, Leased, Session, ConnectionString,
-}
+#[nebula::credential(key = "github_oauth", category = RefreshPair)]
+impl GithubOAuth {
+    type Config = GithubOAuthConfig;   // HasSchema (was "Properties")
+    type State  = OAuth2State;         // encrypted-at-rest material
+    type Output = OAuth2Token;         // consumer-facing AuthScheme
 
-/// CODE per category. Object-safe seam built by the derive; dyn-AFIT is nightly in 1.96
-/// so the registry-facing form boxes futures explicitly.
-pub trait Protocol: Send + Sync + 'static {
-    const SCHEME: CredentialScheme;
-    type Config: HasSchema + DeserializeOwned;   // provider config (was `Properties`)
-    type State:  CredentialState;                // encrypted-at-rest material
-    type Output: AuthScheme;                     // consumer-facing projected auth
+    async fn acquire(&self, cfg: Self::Config, cx: &CredentialContext)
+        -> Result<Acquisition<Self::State>, CredentialError> { /* … */ }
+    fn project(state: &Self::State) -> OAuth2Token { /* … */ }
 
-    fn acquire(&self, cfg: &Self::Config, cx: &Cx)
-        -> BoxFuture<'_, Result<Acquisition<Self::State>, CredentialError>>;  // Pending ⇒ interactive
-    fn project(state: &Self::State) -> Self::Output;       // pure
-    fn policy(state: &Self::State) -> CredentialPolicy;    // capability AS DATA (see D2)
-    fn refresh(&self, state: &mut Self::State, cx: &Cx)    // only invoked when policy demands
-        -> BoxFuture<'_, RefreshOutcome>;
+    // presence ⇒ Refreshable impl + policy().refresh = RefreshToken (compile-checked, ONE site):
+    async fn refresh(&self, st: &mut Self::State, cx: &CredentialContext)
+        -> Result<RefreshOutcome, CredentialError> { /* … */ }
 }
 ```
 
-Providers are registered as **data** over a `Protocol`:
+The bounded `CredentialCategory` enum (the ~10 lifecycle shapes) and the
+`CredentialPolicy` / `RefreshStrategy` / `RevokeStrategy` / `LeaseRef` data live in
+`nebula_credential::lifecycle` (already shipped). The macro produces a
+`CredentialLifecycle` impl returning a `CredentialPolicy` consistent with the methods
+present. Per-provider variation stays configuration data over a shared protocol, never a
+new type:
+
+#### Superseded original sketch (pure runtime-gated `Protocol`)
+
+```rust
+// REJECTED: refresh() with a default body downgrades the E0046 capability guarantee to a
+// runtime error. Kept only to document what the macro-derived design above replaces.
+pub trait Protocol: Send + Sync + 'static {
+    const CATEGORY: CredentialCategory;
+    type Config: HasSchema + DeserializeOwned;
+    type State:  CredentialState;
+    type Output: AuthScheme;
+    fn acquire(&self, cfg: &Self::Config, cx: &Cx)
+        -> BoxFuture<'_, Result<Acquisition<Self::State>, CredentialError>>;
+    fn project(state: &Self::State) -> Self::Output;
+    fn policy(state: &Self::State) -> CredentialPolicy;
+    fn refresh(&self, state: &mut Self::State, cx: &Cx) -> BoxFuture<'_, RefreshOutcome>;
+}
+```
+
+Providers are registered as **data**, never a new type:
 
 ```rust
 registry.provider("github",    OAuth2Config { auth_url, token_url, scopes });
@@ -158,29 +182,33 @@ This generalizes the existing `protocol = TypePath` / `StaticProtocol::build` de
 mode into the **only** path, deleting the `properties`+`todo!()` mode. It dissolves the
 "200 types" problem (one `OAuth2` protocol, hundreds of provider configs).
 
-### D2 — lifecycle is `CredentialPolicy` data, not capability traits
+### D2 — lifecycle SHAPE is `CredentialPolicy` data; capability CODE stays compile-gated
 
 ```rust
 pub struct CredentialPolicy {
-    pub expires_at: Option<Timestamp>,   // inline expiry  (AWS STS / SPIFFE)
-    pub lease:      Option<LeaseRef>,    // external renewable lease (Vault)
+    pub category:   CredentialCategory,     // one of the ~10 lifecycle shapes
+    pub expires_at: Option<DateTime<Utc>>,  // inline expiry  (AWS STS / SPIFFE)
+    pub lease:      Option<LeaseRef>,       // external renewable lease (Vault)
     pub refresh:    RefreshStrategy,
-    pub revoke:     RevokeStrategy,      // HandleBased | IssueTimePolicy | None
+    pub revoke:     RevokeStrategy,         // None | HandleBased | IssueTimePolicy
 }
 pub enum RefreshStrategy {
-    Static,                 // valid until revoked
-    RefreshToken,           // call Protocol::refresh — OAuth2 w/ refresh_token, Vault renew
-    Lease(LeaseRef),        // engine lease scheduler renews at N% TTL  (Vault/k8s)
-    ReAcquire,              // full roundtrip — STS AssumeRole, SAML/OIDC, OAuth2 w/o refresh
+    Static,        // valid until revoked
+    RefreshToken,  // engine calls the refresh method — OAuth2 w/ refresh_token, Vault renew
+    Lease,         // engine lease scheduler renews at N% TTL (Vault/k8s); LeaseRef on the policy
+    ReAcquire,     // full roundtrip — STS AssumeRole, SAML/OIDC, OAuth2 w/o refresh
 }
 ```
 
-The engine reads `policy()` from state and drives the matching path. One `OAuth2`
-protocol handles both refreshable (has `refresh_token`) and re-acquire (none) by what
-its `policy()` returns — no separate trait, no compile-time capability lie, no parity
-assertion. `RevokeStrategy` distinguishes handle-based revoke (Vault) from
-issue-time-policy revoke (AWS STS), so the model stops assuming a uniform revoke
-endpoint.
+The engine reads `policy()` from state and drives the matching path. The lifecycle
+**shape** (category, `expires_at`, `lease`) is pure data. The strategy fields
+(`RefreshStrategy` / `RevokeStrategy`) are **derived by the macro from which capability
+methods the author wrote** (D1) — not hand-declared — so they cannot disagree with the
+compile-gated capability impls: declaring `RefreshToken` without a `refresh` method is
+unrepresentable, preserving the `E0046` guarantee while still surfacing capability as
+runtime data. One `OAuth2` protocol covers both refreshable (`refresh_token` present) and
+re-acquire (absent). `RevokeStrategy` distinguishes handle-based revoke (Vault) from
+issue-time-policy revoke (AWS STS), so the model stops assuming a uniform revoke endpoint.
 
 ### D3 — one registry (collapse four into one)
 
