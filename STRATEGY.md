@@ -17,6 +17,8 @@ Nebula is built **with** LLM coding agents (Claude Code, Cursor, Copilot, CodeRa
 
 Solo developers and small teams building workflow-driven products with LLM nodes in the pipeline are stuck between two camps. On the light stack (n8n, Make) they get visual authoring and local runs, but pay for leaky data semantics (e.g. `1+1=11` as runtime-normal) and a plugin model where integrations collapse into monolithic nodes with if/else dispatch by resource/operation, years of cruft, and breaking changes. On the heavy stack (Temporal, Restate) they get durable execution but lose the visual editor, single-binary local runs, and a broad plugin ecosystem—and LLM stays bolt-on in both. They either live with fragile automation they cannot trust with customer state, or run two parallel stacks and lose authors who can assemble workflows without code.
 
+> **Evidence:** the competitor facts behind this positioning (durability patterns, licences, the empty credential-lifecycle niche, the Restate head-to-head) are documented with sources in [`docs/COMPETITIVE_ANALYSIS.md`](docs/COMPETITIVE_ANALYSIS.md).
+
 ## Our approach
 
 We win on **runtime and contract honesty**, not feature breadth: fewer promises, each honored end-to-end in the engine; typed boundaries between nodes; checkpoint-based recovery instead of Temporal-style replay operations; **library-first** (`nebula-sdk` as the headline surface) and **local-first** (SQLite, single process, no mandatory Docker for dev).
