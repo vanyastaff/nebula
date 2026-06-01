@@ -263,12 +263,11 @@ would only relocate the duplication.
 
 > **Amended 2026-06-01 — the crate merge is INFEASIBLE; superseded.** Verified
 > against the dependency graph: `nebula-credential-runtime` depends on
-> `nebula-engine` + `nebula-storage` (Exec) + `nebula-tenancy` (Business) — it
-> composes the engine resolver, the storage `EncryptionLayer`/`CacheLayer`/
-> `AuditLayer` stack, and the tenancy scope. `nebula-credential` is **Core**.
-> Merging the facade *into* Core would require Core→Exec/Business edges, which
-> `cargo deny` `[bans]` wrappers forbid (and rightly: it inverts the layer
-> graph). The ADR's premise — "`nebula-credential` is shared infra importable
+> `nebula-engine` + `nebula-storage` (both **Exec**) — it composes the engine
+> resolver and the storage `EncryptionLayer`/`CacheLayer`/`AuditLayer` stack.
+> `nebula-credential` is **Core**. Merging the facade *into* Core would require a
+> Core→Exec edge, which `cargo deny` `[bans]` wrappers forbid (and rightly: it
+> inverts the layer graph). The ADR's premise — "`nebula-credential` is shared infra importable
 > from Exec/Business/API, so the merge buys no layering harm" — confused
 > *importable from* higher tiers with *able to import* higher tiers; the facade
 > needs to import **up**, which Core cannot. **Resolution:** the facade stays a
