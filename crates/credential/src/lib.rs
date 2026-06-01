@@ -63,6 +63,10 @@ pub mod contract;
 pub mod credentials;
 /// Typed credential extension trait for capability contexts.
 pub mod ext;
+/// Credential lifecycle as data — `CredentialPolicy` / `RefreshStrategy` /
+/// `RevokeStrategy` / `CredentialCategory` (ADR-0088 D2: capabilities are data,
+/// not sub-traits).
+pub mod lifecycle;
 /// Credential operation metrics — counter names and label helpers.
 pub mod metrics;
 /// External credential provider abstraction — delegation to external secret managers.
@@ -72,7 +76,7 @@ pub mod provider;
 pub mod rotation;
 /// Authentication scheme types — AuthScheme trait, AuthPattern, 12 built-in schemes.
 pub mod scheme;
-/// credential secrecy secret-handling primitives — AES-256-GCM, guards, zeroizing wrappers, serde helpers.
+/// credential secrecy primitives — guards, zeroizing wrappers, PKCE + serde helpers (AES-256-GCM moved to nebula-crypto).
 pub mod secrets;
 
 // ── Flattened modules (previously nested under accessor/ and metadata/) ───
@@ -189,6 +193,10 @@ pub use secrets::{
     CredentialGuard, ExposeSecret, ExposeSecretMut, RedactedSecret, SchemeFactory, SchemeGuard,
     SecretBox, SecretString, generate_code_challenge, generate_pkce_verifier,
     generate_random_state, secret_from_string,
+};
+// Lifecycle policy types (ADR-0088 D2): capabilities as data, not sub-traits.
+pub use lifecycle::{
+    CredentialCategory, CredentialPolicy, LeaseRef, RefreshStrategy, RevokeStrategy,
 };
 // Store trait + DTOs (canonical impls live in `nebula_storage::credential` per storage credential layers)
 pub use store::{CredentialStore, PutMode, ScopeResolver, StoreError, StoredCredential};
