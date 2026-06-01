@@ -18,6 +18,19 @@ related:
 
 # 0083. Agent intent, structural-budget & honesty gate (Layer-2)
 
+> **Status update (2026-05-31): RETIRED.** The deterministic structural-budget
+> gate this ADR introduced (`.claude/hooks/intent-gate.sh`) and the per-turn
+> green-gate `stop-gate.sh` (part of the D10 framing below) were **removed** in a
+> "Lean" hook prune. They duplicated lefthook/CI (the authoritative code gate)
+> plus the global anti-lazy hooks, while firing per conversation-turn against the
+> whole working tree — producing false-positives on unrelated pre-turn WIP and a
+> phantom-blob mis-measurement (non-adjacent hunks merged because `@@` headers
+> were stripped from the added-line stream). Surviving guards: `edit-guard.sh`
+> (no-unwrap / justified-allows / no-TODO / test-weakening), `bash-deny.sh`
+> (advisory), `record.sh` (inert recorder), `fmt.sh`, `turn-reset.sh`. The
+> structural-budget intent below is retained as **review guidance**. The
+> analysis and rationale that follow are preserved as the historical record.
+
 ## Context
 
 The committed guard stack (CLAUDE.md "Enforced Discipline") gives a

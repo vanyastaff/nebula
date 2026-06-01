@@ -164,6 +164,7 @@ between siblings at the same layer.
 | Removed doc trees      | `docs/ARCHIVE.md`             | superpowers / audits / brainstorms moved out of repo |
 | Agent rules + map      | `CLAUDE.md`                   | **Canonical** — this file — branch / commit / PR rules + project map + enforced discipline |
 | Product strategy       | `STRATEGY.md`                 | Direction, 2026 standard bar, flagship, tracks (complements canon) |
+| Competitive analysis   | `docs/COMPETITIVE_ANALYSIS.md` | Verified competitor landscape backing STRATEGY (evidence layer; non-normative) |
 | 1.0 roadmap            | `docs/ROADMAP.md`             | Production-ready 1.0 milestone checklist (M0–M14), capability/dependency-ordered |
 | Product overview       | `README.md`                   | What Nebula is, design principles, architecture |
 | Cross-tool pointer     | `AGENTS.md`                   | Thin pointer naming `CLAUDE.md` canonical |
@@ -186,7 +187,7 @@ between siblings at the same layer.
 | `AGENTS.md`                   | Thin pointer naming `CLAUDE.md` canonical (cross-tool stub) |
 | `.github/copilot-instructions.md` | GitHub Copilot guidance (defers to `CLAUDE.md`) |
 | `.cursor/rules/*.mdc`         | Cursor project rules that defer to `CLAUDE.md` |
-| `.claude/hooks/`              | Committed guard hooks (enforced discipline) |
+| `.claude/hooks/`              | Committed edit-time guard hooks: edit-guard + bash-deny + fmt + record + turn-reset (see Enforced Discipline) |
 | `.claude/skills/rust-intel/`  | Vendored LLM-Rust-failure-mode skill — v0.2.2, MIT, advisory (not hook-enforced); `/rust-cc-{audit,fix,plan}` slash commands (see its `UPSTREAM.md`) |
 | `.claude/commands/`           | Slash-command definitions for the vendored skills above |
 | `.pi/settings.json`           | [`pi-subagents`](https://pi.dev/packages/pi-subagents) `agentOverrides` (3-tier Anthropic strategy with cross-provider fallback chains: scout/context-builder/researcher on `claude-haiku-4-5` + medium for cheap recon; reviewer/worker on `claude-sonnet-4-6` + high with inherited project context; planner/oracle on `claude-opus-4-7` + **max** effort — no token constraint for architecture / security review). Fallback order across providers: `anthropic` → `github-copilot` → `cursor-agent` → `openai-codex`. **and** vstack-namespaced per-project overrides for [`@vanillagreen/pi-hooks`](https://pi.dev/packages/%40vanillagreen/pi-hooks) (see Pi Hook Strategy below) and [`@vanillagreen/pi-output-policy`](https://pi.dev/packages/%40vanillagreen/pi-output-policy) tuning |
@@ -271,7 +272,7 @@ Three hook layers, each scoped to a different runtime so dups are minimized:
 
 | Layer | Trigger | Source | Authoritative for |
 |-------|---------|--------|--------------------|
-| `.claude/hooks/*.sh` | Claude Code only (UserPromptSubmit / PreTool / PostTool / Stop / SubagentStop) | this repo | Per-turn no-cheat: D10 stack (edit-guard + record + stop-gate + intent-gate) |
+| `.claude/hooks/*.sh` | Claude Code only (UserPromptSubmit / PreTool / PostTool) | this repo | Edit-time guards: edit-guard (no-unwrap / justified-allows / test-weakening) + bash-deny (advisory) + record + fmt + turn-reset. Behavioral no-cheat → global anti-lazy hooks; code gate → lefthook/CI |
 | `lefthook.yml` | `git commit` / `git push` (any harness or shell) | this repo | Pre-commit per-crate fmt-check + clippy + typos + taplo + deny; pre-push full-workspace clippy + crate-diff nextest |
 | [`@vanillagreen/pi-hooks`](https://pi.dev/packages/%40vanillagreen/pi-hooks) | Inside Pi sessions only (tool_call / tool_result / turn_end) | global package, project-tuned via `.pi/settings.json` | Pi-side end-of-turn `cargo clippy` advisory + bare-`cd` block |
 
@@ -285,25 +286,35 @@ Three hook layers, each scoped to a different runtime so dups are minimized:
 ## Enforced Discipline (guard hooks)
 
 Mechanically enforced by `.claude/hooks/*.sh` (committed in `.claude/settings.json`),
-not advisory. `task hooks:test` proves each guard. **The no-cheat guarantee is
-structural (D10): B (edit-guard) + A2 (clean-gate recorder) + C (Stop-gate) +
-lefthook/CI.** Hook A is a **fail-open advisory tripwire**, not a security
-boundary — it nudges on blatant literals only.
-`intent-gate.sh` (Layer-2, ADR-0083) is a deterministic structural-budget
-**addition above** D10 — it does not alter the D10 core; `stop-gate.sh` still
-runs first and remains the guarantee.
+not advisory. `task hooks:test` proves each surviving guard. These are
+**edit-time** guards: they catch a bad edit as it lands, and `bash-deny.sh`
+nudges on blatant destructive shell. Behavioral discipline (don't claim done,
+verify before asserting, no permission-seeking) is carried by the **global
+anti-lazy hooks**, and the **authoritative code gate is lefthook + CI**
+(fmt / clippy `-D warnings` / nextest / deny / rustdoc) at commit/push — that
+is what blocks a merge.
 
 | Rule | Guard |
 |------|-------|
 | Nudge: blatant `git commit --no-verify` / `cargo fmt --all` / `git push --force` | `bash-deny.sh` (advisory, fail-open) |
-| Lint-suppressed clippy never counts as a passing gate | `record.sh` (A2) |
 | No `unwrap()/expect()/panic!()` in lib code | `edit-guard.sh` |
 | `#[allow]/todo!/unimplemented!/unreachable!` need `// guard-justified:` | `edit-guard.sh` |
 | No TODO/FIXME/HACK/plan-id in committed code | `edit-guard.sh` |
 | No test-weakening while impl changed same turn | `edit-guard.sh` |
-| Cannot end a turn with impl changed but no green clippy+nextest | `stop-gate.sh` |
-| Layer-2: turn diff over structural budget (net-LoC / new-files / blob / dup symbol) | `intent-gate.sh` (deterministic, ADR-0083; bench / golden-snapshot paths + files whose first lines carry `@generated` AND a `DO NOT EDIT`/`SignedSource<<…>>` authority marker are auto-exempt; `// budget-justified: <reason>` or `# budget-justified: <reason>` escape capped at 2 markers/turn with a ≥30-char + whole-word-keyword quality bar on the blob check) |
+| `let _ = <call>` swallowing a `Result`/must-use | `edit-guard.sh` |
+
+`record.sh` (A2) is retained as a per-turn green recorder and `turn-reset.sh`
+resets per-turn state at A0 (it feeds `edit-guard.sh`'s same-turn
+test-weakening check); neither blocks a turn.
 
 Escape hatch for discretionary edit rules: a `// guard-justified: <reason>` line
 directly above the construct. No escape for lefthook-bypass, lint-suppression,
 or no-unwrap.
+
+> **Retired (Lean prune):** the per-turn `stop-gate.sh` (green-before-stop) and
+> the deterministic ADR-0083 structural-budget gate `intent-gate.sh`
+> (net-LoC / new-file / blob / dup-symbol caps + `// budget-justified:` escape)
+> were removed. They duplicated lefthook/CI and the global anti-lazy hooks while
+> firing per conversation-turn against the whole working tree (false-positives on
+> unrelated pre-turn WIP). Structural-budget intent now lives only as review
+> guidance; correctness/format is enforced by lefthook + CI.
