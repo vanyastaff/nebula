@@ -216,7 +216,36 @@ A single KEY-keyed registry in `nebula-credential` holds, per credential type, t
 boxed `Protocol` object (which itself carries `acquire`/`project`/`policy`/`refresh` +
 its own state codec `KIND`/`VERSION` + `SCHEME`). Capability = **closure/strategy
 presence**, not a parallel flag table. `register::<P>()` is the single registrar;
-`StateProjectionRegistry`, `CredentialDispatch`, and `DispatchOps` are deleted.
+the parallel capability/projection tables (`StateProjectionRegistry`,
+`CredentialDispatch`) are deleted. `DispatchOps`'s **capability role** is deleted
+too — but see the implementation note: its async *operation*-closure storage is
+retained (it is generic over the store/pending types and cannot fold into the
+non-generic Core registry).
+
+> **Implemented 2026-06-01 (registry collapse).** Two of the four tables were
+> deleted and capability now reads solely from the `CredentialRegistry`
+> `Capabilities` bitflag (computed at `register::<C>()` from sub-trait
+> membership):
+>
+> - `CredentialDispatch` (runtime, three bool flags) — deleted; the flags
+>   mirrored the bitflag. `CredentialService` reads
+>   `registry.is_refreshable/testable/revocable(key)`.
+> - `StateProjectionRegistry` (engine, state-KIND → `project` closure) —
+>   deleted. It had **zero production callers**: the resolver is generic over
+>   `C` and calls `C::project` directly, so the type-erased lookup was
+>   vestigial. Its fatal-duplicate-KIND check was also unsound — state KIND is
+>   not unique (API-key and bearer-token both project `SecretToken`), so the
+>   N7 supply-chain defense correctly stays at KEY granularity
+>   (`CredentialRegistry` dup-KEY fatal, §15.6).
+> - The test-only `register_credential_complete` registrar is deleted;
+>   registration goes straight through `CredentialRegistry::register`.
+>
+> `DispatchOps<B,PS>` is **retained** as the type-erased async
+> *operation*-closure table — "delete `DispatchOps`" is read as "delete its
+> capability role"; the async ops cannot fold into the non-generic Core
+> registry because they are generic over the store / pending-store types. Net:
+> four tables → `CredentialRegistry` (the one capability+metadata source) +
+> `DispatchOps<B,PS>` (operation closures).
 
 ### D4 — non-generic facade; merge `credential-runtime` into `nebula-credential`
 

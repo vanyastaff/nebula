@@ -184,6 +184,37 @@ impl CredentialRegistry {
         entry.instance.as_any().downcast_ref::<C>()
     }
 
+    /// Whether the credential at `key` implements
+    /// [`Refreshable`](crate::Refreshable).
+    ///
+    /// Reads the [`Capabilities`] bitflag computed at registration — the
+    /// single source of truth for capability (ADR-0088 D3). Replaces the
+    /// former parallel `CredentialDispatch` bool flag, which mirrored the same
+    /// sub-trait membership this bitflag already encodes.
+    #[must_use]
+    pub fn is_refreshable(&self, key: &str) -> bool {
+        self.capabilities_of(key)
+            .is_some_and(|c| c.contains(Capabilities::REFRESHABLE))
+    }
+
+    /// Whether the credential at `key` implements
+    /// [`Testable`](crate::Testable). Reads the registration-time
+    /// [`Capabilities`] bitflag (ADR-0088 D3).
+    #[must_use]
+    pub fn is_testable(&self, key: &str) -> bool {
+        self.capabilities_of(key)
+            .is_some_and(|c| c.contains(Capabilities::TESTABLE))
+    }
+
+    /// Whether the credential at `key` implements
+    /// [`Revocable`](crate::Revocable). Reads the registration-time
+    /// [`Capabilities`] bitflag (ADR-0088 D3).
+    #[must_use]
+    pub fn is_revocable(&self, key: &str) -> bool {
+        self.capabilities_of(key)
+            .is_some_and(|c| c.contains(Capabilities::REVOCABLE))
+    }
+
     /// Returns the capability set for the credential at `key`, if registered.
     ///
     /// Per Tech Spec §15.8 (closes security-lead N6) the capability set is

@@ -1,7 +1,7 @@
 //! Engine-owned credential orchestration primitives (**Plane B**).
 //!
-//! This module hosts runtime credential resolution and type-erased registry
-//! logic used by the execution engine for **integration credentials** — workflow
+//! This module hosts runtime credential resolution used by the execution
+//! engine for **integration credentials** — workflow
 //! access to external systems per [`Credential`](nebula_credential::Credential)
 //! and (`crates/engine/README.md`). It does
 //! not implement platform/operator authentication (**Plane A**).
@@ -10,7 +10,6 @@ pub mod dispatchers;
 pub mod executor;
 pub mod lease;
 pub mod refresh;
-pub mod registry;
 pub mod resolver;
 #[cfg(feature = "rotation")]
 pub mod rotation;
@@ -26,6 +25,5 @@ pub use lease::{
 // dispatch path.
 pub use nebula_credential::resolve::TestResult;
 pub use refresh::{RefreshAttempt, RefreshCoordinator};
-pub use registry::{StateProjectionError, StateProjectionRegistry};
 pub use resolver::{CredentialResolver, ResolveError};
 pub use scoped_accessor::ScopedCredentialAccessor;
