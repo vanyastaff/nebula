@@ -51,14 +51,15 @@
 // Module declarations
 pub mod any;
 pub mod error;
-pub mod field_path;
 pub mod traits;
 pub mod validatable;
 
 // Re-export core types
 pub use any::AnyValidator;
 pub use error::{ErrorSeverity, ValidationError, ValidationErrors, ValidationMode};
-pub use field_path::FieldPath;
+// `FieldPath` is the canonical type from `nebula-error`, re-exported here so
+// `crate::foundation::FieldPath` keeps resolving.
+pub use nebula_error::FieldPath;
 pub use traits::{Validatable, Validate, ValidateExt};
 pub use validatable::AsValidatable;
 

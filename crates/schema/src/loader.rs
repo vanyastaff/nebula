@@ -260,13 +260,13 @@ fn field_path_from_key(key: &str) -> FieldPath {
     })
 }
 
-/// Use the path from a loader-returned error if it's non-root, otherwise fall
-/// back to the request field path.
-fn field_path_from_err_or(fallback: &FieldPath, err: &ValidationError) -> FieldPath {
-    if err.path.is_root() {
-        fallback.clone()
-    } else {
-        err.path.clone()
+/// Use the field pointer from a loader-returned error if present, otherwise
+/// fall back to the request field path (rendered as a dotted/bracketed string
+/// for `ValidationErrorBuilder::at_field`).
+fn field_path_from_err_or(fallback: &FieldPath, err: &ValidationError) -> String {
+    match &err.field {
+        Some(pointer) => pointer.to_string(),
+        None => fallback.to_string(),
     }
 }
 
@@ -334,9 +334,9 @@ impl LoaderRegistry {
                 "option loader not registered"
             );
             return Err(ValidationError::builder("loader.not_registered")
-                .at(field_path)
+                .at_field(field_path.to_string())
                 .message(format!("option loader `{key}` is not registered"))
-                .param("loader", Value::String(key.to_owned()))
+                .param("loader", key.to_owned())
                 .build());
         };
         loader.call(context).await.map_err(|e| {
@@ -347,9 +347,9 @@ impl LoaderRegistry {
                 "option loader call failed"
             );
             ValidationError::builder("loader.failed")
-                .at(field_path_from_err_or(&field_path, &e))
+                .at_field(field_path_from_err_or(&field_path, &e))
                 .message(format!("option loader `{key}` failed: {e}"))
-                .param("loader", Value::String(key.to_owned()))
+                .param("loader", key.to_owned())
                 .source(e)
                 .build()
         })
@@ -381,9 +381,9 @@ impl LoaderRegistry {
                 "record loader not registered"
             );
             return Err(ValidationError::builder("loader.not_registered")
-                .at(field_path)
+                .at_field(field_path.to_string())
                 .message(format!("record loader `{key}` is not registered"))
-                .param("loader", Value::String(key.to_owned()))
+                .param("loader", key.to_owned())
                 .build());
         };
         loader.call(context).await.map_err(|e| {
@@ -394,9 +394,9 @@ impl LoaderRegistry {
                 "record loader call failed"
             );
             ValidationError::builder("loader.failed")
-                .at(field_path_from_err_or(&field_path, &e))
+                .at_field(field_path_from_err_or(&field_path, &e))
                 .message(format!("record loader `{key}` failed: {e}"))
-                .param("loader", Value::String(key.to_owned()))
+                .param("loader", key.to_owned())
                 .source(e)
                 .build()
         })
@@ -424,12 +424,12 @@ mod tests {
         let err = registry.load_options("missing", ctx).await.unwrap_err();
         assert_eq!(err.code, "loader.not_registered");
         assert!(
-            err.params
+            err.params()
                 .iter()
                 .any(|(k, v)| k == "loader" && v == "missing")
         );
         // Error path should reflect the requesting field key.
-        assert_eq!(err.path.to_string(), "field");
+        assert_eq!(err.field.as_deref(), Some("/field"));
     }
 
     #[tokio::test]
@@ -439,7 +439,7 @@ mod tests {
         let err = registry.load_records("missing", ctx).await.unwrap_err();
         assert_eq!(err.code, "loader.not_registered");
         // Error path should reflect the requesting field key.
-        assert_eq!(err.path.to_string(), "field");
+        assert_eq!(err.field.as_deref(), Some("/field"));
     }
 
     #[tokio::test]
@@ -471,7 +471,6 @@ mod tests {
     async fn loader_failure_root_path_maps_back_to_request_field() {
         let registry = LoaderRegistry::new().register_option("regions_loader", |_ctx| async {
             Err(ValidationError::builder("loader.failed")
-                .at(FieldPath::root())
                 .message("downstream error")
                 .build())
         });
@@ -481,7 +480,7 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.code, "loader.failed");
-        assert_eq!(err.path.to_string(), "region");
+        assert_eq!(err.field.as_deref(), Some("/region"));
     }
 
     #[test]

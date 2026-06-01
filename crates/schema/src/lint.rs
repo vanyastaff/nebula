@@ -82,8 +82,7 @@ pub(crate) fn lint_root_rules(rules: &[Rule], fields: &[Field], report: &mut Val
             let Some(target) = resolve_rule_dependency(field_ref) else {
                 report.push(
                     ValidationError::builder("dangling_reference")
-                        .at(FieldPath::root())
-                        .param("reference", serde_json::Value::String(field_ref.to_owned()))
+                        .param("reference", field_ref.to_owned())
                         .message(format!(
                             "root rule reference `{field_ref}` must be a JSON Pointer path (for example `/foo/bar`) or legacy `$root.foo` path"
                         ))
@@ -96,8 +95,7 @@ pub(crate) fn lint_root_rules(rules: &[Rule], fields: &[Field], report: &mut Val
             if !defined.contains(&normalized) {
                 report.push(
                     ValidationError::builder("dangling_reference")
-                        .at(FieldPath::root())
-                        .param("reference", serde_json::Value::String(field_ref.to_owned()))
+                        .param("reference", field_ref.to_owned())
                         .message(format!("root rule references unknown field `{normalized}`"))
                         .build(),
                 );
@@ -173,7 +171,7 @@ fn lint_default_type(field: &Field, path: &FieldPath, report: &mut ValidationRep
     if matches!(field, Field::Secret(_)) {
         report.push(
             ValidationError::builder("secret.default_forbidden")
-                .at(path.clone())
+                .at_field(path.to_string())
                 .message(format!(
                     "field `{path}` is a secret field; `default` is not allowed because it would \
                      hard-code plaintext into the schema. Configure the value via the credential \
@@ -256,7 +254,7 @@ fn lint_default_type(field: &Field, path: &FieldPath, report: &mut ValidationRep
     if !ok {
         report.push(
             ValidationError::builder("default.type_mismatch")
-                .at(path.clone())
+                .at_field(path.to_string())
                 .message(format!(
                     "default value type does not match `{}` field type",
                     field.type_name()
@@ -279,7 +277,7 @@ fn lint_duplicate_keys_in_scope(
         }
         report.push(
             ValidationError::builder("duplicate_key")
-                .at(prefix.clone().join(field.key().clone()))
+                .at_field(prefix.clone().join(field.key().clone()).to_string())
                 .message(format!("duplicate field key `{key}`"))
                 .build(),
         );
@@ -332,7 +330,7 @@ fn lint_select_field(
     if select.dynamic && !has_nonempty_loader_key(select.loader.as_deref()) {
         report.push(
             ValidationError::builder("missing_loader")
-                .at(path.clone())
+                .at_field(path.to_string())
                 .message("dynamic select has no loader key configured")
                 .warn()
                 .build(),
@@ -341,7 +339,7 @@ fn lint_select_field(
     if !select.dynamic && has_nonempty_loader_key(select.loader.as_deref()) {
         report.push(
             ValidationError::builder("loader_without_dynamic")
-                .at(path.clone())
+                .at_field(path.to_string())
                 .message("select has loader key but dynamic flag is disabled")
                 .warn()
                 .build(),
@@ -378,7 +376,7 @@ fn lint_select_option_types(
         if has_complex {
             report.push(
                 ValidationError::builder("option.type_inconsistent")
-                    .at(path.clone())
+                    .at_field(path.to_string())
                     .message(
                         "non-multiple select has option values of complex type (array or object)",
                     )
@@ -402,7 +400,7 @@ fn lint_select_option_types(
     if !all_same {
         report.push(
             ValidationError::builder("option.type_inconsistent")
-                .at(path.clone())
+                .at_field(path.to_string())
                 .message(
                     "select options have mixed JSON types; all option values should share the same type",
                 )
@@ -431,7 +429,7 @@ fn lint_dynamic_field(
     if !has_nonempty_loader_key(dynamic.loader.as_deref()) {
         report.push(
             ValidationError::builder("missing_loader")
-                .at(path.clone())
+                .at_field(path.to_string())
                 .message("dynamic field has no loader key configured")
                 .warn()
                 .build(),
@@ -451,7 +449,7 @@ fn lint_notice_field(
     {
         report.push(
             ValidationError::builder("notice.misuse")
-                .at(path.clone())
+                .at_field(path.to_string())
                 .message(
                     "notice field should stay display-only \
                      (no required/default/rules/transformers)",
@@ -463,7 +461,7 @@ fn lint_notice_field(
     if notice.description.is_none() {
         report.push(
             ValidationError::builder("notice_missing_description")
-                .at(path.clone())
+                .at_field(path.to_string())
                 .message("notice field should include description text")
                 .warn()
                 .build(),
@@ -480,7 +478,7 @@ fn lint_list_new(
     if list.item.is_none() {
         report.push(
             ValidationError::builder("missing_item_schema")
-                .at(path.clone())
+                .at_field(path.to_string())
                 .message("list field must define item schema")
                 .build(),
         );
@@ -502,7 +500,7 @@ fn lint_mode_new(
     {
         report.push(
             ValidationError::builder("invalid_default_variant")
-                .at(path.clone())
+                .at_field(path.to_string())
                 .message(format!(
                     "default variant `{default_variant}` does not exist in mode variants"
                 ))
@@ -517,7 +515,7 @@ fn lint_mode_new(
             Err(e) => {
                 report.push(
                     ValidationError::builder("invalid_key")
-                        .at(path.clone())
+                        .at_field(path.to_string())
                         .message(format!(
                             "mode variant key `{}` cannot participate in schema paths: {}",
                             variant.key, e.message
@@ -531,7 +529,7 @@ fn lint_mode_new(
         if !seen.insert(variant.key.as_str()) {
             report.push(
                 ValidationError::builder("duplicate_variant")
-                    .at(path.clone())
+                    .at_field(path.to_string())
                     .message(format!("duplicate mode variant key `{}`", variant.key))
                     .build(),
             );
@@ -542,7 +540,7 @@ fn lint_mode_new(
                 let vpath = path.clone().join(vk);
                 report.push(
                     ValidationError::builder("missing_variant_label")
-                        .at(vpath)
+                        .at_field(vpath.to_string())
                         .message("mode variant label is empty")
                         .warn()
                         .build(),
@@ -573,7 +571,7 @@ fn lint_depends_on_new(
         if !seen_dependencies.insert(dependency_text.clone()) {
             report.push(
                 ValidationError::builder("duplicate_dependency")
-                    .at(path.clone())
+                    .at_field(path.to_string())
                     .message(format!(
                         "depends_on contains duplicate reference `{dependency_text}`"
                     ))
@@ -593,7 +591,7 @@ fn lint_depends_on_new(
         if first_key == Some(field_key) {
             report.push(
                 ValidationError::builder("self_dependency")
-                    .at(path.clone())
+                    .at_field(path.to_string())
                     .message(format!("depends_on contains self reference `{dependency}`"))
                     .build(),
             );
@@ -603,7 +601,7 @@ fn lint_depends_on_new(
         if dependency.is_root() {
             report.push(
                 ValidationError::builder("dangling_reference")
-                    .at(path.clone())
+                    .at_field(path.to_string())
                     .message("depends_on references an empty path")
                     .build(),
             );
@@ -614,7 +612,7 @@ fn lint_depends_on_new(
         if !local_keys.contains(root_key) && !root_keys.contains(root_key) {
             report.push(
                 ValidationError::builder("dangling_reference")
-                    .at(path.clone())
+                    .at_field(path.to_string())
                     .message(format!("depends_on references unknown key `{root_key}`"))
                     .build(),
             );
@@ -639,7 +637,7 @@ fn lint_rule_refs_new(
         let Some(root_key) = referenced_root_key(field_ref) else {
             report.push(
                 ValidationError::builder("dangling_reference")
-                    .at(path.clone())
+                    .at_field(path.to_string())
                     .message(format!(
                         "rule reference `{field_ref}` must be a JSON Pointer path (for example `/foo/bar`) or legacy `$root.foo` path"
                     ))
@@ -650,7 +648,7 @@ fn lint_rule_refs_new(
         if !root_keys.contains(root_key.as_str()) {
             report.push(
                 ValidationError::builder("dangling_reference")
-                    .at(path.clone())
+                    .at_field(path.to_string())
                     .message(format!(
                         "rule references unknown root key `{}`",
                         root_key.as_str()
@@ -714,7 +712,7 @@ fn lint_single_compat_new(
     if !compatible {
         report.push(
             ValidationError::builder("rule.incompatible")
-                .at(path.clone())
+                .at_field(path.to_string())
                 .message(format!(
                     "rule `{}` is not compatible with `{}` field",
                     rule_name(rule),
@@ -744,7 +742,7 @@ fn lint_contradictory_rules_new(rules: &[Rule], path: &FieldPath, report: &mut V
     {
         report.push(
             ValidationError::builder("rule.contradictory")
-                .at(path.clone())
+                .at_field(path.to_string())
                 .message(format!(
                     "min_length ({min}) is greater than max_length ({max})"
                 ))
@@ -756,7 +754,7 @@ fn lint_contradictory_rules_new(rules: &[Rule], path: &FieldPath, report: &mut V
     {
         report.push(
             ValidationError::builder("rule.contradictory")
-                .at(path.clone())
+                .at_field(path.to_string())
                 .message(format!(
                     "min_items ({min}) is greater than max_items ({max})"
                 ))
@@ -903,7 +901,7 @@ fn collect_min_max(
 fn emit_visibility_cycle_on_edge(from: &FieldPath, to: &FieldPath, report: &mut ValidationReport) {
     report.push(
         ValidationError::builder("visibility_cycle")
-            .at(from.clone())
+            .at_field(from.to_string())
             .message(format!(
                 "visibility rule graph contains a cycle (dependency `{from}` -> `{to}`)"
             ))
@@ -914,7 +912,7 @@ fn emit_visibility_cycle_on_edge(from: &FieldPath, to: &FieldPath, report: &mut 
 fn emit_required_cycle_on_edge(from: &FieldPath, to: &FieldPath, report: &mut ValidationReport) {
     report.push(
         ValidationError::builder("required_cycle")
-            .at(from.clone())
+            .at_field(from.to_string())
             .message(format!(
                 "required rule graph contains a cycle (dependency `{from}` -> `{to}`)"
             ))
@@ -1032,7 +1030,7 @@ fn emit_loader_dependency_cycle_on_edge(
 ) {
     report.push(
         ValidationError::builder("loader_dependency_cycle")
-            .at(from.clone())
+            .at_field(from.to_string())
             .message(format!("circular loader dependency: `{from}` -> `{to}`"))
             .build(),
     );
@@ -1275,7 +1273,7 @@ fn walk_rule_for_secret_value_predicates(
                 let pointer = predicate.field().as_str();
                 report.push(
                     ValidationError::builder("secret.predicate_on_value")
-                        .at(path.clone())
+                        .at_field(path.to_string())
                         .message(format!(
                             "predicate targets secret field `{pointer}` by value; only \
                              Set/Empty (presence) predicates may reference a secret"
@@ -1359,7 +1357,7 @@ fn lint_mode_no_payload_variant_must_forbid_expression(
             {
                 report.push(
                     ValidationError::builder("mode.no_payload_variant_must_forbid_expression")
-                        .at(node.path.clone())
+                        .at_field(node.path.to_string())
                         .param("variant", variant.key.clone())
                         .message(format!(
                             "no-payload mode variant `{}` placeholder must forbid expressions",
@@ -1611,7 +1609,7 @@ mod tests {
             "did not expect dangling_reference, got {:?}",
             report
                 .errors()
-                .map(|e| (&e.code, e.path.to_string()))
+                .map(|e| (&e.code, e.field.clone()))
                 .collect::<Vec<_>>()
         );
     }

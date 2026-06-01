@@ -6,6 +6,33 @@
 use nebula_schema::*;
 use serde_json::json;
 
+// Test helper: render a canonical RFC-6901 field pointer (`/a/b/0`) back into
+// the schema's dotted/bracketed display (`a.b[0]`) so historical path
+// assertions keep their original form after the nebula-error migration.
+fn field_dotted(e: &ValidationError) -> String {
+    let Some(pointer) = e.field.as_deref() else {
+        return String::new();
+    };
+    let mut out = String::new();
+    for seg in pointer.trim_start_matches('/').split('/') {
+        if seg.is_empty() {
+            continue;
+        }
+        let unescaped = seg.replace("~1", "/").replace("~0", "~");
+        if unescaped.chars().all(|c| c.is_ascii_digit()) {
+            out.push('[');
+            out.push_str(&unescaped);
+            out.push(']');
+        } else {
+            if !out.is_empty() {
+                out.push('.');
+            }
+            out.push_str(&unescaped);
+        }
+    }
+    out
+}
+
 #[derive(Debug, serde::Deserialize, PartialEq)]
 struct Person {
     name: String,
@@ -192,13 +219,13 @@ async fn expression_type_mismatch_in_nested_object_is_remapped() {
 
     let report = validated.resolve(&RoutingCtx).await.unwrap_err();
     assert!(
-        report.errors().any(|e| {
-            e.code == "expression.type_mismatch" && e.path == FieldPath::parse("user.name").unwrap()
-        }),
+        report
+            .errors()
+            .any(|e| { e.code == "expression.type_mismatch" && field_dotted(e) == "user.name" }),
         "expected expression.type_mismatch at user.name, got: {:?}",
         report
             .errors()
-            .map(|e| (e.code.clone(), e.path.to_string()))
+            .map(|e| (e.code.clone(), field_dotted(e)))
             .collect::<Vec<_>>()
     );
     assert!(
@@ -223,13 +250,13 @@ async fn expression_type_mismatch_in_list_item_is_remapped() {
 
     let report = validated.resolve(&RoutingCtx).await.unwrap_err();
     assert!(
-        report.errors().any(|e| {
-            e.code == "expression.type_mismatch" && e.path == FieldPath::parse("tags[0]").unwrap()
-        }),
+        report
+            .errors()
+            .any(|e| { e.code == "expression.type_mismatch" && field_dotted(e) == "tags[0]" }),
         "expected expression.type_mismatch at tags[0], got: {:?}",
         report
             .errors()
-            .map(|e| (e.code.clone(), e.path.to_string()))
+            .map(|e| (e.code.clone(), field_dotted(e)))
             .collect::<Vec<_>>()
     );
     assert!(
@@ -258,7 +285,7 @@ async fn expression_type_mismatch_remap_is_scoped_to_failing_sibling() {
     let mismatch_paths: Vec<String> = report
         .errors()
         .filter(|e| e.code == "expression.type_mismatch")
-        .map(|e| e.path.to_string())
+        .map(field_dotted)
         .collect();
     assert_eq!(
         mismatch_paths,
@@ -266,7 +293,7 @@ async fn expression_type_mismatch_remap_is_scoped_to_failing_sibling() {
         "expected remap only for failing sibling, got: {:?}",
         report
             .errors()
-            .map(|e| (e.code.clone(), e.path.to_string()))
+            .map(|e| (e.code.clone(), field_dotted(e)))
             .collect::<Vec<_>>()
     );
     assert!(
@@ -466,7 +493,7 @@ async fn into_typed_rejects_secret_material_by_default() {
 
     let err = resolved.into_typed::<ApiCredential>().unwrap_err();
     assert_eq!(err.code, "type_mismatch");
-    assert_eq!(err.path.to_string(), "api_key");
+    assert_eq!(field_dotted(&err), "api_key");
     assert!(
         err.message.contains("get_secret() / SecretWire"),
         "expected explicit opt-in guidance, got: {}",

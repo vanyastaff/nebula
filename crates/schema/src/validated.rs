@@ -13,7 +13,7 @@ use smallvec::SmallVec;
 use zeroize::Zeroize;
 
 use crate::{
-    error::{Severity, ValidationError, ValidationReport},
+    error::{ValidationError, ValidationReport},
     expression::ExpressionContext,
     field::{Field, ListField, NumberField, ObjectField},
     key::FieldKey,
@@ -319,7 +319,6 @@ impl ValidSchema {
     /// let full = FieldValues::from_json(json!({"name": "Alice"})).unwrap();
     /// assert!(schema.validate(&full).is_ok());
     /// ```
-    #[allow(clippy::result_large_err)]
     #[tracing::instrument(
         level = "debug",
         target = "nebula_schema::validate",
@@ -389,7 +388,7 @@ impl ValidSchema {
 
         let warnings: Arc<[ValidationError]> = report
             .iter()
-            .filter(|e| e.severity == Severity::Warning)
+            .filter(|e| e.severity().is_warning())
             .cloned()
             .collect();
         Ok(ValidValues {
@@ -470,7 +469,6 @@ impl ValidValues {
     ///
     /// Returns `Err(ValidationReport)` when any expression evaluation fails
     /// or when a resolved value violates a field rule.
-    #[allow(clippy::result_large_err)]
     #[tracing::instrument(
         level = "debug",
         target = "nebula_schema::resolve",
@@ -537,7 +535,7 @@ impl ValidValues {
         // wall-clock cost of `resolve()` on schemas without expressions.
         let resolve_warnings: Vec<ValidationError> = report
             .iter()
-            .filter(|e| e.severity == Severity::Warning)
+            .filter(|e| e.severity().is_warning())
             .cloned()
             .collect();
 
@@ -696,7 +694,7 @@ impl ResolvedValues {
         if let Some(path) = first_secret_path_in_values(&self.values) {
             return Err(Box::new(
                 ValidationError::builder("type_mismatch")
-                    .at(path)
+                    .at_field(path.to_string())
                     .message(
                         "typed extraction refused because resolved values contain secret material; use get_secret() / SecretWire across an explicit boundary instead"
                             .to_owned(),
@@ -865,7 +863,7 @@ fn promote_secret_value(
                         *s = password;
                         report.push(
                             ValidationError::builder("secret.kdf")
-                                .at(path.clone())
+                                .at_field(path.to_string())
                                 .message(e.to_string())
                                 .build(),
                         );
@@ -878,14 +876,14 @@ fn promote_secret_value(
         },
         FieldValue::Literal(_) => report.push(
             ValidationError::builder("type_mismatch")
-                .at(path.clone())
+                .at_field(path.to_string())
                 .message("secret field value must be a string")
                 .build(),
         ),
         FieldValue::SecretLiteral(_) => {},
         FieldValue::Expression(_) => report.push(
             ValidationError::builder("expression.unresolved")
-                .at(path.clone())
+                .at_field(path.to_string())
                 .message("secret field still has an expression value at resolve time".to_owned())
                 .build(),
         ),
@@ -893,7 +891,7 @@ fn promote_secret_value(
             let shape = field_value_shape_for_errors(other);
             report.push(
                 ValidationError::builder("type_mismatch")
-                    .at(path.clone())
+                    .at_field(path.to_string())
                     .message(format!(
                         "secret field has incompatible value shape: {shape}"
                     ))
@@ -943,10 +941,10 @@ fn resolve_value<'v>(
                         Err(mut e) => {
                             // Attach path context and enforce the standard code.
                             if e.code == "expression.runtime" {
-                                e.path = path.clone();
+                                e = e.with_field(path.to_string());
                             } else {
                                 e = ValidationError::builder("expression.runtime")
-                                    .at(path.clone())
+                                    .at_field(path.to_string())
                                     .message(e.message.clone())
                                     .build();
                             }
@@ -1017,10 +1015,22 @@ fn remap_expression_type_mismatch(
     report: ValidationReport,
     expression_paths: &HashSet<FieldPath>,
 ) -> ValidationReport {
+    // Expression paths are schema paths (dotted/bracketed); the issue field is
+    // a canonical RFC-6901 pointer. Compare both as `nebula_error::FieldPath`.
+    let expression_pointers: Vec<crate::error::ErrorFieldPath> = expression_paths
+        .iter()
+        .filter_map(|p| crate::error::ErrorFieldPath::parse(p.to_string()))
+        .collect();
     let remapped = report.into_iter().map(|mut issue| {
-        let from_expression = expression_paths
-            .iter()
-            .any(|expression_path| issue.path.starts_with(expression_path));
+        let from_expression = issue
+            .field
+            .as_deref()
+            .and_then(crate::error::ErrorFieldPath::parse)
+            .is_some_and(|issue_path| {
+                expression_pointers
+                    .iter()
+                    .any(|prefix| issue_path.starts_with(prefix))
+            });
         if issue.code == "type_mismatch" && from_expression {
             issue.code = "expression.type_mismatch".into();
         }
@@ -1236,7 +1246,7 @@ fn validate_field(
             ExpressionMode::Forbidden => {
                 report.push(
                     ValidationError::builder("expression.forbidden")
-                        .at(path.clone())
+                        .at_field(path.to_string())
                         .message(format!("field `{path}` does not allow expression values"))
                         .build(),
                 );
@@ -1256,7 +1266,7 @@ fn validate_field(
     if matches!(field.expression(), ExpressionMode::Required) {
         report.push(
             ValidationError::builder("expression.required")
-                .at(path.clone())
+                .at_field(path.to_string())
                 .message(format!("field `{path}` requires an expression value"))
                 .build(),
         );
@@ -1298,7 +1308,7 @@ fn validate_literal_value(
             if !transformed.is_string() {
                 report.push(
                     ValidationError::builder("type_mismatch")
-                        .at(path.clone())
+                        .at_field(path.to_string())
                         .message(format!("field `{path}` expects a string value"))
                         .build(),
                 );
@@ -1317,7 +1327,7 @@ fn validate_literal_value(
                         if !transformed.is_string() {
                             report.push(
                                 ValidationError::builder("type_mismatch")
-                                    .at(path.clone())
+                                    .at_field(path.to_string())
                                     .message(format!("field `{path}` expects a string value"))
                                     .build(),
                             );
@@ -1333,7 +1343,7 @@ fn validate_literal_value(
                         if !transformed.is_string() {
                             report.push(
                                 ValidationError::builder("type_mismatch")
-                                    .at(path.clone())
+                                    .at_field(path.to_string())
                                     .message(format!("field `{path}` expects a string value"))
                                     .build(),
                             );
@@ -1352,7 +1362,7 @@ fn validate_literal_value(
             if !transformed.is_string() {
                 report.push(
                     ValidationError::builder("type_mismatch")
-                        .at(path.clone())
+                        .at_field(path.to_string())
                         .message(format!("field `{path}` expects a string value"))
                         .build(),
                 );
@@ -1368,7 +1378,7 @@ fn validate_literal_value(
             if !transformed.is_string() {
                 report.push(
                     ValidationError::builder("type_mismatch")
-                        .at(path.clone())
+                        .at_field(path.to_string())
                         .message(format!("field `{path}` expects a string value"))
                         .build(),
                 );
@@ -1389,7 +1399,7 @@ fn validate_literal_value(
             let Some(num) = transformed.as_f64() else {
                 report.push(
                     ValidationError::builder("type_mismatch")
-                        .at(path.clone())
+                        .at_field(path.to_string())
                         .message(format!("field `{path}` expects a numeric value"))
                         .build(),
                 );
@@ -1398,7 +1408,7 @@ fn validate_literal_value(
             if *integer && num.fract() != 0.0 {
                 report.push(
                     ValidationError::builder("type_mismatch")
-                        .at(path.clone())
+                        .at_field(path.to_string())
                         .message(format!("field `{path}` expects a whole number"))
                         .build(),
                 );
@@ -1413,7 +1423,7 @@ fn validate_literal_value(
             if !lit.is_boolean() {
                 report.push(
                     ValidationError::builder("type_mismatch")
-                        .at(path.clone())
+                        .at_field(path.to_string())
                         .message(format!("field `{path}` expects a boolean value"))
                         .build(),
                 );
@@ -1445,7 +1455,7 @@ fn validate_literal_value(
                     {
                         report.push(
                             ValidationError::builder("expression.forbidden")
-                                .at(path.clone())
+                                .at_field(path.to_string())
                                 .message(format!(
                                     "field `{path}` does not allow expression values in list items"
                                 ))
@@ -1480,7 +1490,7 @@ fn validate_literal_value(
                 _ => {
                     report.push(
                         ValidationError::builder("type_mismatch")
-                            .at(path.clone())
+                            .at_field(path.to_string())
                             .message(format!("field `{path}` expects an array value"))
                             .build(),
                     );
@@ -1503,9 +1513,9 @@ fn validate_literal_value(
             {
                 report.push(
                     ValidationError::builder("items.min")
-                        .at(path.clone())
-                        .param("min", serde_json::json!(min))
-                        .param("actual", serde_json::json!(item_count))
+                        .at_field(path.to_string())
+                        .param("min", (min).to_string())
+                        .param("actual", (item_count).to_string())
                         .message(format!(
                             "field `{path}` requires at least {min} items, got {item_count}"
                         ))
@@ -1517,9 +1527,9 @@ fn validate_literal_value(
             {
                 report.push(
                     ValidationError::builder("items.max")
-                        .at(path.clone())
-                        .param("max", serde_json::json!(max))
-                        .param("actual", serde_json::json!(item_count))
+                        .at_field(path.to_string())
+                        .param("max", (max).to_string())
+                        .param("actual", (item_count).to_string())
                         .message(format!(
                             "field `{path}` allows at most {max} items, got {item_count}"
                         ))
@@ -1540,8 +1550,8 @@ fn validate_literal_value(
                 if let Some(idx) = duplicate_index {
                     report.push(
                         ValidationError::builder("items.unique")
-                            .at(path.clone().join(idx))
-                            .param("index", serde_json::json!(idx))
+                            .at_field(path.clone().join(idx).to_string())
+                            .param("index", (idx).to_string())
                             .message(format!(
                                 "field `{path}` requires unique items; duplicate found at index {idx}"
                             ))
@@ -1579,7 +1589,7 @@ fn validate_literal_value(
             let FieldValue::Object(map) = value else {
                 report.push(
                     ValidationError::builder("type_mismatch")
-                        .at(path.clone())
+                        .at_field(path.to_string())
                         .message(format!("field `{path}` expects an object value"))
                         .build(),
                 );
@@ -1626,7 +1636,7 @@ fn validate_literal_value(
                     {
                         report.push(
                             ValidationError::builder("type_mismatch")
-                                .at(path.clone())
+                                .at_field(path.to_string())
                                 .message(format!(
                                     "field `{path}` expects a mode value ({{\"mode\": \"...\", ...}})"
                                 ))
@@ -1642,7 +1652,9 @@ fn validate_literal_value(
                         Some(other) => {
                             report.push(
                                 ValidationError::builder("type_mismatch")
-                                    .at(path.clone().join(mode_selector_key.clone()))
+                                    .at_field(
+                                        path.clone().join(mode_selector_key.clone()).to_string(),
+                                    )
                                     .message(format!(
                                         "field `{path}.mode` expects a string value, got {}",
                                         field_value_shape_for_errors(other)
@@ -1657,7 +1669,7 @@ fn validate_literal_value(
                 _ => {
                     report.push(
                         ValidationError::builder("type_mismatch")
-                            .at(path.clone())
+                            .at_field(path.to_string())
                             .message(format!(
                                 "field `{path}` expects a mode value ({{\"mode\": \"...\", ...}})"
                             ))
@@ -1671,7 +1683,7 @@ fn validate_literal_value(
             let Some(resolved_key) = resolved_key else {
                 report.push(
                     ValidationError::builder("mode.required")
-                        .at(path.clone())
+                        .at_field(path.to_string())
                         .message(format!("field `{path}` requires a mode key"))
                         .build(),
                 );
@@ -1680,8 +1692,8 @@ fn validate_literal_value(
             let Some(variant) = variants.iter().find(|v| v.key == resolved_key) else {
                 report.push(
                     ValidationError::builder("mode.invalid")
-                        .at(path.clone())
-                        .param("mode", serde_json::Value::String(resolved_key.to_owned()))
+                        .at_field(path.to_string())
+                        .param("mode", resolved_key.to_owned())
                         .message(format!(
                             "field `{path}` has unknown mode variant `{resolved_key}`"
                         ))
@@ -1714,7 +1726,7 @@ fn validate_literal_value(
                 _ => {
                     report.push(
                         ValidationError::builder("type_mismatch")
-                            .at(path.clone())
+                            .at_field(path.to_string())
                             .message(format!(
                                 "field `{path}` expects {}",
                                 if f.multiple {
@@ -1734,7 +1746,7 @@ fn validate_literal_value(
                     if items.iter().any(|v| !v.is_string()) {
                         report.push(
                             ValidationError::builder("type_mismatch")
-                                .at(path.clone())
+                                .at_field(path.to_string())
                                 .message(format!(
                                     "field `{path}` expects an array of string file paths"
                                 ))
@@ -1745,7 +1757,7 @@ fn validate_literal_value(
                 } else {
                     report.push(
                         ValidationError::builder("type_mismatch")
-                            .at(path.clone())
+                            .at_field(path.to_string())
                             .message(format!("field `{path}` expects an array of file paths"))
                             .build(),
                     );
@@ -1754,7 +1766,7 @@ fn validate_literal_value(
             } else if !transformed.is_string() {
                 report.push(
                     ValidationError::builder("type_mismatch")
-                        .at(path.clone())
+                        .at_field(path.to_string())
                         .message(format!("field `{path}` expects a string file path"))
                         .build(),
                 );
@@ -1808,8 +1820,8 @@ fn check_select_options(
                 if !options.iter().any(|o| o.value == *v) {
                     report.push(
                         ValidationError::builder("option.invalid")
-                            .at(path.clone())
-                            .param("index", serde_json::json!(i))
+                            .at_field(path.to_string())
+                            .param("index", (i).to_string())
                             .message(format!("field `{path}[{i}]` is not in allowed option set"))
                             .build(),
                     );
@@ -1819,7 +1831,7 @@ fn check_select_options(
         (true, None) => {
             report.push(
                 ValidationError::builder("type_mismatch")
-                    .at(path.clone())
+                    .at_field(path.to_string())
                     .message(format!(
                         "field `{path}` expects an array of option values (multiple select)"
                     ))
@@ -1829,7 +1841,7 @@ fn check_select_options(
         (false, Some(_)) => {
             report.push(
                 ValidationError::builder("type_mismatch")
-                    .at(path.clone())
+                    .at_field(path.to_string())
                     .message(format!(
                         "field `{path}` expects a single option value, got an array"
                     ))
@@ -1840,7 +1852,7 @@ fn check_select_options(
             if !options.iter().any(|o| o.value == *transformed) {
                 report.push(
                     ValidationError::builder("option.invalid")
-                        .at(path.clone())
+                        .at_field(path.to_string())
                         .message(format!("field `{path}` value is not in allowed option set"))
                         .build(),
                 );
@@ -1880,7 +1892,7 @@ fn merge_validator_errors(
         };
         report.push(
             ValidationError::builder(code)
-                .at(issue_path)
+                .at_field(issue_path.to_string())
                 .message(msg)
                 .build(),
         );
@@ -2032,8 +2044,10 @@ mod tests {
         let bad = FieldValues::from_json(json!({"config": {"tier": "free"}})).unwrap();
         let report = schema.validate(&bad).unwrap_err();
         assert!(
-            report.errors().any(|e| e.path.to_string() == "config.tier"),
-            "expected root-rule error at config.tier, got: {report:?}"
+            report
+                .errors()
+                .any(|e| e.field.as_deref() == Some("/config/tier")),
+            "expected root-rule error at /config/tier, got: {report:?}"
         );
     }
 

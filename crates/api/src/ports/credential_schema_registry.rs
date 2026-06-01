@@ -137,8 +137,12 @@ impl CredentialSchemaPort for RegistryCredentialSchema {
         let schema = any.metadata().base.schema;
         // Ingest only (NEVER `.resolve()` — credential secrecy: credential data
         // must not be expression-resolved against workflow state).
-        let values = FieldValues::from_json(data.clone())
-            .map_err(|e| vec![field_error(e.path.to_string(), e.code.as_ref())])?;
+        let values = FieldValues::from_json(data.clone()).map_err(|e| {
+            vec![field_error(
+                e.field.as_deref().unwrap_or("").to_owned(),
+                e.code.as_ref(),
+            )]
+        })?;
         match schema.validate(&values) {
             Ok(_valid) => {
                 tracing::Span::current().record("outcome", "ok");
@@ -147,7 +151,9 @@ impl CredentialSchemaPort for RegistryCredentialSchema {
             Err(report) => {
                 let errors: Vec<CredentialFieldError> = report
                     .errors()
-                    .map(|e| field_error(e.path.to_string(), e.code.as_ref()))
+                    .map(|e| {
+                        field_error(e.field.as_deref().unwrap_or("").to_owned(), e.code.as_ref())
+                    })
                     .collect();
                 tracing::Span::current().record("outcome", "rejected");
                 debug_assert!(

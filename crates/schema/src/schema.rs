@@ -178,24 +178,15 @@ impl Schema {
 /// # Errors
 ///
 /// Returns `invalid_key` when `key` does not satisfy [`FieldKey`] constraints.
-#[expect(
-    clippy::result_large_err,
-    reason = "ValidationError is intentionally large; callers are on the validation path"
-)]
 fn parse_top_level_key(key: &str) -> Result<crate::key::FieldKey, ValidationError> {
     crate::key::FieldKey::new(key).map_err(|e| {
         ValidationError::builder("invalid_key")
-            .at(FieldPath::root())
-            .param("key", Value::String(key.to_owned()))
+            .param("key", key.to_owned())
             .message(format!("invalid key `{key}`: {e}"))
             .build()
     })
 }
 
-#[allow(
-    clippy::result_large_err,
-    reason = "ValidationError is intentionally large; callers are on the validation path"
-)]
 pub(crate) fn resolve_select_loader_key(
     fields: &[Field],
     key: &str,
@@ -204,10 +195,6 @@ pub(crate) fn resolve_select_loader_key(
     resolve_select_loader_path(fields, &path)
 }
 
-#[allow(
-    clippy::result_large_err,
-    reason = "ValidationError is intentionally large; callers are on the validation path"
-)]
 pub(crate) fn resolve_select_loader_path(
     fields: &[Field],
     path: &FieldPath,
@@ -219,10 +206,6 @@ pub(crate) fn resolve_select_loader_path(
     loader_key_or_error(select.loader.as_deref(), path)
 }
 
-#[allow(
-    clippy::result_large_err,
-    reason = "ValidationError is intentionally large; callers are on the validation path"
-)]
 pub(crate) fn resolve_dynamic_loader_key(
     fields: &[Field],
     key: &str,
@@ -231,10 +214,6 @@ pub(crate) fn resolve_dynamic_loader_key(
     resolve_dynamic_loader_path(fields, &path)
 }
 
-#[allow(
-    clippy::result_large_err,
-    reason = "ValidationError is intentionally large; callers are on the validation path"
-)]
 pub(crate) fn resolve_dynamic_loader_path(
     fields: &[Field],
     path: &FieldPath,
@@ -246,18 +225,14 @@ pub(crate) fn resolve_dynamic_loader_path(
     loader_key_or_error(dynamic.loader.as_deref(), path)
 }
 
-#[allow(
-    clippy::result_large_err,
-    reason = "ValidationError is intentionally large; callers are on the validation path"
-)]
 fn loader_key_or_error(loader: Option<&str>, path: &FieldPath) -> Result<String, ValidationError> {
     loader
         .filter(|loader| !loader.trim().is_empty())
         .map(str::to_owned)
         .ok_or_else(|| {
             ValidationError::builder("loader.missing_config")
-                .at(path.clone())
-                .param("key", Value::String(path.to_string()))
+                .at_field(path.to_string())
+                .param("key", path.to_string())
                 .message(format!("field `{path}` has no loader configured"))
                 .build()
         })
@@ -265,20 +240,16 @@ fn loader_key_or_error(loader: Option<&str>, path: &FieldPath) -> Result<String,
 
 fn loader_type_mismatch(path: &FieldPath, expected: &str, actual: &str) -> ValidationError {
     ValidationError::builder("field.type_mismatch")
-        .at(path.clone())
-        .param("key", Value::String(path.to_string()))
-        .param("expected", Value::String(expected.to_owned()))
-        .param("actual", Value::String(actual.to_owned()))
+        .at_field(path.to_string())
+        .param("key", path.to_string())
+        .param("expected", expected.to_owned())
+        .param("actual", actual.to_owned())
         .message(format!(
             "field `{path}` is not a {expected} field (got {actual})"
         ))
         .build()
 }
 
-#[allow(
-    clippy::result_large_err,
-    reason = "ValidationError is intentionally large; callers are on the validation path"
-)]
 fn find_field_by_schema_path<'a>(
     fields: &'a [Field],
     path: &FieldPath,
@@ -286,8 +257,8 @@ fn find_field_by_schema_path<'a>(
     let mut segments = path.segments().iter();
     let Some(PathSegment::Key(first_key)) = segments.next() else {
         return Err(ValidationError::builder("field.not_found")
-            .at(path.clone())
-            .param("key", Value::String(path.to_string()))
+            .at_field(path.to_string())
+            .param("key", path.to_string())
             .message(format!("field `{path}` not found in schema"))
             .build());
     };
@@ -298,8 +269,8 @@ fn find_field_by_schema_path<'a>(
         .find(|field| field.key() == first_key)
         .ok_or_else(|| {
             ValidationError::builder("field.not_found")
-                .at(current_path.clone())
-                .param("key", Value::String(current_path.to_string()))
+                .at_field(current_path.to_string())
+                .param("key", current_path.to_string())
                 .message(format!("field `{current_path}` not found in schema"))
                 .build()
         })?;
@@ -315,8 +286,8 @@ fn find_field_by_schema_path<'a>(
                         .find(|field| field.key() == key)
                         .ok_or_else(|| {
                             ValidationError::builder("field.not_found")
-                                .at(current_path.clone())
-                                .param("key", Value::String(current_path.to_string()))
+                                .at_field(current_path.to_string())
+                                .param("key", current_path.to_string())
                                 .message(format!("field `{current_path}` not found in schema"))
                                 .build()
                         })?;
@@ -325,8 +296,8 @@ fn find_field_by_schema_path<'a>(
                     let Some(item) = list.item.as_deref() else {
                         current_path = current_path.join(key.clone());
                         return Err(ValidationError::builder("field.not_found")
-                            .at(current_path.clone())
-                            .param("key", Value::String(current_path.to_string()))
+                            .at_field(current_path.to_string())
+                            .param("key", current_path.to_string())
                             .message(format!("field `{current_path}` not found in schema"))
                             .build());
                     };
@@ -338,16 +309,16 @@ fn find_field_by_schema_path<'a>(
                             .find(|field| field.key() == key)
                             .ok_or_else(|| {
                                 ValidationError::builder("field.not_found")
-                                    .at(current_path.clone())
-                                    .param("key", Value::String(current_path.to_string()))
+                                    .at_field(current_path.to_string())
+                                    .param("key", current_path.to_string())
                                     .message(format!("field `{current_path}` not found in schema"))
                                     .build()
                             })?;
                     } else {
                         current_path = current_path.join(key.clone());
                         return Err(ValidationError::builder("field.not_found")
-                            .at(current_path.clone())
-                            .param("key", Value::String(current_path.to_string()))
+                            .at_field(current_path.to_string())
+                            .param("key", current_path.to_string())
                             .message(format!("field `{current_path}` not found in schema"))
                             .build());
                     }
@@ -361,8 +332,8 @@ fn find_field_by_schema_path<'a>(
                         .map(|variant| variant.field.as_ref())
                         .ok_or_else(|| {
                             ValidationError::builder("field.not_found")
-                                .at(current_path.clone())
-                                .param("key", Value::String(current_path.to_string()))
+                                .at_field(current_path.to_string())
+                                .param("key", current_path.to_string())
                                 .message(format!("field `{current_path}` not found in schema"))
                                 .build()
                         })?;
@@ -370,8 +341,8 @@ fn find_field_by_schema_path<'a>(
                 _ => {
                     current_path = current_path.join(key.clone());
                     return Err(ValidationError::builder("field.not_found")
-                        .at(current_path.clone())
-                        .param("key", Value::String(current_path.to_string()))
+                        .at_field(current_path.to_string())
+                        .param("key", current_path.to_string())
                         .message(format!("field `{current_path}` not found in schema"))
                         .build());
                 },
@@ -382,16 +353,16 @@ fn find_field_by_schema_path<'a>(
                     Field::List(list) => {
                         current = list.item.as_deref().ok_or_else(|| {
                             ValidationError::builder("field.not_found")
-                                .at(current_path.clone())
-                                .param("key", Value::String(current_path.to_string()))
+                                .at_field(current_path.to_string())
+                                .param("key", current_path.to_string())
                                 .message(format!("field `{current_path}` not found in schema"))
                                 .build()
                         })?;
                     },
                     _ => {
                         return Err(ValidationError::builder("field.not_found")
-                            .at(current_path.clone())
-                            .param("key", Value::String(current_path.to_string()))
+                            .at_field(current_path.to_string())
+                            .param("key", current_path.to_string())
                             .message(format!("field `{current_path}` not found in schema"))
                             .build());
                     },
@@ -665,9 +636,9 @@ fn validate_index_limits(
     if fields.len() > max_indexable_siblings {
         report.push(
             ValidationError::builder("schema.index_overflow")
-                .at(path.clone())
-                .param("limit", Value::from(max_indexable_siblings))
-                .param("actual", Value::from(fields.len()))
+                .at_field(path.to_string())
+                .param("limit", (max_indexable_siblings).to_string())
+                .param("actual", (fields.len()).to_string())
                 .message(format!(
                     "too many sibling fields at `{path}`: {} > {}",
                     fields.len(),
@@ -682,8 +653,8 @@ fn validate_index_limits(
         let Some(next_depth) = depth.checked_add(1) else {
             report.push(
                 ValidationError::builder("schema.depth_limit")
-                    .at(child_path)
-                    .param("limit", Value::from(u8::MAX))
+                    .at_field(child_path.to_string())
+                    .param("limit", (u8::MAX).to_string())
                     .message("schema nesting depth exceeds supported index range")
                     .build(),
             );
@@ -726,9 +697,9 @@ fn validate_mode_variant_index_limits(
     if mode.variants.len() > max_indexable_siblings {
         report.push(
             ValidationError::builder("schema.index_overflow")
-                .at(path.clone())
-                .param("limit", Value::from(max_indexable_siblings))
-                .param("actual", Value::from(mode.variants.len()))
+                .at_field(path.to_string())
+                .param("limit", (max_indexable_siblings).to_string())
+                .param("actual", (mode.variants.len()).to_string())
                 .message(format!(
                     "too many mode variants at `{path}`: {} > {}",
                     mode.variants.len(),
@@ -741,8 +712,8 @@ fn validate_mode_variant_index_limits(
     let Some(variant_depth) = depth.checked_add(1) else {
         report.push(
             ValidationError::builder("schema.depth_limit")
-                .at(path.clone())
-                .param("limit", Value::from(u8::MAX))
+                .at_field(path.to_string())
+                .param("limit", (u8::MAX).to_string())
                 .message("schema mode variant depth exceeds supported index range")
                 .build(),
         );

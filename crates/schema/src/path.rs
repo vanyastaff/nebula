@@ -55,10 +55,6 @@ impl FieldPath {
     ///
     /// Returns `invalid_path` when the input has invalid separators, keys, or
     /// index syntax.
-    #[expect(
-        clippy::result_large_err,
-        reason = "ValidationError is intentionally large; callers are on the validation path"
-    )]
     pub fn parse(s: &str) -> Result<Self, ValidationError> {
         if s.is_empty() {
             return Err(Self::err(s, "empty path"));
@@ -147,7 +143,6 @@ impl FieldPath {
 
     fn err(value: &str, msg: &'static str) -> ValidationError {
         ValidationError::builder("invalid_path")
-            .at(Self::root())
             .message(msg)
             .param("path", value.to_owned())
             .build()

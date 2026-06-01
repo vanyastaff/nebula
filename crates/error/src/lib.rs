@@ -45,6 +45,7 @@ mod error;
 mod retry;
 mod severity;
 mod traits;
+mod validation;
 
 pub use category::ErrorCategory;
 pub use code::{ErrorCode, codes};
@@ -58,6 +59,10 @@ pub use error::NebulaError;
 pub use retry::RetryHint;
 pub use severity::ErrorSeverity;
 pub use traits::{Classify, ErrorClassifier};
+pub use validation::{
+    FieldPath, ValidationError, ValidationErrorBuilder, ValidationErrors, ValidationReport,
+    render_template,
+};
 
 /// Convenience result type alias.
 ///

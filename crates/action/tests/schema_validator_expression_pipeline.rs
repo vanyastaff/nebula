@@ -203,7 +203,7 @@ async fn pipeline_validation_rejects_missing_required_before_resolve() {
     assert!(
         report
             .errors()
-            .any(|e| e.code.as_ref() == "required" && e.path.to_string() == "name"),
+            .any(|e| e.code.as_ref() == "required" && e.field.as_deref() == Some("/name")),
         "expected `required` error on `name`, got: {:?}",
         report.errors().collect::<Vec<_>>()
     );

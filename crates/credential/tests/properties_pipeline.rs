@@ -76,7 +76,7 @@ fn properties_pipeline_rejects_missing_required_api_key() {
     assert!(
         report
             .errors()
-            .any(|e| e.code.as_ref() == "required" && e.path.to_string() == "api_key"),
+            .any(|e| e.code.as_ref() == "required" && e.field.as_deref() == Some("/api_key")),
         "expected `required` on api_key, got: {:?}",
         report.errors().collect::<Vec<_>>()
     );

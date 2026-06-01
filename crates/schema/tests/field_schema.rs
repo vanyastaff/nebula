@@ -4,6 +4,33 @@ use nebula_schema::{
 };
 use serde_json::json;
 
+// Test helper: render a canonical RFC-6901 field pointer (`/a/b/0`) back into
+// the schema's dotted/bracketed display (`a.b[0]`) so historical path
+// assertions keep their original form after the nebula-error migration.
+fn field_dotted(e: &nebula_schema::ValidationError) -> String {
+    let Some(pointer) = e.field.as_deref() else {
+        return String::new();
+    };
+    let mut out = String::new();
+    for seg in pointer.trim_start_matches('/').split('/') {
+        if seg.is_empty() {
+            continue;
+        }
+        let unescaped = seg.replace("~1", "/").replace("~0", "~");
+        if unescaped.chars().all(|c| c.is_ascii_digit()) {
+            out.push('[');
+            out.push_str(&unescaped);
+            out.push(']');
+        } else {
+            if !out.is_empty() {
+                out.push('.');
+            }
+            out.push_str(&unescaped);
+        }
+    }
+    out
+}
+
 fn raw_schema(fields: impl IntoIterator<Item = Field>) -> Schema {
     let fields: Vec<Field> = fields.into_iter().collect();
     serde_json::from_value(json!({ "fields": fields })).expect("raw schema from field list")
@@ -119,7 +146,7 @@ fn validate_reports_missing_required() {
 
     assert!(report.has_errors());
     assert_eq!(report.errors().count(), 1);
-    assert!(report.errors().any(|e| e.path.to_string() == "username"));
+    assert!(report.errors().any(|e| field_dotted(e) == "username"));
     assert!(report.errors().any(|e| e.code == "required"));
 }
 
@@ -152,7 +179,7 @@ fn validate_applies_visibility_and_rules() {
         .expect("test-only known-good key");
     let report = schema.validate(&values).unwrap_err();
     assert!(report.has_errors());
-    assert!(report.errors().any(|e| e.path.to_string() == "api_key"));
+    assert!(report.errors().any(|e| field_dotted(e) == "api_key"));
 }
 
 #[test]
@@ -179,17 +206,17 @@ fn validate_enforces_scalar_type_mismatches() {
     assert!(
         report
             .errors()
-            .any(|e| e.path.to_string() == "name" && e.code == "type_mismatch")
+            .any(|e| field_dotted(e) == "name" && e.code == "type_mismatch")
     );
     assert!(
         report
             .errors()
-            .any(|e| e.path.to_string() == "retries" && e.code == "type_mismatch")
+            .any(|e| field_dotted(e) == "retries" && e.code == "type_mismatch")
     );
     assert!(
         report
             .errors()
-            .any(|e| e.path.to_string() == "enabled" && e.code == "type_mismatch")
+            .any(|e| field_dotted(e) == "enabled" && e.code == "type_mismatch")
     );
 }
 
@@ -231,12 +258,12 @@ fn validate_enforces_file_value_shape() {
     assert!(
         report
             .errors()
-            .any(|e| e.path.to_string() == "single" && e.code == "type_mismatch")
+            .any(|e| field_dotted(e) == "single" && e.code == "type_mismatch")
     );
     assert!(
         report
             .errors()
-            .any(|e| e.path.to_string() == "many" && e.code == "type_mismatch")
+            .any(|e| field_dotted(e) == "many" && e.code == "type_mismatch")
     );
 }
 

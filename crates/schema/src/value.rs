@@ -1,7 +1,5 @@
 //! Runtime value tree and container.
 
-use std::collections::HashMap;
-
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -78,10 +76,6 @@ impl FieldValue {
     ///
     /// Returns `recursion_limit` when conversion would descend beyond
     /// [`MAX_VALUE_DEPTH`].
-    #[expect(
-        clippy::result_large_err,
-        reason = "ValidationError is intentionally large; callers are on the validation path"
-    )]
     pub fn try_from_json(value: Value) -> Result<Self, crate::error::ValidationError> {
         Self::try_from_json_at(value, &FieldPath::root(), 0)
     }
@@ -125,10 +119,6 @@ impl FieldValue {
         }
     }
 
-    #[expect(
-        clippy::result_large_err,
-        reason = "ValidationError is intentionally large; callers are on the validation path"
-    )]
     fn try_from_json_at(
         value: Value,
         path: &FieldPath,
@@ -318,10 +308,6 @@ impl FieldValues {
     ///
     /// Returns `invalid_key` for invalid object keys, or `type_mismatch` when
     /// `value` is not a top-level object.
-    #[expect(
-        clippy::result_large_err,
-        reason = "ValidationError is intentionally large; callers are on the validation path"
-    )]
     pub fn from_json(value: Value) -> Result<Self, crate::error::ValidationError> {
         validate_json_keys(&value, &FieldPath::root(), 0)?;
         match FieldValue::try_from_json(value)? {
@@ -350,10 +336,6 @@ impl FieldValues {
     ///
     /// Use `.expect("known-good key")` in tests/migrations where the key is
     /// a static literal. For runtime input, propagate the error with `?`.
-    #[expect(
-        clippy::result_large_err,
-        reason = "ValidationError is intentionally large; callers are on the validation path"
-    )]
     pub fn try_set_raw(
         &mut self,
         key: &str,
@@ -362,7 +344,7 @@ impl FieldValues {
         let fk = FieldKey::new(key).map_err(|e| {
             crate::error::ValidationError::builder("invalid_key")
                 .message(format!("try_set_raw: invalid key {key:?}: {e}"))
-                .param("key", Value::String(key.to_owned()))
+                .param("key", key.to_owned())
                 .build()
         })?;
         let field_path = FieldPath::root().join(fk.clone());
@@ -484,17 +466,6 @@ impl FieldValues {
         Value::Object(out)
     }
 
-    /// Produce a `HashMap<String, Value>` for rule-evaluation context.
-    ///
-    /// Used by `schema.rs` validate logic which expects `HashMap<String, Value>`.
-    #[must_use]
-    pub fn to_context_map(&self) -> HashMap<String, Value> {
-        self.0
-            .iter()
-            .map(|(k, v)| (k.as_str().to_owned(), v.to_json()))
-            .collect()
-    }
-
     /// Get a string literal value by key.
     #[must_use]
     pub fn get_string(&self, key: &FieldKey) -> Option<&str> {
@@ -539,10 +510,6 @@ impl FieldValues {
     }
 }
 
-#[expect(
-    clippy::result_large_err,
-    reason = "ValidationError is intentionally large; callers are on the validation path"
-)]
 fn validate_json_keys(
     value: &Value,
     path: &FieldPath,
@@ -566,9 +533,9 @@ fn validate_json_keys(
             for (raw_key, child) in map {
                 let key = FieldKey::new(raw_key).map_err(|e| {
                     crate::error::ValidationError::builder("invalid_key")
-                        .at(path.clone())
+                        .at_field(path.to_string())
                         .message(format!("invalid key `{raw_key}`: {e}"))
-                        .param("key", Value::String(raw_key.clone()))
+                        .param("key", raw_key.clone())
                         .build()
                 })?;
                 let child_path = path.clone().join(key);
@@ -587,10 +554,6 @@ fn validate_json_keys(
     }
 }
 
-#[expect(
-    clippy::result_large_err,
-    reason = "ValidationError is intentionally large; callers are on the validation path"
-)]
 fn validate_json_object_depth(
     map: &Map<String, Value>,
     path: &FieldPath,
@@ -602,10 +565,6 @@ fn validate_json_object_depth(
     Ok(())
 }
 
-#[expect(
-    clippy::result_large_err,
-    reason = "ValidationError is intentionally large; callers are on the validation path"
-)]
 fn validate_json_depth(
     value: &Value,
     path: &FieldPath,
@@ -629,8 +588,8 @@ fn validate_json_depth(
 
 fn recursion_limit_error(path: &FieldPath) -> crate::error::ValidationError {
     crate::error::ValidationError::builder("recursion_limit")
-        .at(path.clone())
-        .param("limit", serde_json::json!(MAX_VALUE_DEPTH))
+        .at_field(path.to_string())
+        .param("limit", (MAX_VALUE_DEPTH).to_string())
         .message(format!(
             "value tree depth exceeds the {MAX_VALUE_DEPTH}-level limit at `{path}`"
         ))

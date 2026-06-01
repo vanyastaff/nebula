@@ -94,10 +94,6 @@ impl Expression {
     /// # Errors
     ///
     /// Returns `ValidationError` with code `expression.parse` if parsing fails.
-    #[expect(
-        clippy::result_large_err,
-        reason = "ValidationError is intentionally large; callers are on the validation path"
-    )]
     pub fn parse(&self) -> Result<&ExpressionAst, ValidationError> {
         self.parse_at(&FieldPath::root())
     }
@@ -110,10 +106,6 @@ impl Expression {
     /// # Errors
     ///
     /// Returns `ValidationError` with code `expression.parse` if parsing fails.
-    #[expect(
-        clippy::result_large_err,
-        reason = "ValidationError is intentionally large; callers are on the validation path"
-    )]
     pub fn parse_at(&self, path: &FieldPath) -> Result<&ExpressionAst, ValidationError> {
         match self.parsed.get_or_init(|| {
             parse_expression_source(self.source())
@@ -124,7 +116,7 @@ impl Expression {
         }) {
             Ok(ast) => Ok(ast),
             Err(message) => Err(ValidationError::builder("expression.parse")
-                .at(path.clone())
+                .at_field(path.to_string())
                 .message(message.to_string())
                 .param("source", self.source.to_string())
                 .build()),
@@ -138,7 +130,6 @@ impl Expression {
         msg: impl Into<std::borrow::Cow<'static, str>>,
     ) -> ValidationError {
         ValidationError::builder("expression.parse")
-            .at(FieldPath::root())
             .message(msg)
             .param("source", self.source.to_string())
             .build()
@@ -179,11 +170,11 @@ mod tests {
         let e = Expression::new("bad");
         let err = e.parse_error("boom");
         assert_eq!(err.code, "expression.parse");
-        // params stored as Arc<[(Cow, Value)]>
+        // params stored as string key/value pairs on the canonical error.
         let found = err
-            .params
+            .params()
             .iter()
-            .any(|(k, v)| k.as_ref() == "source" && v.as_str() == Some("bad"));
+            .any(|(k, v)| k.as_ref() == "source" && v.as_ref() == "bad");
         assert!(found, "source param not found");
     }
 
@@ -200,6 +191,6 @@ mod tests {
         let err = e
             .parse_at(&FieldPath::parse("foo.bar").expect("valid path"))
             .unwrap_err();
-        assert_eq!(err.path.to_string(), "foo.bar");
+        assert_eq!(err.field.as_deref(), Some("/foo/bar"));
     }
 }

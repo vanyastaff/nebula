@@ -16,10 +16,37 @@ use nebula_schema::mode::VisibilityMode;
 use nebula_schema::{Field, FieldValues, Schema, field_key};
 use serde_json::json;
 
+// Test helper: render a canonical RFC-6901 field pointer (`/a/b/0`) back into
+// the schema's dotted/bracketed display (`a.b[0]`) so historical path
+// assertions keep their original form after the nebula-error migration.
+fn field_dotted(e: &nebula_schema::ValidationError) -> String {
+    let Some(pointer) = e.field.as_deref() else {
+        return String::new();
+    };
+    let mut out = String::new();
+    for seg in pointer.trim_start_matches('/').split('/') {
+        if seg.is_empty() {
+            continue;
+        }
+        let unescaped = seg.replace("~1", "/").replace("~0", "~");
+        if unescaped.chars().all(|c| c.is_ascii_digit()) {
+            out.push('[');
+            out.push_str(&unescaped);
+            out.push(']');
+        } else {
+            if !out.is_empty() {
+                out.push('.');
+            }
+            out.push_str(&unescaped);
+        }
+    }
+    out
+}
+
 fn codes(report: &nebula_schema::ValidationReport) -> Vec<(String, String)> {
     report
         .errors()
-        .map(|e| (e.code.to_string(), e.path.to_string()))
+        .map(|e| (e.code.to_string(), field_dotted(e)))
         .collect()
 }
 

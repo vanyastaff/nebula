@@ -31,10 +31,6 @@ impl FieldKey {
     /// # Errors
     ///
     /// Returns `invalid_key` when the candidate string violates key format constraints.
-    #[expect(
-        clippy::result_large_err,
-        reason = "ValidationError is intentionally large; callers are on the validation path"
-    )]
     pub fn new(value: impl AsRef<str>) -> Result<Self, ValidationError> {
         let value = value.as_ref();
         let bytes = value.as_bytes();
@@ -79,7 +75,7 @@ impl FieldKey {
 
     pub(crate) fn err_at(path: FieldPath, value: &str, msg: &'static str) -> ValidationError {
         ValidationError::builder("invalid_key")
-            .at(path)
+            .at_field(path.to_string())
             .message(msg)
             .param("key", value.to_owned())
             .build()

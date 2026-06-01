@@ -4069,6 +4069,7 @@ dependencies = [
  "hex",
  "indexmap",
  "insta",
+ "nebula-error",
  "nebula-expression",
  "nebula-schema-macros",
  "nebula-validator",

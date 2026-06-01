@@ -1,6 +1,33 @@
 use nebula_schema::{Field, FieldValues, Schema, field_key};
 use serde_json::json;
 
+// Test helper: render a canonical RFC-6901 field pointer (`/a/b/0`) back into
+// the schema's dotted/bracketed display (`a.b[0]`) so historical path
+// assertions keep their original form after the nebula-error migration.
+fn field_dotted(e: &nebula_schema::ValidationError) -> String {
+    let Some(pointer) = e.field.as_deref() else {
+        return String::new();
+    };
+    let mut out = String::new();
+    for seg in pointer.trim_start_matches('/').split('/') {
+        if seg.is_empty() {
+            continue;
+        }
+        let unescaped = seg.replace("~1", "/").replace("~0", "~");
+        if unescaped.chars().all(|c| c.is_ascii_digit()) {
+            out.push('[');
+            out.push_str(&unescaped);
+            out.push(']');
+        } else {
+            if !out.is_empty() {
+                out.push('.');
+            }
+            out.push_str(&unescaped);
+        }
+    }
+    out
+}
+
 fn telegram_send_message_schema() -> nebula_schema::ValidSchema {
     Schema::builder()
         .add(
@@ -124,7 +151,7 @@ fn http_schema_rejects_invalid_url() {
 
     let report = schema.validate(&values).unwrap_err();
     assert!(report.has_errors());
-    assert!(report.errors().any(|e| e.path.to_string() == "url"));
+    assert!(report.errors().any(|e| field_dotted(e) == "url"));
 }
 
 #[test]
@@ -142,7 +169,7 @@ fn oauth_schema_list_rules_are_enforced() {
     assert!(
         report
             .errors()
-            .any(|e| e.path.to_string() == "scopes" && e.code == "items.min")
+            .any(|e| field_dotted(e) == "scopes" && e.code == "items.min")
     );
 }
 
@@ -160,11 +187,11 @@ fn mode_variant_payload_is_validated() {
     assert!(report.has_errors());
     // The bearer token is required — the error path is auth.value (the mode payload slot)
     assert!(
-        report.errors().any(|e| e.path.to_string().contains("auth")),
+        report.errors().any(|e| field_dotted(e).contains("auth")),
         "expected required error under auth, got: {:?}",
         report
             .errors()
-            .map(|e| (&e.code, e.path.to_string()))
+            .map(|e| (&e.code, field_dotted(e)))
             .collect::<Vec<_>>()
     );
 }
@@ -179,5 +206,5 @@ fn object_children_are_validated() {
 
     let report = schema.validate(&values).unwrap_err();
     assert!(report.has_errors());
-    assert!(report.errors().any(|e| e.path.to_string() == "config.port"));
+    assert!(report.errors().any(|e| field_dotted(e) == "config.port"));
 }

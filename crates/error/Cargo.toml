@@ -17,13 +17,17 @@ documentation.workspace = true
 workspace = true
 optional = true
 
+[dependencies.serde_json]
+workspace = true
+optional = true
+
 [dependencies.nebula-error-macros]
 path = "macros"
 optional = true
 
 [features]
 default = []
-serde = ["dep:serde"]
+serde = ["dep:serde", "dep:serde_json"]
 derive = ["dep:nebula-error-macros"]
 
 [dev-dependencies]

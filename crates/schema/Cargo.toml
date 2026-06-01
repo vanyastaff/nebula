@@ -21,6 +21,7 @@ schemars = ["dep:schemars"]
 audit-secret-expose = []
 
 [dependencies]
+nebula-error = { workspace = true, features = ["serde"] }
 nebula-validator = { path = "../validator" }
 nebula-expression = { path = "../expression" }
 nebula-schema-macros = { path = "macros" }

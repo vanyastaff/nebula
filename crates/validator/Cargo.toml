@@ -29,7 +29,7 @@ nebula-validator-macros = { path = "macros", optional = true }
 
 # Error handling
 thiserror = { workspace = true }
-nebula-error = { workspace = true, features = ["derive"] }
+nebula-error = { workspace = true, features = ["derive", "serde"] }
 
 # Small vector optimization for error params
 smallvec = "1.15"

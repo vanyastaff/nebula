@@ -4,6 +4,33 @@ use nebula_schema::{
 };
 use serde_json::json;
 
+// Test helper: render a canonical RFC-6901 field pointer (`/a/b/0`) back into
+// the schema's dotted/bracketed display (`a.b[0]`) so historical path
+// assertions keep their original form after the nebula-error migration.
+fn field_dotted(e: &nebula_schema::ValidationError) -> String {
+    let Some(pointer) = e.field.as_deref() else {
+        return String::new();
+    };
+    let mut out = String::new();
+    for seg in pointer.trim_start_matches('/').split('/') {
+        if seg.is_empty() {
+            continue;
+        }
+        let unescaped = seg.replace("~1", "/").replace("~0", "~");
+        if unescaped.chars().all(|c| c.is_ascii_digit()) {
+            out.push('[');
+            out.push_str(&unescaped);
+            out.push(']');
+        } else {
+            if !out.is_empty() {
+                out.push('.');
+            }
+            out.push_str(&unescaped);
+        }
+    }
+    out
+}
+
 fn raw_schema(fields: impl IntoIterator<Item = Field>) -> Schema {
     let fields: Vec<Field> = fields.into_iter().collect();
     serde_json::from_value(json!({ "fields": fields })).expect("raw schema from field list")
@@ -12,13 +39,13 @@ fn raw_schema(fields: impl IntoIterator<Item = Field>) -> Schema {
 fn has_error(report: &ValidationReport, code: &str, path_prefix: &str) -> bool {
     report
         .errors()
-        .any(|e| e.code == code && e.path.to_string().starts_with(path_prefix))
+        .any(|e| e.code == code && field_dotted(e).starts_with(path_prefix))
 }
 
 fn has_warning(report: &ValidationReport, code: &str, path_prefix: &str) -> bool {
     report
         .warnings()
-        .any(|e| e.code == code && e.path.to_string().starts_with(path_prefix))
+        .any(|e| e.code == code && field_dotted(e).starts_with(path_prefix))
 }
 
 #[test]
@@ -50,7 +77,7 @@ fn lint_schema_reports_dangling_refs_and_structural_issues() {
         "expected dangling_reference at name, got: {:?}",
         report
             .errors()
-            .map(|e| (&e.code, e.path.to_string()))
+            .map(|e| (&e.code, field_dotted(e)))
             .collect::<Vec<_>>()
     );
     assert!(
@@ -325,7 +352,7 @@ async fn nested_loader_errors_anchor_to_nested_path() {
         .expect_err("missing nested loader must fail");
 
     assert_eq!(error.code, "loader.not_registered");
-    assert_eq!(error.path.to_string(), "config.workspace");
+    assert_eq!(field_dotted(&error), "config.workspace");
 }
 
 #[tokio::test]
@@ -350,7 +377,7 @@ async fn top_level_loader_string_api_rejects_nested_paths() {
         .expect_err("top-level string API should reject nested paths");
 
     assert_eq!(error.code, "invalid_key");
-    assert_eq!(error.path.to_string(), "");
+    assert_eq!(field_dotted(&error), "");
 }
 
 #[tokio::test]
@@ -385,7 +412,7 @@ async fn load_select_options_unknown_key_emits_field_not_found() {
         .await
         .expect_err("unknown key must fail");
     assert_eq!(error.code, "field.not_found");
-    assert_eq!(error.path.to_string(), "ghost");
+    assert_eq!(field_dotted(&error), "ghost");
 }
 
 #[tokio::test]
@@ -398,22 +425,22 @@ async fn load_select_options_wrong_field_type_emits_type_mismatch() {
         .await
         .expect_err("wrong field type must fail");
     assert_eq!(error.code, "field.type_mismatch");
-    assert_eq!(error.path.to_string(), "email");
+    assert_eq!(field_dotted(&error), "email");
     assert!(
         error
-            .params
+            .params()
             .iter()
             .any(|(k, v)| k == "expected" && v == "select"),
         "expected param missing: {:?}",
-        error.params
+        error.params()
     );
     assert!(
         error
-            .params
+            .params()
             .iter()
             .any(|(k, v)| k == "actual" && v == "string"),
         "actual param missing: {:?}",
-        error.params
+        error.params()
     );
 }
 
@@ -431,7 +458,7 @@ async fn load_select_options_without_loader_emits_missing_config() {
         .await
         .expect_err("missing loader config must fail");
     assert_eq!(error.code, "loader.missing_config");
-    assert_eq!(error.path.to_string(), "region");
+    assert_eq!(field_dotted(&error), "region");
 }
 
 #[tokio::test]
@@ -446,11 +473,11 @@ async fn load_dynamic_records_wrong_field_type_emits_type_mismatch() {
     assert_eq!(error.code, "field.type_mismatch");
     assert!(
         error
-            .params
+            .params()
             .iter()
             .any(|(k, v)| k == "expected" && v == "dynamic"),
         "expected param missing: {:?}",
-        error.params
+        error.params()
     );
 }
 
@@ -468,7 +495,7 @@ async fn load_dynamic_records_unknown_key_emits_field_not_found() {
         .await
         .expect_err("unknown key must fail");
     assert_eq!(error.code, "field.not_found");
-    assert_eq!(error.path.to_string(), "ghost");
+    assert_eq!(field_dotted(&error), "ghost");
 }
 
 #[tokio::test]
@@ -481,7 +508,7 @@ async fn load_dynamic_records_without_loader_emits_missing_config() {
         .await
         .expect_err("missing loader config must fail");
     assert_eq!(error.code, "loader.missing_config");
-    assert_eq!(error.path.to_string(), "resource");
+    assert_eq!(field_dotted(&error), "resource");
 }
 
 #[test]
@@ -503,7 +530,7 @@ fn lint_schema_detects_visibility_cycles() {
     let cycle_paths: Vec<String> = report
         .errors()
         .filter(|e| e.code == "visibility_cycle")
-        .map(|e| e.path.to_string())
+        .map(field_dotted)
         .collect();
     assert!(
         cycle_paths.iter().any(|p| p == "a" || p == "b"),
@@ -600,7 +627,7 @@ fn lint_schema_accepts_compatible_rule_types() {
         "compatible string rules should not be flagged: {:?}",
         report
             .warnings()
-            .map(|e| (&e.code, e.path.to_string()))
+            .map(|e| (&e.code, field_dotted(e)))
             .collect::<Vec<_>>()
     );
     assert!(
@@ -652,7 +679,7 @@ fn lint_reports_duplicate_depends_on_entries() {
         "expected duplicate_dependency warning, got: {:?}",
         report
             .warnings()
-            .map(|e| (&e.code, e.path.to_string()))
+            .map(|e| (&e.code, field_dotted(e)))
             .collect::<Vec<_>>()
     );
 }
@@ -712,7 +739,7 @@ fn loader_dependency_cycle_detected() {
         "expected loader_dependency_cycle error, got: {:?}",
         schema
             .errors()
-            .map(|e| (&e.code, e.path.to_string()))
+            .map(|e| (&e.code, field_dotted(e)))
             .collect::<Vec<_>>()
     );
 }
@@ -740,7 +767,7 @@ fn loader_dependency_no_cycle() {
         "acyclic loader graph should build successfully, got: {:?}",
         result.as_ref().err().map(|r| r
             .errors()
-            .map(|e| (&e.code, e.path.to_string()))
+            .map(|e| (&e.code, field_dotted(e)))
             .collect::<Vec<_>>())
     );
 }
@@ -775,7 +802,7 @@ fn loader_dependency_transitive_cycle() {
         "expected loader_dependency_cycle error for transitive cycle, got: {:?}",
         schema
             .errors()
-            .map(|e| (&e.code, e.path.to_string()))
+            .map(|e| (&e.code, field_dotted(e)))
             .collect::<Vec<_>>()
     );
 }
@@ -797,7 +824,7 @@ fn select_options_consistent_types_ok() {
         "consistent string options should not produce a warning, got: {:?}",
         report
             .warnings()
-            .map(|e| (&e.code, e.path.to_string()))
+            .map(|e| (&e.code, field_dotted(e)))
             .collect::<Vec<_>>()
     );
 }
@@ -818,7 +845,7 @@ fn select_options_mixed_types_warns() {
         "mixed-type options should produce option.type_inconsistent warning, got: {:?}",
         report
             .warnings()
-            .map(|e| (&e.code, e.path.to_string()))
+            .map(|e| (&e.code, field_dotted(e)))
             .collect::<Vec<_>>()
     );
 }
@@ -839,7 +866,7 @@ fn select_options_complex_value_without_multiple_warns() {
         "non-multiple select with array option value should warn, got: {:?}",
         report
             .warnings()
-            .map(|e| (&e.code, e.path.to_string()))
+            .map(|e| (&e.code, field_dotted(e)))
             .collect::<Vec<_>>()
     );
 }
@@ -861,7 +888,7 @@ fn select_options_multiple_with_array_values_ok() {
         "multiple select with array option values should not produce option.type_inconsistent warning, got: {:?}",
         report
             .warnings()
-            .map(|e| (&e.code, e.path.to_string()))
+            .map(|e| (&e.code, field_dotted(e)))
             .collect::<Vec<_>>()
     );
 }
@@ -881,7 +908,7 @@ fn select_single_option_complex_type_warns() {
         "non-multiple select with single complex option value should warn, got: {:?}",
         report
             .warnings()
-            .map(|e| (&e.code, e.path.to_string()))
+            .map(|e| (&e.code, field_dotted(e)))
             .collect::<Vec<_>>()
     );
 }
@@ -909,7 +936,7 @@ fn value_predicate_targeting_secret_is_rejected() {
         "expected secret.predicate_on_value, got {:?}",
         report
             .errors()
-            .map(|e| (&e.code, e.path.to_string()))
+            .map(|e| (&e.code, field_dotted(e)))
             .collect::<Vec<_>>()
     );
 }
@@ -954,7 +981,7 @@ fn nested_value_predicate_targeting_secret_is_rejected() {
         "expected secret.predicate_on_value for nested secret, got {:?}",
         report
             .errors()
-            .map(|e| (&e.code, e.path.to_string()))
+            .map(|e| (&e.code, field_dotted(e)))
             .collect::<Vec<_>>()
     );
 }
@@ -987,7 +1014,7 @@ fn value_predicate_targeting_list_item_secret_is_rejected() {
         "expected secret.predicate_on_value for list-item secret, got {:?}",
         report
             .errors()
-            .map(|e| (&e.code, e.path.to_string()))
+            .map(|e| (&e.code, field_dotted(e)))
             .collect::<Vec<_>>()
     );
 }
@@ -1019,7 +1046,7 @@ fn value_predicate_targeting_mode_variant_secret_is_rejected() {
         "expected secret.predicate_on_value for mode-variant secret, got {:?}",
         report
             .errors()
-            .map(|e| (&e.code, e.path.to_string()))
+            .map(|e| (&e.code, field_dotted(e)))
             .collect::<Vec<_>>()
     );
 }
@@ -1046,7 +1073,7 @@ fn root_value_predicate_targeting_secret_is_rejected() {
         "expected secret.predicate_on_value for root rule, got {:?}",
         report
             .errors()
-            .map(|e| (&e.code, e.path.to_string()))
+            .map(|e| (&e.code, field_dotted(e)))
             .collect::<Vec<_>>()
     );
 }
@@ -1095,7 +1122,7 @@ fn root_value_predicate_on_list_indexed_secret_is_rejected() {
         "expected secret.predicate_on_value for list-indexed root secret, got {:?}",
         report
             .errors()
-            .map(|e| (&e.code, e.path.to_string()))
+            .map(|e| (&e.code, field_dotted(e)))
             .collect::<Vec<_>>()
     );
 }
@@ -1135,7 +1162,7 @@ fn root_value_predicate_on_mode_secret_under_list_is_rejected() {
         "expected secret.predicate_on_value for mode-under-list root secret, got {:?}",
         report
             .errors()
-            .map(|e| (&e.code, e.path.to_string()))
+            .map(|e| (&e.code, field_dotted(e)))
             .collect::<Vec<_>>()
     );
 }

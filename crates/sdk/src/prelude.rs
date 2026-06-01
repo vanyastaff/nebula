@@ -64,12 +64,13 @@ pub use nebula_resource::Resource;
 // domain crate imports above (same names, macro namespace).
 // Schema types — Field/Schema/ValidSchema/field_key already re-exported via nebula_action
 // above.
+pub use nebula_schema::ErrorSeverity;
 pub use nebula_schema::{
     BooleanField, CodeField, ComputedField, DynamicField, Expression, ExpressionMode, FieldKey,
     FieldPath, FieldValue, FieldValues, FileField, InputHint, ListField, LoaderContext,
     LoaderRegistry, ModeField, NoticeField, NumberField, ObjectField, RequiredMode, ResolvedValues,
-    SchemaBuilder, SecretField, SelectField, SelectOption, Severity, StringField, Transformer,
-    ValidValues, ValidationError, ValidationReport, VisibilityMode,
+    SchemaBuilder, SecretField, SelectField, SelectOption, StringField, Transformer, ValidValues,
+    ValidationError, ValidationReport, VisibilityMode,
 };
 pub use nebula_validator::Validator;
 // Validator traits

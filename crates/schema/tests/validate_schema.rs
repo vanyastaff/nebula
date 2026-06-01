@@ -6,6 +6,33 @@
 use nebula_schema::*;
 use serde_json::json;
 
+// Test helper: render a canonical RFC-6901 field pointer (`/a/b/0`) back into
+// the schema's dotted/bracketed display (`a.b[0]`) so historical path
+// assertions keep their original form after the nebula-error migration.
+fn field_dotted(e: &ValidationError) -> String {
+    let Some(pointer) = e.field.as_deref() else {
+        return String::new();
+    };
+    let mut out = String::new();
+    for seg in pointer.trim_start_matches('/').split('/') {
+        if seg.is_empty() {
+            continue;
+        }
+        let unescaped = seg.replace("~1", "/").replace("~0", "~");
+        if unescaped.chars().all(|c| c.is_ascii_digit()) {
+            out.push('[');
+            out.push_str(&unescaped);
+            out.push(']');
+        } else {
+            if !out.is_empty() {
+                out.push('.');
+            }
+            out.push_str(&unescaped);
+        }
+    }
+    out
+}
+
 fn fk(s: &str) -> FieldKey {
     FieldKey::new(s).unwrap()
 }
@@ -633,7 +660,7 @@ fn root_rule_error_path_snapshot() {
             json!({
                 "code": error.code,
                 "message": error.message,
-                "path": error.path.to_string(),
+                "path": field_dotted(error),
             })
         })
         .collect();
@@ -713,7 +740,7 @@ fn middle_skipped_field_does_not_shift_plan_to_field_mapping() {
 
     let codes_paths: Vec<(String, String)> = report
         .errors()
-        .map(|e| (e.code.to_string(), e.path.to_string()))
+        .map(|e| (e.code.to_string(), field_dotted(e)))
         .collect();
     assert!(
         codes_paths.iter().any(|(_, p)| p.contains("f_first")),
@@ -753,9 +780,9 @@ fn hidden_present_required_empty_emits_single_required() {
         "expected exactly one error, got: {:?}",
         errors
             .iter()
-            .map(|e| (&e.code, e.path.to_string()))
+            .map(|e| (&e.code, field_dotted(e)))
             .collect::<Vec<_>>()
     );
     assert_eq!(errors[0].code, "required");
-    assert_eq!(errors[0].path.to_string(), "secret_slot");
+    assert_eq!(field_dotted(errors[0]), "secret_slot");
 }

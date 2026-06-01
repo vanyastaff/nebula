@@ -1,29 +1,17 @@
-//! Error types for validation failures
+//! Error types for validation failures.
 //!
-//! This module provides a rich, structured error type that supports
-//! nested errors, field paths, error codes, and parameterized messages.
-//!
-//! # Memory Optimization
-//!
-//! [`ValidationError`] is optimized for the common case (80 bytes):
-//! - `code`, `message`, `field` are inline (most errors only use these)
-//! - `params`, `nested`, `severity`, `help` are boxed in `ErrorExtras` (lazy allocated)
-//!
-//! This reduces stack size by ~47% compared to inlining all fields.
+//! The structured error types ([`ValidationError`], [`ValidationErrors`],
+//! [`ErrorSeverity`], `FieldPath`, `render_template`) are the canonical
+//! workspace types defined in `nebula-error` and re-exported here so existing
+//! `crate::foundation::error::*` paths keep working. Only the validator-local
+//! [`ValidationMode`] and the canonical [`codes`] live in this crate.
 
 pub mod codes;
 mod mode;
-mod pointer;
-mod severity;
-mod validation_error;
-mod validation_errors;
 
 pub use mode::ValidationMode;
-pub(crate) use pointer::to_json_pointer;
-pub use severity::ErrorSeverity;
-pub use validation_error::ValidationError;
-pub(crate) use validation_error::render_template;
-pub use validation_errors::ValidationErrors;
+pub(crate) use nebula_error::render_template;
+pub use nebula_error::{ErrorSeverity, ValidationError, ValidationErrors};
 
 // ============================================================================
 // TESTS
@@ -37,7 +25,7 @@ mod tests {
 
     #[test]
     fn test_validation_error_size() {
-        // Ensure our optimized struct is <= 80 bytes
+        // Ensure the canonical struct is <= 80 bytes
         let size = size_of::<ValidationError>();
         assert!(
             size <= 80,
@@ -228,6 +216,13 @@ mod tests {
         let err = ValidationError::new("test", "no placeholders here");
         let rendered = format!("{err}");
         assert!(rendered.contains("no placeholders here"));
+    }
+
+    #[test]
+    fn render_template_helper_is_reexported() {
+        let params = [(Cow::Borrowed("min"), Cow::Borrowed("3"))];
+        let rendered = render_template("at least {min}", &params);
+        assert_eq!(rendered, "at least 3");
     }
 
     #[test]

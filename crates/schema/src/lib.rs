@@ -174,7 +174,7 @@ pub use builder::{
     ObjectBuilder, SecretBuilder, SelectBuilder, StringBuilder,
 };
 pub use error::{
-    STANDARD_CODES, Severity, ValidationError, ValidationErrorBuilder, ValidationReport,
+    ErrorSeverity, STANDARD_CODES, ValidationError, ValidationErrorBuilder, ValidationReport,
 };
 pub use expression::{EvalFuture, Expression, ExpressionAst, ExpressionContext};
 /// Discriminated field: one of several payload shapes (auth scheme, body kind, etc.).

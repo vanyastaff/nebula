@@ -577,7 +577,7 @@ where
         let schema = nebula_schema::schema_of::<C::Properties>();
         let values = FieldValues::from_json(props.clone()).map_err(|e| {
             CredentialServiceError::ValidationFailed {
-                reason: format!("[{}] {}", e.code, e.path),
+                reason: format!("[{}] {}", e.code, e.field.as_deref().unwrap_or("")),
             }
         })?;
         schema
@@ -585,7 +585,7 @@ where
             .map_err(|report| CredentialServiceError::ValidationFailed {
                 reason: report
                     .errors()
-                    .map(|e| format!("[{}] {}", e.code, e.path))
+                    .map(|e| format!("[{}] {}", e.code, e.field.as_deref().unwrap_or("")))
                     .collect::<Vec<_>>()
                     .join("; "),
             })?;
