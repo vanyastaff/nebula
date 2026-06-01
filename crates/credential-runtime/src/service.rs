@@ -44,7 +44,6 @@ use tokio_util::sync::CancellationToken;
 use zeroize::Zeroize;
 
 use crate::CredentialServiceError;
-use crate::dispatch::CredentialDispatch;
 use crate::observer::CredentialObserver;
 use crate::ops::DispatchOps;
 use crate::scope::TenantScope;
@@ -148,7 +147,6 @@ pub struct CredentialService<B: CredentialStore, PS: PendingStateStore> {
     pub(crate) lease: LeaseLifecycle,
     pub(crate) pending: PS,
     pub(crate) registry: Arc<CredentialRegistry>,
-    pub(crate) dispatch: Arc<CredentialDispatch>,
     pub(crate) ops: Arc<DispatchOps<B, PS>>,
     pub(crate) observer: Arc<dyn CredentialObserver>,
     // Read by `ensure_local_source` on every secret-resolving entry
@@ -169,7 +167,6 @@ impl<B: CredentialStore, PS: PendingStateStore> CredentialService<B, PS> {
         lease: LeaseLifecycle,
         pending: PS,
         registry: Arc<CredentialRegistry>,
-        dispatch: Arc<CredentialDispatch>,
         ops: Arc<DispatchOps<B, PS>>,
         observer: Arc<dyn CredentialObserver>,
         source: StateSource,
@@ -180,7 +177,6 @@ impl<B: CredentialStore, PS: PendingStateStore> CredentialService<B, PS> {
             lease,
             pending,
             registry,
-            dispatch,
             ops,
             observer,
             source,
@@ -262,7 +258,7 @@ impl<B: CredentialStore, PS: PendingStateStore> CredentialService<B, PS> {
         self.ensure_local_source()?;
         // The type must be registered (TypeUnknown closes the abuse where
         // an unregistered key reaches resolution).
-        if !self.dispatch.contains(credential_key) {
+        if !self.registry.contains(credential_key) {
             return Err(CredentialServiceError::TypeUnknown {
                 key: credential_key.to_owned(),
             });
@@ -509,7 +505,7 @@ impl<B: CredentialStore, PS: PendingStateStore> CredentialService<B, PS> {
         id: &str,
     ) -> Result<TestReport, CredentialServiceError> {
         let stored = self.load_owned(scope, id).await?;
-        if !self.dispatch.is_testable(&stored.credential_key) {
+        if !self.registry.is_testable(&stored.credential_key) {
             return Err(CredentialServiceError::CapabilityUnsupported {
                 capability: "test".to_owned(),
                 key: stored.credential_key.clone(),
@@ -611,7 +607,7 @@ impl<B: CredentialStore, PS: PendingStateStore> CredentialService<B, PS> {
         id: &str,
     ) -> Result<CredentialSnapshot, CredentialServiceError> {
         let stored = self.load_owned(scope, id).await?;
-        if !self.dispatch.is_refreshable(&stored.credential_key) {
+        if !self.registry.is_refreshable(&stored.credential_key) {
             return Err(CredentialServiceError::CapabilityUnsupported {
                 capability: "refresh".to_owned(),
                 key: stored.credential_key.clone(),
@@ -750,7 +746,7 @@ impl<B: CredentialStore, PS: PendingStateStore> CredentialService<B, PS> {
         id: &str,
     ) -> Result<(), CredentialServiceError> {
         let stored = self.load_owned(scope, id).await?;
-        if !self.dispatch.is_revocable(&stored.credential_key) {
+        if !self.registry.is_revocable(&stored.credential_key) {
             return Err(CredentialServiceError::CapabilityUnsupported {
                 capability: "revoke".to_owned(),
                 key: stored.credential_key.clone(),
@@ -814,7 +810,7 @@ impl<B: CredentialStore, PS: PendingStateStore> CredentialService<B, PS> {
         props: Value,
     ) -> Result<Acquisition, CredentialServiceError> {
         self.ensure_local_source()?;
-        if !self.dispatch.contains(credential_key) {
+        if !self.registry.contains(credential_key) {
             return Err(CredentialServiceError::TypeUnknown {
                 key: credential_key.to_owned(),
             });
@@ -860,7 +856,7 @@ impl<B: CredentialStore, PS: PendingStateStore> CredentialService<B, PS> {
         user_input: UserInput,
     ) -> Result<Acquisition, CredentialServiceError> {
         self.ensure_local_source()?;
-        if !self.dispatch.contains(credential_key) {
+        if !self.registry.contains(credential_key) {
             return Err(CredentialServiceError::TypeUnknown {
                 key: credential_key.to_owned(),
             });
@@ -961,7 +957,7 @@ impl<B: CredentialStore, PS: PendingStateStore> CredentialService<B, PS> {
     }
 
     /// Build a [`CredentialTypeInfo`] from the registry metadata +
-    /// dispatch capability flags. Returns `None` if the registry has no
+    /// capability bitflag. Returns `None` if the registry has no
     /// instance for `key` (cannot project metadata).
     fn type_info(&self, key: &str) -> Option<CredentialTypeInfo> {
         let metadata = self.registry.resolve_any(key)?.metadata();
@@ -971,9 +967,9 @@ impl<B: CredentialStore, PS: PendingStateStore> CredentialService<B, PS> {
             description: metadata.base.description.clone(),
             pattern: metadata.pattern,
             capabilities: TypeCapabilities {
-                refreshable: self.dispatch.is_refreshable(key),
-                testable: self.dispatch.is_testable(key),
-                revocable: self.dispatch.is_revocable(key),
+                refreshable: self.registry.is_refreshable(key),
+                testable: self.registry.is_testable(key),
+                revocable: self.registry.is_revocable(key),
             },
         })
     }
@@ -1299,9 +1295,7 @@ pub mod test_support {
     use nebula_credential::provider::LeaseEvent;
     use nebula_credential::store::StoreError;
     use nebula_credential::{CredentialEvent, CredentialId, CredentialRegistry};
-    use nebula_credential_builtin::{
-        BearerTokenCredential, SharedKeyCredential, SigningKeyCredential, register_builtins,
-    };
+    use nebula_credential_builtin::register_builtins;
     use nebula_credential_testutil::InMemoryPendingStore;
     use nebula_crypto::EncryptionKey;
     use nebula_engine::credential::LeaseLifecycleConfig;
@@ -1313,7 +1307,6 @@ pub mod test_support {
 
     use super::CredentialService;
     use crate::builder::CredentialServiceBuilder;
-    use crate::dispatch::CredentialDispatch;
     use crate::observer::{CredentialObserver, NoopObserver};
     use crate::ops::{
         DispatchOps, register_all_builtin_ops, register_refreshable_ops, register_runtime_ops,
@@ -1352,17 +1345,6 @@ pub mod test_support {
         let mut registry = CredentialRegistry::new();
         register_builtins(&mut registry).expect("register_builtins");
 
-        let mut dispatch = CredentialDispatch::new();
-        dispatch
-            .register::<BearerTokenCredential>()
-            .expect("dispatch bearer");
-        dispatch
-            .register::<SharedKeyCredential>()
-            .expect("dispatch shared");
-        dispatch
-            .register::<SigningKeyCredential>()
-            .expect("dispatch signing");
-
         // All three builtins are static (no capability impls), so only
         // the base ops are registered — no `register_*_ops` capability
         // call. Closure absence is "capability not supported".
@@ -1381,7 +1363,6 @@ pub mod test_support {
             CacheConfig::default(),
             InMemoryPendingStore::new(),
             Arc::new(registry),
-            Arc::new(dispatch),
             Arc::new(ops),
             Arc::new(NoopObserver::new()),
             LeaseLifecycleConfig::default(),
@@ -1453,23 +1434,10 @@ pub mod test_support {
             .register(RefreshableFixtureCredential, "nebula-credential-runtime")
             .expect("register fixture");
 
-        let mut dispatch = CredentialDispatch::new();
-        dispatch
-            .register::<BearerTokenCredential>()
-            .expect("dispatch bearer");
-        dispatch
-            .register::<SharedKeyCredential>()
-            .expect("dispatch shared");
-        dispatch
-            .register::<SigningKeyCredential>()
-            .expect("dispatch signing");
-        dispatch
-            .register::<RefreshableFixtureCredential>()
-            .expect("dispatch fixture");
-        // Closure presence *is* the capability; the dispatch flag mirrors
-        // it so `is_refreshable` agrees with the registered ops.
-        dispatch.mark_refreshable::<RefreshableFixtureCredential>();
-
+        // Capability is read from the registry's computed `Capabilities`
+        // bitflag (ADR-0088 D3): `RefreshableFixtureCredential` impls
+        // `Refreshable`, so `registry.is_refreshable(key)` is true without a
+        // parallel dispatch flag.
         let mut ops = DispatchOps::<InMemoryStore, InMemoryPendingStore>::new();
         register_all_builtin_ops::<InMemoryStore, InMemoryPendingStore>(&mut ops)
             .expect("builtin ops");
@@ -1501,7 +1469,6 @@ pub mod test_support {
             CacheConfig::default(),
             InMemoryPendingStore::new(),
             Arc::new(registry),
-            Arc::new(dispatch),
             Arc::new(ops),
             Arc::new(observer),
             LeaseLifecycleConfig::default(),

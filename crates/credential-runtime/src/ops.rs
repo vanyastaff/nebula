@@ -31,8 +31,35 @@ use nebula_engine::credential::{
 use nebula_schema::FieldValues;
 use zeroize::Zeroizing;
 
-use crate::dispatch::DispatchError;
 use crate::error::CredentialServiceError;
+
+/// Registration-time failure for the operation-dispatch table
+/// ([`DispatchOps`]). Relocated here when the parallel `CredentialDispatch`
+/// capability-flag table was removed (ADR-0088 D3): the ops table owns its own
+/// registration errors, and capability is read from the
+/// [`CredentialRegistry`](nebula_credential::CredentialRegistry) bitflag.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum DispatchError {
+    /// Two registrations shared a `Credential::KEY`. First wins; second
+    /// rejected; table unchanged.
+    #[error("duplicate credential dispatch key '{key}'")]
+    DuplicateKey {
+        /// The colliding key.
+        key: &'static str,
+    },
+
+    /// A capability registrar (`register_testable_ops` /
+    /// `register_refreshable_ops` / `register_revocable_ops` /
+    /// `register_interactive_ops`) ran before the base ops for `key` were
+    /// registered. Capability closures attach onto an existing base entry, so
+    /// the base `register_runtime_ops` must run first.
+    #[error("base credential ops absent for key '{key}'; register the base ops first")]
+    BaseOpsMissing {
+        /// The key whose base entry was missing.
+        key: &'static str,
+    },
+}
 
 /// Serialized credential state produced by a `resolve` closure, ready to
 /// persist via the layered store (the `EncryptionLayer` ciphers `data`).
@@ -942,7 +969,7 @@ mod tests {
             .expect_err("second rejected");
         assert!(matches!(
             err,
-            crate::dispatch::DispatchError::DuplicateKey { .. }
+            crate::ops::DispatchError::DuplicateKey { .. }
         ));
         assert_eq!(ops.len(), 1);
     }
