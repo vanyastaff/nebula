@@ -114,9 +114,8 @@ pub fn derive_credential(input: TokenStream) -> TokenStream {
 /// `#[derive(Credential)]`).
 ///
 /// Applied to an inherent `impl Type { … }`, it reads the associated types
-/// and the methods present and emits the base
-/// [`Credential`](nebula_credential::Credential) impl, one capability
-/// sub-trait impl per capability **method** supplied (`refresh` ⇒
+/// and the methods present and emits the base `Credential` impl, one
+/// capability sub-trait impl per capability **method** supplied (`refresh` ⇒
 /// `Refreshable`, `revoke` ⇒ `Revocable`, `test` ⇒ `Testable`,
 /// `continue_resolve` ⇒ `Interactive`, `release` ⇒ `Dynamic`), the five
 /// `plugin_capability_report::IsX` consts, and a

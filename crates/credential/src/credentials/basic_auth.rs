@@ -21,8 +21,8 @@ use crate::{
 /// `nebula_schema::schema_of::<Self::Properties>()` (schema-of properties). The
 /// plaintext password lives
 /// in a `String` here for schema derivation and is wrapped into
-/// [`SecretString`] inside [`Credential::resolve`] before it leaves the
-/// resolver.
+/// [`SecretString`] inside [`Credential::resolve`](crate::Credential::resolve)
+/// before it leaves the resolver.
 #[derive(Schema, Deserialize, Default)]
 pub struct BasicAuthProperties {
     /// Username for HTTP Basic authentication.

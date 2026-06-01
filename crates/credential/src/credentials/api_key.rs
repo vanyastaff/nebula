@@ -22,7 +22,7 @@ use crate::{
 /// emits the `HasSchema` impl read via
 /// `nebula_schema::schema_of::<Self::Properties>()` (schema-of properties). The
 /// actual auth material conversion to
-/// [`SecretToken`] happens in [`Credential::resolve`].
+/// [`SecretToken`] happens in [`Credential::resolve`](crate::Credential::resolve).
 ///
 /// The plaintext lives in a `String` here rather than `SecretString` so
 /// that the universal `#[derive(Schema)]` field-type inference applies

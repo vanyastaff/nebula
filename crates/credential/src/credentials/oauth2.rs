@@ -55,11 +55,11 @@ use crate::{
 /// Internal OAuth2 state with refresh internals.
 ///
 /// This is what gets encrypted and stored. Consumer-facing auth is
-/// [`OAuth2Token`] (via [`OAuth2Credential::project`]).
+/// [`OAuth2Token`] (via [`Credential::project`](crate::Credential::project)).
 ///
 /// Contains `client_id`, `client_secret`, and `token_url` so that
-/// [`OAuth2Credential::refresh`] can exchange a refresh token without
-/// requiring the original setup parameters.
+/// [`Refreshable::refresh`](crate::Refreshable::refresh) can exchange a refresh
+/// token without requiring the original setup parameters.
 ///
 /// Per Tech Spec §15.4 amendment — `Zeroize` + `ZeroizeOnDrop` derived
 /// so the decrypted plaintext (access/refresh tokens, client creds)
@@ -302,9 +302,10 @@ impl PendingState for OAuth2Pending {
 
 // ── OAuth2Credential ───────────────────────────────────────────────────
 
-/// OAuth2 credential type implementing the [`Credential`] trait plus
-/// the [`Interactive`], [`Refreshable`], [`Revocable`], and [`Testable`]
-/// sub-traits per Tech Spec §15.4.
+/// OAuth2 credential type implementing the [`Credential`](crate::Credential)
+/// trait plus the [`Interactive`](crate::Interactive),
+/// [`Refreshable`](crate::Refreshable), [`Revocable`](crate::Revocable), and
+/// [`Testable`](crate::Testable) sub-traits per Tech Spec §15.4.
 ///
 /// `Revocable` and `Testable` currently surface
 /// `CredentialError::Provider("OAuth2 HTTP transport has moved …")`
@@ -322,8 +323,8 @@ impl PendingState for OAuth2Pending {
 ///
 /// # Grant types and entry points
 ///
-/// Per §15.4 the base [`Credential::resolve`] returns
-/// `ResolveResult<State, ()>` and cannot carry typed
+/// Per §15.4 the base [`Credential::resolve`](crate::Credential::resolve)
+/// returns `ResolveResult<State, ()>` and cannot carry typed
 /// [`OAuth2Pending`]. The interactive entry point therefore lives on
 /// the OAuth2-specific kickoff path:
 ///
@@ -332,7 +333,7 @@ impl PendingState for OAuth2Pending {
 ///   constructs an [`OAuth2Pending`] directly via [`OAuth2Credential::initiate_authorization_code`]
 ///   and persists it to the [`PendingStateStore`](crate::pending_store::PendingStateStore). On
 ///   callback, the framework loads the typed pending state and invokes
-///   [`Interactive::continue_resolve`].
+///   [`Interactive::continue_resolve`](crate::Interactive::continue_resolve).
 /// - **Client Credentials** — base `resolve` returns `Complete(state)` once the engine wires the
 ///   moved `nebula-engine` HTTP transport (API-owned OAuth flow). For now `resolve` returns `Provider("OAuth2
 ///   HTTP transport has moved …")` so callers surface the migration explicitly rather than silently
@@ -639,8 +640,9 @@ impl OAuth2Credential {
     /// Constructs the authorization URL (with PKCE challenge + anti-CSRF
     /// state) and the typed [`OAuth2Pending`] state that the framework
     /// must persist before redirecting the user. Per Tech Spec §15.4
-    /// the base [`Credential::resolve`] cannot carry the typed pending
-    /// state; this kickoff method exists so the API endpoint
+    /// the base [`Credential::resolve`](crate::Credential::resolve) cannot
+    /// carry the typed pending state; this kickoff method exists so the API
+    /// endpoint
     /// orchestrating the OAuth2 flow can construct the pending state
     /// directly and call
     /// [`PendingStateStore::put`](crate::pending_store::PendingStateStore::put).
