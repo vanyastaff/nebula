@@ -283,7 +283,7 @@ runs `Protocol::acquire`/`refresh`/`project`, and **verifies the resolved `Outpu
 matches the consumer's declared scheme type** before `slot.store(guard)` / making it
 resolvable. Today the slot↔credential link is a bare string KEY with no shape check.
 
-```
+```text
 declare (consumer):  #[credential(key="db")] db: SlotCell<CredentialGuard<ConnectionSecret>>
 bind     (workflow): node.slot_bindings { "db" -> credential_id "pg-prod-7" }
 resolve  (engine):   validate_binding(scope,id) → Protocol.acquire/refresh → project
@@ -313,7 +313,8 @@ resolve  (engine):   validate_binding(scope,id) → Protocol.acquire/refresh →
   dependency). Resource stays a pure consumer of already-resolved guards (ADR-0081).
 - `nebula-crypto` is leaf cross-cutting (depends only on `nebula-error` for `Classify`);
   `nebula-storage` and `nebula-credential` consume it downward.
-- `deny.toml` `[wrappers]` is updated to the new consumer set; the merge of
+- the `deny.toml` `wrappers = [...]` allowlists (inside the `[bans].deny` entries —
+  there is no `[wrappers]` table) are updated to the new consumer set; the merge of
   `credential-runtime` removes one crate from the graph.
 
 ## Alternatives considered

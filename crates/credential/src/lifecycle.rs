@@ -163,12 +163,20 @@ impl CredentialPolicy {
     }
 
     /// Can the engine renew this without human interaction?
+    ///
+    /// A `Lease` strategy is auto-renewable only when its [`LeaseRef`] is
+    /// actually renewable — a one-shot lease (`renewable: false`) must re-acquire,
+    /// not renew.
     #[must_use]
     pub const fn is_auto_renewable(&self) -> bool {
-        matches!(
-            self.refresh,
-            RefreshStrategy::RefreshToken | RefreshStrategy::Lease
-        )
+        match self.refresh {
+            RefreshStrategy::RefreshToken => true,
+            RefreshStrategy::Lease => match &self.lease {
+                Some(lease) => lease.renewable,
+                None => false,
+            },
+            RefreshStrategy::Static | RefreshStrategy::ReAcquire => false,
+        }
     }
 }
 
@@ -237,6 +245,24 @@ mod tests {
         assert!(p.is_auto_renewable());
         // No inline expiry → never reported expired locally (server-tracked).
         assert!(!p.is_expired_at(now + chrono::Duration::days(365)));
+    }
+
+    #[test]
+    fn one_shot_lease_is_not_auto_renewable() {
+        let p = CredentialPolicy {
+            category: CredentialCategory::Leased,
+            expires_at: None,
+            lease: Some(LeaseRef {
+                lease_id: "vault/lease/one-shot".to_owned(),
+                lease_duration: Duration::from_hours(1),
+                renewable: false,
+            }),
+            refresh: RefreshStrategy::Lease,
+            revoke: RevokeStrategy::HandleBased,
+        };
+        // Leased + non-renewable ⇒ must re-acquire, not auto-renew.
+        assert!(!p.is_auto_renewable());
+        assert!(p.is_expiring());
     }
 
     #[test]

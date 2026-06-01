@@ -56,6 +56,13 @@ pub enum CryptoError {
     #[classify(category = "internal", code = "CREDENTIAL:CRYPTO_VERSION")]
     #[error("Unsupported encryption version: {0}")]
     UnsupportedVersion(u8),
+
+    /// A rotation envelope was requested with an empty `key_id`. Every new
+    /// encryption must record which key produced it, so the rotation lookup can
+    /// select the right decryption key later.
+    #[classify(category = "internal", code = "CREDENTIAL:CRYPTO_KEY_ID")]
+    #[error("key_id must not be empty for new encryptions")]
+    InvalidKeyId,
 }
 
 // ============================================================================
@@ -170,8 +177,8 @@ impl EncryptedData {
 /// Generate a fresh 96-bit random AES-GCM nonce.
 ///
 /// Per NIST SP 800-38D §8.2.2 a fully-random 96-bit nonce is safe up to
-/// roughly 2^32 encryptions per key under the birthday bound. We read the full
-/// 12 bytes from a CSPRNG seeded from the OS via `getrandom` on every call.
+/// roughly 2^32 encryptions per key under the birthday bound. We read 12 bytes
+/// from a thread-local CSPRNG (`rand::rng()`) on every call.
 ///
 /// `rand::rng()` returns `ThreadRng` which is **CSPRNG-quality** — seeded from
 /// `OsRng` (`getrandom`) at thread start and periodically reseeded from the OS.
@@ -337,9 +344,7 @@ pub fn encrypt_with_key_id(
     aad: &[u8],
 ) -> Result<EncryptedData, CryptoError> {
     if key_id.is_empty() {
-        return Err(CryptoError::EncryptionFailed(
-            "key_id must not be empty for new encryptions".into(),
-        ));
+        return Err(CryptoError::InvalidKeyId);
     }
 
     let cipher = Aes256Gcm::new_from_slice(key.as_bytes())
@@ -472,6 +477,13 @@ mod tests {
 
         let decrypted = decrypt_with_aad(&key, &encrypted, aad).unwrap();
         assert_eq!(decrypted.as_slice(), plaintext);
+    }
+
+    #[test]
+    fn empty_key_id_is_rejected() {
+        let key = EncryptionKey::from_bytes([0x42; 32]);
+        let err = encrypt_with_key_id(&key, "", b"plaintext", b"aad").unwrap_err();
+        assert!(matches!(err, CryptoError::InvalidKeyId));
     }
 
     #[test]

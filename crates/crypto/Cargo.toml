@@ -12,9 +12,9 @@ repository.workspace = true
 # AES-256-GCM authenticated encryption + Argon2id KDF — the only reason this
 # crate exists. Pinned to the same versions nebula-credential carried before the
 # ADR-0088 extract.
-aes-gcm = "0.10"
-argon2 = "0.5"
-zeroize = { version = "1.8.2", features = ["zeroize_derive"] }
+aes-gcm = { workspace = true }
+argon2 = { workspace = true }
+zeroize = { workspace = true }
 rand = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 
