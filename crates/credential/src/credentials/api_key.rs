@@ -8,7 +8,7 @@ use nebula_schema::{FieldValues, Schema};
 use serde::Deserialize;
 
 use crate::{
-    Credential, CredentialContext, SecretString,
+    Credential, CredentialContext, CredentialLifecycle, CredentialPolicy, SecretString,
     contract::plugin_capability_report,
     error::{CredentialError, ProviderErrorContext, ProviderErrorKind, SecretFreeMessage},
     metadata::CredentialMetadata,
@@ -120,6 +120,15 @@ impl plugin_capability_report::IsDynamic for ApiKeyCredential {
     const VALUE: bool = false;
 }
 
+/// API keys are static (ADR-0088 D2): no expiry, no refresh, no provider-side
+/// revocation — the [`CredentialCategory::StaticSecret`](crate::CredentialCategory::StaticSecret)
+/// shape. Consistent with the absent capability sub-trait impls above.
+impl CredentialLifecycle for ApiKeyCredential {
+    fn policy(_state: &SecretToken) -> CredentialPolicy {
+        CredentialPolicy::static_secret()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -127,6 +136,17 @@ mod tests {
     #[test]
     fn key_is_api_key() {
         assert_eq!(ApiKeyCredential::KEY, "api_key");
+    }
+
+    #[test]
+    fn lifecycle_policy_is_static() {
+        let token = SecretToken::new(SecretString::new("x"));
+        let p = ApiKeyCredential::policy(&token);
+        assert_eq!(p.category, crate::CredentialCategory::StaticSecret);
+        assert!(!p.is_expiring());
+        assert!(!p.is_auto_renewable());
+        assert_eq!(p.refresh, crate::RefreshStrategy::Static);
+        assert_eq!(p.revoke, crate::RevokeStrategy::None);
     }
 
     // Capability membership checks moved to compile-time: the absence

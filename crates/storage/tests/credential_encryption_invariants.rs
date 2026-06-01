@@ -5,9 +5,8 @@
 
 use std::time::Instant;
 
-use nebula_credential::{
-    CryptoError, EncryptedData, EncryptionKey, SecretString, decrypt, encrypt_with_aad,
-};
+use nebula_credential::SecretString;
+use nebula_crypto::{CryptoError, EncryptedData, EncryptionKey, decrypt, encrypt_with_aad};
 use pretty_assertions::assert_eq;
 use rstest::rstest;
 use serde_json::json;

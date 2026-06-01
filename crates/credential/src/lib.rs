@@ -33,9 +33,9 @@
 //!   scope layer was re-homed to `nebula_tenancy::CredentialScopeLayer` (spec §8).
 //! - Engine-owned runtime resolution lives in `nebula-engine::credential`.
 //! - `SecretString`, `CredentialGuard` — zeroizing secret wrappers.
-//! - `EncryptedData`, `EncryptionKey`, `encrypt_with_aad`, `encrypt_with_key_id`, `decrypt`,
-//!   `decrypt_with_aad` — AES-256-GCM primitives. The AAD-free `encrypt` path is intentionally not
-//!   exposed (SEC-11 hardening 2026-04-27).
+//! - AES-256-GCM primitives (`EncryptedData`, `EncryptionKey`, `encrypt_with_aad`,
+//!   `encrypt_with_key_id`, `decrypt`, `decrypt_with_aad`) moved to `nebula-crypto`
+//!   (ADR-0088). The AAD-free `encrypt` path is intentionally not exposed (SEC-11).
 //! - `#[derive(Credential)]`, `#[derive(AuthScheme)]` — proc-macro derivations.
 //!
 //! ## Security invariant (credential secrecy)
@@ -63,6 +63,10 @@ pub mod contract;
 pub mod credentials;
 /// Typed credential extension trait for capability contexts.
 pub mod ext;
+/// Credential lifecycle as data — `CredentialPolicy` / `RefreshStrategy` /
+/// `RevokeStrategy` / `CredentialCategory` (ADR-0088 D2: capabilities are data,
+/// not sub-traits).
+pub mod lifecycle;
 /// Credential operation metrics — counter names and label helpers.
 pub mod metrics;
 /// External credential provider abstraction — delegation to external secret managers.
@@ -72,7 +76,7 @@ pub mod provider;
 pub mod rotation;
 /// Authentication scheme types — AuthScheme trait, AuthPattern, 12 built-in schemes.
 pub mod scheme;
-/// credential secrecy secret-handling primitives — AES-256-GCM, guards, zeroizing wrappers, serde helpers.
+/// credential secrecy primitives — guards, zeroizing wrappers, PKCE + serde helpers (AES-256-GCM moved to nebula-crypto).
 pub mod secrets;
 
 // ── Flattened modules (previously nested under accessor/ and metadata/) ───
@@ -183,14 +187,17 @@ pub use scheme::{
 // per credential isolation; the previously-defined parallel `OnCredentialRefresh<C>`
 // trait was removed in nebula-resource П2.
 //
-// SEC-11 (security hardening 2026-04-27 Stage 1): bare `encrypt` removed
-// from public surface. See `secrets/mod.rs` rationale comment above the
-// `pub use crypto::{...}` block.
+// AES-256-GCM primitives moved to `nebula-crypto` (ADR-0088); import them from
+// there. PKCE/state helpers + secret wrappers stay here.
 pub use secrets::{
-    CredentialGuard, EncryptedData, EncryptionKey, ExposeSecret, ExposeSecretMut, RedactedSecret,
-    SchemeFactory, SchemeGuard, SecretBox, SecretString, decrypt, decrypt_with_aad,
-    encrypt_with_aad, encrypt_with_key_id, generate_code_challenge, generate_pkce_verifier,
+    CredentialGuard, ExposeSecret, ExposeSecretMut, RedactedSecret, SchemeFactory, SchemeGuard,
+    SecretBox, SecretString, generate_code_challenge, generate_pkce_verifier,
     generate_random_state, secret_from_string,
+};
+// Lifecycle policy types (ADR-0088 D2): capabilities as data, not sub-traits.
+pub use lifecycle::{
+    CredentialCategory, CredentialLifecycle, CredentialPolicy, LeaseRef, RefreshStrategy,
+    RevokeStrategy,
 };
 // Store trait + DTOs (canonical impls live in `nebula_storage::credential` per storage credential layers)
 pub use store::{CredentialStore, PutMode, ScopeResolver, StoreError, StoredCredential};

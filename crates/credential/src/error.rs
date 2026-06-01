@@ -577,37 +577,10 @@ impl nebula_error::Classify for CredentialError {
 
 // ── Cryptographic errors ─────────────────────────────────────────────────────
 
-/// Cryptographic operation errors
-///
-/// Errors from encryption, decryption, and key derivation operations.
-#[derive(Debug, Error, nebula_error::Classify)]
-#[non_exhaustive]
-pub enum CryptoError {
-    /// Decryption failed - invalid key or corrupted data
-    #[classify(category = "internal", code = "CREDENTIAL:CRYPTO_DECRYPT")]
-    #[error("Decryption failed - invalid key or corrupted data")]
-    DecryptionFailed,
-
-    /// Encryption failed
-    #[classify(category = "internal", code = "CREDENTIAL:CRYPTO_ENCRYPT")]
-    #[error("Encryption failed: {0}")]
-    EncryptionFailed(String),
-
-    /// Key derivation failed
-    #[classify(category = "internal", code = "CREDENTIAL:CRYPTO_KEY")]
-    #[error("Key derivation failed: {0}")]
-    KeyDerivation(String),
-
-    /// Nonce generation failed
-    #[classify(category = "internal", code = "CREDENTIAL:CRYPTO_NONCE")]
-    #[error("Nonce generation failed")]
-    NonceGeneration,
-
-    /// Unsupported encryption version
-    #[classify(category = "internal", code = "CREDENTIAL:CRYPTO_VERSION")]
-    #[error("Unsupported encryption version: {0}")]
-    UnsupportedVersion(u8),
-}
+// `CryptoError` moved to `nebula-crypto` (ADR-0088). Re-exported here because it
+// is part of `CredentialError` (the `Crypto` variant + `From<CryptoError>`), so
+// `nebula_credential::CryptoError` remains a stable path.
+pub use nebula_crypto::CryptoError;
 
 // ── Validation errors ────────────────────────────────────────────────────────
 

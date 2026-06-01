@@ -12,7 +12,7 @@ cascade and later work. Numbering starts at **0042** in this directory.
 
 | Theme | Primary ADRs | Typical question |
 |-------|----------------|------------------|
-| **M6 integration binding** | **0081** (absorbs ADR-0042–0045, 0051, 0066–0067) | Slots, resources, rotation |
+| **M6 integration binding** | **0081** (absorbs ADR-0042–0045, 0051, 0066–0067); **0088** (credential subsystem rewrite — Protocol model + crate re-layering, proposed) | Slots, resources, rotation, credential injection |
 | **Schema & validation** | **0080** (absorbs ADR-0052, 0058–0064) | Forms, JSON Schema |
 | **Storage (spec-16)** | 0072 | Port, adapter, tenancy |
 | **Action surface & retry** | 0069, 0053, 0068 | Action traits, retry |
@@ -42,7 +42,7 @@ working tree (evicted 2026-05-18). Do not expect `docs/adr/00NN-*.md` to exist.
 | [0081](./0081-m6-resource-credential-integration.md) | M6 resource & credential integration | accepted |
 | [0082](./0082-api-webhooks-idempotency.md) | API edge — OpenAPI, idempotency, webhooks | accepted |
 
-## Index (live standalone, 0046–0085)
+## Index (live standalone, 0046–0088)
 
 Stubs 0042–0067 that Wave B folded into the contract ADRs were evicted
 2026-05-18 (full text in git history; supersession recorded below). Only
@@ -64,6 +64,7 @@ live standalone decisions remain as individual files:
 | [0083](./0083-agent-intent-honesty-gate.md) | Agent intent-honesty gate (structural-budget tier) | accepted |
 | [0084](./0084-pre-expiry-credential-refresh-deferred.md) | Pre-expiry credential refresh deferred to 1.1 | accepted |
 | [0085](./0085-oauth-identity-providers-from-secrets.md) | OAuth identity providers from operator secrets (M3.1 Plane A) | accepted |
+| [0088](./0088-credential-subsystem-rewrite.md) | Credential subsystem rewrite — Protocol model, policy-as-data lifecycle, crate re-layering | proposed |
 
 ## Supersession (audit trail — text-only; superseded bodies in git history)
 

@@ -8,9 +8,10 @@
 
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use nebula_credential::{
-    CredentialId, EncryptedData,
+    CredentialId,
     rotation::{BackupId, RotationError, RotationId, RotationResult},
 };
+use nebula_crypto::EncryptedData;
 use serde::{Deserialize, Serialize};
 
 /// Rotation backup containing encrypted credential snapshot

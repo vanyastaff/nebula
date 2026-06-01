@@ -29,10 +29,8 @@
 
 use std::{collections::HashMap, sync::Arc};
 
-use nebula_credential::{
-    CredentialStore, EncryptedData, EncryptionKey, PutMode, StoreError, StoredCredential,
-    decrypt_with_aad, encrypt_with_key_id,
-};
+use nebula_credential::{CredentialStore, PutMode, StoreError, StoredCredential};
+use nebula_crypto::{EncryptedData, EncryptionKey, decrypt_with_aad, encrypt_with_key_id};
 
 use super::super::key_provider::KeyProvider;
 
@@ -256,9 +254,10 @@ impl<S> EncryptionLayer<S> {
 #[cfg(all(test, feature = "test-util"))]
 mod tests {
     use nebula_credential::{
-        AuthStyle, PutMode, SecretString, credentials::oauth2::OAuth2State, encrypt_with_key_id,
+        AuthStyle, PutMode, SecretString, credentials::oauth2::OAuth2State,
         store::test_helpers::make_credential,
     };
+    use nebula_crypto::encrypt_with_key_id;
 
     use super::{
         super::super::{key_provider::StaticKeyProvider, memory::InMemoryStore},
