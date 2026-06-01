@@ -42,10 +42,8 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use super::oauth2_config;
 use crate::{
-    Credential, CredentialCategory, CredentialContext, CredentialLifecycle, CredentialPolicy,
-    CredentialState, Interactive, PendingState, RefreshStrategy, Refreshable, Revocable,
-    RevokeStrategy, SecretString, Testable,
-    contract::plugin_capability_report,
+    CredentialCategory, CredentialContext, CredentialPolicy, CredentialState, PendingState,
+    RefreshStrategy, RevokeStrategy, SecretString,
     error::{CredentialError, ProviderErrorContext, ProviderErrorKind, SecretFreeMessage},
     metadata::CredentialMetadata,
     resolve::{InteractionRequest, RefreshOutcome, ResolveResult, TestResult, UserInput},
@@ -401,12 +399,20 @@ pub struct OAuth2Properties {
     pub redirect_uri: Option<String>,
 }
 
-impl Credential for OAuth2Credential {
+// ADR-0088 D1: the full OAuth2 credential surface in one `impl` block.
+// `#[credential]` sees `continue_resolve` (+ `type Pending`), `refresh`,
+// `revoke`, and `test`, and emits the `Interactive` + `Refreshable` +
+// `Revocable` + `Testable` impls plus the matching capability-report consts.
+// The hand-written `policy()` is relocated verbatim because OAuth2's refresh
+// strategy is state-dependent (`RefreshToken` while a refresh token is held,
+// else `ReAcquire`) — the macro's synthesized policy cannot read live state.
+// The `initiate_authorization_code` kickoff helper stays in its own inherent
+// `impl` block below; it is not part of the credential contract.
+#[nebula_credential::credential(key = "oauth2", category = RefreshPair)]
+impl OAuth2Credential {
     type Properties = OAuth2Properties;
     type Scheme = OAuth2Token;
     type State = OAuth2State;
-
-    const KEY: &'static str = "oauth2";
 
     fn metadata() -> CredentialMetadata {
         CredentialMetadata::builder()
@@ -477,9 +483,7 @@ impl Credential for OAuth2Credential {
             GrantType::ClientCredentials => Err(oauth2_http_transport_disabled()),
         }
     }
-}
 
-impl Interactive for OAuth2Credential {
     type Pending = OAuth2Pending;
 
     async fn continue_resolve(
@@ -557,9 +561,7 @@ impl Interactive for OAuth2Credential {
             )),
         }
     }
-}
 
-impl Refreshable for OAuth2Credential {
     async fn refresh(
         state: &mut OAuth2State,
         _ctx: &CredentialContext,
@@ -581,9 +583,7 @@ impl Refreshable for OAuth2Credential {
         // this crate no longer performs HTTP.
         Err(oauth2_http_transport_disabled())
     }
-}
 
-impl Revocable for OAuth2Credential {
     async fn revoke(
         _state: &mut OAuth2State,
         _ctx: &CredentialContext,
@@ -596,9 +596,7 @@ impl Revocable for OAuth2Credential {
         // provider" while the token remains live.
         Err(oauth2_http_transport_disabled())
     }
-}
 
-impl Testable for OAuth2Credential {
     async fn test(
         _scheme: &OAuth2Token,
         _ctx: &CredentialContext,
@@ -612,38 +610,14 @@ impl Testable for OAuth2Credential {
         // classification.
         Err(oauth2_http_transport_disabled())
     }
-}
 
-// Per Tech Spec §15.8 (closes security-lead N6) `OAuth2Credential`
-// reports its sub-trait surface via `plugin_capability_report::Is*` so
-// the `CredentialRegistry` capability bitflag set matches the
-// implementations directly above (Interactive + Refreshable + Revocable
-// + Testable). OAuth2 is not a `Dynamic` credential — its tokens are
-// stored, refreshed, and revoked by KEY rather than leased per
-// execution.
-impl plugin_capability_report::IsInteractive for OAuth2Credential {
-    const VALUE: bool = true;
-}
-impl plugin_capability_report::IsRefreshable for OAuth2Credential {
-    const VALUE: bool = true;
-}
-impl plugin_capability_report::IsRevocable for OAuth2Credential {
-    const VALUE: bool = true;
-}
-impl plugin_capability_report::IsTestable for OAuth2Credential {
-    const VALUE: bool = true;
-}
-impl plugin_capability_report::IsDynamic for OAuth2Credential {
-    const VALUE: bool = false;
-}
-
-/// OAuth2 is a refresh-pair credential (ADR-0088 D2). The policy is computed from
-/// live state: `RefreshToken` while a refresh token is held (the engine can renew
-/// non-interactively), otherwise `ReAcquire` (the refresh path returns
-/// `ReauthRequired`). Revocable handle-based (RFC 7009); expiry is the access
-/// token's inline `expires_at`. Strategies match the implemented sub-traits
-/// (`Refreshable` + `Revocable`).
-impl CredentialLifecycle for OAuth2Credential {
+    // OAuth2 is a refresh-pair credential (ADR-0088 D2). The policy is computed
+    // from live state: `RefreshToken` while a refresh token is held (the engine
+    // can renew non-interactively), otherwise `ReAcquire` (the refresh path
+    // returns `ReauthRequired`). Revoke is handle-based (RFC 7009); expiry is
+    // the access token's inline `expires_at`. The hand-written `policy` is kept
+    // (not macro-synthesized) precisely because the refresh strategy depends on
+    // live state, which the macro's category-derived default cannot read.
     fn policy(state: &OAuth2State) -> CredentialPolicy {
         CredentialPolicy {
             category: CredentialCategory::RefreshPair,
@@ -856,6 +830,12 @@ fn build_config(
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+
+    // Trait names referenced only by the tests now that `#[credential]`
+    // generates the trait impls via absolute paths: `Credential` (KEY /
+    // Properties), `CredentialLifecycle` (policy), and the capability
+    // sub-traits exercised by `assert_oauth2_capabilities`.
+    use crate::{Credential, CredentialLifecycle, Interactive, Refreshable, Revocable, Testable};
 
     use super::*;
 
