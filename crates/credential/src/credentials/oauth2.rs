@@ -42,10 +42,8 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use super::oauth2_config;
 use crate::{
-    Credential, CredentialCategory, CredentialContext, CredentialLifecycle, CredentialPolicy,
-    CredentialState, Interactive, PendingState, RefreshStrategy, Refreshable, Revocable,
-    RevokeStrategy, SecretString, Testable,
-    contract::plugin_capability_report,
+    CredentialCategory, CredentialContext, CredentialPolicy, CredentialState, PendingState,
+    RefreshStrategy, RevokeStrategy, SecretString,
     error::{CredentialError, ProviderErrorContext, ProviderErrorKind, SecretFreeMessage},
     metadata::CredentialMetadata,
     resolve::{InteractionRequest, RefreshOutcome, ResolveResult, TestResult, UserInput},
@@ -57,11 +55,11 @@ use crate::{
 /// Internal OAuth2 state with refresh internals.
 ///
 /// This is what gets encrypted and stored. Consumer-facing auth is
-/// [`OAuth2Token`] (via [`OAuth2Credential::project`]).
+/// [`OAuth2Token`] (via [`Credential::project`](crate::Credential::project)).
 ///
 /// Contains `client_id`, `client_secret`, and `token_url` so that
-/// [`OAuth2Credential::refresh`] can exchange a refresh token without
-/// requiring the original setup parameters.
+/// [`Refreshable::refresh`](crate::Refreshable::refresh) can exchange a refresh
+/// token without requiring the original setup parameters.
 ///
 /// Per Tech Spec §15.4 amendment — `Zeroize` + `ZeroizeOnDrop` derived
 /// so the decrypted plaintext (access/refresh tokens, client creds)
@@ -304,9 +302,10 @@ impl PendingState for OAuth2Pending {
 
 // ── OAuth2Credential ───────────────────────────────────────────────────
 
-/// OAuth2 credential type implementing the [`Credential`] trait plus
-/// the [`Interactive`], [`Refreshable`], [`Revocable`], and [`Testable`]
-/// sub-traits per Tech Spec §15.4.
+/// OAuth2 credential type implementing the [`Credential`](crate::Credential)
+/// trait plus the [`Interactive`](crate::Interactive),
+/// [`Refreshable`](crate::Refreshable), [`Revocable`](crate::Revocable), and
+/// [`Testable`](crate::Testable) sub-traits per Tech Spec §15.4.
 ///
 /// `Revocable` and `Testable` currently surface
 /// `CredentialError::Provider("OAuth2 HTTP transport has moved …")`
@@ -324,8 +323,8 @@ impl PendingState for OAuth2Pending {
 ///
 /// # Grant types and entry points
 ///
-/// Per §15.4 the base [`Credential::resolve`] returns
-/// `ResolveResult<State, ()>` and cannot carry typed
+/// Per §15.4 the base [`Credential::resolve`](crate::Credential::resolve)
+/// returns `ResolveResult<State, ()>` and cannot carry typed
 /// [`OAuth2Pending`]. The interactive entry point therefore lives on
 /// the OAuth2-specific kickoff path:
 ///
@@ -334,7 +333,7 @@ impl PendingState for OAuth2Pending {
 ///   constructs an [`OAuth2Pending`] directly via [`OAuth2Credential::initiate_authorization_code`]
 ///   and persists it to the [`PendingStateStore`](crate::pending_store::PendingStateStore). On
 ///   callback, the framework loads the typed pending state and invokes
-///   [`Interactive::continue_resolve`].
+///   [`Interactive::continue_resolve`](crate::Interactive::continue_resolve).
 /// - **Client Credentials** — base `resolve` returns `Complete(state)` once the engine wires the
 ///   moved `nebula-engine` HTTP transport (API-owned OAuth flow). For now `resolve` returns `Provider("OAuth2
 ///   HTTP transport has moved …")` so callers surface the migration explicitly rather than silently
@@ -401,12 +400,20 @@ pub struct OAuth2Properties {
     pub redirect_uri: Option<String>,
 }
 
-impl Credential for OAuth2Credential {
+// ADR-0088 D1: the full OAuth2 credential surface in one `impl` block.
+// `#[credential]` sees `continue_resolve` (+ `type Pending`), `refresh`,
+// `revoke`, and `test`, and emits the `Interactive` + `Refreshable` +
+// `Revocable` + `Testable` impls plus the matching capability-report consts.
+// The hand-written `policy()` is relocated verbatim because OAuth2's refresh
+// strategy is state-dependent (`RefreshToken` while a refresh token is held,
+// else `ReAcquire`) — the macro's synthesized policy cannot read live state.
+// The `initiate_authorization_code` kickoff helper stays in its own inherent
+// `impl` block below; it is not part of the credential contract.
+#[nebula_credential::credential(key = "oauth2", category = RefreshPair)]
+impl OAuth2Credential {
     type Properties = OAuth2Properties;
     type Scheme = OAuth2Token;
     type State = OAuth2State;
-
-    const KEY: &'static str = "oauth2";
 
     fn metadata() -> CredentialMetadata {
         CredentialMetadata::builder()
@@ -477,9 +484,7 @@ impl Credential for OAuth2Credential {
             GrantType::ClientCredentials => Err(oauth2_http_transport_disabled()),
         }
     }
-}
 
-impl Interactive for OAuth2Credential {
     type Pending = OAuth2Pending;
 
     async fn continue_resolve(
@@ -557,9 +562,7 @@ impl Interactive for OAuth2Credential {
             )),
         }
     }
-}
 
-impl Refreshable for OAuth2Credential {
     async fn refresh(
         state: &mut OAuth2State,
         _ctx: &CredentialContext,
@@ -581,9 +584,7 @@ impl Refreshable for OAuth2Credential {
         // this crate no longer performs HTTP.
         Err(oauth2_http_transport_disabled())
     }
-}
 
-impl Revocable for OAuth2Credential {
     async fn revoke(
         _state: &mut OAuth2State,
         _ctx: &CredentialContext,
@@ -596,9 +597,7 @@ impl Revocable for OAuth2Credential {
         // provider" while the token remains live.
         Err(oauth2_http_transport_disabled())
     }
-}
 
-impl Testable for OAuth2Credential {
     async fn test(
         _scheme: &OAuth2Token,
         _ctx: &CredentialContext,
@@ -612,38 +611,14 @@ impl Testable for OAuth2Credential {
         // classification.
         Err(oauth2_http_transport_disabled())
     }
-}
 
-// Per Tech Spec §15.8 (closes security-lead N6) `OAuth2Credential`
-// reports its sub-trait surface via `plugin_capability_report::Is*` so
-// the `CredentialRegistry` capability bitflag set matches the
-// implementations directly above (Interactive + Refreshable + Revocable
-// + Testable). OAuth2 is not a `Dynamic` credential — its tokens are
-// stored, refreshed, and revoked by KEY rather than leased per
-// execution.
-impl plugin_capability_report::IsInteractive for OAuth2Credential {
-    const VALUE: bool = true;
-}
-impl plugin_capability_report::IsRefreshable for OAuth2Credential {
-    const VALUE: bool = true;
-}
-impl plugin_capability_report::IsRevocable for OAuth2Credential {
-    const VALUE: bool = true;
-}
-impl plugin_capability_report::IsTestable for OAuth2Credential {
-    const VALUE: bool = true;
-}
-impl plugin_capability_report::IsDynamic for OAuth2Credential {
-    const VALUE: bool = false;
-}
-
-/// OAuth2 is a refresh-pair credential (ADR-0088 D2). The policy is computed from
-/// live state: `RefreshToken` while a refresh token is held (the engine can renew
-/// non-interactively), otherwise `ReAcquire` (the refresh path returns
-/// `ReauthRequired`). Revocable handle-based (RFC 7009); expiry is the access
-/// token's inline `expires_at`. Strategies match the implemented sub-traits
-/// (`Refreshable` + `Revocable`).
-impl CredentialLifecycle for OAuth2Credential {
+    // OAuth2 is a refresh-pair credential (ADR-0088 D2). The policy is computed
+    // from live state: `RefreshToken` while a refresh token is held (the engine
+    // can renew non-interactively), otherwise `ReAcquire` (the refresh path
+    // returns `ReauthRequired`). Revoke is handle-based (RFC 7009); expiry is
+    // the access token's inline `expires_at`. The hand-written `policy` is kept
+    // (not macro-synthesized) precisely because the refresh strategy depends on
+    // live state, which the macro's category-derived default cannot read.
     fn policy(state: &OAuth2State) -> CredentialPolicy {
         CredentialPolicy {
             category: CredentialCategory::RefreshPair,
@@ -665,8 +640,9 @@ impl OAuth2Credential {
     /// Constructs the authorization URL (with PKCE challenge + anti-CSRF
     /// state) and the typed [`OAuth2Pending`] state that the framework
     /// must persist before redirecting the user. Per Tech Spec §15.4
-    /// the base [`Credential::resolve`] cannot carry the typed pending
-    /// state; this kickoff method exists so the API endpoint
+    /// the base [`Credential::resolve`](crate::Credential::resolve) cannot
+    /// carry the typed pending state; this kickoff method exists so the API
+    /// endpoint
     /// orchestrating the OAuth2 flow can construct the pending state
     /// directly and call
     /// [`PendingStateStore::put`](crate::pending_store::PendingStateStore::put).
@@ -856,6 +832,12 @@ fn build_config(
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+
+    // Trait names referenced only by the tests now that `#[credential]`
+    // generates the trait impls via absolute paths: `Credential` (KEY /
+    // Properties), `CredentialLifecycle` (policy), and the capability
+    // sub-traits exercised by `assert_oauth2_capabilities`.
+    use crate::{Credential, CredentialLifecycle, Interactive, Refreshable, Revocable, Testable};
 
     use super::*;
 

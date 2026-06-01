@@ -152,8 +152,10 @@ pub use nebula_core::{CredentialId, CredentialKey, credential_key};
 // without forcing plugin authors onto a direct `nebula-schema` dependency
 // (schema-of properties: `Self::Properties: HasSchema` is the single source of truth).
 pub use nebula_schema::schema_of;
-// Derive macros
-pub use nebula_credential_macros::{AuthScheme, Credential};
+// Derive + attribute macros. `credential` is the ADR-0088 D1 attribute macro
+// (one-impl-block authoring); `Credential` is the legacy derive kept during
+// the migration window.
+pub use nebula_credential_macros::{AuthScheme, Credential, credential};
 // Opt-out built-in (lives at root, not under credentials::, because it has
 // no Input form and is never registered in CredentialRegistry — it's a
 // Resource-side type marker per credential isolation).
