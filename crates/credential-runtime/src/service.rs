@@ -103,8 +103,9 @@ pub enum Acquisition {
     },
 }
 
-/// Capability surface of a credential type, sourced from the dispatch
-/// table (closure presence), not self-attested metadata.
+/// Capability surface of a credential type, sourced from the
+/// [`CredentialRegistry`] `Capabilities` bitflag (computed from sub-trait
+/// membership at registration), not self-attested metadata.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct TypeCapabilities {
     /// Type implements `Refreshable`.
@@ -1276,8 +1277,8 @@ pub mod test_support {
     //! adversarial integration suite, and Plan-3 consumers. One call
     //! assembles a `StaticKeyProvider`, an `InMemoryStore`, an
     //! `InMemoryPendingStore`, an `AuditSink` (no-op by default), the
-    //! three first-party builtins registered into the
-    //! registry/dispatch/ops, and a `NoopObserver`.
+    //! three first-party builtins registered into the registry + ops
+    //! tables, and a `NoopObserver`.
     //!
     //! # test-util gating
     //!
@@ -1325,7 +1326,7 @@ pub mod test_support {
     }
 
     /// Build an in-memory service with the three first-party builtins
-    /// wired through registry + dispatch + ops, accepting an arbitrary
+    /// wired through registry + ops, accepting an arbitrary
     /// [`AuditSink`], **and** return a `Clone` of the raw `InMemoryStore`
     /// that shares the service's backing map.
     ///
@@ -1415,9 +1416,11 @@ pub mod test_support {
     }
 
     /// Build an in-memory service with the three static builtins **plus**
-    /// the [`RefreshableFixtureCredential`] wired through registry +
-    /// dispatch (`mark_refreshable`) + ops (`register_runtime_ops` then
-    /// `register_refreshable_ops`). Returns the service alongside an
+    /// the [`RefreshableFixtureCredential`] wired through registry + ops
+    /// (`register_runtime_ops` then `register_refreshable_ops`). Its
+    /// refreshable capability is read from the registry `Capabilities` bitflag
+    /// (`registry.is_refreshable`), computed from its `Refreshable` impl — no
+    /// parallel dispatch flag. Returns the service alongside an
     /// `Arc<AtomicUsize>` that counts `on_refresh` calls, so a test can
     /// prove the success path fired the observer hook.
     ///
@@ -1778,7 +1781,7 @@ mod tests {
     }
 
     /// Without a session, `continue_resolve` must fail `SessionRequired`
-    /// *before* the dispatch/capability gate: the pending-store
+    /// *before* the capability gate: the pending-store
     /// `(kind, owner, session, token)` binding makes a continuation
     /// structurally impossible without one, and the bare session-less
     /// path would otherwise collapse into a silent `ValidationFailed`

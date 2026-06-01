@@ -216,7 +216,11 @@ A single KEY-keyed registry in `nebula-credential` holds, per credential type, t
 boxed `Protocol` object (which itself carries `acquire`/`project`/`policy`/`refresh` +
 its own state codec `KIND`/`VERSION` + `SCHEME`). Capability = **closure/strategy
 presence**, not a parallel flag table. `register::<P>()` is the single registrar;
-`StateProjectionRegistry`, `CredentialDispatch`, and `DispatchOps` are deleted.
+the parallel capability/projection tables (`StateProjectionRegistry`,
+`CredentialDispatch`) are deleted. `DispatchOps`'s **capability role** is deleted
+too — but see the implementation note: its async *operation*-closure storage is
+retained (it is generic over the store/pending types and cannot fold into the
+non-generic Core registry).
 
 > **Implemented 2026-06-01 (registry collapse).** Two of the four tables were
 > deleted and capability now reads solely from the `CredentialRegistry`
