@@ -58,8 +58,8 @@ struct ApiCredential {
 struct ConstCtx(serde_json::Value);
 
 impl ExpressionContext for ConstCtx {
-    fn evaluate<'a>(&'a self, _ast: &'a ExpressionAst) -> EvalFuture<'a> {
-        Box::pin(async move { Ok(self.0.clone()) })
+    fn evaluate(&self, _ast: &ExpressionAst) -> Result<serde_json::Value, ValidationError> {
+        Ok(self.0.clone())
     }
 }
 
@@ -67,22 +67,20 @@ impl ExpressionContext for ConstCtx {
 struct RoutingCtx;
 
 impl ExpressionContext for RoutingCtx {
-    fn evaluate<'a>(&'a self, ast: &'a ExpressionAst) -> EvalFuture<'a> {
-        Box::pin(async move {
-            if ast.source().contains("$bad_str") {
-                return Ok(json!(123));
-            }
-            if ast.source().contains("$ok_str") {
-                return Ok(json!("ok"));
-            }
-            if ast.source().contains("$bad_item") {
-                return Ok(json!(999));
-            }
-            if ast.source().contains("$ok_num") {
-                return Ok(json!(42));
-            }
-            Ok(json!(null))
-        })
+    fn evaluate(&self, ast: &ExpressionAst) -> Result<serde_json::Value, ValidationError> {
+        if ast.source().contains("$bad_str") {
+            return Ok(json!(123));
+        }
+        if ast.source().contains("$ok_str") {
+            return Ok(json!("ok"));
+        }
+        if ast.source().contains("$bad_item") {
+            return Ok(json!(999));
+        }
+        if ast.source().contains("$ok_num") {
+            return Ok(json!(42));
+        }
+        Ok(json!(null))
     }
 }
 
@@ -90,19 +88,17 @@ impl ExpressionContext for RoutingCtx {
 struct FailCtx;
 
 impl ExpressionContext for FailCtx {
-    fn evaluate<'a>(&'a self, _ast: &'a ExpressionAst) -> EvalFuture<'a> {
-        Box::pin(async move {
-            Err(ValidationError::builder("expression.runtime")
-                .message("evaluation failed")
-                .build())
-        })
+    fn evaluate(&self, _ast: &ExpressionAst) -> Result<serde_json::Value, ValidationError> {
+        Err(ValidationError::builder("expression.runtime")
+            .message("evaluation failed")
+            .build())
     }
 }
 
 // ── Fast path (no expressions) ────────────────────────────────────────────────
 
-#[tokio::test]
-async fn fast_path_no_expressions() {
+#[test]
+fn fast_path_no_expressions() {
     // Schema where all fields are ExpressionMode::Forbidden — uses_expressions = false.
     let schema = Schema::builder()
         .add(Field::boolean(field_key!("flag")))
@@ -117,7 +113,7 @@ async fn fast_path_no_expressions() {
 
     let values = FieldValues::from_json(json!({"flag": true})).unwrap();
     let validated = schema.validate(&values).unwrap();
-    let resolved = validated.resolve(&ConstCtx(json!(null))).await.unwrap();
+    let resolved = validated.resolve(&ConstCtx(json!(null))).unwrap();
 
     assert_eq!(resolved.get(&field_key!("flag")), Some(&json!(true)));
     assert!(resolved.warnings().is_empty());
@@ -125,8 +121,8 @@ async fn fast_path_no_expressions() {
 
 // ── Expression evaluates and replaces with literal ────────────────────────────
 
-#[tokio::test]
-async fn expression_resolves_to_literal() {
+#[test]
+fn expression_resolves_to_literal() {
     let schema = Schema::builder()
         .add(Field::number(field_key!("n")))
         .build()
@@ -136,15 +132,15 @@ async fn expression_resolves_to_literal() {
     let validated = schema.validate(&values).unwrap();
 
     let ctx = ConstCtx(json!(42.0));
-    let resolved = validated.resolve(&ctx).await.unwrap();
+    let resolved = validated.resolve(&ctx).unwrap();
 
     assert_eq!(resolved.get(&field_key!("n")), Some(&json!(42.0)));
 }
 
 // ── Literal values pass through unchanged ─────────────────────────────────────
 
-#[tokio::test]
-async fn literal_values_pass_through() {
+#[test]
+fn literal_values_pass_through() {
     let schema = Schema::builder()
         .add(Field::string(field_key!("s")))
         .build()
@@ -153,18 +149,15 @@ async fn literal_values_pass_through() {
     let values = FieldValues::from_json(json!({"s": "hello"})).unwrap();
     let validated = schema.validate(&values).unwrap();
 
-    let resolved = validated
-        .resolve(&ConstCtx(json!("ignored")))
-        .await
-        .unwrap();
+    let resolved = validated.resolve(&ConstCtx(json!("ignored"))).unwrap();
 
     assert_eq!(resolved.get(&field_key!("s")), Some(&json!("hello")));
 }
 
 // ── Expression evaluation failure → expression.runtime error ─────────────────
 
-#[tokio::test]
-async fn expression_evaluation_failure_returns_report() {
+#[test]
+fn expression_evaluation_failure_returns_report() {
     let schema = Schema::builder()
         .add(Field::string(field_key!("x")))
         .build()
@@ -173,7 +166,7 @@ async fn expression_evaluation_failure_returns_report() {
     let values = FieldValues::from_json(json!({"x": {"$expr": "{{ $bad }}"}})).unwrap();
     let validated = schema.validate(&values).unwrap();
 
-    let report = validated.resolve(&FailCtx).await.unwrap_err();
+    let report = validated.resolve(&FailCtx).unwrap_err();
     assert!(
         report.errors().any(|e| e.code == "expression.runtime"),
         "expected expression.runtime, got: {:?}",
@@ -181,8 +174,8 @@ async fn expression_evaluation_failure_returns_report() {
     );
 }
 
-#[tokio::test]
-async fn expression_type_mismatch_returns_expression_type_mismatch() {
+#[test]
+fn expression_type_mismatch_returns_expression_type_mismatch() {
     let schema = Schema::builder()
         .add(Field::string(field_key!("x")))
         .build()
@@ -191,7 +184,7 @@ async fn expression_type_mismatch_returns_expression_type_mismatch() {
     let values = FieldValues::from_json(json!({"x": {"$expr": "{{ $n }}"}})).unwrap();
     let validated = schema.validate(&values).unwrap();
 
-    let report = validated.resolve(&ConstCtx(json!(123))).await.unwrap_err();
+    let report = validated.resolve(&ConstCtx(json!(123))).unwrap_err();
     assert!(
         report
             .errors()
@@ -206,8 +199,8 @@ async fn expression_type_mismatch_returns_expression_type_mismatch() {
     );
 }
 
-#[tokio::test]
-async fn expression_type_mismatch_in_nested_object_is_remapped() {
+#[test]
+fn expression_type_mismatch_in_nested_object_is_remapped() {
     let schema = Schema::builder()
         .add(Field::object(field_key!("user")).add(Field::string(field_key!("name"))))
         .build()
@@ -217,7 +210,7 @@ async fn expression_type_mismatch_in_nested_object_is_remapped() {
         FieldValues::from_json(json!({"user": {"name": {"$expr": "{{ $bad_str }}"}}})).unwrap();
     let validated = schema.validate(&values).unwrap();
 
-    let report = validated.resolve(&RoutingCtx).await.unwrap_err();
+    let report = validated.resolve(&RoutingCtx).unwrap_err();
     assert!(
         report
             .errors()
@@ -235,8 +228,8 @@ async fn expression_type_mismatch_in_nested_object_is_remapped() {
     );
 }
 
-#[tokio::test]
-async fn expression_type_mismatch_in_list_item_is_remapped() {
+#[test]
+fn expression_type_mismatch_in_list_item_is_remapped() {
     let schema = Schema::builder()
         .add(Field::list(field_key!("tags")).item(Field::string(field_key!("_item"))))
         .build()
@@ -248,7 +241,7 @@ async fn expression_type_mismatch_in_list_item_is_remapped() {
     .unwrap();
     let validated = schema.validate(&values).unwrap();
 
-    let report = validated.resolve(&RoutingCtx).await.unwrap_err();
+    let report = validated.resolve(&RoutingCtx).unwrap_err();
     assert!(
         report
             .errors()
@@ -266,8 +259,8 @@ async fn expression_type_mismatch_in_list_item_is_remapped() {
     );
 }
 
-#[tokio::test]
-async fn expression_type_mismatch_remap_is_scoped_to_failing_sibling() {
+#[test]
+fn expression_type_mismatch_remap_is_scoped_to_failing_sibling() {
     let schema = Schema::builder()
         .add(Field::string(field_key!("a")))
         .add(Field::number(field_key!("b")))
@@ -281,7 +274,7 @@ async fn expression_type_mismatch_remap_is_scoped_to_failing_sibling() {
     .unwrap();
     let validated = schema.validate(&values).unwrap();
 
-    let report = validated.resolve(&RoutingCtx).await.unwrap_err();
+    let report = validated.resolve(&RoutingCtx).unwrap_err();
     let mismatch_paths: Vec<String> = report
         .errors()
         .filter(|e| e.code == "expression.type_mismatch")
@@ -305,8 +298,8 @@ async fn expression_type_mismatch_remap_is_scoped_to_failing_sibling() {
 
 // ── Nested object with expressions ────────────────────────────────────────────
 
-#[tokio::test]
-async fn nested_object_expressions_resolve() {
+#[test]
+fn nested_object_expressions_resolve() {
     let schema = Schema::builder()
         .add(
             Field::object(field_key!("user"))
@@ -325,7 +318,7 @@ async fn nested_object_expressions_resolve() {
     .unwrap();
 
     let validated = schema.validate(&values).unwrap();
-    let resolved = validated.resolve(&ConstCtx(json!("Alice"))).await.unwrap();
+    let resolved = validated.resolve(&ConstCtx(json!("Alice"))).unwrap();
 
     let name = resolved
         .values()
@@ -342,8 +335,8 @@ async fn nested_object_expressions_resolve() {
 
 // ── List with expressions ─────────────────────────────────────────────────────
 
-#[tokio::test]
-async fn list_items_with_expressions_resolve() {
+#[test]
+fn list_items_with_expressions_resolve() {
     let schema = Schema::builder()
         .add(Field::list(field_key!("tags")).item(Field::string(field_key!("_item"))))
         .build()
@@ -359,7 +352,7 @@ async fn list_items_with_expressions_resolve() {
 
     let validated = schema.validate(&values).unwrap();
     let ctx = ConstCtx(json!("evaluated-tag"));
-    let resolved = validated.resolve(&ctx).await.unwrap();
+    let resolved = validated.resolve(&ctx).unwrap();
 
     let first = resolved
         .values()
@@ -373,8 +366,8 @@ async fn list_items_with_expressions_resolve() {
 
 // ── Multiple expressions — all resolved in one pass ───────────────────────────
 
-#[tokio::test]
-async fn multiple_expressions_all_resolve() {
+#[test]
+fn multiple_expressions_all_resolve() {
     let schema = Schema::builder()
         .add(Field::string(field_key!("a")))
         .add(Field::string(field_key!("b")))
@@ -388,10 +381,7 @@ async fn multiple_expressions_all_resolve() {
     .unwrap();
 
     let validated = schema.validate(&values).unwrap();
-    let resolved = validated
-        .resolve(&ConstCtx(json!("resolved")))
-        .await
-        .unwrap();
+    let resolved = validated.resolve(&ConstCtx(json!("resolved"))).unwrap();
 
     assert_eq!(resolved.get(&field_key!("a")), Some(&json!("resolved")));
     assert_eq!(resolved.get(&field_key!("b")), Some(&json!("resolved")));
@@ -399,8 +389,8 @@ async fn multiple_expressions_all_resolve() {
 
 // ── into_json / into_typed ────────────────────────────────────────────────────
 
-#[tokio::test]
-async fn into_json_works_after_resolution() {
+#[test]
+fn into_json_works_after_resolution() {
     let schema = Schema::builder()
         .add(Field::string(field_key!("name")))
         .build()
@@ -408,14 +398,14 @@ async fn into_json_works_after_resolution() {
 
     let values = FieldValues::from_json(json!({"name": {"$expr": "{{ $n }}"}})).unwrap();
     let validated = schema.validate(&values).unwrap();
-    let resolved = validated.resolve(&ConstCtx(json!("Bob"))).await.unwrap();
+    let resolved = validated.resolve(&ConstCtx(json!("Bob"))).unwrap();
 
     let out = resolved.into_json();
     assert_eq!(out, json!({"name": "Bob"}));
 }
 
-#[tokio::test]
-async fn into_typed_deserializes_successfully() {
+#[test]
+fn into_typed_deserializes_successfully() {
     let schema = Schema::builder()
         .add(Field::string(field_key!("name")))
         .build()
@@ -423,7 +413,7 @@ async fn into_typed_deserializes_successfully() {
 
     let values = FieldValues::from_json(json!({"name": {"$expr": "{{ $n }}"}})).unwrap();
     let validated = schema.validate(&values).unwrap();
-    let resolved = validated.resolve(&ConstCtx(json!("Bob"))).await.unwrap();
+    let resolved = validated.resolve(&ConstCtx(json!("Bob"))).unwrap();
 
     let typed: Person = resolved.into_typed().unwrap();
     assert_eq!(
@@ -434,8 +424,8 @@ async fn into_typed_deserializes_successfully() {
     );
 }
 
-#[tokio::test]
-async fn into_typed_returns_type_mismatch_on_deserialize_failure() {
+#[test]
+fn into_typed_returns_type_mismatch_on_deserialize_failure() {
     let schema = Schema::builder()
         .add(Field::string(field_key!("name")))
         .build()
@@ -443,14 +433,14 @@ async fn into_typed_returns_type_mismatch_on_deserialize_failure() {
 
     let values = FieldValues::from_json(json!({"name": {"$expr": "{{ $n }}"}})).unwrap();
     let validated = schema.validate(&values).unwrap();
-    let resolved = validated.resolve(&ConstCtx(json!("Bob"))).await.unwrap();
+    let resolved = validated.resolve(&ConstCtx(json!("Bob"))).unwrap();
 
     let err = resolved.into_typed::<u64>().unwrap_err();
     assert_eq!(err.code, "type_mismatch");
 }
 
-#[tokio::test]
-async fn secret_field_promotes_and_resolved_get_sanitizes_json() {
+#[test]
+fn secret_field_promotes_and_resolved_get_sanitizes_json() {
     let schema = Schema::builder()
         .add(Field::secret(field_key!("api_key")).required())
         .build()
@@ -458,7 +448,7 @@ async fn secret_field_promotes_and_resolved_get_sanitizes_json() {
 
     let values = FieldValues::from_json(json!({"api_key": "sekrit"})).unwrap();
     let valid = schema.validate(&values).unwrap();
-    let resolved = valid.resolve(&ConstCtx(json!(null))).await.unwrap();
+    let resolved = valid.resolve(&ConstCtx(json!(null))).unwrap();
 
     assert!(resolved.get(&field_key!("api_key")).is_none());
     assert!(matches!(
@@ -480,8 +470,8 @@ async fn secret_field_promotes_and_resolved_get_sanitizes_json() {
     assert_eq!(obj.get("api_key"), Some(&json!("<redacted>")));
 }
 
-#[tokio::test]
-async fn into_typed_rejects_secret_material_by_default() {
+#[test]
+fn into_typed_rejects_secret_material_by_default() {
     let schema = Schema::builder()
         .add(Field::secret(field_key!("api_key")).required())
         .build()
@@ -489,7 +479,7 @@ async fn into_typed_rejects_secret_material_by_default() {
 
     let values = FieldValues::from_json(json!({"api_key": "sekrit"})).unwrap();
     let valid = schema.validate(&values).unwrap();
-    let resolved = valid.resolve(&ConstCtx(json!(null))).await.unwrap();
+    let resolved = valid.resolve(&ConstCtx(json!(null))).unwrap();
 
     let err = resolved.into_typed::<ApiCredential>().unwrap_err();
     assert_eq!(err.code, "type_mismatch");
@@ -501,8 +491,8 @@ async fn into_typed_rejects_secret_material_by_default() {
     );
 }
 
-#[tokio::test]
-async fn resolve_promotes_mode_object_envelope_secrets_via_default_variant() {
+#[test]
+fn resolve_promotes_mode_object_envelope_secrets_via_default_variant() {
     let schema = Schema::builder()
         .add(
             Field::mode(field_key!("auth"))
@@ -526,7 +516,7 @@ async fn resolve_promotes_mode_object_envelope_secrets_via_default_variant() {
     }))
     .unwrap();
     let valid = schema.validate(&values).unwrap();
-    let resolved = valid.resolve(&ConstCtx(json!(null))).await.unwrap();
+    let resolved = valid.resolve(&ConstCtx(json!(null))).unwrap();
 
     let secret_path = FieldPath::parse("auth.value.api_key").unwrap();
     let secret = resolved

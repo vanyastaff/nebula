@@ -2,8 +2,6 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    future::Future,
-    pin::Pin,
     sync::{Arc, LazyLock},
 };
 
@@ -478,10 +476,7 @@ impl ValidValues {
             field_count = self.schema.fields().len(),
         )
     )]
-    pub async fn resolve(
-        self,
-        ctx: &dyn ExpressionContext,
-    ) -> Result<ResolvedValues, ValidationReport> {
+    pub fn resolve(self, ctx: &dyn ExpressionContext) -> Result<ResolvedValues, ValidationReport> {
         let mut report = ValidationReport::new();
         let mut values = self.values;
         let mut resolved_expression_paths: HashSet<FieldPath> = HashSet::new();
@@ -500,8 +495,7 @@ impl ValidValues {
                     &path,
                     &mut report,
                     &mut resolved_expression_paths,
-                )
-                .await;
+                );
                 values.set(key, resolved);
             }
 
@@ -910,105 +904,101 @@ fn promote_secret_value(
 /// as `Literal(Value::Null)` so that the walk can continue and collect all
 /// errors in one pass.
 ///
-/// The function is recursive and uses `Box::pin` to satisfy the async
-/// recursion requirement.
-fn resolve_value<'v>(
+/// The function recurses synchronously; recursion depth is bounded by the
+/// schema's structural depth limit enforced at lint time.
+fn resolve_value(
     value: FieldValue,
-    ctx: &'v dyn ExpressionContext,
-    path: &'v FieldPath,
-    report: &'v mut ValidationReport,
-    resolved_expression_paths: &'v mut HashSet<FieldPath>,
-) -> Pin<Box<dyn Future<Output = FieldValue> + Send + 'v>> {
-    Box::pin(async move {
-        match value {
-            FieldValue::Expression(ref expr) => {
-                tracing::debug!(
-                    target: "nebula_schema::resolve",
-                    path = %path,
-                    "evaluating expression"
-                );
-                match expr.parse_at(path) {
-                    Ok(ast) => match ctx.evaluate(ast).await {
-                        Ok(v) => {
-                            tracing::trace!(
-                                target: "nebula_schema::resolve",
-                                path = %path,
-                                "expression resolved"
-                            );
-                            resolved_expression_paths.insert(path.clone());
-                            FieldValue::Literal(v)
-                        },
-                        Err(mut e) => {
-                            // Attach path context and enforce the standard code.
-                            if e.code == "expression.runtime" {
-                                e = e.with_field(path.to_string());
-                            } else {
-                                e = ValidationError::builder("expression.runtime")
-                                    .at_field(path.to_string())
-                                    .message(e.message.clone())
-                                    .build();
-                            }
-                            tracing::warn!(
-                                target: "nebula_schema::resolve",
-                                path = %path,
-                                code = %e.code,
-                                "expression evaluation failed"
-                            );
-                            report.push(e);
-                            FieldValue::Literal(serde_json::Value::Null)
-                        },
+    ctx: &dyn ExpressionContext,
+    path: &FieldPath,
+    report: &mut ValidationReport,
+    resolved_expression_paths: &mut HashSet<FieldPath>,
+) -> FieldValue {
+    match value {
+        FieldValue::Expression(ref expr) => {
+            tracing::debug!(
+                target: "nebula_schema::resolve",
+                path = %path,
+                "evaluating expression"
+            );
+            match expr.parse_at(path) {
+                Ok(ast) => match ctx.evaluate(&ast) {
+                    Ok(v) => {
+                        tracing::trace!(
+                            target: "nebula_schema::resolve",
+                            path = %path,
+                            "expression resolved"
+                        );
+                        resolved_expression_paths.insert(path.clone());
+                        FieldValue::Literal(v)
                     },
-                    Err(e) => {
+                    Err(mut e) => {
+                        // Attach path context and enforce the standard code.
+                        if e.code == "expression.runtime" {
+                            e = e.with_field(path.to_string());
+                        } else {
+                            e = ValidationError::builder("expression.runtime")
+                                .at_field(path.to_string())
+                                .message(e.message.clone())
+                                .build();
+                        }
                         tracing::warn!(
                             target: "nebula_schema::resolve",
                             path = %path,
                             code = %e.code,
-                            "expression parse failed at resolve"
+                            "expression evaluation failed"
                         );
                         report.push(e);
                         FieldValue::Literal(serde_json::Value::Null)
                     },
-                }
-            },
-            FieldValue::Object(map) => {
-                let mut out = IndexMap::with_capacity(map.len());
-                for (k, v) in map {
-                    let child_path = path.clone().join(k.clone());
-                    let resolved =
-                        resolve_value(v, ctx, &child_path, report, resolved_expression_paths).await;
-                    out.insert(k, resolved);
-                }
-                FieldValue::Object(out)
-            },
-            FieldValue::List(items) => {
-                let mut out = Vec::with_capacity(items.len());
-                for (i, v) in items.into_iter().enumerate() {
-                    let item_path = path.clone().join(i);
-                    let resolved =
-                        resolve_value(v, ctx, &item_path, report, resolved_expression_paths).await;
-                    out.push(resolved);
-                }
-                FieldValue::List(out)
-            },
-            FieldValue::Mode { mode, value } => {
-                let resolved_value = if let Some(inner) = value {
-                    let inner_path = path.clone().join((*MODE_PAYLOAD_KEY).clone());
-                    let resolved =
-                        resolve_value(*inner, ctx, &inner_path, report, resolved_expression_paths)
-                            .await;
-                    Some(Box::new(resolved))
-                } else {
-                    None
-                };
-                FieldValue::Mode {
-                    mode,
-                    value: resolved_value,
-                }
-            },
-            // Literals pass through unchanged.
-            other => other,
-        }
-    })
+                },
+                Err(e) => {
+                    tracing::warn!(
+                        target: "nebula_schema::resolve",
+                        path = %path,
+                        code = %e.code,
+                        "expression parse failed at resolve"
+                    );
+                    report.push(e);
+                    FieldValue::Literal(serde_json::Value::Null)
+                },
+            }
+        },
+        FieldValue::Object(map) => {
+            let mut out = IndexMap::with_capacity(map.len());
+            for (k, v) in map {
+                let child_path = path.clone().join(k.clone());
+                let resolved =
+                    resolve_value(v, ctx, &child_path, report, resolved_expression_paths);
+                out.insert(k, resolved);
+            }
+            FieldValue::Object(out)
+        },
+        FieldValue::List(items) => {
+            let mut out = Vec::with_capacity(items.len());
+            for (i, v) in items.into_iter().enumerate() {
+                let item_path = path.clone().join(i);
+                let resolved = resolve_value(v, ctx, &item_path, report, resolved_expression_paths);
+                out.push(resolved);
+            }
+            FieldValue::List(out)
+        },
+        FieldValue::Mode { mode, value } => {
+            let resolved_value = if let Some(inner) = value {
+                let inner_path = path.clone().join((*MODE_PAYLOAD_KEY).clone());
+                let resolved =
+                    resolve_value(*inner, ctx, &inner_path, report, resolved_expression_paths);
+                Some(Box::new(resolved))
+            } else {
+                None
+            };
+            FieldValue::Mode {
+                mode,
+                value: resolved_value,
+            }
+        },
+        // Literals pass through unchanged.
+        other => other,
+    }
 }
 
 fn remap_expression_type_mismatch(

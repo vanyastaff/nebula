@@ -1,148 +1,137 @@
-//! Expression value wrapper — lazy parse via OnceLock.
+//! Expression value wrapper — single-parse via `nebula_expression::CachedExpression`.
 
-use std::{
-    future::Future,
-    pin::Pin,
-    sync::{Arc, OnceLock},
-};
+use std::{borrow::Cow, sync::Arc};
+
+use nebula_expression::CachedExpression;
 
 use crate::{error::ValidationError, path::FieldPath};
 
-/// Boxed future returned by [`ExpressionContext::evaluate`].
-///
-/// Stored as a type alias so impls can write `Box::pin(async move { … })`
-/// without spelling out the full `Pin<Box<dyn Future …>>` shape.
-pub type EvalFuture<'a> =
-    Pin<Box<dyn Future<Output = Result<serde_json::Value, ValidationError>> + Send + 'a>>;
-
 /// Minimal contract required to evaluate an expression at runtime.
 ///
-/// Implement this to bridge nebula-schema's resolution phase with any
-/// expression engine. The real evaluator lives in `nebula-expression`;
-/// this trait is the integration seam so tests can use a stub.
+/// Implement this to bridge nebula-schema's resolution phase with an
+/// expression engine. The real evaluator lives in `nebula-expression`; this
+/// trait is the integration seam so tests can use a stub.
 ///
-/// The trait is dyn-safe: callers receive `&dyn ExpressionContext` from
-/// [`ValidValues::resolve`](crate::ValidValues::resolve). The `evaluate`
-/// method intentionally returns a [`EvalFuture`] (boxed future) instead of
-/// using `async fn` so the trait stays object-safe under Rust 1.95 / edition
-/// 2024 without an `async-trait` macro indirection.
+/// The seam is **synchronous**: the expression evaluator is synchronous and
+/// resolution performs no I/O, so wrapping it in a boxed future bought nothing
+/// but per-node allocation. Implementors evaluate the pre-parsed
+/// [`ExpressionAst`] — typically via
+/// [`ExpressionEngine::evaluate_cached`](nebula_expression::ExpressionEngine::evaluate_cached) —
+/// which reuses the AST parsed at schema-validation time (no re-parse).
 ///
 /// # Example
 ///
 /// ```rust
-/// use nebula_schema::{EvalFuture, ExpressionAst, ExpressionContext, ValidationError};
+/// use nebula_schema::{ExpressionAst, ExpressionContext, ValidationError};
 ///
 /// struct ConstCtx(serde_json::Value);
 ///
 /// impl ExpressionContext for ConstCtx {
-///     fn evaluate<'a>(&'a self, _ast: &'a ExpressionAst) -> EvalFuture<'a> {
-///         Box::pin(async move { Ok(self.0.clone()) })
+///     fn evaluate(&self, _ast: &ExpressionAst) -> Result<serde_json::Value, ValidationError> {
+///         Ok(self.0.clone())
 ///     }
 /// }
 /// ```
 pub trait ExpressionContext: Send + Sync {
-    /// Evaluate a parsed expression AST and return the resulting JSON value.
+    /// Evaluate a parsed expression and return the resulting JSON value.
     ///
     /// Errors should use code `"expression.runtime"`.
-    fn evaluate<'a>(&'a self, ast: &'a ExpressionAst) -> EvalFuture<'a>;
+    ///
+    /// # Errors
+    ///
+    /// Returns a `ValidationError` when evaluation fails.
+    fn evaluate(&self, ast: &ExpressionAst) -> Result<serde_json::Value, ValidationError>;
 }
 
-/// Opaque parsed AST wrapper.
+/// A parsed, reusable expression handle.
 ///
-/// The parse/grammar source of truth is `nebula-expression`; this struct
-/// intentionally exposes only the original source so schema consumers are not
-/// coupled to expression crate internals.
+/// Wraps `nebula_expression::CachedExpression` so the source is parsed exactly
+/// once — at schema-validation time — and the same AST is reused at resolve
+/// time. The `Arc` makes cloning cheap and keeps the cached AST shared.
 #[derive(Debug, Clone)]
-#[non_exhaustive]
 pub struct ExpressionAst {
-    /// Raw expression source — the only payload this wrapper exposes.
-    pub(crate) source: Arc<str>,
+    cached: Arc<CachedExpression>,
 }
 
 impl ExpressionAst {
+    /// Borrow the underlying cached expression (for `evaluate_cached`).
+    #[must_use]
+    pub fn cached(&self) -> &CachedExpression {
+        &self.cached
+    }
+
     /// Borrow the raw expression source.
     #[must_use]
     pub fn source(&self) -> &str {
-        &self.source
+        &self.cached.source
     }
 }
 
 /// An unresolved expression (e.g. `{{ $input.name }}`).
 #[derive(Debug, Clone)]
 pub struct Expression {
-    source: Arc<str>,
-    parsed: Arc<OnceLock<Result<ExpressionAst, Arc<str>>>>,
+    cached: Arc<CachedExpression>,
 }
 
 impl Expression {
     /// Wrap an expression source string.
-    pub fn new(source: impl Into<Arc<str>>) -> Self {
+    pub fn new(source: impl Into<String>) -> Self {
         Self {
-            source: source.into(),
-            parsed: Arc::new(OnceLock::new()),
+            cached: Arc::new(CachedExpression::new(source)),
         }
     }
 
     /// Return the raw expression source.
     #[must_use]
     pub fn source(&self) -> &str {
-        &self.source
+        &self.cached.source
     }
 
-    /// Lazy parse — caches the first parse result (success or error).
+    /// Parse the expression, returning a reusable [`ExpressionAst`].
     ///
     /// # Errors
     ///
     /// Returns `ValidationError` with code `expression.parse` if parsing fails.
-    pub fn parse(&self) -> Result<&ExpressionAst, ValidationError> {
+    pub fn parse(&self) -> Result<ExpressionAst, ValidationError> {
         self.parse_at(&FieldPath::root())
     }
 
-    /// Lazy parse with caller-provided path context for errors.
+    /// Parse with caller-provided path context for errors.
     ///
-    /// The parse result is cached (success or syntax failure), while the
-    /// returned [`ValidationError`] path is attached per call site.
+    /// Forces the parse now (a syntax check) and caches the AST inside the
+    /// shared `CachedExpression`, so resolve-time evaluation reuses it without
+    /// re-parsing. The parse result (success or failure) is cached; the
+    /// returned error path is attached per call site.
     ///
     /// # Errors
     ///
     /// Returns `ValidationError` with code `expression.parse` if parsing fails.
-    pub fn parse_at(&self, path: &FieldPath) -> Result<&ExpressionAst, ValidationError> {
-        match self.parsed.get_or_init(|| {
-            parse_expression_source(self.source())
-                .map(|()| ExpressionAst {
-                    source: self.source.clone(),
-                })
-                .map_err(Arc::<str>::from)
-        }) {
-            Ok(ast) => Ok(ast),
-            Err(message) => Err(ValidationError::builder("expression.parse")
+    pub fn parse_at(&self, path: &FieldPath) -> Result<ExpressionAst, ValidationError> {
+        match self.cached.ast() {
+            Ok(_) => Ok(ExpressionAst {
+                cached: Arc::clone(&self.cached),
+            }),
+            Err(e) => Err(ValidationError::builder("expression.parse")
                 .at_field(path.to_string())
-                .message(message.to_string())
-                .param("source", self.source.to_string())
+                .message(e.to_string())
+                .param("source", self.cached.source.clone())
                 .build()),
         }
     }
 
     /// Build a parse error tagged for this expression.
     #[allow(dead_code)]
-    pub(crate) fn parse_error(
-        &self,
-        msg: impl Into<std::borrow::Cow<'static, str>>,
-    ) -> ValidationError {
+    pub(crate) fn parse_error(&self, msg: impl Into<Cow<'static, str>>) -> ValidationError {
         ValidationError::builder("expression.parse")
             .message(msg)
-            .param("source", self.source.to_string())
+            .param("source", self.cached.source.clone())
             .build()
     }
 }
 
-fn parse_expression_source(source: &str) -> Result<(), String> {
-    nebula_expression::parse_expression(source).map_err(|e| e.to_string())
-}
-
 impl PartialEq for Expression {
     fn eq(&self, other: &Self) -> bool {
-        self.source == other.source
+        self.cached.source == other.cached.source
     }
 }
 
@@ -151,11 +140,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn lazy_parse_is_cached() {
+    fn parse_caches_ast_across_calls() {
         let e = Expression::new("{{ $x }}");
-        let a1 = std::ptr::from_ref(e.parse().unwrap());
-        let a2 = std::ptr::from_ref(e.parse().unwrap());
-        assert_eq!(a1, a2, "parse should cache the same AST instance");
+        let a1 = e.parse().unwrap();
+        let a2 = e.parse().unwrap();
+        // Both handles share the same cached expression instance.
+        assert!(Arc::ptr_eq(&a1.cached, &a2.cached));
     }
 
     #[test]
@@ -170,7 +160,6 @@ mod tests {
         let e = Expression::new("bad");
         let err = e.parse_error("boom");
         assert_eq!(err.code, "expression.parse");
-        // params stored as string key/value pairs on the canonical error.
         let found = err
             .params()
             .iter()

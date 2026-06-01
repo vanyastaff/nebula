@@ -18,6 +18,31 @@ use crate::{
     eval::Evaluator, lexer::Lexer, parser::Parser, policy::EvaluationPolicy,
 };
 
+/// Parse an expression (or single `{{ … }}`-wrapped expression) source string
+/// into an AST, stripping surrounding template delimiters if present.
+///
+/// This is the canonical single-expression parse used by both
+/// [`ExpressionEngine::evaluate`] and [`crate::maybe::CachedExpression`], so a
+/// value parsed at schema-validation time evaluates without re-parsing.
+///
+/// # Errors
+///
+/// Returns an [`ExpressionError`](crate::ExpressionError) when lexing or
+/// parsing fails.
+pub fn parse_program(source: &str) -> ExpressionResult<Expr> {
+    let expr_content = if source.trim().starts_with("{{") && source.trim().ends_with("}}") {
+        let trimmed = source.trim();
+        trimmed[2..trimmed.len() - 2].trim()
+    } else {
+        source
+    };
+
+    let mut lexer = Lexer::new(expr_content);
+    let tokens = lexer.tokenize()?;
+    let mut parser = Parser::new(tokens);
+    parser.parse()
+}
+
 /// Cache hit/miss statistics snapshot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CacheStats {
@@ -354,22 +379,24 @@ impl ExpressionEngine {
 
     /// Parse an expression string into an AST (internal helper)
     fn parse_expression(&self, expression: &str) -> ExpressionResult<Expr> {
-        // Handle template delimiters
-        let expr_content =
-            if expression.trim().starts_with("{{") && expression.trim().ends_with("}}") {
-                let trimmed = expression.trim();
-                trimmed[2..trimmed.len() - 2].trim()
-            } else {
-                expression
-            };
+        parse_program(expression)
+    }
 
-        // Tokenize
-        let mut lexer = Lexer::new(expr_content);
-        let tokens = lexer.tokenize()?;
-
-        // Parse
-        let mut parser = Parser::new(tokens);
-        parser.parse()
+    /// Evaluate a pre-parsed [`CachedExpression`](crate::maybe::CachedExpression)
+    /// against the given context.
+    ///
+    /// The AST is parsed once on first use and cached inside the
+    /// `CachedExpression`; subsequent calls reuse it. This is the single-parse
+    /// path used by `nebula-schema`'s resolution seam — the expression is
+    /// parsed during schema validation and the same AST is evaluated here,
+    /// avoiding the historical re-parse from source.
+    pub fn evaluate_cached(
+        &self,
+        cached: &crate::maybe::CachedExpression,
+        context: &EvaluationContext,
+    ) -> ExpressionResult<Value> {
+        let ast = cached.ast()?;
+        self.evaluator.eval(ast, context)
     }
 
     /// Clear all caches (expressions and templates)

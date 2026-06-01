@@ -5,20 +5,20 @@
 //! assertions instead of `main`.
 
 use nebula_schema::{
-    EvalFuture, ExpressionAst, ExpressionContext, Field, FieldValues, Schema, field_key,
+    ExpressionAst, ExpressionContext, Field, FieldValues, Schema, ValidationError, field_key,
 };
 use serde_json::json;
 
 struct Ctx(serde_json::Value);
 
 impl ExpressionContext for Ctx {
-    fn evaluate<'a>(&'a self, _ast: &'a ExpressionAst) -> EvalFuture<'a> {
-        Box::pin(async move { Ok(self.0.clone()) })
+    fn evaluate(&self, _ast: &ExpressionAst) -> Result<serde_json::Value, ValidationError> {
+        Ok(self.0.clone())
     }
 }
 
-#[tokio::test]
-async fn e2e_happy_path_validate_then_resolve() {
+#[test]
+fn e2e_happy_path_validate_then_resolve() {
     let schema = Schema::builder()
         .add(Field::string(field_key!("name")).required())
         .add(Field::number(field_key!("count")))
@@ -32,12 +32,12 @@ async fn e2e_happy_path_validate_then_resolve() {
     .expect("ingest");
 
     let valid = schema.validate(&values).expect("valid values");
-    let resolved = valid.resolve(&Ctx(json!(7.0))).await.expect("resolve");
+    let resolved = valid.resolve(&Ctx(json!(7.0))).expect("resolve");
     assert_eq!(resolved.get(&field_key!("count")), Some(&json!(7.0)));
 }
 
-#[tokio::test]
-async fn e2e_fast_path_no_expressions_uses_booleans() {
+#[test]
+fn e2e_fast_path_no_expressions_uses_booleans() {
     let schema = Schema::builder()
         .add(Field::boolean(field_key!("flag")))
         .build()
@@ -47,6 +47,6 @@ async fn e2e_fast_path_no_expressions_uses_booleans() {
 
     let values = FieldValues::from_json(json!({ "flag": true })).expect("ingest");
     let valid = schema.validate(&values).expect("valid");
-    let resolved = valid.resolve(&Ctx(json!(null))).await.expect("resolve");
+    let resolved = valid.resolve(&Ctx(json!(null))).expect("resolve");
     assert_eq!(resolved.get(&field_key!("flag")), Some(&json!(true)));
 }

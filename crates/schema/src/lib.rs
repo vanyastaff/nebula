@@ -110,9 +110,10 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 // Hard-deny `#[async_trait::async_trait]` on this crate. Project rule
-// (see `ARCHITECTURE.md` anti-patterns + `clippy.toml`) — Rust 1.75+
-// supports `async fn` in traits directly; the schema crate ships a
-// `BoxFuture`-style `EvalFuture` alias for object-safe usage instead.
+// (see `ARCHITECTURE.md` anti-patterns + `clippy.toml`). The expression
+// resolution seam (`ExpressionContext`) is synchronous — the evaluator is
+// synchronous and resolution does no I/O — so no boxed-future indirection is
+// needed.
 #![deny(clippy::disallowed_macros)]
 
 // Allow `nebula_schema::Foo` to resolve from inside the crate too (lib unit
@@ -176,7 +177,7 @@ pub use builder::{
 pub use error::{
     ErrorSeverity, STANDARD_CODES, ValidationError, ValidationErrorBuilder, ValidationReport,
 };
-pub use expression::{EvalFuture, Expression, ExpressionAst, ExpressionContext};
+pub use expression::{Expression, ExpressionAst, ExpressionContext};
 /// Discriminated field: one of several payload shapes (auth scheme, body kind, etc.).
 ///
 /// # JSON wire format

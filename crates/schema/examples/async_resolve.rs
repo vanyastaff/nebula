@@ -5,7 +5,7 @@
 //! `cargo run -p nebula-schema --example async_resolve`
 
 use nebula_schema::{
-    EvalFuture, ExpressionAst, ExpressionContext, Field, FieldValues, Schema, field_key,
+    ExpressionAst, ExpressionContext, Field, FieldValues, Schema, ValidationError, field_key,
 };
 use serde_json::json;
 
@@ -13,13 +13,12 @@ use serde_json::json;
 struct ConstJson(serde_json::Value);
 
 impl ExpressionContext for ConstJson {
-    fn evaluate<'a>(&'a self, _ast: &'a ExpressionAst) -> EvalFuture<'a> {
-        Box::pin(async move { Ok(self.0.clone()) })
+    fn evaluate(&self, _ast: &ExpressionAst) -> Result<serde_json::Value, ValidationError> {
+        Ok(self.0.clone())
     }
 }
 
-#[tokio::main]
-async fn main() {
+fn main() {
     let schema = Schema::builder()
         .add(Field::boolean(field_key!("enabled")))
         .add(Field::number(field_key!("n")))
@@ -35,7 +34,7 @@ async fn main() {
 
     let valid = schema.validate(&values).expect("validate");
     let ctx = ConstJson(json!(42.0));
-    let resolved = valid.resolve(&ctx).await.expect("resolve");
+    let resolved = valid.resolve(&ctx).expect("resolve");
 
     assert_eq!(resolved.get(&field_key!("n")), Some(&json!(42.0)));
     eprintln!("OK: resolved numeric field via expression context");

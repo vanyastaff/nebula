@@ -30,7 +30,7 @@
 //! - `"loader.missing_config"` — `load_select_options_without_loader_emits_missing_config`.
 
 use nebula_schema::{
-    EvalFuture, ExpressionAst, ExpressionContext, Field, FieldKey, FieldValue, FieldValues, Schema,
+    ExpressionAst, ExpressionContext, Field, FieldKey, FieldValue, FieldValues, Schema,
     ValidationError, ValidationReport, field_key,
 };
 use serde_json::json;
@@ -386,32 +386,30 @@ fn emits_expression_parse() {
 struct RuntimeFailCtx;
 
 impl ExpressionContext for RuntimeFailCtx {
-    fn evaluate<'a>(&'a self, _ast: &'a ExpressionAst) -> EvalFuture<'a> {
-        Box::pin(async move {
-            Err(ValidationError::builder("expression.runtime")
-                .message("forced runtime failure")
-                .build())
-        })
+    fn evaluate(&self, _ast: &ExpressionAst) -> Result<serde_json::Value, ValidationError> {
+        Err(ValidationError::builder("expression.runtime")
+            .message("forced runtime failure")
+            .build())
     }
 }
 
 struct ConstCtx(serde_json::Value);
 
 impl ExpressionContext for ConstCtx {
-    fn evaluate<'a>(&'a self, _ast: &'a ExpressionAst) -> EvalFuture<'a> {
-        Box::pin(async move { Ok(self.0.clone()) })
+    fn evaluate(&self, _ast: &ExpressionAst) -> Result<serde_json::Value, ValidationError> {
+        Ok(self.0.clone())
     }
 }
 
-#[tokio::test]
-async fn emits_expression_runtime() {
+#[test]
+fn emits_expression_runtime() {
     let schema = Schema::builder()
         .add(Field::string(field_key!("x")))
         .build()
         .unwrap();
     let values = FieldValues::from_json(json!({"x": {"$expr": "{{ $bad }}"}})).unwrap();
     let validated = schema.validate(&values).unwrap();
-    let report = validated.resolve(&RuntimeFailCtx).await.unwrap_err();
+    let report = validated.resolve(&RuntimeFailCtx).unwrap_err();
     assert!(
         has_code(&report, "expression.runtime"),
         "expected expression.runtime, got: {:?}",
@@ -419,15 +417,15 @@ async fn emits_expression_runtime() {
     );
 }
 
-#[tokio::test]
-async fn emits_expression_type_mismatch() {
+#[test]
+fn emits_expression_type_mismatch() {
     let schema = Schema::builder()
         .add(Field::string(field_key!("x")))
         .build()
         .unwrap();
     let values = FieldValues::from_json(json!({"x": {"$expr": "{{ $n }}"}})).unwrap();
     let validated = schema.validate(&values).unwrap();
-    let report = validated.resolve(&ConstCtx(json!(123))).await.unwrap_err();
+    let report = validated.resolve(&ConstCtx(json!(123))).unwrap_err();
     assert!(
         has_code(&report, "expression.type_mismatch"),
         "expected expression.type_mismatch, got: {:?}",

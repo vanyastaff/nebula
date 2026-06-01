@@ -106,6 +106,22 @@ pub enum ExpressionError {
     DepthExceeded { limit: usize, actual: usize },
 }
 
+impl From<ExpressionError> for nebula_error::ValidationError {
+    /// Converts an evaluator error into the canonical validation error at the
+    /// schema seam, mapping the variant onto a schema-stable `expression.*`
+    /// code so downstream consumers see one error vocabulary.
+    fn from(err: ExpressionError) -> Self {
+        let code = match &err {
+            ExpressionError::SyntaxError { .. } | ExpressionError::ParseError { .. } => {
+                "expression.parse"
+            },
+            ExpressionError::TypeError { .. } => "expression.type_mismatch",
+            _ => "expression.runtime",
+        };
+        nebula_error::ValidationError::new(code, err.to_string())
+    }
+}
+
 impl ExpressionError {
     // ============================================================================
     // Convenience Constructors

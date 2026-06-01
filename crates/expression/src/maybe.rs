@@ -21,14 +21,42 @@ use crate::{ExpressionError, ast::Expr, context::EvaluationContext, engine::Expr
 /// reinterpreted as an expression on deserialize.
 const EXPR_TAG: &str = "$expr";
 
-/// Internal structure for cached expression parsing
+/// A reusable expression handle that parses its source once and caches the
+/// resulting AST (or the parse-error message) for every subsequent evaluation.
 #[derive(Debug)]
 #[doc(hidden)]
 pub struct CachedExpression {
     /// Source expression string
     pub source: String,
-    #[doc(hidden)]
-    pub ast: OnceLock<Expr>,
+    /// Lazily-parsed AST, or the parse-error message. Cached on first use.
+    ast: OnceLock<Result<Expr, String>>,
+}
+
+impl CachedExpression {
+    /// Wraps an expression source string. The AST is parsed lazily on first
+    /// [`ast`](Self::ast) / evaluation call.
+    #[must_use]
+    pub fn new(source: impl Into<String>) -> Self {
+        Self {
+            source: source.into(),
+            ast: OnceLock::new(),
+        }
+    }
+
+    /// Returns the parsed AST, parsing (and caching) on first call.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`ExpressionError`] if the source fails to parse.
+    pub fn ast(&self) -> crate::error::ExpressionResult<&Expr> {
+        match self
+            .ast
+            .get_or_init(|| crate::engine::parse_program(&self.source).map_err(|e| e.to_string()))
+        {
+            Ok(expr) => Ok(expr),
+            Err(message) => Err(ExpressionError::parse_error(message.clone())),
+        }
+    }
 }
 
 impl Clone for CachedExpression {
@@ -100,10 +128,7 @@ impl<T> MaybeExpression<T> {
 
     /// Create a new expression
     pub fn expression(expr: impl Into<String>) -> Self {
-        Self::Expression(CachedExpression {
-            source: expr.into(),
-            ast: OnceLock::new(),
-        })
+        Self::Expression(CachedExpression::new(expr))
     }
 
     /// Check if this is a concrete value
@@ -188,7 +213,7 @@ where
         match self {
             Self::Value(v) => Ok(v.clone()),
             Self::Expression(cached) => {
-                let value = engine.evaluate(&cached.source, context)?;
+                let value = engine.evaluate_cached(cached, context)?;
                 T::try_from(value).map_err(Into::into)
             },
         }
@@ -207,7 +232,7 @@ impl MaybeExpression<Value> {
     ) -> Result<Value, ExpressionError> {
         match self {
             Self::Value(v) => Ok(v.clone()),
-            Self::Expression(cached) => engine.evaluate(&cached.source, context),
+            Self::Expression(cached) => engine.evaluate_cached(cached, context),
         }
     }
 }
@@ -225,7 +250,7 @@ impl MaybeExpression<String> {
         match self {
             Self::Value(s) => Ok(s.clone()),
             Self::Expression(cached) => {
-                let value = engine.evaluate(&cached.source, context)?;
+                let value = engine.evaluate_cached(cached, context)?;
                 match value.as_str() {
                     Some(s) => Ok(s.to_owned()),
                     None => Ok(value.to_string()),
@@ -245,7 +270,7 @@ impl MaybeExpression<i64> {
         match self {
             Self::Value(i) => Ok(*i),
             Self::Expression(cached) => {
-                let value = engine.evaluate(&cached.source, context)?;
+                let value = engine.evaluate_cached(cached, context)?;
                 value.as_i64().ok_or_else(|| {
                     ExpressionError::type_error(
                         "integer",
@@ -267,7 +292,7 @@ impl MaybeExpression<f64> {
         match self {
             Self::Value(f) => Ok(*f),
             Self::Expression(cached) => {
-                let value = engine.evaluate(&cached.source, context)?;
+                let value = engine.evaluate_cached(cached, context)?;
                 crate::value_utils::to_float(&value)
                     .map_err(|e| ExpressionError::type_error("float", e))
             },
@@ -285,7 +310,7 @@ impl MaybeExpression<bool> {
         match self {
             Self::Value(b) => Ok(*b),
             Self::Expression(cached) => {
-                let value = engine.evaluate(&cached.source, context)?;
+                let value = engine.evaluate_cached(cached, context)?;
                 Ok(crate::value_utils::to_boolean(&value))
             },
         }
@@ -356,10 +381,7 @@ where
         let value = Value::deserialize(deserializer)?;
 
         if let Some(source) = extract_expr_tag(&value) {
-            return Ok(Self::Expression(CachedExpression {
-                source: source.to_string(),
-                ast: OnceLock::new(),
-            }));
+            return Ok(Self::Expression(CachedExpression::new(source)));
         }
 
         T::deserialize(value)

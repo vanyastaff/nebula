@@ -27,8 +27,7 @@ use nebula_action::{
 use nebula_core::{Dependencies, action_key};
 use nebula_expression::{EvaluationContext, ExpressionEngine};
 use nebula_schema::{
-    EvalFuture, ExpressionAst, ExpressionContext, Field, FieldValues, HasSchema, Schema,
-    ValidSchema, field_key,
+    ExpressionAst, ExpressionContext, Field, FieldValues, HasSchema, Schema, ValidSchema, field_key,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -114,24 +113,22 @@ impl StatelessAction for PipelineProbe {
 /// Evaluates `{{ ... }}` AST nodes via a real `ExpressionEngine`.
 ///
 /// `nebula_schema::ExpressionContext` is the dyn-safe seam for resolution.
-/// `ExpressionAst` exposes only the source string (per design) so the bridge
-/// re-routes through `engine.evaluate(source, &eval_ctx)` rather than
-/// trying to share parsed AST nodes across crate boundaries.
+/// `ExpressionAst` carries the pre-parsed `CachedExpression`, so the bridge
+/// evaluates it via `engine.evaluate_cached(ast.cached(), &eval_ctx)` — a
+/// single parse with no re-parse from source.
 struct EngineBridge {
     engine: ExpressionEngine,
     ctx: EvaluationContext,
 }
 
 impl ExpressionContext for EngineBridge {
-    fn evaluate<'a>(&'a self, ast: &'a ExpressionAst) -> EvalFuture<'a> {
-        let source = ast.source().to_owned();
-        Box::pin(async move {
-            self.engine.evaluate(&source, &self.ctx).map_err(|e| {
-                nebula_schema::ValidationError::builder("expression.runtime")
-                    .message(format!("expression `{source}` failed: {e}"))
-                    .build()
-            })
-        })
+    fn evaluate(
+        &self,
+        ast: &ExpressionAst,
+    ) -> Result<serde_json::Value, nebula_schema::ValidationError> {
+        self.engine
+            .evaluate_cached(ast.cached(), &self.ctx)
+            .map_err(Into::into)
     }
 }
 
@@ -165,7 +162,7 @@ async fn pipeline_resolves_template_then_executes() {
 
     // 3. Expression resolution against $input.value = 42.
     let bridge = make_engine_bridge(json!({"value": 42}));
-    let resolved = validated.resolve(&bridge).await.expect("resolve must pass");
+    let resolved = validated.resolve(&bridge).expect("resolve must pass");
 
     // 4. Typed deserialize from resolved JSON.
     let typed: PipelineInput =
@@ -191,8 +188,8 @@ async fn pipeline_resolves_template_then_executes() {
 
 /// Stage 1 fail-fast: validation rejects a missing required field before
 /// the engine ever invokes expression resolution.
-#[tokio::test]
-async fn pipeline_validation_rejects_missing_required_before_resolve() {
+#[test]
+fn pipeline_validation_rejects_missing_required_before_resolve() {
     let schema = <PipelineInput as HasSchema>::schema();
     // `name` is required but omitted.
     let raw = json!({
@@ -212,8 +209,8 @@ async fn pipeline_validation_rejects_missing_required_before_resolve() {
 /// Stage 1 fail-fast: validation rejects a bad literal type before resolve.
 /// `count` is declared as integer; supplying a literal string short-circuits
 /// before any `{{ … }}` evaluation could happen.
-#[tokio::test]
-async fn pipeline_validation_rejects_bad_literal_type_before_resolve() {
+#[test]
+fn pipeline_validation_rejects_bad_literal_type_before_resolve() {
     let schema = <PipelineInput as HasSchema>::schema();
     let raw = json!({
         "name": "alice",
@@ -231,8 +228,8 @@ async fn pipeline_validation_rejects_bad_literal_type_before_resolve() {
 /// Stage 3 fail-fast: an expression that evaluates to an incompatible type
 /// is caught at resolve time as `expression.type_mismatch`. The action's
 /// `execute` is never reached.
-#[tokio::test]
-async fn pipeline_expression_type_mismatch_caught_before_execute() {
+#[test]
+fn pipeline_expression_type_mismatch_caught_before_execute() {
     let schema = <PipelineInput as HasSchema>::schema();
     let raw = json!({
         "name": "alice",
@@ -247,7 +244,6 @@ async fn pipeline_expression_type_mismatch_caught_before_execute() {
     let bridge = make_engine_bridge(json!({"text": "not-a-number"}));
     let report = validated
         .resolve(&bridge)
-        .await
         .expect_err("resolve must fail because resolved value is wrong type");
     assert!(
         report
@@ -260,8 +256,8 @@ async fn pipeline_expression_type_mismatch_caught_before_execute() {
 
 /// Stage 3 fail-fast: an expression whose evaluation itself errors out
 /// surfaces as `expression.runtime` and never reaches `execute`.
-#[tokio::test]
-async fn pipeline_expression_runtime_error_caught_before_execute() {
+#[test]
+fn pipeline_expression_runtime_error_caught_before_execute() {
     let schema = <PipelineInput as HasSchema>::schema();
     let raw = json!({
         "name": "alice",
@@ -274,7 +270,6 @@ async fn pipeline_expression_runtime_error_caught_before_execute() {
     let bridge = make_engine_bridge(json!({}));
     let report = validated
         .resolve(&bridge)
-        .await
         .expect_err("resolve must fail with runtime error");
     assert!(
         report
