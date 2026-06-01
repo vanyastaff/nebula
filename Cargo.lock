@@ -3642,6 +3642,7 @@ dependencies = [
  "nebula-resilience",
  "nebula-schema",
  "nebula-storage",
+ "nebula-storage-port",
  "pretty_assertions",
  "serde",
  "serde_json",

@@ -1823,7 +1823,10 @@ mod tests {
         let with = TenantScope::new("org1", "ws1").with_session("sess-xyz");
         let ctx = Svc::owner_context(&with);
         assert_eq!(ctx.session_id(), Some("sess-xyz"));
-        assert_eq!(ctx.owner_id(), "org1/ws1");
+        assert_eq!(
+            ctx.owner_id(),
+            nebula_storage_port::Scope::new("ws1", "org1").credential_owner_id()
+        );
 
         let without = TenantScope::new("org1", "ws1");
         let ctx_none = Svc::owner_context(&without);

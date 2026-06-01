@@ -30,6 +30,9 @@ nebula-credential-testutil = { path = "../credential-testutil", optional = true 
 nebula-engine = { path = "../engine" }
 nebula-core = { path = "../core" }
 nebula-schema = { path = "../schema" }
+# Core `Scope` — the canonical credential owner_id derivation
+# (`Scope::credential_owner_id`, ADR-0088 D7) that `TenantScope` routes through.
+nebula-storage-port = { path = "../storage-port" }
 nebula-eventbus = { path = "../eventbus" }
 nebula-resilience = { path = "../resilience" }
 tokio = { workspace = true, features = ["rt", "sync", "macros", "time"] }
