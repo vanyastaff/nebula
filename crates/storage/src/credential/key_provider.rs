@@ -26,7 +26,7 @@
 use std::{fmt::Write as _, path::PathBuf, sync::Arc};
 
 use base64::Engine;
-use nebula_credential::EncryptionKey;
+use nebula_crypto::EncryptionKey;
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 

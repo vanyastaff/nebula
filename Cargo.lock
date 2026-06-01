@@ -3559,10 +3559,8 @@ dependencies = [
 name = "nebula-credential"
 version = "0.1.0"
 dependencies = [
- "aes-gcm",
  "ahash",
  "arc-swap",
- "argon2",
  "base64",
  "bitflags",
  "chrono",
@@ -3572,6 +3570,7 @@ dependencies = [
  "mockall",
  "nebula-core",
  "nebula-credential-macros",
+ "nebula-crypto",
  "nebula-error",
  "nebula-metadata",
  "nebula-resilience",
@@ -3636,6 +3635,7 @@ dependencies = [
  "nebula-credential-builtin",
  "nebula-credential-runtime",
  "nebula-credential-testutil",
+ "nebula-crypto",
  "nebula-engine",
  "nebula-error",
  "nebula-eventbus",
@@ -3680,6 +3680,19 @@ dependencies = [
  "tracing",
  "url",
  "wiremock",
+]
+
+[[package]]
+name = "nebula-crypto"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "argon2",
+ "nebula-error",
+ "rand 0.10.1",
+ "serde",
+ "thiserror",
+ "zeroize",
 ]
 
 [[package]]
@@ -4154,6 +4167,7 @@ dependencies = [
  "moka",
  "nebula-core",
  "nebula-credential",
+ "nebula-crypto",
  "nebula-env",
  "nebula-storage-port",
  "nebula-tenancy",

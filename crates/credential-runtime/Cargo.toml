@@ -13,6 +13,10 @@ repository.workspace = true
 nebula-error = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
 nebula-credential = { path = "../credential" }
+# AES-256-GCM `EncryptionKey` for the cfg(any(test, feature="test-util")) service
+# wiring (ADR-0088: crypto primitives live in nebula-crypto). Already in the tree
+# transitively via nebula-credential / nebula-storage.
+nebula-crypto = { path = "../crypto" }
 nebula-credential-builtin = { path = "../credential-builtin" }
 # Production deps use only the unconditionally-public storage layer
 # types (EncryptionLayer/CacheLayer/AuditLayer/KeyProvider/AuditSink).

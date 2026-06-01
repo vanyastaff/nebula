@@ -15,6 +15,7 @@ documentation.workspace = true
 nebula-core = { path = "../core" }
 nebula-env = { workspace = true }
 nebula-credential = { path = "../credential" }
+nebula-crypto = { path = "../crypto" }
 nebula-storage-port = { path = "../storage-port" }
 
 async-trait = { workspace = true }

@@ -33,9 +33,9 @@
 //!   scope layer was re-homed to `nebula_tenancy::CredentialScopeLayer` (spec §8).
 //! - Engine-owned runtime resolution lives in `nebula-engine::credential`.
 //! - `SecretString`, `CredentialGuard` — zeroizing secret wrappers.
-//! - `EncryptedData`, `EncryptionKey`, `encrypt_with_aad`, `encrypt_with_key_id`, `decrypt`,
-//!   `decrypt_with_aad` — AES-256-GCM primitives. The AAD-free `encrypt` path is intentionally not
-//!   exposed (SEC-11 hardening 2026-04-27).
+//! - AES-256-GCM primitives (`EncryptedData`, `EncryptionKey`, `encrypt_with_aad`,
+//!   `encrypt_with_key_id`, `decrypt`, `decrypt_with_aad`) moved to `nebula-crypto`
+//!   (ADR-0088). The AAD-free `encrypt` path is intentionally not exposed (SEC-11).
 //! - `#[derive(Credential)]`, `#[derive(AuthScheme)]` — proc-macro derivations.
 //!
 //! ## Security invariant (credential secrecy)
@@ -183,13 +183,11 @@ pub use scheme::{
 // per credential isolation; the previously-defined parallel `OnCredentialRefresh<C>`
 // trait was removed in nebula-resource П2.
 //
-// SEC-11 (security hardening 2026-04-27 Stage 1): bare `encrypt` removed
-// from public surface. See `secrets/mod.rs` rationale comment above the
-// `pub use crypto::{...}` block.
+// AES-256-GCM primitives moved to `nebula-crypto` (ADR-0088); import them from
+// there. PKCE/state helpers + secret wrappers stay here.
 pub use secrets::{
-    CredentialGuard, EncryptedData, EncryptionKey, ExposeSecret, ExposeSecretMut, RedactedSecret,
-    SchemeFactory, SchemeGuard, SecretBox, SecretString, decrypt, decrypt_with_aad,
-    encrypt_with_aad, encrypt_with_key_id, generate_code_challenge, generate_pkce_verifier,
+    CredentialGuard, ExposeSecret, ExposeSecretMut, RedactedSecret, SchemeFactory, SchemeGuard,
+    SecretBox, SecretString, generate_code_challenge, generate_pkce_verifier,
     generate_random_state, secret_from_string,
 };
 // Store trait + DTOs (canonical impls live in `nebula_storage::credential` per storage credential layers)
