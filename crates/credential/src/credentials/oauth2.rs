@@ -42,8 +42,9 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use super::oauth2_config;
 use crate::{
-    Credential, CredentialContext, CredentialState, Interactive, PendingState, Refreshable,
-    Revocable, SecretString, Testable,
+    Credential, CredentialCategory, CredentialContext, CredentialLifecycle, CredentialPolicy,
+    CredentialState, Interactive, PendingState, RefreshStrategy, Refreshable, Revocable,
+    RevokeStrategy, SecretString, Testable,
     contract::plugin_capability_report,
     error::{CredentialError, ProviderErrorContext, ProviderErrorKind, SecretFreeMessage},
     metadata::CredentialMetadata,
@@ -636,6 +637,28 @@ impl plugin_capability_report::IsDynamic for OAuth2Credential {
     const VALUE: bool = false;
 }
 
+/// OAuth2 is a refresh-pair credential (ADR-0088 D2). The policy is computed from
+/// live state: `RefreshToken` while a refresh token is held (the engine can renew
+/// non-interactively), otherwise `ReAcquire` (the refresh path returns
+/// `ReauthRequired`). Revocable handle-based (RFC 7009); expiry is the access
+/// token's inline `expires_at`. Strategies match the implemented sub-traits
+/// (`Refreshable` + `Revocable`).
+impl CredentialLifecycle for OAuth2Credential {
+    fn policy(state: &OAuth2State) -> CredentialPolicy {
+        CredentialPolicy {
+            category: CredentialCategory::RefreshPair,
+            expires_at: state.expires_at,
+            lease: None,
+            refresh: if state.refresh_token.is_some() {
+                RefreshStrategy::RefreshToken
+            } else {
+                RefreshStrategy::ReAcquire
+            },
+            revoke: RevokeStrategy::HandleBased,
+        }
+    }
+}
+
 impl OAuth2Credential {
     /// Initiate the Authorization Code flow.
     ///
@@ -853,6 +876,26 @@ mod tests {
     #[test]
     fn key_is_oauth2() {
         assert_eq!(OAuth2Credential::KEY, "oauth2");
+    }
+
+    #[test]
+    fn lifecycle_policy_reflects_refresh_token_presence() {
+        // With a refresh token the engine can renew non-interactively.
+        let with_token = make_state();
+        let p = OAuth2Credential::policy(&with_token);
+        assert_eq!(p.category, CredentialCategory::RefreshPair);
+        assert_eq!(p.refresh, RefreshStrategy::RefreshToken);
+        assert_eq!(p.revoke, RevokeStrategy::HandleBased);
+        assert!(p.is_auto_renewable());
+        assert!(p.is_expiring());
+
+        // Without a refresh token the credential must re-acquire (the refresh
+        // path would return ReauthRequired).
+        let mut without = make_state();
+        without.refresh_token = None;
+        let p2 = OAuth2Credential::policy(&without);
+        assert_eq!(p2.refresh, RefreshStrategy::ReAcquire);
+        assert!(!p2.is_auto_renewable());
     }
 
     // Capability membership is type-level after §15.4: `OAuth2Credential`

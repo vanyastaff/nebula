@@ -7,7 +7,7 @@ use nebula_schema::{FieldValues, Schema};
 use serde::Deserialize;
 
 use crate::{
-    Credential, CredentialContext, SecretString,
+    Credential, CredentialContext, CredentialLifecycle, CredentialPolicy, SecretString,
     contract::plugin_capability_report,
     error::{CredentialError, ProviderErrorContext, ProviderErrorKind, SecretFreeMessage},
     metadata::CredentialMetadata,
@@ -112,6 +112,14 @@ impl plugin_capability_report::IsDynamic for BasicAuthCredential {
     const VALUE: bool = false;
 }
 
+/// Basic auth is static (ADR-0088 D2): no expiry, no refresh, no provider-side
+/// revocation — consistent with its absent capability sub-trait impls.
+impl CredentialLifecycle for BasicAuthCredential {
+    fn policy(_state: &IdentityPassword) -> CredentialPolicy {
+        CredentialPolicy::static_secret()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -119,6 +127,15 @@ mod tests {
     #[test]
     fn key_is_basic_auth() {
         assert_eq!(BasicAuthCredential::KEY, "basic_auth");
+    }
+
+    #[test]
+    fn lifecycle_policy_is_static() {
+        let auth = IdentityPassword::new("u", SecretString::new("p"));
+        let p = BasicAuthCredential::policy(&auth);
+        assert_eq!(p.category, crate::CredentialCategory::StaticSecret);
+        assert!(!p.is_expiring());
+        assert!(!p.is_auto_renewable());
     }
 
     // Capability membership checks moved to compile-time: the absence
