@@ -7,8 +7,7 @@ use nebula_schema::{FieldValues, Schema};
 use serde::Deserialize;
 
 use crate::{
-    Credential, CredentialContext, CredentialLifecycle, CredentialPolicy, SecretString,
-    contract::plugin_capability_report,
+    CredentialContext, SecretString,
     error::{CredentialError, ProviderErrorContext, ProviderErrorKind, SecretFreeMessage},
     metadata::CredentialMetadata,
     resolve::ResolveResult,
@@ -46,12 +45,16 @@ pub struct BasicAuthProperties {
 /// - **Identity projection:** stored state is the scheme itself.
 pub struct BasicAuthCredential;
 
-impl Credential for BasicAuthCredential {
+// ADR-0088 D1: one `impl` block declares the whole credential. `#[credential]`
+// sees only `project` + `resolve` (no capability methods) and emits the
+// `Credential` impl, five all-`false` capability-report consts, and a
+// `StaticSecret` `CredentialLifecycle` policy — matching the absent capability
+// sub-traits.
+#[nebula_credential::credential(key = "basic_auth", category = StaticSecret)]
+impl BasicAuthCredential {
     type Properties = BasicAuthProperties;
     type Scheme = IdentityPassword;
     type State = IdentityPassword;
-
-    const KEY: &'static str = "basic_auth";
 
     fn metadata() -> CredentialMetadata {
         CredentialMetadata::builder()
@@ -92,36 +95,13 @@ impl Credential for BasicAuthCredential {
     }
 }
 
-// Per Tech Spec §15.8 every credential reports its sub-trait surface
-// via `plugin_capability_report::Is*`. `BasicAuthCredential` is fully
-// static — no capability sub-trait impls — so all five constants are
-// `false`.
-impl plugin_capability_report::IsInteractive for BasicAuthCredential {
-    const VALUE: bool = false;
-}
-impl plugin_capability_report::IsRefreshable for BasicAuthCredential {
-    const VALUE: bool = false;
-}
-impl plugin_capability_report::IsRevocable for BasicAuthCredential {
-    const VALUE: bool = false;
-}
-impl plugin_capability_report::IsTestable for BasicAuthCredential {
-    const VALUE: bool = false;
-}
-impl plugin_capability_report::IsDynamic for BasicAuthCredential {
-    const VALUE: bool = false;
-}
-
-/// Basic auth is static (ADR-0088 D2): no expiry, no refresh, no provider-side
-/// revocation — consistent with its absent capability sub-trait impls.
-impl CredentialLifecycle for BasicAuthCredential {
-    fn policy(_state: &IdentityPassword) -> CredentialPolicy {
-        CredentialPolicy::static_secret()
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    // `Credential` (for `KEY`) and `CredentialLifecycle` (for `policy`) are
+    // only referenced by the tests now that `#[credential]` generates the
+    // trait impls via absolute paths.
+    use crate::{Credential, CredentialLifecycle};
+
     use super::*;
 
     #[test]

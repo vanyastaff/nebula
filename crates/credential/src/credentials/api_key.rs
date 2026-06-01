@@ -8,8 +8,7 @@ use nebula_schema::{FieldValues, Schema};
 use serde::Deserialize;
 
 use crate::{
-    Credential, CredentialContext, CredentialLifecycle, CredentialPolicy, SecretString,
-    contract::plugin_capability_report,
+    CredentialContext, SecretString,
     error::{CredentialError, ProviderErrorContext, ProviderErrorKind, SecretFreeMessage},
     metadata::CredentialMetadata,
     resolve::ResolveResult,
@@ -61,12 +60,18 @@ pub struct ApiKeyProperties {
 /// ```
 pub struct ApiKeyCredential;
 
-impl Credential for ApiKeyCredential {
+// ADR-0088 D1: the whole credential surface is declared in one `impl` block.
+// `#[credential]` reads which methods are present — here only `project` +
+// `resolve`, with no capability methods — and emits the `Credential` impl, the
+// five all-`false` capability-report consts, and a `CredentialLifecycle` whose
+// policy is `StaticSecret` with no refresh and no provider-side revoke
+// (matching the absent capability sub-traits). The `category = StaticSecret`
+// arg supplies the structural lifecycle kind.
+#[nebula_credential::credential(key = "api_key", category = StaticSecret)]
+impl ApiKeyCredential {
     type Properties = ApiKeyProperties;
     type Scheme = SecretToken;
     type State = SecretToken;
-
-    const KEY: &'static str = "api_key";
 
     fn metadata() -> CredentialMetadata {
         CredentialMetadata::builder()
@@ -99,38 +104,13 @@ impl Credential for ApiKeyCredential {
     }
 }
 
-// Per Tech Spec §15.8 every credential reports its sub-trait surface
-// via `plugin_capability_report::Is*`. `ApiKeyCredential` is fully
-// static — no capability sub-trait impls — so all five constants are
-// `false`. `CredentialRegistry::register` reads these to compute the
-// `Capabilities` bitflag set.
-impl plugin_capability_report::IsInteractive for ApiKeyCredential {
-    const VALUE: bool = false;
-}
-impl plugin_capability_report::IsRefreshable for ApiKeyCredential {
-    const VALUE: bool = false;
-}
-impl plugin_capability_report::IsRevocable for ApiKeyCredential {
-    const VALUE: bool = false;
-}
-impl plugin_capability_report::IsTestable for ApiKeyCredential {
-    const VALUE: bool = false;
-}
-impl plugin_capability_report::IsDynamic for ApiKeyCredential {
-    const VALUE: bool = false;
-}
-
-/// API keys are static (ADR-0088 D2): no expiry, no refresh, no provider-side
-/// revocation — the [`CredentialCategory::StaticSecret`](crate::CredentialCategory::StaticSecret)
-/// shape. Consistent with the absent capability sub-trait impls above.
-impl CredentialLifecycle for ApiKeyCredential {
-    fn policy(_state: &SecretToken) -> CredentialPolicy {
-        CredentialPolicy::static_secret()
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    // `Credential` (for `KEY` / `Properties`) and `CredentialLifecycle` (for
+    // `policy`) are only referenced by the tests now that `#[credential]`
+    // generates the trait impls via absolute paths.
+    use crate::{Credential, CredentialLifecycle};
+
     use super::*;
 
     #[test]

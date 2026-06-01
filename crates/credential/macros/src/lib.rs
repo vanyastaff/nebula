@@ -11,6 +11,7 @@ use proc_macro::TokenStream;
 mod auth_scheme;
 mod capability;
 mod credential;
+mod credential_attr;
 
 /// Derive macro for the `Credential` trait — Phase 5 of the M6 dependency
 /// redesign.
@@ -106,6 +107,62 @@ mod credential;
 )]
 pub fn derive_credential(input: TokenStream) -> TokenStream {
     credential::derive(input)
+}
+
+/// Attribute macro for declaring a credential as a single `impl` block
+/// (ADR-0088 D1 — the canonical authoring path, superseding
+/// `#[derive(Credential)]`).
+///
+/// Applied to an inherent `impl Type { … }`, it reads the associated types
+/// and the methods present and emits the base
+/// [`Credential`](nebula_credential::Credential) impl, one capability
+/// sub-trait impl per capability **method** supplied (`refresh` ⇒
+/// `Refreshable`, `revoke` ⇒ `Revocable`, `test` ⇒ `Testable`,
+/// `continue_resolve` ⇒ `Interactive`, `release` ⇒ `Dynamic`), the five
+/// `plugin_capability_report::IsX` consts, and a
+/// `CredentialLifecycle::policy()` derived from those same methods.
+///
+/// Capability is **inferred from method presence**, never declared — so the
+/// capability-report consts and the lifecycle policy can never disagree with
+/// the implemented capabilities (the `E0046` compile-gate is preserved while
+/// the four old declaration sites collapse into one).
+///
+/// # Arguments
+///
+/// - `key = "…"` — stable credential type key (required).
+/// - `category = <CredentialCategory variant>` — structural lifecycle kind
+///   (required; drives the synthesized policy `category`).
+/// - `name = "…"` — required only when no `fn metadata` is supplied.
+/// - `description = "…"`, `icon = "…"`, `doc_url = "…"` — optional metadata.
+///
+/// # Example
+///
+/// ```ignore
+/// use nebula_credential::credential;
+///
+/// #[credential(key = "api_key", category = StaticSecret, name = "API Key", icon = "key")]
+/// impl ApiKeyCredential {
+///     type Properties = ApiKeyProperties;
+///     type Scheme = SecretToken;
+///     type State = SecretToken;
+///
+///     fn project(state: &SecretToken) -> SecretToken { state.clone() }
+///
+///     async fn resolve(values: &FieldValues, _ctx: &CredentialContext)
+///         -> Result<ResolveResult<SecretToken, ()>, CredentialError> { /* … */ }
+/// }
+/// ```
+///
+/// # Errors
+///
+/// Emits a compile error when applied to a trait impl, when a required item
+/// (`type Properties`/`Scheme`/`State`, `fn project`/`resolve`) is missing,
+/// when `continue_resolve` and `type Pending` are not supplied as a pair, or
+/// when an unrecognized item appears (a typo cannot silently drop a
+/// capability — move inherent helpers to a separate `impl` block).
+#[proc_macro_attribute]
+pub fn credential(args: TokenStream, input: TokenStream) -> TokenStream {
+    credential_attr::expand(args, input)
 }
 
 /// Derive macro for the `AuthScheme` trait.
