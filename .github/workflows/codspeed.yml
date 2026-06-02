@@ -208,14 +208,14 @@ jobs:
           toolchain: stable
 
       - name: Cache Cargo artifacts
-        uses: Swatinem/rust-cache@8cbdedb5103daa674dcf46d3590fe06a76645684 # v2.9.1
+        uses: Swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0 # v2.9.1
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: true
           shared-key: codspeed-${{ matrix.shard }}
 
       - name: Install cargo-codspeed
-        uses: taiki-e/install-action@481c34c1cf3a84c68b5e46f4eccfc82af798415a # v2.75.23
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538 # v2.81.1
         with:
           tool: cargo-codspeed
 
@@ -223,7 +223,7 @@ jobs:
         run: cargo codspeed build ${{ matrix.packages }}
 
       - name: Run the benchmarks
-        uses: CodSpeedHQ/action@db35df748deb45fdef0960669f57d627c1956c30 # v4
+        uses: CodSpeedHQ/action@9d332c4d90b43981c3e55ae8e38e68709996240f # v4
         with:
           mode: simulation
           run: cargo codspeed run ${{ matrix.packages }}

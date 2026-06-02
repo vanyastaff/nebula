@@ -26,7 +26,7 @@ jobs:
 
       - name: Install convco
         if: github.actor != 'dependabot[bot]'
-        uses: taiki-e/install-action@481c34c1cf3a84c68b5e46f4eccfc82af798415a # v2.75.23
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538 # v2.81.1
         with:
           tool: convco
 
@@ -48,7 +48,7 @@ jobs:
           fi
 
       - name: Auto label PR
-        uses: actions/labeler@634933edcd8ababfe52f92936142cc22ac488b1b # v6
+        uses: actions/labeler@f27b608878404679385c85cfa523b85ccb86e213 # v6
         with:
           repo-token: '${{ secrets.GITHUB_TOKEN }}'
 

@@ -32,7 +32,7 @@ jobs:
           toolchain: nightly
           components: rust-src
       - name: Install cargo-udeps
-        uses: taiki-e/install-action@481c34c1cf3a84c68b5e46f4eccfc82af798415a # v2.75.23
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538 # v2.81.1
         with:
           tool: cargo-udeps
       - name: Check for unused dependencies
