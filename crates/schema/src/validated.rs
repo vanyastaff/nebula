@@ -1863,29 +1863,17 @@ fn merge_validator_errors(
     fallback: &FieldPath,
     report: &mut ValidationReport,
 ) {
+    // Validator errors are now the same canonical type as schema errors, so
+    // they carry their code, message, params, severity, and a normalized RFC
+    // 6901 field pointer already. Move them through verbatim, only supplying
+    // the schema's structural path when the error did not localise itself to a
+    // field (root-level rule failures).
     for e in errs.errors() {
-        let code: String = e.code.as_ref().to_owned();
-        let msg: String = e.message.as_ref().to_owned();
-        let issue_path = match e.field_pointer().as_deref() {
-            Some(pointer) => {
-                crate::rule_ref::field_path_from_json_pointer(pointer).unwrap_or_else(|| {
-                    tracing::warn!(
-                        target: "nebula_schema::validate",
-                        pointer,
-                        fallback = %fallback,
-                        "validator error carried unparsable field pointer; falling back"
-                    );
-                    fallback.clone()
-                })
-            },
-            None => fallback.clone(),
-        };
-        report.push(
-            ValidationError::builder(code)
-                .at_field(issue_path.to_string())
-                .message(msg)
-                .build(),
-        );
+        let mut issue = e.clone();
+        if issue.field.is_none() && !fallback.is_root() {
+            issue = issue.with_field(fallback.to_string());
+        }
+        report.push(issue);
     }
 }
 
