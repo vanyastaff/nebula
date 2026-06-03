@@ -87,7 +87,8 @@ nebula/
 └── .github/            # CI workflows, CODEOWNERS, PR/issue templates, copilot-instructions.md
 ```
 
-Per-crate layout: each `crates/<name>/` has `Cargo.toml` and `README.md`;
+Per-crate layout: each `crates/<name>/` has `Cargo.toml`, `README.md`, and a
+`CLAUDE.md` (agent quick-map; full design stays in the README);
 some carry a sibling derive crate (`<name>/macros`) and/or a `docs/` folder.
 
 ## Layered Dependency Map
@@ -163,6 +164,7 @@ between siblings at the same layer.
 | **Agent doc map**      | `docs/README.md`              | **Start here for docs** — Tier 0–1 only; do not bulk-read `docs/adr/0*` |
 | Removed doc trees      | `docs/ARCHIVE.md`             | superpowers / audits / brainstorms moved out of repo |
 | Agent rules + map      | `CLAUDE.md`                   | **Canonical** — this file — branch / commit / PR rules + project map + enforced discipline |
+| Onboarding / handoff   | `HANDOFF.md`                  | Onboarding / handoff doc for new human or AI collaborators |
 | Product strategy       | `STRATEGY.md`                 | Direction, 2026 standard bar, flagship, tracks (complements canon) |
 | 1.0 roadmap            | `docs/ROADMAP.md`             | Production-ready 1.0 milestone checklist (M0–M14), capability/dependency-ordered |
 | Product overview       | `README.md`                   | What Nebula is, design principles, architecture |
@@ -183,11 +185,14 @@ between siblings at the same layer.
 | File                          | Purpose |
 |-------------------------------|---------|
 | `CLAUDE.md`                   | **Canonical** agent rules + project map — every AI tool should read this |
+| `crates/<crate>/CLAUDE.md`    | Per-crate agent quick-map (purpose, layer, commands, key files, crate rules); complements the human-facing README |
+| `HANDOFF.md`                  | Onboarding / handoff doc for new human or AI collaborators |
 | `AGENTS.md`                   | Thin pointer naming `CLAUDE.md` canonical (cross-tool stub) |
 | `.github/copilot-instructions.md` | GitHub Copilot guidance (defers to `CLAUDE.md`) |
 | `.cursor/rules/*.mdc`         | Cursor project rules that defer to `CLAUDE.md` |
 | `.claude/hooks/`              | Committed guard hooks (enforced discipline) |
 | `.claude/skills/rust-intel/`  | Vendored LLM-Rust-failure-mode skill — v0.2.2, MIT, advisory (not hook-enforced); `/rust-cc-{audit,fix,plan}` slash commands (see its `UPSTREAM.md`) |
+| `.claude/skills/<name>/`      | Native project skills, discoverable on demand with keyword-first descriptions — `nebula-layer-boundaries`, `nebula-credential-lifecycle`, `nebula-storage-port-adapter`, `nebula-error-and-validation`, `nebula-observability-dod`, `nebula-worktree-pr-workflow` |
 | `.claude/commands/`           | Slash-command definitions for the vendored skills above |
 | `.pi/settings.json`           | [`pi-subagents`](https://pi.dev/packages/pi-subagents) `agentOverrides` (3-tier Anthropic strategy with cross-provider fallback chains: scout/context-builder/researcher on `claude-haiku-4-5` + medium for cheap recon; reviewer/worker on `claude-sonnet-4-6` + high with inherited project context; planner/oracle on `claude-opus-4-7` + **max** effort — no token constraint for architecture / security review). Fallback order across providers: `anthropic` → `github-copilot` → `cursor-agent` → `openai-codex`. **and** vstack-namespaced per-project overrides for [`@vanillagreen/pi-hooks`](https://pi.dev/packages/%40vanillagreen/pi-hooks) (see Pi Hook Strategy below) and [`@vanillagreen/pi-output-policy`](https://pi.dev/packages/%40vanillagreen/pi-output-policy) tuning |
 | `.pi/lsp.json`                | [`@narumitw/pi-lsp`](https://pi.dev/packages/%40narumitw/pi-lsp) server map — `rust-analyzer` for `.rs` (clippy on `check`, all features, target/ excluded) and `taplo` for `.toml`; powers `lsp_diagnostics` / `lsp_fix` tools |
