@@ -2973,10 +2973,14 @@ async fn test_execute_workflow_rejects_invalid_definition() {
     assert_eq!(content_type, Some("application/problem+json"));
 
     // The gate runs before any execution-state mutation: no Start signal was
-    // enqueued on the durable control queue.
+    // enqueued on the durable control queue, and no running execution resulted.
     assert!(
         handles.control_queue.snapshot().is_empty(),
         "rejected execute must not enqueue a Start signal"
+    );
+    assert!(
+        handles.running_executions().await.is_empty(),
+        "rejected execute must not create a running execution"
     );
 }
 
@@ -3035,5 +3039,130 @@ async fn test_start_execution_rejects_invalid_definition() {
     assert!(
         handles.control_queue.snapshot().is_empty(),
         "rejected start must not enqueue a Start signal"
+    );
+    assert!(
+        handles.running_executions().await.is_empty(),
+        "rejected start must not create a running execution"
+    );
+}
+
+/// Shift-left validation gate (M3.6): `POST /workflows/{id}/execute` must
+/// reject a stored definition that cannot be parsed as a `WorkflowDefinition`
+/// with 400 (request-level parse failure, distinct from the 422 structural
+/// path) and enqueue no Start signal.
+#[tokio::test]
+async fn test_execute_workflow_rejects_unparseable_definition() {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use tower::ServiceExt;
+
+    let (state, handles) = create_state_with_port_handles().await;
+    let api_config = ApiConfig::for_test();
+    let token = create_test_jwt();
+
+    let workflow_id = nebula_core::WorkflowId::new();
+    handles
+        .seed_workflow(
+            workflow_id,
+            make_malformed_workflow_definition(&workflow_id),
+        )
+        .await;
+
+    let app = app::build_app(state, &api_config);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(ws_path(&format!("/workflows/{workflow_id}/execute")))
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
+                .body(Body::from(r#"{"input":{}}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_REQUEST,
+        "unparseable stored definition must be rejected with 400 before dispatch"
+    );
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok());
+    assert_eq!(content_type, Some("application/problem+json"));
+
+    assert!(
+        handles.control_queue.snapshot().is_empty(),
+        "rejected execute must not enqueue a Start signal"
+    );
+    assert!(
+        handles.running_executions().await.is_empty(),
+        "rejected execute must not create a running execution"
+    );
+}
+
+/// Shift-left validation gate (M3.6): `POST /workflows/{id}/executions` must
+/// reject a stored definition that cannot be parsed as a `WorkflowDefinition`
+/// with 400 and enqueue no Start signal.
+#[tokio::test]
+async fn test_start_execution_rejects_unparseable_definition() {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use tower::ServiceExt;
+
+    let (state, handles) = create_state_with_port_handles().await;
+    let api_config = ApiConfig::for_test();
+    let token = create_test_jwt();
+
+    let workflow_id = nebula_core::WorkflowId::new();
+    handles
+        .seed_workflow(
+            workflow_id,
+            make_malformed_workflow_definition(&workflow_id),
+        )
+        .await;
+
+    let app = app::build_app(state, &api_config);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(ws_path(&format!("/workflows/{workflow_id}/executions")))
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
+                .body(Body::from(r#"{"input":{}}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_REQUEST,
+        "unparseable stored definition must be rejected with 400 before dispatch"
+    );
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok());
+    assert_eq!(content_type, Some("application/problem+json"));
+
+    assert!(
+        handles.control_queue.snapshot().is_empty(),
+        "rejected start must not enqueue a Start signal"
+    );
+    assert!(
+        handles.running_executions().await.is_empty(),
+        "rejected start must not create a running execution"
     );
 }

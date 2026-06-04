@@ -20,7 +20,7 @@
 > `#PR`) when a new gap is discovered; tick it off only after the exit
 > criteria below are verifiably met.
 
-## Status snapshot — 2026-05-26
+## Status snapshot — 2026-05-26 (M3.6 addendum 2026-06-04)
 
 - **Cross-cutting layer** (`error`, `log`, `eventbus`, `metrics`,
   `resilience`) — **stable, no pending breaks**. `nebula-telemetry` was
