@@ -17,10 +17,9 @@ use std::sync::Arc;
 
 use nebula_credential::pending_store::PendingStateStore;
 use nebula_credential::resolve::{InteractionRequest, TestResult, UserInput};
-use nebula_credential::store::CredentialStore;
 use nebula_credential::{
-    Credential, CredentialContext, CredentialRecord, CredentialSnapshot, CredentialState,
-    Interactive, PendingToken, Refreshable, Revocable, Testable,
+    Capabilities, Credential, CredentialContext, CredentialRecord, CredentialSnapshot,
+    CredentialState, Interactive, PendingToken, Refreshable, Revocable, Testable,
 };
 use nebula_engine::credential::{
     ResolveResponse, dispatch_revoke, dispatch_test, execute_continue, execute_resolve,
@@ -238,22 +237,19 @@ struct OpsEntry<PS> {
 /// [`CredentialRegistry`](nebula_credential::CredentialRegistry) and
 /// `register_builtins` at the composition root.
 ///
-/// `B` is the raw backend type the owning service is generic over; it
-/// appears only as a marker so the table's type lines up with
-/// `CredentialService<B, PS>` (the closures themselves capture `C` and
-/// thread `PS`, never `B`).
-pub struct DispatchOps<B: CredentialStore, PS: PendingStateStore> {
+/// The closures capture the concrete credential type `C` and thread `PS`;
+/// the table is otherwise backend-agnostic, so it carries no backend param.
+pub struct DispatchOps<PS: PendingStateStore> {
     entries: HashMap<&'static str, OpsEntry<PS>>,
-    _backend: std::marker::PhantomData<fn() -> B>,
 }
 
-impl<B: CredentialStore, PS: PendingStateStore> Default for DispatchOps<B, PS> {
+impl<PS: PendingStateStore> Default for DispatchOps<PS> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<B: CredentialStore, PS: PendingStateStore> std::fmt::Debug for DispatchOps<B, PS> {
+impl<PS: PendingStateStore> std::fmt::Debug for DispatchOps<PS> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DispatchOps")
             .field("registered_keys", &self.entries.keys().collect::<Vec<_>>())
@@ -261,13 +257,12 @@ impl<B: CredentialStore, PS: PendingStateStore> std::fmt::Debug for DispatchOps<
     }
 }
 
-impl<B: CredentialStore, PS: PendingStateStore> DispatchOps<B, PS> {
+impl<PS: PendingStateStore> DispatchOps<PS> {
     /// Empty table.
     #[must_use]
     pub fn new() -> Self {
         Self {
             entries: HashMap::new(),
-            _backend: std::marker::PhantomData,
         }
     }
 
@@ -287,6 +282,29 @@ impl<B: CredentialStore, PS: PendingStateStore> DispatchOps<B, PS> {
     #[must_use]
     pub fn contains(&self, key: &str) -> bool {
         self.entries.contains_key(key)
+    }
+
+    /// The capabilities backed by a registered operation closure for `key`,
+    /// derived from which optional closures are present. Covers the four
+    /// ops-modeled capabilities (`REFRESHABLE` / `TESTABLE` / `REVOCABLE` /
+    /// `INTERACTIVE`); `DYNAMIC` is a lease-lifecycle concern with no ops
+    /// closure and is never reported here. Empty set when `key` is absent.
+    ///
+    /// Used by [`CredentialServiceBuilder::build`]
+    /// to gate the registry's advertised capabilities against the closures
+    /// actually registered, so discovery cannot advertise a capability that
+    /// would fail at first call.
+    #[must_use]
+    pub(crate) fn capabilities_of(&self, key: &str) -> Capabilities {
+        let Some(entry) = self.entries.get(key) else {
+            return Capabilities::empty();
+        };
+        let mut caps = Capabilities::empty();
+        caps.set(Capabilities::REFRESHABLE, entry.refresh_fn.is_some());
+        caps.set(Capabilities::TESTABLE, entry.test_fn.is_some());
+        caps.set(Capabilities::REVOCABLE, entry.revoke_fn.is_some());
+        caps.set(Capabilities::INTERACTIVE, entry.continue_fn.is_some());
+        caps
     }
 
     /// Resolve `props` into serialized credential state for the type at
@@ -520,12 +538,11 @@ impl<B: CredentialStore, PS: PendingStateStore> DispatchOps<B, PS> {
 ///
 /// [`DispatchError::DuplicateKey`] if `C::KEY` is already registered; the
 /// table is left unchanged for the rejected entry.
-pub fn register_runtime_ops<C, B, PS>(ops: &mut DispatchOps<B, PS>) -> Result<(), DispatchError>
+pub fn register_runtime_ops<C, PS>(ops: &mut DispatchOps<PS>) -> Result<(), DispatchError>
 where
     C: Credential,
     C::Scheme: Clone,
     C::Properties: serde::de::DeserializeOwned,
-    B: CredentialStore,
     PS: PendingStateStore,
 {
     let key: &'static str = C::KEY;
@@ -681,11 +698,10 @@ where
 ///
 /// [`DispatchError::BaseOpsMissing`] when `C::KEY` has no base entry —
 /// the capability registration must follow the base registration.
-pub fn register_testable_ops<C, B, PS>(ops: &mut DispatchOps<B, PS>) -> Result<(), DispatchError>
+pub fn register_testable_ops<C, PS>(ops: &mut DispatchOps<PS>) -> Result<(), DispatchError>
 where
     C: Testable,
     C::Scheme: Clone,
-    B: CredentialStore,
     PS: PendingStateStore,
 {
     let key: &'static str = <C as Credential>::KEY;
@@ -748,11 +764,10 @@ fn classify_refresh_error(e: nebula_credential::CredentialError) -> CredentialSe
 /// # Errors
 ///
 /// [`DispatchError::BaseOpsMissing`] when `C::KEY` has no base entry.
-pub fn register_refreshable_ops<C, B, PS>(ops: &mut DispatchOps<B, PS>) -> Result<(), DispatchError>
+pub fn register_refreshable_ops<C, PS>(ops: &mut DispatchOps<PS>) -> Result<(), DispatchError>
 where
     C: Refreshable,
     C::Scheme: Clone,
-    B: CredentialStore,
     PS: PendingStateStore,
 {
     let key: &'static str = <C as Credential>::KEY;
@@ -838,11 +853,10 @@ where
 /// # Errors
 ///
 /// [`DispatchError::BaseOpsMissing`] when `C::KEY` has no base entry.
-pub fn register_revocable_ops<C, B, PS>(ops: &mut DispatchOps<B, PS>) -> Result<(), DispatchError>
+pub fn register_revocable_ops<C, PS>(ops: &mut DispatchOps<PS>) -> Result<(), DispatchError>
 where
     C: Revocable,
     C::Scheme: Clone,
-    B: CredentialStore,
     PS: PendingStateStore,
 {
     let key: &'static str = <C as Credential>::KEY;
@@ -878,11 +892,10 @@ where
 /// # Errors
 ///
 /// [`DispatchError::BaseOpsMissing`] when `C::KEY` has no base entry.
-pub fn register_interactive_ops<C, B, PS>(ops: &mut DispatchOps<B, PS>) -> Result<(), DispatchError>
+pub fn register_interactive_ops<C, PS>(ops: &mut DispatchOps<PS>) -> Result<(), DispatchError>
 where
     C: Interactive,
     C::Scheme: Clone,
-    B: CredentialStore,
     PS: PendingStateStore,
 {
     let key: &'static str = <C as Credential>::KEY;
@@ -919,35 +932,48 @@ where
 /// # Errors
 ///
 /// [`DispatchError::DuplicateKey`] if any builtin key is already present.
-pub fn register_all_builtin_ops<B, PS>(ops: &mut DispatchOps<B, PS>) -> Result<(), DispatchError>
+pub fn register_all_builtin_ops<PS>(ops: &mut DispatchOps<PS>) -> Result<(), DispatchError>
 where
-    B: CredentialStore,
     PS: PendingStateStore,
 {
-    register_runtime_ops::<nebula_credential_builtin::BearerTokenCredential, B, PS>(ops)?;
-    register_runtime_ops::<nebula_credential_builtin::SharedKeyCredential, B, PS>(ops)?;
-    register_runtime_ops::<nebula_credential_builtin::SigningKeyCredential, B, PS>(ops)?;
+    register_runtime_ops::<nebula_credential_builtin::BearerTokenCredential, PS>(ops)?;
+    register_runtime_ops::<nebula_credential_builtin::SharedKeyCredential, PS>(ops)?;
+    register_runtime_ops::<nebula_credential_builtin::SigningKeyCredential, PS>(ops)?;
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{DispatchOps, register_runtime_ops};
-    use nebula_credential::{CredentialContext, CredentialRecord};
+    use super::{DispatchOps, register_refreshable_ops, register_runtime_ops};
+    use crate::test_fixtures::RefreshableFixtureCredential;
+    use nebula_credential::{Capabilities, Credential, CredentialContext, CredentialRecord};
     use nebula_credential_builtin::BearerTokenCredential;
     use nebula_credential_testutil::InMemoryPendingStore;
     use nebula_schema::FieldValues;
-    use nebula_storage::credential::InMemoryStore;
 
-    type Ops = DispatchOps<InMemoryStore, InMemoryPendingStore>;
+    type Ops = DispatchOps<InMemoryPendingStore>;
+
+    #[test]
+    fn capabilities_of_reflects_registered_closures() {
+        let mut ops = Ops::new();
+        register_runtime_ops::<RefreshableFixtureCredential, InMemoryPendingStore>(&mut ops)
+            .expect("base ops");
+        let key = <RefreshableFixtureCredential as Credential>::KEY;
+        // Base ops only: no capability closure registered yet.
+        assert_eq!(ops.capabilities_of(key), Capabilities::empty());
+        register_refreshable_ops::<RefreshableFixtureCredential, InMemoryPendingStore>(&mut ops)
+            .expect("refreshable ops");
+        // The refresh closure is present now, and only that flag is set.
+        assert_eq!(ops.capabilities_of(key), Capabilities::REFRESHABLE);
+        // An unregistered key reports the empty set.
+        assert_eq!(ops.capabilities_of("does_not_exist"), Capabilities::empty());
+    }
 
     #[test]
     fn register_and_lookup() {
         let mut ops = Ops::new();
-        register_runtime_ops::<BearerTokenCredential, InMemoryStore, InMemoryPendingStore>(
-            &mut ops,
-        )
-        .expect("register ok");
+        register_runtime_ops::<BearerTokenCredential, InMemoryPendingStore>(&mut ops)
+            .expect("register ok");
         assert!(ops.contains("bearer_token"));
         assert_eq!(ops.len(), 1);
     }
@@ -955,14 +981,9 @@ mod tests {
     #[test]
     fn duplicate_key_is_rejected() {
         let mut ops = Ops::new();
-        register_runtime_ops::<BearerTokenCredential, InMemoryStore, InMemoryPendingStore>(
-            &mut ops,
-        )
-        .expect("first ok");
-        let err =
-            register_runtime_ops::<BearerTokenCredential, InMemoryStore, InMemoryPendingStore>(
-                &mut ops,
-            )
+        register_runtime_ops::<BearerTokenCredential, InMemoryPendingStore>(&mut ops)
+            .expect("first ok");
+        let err = register_runtime_ops::<BearerTokenCredential, InMemoryPendingStore>(&mut ops)
             .expect_err("second rejected");
         assert!(matches!(
             err,
@@ -974,10 +995,8 @@ mod tests {
     #[tokio::test]
     async fn resolve_then_snapshot_roundtrip() {
         let mut ops = Ops::new();
-        register_runtime_ops::<BearerTokenCredential, InMemoryStore, InMemoryPendingStore>(
-            &mut ops,
-        )
-        .expect("register ok");
+        register_runtime_ops::<BearerTokenCredential, InMemoryPendingStore>(&mut ops)
+            .expect("register ok");
 
         let mut values = FieldValues::new();
         values
