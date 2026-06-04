@@ -87,9 +87,10 @@ pub enum ApiError {
     /// invalid per `nebula_workflow::validate_workflow` (RFC 9457 **422**).
     ///
     /// Distinct from [`Self::Validation`] (400), which covers request-level
-    /// parse/format errors. This variant is returned only from
-    /// `activate_workflow` after the stored definition fails structural
-    /// DAG/schema checks.
+    /// parse/format errors. Returned by `activate_workflow` and by the
+    /// shift-left dispatch gate (`execute_workflow` / `start_execution`, via
+    /// `validate_for_dispatch`) after the stored definition fails structural
+    /// DAG/schema checks (ROADMAP M3.6).
     #[classify(category = "validation", code = "API:INVALID_WORKFLOW")]
     #[error("Invalid workflow definition: {detail}")]
     InvalidWorkflowDefinition {

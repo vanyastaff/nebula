@@ -185,6 +185,54 @@ pub fn validate_workflow(definition: &WorkflowDefinition) -> Vec<WorkflowError> 
     errors
 }
 
+/// A [`WorkflowDefinition`] proven to pass [`validate_workflow`] with zero
+/// errors — the **shift-left dispatch witness** (canon §10 / §12.2, ROADMAP
+/// M3.6).
+///
+/// The inner definition is private and there is no `&mut` / `DerefMut`
+/// accessor, so the only way to obtain a `ValidatedWorkflow` is
+/// [`ValidatedWorkflow::validate`], which runs the full activation-time
+/// validator. Dispatch seams that require a `&ValidatedWorkflow` therefore
+/// cannot be reached with an unvalidated (or subsequently-mutated) definition:
+/// "must validate before dispatch" becomes a compile-time obligation rather
+/// than a convention every new handler has to remember.
+///
+/// The *call* to validation is still owned by the consuming layer
+/// (`nebula-api` dispatch handlers); this crate owns only the witness and the
+/// validator (see `crates/workflow/CLAUDE.md`).
+#[derive(Debug, Clone)]
+pub struct ValidatedWorkflow(WorkflowDefinition);
+
+impl ValidatedWorkflow {
+    /// Validate `definition` and, on success, wrap it as a dispatch witness.
+    ///
+    /// # Errors
+    ///
+    /// Returns every [`WorkflowError`] that [`validate_workflow`] collects when
+    /// the definition is structurally invalid. On success the definition is
+    /// moved into the witness untouched.
+    pub fn validate(definition: WorkflowDefinition) -> Result<Self, Vec<WorkflowError>> {
+        let errors = validate_workflow(&definition);
+        if errors.is_empty() {
+            Ok(Self(definition))
+        } else {
+            Err(errors)
+        }
+    }
+
+    /// Borrow the validated definition.
+    #[must_use]
+    pub fn definition(&self) -> &WorkflowDefinition {
+        &self.0
+    }
+
+    /// Consume the witness, returning the validated definition by value.
+    #[must_use]
+    pub fn into_inner(self) -> WorkflowDefinition {
+        self.0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -655,6 +703,33 @@ mod tests {
         assert!(
             workflow_err,
             "workflow-default invalid retry config must have node = None; got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn validated_workflow_accepts_valid_definition() {
+        let a = node_key!("a");
+        let b = node_key!("b");
+        let def = make_definition(
+            "ok",
+            vec![node(a.clone()), node(b.clone())],
+            vec![Connection::new(a, b)],
+        );
+        let validated = ValidatedWorkflow::validate(def.clone()).expect("valid workflow");
+        // Witness round-trips the exact definition it was built from.
+        assert_eq!(validated.definition().name, "ok");
+        assert_eq!(validated.into_inner().nodes.len(), def.nodes.len());
+    }
+
+    #[test]
+    fn validated_workflow_rejects_invalid_definition() {
+        // Empty-nodes workflow fails `validate_workflow` (NoNodes); the witness
+        // surfaces every collected error rather than silently constructing.
+        let def = make_definition("empty", vec![], vec![]);
+        let errors = ValidatedWorkflow::validate(def).expect_err("empty workflow must fail");
+        assert!(
+            errors.iter().any(|e| matches!(e, WorkflowError::NoNodes)),
+            "expected NoNodes; got: {errors:?}"
         );
     }
 

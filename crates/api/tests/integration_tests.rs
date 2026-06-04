@@ -888,13 +888,15 @@ async fn test_execute_workflow() {
     let api_config = ApiConfig::for_test();
     let token = create_test_jwt();
 
-    // Create a workflow first
+    // Create a workflow first. The dispatch path now runs the shift-left
+    // validation gate (M3.6), so the stored definition must be structurally
+    // valid — a single entry node, no cycles.
     let create_request = serde_json::json!({
         "name": "Test Workflow",
         "description": "A test workflow",
         "definition": {
-            "nodes": [],
-            "edges": []
+            "nodes": [{ "id": "step_a", "name": "Step A", "action_key": "echo" }],
+            "connections": []
         }
     });
 
@@ -1238,13 +1240,15 @@ async fn test_execution_start() {
     let api_config = ApiConfig::for_test();
     let token = create_test_jwt();
 
-    // Create a workflow first
+    // Create a workflow first. The dispatch path now runs the shift-left
+    // validation gate (M3.6), so the stored definition must be structurally
+    // valid — a single entry node, no cycles.
     let create_request = serde_json::json!({
         "name": "Test Workflow",
         "description": "A test workflow",
         "definition": {
-            "nodes": [],
-            "edges": []
+            "nodes": [{ "id": "step_a", "name": "Step A", "action_key": "echo" }],
+            "connections": []
         }
     });
 
@@ -2549,7 +2553,7 @@ async fn test_issue_327_start_execution_persists_canonical_execution_state() {
     let create_request = serde_json::json!({
         "name": "Issue 327 Workflow",
         "description": "Contract test: API-created execution must round-trip through ExecutionState",
-        "definition": { "nodes": [], "edges": [] }
+        "definition": { "nodes": [{ "id": "step_a", "name": "Step A", "action_key": "echo" }], "connections": [] }
     });
     let app = app::build_app(state.clone(), &api_config);
     let response = app
@@ -2728,7 +2732,7 @@ async fn test_issue_332_start_execution_enqueues_control_start() {
     let create_request = serde_json::json!({
         "name": "Issue 332 Workflow",
         "description": "API start must emit a Start command on the control queue",
-        "definition": { "nodes": [], "edges": [] }
+        "definition": { "nodes": [{ "id": "step_a", "name": "Step A", "action_key": "echo" }], "connections": [] }
     });
     let app = app::build_app(state.clone(), &api_config);
     let response = app
@@ -2834,7 +2838,7 @@ async fn test_issue_332_execute_workflow_enqueues_control_start() {
     let create_request = serde_json::json!({
         "name": "Issue 332 Execute Workflow",
         "description": "POST /workflows/:id/execute must also emit a Start command",
-        "definition": { "nodes": [], "edges": [] }
+        "definition": { "nodes": [{ "id": "step_a", "name": "Step A", "action_key": "echo" }], "connections": [] }
     });
     let app = app::build_app(state.clone(), &api_config);
     let response = app
@@ -2910,5 +2914,256 @@ async fn test_issue_332_execute_workflow_enqueues_control_start() {
     assert_eq!(
         msg.execution_id, execution_id_str,
         "#332: queued entry must reference the newly-created execution id"
+    );
+}
+
+/// Shift-left validation gate (M3.6): `POST /workflows/{id}/execute` must
+/// reject a structurally-invalid (cyclic) stored definition with RFC 9457 422
+/// *before* any execution state is created or any Start signal is enqueued.
+#[tokio::test]
+async fn test_execute_workflow_rejects_invalid_definition() {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use tower::ServiceExt;
+
+    let (state, handles) = create_state_with_port_handles().await;
+    let api_config = ApiConfig::for_test();
+    let token = create_test_jwt();
+
+    // Cyclic workflow: parses as a WorkflowDefinition but fails
+    // validate_workflow (CycleDetected + NoEntryNodes).
+    let workflow_id = nebula_core::WorkflowId::new();
+    handles
+        .seed_workflow(workflow_id, make_cyclic_workflow_definition(&workflow_id))
+        .await;
+
+    assert!(
+        handles.control_queue.snapshot().is_empty(),
+        "control queue must be empty before execute"
+    );
+
+    let app = app::build_app(state, &api_config);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(ws_path(&format!("/workflows/{workflow_id}/execute")))
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
+                .body(Body::from(r#"{"input":{}}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        response.status(),
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "invalid workflow must be rejected with 422 before dispatch"
+    );
+    // RFC 9457: structured problem+json body.
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok());
+    assert_eq!(content_type, Some("application/problem+json"));
+
+    // The gate runs before any execution-state mutation: no Start signal was
+    // enqueued on the durable control queue, and no running execution resulted.
+    assert!(
+        handles.control_queue.snapshot().is_empty(),
+        "rejected execute must not enqueue a Start signal"
+    );
+    assert!(
+        handles.running_executions().await.is_empty(),
+        "rejected execute must not create a running execution"
+    );
+}
+
+/// Shift-left validation gate (M3.6): `POST /workflows/{id}/executions`
+/// (`start_execution`) must reject a structurally-invalid (cyclic) stored
+/// definition with RFC 9457 422 and enqueue no Start signal.
+#[tokio::test]
+async fn test_start_execution_rejects_invalid_definition() {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use tower::ServiceExt;
+
+    let (state, handles) = create_state_with_port_handles().await;
+    let api_config = ApiConfig::for_test();
+    let token = create_test_jwt();
+
+    let workflow_id = nebula_core::WorkflowId::new();
+    handles
+        .seed_workflow(workflow_id, make_cyclic_workflow_definition(&workflow_id))
+        .await;
+
+    assert!(
+        handles.control_queue.snapshot().is_empty(),
+        "control queue must be empty before start"
+    );
+
+    let app = app::build_app(state, &api_config);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(ws_path(&format!("/workflows/{workflow_id}/executions")))
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
+                .body(Body::from(r#"{"input":{}}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        response.status(),
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "invalid workflow must be rejected with 422 before dispatch"
+    );
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok());
+    assert_eq!(content_type, Some("application/problem+json"));
+
+    assert!(
+        handles.control_queue.snapshot().is_empty(),
+        "rejected start must not enqueue a Start signal"
+    );
+    assert!(
+        handles.running_executions().await.is_empty(),
+        "rejected start must not create a running execution"
+    );
+}
+
+// budget-justified: parallel /execute + /executions rejection test data covering the 422 and 400 dispatch-gate branches
+/// Shift-left validation gate (M3.6): `POST /workflows/{id}/execute` must
+/// reject a stored definition that cannot be parsed as a `WorkflowDefinition`
+/// with 400 (request-level parse failure, distinct from the 422 structural
+/// path) and enqueue no Start signal.
+#[tokio::test]
+async fn test_execute_workflow_rejects_unparseable_definition() {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use tower::ServiceExt;
+
+    let (state, handles) = create_state_with_port_handles().await;
+    let api_config = ApiConfig::for_test();
+    let token = create_test_jwt();
+
+    let workflow_id = nebula_core::WorkflowId::new();
+    handles
+        .seed_workflow(
+            workflow_id,
+            make_malformed_workflow_definition(&workflow_id),
+        )
+        .await;
+
+    let app = app::build_app(state, &api_config);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(ws_path(&format!("/workflows/{workflow_id}/execute")))
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
+                .body(Body::from(r#"{"input":{}}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_REQUEST,
+        "unparseable stored definition must be rejected with 400 before dispatch"
+    );
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok());
+    assert_eq!(content_type, Some("application/problem+json"));
+
+    assert!(
+        handles.control_queue.snapshot().is_empty(),
+        "rejected execute must not enqueue a Start signal"
+    );
+    assert!(
+        handles.running_executions().await.is_empty(),
+        "rejected execute must not create a running execution"
+    );
+}
+
+/// Shift-left validation gate (M3.6): `POST /workflows/{id}/executions` must
+/// reject a stored definition that cannot be parsed as a `WorkflowDefinition`
+/// with 400 and enqueue no Start signal.
+#[tokio::test]
+async fn test_start_execution_rejects_unparseable_definition() {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use tower::ServiceExt;
+
+    let (state, handles) = create_state_with_port_handles().await;
+    let api_config = ApiConfig::for_test();
+    let token = create_test_jwt();
+
+    let workflow_id = nebula_core::WorkflowId::new();
+    handles
+        .seed_workflow(
+            workflow_id,
+            make_malformed_workflow_definition(&workflow_id),
+        )
+        .await;
+
+    let app = app::build_app(state, &api_config);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(ws_path(&format!("/workflows/{workflow_id}/executions")))
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
+                .body(Body::from(r#"{"input":{}}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_REQUEST,
+        "unparseable stored definition must be rejected with 400 before dispatch"
+    );
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok());
+    assert_eq!(content_type, Some("application/problem+json"));
+
+    assert!(
+        handles.control_queue.snapshot().is_empty(),
+        "rejected start must not enqueue a Start signal"
+    );
+    assert!(
+        handles.running_executions().await.is_empty(),
+        "rejected start must not create a running execution"
     );
 }

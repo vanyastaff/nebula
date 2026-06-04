@@ -111,6 +111,20 @@ pub(crate) fn make_cyclic_workflow_definition(
     })
 }
 
+/// Build a stored definition blob that is a valid JSON object but does NOT
+/// deserialize as a `WorkflowDefinition` (every required field absent), to
+/// exercise the parse-failure → 400 branch of the dispatch gate
+/// (`validate_for_dispatch`), distinct from the structural-validation → 422
+/// branch that [`make_cyclic_workflow_definition`] covers.
+pub(crate) fn make_malformed_workflow_definition(
+    workflow_id: &nebula_core::WorkflowId,
+) -> serde_json::Value {
+    serde_json::json!({
+        "id": workflow_id.to_string(),
+        "this_is_not": "a parseable WorkflowDefinition"
+    })
+}
+
 // ── JWT helper ────────────────────────────────────────────────────────────────
 
 /// Build a valid JWT token signed with [`TEST_JWT_SECRET`].

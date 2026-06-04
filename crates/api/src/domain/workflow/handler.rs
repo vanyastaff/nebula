@@ -20,7 +20,7 @@ use crate::{
     domain::{
         execution::{
             dto::{ExecutionResponse, StartExecutionRequest},
-            handler::enqueue_start_scoped,
+            handler::{enqueue_start_scoped, validate_for_dispatch},
         },
         shared::PaginationParams,
         workflow::dto::{
@@ -622,10 +622,11 @@ pub async fn activate_workflow(
     request_body = StartExecutionRequest,
     responses(
         (status = 202, description = "Execution accepted; engine dispatch in flight.", body = ExecutionResponse),
-        (status = 400, description = "Invalid workflow identifier.", body = ProblemDetails),
+        (status = 400, description = "Invalid workflow identifier, or the stored workflow definition cannot be parsed as a workflow.", body = ProblemDetails),
         (status = 401, description = "Authentication required.", body = ProblemDetails),
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
         (status = 404, description = "Workflow does not exist.", body = ProblemDetails),
+        (status = 422, description = "Workflow definition fails structural validation (shift-left gate).", body = ProblemDetails),
         (status = 500, description = "Workflow repository or execution repository unavailable.", body = ProblemDetails),
         (status = 503, description = "Control queue is unavailable; the engine cannot pick up the dispatch signal.", body = ProblemDetails),
     ),
@@ -641,11 +642,17 @@ pub async fn execute_workflow(
     let workflow_id = WorkflowId::parse(&id)
         .map_err(|e| ApiError::validation_message(format!("Invalid workflow ID: {e}")))?;
 
-    // Verify the workflow exists in the caller's tenant.
-    state
+    // Verify the workflow exists in the caller's tenant, then run the
+    // shift-left validation gate (ROADMAP M3.6 / canon §10): a structurally
+    // invalid definition is rejected with RFC 9457 *before* any execution
+    // state is created or any Start signal is enqueued. `enqueue_start_scoped`
+    // requires the `ValidatedWorkflow` witness produced here, so the dispatch
+    // path is type-prevented from skipping validation.
+    let definition = state
         .workflow_definition_scoped(&scope, workflow_id)
         .await?
         .ok_or_else(|| ApiError::NotFound(format!("Workflow {id} not found")))?;
+    let validated = validate_for_dispatch(&definition)?;
 
     // Generate new execution ID
     let execution_id = ExecutionId::new();
@@ -677,7 +684,7 @@ pub async fn execute_workflow(
     // `enqueue_start_scoped` helper so the create + enqueue contract lives
     // in one place. M3.5: it stamps optional W3C trace context on the row
     // when the HTTP span is OTel-linked.
-    enqueue_start_scoped(&state, &scope, execution_id).await?;
+    enqueue_start_scoped(&state, &scope, execution_id, &validated).await?;
 
     // Report `created_at` as the observable timestamp — the engine has not
     // transitioned `started_at` yet (that happens at dispatch time). See
