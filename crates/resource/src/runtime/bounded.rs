@@ -386,18 +386,25 @@ where
                 if let Some(m) = &metrics {
                     m.record_release();
                 }
-                rq.submit(move || {
-                    Box::pin(release_one_observed(
-                        resource_clone,
-                        runtime,
-                        returned_lease,
-                        !tainted,
-                        permit,
-                        poisoned,
-                        metrics,
-                    ))
-                });
+                // Return the teardown future. The guard awaits it inline on
+                // `ResourceGuard::release` (surfacing the `release_one`
+                // / S4-reset `Result`) or submits it to its `ReleaseQueue`
+                // on `Drop` (best-effort, `Result` discarded). The permit is
+                // moved into the future and dropped only after `release_one`
+                // resolves — permit-held-until-release (#384) — on both
+                // paths; the S4 poison-latch + destroy-on-failed-reset is
+                // unchanged and lives inside `release_one_observed`.
+                Box::pin(release_one_observed(
+                    resource_clone,
+                    runtime,
+                    returned_lease,
+                    !tainted,
+                    permit,
+                    poisoned,
+                    metrics,
+                ))
             },
+            rq,
         ))
     }
 }
@@ -438,6 +445,17 @@ where
 /// on a failed reset, so a reset error cannot deadlock the semaphore (S4
 /// preserve): the next acquire reaches the poison check and fails closed
 /// with an error, it does not block forever on the permit.
+///
+/// This **is** the teardown future the guard's release callback returns:
+/// `ResourceGuard::release` awaits it and surfaces the `Result`; `Drop`
+/// submits it to the [`ReleaseQueue`] discarding the `Result`. On a failed
+/// reset the **original `release_one` error is returned** (so an awaited
+/// `release()` observes it) — but only **after** the poison latch is set,
+/// the matching instance is destroyed, and the permit is dropped, so the S4
+/// fail-closed + #384 permit-held-until-reset semantics are byte-for-byte
+/// unchanged regardless of whether the caller awaits the `Result` or
+/// discards it. The S4 destroy's own error is still observed (warn +
+/// metric) but never overrides the reset error that is surfaced.
 async fn release_one_observed<R>(
     resource: R,
     runtime: Arc<R::Runtime>,
@@ -446,57 +464,69 @@ async fn release_one_observed<R>(
     permit: Option<tokio::sync::OwnedSemaphorePermit>,
     poisoned: Arc<AtomicBool>,
     metrics: Option<ResourceOpsMetrics>,
-) where
+) -> Result<(), Error>
+where
     R: BoundedRelease + Send + Sync + 'static,
     R::Runtime: Clone + Send + Sync + 'static,
     R::Lease: Send + 'static,
 {
-    if let Err(e) = resource.release_one(&runtime, lease, healthy).await {
-        tracing::warn!(
-            resource = %R::key(),
-            error = %Into::<Error>::into(e),
-            "bounded: release hook failed (observed, not swallowed)"
-        );
-        if let Some(m) = &metrics {
-            m.record_release_error();
-        }
+    let outcome = match resource.release_one(&runtime, lease, healthy).await {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            // Convert once, into a value-typed `Error`, so the same error is
+            // both logged and returned to an awaiting `release()` caller.
+            let err: Error = e.into();
+            tracing::warn!(
+                resource = %R::key(),
+                error = %err,
+                "bounded: release hook failed (observed, not swallowed)"
+            );
+            if let Some(m) = &metrics {
+                m.record_release_error();
+            }
 
-        // S4: a failed *reset* for the Exclusive cap means the single
-        // underlying instance is in an unknown half-reset state. Latch the
-        // runtime poisoned so the *next* `acquire` fails closed instead of
-        // minting a lease over it — destroying a throwaway `(*runtime).clone()`
-        // would not have isolated the next caller, because for the
-        // Exclusive cap the lease is itself a clone of the shared
-        // interior-mutable runtime that `acquire_one` hands out next.
-        // Gated on `RESET_ON_RELEASE` (`true` *only* for `Exclusive`):
-        // `Capped<N>` (incl. `Capped<1>`) is a shared multiplexer the next
-        // acquirer still needs — never poisoned or destroyed. The
-        // failed-release error is still observed above and the permit is
-        // still returned below for every cap.
-        if R::Cap::RESET_ON_RELEASE {
-            poisoned.store(true, Ordering::Release);
-            // Best-effort teardown of the matching owned instance so its
-            // OS / connection resources are released promptly (the live
-            // shared runtime is now unreachable behind the poison latch).
-            // `destroy` consumes an owned `R::Runtime`; the lease was
-            // minted by cloning the runtime, so a clone is the matching
-            // instance. Its outcome is observed, never swallowed.
-            let instance = (*runtime).clone();
-            if let Err(de) = resource.destroy(instance).await {
-                tracing::warn!(
-                    resource = %R::key(),
-                    error = %Into::<Error>::into(de),
-                    "bounded: destroy after failed reset also failed \
-                     (runtime already poisoned; acquires fail closed)"
-                );
-                if let Some(m) = &metrics {
-                    m.record_release_error();
+            // S4: a failed *reset* for the Exclusive cap means the single
+            // underlying instance is in an unknown half-reset state. Latch the
+            // runtime poisoned so the *next* `acquire` fails closed instead of
+            // minting a lease over it — destroying a throwaway `(*runtime).clone()`
+            // would not have isolated the next caller, because for the
+            // Exclusive cap the lease is itself a clone of the shared
+            // interior-mutable runtime that `acquire_one` hands out next.
+            // Gated on `RESET_ON_RELEASE` (`true` *only* for `Exclusive`):
+            // `Capped<N>` (incl. `Capped<1>`) is a shared multiplexer the next
+            // acquirer still needs — never poisoned or destroyed. The
+            // failed-release error is still observed above and the permit is
+            // still returned below for every cap.
+            if R::Cap::RESET_ON_RELEASE {
+                poisoned.store(true, Ordering::Release);
+                // Best-effort teardown of the matching owned instance so its
+                // OS / connection resources are released promptly (the live
+                // shared runtime is now unreachable behind the poison latch).
+                // `destroy` consumes an owned `R::Runtime`; the lease was
+                // minted by cloning the runtime, so a clone is the matching
+                // instance. Its outcome is observed, never swallowed.
+                let instance = (*runtime).clone();
+                if let Err(de) = resource.destroy(instance).await {
+                    tracing::warn!(
+                        resource = %R::key(),
+                        error = %Into::<Error>::into(de),
+                        "bounded: destroy after failed reset also failed \
+                         (runtime already poisoned; acquires fail closed)"
+                    );
+                    if let Some(m) = &metrics {
+                        m.record_release_error();
+                    }
                 }
             }
-        }
-    }
+            // Surface the original reset error: a caller who awaits
+            // `release()` observes it. The poison/destroy/permit semantics
+            // above are unchanged whether or not the `Result` is consumed.
+            Err(err)
+        },
+    };
     // `permit` drops here — after release_one (and any S4 destroy) has
     // resolved. The next acquirer cannot enter mid-reset (#384); for the
     // Exclusive cap it then hits the poison check and fails closed.
     drop(permit);
+    outcome
 }

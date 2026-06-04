@@ -579,6 +579,138 @@ async fn manager_register_and_acquire_pooled() {
 }
 
 #[tokio::test]
+async fn pool_maintenance_reaper_evicts_idle_timed_out_instance() {
+    use nebula_resource::ResourceEvent;
+
+    let manager = Manager::new();
+    let resource = PoolTestResource::new();
+    let pool_config = nebula_resource::topology::pooled::config::Config {
+        min_size: 0,
+        max_size: 4,
+        idle_timeout: Some(std::time::Duration::from_millis(100)),
+        max_lifetime: None,
+        maintenance_interval: std::time::Duration::from_millis(50),
+        ..Default::default()
+    };
+    let pool_rt = PoolRuntime::<PoolTestResource>::new(pool_config, 1);
+
+    let mut events = manager.subscribe_events();
+
+    manager
+        .register(RegistrationSpec {
+            resource: resource.clone(),
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Pool(pool_rt),
+            acquire: Manager::erased_acquire_pooled_for::<PoolTestResource>(),
+            recovery_gate: None,
+        })
+        .expect("registration should succeed");
+
+    // Create exactly one idle instance: acquire then drop. The release runs
+    // on the ReleaseQueue, so the instance lands in the idle queue
+    // asynchronously with `returned_at ~= now`.
+    let ctx = test_ctx();
+    let handle: ResourceGuard<PoolTestResource> = manager
+        .acquire_pooled(&ctx, &AcquireOptions::default())
+        .await
+        .expect("acquire should succeed");
+    drop(handle);
+
+    // Nobody calls run_maintenance: the ONLY way this instance is destroyed
+    // is the background reaper sweeping it once it ages past idle_timeout.
+    let evicted = poll_until(std::time::Duration::from_secs(3), || {
+        resource.destroy_counter.load(Ordering::Relaxed) >= 1
+    })
+    .await;
+    assert!(
+        evicted,
+        "background maintenance reaper should have evicted the idle-timed-out \
+         instance without any manual run_maintenance call"
+    );
+
+    // And it surfaced a MaintenanceEvicted observability event.
+    let mut saw_event = false;
+    while let Some(evt) = events.try_recv() {
+        if let ResourceEvent::MaintenanceEvicted { evicted, key } = evt {
+            assert_eq!(key.as_str(), "test-pool");
+            assert!(evicted >= 1, "evicted count must be positive");
+            saw_event = true;
+        }
+    }
+    assert!(
+        saw_event,
+        "expected a ResourceEvent::MaintenanceEvicted from the reaper"
+    );
+
+    manager
+        .graceful_shutdown(
+            ShutdownConfig::default().with_drain_timeout(std::time::Duration::from_millis(50)),
+        )
+        .await
+        .expect("graceful_shutdown must succeed");
+}
+
+#[tokio::test]
+async fn pool_maintenance_reaper_not_spawned_without_ttl() {
+    // With neither idle_timeout nor max_lifetime set, no reaper is spawned,
+    // so a healthy idle instance is never evicted in the background
+    // (the zero-overhead guard). Assert the instance is NOT destroyed over a
+    // window that comfortably exceeds the maintenance interval.
+    let manager = Manager::new();
+    let resource = PoolTestResource::new();
+    let pool_config = nebula_resource::topology::pooled::config::Config {
+        min_size: 0,
+        max_size: 4,
+        idle_timeout: None,
+        max_lifetime: None,
+        maintenance_interval: std::time::Duration::from_millis(50),
+        ..Default::default()
+    };
+    let pool_rt = PoolRuntime::<PoolTestResource>::new(pool_config, 1);
+
+    manager
+        .register(RegistrationSpec {
+            resource: resource.clone(),
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Pool(pool_rt),
+            acquire: Manager::erased_acquire_pooled_for::<PoolTestResource>(),
+            recovery_gate: None,
+        })
+        .expect("registration should succeed");
+
+    let ctx = test_ctx();
+    let handle: ResourceGuard<PoolTestResource> = manager
+        .acquire_pooled(&ctx, &AcquireOptions::default())
+        .await
+        .expect("acquire should succeed");
+    drop(handle);
+
+    // Poll past several maintenance intervals; with no TTL the instance must
+    // remain idle and never be destroyed by a (non-existent) sweep.
+    let destroyed = poll_until(std::time::Duration::from_millis(400), || {
+        resource.destroy_counter.load(Ordering::Relaxed) >= 1
+    })
+    .await;
+    assert!(
+        !destroyed,
+        "no TTL configured => no reaper => idle instance must not be evicted \
+         (destroy_counter = {})",
+        resource.destroy_counter.load(Ordering::Relaxed)
+    );
+
+    manager
+        .graceful_shutdown(
+            ShutdownConfig::default().with_drain_timeout(std::time::Duration::from_millis(50)),
+        )
+        .await
+        .expect("graceful_shutdown must succeed");
+}
+
+#[tokio::test]
 async fn manager_register_and_acquire_resident() {
     let manager = Manager::new();
     let resource = ResidentTestResource::new();
@@ -3401,10 +3533,21 @@ impl Resource for HandleDummyResource {
 
 #[test]
 fn panic_in_release_callback_does_not_abort() {
-    // Create a guarded handle with a callback that panics.
-    // Drop the handle. Process must not abort.
-    // catch_unwind in Drop should catch it.
+    // Create a guarded handle with a callback that panics. The callback now
+    // *builds* the teardown future; the build runs synchronously on `Drop`
+    // inside `catch_unwind`, so a panic there must still be caught and the
+    // process must not abort.
     use std::sync::atomic::{AtomicBool, Ordering};
+
+    // The guard holds a `ReleaseQueue` for its `Drop` fallback. Building the
+    // queue spawns workers, so it must happen inside a Tokio runtime
+    // context; keep the runtime alive for the whole test via `enter()`.
+    let rt = tokio::runtime::Runtime::new().expect("build a tokio runtime");
+    let _rt_guard = rt.enter();
+    // Drop the handle (detaches the workers) — this test asserts the panic is
+    // caught at future-build time on `Drop`, not queued-future completion.
+    let (queue, _queue_handle) = ReleaseQueue::new(1);
+    let queue = Arc::new(queue);
 
     let callback_entered = Arc::new(AtomicBool::new(false));
     let entered = callback_entered.clone();
@@ -3419,12 +3562,52 @@ fn panic_in_release_callback_does_not_abort() {
                 entered.store(true, Ordering::Relaxed);
                 panic!("intentional panic in release callback");
             },
+            queue,
         );
     }
     // If we get here, the process didn't abort.
     assert!(
         callback_entered.load(Ordering::Relaxed),
         "callback should have been invoked before the panic was caught"
+    );
+}
+
+#[tokio::test]
+async fn release_shared_guard_runs_teardown_inline_and_returns_ok() {
+    // The `Shared` (Arc-wrapped) arm of `release()` has no production topology
+    // producer today, but `ResourceGuard::shared` is public API. Exercise that
+    // match arm directly: `release()` must run the teardown future INLINE
+    // (awaited, not queued) and surface its `Ok`.
+    use nebula_resource::guard::ResourceGuard;
+
+    let (queue, _queue_handle) = ReleaseQueue::new(1);
+    let queue = Arc::new(queue);
+
+    let ran = Arc::new(AtomicBool::new(false));
+    let ran_cb = Arc::clone(&ran);
+
+    let guard = ResourceGuard::<HandleDummyResource>::shared(
+        Arc::new(42_u32),
+        resource_key!("handle-dummy"),
+        nebula_resource::TopologyTag::Resident,
+        1,
+        move |_tainted: bool| {
+            let ran = Arc::clone(&ran_cb);
+            Box::pin(async move {
+                ran.store(true, Ordering::Relaxed);
+                Ok::<(), Error>(())
+            }) as std::pin::Pin<Box<dyn Future<Output = Result<(), Error>> + Send>>
+        },
+        queue,
+    );
+
+    guard
+        .release()
+        .await
+        .expect("release of a shared guard runs its teardown future and returns Ok");
+    assert!(
+        ran.load(Ordering::Relaxed),
+        "the shared release future must have run inline (awaited by release(), not queued)"
     );
 }
 
@@ -4706,4 +4889,233 @@ async fn probe_boundary_serializes_callers_under_herd() {
         probes, 1,
         "#322: exactly one caller should have been admitted as the probe, got {probes}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// ResourceGuard::release() — explicit, awaited release checkpoint (canon §11.4)
+// ---------------------------------------------------------------------------
+
+/// `release()` on a Pooled guard returns `Ok(())` and recycles the instance:
+/// the slot lands back in idle and a subsequent acquire reuses it (the
+/// `create_counter` does not advance). This is the awaited-inline counterpart
+/// to the drop-then-`wait_idle_count` recycle path.
+#[tokio::test]
+async fn release_pooled_guard_recycles_and_returns_ok() {
+    let resource = PoolTestResource::new();
+    let config = nebula_resource::topology::pooled::config::Config {
+        max_size: 4,
+        ..Default::default()
+    };
+    let pool = PoolRuntime::<PoolTestResource>::new(config, 1);
+    let (rq, rq_handle) = ReleaseQueue::new(1);
+    let rq = Arc::new(rq);
+    let ctx = test_ctx();
+
+    let handle = pool
+        .acquire(
+            &resource,
+            &test_config(),
+            &ctx,
+            &rq,
+            0,
+            &AcquireOptions::default(),
+            None,
+        )
+        .await
+        .expect("first acquire should succeed");
+    assert_eq!(resource.create_counter.load(Ordering::Relaxed), 1);
+
+    // Explicit awaited release: runs the recycle inline and returns its
+    // outcome. No `ReleaseQueue` worker is involved on this path.
+    handle
+        .release()
+        .await
+        .expect("release of a healthy pooled guard recycles and returns Ok");
+
+    // The instance is already back in idle by the time `release()` returned
+    // (the recycle was awaited inline, not queued) — no settle needed.
+    assert_eq!(
+        pool.idle_count().await,
+        1,
+        "an awaited release must have recycled the instance back to idle"
+    );
+
+    // Reacquire reuses the recycled instance: no new creation.
+    let handle2 = pool
+        .acquire(
+            &resource,
+            &test_config(),
+            &ctx,
+            &rq,
+            0,
+            &AcquireOptions::default(),
+            None,
+        )
+        .await
+        .expect("second acquire should succeed");
+    assert_eq!(
+        resource.create_counter.load(Ordering::Relaxed),
+        1,
+        "release() recycled, not destroyed — reacquire reuses the instance"
+    );
+
+    drop(handle2);
+    drop(rq);
+    ReleaseQueue::shutdown(rq_handle).await;
+}
+
+/// `release()` surfaces the teardown error AND still completes the drain
+/// accounting. Uses the `Exclusive` cap whose `release_one` always fails: the
+/// awaited `release()` returns `Err`, and because `settle` ran regardless of
+/// the error, a subsequent `graceful_shutdown` drains promptly (does not
+/// hang on the now-released slot).
+#[tokio::test]
+async fn release_surfaces_error_but_still_completes_drain() {
+    let manager = Manager::new();
+    let resource = FailingResetExclusive;
+    let exclusive_rt =
+        BoundedRuntime::<FailingResetExclusive>::new(&resource, 1u32, BoundedConfig::default());
+
+    manager
+        .register(RegistrationSpec {
+            resource: resource.clone(),
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Bounded(exclusive_rt),
+            acquire: Manager::erased_acquire_bounded_for::<FailingResetExclusive>(),
+            recovery_gate: None,
+        })
+        .expect("registration should succeed");
+
+    let ctx = test_ctx();
+    let handle: ResourceGuard<FailingResetExclusive> = manager
+        .acquire_bounded(&ctx, &AcquireOptions::default())
+        .await
+        .expect("first acquire should succeed");
+
+    // The Exclusive `release_one` is a reset that always fails. `release()`
+    // surfaces that error — but the poison-latch, the matching-instance
+    // destroy, the permit drop (#384), and the drain accounting all already
+    // ran before the error reached us.
+    let err = handle
+        .release()
+        .await
+        .expect_err("a failing reset must surface as an Err from release()");
+    assert_eq!(
+        *err.kind(),
+        ErrorKind::Transient,
+        "the surfaced error is the original release_one error (TestError → transient): {err:?}"
+    );
+
+    // The slot was released despite the error, so graceful_shutdown drains
+    // promptly rather than hanging on an outstanding in-flight count.
+    let report = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        manager.graceful_shutdown(
+            ShutdownConfig::default().with_drain_timeout(std::time::Duration::from_millis(500)),
+        ),
+    )
+    .await
+    .expect("graceful_shutdown must not hang — the errored release still drained the slot")
+    .expect("graceful_shutdown must succeed");
+    let _ = report;
+}
+
+/// `release()` on an Owned (resident) guard returns `Ok(())` — there is no
+/// recycle/destroy work, only the drain + event settle.
+#[tokio::test]
+async fn release_owned_resident_guard_returns_ok() {
+    let manager = Manager::new();
+    let resource = ResidentTestResource::new();
+    let resident_rt =
+        ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
+
+    manager
+        .register(RegistrationSpec {
+            resource,
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident_for::<ResidentTestResource>(),
+            recovery_gate: None,
+        })
+        .expect("registration should succeed");
+
+    let ctx = test_ctx();
+    let handle: ResourceGuard<ResidentTestResource> = manager
+        .acquire_resident(&ctx, &AcquireOptions::default())
+        .await
+        .expect("acquire should succeed");
+
+    handle
+        .release()
+        .await
+        .expect("release of an owned resident guard is a no-op teardown — Ok");
+
+    manager
+        .graceful_shutdown(
+            ShutdownConfig::default().with_drain_timeout(std::time::Duration::from_millis(50)),
+        )
+        .await
+        .expect("graceful_shutdown must succeed");
+}
+
+/// Calling `release()` then dropping the (consumed) guard must emit **exactly
+/// one** `Released` event and decrement the drain counters exactly once: the
+/// `release()` consumes `self`, so the subsequent drop of the husk is inert.
+#[tokio::test]
+async fn release_then_drop_emits_exactly_one_released_event() {
+    let manager = Manager::new();
+    let resource = ResidentTestResource::new();
+    let resident_rt =
+        ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
+
+    manager
+        .register(RegistrationSpec {
+            resource,
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident_for::<ResidentTestResource>(),
+            recovery_gate: None,
+        })
+        .expect("registration should succeed");
+
+    let mut rx = manager.subscribe_events();
+
+    let ctx = test_ctx();
+    let handle: ResourceGuard<ResidentTestResource> = manager
+        .acquire_resident(&ctx, &AcquireOptions::default())
+        .await
+        .expect("acquire should succeed");
+
+    // The awaited checkpoint runs the settle (emits `Released`) and consumes
+    // `self`; the husk's drop at end of statement is fully inert.
+    handle.release().await.expect("release should succeed");
+
+    let mut released_count = 0usize;
+    while let Some(event) = rx.try_recv() {
+        if matches!(
+            &event,
+            nebula_resource::ResourceEvent::Released { key, .. }
+                if key == &resource_key!("test-resident")
+        ) {
+            released_count += 1;
+        }
+    }
+    assert_eq!(
+        released_count, 1,
+        "release() then drop must emit EXACTLY one Released event — the \
+         drop-after-release husk is inert (no double emit / double decrement)"
+    );
+
+    manager
+        .graceful_shutdown(
+            ShutdownConfig::default().with_drain_timeout(std::time::Duration::from_millis(50)),
+        )
+        .await
+        .expect("graceful_shutdown must succeed");
 }
