@@ -54,6 +54,26 @@ pub enum CredentialServiceError {
         key: String,
     },
 
+    /// A credential type advertises a capability in the registry but the
+    /// matching operation closure was never registered in `DispatchOps`
+    /// (a `register_*_ops` call was skipped at the composition root). Caught
+    /// at [`build`](crate::CredentialServiceBuilder::build) so a misconfigured
+    /// service fails loud at startup instead of returning
+    /// [`CapabilityUnsupported`](Self::CapabilityUnsupported) at first use.
+    #[classify(
+        category = "internal",
+        code = "CREDENTIAL_SERVICE:CAPABILITY_WITHOUT_OPS"
+    )]
+    #[error(
+        "credential type '{key}' advertises capability '{capability}' but no matching operation closure is registered"
+    )]
+    CapabilityWithoutOps {
+        /// Capability name (`refresh` / `test` / `revoke` / `interactive`).
+        capability: String,
+        /// `Credential::KEY` of the misconfigured type.
+        key: String,
+    },
+
     /// No credential type registered under this key.
     #[classify(category = "validation", code = "CREDENTIAL_SERVICE:TYPE_UNKNOWN")]
     #[error("unknown credential type: {key}")]

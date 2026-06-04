@@ -18,8 +18,8 @@ use std::sync::Arc;
 use nebula_credential::pending_store::PendingStateStore;
 use nebula_credential::resolve::{InteractionRequest, TestResult, UserInput};
 use nebula_credential::{
-    Credential, CredentialContext, CredentialRecord, CredentialSnapshot, CredentialState,
-    Interactive, PendingToken, Refreshable, Revocable, Testable,
+    Capabilities, Credential, CredentialContext, CredentialRecord, CredentialSnapshot,
+    CredentialState, Interactive, PendingToken, Refreshable, Revocable, Testable,
 };
 use nebula_engine::credential::{
     ResolveResponse, dispatch_revoke, dispatch_test, execute_continue, execute_resolve,
@@ -282,6 +282,29 @@ impl<PS: PendingStateStore> DispatchOps<PS> {
     #[must_use]
     pub fn contains(&self, key: &str) -> bool {
         self.entries.contains_key(key)
+    }
+
+    /// The capabilities backed by a registered operation closure for `key`,
+    /// derived from which optional closures are present. Covers the four
+    /// ops-modeled capabilities (`REFRESHABLE` / `TESTABLE` / `REVOCABLE` /
+    /// `INTERACTIVE`); `DYNAMIC` is a lease-lifecycle concern with no ops
+    /// closure and is never reported here. Empty set when `key` is absent.
+    ///
+    /// Used by [`CredentialServiceBuilder::build`](crate::CredentialServiceBuilder::build)
+    /// to gate the registry's advertised capabilities against the closures
+    /// actually registered, so discovery cannot advertise a capability that
+    /// would fail at first call.
+    #[must_use]
+    pub(crate) fn capabilities_of(&self, key: &str) -> Capabilities {
+        let Some(entry) = self.entries.get(key) else {
+            return Capabilities::empty();
+        };
+        let mut caps = Capabilities::empty();
+        caps.set(Capabilities::REFRESHABLE, entry.refresh_fn.is_some());
+        caps.set(Capabilities::TESTABLE, entry.test_fn.is_some());
+        caps.set(Capabilities::REVOCABLE, entry.revoke_fn.is_some());
+        caps.set(Capabilities::INTERACTIVE, entry.continue_fn.is_some());
+        caps
     }
 
     /// Resolve `props` into serialized credential state for the type at
@@ -921,13 +944,30 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{DispatchOps, register_runtime_ops};
-    use nebula_credential::{CredentialContext, CredentialRecord};
+    use super::{DispatchOps, register_refreshable_ops, register_runtime_ops};
+    use crate::test_fixtures::RefreshableFixtureCredential;
+    use nebula_credential::{Capabilities, Credential, CredentialContext, CredentialRecord};
     use nebula_credential_builtin::BearerTokenCredential;
     use nebula_credential_testutil::InMemoryPendingStore;
     use nebula_schema::FieldValues;
 
     type Ops = DispatchOps<InMemoryPendingStore>;
+
+    #[test]
+    fn capabilities_of_reflects_registered_closures() {
+        let mut ops = Ops::new();
+        register_runtime_ops::<RefreshableFixtureCredential, InMemoryPendingStore>(&mut ops)
+            .expect("base ops");
+        let key = <RefreshableFixtureCredential as Credential>::KEY;
+        // Base ops only: no capability closure registered yet.
+        assert_eq!(ops.capabilities_of(key), Capabilities::empty());
+        register_refreshable_ops::<RefreshableFixtureCredential, InMemoryPendingStore>(&mut ops)
+            .expect("refreshable ops");
+        // The refresh closure is present now, and only that flag is set.
+        assert_eq!(ops.capabilities_of(key), Capabilities::REFRESHABLE);
+        // An unregistered key reports the empty set.
+        assert_eq!(ops.capabilities_of("does_not_exist"), Capabilities::empty());
+    }
 
     #[test]
     fn register_and_lookup() {

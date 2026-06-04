@@ -1356,7 +1356,7 @@ pub mod test_support {
         // the same map the layered stack writes through.
         let raw_store = InMemoryStore::new();
         let key = Arc::new(EncryptionKey::from_bytes([0x42; 32]));
-        let svc = CredentialServiceBuilder::new(
+        let svc = match CredentialServiceBuilder::new(
             raw_store.clone(),
             Arc::new(StaticKeyProvider::new(key)),
             audit_sink,
@@ -1368,7 +1368,13 @@ pub mod test_support {
             LeaseLifecycleConfig::default(),
             CancellationToken::new(),
         )
-        .build();
+        .build()
+        {
+            Ok(svc) => svc,
+            // guard-justified: this test fixture registers every advertised
+            // capability's ops, so the build-time capability gate never fires.
+            Err(err) => unreachable!("fixture service is well-formed: {err}"),
+        };
         (svc, raw_store)
     }
 
@@ -1457,7 +1463,7 @@ pub mod test_support {
 
         let raw_store = InMemoryStore::new();
         let key = Arc::new(EncryptionKey::from_bytes([0x42; 32]));
-        let svc = CredentialServiceBuilder::new(
+        let svc = match CredentialServiceBuilder::new(
             raw_store,
             Arc::new(StaticKeyProvider::new(key)),
             Arc::new(NoopAuditSink),
@@ -1469,7 +1475,13 @@ pub mod test_support {
             LeaseLifecycleConfig::default(),
             CancellationToken::new(),
         )
-        .build();
+        .build()
+        {
+            Ok(svc) => svc,
+            // guard-justified: this test fixture registers every advertised
+            // capability's ops, so the build-time capability gate never fires.
+            Err(err) => unreachable!("fixture service is well-formed: {err}"),
+        };
         (svc, refreshes)
     }
 }

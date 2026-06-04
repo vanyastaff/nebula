@@ -12,9 +12,9 @@
 
 use std::sync::Arc;
 
-use nebula_credential::CredentialRegistry;
 use nebula_credential::pending_store::PendingStateStore;
 use nebula_credential::store::CredentialStore;
+use nebula_credential::{Capabilities, CredentialRegistry};
 use nebula_engine::credential::{
     CredentialResolver, LeaseLifecycle, LeaseLifecycleConfig, RefreshCoordinator,
 };
@@ -23,6 +23,7 @@ use nebula_storage::credential::{
 };
 use tokio_util::sync::CancellationToken;
 
+use crate::error::CredentialServiceError;
 use crate::observer::CredentialObserver;
 use crate::ops::DispatchOps;
 use crate::service::CredentialService;
@@ -110,11 +111,43 @@ impl<B: CredentialStore, PS: PendingStateStore> CredentialServiceBuilder<B, PS> 
         self
     }
 
-    /// Compose the secure layered store + engine resolver + lease
-    /// lifecycle and return the service. Infallible: every mandatory
-    /// field is an owned value (no `unwrap`).
-    #[must_use]
-    pub fn build(self) -> CredentialService<B, PS> {
+    /// Compose the secure layered store + engine resolver + lease lifecycle
+    /// and return the service.
+    ///
+    /// Runs a startup invariant first: every capability the registry
+    /// advertises (in the four ops-modeled capabilities) must have a
+    /// registered operation closure, so discovery and dispatch cannot
+    /// advertise a capability that would fail at first call.
+    ///
+    /// # Errors
+    ///
+    /// [`CredentialServiceError::CapabilityWithoutOps`] when a registered
+    /// credential type advertises `refresh` / `test` / `revoke` /
+    /// `interactive` but its matching `register_*_ops` call was skipped at
+    /// the composition root.
+    pub fn build(self) -> Result<CredentialService<B, PS>, CredentialServiceError> {
+        // registry-advertised capabilities ⊆ ops-registered closures, per
+        // credential key. DYNAMIC is a lease concern with no ops closure, so
+        // the subset is scoped to the four ops-modeled capabilities.
+        let ops_modeled = Capabilities::REFRESHABLE
+            | Capabilities::TESTABLE
+            | Capabilities::REVOCABLE
+            | Capabilities::INTERACTIVE;
+        for key in self.registry.iter_keys() {
+            let advertised = self
+                .registry
+                .capabilities_of(key)
+                .unwrap_or_default()
+                .intersection(ops_modeled);
+            let missing = advertised.difference(self.ops.capabilities_of(key));
+            if !missing.is_empty() {
+                return Err(CredentialServiceError::CapabilityWithoutOps {
+                    capability: first_missing_capability(missing).to_owned(),
+                    key: key.to_owned(),
+                });
+            }
+        }
+
         let store = AuditLayer::new(
             CacheLayer::new(
                 EncryptionLayer::new(self.raw_store, self.key_provider),
@@ -135,7 +168,7 @@ impl<B: CredentialStore, PS: PendingStateStore> CredentialServiceBuilder<B, PS> 
             self.observer.metrics(),
             self.shutdown,
         );
-        CredentialService::__from_parts(
+        Ok(CredentialService::__from_parts(
             store,
             resolver,
             lease,
@@ -144,6 +177,23 @@ impl<B: CredentialStore, PS: PendingStateStore> CredentialServiceBuilder<B, PS> 
             self.ops,
             self.observer,
             self.external,
-        )
+        ))
+    }
+}
+
+/// Name the first ops-modeled capability present in `missing`, for the
+/// [`CredentialServiceError::CapabilityWithoutOps`] message. `missing` is
+/// always non-empty at the call site.
+fn first_missing_capability(missing: Capabilities) -> &'static str {
+    if missing.contains(Capabilities::REFRESHABLE) {
+        "refresh"
+    } else if missing.contains(Capabilities::TESTABLE) {
+        "test"
+    } else if missing.contains(Capabilities::REVOCABLE) {
+        "revoke"
+    } else if missing.contains(Capabilities::INTERACTIVE) {
+        "interactive"
+    } else {
+        "unknown"
     }
 }
