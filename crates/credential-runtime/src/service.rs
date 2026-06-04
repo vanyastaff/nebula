@@ -148,7 +148,7 @@ pub struct CredentialService<B: CredentialStore, PS: PendingStateStore> {
     pub(crate) lease: LeaseLifecycle,
     pub(crate) pending: PS,
     pub(crate) registry: Arc<CredentialRegistry>,
-    pub(crate) ops: Arc<DispatchOps<B, PS>>,
+    pub(crate) ops: Arc<DispatchOps<PS>>,
     pub(crate) observer: Arc<dyn CredentialObserver>,
     // Read by `ensure_local_source` on every secret-resolving entry
     // point. `External` is configurable but its resolution wiring (the
@@ -168,7 +168,7 @@ impl<B: CredentialStore, PS: PendingStateStore> CredentialService<B, PS> {
         lease: LeaseLifecycle,
         pending: PS,
         registry: Arc<CredentialRegistry>,
-        ops: Arc<DispatchOps<B, PS>>,
+        ops: Arc<DispatchOps<PS>>,
         observer: Arc<dyn CredentialObserver>,
         source: StateSource,
     ) -> Self {
@@ -1349,9 +1349,8 @@ pub mod test_support {
         // All three builtins are static (no capability impls), so only
         // the base ops are registered — no `register_*_ops` capability
         // call. Closure absence is "capability not supported".
-        let mut ops = DispatchOps::<InMemoryStore, InMemoryPendingStore>::new();
-        register_all_builtin_ops::<InMemoryStore, InMemoryPendingStore>(&mut ops)
-            .expect("builtin ops");
+        let mut ops = DispatchOps::<InMemoryPendingStore>::new();
+        register_all_builtin_ops::<InMemoryPendingStore>(&mut ops).expect("builtin ops");
 
         // `InMemoryStore` is `Arc<RwLock<..>>`-backed: the clone shares
         // the same map the layered stack writes through.
@@ -1441,22 +1440,15 @@ pub mod test_support {
         // bitflag (ADR-0088 D3): `RefreshableFixtureCredential` impls
         // `Refreshable`, so `registry.is_refreshable(key)` is true without a
         // parallel dispatch flag.
-        let mut ops = DispatchOps::<InMemoryStore, InMemoryPendingStore>::new();
-        register_all_builtin_ops::<InMemoryStore, InMemoryPendingStore>(&mut ops)
-            .expect("builtin ops");
+        let mut ops = DispatchOps::<InMemoryPendingStore>::new();
+        register_all_builtin_ops::<InMemoryPendingStore>(&mut ops).expect("builtin ops");
         // Base ops first, then the refresh capability closure (the
         // ordering `register_refreshable_ops` enforces via
         // `DispatchError::BaseOpsMissing`).
-        register_runtime_ops::<RefreshableFixtureCredential, InMemoryStore, InMemoryPendingStore>(
-            &mut ops,
-        )
-        .expect("fixture base ops");
-        register_refreshable_ops::<
-            RefreshableFixtureCredential,
-            InMemoryStore,
-            InMemoryPendingStore,
-        >(&mut ops)
-        .expect("fixture refreshable ops");
+        register_runtime_ops::<RefreshableFixtureCredential, InMemoryPendingStore>(&mut ops)
+            .expect("fixture base ops");
+        register_refreshable_ops::<RefreshableFixtureCredential, InMemoryPendingStore>(&mut ops)
+            .expect("fixture refreshable ops");
 
         let refreshes = Arc::new(AtomicUsize::new(0));
         let observer = CountingObserver {
