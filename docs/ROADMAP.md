@@ -88,7 +88,10 @@
   providers from operator secrets (carved out to its own SDD plan — Wave 4
   credential-stabilize compose-root `CredentialService` instantiation
   unblocked but not wired; `complete_oauth` still returns
-  `NotImplemented`); shift-left validation audit (M3.6).
+  `NotImplemented`). **M3.6 shift-left validation closed 2026-06-04** — both
+  dispatch handlers gate on `validate_workflow` via the
+  `nebula_workflow::ValidatedWorkflow` witness before any execution-state
+  mutation (no `/execute` or `/executions` path bypasses validation).
 - **Shared infra** — `nebula-credential` is consumed by Exec + API +
   Business (the `deny.toml` `[wrappers]` allowlist locks the consumer set).
   The `nebula-credential-runtime` crate shipped (ADR-0066, #678):
@@ -354,17 +357,44 @@ The largest 1.0 area. Closure criteria (on top of the global DoD):
 
 #### M3.6 Shift-left workflow validation
 
-- [ ] Audit every `/execute` and `/workflows/{id}/run` handler — call
+> **Closed 2026-06-04** — plan
+> `docs/plans/2026-06-04-001-feat-api-m3.6-shift-left-validation-plan.md`.
+> Recon correction: the API→engine seam is the durable control queue, not a
+> direct `engine.execute_workflow` call (which has ~50 engine-test callers
+> only), so the witness is required at the dispatch seam
+> (`enqueue_start_scoped`), not forced onto the engine signature.
+
+- [x] Audit every `/execute` and `/workflows/{id}/run` handler — call
       `validate_workflow` before engine handoff per the
-      `crates/workflow/README.md` contract (current coverage map unknown).
-- [ ] Encode "must validate before dispatch" as a typed boundary — e.g. a
-      `ValidatedWorkflow` newtype the engine `Submit` API requires
-      (impossible to call without validating).
-- [ ] Map `WorkflowValidationError` → `400 Bad Request` with field-level
-      detail in problem+json.
-- [ ] Integration test: malformed workflow → 400 before any engine state
-      mutation.
-- [ ] Lint/CI gate catching a future handler that skips `validate_workflow`.
+      `crates/workflow/README.md` contract. The two dispatch handlers
+      (`domain/workflow/handler.rs::execute_workflow`,
+      `domain/execution/handler.rs::start_execution`) now run the gate via the
+      shared `validate_for_dispatch` helper before `create_execution_scoped` /
+      `enqueue_start_scoped`. (`/workflows/{id}/run` does not exist; the start
+      routes are `.../execute` and `.../executions`.)
+- [x] Encode "must validate before dispatch" as a typed boundary —
+      `nebula_workflow::ValidatedWorkflow` newtype (private field; built only
+      via `ValidatedWorkflow::validate`). The shared `enqueue_start_scoped`
+      dispatch helper requires a `&ValidatedWorkflow`, so unvalidated dispatch
+      is unrepresentable. (Placed at the dispatch seam, not on
+      `engine.execute_workflow` — see note above.)
+- [x] Map validation failure → field-level problem+json. Reuses the existing
+      `ApiError::InvalidWorkflowDefinition` → **422** path (RFC 6901 pointers
+      via `workflow_error_pointer`). 422 (not the bullet's looser "400")
+      follows the `activate_workflow` precedent: 422 is correct for
+      well-formed-but-semantically-invalid input; an unparseable blob still
+      yields 400. (canon §4.5 honesty: codebase precedent overrides roadmap
+      wording.)
+- [x] Integration test: malformed workflow → rejected before any engine state
+      mutation. `test_execute_workflow_rejects_invalid_definition` +
+      `test_start_execution_rejects_invalid_definition`
+      (`crates/api/tests/integration_tests.rs`): cyclic stored def → 422
+      problem+json **and** an empty control queue (no Start enqueued).
+- [x] Lint/CI gate catching a future handler that skips `validate_workflow` —
+      satisfied structurally: `enqueue_start_scoped` is uncallable without a
+      `ValidatedWorkflow`, so the compiler is the gate. (`restart_execution`
+      does not route through this helper; a defensive re-validate there is a
+      noted 1.1 follow-up.)
 
 **Exit:** every shipping route reachable from `build_app`; every
 state-changing endpoint replay-protected end-to-end; OpenAPI spec is the
@@ -1180,7 +1210,7 @@ Not all parallelizable. Suggested ordering (M0–M2, M6, M11 closed
 2. **M3 (API)** in parallel with M0 — biggest user-facing gap; sliceable
    (M3.1 mostly closed via #737/#738/#751/#753/#754 — only
    OAuth-secrets-from-operator remains (carved out to its own SDD plan);
-   M3.2 ✅, M3.3 ✅, M3.4 ✅, M3.5 ✅ via #742, M3.6 open).
+   M3.2 ✅, M3.3 ✅, M3.4 ✅, M3.5 ✅ via #742, M3.6 ✅ (2026-06-04)).
 3. **M1, M2 (engine correctness + retry)** after M0 — same `engine.rs`
    paths. ✅ DONE.
 4. **M4, M5 (plugin capability gate + plugin ABI contract)** in parallel

@@ -280,6 +280,7 @@ pub async fn get_execution(
         (status = 401, description = "Authentication required.", body = ProblemDetails),
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
         (status = 404, description = "Workflow does not exist.", body = ProblemDetails),
+        (status = 422, description = "Workflow definition fails structural validation (shift-left gate).", body = ProblemDetails),
         (status = 503, description = "Control queue is unavailable; the engine cannot pick up the dispatch signal.", body = ProblemDetails),
     ),
 )]
@@ -294,11 +295,17 @@ pub async fn start_execution(
     let workflow_id_parsed = WorkflowId::parse(&workflow_id)
         .map_err(|e| ApiError::validation_message(format!("Invalid workflow ID: {e}")))?;
 
-    // Verify the workflow exists in the caller's tenant.
-    state
+    // Verify the workflow exists in the caller's tenant, then run the
+    // shift-left validation gate (ROADMAP M3.6 / canon §10): a structurally
+    // invalid definition is rejected with RFC 9457 *before* any execution
+    // state is created or any Start signal is enqueued. `enqueue_start_scoped`
+    // requires the `ValidatedWorkflow` witness produced here, so the dispatch
+    // path is type-prevented from skipping validation.
+    let definition = state
         .workflow_definition_scoped(&scope, workflow_id_parsed)
         .await?
         .ok_or_else(|| ApiError::NotFound(format!("Workflow {workflow_id} not found")))?;
+    let validated = validate_for_dispatch(&definition)?;
 
     // Generate new execution ID
     let execution_id = ExecutionId::new();
@@ -345,7 +352,7 @@ pub async fn start_execution(
     // exists but the engine will not see the Start signal — the handler
     // fails loudly so the caller can retry. The retry is idempotent
     // at the consumer layer via CAS (control-queue CAS).
-    enqueue_start_scoped(&state, &scope, execution_id).await?;
+    enqueue_start_scoped(&state, &scope, execution_id, &validated).await?;
 
     // Build response. `started_at` is omitted on a Created execution —
     // integration seam step 3 forbids synthetic timestamps for fields the engine
@@ -395,17 +402,25 @@ pub async fn start_execution(
 /// M3.5: stamps optional [`nebula_core::W3cTraceContext`] on the row from the active HTTP span
 /// when the global propagator yields a valid carrier; otherwise enqueues without one (never
 /// fails the request for trace stamping alone).
+///
+/// M3.6: takes a [`nebula_workflow::ValidatedWorkflow`] witness by reference.
+/// The witness can only be produced by [`validate_for_dispatch`] (which runs
+/// `validate_workflow`), so the type system forbids reaching dispatch with an
+/// unvalidated definition — this is the structural "lint gate" against a
+/// future start-path handler that forgets to shift-left validate.
 pub(crate) async fn enqueue_start_scoped(
     state: &AppState,
     scope: &nebula_storage_port::Scope,
     execution_id: ExecutionId,
+    validated: &nebula_workflow::ValidatedWorkflow,
 ) -> ApiResult<()> {
     let w3c_trace_context = w3c_trace_context_for_control_queue();
     tracing::debug!(
         execution_id = %execution_id,
         command = ControlCommand::Start.as_str(),
         has_trace_context = w3c_trace_context.is_some(),
-        "execution: enqueue Start on control queue"
+        node_count = validated.definition().nodes.len(),
+        "execution: enqueue Start on control queue (shift-left validated)"
     );
     state
         .enqueue_control_scoped(
@@ -415,6 +430,44 @@ pub(crate) async fn enqueue_start_scoped(
             w3c_trace_context,
         )
         .await
+}
+
+/// Parse a stored workflow definition blob and run the shift-left structural
+/// validation gate, returning a [`nebula_workflow::ValidatedWorkflow`] dispatch
+/// witness or an RFC 9457 error (canon §10 / §12.2, ROADMAP M3.6).
+///
+/// Every start-path handler (`execute_workflow`, `start_execution`) MUST turn
+/// the stored definition into a `ValidatedWorkflow` via this helper *before* it
+/// creates an execution row or enqueues a Start signal. Because
+/// [`enqueue_start_scoped`] requires the witness, the compiler rejects any
+/// dispatch path that skips this call.
+///
+/// Error mapping:
+/// - A blob that cannot be parsed as a `WorkflowDefinition` → **400** via
+///   [`ApiError::validation_message`] (a request-level / format error), using
+///   the same `to_string`→`from_str` round-trip `activate_workflow` relies on
+///   (`from_value` cannot zero-copy-borrow `&str` for `Key<T>` fields, #343).
+/// - A parseable-but-structurally-invalid definition → **422**
+///   [`ApiError::InvalidWorkflowDefinition`], carrying every typed
+///   [`nebula_workflow::WorkflowError`] so the problem+json body gets
+///   field-level RFC 6901 pointers.
+pub(crate) fn validate_for_dispatch(
+    definition: &serde_json::Value,
+) -> ApiResult<nebula_workflow::ValidatedWorkflow> {
+    let raw_json = serde_json::to_string(definition)
+        .map_err(|e| ApiError::Internal(format!("Failed to serialize workflow definition: {e}")))?;
+    let workflow_def: nebula_workflow::WorkflowDefinition = serde_json::from_str(&raw_json)
+        .map_err(|e| {
+            ApiError::validation_message(format!(
+                "Workflow definition cannot be parsed as WorkflowDefinition: {e}"
+            ))
+        })?;
+    nebula_workflow::ValidatedWorkflow::validate(workflow_def).map_err(|errors| {
+        ApiError::InvalidWorkflowDefinition {
+            detail: format!("Workflow definition is invalid ({} error(s))", errors.len()),
+            errors,
+        }
+    })
 }
 
 /// Cancel execution
