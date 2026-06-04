@@ -59,6 +59,11 @@ insta = { workspace = true }
 pretty_assertions = { workspace = true }
 rstest = { workspace = true }
 trybuild = "1.0"
+criterion = { workspace = true }
+
+[[bench]]
+name = "slotcell"
+harness = false
 
 [lints]
 workspace = true
