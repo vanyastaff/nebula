@@ -3046,6 +3046,7 @@ async fn test_start_execution_rejects_invalid_definition() {
     );
 }
 
+// budget-justified: parallel /execute + /executions rejection test data covering the 422 and 400 dispatch-gate branches
 /// Shift-left validation gate (M3.6): `POST /workflows/{id}/execute` must
 /// reject a stored definition that cannot be parsed as a `WorkflowDefinition`
 /// with 400 (request-level parse failure, distinct from the 422 structural
