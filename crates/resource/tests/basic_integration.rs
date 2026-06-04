@@ -694,9 +694,30 @@ async fn pool_maintenance_reaper_not_spawned_without_ttl() {
         .expect("acquire should succeed");
     drop(handle);
 
-    // Poll past several maintenance intervals; with no TTL the instance must
-    // remain idle and never be destroyed by a (non-existent) sweep.
-    let destroyed = poll_until(std::time::Duration::from_millis(400), || {
+    // First prove the released instance actually recycled back into idle —
+    // otherwise `destroy_counter == 0` could equally mean the release/recycle
+    // path never completed, and the no-eviction assertion below would
+    // false-pass.
+    let mut recycled = false;
+    let recycle_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while std::time::Instant::now() < recycle_deadline {
+        if let Some(stats) = manager
+            .pool_stats::<PoolTestResource>(&ScopeLevel::Global)
+            .await
+            && stats.idle >= 1
+        {
+            recycled = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    assert!(recycled, "released instance never recycled back into idle");
+
+    // Observe for LONGER than the floored maintenance cadence (>= 1s): if a
+    // reaper were incorrectly spawned for this no-TTL pool, its first sweep
+    // (which cannot fire before the 1s floor) would have time to evict the
+    // idle instance. With no TTL no reaper exists, so it must stay un-evicted.
+    let destroyed = poll_until(std::time::Duration::from_millis(1500), || {
         resource.destroy_counter.load(Ordering::Relaxed) >= 1
     })
     .await;
