@@ -3617,6 +3617,7 @@ async fn release_shared_guard_runs_teardown_and_returns_ok() {
     );
 }
 
+// budget-justified: slow-destroy test fixture + cancel-safety regression test for the P1 release() finding
 /// A pooled resource whose `destroy` is deliberately slow, so a test can
 /// cancel an in-flight `release()` while its teardown is still running.
 #[derive(Clone)]
