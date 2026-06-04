@@ -23,7 +23,7 @@
 - `ParamValue` holds unresolved expression strings; this crate must NOT evaluate them (that is `nebula-expression`) and must NOT execute/schedule the DAG (that is `nebula-engine`) or persist it (that is `nebula-storage`/`nebula-api`).
 - `WorkflowDefinition` MUST survive a `serde_json` round-trip without loss — schema is a public compat surface (`docs/UPGRADE_COMPAT.md`).
 - Cross-crate calls go through `nebula-eventbus`, not direct sibling imports.
-- Library code uses typed `thiserror`/`WorkflowError`; no panicking unwrap/expect/panic in lib code (4 builder-invariant `panic!` sites are known doc-debt to migrate to `WorkflowError`).
+- Library code uses typed `thiserror`/`WorkflowError`; no panicking unwrap/expect/panic in lib code. (4 existing builder-invariant `panic!` sites in `src/node.rs` are flagged debt pending migration to `WorkflowError` — do not add new ones.)
 
 ## See also
 - `README.md` — full design · `docs/PRODUCT_CANON.md` §10/§12.2 · `docs/UPGRADE_COMPAT.md` · Spec 28 (port-driven routing).

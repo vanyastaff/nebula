@@ -90,12 +90,14 @@ Fast single-crate inner loop (don't run the full workspace every edit):
 | `lefthook.yml` | `git commit` / `git push` (any harness) | Pre-commit + pre-push gates (§5) |
 | `.github/workflows/ci.yml` | PR / merge_group | Required jobs: `fmt`, `clippy`, `check`, `doctests`, `msrv`, `doc`, `deny` (aggregated into the single required `CI` check) |
 
-**`lefthook pre-push` MUST mirror CI required jobs.** If you change a CI required
-job, change pre-push to match, and vice versa (CLAUDE.md Agent Rules;
-`feedback_lefthook_mirrors_ci.md`). Note CI also runs `check` (incl.
+**Keep `lefthook pre-push` in sync with the CI required jobs it owns** — the
+`clippy` and changed-crate `nextest` gates. If you change one of those CI jobs,
+change pre-push to match, and vice versa (CLAUDE.md Agent Rules;
+`feedback_lefthook_mirrors_ci.md`). The remaining required jobs — `check` (incl.
 `--all-features` and several `--no-default-features` crate checks), `doc`
-(`RUSTDOCFLAGS=-D warnings cargo doc --no-deps`), and `msrv` (1.95) — these are
-CI-owned and not in pre-push, so a green pre-push does not guarantee green CI.
+(`RUSTDOCFLAGS=-D warnings cargo doc --no-deps`), and `msrv` (1.95) — are
+CI-owned and deliberately NOT mirrored in pre-push, so a green pre-push does not
+guarantee green CI.
 
 ## 5. Commit granularity and the lefthook gates
 
