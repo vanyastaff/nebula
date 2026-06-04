@@ -12,6 +12,12 @@
       "Bash(rustfmt *)",
       "Bash(taplo *)",
       "Bash(jq *)"
+    ],
+    "deny": [
+      "Read(./target/**)",
+      "Read(./**/target/**)",
+      "Read(./.worktrees/**)",
+      "Read(./.claude/worktrees/**)"
     ]
   },
   "hooks": {
