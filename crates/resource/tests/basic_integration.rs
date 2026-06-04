@@ -618,30 +618,35 @@ async fn pool_maintenance_reaper_evicts_idle_timed_out_instance() {
         .expect("acquire should succeed");
     drop(handle);
 
-    // Nobody calls run_maintenance: the ONLY way this instance is destroyed
-    // is the background reaper sweeping it once it ages past idle_timeout.
-    let evicted = poll_until(std::time::Duration::from_secs(3), || {
-        resource.destroy_counter.load(Ordering::Relaxed) >= 1
+    // Nobody calls run_maintenance: the ONLY way this instance is destroyed is
+    // the background reaper sweeping it once it ages past idle_timeout. The
+    // reaper emits `MaintenanceEvicted` *after* `run_maintenance` returns, so
+    // poll for the EVENT — draining the subscriber on every tick — rather than
+    // racing the destroy counter (which flips mid-sweep) against the later
+    // emit. The deadline comfortably exceeds the (TTL-floored) sweep cadence.
+    let mut saw_event = false;
+    let got_event = poll_until(std::time::Duration::from_secs(8), || {
+        while let Some(evt) = events.try_recv() {
+            if let ResourceEvent::MaintenanceEvicted { evicted, key } = evt {
+                assert_eq!(key.as_str(), "test-pool");
+                assert!(evicted >= 1, "evicted count must be positive");
+                saw_event = true;
+            }
+        }
+        saw_event
     })
     .await;
     assert!(
-        evicted,
+        got_event,
         "background maintenance reaper should have evicted the idle-timed-out \
-         instance without any manual run_maintenance call"
+         instance and emitted MaintenanceEvicted without any manual \
+         run_maintenance call"
     );
-
-    // And it surfaced a MaintenanceEvicted observability event.
-    let mut saw_event = false;
-    while let Some(evt) = events.try_recv() {
-        if let ResourceEvent::MaintenanceEvicted { evicted, key } = evt {
-            assert_eq!(key.as_str(), "test-pool");
-            assert!(evicted >= 1, "evicted count must be positive");
-            saw_event = true;
-        }
-    }
+    // The emit happens after the destroy in `run_maintenance`, so by now the
+    // instance is definitely destroyed.
     assert!(
-        saw_event,
-        "expected a ResourceEvent::MaintenanceEvicted from the reaper"
+        resource.destroy_counter.load(Ordering::Relaxed) >= 1,
+        "the evicted instance must have been destroyed"
     );
 
     manager
@@ -3573,11 +3578,12 @@ fn panic_in_release_callback_does_not_abort() {
 }
 
 #[tokio::test]
-async fn release_shared_guard_runs_teardown_inline_and_returns_ok() {
+async fn release_shared_guard_runs_teardown_and_returns_ok() {
     // The `Shared` (Arc-wrapped) arm of `release()` has no production topology
     // producer today, but `ResourceGuard::shared` is public API. Exercise that
-    // match arm directly: `release()` must run the teardown future INLINE
-    // (awaited, not queued) and surface its `Ok`.
+    // match arm directly: `release()` must run the teardown future to
+    // completion (awaited via the detached teardown task, not left to the
+    // `Drop` queue) and surface its `Ok`.
     use nebula_resource::guard::ResourceGuard;
 
     let (queue, _queue_handle) = ReleaseQueue::new(1);
@@ -3607,8 +3613,124 @@ async fn release_shared_guard_runs_teardown_inline_and_returns_ok() {
         .expect("release of a shared guard runs its teardown future and returns Ok");
     assert!(
         ran.load(Ordering::Relaxed),
-        "the shared release future must have run inline (awaited by release(), not queued)"
+        "the shared release future must have run to completion (awaited by release(), not left to the Drop queue)"
     );
+}
+
+/// A pooled resource whose `destroy` is deliberately slow, so a test can
+/// cancel an in-flight `release()` while its teardown is still running.
+#[derive(Clone)]
+struct SlowDestroyPoolResource {
+    create_counter: Arc<AtomicU64>,
+    destroy_counter: Arc<AtomicU64>,
+}
+
+impl SlowDestroyPoolResource {
+    fn new() -> Self {
+        Self {
+            create_counter: Arc::new(AtomicU64::new(0)),
+            destroy_counter: Arc::new(AtomicU64::new(0)),
+        }
+    }
+}
+
+impl Resource for SlowDestroyPoolResource {
+    type Config = TestConfig;
+    type Runtime = ();
+    type Lease = ();
+    type Error = TestError;
+
+    fn key() -> ResourceKey {
+        resource_key!("slow-destroy-pool")
+    }
+
+    async fn create(&self, _config: &TestConfig, _ctx: &ResourceContext) -> Result<(), TestError> {
+        self.create_counter.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    async fn destroy(&self, _runtime: ()) -> Result<(), TestError> {
+        // Long enough that a 20ms release() timeout reliably fires first.
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        self.destroy_counter.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::from_key(&Self::key())
+    }
+}
+
+impl Pooled for SlowDestroyPoolResource {}
+
+#[tokio::test]
+async fn release_teardown_survives_caller_cancellation() {
+    // P1 regression: if the task awaiting `release()` is cancelled mid-teardown,
+    // the teardown must STILL run to completion and the drain must STILL settle
+    // (both run on a task detached from the caller's cancellation). Otherwise a
+    // pooled runtime leaks un-destroyed and `graceful_shutdown` / revoke wedge
+    // on a permanently-counted slot.
+    let manager = Manager::new();
+    let resource = SlowDestroyPoolResource::new();
+    let pool_config = nebula_resource::topology::pooled::config::Config {
+        min_size: 0,
+        max_size: 4,
+        idle_timeout: None,
+        max_lifetime: None,
+        ..Default::default()
+    };
+    let pool_rt = PoolRuntime::<SlowDestroyPoolResource>::new(pool_config, 1);
+
+    manager
+        .register(RegistrationSpec {
+            resource: resource.clone(),
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Pool(pool_rt),
+            acquire: Manager::erased_acquire_pooled_for::<SlowDestroyPoolResource>(),
+            recovery_gate: None,
+        })
+        .expect("registration should succeed");
+
+    let ctx = test_ctx();
+    let mut handle: ResourceGuard<SlowDestroyPoolResource> = manager
+        .acquire_pooled(&ctx, &AcquireOptions::default())
+        .await
+        .expect("acquire should succeed");
+    // Taint so release() forces a destroy (the slow teardown path).
+    handle.taint();
+
+    // Cancel the release while its teardown is still sleeping: the 300ms destroy
+    // cannot finish within the 20ms timeout, so the future awaiting `release()`
+    // is dropped mid-teardown.
+    let cancelled =
+        tokio::time::timeout(std::time::Duration::from_millis(20), handle.release()).await;
+    assert!(
+        cancelled.is_err(),
+        "the slow release() must have been cancelled by the short timeout"
+    );
+
+    // The detached teardown task must still complete the destroy...
+    let destroyed = poll_until(std::time::Duration::from_secs(3), || {
+        resource.destroy_counter.load(Ordering::Relaxed) >= 1
+    })
+    .await;
+    assert!(
+        destroyed,
+        "teardown must complete on its detached task despite the caller being cancelled"
+    );
+
+    // ...and the drain must have settled, so shutdown does not hang.
+    tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        manager.graceful_shutdown(
+            ShutdownConfig::default().with_drain_timeout(std::time::Duration::from_millis(50)),
+        ),
+    )
+    .await
+    .expect("graceful_shutdown must not hang — the cancelled release still settled the drain")
+    .expect("graceful_shutdown must succeed");
 }
 
 // ---------------------------------------------------------------------------

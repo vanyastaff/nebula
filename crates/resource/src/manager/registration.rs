@@ -177,12 +177,13 @@ impl Manager {
         if cfg.idle_timeout.is_none() && cfg.max_lifetime.is_none() {
             return;
         }
-        // `tokio::time::interval` panics on a zero period; clamp so an
-        // operator-supplied `maintenance_interval` of zero degrades to a
-        // tight-but-valid sweep rather than panicking the reaper task.
+        // `tokio::time::interval` panics on a zero period, and a sub-second
+        // maintenance cadence would burn CPU for no benefit (eviction is
+        // coarse-grained). Floor a zero/too-small operator-supplied
+        // `maintenance_interval` at 1s rather than panicking or spinning.
         let period = cfg
             .maintenance_interval
-            .max(std::time::Duration::from_millis(1));
+            .max(std::time::Duration::from_secs(1));
         let weak = Arc::downgrade(managed);
         let cancel = self.cancel.clone();
         let bus = Arc::clone(&self.event_bus);

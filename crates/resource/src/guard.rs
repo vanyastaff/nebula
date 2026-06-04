@@ -17,6 +17,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use futures::FutureExt as _;
 use nebula_core::ResourceKey;
 use nebula_eventbus::EventBus;
 use tokio::sync::{Notify, OwnedSemaphorePermit};
@@ -424,46 +425,44 @@ impl<R: Resource> ResourceGuard<R> {
                 permit,
                 ..
             }) => {
-                // Take the permit out before the callback runs (matching
-                // `Drop`), but hold it across the await: for the bounded
-                // `Exclusive` cap the permit must outlive `release_one`'s
-                // reset (#384). It is dropped at the end of this arm —
-                // after the awaited teardown — never before.
-                let permit_guard = permit;
-                let outcome = if let (Some(lease), Some(callback)) = (value, on_release) {
-                    callback(lease, tainted).await
-                } else {
-                    Ok(())
+                // Build the teardown future, then run it + the drain settle on
+                // a DETACHED task (see `spawn_teardown_and_settle`): a caller
+                // that awaits `release()` inside a cancellable task must not,
+                // by being aborted mid-teardown, drop the teardown future or
+                // leave the slot permanently counted in the drain. The permit
+                // is moved in and held until the teardown resolves (#384).
+                let teardown: ReleaseFuture = match (value, on_release) {
+                    (Some(lease), Some(callback)) => callback(lease, tainted),
+                    _ => Box::pin(async { Ok(()) }),
                 };
-                drop(permit_guard);
-                // `settle` runs REGARDLESS of Ok/Err: the slot must always be
-                // released for shutdown / revoke drain — a release that
-                // errored still happened.
-                settle(
+                spawn_teardown_and_settle(
+                    teardown,
+                    permit,
                     drain_counters,
                     event_bus,
-                    &key,
+                    key,
                     held,
                     emit_released,
                     tainted,
-                );
-                outcome
+                )
+                .await
             },
             Some(GuardInner::Shared { on_release, .. }) => {
-                let outcome = if let Some(callback) = on_release {
-                    callback(tainted).await
-                } else {
-                    Ok(())
+                let teardown: ReleaseFuture = match on_release {
+                    Some(callback) => callback(tainted),
+                    None => Box::pin(async { Ok(()) }),
                 };
-                settle(
+                spawn_teardown_and_settle(
+                    teardown,
+                    None,
                     drain_counters,
                     event_bus,
-                    &key,
+                    key,
                     held,
                     emit_released,
                     tainted,
-                );
-                outcome
+                )
+                .await
             },
         }
     }
@@ -507,6 +506,66 @@ fn settle(
             held,
             tainted,
         });
+    }
+}
+
+/// Runs a guard teardown future + the post-teardown [`settle`] on a **detached
+/// task**, so [`ResourceGuard::release`] is cancel-safe.
+///
+/// Dropping a `JoinHandle` does not abort its task: if the caller that awaited
+/// `release()` is cancelled mid-teardown, the await is abandoned but this task
+/// still runs the teardown to completion and decrements the drain counters —
+/// matching the `Drop` fallback, which offloads the same work to the
+/// [`ReleaseQueue`]. Without this, a cancellation after the guard's state was
+/// taken out would drop the teardown (leaking the pooled runtime) and skip the
+/// drain settle (wedging `graceful_shutdown` / `revoke_slot`).
+///
+/// The teardown is wrapped in `catch_unwind` so a panicking resource teardown
+/// still settles the drain (the panic is surfaced as a typed error), mirroring
+/// `Drop`'s `catch_unwind`. The semaphore permit is moved in and dropped only
+/// after the teardown resolves (#384).
+#[expect(
+    clippy::too_many_arguments,
+    reason = "teardown + permit + the six `settle` inputs; bundling into a one-use struct adds more ceremony than it removes for this internal helper"
+)]
+async fn spawn_teardown_and_settle(
+    teardown: ReleaseFuture,
+    permit: Option<OwnedSemaphorePermit>,
+    drain_counters: Option<DrainTrackers>,
+    event_bus: Option<Arc<EventBus<ResourceEvent>>>,
+    key: ResourceKey,
+    held: Duration,
+    emit_released: bool,
+    tainted: bool,
+) -> Result<(), crate::Error> {
+    let task = tokio::spawn(async move {
+        let outcome = match std::panic::AssertUnwindSafe(teardown).catch_unwind().await {
+            Ok(res) => res,
+            Err(_panic) => Err(crate::Error::transient(
+                "resource teardown panicked during release()",
+            )),
+        };
+        // #384: the permit outlives the teardown (a bounded `Exclusive` reset
+        // must complete before the slot frees), then drops here.
+        drop(permit);
+        // Drain accounting ALWAYS runs — even on teardown error/panic, and
+        // even if the caller that awaited `release()` was cancelled (this task
+        // is detached from that cancellation).
+        settle(
+            drain_counters,
+            event_bus,
+            &key,
+            held,
+            emit_released,
+            tainted,
+        );
+        outcome
+    });
+    match task.await {
+        Ok(outcome) => outcome,
+        // The detached task was aborted (e.g. runtime shutdown). The process
+        // is tearing down; report it rather than panic on the `JoinError`.
+        Err(_join_err) => Err(crate::Error::cancelled()),
     }
 }
 
