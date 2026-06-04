@@ -98,7 +98,7 @@ impl<B: CredentialStore, PS: PendingStateStore> CredentialServiceBuilder<B, PS> 
     /// subsystem spec §8). Until that lands, a service built with an
     /// external source rejects every secret-resolving call
     /// (`create` / `resolve` / `continue_resolve`) with
-    /// [`CredentialServiceError::ExternalSourceNotWired`](crate::CredentialServiceError::ExternalSourceNotWired)
+    /// [`CredentialServiceError::ExternalSourceNotWired`]
     /// rather than silently resolving from the local store (which would
     /// hand back material from the wrong source). The default
     /// [`StateSource::LocalEncrypted`] is fully functional.

@@ -290,7 +290,7 @@ impl<PS: PendingStateStore> DispatchOps<PS> {
     /// `INTERACTIVE`); `DYNAMIC` is a lease-lifecycle concern with no ops
     /// closure and is never reported here. Empty set when `key` is absent.
     ///
-    /// Used by [`CredentialServiceBuilder::build`](crate::CredentialServiceBuilder::build)
+    /// Used by [`CredentialServiceBuilder::build`]
     /// to gate the registry's advertised capabilities against the closures
     /// actually registered, so discovery cannot advertise a capability that
     /// would fail at first call.
