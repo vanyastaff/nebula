@@ -29,7 +29,7 @@ machinery; implementing a backend; or wrapping a store for tenant scoping.
 Dependency direction (`crates/storage-port/README.md`): `engine` / `api` /
 `core` depend **only on the port**; only composition roots
 (`nebula-api` `AppState`, the engine wiring, the knife test) wire the concrete
-adapter + tenancy decorator. The `deny.toml [wrappers]` blocks for
+adapter + tenancy decorator. The `deny.toml` `[bans].deny` `wrappers` blocks for
 `nebula-storage-port` (broad, Core-tier), `nebula-storage` (engine/api/server
 composition seam), and `nebula-tenancy` (api/engine + scoped-conformance
 dev-dep only) lock the exact consumer sets — a sibling crate cannot quietly

@@ -18,7 +18,7 @@
 - `src/runtime/` — `ActionRuntime` dispatch, sandbox runner, blob/queue plumbing.
 
 ## Conventions & never-do
-- **All execution-state transitions go through `ExecutionRepo::transition` (CAS on `version`)** — no in-engine state mutation or parallel lifecycle (L2-§11.1).
+- **All execution-state transitions go through the spec-16 storage port — `ExecutionStore::commit(TransitionBatch)`, CAS on `version`** — `TransitionBatch` is the only way to apply a transition (ADR-0072); no in-engine state mutation or parallel lifecycle (L2-§11.1).
 - **Engine owns the control-queue consumer** — a handler that only logs/discards rows violates canon (L2-§12.2). `Cancel` reaches the live loop via `WorkflowEngine::cancel_execution`; dispatch must be idempotent per `(execution_id, command)`.
 - **Credential accessor is deny-by-default**: empty allowlist denies all; populate via `with_action_credentials`. No fail-open. (Resources have no allowlist — scoping is the topology layer's job.)
 - Not a storage impl, action dispatcher, plugin loader, or expression evaluator — those are `nebula-storage` / `nebula-runtime` / `nebula-sandbox` / `nebula-expression`.

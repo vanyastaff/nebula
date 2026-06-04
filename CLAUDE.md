@@ -93,8 +93,8 @@ some carry a sibling derive crate (`<name>/macros`) and/or a `docs/` folder.
 
 ## Layered Dependency Map
 
-Mechanically enforced by `cargo deny check` against `deny.toml` `[wrappers]`.
-Each layer depends only on layers below; cross-cutting crates are importable at
+Mechanically enforced by `cargo deny check` against the `wrappers` allowlists in
+`deny.toml` `[bans].deny`. Each layer depends only on layers below; cross-cutting crates are importable at
 any level.
 
 | Layer        | Crates |
@@ -118,7 +118,7 @@ the Exec tier (`engine`, `storage`) and the API tier consume the
 credential contract directly alongside Business (`action`, `plugin`,
 `resource`) and the first-party backends (`credential-builtin`,
 `credential-vault`). Like the cross-cutting crates it is importable from
-those tiers; the `deny.toml` `[wrappers]` allowlist locks the exact
+those tiers; the `deny.toml` `[bans].deny` `wrappers` allowlist locks the exact
 consumer set.
 
 `nebula-storage-port` (Core) is the object-safe storage seam: the spec-16

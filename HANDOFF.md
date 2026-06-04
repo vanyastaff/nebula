@@ -62,8 +62,8 @@ auto-close, so an "open" GitHub issue may already be fixed — verify with
 
 Six layers, each depends **only on layers below it**. Cross-cutting crates are
 importable at any level. Boundaries are **mechanically enforced** by
-`cargo deny check` against `deny.toml [wrappers]` — a missing edge fails CI
-before review. Cross-crate signalling goes through `nebula-eventbus`, never
+`cargo deny check` against the `wrappers` allowlists in `deny.toml` `[bans].deny`
+— a missing edge fails CI before review. Cross-crate signalling goes through `nebula-eventbus`, never
 direct sibling imports. Full map + nuances → [`CLAUDE.md`](CLAUDE.md)
 "Layered Dependency Map".
 
@@ -80,7 +80,7 @@ Three placements that are *not* a simple single-tier reading:
 
 - **`nebula-credential` is shared infra**, not Business-only — Exec (`engine`,
   `storage`) and API consume the credential contract directly alongside
-  Business; the `deny.toml [wrappers]` allowlist locks the exact consumer set.
+  Business; the `deny.toml` `[bans].deny` `wrappers` allowlist locks the exact consumer set.
 - **Storage is a port/adapter/tenancy split:** `nebula-storage-port` (Core) is
   the object-safe spec-16 row-model **contract** (no backend code);
   `nebula-storage` (Exec) is the **sole adapter** (InMemory + SQLite +
@@ -188,9 +188,10 @@ than grepping blind:
 - **Pi:** `.pi/lsp.json` already maps `rust-analyzer` for `.rs` (clippy on
   `check`, all features, `target/` excluded) and `taplo` for `.toml`; the
   `lsp_diagnostics` / `lsp_fix` tools use it.
-- `.claude/settings.json` now **denies `Read` of `target/**`** (and
-  `*.generated.rs`) so generated/build artifacts don't pollute context — rely
-  on the LSP / Grep tools for navigation instead.
+- `.claude/settings.json` now **denies `Read` of `target/**`** (and the sibling
+  worktree pool `.worktrees/**` / `.claude/worktrees/**`) so build artifacts and
+  stale duplicate crate trees don't pollute context — rely on the LSP / Grep
+  tools for navigation instead.
 
 ## 7. Active frontiers / moats
 

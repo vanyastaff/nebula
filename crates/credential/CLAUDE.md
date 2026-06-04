@@ -2,7 +2,7 @@
 > Agent quick-map for `crates/credential/`. Full design: `README.md`. Repo-wide rules: root `CLAUDE.md`.
 
 **Purpose:** The typed Credential Contract — declares the split between stored `State` (encrypted at rest) and projected auth `Scheme` (what action code receives); runtime resolve/refresh/rotation orchestration lives in `nebula-engine::credential`, not here.
-**Layer:** Shared-infra (credential contract) — importable by Exec/API/Business per the `deny.toml` `[wrappers]` allowlist; depends only on Core + cross-cutting (root CLAUDE.md → Layered Dependency Map).
+**Layer:** Shared-infra (credential contract) — importable by Exec/API/Business per the `deny.toml` `[bans].deny` `wrappers` allowlist; depends only on Core + cross-cutting (root CLAUDE.md → Layered Dependency Map).
 
 ## Commands
 - `cargo check -p nebula-credential`

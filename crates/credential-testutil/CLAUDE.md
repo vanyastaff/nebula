@@ -15,7 +15,7 @@
 
 ## Conventions & never-do
 - These are **test shims**, behaviour-identical to the canonical `nebula_storage::credential::{InMemoryStore, InMemoryPendingStore}`. Production composition roots/examples/docs MUST import the `nebula-storage` variants, never this crate.
-- Do NOT consume from production code — crate is `publish = false`; consumer set is locked by `deny.toml` `[wrappers]` (`nebula-credential-runtime` via its `test-util` feature + dev-deps; `nebula-tenancy` dev-deps).
+- Do NOT consume from production code — crate is `publish = false`; consumer set is locked by the `deny.toml` `[bans].deny` `wrappers` allowlist (`nebula-credential-runtime` via its `test-util` feature + dev-deps; `nebula-tenancy` dev-deps).
 - Do NOT cargo-cult the `tokio::RwLock<HashMap<...>>` pattern into production — the guard never crosses `.await` here (perf-irrelevant shim); doing so elsewhere is the issue-#587 perf cost.
 - Keep scope tight: no snapshot fixtures, redaction asserts, scheme builders, or first-party credential catalog (that's `nebula-credential-builtin`); cloning a store shares one backing map, all data drops with the last clone.
 - Library code uses typed `thiserror`/`NebulaError` (`StoreError`/`PendingStoreError`); no panicking unwrap/expect/panic in lib code.
