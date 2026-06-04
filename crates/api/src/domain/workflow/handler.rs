@@ -622,7 +622,7 @@ pub async fn activate_workflow(
     request_body = StartExecutionRequest,
     responses(
         (status = 202, description = "Execution accepted; engine dispatch in flight.", body = ExecutionResponse),
-        (status = 400, description = "Invalid workflow identifier.", body = ProblemDetails),
+        (status = 400, description = "Invalid workflow identifier, or the stored workflow definition cannot be parsed as a workflow.", body = ProblemDetails),
         (status = 401, description = "Authentication required.", body = ProblemDetails),
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
         (status = 404, description = "Workflow does not exist.", body = ProblemDetails),
