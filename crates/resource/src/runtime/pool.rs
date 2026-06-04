@@ -377,13 +377,12 @@ impl<R: Resource> PoolRuntime<R> {
     }
 }
 
-impl<R> PoolRuntime<R>
-where
-    R: Pooled + Clone + Send + Sync + 'static,
-    R::Runtime: Into<R::Lease>,
-    R::Lease: Into<R::Runtime>,
-    R::Runtime: Clone,
-{
+// `run_maintenance` + `should_evict` need only `R: Resource` (eviction calls
+// `Resource::destroy` and reads pool fields — no `Pooled`/`Clone`/`Into`
+// conversions), so they live in this weak-bound block. That lets the
+// `R: Resource`-only registration path drive the background maintenance
+// reaper without the acquire-path topology bounds.
+impl<R: Resource> PoolRuntime<R> {
     /// Runs one maintenance cycle: evicts idle-timeout, max-lifetime,
     /// stale-fingerprint, and credential-revoked entries from the idle
     /// queue.
@@ -460,7 +459,15 @@ where
         }
         false
     }
+}
 
+impl<R> PoolRuntime<R>
+where
+    R: Pooled + Clone + Send + Sync + 'static,
+    R::Runtime: Into<R::Lease>,
+    R::Lease: Into<R::Runtime>,
+    R::Runtime: Clone,
+{
     /// Acquires an instance from the pool.
     ///
     /// 1. Acquire a semaphore permit (waits with timeout if pool is full).
@@ -864,19 +871,23 @@ where
                 // instance, so the counter is re-read inside the release
                 // logic rather than captured here.
                 let revoke_epoch = revoke_epoch_ref.clone();
-                release_queue.submit(move || {
-                    Box::pin(release_entry(
-                        resource,
-                        entry,
-                        tainted,
-                        current_fp,
-                        revoke_epoch,
-                        max_lifetime,
-                        idle,
-                    ))
-                });
+                // Return the teardown future. The guard awaits it inline on
+                // `ResourceGuard::release` (surfacing the recycle/destroy
+                // `Result`) or submits it to its `ReleaseQueue` on `Drop`
+                // (best-effort, `Result` discarded). The revoke-epoch re-read
+                // under the idle lock still lives inside `release_entry`.
+                Box::pin(release_entry(
+                    resource,
+                    entry,
+                    tainted,
+                    current_fp,
+                    revoke_epoch,
+                    max_lifetime,
+                    idle,
+                ))
             },
             Some(permit),
+            release_queue,
         )
     }
 
@@ -1156,6 +1167,16 @@ where
 /// Decides whether to recycle or destroy a returned pool entry. The semaphore
 /// permit is **not** held here — it was already returned when the handle
 /// dropped (it lives in `GuardInner::Guarded`, not in the callback closure).
+///
+/// This **is** the teardown future the guard's release callback returns:
+/// `ResourceGuard::release` awaits it and surfaces the `Result`; `Drop`
+/// submits it to the [`ReleaseQueue`] discarding the `Result`. The returned
+/// `Result` is the `destroy` outcome on every destroy arm (so an awaited
+/// `release()` observes a failed destroy), `Ok(())` when the instance is
+/// recycled back to idle. Every control-flow branch — tainted, stale
+/// fingerprint, the live revoke-epoch re-read, max-lifetime, broken, and the
+/// post-`recycle` revoke re-check under the idle lock — is preserved
+/// verbatim; only the swallowed `let _ =` becomes a propagated `Result`.
 async fn release_entry<R>(
     resource: R,
     entry: PoolEntry<R>,
@@ -1164,19 +1185,18 @@ async fn release_entry<R>(
     revoke_epoch: Arc<AtomicU64>,
     max_lifetime: Option<Duration>,
     idle: Arc<Mutex<VecDeque<PoolEntry<R>>>>,
-) where
+) -> Result<(), Error>
+where
     R: Pooled + Send + Sync + 'static,
 {
     // Tainted — destroy immediately.
     if tainted {
-        let _ = resource.destroy(entry.runtime).await;
-        return;
+        return resource.destroy(entry.runtime).await.map_err(Into::into);
     }
 
     // Stale fingerprint — config changed since checkout.
     if entry.fingerprint != current_fp {
-        let _ = resource.destroy(entry.runtime).await;
-        return;
+        return resource.destroy(entry.runtime).await.map_err(Into::into);
     }
 
     // Credential revoked while this handle was checked out (or while its
@@ -1188,20 +1208,17 @@ async fn release_entry<R>(
     // revoke at any point up to this check destroys the instance instead of
     // returning it to idle.
     if entry.revoke_epoch != revoke_epoch.load(Ordering::Acquire) {
-        let _ = resource.destroy(entry.runtime).await;
-        return;
+        return resource.destroy(entry.runtime).await.map_err(Into::into);
     }
 
     // Max lifetime exceeded.
     if max_lifetime.is_some_and(|max| entry.metrics.created_at.elapsed() > max) {
-        let _ = resource.destroy(entry.runtime).await;
-        return;
+        return resource.destroy(entry.runtime).await.map_err(Into::into);
     }
 
     // Broken check (sync).
     if resource.is_broken(&entry.runtime).is_broken() {
-        let _ = resource.destroy(entry.runtime).await;
-        return;
+        return resource.destroy(entry.runtime).await.map_err(Into::into);
     }
 
     // Async recycle check.
@@ -1215,15 +1232,15 @@ async fn release_entry<R>(
             let mut idle = idle.lock().await;
             if entry.revoke_epoch != revoke_epoch.load(Ordering::Acquire) {
                 drop(idle);
-                let _ = resource.destroy(entry.runtime).await;
-                return;
+                return resource.destroy(entry.runtime).await.map_err(Into::into);
             }
             let mut entry = entry;
             entry.returned_at = Some(Instant::now());
             idle.push_back(entry);
+            Ok(())
         },
         Ok(RecycleDecision::Drop) | Err(_) => {
-            let _ = resource.destroy(entry.runtime).await;
+            resource.destroy(entry.runtime).await.map_err(Into::into)
         },
     }
 }

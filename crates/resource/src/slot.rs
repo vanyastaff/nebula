@@ -190,9 +190,15 @@ impl<S> SlotCell<S> {
     pub fn generation(&self) -> u64 {
         match self.inner.load_full() {
             Some(entry) => entry.generation,
-            // No live entry: either never bound (`next_generation == 0`)
-            // or cleared by a `take` (its bumped generation).
-            None => self.next_generation.load(Ordering::Acquire),
+            // No live entry: never bound (0) or cleared by a `take`.
+            // `Relaxed` is correct — a reader that observes the cleared slot
+            // has already synchronized with that `take`'s `inner.swap(None)`
+            // (arc-swap acquire/release), which is sequenced *after* the take's
+            // generation bump, so this load sees the post-clear generation
+            // without an acquire of its own; per-location coherence keeps it
+            // monotone for a single observer. The tag guards no payload and
+            // pairs with no `Release` (the bump is `Relaxed`) — do not add one.
+            None => self.next_generation.load(Ordering::Relaxed),
         }
     }
 

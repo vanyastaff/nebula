@@ -120,6 +120,15 @@ pub enum ResourceEvent {
         /// Already-redacted error description.
         error: String,
     },
+    /// A background pool-maintenance sweep evicted idle-timed-out,
+    /// max-lifetime-exceeded, stale-fingerprint, or revoked idle instances.
+    /// Emitted only when at least one instance was evicted.
+    MaintenanceEvicted {
+        /// The key of the pool whose idle instances were evicted.
+        key: ResourceKey,
+        /// Number of instances evicted in this maintenance cycle.
+        evicted: usize,
+    },
 }
 
 impl ResourceEvent {
@@ -139,7 +148,8 @@ impl ResourceEvent {
             | Self::SlotRefreshed { key, .. }
             | Self::SlotRevoked { key, .. }
             | Self::SlotRefreshFailed { key, .. }
-            | Self::SlotRevokeFailed { key, .. } => Some(key),
+            | Self::SlotRevokeFailed { key, .. }
+            | Self::MaintenanceEvicted { key, .. } => Some(key),
         }
     }
 }
