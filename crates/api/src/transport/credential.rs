@@ -6,13 +6,11 @@
 //! ## honest capability honesty split (Phase 4)
 //!
 //! The CRUD subset (`create` / `get` / `update` / `delete` / `list`)
-//! persists through `CredentialStoreHandle` (crate-private): when
-//! `AppState::credential_service` is set it routes through the
-//! `CredentialService`'s `LayeredStore<InMemoryStore>`
-//! (encryption+audit+cache stack); otherwise it falls back to the raw
-//! `InMemoryStore` wrapped by `CredentialScopeLayer`
-//! (`AppState::oauth_credential_store`). The OAuth2 callback path still
-//! writes through `scoped_store` directly (unchanged, no type dispatch).
+//! persists through `scoped_store` (crate-private): the raw
+//! `InMemoryStore` (`AppState::oauth_credential_store`) wrapped by
+//! `CredentialScopeLayer`, which stamps/checks the tenant owner on every
+//! call. The OAuth2 callback path writes through `scoped_store` the same
+//! way (no type dispatch).
 //!
 //! The lifecycle / acquisition / type-discovery functions stay **honest
 //! 503** (`ApiError::ServiceUnavailable`): `test` / `refresh` / `revoke`
@@ -49,24 +47,20 @@
 //!   `ApiError` / `ProblemDetails`. Tracing spans log `cred.id` /
 //!   `cred.key` only.
 //!
-//! Durability is process-local (in-memory store). When `credential_service`
-//! is wired, the `EncryptionLayer` inside `LayeredStore` encrypts at rest
-//! — see the credential durability note in `crates/api/README.md`.
+//! Durability is process-local (in-memory store) — encryption at rest
+//! arrives with the typed credential facade in a follow-up; see the
+//! credential durability note in `crates/api/README.md`.
 //!
 //! ## Workspace isolation
 //!
 //! Workspace handlers derive an owner id from the resolved tenant scope.
-//! When `credential_service` is set, `CredentialStoreHandle::Layered`
-//! (crate-private) stamps `metadata["owner_id"]` on create and checks it on every
-//! subsequent read, update, and delete — same invariant as the service's
-//! internal `load_owned()`. When it is `None` (legacy path),
-//! `CredentialScopeLayer` performs the same enforcement, so credential
-//! IDs remain non-dereferenceable across workspaces either way.
+//! `scoped_store`'s `CredentialScopeLayer` stamps `metadata["owner_id"]`
+//! on write and checks it on every read, update, and delete, so credential
+//! IDs remain non-dereferenceable across workspaces.
 
 use nebula_credential::{
     CredentialStore, PutMode, ScopeResolver, SecretString, StoreError, StoredCredential,
 };
-use nebula_credential_runtime::LayeredStore;
 use nebula_storage::credential::InMemoryStore;
 use nebula_storage_port::Scope;
 use nebula_tenancy::CredentialScopeLayer;
@@ -116,169 +110,6 @@ pub(crate) fn owner_id_from_scope(scope: &Scope) -> String {
     // credential-runtime plane so both key the same tenant identically. Was a
     // local `format!("{}:{}", …)` that drifted from the runtime's `/` form.
     scope.credential_owner_id()
-}
-
-/// The credential store selection for CRUD operations.
-///
-/// When `AppState::credential_service` is set, returns the service's
-/// `LayeredStore<InMemoryStore>` arc (encryption+audit+cache stack).
-/// Manual owner-id filtering is done by the CRUD functions on top of this
-/// store, mirroring the service's internal `load_owned()` contract.
-///
-/// When `None`, falls back to the raw `InMemoryStore` via
-/// `CredentialScopeLayer` (legacy path — removed after Task 18 deletes
-/// the layer from `nebula-tenancy`).
-pub(crate) enum CredentialStoreHandle<'a> {
-    /// Service's layered store — encryption+audit+cache. Owner-id filtering
-    /// is applied manually in each CRUD call.
-    Layered(Arc<LayeredStore<InMemoryStore>>, &'a str),
-    /// Legacy raw store wrapped by `CredentialScopeLayer`.
-    Scoped(CredentialScopeLayer<InMemoryStore>),
-}
-
-impl<'a> CredentialStoreHandle<'a> {
-    pub(crate) fn for_state(state: &'a AppState, owner_id: &'a str) -> Self {
-        if let Some(svc) = state.credential_service.as_ref() {
-            Self::Layered(svc.credential_store_handle(), owner_id)
-        } else {
-            Self::Scoped(CredentialScopeLayer::new(
-                state.oauth_credential_store.as_ref().clone(),
-                Arc::new(RequestCredentialOwner(owner_id.to_owned())),
-            ))
-        }
-    }
-
-    /// `get` with optional owner-id check.
-    ///
-    /// The `Layered` arm loads from the unscoped store and then checks
-    /// `metadata["owner_id"]` — same tenant isolation the service's
-    /// `load_owned()` applies. The `Scoped` arm delegates to the
-    /// `CredentialScopeLayer` which stamps/checks owner on every call.
-    pub(crate) async fn get(&self, id: &str) -> Result<StoredCredential, StoreError> {
-        match self {
-            Self::Layered(store, owner_id) => {
-                let stored = store.get(id).await?;
-                let row_owner = stored
-                    .metadata
-                    .get("owner_id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                if row_owner != *owner_id {
-                    return Err(StoreError::NotFound { id: id.to_owned() });
-                }
-                Ok(stored)
-            },
-            Self::Scoped(store) => store.get(id).await,
-        }
-    }
-
-    /// `put` — stamps `owner_id` into metadata on **every** PutMode for
-    /// the layered path (the scoped path has the layer do it
-    /// automatically).
-    ///
-    /// The previous code only stamped on `CreateOnly`, which dropped the
-    /// owner marker on update writes (the CRUD update handler rebuilds
-    /// metadata from `CredentialMeta` which has no `owner_id` field),
-    /// orphaning the row to its rightful tenant on next read. We also
-    /// validate any caller-supplied `owner_id` matches the scope —
-    /// anything else is a confused-deputy attempt and fails-closed with
-    /// `NotFound` (no cross-tenant existence leak).
-    pub(crate) async fn put(
-        &self,
-        mut cred: StoredCredential,
-        mode: PutMode,
-    ) -> Result<StoredCredential, StoreError> {
-        match self {
-            Self::Layered(store, owner_id) => {
-                if let Some(existing) = cred.metadata.get("owner_id").and_then(|v| v.as_str())
-                    && existing != *owner_id
-                {
-                    return Err(StoreError::NotFound {
-                        id: cred.id.clone(),
-                    });
-                }
-                cred.metadata.insert(
-                    "owner_id".to_owned(),
-                    serde_json::Value::String((*owner_id).to_owned()),
-                );
-                store.put(cred, mode).await
-            },
-            Self::Scoped(store) => store.put(cred, mode).await,
-        }
-    }
-
-    /// `delete` — layered arm checks owner before delegating.
-    pub(crate) async fn delete(&self, id: &str) -> Result<(), StoreError> {
-        match self {
-            Self::Layered(store, owner_id) => {
-                let stored = store.get(id).await?;
-                let row_owner = stored
-                    .metadata
-                    .get("owner_id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                if row_owner != *owner_id {
-                    return Err(StoreError::NotFound { id: id.to_owned() });
-                }
-                store.delete(id).await
-            },
-            Self::Scoped(store) => store.delete(id).await,
-        }
-    }
-
-    /// `list` — the layered arm filters by `owner_id` BEFORE returning
-    /// IDs (otherwise the raw `InMemoryStore::list` leaks every tenant's
-    /// IDs to the caller — neither `list_credentials` upstream nor the
-    /// stamp-on-put validates owner on the ID itself). The scoped arm is
-    /// already owner-filtered by `CredentialScopeLayer`.
-    pub(crate) async fn list(&self, state_kind: Option<&str>) -> Result<Vec<String>, StoreError> {
-        match self {
-            Self::Layered(store, owner_id) => Self::list_owned(store, owner_id, state_kind).await,
-            Self::Scoped(store) => store.list(state_kind).await,
-        }
-    }
-
-    /// Layered `list` impl extracted so the loop body stays under the
-    /// `clippy::excessive_nesting` threshold. Drops rows we can't inspect
-    /// or whose `owner_id` doesn't match the caller's scope.
-    ///
-    /// `NotFound` mid-iteration is silently skipped (a row that vanished
-    /// between `list` and `get` is just not yours). Other `get` errors
-    /// — most importantly `Backend` from a failed decrypt — are logged
-    /// at `warn` so operators see corruption or key-rotation drift
-    /// instead of silently losing rows from the owner's list.
-    async fn list_owned(
-        store: &Arc<LayeredStore<InMemoryStore>>,
-        owner_id: &str,
-        state_kind: Option<&str>,
-    ) -> Result<Vec<String>, StoreError> {
-        let all_ids = store.list(state_kind).await?;
-        let mut owned = Vec::with_capacity(all_ids.len());
-        for id in all_ids {
-            let cred = match store.get(&id).await {
-                Ok(c) => c,
-                Err(StoreError::NotFound { .. }) => continue,
-                Err(e) => {
-                    tracing::warn!(
-                        cred.id = %id,
-                        err = %e,
-                        "list_owned: store.get failed; excluding row from listing \
-                         (possible decryption / key-rotation issue)"
-                    );
-                    continue;
-                },
-            };
-            let row_owner = cred
-                .metadata
-                .get("owner_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            if row_owner == owner_id {
-                owned.push(id);
-            }
-        }
-        Ok(owned)
-    }
 }
 
 /// Legacy alias — `oauth.rs` still uses this directly until OAuth is
@@ -507,7 +338,7 @@ fn map_store_err(err: StoreError, cred: &str) -> ApiError {
 /// Fetch a credential, treating a cross-workspace / unknown id as a
 /// flat 404 (no existence disclosure, problem+json error seam / Phase-2 pattern).
 async fn load(state: &AppState, owner_id: &str, cred: &str) -> ApiResult<StoredCredential> {
-    CredentialStoreHandle::for_state(state, owner_id)
+    scoped_store(state, owner_id)
         .get(cred)
         .await
         .map_err(|e| map_store_err(e, cred))
@@ -562,7 +393,7 @@ pub async fn create_credential(
         metadata,
     };
 
-    let persisted = CredentialStoreHandle::for_state(state, owner_id)
+    let persisted = scoped_store(state, owner_id)
         .put(stored, PutMode::CreateOnly)
         .await
         .map_err(|e| map_store_err(e, &id))?;
@@ -651,7 +482,7 @@ pub async fn update_credential(
         metadata,
     };
 
-    let persisted = CredentialStoreHandle::for_state(state, owner_id)
+    let persisted = scoped_store(state, owner_id)
         .put(updated, mode)
         .await
         .map_err(|e| map_store_err(e, cred))?;
@@ -663,7 +494,7 @@ pub async fn update_credential(
 /// Delete a credential from the workspace.
 #[tracing::instrument(skip_all, fields(cred.id = %cred))]
 pub async fn delete_credential(state: &AppState, owner_id: &str, cred: &str) -> ApiResult<()> {
-    CredentialStoreHandle::for_state(state, owner_id)
+    scoped_store(state, owner_id)
         .delete(cred)
         .await
         .map_err(|e| map_store_err(e, cred))?;
@@ -685,7 +516,7 @@ pub async fn list_credentials(
     // different `state_kind` + non-`CredentialMeta` metadata shape) are
     // excluded at the source rather than fetched-then-discarded — no
     // wasted `get` + projection, and no metadata-shape 500 risk.
-    let store = CredentialStoreHandle::for_state(state, owner_id);
+    let store = scoped_store(state, owner_id);
     let ids = store
         .list(Some(STATE_KIND))
         .await
