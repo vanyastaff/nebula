@@ -204,11 +204,40 @@ by separating *layer* from *shape*: typed at every tier.
 4. api rewire `transport/credential.rs` + `handler.rs`: route CRUD through
    `facade.create/get/update/delete/list`, lifecycle through
    `facade.test/refresh/revoke`, acquisition through `facade.resolve/continue`,
-   discovery through `facade.list_types/get_type` (or the schema port);
-   `CredentialServiceError`→`ApiError` (RFC 9457, secret-safe); build
-   `TenantScope` from the request scope; delete `classify()`. Green `nebula-api`.
+   discovery via the schema port (DTO-safe; facade `list_types` returns a
+   runtime type, not a DTO); `CredentialServiceError`→`ApiError` (RFC 9457,
+   secret-safe, IDOR flat-404 preserved); build `TenantScope` from the request
+   scope; source `auth_pattern`/capabilities from the schema port (delete the
+   hardcoded `classify()` dup). Green `nebula-api`.
 5. Honest-503 → real (or proper `CapabilityUnsupported`); update the unit test
    `engine_owned_fns_are_honest_503` to the new reality; `openapi_spec` test.
+
+## Step-4 design findings (surfaced 2026-06-09; resolve before building)
+
+- **DONE so far on the branch:** step 1–2 (`08084e98`) + step 3 server-compose
+  (`4da698a0`), both green + pushed to PR #785. `AppState.credential_service`
+  is now a live service; `transport/credential.rs` does **not** consume it yet.
+- **Split-brain store hazard (must resolve in step 4):** the `CredentialService`
+  owns its **own** in-memory store (built in the factory). The api's OAuth path
+  + `scoped_store` write to a **separate** `AppState.oauth_credential_store`.
+  Routing CRUD through `facade.*` while OAuth stays on `oauth_credential_store`
+  splits the data: an OAuth-created credential would be invisible to
+  `facade.get`/`facade.list` (a regression for the generic `GET /credentials/{id}`).
+  **Resolution:** point the OAuth path at the facade's store via
+  `credential_store_handle()` (`scoped_store` wraps
+  `ErasedCredentialStore::new(handle)` instead of `oauth_credential_store`), so
+  CRUD (facade methods) and OAuth (scoped layer over the same handle) share one
+  store. This folds the original P5 store-unification into step 4. Both planes
+  stamp `metadata["owner_id"]` identically, so owner scoping stays consistent;
+  `facade.get` projects an OAuth row via the registered `oauth2` ops.
+- **`None` handling:** transport must treat absent `credential_service` as an
+  honest 503 (and the transport unit tests in `transport/credential.rs` must
+  wire a service via the factory's `with_key_provider`, or assert the 503).
+- **auth_pattern/capabilities:** `CredentialResponse` sources these from the
+  schema port (`get_type(key)`), not the deleted `classify()`.
+- This is security-sensitive (IDOR, tenant isolation, secret hygiene, OAuth
+  two-phase) — build it as a deliberate pass with adversarial review, not a
+  rushed one.
 - **P4 OAuth migration**: two-phase raw-bytes write → facade interactive
   acquisition (`resolve`→`Pending`→`continue_resolve`); audit `owner_id=None`
   admin-bypass (facade `TenantScope` has no None).
