@@ -125,6 +125,15 @@ reqwest = { version = "0.13", features = ["json"], default-features = false }
 axum = { version = "0.8", features = ["json"] }
 tower-http = { version = "0.6", features = ["trace", "cors", "compression-gzip"] }
 
+# Database — optional storage backends. The version is pinned here so the
+# three consumers (the `nebula-storage` adapter, `nebula-api`'s
+# `PgAuthBackend`, and the `nebula-server` composition root) can never drift
+# onto different sqlx majors. Each consumer keeps `optional = true` and
+# enables only its own driver / TLS features; `domain-key` must NOT enable
+# any `sqlx-*` feature (keys cross the boundary as primitives — see
+# `crates/storage/Cargo.toml`).
+sqlx = { version = "0.9", default-features = false }
+
 # SMTP — production email transport (consumed by apps/server's SmtpEmailPort).
 # `default-features = false` strips native-tls / sendmail / file transport;
 # the workspace standard is rustls + tokio, not openssl. `builder` enables
