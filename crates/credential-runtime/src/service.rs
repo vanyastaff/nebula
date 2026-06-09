@@ -34,9 +34,9 @@ use std::time::Duration;
 use nebula_credential::resolve::{InteractionRequest, TestResult, UserInput};
 use nebula_credential::store::{PutMode, StoreError, StoredCredential};
 use nebula_credential::{
-    AuthPattern, Credential, CredentialContext, CredentialGuard, CredentialId, CredentialRecord,
-    CredentialRegistry, CredentialSnapshot, DynCredentialStore, ErasedCredentialStore,
-    ErasedPendingStore, PendingToken,
+    AuthPattern, Credential, CredentialContext, CredentialDisplay, CredentialGuard, CredentialId,
+    CredentialRecord, CredentialRegistry, CredentialSnapshot, DynCredentialStore,
+    ErasedCredentialStore, ErasedPendingStore, PendingToken,
 };
 use nebula_engine::credential::{CredentialResolver, LeaseLifecycle};
 use nebula_resilience::CallError;
@@ -57,6 +57,12 @@ use crate::state_source::StateSource;
 /// Metadata key the facade stamps with the owning tenant. Read on every
 /// `get`/`list`/`update`/`delete` to enforce tenant isolation.
 const OWNER_ID_KEY: &str = "owner_id";
+
+/// Metadata key holding the facade-owned [`CredentialDisplay`] sub-object
+/// (a sibling to [`OWNER_ID_KEY`]). Single-writer: only the facade reads or
+/// writes it, so the multi-writer shape conflict that affected the api's old
+/// top-level metadata layout cannot recur.
+const DISPLAY_KEY: &str = "display";
 
 /// Layered store stack composed once at `CredentialServiceBuilder::build`:
 /// `Audit(Cache(Encryption(raw)))`. `Encryption` is adjacent to the raw
@@ -262,6 +268,7 @@ impl CredentialService {
         scope: &TenantScope,
         credential_key: &str,
         props: Value,
+        display: CredentialDisplay,
     ) -> Result<CredentialSnapshot, CredentialServiceError> {
         // Fail loud if an external source was configured but its
         // resolution wiring is not implemented yet — never silently
@@ -295,7 +302,7 @@ impl CredentialService {
             .await?;
 
         let snapshot = self
-            .persist_resolved(scope, credential_key, id, resolved)
+            .persist_resolved(scope, credential_key, id, resolved, display)
             .await?;
 
         self.observer.on_resolve(&id);
@@ -321,19 +328,24 @@ impl CredentialService {
         credential_key: &str,
         id: CredentialId,
         resolved: crate::ops::ResolvedState,
+        display: CredentialDisplay,
     ) -> Result<CredentialSnapshot, CredentialServiceError> {
         let mut metadata = serde_json::Map::new();
         metadata.insert(
             OWNER_ID_KEY.to_owned(),
             Value::String(scope.owner_id().to_owned()),
         );
+        Self::set_display(&mut metadata, &display);
 
         // Project the response snapshot from the just-resolved state
         // bytes before they are moved into the stored row (avoids a
         // round-trip + decrypt; identical projection to `get`).
         let mut record = CredentialRecord::new();
         record.expires_at = resolved.expires_at;
-        let snapshot = self.ops.snapshot(credential_key, &resolved.data, record)?;
+        let snapshot = self
+            .ops
+            .snapshot(credential_key, &resolved.data, record)?
+            .with_display(display);
 
         let now = chrono::Utc::now();
         let stored = StoredCredential {
@@ -428,6 +440,7 @@ impl CredentialService {
         id: &str,
         props: Value,
         expected_version: u64,
+        display: CredentialDisplay,
     ) -> Result<CredentialSnapshot, CredentialServiceError> {
         // Owner check first: a cross-tenant id is reported as missing,
         // never as a version conflict (no existence leak).
@@ -451,6 +464,7 @@ impl CredentialService {
             OWNER_ID_KEY.to_owned(),
             Value::String(scope.owner_id().to_owned()),
         );
+        Self::set_display(&mut metadata, &display);
 
         let now = chrono::Utc::now();
         let stored = StoredCredential {
@@ -911,8 +925,17 @@ impl CredentialService {
         match outcome {
             crate::ops::AcquireOutcome::Complete(resolved) => {
                 let id = CredentialId::new();
+                // Acquisition carries no caller-supplied display metadata
+                // (the interactive/resolve flow names nothing); a later
+                // `update` can attach it.
                 let snapshot = self
-                    .persist_resolved(scope, credential_key, id, resolved)
+                    .persist_resolved(
+                        scope,
+                        credential_key,
+                        id,
+                        resolved,
+                        CredentialDisplay::default(),
+                    )
                     .await?;
                 self.observer.on_resolve(&id);
                 tracing::info!(
@@ -1210,8 +1233,11 @@ impl CredentialService {
         record.created_at = stored.created_at;
         record.last_modified = stored.updated_at;
         record.expires_at = stored.expires_at;
-        self.ops
-            .snapshot(&stored.credential_key, &stored.data, record)
+        let display = Self::display_from(&stored);
+        Ok(self
+            .ops
+            .snapshot(&stored.credential_key, &stored.data, record)?
+            .with_display(display))
     }
 
     /// Whether `stored` is owned by `scope`. A row missing the
@@ -1222,6 +1248,38 @@ impl CredentialService {
             .get(OWNER_ID_KEY)
             .and_then(Value::as_str)
             .is_some_and(|o| o == scope.owner_id())
+    }
+
+    /// Write `display` into `metadata[DISPLAY_KEY]`, or remove the key when
+    /// `display` is empty so an empty default leaves no residue. Sole writer
+    /// of the reserved key (sibling to `owner_id`).
+    fn set_display(metadata: &mut serde_json::Map<String, Value>, display: &CredentialDisplay) {
+        if display.is_empty() {
+            metadata.remove(DISPLAY_KEY);
+            return;
+        }
+        // `CredentialDisplay` is plain `Option<String>` / `BTreeMap` fields,
+        // so serialization to a JSON object cannot fail; on the impossible
+        // error drop the key rather than persist a corrupt entry.
+        match serde_json::to_value(display) {
+            Ok(v) => {
+                metadata.insert(DISPLAY_KEY.to_owned(), v);
+            },
+            Err(_) => {
+                metadata.remove(DISPLAY_KEY);
+            },
+        }
+    }
+
+    /// Read the facade-owned display sub-object back from a stored row. A
+    /// missing or malformed entry yields the empty default — display metadata
+    /// is non-critical and must never fail a credential read.
+    fn display_from(stored: &StoredCredential) -> CredentialDisplay {
+        stored
+            .metadata
+            .get(DISPLAY_KEY)
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default()
     }
 
     /// Build the minimal owner-scoped [`CredentialContext`] the resolve
@@ -1496,6 +1554,7 @@ mod tests {
     use super::test_support::in_memory_service;
     use crate::CredentialServiceError;
     use crate::scope::TenantScope;
+    use nebula_credential::CredentialDisplay;
 
     #[tokio::test]
     async fn create_then_get_roundtrip_is_tenant_scoped() {
@@ -1506,6 +1565,7 @@ mod tests {
                 &scope,
                 "bearer_token",
                 serde_json::json!({ "token": "sk-secret-1" }),
+                CredentialDisplay::default(),
             )
             .await
             .expect("create ok");
@@ -1528,6 +1588,7 @@ mod tests {
             &owner,
             "bearer_token",
             serde_json::json!({ "token": "sk-secret-2" }),
+            CredentialDisplay::default(),
         )
         .await
         .expect("create ok");
@@ -1551,6 +1612,7 @@ mod tests {
                 &scope,
                 "bearer_token",
                 serde_json::json!({ "token": { "$expr": "{{ $execution.id }}" } }),
+                CredentialDisplay::default(),
             )
             .await
             .expect_err("expr must be rejected");
@@ -1565,7 +1627,12 @@ mod tests {
         let svc = in_memory_service();
         let scope = TenantScope::new("org1", "ws1");
         let err = svc
-            .create(&scope, "no_such_type", serde_json::json!({}))
+            .create(
+                &scope,
+                "no_such_type",
+                serde_json::json!({}),
+                CredentialDisplay::default(),
+            )
             .await
             .expect_err("unknown type");
         assert!(matches!(err, CredentialServiceError::TypeUnknown { .. }));
@@ -1579,6 +1646,7 @@ mod tests {
             &scope,
             "bearer_token",
             serde_json::json!({ "token": "sk-v1" }),
+            CredentialDisplay::default(),
         )
         .await
         .expect("create ok");
@@ -1587,7 +1655,13 @@ mod tests {
         // Stored version after CreateOnly is 1; a stale expected_version
         // of 99 must conflict.
         let err = svc
-            .update(&scope, &id, serde_json::json!({ "token": "sk-v2" }), 99)
+            .update(
+                &scope,
+                &id,
+                serde_json::json!({ "token": "sk-v2" }),
+                99,
+                CredentialDisplay::default(),
+            )
             .await
             .expect_err("stale version");
         assert!(matches!(
@@ -1604,14 +1678,21 @@ mod tests {
             &scope,
             "bearer_token",
             serde_json::json!({ "token": "sk-old" }),
+            CredentialDisplay::default(),
         )
         .await
         .expect("create ok");
         let id = svc.list(&scope).await.expect("list")[0].clone();
 
-        svc.update(&scope, &id, serde_json::json!({ "token": "sk-new" }), 1)
-            .await
-            .expect("update ok");
+        svc.update(
+            &scope,
+            &id,
+            serde_json::json!({ "token": "sk-new" }),
+            1,
+            CredentialDisplay::default(),
+        )
+        .await
+        .expect("update ok");
         // Still resolvable post-update.
         let got = svc.get(&scope, &id).await.expect("get ok");
         assert_eq!(got.kind(), "bearer_token");
@@ -1629,6 +1710,7 @@ mod tests {
             &owner,
             "bearer_token",
             serde_json::json!({ "token": "sk-x" }),
+            CredentialDisplay::default(),
         )
         .await
         .expect("create ok");
@@ -1640,9 +1722,15 @@ mod tests {
             CredentialServiceError::NotFound { .. }
         ));
         assert!(matches!(
-            svc.update(&other, &id, serde_json::json!({ "token": "z" }), 1)
-                .await
-                .expect_err("denied"),
+            svc.update(
+                &other,
+                &id,
+                serde_json::json!({ "token": "z" }),
+                1,
+                CredentialDisplay::default(),
+            )
+            .await
+            .expect_err("denied"),
             CredentialServiceError::NotFound { .. }
         ));
     }
@@ -1658,6 +1746,7 @@ mod tests {
             &scope,
             "bearer_token",
             serde_json::json!({ "token": "sk-cap" }),
+            CredentialDisplay::default(),
         )
         .await
         .expect("create ok");
@@ -1740,6 +1829,7 @@ mod tests {
             &owner,
             "bearer_token",
             serde_json::json!({ "token": "sk-xt" }),
+            CredentialDisplay::default(),
         )
         .await
         .expect("create ok");
@@ -1853,6 +1943,7 @@ mod tests {
             &scope,
             "refreshable_fixture",
             serde_json::json!({ "token": "tok-base" }),
+            CredentialDisplay::default(),
         )
         .await
         .expect("create fixture ok");
@@ -1899,6 +1990,7 @@ mod tests {
             &scope,
             "refreshable_fixture",
             serde_json::json!({ "token": "tok-race" }),
+            CredentialDisplay::default(),
         )
         .await
         .expect("create ok");
@@ -1923,6 +2015,7 @@ mod tests {
                         id_ref,
                         serde_json::json!({ "token": "tok-race-concurrent" }),
                         1,
+                        CredentialDisplay::default(),
                     )
                     .await;
                 barrier.wait().await;

@@ -55,7 +55,7 @@
 
 use std::{any::Any, fmt};
 
-use crate::{AuthScheme, CredentialRecord};
+use crate::{AuthScheme, CredentialDisplay, CredentialRecord};
 
 /// Error returned by [`CredentialSnapshot`] projection methods.
 ///
@@ -105,6 +105,9 @@ pub struct CredentialSnapshot {
     scheme_pattern: String,
     /// Associated credential record (runtime state).
     record: CredentialRecord,
+    /// Non-secret per-instance display metadata (name / description / tags).
+    /// Empty by default; the credential runtime populates it on read.
+    display: CredentialDisplay,
     /// Type-erased projected `AuthScheme`.
     projected: Box<dyn Any + Send + Sync>,
     /// Clone function captured at construction time from `S: AuthScheme + Clone`.
@@ -165,6 +168,7 @@ impl CredentialSnapshot {
             kind: kind.into(),
             scheme_pattern: format!("{:?}", S::pattern()),
             record,
+            display: CredentialDisplay::default(),
             projected: Box::new(scheme),
             clone_fn: clone_projected::<S>,
         }
@@ -236,6 +240,26 @@ impl CredentialSnapshot {
         &self.record
     }
 
+    /// Non-secret per-instance display metadata (name / description / tags).
+    ///
+    /// Empty unless the credential runtime attached it via
+    /// [`with_display`](Self::with_display) on the read path.
+    #[must_use]
+    pub fn display(&self) -> &CredentialDisplay {
+        &self.display
+    }
+
+    /// Attach per-instance display metadata, returning the updated snapshot.
+    ///
+    /// The credential runtime uses this to surface a stored credential's
+    /// name / description / tags on `get` / `list` without threading them
+    /// through every [`new`](Self::new) call site.
+    #[must_use = "with_display returns the updated snapshot"]
+    pub fn with_display(mut self, display: CredentialDisplay) -> Self {
+        self.display = display;
+        self
+    }
+
     /// True iff this snapshot's `expires_at` is in the past.
     ///
     /// Delegates to [`CredentialRecord::is_expired`] — a snapshot without an
@@ -257,6 +281,7 @@ impl Clone for CredentialSnapshot {
             kind: self.kind.clone(),
             scheme_pattern: self.scheme_pattern.clone(),
             record: self.record.clone(),
+            display: self.display.clone(),
             projected: (self.clone_fn)(&*self.projected),
             clone_fn: self.clone_fn,
         }
@@ -269,6 +294,7 @@ impl fmt::Debug for CredentialSnapshot {
             .field("kind", &self.kind)
             .field("scheme_pattern", &self.scheme_pattern)
             .field("record", &self.record)
+            .field("display", &self.display)
             .field("projected", &"[REDACTED]")
             .finish()
     }

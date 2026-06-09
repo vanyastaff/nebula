@@ -144,18 +144,71 @@ Doctests on `nebula-credential` / `nebula-credential-runtime`. Warm + plain
 
 ---
 
-# P2–P6 (deferred; re-gate after P1)
+# P2 (folded P2+P3) — server composes + api routes CRUD/lifecycle/discovery
 
-- **P2 server composes service**: deps + deny wrappers; build `CredentialService`
-  in `run_transport` (`EnvKeyProvider::from_env` fail-closed, real/doc'd
-  `AuditSink`, `EventMetricObserver`, `register_builtins` +
-  `register_all_builtin_ops::<ErasedPendingStore>`, real shutdown
-  `CancellationToken` → ctrl_c + axum graceful); `with_credential_service`.
-  Note: prod `InMemoryPendingStore`/`InMemoryStore` live in
-  `nebula_storage::credential` (not testutil).
-- **P3 api rewire CRUD/lifecycle/discovery**: route `transport/credential.rs`
-  through `state.credential_service`; map `CredentialServiceError`→`ApiError`
-  (RFC 9457); honest-503 stubs become real; delete api `classify()` dup.
+Approved 2026-06-09 (folded so the milestone is observable, not an inert slot +
+idle reaper). Tactical calls (stated, override-able): `EnvKeyProvider::from_env`
+fail-closed in prod + ephemeral dev key behind `NEBULA_CRED_DEV_KEY=1` + loud
+`warn!`; no-op `AuditSink` + honest startup `warn!` + typed injection seam;
+real shutdown `CancellationToken` → ctrl_c + axum graceful; startup `warn!` that
+credential storage is encrypted-at-rest-**in-memory** (non-durable).
+
+## Instance display-metadata model — DECIDED (researched 2026-06-09)
+
+The facade has **no** per-instance display metadata; `persist_resolved` stamps
+only `owner_id`. Lighting up `test`/`refresh`/`revoke` forces CRUD through
+`facade.create` (typed state), which today would drop the api's
+`name`/`description`/`tags`. 3-angle research (internal patterns / external prior
+art / ADR-canon): internal + external both favor **typed fields** (every other
+entity uses `display_name`/`slug` columns; AWS/Windmill/n8n use typed scalars);
+the ADR-canon "opaque map" view is weakest-grounded (canon silent; defends the
+current hack the dead `CredentialRow` shape contradicts). The conflict resolves
+by separating *layer* from *shape*: typed at every tier.
+
+**Decision — typed instance display metadata at the facade surface (lean):**
+- `nebula-credential`: add `CredentialDisplay { display_name: Option<String>,
+  description: Option<String>, tags: BTreeMap<String,String> }` (Serialize +
+  Default); add a `display: CredentialDisplay` field to `CredentialSnapshot`
+  with a `with_display(..)` builder + `display()` accessor (existing
+  `CredentialSnapshot::new` callers untouched).
+- **`StoredCredential` struct UNCHANGED.** ~20 literal sites across 6 crates
+  (incl. engine production + storage/tenancy tests) make a new struct field a
+  premature Core-contract churn, and there is no durable backend to hold columns
+  (schema 0027 has no credentials table). Instead the facade persists
+  `CredentialDisplay` under a **reserved, facade-owned `metadata["display"]`
+  sub-object** (single-writer; `owner_id` stays a sibling key — no multi-writer
+  shape conflict, the failure mode the research flagged). This keeps the typed
+  value at the API surface (the research's core conclusion) without the churn;
+  durable **columns** are deferred to the durable adapter (the rewrite).
+- `credential-runtime`: facade `create`/`update` take a `CredentialDisplay`;
+  `persist_resolved` writes `metadata["display"]`; `get`/`snapshot_from_store`
+  read it back via `snapshot.with_display(..)`. `ops.snapshot` stays
+  display-agnostic (facade attaches display at the call site).
+- `api`: map the DTO `name`/`description`/`tags` ↔ `CredentialDisplay` (plain
+  values, no domain type in DTOs — ADR-0047 safe). Drop the api `CredentialMeta`
+  shoved-into-`metadata` hack + the `classify()` dup (capabilities from the
+  registry via the schema port / facade `list_types`).
+- **Deferred (noted, not in this pass):** consolidating `CredentialRecord.tags`
+  (dormant) into the display home; durable display columns. Revisit in the
+  credential rewrite when the durable adapter lands.
+
+## Build steps
+
+1. Core domain: `CredentialDisplay` + `StoredCredential.display` +
+   `CredentialSnapshot.display` (+ accessor). Green `nebula-credential`.
+2. Facade: thread `CredentialDisplay` through `create`/`update`/`persist_resolved`
+   /`ops.snapshot`/`test_support`/tests. Green `nebula-credential-runtime`.
+3. Server (`apps/server`): deps + deny wrappers; build `CredentialService` in
+   `run_transport` per the tactical calls; `with_credential_service`. Prod
+   `InMemoryStore`/`InMemoryPendingStore` from `nebula_storage::credential`.
+4. api rewire `transport/credential.rs` + `handler.rs`: route CRUD through
+   `facade.create/get/update/delete/list`, lifecycle through
+   `facade.test/refresh/revoke`, acquisition through `facade.resolve/continue`,
+   discovery through `facade.list_types/get_type` (or the schema port);
+   `CredentialServiceError`→`ApiError` (RFC 9457, secret-safe); build
+   `TenantScope` from the request scope; delete `classify()`. Green `nebula-api`.
+5. Honest-503 → real (or proper `CapabilityUnsupported`); update the unit test
+   `engine_owned_fns_are_honest_503` to the new reality; `openapi_spec` test.
 - **P4 OAuth migration**: two-phase raw-bytes write → facade interactive
   acquisition (`resolve`→`Pending`→`continue_resolve`); audit `owner_id=None`
   admin-bypass (facade `TenantScope` has no None).

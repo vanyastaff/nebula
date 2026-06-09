@@ -32,6 +32,7 @@ async fn refresh_transient_falls_back_to_cached_when_non_expired() {
         &scope,
         RefreshableFixtureCredential::KEY,
         json!({ "token": "seed-token" }),
+        nebula_credential::CredentialDisplay::default(),
     )
     .await
     .expect("create seed");
@@ -70,6 +71,7 @@ async fn refresh_terminal_failure_propagates() {
         &scope,
         RefreshableFixtureCredential::KEY,
         json!({ "token": "seed-token" }),
+        nebula_credential::CredentialDisplay::default(),
     )
     .await
     .expect("create seed");
@@ -105,6 +107,7 @@ async fn refresh_no_failure_returns_refreshed_snapshot() {
         &scope,
         RefreshableFixtureCredential::KEY,
         json!({ "token": "seed-token" }),
+        nebula_credential::CredentialDisplay::default(),
     )
     .await
     .expect("create seed");

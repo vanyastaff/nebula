@@ -90,6 +90,8 @@ mod accessor;
 mod context;
 /// Typed credential reference — `CredentialRef<C>` slot-binding handle (typed ref fields).
 mod credential_ref;
+/// Per-instance credential display metadata — `CredentialDisplay` (name / description / tags).
+mod display;
 /// Typed credential handle — CredentialHandle (ArcSwap-backed).
 mod handle;
 /// Credential metadata — static type descriptor (CredentialMetadata, builder, compat).
@@ -222,6 +224,7 @@ pub use crate::rotation::{CredentialRotationEvent, RotationError, RotationResult
 pub use crate::secrets::serde_secret;
 // Error / event / metadata / snapshot / identifiers
 pub use crate::{
+    display::CredentialDisplay,
     error::{
         CredentialAccessError, CredentialError, CryptoError, ProviderErrorContext,
         ProviderErrorKind, RefreshErrorKind, RefreshFailedContext, ResolutionStage, RetryAdvice,

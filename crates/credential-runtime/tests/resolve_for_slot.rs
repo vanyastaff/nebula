@@ -27,6 +27,7 @@ async fn resolve_for_slot_produces_guard() {
             &scope,
             BearerTokenCredential::KEY,
             json!({ "token": "test-bearer-abc123" }),
+            nebula_credential::CredentialDisplay::default(),
         )
         .await
         .expect("create succeeds");
@@ -67,6 +68,7 @@ async fn resolve_for_slot_scope_violation_rejected() {
             &scope_a,
             BearerTokenCredential::KEY,
             json!({ "token": "token-for-a" }),
+            nebula_credential::CredentialDisplay::default(),
         )
         .await
         .expect("create succeeds");
@@ -104,6 +106,7 @@ async fn resolve_for_slot_cancellation_returns_cancelled() {
             &scope,
             BearerTokenCredential::KEY,
             json!({ "token": "token-cancel-test" }),
+            nebula_credential::CredentialDisplay::default(),
         )
         .await
         .expect("create succeeds");
