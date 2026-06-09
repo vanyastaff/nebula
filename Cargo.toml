@@ -189,7 +189,7 @@ wiremock = "0.6"
 semver = { version = "1", features = ["serde"] }
 
 # Compact inline string (≤24 bytes heap-free; used in error ABI + future ID types)
-compact_str = { version = "0.7", features = ["serde"] }
+compact_str = { version = "0.9", features = ["serde"] }
 
 # Compile-time layout assertions
 static_assertions = "1"
