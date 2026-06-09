@@ -14,7 +14,7 @@
 //! api layer never touches a raw store or re-implements validation.
 //!
 //! The OAuth2 two-phase flow (`domain::credential::oauth`) persists
-//! through [`scoped_store`] — a `CredentialScopeLayer` over the **same**
+//! through `scoped_store` — a `CredentialScopeLayer` over the **same**
 //! facade store handle ([`CredentialService::credential_store_handle`]) —
 //! so an OAuth-acquired credential is visible to `get`/`list` and there
 //! is no second store to drift from.

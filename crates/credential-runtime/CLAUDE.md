@@ -12,6 +12,7 @@
 
 ## Key files
 - `src/service.rs` — `CredentialService`, `Acquisition`, `LayeredStore`, `test_support`; the facade + lifecycle (largest module).
+- `src/head.rs` — `CredentialHead`: the secret-free row view CRUD/refresh return (id + store CAS version + reauth flag + display); never carries state bytes.
 - `src/ops.rs` — `DispatchOps` type-erased async op table + `register_*_ops` per-capability registrars; swap for test doubles here.
 - `src/binding.rs` — `ValidatedCredentialBinding` + `TenantFingerprint`: crate-private-constructor newtype closing the `slot_bindings` confused-deputy (only `resolve_for_slot` mints one).
 - `src/scope.rs` — `TenantScope` / `FixedScopeResolver`: owner_id derivation (`Scope::credential_owner_id`, ADR-0088 D7).
