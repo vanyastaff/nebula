@@ -14,12 +14,24 @@ use axum::{
 use common::{create_state_with_queue, create_test_jwt, ws_path};
 use nebula_api::{ApiConfig, app};
 use nebula_credential::{
-    Credential, CredentialContext, CredentialState, CredentialStore, OAuth2Credential, OAuth2State,
-    PutMode,
+    Credential, CredentialContext, CredentialState, CredentialStore, ErasedCredentialStore,
+    OAuth2Credential, OAuth2State, PutMode,
 };
 use nebula_engine::credential::CredentialResolver;
 use tower::ServiceExt;
 use url::form_urlencoded;
+
+/// The single credential store: the facade's layered store handle (the
+/// OAuth path and the CRUD plane share it — ADR-0088 D7).
+fn oauth_store_handle(state: &nebula_api::AppState) -> ErasedCredentialStore {
+    ErasedCredentialStore::new(
+        state
+            .credential_service
+            .as_ref()
+            .expect("credential service wired into test state")
+            .credential_store_handle(),
+    )
+}
 
 async fn spawn_mock_token_endpoint() -> (String, tokio::task::JoinHandle<()>) {
     let token_router = axum::Router::new().route(
@@ -227,12 +239,14 @@ async fn e2e_oauth2_flow_persists_exchanged_credential_state() {
     assert_eq!(callback_json["credential_id"], credential_id);
     assert_eq!(callback_json["exchanged"], true);
 
-    let stored = state
-        .oauth_credential_store
+    let stored = oauth_store_handle(&state)
         .get(credential_id)
         .await
         .expect("stored oauth credential");
-    assert_eq!(stored.version, 1, "first persisted row should be version 1");
+    assert_eq!(
+        stored.version, 2,
+        "authorize creates the placeholder (v1); the callback CAS bumps it to v2"
+    );
     assert_eq!(stored.credential_key, OAuth2Credential::KEY);
     assert_eq!(stored.state_kind, OAuth2State::KIND);
 
@@ -263,17 +277,16 @@ async fn e2e_oauth2_flow_persists_exchanged_credential_state() {
     let mut stale_record = stored.clone();
     stale_record.data = serde_json::to_vec(&persisted_state).expect("serialize stale oauth state");
     stale_record.expires_at = persisted_state.expires_at();
-    let stale_put = state
-        .oauth_credential_store
+    let stale_put = oauth_store_handle(&state)
         .put(stale_record, PutMode::Overwrite)
         .await
         .expect("persist stale oauth state");
     assert_eq!(
-        stale_put.version, 2,
+        stale_put.version, 3,
         "manual overwrite of stale state should bump StoredCredential::version (CAS basis)"
     );
 
-    let resolver = CredentialResolver::new(state.oauth_credential_store.clone());
+    let resolver = CredentialResolver::new(std::sync::Arc::new(oauth_store_handle(&state)));
     let ctx = CredentialContext::for_test("test-user");
     let handle = resolver
         .resolve_with_refresh::<OAuth2Credential>(credential_id, &ctx)
@@ -288,13 +301,12 @@ async fn e2e_oauth2_flow_persists_exchanged_credential_state() {
         "e2e-access-token-refreshed"
     );
 
-    let refreshed = state
-        .oauth_credential_store
+    let refreshed = oauth_store_handle(&state)
         .get(credential_id)
         .await
         .expect("refreshed oauth credential in store");
     assert_eq!(
-        refreshed.version, 3,
+        refreshed.version, 4,
         "engine refresh should persist via CAS and increment version"
     );
     let refreshed_state: OAuth2State =

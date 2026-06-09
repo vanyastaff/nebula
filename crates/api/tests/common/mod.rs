@@ -11,9 +11,6 @@ use std::sync::Arc;
 use nebula_api::{
     ApiConfig, AppState,
     error::ApiError,
-    ports::credential_schema::{
-        CredentialFieldError, CredentialSchemaPort, CredentialTypeDescriptor,
-    },
     state::{OrgResolver, WorkspaceResolver},
 };
 use nebula_core::{OrgId, WorkspaceId};
@@ -157,32 +154,6 @@ pub(crate) fn create_test_jwt() -> String {
 }
 
 // ── AppState builders ─────────────────────────────────────────────────────────
-
-/// Permissive [`CredentialSchemaPort`] test double: accepts any `data`,
-/// exposes no catalog types. Wired by default into [`create_state_with_queue`]
-/// so credential happy-path tests keep their pre--P4 behavior
-/// (the old fail-open persisted unvalidated; the correct test default is
-/// "a validator is present and permissive"). The reject / no-port cases
-/// are exercised explicitly by `tests/seam_credential_write_path_validation.rs`.
-pub(crate) struct PermissiveCredentialSchemaPort;
-
-impl CredentialSchemaPort for PermissiveCredentialSchemaPort {
-    fn validate_data(
-        &self,
-        _credential_key: &str,
-        _data: &serde_json::Value,
-    ) -> Result<(), Vec<CredentialFieldError>> {
-        Ok(())
-    }
-
-    fn list_types(&self) -> Vec<CredentialTypeDescriptor> {
-        Vec::new()
-    }
-
-    fn get_type(&self, _credential_key: &str) -> Option<CredentialTypeDescriptor> {
-        None
-    }
-}
 
 /// Build an `AppState` whose execution / workflow / control-queue
 /// surface is the scoped storage port, wired exactly as the composition
@@ -355,6 +326,10 @@ impl PortHandles {
 /// credential-schema port is left unset so the credential-schema validation seam test can
 /// assert the unconfigured write path returns 503 (never persists
 /// unvalidated).
+/// 32 `0x42` bytes, base64 — a valid AES-256 key fixture (mirrors the
+/// factory dev key). Not a secret: a fixed test constant.
+pub(crate) const TEST_CRED_KEY_B64: &str = "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI=";
+
 async fn build_port_state_with(with_credential_port: bool) -> (AppState, PortHandles) {
     use nebula_storage::inmem::{
         InMemoryJournalReader, InMemoryNodeResultStore, InMemoryWorkflowStore,
@@ -386,8 +361,21 @@ async fn build_port_state_with(with_credential_port: bool) -> (AppState, PortHan
     .with_workspace_resolver(Arc::new(TestWorkspaceResolver))
     .with_insecure_tenant_rbac_bypass_for_tests();
 
+    // A composed CredentialService is always wired (the production shape:
+    // encrypted-at-rest in-memory store with the first-party type set).
+    // The schema port is conditional so the write-path seam test can
+    // assert the no-port ⇒ 503 fail-closed gate with the service present.
+    let key = Arc::new(
+        nebula_storage::credential::EnvKeyProvider::from_base64(TEST_CRED_KEY_B64)
+            .expect("valid 32-byte AES key fixture"),
+    );
+    let svc = nebula_api::ports::credential_service_factory::with_key_provider(key)
+        .expect("credential service composes");
+    let state = state.with_credential_service(svc);
     let state = if with_credential_port {
-        state.with_credential_schema(Arc::new(PermissiveCredentialSchemaPort))
+        let port = nebula_api::ports::credential_schema_registry::try_default_registry_port()
+            .expect("first-party registry composes");
+        state.with_credential_schema(port)
     } else {
         state
     };

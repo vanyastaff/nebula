@@ -12,10 +12,7 @@ use nebula_credential_runtime::CredentialService;
 use nebula_engine::ActionRegistry;
 use nebula_metrics::MetricsRegistry;
 use nebula_plugin::PluginRegistry;
-use nebula_storage::{
-    credential::{InMemoryPendingStore, InMemoryStore},
-    repos::WebhookActivationRepo,
-};
+use nebula_storage::{credential::InMemoryPendingStore, repos::WebhookActivationRepo};
 use nebula_storage_port::Scope;
 use nebula_storage_port::store::{
     ControlQueue, ExecutionJournalReader, ExecutionStore, NodeResultStore, WorkflowStore,
@@ -243,15 +240,14 @@ pub struct AppState {
     /// (honest capability stub, mirroring `action_registry`).
     pub credential_schema: Option<Arc<dyn crate::ports::credential_schema::CredentialSchemaPort>>,
 
-    /// Optional `CredentialService` facade — when `Some`, the credential CRUD
-    /// transport layer uses the service's encryption+audit+cache store handle
-    /// instead of the raw `InMemoryStore` wrapped by `CredentialScopeLayer`.
+    /// Optional `CredentialService` facade — the **single** credential
+    /// persistence path (ADR-0088 D7). All credential CRUD, lifecycle, and
+    /// acquisition operations route through it; the OAuth two-phase flow
+    /// writes through a `CredentialScopeLayer` over the service's
+    /// encryption+audit+cache store handle, so both planes share one store.
     ///
-    /// When `None`, the CRUD path falls back to `oauth_credential_store` (the
-    /// raw in-memory store via `CredentialScopeLayer`) for backward compatibility
-    /// during the wire-up transition — after Task 18 deletes `CredentialScopeLayer`
-    /// from `nebula-tenancy` this fallback path will be removed and `credential_service`
-    /// will be mandatory.
+    /// When `None`, every credential endpoint returns an honest 503 —
+    /// there is no raw-store fallback path.
     ///
     /// `CredentialService` is non-generic — its backend is erased behind
     /// `DynCredentialStore` / `ErasedPendingStore` at construction (ADR-0088 D4),
@@ -270,9 +266,6 @@ pub struct AppState {
 
     /// Maps signed state -> pending token so callback can consume pending data.
     pub oauth_state_tokens: Arc<RwLock<HashMap<String, PendingToken>>>,
-
-    /// Credential state store used by OAuth callback completion.
-    pub oauth_credential_store: Arc<InMemoryStore>,
 
     /// Optional org-slug → [`OrgId`] resolver.
     pub org_resolver: Option<Arc<dyn OrgResolver>>,
@@ -468,7 +461,6 @@ impl AppState {
             webhook_transport: None,
             oauth_pending_store: Arc::new(InMemoryPendingStore::new()),
             oauth_state_tokens: Arc::new(RwLock::new(HashMap::new())),
-            oauth_credential_store: Arc::new(InMemoryStore::new()),
             org_resolver: None,
             workspace_resolver: None,
             auth_backend: None,
@@ -1040,13 +1032,10 @@ impl AppState {
         self
     }
 
-    /// Attach the `CredentialService` facade for credential CRUD.
-    ///
-    /// When set, the credential transport layer uses the service's
-    /// encryption+audit+cache store stack (erased behind `DynCredentialStore`)
-    /// instead of the raw `oauth_credential_store` wrapped by
-    /// `CredentialScopeLayer`. Tenant isolation is applied by the transport
-    /// layer via `credential_store_for_owner`.
+    /// Attach the `CredentialService` facade — the single credential
+    /// persistence path (CRUD, lifecycle, acquisition, and the OAuth
+    /// two-phase writes all route through it). Without it every
+    /// credential endpoint returns an honest 503.
     #[must_use = "builder methods must be chained or built"]
     pub fn with_credential_service(mut self, service: Arc<CredentialService>) -> Self {
         self.credential_service = Some(service);

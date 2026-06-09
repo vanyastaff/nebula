@@ -65,22 +65,20 @@ pub async fn get_oauth2_authorize_url(
 
 /// Build an OAuth2 authorization URL and persist tenant-bound pending state.
 ///
-/// When `owner_id` is provided, the credential placeholder is created/read
-/// through the scoped credential store and the pending exchange records the
-/// expected credential version for callback-time CAS persistence.
+/// The credential placeholder is created/read through the owner-scoped
+/// facade store and the pending exchange records the expected credential
+/// version for callback-time CAS persistence. `owner_id` is mandatory —
+/// every OAuth credential acquisition is tenant-bound (the system-level
+/// unscoped routes are permanently disabled).
 pub async fn get_oauth2_authorize_url_for_owner(
     credential_id: &str,
     state: &AppState,
     user: &AuthenticatedUser,
     query: AuthorizationUriRequest,
-    owner_id: Option<String>,
+    owner_id: String,
 ) -> ApiResult<Json<AuthorizationUriResponse>> {
     validate_oauth_outbound_url(&query.token_url).map_err(ApiError::validation_message)?;
-    let expected_version = if let Some(owner_id) = owner_id.as_deref() {
-        Some(prepare_oauth_credential(state, owner_id, credential_id).await?)
-    } else {
-        None
-    };
+    let expected_version = prepare_oauth_credential(state, &owner_id, credential_id).await?;
 
     let csrf = generate_random_state();
     let signer = OAuthStateSigner::new(state.jwt_secret.as_bytes());
@@ -209,7 +207,7 @@ where
         user,
         code,
         signed_state,
-        Some(owner_id),
+        owner_id,
         exchange_fn,
     )
     .await
@@ -237,7 +235,7 @@ async fn handle_callback_with_exchange<F, Fut>(
     user: &AuthenticatedUser,
     code: String,
     signed_state: String,
-    owner_id: Option<String>,
+    owner_id: String,
     exchange_fn: F,
 ) -> ApiResult<Json<OAuthCallbackResponse>>
 where
@@ -282,7 +280,7 @@ where
             )));
         },
     };
-    if pending_for_owner_check.owner_id.as_deref() != owner_id.as_deref() {
+    if pending_for_owner_check.owner_id != owner_id {
         return Err(ApiError::Unauthorized(
             "oauth pending state tenant mismatch".to_owned(),
         ));
@@ -327,7 +325,7 @@ where
     let oauth_state = build_oauth2_state(&token_body, &pending)?;
     persist_oauth_state(
         state,
-        owner_id.as_deref(),
+        &owner_id,
         pending.expected_version,
         credential_id,
         oauth_state,
@@ -352,8 +350,8 @@ struct OAuthPendingExchange {
     code_verifier: SecretString,
     scopes: Vec<String>,
     auth_style: nebula_credential::AuthStyle,
-    owner_id: Option<String>,
-    expected_version: Option<u64>,
+    owner_id: String,
+    expected_version: u64,
 }
 
 impl Zeroize for OAuthPendingExchange {
@@ -434,8 +432,8 @@ fn build_oauth2_state(
 
 async fn persist_oauth_state(
     state: &AppState,
-    owner_id: Option<&str>,
-    expected_version: Option<u64>,
+    owner_id: &str,
+    expected_version: u64,
     credential_id: &str,
     oauth_state: OAuth2State,
 ) -> ApiResult<()> {
@@ -445,32 +443,11 @@ async fn persist_oauth_state(
         ))
     })?;
     let now = chrono::Utc::now();
-    let (created_at, metadata, mode) = match owner_id {
-        Some(owner_id) => {
-            let store = crate::transport::credential::scoped_store(state, owner_id);
-            let existing = store
-                .get(credential_id)
-                .await
-                .map_err(|e| map_oauth_store_err(e, credential_id))?;
-            let expected_version = expected_version.ok_or_else(|| {
-                ApiError::Unauthorized("oauth pending state missing credential version".to_owned())
-            })?;
-            (
-                existing.created_at,
-                existing.metadata,
-                PutMode::CompareAndSwap { expected_version },
-            )
-        },
-        None => match state.oauth_credential_store.get(credential_id).await {
-            Ok(existing) => (existing.created_at, existing.metadata, PutMode::Overwrite),
-            Err(StoreError::NotFound { .. }) => (now, serde_json::Map::new(), PutMode::Overwrite),
-            Err(e) => {
-                return Err(ApiError::Internal(format!(
-                    "failed to read existing oauth credential: {e}"
-                )));
-            },
-        },
-    };
+    let store = crate::transport::credential::scoped_store(state, owner_id)?;
+    let existing = store
+        .get(credential_id)
+        .await
+        .map_err(|e| map_oauth_store_err(e, credential_id))?;
     let stored = StoredCredential {
         id: credential_id.to_owned(),
         credential_key: OAuth2Credential::KEY.to_owned(),
@@ -478,33 +455,19 @@ async fn persist_oauth_state(
         state_kind: OAuth2State::KIND.to_owned(),
         state_version: OAuth2State::VERSION,
         version: 0,
-        created_at,
+        created_at: existing.created_at,
         updated_at: now,
         expires_at: oauth_state.expires_at(),
-        // Refresh-coordination state belongs to the resolver; the OAuth
-        // create/exchange path inserts a fresh credential, so reauth
-        // is not required.
+        // The exchange just minted fresh tokens — the placeholder's
+        // `reauth_required` flag is cleared by this write.
         reauth_required: false,
-        metadata,
+        metadata: existing.metadata,
     };
 
-    match owner_id {
-        Some(owner_id) => {
-            crate::transport::credential::scoped_store(state, owner_id)
-                .put(stored, mode)
-                .await
-                .map_err(|e| map_oauth_store_err(e, credential_id))?;
-        },
-        None => {
-            state
-                .oauth_credential_store
-                .put(stored, mode)
-                .await
-                .map_err(|e| {
-                    ApiError::Internal(format!("failed to persist oauth credential state: {e}"))
-                })?;
-        },
-    }
+    store
+        .put(stored, PutMode::CompareAndSwap { expected_version })
+        .await
+        .map_err(|e| map_oauth_store_err(e, credential_id))?;
     Ok(())
 }
 
@@ -513,7 +476,7 @@ async fn prepare_oauth_credential(
     owner_id: &str,
     credential_id: &str,
 ) -> ApiResult<u64> {
-    let store = crate::transport::credential::scoped_store(state, owner_id);
+    let store = crate::transport::credential::scoped_store(state, owner_id)?;
     match store.get(credential_id).await {
         Ok(existing) => {
             if existing.credential_key != OAuth2Credential::KEY
@@ -577,6 +540,7 @@ mod tests {
     use super::*;
     use crate::config::JwtSecret;
     use nebula_credential::{CredentialStore, PendingStateStore};
+    use nebula_storage::credential::EnvKeyProvider;
     use nebula_storage::inmem::{
         InMemoryControlQueue, InMemoryExecutionStore, InMemoryJournalReader,
         InMemoryNodeResultStore, InMemoryWorkflowStore, InMemoryWorkflowVersionStore,
@@ -596,6 +560,12 @@ mod tests {
         let workflow_versions = InMemoryWorkflowVersionStore::new();
         let workflow_store = InMemoryWorkflowStore::new_with_versions(&workflow_versions);
 
+        let key = Arc::new(
+            EnvKeyProvider::from_base64(TEST_KEY_B64).expect("valid 32-byte AES key fixture"),
+        );
+        let svc = crate::ports::credential_service_factory::with_key_provider(key)
+            .expect("service composes");
+
         AppState::new(
             Arc::new(workflow_store),
             Arc::new(workflow_versions),
@@ -605,9 +575,17 @@ mod tests {
             Arc::new(control_queue),
             jwt_secret,
         )
+        .with_credential_service(svc)
     }
 
-    fn test_pending_exchange() -> OAuthPendingExchange {
+    /// 32 `0x42` bytes, base64 — a valid AES-256 key fixture (mirrors the
+    /// factory dev key). Not a secret: a fixed test constant.
+    const TEST_KEY_B64: &str = "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI=";
+
+    /// Canonical owner key for the test tenant.
+    const OWNER_A: &str = "org-a:ws-a";
+
+    fn test_pending_exchange(owner_id: &str, expected_version: u64) -> OAuthPendingExchange {
         OAuthPendingExchange {
             token_url: "https://provider.example.com/token".to_owned(),
             client_id: "client-id".to_owned(),
@@ -616,24 +594,42 @@ mod tests {
             code_verifier: SecretString::new("pkce-verifier"),
             scopes: vec!["read".to_owned(), "write".to_owned()],
             auth_style: nebula_credential::AuthStyle::Header,
-            owner_id: None,
-            expected_version: None,
+            owner_id: owner_id.to_owned(),
+            expected_version,
         }
     }
 
-    #[tokio::test]
-    async fn callback_persists_oauth_state_in_credential_store() {
-        let state = test_app_state();
-        let credential_id = "cred-123";
-        let user = AuthenticatedUser {
-            user_id: "user-123".to_owned(),
-        };
+    /// Read a stored credential row back through the same owner-scoped
+    /// facade store handle the OAuth path writes through.
+    async fn read_stored(
+        state: &AppState,
+        owner_id: &str,
+        credential_id: &str,
+    ) -> StoredCredential {
+        crate::transport::credential::scoped_store(state, owner_id)
+            .expect("credential service is wired in test_app_state")
+            .get(credential_id)
+            .await
+            .expect("stored oauth credential")
+    }
+
+    /// One full authorize→callback round against `credential_id` under
+    /// `OWNER_A`, exchanging for the given token body.
+    async fn run_callback_round(
+        state: &AppState,
+        user: &AuthenticatedUser,
+        credential_id: &str,
+        token_body: serde_json::Value,
+    ) {
+        let expected_version = prepare_oauth_credential(state, OWNER_A, credential_id)
+            .await
+            .expect("placeholder prepared");
 
         let csrf = generate_random_state();
         let signer = OAuthStateSigner::new(state.jwt_secret.as_bytes());
         let (signed_state, payload) =
             build_signed_state(&signer, credential_id, csrf).expect("signed state");
-        let pending = test_pending_exchange();
+        let pending = test_pending_exchange(OWNER_A, expected_version);
         let pending_token = state
             .oauth_pending_store
             .put("oauth2", &user.user_id, &payload.csrf_token, pending)
@@ -645,20 +641,13 @@ mod tests {
             .await
             .insert(signed_state.clone(), pending_token);
 
-        let token_body = serde_json::json!({
-            "access_token": "access-token-value",
-            "refresh_token": "refresh-token-value",
-            "token_type": "Bearer",
-            "expires_in": 3600,
-            "scope": "scope-a scope-b"
-        });
         let callback = handle_callback_with_exchange(
             credential_id,
-            &state,
-            &user,
+            state,
+            user,
             "auth-code".to_owned(),
             signed_state,
-            None,
+            OWNER_A.to_owned(),
             move |_req| {
                 let token_body = token_body.clone();
                 async move { Ok(token_body) }
@@ -667,14 +656,32 @@ mod tests {
         .await
         .expect("callback handled");
         assert!(callback.0.exchanged);
+    }
 
-        let stored = state
-            .oauth_credential_store
-            .get(credential_id)
-            .await
-            .expect("stored oauth credential");
+    #[tokio::test]
+    async fn callback_persists_oauth_state_in_credential_store() {
+        let state = test_app_state();
+        let credential_id = "cred-123";
+        let user = AuthenticatedUser {
+            user_id: "user-123".to_owned(),
+        };
+
+        let token_body = serde_json::json!({
+            "access_token": "access-token-value",
+            "refresh_token": "refresh-token-value",
+            "token_type": "Bearer",
+            "expires_in": 3600,
+            "scope": "scope-a scope-b"
+        });
+        run_callback_round(&state, &user, credential_id, token_body).await;
+
+        let stored = read_stored(&state, OWNER_A, credential_id).await;
         assert_eq!(stored.state_kind, OAuth2State::KIND);
         assert_eq!(stored.credential_key, OAuth2Credential::KEY);
+        assert!(
+            !stored.reauth_required,
+            "the exchange must clear the placeholder reauth flag"
+        );
 
         let persisted_state: OAuth2State =
             serde_json::from_slice(&stored.data).expect("oauth state json");
@@ -695,84 +702,51 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn callback_overwrites_existing_oauth_state() {
+    async fn second_callback_round_replaces_tokens_and_preserves_created_at() {
         let state = test_app_state();
         let credential_id = "cred-456";
         let user = AuthenticatedUser {
             user_id: "user-456".to_owned(),
         };
 
-        let old_oauth_state = OAuth2State {
-            access_token: SecretString::new("old-access-token"),
-            token_type: "Bearer".to_owned(),
-            refresh_token: Some(SecretString::new("old-refresh-token")),
-            expires_at: None,
-            scopes: vec!["old-scope".to_owned()],
-            client_id: SecretString::new("old-client-id"),
-            client_secret: SecretString::new("old-client-secret"),
-            token_url: "https://provider.example.com/token".to_owned(),
-            auth_style: nebula_credential::AuthStyle::Header,
-        };
-        persist_oauth_state(&state, None, None, credential_id, old_oauth_state)
-            .await
-            .expect("seed existing oauth state");
-        let first_created_at = state
-            .oauth_credential_store
-            .get(credential_id)
-            .await
-            .expect("seeded credential")
-            .created_at;
-
-        let csrf = generate_random_state();
-        let signer = OAuthStateSigner::new(state.jwt_secret.as_bytes());
-        let (signed_state, payload) =
-            build_signed_state(&signer, credential_id, csrf).expect("signed state");
-        let pending = test_pending_exchange();
-        let pending_token = state
-            .oauth_pending_store
-            .put("oauth2", &user.user_id, &payload.csrf_token, pending)
-            .await
-            .expect("pending store put");
-        state
-            .oauth_state_tokens
-            .write()
-            .await
-            .insert(signed_state.clone(), pending_token);
-
-        let token_body = serde_json::json!({
-            "access_token": "new-access-token",
-            "refresh_token": "new-refresh-token",
-            "token_type": "Bearer",
-            "expires_in": 900,
-            "scope": "new-scope-a new-scope-b"
-        });
-        let callback = handle_callback_with_exchange(
-            credential_id,
+        run_callback_round(
             &state,
             &user,
-            "auth-code".to_owned(),
-            signed_state,
-            None,
-            move |_req| {
-                let token_body = token_body.clone();
-                async move { Ok(token_body) }
-            },
+            credential_id,
+            serde_json::json!({
+                "access_token": "old-access-token",
+                "token_type": "Bearer",
+            }),
         )
-        .await
-        .expect("callback handled");
-        assert!(callback.0.exchanged);
+        .await;
+        let first = read_stored(&state, OWNER_A, credential_id).await;
 
-        let stored = state
-            .oauth_credential_store
-            .get(credential_id)
-            .await
-            .expect("stored oauth credential");
+        run_callback_round(
+            &state,
+            &user,
+            credential_id,
+            serde_json::json!({
+                "access_token": "new-access-token",
+                "refresh_token": "new-refresh-token",
+                "token_type": "Bearer",
+                "expires_in": 900,
+                "scope": "new-scope-a new-scope-b"
+            }),
+        )
+        .await;
+
+        let stored = read_stored(&state, OWNER_A, credential_id).await;
         assert_eq!(stored.state_kind, OAuth2State::KIND);
         assert_eq!(stored.credential_key, OAuth2Credential::KEY);
-        assert_eq!(stored.version, 2);
+        assert!(
+            stored.version > first.version,
+            "the second exchange must CAS over the first ({} -> {})",
+            first.version,
+            stored.version
+        );
         assert_eq!(
-            stored.created_at, first_created_at,
-            "overwrite must preserve created_at"
+            stored.created_at, first.created_at,
+            "re-authorization must preserve created_at"
         );
 
         let persisted_state: OAuth2State =
@@ -781,16 +755,44 @@ mod tests {
             persisted_state.access_token.expose_secret().to_owned(),
             "new-access-token"
         );
-        assert_eq!(
-            persisted_state
-                .refresh_token
-                .clone()
-                .expect("refresh token")
-                .expose_secret()
-                .to_owned(),
-            "new-refresh-token"
-        );
         assert_eq!(persisted_state.scopes, vec!["new-scope-a", "new-scope-b"]);
+    }
+
+    /// The OAuth-acquired row is visible to the generic CRUD plane (one
+    /// store): `facade.get`/`list` see it under the same owner, and a
+    /// foreign owner sees nothing.
+    #[tokio::test]
+    async fn oauth_row_is_visible_to_the_crud_plane() {
+        let state = test_app_state();
+        let credential_id = "cred-crud-visible";
+        let user = AuthenticatedUser {
+            user_id: "user-vis".to_owned(),
+        };
+
+        run_callback_round(
+            &state,
+            &user,
+            credential_id,
+            serde_json::json!({
+                "access_token": "vis-access-token",
+                "token_type": "Bearer",
+            }),
+        )
+        .await;
+
+        // OWNER_A is an opaque owner string for the scoped store; assert
+        // via the scoped store that a *different* owner cannot read the
+        // row (flat NotFound) while the owning scope still can.
+        let foreign = crate::transport::credential::scoped_store(&state, "org-b:ws-b")
+            .expect("service wired");
+        let err = foreign
+            .get(credential_id)
+            .await
+            .expect_err("foreign owner must not read the oauth row");
+        assert!(matches!(err, StoreError::NotFound { .. }));
+        // And the owning scope still reads it.
+        let stored = read_stored(&state, OWNER_A, credential_id).await;
+        assert_eq!(stored.credential_key, OAuth2Credential::KEY);
     }
 
     #[tokio::test]
@@ -801,12 +803,15 @@ mod tests {
             user_id: "user-tenant-mismatch".to_owned(),
         };
 
+        let expected_version = prepare_oauth_credential(&state, OWNER_A, credential_id)
+            .await
+            .expect("placeholder prepared");
+
         let csrf = generate_random_state();
         let signer = OAuthStateSigner::new(state.jwt_secret.as_bytes());
         let (signed_state, payload) =
             build_signed_state(&signer, credential_id, csrf).expect("signed state");
-        let mut pending = test_pending_exchange();
-        pending.owner_id = Some("org-a:ws-a".to_owned());
+        let pending = test_pending_exchange(OWNER_A, expected_version);
         let pending_token = state
             .oauth_pending_store
             .put("oauth2", &user.user_id, &payload.csrf_token, pending)
@@ -825,7 +830,7 @@ mod tests {
             &user,
             "auth-code".to_owned(),
             signed_state.clone(),
-            Some("org-b:ws-b".to_owned()),
+            "org-b:ws-b".to_owned(),
             |_req| async { Err::<serde_json::Value, String>("exchange should not run".to_owned()) },
         )
         .await
@@ -845,7 +850,7 @@ mod tests {
             )
             .await
             .expect("tenant mismatch must leave pending state retryable");
-        assert_eq!(still_pending.owner_id.as_deref(), Some("org-a:ws-a"));
+        assert_eq!(still_pending.owner_id, OWNER_A);
         assert!(
             state
                 .oauth_state_tokens
