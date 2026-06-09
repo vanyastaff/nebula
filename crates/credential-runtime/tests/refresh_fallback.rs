@@ -15,10 +15,7 @@ use serde_json::json;
 
 /// Helper — `in_memory_service_with_fixtures` returns `(service, refresh_counter)`.
 fn build() -> (
-    nebula_credential_runtime::CredentialService<
-        nebula_storage::credential::InMemoryStore,
-        nebula_credential_testutil::InMemoryPendingStore,
-    >,
+    nebula_credential_runtime::CredentialService,
     std::sync::Arc<std::sync::atomic::AtomicUsize>,
 ) {
     in_memory_service_with_fixtures()
@@ -35,6 +32,7 @@ async fn refresh_transient_falls_back_to_cached_when_non_expired() {
         &scope,
         RefreshableFixtureCredential::KEY,
         json!({ "token": "seed-token" }),
+        nebula_credential::CredentialDisplay::default(),
     )
     .await
     .expect("create seed");
@@ -73,6 +71,7 @@ async fn refresh_terminal_failure_propagates() {
         &scope,
         RefreshableFixtureCredential::KEY,
         json!({ "token": "seed-token" }),
+        nebula_credential::CredentialDisplay::default(),
     )
     .await
     .expect("create seed");
@@ -108,6 +107,7 @@ async fn refresh_no_failure_returns_refreshed_snapshot() {
         &scope,
         RefreshableFixtureCredential::KEY,
         json!({ "token": "seed-token" }),
+        nebula_credential::CredentialDisplay::default(),
     )
     .await
     .expect("create seed");

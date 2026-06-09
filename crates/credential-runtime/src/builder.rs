@@ -12,9 +12,10 @@
 
 use std::sync::Arc;
 
-use nebula_credential::pending_store::PendingStateStore;
 use nebula_credential::store::CredentialStore;
-use nebula_credential::{Capabilities, CredentialRegistry};
+use nebula_credential::{
+    Capabilities, CredentialRegistry, DynCredentialStore, ErasedCredentialStore, ErasedPendingStore,
+};
 use nebula_engine::credential::{
     CredentialResolver, LeaseLifecycle, LeaseLifecycleConfig, RefreshCoordinator,
 };
@@ -33,14 +34,14 @@ use crate::state_source::StateSource;
 /// mandatory collaborators), chain optional setters, then [`build`].
 ///
 /// [`build`]: Self::build
-pub struct CredentialServiceBuilder<B: CredentialStore, PS: PendingStateStore> {
+pub struct CredentialServiceBuilder<B: CredentialStore + 'static> {
     raw_store: B,
     key_provider: Arc<dyn KeyProvider>,
     audit_sink: Arc<dyn AuditSink>,
     cache_config: CacheConfig,
-    pending_store: PS,
+    pending_store: ErasedPendingStore,
     registry: Arc<CredentialRegistry>,
-    ops: Arc<DispatchOps<PS>>,
+    ops: Arc<DispatchOps<ErasedPendingStore>>,
     observer: Arc<dyn CredentialObserver>,
     lease_config: LeaseLifecycleConfig,
     shutdown: CancellationToken,
@@ -48,7 +49,7 @@ pub struct CredentialServiceBuilder<B: CredentialStore, PS: PendingStateStore> {
     external: StateSource,
 }
 
-impl<B: CredentialStore, PS: PendingStateStore> CredentialServiceBuilder<B, PS> {
+impl<B: CredentialStore + 'static> CredentialServiceBuilder<B> {
     /// Provide every mandatory collaborator. Omitting any is a compile
     /// error (the secure-construction guarantee, no runtime check).
     #[allow(clippy::too_many_arguments)]
@@ -57,9 +58,9 @@ impl<B: CredentialStore, PS: PendingStateStore> CredentialServiceBuilder<B, PS> 
         key_provider: Arc<dyn KeyProvider>,
         audit_sink: Arc<dyn AuditSink>,
         cache_config: CacheConfig,
-        pending_store: PS,
+        pending_store: ErasedPendingStore,
         registry: Arc<CredentialRegistry>,
-        ops: Arc<DispatchOps<PS>>,
+        ops: Arc<DispatchOps<ErasedPendingStore>>,
         observer: Arc<dyn CredentialObserver>,
         lease_config: LeaseLifecycleConfig,
         shutdown: CancellationToken,
@@ -125,7 +126,7 @@ impl<B: CredentialStore, PS: PendingStateStore> CredentialServiceBuilder<B, PS> 
     /// credential type advertises `refresh` / `test` / `revoke` /
     /// `interactive` but its matching `register_*_ops` call was skipped at
     /// the composition root.
-    pub fn build(self) -> Result<CredentialService<B, PS>, CredentialServiceError> {
+    pub fn build(self) -> Result<CredentialService, CredentialServiceError> {
         // registry-advertised capabilities ⊆ ops-registered closures, per
         // credential key. DYNAMIC is a lease concern with no ops closure, so
         // the subset is scoped to the four ops-modeled capabilities.
@@ -148,20 +149,21 @@ impl<B: CredentialStore, PS: PendingStateStore> CredentialServiceBuilder<B, PS> 
             }
         }
 
-        let store = AuditLayer::new(
+        let layered = AuditLayer::new(
             CacheLayer::new(
                 EncryptionLayer::new(self.raw_store, self.key_provider),
                 self.cache_config,
             ),
             self.audit_sink,
         );
-        let store = Arc::new(store);
+        let store: Arc<dyn DynCredentialStore> = Arc::new(layered);
         let refresh_coordinator = self
             .refresh_coordinator
             .unwrap_or_else(|| Arc::new(RefreshCoordinator::new()));
-        let resolver = CredentialResolver::new(Arc::clone(&store))
-            .with_refresh_coordinator(refresh_coordinator)
-            .with_event_bus(self.observer.event_bus());
+        let resolver =
+            CredentialResolver::new(Arc::new(ErasedCredentialStore::new(Arc::clone(&store))))
+                .with_refresh_coordinator(refresh_coordinator)
+                .with_event_bus(self.observer.event_bus());
         let lease = LeaseLifecycle::spawn(
             self.lease_config,
             self.observer.lease_bus(),

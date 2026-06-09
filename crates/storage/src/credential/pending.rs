@@ -3,6 +3,13 @@
 //! Data is lost when the store is dropped. Use this in tests and for local
 //! development rather than mocking [`PendingStateStore`] directly.
 //!
+//! This type implements [`DynPendingStateStore`] (the object-safe byte-core
+//! port); it acquires the typed [`PendingStateStore`] surface — generic over
+//! `<P: PendingState>` — via the blanket impl in
+//! `nebula_credential::erased`, which does the serde round-trip. The serde
+//! lives in the blanket, not here: this store persists raw `Vec<u8>` plus the
+//! binding tuple and absolute expiry.
+//!
 //! # Shim note
 //!
 //! A body-identical shim exists in `nebula-credential-testutil` for crates that
@@ -10,6 +17,8 @@
 //! cargo resolution that breaks the `PendingStateStore` trait bound). Both copies
 //! implement the same trait with the same semantics. Production consumers and
 //! composition roots should prefer this storage-side copy.
+//!
+//! [`PendingStateStore`]: nebula_credential::PendingStateStore
 //!
 //! # Invariants
 //!
@@ -34,10 +43,13 @@
 //!
 //! See `crates/storage/README.md` for credential persistence layout.
 
+use std::future::Future;
+use std::pin::Pin;
+use std::time::Duration;
 use std::{collections::HashMap, sync::Arc};
 
 use chrono::Utc;
-use nebula_credential::{PendingState, PendingStateStore, PendingStoreError, PendingToken};
+use nebula_credential::{DynPendingStateStore, PendingStoreError, PendingToken};
 use tokio::sync::RwLock;
 
 /// In-memory pending store backed by a `HashMap`.
@@ -89,140 +101,147 @@ impl Default for InMemoryPendingStore {
     }
 }
 
-impl PendingStateStore for InMemoryPendingStore {
-    async fn put<P: PendingState>(
-        &self,
-        credential_kind: &str,
-        owner_id: &str,
-        session_id: &str,
-        pending: P,
-    ) -> Result<PendingToken, PendingStoreError> {
-        let data =
-            serde_json::to_vec(&pending).map_err(|e| PendingStoreError::Backend(Box::new(e)))?;
-        let expires_at = Utc::now() + pending.expires_in();
-        let token = PendingToken::generate();
+impl DynPendingStateStore for InMemoryPendingStore {
+    fn put_serialized<'a>(
+        &'a self,
+        credential_kind: &'a str,
+        owner_id: &'a str,
+        session_id: &'a str,
+        data: Vec<u8>,
+        expires_in: Duration,
+    ) -> Pin<Box<dyn Future<Output = Result<PendingToken, PendingStoreError>> + Send + 'a>> {
+        Box::pin(async move {
+            let expires_at = Utc::now() + expires_in;
+            let token = PendingToken::generate();
 
-        let entry = PendingEntry {
-            credential_kind: credential_kind.to_owned(),
-            owner_id: owner_id.to_owned(),
-            session_id: session_id.to_owned(),
-            data,
-            expires_at,
-        };
+            let entry = PendingEntry {
+                credential_kind: credential_kind.to_owned(),
+                owner_id: owner_id.to_owned(),
+                session_id: session_id.to_owned(),
+                data,
+                expires_at,
+            };
 
-        self.entries
-            .write()
-            .await
-            .insert(token.as_str().to_owned(), entry);
+            self.entries
+                .write()
+                .await
+                .insert(token.as_str().to_owned(), entry);
 
-        Ok(token)
+            Ok(token)
+        })
     }
 
-    async fn get<P: PendingState>(&self, token: &PendingToken) -> Result<P, PendingStoreError> {
-        let mut entries = self.entries.write().await;
-        let entry = entries
-            .get(token.as_str())
-            .ok_or(PendingStoreError::NotFound)?;
+    fn get_serialized<'a>(
+        &'a self,
+        token: &'a PendingToken,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, PendingStoreError>> + Send + 'a>> {
+        Box::pin(async move {
+            let mut entries = self.entries.write().await;
+            let entry = entries
+                .get(token.as_str())
+                .ok_or(PendingStoreError::NotFound)?;
 
-        if Utc::now() > entry.expires_at {
-            // Expiry is deterministic; evict here too so repeated `get`
-            // probes cannot retain stale rows forever.
-            entries.remove(token.as_str());
-            return Err(PendingStoreError::Expired);
-        }
-        let data = entry.data.clone();
-        drop(entries);
-
-        serde_json::from_slice(&data).map_err(|e| PendingStoreError::Backend(Box::new(e)))
+            if Utc::now() > entry.expires_at {
+                // Expiry is deterministic; evict here too so repeated `get`
+                // probes cannot retain stale rows forever.
+                entries.remove(token.as_str());
+                return Err(PendingStoreError::Expired);
+            }
+            Ok(entry.data.clone())
+        })
     }
 
-    async fn get_bound<P: PendingState>(
-        &self,
-        credential_kind: &str,
-        token: &PendingToken,
-        owner_id: &str,
-        session_id: &str,
-    ) -> Result<P, PendingStoreError> {
-        let mut entries = self.entries.write().await;
-        let entry = entries
-            .get(token.as_str())
-            .ok_or(PendingStoreError::NotFound)?;
+    fn get_bound_serialized<'a>(
+        &'a self,
+        credential_kind: &'a str,
+        token: &'a PendingToken,
+        owner_id: &'a str,
+        session_id: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, PendingStoreError>> + Send + 'a>> {
+        Box::pin(async move {
+            let mut entries = self.entries.write().await;
+            let entry = entries
+                .get(token.as_str())
+                .ok_or(PendingStoreError::NotFound)?;
 
-        if Utc::now() > entry.expires_at {
-            entries.remove(token.as_str());
-            return Err(PendingStoreError::Expired);
-        }
+            if Utc::now() > entry.expires_at {
+                entries.remove(token.as_str());
+                return Err(PendingStoreError::Expired);
+            }
 
-        let mismatch = entry.credential_kind != credential_kind
-            || entry.owner_id != owner_id
-            || entry.session_id != session_id;
-        if mismatch {
-            return Err(PendingStoreError::ValidationFailed {
-                reason: "token bindings do not match".to_owned(),
-            });
-        }
+            let mismatch = entry.credential_kind != credential_kind
+                || entry.owner_id != owner_id
+                || entry.session_id != session_id;
+            if mismatch {
+                return Err(PendingStoreError::ValidationFailed {
+                    reason: "token bindings do not match".to_owned(),
+                });
+            }
 
-        let data = entry.data.clone();
-        drop(entries);
-
-        serde_json::from_slice(&data).map_err(|e| PendingStoreError::Backend(Box::new(e)))
+            Ok(entry.data.clone())
+        })
     }
 
-    async fn consume<P: PendingState>(
-        &self,
-        credential_kind: &str,
-        token: &PendingToken,
-        owner_id: &str,
-        session_id: &str,
-    ) -> Result<P, PendingStoreError> {
-        // Validate *before* removing. A wrong-owner (or otherwise malformed)
-        // `consume` request must not be able to destroy the legitimate
-        // user's pending state — that would turn any token leak into a
-        // single-shot DoS against the in-flight flow. Hold the write lock
-        // across the whole check so no concurrent consume can race between
-        // validation and removal.
-        let mut entries = self.entries.write().await;
+    fn consume_serialized<'a>(
+        &'a self,
+        credential_kind: &'a str,
+        token: &'a PendingToken,
+        owner_id: &'a str,
+        session_id: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, PendingStoreError>> + Send + 'a>> {
+        Box::pin(async move {
+            // Validate *before* removing. A wrong-owner (or otherwise
+            // malformed) `consume` request must not be able to destroy the
+            // legitimate user's pending state — that would turn any token
+            // leak into a single-shot DoS against the in-flight flow. Hold
+            // the write lock across the whole check so no concurrent consume
+            // can race between validation and removal.
+            let mut entries = self.entries.write().await;
 
-        let entry = entries
-            .get(token.as_str())
-            .ok_or(PendingStoreError::NotFound)?;
+            let entry = entries
+                .get(token.as_str())
+                .ok_or(PendingStoreError::NotFound)?;
 
-        if Utc::now() > entry.expires_at {
-            // Expiry is deterministic; it's safe to evict the stale row now.
-            entries.remove(token.as_str());
-            return Err(PendingStoreError::Expired);
-        }
+            if Utc::now() > entry.expires_at {
+                // Expiry is deterministic; it's safe to evict the stale row now.
+                entries.remove(token.as_str());
+                return Err(PendingStoreError::Expired);
+            }
 
-        // All three binding checks are folded into one OR so the failure
-        // path is indistinguishable and does not hint at which dimension
-        // mismatched (cheap mitigation for a timing/oracle probe).
-        let mismatch = entry.credential_kind != credential_kind
-            || entry.owner_id != owner_id
-            || entry.session_id != session_id;
-        if mismatch {
-            // Intentionally leave the entry in place so the legitimate
-            // caller can still consume it.
-            return Err(PendingStoreError::ValidationFailed {
-                reason: "token bindings do not match".to_owned(),
-            });
-        }
+            // All three binding checks are folded into one OR so the failure
+            // path is indistinguishable and does not hint at which dimension
+            // mismatched (cheap mitigation for a timing/oracle probe).
+            let mismatch = entry.credential_kind != credential_kind
+                || entry.owner_id != owner_id
+                || entry.session_id != session_id;
+            if mismatch {
+                // Intentionally leave the entry in place so the legitimate
+                // caller can still consume it.
+                return Err(PendingStoreError::ValidationFailed {
+                    reason: "token bindings do not match".to_owned(),
+                });
+            }
 
-        // Only now remove the entry and deserialize from the owned bytes.
-        // The `get` above succeeded under the same write lock, so `remove`
-        // is expected to return `Some`. Defensively surface a `NotFound`
-        // rather than `.expect(...)` panicking in library code if a future
-        // refactor ever breaks the locking discipline.
-        let entry = entries
-            .remove(token.as_str())
-            .ok_or(PendingStoreError::NotFound)?;
-        drop(entries);
-
-        serde_json::from_slice(&entry.data).map_err(|e| PendingStoreError::Backend(Box::new(e)))
+            // Only now remove the entry and return the owned bytes. The
+            // get() above succeeded under the same write lock, so remove is
+            // expected to yield Some; defensively surface a NotFound rather
+            // than panicking in library code if a future refactor ever
+            // breaks the locking discipline.
+            let entry = entries
+                .remove(token.as_str())
+                .ok_or(PendingStoreError::NotFound)?;
+            Ok(entry.data)
+        })
     }
 
-    async fn delete(&self, token: &PendingToken) -> Result<(), PendingStoreError> {
-        self.entries.write().await.remove(token.as_str());
-        Ok(())
+    fn delete<'a>(
+        &'a self,
+        token: &'a PendingToken,
+    ) -> Pin<Box<dyn Future<Output = Result<(), PendingStoreError>> + Send + 'a>> {
+        Box::pin(async move {
+            self.entries.write().await.remove(token.as_str());
+            Ok(())
+        })
     }
 }
 
@@ -230,6 +249,10 @@ impl PendingStateStore for InMemoryPendingStore {
 mod tests {
     use std::time::Duration;
 
+    // The typed `put`/`get`/`consume::<T>` surface comes from the blanket
+    // `PendingStateStore` impl on every `DynPendingStateStore`; pull both
+    // traits into scope so the tests exercise the typed API.
+    use nebula_credential::{PendingState, PendingStateStore};
     use serde::{Deserialize, Serialize};
     use zeroize::{Zeroize, ZeroizeOnDrop};
 
@@ -467,8 +490,10 @@ mod tests {
         let store = InMemoryPendingStore::new();
         let token = PendingToken::generate();
 
-        // Deleting a non-existent token should succeed.
-        store.delete(&token).await.unwrap();
-        store.delete(&token).await.unwrap();
+        // Deleting a non-existent token should succeed. `delete` is the one
+        // method present on both `DynPendingStateStore` (byte core) and the
+        // blanket `PendingStateStore`, so disambiguate to the typed surface.
+        assert!(PendingStateStore::delete(&store, &token).await.is_ok());
+        assert!(PendingStateStore::delete(&store, &token).await.is_ok());
     }
 }

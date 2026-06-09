@@ -16,7 +16,12 @@ async fn cross_tenant_binding_rejected() {
 
     // Create a credential under scope A.
     service
-        .create(&scope_a, "bearer_token", json!({ "token": "tenant-a-key" }))
+        .create(
+            &scope_a,
+            "bearer_token",
+            json!({ "token": "tenant-a-key" }),
+            nebula_credential::CredentialDisplay::default(),
+        )
         .await
         .expect("create succeeds for tenant A");
 

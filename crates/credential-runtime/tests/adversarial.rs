@@ -31,9 +31,14 @@ async fn abuse1_cross_tenant_is_uniformly_not_found_no_existence_leak() {
     let a = TenantScope::new("orgA", "wsA");
     let b = TenantScope::new("orgB", "wsB");
 
-    svc.create(&a, "bearer_token", json!({ "token": "sk-tenant-A" }))
-        .await
-        .expect("create under A");
+    svc.create(
+        &a,
+        "bearer_token",
+        json!({ "token": "sk-tenant-A" }),
+        nebula_credential::CredentialDisplay::default(),
+    )
+    .await
+    .expect("create under A");
     let id = svc.list(&a).await.expect("list A")[0].clone();
 
     // get / update / delete / test / refresh / revoke under B: every one
@@ -44,9 +49,15 @@ async fn abuse1_cross_tenant_is_uniformly_not_found_no_existence_leak() {
         CredentialServiceError::NotFound { .. }
     ));
     assert!(matches!(
-        svc.update(&b, &id, json!({ "token": "z" }), 1)
-            .await
-            .expect_err("update B denied"),
+        svc.update(
+            &b,
+            &id,
+            json!({ "token": "z" }),
+            1,
+            nebula_credential::CredentialDisplay::default()
+        )
+        .await
+        .expect_err("update B denied"),
         CredentialServiceError::NotFound { .. }
     ));
     assert!(matches!(
@@ -87,6 +98,7 @@ async fn abuse2_expr_injection_is_validation_failed_control_succeeds() {
             &scope,
             "bearer_token",
             json!({ "token": { "$expr": "{{ $execution.id }}" } }),
+            nebula_credential::CredentialDisplay::default(),
         )
         .await
         .expect_err("$expr envelope must be refused");
@@ -97,7 +109,12 @@ async fn abuse2_expr_injection_is_validation_failed_control_succeeds() {
 
     // Control: a well-formed create on the same type succeeds.
     let snap = svc
-        .create(&scope, "bearer_token", json!({ "token": "sk-well-formed" }))
+        .create(
+            &scope,
+            "bearer_token",
+            json!({ "token": "sk-well-formed" }),
+            nebula_credential::CredentialDisplay::default(),
+        )
         .await
         .expect("well-formed create succeeds");
     assert_eq!(snap.kind(), "bearer_token");
@@ -133,7 +150,12 @@ async fn abuse3_no_secret_in_snapshot_debug_on_create_and_get() {
     let scope = TenantScope::new("org1", "ws1");
 
     let created = svc
-        .create(&scope, "bearer_token", json!({ "token": SECRET }))
+        .create(
+            &scope,
+            "bearer_token",
+            json!({ "token": SECRET }),
+            nebula_credential::CredentialDisplay::default(),
+        )
         .await
         .expect("create ok");
     let created_dbg = format!("{created:?}");
@@ -171,9 +193,14 @@ async fn abuse3_no_secret_in_snapshot_debug_on_create_and_get() {
 async fn abuse4_static_type_capability_ops_are_unsupported() {
     let svc = in_memory_service();
     let scope = TenantScope::new("org1", "ws1");
-    svc.create(&scope, "bearer_token", json!({ "token": "sk-cap" }))
-        .await
-        .expect("create ok");
+    svc.create(
+        &scope,
+        "bearer_token",
+        json!({ "token": "sk-cap" }),
+        nebula_credential::CredentialDisplay::default(),
+    )
+    .await
+    .expect("create ok");
     let id = svc.list(&scope).await.expect("list")[0].clone();
 
     for (op_name, res) in [
@@ -250,9 +277,14 @@ async fn abuse5_cross_tenant_revoke_is_not_found_before_lease_scan() {
     let owner = TenantScope::new("orgX", "wsX");
     let attacker = TenantScope::new("orgY", "wsY");
 
-    svc.create(&owner, "bearer_token", json!({ "token": "sk-lease" }))
-        .await
-        .expect("create ok");
+    svc.create(
+        &owner,
+        "bearer_token",
+        json!({ "token": "sk-lease" }),
+        nebula_credential::CredentialDisplay::default(),
+    )
+    .await
+    .expect("create ok");
     let id = svc.list(&owner).await.expect("list")[0].clone();
 
     // The attacker's revoke is NotFound — the owner gate runs before the
@@ -347,9 +379,14 @@ async fn abuse7_layered_store_roundtrips_without_exposing_plaintext() {
     let svc = in_memory_service();
     let scope = TenantScope::new("org1", "ws1");
 
-    svc.create(&scope, "bearer_token", json!({ "token": SECRET }))
-        .await
-        .expect("create ok");
+    svc.create(
+        &scope,
+        "bearer_token",
+        json!({ "token": SECRET }),
+        nebula_credential::CredentialDisplay::default(),
+    )
+    .await
+    .expect("create ok");
     let id = svc.list(&scope).await.expect("list")[0].clone();
 
     // Round-trips through Encryption(raw) transparently and the projected
@@ -395,7 +432,12 @@ async fn abuse8_audit_refusal_fails_closed_no_partial_write() {
     let scope = TenantScope::new("org1", "ws1");
 
     let err = svc
-        .create(&scope, "bearer_token", json!({ "token": "sk-audit" }))
+        .create(
+            &scope,
+            "bearer_token",
+            json!({ "token": "sk-audit" }),
+            nebula_credential::CredentialDisplay::default(),
+        )
         .await
         .expect_err("create must fail when the audit sink refuses");
     assert!(

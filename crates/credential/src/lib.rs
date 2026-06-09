@@ -90,6 +90,8 @@ mod accessor;
 mod context;
 /// Typed credential reference — `CredentialRef<C>` slot-binding handle (typed ref fields).
 mod credential_ref;
+/// Per-instance credential display metadata — `CredentialDisplay` (name / description / tags).
+mod display;
 /// Typed credential handle — CredentialHandle (ArcSwap-backed).
 mod handle;
 /// Credential metadata — static type descriptor (CredentialMetadata, builder, compat).
@@ -102,6 +104,9 @@ mod record;
 // ── Utility modules ─────────────────────────────────────────────────────────
 // Free-standing concerns: errors, storage, refresh coordinator, etc.
 
+/// Dyn-erasure bridge for the two RPITIT storage ports — lets the
+/// `CredentialService` facade be non-generic (ADR-0088 D4).
+pub mod erased;
 /// Error types for credential operations.
 pub mod error;
 /// Credential lifecycle events for cross-crate signaling.
@@ -160,6 +165,12 @@ pub use nebula_credential_macros::{AuthScheme, Credential, credential};
 // no Input form and is never registered in CredentialRegistry — it's a
 // Resource-side type marker per credential isolation).
 pub use no_credential::{NoCredential, NoCredentialState};
+// Dyn-erasure bridge (ADR-0088 D4): object-safe mirrors of the two RPITIT
+// storage ports + their `Arc<dyn …>` wrappers, so the runtime facade is
+// non-generic.
+pub use erased::{
+    DynCredentialStore, DynPendingStateStore, ErasedCredentialStore, ErasedPendingStore,
+};
 // Pending state store
 pub use pending_store::{PendingStateStore, PendingStoreError};
 // External provider abstraction (redesigned per external provider):
@@ -213,6 +224,7 @@ pub use crate::rotation::{CredentialRotationEvent, RotationError, RotationResult
 pub use crate::secrets::serde_secret;
 // Error / event / metadata / snapshot / identifiers
 pub use crate::{
+    display::CredentialDisplay,
     error::{
         CredentialAccessError, CredentialError, CryptoError, ProviderErrorContext,
         ProviderErrorKind, RefreshErrorKind, RefreshFailedContext, ResolutionStage, RetryAdvice,

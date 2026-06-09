@@ -253,10 +253,11 @@ pub struct AppState {
     /// from `nebula-tenancy` this fallback path will be removed and `credential_service`
     /// will be mandatory.
     ///
-    /// The concrete type is `CredentialService<InMemoryStore, InMemoryPendingStore>` —
-    /// the api always uses the in-memory backend; production composition roots that
-    /// use a durable backend wire the service through the server binary, not here.
-    pub credential_service: Option<Arc<CredentialService<InMemoryStore, InMemoryPendingStore>>>,
+    /// `CredentialService` is non-generic — its backend is erased behind
+    /// `DynCredentialStore` / `ErasedPendingStore` at construction (ADR-0088 D4),
+    /// so the api names it without a backend type parameter. The concrete
+    /// backend is chosen by the composition root (the server binary), not here.
+    pub credential_service: Option<Arc<CredentialService>>,
 
     /// Optional webhook HTTP transport. When `None`, no `/webhooks/*`
     /// routes are mounted on the app; webhook-style `WebhookAction`
@@ -1042,15 +1043,12 @@ impl AppState {
     /// Attach the `CredentialService` facade for credential CRUD.
     ///
     /// When set, the credential transport layer uses the service's
-    /// encryption+audit+cache store stack (`LayeredStore<InMemoryStore>`)
+    /// encryption+audit+cache store stack (erased behind `DynCredentialStore`)
     /// instead of the raw `oauth_credential_store` wrapped by
     /// `CredentialScopeLayer`. Tenant isolation is applied by the transport
     /// layer via `credential_store_for_owner`.
     #[must_use = "builder methods must be chained or built"]
-    pub fn with_credential_service(
-        mut self,
-        service: Arc<CredentialService<InMemoryStore, InMemoryPendingStore>>,
-    ) -> Self {
+    pub fn with_credential_service(mut self, service: Arc<CredentialService>) -> Self {
         self.credential_service = Some(service);
         self
     }

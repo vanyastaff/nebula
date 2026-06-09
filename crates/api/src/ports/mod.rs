@@ -7,4 +7,5 @@
 
 pub mod credential_schema;
 pub mod credential_schema_registry;
+pub mod credential_service_factory;
 pub mod email;

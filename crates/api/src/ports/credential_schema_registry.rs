@@ -183,6 +183,29 @@ impl CredentialSchemaPort for RegistryCredentialSchema {
     }
 }
 
+/// Build the shared first-party credential registry — the single type set
+/// behind both the schema port ([`try_default_registry_port`]) and the
+/// runtime facade
+/// ([`super::credential_service_factory::try_default_credential_service`]).
+/// Extracting it keeps schema validation and dispatch on **one** registered
+/// set, so the registry's advertised capabilities and the facade's ops table
+/// cannot drift apart.
+///
+/// # Errors
+///
+/// Returns [`nebula_credential::RegisterError`] if a credential KEY is
+/// already registered (a composition bug — distinct first-party const
+/// KEYs make this unreachable in practice, but the library returns the
+/// typed error rather than panicking; the caller decides how to surface
+/// it — AGENTS.md "no `expect()` in library code").
+pub(crate) fn default_registry() -> Result<CredentialRegistry, nebula_credential::RegisterError> {
+    let mut registry = CredentialRegistry::new();
+    registry.register(ApiKeyCredential, "nebula-credential")?;
+    registry.register(BasicAuthCredential, "nebula-credential")?;
+    registry.register(OAuth2Credential, "nebula-credential")?;
+    Ok(registry)
+}
+
 /// Build the default port with the first-party credential types
 /// registered (credential-schema validation). Used by the composition root so
 /// `apps/server` needs no `nebula-credential`/`nebula-schema` dep.
@@ -196,11 +219,9 @@ impl CredentialSchemaPort for RegistryCredentialSchema {
 /// it — AGENTS.md "no `expect()` in library code").
 pub fn try_default_registry_port()
 -> Result<Arc<dyn CredentialSchemaPort>, nebula_credential::RegisterError> {
-    let mut registry = CredentialRegistry::new();
-    registry.register(ApiKeyCredential, "nebula-credential")?;
-    registry.register(BasicAuthCredential, "nebula-credential")?;
-    registry.register(OAuth2Credential, "nebula-credential")?;
-    Ok(Arc::new(RegistryCredentialSchema::new(Arc::new(registry))))
+    Ok(Arc::new(RegistryCredentialSchema::new(Arc::new(
+        default_registry()?,
+    ))))
 }
 
 #[cfg(test)]
