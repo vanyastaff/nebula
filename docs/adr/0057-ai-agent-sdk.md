@@ -3,6 +3,14 @@
 **Status:** Proposed (2026-05-14)
 **Tags:** ai, agent, sdk, llm, streaming
 
+> **Amended by [ADR-0089](./0089-resource-advertised-agent-tools.md)
+> (2026-06-04):** the primary agent-tool source is inverted from actions to
+> **resources** (`impl ResourceTools for X`, discovered off acquired
+> `ResourceGuard`s). `AgentTool: StatelessAction` (§1 below) is narrowed to a
+> **secondary** provider; both feed one `ToolDefinition` and one registry. The
+> `Llm`/`Memory`/ReAct-loop/streaming/multi-agent sections here are unchanged.
+> Read 0089 before implementing the tool surface.
+
 ## Context
 
 Charter §2 lists AI agent orchestration as one of three target
