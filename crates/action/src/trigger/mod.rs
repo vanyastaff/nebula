@@ -466,13 +466,18 @@ pub trait TriggerHandler: Send + Sync + 'static {
 /// ```
 pub struct TriggerActionAdapter<A> {
     action: A,
+    meta: ActionMetadata,
 }
 
 impl<A> TriggerActionAdapter<A> {
     /// Wrap a typed trigger action.
     #[must_use]
-    pub fn new(action: A) -> Self {
-        Self { action }
+    pub fn new(action: A) -> Self
+    where
+        A: Action,
+    {
+        let meta = <A as Action>::metadata();
+        Self { action, meta }
     }
 
     /// Consume the adapter, returning the inner action.
@@ -489,7 +494,7 @@ where
     A::Error: Into<ActionError>,
 {
     fn metadata(&self) -> &ActionMetadata {
-        <A as Action>::metadata()
+        &self.meta
     }
 
     /// Start the trigger by delegating to the typed action.
@@ -599,16 +604,12 @@ mod tests {
         type Input = Value;
         type Output = Value;
 
-        fn metadata() -> &'static ActionMetadata {
-            use std::sync::OnceLock;
-            static M: OnceLock<ActionMetadata> = OnceLock::new();
-            M.get_or_init(|| {
-                ActionMetadata::new(
-                    nebula_core::action_key!("test.trigger_action"),
-                    "MockTrigger",
-                    "Tracks start/stop",
-                )
-            })
+        fn metadata() -> ActionMetadata {
+            ActionMetadata::new(
+                nebula_core::action_key!("test.trigger_action"),
+                "MockTrigger",
+                "Tracks start/stop",
+            )
         }
         fn dependencies() -> &'static nebula_core::Dependencies {
             use std::sync::OnceLock;

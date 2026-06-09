@@ -66,15 +66,12 @@ impl Action for PipelineWitness {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> &'static ActionMetadata {
-        static M: OnceLock<ActionMetadata> = OnceLock::new();
-        M.get_or_init(|| {
-            ActionMetadata::new(
-                action_key!("test.phase9.pipeline_witness"),
-                "PipelineWitness",
-                "Phase 9 e2e pipeline witness",
-            )
-        })
+    fn metadata() -> ActionMetadata {
+        ActionMetadata::new(
+            action_key!("test.phase9.pipeline_witness"),
+            "PipelineWitness",
+            "Phase 9 e2e pipeline witness",
+        )
     }
 
     fn dependencies() -> &'static Dependencies {

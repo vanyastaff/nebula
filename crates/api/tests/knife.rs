@@ -378,16 +378,12 @@ impl nebula_action::action::Action for KnifeEcho {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> &'static nebula_action::metadata::ActionMetadata {
-        static M: std::sync::OnceLock<nebula_action::metadata::ActionMetadata> =
-            std::sync::OnceLock::new();
-        M.get_or_init(|| {
-            nebula_action::metadata::ActionMetadata::new(
-                nebula_core::action_key!("knife.echo.static"),
-                "KnifeEcho",
-                "static",
-            )
-        })
+    fn metadata() -> nebula_action::metadata::ActionMetadata {
+        nebula_action::metadata::ActionMetadata::new(
+            nebula_core::action_key!("knife.echo.static"),
+            "KnifeEcho",
+            "static",
+        )
     }
     fn dependencies() -> &'static nebula_core::Dependencies {
         static D: std::sync::OnceLock<nebula_core::Dependencies> = std::sync::OnceLock::new();

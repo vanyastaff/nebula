@@ -156,85 +156,64 @@ impl ActionMetadata {
         }
     }
 
-    /// Create metadata whose `parameters` schema is auto-derived from a
-    /// [`StatelessAction`](crate::StatelessAction) implementation's `Input`
-    /// type.
+    /// Create metadata from a key alone — name defaults to the key string and
+    /// description is empty.
     ///
-    /// Prefer this over [`ActionMetadata::new`] + [`ActionMetadata::with_schema`]
-    /// when the author owns a typed `Input` struct — the compiler then
-    /// enforces that the declared `Input` type agrees with the schema the
-    /// engine, UI, and validator will see.
+    /// Convenience constructor symmetric with `ResourceMetadata::from_key`,
+    /// useful for fixtures and placeholder catalog entries where only the key
+    /// is meaningful. (`CredentialMetadata` has no `from_key` — its required
+    /// `AuthPattern` has no meaningful default.)
+    #[must_use]
+    pub fn from_key(key: &ActionKey) -> Self {
+        Self::new(key.clone(), key.to_string(), String::new())
+    }
+
+    /// Begin building metadata with the required catalog fields seeded.
+    ///
+    /// Symmetric entry point with `ResourceMetadata::builder` /
+    /// `CredentialMetadata::builder`. `ActionMetadata` uses a consuming fluent
+    /// builder — the `with_*` methods take and return `Self` — so this returns
+    /// the value directly; chain `with_*` and finish with
+    /// [`build`](Self::build), or use the value as-is.
+    #[must_use]
+    pub fn builder(
+        key: ActionKey,
+        name: impl Into<String>,
+        description: impl Into<String>,
+    ) -> Self {
+        Self::new(key, name, description)
+    }
+
+    /// Create metadata whose `parameters` schema is auto-derived from the
+    /// action's [`Input`](crate::Action::Input) type.
+    ///
+    /// Symmetric with `CredentialMetadata::for_credential` and
+    /// `ResourceMetadata::for_resource`. Prefer this over
+    /// [`ActionMetadata::new`] + [`ActionMetadata::with_schema`] when the
+    /// author owns a typed `Input` struct — the compiler then enforces that
+    /// the declared `Input` type agrees with the schema the engine, UI, and
+    /// validator will see. Works for any action kind (stateless, stateful,
+    /// paginated, batch, trigger, …) because every [`Action`](crate::Action)
+    /// has an `Input: HasSchema`.
     ///
     /// # Example
     ///
     /// ```ignore
-    /// use nebula_action::{ActionMetadata, StatelessAction};
+    /// use nebula_action::ActionMetadata;
     /// use nebula_core::action_key;
     ///
-    /// struct MyAction;
-    /// impl StatelessAction for MyAction {
-    /// type Input = MyInput; // must impl HasSchema
-    /// type Output = MyOutput;
-    /// //...
-    /// }
-    ///
-    /// let meta = ActionMetadata::for_stateless::<MyAction>(
-    /// action_key!("my.action"), "My Action", "desc",
+    /// let meta = ActionMetadata::for_action::<MyAction>(
+    ///     action_key!("my.action"), "My Action", "desc",
     /// );
     /// ```
     #[must_use]
-    pub fn for_stateless<A>(
+    pub fn for_action<A>(
         key: ActionKey,
         name: impl Into<String>,
         description: impl Into<String>,
     ) -> Self
     where
-        A: crate::stateless::StatelessAction,
-    {
-        Self::new(key, name, description)
-            .with_schema(<A::Input as nebula_schema::HasSchema>::schema())
-    }
-
-    /// Create metadata whose `parameters` schema is auto-derived from a
-    /// [`StatefulAction`](crate::StatefulAction)'s `Input` type.
-    #[must_use]
-    pub fn for_stateful<A>(
-        key: ActionKey,
-        name: impl Into<String>,
-        description: impl Into<String>,
-    ) -> Self
-    where
-        A: crate::stateful::StatefulAction,
-    {
-        Self::new(key, name, description)
-            .with_schema(<A::Input as nebula_schema::HasSchema>::schema())
-    }
-
-    /// Create metadata whose `parameters` schema is auto-derived from a
-    /// [`PaginatedAction`](crate::PaginatedAction)'s `Input` type.
-    #[must_use]
-    pub fn for_paginated<A>(
-        key: ActionKey,
-        name: impl Into<String>,
-        description: impl Into<String>,
-    ) -> Self
-    where
-        A: crate::stateful::PaginatedAction,
-    {
-        Self::new(key, name, description)
-            .with_schema(<A::Input as nebula_schema::HasSchema>::schema())
-    }
-
-    /// Create metadata whose `parameters` schema is auto-derived from a
-    /// [`BatchAction`](crate::BatchAction)'s `Input` type.
-    #[must_use]
-    pub fn for_batch<A>(
-        key: ActionKey,
-        name: impl Into<String>,
-        description: impl Into<String>,
-    ) -> Self
-    where
-        A: crate::stateful::BatchAction,
+        A: crate::action::Action,
     {
         Self::new(key, name, description)
             .with_schema(<A::Input as nebula_schema::HasSchema>::schema())

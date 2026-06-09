@@ -246,16 +246,12 @@ macro_rules! simple_action {
             type Input = $input;
             type Output = $output;
 
-            fn metadata() -> &'static $crate::nebula_action::ActionMetadata {
-                static METADATA: ::std::sync::OnceLock<$crate::nebula_action::ActionMetadata> =
-                    ::std::sync::OnceLock::new();
-                METADATA.get_or_init(|| {
-                    $crate::nebula_action::ActionMetadata::for_stateless::<$name>(
-                        $crate::nebula_core::action_key!($key),
-                        stringify!($name),
-                        "",
-                    )
-                })
+            fn metadata() -> $crate::nebula_action::ActionMetadata {
+                $crate::nebula_action::ActionMetadata::for_action::<$name>(
+                    $crate::nebula_core::action_key!($key),
+                    stringify!($name),
+                    "",
+                )
             }
 
             fn dependencies() -> &'static $crate::nebula_core::Dependencies {

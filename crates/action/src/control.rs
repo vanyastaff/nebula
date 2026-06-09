@@ -38,24 +38,24 @@
 //!     Action, ActionCategory, DeclaresDependencies, ActionError,
 //!     ActionMetadata, ControlAction, ControlInput, ControlOutcome,
 //! };
-//! use nebula_core::action_key;
+//! use nebula_core::{Dependencies, action_key};
 //!
-//! pub struct MyIf {
-//!     metadata: ActionMetadata,
-//! }
-//!
-//! impl MyIf {
-//!     pub fn new() -> Self {
-//!         Self {
-//!             metadata: ActionMetadata::new(action_key!("control.if"), "If", "Binary branch")
-//!                 .with_category(ActionCategory::Control),
-//!         }
-//!     }
-//! }
+//! pub struct MyIf;
 //!
 //! impl DeclaresDependencies for MyIf {}
 //! impl Action for MyIf {
-//!     fn metadata(&self) -> &ActionMetadata { &self.metadata }
+//!     type Input = serde_json::Value;
+//!     type Output = serde_json::Value;
+//!
+//!     fn metadata() -> ActionMetadata {
+//!         ActionMetadata::new(action_key!("control.if"), "If", "Binary branch")
+//!             .with_category(ActionCategory::Control)
+//!     }
+//!
+//!     fn dependencies() -> &'static Dependencies {
+//!         static D: std::sync::OnceLock<Dependencies> = std::sync::OnceLock::new();
+//!         D.get_or_init(Dependencies::new)
+//!     }
 //! }
 //!
 //! impl ControlAction for MyIf {
@@ -461,12 +461,12 @@ pub struct ControlActionAdapter<A: ControlAction> {
 impl<A: ControlAction> ControlActionAdapter<A> {
     /// Wrap a typed control action.
     ///
-    /// The adapter clones the action's metadata, stamps the appropriate
+    /// The adapter takes the action's metadata, stamps the appropriate
     /// [`ActionCategory`] (Control or Terminal), and caches the result
     /// in an `Arc` so subsequent `metadata()` calls are cheap.
     #[must_use]
     pub fn new(action: A) -> Self {
-        let mut meta = <A as Action>::metadata().clone();
+        let mut meta = <A as Action>::metadata();
         meta.category = derive_category(&meta);
         Self {
             action,
@@ -760,13 +760,10 @@ mod tests {
         type Input = Value;
         type Output = Value;
 
-        fn metadata() -> &'static ActionMetadata {
-            static M: OnceLock<ActionMetadata> = OnceLock::new();
-            M.get_or_init(|| {
-                ActionMetadata::new(action_key!("test.if"), "TestIf", "Binary branch")
-                    .with_inputs(default_input_ports())
-                    .with_outputs(vec![OutputPort::flow("true"), OutputPort::flow("false")])
-            })
+        fn metadata() -> ActionMetadata {
+            ActionMetadata::new(action_key!("test.if"), "TestIf", "Binary branch")
+                .with_inputs(default_input_ports())
+                .with_outputs(vec![OutputPort::flow("true"), OutputPort::flow("false")])
         }
         fn dependencies() -> &'static Dependencies {
             static D: OnceLock<Dependencies> = OnceLock::new();
@@ -802,12 +799,9 @@ mod tests {
         type Input = Value;
         type Output = Value;
 
-        fn metadata() -> &'static ActionMetadata {
-            static M: OnceLock<ActionMetadata> = OnceLock::new();
-            M.get_or_init(|| {
-                ActionMetadata::new(action_key!("test.stop"), "TestStop", "Terminate")
-                    .with_outputs(Vec::new())
-            })
+        fn metadata() -> ActionMetadata {
+            ActionMetadata::new(action_key!("test.stop"), "TestStop", "Terminate")
+                .with_outputs(Vec::new())
         }
         fn dependencies() -> &'static Dependencies {
             static D: OnceLock<Dependencies> = OnceLock::new();
@@ -951,7 +945,7 @@ mod tests {
     fn adapter_preserves_original_outputs_after_stamp() {
         // The adapter only rewrites `category`; it must not touch `outputs`
         // or any other metadata field.
-        let original_outputs = <TestIf as Action>::metadata().outputs.clone();
+        let original_outputs = <TestIf as Action>::metadata().outputs;
         let adapter = ControlActionAdapter::new(TestIf::new());
         assert_eq!(
             StatelessHandler::metadata(&adapter).outputs,

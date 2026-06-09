@@ -76,10 +76,8 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
             type Input = #input_ty;
             type Output = #output_ty;
 
-            fn metadata() -> &'static ::nebula_action::ActionMetadata {
-                static METADATA: ::std::sync::OnceLock<::nebula_action::ActionMetadata> =
-                    ::std::sync::OnceLock::new();
-                METADATA.get_or_init(|| #metadata_init)
+            fn metadata() -> ::nebula_action::ActionMetadata {
+                #metadata_init
             }
 
             fn dependencies() -> &'static ::nebula_core::Dependencies {

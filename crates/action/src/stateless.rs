@@ -96,13 +96,18 @@ pub trait StatelessHandler: Send + Sync + 'static {
 /// strongly-typed Rust.
 pub struct StatelessActionAdapter<A> {
     action: A,
+    meta: ActionMetadata,
 }
 
 impl<A> StatelessActionAdapter<A> {
     /// Wrap a typed stateless action.
     #[must_use]
-    pub fn new(action: A) -> Self {
-        Self { action }
+    pub fn new(action: A) -> Self
+    where
+        A: Action,
+    {
+        let meta = <A as Action>::metadata();
+        Self { action, meta }
     }
 
     /// Consume the adapter, returning the inner action.
@@ -118,7 +123,7 @@ where
     A: StatelessAction + Send + Sync + 'static,
 {
     fn metadata(&self) -> &ActionMetadata {
-        <A as Action>::metadata()
+        &self.meta
     }
 
     async fn execute(
@@ -206,15 +211,12 @@ mod tests {
         type Input = AddInput;
         type Output = AddOutput;
 
-        fn metadata() -> &'static ActionMetadata {
-            static M: OnceLock<ActionMetadata> = OnceLock::new();
-            M.get_or_init(|| {
-                ActionMetadata::new(
-                    nebula_core::action_key!("math.add"),
-                    "Add",
-                    "Adds two numbers",
-                )
-            })
+        fn metadata() -> ActionMetadata {
+            ActionMetadata::new(
+                nebula_core::action_key!("math.add"),
+                "Add",
+                "Adds two numbers",
+            )
         }
         fn dependencies() -> &'static Dependencies {
             static D: OnceLock<Dependencies> = OnceLock::new();

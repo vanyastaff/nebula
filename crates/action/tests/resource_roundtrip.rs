@@ -39,15 +39,12 @@ impl Action for PoolAction {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> &'static ActionMetadata {
-        static M: OnceLock<ActionMetadata> = OnceLock::new();
-        M.get_or_init(|| {
-            ActionMetadata::new(
-                nebula_core::action_key!("test.resource.pool"),
-                "Pool",
-                "Typed pool resource",
-            )
-        })
+    fn metadata() -> ActionMetadata {
+        ActionMetadata::new(
+            nebula_core::action_key!("test.resource.pool"),
+            "Pool",
+            "Typed pool resource",
+        )
     }
 
     fn dependencies() -> &'static Dependencies {

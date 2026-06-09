@@ -27,15 +27,12 @@ impl Action for TickPoller {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> &'static ActionMetadata {
-        static M: OnceLock<ActionMetadata> = OnceLock::new();
-        M.get_or_init(|| {
-            ActionMetadata::new(
-                nebula_core::action_key!("test.tick"),
-                "Tick Poller",
-                "Test poll trigger",
-            )
-        })
+    fn metadata() -> ActionMetadata {
+        ActionMetadata::new(
+            nebula_core::action_key!("test.tick"),
+            "Tick Poller",
+            "Test poll trigger",
+        )
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -174,15 +171,12 @@ impl Action for ZeroIntervalPoller {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> &'static ActionMetadata {
-        static M: OnceLock<ActionMetadata> = OnceLock::new();
-        M.get_or_init(|| {
-            ActionMetadata::new(
-                nebula_core::action_key!("test.tick.zero"),
-                "Zero Interval",
-                "Returns Duration::ZERO from poll_config",
-            )
-        })
+    fn metadata() -> ActionMetadata {
+        ActionMetadata::new(
+            nebula_core::action_key!("test.tick.zero"),
+            "Zero Interval",
+            "Returns Duration::ZERO from poll_config",
+        )
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -460,15 +454,12 @@ impl Action for FailingValidator {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> &'static ActionMetadata {
-        static M: OnceLock<ActionMetadata> = OnceLock::new();
-        M.get_or_init(|| {
-            ActionMetadata::new(
-                nebula_core::action_key!("test.validate.fail"),
-                "Failing Validator",
-                "validate() returns Err",
-            )
-        })
+    fn metadata() -> ActionMetadata {
+        ActionMetadata::new(
+            nebula_core::action_key!("test.validate.fail"),
+            "Failing Validator",
+            "validate() returns Err",
+        )
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -522,15 +513,12 @@ impl Action for StartFromNowPoller {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> &'static ActionMetadata {
-        static M: OnceLock<ActionMetadata> = OnceLock::new();
-        M.get_or_init(|| {
-            ActionMetadata::new(
-                nebula_core::action_key!("test.initial_cursor"),
-                "Start From Now",
-                "initial_cursor returns 1000",
-            )
-        })
+    fn metadata() -> ActionMetadata {
+        ActionMetadata::new(
+            nebula_core::action_key!("test.initial_cursor"),
+            "Start From Now",
+            "initial_cursor returns 1000",
+        )
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -634,15 +622,12 @@ impl Action for ReadyPoller {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> &'static ActionMetadata {
-        static M: OnceLock<ActionMetadata> = OnceLock::new();
-        M.get_or_init(|| {
-            ActionMetadata::new(
-                nebula_core::action_key!("test.retry_batch"),
-                "Retry Batch",
-                "always-ready, emitter fails",
-            )
-        })
+    fn metadata() -> ActionMetadata {
+        ActionMetadata::new(
+            nebula_core::action_key!("test.retry_batch"),
+            "Retry Batch",
+            "always-ready, emitter fails",
+        )
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -756,15 +741,12 @@ impl Action for DropPoller {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> &'static ActionMetadata {
-        static M: OnceLock<ActionMetadata> = OnceLock::new();
-        M.get_or_init(|| {
-            ActionMetadata::new(
-                nebula_core::action_key!("test.drop_loss"),
-                "Drop Loss",
-                "all events dropped under DropAndContinue",
-            )
-        })
+    fn metadata() -> ActionMetadata {
+        ActionMetadata::new(
+            nebula_core::action_key!("test.drop_loss"),
+            "Drop Loss",
+            "all events dropped under DropAndContinue",
+        )
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -856,15 +838,12 @@ impl Action for HugeOverridePoller {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> &'static ActionMetadata {
-        static M: OnceLock<ActionMetadata> = OnceLock::new();
-        M.get_or_init(|| {
-            ActionMetadata::new(
-                nebula_core::action_key!("test.huge_override"),
-                "Huge Override",
-                "override_next = 1h, max_interval = 200ms",
-            )
-        })
+    fn metadata() -> ActionMetadata {
+        ActionMetadata::new(
+            nebula_core::action_key!("test.huge_override"),
+            "Huge Override",
+            "override_next = 1h, max_interval = 200ms",
+        )
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -942,15 +921,12 @@ impl Action for EmptyPartialPoller {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> &'static ActionMetadata {
-        static M: OnceLock<ActionMetadata> = OnceLock::new();
-        M.get_or_init(|| {
-            ActionMetadata::new(
-                nebula_core::action_key!("test.empty_partial"),
-                "Empty Partial",
-                "returns Partial with no events and a retryable error",
-            )
-        })
+    fn metadata() -> ActionMetadata {
+        ActionMetadata::new(
+            nebula_core::action_key!("test.empty_partial"),
+            "Empty Partial",
+            "returns Partial with no events and a retryable error",
+        )
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -1029,15 +1005,12 @@ impl Action for SlowPoller {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> &'static ActionMetadata {
-        static M: OnceLock<ActionMetadata> = OnceLock::new();
-        M.get_or_init(|| {
-            ActionMetadata::new(
-                nebula_core::action_key!("test.first_poll.immediate"),
-                "Slow Poller",
-                "base_interval 10min, first poll should still run immediately",
-            )
-        })
+    fn metadata() -> ActionMetadata {
+        ActionMetadata::new(
+            nebula_core::action_key!("test.first_poll.immediate"),
+            "Slow Poller",
+            "base_interval 10min, first poll should still run immediately",
+        )
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -1187,15 +1160,12 @@ impl Action for WildConfigPoller {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> &'static ActionMetadata {
-        static M: OnceLock<ActionMetadata> = OnceLock::new();
-        M.get_or_init(|| {
-            ActionMetadata::new(
-                nebula_core::action_key!("test.wild_config"),
-                "Wild Config",
-                "Configurable PollConfig for clamp tests",
-            )
-        })
+    fn metadata() -> ActionMetadata {
+        ActionMetadata::new(
+            nebula_core::action_key!("test.wild_config"),
+            "Wild Config",
+            "Configurable PollConfig for clamp tests",
+        )
     }
 
     fn dependencies() -> &'static Dependencies {

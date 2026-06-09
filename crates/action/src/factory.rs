@@ -15,7 +15,7 @@
 //! [`FromWorkflowNode::from_workflow_node`](crate::FromWorkflowNode::from_workflow_node)
 //! and then erasing to the matching [`ErasedAction`] variant.
 
-use std::{any::Any, future::Future, marker::PhantomData, pin::Pin};
+use std::{any::Any, future::Future, marker::PhantomData, pin::Pin, sync::OnceLock};
 
 use async_trait::async_trait;
 use nebula_workflow::NodeDefinition;
@@ -67,12 +67,14 @@ pub trait ActionFactory: Send + Sync + 'static {
 /// Generic factory that produces [`ErasedAction::Stateless`] for any type
 /// implementing [`StatelessAction`] + [`FromWorkflowNode`].
 pub struct GenericStatelessFactory<A> {
+    meta: OnceLock<ActionMetadata>,
     _phantom: PhantomData<fn() -> A>,
 }
 
 impl<A> Default for GenericStatelessFactory<A> {
     fn default() -> Self {
         Self {
+            meta: OnceLock::new(),
             _phantom: PhantomData,
         }
     }
@@ -93,7 +95,7 @@ where
     <A as Action>::Output: Serialize + Send + Sync,
 {
     fn metadata(&self) -> &ActionMetadata {
-        <A as Action>::metadata()
+        self.meta.get_or_init(<A as Action>::metadata)
     }
 
     fn instantiate<'a>(
@@ -103,7 +105,8 @@ where
     ) -> Pin<Box<dyn Future<Output = Result<ErasedAction, ActionError>> + Send + 'a>> {
         Box::pin(async move {
             let action = A::from_workflow_node(node, ctx).await?;
-            let inner = ErasedStatelessImpl::<A>::new(action);
+            let meta = self.metadata().clone();
+            let inner = ErasedStatelessImpl::<A>::new(action, meta);
             Ok(ErasedAction::Stateless(Box::new(inner)))
         })
     }
@@ -111,11 +114,12 @@ where
 
 struct ErasedStatelessImpl<A> {
     action: A,
+    meta: ActionMetadata,
 }
 
 impl<A> ErasedStatelessImpl<A> {
-    fn new(action: A) -> Self {
-        Self { action }
+    fn new(action: A, meta: ActionMetadata) -> Self {
+        Self { action, meta }
     }
 }
 
@@ -127,7 +131,7 @@ where
     <A as Action>::Output: Serialize + Send + Sync,
 {
     fn metadata(&self) -> &ActionMetadata {
-        <A as Action>::metadata()
+        &self.meta
     }
 
     async fn dispatch(
@@ -157,12 +161,14 @@ where
 /// Generic factory that produces [`ErasedAction::Stateful`] for any type
 /// implementing [`StatefulAction`] + [`FromWorkflowNode`].
 pub struct GenericStatefulFactory<A> {
+    meta: OnceLock<ActionMetadata>,
     _phantom: PhantomData<fn() -> A>,
 }
 
 impl<A> Default for GenericStatefulFactory<A> {
     fn default() -> Self {
         Self {
+            meta: OnceLock::new(),
             _phantom: PhantomData,
         }
     }
@@ -184,7 +190,7 @@ where
     A::State: Serialize + DeserializeOwned + Clone + Send + Sync,
 {
     fn metadata(&self) -> &ActionMetadata {
-        <A as Action>::metadata()
+        self.meta.get_or_init(<A as Action>::metadata)
     }
 
     fn instantiate<'a>(
@@ -194,7 +200,8 @@ where
     ) -> Pin<Box<dyn Future<Output = Result<ErasedAction, ActionError>> + Send + 'a>> {
         Box::pin(async move {
             let action = A::from_workflow_node(node, ctx).await?;
-            let inner = ErasedStatefulImpl::<A>::new(action);
+            let meta = self.metadata().clone();
+            let inner = ErasedStatefulImpl::<A>::new(action, meta);
             Ok(ErasedAction::Stateful(Box::new(inner)))
         })
     }
@@ -202,11 +209,12 @@ where
 
 struct ErasedStatefulImpl<A> {
     action: A,
+    meta: ActionMetadata,
 }
 
 impl<A> ErasedStatefulImpl<A> {
-    fn new(action: A) -> Self {
-        Self { action }
+    fn new(action: A, meta: ActionMetadata) -> Self {
+        Self { action, meta }
     }
 }
 
@@ -219,7 +227,7 @@ where
     A::State: Serialize + DeserializeOwned + Clone + Send + Sync,
 {
     fn metadata(&self) -> &ActionMetadata {
-        <A as Action>::metadata()
+        &self.meta
     }
 
     fn init_state(&self) -> Result<Value, ActionError> {
@@ -290,12 +298,14 @@ where
 /// Generic factory that produces [`ErasedAction::Trigger`] for any type
 /// implementing [`TriggerAction`] + [`FromWorkflowNode`].
 pub struct GenericTriggerFactory<A> {
+    meta: OnceLock<ActionMetadata>,
     _phantom: PhantomData<fn() -> A>,
 }
 
 impl<A> Default for GenericTriggerFactory<A> {
     fn default() -> Self {
         Self {
+            meta: OnceLock::new(),
             _phantom: PhantomData,
         }
     }
@@ -315,7 +325,7 @@ where
     <A as TriggerAction>::Error: Into<ActionError>,
 {
     fn metadata(&self) -> &ActionMetadata {
-        <A as Action>::metadata()
+        self.meta.get_or_init(<A as Action>::metadata)
     }
 
     fn instantiate<'a>(
@@ -325,7 +335,8 @@ where
     ) -> Pin<Box<dyn Future<Output = Result<ErasedAction, ActionError>> + Send + 'a>> {
         Box::pin(async move {
             let action = A::from_workflow_node(node, ctx).await?;
-            let inner = ErasedTriggerImpl::<A>::new(action);
+            let meta = self.metadata().clone();
+            let inner = ErasedTriggerImpl::<A>::new(action, meta);
             Ok(ErasedAction::Trigger(Box::new(inner)))
         })
     }
@@ -333,11 +344,12 @@ where
 
 struct ErasedTriggerImpl<A> {
     action: A,
+    meta: ActionMetadata,
 }
 
 impl<A> ErasedTriggerImpl<A> {
-    fn new(action: A) -> Self {
-        Self { action }
+    fn new(action: A, meta: ActionMetadata) -> Self {
+        Self { action, meta }
     }
 }
 
@@ -348,7 +360,7 @@ where
     <A as TriggerAction>::Error: Into<ActionError>,
 {
     fn metadata(&self) -> &ActionMetadata {
-        <A as Action>::metadata()
+        &self.meta
     }
 
     async fn start(&self, ctx: &dyn TriggerContext) -> Result<(), ActionError> {
@@ -390,12 +402,14 @@ where
 /// Generic factory that produces [`ErasedAction::Resource`] for any type
 /// implementing [`ResourceAction`] + [`FromWorkflowNode`].
 pub struct GenericResourceFactory<A> {
+    meta: OnceLock<ActionMetadata>,
     _phantom: PhantomData<fn() -> A>,
 }
 
 impl<A> Default for GenericResourceFactory<A> {
     fn default() -> Self {
         Self {
+            meta: OnceLock::new(),
             _phantom: PhantomData,
         }
     }
@@ -414,7 +428,7 @@ where
     A: ResourceAction + FromWorkflowNode<Error = ActionError> + Send + Sync + 'static,
 {
     fn metadata(&self) -> &ActionMetadata {
-        <A as Action>::metadata()
+        self.meta.get_or_init(<A as Action>::metadata)
     }
 
     fn instantiate<'a>(
@@ -424,7 +438,8 @@ where
     ) -> Pin<Box<dyn Future<Output = Result<ErasedAction, ActionError>> + Send + 'a>> {
         Box::pin(async move {
             let action = A::from_workflow_node(node, ctx).await?;
-            let inner = ErasedResourceImpl::<A>::new(action);
+            let meta = self.metadata().clone();
+            let inner = ErasedResourceImpl::<A>::new(action, meta);
             Ok(ErasedAction::Resource(Box::new(inner)))
         })
     }
@@ -432,11 +447,12 @@ where
 
 struct ErasedResourceImpl<A> {
     action: A,
+    meta: ActionMetadata,
 }
 
 impl<A> ErasedResourceImpl<A> {
-    fn new(action: A) -> Self {
-        Self { action }
+    fn new(action: A, meta: ActionMetadata) -> Self {
+        Self { action, meta }
     }
 }
 
@@ -446,7 +462,7 @@ where
     A: ResourceAction + Send + Sync + 'static,
 {
     fn metadata(&self) -> &ActionMetadata {
-        <A as Action>::metadata()
+        &self.meta
     }
 
     async fn configure(
@@ -479,12 +495,14 @@ where
 /// Generic factory that produces [`ErasedAction::Control`] for any type
 /// implementing [`ControlAction`] + [`FromWorkflowNode`].
 pub struct GenericControlFactory<A> {
+    meta: OnceLock<ActionMetadata>,
     _phantom: PhantomData<fn() -> A>,
 }
 
 impl<A> Default for GenericControlFactory<A> {
     fn default() -> Self {
         Self {
+            meta: OnceLock::new(),
             _phantom: PhantomData,
         }
     }
@@ -503,7 +521,7 @@ where
     A: ControlAction + FromWorkflowNode<Error = ActionError> + Send + Sync + 'static,
 {
     fn metadata(&self) -> &ActionMetadata {
-        <A as Action>::metadata()
+        self.meta.get_or_init(<A as Action>::metadata)
     }
 
     fn instantiate<'a>(
@@ -513,7 +531,8 @@ where
     ) -> Pin<Box<dyn Future<Output = Result<ErasedAction, ActionError>> + Send + 'a>> {
         Box::pin(async move {
             let action = A::from_workflow_node(node, ctx).await?;
-            let inner = ErasedControlImpl::<A>::new(action);
+            let meta = self.metadata().clone();
+            let inner = ErasedControlImpl::<A>::new(action, meta);
             Ok(ErasedAction::Control(Box::new(inner)))
         })
     }
@@ -521,11 +540,12 @@ where
 
 struct ErasedControlImpl<A> {
     action: A,
+    meta: ActionMetadata,
 }
 
 impl<A> ErasedControlImpl<A> {
-    fn new(action: A) -> Self {
-        Self { action }
+    fn new(action: A, meta: ActionMetadata) -> Self {
+        Self { action, meta }
     }
 }
 
@@ -535,7 +555,7 @@ where
     A: ControlAction + Send + Sync + 'static,
 {
     fn metadata(&self) -> &ActionMetadata {
-        <A as Action>::metadata()
+        &self.meta
     }
 
     async fn dispatch(

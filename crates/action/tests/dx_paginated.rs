@@ -37,15 +37,12 @@ impl Action for NumberPaginator {
     type Input = serde_json::Value;
     type Output = NumberPage;
 
-    fn metadata() -> &'static ActionMetadata {
-        static M: OnceLock<ActionMetadata> = OnceLock::new();
-        M.get_or_init(|| {
-            ActionMetadata::new(
-                action_key!("test.number_paginator"),
-                "NumberPaginator",
-                "Paginate numbers",
-            )
-        })
+    fn metadata() -> ActionMetadata {
+        ActionMetadata::new(
+            action_key!("test.number_paginator"),
+            "NumberPaginator",
+            "Paginate numbers",
+        )
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -93,15 +90,12 @@ impl Action for LimitedPaginator {
     type Input = serde_json::Value;
     type Output = NumberPage;
 
-    fn metadata() -> &'static ActionMetadata {
-        static M: OnceLock<ActionMetadata> = OnceLock::new();
-        M.get_or_init(|| {
-            ActionMetadata::new(
-                action_key!("test.limited_paginator"),
-                "LimitedPaginator",
-                "Paginate with limit",
-            )
-        })
+    fn metadata() -> ActionMetadata {
+        ActionMetadata::new(
+            action_key!("test.limited_paginator"),
+            "LimitedPaginator",
+            "Paginate with limit",
+        )
     }
 
     fn dependencies() -> &'static Dependencies {

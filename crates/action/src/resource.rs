@@ -99,13 +99,18 @@ pub trait ResourceHandler: Send + Sync + 'static {
 /// ```
 pub struct ResourceActionAdapter<A> {
     action: A,
+    meta: ActionMetadata,
 }
 
 impl<A> ResourceActionAdapter<A> {
     /// Wrap a typed resource action.
     #[must_use]
-    pub fn new(action: A) -> Self {
-        Self { action }
+    pub fn new(action: A) -> Self
+    where
+        A: Action,
+    {
+        let meta = <A as Action>::metadata();
+        Self { action, meta }
     }
 
     /// Consume the adapter, returning the inner action.
@@ -121,7 +126,7 @@ where
     A: ResourceAction + Send + Sync + 'static,
 {
     fn metadata(&self) -> &ActionMetadata {
-        <A as Action>::metadata()
+        &self.meta
     }
 
     /// Configure the resource by delegating to the typed action.
@@ -199,15 +204,12 @@ mod tests {
         type Input = Value;
         type Output = Value;
 
-        fn metadata() -> &'static ActionMetadata {
-            static M: OnceLock<ActionMetadata> = OnceLock::new();
-            M.get_or_init(|| {
-                ActionMetadata::new(
-                    nebula_core::action_key!("test.resource_action"),
-                    "MockResource",
-                    "Creates a string pool",
-                )
-            })
+        fn metadata() -> ActionMetadata {
+            ActionMetadata::new(
+                nebula_core::action_key!("test.resource_action"),
+                "MockResource",
+                "Creates a string pool",
+            )
         }
         fn dependencies() -> &'static Dependencies {
             static D: OnceLock<Dependencies> = OnceLock::new();

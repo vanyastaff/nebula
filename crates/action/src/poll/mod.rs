@@ -1052,6 +1052,7 @@ struct CycleOutcome<C> {
 /// - **`Err`**: cursor = pre-poll position. No events dispatched.
 pub struct PollTriggerAdapter<A: PollAction> {
     action: A,
+    meta: ActionMetadata,
     started: AtomicBool,
     poll_warn: WarnThrottle,
     serialize_warn: WarnThrottle,
@@ -1062,8 +1063,10 @@ impl<A: PollAction> PollTriggerAdapter<A> {
     /// Wrap a typed poll action.
     #[must_use]
     pub fn new(action: A) -> Self {
+        let meta = <A as Action>::metadata();
         Self {
             action,
+            meta,
             started: AtomicBool::new(false),
             poll_warn: WarnThrottle::new(),
             serialize_warn: WarnThrottle::new(),
@@ -1296,7 +1299,7 @@ where
     A::Event: Send + Sync,
 {
     fn metadata(&self) -> &ActionMetadata {
-        <A as Action>::metadata()
+        &self.meta
     }
 
     fn start<'life0, 'life1, 'a>(

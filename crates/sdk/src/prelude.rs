@@ -56,9 +56,15 @@ pub use nebula_credential::{
     SnapshotError,
 };
 pub use nebula_credential::{CredentialContext, CredentialId};
+// Shared catalog-metadata vocabulary — the `Metadata` trait plus the
+// `BaseMetadata` prefix and value types that `ActionMetadata`,
+// `CredentialMetadata`, and `ResourceMetadata` all compose. Re-exported so the
+// uniform `metadata()` accessor surface (`key`/`name`/`version`/`icon`/…) is
+// usable across all three catalog leaves from a single import.
+pub use nebula_metadata::{BaseMetadata, DeprecationNotice, Icon, MaturityLevel, Metadata};
 // Plugin types
 pub use nebula_plugin::{Plugin, PluginManifest};
-pub use nebula_resource::Resource;
+pub use nebula_resource::{Resource, ResourceMetadata};
 // Derive macros (re-exported from their respective domain crates)
 // Action, Credential, and Plugin derive macros are already in scope from the
 // domain crate imports above (same names, macro namespace).

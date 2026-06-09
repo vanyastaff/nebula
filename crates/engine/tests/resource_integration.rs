@@ -51,15 +51,12 @@ impl Action for ResourceConsumerHandler {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> &'static ActionMetadata {
-        static M: OnceLock<ActionMetadata> = OnceLock::new();
-        M.get_or_init(|| {
-            ActionMetadata::new(
-                action_key!("test.resource_consumer.static"),
-                "ResourceConsumer",
-                "static",
-            )
-        })
+    fn metadata() -> ActionMetadata {
+        ActionMetadata::new(
+            action_key!("test.resource_consumer.static"),
+            "ResourceConsumer",
+            "static",
+        )
     }
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -94,15 +91,12 @@ impl Action for ResourceProbeHandler {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> &'static ActionMetadata {
-        static M: OnceLock<ActionMetadata> = OnceLock::new();
-        M.get_or_init(|| {
-            ActionMetadata::new(
-                action_key!("test.resource_probe.static"),
-                "ResourceProbe",
-                "static",
-            )
-        })
+    fn metadata() -> ActionMetadata {
+        ActionMetadata::new(
+            action_key!("test.resource_probe.static"),
+            "ResourceProbe",
+            "static",
+        )
     }
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -345,15 +339,12 @@ impl Action for IntegrationAcquireHandler {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> &'static ActionMetadata {
-        static M: OnceLock<ActionMetadata> = OnceLock::new();
-        M.get_or_init(|| {
-            ActionMetadata::new(
-                action_key!("test.engine_integration.acquire"),
-                "IntegrationAcquire",
-                "static",
-            )
-        })
+    fn metadata() -> ActionMetadata {
+        ActionMetadata::new(
+            action_key!("test.engine_integration.acquire"),
+            "IntegrationAcquire",
+            "static",
+        )
     }
 
     fn dependencies() -> &'static Dependencies {
