@@ -39,7 +39,7 @@ updates:
       prefix: "chore(ci)"
     ignore:
       # `dtolnay/rust-toolchain` is SHA-pinned with a `# v1` comment in
-      # ci.yml; the MSRV (currently 1.95) is passed via the `toolchain:`
+      # ci.yml; the MSRV (currently 1.96) is passed via the `toolchain:`
       # input, not the action ref. Dependabot would otherwise open weekly
       # PRs bumping the action's SHA — we prefer to review and roll that
       # action by hand since it installs the compiler for every CI job.

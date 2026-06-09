@@ -101,7 +101,7 @@ impl SessionRepo for PgSessionRepo {
             "SELECT {SELECT_COLS} FROM sessions \
              WHERE id = $1 AND revoked_at IS NULL AND expires_at > NOW()"
         );
-        let row = sqlx::query_as::<_, SessionTuple>(&sql)
+        let row = sqlx::query_as::<_, SessionTuple>(sqlx::AssertSqlSafe(sql))
             .bind(id)
             .fetch_optional(&self.pool)
             .await

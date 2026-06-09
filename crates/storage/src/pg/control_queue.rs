@@ -162,7 +162,7 @@ impl ControlQueueRepo for PgControlQueueRepo {
              WHERE e.id = claimed.id \
              RETURNING {SELECT_COLS}"
         );
-        let rows = sqlx::query_as::<_, EntryTuple>(&sql)
+        let rows = sqlx::query_as::<_, EntryTuple>(sqlx::AssertSqlSafe(sql))
             .bind(i64::from(batch_size))
             .bind(processor)
             .fetch_all(&self.pool)

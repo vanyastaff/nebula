@@ -106,7 +106,7 @@ impl VerificationTokenRepo for PgVerificationTokenRepo {
              WHERE token_hash = $1 AND consumed_at IS NULL AND expires_at > NOW() \
              RETURNING {SELECT_COLS}"
         );
-        let row = sqlx::query_as::<_, TokenTuple>(&sql)
+        let row = sqlx::query_as::<_, TokenTuple>(sqlx::AssertSqlSafe(sql))
             .bind(token_hash)
             .fetch_optional(&self.pool)
             .await
@@ -132,7 +132,7 @@ impl VerificationTokenRepo for PgVerificationTokenRepo {
                AND consumed_at IS NULL AND expires_at > NOW() \
              RETURNING {SELECT_COLS}"
         );
-        let row = sqlx::query_as::<_, TokenTuple>(&sql)
+        let row = sqlx::query_as::<_, TokenTuple>(sqlx::AssertSqlSafe(sql))
             .bind(token_hash)
             .bind(kind)
             .fetch_optional(&self.pool)
@@ -148,7 +148,7 @@ impl VerificationTokenRepo for PgVerificationTokenRepo {
     ) -> Result<Option<VerificationTokenRow>, StorageError> {
         debug_assert!(!token_hash.is_empty(), "token_hash must not be empty");
         let sql = format!("SELECT {SELECT_COLS} FROM verification_tokens WHERE token_hash = $1");
-        let row = sqlx::query_as::<_, TokenTuple>(&sql)
+        let row = sqlx::query_as::<_, TokenTuple>(sqlx::AssertSqlSafe(sql))
             .bind(token_hash)
             .fetch_optional(&self.pool)
             .await

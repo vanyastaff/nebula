@@ -49,7 +49,7 @@ resolver = "3"
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.95"
+rust-version = "1.96"
 keywords = ["workflow", "integrations", "no-code", "low-code", "automation"]
 authors = ["Vanya Stafford <vanya.john.stafford@gmail.com>"]
 description = "Workflow automation toolkit"
@@ -91,13 +91,7 @@ unicode-width = "0.2"
 
 # Graph
 petgraph = "0.8"
-domain-key = { version = "0.5.2", features = [
-  "serde",
-  "ulid",
-  "uuid",
-  "sqlx-postgres",
-  "sqlx-sqlite",
-] }
+domain-key = { version = "0.6.0", features = ["serde", "ulid", "uuid"] }
 uuid = { version = "1.23", features = ["v4", "serde"] }
 chrono = { version = "0.4.44", default-features = false, features = ["clock"] }
 chrono-tz = { version = "0.10", default-features = false, features = ["std"] }
@@ -130,6 +124,15 @@ http = "1.4"
 reqwest = { version = "0.13", features = ["json"], default-features = false }
 axum = { version = "0.8", features = ["json"] }
 tower-http = { version = "0.6", features = ["trace", "cors", "compression-gzip"] }
+
+# Database — optional storage backends. The version is pinned here so the
+# three consumers (the `nebula-storage` adapter, `nebula-api`'s
+# `PgAuthBackend`, and the `nebula-server` composition root) can never drift
+# onto different sqlx majors. Each consumer keeps `optional = true` and
+# enables only its own driver / TLS features; `domain-key` must NOT enable
+# any `sqlx-*` feature (keys cross the boundary as primitives — see
+# `crates/storage/Cargo.toml`).
+sqlx = { version = "0.9", default-features = false }
 
 # SMTP — production email transport (consumed by apps/server's SmtpEmailPort).
 # `default-features = false` strips native-tls / sendmail / file transport;

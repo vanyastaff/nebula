@@ -83,7 +83,7 @@ impl WorkspaceRepo for PgWorkspaceRepo {
     async fn get(&self, id: &[u8]) -> Result<Option<WorkspaceRow>, StorageError> {
         let sql =
             format!("SELECT {SELECT_COLS} FROM workspaces WHERE id = $1 AND deleted_at IS NULL");
-        let row = sqlx::query_as::<_, WsTuple>(&sql)
+        let row = sqlx::query_as::<_, WsTuple>(sqlx::AssertSqlSafe(sql))
             .bind(id)
             .fetch_optional(&self.pool)
             .await
@@ -100,7 +100,7 @@ impl WorkspaceRepo for PgWorkspaceRepo {
             "SELECT {SELECT_COLS} FROM workspaces \
              WHERE org_id = $1 AND LOWER(slug) = LOWER($2) AND deleted_at IS NULL"
         );
-        let row = sqlx::query_as::<_, WsTuple>(&sql)
+        let row = sqlx::query_as::<_, WsTuple>(sqlx::AssertSqlSafe(sql))
             .bind(org_id)
             .bind(slug)
             .fetch_optional(&self.pool)
@@ -114,7 +114,7 @@ impl WorkspaceRepo for PgWorkspaceRepo {
             "SELECT {SELECT_COLS} FROM workspaces \
              WHERE org_id = $1 AND is_default = TRUE AND deleted_at IS NULL"
         );
-        let row = sqlx::query_as::<_, WsTuple>(&sql)
+        let row = sqlx::query_as::<_, WsTuple>(sqlx::AssertSqlSafe(sql))
             .bind(org_id)
             .fetch_optional(&self.pool)
             .await
@@ -128,7 +128,7 @@ impl WorkspaceRepo for PgWorkspaceRepo {
              WHERE org_id = $1 AND deleted_at IS NULL \
              ORDER BY is_default DESC, created_at"
         );
-        let rows = sqlx::query_as::<_, WsTuple>(&sql)
+        let rows = sqlx::query_as::<_, WsTuple>(sqlx::AssertSqlSafe(sql))
             .bind(org_id)
             .fetch_all(&self.pool)
             .await

@@ -79,7 +79,7 @@ impl OrgRepo for PgOrgRepo {
 
     async fn get(&self, id: &[u8]) -> Result<Option<OrgRow>, StorageError> {
         let sql = format!("SELECT {SELECT_COLS} FROM orgs WHERE id = $1 AND deleted_at IS NULL");
-        let row = sqlx::query_as::<_, OrgTuple>(&sql)
+        let row = sqlx::query_as::<_, OrgTuple>(sqlx::AssertSqlSafe(sql))
             .bind(id)
             .fetch_optional(&self.pool)
             .await
@@ -91,7 +91,7 @@ impl OrgRepo for PgOrgRepo {
         let sql = format!(
             "SELECT {SELECT_COLS} FROM orgs WHERE LOWER(slug) = LOWER($1) AND deleted_at IS NULL"
         );
-        let row = sqlx::query_as::<_, OrgTuple>(&sql)
+        let row = sqlx::query_as::<_, OrgTuple>(sqlx::AssertSqlSafe(sql))
             .bind(slug)
             .fetch_optional(&self.pool)
             .await

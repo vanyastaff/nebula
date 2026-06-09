@@ -104,7 +104,7 @@ impl OAuthStateRepo for PgOAuthStateRepo {
              WHERE state = $1 AND consumed_at IS NULL AND expires_at > NOW() \
              RETURNING {SELECT_COLS}"
         );
-        let row = sqlx::query_as::<_, StateTuple>(&sql)
+        let row = sqlx::query_as::<_, StateTuple>(sqlx::AssertSqlSafe(sql))
             .bind(state)
             .fetch_optional(&self.pool)
             .await
@@ -130,7 +130,7 @@ impl OAuthStateRepo for PgOAuthStateRepo {
                AND consumed_at IS NULL AND expires_at > NOW() \
              RETURNING {SELECT_COLS}"
         );
-        let row = sqlx::query_as::<_, StateTuple>(&sql)
+        let row = sqlx::query_as::<_, StateTuple>(sqlx::AssertSqlSafe(sql))
             .bind(state)
             .bind(provider)
             .fetch_optional(&self.pool)
@@ -152,7 +152,7 @@ impl OAuthStateRepo for PgOAuthStateRepo {
     async fn get_by_state(&self, state: &str) -> Result<Option<OAuthStateRow>, StorageError> {
         debug_assert!(!state.is_empty(), "state value must not be empty");
         let sql = format!("SELECT {SELECT_COLS} FROM plane_a_oauth_states WHERE state = $1");
-        let row = sqlx::query_as::<_, StateTuple>(&sql)
+        let row = sqlx::query_as::<_, StateTuple>(sqlx::AssertSqlSafe(sql))
             .bind(state)
             .fetch_optional(&self.pool)
             .await

@@ -4,14 +4,14 @@ error: #[derive(Schema)]: integer type `i128` is not yet supported because `serd
 8 |     count: i128,
   |     ^^^^^
 
-error[E0599]: no function or associated item named `schema` found for struct `Bad` in the current scope
+error[E0599]: no associated function or constant named `schema` found for struct `Bad` in the current scope
   --> tests/compile_fail/derive_unsupported_int_width.rs:12:18
    |
  5 | struct Bad {
-   | ---------- function or associated item `schema` not found for this struct
+   | ---------- associated function or constant `schema` not found for this struct
 ...
 12 |     let _ = Bad::schema();
-   |                  ^^^^^^ function or associated item not found in `Bad`
+   |                  ^^^^^^ associated function or constant not found in `Bad`
    |
    = help: items from traits can only be used if the trait is implemented and in scope
    = note: the following trait defines an item `schema`, perhaps you need to implement it:

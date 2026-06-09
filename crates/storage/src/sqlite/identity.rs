@@ -1231,7 +1231,7 @@ async fn cas_disambiguate(
     // `table` is a fixed internal literal (never user input), so the
     // format here cannot be an injection vector.
     let sql = format!("SELECT version FROM {table} WHERE id = ?");
-    let current = sqlx::query_scalar::<_, i64>(&sql)
+    let current = sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(sql))
         .bind(id)
         .fetch_optional(pool)
         .await
@@ -1256,7 +1256,7 @@ async fn soft_delete_by_id(
     id: &str,
 ) -> Result<(), StorageError> {
     let sql = format!("UPDATE {table} SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL");
-    let res = sqlx::query(&sql)
+    let res = sqlx::query(sqlx::AssertSqlSafe(sql))
         .bind(now_rfc3339())
         .bind(id)
         .execute(pool)

@@ -51,7 +51,7 @@ pub async fn init_schema(pool: &sqlx::PgPool) -> Result<(), nebula_storage_port:
         if trimmed.is_empty() {
             continue;
         }
-        sqlx::query(trimmed)
+        sqlx::query(sqlx::AssertSqlSafe(trimmed))
             .execute(pool)
             .await
             .map_err(|e| nebula_storage_port::StorageError::Connection(e.to_string()))?;

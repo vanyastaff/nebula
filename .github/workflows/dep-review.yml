@@ -46,4 +46,15 @@ jobs:
           # `0BSD` admits `quoted_printable` (transitive via `lettre` → nebula-server);
           # OSI-approved, strictly more permissive than MIT (no attribution clause).
           allow-licenses: 0BSD, Apache-2.0, BSD-2-Clause, BSD-3-Clause, CC0-1.0, CDLA-Permissive-2.0, ISC, MIT, MPL-2.0, Unicode-3.0, Unicode-DFS-2016, Zlib
+          # Per-package license exemptions for crates whose `license` field uses
+          # the deprecated `/` SPDX conjunction (e.g. `MIT/Apache-2.0`,
+          # `BSD-3-Clause/MIT`). GitHub's parser cannot normalise `/` and renders
+          # it as `LicenseRef-bad-…`, failing the allow-list match even though
+          # every disjunct IS allowed above. `cargo deny` (the authoritative gate)
+          # parses `/` as OR and passes. Exemptions are version-agnostic so a
+          # patch bump does not re-trip the check.
+          allow-dependencies-licenses: >-
+            pkg:cargo/brotli-decompressor,
+            pkg:cargo/futures-timer,
+            pkg:cargo/generator
           comment-summary-in-pr: on-failure
