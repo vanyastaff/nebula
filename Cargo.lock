@@ -4277,12 +4277,13 @@ dependencies = [
 
 [[package]]
 name = "oas3"
-version = "0.16.1"
+version = "0.22.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "467938ca71cb364150b7fe3564316d80f1deea1891020f85468ac01749f1a409"
+checksum = "da5a5aa72eddcc53edfd06f287a2c10f872d88e8b72c650234cd8a227572424a"
 dependencies = [
  "derive_more",
  "http 1.4.2",
+ "indexmap",
  "log",
  "once_cell",
  "regex",
@@ -5910,6 +5911,7 @@ version = "1.0.150"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e8014e44b4736ed0538adeecded0fce2a272f22dc9578a7eb6b2d9993c74cfb9"
 dependencies = [
+ "indexmap",
  "itoa",
  "memchr",
  "serde",
