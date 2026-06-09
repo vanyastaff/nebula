@@ -119,7 +119,7 @@ impl PatRepo for PgPatRepo {
              WHERE hash = $1 AND revoked_at IS NULL \
                AND (expires_at IS NULL OR expires_at > NOW())"
         );
-        let row = sqlx::query_as::<_, PatTuple>(&sql)
+        let row = sqlx::query_as::<_, PatTuple>(sqlx::AssertSqlSafe(sql))
             .bind(hash)
             .fetch_optional(&self.pool)
             .await
@@ -180,7 +180,7 @@ impl PatRepo for PgPatRepo {
                AND (expires_at IS NULL OR expires_at > NOW()) \
              ORDER BY created_at"
         );
-        let rows = sqlx::query_as::<_, PatTuple>(&sql)
+        let rows = sqlx::query_as::<_, PatTuple>(sqlx::AssertSqlSafe(sql))
             .bind(principal_kind)
             .bind(principal_id)
             .fetch_all(&self.pool)

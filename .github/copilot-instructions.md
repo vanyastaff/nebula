@@ -1,7 +1,7 @@
 # Copilot Instructions for Nebula
 
 ## Project Context
-Modular type-safe Rust workflow engine. Edition 2024, MSRV 1.95, alpha stage.
+Modular type-safe Rust workflow engine. Edition 2024, MSRV 1.96, alpha stage.
 Layered architecture (one-way deps, no upward) — canonical map and exact
 allowlist live in [`CLAUDE.md`](../CLAUDE.md) § "Layered Dependency Map";
 mechanically enforced by `cargo deny check` against the `wrappers` fields

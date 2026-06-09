@@ -108,7 +108,7 @@ tokio-util = { workspace = true }
 # and passes it in; the PgAuthBackend issues two multi-step transactions directly
 # (`register_user`, `complete_password_reset`) which is why `nebula-storage` cannot
 # encapsulate the dep. Mirrors `apps/server/Cargo.toml`.
-sqlx = { version = "0.8", optional = true, default-features = false, features = [
+sqlx = { version = "0.9", optional = true, default-features = false, features = [
   "runtime-tokio",
   "postgres",
   "chrono",

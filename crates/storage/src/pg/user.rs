@@ -126,7 +126,7 @@ impl UserRepo for PgUserRepo {
     #[tracing::instrument(level = "debug", skip(self), fields(user_id = %hex::encode(id)))]
     async fn get(&self, id: &[u8]) -> Result<Option<UserRow>, StorageError> {
         let sql = format!("SELECT {SELECT_COLS} FROM users WHERE id = $1 AND deleted_at IS NULL");
-        let row = sqlx::query_as::<_, UserTuple>(&sql)
+        let row = sqlx::query_as::<_, UserTuple>(sqlx::AssertSqlSafe(sql))
             .bind(id)
             .fetch_optional(&self.pool)
             .await
@@ -140,7 +140,7 @@ impl UserRepo for PgUserRepo {
             "SELECT {SELECT_COLS} FROM users \
              WHERE LOWER(email) = LOWER($1) AND deleted_at IS NULL"
         );
-        let row = sqlx::query_as::<_, UserTuple>(&sql)
+        let row = sqlx::query_as::<_, UserTuple>(sqlx::AssertSqlSafe(sql))
             .bind(email)
             .fetch_optional(&self.pool)
             .await

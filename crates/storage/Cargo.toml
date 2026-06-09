@@ -46,12 +46,11 @@ moka = { workspace = true, features = ["future"] }
 # `postgres` and `sqlite` features each turn on this dep, and each
 # forwards only its own driver feature to sqlx (`sqlx/postgres` or
 # `sqlx/sqlite`). Storage-level: enabling `postgres` alone activates
-# only the postgres driver from this crate's perspective. (The
-# workspace-level `domain-key` dep enables both `sqlx-postgres` and
-# `sqlx-sqlite` features for typed-key impls, which can unify both
-# drivers in a multi-crate build; that is a workspace concern, not
-# this crate's.)
-sqlx = { version = "0.8", optional = true, default-features = false, features = [
+# only the postgres driver from this crate's perspective. Keys cross
+# the sqlx boundary as primitives (the spec-16 row DTOs use `String` /
+# `[u8; N]`), so `domain-key` does NOT enable any `sqlx-*` feature and
+# this crate is the sole sqlx consumer in its subtree.
+sqlx = { version = "0.9", optional = true, default-features = false, features = [
   "runtime-tokio",
   "macros",
   "migrate",

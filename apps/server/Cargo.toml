@@ -42,7 +42,7 @@ lettre = { workspace = true }
 # `compose::build_pg_idempotency_store` (gated by `feature = "postgres"`).
 # Mirrors `crates/api/Cargo.toml` exactly so the verbatim `use sqlx::...`
 # port resolves identically.
-sqlx = { version = "0.8", optional = true, default-features = false, features = [
+sqlx = { version = "0.9", optional = true, default-features = false, features = [
   "runtime-tokio",
   "postgres",
   "tls-rustls-ring-native-roots",
