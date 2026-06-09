@@ -15,6 +15,7 @@ documentation.workspace = true
 # Core re-exports
 nebula-core = { path = "../core" }
 nebula-action = { path = "../action" }
+nebula-metadata = { path = "../metadata" }
 nebula-workflow = { path = "../workflow" }
 nebula-schema = { path = "../schema" }
 nebula-credential = { path = "../credential" }

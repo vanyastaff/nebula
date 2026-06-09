@@ -458,13 +458,18 @@ pub trait StatefulHandler: Send + Sync + 'static {
 /// engine checkpointing.
 pub struct StatefulActionAdapter<A> {
     action: A,
+    meta: ActionMetadata,
 }
 
 impl<A> StatefulActionAdapter<A> {
     /// Wrap a typed stateful action.
     #[must_use]
-    pub fn new(action: A) -> Self {
-        Self { action }
+    pub fn new(action: A) -> Self
+    where
+        A: Action,
+    {
+        let meta = <A as Action>::metadata();
+        Self { action, meta }
     }
 
     /// Consume the adapter, returning the inner action.
@@ -483,7 +488,7 @@ where
     A::State: Serialize + DeserializeOwned + Clone + Send + Sync,
 {
     fn metadata(&self) -> &ActionMetadata {
-        <A as Action>::metadata()
+        &self.meta
     }
 
     fn init_state(&self) -> Result<Value, ActionError> {
@@ -633,15 +638,12 @@ mod tests {
         type Input = Value;
         type Output = Value;
 
-        fn metadata() -> &'static ActionMetadata {
-            static M: OnceLock<ActionMetadata> = OnceLock::new();
-            M.get_or_init(|| {
-                ActionMetadata::new(
-                    nebula_core::action_key!("test.counter"),
-                    "Counter",
-                    "Counts up to 3",
-                )
-            })
+        fn metadata() -> ActionMetadata {
+            ActionMetadata::new(
+                nebula_core::action_key!("test.counter"),
+                "Counter",
+                "Counts up to 3",
+            )
         }
         fn dependencies() -> &'static Dependencies {
             static D: OnceLock<Dependencies> = OnceLock::new();
@@ -754,15 +756,12 @@ mod tests {
         type Input = Value;
         type Output = Value;
 
-        fn metadata() -> &'static ActionMetadata {
-            static M: OnceLock<ActionMetadata> = OnceLock::new();
-            M.get_or_init(|| {
-                ActionMetadata::new(
-                    nebula_core::action_key!("test.mutate_fail"),
-                    "MutateFail",
-                    "Mutates state then fails",
-                )
-            })
+        fn metadata() -> ActionMetadata {
+            ActionMetadata::new(
+                nebula_core::action_key!("test.mutate_fail"),
+                "MutateFail",
+                "Mutates state then fails",
+            )
         }
         fn dependencies() -> &'static Dependencies {
             static D: OnceLock<Dependencies> = OnceLock::new();

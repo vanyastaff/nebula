@@ -4013,6 +4013,7 @@ dependencies = [
  "nebula-action",
  "nebula-core",
  "nebula-credential",
+ "nebula-metadata",
  "nebula-plugin",
  "nebula-resource",
  "nebula-schema",

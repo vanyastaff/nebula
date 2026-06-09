@@ -61,15 +61,12 @@ impl Action for StripeWebhookAction {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> &'static ActionMetadata {
-        static M: OnceLock<ActionMetadata> = OnceLock::new();
-        M.get_or_init(|| {
-            ActionMetadata::new(
-                action_key!("nebula.webhook.stripe"),
-                "Stripe Webhook",
-                "Stripe-flavoured signed webhook trigger.",
-            )
-        })
+    fn metadata() -> ActionMetadata {
+        ActionMetadata::new(
+            action_key!("nebula.webhook.stripe"),
+            "Stripe Webhook",
+            "Stripe-flavoured signed webhook trigger.",
+        )
     }
 
     fn dependencies() -> &'static Dependencies {

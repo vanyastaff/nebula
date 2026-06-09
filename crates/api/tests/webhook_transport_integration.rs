@@ -60,15 +60,12 @@ impl Action for GitHubLikeWebhook {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> &'static ActionMetadata {
-        static M: OnceLock<ActionMetadata> = OnceLock::new();
-        M.get_or_init(|| {
-            ActionMetadata::new(
-                nebula_core::action_key!("test.webhook.integration"),
-                "GitHub-like",
-                "Integration test webhook",
-            )
-        })
+    fn metadata() -> ActionMetadata {
+        ActionMetadata::new(
+            nebula_core::action_key!("test.webhook.integration"),
+            "GitHub-like",
+            "Integration test webhook",
+        )
     }
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -409,15 +406,12 @@ impl Action for HangingWebhook {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> &'static ActionMetadata {
-        static M: OnceLock<ActionMetadata> = OnceLock::new();
-        M.get_or_init(|| {
-            ActionMetadata::new(
-                nebula_core::action_key!("test.webhook.hang"),
-                "Hanging",
-                "Handler that never returns",
-            )
-        })
+    fn metadata() -> ActionMetadata {
+        ActionMetadata::new(
+            nebula_core::action_key!("test.webhook.hang"),
+            "Hanging",
+            "Handler that never returns",
+        )
     }
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -620,15 +614,12 @@ impl Action for UnsignedWebhook {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> &'static ActionMetadata {
-        static M: OnceLock<ActionMetadata> = OnceLock::new();
-        M.get_or_init(|| {
-            ActionMetadata::new(
-                nebula_core::action_key!("test.webhook.unsigned"),
-                "Unsigned",
-                "OptionalAcceptUnsigned regression guard",
-            )
-        })
+    fn metadata() -> ActionMetadata {
+        ActionMetadata::new(
+            nebula_core::action_key!("test.webhook.unsigned"),
+            "Unsigned",
+            "OptionalAcceptUnsigned regression guard",
+        )
     }
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -670,15 +661,12 @@ impl Action for DefaultConfigWebhook {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> &'static ActionMetadata {
-        static M: OnceLock<ActionMetadata> = OnceLock::new();
-        M.get_or_init(|| {
-            ActionMetadata::new(
-                nebula_core::action_key!("test.webhook.default_config.static"),
-                "DefaultConfig",
-                "static",
-            )
-        })
+    fn metadata() -> ActionMetadata {
+        ActionMetadata::new(
+            nebula_core::action_key!("test.webhook.default_config.static"),
+            "DefaultConfig",
+            "static",
+        )
     }
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();

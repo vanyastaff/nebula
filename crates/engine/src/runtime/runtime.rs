@@ -1381,11 +1381,8 @@ mod tests {
         type Input = serde_json::Value;
         type Output = serde_json::Value;
 
-        fn metadata() -> &'static ActionMetadata {
-            static M: OnceLock<ActionMetadata> = OnceLock::new();
-            M.get_or_init(|| {
-                ActionMetadata::new(action_key!("test.echo.static"), "Echo", "echoes input")
-            })
+        fn metadata() -> ActionMetadata {
+            ActionMetadata::new(action_key!("test.echo.static"), "Echo", "echoes input")
         }
         fn dependencies() -> &'static Dependencies {
             static D: OnceLock<Dependencies> = OnceLock::new();
@@ -1409,11 +1406,8 @@ mod tests {
         type Input = serde_json::Value;
         type Output = serde_json::Value;
 
-        fn metadata() -> &'static ActionMetadata {
-            static M: OnceLock<ActionMetadata> = OnceLock::new();
-            M.get_or_init(|| {
-                ActionMetadata::new(action_key!("test.fail.static"), "Fail", "always fails")
-            })
+        fn metadata() -> ActionMetadata {
+            ActionMetadata::new(action_key!("test.fail.static"), "Fail", "always fails")
         }
         fn dependencies() -> &'static Dependencies {
             static D: OnceLock<Dependencies> = OnceLock::new();
@@ -1838,15 +1832,12 @@ mod tests {
             type Input = serde_json::Value;
             type Output = serde_json::Value;
 
-            fn metadata() -> &'static ActionMetadata {
-                static M: OnceLock<ActionMetadata> = OnceLock::new();
-                M.get_or_init(|| {
-                    ActionMetadata::new(
-                        action_key!("test.multi_out.static"),
-                        "MultiOut",
-                        "multi-port fan-out",
-                    )
-                })
+            fn metadata() -> ActionMetadata {
+                ActionMetadata::new(
+                    action_key!("test.multi_out.static"),
+                    "MultiOut",
+                    "multi-port fan-out",
+                )
             }
             fn dependencies() -> &'static Dependencies {
                 static D: OnceLock<Dependencies> = OnceLock::new();
@@ -1927,11 +1918,8 @@ mod tests {
             type Input = serde_json::Value;
             type Output = serde_json::Value;
 
-            fn metadata() -> &'static ActionMetadata {
-                static M: OnceLock<ActionMetadata> = OnceLock::new();
-                M.get_or_init(|| {
-                    ActionMetadata::new(action_key!("test.branch.static"), "Branch", "static")
-                })
+            fn metadata() -> ActionMetadata {
+                ActionMetadata::new(action_key!("test.branch.static"), "Branch", "static")
             }
             fn dependencies() -> &'static Dependencies {
                 static D: OnceLock<Dependencies> = OnceLock::new();
@@ -2000,11 +1988,8 @@ mod tests {
             type Input = serde_json::Value;
             type Output = serde_json::Value;
 
-            fn metadata() -> &'static ActionMetadata {
-                static M: OnceLock<ActionMetadata> = OnceLock::new();
-                M.get_or_init(|| {
-                    ActionMetadata::new(action_key!("test.collection.static"), "Coll", "static")
-                })
+            fn metadata() -> ActionMetadata {
+                ActionMetadata::new(action_key!("test.collection.static"), "Coll", "static")
             }
             fn dependencies() -> &'static Dependencies {
                 static D: OnceLock<Dependencies> = OnceLock::new();
@@ -2075,11 +2060,8 @@ mod tests {
             type Input = serde_json::Value;
             type Output = serde_json::Value;
 
-            fn metadata() -> &'static ActionMetadata {
-                static M: OnceLock<ActionMetadata> = OnceLock::new();
-                M.get_or_init(|| {
-                    ActionMetadata::new(action_key!("test.binary.static"), "Bin", "static")
-                })
+            fn metadata() -> ActionMetadata {
+                ActionMetadata::new(action_key!("test.binary.static"), "Bin", "static")
             }
             fn dependencies() -> &'static Dependencies {
                 static D: OnceLock<Dependencies> = OnceLock::new();
@@ -2143,11 +2125,8 @@ mod tests {
             type Input = serde_json::Value;
             type Output = serde_json::Value;
 
-            fn metadata() -> &'static ActionMetadata {
-                static M: OnceLock<ActionMetadata> = OnceLock::new();
-                M.get_or_init(|| {
-                    ActionMetadata::new(action_key!("test.ref.static"), "Ref", "static")
-                })
+            fn metadata() -> ActionMetadata {
+                ActionMetadata::new(action_key!("test.ref.static"), "Ref", "static")
             }
             fn dependencies() -> &'static Dependencies {
                 static D: OnceLock<Dependencies> = OnceLock::new();

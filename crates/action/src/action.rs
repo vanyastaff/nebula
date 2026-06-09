@@ -38,9 +38,8 @@ use crate::metadata::ActionMetadata;
 /// type Input = serde_json::Value;
 /// type Output = serde_json::Value;
 ///
-/// fn metadata() -> &'static ActionMetadata {
-/// static M: OnceLock<ActionMetadata> = OnceLock::new();
-/// M.get_or_init(|| ActionMetadata::new(action_key!("echo"), "Echo", "Echoes input"))
+/// fn metadata() -> ActionMetadata {
+/// ActionMetadata::new(action_key!("echo"), "Echo", "Echoes input")
 /// }
 /// fn dependencies() -> &'static Dependencies {
 /// static D: OnceLock<Dependencies> = OnceLock::new();
@@ -65,8 +64,15 @@ pub trait Action: Sized + Send + Sync + 'static {
     /// What this action produces; serialized to JSON for downstream nodes.
     type Output: HasSchema + Serialize + Send + Sync;
 
-    /// Static metadata describing this action type (key, version, ports, etc.).
-    fn metadata() -> &'static ActionMetadata;
+    /// Metadata describing this action type (key, version, ports, etc.).
+    ///
+    /// Returned by value, symmetric with
+    /// [`Credential::metadata`](nebula_credential) and
+    /// `Resource::metadata`. Authors build it fresh — no `static`/`OnceLock`
+    /// boilerplate. The engine caches the result once per registered factory
+    /// (see `ActionFactory`), so the cold per-call cost is paid only at
+    /// registration, not per dispatch.
+    fn metadata() -> ActionMetadata;
 
     /// Slot-binding declarations (`#[resource]` / `#[credential]` fields, Phase 3 / S3+).
     fn dependencies() -> &'static Dependencies;

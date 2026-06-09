@@ -35,11 +35,8 @@ impl Action for EchoAction {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> &'static ActionMetadata {
-        static M: OnceLock<ActionMetadata> = OnceLock::new();
-        M.get_or_init(|| {
-            ActionMetadata::new(action_key!("test.echo"), "Echo", "Echo input to output")
-        })
+    fn metadata() -> ActionMetadata {
+        ActionMetadata::new(action_key!("test.echo"), "Echo", "Echo input to output")
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -89,11 +86,8 @@ impl Action for CounterAction {
     type Input = ();
     type Output = U32Out;
 
-    fn metadata() -> &'static ActionMetadata {
-        static M: OnceLock<ActionMetadata> = OnceLock::new();
-        M.get_or_init(|| {
-            ActionMetadata::new(action_key!("test.counter"), "Counter", "Count then break")
-        })
+    fn metadata() -> ActionMetadata {
+        ActionMetadata::new(action_key!("test.counter"), "Counter", "Count then break")
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -174,15 +168,12 @@ impl Action for NoOpTrigger {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> &'static ActionMetadata {
-        static M: OnceLock<ActionMetadata> = OnceLock::new();
-        M.get_or_init(|| {
-            ActionMetadata::new(
-                action_key!("test.noop_trigger"),
-                "NoOp Trigger",
-                "Start/stop no-op",
-            )
-        })
+    fn metadata() -> ActionMetadata {
+        ActionMetadata::new(
+            action_key!("test.noop_trigger"),
+            "NoOp Trigger",
+            "Start/stop no-op",
+        )
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -241,15 +232,12 @@ impl Action for MigratableAction {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> &'static ActionMetadata {
-        static M: OnceLock<ActionMetadata> = OnceLock::new();
-        M.get_or_init(|| {
-            ActionMetadata::new(
-                action_key!("test.migratable"),
-                "Migratable",
-                "Migrates v1 state",
-            )
-        })
+    fn metadata() -> ActionMetadata {
+        ActionMetadata::new(
+            action_key!("test.migratable"),
+            "Migratable",
+            "Migrates v1 state",
+        )
     }
 
     fn dependencies() -> &'static Dependencies {

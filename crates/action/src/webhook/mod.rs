@@ -1561,6 +1561,7 @@ pub struct WebhookTriggerAdapter<A: WebhookAction> {
     /// because webhook configuration does not belong on the base
     /// trigger trait.
     config: WebhookConfig,
+    meta: ActionMetadata,
     state: RwLock<Option<Arc<A::State>>>,
     /// Shared with every [`InFlightGuard`] so the guard can decrement
     /// and notify on drop without needing a lifetime back to `self`.
@@ -1573,16 +1574,18 @@ pub struct WebhookTriggerAdapter<A: WebhookAction> {
 impl<A: WebhookAction> WebhookTriggerAdapter<A> {
     /// Wrap a typed webhook action.
     ///
-    /// Reads [`WebhookAction::config`] once and caches the result so
-    /// the dispatch path does not re-enter the action on every
-    /// request, and so the runtime / test harness can forward the
+    /// Reads [`WebhookAction::config`] and [`Action::metadata`] once and
+    /// caches both so the dispatch path does not re-enter the action on
+    /// every request, and so the runtime / test harness can forward the
     /// policy to the transport without re-downcasting the handler.
     #[must_use]
     pub fn new(action: A) -> Self {
         let config = action.config();
+        let meta = <A as Action>::metadata();
         Self {
             action,
             config,
+            meta,
             state: RwLock::new(None),
             in_flight: Arc::new(AtomicU32::new(0)),
             idle_notify: Arc::new(Notify::new()),
@@ -1624,7 +1627,7 @@ where
     A::State: Send + Sync,
 {
     fn metadata(&self) -> &ActionMetadata {
-        <A as Action>::metadata()
+        &self.meta
     }
 
     fn start<'life0, 'life1, 'a>(

@@ -55,12 +55,9 @@ impl Action for DemoIf {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> &'static ActionMetadata {
-        static M: OnceLock<ActionMetadata> = OnceLock::new();
-        M.get_or_init(|| {
-            ActionMetadata::new(action_key!("demo.if"), "If", "Binary branch")
-                .with_outputs(vec![OutputPort::flow("true"), OutputPort::flow("false")])
-        })
+    fn metadata() -> ActionMetadata {
+        ActionMetadata::new(action_key!("demo.if"), "If", "Binary branch")
+            .with_outputs(vec![OutputPort::flow("true"), OutputPort::flow("false")])
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -154,21 +151,18 @@ impl Action for DemoSwitch {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> &'static ActionMetadata {
-        static M: OnceLock<ActionMetadata> = OnceLock::new();
-        M.get_or_init(|| {
-            ActionMetadata::new(
-                action_key!("demo.switch"),
-                "Switch",
-                "N-way branch by status field",
-            )
-            .with_outputs(vec![
-                OutputPort::flow("active"),
-                OutputPort::flow("pending"),
-                OutputPort::flow("archived"),
-                OutputPort::flow("default"),
-            ])
-        })
+    fn metadata() -> ActionMetadata {
+        ActionMetadata::new(
+            action_key!("demo.switch"),
+            "Switch",
+            "N-way branch by status field",
+        )
+        .with_outputs(vec![
+            OutputPort::flow("active"),
+            OutputPort::flow("pending"),
+            OutputPort::flow("archived"),
+            OutputPort::flow("default"),
+        ])
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -251,16 +245,13 @@ impl Action for DemoRouter {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> &'static ActionMetadata {
-        static M: OnceLock<ActionMetadata> = OnceLock::new();
-        M.get_or_init(|| {
-            ActionMetadata::new(action_key!("demo.router"), "Router", "Multi-rule routing")
-                .with_outputs(vec![
-                    OutputPort::flow("high"),
-                    OutputPort::flow("medium"),
-                    OutputPort::flow("low"),
-                ])
-        })
+    fn metadata() -> ActionMetadata {
+        ActionMetadata::new(action_key!("demo.router"), "Router", "Multi-rule routing")
+            .with_outputs(vec![
+                OutputPort::flow("high"),
+                OutputPort::flow("medium"),
+                OutputPort::flow("low"),
+            ])
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -338,16 +329,13 @@ impl Action for NeverMatchRouter {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> &'static ActionMetadata {
-        static M: OnceLock<ActionMetadata> = OnceLock::new();
-        M.get_or_init(|| {
-            ActionMetadata::new(
-                action_key!("demo.never_match_router"),
-                "NeverMatchRouter",
-                "Drops every input — used to test Drop code path",
-            )
-            .with_outputs(vec![OutputPort::flow("out")])
-        })
+    fn metadata() -> ActionMetadata {
+        ActionMetadata::new(
+            action_key!("demo.never_match_router"),
+            "NeverMatchRouter",
+            "Drops every input — used to test Drop code path",
+        )
+        .with_outputs(vec![OutputPort::flow("out")])
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -386,16 +374,13 @@ impl Action for DemoFilter {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> &'static ActionMetadata {
-        static M: OnceLock<ActionMetadata> = OnceLock::new();
-        M.get_or_init(|| {
-            ActionMetadata::new(
-                action_key!("demo.filter"),
-                "Filter",
-                "Drop items below threshold",
-            )
-            .with_outputs(vec![OutputPort::flow("out")])
-        })
+    fn metadata() -> ActionMetadata {
+        ActionMetadata::new(
+            action_key!("demo.filter"),
+            "Filter",
+            "Drop items below threshold",
+        )
+        .with_outputs(vec![OutputPort::flow("out")])
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -466,11 +451,8 @@ impl Action for DemoNoOp {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> &'static ActionMetadata {
-        static M: OnceLock<ActionMetadata> = OnceLock::new();
-        M.get_or_init(|| {
-            ActionMetadata::new(action_key!("demo.noop"), "NoOp", "Pass-through placeholder")
-        })
+    fn metadata() -> ActionMetadata {
+        ActionMetadata::new(action_key!("demo.noop"), "NoOp", "Pass-through placeholder")
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -529,16 +511,13 @@ impl Action for DemoStop {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> &'static ActionMetadata {
-        static M: OnceLock<ActionMetadata> = OnceLock::new();
-        M.get_or_init(|| {
-            ActionMetadata::new(
-                action_key!("demo.stop"),
-                "Stop",
-                "Terminate execution with success",
-            )
-            .with_outputs(Vec::new())
-        })
+    fn metadata() -> ActionMetadata {
+        ActionMetadata::new(
+            action_key!("demo.stop"),
+            "Stop",
+            "Terminate execution with success",
+        )
+        .with_outputs(Vec::new())
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -604,16 +583,13 @@ impl Action for DemoFail {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> &'static ActionMetadata {
-        static M: OnceLock<ActionMetadata> = OnceLock::new();
-        M.get_or_init(|| {
-            ActionMetadata::new(
-                action_key!("demo.fail"),
-                "Fail",
-                "Terminate execution with failure",
-            )
-            .with_outputs(Vec::new())
-        })
+    fn metadata() -> ActionMetadata {
+        ActionMetadata::new(
+            action_key!("demo.fail"),
+            "Fail",
+            "Terminate execution with failure",
+        )
+        .with_outputs(Vec::new())
     }
 
     fn dependencies() -> &'static Dependencies {

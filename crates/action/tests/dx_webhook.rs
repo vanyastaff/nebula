@@ -30,15 +30,12 @@ impl Action for TestWebhook {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> &'static ActionMetadata {
-        static M: OnceLock<ActionMetadata> = OnceLock::new();
-        M.get_or_init(|| {
-            ActionMetadata::new(
-                nebula_core::action_key!("test.webhook"),
-                "Test Webhook",
-                "Test webhook action",
-            )
-        })
+    fn metadata() -> ActionMetadata {
+        ActionMetadata::new(
+            nebula_core::action_key!("test.webhook"),
+            "Test Webhook",
+            "Test webhook action",
+        )
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -187,15 +184,12 @@ impl Action for CountingWebhook {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> &'static ActionMetadata {
-        static M: OnceLock<ActionMetadata> = OnceLock::new();
-        M.get_or_init(|| {
-            ActionMetadata::new(
-                nebula_core::action_key!("test.webhook.count"),
-                "Counting Webhook",
-                "Counts activate/deactivate",
-            )
-        })
+    fn metadata() -> ActionMetadata {
+        ActionMetadata::new(
+            nebula_core::action_key!("test.webhook.count"),
+            "Counting Webhook",
+            "Counts activate/deactivate",
+        )
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -296,15 +290,12 @@ impl Action for ErroringWebhook {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> &'static ActionMetadata {
-        static M: OnceLock<ActionMetadata> = OnceLock::new();
-        M.get_or_init(|| {
-            ActionMetadata::new(
-                nebula_core::action_key!("test.webhook.error"),
-                "Erroring Webhook",
-                "handle_request always returns Err",
-            )
-        })
+    fn metadata() -> ActionMetadata {
+        ActionMetadata::new(
+            nebula_core::action_key!("test.webhook.error"),
+            "Erroring Webhook",
+            "handle_request always returns Err",
+        )
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -370,15 +361,12 @@ impl Action for HangingWebhook {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> &'static ActionMetadata {
-        static M: OnceLock<ActionMetadata> = OnceLock::new();
-        M.get_or_init(|| {
-            ActionMetadata::new(
-                nebula_core::action_key!("test.webhook.hang"),
-                "Hanging Webhook",
-                "handle_request hangs forever",
-            )
-        })
+    fn metadata() -> ActionMetadata {
+        ActionMetadata::new(
+            nebula_core::action_key!("test.webhook.hang"),
+            "Hanging Webhook",
+            "handle_request hangs forever",
+        )
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -505,15 +493,12 @@ impl Action for SlowWebhook {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> &'static ActionMetadata {
-        static M: OnceLock<ActionMetadata> = OnceLock::new();
-        M.get_or_init(|| {
-            ActionMetadata::new(
-                nebula_core::action_key!("test.webhook.slow"),
-                "Slow Webhook",
-                "handle_request awaits a flag",
-            )
-        })
+    fn metadata() -> ActionMetadata {
+        ActionMetadata::new(
+            nebula_core::action_key!("test.webhook.slow"),
+            "Slow Webhook",
+            "handle_request awaits a flag",
+        )
     }
 
     fn dependencies() -> &'static Dependencies {

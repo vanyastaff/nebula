@@ -174,9 +174,8 @@ macro_rules! placeholder_action_impl {
             type Input = serde_json::Value;
             type Output = serde_json::Value;
 
-            fn metadata() -> &'static ActionMetadata {
-                static M: OnceLock<ActionMetadata> = OnceLock::new();
-                M.get_or_init(|| ActionMetadata::new($key, $name, $desc))
+            fn metadata() -> ActionMetadata {
+                ActionMetadata::new($key, $name, $desc)
             }
             fn dependencies() -> &'static Dependencies {
                 static D: OnceLock<Dependencies> = OnceLock::new();

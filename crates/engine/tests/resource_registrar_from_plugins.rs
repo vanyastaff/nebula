@@ -242,10 +242,8 @@ impl Action for NoopHandler {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> &'static ActionMetadata {
-        use std::sync::OnceLock;
-        static M: OnceLock<ActionMetadata> = OnceLock::new();
-        M.get_or_init(|| ActionMetadata::new(action_key!("test.noop.static"), "Noop", "static"))
+    fn metadata() -> ActionMetadata {
+        ActionMetadata::new(action_key!("test.noop.static"), "Noop", "static")
     }
     fn dependencies() -> &'static Dependencies {
         use std::sync::OnceLock;

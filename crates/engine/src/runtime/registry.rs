@@ -148,7 +148,7 @@ impl ActionRegistry {
         <A as Action>::Input: serde::de::DeserializeOwned + Send + Sync,
         <A as Action>::Output: serde::Serialize + Send + Sync,
     {
-        let metadata = <A as Action>::metadata().clone();
+        let metadata = <A as Action>::metadata();
         let handler = ActionHandler::Stateless(Arc::new(StatelessActionAdapter::new(action)));
         self.register(metadata, handler);
     }
@@ -167,7 +167,7 @@ impl ActionRegistry {
         <A as Action>::Output: serde::Serialize + Send + Sync,
         A::State: serde::Serialize + serde::de::DeserializeOwned + Clone + Send + Sync,
     {
-        let metadata = <A as Action>::metadata().clone();
+        let metadata = <A as Action>::metadata();
         let handler = ActionHandler::Stateful(Arc::new(StatefulActionAdapter::new(action)));
         self.register(metadata, handler);
     }
@@ -184,7 +184,7 @@ impl ActionRegistry {
         A: TriggerAction + Send + Sync + 'static,
         A::Error: Into<ActionError>,
     {
-        let metadata = <A as Action>::metadata().clone();
+        let metadata = <A as Action>::metadata();
         let handler = ActionHandler::Trigger(Arc::new(TriggerActionAdapter::new(action)));
         self.register(metadata, handler);
     }
@@ -201,7 +201,7 @@ impl ActionRegistry {
         A: WebhookAction + Send + Sync + 'static,
         <A as WebhookAction>::State: Send + Sync,
     {
-        let metadata = <A as Action>::metadata().clone();
+        let metadata = <A as Action>::metadata();
         let handler = ActionHandler::Trigger(Arc::new(WebhookTriggerAdapter::new(action)));
         self.register(metadata, handler);
     }
@@ -219,7 +219,7 @@ impl ActionRegistry {
         <A as PollAction>::Cursor: Send + Sync,
         <A as PollAction>::Event: Send + Sync,
     {
-        let metadata = <A as Action>::metadata().clone();
+        let metadata = <A as Action>::metadata();
         let handler = ActionHandler::Trigger(Arc::new(PollTriggerAdapter::new(action)));
         self.register(metadata, handler);
     }
@@ -235,7 +235,7 @@ impl ActionRegistry {
     where
         A: Action + ResourceAction + Send + Sync + 'static,
     {
-        let metadata = <A as Action>::metadata().clone();
+        let metadata = <A as Action>::metadata();
         let handler = ActionHandler::Resource(Arc::new(ResourceActionAdapter::new(action)));
         self.register(metadata, handler);
     }
@@ -293,7 +293,7 @@ impl ActionRegistry {
         <A as Action>::Input: serde::de::DeserializeOwned + Send + Sync,
         <A as Action>::Output: serde::Serialize + Send + Sync,
     {
-        let metadata = <A as Action>::metadata().clone();
+        let metadata = <A as Action>::metadata();
         let factory: Arc<dyn ActionFactory> = Arc::new(GenericStatelessFactory::<A>::new());
         self.register_factory(metadata, factory);
     }
@@ -306,7 +306,7 @@ impl ActionRegistry {
         <A as Action>::Output: serde::Serialize + Send + Sync,
         A::State: serde::Serialize + serde::de::DeserializeOwned + Clone + Send + Sync,
     {
-        let metadata = <A as Action>::metadata().clone();
+        let metadata = <A as Action>::metadata();
         let factory: Arc<dyn ActionFactory> = Arc::new(GenericStatefulFactory::<A>::new());
         self.register_factory(metadata, factory);
     }
@@ -317,7 +317,7 @@ impl ActionRegistry {
         A: TriggerAction + FromWorkflowNode<Error = ActionError> + Send + Sync + 'static,
         <A as TriggerAction>::Error: Into<ActionError>,
     {
-        let metadata = <A as Action>::metadata().clone();
+        let metadata = <A as Action>::metadata();
         let factory: Arc<dyn ActionFactory> = Arc::new(GenericTriggerFactory::<A>::new());
         self.register_factory(metadata, factory);
     }
@@ -327,7 +327,7 @@ impl ActionRegistry {
     where
         A: ResourceAction + FromWorkflowNode<Error = ActionError> + Send + Sync + 'static,
     {
-        let metadata = <A as Action>::metadata().clone();
+        let metadata = <A as Action>::metadata();
         let factory: Arc<dyn ActionFactory> = Arc::new(GenericResourceFactory::<A>::new());
         self.register_factory(metadata, factory);
     }
@@ -337,7 +337,7 @@ impl ActionRegistry {
     where
         A: ControlAction + FromWorkflowNode<Error = ActionError> + Send + Sync + 'static,
     {
-        let metadata = <A as Action>::metadata().clone();
+        let metadata = <A as Action>::metadata();
         let factory: Arc<dyn ActionFactory> = Arc::new(GenericControlFactory::<A>::new());
         self.register_factory(metadata, factory);
     }
@@ -470,7 +470,7 @@ mod tests {
         action::Action, error::ActionError, metadata::ActionMetadata, result::ActionResult,
         stateless::StatelessAction,
     };
-    use nebula_core::Dependencies;
+    use nebula_core::{Dependencies, action_key};
 
     use super::*;
 
@@ -480,11 +480,8 @@ mod tests {
         type Input = serde_json::Value;
         type Output = serde_json::Value;
 
-        fn metadata() -> &'static ActionMetadata {
-            static M: OnceLock<ActionMetadata> = OnceLock::new();
-            M.get_or_init(|| {
-                ActionMetadata::new(ActionKey::new("test.noop").unwrap(), "Noop", "Does nothing")
-            })
+        fn metadata() -> ActionMetadata {
+            ActionMetadata::new(action_key!("test.noop"), "Noop", "Does nothing")
         }
         fn dependencies() -> &'static Dependencies {
             static D: OnceLock<Dependencies> = OnceLock::new();

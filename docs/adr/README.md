@@ -25,6 +25,7 @@ cascade and later work. Numbering starts at **0042** in this directory.
 | **AI agent & tools** | 0057 (agent SDK direction, proposed); **0089** (resource-advertised tools — primary tool source, proposed, amends 0057) | Agent loop, tools, MCP-shape, tool scoping |
 | **Agent harness** | **0083** | Intent / structural-budget / honesty gate |
 | **Environment config** | **0086** | `nebula-env` cross-cutting typed env reader |
+| **Crate boundaries & metadata** | **0090** | Where shared metadata types live; many-crate hygiene; symmetric `metadata()` API |
 
 ## Historical ADRs (0001–0041)
 

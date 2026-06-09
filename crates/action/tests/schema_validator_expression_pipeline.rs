@@ -78,15 +78,12 @@ impl Action for PipelineProbe {
     type Input = PipelineInput;
     type Output = PipelineOutput;
 
-    fn metadata() -> &'static ActionMetadata {
-        static M: OnceLock<ActionMetadata> = OnceLock::new();
-        M.get_or_init(|| {
-            ActionMetadata::new(
-                action_key!("test.phase9.pipeline_probe"),
-                "PipelineProbe",
-                "Phase 9 / Task 9.1 schema → validator → expression pipeline probe",
-            )
-        })
+    fn metadata() -> ActionMetadata {
+        ActionMetadata::new(
+            action_key!("test.phase9.pipeline_probe"),
+            "PipelineProbe",
+            "Phase 9 / Task 9.1 schema → validator → expression pipeline probe",
+        )
     }
 
     fn dependencies() -> &'static Dependencies {

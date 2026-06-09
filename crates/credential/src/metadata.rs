@@ -36,6 +36,22 @@ pub enum CredentialMetadataBuildError {
 /// `description`, `schema`, `icon`, `documentation_url`, `tags`,
 /// `maturity`, `deprecation`) lives on the composed [`BaseMetadata`];
 /// `pattern` is the credential-specific classifier.
+///
+/// # Constructors
+///
+/// The accessor and type-driven constructor mirror the other catalog leaves
+/// (`ActionMetadata` / `ResourceMetadata`): [`Credential::metadata`](crate::Credential::metadata) returns
+/// `CredentialMetadata` by value, and [`for_credential`](Self::for_credential)
+/// derives the schema from a typed `Credential` impl, symmetric with
+/// `ActionMetadata::for_action` and `ResourceMetadata::for_resource`.
+///
+/// Two constructors are deliberately *not* mirrored, because `pattern`
+/// ([`AuthPattern`]) is a required identity field with no meaningful default:
+/// there is no `from_key` (a key-only credential carries no auth pattern and
+/// is meaningless), and [`builder`](Self::builder) stays an imperative
+/// `Option`-field builder (rather than the seeded `builder(key, name,
+/// description)` of the other two) for the config-driven / icon / doc-url
+/// path, where `pattern` and `schema` are supplied as setters.
 #[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CredentialMetadata {

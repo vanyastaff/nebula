@@ -55,15 +55,12 @@ impl Action for DoublerBatch {
     type Input = NumberList;
     type Output = BatchOutput;
 
-    fn metadata() -> &'static ActionMetadata {
-        static M: OnceLock<ActionMetadata> = OnceLock::new();
-        M.get_or_init(|| {
-            ActionMetadata::new(
-                action_key!("test.doubler_batch"),
-                "DoublerBatch",
-                "Batch doubler",
-            )
-        })
+    fn metadata() -> ActionMetadata {
+        ActionMetadata::new(
+            action_key!("test.doubler_batch"),
+            "DoublerBatch",
+            "Batch doubler",
+        )
     }
 
     fn dependencies() -> &'static Dependencies {
