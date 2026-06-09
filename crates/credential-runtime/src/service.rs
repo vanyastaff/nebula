@@ -35,8 +35,8 @@ use nebula_credential::resolve::{InteractionRequest, TestResult, UserInput};
 use nebula_credential::store::{PutMode, StoreError, StoredCredential};
 use nebula_credential::{
     AuthPattern, Credential, CredentialContext, CredentialDisplay, CredentialGuard, CredentialId,
-    CredentialRecord, CredentialRegistry, CredentialSnapshot, DynCredentialStore,
-    ErasedCredentialStore, ErasedPendingStore, PendingToken,
+    CredentialRegistry, DynCredentialStore, ErasedCredentialStore, ErasedPendingStore,
+    PendingToken,
 };
 use nebula_engine::credential::{CredentialResolver, LeaseLifecycle};
 use nebula_resilience::CallError;
@@ -49,6 +49,7 @@ use tokio_util::sync::CancellationToken;
 use zeroize::Zeroize;
 
 use crate::CredentialServiceError;
+use crate::head::CredentialHead;
 use crate::observer::CredentialObserver;
 use crate::ops::DispatchOps;
 use crate::scope::TenantScope;
@@ -88,15 +89,16 @@ pub struct TestReport {
 
 /// Outcome of [`CredentialService::resolve`] /
 /// [`CredentialService::continue_resolve`]. Secret-free: the `Complete`
-/// arm carries the redacting [`CredentialSnapshot`]; the `Pending` arm
-/// carries the opaque token string + the UI instruction.
+/// arm carries the management-plane [`CredentialHead`] (id + row
+/// metadata, no state bytes); the `Pending` arm carries the opaque token
+/// string + the UI instruction.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Acquisition {
     /// Resolved synchronously and persisted.
     Complete {
-        /// Secret-free snapshot of the just-persisted credential.
-        snapshot: CredentialSnapshot,
+        /// Secret-free head of the just-persisted credential.
+        head: CredentialHead,
     },
     /// Interactive acquisition kicked off; resume via
     /// [`continue_resolve`](CredentialService::continue_resolve) with
@@ -269,7 +271,7 @@ impl CredentialService {
         credential_key: &str,
         props: Value,
         display: CredentialDisplay,
-    ) -> Result<CredentialSnapshot, CredentialServiceError> {
+    ) -> Result<CredentialHead, CredentialServiceError> {
         // Fail loud if an external source was configured but its
         // resolution wiring is not implemented yet — never silently
         // resolve from the local store under a Vault-configured service.
@@ -301,7 +303,7 @@ impl CredentialService {
             .resolve(credential_key, &values, &ctx, &self.pending)
             .await?;
 
-        let snapshot = self
+        let head = self
             .persist_resolved(scope, credential_key, id, resolved, display)
             .await?;
 
@@ -312,12 +314,12 @@ impl CredentialService {
             "credential created"
         );
 
-        Ok(snapshot)
+        Ok(head)
     }
 
     /// Persist a freshly-resolved credential under `id` scoped to
-    /// `scope`, returning the secret-free snapshot projected from the
-    /// just-resolved bytes (no decrypt round-trip). Shared by [`create`]
+    /// `scope`, returning the secret-free [`CredentialHead`] of the
+    /// just-persisted row (never the state bytes). Shared by [`create`]
     /// and the synchronous-`Complete` arm of [`resolve`].
     ///
     /// [`create`]: Self::create
@@ -329,23 +331,13 @@ impl CredentialService {
         id: CredentialId,
         resolved: crate::ops::ResolvedState,
         display: CredentialDisplay,
-    ) -> Result<CredentialSnapshot, CredentialServiceError> {
+    ) -> Result<CredentialHead, CredentialServiceError> {
         let mut metadata = serde_json::Map::new();
         metadata.insert(
             OWNER_ID_KEY.to_owned(),
             Value::String(scope.owner_id().to_owned()),
         );
         Self::set_display(&mut metadata, &display);
-
-        // Project the response snapshot from the just-resolved state
-        // bytes before they are moved into the stored row (avoids a
-        // round-trip + decrypt; identical projection to `get`).
-        let mut record = CredentialRecord::new();
-        record.expires_at = resolved.expires_at;
-        let snapshot = self
-            .ops
-            .snapshot(credential_key, &resolved.data, record)?
-            .with_display(display);
 
         let now = chrono::Utc::now();
         let stored = StoredCredential {
@@ -362,31 +354,38 @@ impl CredentialService {
             metadata,
         };
 
-        self.store
+        // The store returns the persisted row (with its post-put version),
+        // which is the authoritative source for the returned head — the
+        // CAS token must reflect what a subsequent `update` has to match.
+        let persisted = self
+            .store
             .put(stored, PutMode::CreateOnly)
             .await
             .map_err(Self::map_store_err)?;
 
-        Ok(snapshot)
+        Ok(CredentialHead::from_stored(&persisted, display))
     }
 
-    /// Fetch a credential's secret-free snapshot, scoped to `scope`.
+    /// Fetch a credential's secret-free [`CredentialHead`], scoped to
+    /// `scope`. Never deserializes the state bytes, so a row that is not
+    /// yet resolvable (e.g. an interactive flow awaiting authorization,
+    /// `reauth_required = true`) still reads back as a valid head.
     ///
     /// # Errors
     ///
     /// [`CredentialServiceError::NotFound`] if the id is absent **or**
-    /// belongs to another tenant (no cross-tenant existence leak);
-    /// [`CredentialServiceError::Internal`] on a decode failure.
+    /// belongs to another tenant (no cross-tenant existence leak).
     pub async fn get(
         &self,
         scope: &TenantScope,
         id: &str,
-    ) -> Result<CredentialSnapshot, CredentialServiceError> {
-        self.snapshot_from_store(scope, id).await
+    ) -> Result<CredentialHead, CredentialServiceError> {
+        let stored = self.load_owned(scope, id).await?;
+        Ok(Self::head_from(&stored))
     }
 
-    /// List credential ids visible to `scope` (rows whose stored
-    /// `owner_id` matches).
+    /// List the secret-free heads of every credential visible to `scope`
+    /// (rows whose stored `owner_id` matches).
     ///
     /// # Performance contract
     ///
@@ -404,14 +403,17 @@ impl CredentialService {
     /// # Errors
     ///
     /// [`CredentialServiceError::Store`] on a backend failure.
-    pub async fn list(&self, scope: &TenantScope) -> Result<Vec<String>, CredentialServiceError> {
+    pub async fn list(
+        &self,
+        scope: &TenantScope,
+    ) -> Result<Vec<CredentialHead>, CredentialServiceError> {
         let ids = self.store.list(None).await.map_err(Self::map_store_err)?;
         let mut visible = Vec::new();
         for id in ids {
             match self.store.get(&id).await {
                 Ok(stored) => {
                     if Self::owner_matches(&stored, scope) {
-                        visible.push(id);
+                        visible.push(Self::head_from(&stored));
                     }
                 },
                 // A row that vanished between `list` and `get` is simply
@@ -423,10 +425,21 @@ impl CredentialService {
         Ok(visible)
     }
 
-    /// Replace a credential's stored state via compare-and-swap.
+    /// Update a credential's stored state and/or display metadata.
     ///
-    /// `expected_version` is the optimistic-concurrency precondition; a
-    /// mismatch surfaces as [`CredentialServiceError::VersionConflict`].
+    /// `props = Some(..)` re-runs the canonical validate→resolve pipeline
+    /// for the row's (unchanged) credential type and replaces the stored
+    /// state; `props = None` keeps the existing state bytes untouched and
+    /// rewrites only the display metadata — a rename/re-tag never
+    /// re-resolves or re-encrypts material.
+    ///
+    /// `display` is the **full replacement** value; callers that want
+    /// field-wise merge semantics read the current head first and merge
+    /// before calling.
+    ///
+    /// `expected_version = Some(v)` engages compare-and-swap (a mismatch
+    /// surfaces as [`CredentialServiceError::VersionConflict`]);
+    /// `None` is a last-writer-wins overwrite.
     ///
     /// # Errors
     ///
@@ -438,26 +451,33 @@ impl CredentialService {
         &self,
         scope: &TenantScope,
         id: &str,
-        props: Value,
-        expected_version: u64,
+        props: Option<Value>,
+        expected_version: Option<u64>,
         display: CredentialDisplay,
-    ) -> Result<CredentialSnapshot, CredentialServiceError> {
+    ) -> Result<CredentialHead, CredentialServiceError> {
         // Owner check first: a cross-tenant id is reported as missing,
         // never as a version conflict (no existence leak).
         let existing = self.load_owned(scope, id).await?;
 
-        self.ops.validate(&existing.credential_key, &props)?;
-        let values = FieldValues::from_json(props).map_err(|e| {
-            CredentialServiceError::ValidationFailed {
-                reason: format!("property ingest failed: {e}"),
-            }
-        })?;
-
-        let ctx = Self::owner_context(scope);
-        let resolved = self
-            .ops
-            .resolve(&existing.credential_key, &values, &ctx, &self.pending)
-            .await?;
+        // Re-resolve only when new properties were supplied; a
+        // display-only update carries the existing state through.
+        let resolved = match props {
+            Some(props) => {
+                self.ops.validate(&existing.credential_key, &props)?;
+                let values = FieldValues::from_json(props).map_err(|e| {
+                    CredentialServiceError::ValidationFailed {
+                        reason: format!("property ingest failed: {e}"),
+                    }
+                })?;
+                let ctx = Self::owner_context(scope);
+                Some(
+                    self.ops
+                        .resolve(&existing.credential_key, &values, &ctx, &self.pending)
+                        .await?,
+                )
+            },
+            None => None,
+        };
 
         let mut metadata = existing.metadata.clone();
         metadata.insert(
@@ -467,27 +487,40 @@ impl CredentialService {
         Self::set_display(&mut metadata, &display);
 
         let now = chrono::Utc::now();
-        let stored = StoredCredential {
-            id: existing.id.clone(),
-            credential_key: existing.credential_key.clone(),
-            data: resolved.data.to_vec(),
-            state_kind: resolved.state_kind,
-            state_version: resolved.state_version,
-            version: existing.version,
-            created_at: existing.created_at,
-            updated_at: now,
-            expires_at: resolved.expires_at,
-            reauth_required: false,
-            metadata,
+        let stored = match resolved {
+            Some(resolved) => StoredCredential {
+                id: existing.id.clone(),
+                credential_key: existing.credential_key.clone(),
+                data: resolved.data.to_vec(),
+                state_kind: resolved.state_kind,
+                state_version: resolved.state_version,
+                version: existing.version,
+                created_at: existing.created_at,
+                updated_at: now,
+                expires_at: resolved.expires_at,
+                reauth_required: false,
+                metadata,
+            },
+            None => StoredCredential {
+                updated_at: now,
+                metadata,
+                ..existing.clone()
+            },
         };
 
-        self.store
-            .put(stored, PutMode::CompareAndSwap { expected_version })
+        let mode = match expected_version {
+            Some(expected_version) => PutMode::CompareAndSwap { expected_version },
+            None => PutMode::Overwrite,
+        };
+
+        let persisted = self
+            .store
+            .put(stored, mode)
             .await
             .map_err(Self::map_store_err)?;
 
         tracing::info!(credential.id = %id, "credential updated");
-        self.snapshot_from_store(scope, id).await
+        Ok(Self::head_from(&persisted))
     }
 
     /// Delete a credential scoped to `scope`.
@@ -576,13 +609,13 @@ impl CredentialService {
     /// entirely** and the now-fresher state is re-read from the store
     /// instead of clobbering it with the un-mutated local copy. On
     /// success (either path) [`CredentialObserver::on_refresh`] fires and
-    /// the fresh secret-free snapshot is returned.
+    /// the fresh secret-free [`CredentialHead`] is returned.
     ///
     /// ## Fallback-on-interrupt
     ///
     /// If the provider call fails with a **transient** error
     /// ([`CredentialServiceError::TransientProvider`]) AND the currently
-    /// cached snapshot is still non-expired, the cached snapshot is
+    /// stored material is still non-expired, the cached head is
     /// returned instead of propagating the error. This protects in-flight
     /// executions from transient provider 5xx / network blips without
     /// papering over real expiry. Terminal failures (token expired / revoked /
@@ -595,7 +628,7 @@ impl CredentialService {
     /// - [`CredentialServiceError::NotFound`] — absent or cross-tenant id.
     /// - [`CredentialServiceError::CapabilityUnsupported`] — type is not `Refreshable`.
     /// - [`CredentialServiceError::Provider`] — refresh failed after retries (terminal).
-    /// - [`CredentialServiceError::TransientProvider`] — transient failure AND cached snapshot
+    /// - [`CredentialServiceError::TransientProvider`] — transient failure AND stored material
     ///   is expired (no valid fallback available).
     /// - [`CredentialServiceError::VersionConflict`] — a concurrent write landed first.
     /// - [`CredentialServiceError::Store`] — re-persist failed.
@@ -603,19 +636,19 @@ impl CredentialService {
         &self,
         scope: &TenantScope,
         id: &str,
-    ) -> Result<CredentialSnapshot, CredentialServiceError> {
-        // Snapshot the cached state before attempting refresh. On a
-        // transient provider failure we fall back to this if it is still
+    ) -> Result<CredentialHead, CredentialServiceError> {
+        // Read the current head before attempting refresh. On a transient
+        // provider failure we fall back to this if the material is still
         // non-expired — avoids propagating blips to the caller.
         let cached = self.get(scope, id).await?;
 
         match self.refresh_inner(scope, id).await {
-            Ok(snap) => Ok(snap),
+            Ok(head) => Ok(head),
             Err(ref e) if Self::is_transient_failure(e) && !cached.is_expired() => {
                 tracing::warn!(
                     credential.id = %id,
                     error = %e,
-                    "credential refresh failed transiently; returning cached non-expired snapshot"
+                    "credential refresh failed transiently; stored material still non-expired"
                 );
                 Ok(cached)
             },
@@ -630,7 +663,7 @@ impl CredentialService {
         &self,
         scope: &TenantScope,
         id: &str,
-    ) -> Result<CredentialSnapshot, CredentialServiceError> {
+    ) -> Result<CredentialHead, CredentialServiceError> {
         let stored = self.load_owned(scope, id).await?;
         if !self.registry.is_refreshable(&stored.credential_key) {
             return Err(CredentialServiceError::CapabilityUnsupported {
@@ -667,7 +700,7 @@ impl CredentialService {
             // state. Re-writing the un-mutated local copy here would
             // either spuriously `VersionConflict` or clobber that fresher
             // state (concurrent-refresh contract). Skip the write entirely and return the
-            // store's current (post-coalesce) snapshot.
+            // store's current (post-coalesce) head.
             crate::ops::RefreshOutcomeKind::CoalescedReRead => {
                 let credential_id = CredentialId::parse(&stored.id).map_err(|e| {
                     CredentialServiceError::Internal(format!(
@@ -679,7 +712,7 @@ impl CredentialService {
                     credential.id = %id,
                     "credential refresh coalesced by another replica; re-reading without re-writing"
                 );
-                return self.snapshot_from_store(scope, id).await;
+                return self.get(scope, id).await;
             },
         };
 
@@ -725,7 +758,7 @@ impl CredentialService {
         })?;
         self.observer.on_refresh(&credential_id);
         tracing::info!(credential.id = %id, "credential refreshed");
-        self.snapshot_from_store(scope, id).await
+        self.get(scope, id).await
     }
 
     /// True iff this error is a transient refresh/provider failure that the
@@ -928,7 +961,7 @@ impl CredentialService {
                 // Acquisition carries no caller-supplied display metadata
                 // (the interactive/resolve flow names nothing); a later
                 // `update` can attach it.
-                let snapshot = self
+                let head = self
                     .persist_resolved(
                         scope,
                         credential_key,
@@ -943,7 +976,7 @@ impl CredentialService {
                     credential.id = %id,
                     "credential acquired"
                 );
-                Ok(Acquisition::Complete { snapshot })
+                Ok(Acquisition::Complete { head })
             },
             crate::ops::AcquireOutcome::Pending { token, interaction } => {
                 // The interaction can only be completed through
@@ -1222,22 +1255,11 @@ impl CredentialService {
         Ok(stored)
     }
 
-    /// Load + owner-check + project to a secret-free snapshot.
-    async fn snapshot_from_store(
-        &self,
-        scope: &TenantScope,
-        id: &str,
-    ) -> Result<CredentialSnapshot, CredentialServiceError> {
-        let stored = self.load_owned(scope, id).await?;
-        let mut record = CredentialRecord::new();
-        record.created_at = stored.created_at;
-        record.last_modified = stored.updated_at;
-        record.expires_at = stored.expires_at;
-        let display = Self::display_from(&stored);
-        Ok(self
-            .ops
-            .snapshot(&stored.credential_key, &stored.data, record)?
-            .with_display(display))
+    /// Project a stored row to its secret-free [`CredentialHead`],
+    /// attaching the facade-owned display sub-object. Never touches
+    /// `stored.data`.
+    fn head_from(stored: &StoredCredential) -> CredentialHead {
+        CredentialHead::from_stored(stored, Self::display_from(stored))
     }
 
     /// Whether `stored` is owned by `scope`. A row missing the
@@ -1560,7 +1582,7 @@ mod tests {
     async fn create_then_get_roundtrip_is_tenant_scoped() {
         let svc = in_memory_service();
         let scope = TenantScope::new("org1", "ws1");
-        let snap = svc
+        let head = svc
             .create(
                 &scope,
                 "bearer_token",
@@ -1569,14 +1591,15 @@ mod tests {
             )
             .await
             .expect("create ok");
-        assert_eq!(snap.kind(), "bearer_token");
+        assert_eq!(head.credential_key, "bearer_token");
 
         // The id round-trips: get with the same scope returns the row.
-        let ids = svc.list(&scope).await.expect("list ok");
-        assert_eq!(ids.len(), 1);
-        let got = svc.get(&scope, &ids[0]).await.expect("get ok");
-        assert_eq!(got.kind(), "bearer_token");
-        // Secret never appears in the snapshot's Debug.
+        let heads = svc.list(&scope).await.expect("list ok");
+        assert_eq!(heads.len(), 1);
+        assert_eq!(heads[0].id, head.id);
+        let got = svc.get(&scope, &head.id).await.expect("get ok");
+        assert_eq!(got.credential_key, "bearer_token");
+        // The secret structurally cannot appear in the head's Debug.
         assert!(!format!("{got:?}").contains("sk-secret-1"));
     }
 
@@ -1592,8 +1615,8 @@ mod tests {
         )
         .await
         .expect("create ok");
-        let ids = svc.list(&owner).await.expect("list ok");
-        let id = &ids[0];
+        let heads = svc.list(&owner).await.expect("list ok");
+        let id = &heads[0].id;
 
         // A different tenant cannot see the credential at all.
         let other = TenantScope::new("org1", "ws2");
@@ -1650,7 +1673,7 @@ mod tests {
         )
         .await
         .expect("create ok");
-        let id = svc.list(&scope).await.expect("list")[0].clone();
+        let id = svc.list(&scope).await.expect("list")[0].id.clone();
 
         // Stored version after CreateOnly is 1; a stale expected_version
         // of 99 must conflict.
@@ -1658,8 +1681,8 @@ mod tests {
             .update(
                 &scope,
                 &id,
-                serde_json::json!({ "token": "sk-v2" }),
-                99,
+                Some(serde_json::json!({ "token": "sk-v2" })),
+                Some(99),
                 CredentialDisplay::default(),
             )
             .await
@@ -1682,20 +1705,20 @@ mod tests {
         )
         .await
         .expect("create ok");
-        let id = svc.list(&scope).await.expect("list")[0].clone();
+        let id = svc.list(&scope).await.expect("list")[0].id.clone();
 
         svc.update(
             &scope,
             &id,
-            serde_json::json!({ "token": "sk-new" }),
-            1,
+            Some(serde_json::json!({ "token": "sk-new" })),
+            Some(1),
             CredentialDisplay::default(),
         )
         .await
         .expect("update ok");
-        // Still resolvable post-update.
+        // Still readable post-update.
         let got = svc.get(&scope, &id).await.expect("get ok");
-        assert_eq!(got.kind(), "bearer_token");
+        assert_eq!(got.credential_key, "bearer_token");
 
         svc.delete(&scope, &id).await.expect("delete ok");
         let err = svc.get(&scope, &id).await.expect_err("gone");
@@ -1714,7 +1737,7 @@ mod tests {
         )
         .await
         .expect("create ok");
-        let id = svc.list(&owner).await.expect("list")[0].clone();
+        let id = svc.list(&owner).await.expect("list")[0].id.clone();
 
         let other = TenantScope::new("org9", "ws9");
         assert!(matches!(
@@ -1725,8 +1748,8 @@ mod tests {
             svc.update(
                 &other,
                 &id,
-                serde_json::json!({ "token": "z" }),
-                1,
+                Some(serde_json::json!({ "token": "z" })),
+                Some(1),
                 CredentialDisplay::default(),
             )
             .await
@@ -1750,7 +1773,7 @@ mod tests {
         )
         .await
         .expect("create ok");
-        let id = svc.list(&scope).await.expect("list")[0].clone();
+        let id = svc.list(&scope).await.expect("list")[0].id.clone();
 
         let test_err = svc.test(&scope, &id).await.expect_err("not testable");
         assert!(matches!(
@@ -1784,17 +1807,19 @@ mod tests {
             )
             .await
             .expect("resolve ok");
-        let snapshot = match acq {
-            Acquisition::Complete { snapshot } => snapshot,
+        let head = match acq {
+            Acquisition::Complete { head } => head,
             other => panic!("expected Complete, got {other:?}"),
         };
-        assert_eq!(snapshot.kind(), "bearer_token");
+        assert_eq!(head.credential_key, "bearer_token");
 
-        // The acquired credential is now a normal stored credential.
-        let ids = svc.list(&scope).await.expect("list ok");
-        assert_eq!(ids.len(), 1);
-        let got = svc.get(&scope, &ids[0]).await.expect("get ok");
-        assert_eq!(got.kind(), "bearer_token");
+        // The acquired credential is now a normal stored credential, and
+        // the returned head's id is the persisted row's id.
+        let heads = svc.list(&scope).await.expect("list ok");
+        assert_eq!(heads.len(), 1);
+        assert_eq!(heads[0].id, head.id);
+        let got = svc.get(&scope, &head.id).await.expect("get ok");
+        assert_eq!(got.credential_key, "bearer_token");
         assert!(!format!("{got:?}").contains("sk-acquired"));
     }
 
@@ -1833,7 +1858,7 @@ mod tests {
         )
         .await
         .expect("create ok");
-        let id = svc.list(&owner).await.expect("list")[0].clone();
+        let id = svc.list(&owner).await.expect("list")[0].id.clone();
 
         let other = TenantScope::new("org9", "ws9");
         // A cross-tenant id is reported as missing on every new op —
@@ -1947,11 +1972,11 @@ mod tests {
         )
         .await
         .expect("create fixture ok");
-        let id = svc.list(&scope).await.expect("list")[0].clone();
+        let id = svc.list(&scope).await.expect("list")[0].id.clone();
 
         assert_eq!(refreshes.load(std::sync::atomic::Ordering::SeqCst), 0);
-        let snap = svc.refresh(&scope, &id).await.expect("refresh ok");
-        assert_eq!(snap.kind(), "refreshable_fixture");
+        let head = svc.refresh(&scope, &id).await.expect("refresh ok");
+        assert_eq!(head.credential_key, "refreshable_fixture");
         // on_refresh fired exactly once on the success path.
         assert_eq!(refreshes.load(std::sync::atomic::Ordering::SeqCst), 1);
 
@@ -1959,12 +1984,12 @@ mod tests {
         // observes the first rotation (counter is 2 → token `tok-base-r2`),
         // proving the CAS write stored the refreshed bytes, not the
         // pre-refresh copy.
-        let snap2 = svc.refresh(&scope, &id).await.expect("second refresh ok");
-        assert_eq!(snap2.kind(), "refreshable_fixture");
+        let head2 = svc.refresh(&scope, &id).await.expect("second refresh ok");
+        assert_eq!(head2.credential_key, "refreshable_fixture");
         assert_eq!(refreshes.load(std::sync::atomic::Ordering::SeqCst), 2);
         // Still retrievable and correctly projected post-refresh.
         let got = svc.get(&scope, &id).await.expect("get ok");
-        assert_eq!(got.kind(), "refreshable_fixture");
+        assert_eq!(got.credential_key, "refreshable_fixture");
     }
 
     /// A concurrent version bump landing between refresh's internal load
@@ -1994,7 +2019,7 @@ mod tests {
         )
         .await
         .expect("create ok");
-        let id = svc.list(&scope).await.expect("list")[0].clone();
+        let id = svc.list(&scope).await.expect("list")[0].id.clone();
 
         // 2 parties: the fixture's parked `refresh` and the writer below.
         let barrier = Arc::new(tokio::sync::Barrier::new(2));
@@ -2013,8 +2038,8 @@ mod tests {
                     .update(
                         scope_ref,
                         id_ref,
-                        serde_json::json!({ "token": "tok-race-concurrent" }),
-                        1,
+                        Some(serde_json::json!({ "token": "tok-race-concurrent" })),
+                        Some(1),
                         CredentialDisplay::default(),
                     )
                     .await;

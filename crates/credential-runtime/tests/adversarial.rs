@@ -39,7 +39,7 @@ async fn abuse1_cross_tenant_is_uniformly_not_found_no_existence_leak() {
     )
     .await
     .expect("create under A");
-    let id = svc.list(&a).await.expect("list A")[0].clone();
+    let id = svc.list(&a).await.expect("list A")[0].id.clone();
 
     // get / update / delete / test / refresh / revoke under B: every one
     // is NotFound (not VersionConflict, not CapabilityUnsupported — those
@@ -52,8 +52,8 @@ async fn abuse1_cross_tenant_is_uniformly_not_found_no_existence_leak() {
         svc.update(
             &b,
             &id,
-            json!({ "token": "z" }),
-            1,
+            Some(json!({ "token": "z" })),
+            Some(1),
             nebula_credential::CredentialDisplay::default()
         )
         .await
@@ -108,7 +108,7 @@ async fn abuse2_expr_injection_is_validation_failed_control_succeeds() {
     );
 
     // Control: a well-formed create on the same type succeeds.
-    let snap = svc
+    let head = svc
         .create(
             &scope,
             "bearer_token",
@@ -117,34 +117,21 @@ async fn abuse2_expr_injection_is_validation_failed_control_succeeds() {
         )
         .await
         .expect("well-formed create succeeds");
-    assert_eq!(snap.kind(), "bearer_token");
+    assert_eq!(head.credential_key, "bearer_token");
 }
 
 /// Abuse #3 — secret echo in responses.
 ///
-/// The facade's response/inspection type is [`CredentialSnapshot`]. Its
-/// structural guarantee is twofold and **stronger than "serializes
-/// redacted"**:
-///
-/// 1. `Debug` redacts the projected scheme to `[REDACTED]` — the secret
-///    substring is absent, the sentinel present, on a freshly-created and
-///    a re-fetched snapshot alike.
-/// 2. `CredentialSnapshot` deliberately does **not** implement `Serialize`
-///    at all (it holds a type-erased `Box<dyn Any>`), so it cannot be put
-///    on the wire by serde even by mistake. That `!Serialize` property is
-///    asserted structurally by the `tests/compile_fail` probe
-///    (`snapshot_not_serialize.rs`).
-///
-/// Spec divergence (documented in the deliverable): spec §6 #3 phrased the
-/// check as `serde_json::to_string(snapshot)` then assert the secret is
-/// absent. That is infeasible *and weaker*: `CredentialSnapshot: Serialize`
-/// does not exist, and projecting the inner `SecretToken` then serializing
-/// it would (correctly) expose the secret, because the scheme's
-/// `#[serde(with = "serde_secret")]` is the *encrypted-at-rest* path that
-/// must preserve the value. The honest facade proof is Debug-redaction +
-/// the compile-time absence of `Serialize`.
+/// The facade's management-plane response type is `CredentialHead`, which
+/// is secret-free **by construction**: it is projected from the stored row
+/// without ever reading `StoredCredential::data`, so there is no secret
+/// field to redact — `Debug` and `Serialize` structurally cannot echo the
+/// material. (The scheme-bearing `CredentialSnapshot` stays on the
+/// execution plane and deliberately does not implement `Serialize`; that
+/// property is asserted by the `tests/compile_fail` probe
+/// `snapshot_not_serialize.rs`.)
 #[tokio::test]
-async fn abuse3_no_secret_in_snapshot_debug_on_create_and_get() {
+async fn abuse3_no_secret_in_head_debug_or_serialize_on_create_and_get() {
     const SECRET: &str = "sk-do-not-leak-7f3a";
     let svc = in_memory_service();
     let scope = TenantScope::new("org1", "ws1");
@@ -161,23 +148,24 @@ async fn abuse3_no_secret_in_snapshot_debug_on_create_and_get() {
     let created_dbg = format!("{created:?}");
     assert!(
         !created_dbg.contains(SECRET),
-        "created snapshot Debug leaked the secret"
+        "created head Debug leaked the secret"
     );
+    let created_json = serde_json::to_string(&created).expect("head serializes");
     assert!(
-        created_dbg.contains("[REDACTED]"),
-        "created snapshot Debug must show the redaction sentinel"
+        !created_json.contains(SECRET),
+        "created head Serialize leaked the secret"
     );
 
-    let id = svc.list(&scope).await.expect("list")[0].clone();
-    let fetched = svc.get(&scope, &id).await.expect("get ok");
+    let fetched = svc.get(&scope, &created.id).await.expect("get ok");
     let fetched_dbg = format!("{fetched:?}");
     assert!(
         !fetched_dbg.contains(SECRET),
-        "fetched snapshot Debug leaked the secret"
+        "fetched head Debug leaked the secret"
     );
+    let fetched_json = serde_json::to_string(&fetched).expect("head serializes");
     assert!(
-        fetched_dbg.contains("[REDACTED]"),
-        "fetched snapshot Debug must show the redaction sentinel"
+        !fetched_json.contains(SECRET),
+        "fetched head Serialize leaked the secret"
     );
 }
 
@@ -201,7 +189,7 @@ async fn abuse4_static_type_capability_ops_are_unsupported() {
     )
     .await
     .expect("create ok");
-    let id = svc.list(&scope).await.expect("list")[0].clone();
+    let id = svc.list(&scope).await.expect("list")[0].id.clone();
 
     for (op_name, res) in [
         ("test", svc.test(&scope, &id).await.err()),
@@ -285,7 +273,7 @@ async fn abuse5_cross_tenant_revoke_is_not_found_before_lease_scan() {
     )
     .await
     .expect("create ok");
-    let id = svc.list(&owner).await.expect("list")[0].clone();
+    let id = svc.list(&owner).await.expect("list")[0].id.clone();
 
     // The attacker's revoke is NotFound — the owner gate runs before the
     // capability gate and before any lease release, so a foreign caller
@@ -387,17 +375,17 @@ async fn abuse7_layered_store_roundtrips_without_exposing_plaintext() {
     )
     .await
     .expect("create ok");
-    let id = svc.list(&scope).await.expect("list")[0].clone();
+    let id = svc.list(&scope).await.expect("list")[0].id.clone();
 
     // Round-trips through Encryption(raw) transparently and the projected
     // snapshot never carries the plaintext. (Ciphertext-at-rest itself is
     // proven structurally by the compile-fail probe — the raw store can
     // never be composed without the EncryptionLayer.)
     let got = svc.get(&scope, &id).await.expect("get ok");
-    assert_eq!(got.kind(), "bearer_token");
+    assert_eq!(got.credential_key, "bearer_token");
     assert!(
         !format!("{got:?}").contains(SECRET),
-        "snapshot must not carry the plaintext secret"
+        "head must not carry the plaintext secret"
     );
 }
 

@@ -37,26 +37,27 @@ async fn refresh_transient_falls_back_to_cached_when_non_expired() {
     .await
     .expect("create seed");
 
-    let ids = svc.list(&scope).await.expect("list");
-    assert_eq!(ids.len(), 1);
-    let id = &ids[0];
+    let heads = svc.list(&scope).await.expect("list");
+    assert_eq!(heads.len(), 1);
+    let id = &heads[0].id;
 
-    // Cached snapshot reflects the seed token.
+    // Cached head reflects the seeded row.
     let before = svc.get(&scope, id).await.expect("pre-refresh get");
 
     // Script a transient failure for the next refresh call.
     set_refresh_failure(Some(RefreshFailureScript::Transient));
 
     // refresh() must NOT propagate the transient — it must return the
-    // cached snapshot because the cached state is still non-expired.
+    // cached head because the stored material is still non-expired.
     let after = svc
         .refresh(&scope, id)
         .await
-        .expect("refresh falls back to cached non-expired snapshot");
+        .expect("refresh falls back to cached non-expired head");
 
-    // The returned snapshot is the cached one (same id, same version).
-    assert_eq!(after.kind(), before.kind());
-    assert_eq!(after.record().version, before.record().version);
+    // The returned head is the cached one (same key, same store version —
+    // no write happened).
+    assert_eq!(after.credential_key, before.credential_key);
+    assert_eq!(after.version, before.version);
 
     // Clean any leftover script (defensive — `.take()` already consumed it).
     set_refresh_failure(None);
@@ -76,8 +77,8 @@ async fn refresh_terminal_failure_propagates() {
     .await
     .expect("create seed");
 
-    let ids = svc.list(&scope).await.expect("list");
-    let id = &ids[0];
+    let heads = svc.list(&scope).await.expect("list");
+    let id = &heads[0].id;
 
     // Script a TERMINAL failure (TokenExpired) for the next refresh call.
     set_refresh_failure(Some(RefreshFailureScript::Terminal));
@@ -112,22 +113,21 @@ async fn refresh_no_failure_returns_refreshed_snapshot() {
     .await
     .expect("create seed");
 
-    let ids = svc.list(&scope).await.expect("list");
-    let id = &ids[0];
+    let heads = svc.list(&scope).await.expect("list");
+    let id = &heads[0].id;
 
     let before = svc.get(&scope, id).await.expect("get");
 
     let after = svc.refresh(&scope, id).await.expect("refresh ok");
 
-    assert_eq!(after.kind(), before.kind());
+    assert_eq!(after.credential_key, before.credential_key);
     // A successful refresh re-persists the row via CAS in
-    // `refresh_inner` (sets `updated_at = now`). The `last_modified`
-    // timestamp on the snapshot's record must advance past the
-    // pre-refresh value.
+    // `refresh_inner` (sets `updated_at = now`). The `updated_at`
+    // timestamp on the head must advance past the pre-refresh value.
     assert!(
-        after.record().last_modified > before.record().last_modified,
-        "successful refresh must bump last_modified (before={:?}, after={:?})",
-        before.record().last_modified,
-        after.record().last_modified,
+        after.updated_at > before.updated_at,
+        "successful refresh must bump updated_at (before={:?}, after={:?})",
+        before.updated_at,
+        after.updated_at,
     );
 }
