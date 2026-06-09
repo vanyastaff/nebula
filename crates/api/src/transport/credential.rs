@@ -515,14 +515,27 @@ pub async fn refresh_credential(
 ) -> ApiResult<RefreshCredentialResponse> {
     let svc = service(state)?;
     let tenant = TenantScope::from_scope(scope);
-    let head = svc
+    let report = svc
         .refresh(&tenant, cred)
         .await
         .map_err(|e| map_service_err(e, cred))?;
-    Ok(RefreshCredentialResponse {
-        refreshed: true,
-        message: "credential refreshed".to_owned(),
-        new_expires_at: head.expires_at.map(|t| t.to_rfc3339()),
+    // The facade's fallback-on-interrupt serves the still-valid stored
+    // material when the provider failed transiently — honest reporting:
+    // that is NOT a refresh, and the old expiry is not a "new" one.
+    Ok(if report.refreshed {
+        RefreshCredentialResponse {
+            refreshed: true,
+            message: "credential refreshed".to_owned(),
+            new_expires_at: report.head.expires_at.map(|t| t.to_rfc3339()),
+        }
+    } else {
+        RefreshCredentialResponse {
+            refreshed: false,
+            message: "provider temporarily unavailable; refresh did not run — stored \
+                      credential material is still valid"
+                .to_owned(),
+            new_expires_at: None,
+        }
     })
 }
 

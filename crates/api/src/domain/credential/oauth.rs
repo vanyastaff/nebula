@@ -78,7 +78,7 @@ pub async fn get_oauth2_authorize_url_for_owner(
     owner_id: String,
 ) -> ApiResult<Json<AuthorizationUriResponse>> {
     validate_oauth_outbound_url(&query.token_url).map_err(ApiError::validation_message)?;
-    let expected_version = prepare_oauth_credential(state, &owner_id, credential_id).await?;
+    prepare_oauth_credential(state, &owner_id, credential_id).await?;
 
     let csrf = generate_random_state();
     let signer = OAuthStateSigner::new(state.jwt_secret.as_bytes());
@@ -103,7 +103,6 @@ pub async fn get_oauth2_authorize_url_for_owner(
             .auth_style
             .unwrap_or(nebula_credential::AuthStyle::Header),
         owner_id,
-        expected_version,
     };
     let pending_token = state
         .oauth_pending_store
@@ -323,14 +322,7 @@ where
         .await
         .map_err(ApiError::Internal)?;
     let oauth_state = build_oauth2_state(&token_body, &pending)?;
-    persist_oauth_state(
-        state,
-        &owner_id,
-        pending.expected_version,
-        credential_id,
-        oauth_state,
-    )
-    .await?;
+    persist_oauth_state(state, &owner_id, credential_id, oauth_state).await?;
 
     Ok(Json(OAuthCallbackResponse {
         credential_id: credential_id.to_owned(),
@@ -351,7 +343,6 @@ struct OAuthPendingExchange {
     scopes: Vec<String>,
     auth_style: nebula_credential::AuthStyle,
     owner_id: String,
-    expected_version: u64,
 }
 
 impl Zeroize for OAuthPendingExchange {
@@ -433,7 +424,6 @@ fn build_oauth2_state(
 async fn persist_oauth_state(
     state: &AppState,
     owner_id: &str,
-    expected_version: u64,
     credential_id: &str,
     oauth_state: OAuth2State,
 ) -> ApiResult<()> {
@@ -444,6 +434,11 @@ async fn persist_oauth_state(
     })?;
     let now = chrono::Utc::now();
     let store = crate::transport::credential::scoped_store(state, owner_id)?;
+    // CAS on the version read HERE, not on a version pinned at authorize
+    // time: a legitimate concurrent write (a rename while the user sat on
+    // the IdP consent screen) must not burn the single-use authorization
+    // code and the consumed pending state. Double-exchange is already
+    // prevented one layer up by the pending state''s single-use consume.
     let existing = store
         .get(credential_id)
         .await
@@ -465,7 +460,12 @@ async fn persist_oauth_state(
     };
 
     store
-        .put(stored, PutMode::CompareAndSwap { expected_version })
+        .put(
+            stored,
+            PutMode::CompareAndSwap {
+                expected_version: existing.version,
+            },
+        )
         .await
         .map_err(|e| map_oauth_store_err(e, credential_id))?;
     Ok(())
@@ -475,7 +475,7 @@ async fn prepare_oauth_credential(
     state: &AppState,
     owner_id: &str,
     credential_id: &str,
-) -> ApiResult<u64> {
+) -> ApiResult<()> {
     let store = crate::transport::credential::scoped_store(state, owner_id)?;
     match store.get(credential_id).await {
         Ok(existing) => {
@@ -486,7 +486,7 @@ async fn prepare_oauth_credential(
                     "credential is not an OAuth2 credential",
                 ));
             }
-            Ok(existing.version)
+            Ok(())
         },
         Err(StoreError::NotFound { .. }) => {
             let now = chrono::Utc::now();
@@ -506,7 +506,7 @@ async fn prepare_oauth_credential(
             store
                 .put(stored, PutMode::CreateOnly)
                 .await
-                .map(|created| created.version)
+                .map(|_| ())
                 .map_err(|e| map_oauth_store_err(e, credential_id))
         },
         Err(e) => Err(map_oauth_store_err(e, credential_id)),
@@ -585,7 +585,7 @@ mod tests {
     /// Canonical owner key for the test tenant.
     const OWNER_A: &str = "org-a:ws-a";
 
-    fn test_pending_exchange(owner_id: &str, expected_version: u64) -> OAuthPendingExchange {
+    fn test_pending_exchange(owner_id: &str) -> OAuthPendingExchange {
         OAuthPendingExchange {
             token_url: "https://provider.example.com/token".to_owned(),
             client_id: "client-id".to_owned(),
@@ -595,7 +595,6 @@ mod tests {
             scopes: vec!["read".to_owned(), "write".to_owned()],
             auth_style: nebula_credential::AuthStyle::Header,
             owner_id: owner_id.to_owned(),
-            expected_version,
         }
     }
 
@@ -621,7 +620,7 @@ mod tests {
         credential_id: &str,
         token_body: serde_json::Value,
     ) {
-        let expected_version = prepare_oauth_credential(state, OWNER_A, credential_id)
+        prepare_oauth_credential(state, OWNER_A, credential_id)
             .await
             .expect("placeholder prepared");
 
@@ -629,7 +628,7 @@ mod tests {
         let signer = OAuthStateSigner::new(state.jwt_secret.as_bytes());
         let (signed_state, payload) =
             build_signed_state(&signer, credential_id, csrf).expect("signed state");
-        let pending = test_pending_exchange(OWNER_A, expected_version);
+        let pending = test_pending_exchange(OWNER_A);
         let pending_token = state
             .oauth_pending_store
             .put("oauth2", &user.user_id, &payload.csrf_token, pending)
@@ -795,6 +794,92 @@ mod tests {
         assert_eq!(stored.credential_key, OAuth2Credential::KEY);
     }
 
+    /// A legitimate concurrent write while the user sits on the IdP
+    /// consent screen (e.g. a teammate renames the credential, bumping
+    /// the row version) must NOT burn the single-use authorization code:
+    /// the callback CASes on the version it reads at exchange time, not
+    /// on a version pinned at authorize time.
+    #[tokio::test]
+    async fn concurrent_row_write_between_authorize_and_callback_does_not_break_exchange() {
+        let state = test_app_state();
+        let credential_id = "cred-rename-race";
+        let user = AuthenticatedUser {
+            user_id: "user-race".to_owned(),
+        };
+
+        prepare_oauth_credential(&state, OWNER_A, credential_id)
+            .await
+            .expect("placeholder prepared");
+
+        let csrf = generate_random_state();
+        let signer = OAuthStateSigner::new(state.jwt_secret.as_bytes());
+        let (signed_state, payload) =
+            build_signed_state(&signer, credential_id, csrf).expect("signed state");
+        let pending = test_pending_exchange(OWNER_A);
+        let pending_token = state
+            .oauth_pending_store
+            .put("oauth2", &user.user_id, &payload.csrf_token, pending)
+            .await
+            .expect("pending store put");
+        state
+            .oauth_state_tokens
+            .write()
+            .await
+            .insert(signed_state.clone(), pending_token);
+
+        // Concurrent write lands while the consent screen is open: bump
+        // the row version via an owner-scoped CAS write.
+        let store =
+            crate::transport::credential::scoped_store(&state, OWNER_A).expect("service wired");
+        let existing = store
+            .get(credential_id)
+            .await
+            .expect("placeholder readable");
+        let bumped = StoredCredential {
+            updated_at: chrono::Utc::now(),
+            ..existing.clone()
+        };
+        store
+            .put(
+                bumped,
+                PutMode::CompareAndSwap {
+                    expected_version: existing.version,
+                },
+            )
+            .await
+            .expect("concurrent write succeeds");
+
+        // The callback still completes: the exchange CASes on the version
+        // it reads now, not the authorize-time one.
+        let token_body = serde_json::json!({
+            "access_token": "race-access-token",
+            "token_type": "Bearer",
+        });
+        let callback = handle_callback_with_exchange(
+            credential_id,
+            &state,
+            &user,
+            "auth-code".to_owned(),
+            signed_state,
+            OWNER_A.to_owned(),
+            move |_req| {
+                let token_body = token_body.clone();
+                async move { Ok(token_body) }
+            },
+        )
+        .await
+        .expect("callback survives the concurrent rename");
+        assert!(callback.0.exchanged);
+
+        let stored = read_stored(&state, OWNER_A, credential_id).await;
+        assert!(!stored.reauth_required, "exchange clears the reauth flag");
+        let persisted_state: OAuth2State =
+            serde_json::from_slice(&stored.data).expect("oauth state json");
+        assert_eq!(
+            persisted_state.access_token.expose_secret().to_owned(),
+            "race-access-token"
+        );
+    }
     #[tokio::test]
     async fn tenant_mismatch_does_not_consume_pending_state() {
         let state = test_app_state();
@@ -803,7 +888,7 @@ mod tests {
             user_id: "user-tenant-mismatch".to_owned(),
         };
 
-        let expected_version = prepare_oauth_credential(&state, OWNER_A, credential_id)
+        prepare_oauth_credential(&state, OWNER_A, credential_id)
             .await
             .expect("placeholder prepared");
 
@@ -811,7 +896,7 @@ mod tests {
         let signer = OAuthStateSigner::new(state.jwt_secret.as_bytes());
         let (signed_state, payload) =
             build_signed_state(&signer, credential_id, csrf).expect("signed state");
-        let pending = test_pending_exchange(OWNER_A, expected_version);
+        let pending = test_pending_exchange(OWNER_A);
         let pending_token = state
             .oauth_pending_store
             .put("oauth2", &user.user_id, &payload.csrf_token, pending)

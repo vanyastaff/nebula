@@ -48,16 +48,21 @@ async fn refresh_transient_falls_back_to_cached_when_non_expired() {
     set_refresh_failure(Some(RefreshFailureScript::Transient));
 
     // refresh() must NOT propagate the transient — it must return the
-    // cached head because the stored material is still non-expired.
-    let after = svc
+    // cached head because the stored material is still non-expired, and
+    // the report must say so honestly.
+    let report = svc
         .refresh(&scope, id)
         .await
         .expect("refresh falls back to cached non-expired head");
+    assert!(
+        !report.refreshed,
+        "the fallback path must report refreshed = false"
+    );
 
     // The returned head is the cached one (same key, same store version —
     // no write happened).
-    assert_eq!(after.credential_key, before.credential_key);
-    assert_eq!(after.version, before.version);
+    assert_eq!(report.head.credential_key, before.credential_key);
+    assert_eq!(report.head.version, before.version);
 
     // Clean any leftover script (defensive — `.take()` already consumed it).
     set_refresh_failure(None);
@@ -118,16 +123,20 @@ async fn refresh_no_failure_returns_refreshed_snapshot() {
 
     let before = svc.get(&scope, id).await.expect("get");
 
-    let after = svc.refresh(&scope, id).await.expect("refresh ok");
+    let report = svc.refresh(&scope, id).await.expect("refresh ok");
+    assert!(
+        report.refreshed,
+        "a real refresh must report refreshed = true"
+    );
 
-    assert_eq!(after.credential_key, before.credential_key);
+    assert_eq!(report.head.credential_key, before.credential_key);
     // A successful refresh re-persists the row via CAS in
     // `refresh_inner` (sets `updated_at = now`). The `updated_at`
     // timestamp on the head must advance past the pre-refresh value.
     assert!(
-        after.updated_at > before.updated_at,
+        report.head.updated_at > before.updated_at,
         "successful refresh must bump updated_at (before={:?}, after={:?})",
         before.updated_at,
-        after.updated_at,
+        report.head.updated_at,
     );
 }

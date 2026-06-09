@@ -42,7 +42,7 @@ use nebula_engine::credential::{CredentialResolver, LeaseLifecycle};
 use nebula_resilience::CallError;
 use nebula_resilience::retry::{BackoffConfig, RetryConfig, retry_with};
 use nebula_schema::FieldValues;
-use nebula_storage::credential::{AuditLayer, CacheLayer, EncryptionLayer};
+use nebula_storage::credential::AuditLayer;
 use serde::Serialize;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
@@ -67,13 +67,17 @@ const DISPLAY_KEY: &str = "display";
 
 /// Layered store stack composed once at `CredentialServiceBuilder::build`:
 /// `Audit(Cache(Encryption(raw)))`. `Encryption` is adjacent to the raw
-/// backend so persisted bytes are always ciphertext (spec §6 #7).
+/// backend so persisted bytes are always ciphertext (spec §6 #7); the
+/// cache+encryption core is erased once ([`ErasedCredentialStore`]) so the
+/// facade can hold a second, **un-audited** scan handle over the same
+/// cache for `list`'s owner filter (enumerating foreign rows to discard
+/// them is not an access and must not mint audit `Get` events).
 ///
 /// `pub` so composition roots (the api layer, server binary) can name the
-/// concrete arc type without spelling out all three layer wrappers. The
-/// builder's `build()` is still the only construction path — this is a
-/// type alias, not a constructor.
-pub type LayeredStore<B> = AuditLayer<CacheLayer<EncryptionLayer<B>>>;
+/// concrete type without spelling out the layer wrappers. The builder's
+/// `build()` is still the only construction path — this is a type alias,
+/// not a constructor.
+pub type LayeredStore = AuditLayer<ErasedCredentialStore>;
 
 /// Outcome of [`CredentialService::test`] — a secret-free health-probe
 /// summary. `message` carries only the provider's failure reason (never
@@ -85,6 +89,23 @@ pub struct TestReport {
     pub ok: bool,
     /// Provider-supplied failure reason when `ok` is `false`.
     pub message: Option<String>,
+}
+
+/// Outcome of [`CredentialService::refresh`]. `refreshed` distinguishes a
+/// real provider refresh from the fallback-on-interrupt path that served
+/// the still-valid stored material after a transient provider failure —
+/// a management caller asking "did the refresh happen?" must not be told
+/// `yes` when the provider was unreachable.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct RefreshReport {
+    /// Secret-free head of the row after the call (post-refresh on the
+    /// success path; the pre-call head on the fallback path).
+    pub head: CredentialHead,
+    /// `true` iff the provider refresh ran and the rotated state was
+    /// persisted (or coalesced by another replica). `false` when the
+    /// fallback served the existing non-expired material instead.
+    pub refreshed: bool,
 }
 
 /// Outcome of [`CredentialService::resolve`] /
@@ -154,6 +175,12 @@ pub struct CredentialTypeInfo {
 /// [`CredentialServiceBuilder`](crate::builder::CredentialServiceBuilder).
 pub struct CredentialService {
     pub(crate) store: Arc<dyn DynCredentialStore>,
+    /// Un-audited handle over the same cache+encryption core as `store`.
+    /// Used ONLY by [`list`](Self::list)'s owner-filter scan: enumerating
+    /// rows to discard the foreign ones is not an access, so it must not
+    /// mint per-credential audit `Get` events against other tenants' ids.
+    /// Every real per-id operation goes through the audited `store`.
+    pub(crate) scan_store: ErasedCredentialStore,
     /// Engine resolver wired through the layered store stack (erased at the
     /// store→resolver boundary). Used by
     /// [`resolve_for_slot`](Self::resolve_for_slot) to produce a typed
@@ -181,6 +208,7 @@ impl CredentialService {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn __from_parts(
         store: Arc<dyn DynCredentialStore>,
+        scan_store: ErasedCredentialStore,
         resolver: CredentialResolver<ErasedCredentialStore>,
         lease: LeaseLifecycle,
         pending: ErasedPendingStore,
@@ -191,6 +219,7 @@ impl CredentialService {
     ) -> Self {
         Self {
             store,
+            scan_store,
             resolver,
             lease,
             pending,
@@ -407,10 +436,15 @@ impl CredentialService {
         &self,
         scope: &TenantScope,
     ) -> Result<Vec<CredentialHead>, CredentialServiceError> {
+        // The id enumeration goes through the audited store (one `List`
+        // audit event); the per-row owner-filter reads go through the
+        // un-audited `scan_store` so foreign rows — fetched only to be
+        // discarded — never mint audit `Get` events against other
+        // tenants' ids (the audit trail must record accesses, not scans).
         let ids = self.store.list(None).await.map_err(Self::map_store_err)?;
         let mut visible = Vec::new();
         for id in ids {
-            match self.store.get(&id).await {
+            match self.scan_store.get(&id).await {
                 Ok(stored) => {
                     if Self::owner_matches(&stored, scope) {
                         visible.push(Self::head_from(&stored));
@@ -437,9 +471,14 @@ impl CredentialService {
     /// field-wise merge semantics read the current head first and merge
     /// before calling.
     ///
-    /// `expected_version = Some(v)` engages compare-and-swap (a mismatch
-    /// surfaces as [`CredentialServiceError::VersionConflict`]);
-    /// `None` is a last-writer-wins overwrite.
+    /// `expected_version = Some(v)` engages compare-and-swap on the
+    /// caller's version (a mismatch surfaces as
+    /// [`CredentialServiceError::VersionConflict`]); `None` CASes on the
+    /// version this call just loaded, so a concurrent write landing
+    /// between the load and the put surfaces as `VersionConflict` instead
+    /// of silently rolling the row — including its secret state and any
+    /// concurrently-rotated tokens — back to the loaded copy. There is no
+    /// blind-overwrite path.
     ///
     /// # Errors
     ///
@@ -508,9 +547,12 @@ impl CredentialService {
             },
         };
 
-        let mode = match expected_version {
-            Some(expected_version) => PutMode::CompareAndSwap { expected_version },
-            None => PutMode::Overwrite,
+        // No blind-overwrite path: when the caller supplied no version,
+        // CAS on the version loaded above. A display-only rename racing a
+        // token refresh must conflict, never silently restore the stale
+        // secret bytes captured at load time.
+        let mode = PutMode::CompareAndSwap {
+            expected_version: expected_version.unwrap_or(existing.version),
         };
 
         let persisted = self
@@ -636,21 +678,29 @@ impl CredentialService {
         &self,
         scope: &TenantScope,
         id: &str,
-    ) -> Result<CredentialHead, CredentialServiceError> {
+    ) -> Result<RefreshReport, CredentialServiceError> {
         // Read the current head before attempting refresh. On a transient
         // provider failure we fall back to this if the material is still
-        // non-expired — avoids propagating blips to the caller.
+        // non-expired — avoids propagating blips to the caller. The
+        // report's `refreshed: false` keeps the fallback honest for
+        // management callers.
         let cached = self.get(scope, id).await?;
 
         match self.refresh_inner(scope, id).await {
-            Ok(head) => Ok(head),
+            Ok(head) => Ok(RefreshReport {
+                head,
+                refreshed: true,
+            }),
             Err(ref e) if Self::is_transient_failure(e) && !cached.is_expired() => {
                 tracing::warn!(
                     credential.id = %id,
                     error = %e,
                     "credential refresh failed transiently; stored material still non-expired"
                 );
-                Ok(cached)
+                Ok(RefreshReport {
+                    head: cached,
+                    refreshed: false,
+                })
             },
             Err(e) => Err(e),
         }
@@ -1975,8 +2025,9 @@ mod tests {
         let id = svc.list(&scope).await.expect("list")[0].id.clone();
 
         assert_eq!(refreshes.load(std::sync::atomic::Ordering::SeqCst), 0);
-        let head = svc.refresh(&scope, &id).await.expect("refresh ok");
-        assert_eq!(head.credential_key, "refreshable_fixture");
+        let report = svc.refresh(&scope, &id).await.expect("refresh ok");
+        assert!(report.refreshed, "fixture refresh ran for real");
+        assert_eq!(report.head.credential_key, "refreshable_fixture");
         // on_refresh fired exactly once on the success path.
         assert_eq!(refreshes.load(std::sync::atomic::Ordering::SeqCst), 1);
 
@@ -1984,8 +2035,8 @@ mod tests {
         // observes the first rotation (counter is 2 → token `tok-base-r2`),
         // proving the CAS write stored the refreshed bytes, not the
         // pre-refresh copy.
-        let head2 = svc.refresh(&scope, &id).await.expect("second refresh ok");
-        assert_eq!(head2.credential_key, "refreshable_fixture");
+        let report2 = svc.refresh(&scope, &id).await.expect("second refresh ok");
+        assert_eq!(report2.head.credential_key, "refreshable_fixture");
         assert_eq!(refreshes.load(std::sync::atomic::Ordering::SeqCst), 2);
         // Still retrievable and correctly projected post-refresh.
         let got = svc.get(&scope, &id).await.expect("get ok");
