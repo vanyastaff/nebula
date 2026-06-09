@@ -126,6 +126,16 @@ pub enum TransportInitError {
     /// dependency (the typed `RegisterError` stays inside `nebula-api`).
     #[error("credential-schema port init failed: {0}")]
     CredentialSchemaInit(String),
+    /// The `CredentialService` facade could not be composed (registry
+    /// registration, encryption key provider init, dispatch-ops
+    /// registration, or the final secure-store build failed). Most common
+    /// in production: `NEBULA_CRED_MASTER_KEY` is unset or malformed —
+    /// fail closed rather than boot with a weak/absent key. Carried as a
+    /// `String` so this crate needs no credential dependency (the typed
+    /// `CredentialServiceFactoryError` stays inside `nebula-api`), mirroring
+    /// [`Self::CredentialSchemaInit`].
+    #[error("credential service init failed: {0}")]
+    CredentialServiceInit(String),
     /// An OAuth identity-provider config entry failed boot-time
     /// validation per ADR-0085 REQ-compose-001 Invariant 1.
     ///
@@ -213,6 +223,18 @@ impl ServerRuntime {
         // (per ADR-0048).
         let idempotency_store = build_idempotency_store(&api_config).await?;
         state = state.with_idempotency_store(idempotency_store);
+        // Compose the production `CredentialService` facade inside the async
+        // context: the secure-store build spawns the lease-lifecycle reaper,
+        // which requires the tokio runtime (so this cannot live in the sync
+        // `default_state`). The factory lives in `nebula-api` (which already
+        // deps the credential crates + `tokio-util`) so this composition root
+        // stays credential-dependency-free; it mints its own process shutdown
+        // `CancellationToken` internally (no `tokio-util` dep here). Fails
+        // closed in production when `NEBULA_CRED_MASTER_KEY` is unset/malformed.
+        let credential_service =
+            nebula_api::ports::credential_service_factory::try_default_credential_service()
+                .map_err(|e| TransportInitError::CredentialServiceInit(e.to_string()))?;
+        state = state.with_credential_service(credential_service);
         // Build ONE shared `Arc<dyn EmailPort>` and pass the same Arc
         // to both `AppState::email_port` and the selected auth backend.
         // `API_SMTP_HOST` unset → dev `EchoSink` (unchanged local-first
