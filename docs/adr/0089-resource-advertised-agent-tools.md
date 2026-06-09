@@ -122,14 +122,18 @@ Resources advertise their callable operations through an internal
 `ResourceGuard`s; one `ToolDefinition` shape and one registry unify
 resource-tools (primary) with action-tools (secondary).
 
-### D1 — `ResourceTools` internal trait (sealed, `&self`, `#[async_trait]`)
+### D1 — `ResourceTools` internal trait (downstream-implementable, `&self`, `#[async_trait]`)
 
 The trait sits flush with the existing rotation-hook pattern — another `&self`
 capability read off the immutable descriptor. Unlike `Resource` (RPITIT), the async
 method here is erased with `#[async_trait]` (rationale below): `invoke` is a cold,
 LLM-gated path **and** the trait must be `dyn`-safe for the heterogeneous tool
 registry, so the hot-path rationale that drove `Resource`'s RPITIT does not apply.
-It is **sealed** so methods can be added later without a semver major.
+It is **not sealed** — the primary model requires downstream resource crates and
+plugins to write `impl ResourceTools for TheirResource`, which a sealed trait
+would forbid. Additive evolution instead comes from **default-bodied methods**
+(new methods ship with a default impl, like `Iterator`), so the contract grows
+without breaking existing `impl ResourceTools`.
 
 ```rust
 // crates/resource/src/tools.rs
@@ -143,7 +147,7 @@ It is **sealed** so methods can be added later without a semver major.
 /// generated for us), so the heterogeneous tool registry holds `dyn ResourceTools`
 /// with **no separate erased twin trait**.
 #[async_trait]
-pub trait ResourceTools: sealed::Sealed + Send + Sync {
+pub trait ResourceTools: Send + Sync {        // NOT sealed — downstream resources & plugins implement this
     /// Catalog of operations this resource exposes, tenant-scoped: tools the
     /// caller's scope cannot use are not returned, so the LLM never plans with
     /// them (discovery-time gating — §Security). Sync — no I/O at enumeration.
@@ -159,8 +163,6 @@ pub trait ResourceTools: sealed::Sealed + Send + Sync {
         cx: ToolInvokeCx<'_>,
     ) -> Result<ToolOutput, ToolError>;
 }
-
-mod sealed { pub trait Sealed {} }
 ```
 
 **Why `#[async_trait]`, not RPITIT or `dynosaur`.** The registry holds tools from
@@ -293,7 +295,7 @@ pub enum ToolError {
     #[error("credential rotated mid-call")] CredentialRotated,     // TOCTOU close (§D5)
     #[error("resource unavailable")]        Unavailable,           // guard dropped / generation gone
     /// Opaque resource-specific failure. Contract: new *typed* variants may be
-    /// added (sealed `#[non_exhaustive]`) before a case falls through to here.
+    /// added (`#[non_exhaustive]`) before a case falls through to here.
     #[error(transparent)]                   Other(Box<dyn std::error::Error + Send + Sync>),
 }
 
@@ -339,13 +341,14 @@ async fn run_tool_loop<R: Resource + ResourceTools>(
     scope: &TenantScope,
     llm: &impl Llm,
 ) -> Result<AgentOutput, AgentError> {
-    let catalog = guard.resource_tools().tools(scope);    // scope-filtered at source
+    let catalog  = guard.resource_tools().tools(scope);   // scope-filtered at source
+    let disc_gen = guard.credential_generation();         // SlotCell gen captured AT discovery (§D5)
     loop {
         match llm.step(&catalog).await? {
             LlmStep::Final(answer) => return Ok(answer.into()),
             LlmStep::Call { name, args } => {
-                // re-check liveness + scope at invoke time (TOCTOU close, §Security)
-                let cx = ToolInvokeCx::attenuate(guard, scope)?;  // Err if generation advanced
+                // compare disc_gen vs the live generation now (TOCTOU close, §Security)
+                let cx = ToolInvokeCx::attenuate(guard, scope, disc_gen)?;  // Err CredentialRotated if advanced
                 let out = guard.resource_tools().invoke(&name, args, cx).await?;
                 llm.observe_tool_result(&name, out);              // output is DATA, not instruction
             }
@@ -435,11 +438,15 @@ resources) and is handled as Definition-of-Done, not follow-up:
   raw `ResourceGuard`**. Capability-security "pass attenuated capabilities, never
   raw ones" [3], expressed in Rust ownership: a scoped borrow dropped after the
   call.
-- **Credential `SlotCell` + rotation TOCTOU.** `ToolInvokeCx::attenuate` records
-  the `SlotCell` generation observed at discovery; at invoke time it re-reads
-  `load_versioned()`. If the generation advanced (rotation/revoke), invoke fails
+- **Credential `SlotCell` + rotation TOCTOU.** The agent loop captures the
+  `SlotCell` generation **at discovery** and threads it into
+  `ToolInvokeCx::attenuate(guard, scope, discovery_gen)`; at invoke time attenuate
+  re-reads `load_versioned()` and **compares against that captured generation**.
+  If it advanced between discovery and invoke (rotation/revoke), invoke fails
   `ToolError::CredentialRotated` rather than acting on a stale credential view —
-  closing the plan-vs-execute window [6].
+  closing the plan-vs-execute window [6]. The discovery generation must be passed
+  through explicitly: a bare `tools() -> Vec<ToolDefinition>` cannot reconstruct it
+  at invoke time, so attenuate would otherwise only ever see the post-rotation value.
 - **Destructive-tool gating, not hints.** `ToolAnnotations` are advisory to LLM
   planning but **enforced** at the invoke gate: `destructive`/`open_world` tools
   require a workflow human-in-the-loop step or an explicit `allow_destructive`
@@ -473,7 +480,7 @@ communication uses `nebula-eventbus`, not sibling imports.
 
 Two capabilities proven by the Rust agent-framework field [R5] but **deferred to
 1.0** so the v0 contract stabilises first. Both land as **defaulted** methods on
-the sealed trait, so they are semver-additive — no break for v0 implementors:
+the trait as default-bodied methods, so they are semver-additive — no break for v0 implementors:
 
 - **Invoke lifecycle hooks** — default-`{}` `before_invoke(&self, name, &mut args,
   cx)` and `after_invoke(&self, name, &mut ToolOutput, cx)`. They are the engine
@@ -512,15 +519,15 @@ Slotted onto the M0–M14 scaffold. `nebula-resource` is `frontier`; **M12.4
 bind-population gates `stable`** and is the hard prerequisite — resource-tools
 **must not jump that queue**. The trait is **not on the 1.0 critical path**; it
 lands in the M12.4→M14 interval or defers cleanly to 1.1. Versioning discipline
-(R5): seal the trait early, `&self` from day one, `#[non_exhaustive]` on every
+(R5): default-bodied additive methods, `&self` from day one, `#[non_exhaustive]` on every
 tool/annotation struct, `#[async_trait]` for the `dyn`-safe tool trait (RPITIT
 stays on `Resource`'s hot path).
 
 | Version | What lands | Why now | Depends on | Risk | ADR action |
 |---|---|---|---|---|---|
-| **v0.x — experimental** | `ResourceTools` (sealed, `&self`, `#[async_trait]`, `dyn`-safe); `ToolDefinition`/`ToolAnnotations` (`#[non_exhaustive]`); typed `ToolError`; a `tools()` accessor on `AnyManagedResource` returning `&dyn ResourceTools`; **discovery-only** proven on one read-only resource (Postgres `pg.query`); the `ToolOutput`/`ContentBlock` envelope with the typed `ResourceLink` and the `parallel_safe` annotation (D2). `nebula-agent` crate created; minimal loop fetches a catalog off a guard. | Stabilise the contract before the macro and before any consumer; read-only first removes the destructive-gating surface from v0. | M12.4 bind-population; `nebula-schema`; `async-trait` | Trait churn — bounded by sealing + `#[non_exhaustive]`. AFIT-in-`dyn` gap — solved by `#[async_trait]`. | This ADR (amends 0057). |
+| **v0.x — experimental** | `ResourceTools` (downstream-implementable, `&self`, `#[async_trait]`, `dyn`-safe); `ToolDefinition`/`ToolAnnotations` (`#[non_exhaustive]`); typed `ToolError`; a `tools()` accessor on `AnyManagedResource` returning `&dyn ResourceTools`; **discovery-only** proven on one read-only resource (Postgres `pg.query`); the `ToolOutput`/`ContentBlock` envelope with the typed `ResourceLink` and the `parallel_safe` annotation (D2). `nebula-agent` crate created; minimal loop fetches a catalog off a guard. | Stabilise the contract before the macro and before any consumer; read-only first removes the destructive-gating surface from v0. | M12.4 bind-population; `nebula-schema`; `async-trait` | Trait churn — bounded by default-bodied additive methods + `#[non_exhaustive]`. AFIT-in-`dyn` gap — solved by `#[async_trait]`. | This ADR (amends 0057). |
 | **v0.x+1 — security hardening** | `ToolInvokeCx` attenuation; credential-generation TOCTOU check; tenant-scope discovery filter; `ToolInvoked` audit + observability triple; destructive annotation + invoke-time allowlist gate; secondary `AgentTool` provider folded into one `ToolRegistry`; `cacheable`/`cost_class`/`latency_class` planning annotations (D2). | Security is DoD — a writable tool surface cannot reach an LLM without attenuation + audit + gating. | v0.x; `nebula-tenancy`; `nebula-eventbus`. | Confused-deputy / TOCTOU if attenuation is incomplete. | Amend (gating + audit invariants). |
-| **1.0 — hardened freeze** | Freeze `ResourceTools` + `ToolDefinition` in the SDK / plugin-sdk contract; `#[resource_tools]` derive macro; exercise `output_schema`; add `fn resource_capabilities() -> ResourceCapabilities` (default `NONE`, additive on the sealed trait); D7 lifecycle hooks (`before_invoke`/`after_invoke`) + `set_enabled`. | Freeze the surface in the 1.0 contract; the macro lowers author cost once the contract is proven. | M12 + M13; `MATURITY.md` stable surface (M14.1). | Macro freezing an unproven contract — mitigated by shipping hand-written v0 first. | Macro design note; capabilities flag additive. |
+| **1.0 — hardened freeze** | Freeze `ResourceTools` + `ToolDefinition` in the SDK / plugin-sdk contract; `#[resource_tools]` derive macro; exercise `output_schema`; add `fn resource_capabilities() -> ResourceCapabilities` (default `NONE`, additive via a default-bodied method); D7 lifecycle hooks (`before_invoke`/`after_invoke`) + `set_enabled`. | Freeze the surface in the 1.0 contract; the macro lowers author cost once the contract is proven. | M12 + M13; `MATURITY.md` stable surface (M14.1). | Macro freezing an unproven contract — mitigated by shipping hand-written v0 first. | Macro design note; capabilities flag additive. |
 | **1.1+ — deferred (NOT in 1.0)** | Dynamic tool sets (`listChanged` via eventbus); streaming tool output; wire-MCP **export** to external clients (separate `nebula-mcp-bridge` crate, `tools()` → MCP JSON); elicitation. Wire-export is now structurally trivial — `ToolOutput`/`ContentBlock` already mirror the MCP result shape (D2), so the bridge is serialisation, not a re-model. | MCP client `listChanged` support is sparse (2026 target = static lists); streaming waits on AFIT-in-`dyn` ecosystem stabilisation; wire export must stay out of the internal crate. | 1.0 contract stable; a consumer for each. | Premature dynamism / boundary erosion. | Wire-bridge = its own ADR + its own crate. |
 
 **Other `nebula-resource` improvements surfaced alongside (not blocked by, and
@@ -565,7 +572,7 @@ wire-MCP export, elicitation — all deferred to 1.1+ for the reasons above.
   `#[non_exhaustive]` makes optional fields free.
 - **`ResourceCapabilities` granularity:** bitflags vs `#[non_exhaustive]`
   presence-marker struct. Defer the *shape* to 1.0; the *presence* of the method
-  is additive on a sealed trait.
+  is additive via a default-bodied method on the (unsealed) trait.
 
 ## Alternatives considered
 
@@ -623,8 +630,9 @@ wire-MCP export, elicitation — all deferred to 1.1+ for the reasons above.
 - The lifetime-leak failure mode that plagues Python agent frameworks
   (tool invoked after its session closed) is unrepresentable: `invoke(&self, …)`
   borrows the live guard and only the schema (`ToolDefinition`) escapes.
-- New surface area is bounded and sealed; `#[non_exhaustive]` + sealing + defaulted
-  methods on the sealed trait keep the v0→1.0→1.1 evolution semver-additive.
+- New surface area is bounded; `#[non_exhaustive]` on the structs + **default-bodied
+  methods** on the (unsealed) `ResourceTools` trait keep the v0→1.0→1.1 evolution
+  semver-additive without forbidding downstream `impl ResourceTools`.
 
 ## References
 
