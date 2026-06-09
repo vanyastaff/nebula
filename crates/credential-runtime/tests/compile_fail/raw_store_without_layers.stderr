@@ -1,14 +1,14 @@
 error[E0624]: associated function `__from_parts` is private
-  --> tests/compile_fail/raw_store_without_layers.rs:21:77
+  --> tests/compile_fail/raw_store_without_layers.rs:19:38
    |
-21 |       let _bypass = CredentialService::<InMemoryStore, InMemoryPendingStore>::__from_parts;
-   |                                                                               ^^^^^^^^^^^^ private associated function
+19 |       let _bypass = CredentialService::__from_parts;
+   |                                        ^^^^^^^^^^^^ private associated function
    |
   ::: src/service.rs
    |
    | /     pub(crate) fn __from_parts(
-   | |         store: Arc<LayeredStore<B>>,
-   | |         resolver: CredentialResolver<LayeredStore<B>>,
+   | |         store: Arc<dyn DynCredentialStore>,
+   | |         resolver: CredentialResolver<ErasedCredentialStore>,
    | |         lease: LeaseLifecycle,
 ...  |
    | |         source: StateSource,

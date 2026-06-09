@@ -1,8 +1,13 @@
-//! `CredentialService<B, PS>` — the sole public entry to the credential
-//! management bounded context. Generic over the raw backend `B` and
-//! pending store `PS` (both RPITIT non-object-safe; the params live only
-//! on the struct, never in operation signatures). All invariant-bearing
-//! composition is crate-private: the only constructor path is
+//! `CredentialService` — the sole public entry to the credential
+//! management bounded context. **Non-generic** (ADR-0088 D4): the raw
+//! backend and pending store are erased to `Arc<dyn DynCredentialStore>` /
+//! [`ErasedPendingStore`] at
+//! construction, so a durable backend can be swapped in without
+//! re-monomorphizing every consumer. Both ports are RPITIT (and the
+//! pending port additionally generic per call), so the erasure is the
+//! hand-rolled boxed-future bridge in `nebula_credential::erased`. All
+//! invariant-bearing composition is crate-private: the only constructor
+//! path is
 //! [`CredentialServiceBuilder`](crate::builder::CredentialServiceBuilder),
 //! whose `build()` wraps the raw backend in the layered store so an
 //! unencrypted/mis-composed service is unrepresentable.
@@ -26,12 +31,12 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use nebula_credential::pending_store::PendingStateStore;
 use nebula_credential::resolve::{InteractionRequest, TestResult, UserInput};
-use nebula_credential::store::{CredentialStore, PutMode, StoreError, StoredCredential};
+use nebula_credential::store::{PutMode, StoreError, StoredCredential};
 use nebula_credential::{
     AuthPattern, Credential, CredentialContext, CredentialGuard, CredentialId, CredentialRecord,
-    CredentialRegistry, CredentialSnapshot, PendingToken,
+    CredentialRegistry, CredentialSnapshot, DynCredentialStore, ErasedCredentialStore,
+    ErasedPendingStore, PendingToken,
 };
 use nebula_engine::credential::{CredentialResolver, LeaseLifecycle};
 use nebula_resilience::CallError;
@@ -139,16 +144,17 @@ pub struct CredentialTypeInfo {
 ///
 /// Constructed only via
 /// [`CredentialServiceBuilder`](crate::builder::CredentialServiceBuilder).
-pub struct CredentialService<B: CredentialStore, PS: PendingStateStore> {
-    pub(crate) store: Arc<LayeredStore<B>>,
-    /// Engine resolver wired through the layered store stack. Used by
+pub struct CredentialService {
+    pub(crate) store: Arc<dyn DynCredentialStore>,
+    /// Engine resolver wired through the layered store stack (erased at the
+    /// store→resolver boundary). Used by
     /// [`resolve_for_slot`](Self::resolve_for_slot) to produce a typed
     /// [`CredentialGuard`] for action slot consumption.
-    pub(crate) resolver: CredentialResolver<LayeredStore<B>>,
+    pub(crate) resolver: CredentialResolver<ErasedCredentialStore>,
     pub(crate) lease: LeaseLifecycle,
-    pub(crate) pending: PS,
+    pub(crate) pending: ErasedPendingStore,
     pub(crate) registry: Arc<CredentialRegistry>,
-    pub(crate) ops: Arc<DispatchOps<PS>>,
+    pub(crate) ops: Arc<DispatchOps<ErasedPendingStore>>,
     pub(crate) observer: Arc<dyn CredentialObserver>,
     // Read by `ensure_local_source` on every secret-resolving entry
     // point. `External` is configurable but its resolution wiring (the
@@ -157,18 +163,21 @@ pub struct CredentialService<B: CredentialStore, PS: PendingStateStore> {
     pub(crate) source: StateSource,
 }
 
-impl<B: CredentialStore, PS: PendingStateStore> CredentialService<B, PS> {
+impl CredentialService {
     /// Crate-private assembly point — the builder's `build()` is the
     /// only caller. Not `pub`: external code cannot bypass the layered
     /// composition (compile-fail probe target, spec §6 #7).
+    // guard-justified: __from_parts mirrors the eight mandatory collaborators
+    // the builder composes; bundling them into a struct would just move the
+    // arity to that struct's literal at the single call site.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn __from_parts(
-        store: Arc<LayeredStore<B>>,
-        resolver: CredentialResolver<LayeredStore<B>>,
+        store: Arc<dyn DynCredentialStore>,
+        resolver: CredentialResolver<ErasedCredentialStore>,
         lease: LeaseLifecycle,
-        pending: PS,
+        pending: ErasedPendingStore,
         registry: Arc<CredentialRegistry>,
-        ops: Arc<DispatchOps<PS>>,
+        ops: Arc<DispatchOps<ErasedPendingStore>>,
         observer: Arc<dyn CredentialObserver>,
         source: StateSource,
     ) -> Self {
@@ -184,16 +193,17 @@ impl<B: CredentialStore, PS: PendingStateStore> CredentialService<B, PS> {
         }
     }
 
-    /// Expose the composed layered store (`Audit(Cache(Encryption(raw)))`) as
-    /// a shared arc for callers that need raw access to the encrypted store
-    /// without going through type dispatch.
+    /// Expose the composed layered store (`Audit(Cache(Encryption(raw)))`,
+    /// erased) as a shared arc for callers that need raw access to the
+    /// encrypted store without going through type dispatch.
     ///
     /// The api layer uses this to replace
     /// `nebula_tenancy::CredentialScopeLayer<InMemoryStore>` with the
     /// service's encryption + audit + cache stack while still managing
     /// api-level metadata (`name` / `description` / `tags`) directly in
-    /// [`StoredCredential::metadata`].
-    pub fn credential_store_handle(&self) -> Arc<LayeredStore<B>> {
+    /// [`StoredCredential::metadata`]. The concrete layer stack is erased
+    /// behind [`DynCredentialStore`] so the backend stays swappable.
+    pub fn credential_store_handle(&self) -> Arc<dyn DynCredentialStore> {
         Arc::clone(&self.store)
     }
 
@@ -1295,7 +1305,9 @@ pub mod test_support {
     use nebula_core::accessor::MetricsEmitter;
     use nebula_credential::provider::LeaseEvent;
     use nebula_credential::store::StoreError;
-    use nebula_credential::{CredentialEvent, CredentialId, CredentialRegistry};
+    use nebula_credential::{
+        CredentialEvent, CredentialId, CredentialRegistry, ErasedPendingStore,
+    };
     use nebula_credential_builtin::register_builtins;
     use nebula_credential_testutil::InMemoryPendingStore;
     use nebula_crypto::EncryptionKey;
@@ -1339,18 +1351,15 @@ pub mod test_support {
     /// sink varies and the inner store is observable for assertions.
     pub fn service_and_raw_store_with_audit_sink(
         audit_sink: Arc<dyn AuditSink>,
-    ) -> (
-        CredentialService<InMemoryStore, InMemoryPendingStore>,
-        InMemoryStore,
-    ) {
+    ) -> (CredentialService, InMemoryStore) {
         let mut registry = CredentialRegistry::new();
         register_builtins(&mut registry).expect("register_builtins");
 
         // All three builtins are static (no capability impls), so only
         // the base ops are registered — no `register_*_ops` capability
         // call. Closure absence is "capability not supported".
-        let mut ops = DispatchOps::<InMemoryPendingStore>::new();
-        register_all_builtin_ops::<InMemoryPendingStore>(&mut ops).expect("builtin ops");
+        let mut ops = DispatchOps::<ErasedPendingStore>::new();
+        register_all_builtin_ops::<ErasedPendingStore>(&mut ops).expect("builtin ops");
 
         // `InMemoryStore` is `Arc<RwLock<..>>`-backed: the clone shares
         // the same map the layered stack writes through.
@@ -1361,7 +1370,7 @@ pub mod test_support {
             Arc::new(StaticKeyProvider::new(key)),
             audit_sink,
             CacheConfig::default(),
-            InMemoryPendingStore::new(),
+            ErasedPendingStore::new(Arc::new(InMemoryPendingStore::new())),
             Arc::new(registry),
             Arc::new(ops),
             Arc::new(NoopObserver::new()),
@@ -1382,15 +1391,13 @@ pub mod test_support {
     /// discarding the raw-store handle. Convenience over
     /// [`service_and_raw_store_with_audit_sink`] for tests that do not
     /// need to inspect the inner store.
-    pub fn service_with_audit_sink(
-        audit_sink: Arc<dyn AuditSink>,
-    ) -> CredentialService<InMemoryStore, InMemoryPendingStore> {
+    pub fn service_with_audit_sink(audit_sink: Arc<dyn AuditSink>) -> CredentialService {
         service_and_raw_store_with_audit_sink(audit_sink).0
     }
 
     /// Build an in-memory service with a no-op audit sink — the default
     /// fixture for tests / Plan-3 wiring.
-    pub fn in_memory_service() -> CredentialService<InMemoryStore, InMemoryPendingStore> {
+    pub fn in_memory_service() -> CredentialService {
         service_with_audit_sink(Arc::new(NoopAuditSink))
     }
 
@@ -1432,10 +1439,7 @@ pub mod test_support {
     /// The static builtins cannot exercise any positive capability path
     /// (refresh CAS + retry, the coalesced re-read branch, the concurrent-refresh
     /// version-conflict branch); this fixture-enabled variant does.
-    pub fn in_memory_service_with_fixtures() -> (
-        CredentialService<InMemoryStore, InMemoryPendingStore>,
-        Arc<AtomicUsize>,
-    ) {
+    pub fn in_memory_service_with_fixtures() -> (CredentialService, Arc<AtomicUsize>) {
         let mut registry = CredentialRegistry::new();
         register_builtins(&mut registry).expect("register_builtins");
         registry
@@ -1446,14 +1450,14 @@ pub mod test_support {
         // bitflag (ADR-0088 D3): `RefreshableFixtureCredential` impls
         // `Refreshable`, so `registry.is_refreshable(key)` is true without a
         // parallel dispatch flag.
-        let mut ops = DispatchOps::<InMemoryPendingStore>::new();
-        register_all_builtin_ops::<InMemoryPendingStore>(&mut ops).expect("builtin ops");
+        let mut ops = DispatchOps::<ErasedPendingStore>::new();
+        register_all_builtin_ops::<ErasedPendingStore>(&mut ops).expect("builtin ops");
         // Base ops first, then the refresh capability closure (the
         // ordering `register_refreshable_ops` enforces via
         // `DispatchError::BaseOpsMissing`).
-        register_runtime_ops::<RefreshableFixtureCredential, InMemoryPendingStore>(&mut ops)
+        register_runtime_ops::<RefreshableFixtureCredential, ErasedPendingStore>(&mut ops)
             .expect("fixture base ops");
-        register_refreshable_ops::<RefreshableFixtureCredential, InMemoryPendingStore>(&mut ops)
+        register_refreshable_ops::<RefreshableFixtureCredential, ErasedPendingStore>(&mut ops)
             .expect("fixture refreshable ops");
 
         let refreshes = Arc::new(AtomicUsize::new(0));
@@ -1468,7 +1472,7 @@ pub mod test_support {
             Arc::new(StaticKeyProvider::new(key)),
             Arc::new(NoopAuditSink),
             CacheConfig::default(),
-            InMemoryPendingStore::new(),
+            ErasedPendingStore::new(Arc::new(InMemoryPendingStore::new())),
             Arc::new(registry),
             Arc::new(ops),
             Arc::new(observer),
@@ -1819,10 +1823,8 @@ mod tests {
     #[test]
     fn owner_context_threads_session_when_scope_carries_one() {
         use super::CredentialService;
-        use nebula_credential_testutil::InMemoryPendingStore;
-        use nebula_storage::credential::InMemoryStore;
 
-        type Svc = CredentialService<InMemoryStore, InMemoryPendingStore>;
+        type Svc = CredentialService;
 
         let with = TenantScope::new("org1", "ws1").with_session("sess-xyz");
         let ctx = Svc::owner_context(&with);

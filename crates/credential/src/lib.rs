@@ -102,6 +102,9 @@ mod record;
 // ── Utility modules ─────────────────────────────────────────────────────────
 // Free-standing concerns: errors, storage, refresh coordinator, etc.
 
+/// Dyn-erasure bridge for the two RPITIT storage ports — lets the
+/// `CredentialService` facade be non-generic (ADR-0088 D4).
+pub mod erased;
 /// Error types for credential operations.
 pub mod error;
 /// Credential lifecycle events for cross-crate signaling.
@@ -160,6 +163,12 @@ pub use nebula_credential_macros::{AuthScheme, Credential, credential};
 // no Input form and is never registered in CredentialRegistry — it's a
 // Resource-side type marker per credential isolation).
 pub use no_credential::{NoCredential, NoCredentialState};
+// Dyn-erasure bridge (ADR-0088 D4): object-safe mirrors of the two RPITIT
+// storage ports + their `Arc<dyn …>` wrappers, so the runtime facade is
+// non-generic.
+pub use erased::{
+    DynCredentialStore, DynPendingStateStore, ErasedCredentialStore, ErasedPendingStore,
+};
 // Pending state store
 pub use pending_store::{PendingStateStore, PendingStoreError};
 // External provider abstraction (redesigned per external provider):

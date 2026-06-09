@@ -15,10 +15,7 @@ use serde_json::json;
 
 /// Helper — `in_memory_service_with_fixtures` returns `(service, refresh_counter)`.
 fn build() -> (
-    nebula_credential_runtime::CredentialService<
-        nebula_storage::credential::InMemoryStore,
-        nebula_credential_testutil::InMemoryPendingStore,
-    >,
+    nebula_credential_runtime::CredentialService,
     std::sync::Arc<std::sync::atomic::AtomicUsize>,
 ) {
     in_memory_service_with_fixtures()

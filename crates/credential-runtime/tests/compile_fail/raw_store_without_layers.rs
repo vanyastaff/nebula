@@ -10,13 +10,11 @@
 //! NOT an arity/type error (we never get far enough to type-check args).
 
 use nebula_credential_runtime::CredentialService;
-use nebula_credential_testutil::InMemoryPendingStore;
-use nebula_storage::credential::InMemoryStore;
 
 fn main() {
-    // `InMemoryStore` is a raw `CredentialStore`. Reaching the private
-    // `__from_parts` to wrap it directly (skipping the EncryptionLayer)
-    // is the abuse this probe forbids. Referencing the path is enough —
-    // the privacy check fires before argument type-checking.
-    let _bypass = CredentialService::<InMemoryStore, InMemoryPendingStore>::__from_parts;
+    // Reaching the private `__from_parts` to wrap a raw store directly
+    // (skipping the EncryptionLayer) is the abuse this probe forbids.
+    // Referencing the path is enough — the privacy check fires before any
+    // argument type-checking.
+    let _bypass = CredentialService::__from_parts;
 }
