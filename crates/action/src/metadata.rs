@@ -159,9 +159,10 @@ impl ActionMetadata {
     /// Create metadata from a key alone — name defaults to the key string and
     /// description is empty.
     ///
-    /// Convenience constructor symmetric with `ResourceMetadata::from_key` and
-    /// `CredentialMetadata::from_key`, useful for fixtures and placeholder
-    /// catalog entries where only the key is meaningful.
+    /// Convenience constructor symmetric with `ResourceMetadata::from_key`,
+    /// useful for fixtures and placeholder catalog entries where only the key
+    /// is meaningful. (`CredentialMetadata` has no `from_key` — its required
+    /// `AuthPattern` has no meaningful default.)
     #[must_use]
     pub fn from_key(key: &ActionKey) -> Self {
         Self::new(key.clone(), key.to_string(), String::new())

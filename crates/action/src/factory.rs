@@ -105,7 +105,7 @@ where
     ) -> Pin<Box<dyn Future<Output = Result<ErasedAction, ActionError>> + Send + 'a>> {
         Box::pin(async move {
             let action = A::from_workflow_node(node, ctx).await?;
-            let meta = <A as Action>::metadata();
+            let meta = self.metadata().clone();
             let inner = ErasedStatelessImpl::<A>::new(action, meta);
             Ok(ErasedAction::Stateless(Box::new(inner)))
         })
@@ -200,7 +200,7 @@ where
     ) -> Pin<Box<dyn Future<Output = Result<ErasedAction, ActionError>> + Send + 'a>> {
         Box::pin(async move {
             let action = A::from_workflow_node(node, ctx).await?;
-            let meta = <A as Action>::metadata();
+            let meta = self.metadata().clone();
             let inner = ErasedStatefulImpl::<A>::new(action, meta);
             Ok(ErasedAction::Stateful(Box::new(inner)))
         })
@@ -335,7 +335,7 @@ where
     ) -> Pin<Box<dyn Future<Output = Result<ErasedAction, ActionError>> + Send + 'a>> {
         Box::pin(async move {
             let action = A::from_workflow_node(node, ctx).await?;
-            let meta = <A as Action>::metadata();
+            let meta = self.metadata().clone();
             let inner = ErasedTriggerImpl::<A>::new(action, meta);
             Ok(ErasedAction::Trigger(Box::new(inner)))
         })
@@ -438,7 +438,7 @@ where
     ) -> Pin<Box<dyn Future<Output = Result<ErasedAction, ActionError>> + Send + 'a>> {
         Box::pin(async move {
             let action = A::from_workflow_node(node, ctx).await?;
-            let meta = <A as Action>::metadata();
+            let meta = self.metadata().clone();
             let inner = ErasedResourceImpl::<A>::new(action, meta);
             Ok(ErasedAction::Resource(Box::new(inner)))
         })
@@ -531,7 +531,7 @@ where
     ) -> Pin<Box<dyn Future<Output = Result<ErasedAction, ActionError>> + Send + 'a>> {
         Box::pin(async move {
             let action = A::from_workflow_node(node, ctx).await?;
-            let meta = <A as Action>::metadata();
+            let meta = self.metadata().clone();
             let inner = ErasedControlImpl::<A>::new(action, meta);
             Ok(ErasedAction::Control(Box::new(inner)))
         })
