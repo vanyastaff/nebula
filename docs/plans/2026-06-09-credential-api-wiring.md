@@ -194,8 +194,10 @@ by separating *layer* from *shape*: typed at every tier.
 
 ## Build steps
 
-1. Core domain: `CredentialDisplay` + `StoredCredential.display` +
-   `CredentialSnapshot.display` (+ accessor). Green `nebula-credential`.
+1. Core domain: `CredentialDisplay` + `CredentialSnapshot.display` (field +
+   `with_display`/`display()`). **`StoredCredential` struct stays unchanged** —
+   display persists under the facade-owned `metadata["display"]` sub-object (see
+   the decision above), not a new struct field. Green `nebula-credential`.
 2. Facade: thread `CredentialDisplay` through `create`/`update`/`persist_resolved`
    /`ops.snapshot`/`test_support`/tests. Green `nebula-credential-runtime`.
 3. Server (`apps/server`): deps + deny wrappers; build `CredentialService` in

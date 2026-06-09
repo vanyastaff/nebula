@@ -84,7 +84,7 @@ pub enum CredentialServiceFactoryError {
 /// credential types registered (`api_key`, `basic_auth`, `oauth2`).
 ///
 /// The service shares its registered type set with the schema port via
-/// [`super::credential_schema_registry::default_registry`], so the
+/// `credential_schema_registry::default_registry`, so the
 /// registry-advertised capabilities and the dispatch ops table cannot
 /// drift. OAuth2 advertises all four ops-modeled capabilities
 /// (interactive + refreshable + revocable + testable), so each matching
@@ -152,7 +152,7 @@ fn resolve_key_provider() -> Result<Arc<dyn KeyProvider>, CredentialServiceFacto
 /// [`KeyProvider`] (a durable backend, or a test) composes the same service
 /// without going through the `NEBULA_CRED_*` env resolution. Registers the
 /// first-party type set (shared with the schema port via
-/// [`super::credential_schema_registry::default_registry`]) and the matching
+/// `credential_schema_registry::default_registry`) and the matching
 /// dispatch ops.
 ///
 /// # Errors
