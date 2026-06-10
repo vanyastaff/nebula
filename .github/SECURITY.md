@@ -50,9 +50,11 @@ Nebula is under active development. The following policy applies:
 
 Nebula's main trust boundaries:
 
-- **Plugin / sandbox boundary** — `nebula-sandbox` runs untrusted plugin code
-  out-of-process; its protocol is defined in `nebula-plugin-sdk`. Anything
-  inside the sandbox is hostile by default.
+- **Plugin model** — plugins run **in-process** (ADR-0091): a plugin is a Rust
+  crate linked into the host, registered through `nebula-plugin`. There is no
+  process/WASM isolation boundary today — untrusted third-party native code is
+  out of scope (canon §12.6). Trust is established at build/dependency time, not
+  at runtime.
 - **Credential boundary** — `nebula-credential` and
   `nebula-credential-runtime` own credential material. Other crates receive
   `CredentialGuard<C>` (which is `!Clone` and zeroizes on drop via a manual
