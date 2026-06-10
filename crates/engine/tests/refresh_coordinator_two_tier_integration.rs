@@ -267,6 +267,7 @@ async fn replica_b_does_not_retry_after_replica_a_reauth_required() {
     let expires_at = chrono::Utc::now() - chrono::Duration::minutes(1); // already expired
     let seed = StoredCredential {
         id: credential_id.clone(),
+        name: None,
         credential_key: "i1_regression".into(),
         data: br#"{"token":"old"}"#.to_vec(),
         state_kind: "i1_regression".into(),

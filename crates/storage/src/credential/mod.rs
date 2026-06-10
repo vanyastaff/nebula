@@ -35,6 +35,12 @@ pub mod backup;
 /// Cross-replica refresh claim repository (CAS + heartbeat).
 pub mod refresh_claim;
 
+#[cfg(feature = "sqlite")]
+pub mod sqlite;
+
+#[cfg(feature = "postgres")]
+pub mod postgres;
+
 #[cfg(feature = "rotation")]
 pub use backup::RotationBackup;
 #[cfg(any(test, feature = "test-util"))]
@@ -48,6 +54,8 @@ pub use layer::{
 pub use memory::InMemoryStore;
 #[cfg(any(test, feature = "credential-in-memory"))]
 pub use pending::InMemoryPendingStore;
+#[cfg(feature = "postgres")]
+pub use postgres::PgCredentialStore;
 pub use provider_cache::{ProviderCacheConfig, ProviderCacheLayer, ProviderCacheStats};
 #[cfg(feature = "postgres")]
 pub use refresh_claim::PgRefreshClaimRepo;
@@ -57,3 +65,5 @@ pub use refresh_claim::{
     ClaimAttempt, ClaimToken, HeartbeatError, InMemoryRefreshClaimRepo, ReclaimedClaim,
     RefreshClaim, RefreshClaimRepo, ReplicaId, RepoError, SentinelState,
 };
+#[cfg(feature = "sqlite")]
+pub use sqlite::SqliteCredentialStore;

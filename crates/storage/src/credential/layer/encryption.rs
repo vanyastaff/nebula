@@ -406,6 +406,7 @@ mod tests {
 
         let cred = StoredCredential {
             id: "legacy-1".into(),
+            name: None,
             credential_key: "test_credential".into(),
             data: encrypted_bytes,
             state_kind: "test".into(),
@@ -610,6 +611,7 @@ mod tests {
 
         let cred = StoredCredential {
             id: "legacy-1".into(),
+            name: None,
             credential_key: "test_credential".into(),
             data: envelope_bytes,
             state_kind: "test".into(),

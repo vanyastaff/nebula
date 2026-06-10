@@ -65,6 +65,9 @@ pub trait ScopeResolver: Send + Sync {
 pub struct StoredCredential {
     /// The credential ID.
     pub id: String,
+    /// User-facing credential name (n8n-style "My Google Account"). `None` for
+    /// system / unnamed credentials. When `Some`, unique per owner.
+    pub name: Option<String>,
     /// The credential type key (`Credential::KEY`), identifying which
     /// `Credential` implementation produced this stored state.
     pub credential_key: String,
@@ -231,6 +234,7 @@ pub mod test_helpers {
     pub fn make_credential(id: &str, data: &[u8]) -> StoredCredential {
         StoredCredential {
             id: id.into(),
+            name: None,
             credential_key: "test_credential".into(),
             data: data.to_vec(),
             state_kind: "test".into(),

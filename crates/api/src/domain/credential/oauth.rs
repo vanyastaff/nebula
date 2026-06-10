@@ -445,6 +445,7 @@ async fn persist_oauth_state(
         .map_err(|e| map_oauth_store_err(e, credential_id))?;
     let stored = StoredCredential {
         id: credential_id.to_owned(),
+        name: existing.name,
         credential_key: OAuth2Credential::KEY.to_owned(),
         data,
         state_kind: OAuth2State::KIND.to_owned(),
@@ -492,6 +493,7 @@ async fn prepare_oauth_credential(
             let now = chrono::Utc::now();
             let stored = StoredCredential {
                 id: credential_id.to_owned(),
+                name: None,
                 credential_key: OAuth2Credential::KEY.to_owned(),
                 data: Vec::new(),
                 state_kind: OAuth2State::KIND.to_owned(),

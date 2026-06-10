@@ -15,11 +15,6 @@ mod audit;
     missing_docs,
     reason = "row structs mirror SQL columns; per-field docs add noise without value"
 )]
-mod credential;
-#[expect(
-    missing_docs,
-    reason = "row structs mirror SQL columns; per-field docs add noise without value"
-)]
 mod execution;
 #[expect(
     missing_docs,
@@ -49,7 +44,6 @@ mod webhook_activation;
 mod workflow;
 
 pub use audit::{AuditLogRow, BlobRow, SlugHistoryRow};
-pub use credential::{CredentialAuditRow, CredentialRow, PendingCredentialRow};
 pub use execution::{ExecutionNodeRow, ExecutionRow};
 pub use org::{OrgMemberRow, OrgRow, ServiceAccountRow, WorkspaceMemberRow, WorkspaceRow};
 pub use quota::{OrgQuotaRow, OrgQuotaUsageRow, WorkspaceQuotaUsageRow};

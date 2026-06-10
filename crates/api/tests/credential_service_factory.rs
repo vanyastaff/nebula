@@ -9,10 +9,10 @@
 
 use std::sync::Arc;
 
-use nebula_api::ports::credential_service_factory::with_key_provider;
+use nebula_api::ports::credential_service_factory::{with_key_provider, with_store};
 use nebula_credential::CredentialDisplay;
 use nebula_credential_runtime::TenantScope;
-use nebula_storage::credential::EnvKeyProvider;
+use nebula_storage::credential::{EnvKeyProvider, SqliteCredentialStore};
 use serde_json::json;
 
 /// 32 `0x42` bytes, base64 — a valid AES-256 key fixture (mirrors the
@@ -52,4 +52,39 @@ async fn factory_builds_service_and_create_round_trips() {
     assert_eq!(got.credential_key, "api_key");
     assert_eq!(got.display.display_name.as_deref(), Some("Test key"));
     assert!(!format!("{got:?}").contains("k-factory-test"));
+}
+
+#[tokio::test]
+async fn factory_composes_over_durable_sqlite_store_and_round_trips() {
+    // The production path composes the service over a durable SQLite backend
+    // (here an ephemeral `:memory:` DB so the test needs no filesystem). Proves
+    // `with_store` wires `SqliteCredentialStore` behind the full layer stack and
+    // a create/get round-trips through the durable backend.
+    let key = Arc::new(EnvKeyProvider::from_base64(TEST_KEY_B64).expect("valid 32-byte AES key"));
+    let store = SqliteCredentialStore::connect("sqlite::memory:")
+        .await
+        .expect("open + migrate in-memory SQLite");
+    let svc = with_store(store, key).expect("service composes over SQLite backend");
+
+    let scope = TenantScope::new("org", "ws");
+    let head = svc
+        .create(
+            &scope,
+            "api_key",
+            json!({ "api_key": "k-sqlite-test" }),
+            CredentialDisplay {
+                display_name: Some("Durable key".to_owned()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("api_key create succeeds against SQLite store");
+    assert_eq!(head.credential_key, "api_key");
+
+    let got = svc
+        .get(&scope, &head.id)
+        .await
+        .expect("get from SQLite store");
+    assert_eq!(got.display.display_name.as_deref(), Some("Durable key"));
+    assert!(!format!("{got:?}").contains("k-sqlite-test"));
 }

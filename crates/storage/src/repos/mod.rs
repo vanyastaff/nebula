@@ -15,7 +15,7 @@
 //!   `InMemoryIdempotencyStoreRepo`, consumed by the API idempotency
 //!   middleware (`StorageBackedIdempotencyStore`).
 //! - **Webhook-activation store** — `WebhookActivationRepo`.
-//! - **Identity-row surface** — `AuditRepo`, `BlobRepo`, `CredentialRepo`,
+//! - **Identity-row surface** — `AuditRepo`, `BlobRepo`,
 //!   `OrgRepo`, `QuotaRepo`, `ResourceRepo`, `TriggerRepo`, `UserRepo`,
 //!   `WorkspaceRepo`. The Postgres glue in `crate::pg` implements the
 //!   subset the API consumes.
@@ -32,7 +32,6 @@
 mod audit;
 mod blob;
 mod control_queue;
-mod credential;
 mod idempotency;
 mod org;
 mod quota;
@@ -47,7 +46,6 @@ pub use blob::BlobRepo;
 pub use control_queue::{
     ControlCommand, ControlQueueEntry, ControlQueueRepo, InMemoryControlQueueRepo, ReclaimOutcome,
 };
-pub use credential::CredentialRepo;
 pub use idempotency::{CachedRecord, IdempotencyStoreRepo, InMemoryIdempotencyStoreRepo};
 pub use org::OrgRepo;
 pub use quota::QuotaRepo;

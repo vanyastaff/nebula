@@ -182,6 +182,7 @@ async fn typed_id_routes_through_refresh_coalesced() {
 
     let cred = StoredCredential {
         id: credential_id.clone(),
+        name: None,
         credential_key: "two_tier_test".into(),
         data,
         state_kind: "two_tier_test".into(),

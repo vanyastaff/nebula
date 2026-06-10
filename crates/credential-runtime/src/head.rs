@@ -80,6 +80,7 @@ mod tests {
         let now = Utc::now();
         StoredCredential {
             id: "cred_01ABCDEFGHJKMNPQRSTVWXYZ0".to_owned(),
+            name: None,
             credential_key: "api_key".to_owned(),
             data: vec![1, 2, 3],
             state_kind: "api_key_state".to_owned(),

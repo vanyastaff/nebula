@@ -233,6 +233,7 @@ impl ServerRuntime {
         // closed in production when `NEBULA_CRED_MASTER_KEY` is unset/malformed.
         let credential_service =
             nebula_api::ports::credential_service_factory::try_default_credential_service()
+                .await
                 .map_err(|e| TransportInitError::CredentialServiceInit(e.to_string()))?;
         state = state.with_credential_service(credential_service);
         // Build ONE shared `Arc<dyn EmailPort>` and pass the same Arc
