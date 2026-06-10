@@ -10,17 +10,27 @@
 //! the pattern used by `tests/refresh_claim_sqlite_integration.rs`.
 
 #![cfg(all(
-    feature = "sqlite",
     feature = "test-util",
-    feature = "credential-in-memory"
+    any(
+        feature = "sqlite",
+        feature = "postgres",
+        feature = "credential-in-memory"
+    )
 ))]
-
-use std::str::FromStr;
 
 use nebula_credential::store::test_helpers::make_credential;
 use nebula_credential::{CredentialStore, PutMode, StoreError};
-use nebula_storage::credential::{InMemoryStore, SqliteCredentialStore};
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+
+#[cfg(feature = "credential-in-memory")]
+use nebula_storage::credential::InMemoryStore;
+#[cfg(feature = "postgres")]
+use nebula_storage::credential::PgCredentialStore;
+#[cfg(feature = "sqlite")]
+use {
+    nebula_storage::credential::SqliteCredentialStore,
+    sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions},
+    std::str::FromStr,
+};
 
 // ── SQLite pool helper ────────────────────────────────────────────────────────
 
@@ -29,6 +39,7 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 /// `mode=memory&cache=shared` is mandatory: plain `sqlite::memory:` gives each
 /// connection a separate, invisible database. The random name keeps concurrent
 /// test runs in the same process isolated from each other.
+#[cfg(feature = "sqlite")]
 async fn sqlite_pool() -> sqlx::SqlitePool {
     let db_name = format!("nebula-cred-conformance-{}", uuid::Uuid::new_v4());
     let url = format!("sqlite:file:{db_name}?mode=memory&cache=shared");
@@ -248,19 +259,59 @@ async fn run_conformance<S: CredentialStore>(store: S) {
 
 // ── test entry points ─────────────────────────────────────────────────────────
 
+#[cfg(feature = "credential-in-memory")]
 #[tokio::test]
 async fn conformance_in_memory() {
     run_conformance(InMemoryStore::new()).await;
 }
 
+#[cfg(feature = "sqlite")]
 #[tokio::test]
 async fn conformance_sqlite() {
     let pool = sqlite_pool().await;
     run_conformance(SqliteCredentialStore::new(pool)).await;
 }
 
+// ── Postgres backend (DATABASE_URL-gated; skips clean when unset) ──────────────
+
+/// Connect a Postgres pool from `DATABASE_URL` and apply migration 0030.
+///
+/// Returns `None` (skip) when `DATABASE_URL` is unset; panics when it is set
+/// but unusable, so a misconfigured CI surfaces loudly rather than silently
+/// skipping — mirrors `tests/pg_idempotency.rs`.
+#[cfg(feature = "postgres")]
+async fn pg_pool() -> Option<sqlx::PgPool> {
+    let url = match std::env::var("DATABASE_URL") {
+        Ok(u) if !u.is_empty() => u,
+        _ => return None,
+    };
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(2)
+        .connect(&url)
+        .await
+        .expect("connect Postgres (DATABASE_URL)");
+    sqlx::query(include_str!(
+        "../migrations/postgres/0030_credentials_store.sql"
+    ))
+    .execute(&pool)
+    .await
+    .expect("migration 0030 applied to the Postgres database");
+    Some(pool)
+}
+
+#[cfg(feature = "postgres")]
+#[tokio::test]
+async fn conformance_postgres() {
+    let Some(pool) = pg_pool().await else {
+        eprintln!("Postgres conformance skipped — DATABASE_URL unset");
+        return;
+    };
+    run_conformance(PgCredentialStore::new(pool)).await;
+}
+
 // ── SQLite-specific: name uniqueness is enforced at the index level ───────────
 
+#[cfg(feature = "sqlite")]
 #[tokio::test]
 async fn sqlite_name_uniqueness_enforced_by_index() {
     let pool = sqlite_pool().await;
@@ -293,6 +344,7 @@ async fn sqlite_name_uniqueness_enforced_by_index() {
 
 // ── SQLite-specific: get on missing → NotFound ────────────────────────────────
 
+#[cfg(feature = "sqlite")]
 #[tokio::test]
 async fn sqlite_get_not_found() {
     let pool = sqlite_pool().await;
