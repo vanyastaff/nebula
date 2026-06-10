@@ -90,12 +90,6 @@ deny = [
     "nebula-api",
     # apps/server composition root wires in-memory repos directly (default_state).
     "nebula-server",
-    # Dev-only: `crates/credential-vault/tests/cache_integration.rs`
-    # exercises `ProviderCacheLayer` over `VaultProvider` to prove the
-    # cache/lease wiring from ADR-0051 Phase A composes with the Vault
-    # backend introduced in Phase C. Same pattern as the engine dev-dep
-    # carved out above for the §13 knife integration test.
-    "nebula-credential-vault",
     # nebula-credential-runtime composes the storage-owned layered
     # CredentialStore stack (Audit/Cache/Encryption) inside build().
     "nebula-credential-runtime",
@@ -108,9 +102,9 @@ deny = [
   # repository traits, port-local DTO rows, the plain-data `Scope` value
   # type, `StorageError`, and the `TransitionBatch` unit-of-work. Being a
   # Core-tier contract it is broadly importable: the adapter
-  # (`nebula-storage`), the loom probe, the tenancy decorator, the
-  # exec/api consumers, and the credential-vault dev-dep may depend on it
-  # downward. It has no sqlx and no upward deps.
+  # (`nebula-storage`), the loom probe, the tenancy decorator, and the
+  # exec/api consumers may depend on it downward. It has no sqlx and no
+  # upward deps.
   { crate = "nebula-storage-port", wrappers = [
     "nebula-storage",
     "nebula-storage-loom-probe",
@@ -118,8 +112,7 @@ deny = [
     "nebula-engine",
     "nebula-api",
     "nebula-credential-runtime",
-    "nebula-credential-vault",
-  ], reason = "Storage port is a Core-tier contract; the adapter, tenancy decorator, exec/api consumers (incl. the credential-runtime facade, which derives the canonical Scope::credential_owner_id), and the credential-vault dev-dep may depend on it" },
+  ], reason = "Storage port is a Core-tier contract; the adapter, tenancy decorator, and exec/api consumers (incl. the credential-runtime facade, which derives the canonical Scope::credential_owner_id) may depend on it" },
 
   # nebula-tenancy is the Business-tier multi-tenancy security boundary: it
   # owns the policy (resolve `Scope` from a `Principal`, inject it, enforce
@@ -164,7 +157,7 @@ deny = [
   # (not a single-tier Business crate): the Exec tier (engine/storage) and
   # the API tier consume it directly alongside the Business tier
   # (action/plugin/resource) and the first-party backends
-  # (credential-builtin/-vault). The AGENTS.md layer map reflects this as a
+  # (credential-builtin). The AGENTS.md layer map reflects this as a
   # shared-infra note rather than a Business row. The allowlist locks the
   # current consumer set so a future PR cannot introduce an unreviewed
   # upward dependency from core/*.
@@ -177,7 +170,6 @@ deny = [
     # (CredentialService facade + type registry + ops dispatch). See
     # docs/adr/0081-m6-resource-credential-integration.md.
     "nebula-credential-runtime",
-    "nebula-credential-vault",
     "nebula-engine",
     "nebula-plugin",
     "nebula-resource",
@@ -229,16 +221,6 @@ deny = [
     "nebula-credential-runtime",
   ], reason = "Built-in credential types are first-party; the credential-runtime composition root wires them via register_builtins (ADR-0066, consolidated into ADR-0081)" },
 
-  # nebula-credential-vault is the first concrete LeasedProvider impl per
-  # ADR-0051 Phase C — Business-tier backend wrapping the HashiCorp Vault
-  # HTTP API (KV v2 + dynamic secrets). Plugin authors depend on the
-  # contract crate (`nebula-credential`); composition roots wire this
-  # backend in via `Arc<dyn ExternalProvider>` so it stays decoupled from
-  # any specific Exec/API consumer. The wrapper allowlist starts empty
-  # and is widened as composition roots adopt the provider.
-  { crate = "nebula-credential-vault", wrappers = [
-    "nebula-credential-vault",
-  ], reason = "Vault is a first-party LeasedProvider backend (ADR-0051 Phase C); consumers wire it through their composition root, not via direct deps from upper tiers" },
   # nebula-credential-runtime is the Exec-tier owner of the credential
   # management bounded context (CredentialService facade + type registry +
   # state-source resolution + observability). Narrowly supersedes the

@@ -786,14 +786,14 @@ mod tests {
     /// key at construction time.
     ///
     /// Only used by the cross-layer tests below (feature = "test-util").
-    #[cfg(feature = "test-util")]
+    #[cfg(all(feature = "test-util", feature = "sqlite"))]
     struct CountingKeyProvider {
         inner: StaticKeyProvider,
         current_key_calls: AtomicUsize,
         version_calls: AtomicUsize,
     }
 
-    #[cfg(feature = "test-util")]
+    #[cfg(all(feature = "test-util", feature = "sqlite"))]
     impl CountingKeyProvider {
         fn new(key: Arc<EncryptionKey>) -> Self {
             Self {
@@ -812,7 +812,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "test-util")]
+    #[cfg(all(feature = "test-util", feature = "sqlite"))]
     impl KeyProvider for CountingKeyProvider {
         fn current_key(&self) -> Result<Arc<EncryptionKey>, ProviderError> {
             self.current_key_calls.fetch_add(1, Ordering::SeqCst);
@@ -827,16 +827,20 @@ mod tests {
 
     // Cross-layer test — requires credential's `test_helpers` (test-util feature)
     // plus storage's in-memory store (credential-in-memory feature).
-    #[cfg(feature = "test-util")]
+    #[cfg(all(feature = "test-util", feature = "sqlite"))]
     #[tokio::test]
-    async fn layer_refetches_provider_on_put_and_get() {
+    async fn layer_refetches_provider_on_put_and_get() -> Result<(), nebula_credential::StoreError>
+    {
         use nebula_credential::{CredentialStore, PutMode, store::test_helpers::make_credential};
 
-        use super::super::{layer::EncryptionLayer, memory::InMemoryStore};
+        use super::super::{layer::EncryptionLayer, sqlite::SqliteCredentialStore};
 
         let key = Arc::new(EncryptionKey::from_bytes([0x33; 32]));
         let provider = Arc::new(CountingKeyProvider::new(Arc::clone(&key)));
-        let store = EncryptionLayer::new(InMemoryStore::new(), Arc::clone(&provider) as _);
+        let store = EncryptionLayer::new(
+            SqliteCredentialStore::connect_memory().await?,
+            Arc::clone(&provider) as _,
+        );
 
         let before_put = provider.current_key_calls();
         store
@@ -859,6 +863,7 @@ mod tests {
             provider.version_calls() > 0,
             "provider version must be queried too"
         );
+        Ok(())
     }
 
     /// Failure from `current_key()` surfaces through the layer as a
@@ -866,10 +871,10 @@ mod tests {
     /// surface expects.
     ///
     /// Only used by the cross-layer tests below (feature = "test-util").
-    #[cfg(feature = "test-util")]
+    #[cfg(all(feature = "test-util", feature = "sqlite"))]
     struct FailingKeyProvider;
 
-    #[cfg(feature = "test-util")]
+    #[cfg(all(feature = "test-util", feature = "sqlite"))]
     impl KeyProvider for FailingKeyProvider {
         fn current_key(&self) -> Result<Arc<EncryptionKey>, ProviderError> {
             Err(ProviderError::NotConfigured {
@@ -883,17 +888,18 @@ mod tests {
     }
 
     // Cross-layer test — see `layer_refetches_provider_on_put_and_get`.
-    #[cfg(feature = "test-util")]
+    #[cfg(all(feature = "test-util", feature = "sqlite"))]
     #[tokio::test]
-    async fn provider_failure_surfaces_as_backend_error() {
+    async fn provider_failure_surfaces_as_backend_error()
+    -> Result<(), nebula_credential::StoreError> {
         use nebula_credential::{
             CredentialStore, PutMode, StoreError, store::test_helpers::make_credential,
         };
 
-        use super::super::{layer::EncryptionLayer, memory::InMemoryStore};
+        use super::super::{layer::EncryptionLayer, sqlite::SqliteCredentialStore};
 
         let store = EncryptionLayer::new(
-            InMemoryStore::new(),
+            SqliteCredentialStore::connect_memory().await?,
             Arc::new(FailingKeyProvider) as Arc<dyn KeyProvider>,
         );
 
@@ -905,5 +911,6 @@ mod tests {
             matches!(err, StoreError::Backend(_)),
             "expected Backend variant, got {err:?}"
         );
+        Ok(())
     }
 }

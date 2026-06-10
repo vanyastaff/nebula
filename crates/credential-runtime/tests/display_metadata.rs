@@ -12,7 +12,7 @@ use serde_json::json;
 
 #[tokio::test]
 async fn display_round_trips_through_create_get_and_update() {
-    let svc = in_memory_service();
+    let svc = in_memory_service().await;
     let scope = TenantScope::new("org1", "ws1");
 
     let mut tags = std::collections::BTreeMap::new();
@@ -61,7 +61,7 @@ async fn display_round_trips_through_create_get_and_update() {
 
 #[tokio::test]
 async fn display_only_update_keeps_state_and_respects_cas() {
-    let svc = in_memory_service();
+    let svc = in_memory_service().await;
     let scope = TenantScope::new("org1", "ws1");
 
     let created = svc
@@ -113,7 +113,7 @@ async fn display_only_update_keeps_state_and_respects_cas() {
 
 #[tokio::test]
 async fn empty_display_is_the_default_on_get() {
-    let svc = in_memory_service();
+    let svc = in_memory_service().await;
     let scope = TenantScope::new("org1", "ws1");
 
     svc.create(

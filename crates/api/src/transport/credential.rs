@@ -762,13 +762,17 @@ mod tests {
 
     /// State with the real registry-backed schema port AND a composed
     /// `CredentialService` — the production shape.
-    fn test_state() -> AppState {
+    async fn test_state() -> AppState {
         let port = crate::ports::credential_schema_registry::try_default_registry_port()
             .expect("first-party registry composes");
         let key =
             Arc::new(EnvKeyProvider::from_base64(TEST_KEY_B64).expect("valid 32-byte AES key"));
-        let svc = crate::ports::credential_service_factory::with_key_provider(key)
-            .expect("service composes");
+        let svc = match crate::ports::credential_service_factory::with_memory_store(key).await {
+            Ok(svc) => svc,
+            // guard-justified: the fixed AES key fixture + ephemeral in-memory
+            // store always compose; a failure means the host cannot open one.
+            Err(err) => unreachable!("test credential service composes: {err}"),
+        };
         base_state()
             .with_credential_schema(port)
             .with_credential_service(svc)
@@ -847,7 +851,7 @@ mod tests {
     /// the secret never appears in any returned struct.
     #[tokio::test]
     async fn crud_round_trips_without_secret_in_projection() {
-        let s = test_state();
+        let s = test_state().await;
         let scope = test_scope();
         let secret = "sk-unit-crud-NEVER-LEAK-7a7a";
         let created = create_credential(
@@ -927,7 +931,7 @@ mod tests {
     /// success.
     #[tokio::test]
     async fn lifecycle_on_static_type_is_validation_error() {
-        let s = test_state();
+        let s = test_state().await;
         let scope = test_scope();
         let created = create_credential(
             &s,
@@ -961,7 +965,7 @@ mod tests {
     /// persisted credential is visible to the CRUD plane (one store).
     #[tokio::test]
     async fn resolve_complete_persists_and_is_visible_to_crud() {
-        let s = test_state();
+        let s = test_state().await;
         let scope = test_scope();
         let res = resolve_credential(
             &s,
@@ -987,7 +991,7 @@ mod tests {
     /// disclosure) end-to-end through the transport mapping.
     #[tokio::test]
     async fn cross_workspace_get_is_flat_404() {
-        let s = test_state();
+        let s = test_state().await;
         let scope_a = Scope::new("ws-a", "org");
         let scope_b = Scope::new("ws-b", "org");
         let created = create_credential(

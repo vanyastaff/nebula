@@ -1,5 +1,5 @@
-//! Credential persistence — `InMemoryStore`, `KeyProvider`, and composable
-//! layers.
+//! Credential persistence — durable stores (`SqliteCredentialStore`,
+//! `PgCredentialStore`), `KeyProvider`, and composable layers.
 //!
 //! Two distinct layer families live here:
 //!
@@ -22,9 +22,6 @@
 pub mod key_provider;
 pub mod layer;
 pub mod provider_cache;
-
-#[cfg(any(test, feature = "credential-in-memory"))]
-pub mod memory;
 
 #[cfg(any(test, feature = "credential-in-memory"))]
 pub mod pending;
@@ -50,8 +47,6 @@ pub use layer::{
     AuditEvent, AuditLayer, AuditOperation, AuditResult, AuditSink, CacheConfig, CacheLayer,
     CacheStats, EncryptionLayer,
 };
-#[cfg(any(test, feature = "credential-in-memory"))]
-pub use memory::InMemoryStore;
 #[cfg(any(test, feature = "credential-in-memory"))]
 pub use pending::InMemoryPendingStore;
 #[cfg(feature = "postgres")]

@@ -95,6 +95,32 @@ impl SqliteCredentialStore {
 
         Ok(Self { pool })
     }
+
+    /// Open a fresh, uniquely-named in-memory SQLite store with migration 0030
+    /// applied — the standard test backend for credential-store consumers.
+    ///
+    /// Each call gets an isolated `mode=memory&cache=shared` database keyed by a
+    /// random name, so concurrent tests in the same process never collide and a
+    /// pool with multiple connections all observe the same data (plain
+    /// `sqlite::memory:` gives each connection a private, invisible database).
+    /// The returned store must be held for the lifetime of the test: the
+    /// in-memory database is dropped when its last pooled connection closes.
+    ///
+    /// Test-only (`test-util` feature / `cfg(test)`); never compiled into a
+    /// release build (ADR-0023).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Backend`] if the pool cannot be opened or migration
+    /// 0030 fails to apply.
+    #[cfg(any(test, feature = "test-util"))]
+    pub async fn connect_memory() -> Result<Self, StoreError> {
+        let name = uuid::Uuid::new_v4();
+        Self::connect(&format!(
+            "sqlite:file:nebula-cred-mem-{name}?mode=memory&cache=shared"
+        ))
+        .await
+    }
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────

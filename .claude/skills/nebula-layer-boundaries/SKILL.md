@@ -53,7 +53,7 @@ cannot quietly add an upward edge.
 - **`nebula-credential`** (credential *contract*) — `deny.toml` lines ~186-213.
   Consumed by Business (`action`, `plugin`, `resource`, `tenancy`), Exec
   (`engine`, `storage`, `credential-runtime`), API (`api`), and the first-party
-  backends (`credential-builtin`, `credential-vault`).
+  backends (`credential-builtin`).
   Plugin authors depend on this contract crate, **not** on
   `nebula-credential-builtin` (whose wrappers list is intentionally narrow:
   itself + `credential-runtime`).
@@ -62,7 +62,7 @@ cannot quietly add an upward edge.
   plain-data `Scope { workspace_id, org_id }`, `StorageError`,
   `TransitionBatch`. **No sqlx, no upward deps.** Broadly importable: the
   adapter (`storage`), loom probe, tenancy decorator, `engine`/`api`,
-  `credential-runtime`, plus a `credential-vault` dev-dep.
+  `credential-runtime`.
   Distinguish from **`nebula-storage`** (Exec) — the sole adapter impl
   (InMemory + SQLite + Postgres, sqlx, migrations); its wrappers list is the
   composition seam (`engine`, `api`, `server`, + dev-deps). The legacy

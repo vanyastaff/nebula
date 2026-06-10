@@ -369,7 +369,8 @@ async fn build_port_state_with(with_credential_port: bool) -> (AppState, PortHan
         nebula_storage::credential::EnvKeyProvider::from_base64(TEST_CRED_KEY_B64)
             .expect("valid 32-byte AES key fixture"),
     );
-    let svc = nebula_api::ports::credential_service_factory::with_key_provider(key)
+    let svc = nebula_api::ports::credential_service_factory::with_memory_store(key)
+        .await
         .expect("credential service composes");
     let state = state.with_credential_service(svc);
     let state = if with_credential_port {
