@@ -906,8 +906,8 @@ mod tests {
     use crate::test_fixtures::RefreshableFixtureCredential;
     use nebula_credential::{Capabilities, Credential, CredentialContext};
     use nebula_credential_builtin::BearerTokenCredential;
-    use nebula_credential_testutil::InMemoryPendingStore;
     use nebula_schema::FieldValues;
+    use nebula_storage::credential::InMemoryPendingStore;
 
     type Ops = DispatchOps<InMemoryPendingStore>;
 

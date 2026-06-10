@@ -10,13 +10,9 @@
 //! lives in the blanket, not here: this store persists raw `Vec<u8>` plus the
 //! binding tuple and absolute expiry.
 //!
-//! # Shim note
-//!
-//! A body-identical shim exists in `nebula-credential-testutil` for crates that
-//! cannot dev-dep on `nebula-storage` (the dev-dep path produces a two-copies
-//! cargo resolution that breaks the `PendingStateStore` trait bound). Both copies
-//! implement the same trait with the same semantics. Production consumers and
-//! composition roots should prefer this storage-side copy.
+//! This is the single canonical in-memory `PendingStateStore`. A Business-tier
+//! consumer that cannot dev-dep `nebula-storage` (the Exec adapter) keeps a
+//! colocated `#[cfg(test)]` double instead of depending on this type.
 //!
 //! [`PendingStateStore`]: nebula_credential::PendingStateStore
 //!

@@ -1439,12 +1439,11 @@ pub mod test_support {
         CredentialEvent, CredentialId, CredentialRegistry, ErasedPendingStore,
     };
     use nebula_credential_builtin::register_builtins;
-    use nebula_credential_testutil::InMemoryPendingStore;
     use nebula_crypto::EncryptionKey;
     use nebula_engine::credential::LeaseLifecycleConfig;
     use nebula_eventbus::EventBus;
     use nebula_storage::credential::{
-        AuditEvent, AuditSink, CacheConfig, InMemoryStore, StaticKeyProvider,
+        AuditEvent, AuditSink, CacheConfig, InMemoryPendingStore, InMemoryStore, StaticKeyProvider,
     };
     use tokio_util::sync::CancellationToken;
 

@@ -3497,7 +3497,6 @@ dependencies = [
  "nebula-credential",
  "nebula-credential-builtin",
  "nebula-credential-runtime",
- "nebula-credential-testutil",
  "nebula-crypto",
  "nebula-engine",
  "nebula-error",
@@ -3514,18 +3513,6 @@ dependencies = [
  "tokio-util",
  "tracing",
  "trybuild",
- "zeroize",
-]
-
-[[package]]
-name = "nebula-credential-testutil"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "nebula-credential",
- "serde",
- "serde_json",
- "tokio",
  "zeroize",
 ]
 
@@ -4036,7 +4023,6 @@ dependencies = [
  "chrono",
  "nebula-core",
  "nebula-credential",
- "nebula-credential-testutil",
  "nebula-storage-port",
  "serde_json",
  "thiserror",

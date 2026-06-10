@@ -27,7 +27,6 @@ and `deny.toml`.
 | `nebula-credential-runtime` (`crates/credential-runtime/`) | Exec | The `CredentialService` **facade**: resolve/refresh/rotate/revoke entry points (`src/service.rs`, `src/ops.rs`), validate→encrypt→store pipeline, bind-population seam (`src/binding.rs`, `ValidatedCredentialBinding`). |
 | `nebula-credential-builtin` (`crates/credential-builtin/`) | Business | First-party concrete credential types; `register_builtins`. |
 | `nebula-credential-vault` (`crates/credential-vault/`) | Business | Concrete `LeasedProvider` backend (HashiCorp Vault, ADR-0051 Phase C). |
-| `nebula-credential-testutil` (`crates/credential-testutil/`) | test-only | `InMemoryStore` / `InMemoryPendingStore` doubles; `publish=false`. |
 | `nebula-crypto` (`crates/crypto/`) | Cross-cutting | AES-256-GCM + Argon2id + `EncryptedData`/`CryptoError`. Crypto was **extracted out** of the credential crate (ADR-0088 D7). |
 | `nebula-engine` (`crates/engine/src/credential/`) | Exec | The refresh/rotation **mechanism**: `resolver.rs`, `rotation/resource_fanout.rs`, `lease/scheduler.rs`. |
 
