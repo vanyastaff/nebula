@@ -352,3 +352,33 @@ async fn sqlite_get_not_found() {
     let err = store.get("does-not-exist").await.unwrap_err();
     assert!(matches!(err, StoreError::NotFound { .. }));
 }
+
+// ── SQLite-specific: connect() is idempotent and preserves existing rows ──────
+// Regression guard for the durability bug — migration 0030 begins with
+// `DROP TABLE credentials`, so a `connect()` that re-ran it on every call would
+// wipe the store on each restart. A first `connect()` provisions the table and
+// writes a row; a second `connect()` to the same database must NOT drop it. The
+// first handle is held open so the shared-cache in-memory DB survives, standing
+// in for a persistent file across a process restart.
+#[cfg(feature = "sqlite")]
+#[tokio::test]
+async fn sqlite_connect_is_idempotent_and_preserves_existing_rows() {
+    let name = format!("nebula-cred-restart-{}", uuid::Uuid::new_v4());
+    let url = format!("sqlite:file:{name}?mode=memory&cache=shared");
+
+    let first = SqliteCredentialStore::connect(&url).await.unwrap();
+    first
+        .put(make_credential("survivor", b"secret"), PutMode::CreateOnly)
+        .await
+        .unwrap();
+
+    let second = SqliteCredentialStore::connect(&url).await.unwrap();
+    let got = second
+        .get("survivor")
+        .await
+        .expect("credential survives a reconnect — connect() must not re-run the DROP");
+    assert_eq!(got.data, b"secret");
+
+    drop(first);
+    drop(second);
+}

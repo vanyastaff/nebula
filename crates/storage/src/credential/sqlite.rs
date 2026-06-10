@@ -73,12 +73,25 @@ impl SqliteCredentialStore {
             .await
             .map_err(|e| StoreError::Backend(format!("open SQLite `{url}`: {e}").into()))?;
 
-        sqlx::query(include_str!(
-            "../../migrations/sqlite/0030_credentials_store.sql"
-        ))
-        .execute(&pool)
+        // Bootstrap is idempotent: migration 0030 begins with `DROP TABLE`
+        // (it removes the legacy Model-B schema), so re-running it on every
+        // connect would WIPE a populated store on each restart — defeating
+        // durability. Apply it only when the `credentials` table is absent
+        // (a fresh database); an already-provisioned store keeps its rows.
+        let provisioned: Option<(String,)> = sqlx::query_as(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'credentials'",
+        )
+        .fetch_optional(&pool)
         .await
-        .map_err(|e| StoreError::Backend(format!("apply migration 0030: {e}").into()))?;
+        .map_err(|e| StoreError::Backend(format!("probe credentials table: {e}").into()))?;
+        if provisioned.is_none() {
+            sqlx::query(include_str!(
+                "../../migrations/sqlite/0030_credentials_store.sql"
+            ))
+            .execute(&pool)
+            .await
+            .map_err(|e| StoreError::Backend(format!("apply migration 0030: {e}").into()))?;
+        }
 
         Ok(Self { pool })
     }
@@ -318,7 +331,18 @@ impl SqliteCredentialStore {
             Err(sqlx::Error::Database(db_err))
                 if db_err.kind() == sqlx::error::ErrorKind::UniqueViolation =>
             {
-                Err(StoreError::AlreadyExists { id })
+                // Distinguish a primary-key (id) collision from the
+                // `(owner_id, name)` partial-unique-index collision: only the
+                // former means this id already exists. A name collision on a
+                // *new* id must NOT report `AlreadyExists { id }` (misleading).
+                let msg = db_err.message();
+                if msg.contains("credentials.id") {
+                    Err(StoreError::AlreadyExists { id })
+                } else {
+                    Err(StoreError::Backend(
+                        format!("credential unique-constraint violation (not id): {msg}").into(),
+                    ))
+                }
             },
             Err(e) => Err(StoreError::Backend(e.into())),
         }
@@ -469,13 +493,19 @@ impl SqliteCredentialStore {
 
             return match current {
                 None => Err(StoreError::NotFound { id }),
-                Some((actual_i64,)) => {
-                    let actual = u64::try_from(actual_i64).unwrap_or(u64::MAX);
-                    Err(StoreError::VersionConflict {
+                // A negative stored version is table corruption, not a normal
+                // version mismatch; surface it as Backend rather than fabricating
+                // an `actual` (which would mask the corruption as VersionConflict).
+                Some((actual_i64,)) => match u64::try_from(actual_i64) {
+                    Ok(actual) => Err(StoreError::VersionConflict {
                         id,
                         expected: expected_version,
                         actual,
-                    })
+                    }),
+                    Err(_) => Err(StoreError::Backend(
+                        format!("stored version {actual_i64} is negative — table corruption")
+                            .into(),
+                    )),
                 },
             };
         }

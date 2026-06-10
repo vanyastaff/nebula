@@ -104,7 +104,10 @@ CREATE INDEX idx_credentials_expiring
 
 **Postgres** mirror: `data BYTEA`, timestamps `TIMESTAMPTZ` (native — millis-INTEGER
 is the SQLite-only workaround for lexicographic text ordering), `version BIGINT`,
-`reauth_required BOOLEAN`, `metadata JSONB`.
+`state_version BIGINT` (holds the full `u32` losslessly), `reauth_required BOOLEAN`,
+`metadata TEXT` (JSON string, mirroring the SQLite store's row mapping — not
+`JSONB`; the store never queries inside `metadata`, so the column type is an
+implementation detail and TEXT keeps both backends' row structs identical).
 
 Conventions follow `credential/refresh_claim/{sqlite,postgres}.rs`:
 - SQLite millis-INTEGER timestamps (`DateTime::timestamp_millis` / `millis_to_utc`);

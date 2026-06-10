@@ -253,7 +253,21 @@ impl PgCredentialStore {
             Err(sqlx::Error::Database(db_err))
                 if db_err.kind() == sqlx::error::ErrorKind::UniqueViolation =>
             {
-                Err(StoreError::AlreadyExists { id })
+                // Only a primary-key collision means this id already exists.
+                // The `(owner_id, name)` partial-unique-index
+                // (`idx_credentials_owner_name`) firing on a *new* id is a name
+                // collision, not `AlreadyExists { id }` — surface it as Backend.
+                match db_err.constraint() {
+                    Some("credentials_pkey") => Err(StoreError::AlreadyExists { id }),
+                    other => Err(StoreError::Backend(
+                        format!(
+                            "credential unique-constraint violation ({}) — not a primary-key \
+                             collision",
+                            other.unwrap_or("unknown")
+                        )
+                        .into(),
+                    )),
+                }
             },
             Err(e) => Err(StoreError::Backend(e.into())),
         }
@@ -393,13 +407,19 @@ impl PgCredentialStore {
 
             return match current {
                 None => Err(StoreError::NotFound { id }),
-                Some((actual_i64,)) => {
-                    let actual = u64::try_from(actual_i64).unwrap_or(u64::MAX);
-                    Err(StoreError::VersionConflict {
+                // A negative stored version is table corruption, not a normal
+                // version mismatch; surface it as Backend rather than fabricating
+                // an `actual` (which would mask the corruption as VersionConflict).
+                Some((actual_i64,)) => match u64::try_from(actual_i64) {
+                    Ok(actual) => Err(StoreError::VersionConflict {
                         id,
                         expected: expected_version,
                         actual,
-                    })
+                    }),
+                    Err(_) => Err(StoreError::Backend(
+                        format!("stored version {actual_i64} is negative — table corruption")
+                            .into(),
+                    )),
                 },
             };
         }
