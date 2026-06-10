@@ -1978,26 +1978,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "enumflags2"
-version = "0.7.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1027f7680c853e056ebcec683615fb6fbbc07dbaa13b4d5d9442b146ded4ecef"
-dependencies = [
- "enumflags2_derive",
-]
-
-[[package]]
-name = "enumflags2_derive"
-version = "0.7.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "67c78a4d8fdf9953a5c9d458f9efe940fd97a0cab0941c075a813ac594733827"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
-]
-
-[[package]]
 name = "equivalent"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3042,17 +3022,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "landlock"
-version = "0.4.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "635839550ae8b90d9fd2571460a6645dc0aec070225956ca7a2831ed31d2795d"
-dependencies = [
- "enumflags2",
- "libc",
- "thiserror",
-]
-
-[[package]]
 name = "language-tags"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3613,7 +3582,6 @@ dependencies = [
  "nebula-plugin",
  "nebula-resilience",
  "nebula-resource",
- "nebula-sandbox",
  "nebula-schema",
  "nebula-storage",
  "nebula-storage-port",
@@ -3631,17 +3599,14 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
- "tempfile",
  "thiserror",
  "tokio",
  "tokio-util",
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
- "tracing-test",
  "url",
  "uuid",
- "wiremock",
  "zeroize",
 ]
 
@@ -3834,7 +3799,6 @@ dependencies = [
 name = "nebula-plugin"
 version = "0.1.0"
 dependencies = [
- "async-trait",
  "insta",
  "nebula-action",
  "nebula-core",
@@ -3842,21 +3806,16 @@ dependencies = [
  "nebula-error",
  "nebula-metadata",
  "nebula-plugin-macros",
- "nebula-plugin-sdk",
  "nebula-resource",
- "nebula-sandbox",
  "nebula-schema",
  "nebula-workflow",
  "pretty_assertions",
  "rstest",
  "semver",
  "serde",
- "serde_json",
  "tempfile",
  "thiserror",
- "tokio",
  "toml",
- "tracing",
 ]
 
 [[package]]
@@ -3868,25 +3827,6 @@ dependencies = [
  "quote",
  "semver",
  "syn",
-]
-
-[[package]]
-name = "nebula-plugin-sdk"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "insta",
- "nebula-metadata",
- "nebula-schema",
- "pretty_assertions",
- "rstest",
- "semver",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
- "tracing",
- "uuid",
 ]
 
 [[package]]
@@ -3948,24 +3888,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
-]
-
-[[package]]
-name = "nebula-sandbox"
-version = "0.1.0"
-dependencies = [
- "landlock",
- "nebula-metadata",
- "nebula-plugin-sdk",
- "nix",
- "serde_json",
- "sha2 0.11.0",
- "tempfile",
- "thiserror",
- "tokio",
- "tokio-util",
- "tracing",
- "uuid",
 ]
 
 [[package]]
@@ -6885,27 +6807,6 @@ dependencies = [
  "tracing-core",
  "tracing-log",
  "tracing-serde",
-]
-
-[[package]]
-name = "tracing-test"
-version = "0.2.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "19a4c448db514d4f24c5ddb9f73f2ee71bfb24c526cf0c570ba142d1119e0051"
-dependencies = [
- "tracing-core",
- "tracing-subscriber",
- "tracing-test-macro",
-]
-
-[[package]]
-name = "tracing-test-macro"
-version = "0.2.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ad06847b7afb65c7866a36664b75c40b895e318cea4f71299f013fb22965329d"
-dependencies = [
- "quote",
- "syn",
 ]
 
 [[package]]

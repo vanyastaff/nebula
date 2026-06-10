@@ -39,8 +39,6 @@ members = [
   "crates/credential/macros",
   "crates/plugin/macros",
   "crates/validator/macros",
-  "crates/sandbox",
-  "crates/plugin-sdk",
   "examples",
 ]
 exclude = ["crates/*/fuzz"]
@@ -77,7 +75,6 @@ thiserror = { version = "2.0.18" }
 anyhow = "1.0.102"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", default-features = false }
-tracing-test = "0.2.6"
 
 # Concurrency and synchronization
 dashmap = { version = "6.1.0", default-features = false }
@@ -163,8 +160,6 @@ jsonwebtoken = { version = "10", features = ["rust_crypto"] }
 # Random number generation
 rand = "0.10"
 
-# Platform-specific
-libc = "0.2"
 
 # Observability (optional)
 opentelemetry = "0.31.0"
@@ -215,7 +210,7 @@ nebula-error-macros = { path = "crates/error/macros" }
 # If you find yourself wanting to `#[allow(...)]` the same pedantic lint in
 # three or more files, consider promoting the allow here instead.
 [workspace.lints.rust]
-unsafe_code = "warn"           # sandbox / plugin-sdk opt out via crate-level `#![allow(unsafe_code)]`
+unsafe_code = "warn"
 unused_lifetimes = "warn"
 unused_qualifications = "warn"
 trivial_numeric_casts = "warn"

@@ -47,9 +47,7 @@ jobs:
           shared-key: cross-platform
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: true
-      - name: Test nebula-sandbox
-        run: cargo test -p nebula-sandbox
       - name: Test nebula-engine
         run: cargo test -p nebula-engine
-      - name: Test nebula-plugin-sdk
-        run: cargo test -p nebula-plugin-sdk
+      - name: Test nebula-plugin
+        run: cargo test -p nebula-plugin

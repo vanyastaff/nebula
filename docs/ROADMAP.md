@@ -60,10 +60,10 @@
   durability debts closed (M0); §10 conditional-flow verified (M1); §11.2
   layered-retry shipped (M2.1); §11.5 Layer-1 lease enforcement verified by
   engine + PG + loom + chaos (M2.2); §M6.2 scoped-resources storage +
-  lifecycle primitives shipped. `sandbox` is correctness-grade; the
-  Plugin-Proto tier (`plugin-sdk`, `sandbox`) was decomposed for honesty
-  (#669); the capability-discovery enforcement gap (canon §4.5) is still
-  open (M4).
+  lifecycle primitives shipped. The out-of-process Plugin-Proto tier
+  (`plugin-sdk`, `sandbox`) was **retired** (ADR-0091); plugins register and
+  dispatch in-process, so the former capability-discovery enforcement gap
+  (M4) no longer applies.
 - **API layer** — fully restructured (`lib` + `apps/server`, domain modules;
   #671) with §4.5-honest stub completion. Auth backend + webhook dispatch +
   idempotency landed (M3.1 mostly closed / M3.3 ✅ / M3.4 ✅); OpenAPI 3.1
@@ -402,17 +402,15 @@ authoritative contract; trace context flows API → engine → action →
 resource; production-grade `AuthBackend` ships; no `/execute` path bypasses
 validation.
 
-### M4 — Plugin capability discovery enforcement
+### M4 — Plugin capability discovery enforcement — RETIRED (ADR-0091)
 
-> Crate boundary (per [`CLAUDE.md`](../CLAUDE.md) layer map +
-> `crates/sandbox/src/lib.rs` module docs): **discovery, `plugin.toml`
-> parsing, the registry adapters, and the `SandboxError → ActionError`
-> mapping live in `nebula-plugin`** (`crates/plugin/src/discovery.rs`,
-> `plugin_toml.rs`, `discovered_plugin.rs`). `nebula-sandbox` is a leaf
-> transport crate with **no per-plugin capability/scope model** — it only
-> spawns the child and round-trips envelopes. The capability gate is a
-> registration-time check in `nebula-plugin`, before `ProcessSandbox`
-> spawns anything.
+> **Retired.** This milestone enforced capabilities for **out-of-process**
+> plugins (`ProcessSandbox` child processes). ADR-0091 retired the
+> out-of-process Plugin-Proto tier; plugins now register and run
+> **in-process**, where the Rust type system and the `PluginRegistry`
+> namespace invariant are the enforcement surface. The criteria below are
+> kept for the record but are not 1.0 work. If untrusted out-of-process
+> plugins return in a future revisit, capability enforcement re-opens then.
 
 Closure criteria (on top of the global DoD):
 
@@ -1076,7 +1074,7 @@ Closure criteria (on top of the global DoD):
   create).
 - `ExecutionEvent` migrates from raw `mpsc` to `nebula-eventbus` so
   multi-subscriber consumers stop reinventing broadcast.
-- `nebula-sdk` and `nebula-plugin-sdk` flip `status: partial → stable` with
+- `nebula-sdk` flips `status: partial → stable` with
   a frozen 1.0 public surface.
 - Health trait extracted; command service extracted.
 
@@ -1128,17 +1126,11 @@ Closure criteria (on top of the global DoD):
       retire for 1.0 with migration guidance.
 - [ ] SDK README frontmatter: `status: partial → stable`.
 
-#### M14.4 nebula-plugin-sdk — partial → stable
+#### M14.4 nebula-plugin-sdk — RETIRED (ADR-0091)
 
-- [ ] Land ADR-0006 slice 1d: `PluginCtx` broker RPC accessors +
-      `PluginSupervisor` (`PluginCtx` is currently a placeholder with no
-      methods).
-- [ ] Capability negotiation in the handshake (cross-dep with M4.1).
-- [ ] Protocol versioning becomes a tested contract.
-- [ ] Retire the 1 flagged panic site to a typed error variant.
-- [ ] Test-coverage lift: handshake + duplex envelope happy/error paths
-      covered by integration tests.
-- [ ] Plugin-sdk README frontmatter: `status: partial → stable`.
+> **Retired.** `nebula-plugin-sdk` was the out-of-process plugin authoring
+> SDK; ADR-0091 retired the out-of-process tier. Plugins are authored
+> in-process against `nebula-plugin` directly. No 1.0 work here.
 
 #### M14.5 nebula-resilience — feature gap closure
 

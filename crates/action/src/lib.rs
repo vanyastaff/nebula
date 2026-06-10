@@ -3,8 +3,8 @@
 //! **Role:** Action Trait Family + Execution Policy Metadata (Ports & Adapters).
 //!
 //! Defines what actions are and how they communicate with the engine. Core types
-//! live here; execution environments (in-process, ProcessSandbox with capability
-//! allowlists and OS-level hardening) are drivers in `nebula-sandbox`.
+//! live here; the engine dispatches actions in-process (`InProcessSandbox`).
+//! Process/WASM isolation is a non-goal (ADR-0091, canon §12.6).
 //! WASM is an explicit non-goal for the action execution surface.
 //!
 //! ## Trait family

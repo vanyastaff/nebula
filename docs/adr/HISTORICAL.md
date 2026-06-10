@@ -16,7 +16,7 @@ numbering `0042-tool-provider` is archive-only.
 | 0003 | Consolidated `Field` enum | accepted |
 | 0004 | Credential Metadata→Record rename | accepted |
 | 0005 | `TriggerHealth` trait | accepted |
-| 0006 | Sandbox Phase 1 broker | accepted |
+| 0006 | Sandbox Phase 1 broker | superseded (0091) |
 | 0007 | Prefixed ULID identifiers | accepted |
 | 0008 | Execution control-queue consumer | accepted |
 | 0009 | Resume persistence schema | accepted |
@@ -35,7 +35,7 @@ numbering `0042-tool-provider` is archive-only.
 | 0022 | Webhook signature policy | accepted |
 | 0023 | `KeyProvider` trait | accepted (location → 0029) |
 | 0024 | Defer dynosaur migration | accepted |
-| 0025 | Sandbox broker RPC surface | accepted |
+| 0025 | Sandbox broker RPC surface | superseded (0091) |
 | 0026 | `nebula-sdk` dependency closure | proposed |
 | 0027 | Plugin load-path stable | accepted |
 | 0028 | Cross-crate credential invariants | accepted |

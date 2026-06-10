@@ -10,16 +10,6 @@ repository.workspace = true
 
 [features]
 default = []
-# Out-of-process plugin dispatch (ADR-0025). Default OFF and intentionally
-# excluded from every default feature set, the SDK/server facades, and the
-# default CI profile: enabling it is a deliberate operator step. The inner
-# `out_of_process_plugin_dirs` runtime config (default empty) is the second
-# gate — both the feature AND a non-empty dir list are required before any
-# `ProcessSandbox` is constructed. Until the ADR-0025 broker lands there is
-# no egress / credential mediation, so enabling this gives untrusted
-# plugins unmediated network / credential access; startup emits a single
-# warn invariant when the gate is open.
-out-of-process-plugins = []
 rotation = ["nebula-credential/rotation", "nebula-storage/rotation"]
 # Run the full 10-min refresh-coordinator chaos test (sub-spec §5.4) in
 # `crates/engine/tests/refresh_coordinator_chaos.rs`. Default CI runs the
@@ -44,7 +34,6 @@ nebula-schema = { path = "../schema" }
 nebula-credential = { path = "../credential" }
 nebula-eventbus = { path = "../eventbus" }
 nebula-resource = { path = "../resource" }
-nebula-sandbox = { path = "../sandbox" }
 nebula-resilience = { path = "../resilience" }
 nebula-storage-port = { path = "../storage-port" }
 nebula-storage = { path = "../storage", features = ["credential-in-memory"] }
@@ -94,9 +83,6 @@ insta = { workspace = true }
 pretty_assertions = { workspace = true }
 proptest = { workspace = true }
 rstest = { workspace = true }
-tempfile = { workspace = true }
-tracing-test = { workspace = true }
-wiremock = { workspace = true }
 opentelemetry_sdk = { workspace = true, features = ["trace"] }
 tracing-subscriber = { workspace = true, default-features = false, features = ["registry", "std"] }
 

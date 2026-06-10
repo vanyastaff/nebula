@@ -38,10 +38,11 @@ Most automation platforms are runtime-interpreted, dynamically typed, and treat 
 API / Public    api (HTTP + webhook module) · sdk (integration author façade)
 Exec            engine · storage · storage-loom-probe
 Business        credential · credential-builtin · credential-vault · credential-runtime · credential-testutil · resource · action · plugin · tenancy
-Plugin-Proto    plugin-sdk · sandbox
 Core            core · validator · expression · workflow · execution · schema · metadata · storage-port
 Cross-cutting   log · eventbus · metrics · resilience · error
 ```
+
+Plugins are **in-process** (ADR-0091): a human implements the `Plugin` trait in `nebula-plugin` and registers actions / credentials / resources into the registry; the engine dispatches them in-process. The out-of-process Plugin-Proto tier (`plugin-sdk` + `sandbox`) was retired — process/WASM isolation is a non-goal for now (canon §12.6).
 
 Each layer depends only on layers below it. Cross-cutting crates are importable at any level. Layer boundaries are enforced mechanically by `cargo deny` (see `deny.toml` `wrappers`) — a missing entry fails CI before review.
 
@@ -84,8 +85,6 @@ Source of truth: workspace members in `Cargo.toml`.
 | **Exec**          | `engine`             | Frontier loop, lease lifecycle, node scheduling, control consumer (ADR-0008)         |
 |                   | `storage`            | Persistence trait family + in-memory + Postgres (SQLite local path planned)          |
 |                   | `storage-loom-probe` | `loom`-checked concurrency probe for storage paths                                   |
-| **Plugin-Proto**  | `plugin-sdk`         | Out-of-process plugin protocol (`run_duplex`)                                        |
-|                   | `sandbox`            | Process-isolated action execution + duplex transport (capability allowlist planned)  |
 | **API / Public**  | `api`                | REST server, webhook transport, middleware                                           |
 |                   | `sdk`                | **Integration author façade** — re-exports + `WorkflowBuilder` + `TestRuntime`       |
 | **Cross-cutting** | `error`              | `NebulaError<E>`, `Classify` trait, derive macro                                     |

@@ -102,16 +102,15 @@ any level.
 | API / Public | `api`, `sdk` |
 | Exec         | `engine`, `storage`, `storage-loom-probe` |
 | Business     | `credential-builtin`, `resource`, `action`, `plugin`, `tenancy` |
-| Plugin-Proto | `plugin-sdk`, `sandbox` |
 | Core         | `core`, `validator`, `expression`, `workflow`, `execution`, `schema`, `metadata`, `storage-port` |
 | Cross-cutting| `log`, `eventbus`, `metrics`, `resilience`, `error`, `env` |
 
-**Plugin-Proto** is a leaf tier between Core and Business: the
-out-of-process plugin protocol (`plugin-sdk`) and the duplex transport
-(`sandbox`). It depends only on Core (+ tokio/serde); Business (`plugin`)
-and Exec (`engine`) depend on it *downward*. The discovery path and the
-`SandboxError` → `ActionError` seam live in `plugin`; the `SandboxRunner`
-runner abstraction lives in `engine`.
+Plugins register **in-process** (ADR-0091): a human implements the `Plugin`
+trait in `nebula-plugin` (Business) and registers its actions / credentials /
+resources into `PluginRegistry`; the engine dispatches in-process via
+`InProcessSandbox`. The out-of-process Plugin-Proto tier (`plugin-sdk` +
+`sandbox` duplex transport) was retired — WASM/process isolation is a
+non-goal for now (canon §12.6).
 
 `nebula-credential` is **shared infra**, not a single-tier Business crate:
 the Exec tier (`engine`, `storage`) and the API tier consume the
