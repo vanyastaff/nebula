@@ -98,7 +98,7 @@ action/credential/resource caches enforcing the namespace invariant at construct
 
 - Not a storage implementation — see `nebula-storage` (`ExecutionRepo`, storage backends).
 - Not an action dispatcher — delegated to `nebula-runtime`.
-- Not a plugin loader or isolator — see `nebula-sandbox`.
+- Not a plugin isolator — plugins register and run in-process via `nebula-plugin` (ADR-0091).
 - Not an expression evaluator — see `nebula-expression`.
 - Two retry surfaces, disjoint by trigger boundary (per ADR-0042):
   - **In-call (Layer 1)** — `nebula-resilience::retry_with` lives inside an action

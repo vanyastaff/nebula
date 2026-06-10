@@ -4,7 +4,7 @@ role: Action Trait Family + Execution Policy Metadata (Ports & Adapters)
 status: frontier
 last-reviewed: 2026-04-29
 canon-invariants: [L1-3.5, L2-11.3, L2-13.4, L2-13.5]
-related: [nebula-core, nebula-schema, nebula-credential, nebula-resource, nebula-resilience, nebula-sandbox, nebula-plugin]
+related: [nebula-core, nebula-schema, nebula-credential, nebula-resource, nebula-resilience, nebula-plugin]
 ---
 
 # nebula-action
@@ -15,7 +15,7 @@ Workflow nodes need a typed contract between "what this step does" and "how the 
 
 ## Role
 
-**Action Trait Family + Execution Policy Metadata (Ports & Adapters pattern)**. Core types and traits live here; concrete execution environments (in-process, `ProcessSandbox` with capability allowlists and OS-level hardening) are drivers in `nebula-sandbox`. WASM is an explicit non-goal per `docs/PRODUCT_CANON.md` §12.6.
+**Action Trait Family + Execution Policy Metadata (Ports & Adapters pattern)**. Core types and traits live here; the engine dispatches actions **in-process** (`InProcessSandbox`). Process/WASM isolation is a non-goal (ADR-0091, `docs/PRODUCT_CANON.md` §12.6).
 
 Pattern inspiration: *Ports & Adapters / Hexagonal Architecture* — action authors program to traits; the engine wires driver adapters. Adding a new trait family requires a canon revision (§3.5, §0.2).
 
@@ -214,7 +214,7 @@ The examples deliberately wire slot resolution manually (no `#[derive(Action)]`)
   workflow authors declare engine-level retry at the node level. The two
   layers compose because they trigger at different boundaries (in-call
   vs. post-finalisation).
-- Not the sandbox driver — process isolation, capability enforcement, OS-level hardening are in `nebula-sandbox`.
+- Not the execution driver — the engine runs actions in-process (`InProcessSandbox`); isolation is a future additive concern (ADR-0091).
 - Not a schema system — `ActionMetadata.parameters` holds a `ValidSchema` from `nebula-schema`; field definitions and validation rules live there.
 - Not WASM — see canon §12.6.
 
@@ -232,6 +232,6 @@ See `docs/MATURITY.md` row for `nebula-action`.
 - Canon: `docs/PRODUCT_CANON.md` §3.5 (action trait family; adding a trait = canon revision), §11.2 (retry surface lives in `nebula-resilience`, not the engine), §11.3 (idempotency), §12.6 (WASM non-goal), §13.4 (trigger delivery), §13.5 (non-idempotent side effects).
 - ADRs: `docs/adr/0081-m6-resource-credential-integration.md` (M6 binding cascade — consolidates ADR-0042/0043/0044/0045).
 - Integration model: `docs/INTEGRATION_MODEL.md` §`nebula-action` (including `CheckpointPolicy` status note).
-- Sandbox: `crates/sandbox/README.md` — `ProcessSandbox`, capability allowlists, OS-level hardening.
+- In-process plugin registry: `crates/plugin/README.md` — `Plugin` trait + `PluginRegistry` (ADR-0091).
 - Siblings: `nebula-schema` (`ValidSchema` + `#[derive(Schema)]` for `Self::Input`), `nebula-credential` (`CredentialGuard` slot fields), `nebula-resource` (`ResourceGuard` slot fields, `ResourceAction`), `nebula-resilience` (retry/timeout/circuit-breaker inside actions).
 - Resource sharing across nodes/workflows: see `crates/resource/README.md` "Shared resource pattern" — when multiple actions or workflows acquire the same `Resource` at the same scope, the manager dedupes by `(R::key(), ScopeLevel)` so a single `Resource::create` call serves every acquirer (e.g. one `TelegramBot` client for ten workflows).

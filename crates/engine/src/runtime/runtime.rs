@@ -820,15 +820,12 @@ impl ActionRuntime {
     ///
     /// Dispatch depends on the action's [`IsolationLevel`]:
     ///
-    /// - `None` — trusted in-process execution, handler invoked directly.
-    /// - `CapabilityGated` / `Isolated` — routed through [`SandboxRunner`]. In Phase 0 the sandbox
-    ///   is typically an `InProcessSandbox` whose `ActionExecutor` was wired at engine construction
-    ///   time; the engine is responsible for passing a closure that can actually invoke the
-    ///   registered handler for the given action key. Phase 1 replaces this with `ProcessSandbox`
-    ///   dispatching to real plugin subprocesses over the UDS + JSON duplex v2 protocol (slices
-    ///   1a–1c shipped; slice 1d supervisor + broker pending). See
-    ///   `docs/plans/2026-04-13-sandbox-roadmap.md` and
-    ///   `docs/plans/2026-04-13-sandbox-phase1-broker.md`.
+    /// - `None` — handler invoked directly in-process.
+    /// - `CapabilityGated` / `Isolated` — routed through [`SandboxRunner`], which today is the sole
+    ///   in-process [`InProcessSandbox`] (its `ActionExecutor` closure, wired at engine construction,
+    ///   invokes the registered handler for the action key). Out-of-process execution was retired
+    ///   (ADR-0091); these isolation levels are retained as declared data and currently dispatch
+    ///   in-process. Re-introducing real isolation later is additive.
     async fn execute_stateless(
         &self,
         metadata: &ActionMetadata,

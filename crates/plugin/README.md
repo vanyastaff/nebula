@@ -4,7 +4,7 @@ role: Plugin Distribution Unit (registry + manifest re-export; canon §7.1 — u
 status: partial
 last-reviewed: 2026-04-20
 canon-invariants: [L1-7.1, L2-7.1, L2-13.1]
-related: [nebula-core, nebula-error, nebula-metadata, nebula-action, nebula-resource, nebula-credential, nebula-sandbox, nebula-plugin-sdk]
+related: [nebula-core, nebula-error, nebula-metadata, nebula-action, nebula-resource, nebula-credential]
 ---
 
 > **Forward-looking notice (as of 2026-04-20).** This README documents the plugin
@@ -21,7 +21,7 @@ related: [nebula-core, nebula-error, nebula-metadata, nebula-action, nebula-reso
 
 ## Purpose
 
-Actions, Resources, and Credentials need a versioned, discoverable distribution unit — one that the engine can load, catalog, and enforce dependency rules against without re-inventing per-integration registration. `nebula-plugin` provides that unit: the `Plugin` trait (returning runnable trait objects per canon §3.5), a `ResolvedPlugin` per-plugin wrapper with eager component indices, and an in-memory `PluginRegistry`. The `PluginManifest` bundle descriptor lives in `nebula-metadata` and is re-exported here for source compatibility. Plugin authors implement `Plugin`, return their actions/credentials/resources from the trait methods, and rely on the engine (via `nebula-sandbox`) to load, version, and dependency-check their crate.
+Actions, Resources, and Credentials need a versioned distribution unit — one that the engine can catalog without re-inventing per-integration registration. `nebula-plugin` provides that unit: the `Plugin` trait (returning runnable trait objects per canon §3.5), a `ResolvedPlugin` per-plugin wrapper with eager component indices, and an in-memory `PluginRegistry`. The `PluginManifest` bundle descriptor lives in `nebula-metadata` and is re-exported here for source compatibility. Plugin authors implement `Plugin` in Rust, return their actions/credentials/resources from the trait methods, and register them **in-process**; the Rust compiler enforces the cross-plugin dependency closure at link time (ADR-0091 — out-of-process execution retired).
 
 ## Role
 
@@ -43,12 +43,11 @@ Actions, Resources, and Credentials need a versioned, discoverable distribution 
 - **[L1-§7.1]** Plugin is the unit of **registration**, not the unit of size. Full plugins and micro-plugins use the same contract. No secondary manifest duplicating `fn actions()` / `fn credentials()` / `fn resources()` — `impl Plugin` is the single runtime source of truth for what is registered.
 - **[L2-§7.1]** Three sources of truth, no drift: `Cargo.toml` (Rust package identity + dependency graph), `plugin.toml` (trust + compatibility boundary, read without compiling), `impl Plugin + PluginManifest` (runtime registration and bundle metadata). This crate owns the `impl Plugin` surface; `plugin.toml` parsing belongs to tooling.
 - **[L2-§13.1]** Plugin load → registry: a plugin loads; Actions / Resources / Credentials from `impl Plugin` appear in the catalog without a second manifest that duplicates `fn actions()` / `fn resources()` / `fn credentials()`. Seam: `PluginRegistry::register(Arc<ResolvedPlugin>)` — construction of `ResolvedPlugin` enforces the `{plugin.key()}.` namespace invariant and rejects within-plugin duplicate keys before the entry reaches the registry. Test: unit tests in `crates/plugin/`.
-- **Cross-plugin dependency rule** — types from another plugin come in only via `Cargo.toml [dependencies]` on the provider plugin crate. Referencing a type not in the declared dependency closure is a misconfiguration caught at activation. This rule is enforced by the loader in `nebula-sandbox`, not by this crate directly.
+- **Cross-plugin dependency rule** — types from another plugin come in only via `Cargo.toml [dependencies]` on the provider plugin crate. In the in-process model the Rust compiler enforces this at link time: a type not in the declared dependency closure does not resolve.
 
 ## Non-goals
 
-- Not the plugin loader or sandbox — loading, isolation (`ProcessSandbox`), capability enforcement, OS-level hardening, and cross-plugin dependency activation-time checks live in `nebula-sandbox`.
-- Not the plugin authoring SDK — `nebula-plugin-sdk` provides the higher-level authoring surface on top of these traits.
+- Not process/WASM isolation — out-of-process plugin execution was retired (ADR-0091, canon §12.6). Plugins run in-process; isolation is a future additive concern, not a 1.0 capability.
 - Not responsible for `plugin.toml` parsing or signature verification — those belong to pre-compile tooling (`cargo-nebula`); see canon §7.1.
 - Not a runtime runtime catalog with persistence — this is an in-memory registry; persistence lives in `nebula-storage`.
 
@@ -56,7 +55,7 @@ Actions, Resources, and Credentials need a versioned, discoverable distribution 
 
 See `docs/MATURITY.md` row for `nebula-plugin`.
 
-- API stability: `partial` today, lifting to `stable` with slice B — `Plugin` trait, `ResolvedPlugin`, and `PluginRegistry` (including `all_*` / `resolve_*` accessors) are the registration surface frozen by ADR-0027 once the refactor merges. `PluginManifest` is canonical in `nebula-metadata` and re-exported here after the slice B move. Integration paths (loader activation, cross-plugin dependency resolution) live in `nebula-sandbox` and remain `frontier`.
+- API stability: `partial` today, lifting to `stable` with slice B — `Plugin` trait, `ResolvedPlugin`, and `PluginRegistry` (including `all_*` / `resolve_*` accessors) are the registration surface frozen by ADR-0027 once the refactor merges. `PluginManifest` is canonical in `nebula-metadata` and re-exported here after the slice B move. Cross-plugin dependency resolution is the Rust compiler's job (in-process link-time closure, ADR-0091).
 - `#![forbid(unsafe_code)]`, `#![warn(missing_docs)]` enforced.
 - Signing / trust boundary (`[signing]` in `plugin.toml`): `planned` — not enforced at runtime yet. See canon §7.1 and `docs/INTEGRATION_MODEL.md` signing section.
 
@@ -65,4 +64,4 @@ See `docs/MATURITY.md` row for `nebula-plugin`.
 - Canon: `docs/PRODUCT_CANON.md` §1 (plugin as integration surface), §3.5 (Plugin = distribution + registration unit, returns runnable trait objects), §7.1 (packaging: `Cargo.toml` + `plugin.toml` + `impl Plugin`; unit of registration not size), §13.1 (plugin load → registry contract).
 - ADRs: ADR-0018 (rename rationale), ADR-0027 (`ResolvedPlugin`, namespace invariant, registry accessors) — historical, indexed in `docs/adr/HISTORICAL.md`.
 - Integration model: `docs/INTEGRATION_MODEL.md` §7 — full plugin packaging mechanics, three-sources-of-truth rule, cross-plugin dependency rule, signing rationale, discovery / load lifecycle, ABI policy, tooling notes.
-- Siblings: `nebula-metadata` (canonical `PluginManifest`), `nebula-plugin-sdk` (authoring SDK on top of these traits), `nebula-sandbox` (loading and isolation), `nebula-core` (`PluginKey` identity type), `nebula-action` (`Action` trait), `nebula-resource` (`AnyResource` trait), `nebula-credential` (`AnyCredential` trait).
+- Siblings: `nebula-metadata` (canonical `PluginManifest`), `nebula-core` (`PluginKey` identity type), `nebula-action` (`Action` trait), `nebula-resource` (`AnyResource` trait), `nebula-credential` (`AnyCredential` trait).

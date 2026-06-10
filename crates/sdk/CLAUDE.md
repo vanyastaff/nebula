@@ -20,7 +20,7 @@
 ## Conventions & never-do
 - This is a re-export façade only: it covers exactly the five §3.5 concepts (Action, Credential, Resource, Schema, Plugin). Do NOT add a sixth integration concept or a parallel OAuth/credential type alias — those track `nebula-credential`; a new concept needs canon revision (§0.2).
 - `prelude` / `WorkflowBuilder` / `ActionBuilder` are a public open-source contract (§4.4/§7): breaking changes need explicit announcement + migration, not drive-by edits.
-- Not the engine/runtime, not an expression evaluator, not the plugin process entry point, and it does NOT re-export `nebula-resilience` — see `nebula-engine` / `nebula-expression` / `nebula-plugin-sdk`.
+- Not the engine/runtime, not an expression evaluator, and it does NOT re-export `nebula-resilience` — see `nebula-engine` / `nebula-expression`. Plugins register in-process via `nebula-plugin` (ADR-0091).
 - `anyhow` ergonomics are allowed for author scripts, but first-party lib code uses typed `thiserror`/`NebulaError`; no unwrap/expect/panic in lib code.
 - Cross-crate calls go through `nebula-eventbus`, not direct sibling imports.
 

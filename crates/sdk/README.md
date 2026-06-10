@@ -90,7 +90,7 @@ SDK-level error:
 - Not the engine or runtime — this crate is for writing integrations, not for deploying or
   driving executions. See `nebula-engine` for that.
 - Not an expression evaluator — see `nebula-expression`.
-- Not a plugin process binary entry point — see `nebula-plugin-sdk` (`run_duplex`).
+- Plugins register in-process through `nebula-plugin` — there is no separate plugin process binary (ADR-0091).
 - Does not re-export `nebula-resilience` directly — resilience pipelines are composed at the
   action call site; authors import `nebula-resilience` explicitly if needed.
 

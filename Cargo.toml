@@ -39,8 +39,6 @@ members = [
   "crates/credential/macros",
   "crates/plugin/macros",
   "crates/validator/macros",
-  "crates/sandbox",
-  "crates/plugin-sdk",
   "examples",
 ]
 exclude = ["crates/*/fuzz"]
@@ -215,7 +213,7 @@ nebula-error-macros = { path = "crates/error/macros" }
 # If you find yourself wanting to `#[allow(...)]` the same pedantic lint in
 # three or more files, consider promoting the allow here instead.
 [workspace.lints.rust]
-unsafe_code = "warn"           # sandbox / plugin-sdk opt out via crate-level `#![allow(unsafe_code)]`
+unsafe_code = "warn"
 unused_lifetimes = "warn"
 unused_qualifications = "warn"
 trivial_numeric_casts = "warn"
