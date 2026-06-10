@@ -83,9 +83,6 @@ insta = { workspace = true }
 pretty_assertions = { workspace = true }
 proptest = { workspace = true }
 rstest = { workspace = true }
-tempfile = { workspace = true }
-tracing-test = { workspace = true }
-wiremock = { workspace = true }
 opentelemetry_sdk = { workspace = true, features = ["trace"] }
 tracing-subscriber = { workspace = true, default-features = false, features = ["registry", "std"] }
 
