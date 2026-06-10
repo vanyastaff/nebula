@@ -35,6 +35,9 @@ pub mod backup;
 /// Cross-replica refresh claim repository (CAS + heartbeat).
 pub mod refresh_claim;
 
+#[cfg(feature = "sqlite")]
+pub mod sqlite;
+
 #[cfg(feature = "rotation")]
 pub use backup::RotationBackup;
 #[cfg(any(test, feature = "test-util"))]
@@ -57,3 +60,5 @@ pub use refresh_claim::{
     ClaimAttempt, ClaimToken, HeartbeatError, InMemoryRefreshClaimRepo, ReclaimedClaim,
     RefreshClaim, RefreshClaimRepo, ReplicaId, RepoError, SentinelState,
 };
+#[cfg(feature = "sqlite")]
+pub use sqlite::SqliteCredentialStore;

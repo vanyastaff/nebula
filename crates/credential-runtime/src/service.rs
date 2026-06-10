@@ -371,6 +371,7 @@ impl CredentialService {
         let now = chrono::Utc::now();
         let stored = StoredCredential {
             id: id.to_string(),
+            name: None,
             credential_key: credential_key.to_owned(),
             data: resolved.data.to_vec(),
             state_kind: resolved.state_kind,
@@ -529,6 +530,7 @@ impl CredentialService {
         let stored = match resolved {
             Some(resolved) => StoredCredential {
                 id: existing.id.clone(),
+                name: existing.name.clone(),
                 credential_key: existing.credential_key.clone(),
                 data: resolved.data.to_vec(),
                 state_kind: resolved.state_kind,
@@ -771,6 +773,7 @@ impl CredentialService {
         let state_version = stored.state_version;
         let stored_next = StoredCredential {
             id: stored.id.clone(),
+            name: stored.name.clone(),
             credential_key: stored.credential_key.clone(),
             data: refreshed.to_vec(),
             state_kind,

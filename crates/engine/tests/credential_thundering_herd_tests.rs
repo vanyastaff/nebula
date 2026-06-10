@@ -102,6 +102,7 @@ async fn only_one_refresh_under_concurrent_access() {
 
     let cred = StoredCredential {
         id: "herd-cred".into(),
+        name: None,
         credential_key: "thundering_herd_test".into(),
         data,
         state_kind: "thundering_herd_test".into(),

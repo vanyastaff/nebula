@@ -17,6 +17,7 @@ async fn resolve_to_typed_snapshot() {
     let data = br#"{"token":"test-key"}"#.to_vec();
     let cred = StoredCredential {
         id: "test-cred".into(),
+        name: None,
         credential_key: "api_key".into(),
         data,
         state_kind: "secret_token".into(),
