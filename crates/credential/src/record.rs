@@ -3,15 +3,16 @@
 //! Provides non-sensitive operational state about credential instances
 //! for management and tracking (not security-critical).
 //!
-//! # `CredentialRecord` vs `nebula_storage::rows::CredentialRow`
+//! # `CredentialRecord` vs `StoredCredential`
 //!
 //! This type holds runtime operational state about a credential instance —
 //! created_at, last_accessed, rotation counter, etc. It is the **domain**
 //! representation.
 //!
-//! `nebula_storage::rows::CredentialRow` is the **persisted row** representation.
-//! They are intentionally distinct types owned by different crates (domain
-//! vs persistence) and may diverge as storage schemas evolve.
+//! `StoredCredential` is the **persisted row** the `CredentialStore` durable
+//! backends (SQLite / Postgres) read and write. They are intentionally distinct
+//! (domain operational view vs persistence row) and may diverge as the storage
+//! schema evolves.
 
 use std::collections::HashMap;
 
