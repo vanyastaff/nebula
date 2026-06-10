@@ -60,7 +60,9 @@ const OWNER_KEY: &str = "owner_id";
 ///
 /// ```rust,ignore
 /// use nebula_tenancy::{CredentialScopeLayer, CredentialScopeResolver};
-/// use nebula_credential_testutil::InMemoryStore;
+/// // Composition roots wrap the real storage-side store; the Exec-tier
+/// // adapter is reachable from api/engine (not from this Business crate).
+/// use nebula_storage::credential::InMemoryStore;
 /// use std::sync::Arc;
 ///
 /// struct TenantScope(String);
@@ -241,15 +243,122 @@ fn verify_owner(
     }
 }
 
-// The in-memory `CredentialStore` used as the inner store is behind
-// `nebula-credential`'s `test-util` feature; the dev-dependency enables
-// it for test builds, so a plain `#[cfg(test)]` gate suffices.
+// The inner `CredentialStore` these tests wrap is a colocated in-memory
+// double (`mem::InMemoryStore`). The scope layer only needs a stateful
+// backing store to decorate, and every real `CredentialStore` impl lives in
+// the Exec-tier `nebula-storage` adapter, which this Business-tier crate must
+// not depend on (even as a dev-dep). Keeping the fixture inline also decouples
+// these tests from any specific backend's lifetime.
 #[cfg(test)]
 mod tests {
     use nebula_credential::PutMode;
-    use nebula_credential_testutil::InMemoryStore;
 
     use super::*;
+
+    /// In-memory `CredentialStore` test double. Cloning shares one backing
+    /// map (cheap `Arc` clone); data is dropped with the last handle. The
+    /// `tokio::sync::RwLock` never spans an `.await`, so it is purely a
+    /// trait-ergonomics choice, not a contended async lock.
+    #[derive(Clone, Default)]
+    struct InMemoryStore {
+        data: Arc<tokio::sync::RwLock<std::collections::HashMap<String, StoredCredential>>>,
+    }
+
+    impl InMemoryStore {
+        fn new() -> Self {
+            Self::default()
+        }
+    }
+
+    impl CredentialStore for InMemoryStore {
+        async fn get(&self, id: &str) -> Result<StoredCredential, StoreError> {
+            self.data
+                .read()
+                .await
+                .get(id)
+                .cloned()
+                .ok_or_else(|| StoreError::NotFound { id: id.to_string() })
+        }
+
+        async fn put(
+            &self,
+            mut credential: StoredCredential,
+            mode: PutMode,
+        ) -> Result<StoredCredential, StoreError> {
+            let mut data = self.data.write().await;
+            match mode {
+                PutMode::CreateOnly => {
+                    if data.contains_key(&credential.id) {
+                        return Err(StoreError::AlreadyExists {
+                            id: credential.id.clone(),
+                        });
+                    }
+                    credential.version = 1;
+                    credential.created_at = chrono::Utc::now();
+                    credential.updated_at = credential.created_at;
+                    data.insert(credential.id.clone(), credential.clone());
+                    Ok(credential)
+                },
+                PutMode::Overwrite => {
+                    let version = data
+                        .get(&credential.id)
+                        .map_or(1, |existing| existing.version + 1);
+                    credential.version = version;
+                    credential.updated_at = chrono::Utc::now();
+                    if version == 1 {
+                        credential.created_at = credential.updated_at;
+                    }
+                    data.insert(credential.id.clone(), credential.clone());
+                    Ok(credential)
+                },
+                PutMode::CompareAndSwap { expected_version } => {
+                    let Some(existing) = data.get(&credential.id) else {
+                        return Err(StoreError::NotFound {
+                            id: credential.id.clone(),
+                        });
+                    };
+                    if existing.version != expected_version {
+                        return Err(StoreError::VersionConflict {
+                            id: credential.id.clone(),
+                            expected: expected_version,
+                            actual: existing.version,
+                        });
+                    }
+                    credential.version = expected_version + 1;
+                    credential.updated_at = chrono::Utc::now();
+                    data.insert(credential.id.clone(), credential.clone());
+                    Ok(credential)
+                },
+                // `PutMode` is `#[non_exhaustive]`; a new mode stays fail-closed
+                // until this double is taught how to handle it.
+                _ => Err(StoreError::Backend(
+                    format!("memory store: unsupported PutMode variant `{mode:?}`").into(),
+                )),
+            }
+        }
+
+        async fn delete(&self, id: &str) -> Result<(), StoreError> {
+            self.data
+                .write()
+                .await
+                .remove(id)
+                .map(|_| ())
+                .ok_or_else(|| StoreError::NotFound { id: id.to_string() })
+        }
+
+        async fn list(&self, state_kind: Option<&str>) -> Result<Vec<String>, StoreError> {
+            let data = self.data.read().await;
+            Ok(data
+                .values()
+                .filter(|c| state_kind.is_none() || state_kind == Some(c.state_kind.as_str()))
+                .map(|c| c.id.clone())
+                .collect())
+        }
+
+        async fn exists(&self, id: &str) -> Result<bool, StoreError> {
+            Ok(self.data.read().await.contains_key(id))
+        }
+    }
 
     struct FixedScope(Option<String>);
 

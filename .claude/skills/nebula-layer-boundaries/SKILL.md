@@ -53,7 +53,7 @@ cannot quietly add an upward edge.
 - **`nebula-credential`** (credential *contract*) — `deny.toml` lines ~186-213.
   Consumed by Business (`action`, `plugin`, `resource`, `tenancy`), Exec
   (`engine`, `storage`, `credential-runtime`), API (`api`), and the first-party
-  backends (`credential-builtin`, `credential-vault`, `credential-testutil`).
+  backends (`credential-builtin`, `credential-vault`).
   Plugin authors depend on this contract crate, **not** on
   `nebula-credential-builtin` (whose wrappers list is intentionally narrow:
   itself + `credential-runtime`).
@@ -97,8 +97,7 @@ To legally add a new consumer:
    matrix; `nebula-engine` as a dev-dep of `nebula-api` for the §13 knife test).
    Mark them as dev-only in the comment. cargo-deny has **no feature-aware /
    dev-dep-aware wrappers**, so the allowlist is the only structural gate —
-   `publish = false` test shims (`credential-testutil`) and `test-util`-gated
-   deps still need an explicit entry.
+   `test-util`-gated deps still need an explicit entry.
 4. If an edge would be **upward** (lower layer → higher layer), do not add it.
    Restructure instead: move the shared code down, or route through eventbus.
 

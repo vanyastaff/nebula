@@ -37,7 +37,7 @@ Most automation platforms are runtime-interpreted, dynamically typed, and treat 
 ```
 API / Public    api (HTTP + webhook module) · sdk (integration author façade)
 Exec            engine · storage · storage-loom-probe
-Business        credential · credential-builtin · credential-vault · credential-runtime · credential-testutil · resource · action · plugin · tenancy
+Business        credential · credential-builtin · credential-vault · credential-runtime · resource · action · plugin · tenancy
 Core            core · validator · expression · workflow · execution · schema · metadata · storage-port
 Cross-cutting   log · eventbus · metrics · resilience · error
 ```
@@ -77,7 +77,6 @@ Source of truth: workspace members in `Cargo.toml`.
 |                   | `credential-builtin` | First-party scaffold credential types (built on the `credential` contract)           |
 |                   | `credential-vault`   | Vault-backed credential backend (built on the `credential` contract)                 |
 |                   | `credential-runtime` | `CredentialService<B,PS>` facade and slot-binding resolver (ADR-0066)                |
-|                   | `credential-testutil`| Test shims for credential consumers (extracted from the `credential` crate, M12.2)   |
 |                   | `resource`           | External service lifecycle, typed credential refs                                    |
 |                   | `action`             | Action trait family (Stateless / Stateful / Trigger / Resource / Control)            |
 |                   | `plugin`             | In-process plugin trait + registry                                                   |

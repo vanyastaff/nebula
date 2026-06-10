@@ -27,10 +27,10 @@ serde_json = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros", "sync"] }
-# `make_credential` test fixture stamps StoredCredential timestamps.
+# `make_credential` test fixture stamps StoredCredential timestamps; the
+# colocated in-memory `CredentialStore` double in `credential_scope::tests`
+# uses chrono for the same stamping.
 chrono = { workspace = true }
-# InMemoryStore for the credential-scope-layer regression tests.
-nebula-credential-testutil = { path = "../credential-testutil" }
 
 [lib]
 doctest = false

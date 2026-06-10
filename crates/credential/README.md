@@ -27,7 +27,7 @@ Resolver/registry/executor and rotation **orchestration** live in `nebula-engine
 persistence in `nebula-storage`; OAuth **HTTP ceremony** in `nebula-api` — see
 ADR-0028–0031 and [`ADR-0033`](../../docs/adr/HISTORICAL.md) (Plane B).
 
-**ADR-0032** keeps the `CredentialStore` **trait** in this crate (avoiding a `credential → storage` dependency cycle). Production in-memory stores should use `nebula_storage::credential::InMemoryStore`; `store_memory` remains as a cycle-safe shim.
+**ADR-0032** keeps the `CredentialStore` **trait** in this crate (avoiding a `credential → storage` dependency cycle). All concrete in-memory / SQLite / Postgres stores live in `nebula_storage::credential`; this crate ships no store impl.
 
 **HTTP transport status:** `OAuth2Credential::resolve` (authorization URL construction) is pure — no HTTP. `OAuth2Credential::refresh` returns `CredentialError::Provider("OAuth2 HTTP transport has moved: ...")` per ADR-0031 — refresh HTTP lives in `nebula-engine`, token exchange в `nebula-api`. The crate has **no reqwest dependency**.
 
@@ -131,8 +131,7 @@ Capabilities are not const flags — they are **sub-traits**. A credential opts 
 - 9 built-in scheme types: `SecretToken`, `IdentityPassword`, `OAuth2Token`, `KeyPair`, `Certificate`, `SigningKey`, `ConnectionUri`, `InstanceBinding`, `SharedKey`. Each is `SensitiveScheme` or `PublicScheme` per §15.5.
 - `SchemeGuard<'a, C>`, `SchemeFactory<C>` — refresh-hook surface (Tech Spec §15.7). `SchemeGuard` is `!Clone`, lifetime-pinned, drop-zeroizes through the wrapped scheme's `ZeroizeOnDrop` impl.
 - `CredentialRecord` — runtime operational state (created_at, version, expiry, tags); non-sensitive domain representation. Previously named `Metadata` (ADR 0004).
-- `CredentialStore`, `StoredCredential`, `PutMode`, `StoreError` — storage trait with layered composition.
-- `InMemoryStore` — in-crate test/development store shim (canonical impl is `nebula_storage::credential::InMemoryStore`).
+- `CredentialStore`, `StoredCredential`, `PutMode`, `StoreError` — storage trait with layered composition; concrete impls (in-memory / SQLite / Postgres) live in `nebula_storage::credential`.
 - `SecretString` — string type with automatic zeroization on drop.
 - `CredentialGuard` — secure RAII wrapper with `Deref` + zeroize on drop; implements `Guard` and `TypedGuard` from `nebula-core`.
 - `CredentialRef<C>` — lazy reference type (`id: String` + `PhantomData<fn() -> C>`). New in Phase 1. Resolves to `CredentialGuard<C::Scheme>` via `.resolve(ctx).await`.
