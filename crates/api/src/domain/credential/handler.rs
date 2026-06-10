@@ -68,8 +68,7 @@ pub async fn list_credentials(
     Query(query): Query<ListCredentialsQuery>,
 ) -> ApiResult<Json<ListCredentialsResponse>> {
     let scope = crate::middleware::tenancy::request_scope(&tenant)?;
-    let owner_id = crate::transport::credential::owner_id_from_scope(&scope);
-    let response = crate::transport::credential::list_credentials(&state, &owner_id, query).await?;
+    let response = crate::transport::credential::list_credentials(&state, &scope, query).await?;
     Ok(Json(response))
 }
 
@@ -112,8 +111,7 @@ pub async fn create_credential(
     validate_data_is_object(&body.data)?;
 
     let scope = crate::middleware::tenancy::request_scope(&tenant)?;
-    let owner_id = crate::transport::credential::owner_id_from_scope(&scope);
-    let response = crate::transport::credential::create_credential(&state, &owner_id, body).await?;
+    let response = crate::transport::credential::create_credential(&state, &scope, body).await?;
     Ok(Json(response))
 }
 
@@ -148,8 +146,7 @@ pub async fn get_credential(
     validate_credential_id(&cred)?;
 
     let scope = crate::middleware::tenancy::request_scope(&tenant)?;
-    let owner_id = crate::transport::credential::owner_id_from_scope(&scope);
-    let response = crate::transport::credential::get_credential(&state, &owner_id, &cred).await?;
+    let response = crate::transport::credential::get_credential(&state, &scope, &cred).await?;
     Ok(Json(response))
 }
 
@@ -211,9 +208,8 @@ pub async fn update_credential(
     }
 
     let scope = crate::middleware::tenancy::request_scope(&tenant)?;
-    let owner_id = crate::transport::credential::owner_id_from_scope(&scope);
     let response =
-        crate::transport::credential::update_credential(&state, &owner_id, &cred, body).await?;
+        crate::transport::credential::update_credential(&state, &scope, &cred, body).await?;
     Ok(Json(response))
 }
 
@@ -249,8 +245,7 @@ pub async fn delete_credential(
     validate_credential_id(&cred)?;
 
     let scope = crate::middleware::tenancy::request_scope(&tenant)?;
-    let owner_id = crate::transport::credential::owner_id_from_scope(&scope);
-    crate::transport::credential::delete_credential(&state, &owner_id, &cred).await?;
+    crate::transport::credential::delete_credential(&state, &scope, &cred).await?;
     Ok(Json(AckResponse::ok()))
 }
 
@@ -282,11 +277,13 @@ pub async fn delete_credential(
 pub async fn test_credential(
     State(state): State<AppState>,
     Extension(_user): Extension<AuthenticatedUser>,
-    Path((org, ws, cred)): Path<(String, String, String)>,
+    Extension(tenant): Extension<TenantContext>,
+    Path((_org, _ws, cred)): Path<(String, String, String)>,
 ) -> ApiResult<Json<TestCredentialResponse>> {
     validate_credential_id(&cred)?;
 
-    let response = crate::transport::credential::test_credential(&state, &org, &ws, &cred).await?;
+    let scope = crate::middleware::tenancy::request_scope(&tenant)?;
+    let response = crate::transport::credential::test_credential(&state, &scope, &cred).await?;
     Ok(Json(response))
 }
 
@@ -316,12 +313,13 @@ pub async fn test_credential(
 pub async fn refresh_credential(
     State(state): State<AppState>,
     Extension(_user): Extension<AuthenticatedUser>,
-    Path((org, ws, cred)): Path<(String, String, String)>,
+    Extension(tenant): Extension<TenantContext>,
+    Path((_org, _ws, cred)): Path<(String, String, String)>,
 ) -> ApiResult<Json<RefreshCredentialResponse>> {
     validate_credential_id(&cred)?;
 
-    let response =
-        crate::transport::credential::refresh_credential(&state, &org, &ws, &cred).await?;
+    let scope = crate::middleware::tenancy::request_scope(&tenant)?;
+    let response = crate::transport::credential::refresh_credential(&state, &scope, &cred).await?;
     Ok(Json(response))
 }
 
@@ -352,12 +350,13 @@ pub async fn refresh_credential(
 pub async fn revoke_credential(
     State(state): State<AppState>,
     Extension(_user): Extension<AuthenticatedUser>,
-    Path((org, ws, cred)): Path<(String, String, String)>,
+    Extension(tenant): Extension<TenantContext>,
+    Path((_org, _ws, cred)): Path<(String, String, String)>,
 ) -> ApiResult<Json<RevokeCredentialResponse>> {
     validate_credential_id(&cred)?;
 
-    let response =
-        crate::transport::credential::revoke_credential(&state, &org, &ws, &cred).await?;
+    let scope = crate::middleware::tenancy::request_scope(&tenant)?;
+    let response = crate::transport::credential::revoke_credential(&state, &scope, &cred).await?;
     Ok(Json(response))
 }
 
@@ -384,21 +383,24 @@ pub async fn revoke_credential(
         (status = 400, description = "Validation error (key or data shape).", body = ProblemDetails),
         (status = 401, description = "Authentication required.", body = ProblemDetails),
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
-        (status = 503, description = "Honest stub (honest capability contract): the route is reachable but generic credential resolution is engine-owned (`Credential::resolve` dispatch via `nebula-engine::credential`) and requires a `CredentialRegistry` not wired into this build, so it refuses rather than faking success.", body = ProblemDetails),
+        (status = 503, description = "Credential service or credential-schema port not wired into this deployment (operational honesty: refuses rather than faking success).", body = ProblemDetails),
     ),
 )]
 pub async fn resolve_credential(
     State(state): State<AppState>,
-    Extension(_user): Extension<AuthenticatedUser>,
-    Path((org, ws)): Path<(String, String)>,
+    Extension(user): Extension<AuthenticatedUser>,
+    Extension(tenant): Extension<TenantContext>,
+    Path((_org, _ws)): Path<(String, String)>,
     Json(request): Json<ResolveCredentialRequest>,
 ) -> ApiResult<Json<ResolveCredentialResponse>> {
     // ── Input validation ────────────────────────────────────────────
     validate_credential_key(&request.credential_key)?;
     validate_data_is_object(&request.data)?;
 
+    let scope = crate::middleware::tenancy::request_scope(&tenant)?;
     let response =
-        crate::transport::credential::resolve_credential(&state, &org, &ws, request).await?;
+        crate::transport::credential::resolve_credential(&state, &scope, &user.user_id, request)
+            .await?;
     Ok(Json(response))
 }
 
@@ -423,16 +425,18 @@ pub async fn resolve_credential(
         (status = 400, description = "Validation error (e.g. empty `pending_token`).", body = ProblemDetails),
         (status = 401, description = "Authentication required or pending token expired/already-consumed.", body = ProblemDetails),
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
-        (status = 503, description = "Honest stub (honest capability contract): the route is reachable but generic interactive continuation is engine-owned (`Interactive::continue_resolve` dispatch via `nebula-engine::credential`) and requires a `CredentialRegistry` not wired into this build, so it refuses rather than faking success.", body = ProblemDetails),
+        (status = 503, description = "Credential service not wired into this deployment (operational honesty: refuses rather than faking success).", body = ProblemDetails),
     ),
 )]
 pub async fn continue_resolve_credential(
     State(state): State<AppState>,
-    Extension(_user): Extension<AuthenticatedUser>,
-    Path((org, ws)): Path<(String, String)>,
+    Extension(user): Extension<AuthenticatedUser>,
+    Extension(tenant): Extension<TenantContext>,
+    Path((_org, _ws)): Path<(String, String)>,
     Json(request): Json<ContinueResolveRequest>,
 ) -> ApiResult<Json<ContinueResolveResponse>> {
     // ── Input validation ────────────────────────────────────────────
+    validate_credential_key(&request.credential_key)?;
     if request.pending_token.is_empty() {
         return Err(ApiError::Validation {
             detail: "pending_token must not be empty".to_string(),
@@ -440,8 +444,10 @@ pub async fn continue_resolve_credential(
         });
     }
 
+    let scope = crate::middleware::tenancy::request_scope(&tenant)?;
     let response =
-        crate::transport::credential::continue_resolve(&state, &org, &ws, request).await?;
+        crate::transport::credential::continue_resolve(&state, &scope, &user.user_id, request)
+            .await?;
     Ok(Json(response))
 }
 
@@ -626,14 +632,8 @@ pub async fn get_oauth2_authorize_url_scoped(
     validate_credential_id(&cred)?;
     let scope = crate::middleware::tenancy::request_scope(&tenant)?;
     let owner_id = crate::transport::credential::owner_id_from_scope(&scope);
-    oauth_controller::get_oauth2_authorize_url_for_owner(
-        &cred,
-        &state,
-        &user,
-        query,
-        Some(owner_id),
-    )
-    .await
+    oauth_controller::get_oauth2_authorize_url_for_owner(&cred, &state, &user, query, owner_id)
+        .await
 }
 
 /// GET /orgs/{org}/workspaces/{ws}/credentials/{cred}/oauth2/callback — Handle OAuth2 callback.

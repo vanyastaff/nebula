@@ -17,6 +17,7 @@
 pub mod binding;
 pub mod builder;
 pub mod error;
+pub mod head;
 pub mod observer;
 pub mod ops;
 pub mod scope;
@@ -32,6 +33,7 @@ pub mod test_fixtures;
 pub use binding::{TenantFingerprint, ValidatedCredentialBinding, ValidatedCredentialBindingError};
 pub use builder::CredentialServiceBuilder;
 pub use error::CredentialServiceError;
+pub use head::CredentialHead;
 pub use observer::{CredentialObserver, EventMetricObserver, NoopObserver};
 pub use ops::{
     DispatchError, DispatchOps, register_all_builtin_ops, register_interactive_ops,
@@ -39,7 +41,8 @@ pub use ops::{
 };
 pub use scope::{FixedScopeResolver, TenantScope};
 pub use service::{
-    Acquisition, CredentialService, CredentialTypeInfo, LayeredStore, TestReport, TypeCapabilities,
+    Acquisition, CredentialService, CredentialTypeInfo, LayeredStore, RefreshReport, TestReport,
+    TypeCapabilities,
 };
 pub use state_source::StateSource;
 

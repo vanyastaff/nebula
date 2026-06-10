@@ -32,9 +32,9 @@ async fn resolve_for_slot_produces_guard() {
         .await
         .expect("create succeeds");
 
-    let ids = service.list(&scope).await.expect("list succeeds");
-    assert_eq!(ids.len(), 1, "expected exactly one credential");
-    let id = &ids[0];
+    let heads = service.list(&scope).await.expect("list succeeds");
+    assert_eq!(heads.len(), 1, "expected exactly one credential");
+    let id = &heads[0].id;
 
     // Step 2: validate the binding.
     let binding = service
@@ -73,8 +73,8 @@ async fn resolve_for_slot_scope_violation_rejected() {
         .await
         .expect("create succeeds");
 
-    let ids_a = service.list(&scope_a).await.expect("list scope A");
-    let id = &ids_a[0];
+    let heads_a = service.list(&scope_a).await.expect("list scope A");
+    let id = &heads_a[0].id;
 
     // Validate the binding for scope A.
     let binding_a = service
@@ -111,8 +111,8 @@ async fn resolve_for_slot_cancellation_returns_cancelled() {
         .await
         .expect("create succeeds");
 
-    let ids = service.list(&scope).await.expect("list succeeds");
-    let id = &ids[0];
+    let heads = service.list(&scope).await.expect("list succeeds");
+    let id = &heads[0].id;
 
     let binding = service
         .validate_credential_binding(&scope, id)

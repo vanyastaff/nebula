@@ -91,6 +91,10 @@ pub struct CredentialResponse {
     pub expires_at: Option<String>,
     /// Monotonic version for CAS operations.
     pub version: u64,
+    /// True when the credential cannot be used until re-authorized
+    /// (e.g. an OAuth2 flow was started but not completed, or a refresh
+    /// failed terminally).
+    pub reauth_required: bool,
     /// User-defined tags.
     #[serde(skip_serializing_if = "HashMap::is_empty")]
     pub tags: HashMap<String, String>,
@@ -112,6 +116,8 @@ pub struct CredentialSummary {
     pub expires_at: Option<String>,
     /// Monotonic version for CAS operations.
     pub version: u64,
+    /// True when the credential cannot be used until re-authorized.
+    pub reauth_required: bool,
 }
 
 /// Paginated list of credential summaries.
@@ -156,7 +162,18 @@ pub struct ResolveCredentialRequest {
     pub data: serde_json::Value,
 }
 
-/// Interaction type required to continue a pending credential acquisition.
+/// One form field of a `form_post` interaction.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct FormPostField {
+    /// Form field name.
+    pub name: String,
+    /// Form field value (never secret material — interaction payloads
+    /// are UI instructions, not credential state).
+    pub value: String,
+}
+
+/// Interaction type required to continue a pending credential
+/// acquisition. Mirrors the credential contract's `InteractionRequest`.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AcquisitionInteraction {
@@ -165,20 +182,25 @@ pub enum AcquisitionInteraction {
         /// URL to redirect the user to.
         url: String,
     },
-    /// User must visit the URI and enter the code (e.g. OAuth2 device_code).
+    /// Client must auto-submit a POST form to the IdP (e.g. SAML POST binding).
+    FormPost {
+        /// IdP endpoint URL.
+        url: String,
+        /// Form fields to submit.
+        fields: Vec<FormPostField>,
+    },
+    /// Information the user must act on (device code, instructions).
     DisplayInfo {
-        /// Code the user must enter at the verification URI.
-        user_code: String,
-        /// URI the user must visit.
-        verification_uri: String,
-        /// Seconds until the code expires.
+        /// Dialog title.
+        title: String,
+        /// Instructional message.
+        message: String,
+        /// Structured display payload (e.g. `UserCode` with the
+        /// verification URI, or plain `Text`).
+        data: serde_json::Value,
+        /// Seconds until this information expires.
         #[serde(skip_serializing_if = "Option::is_none")]
         expires_in: Option<u64>,
-    },
-    /// Server has issued a challenge the client must respond to.
-    Challenge {
-        /// Opaque challenge payload the client must respond to.
-        challenge_data: serde_json::Value,
     },
 }
 
@@ -198,14 +220,23 @@ pub enum ResolveCredentialResponse {
         /// Interaction the client must perform next.
         interaction: AcquisitionInteraction,
     },
+    /// The framework asked the client to poll the continuation again.
+    Retry {
+        /// Seconds to wait before re-calling `resolve/continue`.
+        retry_after_secs: u64,
+    },
 }
 
 /// Request body for continuing a pending credential acquisition.
 #[derive(Debug, Clone, Deserialize, ToSchema)]
 pub struct ContinueResolveRequest {
+    /// Credential type key the pending acquisition was started for.
+    pub credential_key: String,
     /// Token from a previous `Pending` response.
     pub pending_token: String,
-    /// User-provided input (authorization code, device confirmation, challenge answer, etc.).
+    /// Typed continuation payload — the serialized `UserInput` shape:
+    /// `"Poll"`, `{"Code":{"code":".."}}`, `{"Callback":{"params":{..}}}`,
+    /// or `{"FormData":{"params":{..}}}`.
     pub user_input: serde_json::Value,
 }
 

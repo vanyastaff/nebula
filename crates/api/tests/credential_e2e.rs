@@ -588,17 +588,30 @@ async fn credential_unauthenticated_request_is_401() {
     );
 }
 
-// ── Honest endpoints keep returning an honest 503 ─────────────────────────────
+// ── Lifecycle / acquisition reach the wired facade ────────────────────────────
 
+/// The lifecycle and acquisition routes reach the handler and the wired
+/// `CredentialService` answers honestly:
+///
+/// - `test`/`refresh`/`revoke` on a static `api_key` row → **400**
+///   (capability gate: the type implements none of Testable /
+///   Refreshable / Revocable) — never a faked success, never a 503.
+/// - `resolve` with a static type completes synchronously (**200**,
+///   `status: "complete"`, persisted id) — the route-shadow regression
+///   guard: the literal `resolve` segment must reach the handler, not
+///   404 in tenancy ULID parsing.
+/// - `resolve/continue` on a non-interactive type → **400** (capability
+///   gate), again proving handler reachability.
+///
+/// Caller-submitted secret material must never echo in any error body.
 #[tokio::test]
-async fn credential_engine_owned_endpoints_stay_honest_503() {
+async fn credential_lifecycle_and_acquisition_answer_through_the_facade() {
     let (state, _q) = create_state_with_queue().await;
     let config = ApiConfig::for_test();
     let token = create_test_jwt();
 
-    // Seed a real credential so test/refresh/revoke reach the handler
-    // body (not a pre-handler 404) and we prove the 503 is the honest
-    // engine-owned signal, not an artifact of a missing row.
+    // Seed a real credential so test/refresh/revoke reach the capability
+    // gate on an existing row (not a pre-handler 404).
     let app = app::build_app(state.clone(), &config);
     let resp = app
         .oneshot(auth_json(
@@ -609,13 +622,14 @@ async fn credential_engine_owned_endpoints_stay_honest_503() {
         ))
         .await
         .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "seed create must succeed");
     let created: serde_json::Value = serde_json::from_str(&body_string(resp).await).unwrap();
     let cred_id = created["id"].as_str().unwrap().to_owned();
 
-    // `test` / `refresh` / `revoke` carry a valid `{cred}` ULID, so the
-    // tenancy middleware passes and the request reaches the handler →
-    // honest 503 (engine-owned dispatch, no CredentialRegistry wired).
-    let post_503: &[(&str, String, serde_json::Value)] = &[
+    // `test` / `refresh` / `revoke` on the static api_key type → 400
+    // from the facade capability gate (closure absence IS capability
+    // absence), with a secret-free problem body.
+    let capability_400: &[(&str, String, serde_json::Value)] = &[
         (
             "POST",
             ws_path(&format!("/credentials/{cred_id}/test")),
@@ -633,7 +647,7 @@ async fn credential_engine_owned_endpoints_stay_honest_503() {
         ),
     ];
 
-    for (method, path, body) in post_503 {
+    for (method, path, body) in capability_400 {
         let app = app::build_app(state.clone(), &config);
         let resp = app
             .oneshot(auth_json(method, path, &token, body))
@@ -641,102 +655,115 @@ async fn credential_engine_owned_endpoints_stay_honest_503() {
             .unwrap();
         assert_eq!(
             resp.status(),
-            StatusCode::SERVICE_UNAVAILABLE,
-            "{method} {path} must stay an honest 503 (engine-owned / no registry)"
+            StatusCode::BAD_REQUEST,
+            "{method} {path}: a static type must fail the capability gate \
+             with 400 — never a faked success, never a stub 503"
         );
         let problem = body_string(resp).await;
-        // Honest error: structured, no secret, problem+json.
         assert!(
             !problem.contains(SECRET_TOKEN),
-            "503 body must never carry a secret: {problem}"
+            "capability-gate body must never carry a secret: {problem}"
         );
     }
 
-    // `resolve` / `resolve/continue` reach the handler. The tenancy
-    // middleware special-cases the literal `resolve` sub-route so it is
-    // NOT parsed as a `{cred}` `CredentialId` (see
-    // `crates/api/src/middleware/tenancy.rs` `resolve_path_ids`).
-    // Without that guard the literal `resolve` segment failed ULID
-    // parsing and every acquisition request was a flat 404 before any
-    // handler ran — a route-shadow that made these endpoints
-    // structurally unreachable. They now hit the handler, which returns
-    // the honest engine-owned 503 (generic `Credential::resolve`
-    // dispatch is not wired into this API build); the genuine `{cred}`
-    // position stays strictly ULID-validated. Regression guard for the
-    // route-shadow.
-    // The sentinel is placed in the submitted credential material
-    // (`data` / `user_input`) so the no-secret assertion below is a
-    // *real* redaction guard, not vacuous: the honest-503 problem body
-    // must never echo caller-submitted secret material (credential secrecy / integration seam —
-    // same contract as the forced-error bodies elsewhere in this file).
-    let resolve_503: &[(&str, String, serde_json::Value)] = &[
-        (
+    // `resolve` reaches the handler (the tenancy middleware special-cases
+    // the literal `resolve` sub-route so it is NOT parsed as a `{cred}`
+    // CredentialId — regression guard for the route-shadow) and a static
+    // type completes synchronously: 200 + persisted id, no secret echo.
+    let app = app::build_app(state.clone(), &config);
+    let resp = app
+        .oneshot(auth_json(
             "POST",
-            ws_path("/credentials/resolve"),
-            serde_json::json!({
+            &ws_path("/credentials/resolve"),
+            &token,
+            &serde_json::json!({
                 "credential_key": "api_key",
                 "data": { "api_key": SECRET_TOKEN }
             }),
-        ),
-        (
-            "POST",
-            ws_path("/credentials/resolve/continue"),
-            serde_json::json!({
-                "pending_token": "tok",
-                "user_input": { "code": SECRET_TOKEN }
-            }),
-        ),
-    ];
-
-    for (method, path, body) in resolve_503 {
-        let app = app::build_app(state.clone(), &config);
-        let resp = app
-            .oneshot(auth_json(method, path, &token, body))
-            .await
-            .unwrap();
-        assert_eq!(
-            resp.status(),
-            StatusCode::SERVICE_UNAVAILABLE,
-            "{method} {path} must reach the handler and return the honest \
-             engine-owned 503 — NOT a pre-handler 404 (that is the tenancy \
-             route-shadow this guards against)"
-        );
-        let problem = body_string(resp).await;
-        assert!(
-            !problem.contains(SECRET_TOKEN),
-            "honest-503 problem body must not echo caller-submitted \
-             credential material (SECRET_TOKEN was in the request \
-             `data`/`user_input`): {problem}"
-        );
-    }
-
-    // Type-discovery endpoints (system-level, not workspace-scoped).
-    // credential-schema port: these are now port-backed. The shared harness wires
-    // a permissive port (zero registered types), so the *honest* result is
-    // 200 with an empty `types` list (the endpoint truthfully reports the
-    // registered set) and 404 for an unknown key — not a honest capability false
-    // capability. The genuine no-port → 503 path is covered by
-    // `tests/seam_credential_catalog_schema.rs::catalog_503_when_port_unconfigured`.
-    let app = app::build_app(state.clone(), &config);
-    let resp = app
-        .oneshot(auth_get("/api/v1/credentials/types", &token))
+        ))
         .await
         .unwrap();
     assert_eq!(
         resp.status(),
         StatusCode::OK,
-        "type listing is port-backed (200, possibly-empty) — honest, not a 503 stub"
+        "resolve must reach the handler and complete for a static type — \
+         NOT a pre-handler 404 (the tenancy route-shadow this guards against)"
     );
-    let listed: serde_json::Value = serde_json::from_str(&body_string(resp).await).unwrap();
+    let resolved = body_string(resp).await;
+    assert!(
+        !resolved.contains(SECRET_TOKEN),
+        "resolve response must not echo the submitted secret: {resolved}"
+    );
+    let resolved_json: serde_json::Value = serde_json::from_str(&resolved).unwrap();
+    assert_eq!(resolved_json["status"], "complete");
+    assert!(
+        resolved_json["credential_id"]
+            .as_str()
+            .is_some_and(|id| id.starts_with("cred_")),
+        "complete resolve must return the persisted credential id"
+    );
+
+    // `resolve/continue` with a well-formed typed payload on a
+    // non-interactive type → 400 from the capability gate; the submitted
+    // material never echoes.
+    let app = app::build_app(state.clone(), &config);
+    let resp = app
+        .oneshot(auth_json(
+            "POST",
+            &ws_path("/credentials/resolve/continue"),
+            &token,
+            &serde_json::json!({
+                "credential_key": "api_key",
+                "pending_token": "tok",
+                "user_input": { "Code": { "code": SECRET_TOKEN } }
+            }),
+        ))
+        .await
+        .unwrap();
     assert_eq!(
-        listed["types"].as_array().map(Vec::len),
-        Some(0),
-        "permissive harness port registers zero types — honest empty catalog"
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "continue on a non-interactive type must fail the capability gate \
+         with 400 — and must reach the handler, not 404 in tenancy"
+    );
+    let problem = body_string(resp).await;
+    assert!(
+        !problem.contains(SECRET_TOKEN),
+        "continue error body must not echo caller-submitted credential \
+         material (SECRET_TOKEN was in `user_input`): {problem}"
+    );
+
+    // Type-discovery endpoints (system-level, not workspace-scoped) are
+    // registry-backed: the first-party catalog lists the builtin types and
+    // a known key resolves.
+    let app = app::build_app(state.clone(), &config);
+    let resp = app
+        .oneshot(auth_get("/api/v1/credentials/types", &token))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let listed: serde_json::Value = serde_json::from_str(&body_string(resp).await).unwrap();
+    let keys: Vec<&str> = listed["types"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|t| t["key"].as_str())
+        .collect();
+    assert!(
+        keys.contains(&"api_key"),
+        "registry-backed catalog must list api_key, got {keys:?}"
     );
 
     let app = app::build_app(state.clone(), &config);
     let resp = app
         .oneshot(auth_get("/api/v1/credentials/types/api_key", &token))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "known type key resolves");
+
+    let app = app::build_app(state.clone(), &config);
+    let resp = app
+        .oneshot(auth_get("/api/v1/credentials/types/no_such_type", &token))
         .await
         .unwrap();
     assert_eq!(
@@ -746,7 +773,6 @@ async fn credential_engine_owned_endpoints_stay_honest_503() {
          non-existence disclosure is non-sensitive — unlike credential instances)"
     );
 }
-
 /// Guard-precision regression (Copilot review, PR #674): the
 /// `"credentials" if segments[7] != "resolve"` tenancy match guard must
 /// keep rejecting a **non-`resolve`, non-ULID** `{cred}` segment

@@ -29,7 +29,7 @@ async fn factory_builds_service_and_create_round_trips() {
 
     // A non-interactive create round-trips through the wired ops + display.
     let scope = TenantScope::new("org", "ws");
-    let snap = svc
+    let head = svc
         .create(
             &scope,
             "api_key",
@@ -41,14 +41,15 @@ async fn factory_builds_service_and_create_round_trips() {
         )
         .await
         .expect("api_key create succeeds");
-    assert_eq!(snap.kind(), "api_key");
-    assert_eq!(snap.display().display_name.as_deref(), Some("Test key"));
+    assert_eq!(head.credential_key, "api_key");
+    assert_eq!(head.display.display_name.as_deref(), Some("Test key"));
 
-    // Retrievable, secret never echoed in the snapshot's Debug.
-    let ids = svc.list(&scope).await.expect("list");
-    assert_eq!(ids.len(), 1);
-    let got = svc.get(&scope, &ids[0]).await.expect("get");
-    assert_eq!(got.kind(), "api_key");
-    assert_eq!(got.display().display_name.as_deref(), Some("Test key"));
+    // Retrievable, secret never echoed in the head's Debug.
+    let heads = svc.list(&scope).await.expect("list");
+    assert_eq!(heads.len(), 1);
+    assert_eq!(heads[0].id, head.id);
+    let got = svc.get(&scope, &head.id).await.expect("get");
+    assert_eq!(got.credential_key, "api_key");
+    assert_eq!(got.display.display_name.as_deref(), Some("Test key"));
     assert!(!format!("{got:?}").contains("k-factory-test"));
 }

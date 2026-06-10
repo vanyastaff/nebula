@@ -111,8 +111,8 @@ pub enum CredentialServiceError {
     /// fallback-on-interrupt path can pattern-match without string-scanning.
     ///
     /// The fallback wrapper in [`CredentialService::refresh`] intercepts this
-    /// variant when a non-expired cached snapshot is available and returns the
-    /// cached material instead of propagating the error.
+    /// variant when the stored material is still non-expired and returns the
+    /// cached head instead of propagating the error.
     ///
     /// [`Provider`]: Self::Provider
     /// [`CredentialService::refresh`]: crate::service::CredentialService::refresh

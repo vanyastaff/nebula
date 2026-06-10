@@ -348,51 +348,39 @@ impl, and (unlike idempotency) no feature-gated PG path, because
 
 ### Credential CRUD durability (canon §11.6 / §12.5)
 
-The credential CRUD endpoints (`create` / `get` / `update` / `delete`
-/ `list` under `…/workspaces/{ws}/credentials`) are **implemented and
-work end-to-end** over the wired in-memory credential store
-(`AppState::oauth_credential_store` —
-`nebula_storage::credential::InMemoryStore`, the same real
-`nebula_credential::CredentialStore` impl the OAuth2 callback writes
-through). The type-specific `data` is persisted **write-only**: it is
-wrapped in `nebula_credential::SecretString` for its in-process
-lifetime and stored as an opaque blob; the metadata-only response
-types have no `data` field, so `get` / `list` cannot echo the secret.
+Every credential operation — CRUD (`create` / `get` / `update` /
+`delete` / `list`), lifecycle (`test` / `refresh` / `revoke`), and
+acquisition (`resolve` / `resolve/continue`) under
+`…/workspaces/{ws}/credentials` — routes through the
+**`CredentialService` facade** (ADR-0088 D7), composed by the server at
+startup (`ports::credential_service_factory`). The facade owns the
+layered store (`Audit(Cache(Encryption(in-memory)))`), runs the typed
+validate→resolve pipeline on `data`, and owner-checks every operation.
+The OAuth2 callback persists through the **same** store handle, so an
+OAuth-acquired credential is visible to `get`/`list` (flagged
+`reauth_required` until the exchange completes). When no service is
+wired, every credential endpoint returns an honest 503 — there is no
+raw-store fallback.
 
-| Aspect | Credential CRUD (in-memory store) |
+| Aspect | Credential operations (facade, in-memory backend) |
 |---|---|
-| Restart-survival | **No** — credentials are lost on restart |
+| Restart-survival | **No** — the facade's backend is in-memory; credentials are lost on restart |
 | Multi-replica share | **No** — state is process-local |
-| Encryption at rest | **No `EncryptionLayer` wired** — the blob is plaintext-at-rest in the in-memory store |
-| Cross-workspace isolation | **None today** — the in-memory credential store is global and the `{org}`/`{ws}` path segments are not bound to credential ownership; any authenticated caller with a valid `cred_<ULID>` resolves/mutates it regardless of workspace. Pre-existing crate-wide local-first gap (same as `workflow`/`execution`); closes when the owner-scoped `nebula_storage::credential::ScopeLayer` is composed in the composition root. |
+| Encryption at rest | **Yes** — the facade composes the `EncryptionLayer` adjacent to the backend (AES-256-GCM; key from `NEBULA_CRED_MASTER_KEY`, fail-closed) |
+| Cross-workspace isolation | **Yes** — the facade owner-checks every operation against the canonical `Scope::credential_owner_id`; cross-workspace ids collapse to a flat 404 |
+| Lifecycle dispatch | **Live** — `test`/`refresh`/`revoke` dispatch the registered type's capability; a type without it is refused with 400 (capability gate), never a faked success |
 
-> **Operator warning:** a credential created via
-> `POST …/credentials` stops resolving the moment the process exits and
-> is not shared across replicas, its secret blob is **not encrypted
-> at rest** in this build (the production `EncryptionLayer` from
-> `nebula_storage`, ADR-0032, is not composed here), and there is **no
-> cross-workspace isolation** — any authenticated caller holding a valid
-> `cred_<ULID>` can resolve or mutate it regardless of the `{org}`/`{ws}`
-> in the path, because no owner-scoped `ScopeLayer` / credential→workspace
-> ownership binding is wired (the same crate-wide local-first gap that
-> `workflow`/`execution` carry). Same local-first caveat as `me/*` and
-> the `memory` idempotency backend — the gap is persistence + at-rest
-> encryption + tenant-isolation *wiring* (un-composed cross-cutting
-> layers), not the CRUD capability itself. It closes when a
-> storage-backed, `EncryptionLayer`- and `ScopeLayer`-wrapped credential
-> store is composed in the composition root.
+> **Operator warning:** a credential created via `POST …/credentials`
+> stops resolving the moment the process exits and is not shared across
+> replicas — the facade's backend is in-memory (encrypted at rest, not
+> durable). Same local-first caveat as `me/*` and the `memory`
+> idempotency backend; it closes when a durable credential backend is
+> swapped in behind the facade's erased store.
 >
-> `test` / `refresh` / `revoke` / generic `resolve` /
-> `resolve/continue` / credential-type discovery remain **honest 503**
-> (canon §4.5): they require engine-owned dispatch
-> (`nebula-engine::credential`, ADR-0030/ADR-0041) and/or a
-> `CredentialRegistry` that is not wired into this build, so they
-> deliberately refuse rather than fake a credential capability. The
-> tenancy path resolver special-cases the literal `resolve` sub-route,
-> so `resolve` / `resolve/continue` are **not** shadowed by the
-> `{cred}` matcher — they reach the handler and return the honest 503
-> above (not a pre-handler 404); the genuine `/credentials/{cred}`
-> position stays strictly ULID-validated.
+> The tenancy path resolver special-cases the literal `resolve`
+> sub-route, so `resolve` / `resolve/continue` are **not** shadowed by
+> the `{cred}` matcher — they reach the handler; the genuine
+> `/credentials/{cred}` position stays strictly ULID-validated.
 
 ### Org membership durability (canon §11.6 / §11.5)
 
@@ -818,16 +806,16 @@ above for the enforcement guarantee.
 | `POST`   | `/api/v1/orgs/{org}/workspaces/{ws}/executions/{exec}/terminate`          | Terminate execution — durable signal (§12.2)                               |
 | `POST`   | `/api/v1/orgs/{org}/workspaces/{ws}/executions/{exec}/restart`            | Restart execution `(honest 501)`                                           |
 | `GET`    | `/api/v1/orgs/{org}/workspaces/{ws}/resources`                            | List resources `(honest 501)`                                              |
-| `POST`   | `/api/v1/orgs/{org}/workspaces/{ws}/credentials/resolve`                  | Start generic credential resolve `(honest 503)`                            |
-| `POST`   | `/api/v1/orgs/{org}/workspaces/{ws}/credentials/resolve/continue`         | Continue multi-step credential resolve `(honest 503)`                      |
+| `POST`   | `/api/v1/orgs/{org}/workspaces/{ws}/credentials/resolve`                  | Start credential acquisition (facade; complete / pending / retry)          |
+| `POST`   | `/api/v1/orgs/{org}/workspaces/{ws}/credentials/resolve/continue`         | Continue multi-step credential acquisition (facade)                        |
 | `GET`    | `/api/v1/orgs/{org}/workspaces/{ws}/credentials`                          | List credentials (metadata only)                                           |
 | `POST`   | `/api/v1/orgs/{org}/workspaces/{ws}/credentials`                          | Create credential (write-only secret)                                      |
 | `GET`    | `/api/v1/orgs/{org}/workspaces/{ws}/credentials/{cred}`                   | Get credential metadata                                                    |
 | `PUT`    | `/api/v1/orgs/{org}/workspaces/{ws}/credentials/{cred}`                   | Update credential                                                          |
 | `DELETE` | `/api/v1/orgs/{org}/workspaces/{ws}/credentials/{cred}`                   | Delete credential                                                          |
-| `POST`   | `/api/v1/orgs/{org}/workspaces/{ws}/credentials/{cred}/test`              | Test credential `(honest 503)`                                             |
-| `POST`   | `/api/v1/orgs/{org}/workspaces/{ws}/credentials/{cred}/refresh`           | Refresh credential token `(honest 503)`                                    |
-| `POST`   | `/api/v1/orgs/{org}/workspaces/{ws}/credentials/{cred}/revoke`            | Revoke credential `(honest 503)`                                           |
+| `POST`   | `/api/v1/orgs/{org}/workspaces/{ws}/credentials/{cred}/test`              | Test credential (capability-gated dispatch)                                |
+| `POST`   | `/api/v1/orgs/{org}/workspaces/{ws}/credentials/{cred}/refresh`           | Refresh credential token (capability-gated dispatch)                       |
+| `POST`   | `/api/v1/orgs/{org}/workspaces/{ws}/credentials/{cred}/revoke`            | Revoke credential (capability-gated dispatch)                              |
 | `POST`   | `/webhooks/{trigger_uuid}/{nonce}`                                         | Inbound webhook trigger (mounted when `webhook_transport` is set)          |
 | `GET`    | `/api/v1/openapi.json`                                                    | OpenAPI 3.1 specification document                                         |
 | `GET`    | `/api/v1/docs/`                                                           | Swagger UI (self-hosted)                                                   |

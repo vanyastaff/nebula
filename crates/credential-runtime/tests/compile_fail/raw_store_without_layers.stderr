@@ -8,8 +8,8 @@ error[E0624]: associated function `__from_parts` is private
    |
    | /     pub(crate) fn __from_parts(
    | |         store: Arc<dyn DynCredentialStore>,
+   | |         scan_store: ErasedCredentialStore,
    | |         resolver: CredentialResolver<ErasedCredentialStore>,
-   | |         lease: LeaseLifecycle,
 ...  |
    | |         source: StateSource,
    | |     ) -> Self {

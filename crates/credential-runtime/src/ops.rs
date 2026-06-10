@@ -18,8 +18,8 @@ use std::sync::Arc;
 use nebula_credential::pending_store::PendingStateStore;
 use nebula_credential::resolve::{InteractionRequest, TestResult, UserInput};
 use nebula_credential::{
-    Capabilities, Credential, CredentialContext, CredentialRecord, CredentialSnapshot,
-    CredentialState, Interactive, PendingToken, Refreshable, Revocable, Testable,
+    Capabilities, Credential, CredentialContext, CredentialState, Interactive, PendingToken,
+    Refreshable, Revocable, Testable,
 };
 use nebula_engine::credential::{
     ResolveResponse, dispatch_revoke, dispatch_test, execute_continue, execute_resolve,
@@ -195,15 +195,6 @@ type RevokeFuture<'a> =
 type RevokeFn =
     Arc<dyn for<'a> Fn(&'a [u8], &'a CredentialContext) -> RevokeFuture<'a> + Send + Sync>;
 
-/// Erased `project`: deserializes stored state bytes into `C::State`,
-/// runs `C::project`, and wraps the scheme in a secret-free
-/// [`CredentialSnapshot`]. Never returns the raw secret bytes.
-type SnapshotFn = Arc<
-    dyn Fn(&[u8], CredentialRecord) -> Result<CredentialSnapshot, CredentialServiceError>
-        + Send
-        + Sync,
->;
-
 /// Erased validation: runs the canonical credential properties pipeline
 /// for the captured concrete `C` —
 /// `schema_of::<C::Properties>().validate(FieldValues)` then a typed
@@ -215,8 +206,8 @@ type ValidateFn =
 
 /// One credential type's erased operation closures.
 ///
-/// `validate` / `resolve` / `snapshot` / `acquire` are always present
-/// (the base registration). The capability closures are `Option`: a
+/// `validate` / `resolve` / `acquire` are always present (the base
+/// registration). The capability closures are `Option`: a
 /// `Some` is set **only** by the matching capability-bounded
 /// `register_*_ops` (callable only for `C: Testable` / `Refreshable` /
 /// `Revocable` / `Interactive`), so closure presence *is* the capability
@@ -225,7 +216,6 @@ type ValidateFn =
 struct OpsEntry<PS> {
     validate: ValidateFn,
     resolve: ResolveFn<PS>,
-    snapshot: SnapshotFn,
     acquire: AcquireFn<PS>,
     test_fn: Option<TestFn>,
     refresh_fn: Option<RefreshFn>,
@@ -330,29 +320,6 @@ impl<PS: PendingStateStore> DispatchOps<PS> {
                 key: key.to_owned(),
             })?;
         (entry.resolve)(values, ctx, pending).await
-    }
-
-    /// Project decrypted state bytes for the type at `key` into a
-    /// secret-free [`CredentialSnapshot`].
-    ///
-    /// # Errors
-    ///
-    /// [`CredentialServiceError::TypeUnknown`] when `key` is absent;
-    /// [`CredentialServiceError::Internal`] when stored bytes fail to
-    /// deserialize into the registered state type.
-    pub(crate) fn snapshot(
-        &self,
-        key: &str,
-        data: &[u8],
-        record: CredentialRecord,
-    ) -> Result<CredentialSnapshot, CredentialServiceError> {
-        let entry = self
-            .entries
-            .get(key)
-            .ok_or_else(|| CredentialServiceError::TypeUnknown {
-                key: key.to_owned(),
-            })?;
-        (entry.snapshot)(data, record)
     }
 
     /// Run the canonical credential properties validation pipeline for
@@ -601,14 +568,6 @@ where
         },
     );
 
-    let snapshot: SnapshotFn = Arc::new(|data: &[u8], record: CredentialRecord| {
-        let state: C::State = serde_json::from_slice(data).map_err(|e| {
-            CredentialServiceError::Internal(format!("stored state deserialization failed: {e}"))
-        })?;
-        let scheme = C::project(&state);
-        Ok(CredentialSnapshot::new(C::KEY, record, scheme))
-    });
-
     let validate: ValidateFn = Arc::new(|props: &serde_json::Value| {
         // Canonical pipeline (mirrors `properties_pipeline.rs`): schema
         // validate, then a typed `from_value` round-trip. The credential
@@ -648,7 +607,6 @@ where
         OpsEntry {
             validate,
             resolve,
-            snapshot,
             acquire,
             test_fn: None,
             refresh_fn: None,
@@ -946,7 +904,7 @@ where
 mod tests {
     use super::{DispatchOps, register_refreshable_ops, register_runtime_ops};
     use crate::test_fixtures::RefreshableFixtureCredential;
-    use nebula_credential::{Capabilities, Credential, CredentialContext, CredentialRecord};
+    use nebula_credential::{Capabilities, Credential, CredentialContext};
     use nebula_credential_builtin::BearerTokenCredential;
     use nebula_credential_testutil::InMemoryPendingStore;
     use nebula_schema::FieldValues;
@@ -993,7 +951,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resolve_then_snapshot_roundtrip() {
+    async fn resolve_produces_persistable_state() {
         let mut ops = Ops::new();
         register_runtime_ops::<BearerTokenCredential, InMemoryPendingStore>(&mut ops)
             .expect("register ok");
@@ -1010,13 +968,9 @@ mod tests {
             .await
             .expect("resolve ok");
         assert_eq!(resolved.state_kind, "secret_token");
-
-        let snap = ops
-            .snapshot("bearer_token", &resolved.data, CredentialRecord::new())
-            .expect("snapshot ok");
-        assert_eq!(snap.kind(), "bearer_token");
-        // Snapshot redacts secrets in Debug.
-        assert!(format!("{snap:?}").contains("[REDACTED]"));
+        // The serialized state bytes are valid self-describing JSON — the
+        // refresh/test/revoke closures deserialize exactly these bytes.
+        assert!(serde_json::from_slice::<serde_json::Value>(&resolved.data).is_ok());
     }
 
     #[tokio::test]

@@ -32,7 +32,7 @@ async fn cross_tenant_binding_rejected() {
         1,
         "expected exactly one credential under scope A"
     );
-    let id = &ids_a[0];
+    let id = &ids_a[0].id;
 
     // Tenant B tries to bind to tenant A's credential — must fail with ScopeMismatch.
     let err = service

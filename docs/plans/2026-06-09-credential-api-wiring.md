@@ -1,7 +1,29 @@
 # Wire nebula-api → CredentialService (ADR-0088 D4 P4 + D7)
 
-Status: in progress (P1 only approved; re-gate before P2+)
-Branch: `refactor/credential-facade-dyn-erasure`
+Status: steps 1–5 DONE. P1 (dyn-erasure) + P2 steps 1–3 merged via PR #785
+(squash `5c5852ec`). Steps 4–5 (api transport → facade, split-brain store
+unification, live lifecycle/acquisition) landed on branch
+`feat/api-credential-routing`:
+
+- `refactor(credential-runtime)!` — facade CRUD/refresh return the new
+  secret-free `CredentialHead` (id + store CAS version + reauth flag +
+  display); `update` takes `props: Option` (display-only updates) +
+  `expected_version: Option`; `Acquisition::Complete` carries the head;
+  `TenantScope::from_scope`; dead `ops.snapshot` deleted.
+- `feat(api)!` — CRUD/lifecycle/acquisition through the facade; OAuth
+  two-phase writes through `scoped_store` over
+  `credential_store_handle()` (split-brain CLOSED, original P5
+  store-unification folded in); `AppState.oauth_credential_store`
+  DELETED; OAuth `owner_id` + CAS version mandatory (admin-bypass write
+  path deleted); api `classify()` dup deleted (schema port is the
+  source); honest-503 only when no service is wired.
+
+Remaining (next PRs): P4 OAuth → facade interactive acquisition
+(`resolve`→`Pending`→`continue`), P5 delete `CredentialScopeLayer` +
+transfer its tenant-isolation tests, P6 observability DoD + criterion
+p99 gate + ADR-0088 status flip.
+
+Branch (historical): `refactor/credential-facade-dyn-erasure`
 Owner decision (2026-06-09): Option **C** (P4 dyn-erasure folded into the wiring,
 one branch, expand-contract green-per-commit). Execution gated **P1-first**:
 land the non-generic facade as its own green milestone, then re-approve the

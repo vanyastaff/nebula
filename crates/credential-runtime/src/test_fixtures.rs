@@ -120,7 +120,7 @@ pub fn set_refresh_rendezvous(barrier: Option<Arc<tokio::sync::Barrier>>) {
 /// would consume the remaining attempts and the second call would
 /// succeed normally — masking the failure the test is trying to
 /// observe. Persistent firing is what lets the fallback probe assert
-/// the outer fallback branch (return cached snapshot) was actually
+/// the outer fallback branch (return cached head) was actually
 /// taken.
 #[derive(Debug, Clone, Copy)]
 pub enum RefreshFailureScript {

@@ -38,6 +38,20 @@ impl TenantScope {
         }
     }
 
+    /// Construct from an already-resolved storage [`Scope`]. The owner key
+    /// is the same canonical [`Scope::credential_owner_id`] derivation as
+    /// [`new`](Self::new) — this constructor exists so the API edge, which
+    /// holds a resolved `Scope`, cannot drift by re-deriving from raw
+    /// org/workspace strings. The session is `None`; attach one with
+    /// [`with_session`](Self::with_session).
+    #[must_use]
+    pub fn from_scope(scope: &Scope) -> Self {
+        Self {
+            owner_id: scope.credential_owner_id(),
+            session_id: None,
+        }
+    }
+
     /// Attach the interactive-flow session id. Required for the
     /// pending-store `(kind, owner, session, token)` binding that the
     /// interactive `resolve`/`continue_resolve` paths depend on; CRUD

@@ -149,13 +149,19 @@ impl<B: CredentialStore + 'static> CredentialServiceBuilder<B> {
             }
         }
 
-        let layered = AuditLayer::new(
-            CacheLayer::new(
-                EncryptionLayer::new(self.raw_store, self.key_provider),
-                self.cache_config,
-            ),
-            self.audit_sink,
+        let cached = CacheLayer::new(
+            EncryptionLayer::new(self.raw_store, self.key_provider),
+            self.cache_config,
         );
+        // Two handles over the SAME cache+encryption stack: the audited
+        // top (`store`) is the access path for every real per-id
+        // operation, while the un-audited `scan_store` exists solely for
+        // `list`'s owner-filter scan — enumerating foreign rows to filter
+        // them out is not an access, so it must not mint per-credential
+        // audit `Get` events against other tenants' ids.
+        let scan: Arc<dyn DynCredentialStore> = Arc::new(cached);
+        let scan_store = ErasedCredentialStore::new(Arc::clone(&scan));
+        let layered = AuditLayer::new(scan_store.clone(), self.audit_sink);
         let store: Arc<dyn DynCredentialStore> = Arc::new(layered);
         let refresh_coordinator = self
             .refresh_coordinator
@@ -172,6 +178,7 @@ impl<B: CredentialStore + 'static> CredentialServiceBuilder<B> {
         );
         Ok(CredentialService::__from_parts(
             store,
+            scan_store,
             resolver,
             lease,
             self.pending_store,
