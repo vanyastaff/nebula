@@ -47,6 +47,41 @@ impl SqliteCredentialStore {
     pub fn new(pool: SqlitePool) -> Self {
         Self { pool }
     }
+
+    /// Open (creating if absent) a SQLite database at `url` and apply migration
+    /// `0030_credentials_store.sql`, returning a ready store.
+    ///
+    /// `url` is a SQLite connection string — a file URL
+    /// (`sqlite://path/to/credentials.db`), a bare path, or
+    /// `sqlite::memory:` for an ephemeral store. The database is expected to be
+    /// credential-dedicated: migration 0030 creates a self-contained
+    /// `credentials` table with no foreign keys, so the full migration chain is
+    /// not required.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Backend`] if the URL is malformed, the database
+    /// cannot be opened/created, or the migration fails to apply.
+    pub async fn connect(url: &str) -> Result<Self, StoreError> {
+        use std::str::FromStr;
+
+        let options = sqlx::sqlite::SqliteConnectOptions::from_str(url)
+            .map_err(|e| StoreError::Backend(format!("invalid SQLite URL `{url}`: {e}").into()))?
+            .create_if_missing(true);
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .connect_with(options)
+            .await
+            .map_err(|e| StoreError::Backend(format!("open SQLite `{url}`: {e}").into()))?;
+
+        sqlx::query(include_str!(
+            "../../migrations/sqlite/0030_credentials_store.sql"
+        ))
+        .execute(&pool)
+        .await
+        .map_err(|e| StoreError::Backend(format!("apply migration 0030: {e}").into()))?;
+
+        Ok(Self { pool })
+    }
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
