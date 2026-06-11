@@ -48,7 +48,7 @@ use nebula_metrics::MetricsRegistry;
 use nebula_resource::{
     Manager, RegistrationSpec, ResidentConfig, ResourceContext, SlotIdentity,
     error::Error as ResourceError,
-    resource::{Resource, ResourceConfig, ResourceMetadata},
+    resource::{Provider, ResourceConfig, ResourceMetadata},
     runtime::{TopologyRuntime, resident::ResidentRuntime},
     topology::resident::Resident,
 };
@@ -156,9 +156,9 @@ impl From<WitnessError> for ResourceError {
     }
 }
 
-impl Resource for WitnessResource {
+impl Provider for WitnessResource {
     type Config = WitnessResourceConfig;
-    type Runtime = Arc<WitnessResourceInner>;
+    type Instance = Arc<WitnessResourceInner>;
 
     fn key() -> ResourceKey {
         resource_key!("phase9-witness-resource")

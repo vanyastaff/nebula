@@ -29,7 +29,7 @@ use nebula_resource::{
     AcquireOptions, Manager, PoolConfig, RegistrationSpec, ResidentConfig, ResourceContext,
     ResourceGuard, ScopeLevel, ShutdownConfig, SlotIdentity,
     error::{Error, ErrorKind},
-    resource::{HasCredentialSlots, Resource, ResourceConfig, ResourceMetadata},
+    resource::{HasCredentialSlots, Provider, ResourceConfig, ResourceMetadata},
     runtime::{TopologyRuntime, pool::PoolRuntime, resident::ResidentRuntime},
     topology::{
         pooled::{BrokenCheck, InstanceMetrics, Pooled, RecycleDecision},
@@ -119,9 +119,9 @@ struct HttpClientResource {
 // derive the key, even though the struct has data. This is intentional
 // (type-level identity) but the docs don't explain this constraint. I initially
 // wrote `fn key(&self)` and got a confusing "method not in trait" error.
-impl Resource for HttpClientResource {
+impl Provider for HttpClientResource {
     type Config = HttpClientConfig;
-    type Runtime = FakeHttpClient;
+    type Instance = FakeHttpClient;
 
     fn key() -> ResourceKey {
         resource_key!("http.client")
@@ -147,9 +147,9 @@ impl HasCredentialSlots for HttpClientResource {
     }
 }
 
-// FRICTION NOTE [Pooled requires Runtime: Clone + Into<Lease>]: The Pooled
+// FRICTION NOTE [Pooled requires Instance: Clone + Into<Lease>]: The Pooled
 // trait itself has no bounds on Clone/Into, but acquire_pooled on Manager
-// requires `R::Runtime: Clone + Into<R::Lease>` and `R::Lease: Into<R::Runtime>`.
+// requires `R::Instance: Clone + Into<R::Lease>` and `R::Lease: Into<R::Instance>`.
 // These bounds are not visible at trait definition time. When you write the impl
 // and try to compile, you get a constraint error only at the call site, not at
 // the impl site. The error message says nothing like "your Runtime must be
@@ -293,9 +293,9 @@ impl ResourceConfig for ConfigStoreConfig {
 #[derive(Clone)]
 struct ConfigStoreResource;
 
-impl Resource for ConfigStoreResource {
+impl Provider for ConfigStoreResource {
     type Config = ConfigStoreConfig;
-    type Runtime = ConfigStore;
+    type Instance = ConfigStore;
 
     fn key() -> ResourceKey {
         resource_key!("config.store")
@@ -446,9 +446,9 @@ impl DbResource {
     }
 }
 
-impl Resource for DbResource {
+impl Provider for DbResource {
     type Config = DbConfig;
-    type Runtime = FakeDbConnection;
+    type Instance = FakeDbConnection;
 
     fn key() -> ResourceKey {
         resource_key!("db.connection")

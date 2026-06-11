@@ -18,7 +18,7 @@ use crate::{
     dedup::SlotIdentity,
     error::Error,
     options::AcquireOptions,
-    resource::Resource,
+    resource::Provider,
     runtime::managed::ManagedResource,
     topology_tag::TopologyTag,
 };
@@ -49,7 +49,7 @@ pub type ErasedAcquireFn = Arc<
 /// `AnyManagedResource` is engine-internal: the only purpose is to let
 /// the [`Registry`] store heterogeneous `ManagedResource<R>` behind one
 /// `dyn AnyManagedResource`, and the sole implementor is the blanket
-/// `impl<R: Resource>` below. Sealing makes that a *structural*
+/// `impl<R: Provider>` below. Sealing makes that a *structural*
 /// guarantee rather than a convention — adding a required method (e.g.
 /// the per-resource-drain hook) can never be a downstream
 /// compile-break, because no downstream impl can exist. The
@@ -58,7 +58,7 @@ pub type ErasedAcquireFn = Arc<
 /// *implement* it.
 mod sealed {
     /// Sealed marker. Implemented only by the crate-internal blanket
-    /// `impl<R: Resource>` for `ManagedResource<R>`.
+    /// `impl<R: Provider>` for `ManagedResource<R>`.
     pub trait Sealed {}
 }
 
@@ -69,7 +69,7 @@ mod sealed {
 ///
 /// **Sealed (engine-internal).** This trait has a private `sealed::Sealed`
 /// supertrait, so it can only be implemented inside `nebula-resource` (by
-/// the blanket `impl<R: Resource>`). It is an engine-internal erasure
+/// the blanket `impl<R: Provider>`). It is an engine-internal erasure
 /// boundary, **not** a downstream extension point — new required methods
 /// may be added without it being a semver-breaking change for consumers
 /// (they only ever hold `Arc<dyn AnyManagedResource>` via
@@ -194,9 +194,9 @@ pub trait AnyManagedResource: sealed::Sealed + Send + Sync + 'static {
 // The one and only `Sealed` impl: every `ManagedResource<R>` (and
 // nothing else, anywhere) — this is what makes `AnyManagedResource`
 // non-implementable downstream.
-impl<R: Resource> sealed::Sealed for ManagedResource<R> {}
+impl<R: Provider> sealed::Sealed for ManagedResource<R> {}
 
-impl<R: Resource + crate::resource::HasCredentialSlots> AnyManagedResource for ManagedResource<R> {
+impl<R: Provider + crate::resource::HasCredentialSlots> AnyManagedResource for ManagedResource<R> {
     fn resource_key(&self) -> ResourceKey {
         R::key()
     }
@@ -594,7 +594,7 @@ impl Registry {
     /// skipped (the scope walk continues) instead of returned and then
     /// failing the caller's `downcast` — which would otherwise short-circuit
     /// to `NotFound` and hide a correctly-typed row at an ancestor scope.
-    pub(crate) fn get_typed_for_acquire<R: Resource>(
+    pub(crate) fn get_typed_for_acquire<R: Provider>(
         &self,
         scope: &Scope,
         slot_identity: &SlotIdentity,
@@ -637,7 +637,7 @@ impl Registry {
     /// key, so a sibling-typed row at an exact scope is skipped (the scope
     /// walk continues) instead of returned and then `downcast`-failed —
     /// without the filter that masks a correctly-typed ancestor/Global row.
-    pub(crate) fn get_typed_for_acquire_scope<R: Resource>(&self, scope: &Scope) -> LookupOutcome {
+    pub(crate) fn get_typed_for_acquire_scope<R: Provider>(&self, scope: &Scope) -> LookupOutcome {
         let type_id = TypeId::of::<ManagedResource<R>>();
         let Some(key) = self.type_index.get(&type_id) else {
             return LookupOutcome::NotFound;
@@ -730,7 +730,7 @@ impl Registry {
     /// then failing the caller's `downcast` — without the filter that would
     /// surface as a spurious `NotFound` masking a correctly-typed row at an
     /// ancestor/Global scope.
-    pub fn get_typed<R: Resource>(&self, scope: &ScopeLevel) -> LookupOutcome {
+    pub fn get_typed<R: Provider>(&self, scope: &ScopeLevel) -> LookupOutcome {
         let type_id = TypeId::of::<ManagedResource<R>>();
         let Some(key) = self.type_index.get(&type_id) else {
             return LookupOutcome::NotFound;

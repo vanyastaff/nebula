@@ -59,7 +59,7 @@ use nebula_core::{OrgId, ResourceKey, ScopeLevel, resource_key, scope::Scope};
 use nebula_credential::{CredentialGuard, CredentialId};
 use nebula_engine::credential::rotation::{ResourceFanoutIndex, RotationOutcome};
 use nebula_resource::{
-    AcquireOptions, Manager, ManagerConfig, RegistrationSpec, ResidentConfig, Resource,
+    AcquireOptions, Manager, ManagerConfig, Provider, RegistrationSpec, ResidentConfig,
     ResourceConfig, ResourceContext, SlotCell, SlotIdentity,
     error::Error as ResourceError,
     events::ResourceEvent,
@@ -223,9 +223,9 @@ struct SecretBearingResource {
     hook_entered: Arc<AtomicUsize>,
 }
 
-impl Resource for SecretBearingResource {
+impl Provider for SecretBearingResource {
     type Config = Cfg;
-    type Runtime = SecretRuntime;
+    type Instance = SecretRuntime;
 
     fn key() -> ResourceKey {
         resource_key!("rotation-redaction-res")

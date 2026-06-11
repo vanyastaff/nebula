@@ -1,4 +1,4 @@
-//! Compile-pass probe: `#[derive(ResourceSlots)]` accepts a named `#[credential]`
+//! Compile-pass probe: `#[derive(Resource)]` accepts a named `#[credential]`
 //! field of shape `SlotCell<CredentialGuard<C>>` and emits an inherent read
 //! accessor `<field>_slot(&self) -> Option<Arc<CredentialGuard<C>>>` that
 //! delegates to `SlotCell::load` (slot model, two-derive pattern).
@@ -9,11 +9,11 @@ use nebula_credential::{
     AuthPattern, Credential, CredentialContext, CredentialError, CredentialGuard,
     CredentialMetadata, ResolveResult, SecretString, SecretToken,
 };
-use nebula_resource::{ResourceSlots, SlotCell};
+use nebula_resource::{Resource, SlotCell};
 use nebula_schema::FieldValues;
 use zeroize::Zeroize;
 
-#[derive(ResourceSlots)]
+#[derive(Resource)]
 struct Demo {
     #[credential(key = "db")]
     db: SlotCell<CredentialGuard<FakeCred>>,

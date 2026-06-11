@@ -11,21 +11,21 @@ pub mod managed;
 pub mod pool;
 pub mod resident;
 
-use crate::{resource::Resource, topology_tag::TopologyTag};
+use crate::{resource::Provider, topology_tag::TopologyTag};
 
 /// Dispatch enum for all topology runtimes.
 ///
 /// Each variant holds the runtime state for a specific topology. The
 /// engine stores one `TopologyRuntime<R>` per registered resource,
 /// inside [`ManagedResource`](managed::ManagedResource).
-pub enum TopologyRuntime<R: Resource> {
+pub enum TopologyRuntime<R: Provider> {
     /// Pool of N interchangeable instances with checkout/recycle.
     Pool(pool::PoolRuntime<R>),
     /// Single shared instance, clone on acquire.
     Resident(resident::ResidentRuntime<R>),
 }
 
-impl<R: Resource> TopologyRuntime<R> {
+impl<R: Provider> TopologyRuntime<R> {
     /// Returns the topology tag for this runtime variant.
     pub fn tag(&self) -> TopologyTag {
         match self {

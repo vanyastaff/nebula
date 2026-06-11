@@ -1,4 +1,4 @@
-//! Compile-fail / compile-pass probes for `#[derive(ResourceSlots)]`
+//! Compile-fail / compile-pass probes for `#[derive(Resource)]`
 //! (slot model, two-derive pattern).
 //!
 //! Compile-fail probes under `tests/probes/` exercise diagnostic contracts:
@@ -11,7 +11,7 @@
 //!
 //! The positive probes exercise a clean two-derive expansion:
 //!
-//! - slot-less unit struct with hand-written `impl Resource`
+//! - slot-less unit struct with hand-written `impl Provider`
 //! - named slot field with derive-emitted `<field>_slot()` accessor
 
 #[test]

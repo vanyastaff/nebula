@@ -21,7 +21,7 @@ use crate::{
     error::Error,
     guard::ResourceGuard,
     options::AcquireOptions,
-    resource::{HasCredentialSlots, Resource},
+    resource::{HasCredentialSlots, Provider},
     topology::resident::{Resident, config::Config},
     topology_tag::TopologyTag,
 };
@@ -33,8 +33,8 @@ use crate::{
 ///
 /// A `create_lock` mutex serialises the slow path (create / recreate) while
 /// keeping the fast path (load + liveness check) entirely lock-free.
-pub struct ResidentRuntime<R: Resource> {
-    cell: Cell<R::Runtime>,
+pub struct ResidentRuntime<R: Provider> {
+    cell: Cell<R::Instance>,
     config: Config,
     /// Serialises the create / recreate slow path **and** the per-slot
     /// rotation hook dispatch (see [`dispatch_resident_hook`]). The
@@ -75,7 +75,7 @@ pub struct ResidentRuntime<R: Resource> {
     built_epoch: AtomicU64,
 }
 
-impl<R: Resource + HasCredentialSlots> ResidentRuntime<R> {
+impl<R: Provider + HasCredentialSlots> ResidentRuntime<R> {
     /// Creates a new resident runtime with the given configuration.
     pub fn new(config: Config) -> Self {
         Self {
@@ -220,7 +220,7 @@ impl<R: Resource + HasCredentialSlots> ResidentRuntime<R> {
 impl<R> ResidentRuntime<R>
 where
     R: Resident + HasCredentialSlots + Send + Sync + 'static,
-    R::Runtime: Clone + Send + 'static,
+    R::Instance: Clone + Send + 'static,
 {
     /// Acquires a clone of the shared runtime instance.
     ///
@@ -397,9 +397,9 @@ mod tests {
         }
     }
 
-    impl Resource for MockResident {
+    impl Provider for MockResident {
         type Config = bool;
-        type Runtime = u32;
+        type Instance = u32;
 
         fn key() -> ResourceKey {
             resource_key!("mock-resident")
@@ -559,9 +559,9 @@ mod tests {
     #[derive(Clone)]
     struct HangingResident;
 
-    impl Resource for HangingResident {
+    impl Provider for HangingResident {
         type Config = bool;
-        type Runtime = u32;
+        type Instance = u32;
 
         fn key() -> ResourceKey {
             resource_key!("hanging-resident")
@@ -690,9 +690,9 @@ mod tests {
         park_before_read: Arc<AtomicBool>,
     }
 
-    impl Resource for SlotReadResident {
+    impl Provider for SlotReadResident {
         type Config = bool;
-        type Runtime = u32;
+        type Instance = u32;
 
         fn key() -> ResourceKey {
             resource_key!("slot-read-resident")

@@ -893,7 +893,7 @@ mod tests {
 
         use nebula_core::{OrgId, ResourceKey, ScopeLevel, resource_key, scope::Scope};
         use nebula_resource::{
-            Manager, ResidentConfig, Resource, ResourceConfig, ResourceContext,
+            Manager, Provider, ResidentConfig, ResourceConfig, ResourceContext,
             error::Error as ResourceError,
             resource::ResourceMetadata,
             runtime::{TopologyRuntime, resident::ResidentRuntime},
@@ -980,9 +980,9 @@ mod tests {
             ledger: Ledger,
         }
 
-        impl Resource for CtlResource {
+        impl Provider for CtlResource {
             type Config = Cfg;
-            type Runtime = Runtime;
+            type Instance = Runtime;
 
             fn key() -> ResourceKey {
                 resource_key!("fanout-ctl")

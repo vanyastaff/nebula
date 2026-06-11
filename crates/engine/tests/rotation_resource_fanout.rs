@@ -21,7 +21,7 @@ use nebula_core::{OrgId, ResourceKey, ScopeLevel, resource_key, scope::Scope};
 use nebula_credential::CredentialId;
 use nebula_engine::credential::rotation::{ResourceFanoutIndex, RotationOutcome};
 use nebula_resource::{
-    AcquireOptions, Manager, RegistrationSpec, ResidentConfig, Resource, ResourceConfig,
+    AcquireOptions, Manager, Provider, RegistrationSpec, ResidentConfig, ResourceConfig,
     ResourceContext, SlotIdentity,
     error::Error as ResourceError,
     resource::ResourceMetadata,
@@ -51,6 +51,11 @@ impl ResourceConfig for Cfg {
     fn validate(&self) -> Result<(), ResourceError> {
         Ok(())
     }
+
+    fn fingerprint(&self) -> u64 {
+        // Unit struct: all instances identical — constant 0 is correct.
+        0
+    }
 }
 
 /// `Err` is intentionally absent here — the mixed ok/err/timeout case is
@@ -73,9 +78,9 @@ struct Ctl {
     refresh_entered: Arc<AtomicUsize>,
 }
 
-impl Resource for Ctl {
+impl Provider for Ctl {
     type Config = Cfg;
-    type Runtime = ();
+    type Instance = ();
 
     fn key() -> ResourceKey {
         resource_key!("it-fanout-ctl")

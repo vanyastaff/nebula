@@ -28,7 +28,7 @@ pub mod runtime;
 
 use std::{future::Future, time::Duration};
 
-use nebula_resource::{Resource, ResourceContext};
+use nebula_resource::{ResourceContext, resource::Provider};
 use tokio_util::sync::CancellationToken;
 
 /// Policy for restarting a daemon after it exits.
@@ -49,7 +49,7 @@ pub enum RestartPolicy {
 /// A long-running worker that runs until cancelled or until it returns.
 /// Implementations select on `cancel` for cooperative shutdown; `DaemonRuntime`
 /// drives the restart loop per the configured [`RestartPolicy`].
-pub trait Daemon: Resource {
+pub trait Daemon: Provider {
     /// Runs the daemon loop.
     ///
     /// The implementation should select on `cancel` for cooperative shutdown.
@@ -62,7 +62,7 @@ pub trait Daemon: Resource {
     /// loop can distinguish transient from permanent exits).
     fn run(
         &self,
-        runtime: &Self::Runtime,
+        runtime: &Self::Instance,
         ctx: &ResourceContext,
         cancel: CancellationToken,
     ) -> impl Future<Output = Result<(), nebula_resource::Error>> + Send;

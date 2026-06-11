@@ -228,7 +228,7 @@ pub(crate) fn emit_slot_field_registrations(slots: &[ParsedSlotField]) -> TokenS
                     ::nebula_core::SlotKind::Resource {
                         type_id: ::std::any::TypeId::of::<#inner_ty>(),
                         type_name: ::std::any::type_name::<#inner_ty>(),
-                        key: <#inner_ty as ::nebula_resource::Resource>::key(),
+                        key: <#inner_ty as ::nebula_resource::resource::Provider>::key(),
                     }
                 },
                 SlotKind::Credential => quote! {

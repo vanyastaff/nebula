@@ -14,7 +14,7 @@ use crate::{
     events::ResourceEvent,
     recovery::gate::RecoveryGate,
     reload::ReloadOutcome,
-    resource::Resource,
+    resource::Provider,
     runtime::{TopologyRuntime, managed::ManagedResource},
 };
 
@@ -54,7 +54,7 @@ impl Manager {
     /// # Errors
     ///
     /// Returns an error if config validation fails on the provided config.
-    pub fn register<R: Resource + crate::resource::HasCredentialSlots>(
+    pub fn register<R: Provider + crate::resource::HasCredentialSlots>(
         &self,
         spec: RegistrationSpec<R>,
     ) -> Result<(), Error> {
@@ -172,7 +172,7 @@ impl Manager {
     /// reload still evicts stale-fingerprint instances and a revoke still
     /// evicts revoked ones on the next sweep — only the TTL *durations* are
     /// frozen for the pool's lifetime.
-    fn spawn_pool_maintenance<R: Resource>(&self, managed: &Arc<ManagedResource<R>>) {
+    fn spawn_pool_maintenance<R: Provider>(&self, managed: &Arc<ManagedResource<R>>) {
         let TopologyRuntime::Pool(pool) = &managed.topology else {
             return;
         };
@@ -269,7 +269,7 @@ impl Manager {
     ///   never its value.
     pub fn validate_config_value<R>(config_json: serde_json::Value) -> Result<R::Config, Error>
     where
-        R: Resource,
+        R: Provider,
         R::Config: serde::de::DeserializeOwned,
     {
         // Schema-validate against <R::Config as HasSchema>::schema(). This is
@@ -401,7 +401,7 @@ impl Manager {
         recovery_gate: Option<Arc<RecoveryGate>>,
     ) -> Result<crate::dedup::SlotIdentity, Error>
     where
-        R: Resource + crate::resource::HasCredentialSlots + nebula_core::DeclaresDependencies,
+        R: Provider + crate::resource::HasCredentialSlots + nebula_core::DeclaresDependencies,
         R::Config: serde::de::DeserializeOwned,
     {
         // 0. Validate that every binding matches a declared credential slot.
@@ -482,7 +482,7 @@ impl Manager {
     ///   registered for the given scope.
     /// - [`ErrorKind::Cancelled`](crate::error::ErrorKind::Cancelled) if the manager is shutting
     ///   down.
-    pub fn lookup<R: Resource>(
+    pub fn lookup<R: Provider>(
         &self,
         scope: &ScopeLevel,
     ) -> Result<Arc<ManagedResource<R>>, Error> {
@@ -503,7 +503,7 @@ impl Manager {
     ///   registered for the given scope.
     /// - [`ErrorKind::Permanent`](crate::error::ErrorKind::Permanent) if config validation fails.
     /// - [`ErrorKind::Cancelled`](crate::error::ErrorKind::Cancelled) if the manager is shut down.
-    pub fn reload_config<R: Resource>(
+    pub fn reload_config<R: Provider>(
         &self,
         new_config: R::Config,
         scope: &ScopeLevel,

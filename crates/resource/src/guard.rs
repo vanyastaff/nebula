@@ -22,7 +22,7 @@ use nebula_eventbus::EventBus;
 use tokio::sync::{Notify, OwnedSemaphorePermit};
 
 use crate::{
-    events::ResourceEvent, release_queue::ReleaseQueue, resource::Resource,
+    events::ResourceEvent, release_queue::ReleaseQueue, resource::Provider,
     topology_tag::TopologyTag,
 };
 
@@ -42,7 +42,7 @@ type ReleaseFuture = Pin<Box<dyn Future<Output = Result<(), crate::Error>> + Sen
 /// future inline ([`ResourceGuard::release`]) or submits it to the
 /// [`ReleaseQueue`] (`Drop`).
 type GuardedRelease<R> =
-    Box<dyn FnOnce(<R as Resource>::Runtime, bool) -> ReleaseFuture + Send + Sync>;
+    Box<dyn FnOnce(<R as Provider>::Instance, bool) -> ReleaseFuture + Send + Sync>;
 
 /// A drain tracker: an in-flight `(active_count, waiters)` pair. One is the
 /// manager-wide `graceful_shutdown` tracker; another is each
@@ -57,10 +57,10 @@ pub(crate) type DrainTracker = Arc<(AtomicU64, Notify)>;
 /// originating resource's isolated revoke drain.
 pub(crate) type DrainTrackers = (DrainTracker, DrainTracker);
 
-/// A guard over an acquired resource runtime.
+/// A guard over an acquired resource instance.
 ///
-/// Dereferences to [`R::Runtime`](Resource::Runtime) for ergonomic access.
-/// The guard holds the in-flight reservation: dropping it returns the runtime
+/// Dereferences to [`R::Instance`](Provider::Instance) for ergonomic access.
+/// The guard holds the in-flight reservation: dropping it returns the instance
 /// to its owning topology (recycle / destroy, per topology).
 ///
 /// # Drop
@@ -97,7 +97,7 @@ pub(crate) type DrainTrackers = (DrainTracker, DrainTracker);
 /// installed panics, the panic is caught and logged via `tracing`;
 /// drain counters are still decremented so shutdown cannot deadlock.
 #[must_use = "dropping a ResourceGuard immediately releases the resource"]
-pub struct ResourceGuard<R: Resource> {
+pub struct ResourceGuard<R: Provider> {
     /// The live lease state. `Some` for the entire lifetime of a usable
     /// guard; only [`ResourceGuard::detach`] sets it to `None`, and `detach`
     /// consumes `self` by value — so a detached guard is not nameable and
@@ -140,10 +140,10 @@ pub struct ResourceGuard<R: Resource> {
     release_queue: Option<Arc<ReleaseQueue>>,
 }
 
-enum GuardInner<R: Resource> {
-    Owned(R::Runtime),
+enum GuardInner<R: Provider> {
+    Owned(R::Instance),
     Guarded {
-        value: Option<R::Runtime>,
+        value: Option<R::Instance>,
         on_release: Option<GuardedRelease<R>>,
         permit: Option<OwnedSemaphorePermit>,
         tainted: bool,
@@ -151,10 +151,10 @@ enum GuardInner<R: Resource> {
     },
 }
 
-impl<R: Resource> ResourceGuard<R> {
+impl<R: Provider> ResourceGuard<R> {
     /// Creates an owned guard — no pool, no release callback.
     pub fn owned(
-        runtime: R::Runtime,
+        runtime: R::Instance,
         resource_key: ResourceKey,
         topology_tag: TopologyTag,
     ) -> Self {
@@ -177,11 +177,11 @@ impl<R: Resource> ResourceGuard<R> {
     /// its `Result`; `Drop` submits it to `release_queue` (discarding the
     /// `Result`) as the best-effort fallback.
     pub fn guarded(
-        runtime: R::Runtime,
+        runtime: R::Instance,
         resource_key: ResourceKey,
         topology_tag: TopologyTag,
         generation: u64,
-        on_release: impl FnOnce(R::Runtime, bool) -> ReleaseFuture + Send + Sync + 'static,
+        on_release: impl FnOnce(R::Instance, bool) -> ReleaseFuture + Send + Sync + 'static,
         release_queue: Arc<ReleaseQueue>,
     ) -> Self {
         Self::guarded_with_permit(
@@ -207,11 +207,11 @@ impl<R: Resource> ResourceGuard<R> {
     /// [`guarded`](Self::guarded). `release_queue` is the queue the `Drop`
     /// fallback submits that future to.
     pub fn guarded_with_permit(
-        runtime: R::Runtime,
+        runtime: R::Instance,
         resource_key: ResourceKey,
         topology_tag: TopologyTag,
         generation: u64,
-        on_release: impl FnOnce(R::Runtime, bool) -> ReleaseFuture + Send + Sync + 'static,
+        on_release: impl FnOnce(R::Instance, bool) -> ReleaseFuture + Send + Sync + 'static,
         permit: Option<OwnedSemaphorePermit>,
         release_queue: Arc<ReleaseQueue>,
     ) -> Self {
@@ -276,7 +276,7 @@ impl<R: Resource> ResourceGuard<R> {
     /// Returns `Some(runtime)` for owned and guarded guards. Returns `None`
     /// only for the post-detach state, which is structurally unreachable for
     /// any nameable guard (detach consumes `self` by value).
-    pub fn detach(mut self) -> Option<R::Runtime> {
+    pub fn detach(mut self) -> Option<R::Instance> {
         // `take()` moves the state out and leaves `None` behind. `self` is
         // then dropped here; its `Drop` impl sees `None` and runs no release
         // callback — identical to the old `mem::replace` sentinel, but the
@@ -505,8 +505,8 @@ async fn spawn_teardown_and_settle(
     }
 }
 
-impl<R: Resource> Deref for ResourceGuard<R> {
-    type Target = R::Runtime;
+impl<R: Provider> Deref for ResourceGuard<R> {
+    type Target = R::Instance;
 
     fn deref(&self) -> &Self::Target {
         match &self.inner {
@@ -531,7 +531,7 @@ impl<R: Resource> Deref for ResourceGuard<R> {
     }
 }
 
-impl<R: Resource> Drop for ResourceGuard<R> {
+impl<R: Provider> Drop for ResourceGuard<R> {
     fn drop(&mut self) {
         // Snapshot the released-event payload once up front: `held` is fixed
         // by now (the guard is being dropped), and `tainted` depends on the
@@ -625,7 +625,7 @@ impl<R: Resource> Drop for ResourceGuard<R> {
     }
 }
 
-impl<R: Resource> std::fmt::Debug for ResourceGuard<R> {
+impl<R: Provider> std::fmt::Debug for ResourceGuard<R> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mode = match &self.inner {
             Some(GuardInner::Owned(_)) => "Owned",
@@ -646,7 +646,7 @@ impl<R: Resource> std::fmt::Debug for ResourceGuard<R> {
 // Guard trait implementations (nebula_core::Guard / TypedGuard)
 // ---------------------------------------------------------------------------
 
-impl<R: Resource> nebula_core::Guard for ResourceGuard<R> {
+impl<R: Provider> nebula_core::Guard for ResourceGuard<R> {
     fn guard_kind(&self) -> &'static str {
         "resource"
     }
@@ -656,8 +656,8 @@ impl<R: Resource> nebula_core::Guard for ResourceGuard<R> {
     }
 }
 
-impl<R: Resource> nebula_core::TypedGuard for ResourceGuard<R> {
-    type Inner = R::Runtime;
+impl<R: Provider> nebula_core::TypedGuard for ResourceGuard<R> {
+    type Inner = R::Instance;
 
     fn as_inner(&self) -> &Self::Inner {
         self
@@ -670,12 +670,12 @@ mod tests {
 
     use super::*;
 
-    // A trivial resource for testing. Runtime = u32 so guards hold a plain integer.
+    // A trivial resource for testing. Instance = u32 so guards hold a plain integer.
     struct DummyResource;
 
-    impl Resource for DummyResource {
+    impl Provider for DummyResource {
         type Config = ();
-        type Runtime = u32;
+        type Instance = u32;
         fn key() -> ResourceKey {
             nebula_core::resource_key!("dummy")
         }
@@ -921,9 +921,9 @@ mod tests {
 
     struct DropProbeResource;
 
-    impl Resource for DropProbeResource {
+    impl Provider for DropProbeResource {
         type Config = ();
-        type Runtime = DropProbe;
+        type Instance = DropProbe;
         fn key() -> ResourceKey {
             nebula_core::resource_key!("dropprobe")
         }

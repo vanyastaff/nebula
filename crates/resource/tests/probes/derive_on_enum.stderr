@@ -1,4 +1,4 @@
-error: #[derive(ResourceSlots)] can only be used on structs, not enums
+error: #[derive(Resource)] can only be used on structs, not enums
  --> tests/probes/derive_on_enum.rs:7:6
   |
 7 | enum NotAStruct {

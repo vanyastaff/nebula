@@ -336,7 +336,7 @@ use crate::{
     recovery::gate::GateState,
     registry::Registry,
     release_queue::{ReleaseQueue, ReleaseQueueHandle},
-    resource::Resource,
+    resource::Provider,
     runtime::managed::ManagedResource,
 };
 
@@ -593,7 +593,7 @@ impl Manager {
     /// a caller conflict, not a server error — rather than a
     /// silently-picked row, so two resolved credentials sharing one
     /// `(key, scope)` can never bleed into each other.
-    fn resolve_typed<R: Resource>(
+    fn resolve_typed<R: Provider>(
         outcome: crate::registry::LookupOutcome,
     ) -> Result<Arc<ManagedResource<R>>, Error> {
         use crate::registry::LookupOutcome;
@@ -623,7 +623,7 @@ impl Manager {
     /// failure mode the agnostic [`resolve_typed`](Self::resolve_typed)
     /// guards against is type-unrepresentable on the pinned path rather
     /// than a runtime branch.
-    fn resolve_typed_pinned<R: Resource>(
+    fn resolve_typed_pinned<R: Provider>(
         outcome: crate::registry::PinnedLookup,
     ) -> Result<Arc<ManagedResource<R>>, Error> {
         use crate::registry::PinnedLookup;
@@ -682,7 +682,7 @@ impl Manager {
     ///
     /// Returns [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound)
     /// if the resource is not registered for the given scope.
-    pub fn health_check<R: Resource>(
+    pub fn health_check<R: Provider>(
         &self,
         scope: &ScopeLevel,
     ) -> Result<ResourceHealthSnapshot, Error> {
@@ -717,7 +717,7 @@ impl Manager {
 
     /// Records acquire success/failure in aggregate metrics and emits
     /// the corresponding [`ResourceEvent`].
-    fn record_acquire_result<R: Resource>(
+    fn record_acquire_result<R: Provider>(
         &self,
         result: &Result<crate::guard::ResourceGuard<R>, Error>,
         started: Instant,
@@ -945,9 +945,9 @@ mod shutdown_post_count_race_tests {
     #[derive(Clone)]
     struct ShutdownRaceResident;
 
-    impl Resource for ShutdownRaceResident {
+    impl Provider for ShutdownRaceResident {
         type Config = RaceCfg;
-        type Runtime = ();
+        type Instance = ();
 
         fn key() -> ResourceKey {
             resource_key!("test.shutdown_post_count_race.resident")

@@ -25,7 +25,7 @@ use std::sync::{
 
 use nebula_core::{OrgId, ResourceKey, ScopeLevel, resource_key, scope::Scope};
 use nebula_resource::{
-    AcquireOptions, Manager, RegisterOptions, RegistrationSpec, Resource, ResourceConfig,
+    AcquireOptions, Manager, Provider, RegisterOptions, RegistrationSpec, ResourceConfig,
     ResourceContext, SlotIdentity,
     error::Error,
     resource::{HasCredentialSlots, ResourceMetadata},
@@ -68,9 +68,9 @@ struct PoolRes {
     create_counter: Arc<AtomicU64>,
 }
 
-impl Resource for PoolRes {
+impl Provider for PoolRes {
     type Config = CountingConfig;
-    type Runtime = u64;
+    type Instance = u64;
 
     fn key() -> ResourceKey {
         resource_key!("acquire-for-pool")
@@ -227,9 +227,9 @@ struct ResRes {
     id_tag: u64,
 }
 
-impl Resource for ResRes {
+impl Provider for ResRes {
     type Config = CountingConfig;
-    type Runtime = u64;
+    type Instance = u64;
 
     fn key() -> ResourceKey {
         resource_key!("acquire-for-resident")

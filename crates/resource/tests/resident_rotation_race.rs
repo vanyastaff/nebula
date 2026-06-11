@@ -24,7 +24,7 @@ use std::sync::{
 use nebula_core::{ResourceKey, ScopeLevel, resource_key, scope::Scope};
 use nebula_credential::CredentialGuard;
 use nebula_resource::{
-    AcquireOptions, Manager, RegistrationSpec, ResidentConfig, Resource, ResourceConfig,
+    AcquireOptions, Manager, Provider, RegistrationSpec, ResidentConfig, ResourceConfig,
     ResourceContext, SlotCell, SlotIdentity,
     error::Error,
     resource::{HasCredentialSlots, ResourceMetadata},
@@ -102,9 +102,9 @@ struct RaceResource {
     revoke_calls: Arc<AtomicUsize>,
 }
 
-impl Resource for RaceResource {
+impl Provider for RaceResource {
     type Config = RaceConfig;
-    type Runtime = RaceRuntime;
+    type Instance = RaceRuntime;
 
     fn key() -> ResourceKey {
         resource_key!("race-resident")
@@ -171,7 +171,7 @@ impl Resource for RaceResource {
 impl HasCredentialSlots for RaceResource {
     // Activate the create-vs-rotate epoch reconcile: a hand-written impl
     // would otherwise inherit the `0` default and never detect staleness.
-    // `#[derive(ResourceSlots)]` generates this; mirrored here because
+    // `#[derive(Resource)]` generates this; mirrored here because
     // this fixture is not derived. NOT author discipline for production code.
     fn credential_slot_epoch(&self) -> u64 {
         self.db.generation()

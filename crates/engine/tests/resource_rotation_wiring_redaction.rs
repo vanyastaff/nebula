@@ -34,7 +34,7 @@ use nebula_credential::{CredentialEvent, CredentialGuard, CredentialId, LeaseEve
 use nebula_engine::credential::rotation::{ResourceFanoutDriver, ResourceFanoutIndex};
 use nebula_eventbus::EventBus;
 use nebula_resource::{
-    AcquireOptions, Manager, RegistrationSpec, ResidentConfig, Resource, ResourceConfig,
+    AcquireOptions, Manager, Provider, RegistrationSpec, ResidentConfig, ResourceConfig,
     ResourceContext, SlotCell, SlotIdentity,
     error::Error as ResourceError,
     resource::ResourceMetadata,
@@ -147,9 +147,9 @@ struct SecretRes {
     hook_entered: Arc<AtomicUsize>,
 }
 
-impl Resource for SecretRes {
+impl Provider for SecretRes {
     type Config = Cfg;
-    type Runtime = SecretRuntime;
+    type Instance = SecretRuntime;
 
     fn key() -> ResourceKey {
         resource_key!("wired-redaction-res")

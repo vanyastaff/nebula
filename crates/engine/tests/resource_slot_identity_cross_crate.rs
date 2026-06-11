@@ -52,7 +52,7 @@ use nebula_expression::ExpressionEngine;
 use nebula_resource::{
     Manager, ScopeLevel, SlotIdentity,
     error::Error as ResourceError,
-    resource::{Resource, ResourceConfig, ResourceMetadata},
+    resource::{Provider, ResourceConfig, ResourceMetadata},
     runtime::{TopologyRuntime, resident::ResidentRuntime},
     topology::resident,
 };
@@ -114,9 +114,9 @@ impl XResource {
     }
 }
 
-impl Resource for XResource {
+impl Provider for XResource {
     type Config = XConfig;
-    type Runtime = Arc<AtomicU64>;
+    type Instance = Arc<AtomicU64>;
 
     fn key() -> ResourceKey {
         resource_key!("xcross.widget")
@@ -136,7 +136,7 @@ impl Resource for XResource {
 
     fn metadata() -> ResourceMetadata {
         ResourceMetadata::new(
-            <Self as Resource>::key(),
+            <Self as Provider>::key(),
             "xcross.widget".to_owned(),
             String::new(),
             <XConfig as HasSchema>::schema(),
@@ -269,7 +269,7 @@ async fn engine_recorded_identity_is_byte_identical_to_resource_side_derive() {
     // under — not some other digest).
     assert!(
         manager.has_registered_for_identity(
-            &<XResource as Resource>::key(),
+            &<XResource as Provider>::key(),
             &ScopeLevel::Global,
             &outcome.slot_identity,
         ),
@@ -300,9 +300,9 @@ async fn accessor_acquire_path_derive_agrees_with_register_path() {
     // The accessor builds its acquire-path identity map from the resolved
     // `(slot, credential)` pairs via `slot_identities_for_key` — a separate
     // construction site from the register path.
-    let acquire_map = slot_identities_for_key(<XResource as Resource>::key(), &bindings);
+    let acquire_map = slot_identities_for_key(<XResource as Provider>::key(), &bindings);
     let acquire_side = acquire_map
-        .get(&<XResource as Resource>::key())
+        .get(&<XResource as Provider>::key())
         .expect("accessor acquire-path identity is present for the key");
 
     assert_eq!(
@@ -354,7 +354,7 @@ async fn distinct_resolved_credentials_never_alias_cross_crate() {
 
     // Both rows are independently resolvable under their own identity, and
     // neither is visible under the other's — fail-closed isolation.
-    let key = <XResource as Resource>::key();
+    let key = <XResource as Provider>::key();
     assert!(manager.has_registered_for_identity(
         &key,
         &ScopeLevel::Global,

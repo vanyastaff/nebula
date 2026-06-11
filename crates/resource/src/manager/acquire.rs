@@ -13,7 +13,7 @@ use crate::{
     events::ResourceEvent,
     manager::ErasedAcquireFn,
     options::AcquireOptions,
-    resource::Resource,
+    resource::Provider,
     runtime::{TopologyRuntime, managed::ManagedResource},
 };
 
@@ -30,11 +30,11 @@ impl Manager {
     where
         R: crate::topology::resident::Resident
             + crate::resource::HasCredentialSlots
-            + Resource
+            + Provider
             + Send
             + Sync
             + 'static,
-        R::Runtime: Clone + Send + Sync + 'static,
+        R::Instance: Clone + Send + Sync + 'static,
     {
         super::acquire_dispatch::erased_acquire_resident::<R>()
     }
@@ -46,15 +46,15 @@ impl Manager {
     #[must_use]
     pub fn erased_acquire_pooled_for<R>() -> ErasedAcquireFn
     where
-        R: crate::topology::pooled::Pooled + Clone + Resource + Send + Sync + 'static,
-        R::Runtime: Clone + Send + Sync + 'static,
+        R: crate::topology::pooled::Pooled + Clone + Provider + Send + Sync + 'static,
+        R::Instance: Clone + Send + Sync + 'static,
     {
         super::acquire_dispatch::erased_acquire_pooled::<R>()
     }
 
     /// Typed acquire lookup walking [`scope_levels_for_acquire`](crate::context::scope_levels_for_acquire)
     /// on the context scope bag, then [`taint_gate`](Self::taint_gate).
-    pub(crate) fn lookup_for_acquire_scope<R: Resource>(
+    pub(crate) fn lookup_for_acquire_scope<R: Provider>(
         &self,
         ctx: &ResourceContext,
     ) -> Result<Arc<ManagedResource<R>>, Error> {
@@ -67,7 +67,7 @@ impl Manager {
     /// [`lookup_for_acquire_scope`](Self::lookup_for_acquire_scope) pinned to
     /// the **collision-free structural** resolved per-slot credential
     /// identity. The pinned lookup is 2-variant (no `Ambiguous`).
-    fn lookup_for_acquire_with_identity<R: Resource>(
+    fn lookup_for_acquire_with_identity<R: Provider>(
         &self,
         ctx: &ResourceContext,
         slot_identity: &crate::dedup::SlotIdentity,
@@ -95,7 +95,7 @@ impl Manager {
     /// would have. Failure mapping (`NotFound` on a type mismatch) and
     /// the [`taint_gate`](Self::taint_gate) tail are byte-identical to
     /// the replaced pinned-lookup path.
-    fn downcast_resolved_row<R: Resource>(
+    fn downcast_resolved_row<R: Provider>(
         &self,
         managed: Arc<dyn crate::registry::AnyManagedResource>,
     ) -> Result<Arc<ManagedResource<R>>, Error> {
@@ -118,7 +118,7 @@ impl Manager {
     /// Taint rejects with [`ErrorKind::Revoked`](crate::error::ErrorKind::Revoked),
     /// distinct from [`ErrorKind::Cancelled`](crate::error::ErrorKind::Cancelled)
     /// raised by [`Self::shutdown_guard`].
-    fn taint_gate<R: Resource>(
+    fn taint_gate<R: Provider>(
         managed: Arc<ManagedResource<R>>,
     ) -> Result<Arc<ManagedResource<R>>, Error> {
         if managed.is_tainted() {
@@ -158,7 +158,7 @@ impl Manager {
     /// invariant. Taint maps to `Revoked` → `ErrorCategory::Unavailable`
     /// (unchanged from the gate); shutdown maps to `Cancelled` (unchanged
     /// from `lookup`'s Defense A), so neither caller-facing category moves.
-    fn reject_if_tainted_or_shutting_down_post_count<R: Resource>(
+    fn reject_if_tainted_or_shutting_down_post_count<R: Provider>(
         &self,
         managed: &Arc<ManagedResource<R>>,
     ) -> Result<(), Error> {
@@ -176,7 +176,7 @@ impl Manager {
     /// The single typed error both taint checks return — keeps the message
     /// and `Revoked` (→ `Unavailable`) classification identical at the
     /// pre-count gate and the post-count re-check.
-    fn tainted_error<R: Resource>() -> Error {
+    fn tainted_error<R: Provider>() -> Error {
         Error::revoked(format!(
             "{}: resource tainted by credential revoke — new acquires rejected",
             R::key()
@@ -275,7 +275,7 @@ impl Manager {
     ) -> Result<crate::guard::ResourceGuard<R>, Error>
     where
         R: crate::topology::pooled::Pooled + Clone + Send + Sync + 'static,
-        R::Runtime: Clone + Send + Sync + 'static,
+        R::Instance: Clone + Send + Sync + 'static,
     {
         let managed = self.lookup_for_acquire_scope::<R>(ctx)?;
         self.pooled_pipeline(managed, ctx, options).await
@@ -307,7 +307,7 @@ impl Manager {
     ) -> Result<crate::guard::ResourceGuard<R>, Error>
     where
         R: crate::topology::pooled::Pooled + Clone + Send + Sync + 'static,
-        R::Runtime: Clone + Send + Sync + 'static,
+        R::Instance: Clone + Send + Sync + 'static,
     {
         let managed = self.lookup_for_acquire_with_identity::<R>(ctx, slot_identity)?;
         self.pooled_pipeline(managed, ctx, options).await
@@ -324,7 +324,7 @@ impl Manager {
     ) -> Result<crate::guard::ResourceGuard<R>, Error>
     where
         R: crate::topology::pooled::Pooled + Clone + Send + Sync + 'static,
-        R::Runtime: Clone + Send + Sync + 'static,
+        R::Instance: Clone + Send + Sync + 'static,
     {
         let managed = self.downcast_resolved_row::<R>(resolved)?;
         self.pooled_pipeline(managed, ctx, options).await
@@ -344,7 +344,7 @@ impl Manager {
     ) -> Result<crate::guard::ResourceGuard<R>, Error>
     where
         R: crate::topology::pooled::Pooled + Clone + Send + Sync + 'static,
-        R::Runtime: Clone + Send + Sync + 'static,
+        R::Instance: Clone + Send + Sync + 'static,
     {
         self.run_acquire(Arc::clone(&managed), || {
             let generation = managed.generation();
@@ -384,7 +384,7 @@ impl Manager {
     /// the five byte-identical `"{key}: expected X topology, registered as
     /// {tag}"` arms into one shared classifier instead of duplicating the
     /// `format!` once per topology dispatcher.
-    pub(crate) fn unexpected_topology<R: Resource>(topology: &TopologyRuntime<R>) -> Error {
+    pub(crate) fn unexpected_topology<R: Provider>(topology: &TopologyRuntime<R>) -> Error {
         Error::permanent(format!(
             "{}: resolved row topology {} does not match the acquired topology",
             R::key(),
@@ -409,7 +409,7 @@ impl Manager {
         mut dispatch: F,
     ) -> Result<crate::guard::ResourceGuard<R>, Error>
     where
-        R: Resource,
+        R: Provider,
         F: FnMut() -> Fut,
         Fut: Future<Output = Result<crate::guard::ResourceGuard<R>, Error>> + Send,
     {
@@ -500,7 +500,7 @@ impl Manager {
             + Send
             + Sync
             + 'static,
-        R::Runtime: Clone + Send + Sync + 'static,
+        R::Instance: Clone + Send + Sync + 'static,
     {
         let managed = self.lookup_for_acquire_scope::<R>(ctx)?;
         self.resident_pipeline(managed, ctx, options).await
@@ -538,7 +538,7 @@ impl Manager {
             + Send
             + Sync
             + 'static,
-        R::Runtime: Clone + Send + Sync + 'static,
+        R::Instance: Clone + Send + Sync + 'static,
     {
         let managed = self.lookup_for_acquire_with_identity::<R>(ctx, slot_identity)?;
         self.resident_pipeline(managed, ctx, options).await
@@ -559,7 +559,7 @@ impl Manager {
             + Send
             + Sync
             + 'static,
-        R::Runtime: Clone + Send + Sync + 'static,
+        R::Instance: Clone + Send + Sync + 'static,
     {
         let managed = self.downcast_resolved_row::<R>(resolved)?;
         self.resident_pipeline(managed, ctx, options).await
@@ -583,7 +583,7 @@ impl Manager {
             + Send
             + Sync
             + 'static,
-        R::Runtime: Clone + Send + Sync + 'static,
+        R::Instance: Clone + Send + Sync + 'static,
     {
         self.run_acquire(Arc::clone(&managed), || {
             let config = managed.config();
@@ -606,7 +606,7 @@ impl Manager {
     pub async fn pool_stats<R>(&self, scope: &ScopeLevel) -> Option<crate::runtime::pool::PoolStats>
     where
         R: crate::topology::pooled::Pooled + Clone + Send + Sync + 'static,
-        R::Runtime: Clone + Send + Sync + 'static,
+        R::Instance: Clone + Send + Sync + 'static,
     {
         let managed = self.lookup::<R>(scope).ok()?;
         match &managed.topology {
@@ -642,7 +642,7 @@ impl Manager {
     pub async fn warmup_pool<R>(&self, ctx: &ResourceContext) -> Result<usize, Error>
     where
         R: crate::topology::pooled::Pooled + Clone + Send + Sync + 'static,
-        R::Runtime: Clone + Send + Sync + 'static,
+        R::Instance: Clone + Send + Sync + 'static,
     {
         let managed = self.lookup_for_acquire_scope::<R>(ctx)?;
         let config = managed.config();

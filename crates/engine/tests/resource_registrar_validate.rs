@@ -32,7 +32,7 @@ use nebula_engine::{RegistrarError, ResourceRegistrarRegistry, TypedResourceRegi
 use nebula_resource::{
     Manager, ScopeLevel,
     error::Error as ResourceError,
-    resource::{Resource, ResourceConfig, ResourceMetadata},
+    resource::{Provider, ResourceConfig, ResourceMetadata},
     runtime::{TopologyRuntime, resident::ResidentRuntime},
     topology::resident,
     topology::resident::Resident,
@@ -87,9 +87,9 @@ impl ResourceConfig for HttpPoolConfig {
 #[derive(Clone)]
 struct HttpPool;
 
-impl Resource for HttpPool {
+impl Provider for HttpPool {
     type Config = HttpPoolConfig;
-    type Runtime = ();
+    type Instance = ();
 
     fn key() -> ResourceKey {
         resource_key!("http_pool")
@@ -105,7 +105,7 @@ impl Resource for HttpPool {
 
     fn metadata() -> ResourceMetadata {
         ResourceMetadata::new(
-            <Self as Resource>::key(),
+            <Self as Provider>::key(),
             "http_pool".to_owned(),
             String::new(),
             <HttpPoolConfig as HasSchema>::schema(),
@@ -169,7 +169,7 @@ async fn known_kind_schema_valid_config_is_ok_and_no_manager_mutation() {
     let manager = Manager::new();
     assert!(
         manager
-            .get_any(&<HttpPool as Resource>::key(), &ScopeLevel::Global)
+            .get_any(&<HttpPool as Provider>::key(), &ScopeLevel::Global)
             .is_none(),
         "validating a config must NEVER live-register the resource \
          (config CRUD is separate from engine activation — §13.1)"

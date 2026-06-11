@@ -50,10 +50,10 @@ pub trait AnyDaemonHandle: Send + Sync {
 struct TypedDaemonHandle<D>
 where
     D: Daemon + Clone + Send + Sync + 'static,
-    D::Runtime: Send + Sync + 'static,
+    D::Instance: Send + Sync + 'static,
 {
     daemon: D,
-    runtime: Arc<D::Runtime>,
+    runtime: Arc<D::Instance>,
     runtime_state: Arc<DaemonRuntime<D>>,
     ctx: ResourceContext,
     key: ResourceKey,
@@ -62,7 +62,7 @@ where
 impl<D> AnyDaemonHandle for TypedDaemonHandle<D>
 where
     D: Daemon + Clone + Send + Sync + 'static,
-    D::Runtime: Send + Sync + 'static,
+    D::Instance: Send + Sync + 'static,
 {
     fn start(&self) -> Pin<Box<dyn Future<Output = Result<(), DaemonError>> + Send + '_>> {
         Box::pin(async move {
@@ -151,13 +151,13 @@ impl DaemonRegistry {
     pub fn register<D>(
         &self,
         daemon: D,
-        runtime: Arc<D::Runtime>,
+        runtime: Arc<D::Instance>,
         config: DaemonConfig,
         ctx: ResourceContext,
     ) -> Result<(), DaemonError>
     where
         D: Daemon + Clone + Send + Sync + 'static,
-        D::Runtime: Send + Sync + 'static,
+        D::Instance: Send + Sync + 'static,
     {
         if self.parent_cancel.is_cancelled() {
             return Err(DaemonError::RegistryCancelled);
@@ -314,7 +314,7 @@ mod tests {
     use nebula_resource::{
         context::ResourceContext,
         error::Error as ResourceError,
-        resource::{Resource, ResourceConfig, ResourceMetadata},
+        resource::{Provider, ResourceConfig, ResourceMetadata},
     };
     use tokio_util::sync::CancellationToken;
 
@@ -347,9 +347,9 @@ mod tests {
         attempts: Arc<AtomicU32>,
     }
 
-    impl Resource for CountedDaemon {
+    impl Provider for CountedDaemon {
         type Config = EmptyCfg;
-        type Runtime = ();
+        type Instance = ();
 
         fn key() -> ResourceKey {
             ResourceKey::new("registry-counted").unwrap()
@@ -371,7 +371,7 @@ mod tests {
     impl Daemon for CountedDaemon {
         async fn run(
             &self,
-            _runtime: &Self::Runtime,
+            _runtime: &Self::Instance,
             _ctx: &ResourceContext,
             cancel: CancellationToken,
         ) -> Result<(), ResourceError> {
@@ -456,9 +456,9 @@ mod tests {
     struct CountedDaemonB {
         attempts: Arc<AtomicU32>,
     }
-    impl Resource for CountedDaemonB {
+    impl Provider for CountedDaemonB {
         type Config = EmptyCfg;
-        type Runtime = ();
+        type Instance = ();
         fn key() -> ResourceKey {
             ResourceKey::new("registry-counted-b").unwrap()
         }
@@ -476,7 +476,7 @@ mod tests {
     impl Daemon for CountedDaemonB {
         async fn run(
             &self,
-            _runtime: &Self::Runtime,
+            _runtime: &Self::Instance,
             _ctx: &ResourceContext,
             cancel: CancellationToken,
         ) -> Result<(), ResourceError> {

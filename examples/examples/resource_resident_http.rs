@@ -40,7 +40,7 @@ use nebula_resource::{
     AcquireOptions, Manager, RegistrationSpec, ResidentConfig, ResourceContext,
     dedup::SlotIdentity,
     error::Error as ResourceError,
-    resource::{Resource, ResourceConfig, ResourceMetadata},
+    resource::{Provider, ResourceConfig, ResourceMetadata},
     runtime::{TopologyRuntime, resident::ResidentRuntime},
     topology::resident::Resident,
 };
@@ -297,9 +297,9 @@ impl GoogleSheets {
     }
 }
 
-impl Resource for GoogleSheets {
+impl Provider for GoogleSheets {
     type Config = GoogleSheetsConfig;
-    type Runtime = GoogleSheetsClient;
+    type Instance = GoogleSheetsClient;
 
     fn key() -> ResourceKey {
         resource_key!("demo.google.sheets")

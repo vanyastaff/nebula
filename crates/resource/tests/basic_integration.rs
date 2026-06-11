@@ -17,7 +17,7 @@ use nebula_resource::{
     guard::ResourceGuard,
     recovery::{GateState, RecoveryGate, RecoveryGateConfig},
     release_queue::ReleaseQueue,
-    resource::{HasCredentialSlots, Resource, ResourceConfig, ResourceMetadata},
+    resource::{HasCredentialSlots, Provider, ResourceConfig, ResourceMetadata},
     runtime::{TopologyRuntime, pool::PoolRuntime, resident::ResidentRuntime},
     topology::{
         pooled::{BrokenCheck, Pooled, RecycleDecision},
@@ -83,9 +83,9 @@ impl PoolTestResource {
     }
 }
 
-impl Resource for PoolTestResource {
+impl Provider for PoolTestResource {
     type Config = TestConfig;
-    type Runtime = Arc<AtomicU64>;
+    type Instance = Arc<AtomicU64>;
 
     fn key() -> ResourceKey {
         resource_key!("test-pool")
@@ -162,9 +162,9 @@ impl ResidentTestResource {
     }
 }
 
-impl Resource for ResidentTestResource {
+impl Provider for ResidentTestResource {
     type Config = TestConfig;
-    type Runtime = Arc<AtomicU64>;
+    type Instance = Arc<AtomicU64>;
 
     fn key() -> ResourceKey {
         resource_key!("test-resident")
@@ -249,7 +249,7 @@ async fn poll_until(deadline: std::time::Duration, mut cond: impl FnMut() -> boo
 async fn wait_idle_count<R>(pool: &PoolRuntime<R>, expected: usize)
 where
     R: Pooled + Clone + Send + Sync + 'static,
-    R::Runtime: Clone + Send + Sync + 'static,
+    R::Instance: Clone + Send + Sync + 'static,
 {
     let deadline = std::time::Duration::from_secs(2);
     let start = std::time::Instant::now();
@@ -837,9 +837,9 @@ struct SlowCreatePoolResource {
     peak: Arc<AtomicU64>,
 }
 
-impl Resource for SlowCreatePoolResource {
+impl Provider for SlowCreatePoolResource {
     type Config = TestConfig;
-    type Runtime = Arc<AtomicU64>;
+    type Instance = Arc<AtomicU64>;
 
     fn key() -> ResourceKey {
         resource_key!("slow-create-pool")
@@ -2133,9 +2133,9 @@ impl FailingResidentResource {
     }
 }
 
-impl Resource for FailingResidentResource {
+impl Provider for FailingResidentResource {
     type Config = TestConfig;
-    type Runtime = Arc<AtomicU64>;
+    type Instance = Arc<AtomicU64>;
 
     fn key() -> ResourceKey {
         resource_key!("test-failing-resident")
@@ -2196,9 +2196,9 @@ impl BlockingResidentResource {
     }
 }
 
-impl Resource for BlockingResidentResource {
+impl Provider for BlockingResidentResource {
     type Config = TestConfig;
-    type Runtime = Arc<AtomicU64>;
+    type Instance = Arc<AtomicU64>;
 
     fn key() -> ResourceKey {
         resource_key!("test-blocking-resident")
@@ -2251,9 +2251,9 @@ impl PermanentFailResource {
     }
 }
 
-impl Resource for PermanentFailResource {
+impl Provider for PermanentFailResource {
     type Config = TestConfig;
-    type Runtime = Arc<AtomicU64>;
+    type Instance = Arc<AtomicU64>;
 
     fn key() -> ResourceKey {
         resource_key!("test-permanent-fail")
@@ -2635,9 +2635,9 @@ async fn acquire_failure_passively_triggers_recovery_gate() {
 #[derive(Clone)]
 struct HandleDummyResource;
 
-impl Resource for HandleDummyResource {
+impl Provider for HandleDummyResource {
     type Config = TestConfig;
-    type Runtime = u32;
+    type Instance = u32;
 
     fn key() -> ResourceKey {
         resource_key!("handle-dummy")
@@ -2753,9 +2753,9 @@ impl SlowDestroyPoolResource {
     }
 }
 
-impl Resource for SlowDestroyPoolResource {
+impl Provider for SlowDestroyPoolResource {
     type Config = TestConfig;
-    type Runtime = ();
+    type Instance = ();
 
     fn key() -> ResourceKey {
         resource_key!("slow-destroy-pool")
@@ -3011,9 +3011,9 @@ impl DropOnRecycleResource {
     }
 }
 
-impl Resource for DropOnRecycleResource {
+impl Provider for DropOnRecycleResource {
     type Config = TestConfig;
-    type Runtime = Arc<AtomicU64>;
+    type Instance = Arc<AtomicU64>;
 
     fn key() -> ResourceKey {
         resource_key!("drop-on-recycle")
@@ -3331,9 +3331,9 @@ impl ReloadPoolResource {
     }
 }
 
-impl Resource for ReloadPoolResource {
+impl Provider for ReloadPoolResource {
     type Config = ReloadConfig;
-    type Runtime = Arc<AtomicU64>;
+    type Instance = Arc<AtomicU64>;
 
     fn key() -> ResourceKey {
         resource_key!("test-reload-pool")

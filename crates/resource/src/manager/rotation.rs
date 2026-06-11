@@ -17,7 +17,7 @@ impl Manager {
     /// Resolves `(key, scope)` to the live [`ManagedResource`](crate::ManagedResource) via the same
     /// registry lookup the `acquire_*` family uses, then borrows the live
     /// `Runtime` per topology and invokes
-    /// [`Resource::on_credential_refresh`](crate::resource::Resource::on_credential_refresh)
+    /// [`Provider::on_credential_refresh`](crate::resource::Provider::on_credential_refresh)
     /// for `slot`. The slot cell itself
     /// lives on the author's resource struct and is populated/rotated by
     /// the engine through `&self` (`SlotCell::store`) — this method does
@@ -288,7 +288,7 @@ impl Manager {
     /// 1. **Drain** only *this resource's* in-flight handles via its own per-resource counter
     ///    (per-resource revoke deferral) — never the manager-wide `drain_tracker`, so a revoke is isolated
     ///    from in-flight traffic to unrelated resources.
-    /// 2. **Dispatch** [`Resource::on_credential_revoke`](crate::resource::Resource::on_credential_revoke) against the live runtime per topology.
+    /// 2. **Dispatch** [`Provider::on_credential_revoke`](crate::resource::Provider::on_credential_revoke) against the live runtime per topology.
     /// 3. Emit [`ResourceEvent::SlotRevoked`] / `SlotRevokeFailed`.
     ///
     /// **Single budget owner (per-resource revoke deferral / #690 review).** The

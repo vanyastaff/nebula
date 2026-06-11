@@ -38,7 +38,7 @@ use nebula_resource::{
     AcquireOptions, Manager, RegistrationSpec, ResidentConfig, ResourceContext,
     dedup::SlotIdentity,
     error::Error as ResourceError,
-    resource::{Resource, ResourceConfig, ResourceMetadata},
+    resource::{Provider, ResourceConfig, ResourceMetadata},
     runtime::{TopologyRuntime, resident::ResidentRuntime},
     topology::resident::Resident,
 };
@@ -120,9 +120,9 @@ impl TelegramBot {
     }
 }
 
-impl Resource for TelegramBot {
+impl Provider for TelegramBot {
     type Config = TelegramConfig;
-    type Runtime = Arc<TelegramBotInner>;
+    type Instance = Arc<TelegramBotInner>;
 
     fn key() -> ResourceKey {
         resource_key!("demo.telegram.bot")

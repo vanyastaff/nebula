@@ -1,9 +1,9 @@
-//! Compile-fail probe: `#[derive(ResourceSlots)]` rejects enums.
+//! Compile-fail probe: `#[derive(Resource)]` rejects enums.
 //! Only structs are accepted.
 
-use nebula_resource::ResourceSlots;
+use nebula_resource::Resource;
 
-#[derive(ResourceSlots)]
+#[derive(Resource)]
 enum NotAStruct {
     A,
     B,

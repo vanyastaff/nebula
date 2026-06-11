@@ -7,11 +7,11 @@
 //!
 //! # Why an adapter, not a TriggerAction extension
 //!
-//! `EventSource: Resource` (needs `R::Runtime`, `nebula_resource::Error`, `ResourceContext`)
+//! `EventSource: Provider` (needs `R::Instance`, `nebula_resource::Error`, `ResourceContext`)
 //! and `TriggerAction: Action` (needs `ActionMetadata`, `TriggerContext`,
 //! `ActionError`) sit on different bases. Rather than refactor either trait,
 //! `EventSourceAdapter<E>` bridges them at construction time:
-//! caller supplies `Arc<E::Runtime>`, `ActionMetadata`, and an `event_to_payload`
+//! caller supplies `Arc<E::Instance>`, `ActionMetadata`, and an `event_to_payload`
 //! closure; the adapter implements `TriggerAction::start` as a "run-until-cancelled"
 //! loop that `subscribe`s + `recv`s + emits via `ctx.emitter()`.
 //!
@@ -23,13 +23,13 @@ use std::{future::Future, sync::Arc};
 use nebula_action::{
     ActionError, ActionMetadata, TriggerContext, TriggerEvent, TriggerEventOutcome, TriggerHandler,
 };
-use nebula_resource::{Resource, ResourceContext, error::ErrorKind as ResourceErrorKind};
+use nebula_resource::{ResourceContext, error::ErrorKind as ResourceErrorKind, resource::Provider};
 
 /// EventSource — pull-based event subscription.
 ///
 /// A long-lived event producer where consumers create subscriptions via
 /// [`Self::subscribe`] and drain events via [`Self::recv`].
-pub trait EventSource: Resource {
+pub trait EventSource: Provider {
     /// The event type produced by this source.
     type Event: Send + Clone + 'static;
     /// An opaque subscription handle for receiving events.
@@ -43,7 +43,7 @@ pub trait EventSource: Resource {
     /// created.
     fn subscribe(
         &self,
-        runtime: &Self::Runtime,
+        runtime: &Self::Instance,
         ctx: &ResourceContext,
     ) -> impl Future<Output = Result<Self::Subscription, nebula_resource::Error>> + Send;
 
@@ -110,7 +110,7 @@ impl<E: EventSource> EventSourceRuntime<E> {
 impl<E> EventSourceRuntime<E>
 where
     E: EventSource + Send + Sync + 'static,
-    E::Runtime: Send + Sync + 'static,
+    E::Instance: Send + Sync + 'static,
 {
     /// Creates a new subscription to the event source.
     ///
@@ -120,7 +120,7 @@ where
     pub async fn subscribe(
         &self,
         resource: &E,
-        runtime: &E::Runtime,
+        runtime: &E::Instance,
         ctx: &ResourceContext,
     ) -> Result<E::Subscription, nebula_resource::Error> {
         resource.subscribe(runtime, ctx).await
@@ -149,7 +149,7 @@ where
 ///
 /// Callers supply:
 /// - the typed `source: E`,
-/// - an `Arc<E::Runtime>` (caller is responsible for building `E::Runtime` — typically via
+/// - an `Arc<E::Instance>` (caller is responsible for building `E::Instance` — typically via
 ///   `Resource::create()` outside the adapter),
 /// - `ActionMetadata` (EventSource has no inherent action metadata),
 /// - `EventSourceConfig` for buffer / flow-control hints,
@@ -163,7 +163,7 @@ where
 /// subscription's responsibility; the adapter does not retain in-flight events.
 pub struct EventSourceAdapter<E: EventSource> {
     source: E,
-    runtime: Arc<E::Runtime>,
+    runtime: Arc<E::Instance>,
     metadata: ActionMetadata,
     // guard-justified: retained as a downstream-observability buffer-size
     // hint; not read on the current adapter path.
@@ -181,12 +181,12 @@ pub struct EventSourceAdapter<E: EventSource> {
 impl<E> EventSourceAdapter<E>
 where
     E: EventSource + Send + Sync + 'static,
-    E::Runtime: Send + Sync + 'static,
+    E::Instance: Send + Sync + 'static,
 {
     /// Wrap an EventSource impl as a `TriggerAction`.
     pub fn new<F>(
         source: E,
-        runtime: Arc<E::Runtime>,
+        runtime: Arc<E::Instance>,
         metadata: ActionMetadata,
         config: EventSourceConfig,
         event_to_payload: F,
@@ -214,7 +214,7 @@ where
 impl<E> TriggerHandler for EventSourceAdapter<E>
 where
     E: EventSource + Send + Sync + 'static,
-    E::Runtime: Send + Sync + 'static,
+    E::Instance: Send + Sync + 'static,
 {
     fn metadata(&self) -> &ActionMetadata {
         &self.metadata
@@ -441,7 +441,7 @@ mod tests {
     use nebula_resource::{
         ResourceContext,
         error::Error as ResourceError,
-        resource::{Resource, ResourceConfig, ResourceMetadata},
+        resource::{Provider, ResourceConfig, ResourceMetadata},
     };
 
     use super::*;
@@ -473,9 +473,9 @@ mod tests {
         emitted: Arc<AtomicU32>,
     }
 
-    impl Resource for ThreeEventSource {
+    impl Provider for ThreeEventSource {
         type Config = EmptyCfg;
-        type Runtime = ();
+        type Instance = ();
 
         fn key() -> ResourceKey {
             ResourceKey::new("event-three").unwrap()
@@ -500,7 +500,7 @@ mod tests {
 
         async fn subscribe(
             &self,
-            _runtime: &Self::Runtime,
+            _runtime: &Self::Instance,
             _ctx: &ResourceContext,
         ) -> Result<Self::Subscription, ResourceError> {
             Ok(())
@@ -593,9 +593,9 @@ mod tests {
         }
     }
 
-    impl Resource for PermanentlyBrokenSource {
+    impl Provider for PermanentlyBrokenSource {
         type Config = EmptyCfg;
-        type Runtime = ();
+        type Instance = ();
 
         fn key() -> ResourceKey {
             ResourceKey::new("event-permanently-broken").unwrap()
@@ -620,7 +620,7 @@ mod tests {
 
         async fn subscribe(
             &self,
-            _runtime: &Self::Runtime,
+            _runtime: &Self::Instance,
             _ctx: &ResourceContext,
         ) -> Result<Self::Subscription, ResourceError> {
             Ok(())

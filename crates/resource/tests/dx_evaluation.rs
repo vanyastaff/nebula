@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use nebula_core::{ExecutionId, ResourceKey};
 use nebula_resource::{
-    AcquireOptions, Manager, PoolConfig, RegistrationSpec, ResidentConfig, Resource,
+    AcquireOptions, Manager, PoolConfig, Provider, RegistrationSpec, ResidentConfig,
     ResourceConfig, ResourceContext, ScopeLevel, ShutdownConfig, SlotIdentity,
     error::{Error, ErrorKind},
     resource::HasCredentialSlots,
@@ -80,9 +80,9 @@ struct HttpResource;
 // `type Error` removed from the trait, the impl is now just `Config` and
 // `Runtime` — the two that actually matter for a simple pooled resource.
 
-impl Resource for HttpResource {
+impl Provider for HttpResource {
     type Config = HttpConfig;
-    type Runtime = HttpClient;
+    type Instance = HttpClient;
 
     fn key() -> ResourceKey {
         resource_key!("http.client")
@@ -235,9 +235,9 @@ struct ConfigStore {
 #[derive(Clone)]
 struct ConfigStoreResource;
 
-impl Resource for ConfigStoreResource {
+impl Provider for ConfigStoreResource {
     type Config = ConfigStoreConfig;
-    type Runtime = ConfigStore;
+    type Instance = ConfigStore;
 
     fn key() -> ResourceKey {
         resource_key!("config.store")
@@ -378,9 +378,9 @@ impl DbResource {
     }
 }
 
-impl Resource for DbResource {
+impl Provider for DbResource {
     type Config = DbConfig;
-    type Runtime = DbConnection;
+    type Instance = DbConnection;
 
     fn key() -> ResourceKey {
         resource_key!("db.connection")

@@ -1,17 +1,17 @@
-//! Core resource trait and supporting types.
+//! Core provider trait and supporting types.
 //!
-//! [`Resource`] is the central abstraction: it describes how to create,
+//! [`Provider`] is the central lifecycle trait: it describes how to create,
 //! health-check, and tear down a single resource type. Implementors supply
-//! two associated types (`Config`, `Runtime`) and the lifecycle methods
+//! two associated types (`Config`, `Instance`) and the lifecycle methods
 //! (slot model).
 //!
 //! Per slot model (supersedes credential isolation) the singular `type Credential`
 //! associated type was deleted in favor of typed credential **slot fields**
 //! declared on the resource struct via `#[credential(key = "...")]` (the
-//! `#[derive(ResourceSlots)]` macro emits a `DeclaresDependencies` impl that
+//! `#[derive(Resource)]` macro emits a `DeclaresDependencies` impl that
 //! enumerates them, plus slot accessors, plus `impl HasCredentialSlots`).
 //!
-//! `Resource::create(&self, ctx)` no longer takes an explicit
+//! `Provider::create(&self, ctx)` no longer takes an explicit
 //! `scheme: &<R::Credential as Credential>::Scheme` argument: the framework
 //! resolves every declared `#[credential]` slot **before** invoking
 //! `create`. Each slot field is a `SlotCell<CredentialGuard<C>>` cell; the
@@ -19,15 +19,15 @@
 //! `<field>_slot()` accessor (`Option<Arc<CredentialGuard<C>>>`).
 //!
 //! Per-credential rotation is exposed via
-//! [`Resource::on_credential_refresh`], which receives the **slot name**
-//! that rotated and the live `Runtime` handle (so multi-credential
+//! [`Provider::on_credential_refresh`], which receives the **slot name**
+//! that rotated and the live `Instance` handle (so multi-credential
 //! resources can choose to refresh only the affected pool, headers, etc.
 //! via interior mutability). Revocation is signalled via
-//! [`Resource::on_credential_revoke`].
+//! [`Provider::on_credential_revoke`].
 //!
-//! [`HasCredentialSlots`] is a separate trait (not on `Resource`) implemented
-//! by `#[derive(ResourceSlots)]`. Resources with no credential slots need only
-//! implement `Resource` — a blanket `impl HasCredentialSlots` for such types
+//! [`HasCredentialSlots`] is a separate trait (not on `Provider`) implemented
+//! by `#[derive(Resource)]`. Resources with no credential slots need only
+//! implement `Provider` — a blanket `impl HasCredentialSlots` for such types
 //! is unnecessary since the epoch is structurally `0`.
 
 use std::future::Future;
@@ -38,9 +38,9 @@ use crate::context::ResourceContext;
 
 /// Trait-object-safe marker for resource type registration and discovery.
 ///
-/// Unlike [`Resource`], this trait carries no associated types and can be
+/// Unlike [`Provider`], this trait carries no associated types and can be
 /// used as `dyn AnyResource`. Implementors typically also implement
-/// [`Resource`], but this decoupling allows the engine to store heterogeneous
+/// [`Provider`], but this decoupling allows the engine to store heterogeneous
 /// resource descriptors without generics.
 pub trait AnyResource: Send + Sync + 'static {
     /// Returns the resource key.
@@ -166,14 +166,14 @@ impl ResourceMetadata {
     }
 
     /// Build resource metadata whose schema is auto-derived from a
-    /// [`Resource`] implementation's `Config` type.
+    /// [`Provider`] implementation's `Config` type.
     pub fn for_resource<R>(
         key: ResourceKey,
         name: impl Into<String>,
         description: impl Into<String>,
     ) -> Self
     where
-        R: Resource,
+        R: Provider,
     {
         Self::new(
             key,
@@ -243,7 +243,7 @@ impl ResourceMetadataBuilder {
     }
 }
 
-/// Core resource trait — 2 associated types + lifecycle methods (slot model).
+/// Provider trait — 2 associated types + lifecycle methods (slot model).
 ///
 /// Uses return-position `impl Future` (RPITIT) instead of `async_trait`,
 /// which avoids the `Box<dyn Future>` allocation on every call.
@@ -251,7 +251,7 @@ impl ResourceMetadataBuilder {
 /// Per slot model (supersedes credential isolation) the singular `type Credential`
 /// associated type was removed in favor of typed credential **slot
 /// fields** on the resource struct (declared via `#[credential(...)]`
-/// field attributes; the `#[derive(ResourceSlots)]` macro emits an impl of
+/// field attributes; the `#[derive(Resource)]` macro emits an impl of
 /// [`nebula_core::DeclaresDependencies`] enumerating them). Each slot
 /// field is a `SlotCell<CredentialGuard<C>>` cell. The framework
 /// resolves slot fields **before** calling [`create`](Self::create) —
@@ -264,29 +264,29 @@ impl ResourceMetadataBuilder {
 /// | Type | Purpose |
 /// |------|---------|
 /// | `Config` | Operational config (no secrets) |
-/// | `Runtime` | The live resource handle (connection, client, etc.) |
+/// | `Instance` | The live resource handle (connection, client, etc.) |
 ///
 /// # Lifecycle
 ///
 /// ```text
-/// create() → Runtime    (slot fields already resolved)
+/// create() → Instance    (slot fields already resolved)
 ///   ↓
 /// check()  → Ok(()) | Err
 ///   ↓
 /// shutdown() → graceful wind-down
 ///   ↓
-/// destroy()  → final cleanup (consumes Runtime)
+/// destroy()  → final cleanup (consumes Instance)
 /// ```
-pub trait Resource: Send + Sync + 'static {
+pub trait Provider: Send + Sync + 'static {
     /// Operational configuration type (no secrets).
     type Config: ResourceConfig;
     /// The live resource handle.
-    type Runtime: Send + Sync + 'static;
+    type Instance: Send + Sync + 'static;
 
     /// Returns the unique key identifying this resource type.
     fn key() -> ResourceKey;
 
-    /// Creates a new runtime instance from config.
+    /// Creates a new instance from config.
     ///
     /// Credential slot cells declared via `#[credential(key = "...")]`
     /// are already populated on `&self` by the framework before this
@@ -319,17 +319,17 @@ pub trait Resource: Send + Sync + 'static {
         &self,
         config: &Self::Config,
         ctx: &ResourceContext,
-    ) -> impl Future<Output = Result<Self::Runtime, crate::Error>> + Send;
+    ) -> impl Future<Output = Result<Self::Instance, crate::Error>> + Send;
 
     /// Called by the engine rotation fan-out after it has swapped the
     /// rotated credential into this resource's slot. `&self`: the resource
     /// impl is an immutable descriptor; blue-green / re-auth acts on
-    /// `runtime`'s own interior mutability. `slot_name` identifies which
+    /// `instance`'s own interior mutability. `slot_name` identifies which
     /// `#[credential]` slot rotated.
     ///
     /// Multi-credential resources can choose to refresh only the affected
     /// sub-system (e.g. swap a single pool, refresh a single header) rather
-    /// than recycling the whole runtime. Connection-bound resources (Pool,
+    /// than recycling the whole instance. Connection-bound resources (Pool,
     /// Service, Transport) typically override with the blue-green swap
     /// pattern: build a fresh pool from the rotated credential, atomically
     /// swap into an `Arc<RwLock<Pool>>`, let RAII drain old handles.
@@ -346,20 +346,20 @@ pub trait Resource: Send + Sync + 'static {
     fn on_credential_refresh(
         &self,
         slot_name: &str,
-        runtime: &Self::Runtime,
+        instance: &Self::Instance,
     ) -> impl Future<Output = Result<(), crate::Error>> + Send {
-        let _ = (slot_name, runtime);
+        let _ = (slot_name, instance);
         async { Ok(()) }
     }
 
     /// Called by the engine fan-out when a slot's credential is revoked.
     /// Post-invocation invariant (slot model): the resource emits no further
     /// authenticated traffic on the revoked credential. Default: no-op
-    /// (the engine still taints + drains the runtime around this call).
+    /// (the engine still taints + drains the instance around this call).
     ///
     /// # Errors
     ///
-    /// Returns `crate::Error` if the runtime cannot stop emitting
+    /// Returns `crate::Error` if the instance cannot stop emitting
     /// authenticated traffic on the revoked credential. The manager
     /// surfaces the error as
     /// [`SlotRevokeFailed`](crate::ResourceEvent::SlotRevokeFailed) on
@@ -371,18 +371,18 @@ pub trait Resource: Send + Sync + 'static {
     ///
     /// On `Ok(())` the resource guarantees no subsequent traffic uses
     /// the revoked credential. On `Err(_)` the manager treats the
-    /// runtime as compromised; the row stays tainted until a fresh
+    /// instance as compromised; the row stays tainted until a fresh
     /// credential is bound.
     fn on_credential_revoke(
         &self,
         slot_name: &str,
-        runtime: &Self::Runtime,
+        instance: &Self::Instance,
     ) -> impl Future<Output = Result<(), crate::Error>> + Send {
-        let _ = (slot_name, runtime);
+        let _ = (slot_name, instance);
         async { Ok(()) }
     }
 
-    /// Health-checks an existing runtime.
+    /// Health-checks an existing instance.
     ///
     /// The default implementation always succeeds.
     ///
@@ -390,44 +390,44 @@ pub trait Resource: Send + Sync + 'static {
     ///
     /// Returns `crate::Error` classified as
     /// [`Transient`](crate::ErrorKind::Transient) for a recoverable health
-    /// failure (the manager will tear the runtime down and let the next
+    /// failure (the manager will tear the instance down and let the next
     /// acquire rebuild it) or
     /// [`Permanent`](crate::ErrorKind::Permanent) for a misconfiguration
     /// that no retry will fix.
     fn check(
         &self,
-        _runtime: &Self::Runtime,
+        _instance: &Self::Instance,
     ) -> impl Future<Output = Result<(), crate::Error>> + Send {
         async { Ok(()) }
     }
 
-    /// Gracefully winds down a runtime (e.g., drain connections).
+    /// Gracefully winds down an instance (e.g., drain connections).
     ///
     /// The default implementation is a no-op.
     ///
     /// # Errors
     ///
-    /// Returns `crate::Error` if graceful shutdown failed and the runtime
+    /// Returns `crate::Error` if graceful shutdown failed and the instance
     /// state is now indeterminate. The manager treats any error here as
     /// non-fatal and proceeds to [`destroy`](Self::destroy), so this
     /// method MUST be idempotent — multiple calls (or
-    /// shutdown-then-destroy) leave the runtime in the same final state.
+    /// shutdown-then-destroy) leave the instance in the same final state.
     fn shutdown(
         &self,
-        _runtime: &Self::Runtime,
+        _instance: &Self::Instance,
     ) -> impl Future<Output = Result<(), crate::Error>> + Send {
         async { Ok(()) }
     }
 
-    /// Final cleanup — consumes the runtime.
+    /// Final cleanup — consumes the instance.
     ///
-    /// The default implementation drops the runtime.
+    /// The default implementation drops the instance.
     ///
     /// # Errors
     ///
     /// Returns `crate::Error` only if final cleanup cannot complete (e.g.,
     /// background workers refused to join). The manager logs the error
-    /// and discards the runtime regardless — `destroy` is the last
+    /// and discards the instance regardless — `destroy` is the last
     /// chance to release server-side handles, so prefer side-effects
     /// over `Err` here.
     ///
@@ -439,9 +439,9 @@ pub trait Resource: Send + Sync + 'static {
     /// token has fired; do not abort if you observe cancellation.
     fn destroy(
         &self,
-        runtime: Self::Runtime,
+        instance: Self::Instance,
     ) -> impl Future<Output = Result<(), crate::Error>> + Send {
-        let _ = runtime;
+        let _ = instance;
         async { Ok(()) }
     }
 
@@ -469,7 +469,7 @@ pub trait Resource: Send + Sync + 'static {
     }
 }
 
-/// Credential-slot epoch provider — implemented by `#[derive(ResourceSlots)]`.
+/// Credential-slot epoch provider — implemented by `#[derive(Resource)]`.
 ///
 /// An order-sensitive positional fold over every credential slot's generation.
 /// `0` = no slot ever bound (also the only value for slot-less resources).
@@ -480,7 +480,7 @@ pub trait Resource: Send + Sync + 'static {
 /// live-epoch), never by magnitude, so it is a change-token rather than a
 /// monotone counter.
 ///
-/// `#[derive(ResourceSlots)]` emits the real implementation: an
+/// `#[derive(Resource)]` emits the real implementation: an
 /// order-sensitive positional fold
 /// (`acc = acc * K + slot.generation()`, fixed odd `K`) over every
 /// declared `#[credential]` field's

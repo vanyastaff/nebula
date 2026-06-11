@@ -1,15 +1,15 @@
-//! Compile-pass probe: `#[derive(ResourceSlots)]` + hand-written `impl Resource`
+//! Compile-pass probe: `#[derive(Resource)]` + hand-written `impl Provider`
 //! accepts a slot-less struct (two-derive pattern). Verifies that:
 //!
 //! - The derive emits an empty `DeclaresDependencies` impl.
 //! - The derive emits `HasCredentialSlots { epoch → 0 }`.
-//! - A hand-written `impl Resource` with `create` satisfies the trait.
+//! - A hand-written `impl Provider` with `create` satisfies the trait.
 //! - No `#[resource(...)]` container attribute is required.
 
 use nebula_core::ResourceKey;
-use nebula_resource::{Error, Resource, ResourceContext, ResourceSlots, resource_key};
+use nebula_resource::{Error, Resource, ResourceContext, resource_key, resource::Provider};
 
-#[derive(Clone, ResourceSlots)]
+#[derive(Clone, Resource)]
 struct UnitResource;
 
 #[derive(Clone, Default)]
@@ -21,9 +21,9 @@ impl nebula_resource::resource::ResourceConfig for MyConfig {
     }
 }
 
-impl Resource for UnitResource {
+impl Provider for UnitResource {
     type Config = MyConfig;
-    type Runtime = ();
+    type Instance = ();
 
     fn key() -> ResourceKey {
         resource_key!("positive.unit")
@@ -35,5 +35,5 @@ impl Resource for UnitResource {
 }
 
 fn main() {
-    let _ = <UnitResource as Resource>::key();
+    let _ = <UnitResource as Provider>::key();
 }

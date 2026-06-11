@@ -24,7 +24,7 @@ use nebula_expression::ExpressionEngine;
 use nebula_resource::{
     Manager, ResidentConfig, ResourceContext,
     error::Error,
-    resource::{HasCredentialSlots, Resource, ResourceConfig, ResourceMetadata},
+    resource::{HasCredentialSlots, Provider, ResourceConfig, ResourceMetadata},
     runtime::{TopologyRuntime, resident::ResidentRuntime},
     topology::resident::Resident,
 };
@@ -87,9 +87,9 @@ impl ResourceConfig for DbConfig {
 #[derive(Clone)]
 struct Db;
 
-impl Resource for Db {
+impl Provider for Db {
     type Config = DbConfig;
-    type Runtime = Arc<()>;
+    type Instance = Arc<()>;
 
     fn key() -> ResourceKey {
         resource_key!("secret-config-guard-db")

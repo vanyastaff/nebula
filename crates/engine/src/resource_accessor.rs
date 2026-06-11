@@ -168,7 +168,7 @@ mod tests {
     use nebula_resource::{
         Manager, RegistrationSpec, ResidentConfig, ResourceContext, ScopeLevel, SlotIdentity,
         error::Error,
-        resource::{Resource, ResourceConfig, ResourceMetadata},
+        resource::{Provider, ResourceConfig, ResourceMetadata},
         runtime::{TopologyRuntime, resident::ResidentRuntime},
         topology::resident::Resident,
     };
@@ -207,9 +207,9 @@ mod tests {
     #[derive(Clone)]
     struct AccResource;
 
-    impl Resource for AccResource {
+    impl Provider for AccResource {
         type Config = AccConfig;
-        type Runtime = Arc<AtomicU64>;
+        type Instance = Arc<AtomicU64>;
 
         fn key() -> ResourceKey {
             ResourceKey::new("test.engine_accessor.acc").expect("valid resource key in test")

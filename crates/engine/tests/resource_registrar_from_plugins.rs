@@ -56,7 +56,7 @@ use nebula_metrics::MetricsRegistry;
 use nebula_resource::{
     AnyResource, Manager, ScopeLevel,
     error::Error as ResourceError,
-    resource::{Resource, ResourceConfig, ResourceMetadata},
+    resource::{Provider, ResourceConfig, ResourceMetadata},
     runtime::{TopologyRuntime, resident::ResidentRuntime},
     topology::resident,
 };
@@ -118,9 +118,9 @@ impl DemoResource {
     }
 }
 
-impl Resource for DemoResource {
+impl Provider for DemoResource {
     type Config = DemoConfig;
-    type Runtime = Arc<AtomicU64>;
+    type Instance = Arc<AtomicU64>;
 
     fn key() -> ResourceKey {
         resource_key!("demo.widget")
@@ -140,7 +140,7 @@ impl Resource for DemoResource {
 
     fn metadata() -> ResourceMetadata {
         ResourceMetadata::new(
-            <Self as Resource>::key(),
+            <Self as Provider>::key(),
             "demo.widget".to_owned(),
             String::new(),
             <DemoConfig as HasSchema>::schema(),
@@ -169,11 +169,11 @@ impl resident::Resident for DemoResource {
 /// cannot auto-build a typed registrar from `Plugin::resources()` alone.
 impl AnyResource for DemoResource {
     fn key(&self) -> ResourceKey {
-        <Self as Resource>::key()
+        <Self as Provider>::key()
     }
 
     fn metadata(&self) -> ResourceMetadata {
-        <Self as Resource>::metadata()
+        <Self as Provider>::metadata()
     }
 }
 
@@ -354,7 +354,7 @@ async fn wired_registrar_performs_typed_registration() {
 
     assert!(
         manager
-            .get_any(&<DemoResource as Resource>::key(), &ScopeLevel::Global)
+            .get_any(&<DemoResource as Provider>::key(), &ScopeLevel::Global)
             .is_some(),
         "the plugin-declared resource must be resolvable in the manager \
          after registration"

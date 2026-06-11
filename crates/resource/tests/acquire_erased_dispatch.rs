@@ -12,7 +12,7 @@ use nebula_core::{ExecutionId, OrgId, ResourceKey, scope::Scope};
 use nebula_resource::{
     AcquireOptions, Manager, RegistrationSpec, ResourceContext, ScopeLevel, SlotIdentity,
     error::Error,
-    resource::{HasCredentialSlots, Resource, ResourceConfig, ResourceMetadata},
+    resource::{HasCredentialSlots, Provider, ResourceConfig, ResourceMetadata},
     runtime::{TopologyRuntime, pool::PoolRuntime, resident::ResidentRuntime},
     topology::resident::{self, Resident},
 };
@@ -43,9 +43,9 @@ impl ProbeResource {
     }
 }
 
-impl Resource for ProbeResource {
+impl Provider for ProbeResource {
     type Config = ProbeConfig;
-    type Runtime = Arc<AtomicU64>;
+    type Instance = Arc<AtomicU64>;
 
     fn key() -> ResourceKey {
         nebula_core::resource_key!("test.acquire_erased.probe")
@@ -307,9 +307,9 @@ mod pool_parity {
         create_count: Arc<AtomicU64>,
     }
 
-    impl Resource for PoolParity {
+    impl Provider for PoolParity {
         type Config = PoolParityCfg;
-        type Runtime = u64;
+        type Instance = u64;
 
         fn key() -> ResourceKey {
             nebula_core::resource_key!("test.ae4.pool")
@@ -443,9 +443,9 @@ mod resident_erased_reuses_runtime {
         create_count: Arc<AtomicU64>,
     }
 
-    impl Resource for ResidentReuse {
+    impl Provider for ResidentReuse {
         type Config = ResidentReuseCfg;
-        type Runtime = Arc<AtomicU64>;
+        type Instance = Arc<AtomicU64>;
 
         fn key() -> ResourceKey {
             nebula_core::resource_key!("test.ae4.resident_reuse")
@@ -565,9 +565,9 @@ mod pool_erased_distinct_instances {
         create_count: Arc<AtomicU64>,
     }
 
-    impl Resource for PoolErased {
+    impl Provider for PoolErased {
         type Config = PoolErasedCfg;
-        type Runtime = u64;
+        type Instance = u64;
 
         fn key() -> ResourceKey {
             nebula_core::resource_key!("test.ae4.pool_erased")

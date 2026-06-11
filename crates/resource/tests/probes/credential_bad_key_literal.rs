@@ -6,11 +6,11 @@ use nebula_credential::{
     AuthPattern, Credential, CredentialContext, CredentialError, CredentialGuard,
     CredentialMetadata, ResolveResult, SecretString, SecretToken,
 };
-use nebula_resource::{ResourceSlots, SlotCell};
+use nebula_resource::{Resource, SlotCell};
 use nebula_schema::FieldValues;
 use zeroize::Zeroize;
 
-#[derive(ResourceSlots)]
+#[derive(Resource)]
 struct Demo {
     #[credential(key = "bad_key_")]
     auth: SlotCell<CredentialGuard<FakeCred>>,

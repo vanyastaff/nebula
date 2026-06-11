@@ -1,4 +1,4 @@
-//! Field-level credential slot detection for `#[derive(ResourceSlots)]`.
+//! Field-level credential slot detection for `#[derive(Resource)]`.
 //!
 //! Walks the struct fields and identifies `#[credential(...)]` attributes.
 //! Each slot field is a `SlotCell` cell holding the resolved guard — the
@@ -125,7 +125,7 @@ pub(crate) fn parse_credential_slot_fields_slots(
                 if attrs::parse_attr_optional(&field.attrs, "credential")?.is_some() {
                     return Err(syn::Error::new_spanned(
                         field,
-                        "#[derive(ResourceSlots)] does not support `#[credential]` on \
+                        "#[derive(Resource)] does not support `#[credential]` on \
                          tuple-struct fields — use a named-field struct",
                     ));
                 }

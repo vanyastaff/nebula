@@ -1,4 +1,4 @@
-//! Compile-fail probe: `#[derive(ResourceSlots)]` rejects `#[credential]`
+//! Compile-fail probe: `#[derive(Resource)]` rejects `#[credential]`
 //! on a tuple-struct field. Named-field structs are the only accepted form
 //! for slot declarations.
 
@@ -6,11 +6,11 @@ use nebula_credential::{
     AuthPattern, Credential, CredentialContext, CredentialError, CredentialGuard,
     CredentialMetadata, ResolveResult, SecretString, SecretToken,
 };
-use nebula_resource::{ResourceSlots, SlotCell};
+use nebula_resource::{Resource, SlotCell};
 use nebula_schema::FieldValues;
 use zeroize::Zeroize;
 
-#[derive(ResourceSlots)]
+#[derive(Resource)]
 struct TupleResource(#[credential(key = "auth")] SlotCell<CredentialGuard<FakeCred>>);
 
 struct FakeCred;

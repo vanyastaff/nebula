@@ -2,7 +2,7 @@
 
 use std::future::Future;
 
-use crate::{context::ResourceContext, resource::Resource};
+use crate::{context::ResourceContext, resource::Provider};
 
 /// Synchronous broken-check result.
 ///
@@ -60,7 +60,7 @@ impl InstanceMetrics {
 /// Pool topology — N interchangeable stateful instances with
 /// checkout/recycle/destroy.
 ///
-/// Implementors extend [`Resource`] with pool-aware lifecycle hooks:
+/// Implementors extend [`Provider`] with pool-aware lifecycle hooks:
 /// a sync broken check (for the `Drop` path), an async recycle step,
 /// and an optional per-checkout prepare step.
 ///
@@ -68,12 +68,12 @@ impl InstanceMetrics {
 ///
 /// [`Manager::acquire_pooled`](crate::Manager::acquire_pooled) requires:
 /// - `R: Clone + Send + Sync + 'static`
-/// - `R::Runtime: Clone + Send + Sync + 'static`
-pub trait Pooled: Resource {
+/// - `R::Instance: Clone + Send + Sync + 'static`
+pub trait Pooled: Provider {
     /// Sync O(1) broken check. Called in the `Drop` path — NO async, NO I/O.
     ///
     /// The default implementation reports all instances as healthy.
-    fn is_broken(&self, _runtime: &Self::Runtime) -> BrokenCheck {
+    fn is_broken(&self, _instance: &Self::Instance) -> BrokenCheck {
         BrokenCheck::Healthy
     }
 
@@ -83,7 +83,7 @@ pub trait Pooled: Resource {
     /// keep or drop the instance. The default keeps everything.
     fn recycle(
         &self,
-        _runtime: &Self::Runtime,
+        _instance: &Self::Instance,
         _metrics: &InstanceMetrics,
     ) -> impl Future<Output = Result<RecycleDecision, crate::Error>> + Send {
         async { Ok(RecycleDecision::Keep) }
@@ -91,7 +91,7 @@ pub trait Pooled: Resource {
 
     /// Prepares an instance for a specific execution context.
     ///
-    /// Called after checkout, before the caller receives the runtime.
+    /// Called after checkout, before the caller receives the instance.
     /// Use this for operations like `SET search_path` or `USE database`.
     ///
     /// # Errors
@@ -100,7 +100,7 @@ pub trait Pooled: Resource {
     /// destroy the instance and try another one.
     fn prepare(
         &self,
-        _runtime: &Self::Runtime,
+        _instance: &Self::Instance,
         _ctx: &ResourceContext,
     ) -> impl Future<Output = Result<(), crate::Error>> + Send {
         async { Ok(()) }

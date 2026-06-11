@@ -7,7 +7,7 @@
 //! - Cleanup-uses-global: cleanup hook can call `ctx.resource::<R>()` to access a global resource
 //!   while the scoped one is being torn down.
 //! - Scope conflicts: same resource key registered at two levels → closest wins.
-//! - Cleanup timeout: Resource::destroy that blocks > budget triggers
+//! - Cleanup timeout: Provider::destroy that blocks > budget triggers
 //!   `ScopedResourceCleanupTimeout` event.
 //! - Use-case coverage from `crates/resource/plans/10-scoped-resources.md`:
 //!   * Temporary test database (cleanup uses global pool to drop the schema after scoped

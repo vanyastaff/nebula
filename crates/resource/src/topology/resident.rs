@@ -2,26 +2,26 @@
 
 use std::time::Duration;
 
-use crate::resource::Resource;
+use crate::resource::Provider;
 
 /// Resident topology — one shared instance, clone on acquire.
 ///
-/// The runtime is created once and shared across all callers via `Clone`.
+/// The instance is created once and shared across all callers via `Clone`.
 /// Suitable for stateless or internally-pooled clients (e.g., `reqwest::Client`).
 ///
 /// # Acquire bounds
 ///
 /// [`Manager::acquire_resident`](crate::Manager::acquire_resident) requires:
 /// - `R: Send + Sync + 'static`
-/// - `R::Runtime: Clone + Send + Sync + 'static`
-pub trait Resident: Resource
+/// - `R::Instance: Clone + Send + Sync + 'static`
+pub trait Resident: Provider
 where
-    Self::Runtime: Clone,
+    Self::Instance: Clone,
 {
     /// Sync O(1) liveness check. NO I/O, NO blocking.
     ///
     /// The default implementation always reports alive.
-    fn is_alive_sync(&self, _runtime: &Self::Runtime) -> bool {
+    fn is_alive_sync(&self, _instance: &Self::Instance) -> bool {
         true
     }
 
@@ -42,7 +42,7 @@ pub mod config {
     pub struct Config {
         /// Whether to automatically recreate the instance on failure.
         pub recreate_on_failure: bool,
-        /// Maximum time to wait for `Resource::create()` before aborting.
+        /// Maximum time to wait for `Provider::create()` before aborting.
         ///
         /// Prevents a hanging backend from holding the create lock forever,
         /// which would deadlock all subsequent acquires.

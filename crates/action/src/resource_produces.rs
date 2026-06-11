@@ -27,7 +27,7 @@
 use std::{fmt, marker::PhantomData};
 
 use nebula_core::ResourceKey;
-use nebula_resource::{Resource, topology_tag::TopologyTag};
+use nebula_resource::{resource::Provider, topology_tag::TopologyTag};
 
 /// Marker type returned by a [`ResourceAction`](crate::resource::ResourceAction)
 /// in its `Action::Output` slot.
@@ -80,7 +80,7 @@ impl<R: ?Sized> ResourceProduces<R> {
     }
 }
 
-impl<R: Resource> ResourceProduces<R> {
+impl<R: Provider> ResourceProduces<R> {
     /// Returns the registered resource key for the produced resource type.
     ///
     /// Read at catalog-construction time to label workflow-graph edges with

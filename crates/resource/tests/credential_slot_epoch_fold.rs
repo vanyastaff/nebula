@@ -10,7 +10,7 @@
 //!
 //! Two independent proofs:
 //!
-//! 1. **Derive fold** — a real `#[derive(ResourceSlots)]` two-slot struct:
+//! 1. **Derive fold** — a real `#[derive(Resource)]` two-slot struct:
 //!    rotating the NON-max slot must change the *derive-emitted*
 //!    `credential_slot_epoch()` (this is the exact macro output the
 //!    epoch-fold contract depends on).
@@ -31,8 +31,8 @@ use nebula_credential::{
     CredentialMetadata, ResolveResult, SecretString, SecretToken,
 };
 use nebula_resource::{
-    AcquireOptions, Manager, RegistrationSpec, ResidentConfig, Resource, ResourceConfig,
-    ResourceContext, ResourceSlots, SlotCell, SlotIdentity,
+    AcquireOptions, Manager, Provider, RegistrationSpec, ResidentConfig, Resource, ResourceConfig,
+    ResourceContext, SlotCell, SlotIdentity,
     error::Error,
     resource::HasCredentialSlots,
     runtime::{TopologyRuntime, resident::ResidentRuntime},
@@ -104,8 +104,8 @@ impl ResourceConfig for TwoSlotCfg {
 }
 
 /// A real derived two-slot resource — `credential_slot_epoch()` here is
-/// the exact token stream `#[derive(ResourceSlots)]` emits.
-#[derive(ResourceSlots)]
+/// the exact token stream `#[derive(Resource)]` emits.
+#[derive(Resource)]
 struct TwoSlotDerived {
     #[credential(key = "slot_a")]
     slot_a: SlotCell<CredentialGuard<FakeCred>>,
@@ -113,9 +113,9 @@ struct TwoSlotDerived {
     slot_b: SlotCell<CredentialGuard<FakeCred>>,
 }
 
-impl Resource for TwoSlotDerived {
+impl Provider for TwoSlotDerived {
     type Config = TwoSlotCfg;
-    type Runtime = ();
+    type Instance = ();
 
     fn key() -> ResourceKey {
         nebula_resource::resource_key!("epochfold-derived")
@@ -199,7 +199,7 @@ struct TwoSlotRuntime {
 }
 
 /// Hand-written two-slot resident. `credential_slot_epoch()` mirrors the
-/// exact positional fold `#[derive(ResourceSlots)]` emits; hand-written
+/// exact positional fold `#[derive(Resource)]` emits; hand-written
 /// here so the `Arc<SlotCell<…>>` fields can be shared with test scaffolding
 /// without borrowing constraints. The point is that the *reconcile* keys
 /// off an order-sensitive epoch, so rotating the non-max slot makes a
@@ -211,9 +211,9 @@ struct TwoSlotResident {
     refresh_calls: Arc<AtomicUsize>,
 }
 
-impl Resource for TwoSlotResident {
+impl Provider for TwoSlotResident {
     type Config = RaceCfg;
-    type Runtime = TwoSlotRuntime;
+    type Instance = TwoSlotRuntime;
 
     fn key() -> ResourceKey {
         resource_key!("epochfold-resident")
@@ -253,7 +253,7 @@ impl Resource for TwoSlotResident {
 impl HasCredentialSlots for TwoSlotResident {
     // The exact positional fold the derive emits (FNV-1a 64-bit prime,
     // wrapping). NOT author discipline for production resources —
-    // `#[derive(ResourceSlots)]` generates this; hand-mirrored only because
+    // `#[derive(Resource)]` generates this; hand-mirrored only because
     // this fixture cannot be derived (derive `create` is `todo!()`).
     fn credential_slot_epoch(&self) -> u64 {
         const K: u64 = 0x0000_0100_0000_01b3;

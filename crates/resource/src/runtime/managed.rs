@@ -20,7 +20,7 @@ use crate::{
     error::Error,
     recovery::RecoveryGate,
     release_queue::ReleaseQueue,
-    resource::Resource,
+    resource::Provider,
     state::{ResourcePhase, ResourceStatus},
 };
 
@@ -29,7 +29,7 @@ use crate::{
 /// Created once per `Manager::register()` call and stored for the
 /// lifetime of the resource. The `config` and `status` fields are
 /// atomically swappable for hot-reload.
-pub struct ManagedResource<R: Resource> {
+pub struct ManagedResource<R: Provider> {
     /// The resource implementation (topology trait impl).
     pub(crate) resource: R,
     /// Hot-swappable operational configuration.
@@ -71,7 +71,7 @@ pub struct ManagedResource<R: Resource> {
     pub(crate) in_flight: Arc<(AtomicU64, Notify)>,
 }
 
-impl<R: Resource> ManagedResource<R> {
+impl<R: Provider> ManagedResource<R> {
     /// Returns the current generation counter.
     pub fn generation(&self) -> u64 {
         self.generation.load(Ordering::Acquire)

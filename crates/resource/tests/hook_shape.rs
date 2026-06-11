@@ -4,11 +4,11 @@
 // guard-justified: this file is a type-shape probe — items exist only to
 // be type-checked, never executed, so dead_code/unused are inherent.
 #![allow(dead_code, unused)]
-use nebula_resource::Resource;
+use nebula_resource::resource::Provider;
 
 fn assert_send<T: Send>(_: T) {}
 
-fn refresh_shape<R: Resource>(r: &R, rt: &R::Runtime) {
+fn refresh_shape<R: Provider>(r: &R, rt: &R::Instance) {
     let _f = r.on_credential_refresh("slot", rt);
     let _g = r.on_credential_revoke("slot", rt);
     assert_send(r.on_credential_refresh("slot", rt));

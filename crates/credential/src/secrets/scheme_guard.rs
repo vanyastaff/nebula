@@ -259,7 +259,7 @@ impl<C: Credential> std::fmt::Debug for SchemeFactory<C> {
     }
 }
 
-// Refresh-notification hook lives on `nebula_resource::Resource` itself
+// Refresh-notification hook lives on `nebula_resource::resource::Provider` itself
 // (`Resource::on_credential_refresh`) per credential isolation + Tech Spec §15.4. The
 // previously-defined parallel `OnCredentialRefresh<C>` trait was a
 // transitional bridge while `Resource` still bound `Auth: AuthScheme`; the

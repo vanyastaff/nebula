@@ -6,28 +6,28 @@
 //!
 //! Resource authors use two derives:
 //!
-//! 1. **`#[derive(ResourceSlots)]`** — emits slot plumbing only:
+//! 1. **`#[derive(Resource)]`** — emits slot plumbing only:
 //!    - `impl DeclaresDependencies` enumerating `#[credential]` slot fields.
 //!    - An inherent `pub fn <field>_slot(&self) -> Option<Arc<...>>` accessor per slot.
 //!    - `impl HasCredentialSlots` with the order-sensitive positional epoch fold.
 //!
-//! 2. **Hand-written `impl Resource`** — the implementor supplies `key()`, the two
-//!    associated types (`Config`, `Runtime`), and the lifecycle methods (`create`,
+//! 2. **Hand-written `impl Provider`** — the implementor supplies `key()`, the two
+//!    associated types (`Config`, `Instance`), and the lifecycle methods (`create`,
 //!    optionally `check`, `shutdown`, `destroy`, credential-rotation hooks).
 //!
 //! ```ignore
 //! use nebula_credential::CredentialGuard;
-//! use nebula_resource::{Resource, SlotCell};
+//! use nebula_resource::{Provider, Resource, SlotCell};
 //!
-//! #[derive(ResourceSlots)]
+//! #[derive(Resource)]
 //! struct Postgres {
 //!     #[credential(key = "db_auth", purpose = "Main DB auth")]
 //!     db_auth: SlotCell<CredentialGuard<DatabaseCredential>>,
 //! }
 //!
-//! impl Resource for Postgres {
+//! impl Provider for Postgres {
 //!     type Config = PostgresConfig;
-//!     type Runtime = PgConnection;
+//!     type Instance = PgConnection;
 //!
 //!     fn key() -> nebula_core::ResourceKey { resource_key!("postgres") }
 //!
@@ -40,8 +40,8 @@
 //! }
 //! ```
 //!
-//! The `#[resource(...)]` container attribute is not accepted by `ResourceSlots` — it
-//! existed only on the retired `#[derive(Resource)]` which emitted a `todo!()` body.
+//! The `#[resource(...)]` container attribute is not accepted by `Resource` — it
+//! existed only on an older retired derive which emitted a `todo!()` body.
 //!
 //! ## `#[derive(ClassifyError)]`
 //!
@@ -107,8 +107,8 @@ mod slots;
 ///
 /// ## What is NOT emitted
 ///
-/// This derive does **not** emit any `Resource` impl, `todo!()`, `key()`,
-/// `metadata()`, or topology constant. The implementor writes `impl Resource`
+/// This derive does **not** emit any `Provider` impl, `todo!()`, `key()`,
+/// `metadata()`, or topology constant. The implementor writes `impl Provider`
 /// by hand (2 associated types + `create`).
 ///
 /// ## Field attributes
@@ -134,8 +134,8 @@ mod slots;
 /// - Tuple structs with a `#[credential]` field: compile error.
 /// - Wrong field type: compile error naming both accepted shapes.
 /// - `#[resource(...)]` container attribute: compile error (removed).
-#[proc_macro_derive(ResourceSlots, attributes(credential))]
-pub fn derive_resource_slots(input: TokenStream) -> TokenStream {
+#[proc_macro_derive(Resource, attributes(credential))]
+pub fn derive_resource(input: TokenStream) -> TokenStream {
     slots::derive(input)
 }
 

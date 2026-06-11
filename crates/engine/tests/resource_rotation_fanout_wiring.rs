@@ -36,7 +36,7 @@ use nebula_engine::{
 use nebula_eventbus::EventBus;
 use nebula_metrics::MetricsRegistry;
 use nebula_resource::{
-    AcquireOptions, Manager, RegistrationSpec, ResidentConfig, Resource, ResourceConfig,
+    AcquireOptions, Manager, Provider, RegistrationSpec, ResidentConfig, ResourceConfig,
     ResourceContext, SlotIdentity,
     error::Error as ResourceError,
     resource::ResourceMetadata,
@@ -83,9 +83,9 @@ struct Recording {
     rec: Recorder,
 }
 
-impl Resource for Recording {
+impl Provider for Recording {
     type Config = NoCfg;
-    type Runtime = ();
+    type Instance = ();
 
     fn key() -> ResourceKey {
         resource_key!("fanout-wiring-rec")

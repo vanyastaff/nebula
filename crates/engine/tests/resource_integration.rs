@@ -30,7 +30,7 @@ use nebula_metrics::MetricsRegistry;
 use nebula_resource::{
     Manager, RegistrationSpec, ResidentConfig, ResourceContext, SlotIdentity,
     error::Error as ResourceError,
-    resource::{Resource, ResourceConfig, ResourceMetadata},
+    resource::{Provider, ResourceConfig, ResourceMetadata},
     runtime::{TopologyRuntime, resident::ResidentRuntime},
     topology::resident::Resident,
 };
@@ -309,9 +309,9 @@ impl ResourceConfig for IntegrationProbeConfig {
 #[derive(Clone)]
 struct IntegrationProbeResource;
 
-impl Resource for IntegrationProbeResource {
+impl Provider for IntegrationProbeResource {
     type Config = IntegrationProbeConfig;
-    type Runtime = Arc<AtomicU64>;
+    type Instance = Arc<AtomicU64>;
 
     fn key() -> ResourceKey {
         resource_key!("test.engine_integration.probe")
@@ -527,7 +527,7 @@ mod shared_resource {
     use nebula_resource::{
         AcquireOptions, Manager, RegistrationSpec, ResidentConfig, ResourceContext, SlotIdentity,
         error::Error,
-        resource::{Resource, ResourceConfig, ResourceMetadata},
+        resource::{Provider, ResourceConfig, ResourceMetadata},
         runtime::{TopologyRuntime, resident::ResidentRuntime},
         topology::resident::Resident,
     };
@@ -615,9 +615,9 @@ mod shared_resource {
         }
     }
 
-    impl Resource for TelegramBot {
+    impl Provider for TelegramBot {
         type Config = TelegramConfig;
-        type Runtime = Arc<TelegramBotInner>;
+        type Instance = Arc<TelegramBotInner>;
 
         fn key() -> ResourceKey {
             resource_key!("telegram-bot")
@@ -678,9 +678,9 @@ mod shared_resource {
         }
     }
 
-    impl Resource for AlternateBot {
+    impl Provider for AlternateBot {
         type Config = TelegramConfig;
-        type Runtime = Arc<TelegramBotInner>;
+        type Instance = Arc<TelegramBotInner>;
 
         fn key() -> ResourceKey {
             resource_key!("telegram-bot-alt")

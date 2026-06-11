@@ -42,7 +42,7 @@ use nebula_resource::{
     AcquireOptions, Manager, RegistrationSpec, ResourceContext,
     dedup::SlotIdentity,
     error::Error as ResourceError,
-    resource::{Resource, ResourceConfig, ResourceMetadata},
+    resource::{Provider, ResourceConfig, ResourceMetadata},
     runtime::{TopologyRuntime, pool::PoolRuntime},
     topology::pooled::{BrokenCheck, Pooled, RecycleDecision, config::Config as PoolConfig},
 };
@@ -181,9 +181,9 @@ impl Postgres {
     }
 }
 
-impl Resource for Postgres {
+impl Provider for Postgres {
     type Config = PostgresConfig;
-    type Runtime = Arc<MockPgConnection>;
+    type Instance = Arc<MockPgConnection>;
 
     fn key() -> ResourceKey {
         resource_key!("demo.postgres")

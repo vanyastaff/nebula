@@ -1,4 +1,4 @@
-//! Compile-fail probe: `#[derive(ResourceSlots)]` rejects a `#[credential]`
+//! Compile-fail probe: `#[derive(Resource)]` rejects a `#[credential]`
 //! field whose type is `Option<SlotCell<CredentialGuard<C>>>`. The slot field
 //! must be exactly `SlotCell<CredentialGuard<C>>` or the alias `CredentialSlot<C>`.
 
@@ -6,11 +6,11 @@ use nebula_credential::{
     AuthPattern, Credential, CredentialContext, CredentialError, CredentialGuard,
     CredentialMetadata, ResolveResult, SecretString, SecretToken,
 };
-use nebula_resource::{ResourceSlots, SlotCell};
+use nebula_resource::{Resource, SlotCell};
 use nebula_schema::FieldValues;
 use zeroize::Zeroize;
 
-#[derive(ResourceSlots)]
+#[derive(Resource)]
 struct Demo {
     #[credential(key = "db")]
     db: Option<SlotCell<CredentialGuard<FakeCred>>>,

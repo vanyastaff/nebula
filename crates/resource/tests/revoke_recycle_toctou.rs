@@ -39,7 +39,7 @@ use std::time::Duration;
 
 use nebula_core::{ResourceKey, ScopeLevel, resource_key, scope::Scope};
 use nebula_resource::{
-    AcquireOptions, Manager, PoolConfig, RegistrationSpec, Resource, ResourceConfig,
+    AcquireOptions, Manager, PoolConfig, Provider, RegistrationSpec, ResourceConfig,
     ResourceContext, SlotIdentity,
     error::{Error, ErrorKind},
     resource::{HasCredentialSlots, ResourceMetadata},
@@ -118,9 +118,9 @@ impl PoolResource {
     }
 }
 
-impl Resource for PoolResource {
+impl Provider for PoolResource {
     type Config = PoolCfg;
-    type Runtime = PoolRt;
+    type Instance = PoolRt;
 
     fn key() -> ResourceKey {
         resource_key!("r16-pool")

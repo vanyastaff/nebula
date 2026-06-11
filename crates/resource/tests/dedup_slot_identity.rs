@@ -25,7 +25,7 @@ use std::sync::{
 
 use nebula_core::{OrgId, ResourceKey, ScopeLevel, resource_key, scope::Scope};
 use nebula_resource::{
-    AcquireOptions, Manager, RegisterOptions, RegistrationSpec, ResidentConfig, Resource,
+    AcquireOptions, Manager, Provider, RegisterOptions, RegistrationSpec, ResidentConfig,
     ResourceConfig, ResourceContext, SlotIdentity,
     error::Error,
     resource::{HasCredentialSlots, ResourceMetadata},
@@ -74,9 +74,9 @@ impl CountingResource {
     }
 }
 
-impl Resource for CountingResource {
+impl Provider for CountingResource {
     type Config = CountingConfig;
-    type Runtime = CountingRuntime;
+    type Instance = CountingRuntime;
 
     fn key() -> ResourceKey {
         resource_key!("dedup-slot-ident")
@@ -428,9 +428,9 @@ fn non_empty_bindings_are_never_the_unbound_identity() {
 #[derive(Clone)]
 struct SiblingResidentResource;
 
-impl Resource for SiblingResidentResource {
+impl Provider for SiblingResidentResource {
     type Config = CountingConfig;
-    type Runtime = CountingRuntime;
+    type Instance = CountingRuntime;
 
     fn key() -> ResourceKey {
         // SAME string as `CountingResource::key()` on purpose.

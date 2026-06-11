@@ -42,7 +42,7 @@
 //!     acquire:       ErasedAcquireFn,
 //!     recovery_gate: Option<Arc<RecoveryGate>>,
 //! ) -> Result<SlotIdentity, nebula_resource::Error>
-//! where R: Resource + DeclaresDependencies, R::Config: DeserializeOwned
+//! where R: Provider + DeclaresDependencies, R::Config: DeserializeOwned
 //! ```
 //!
 //! It derives and **returns** the collision-free structural
@@ -73,7 +73,7 @@
 use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc};
 
 use nebula_resource::{
-    Manager, ScopeLevel, SlotIdentity, TopologyRuntime, recovery::RecoveryGate, resource::Resource,
+    Manager, ScopeLevel, SlotIdentity, TopologyRuntime, recovery::RecoveryGate, resource::Provider,
 };
 
 /// Boxed, `Send` future returned across the erased registrar boundary.
@@ -326,7 +326,7 @@ pub trait ErasedResourceRegistrar: Send + Sync {
 /// identity-independent (the legacy `Fn(u64)` digest threading is gone).
 pub struct TypedResourceRegistrar<R, FRes, FTopo, FAcq>
 where
-    R: Resource + nebula_core::DeclaresDependencies,
+    R: Provider + nebula_core::DeclaresDependencies,
     R::Config: serde::de::DeserializeOwned,
     FRes: Fn() -> R + Send + Sync,
     FTopo: Fn() -> TopologyRuntime<R> + Send + Sync,
@@ -339,7 +339,7 @@ where
 
 impl<R, FRes, FTopo, FAcq> TypedResourceRegistrar<R, FRes, FTopo, FAcq>
 where
-    R: Resource + nebula_core::DeclaresDependencies,
+    R: Provider + nebula_core::DeclaresDependencies,
     R::Config: serde::de::DeserializeOwned,
     FRes: Fn() -> R + Send + Sync,
     FTopo: Fn() -> TopologyRuntime<R> + Send + Sync,
@@ -367,7 +367,7 @@ where
 
 impl<R, FRes, FTopo, FAcq> ErasedResourceRegistrar for TypedResourceRegistrar<R, FRes, FTopo, FAcq>
 where
-    R: Resource + nebula_resource::HasCredentialSlots + nebula_core::DeclaresDependencies,
+    R: Provider + nebula_resource::HasCredentialSlots + nebula_core::DeclaresDependencies,
     R::Config: serde::de::DeserializeOwned,
     FRes: Fn() -> R + Send + Sync,
     FTopo: Fn() -> TopologyRuntime<R> + Send + Sync,
@@ -398,7 +398,7 @@ where
     }
 
     fn resource_key(&self) -> nebula_core::ResourceKey {
-        <R as Resource>::key()
+        <R as Provider>::key()
     }
 
     fn validate(&self, config_json: serde_json::Value) -> Result<(), nebula_resource::Error> {
@@ -776,7 +776,7 @@ mod tests {
     use nebula_resource::{
         Manager, ScopeLevel,
         error::Error as ResourceError,
-        resource::{Resource, ResourceConfig, ResourceMetadata},
+        resource::{Provider, ResourceConfig, ResourceMetadata},
         runtime::{TopologyRuntime, resident::ResidentRuntime},
         topology::resident::{self, Resident},
     };
@@ -841,9 +841,9 @@ mod tests {
         }
     }
 
-    impl Resource for TestRes {
+    impl Provider for TestRes {
         type Config = TestConfig;
-        type Runtime = Arc<AtomicU64>;
+        type Instance = Arc<AtomicU64>;
 
         fn key() -> ResourceKey {
             resource_key!("test-registrar-res")
@@ -1072,7 +1072,7 @@ mod tests {
         use nebula_resource::{
             Manager, ScopeLevel,
             error::Error as ResourceError,
-            resource::{Resource, ResourceConfig, ResourceMetadata},
+            resource::{Provider, ResourceConfig, ResourceMetadata},
             runtime::{TopologyRuntime, resident::ResidentRuntime},
             topology::resident,
         };
@@ -1178,9 +1178,9 @@ mod tests {
         #[derive(Clone)]
         struct OResource;
 
-        impl Resource for OResource {
+        impl Provider for OResource {
             type Config = OConfig;
-            type Runtime = ();
+            type Instance = ();
 
             fn key() -> ResourceKey {
                 resource_key!("ordering.widget")
@@ -1196,7 +1196,7 @@ mod tests {
 
             fn metadata() -> ResourceMetadata {
                 ResourceMetadata::new(
-                    <Self as Resource>::key(),
+                    <Self as Provider>::key(),
                     "ordering.widget".to_owned(),
                     String::new(),
                     <OConfig as HasSchema>::schema(),
@@ -1322,7 +1322,7 @@ mod tests {
 
                 assert!(
                     manager.has_registered_for_identity(
-                        &<OResource as Resource>::key(),
+                        &<OResource as Provider>::key(),
                         &ScopeLevel::Global,
                         &outcome.slot_identity,
                     ),
@@ -1376,7 +1376,7 @@ mod tests {
                 );
                 assert!(
                     !manager.has_registered_for_identity(
-                        &<OResource as Resource>::key(),
+                        &<OResource as Provider>::key(),
                         &ScopeLevel::Global,
                         &SlotIdentity::from_bindings([(SLOT_KEY, "cred-tenant-a")]),
                     ),

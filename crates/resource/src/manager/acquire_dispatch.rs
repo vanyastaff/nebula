@@ -37,7 +37,7 @@ where
         + Send
         + Sync
         + 'static,
-    R::Runtime: Clone + Send + Sync + 'static,
+    R::Instance: Clone + Send + Sync + 'static,
 {
     Arc::new(move |mgr, ctx, opts, resolved| {
         Box::pin(async move {
@@ -52,7 +52,7 @@ where
 fn arc_acquire_pooled<R>() -> ErasedAcquireFn
 where
     R: crate::topology::pooled::Pooled + Clone + Send + Sync + 'static,
-    R::Runtime: Clone + Send + Sync + 'static,
+    R::Instance: Clone + Send + Sync + 'static,
 {
     Arc::new(move |mgr, ctx, opts, resolved| {
         Box::pin(async move {
@@ -77,7 +77,7 @@ where
         + Send
         + Sync
         + 'static,
-    R::Runtime: Clone + Send + Sync + 'static,
+    R::Instance: Clone + Send + Sync + 'static,
 {
     arc_acquire_resident::<R>()
 }
@@ -89,7 +89,7 @@ where
 pub(crate) fn erased_acquire_pooled<R>() -> ErasedAcquireFn
 where
     R: crate::topology::pooled::Pooled + Clone + Send + Sync + 'static,
-    R::Runtime: Clone + Send + Sync + 'static,
+    R::Instance: Clone + Send + Sync + 'static,
 {
     arc_acquire_pooled::<R>()
 }

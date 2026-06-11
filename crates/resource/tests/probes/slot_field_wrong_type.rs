@@ -2,9 +2,9 @@
 //! `SlotCell<CredentialGuard<C>>` nor `CredentialSlot<C>` is rejected at the
 //! field type span, naming both accepted shapes.
 
-use nebula_resource::ResourceSlots;
+use nebula_resource::Resource;
 
-#[derive(ResourceSlots)]
+#[derive(Resource)]
 struct Demo {
     #[credential(key = "auth")]
     auth: String,

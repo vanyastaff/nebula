@@ -13,8 +13,9 @@
 //!
 //! | Type | Purpose |
 //! |------|---------|
-//! | `Resource` | Core trait — `Config`/`Runtime` + lifecycle + slot-rotation hooks |
-//! | `ResourceGuard` | RAII runtime guard with Owned/Guarded modes |
+//! | `Provider` | Lifecycle trait — `Config`/`Instance` + lifecycle + slot-rotation hooks |
+//! | `Resource` | Derive macro — emits slot plumbing (`HasCredentialSlots`, accessors) |
+//! | `ResourceGuard` | RAII instance guard with Owned/Guarded modes |
 //! | `Manager` | Central registry with acquire dispatch and shutdown |
 //! | `ReleaseQueue` | Background worker pool for async cleanup (best-effort on crash) |
 //! | `DrainTimeoutPolicy` | Drain operation timeout policy |
@@ -93,18 +94,18 @@ pub use nebula_credential::{Credential, CredentialContext, CredentialId};
 ///
 /// See [`nebula_resource_macros::ClassifyError`] for full documentation.
 pub use nebula_resource_macros::ClassifyError;
+/// Derive macro that emits slot plumbing for a resource struct.
+///
+/// Generates `impl DeclaresDependencies`, slot accessor methods, and
+/// `impl HasCredentialSlots`. Used together with a hand-written `impl Provider`.
+///
+/// See [`nebula_resource_macros::Resource`] for full documentation.
+pub use nebula_resource_macros::Resource;
 /// Derive macro that generates `impl ResourceConfig` with a structural fingerprint
 /// and an optional default empty `impl HasSchema`.
 ///
 /// See [`nebula_resource_macros::ResourceConfig`] for full documentation.
 pub use nebula_resource_macros::ResourceConfig;
-/// Derive macro that emits slot plumbing for a resource struct.
-///
-/// Generates `impl DeclaresDependencies`, slot accessor methods, and
-/// `impl HasCredentialSlots`. Used together with a hand-written `impl Resource`.
-///
-/// See [`nebula_resource_macros::ResourceSlots`] for full documentation.
-pub use nebula_resource_macros::ResourceSlots;
 // Schema surface — re-exported so adapter crates don't need a direct
 // nebula-schema dep just to satisfy `ResourceConfig`'s `HasSchema`
 // super-bound. `Schema` covers both the type and the derive macro
@@ -118,7 +119,7 @@ pub use registry::{AnyManagedResource, LookupOutcome, Registry};
 pub use release_queue::ReleaseQueue;
 pub use reload::ReloadOutcome;
 pub use resource::{
-    AnyResource, HasCredentialSlots, MetadataCompatibilityError, Resource, ResourceConfig,
+    AnyResource, HasCredentialSlots, MetadataCompatibilityError, Provider, ResourceConfig,
     ResourceMetadata,
 };
 pub use resource_ref::ResourceRef;

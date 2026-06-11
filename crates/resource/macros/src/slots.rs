@@ -1,19 +1,19 @@
-//! `#[derive(ResourceSlots)]` macro implementation — slot model.
+//! `#[derive(Resource)]` macro implementation — slot model.
 //!
 //! ## Two-derive pattern
 //!
 //! Resource authors use two derives:
 //!
-//! 1. `#[derive(ResourceSlots)]` (this macro) — emits the slot plumbing:
+//! 1. `#[derive(Resource)]` (this macro) — emits the slot plumbing:
 //!    - `impl DeclaresDependencies` enumerating `#[credential]` slot fields.
 //!    - An inherent `pub fn <field>_slot(&self) -> Option<Arc<...>>` accessor per slot.
 //!    - `impl HasCredentialSlots` with the order-sensitive positional fold.
 //!
-//! 2. Hand-written `impl Resource` — the implementor supplies `key()`, the two
-//!    associated types (`Config`, `Runtime`), and the lifecycle methods
+//! 2. Hand-written `impl Provider` — the implementor supplies `key()`, the two
+//!    associated types (`Config`, `Instance`), and the lifecycle methods
 //!    (`create`, optionally `check`, `shutdown`, `destroy`, hooks).
 //!
-//! The macro **never** emits any `Resource` item, `todo!()`, `key()`, or
+//! The macro **never** emits any `Provider` item, `todo!()`, `key()`, or
 //! `metadata()`. There is no `#[resource(...)]` container attribute.
 //!
 //! ## Field attributes
@@ -64,13 +64,13 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
         Data::Enum(_) => {
             return Err(syn::Error::new_spanned(
                 struct_name,
-                "#[derive(ResourceSlots)] can only be used on structs, not enums",
+                "#[derive(Resource)] can only be used on structs, not enums",
             ));
         },
         Data::Union(_) => {
             return Err(syn::Error::new_spanned(
                 struct_name,
-                "#[derive(ResourceSlots)] can only be used on structs, not unions",
+                "#[derive(Resource)] can only be used on structs, not unions",
             ));
         },
     };
@@ -81,9 +81,9 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
             return Err(syn::Error::new_spanned(
                 attr,
                 "#[resource(...)] container attribute is not accepted by \
-                 #[derive(ResourceSlots)] — it was only used by the old \
-                 #[derive(Resource)] derive which emitted a todo!() Resource impl. \
-                 Write `impl Resource for ... { ... }` directly instead.",
+                 #[derive(Resource)] — it was only used by an older retired derive \
+                 which emitted a todo!() body. \
+                 Write `impl Provider for ... { ... }` directly instead.",
             ));
         }
     }

@@ -12,7 +12,7 @@ use std::{sync::Arc, time::Duration};
 use nebula_core::ScopeLevel;
 
 use crate::{
-    recovery::gate::RecoveryGate, registry::ErasedAcquireFn, resource::Resource,
+    recovery::gate::RecoveryGate, registry::ErasedAcquireFn, resource::Provider,
     runtime::TopologyRuntime,
 };
 
@@ -230,7 +230,7 @@ impl RegisterOptions {
 /// [`SlotIdentity::Unbound`](crate::dedup::SlotIdentity) preserves the
 /// historical single-row-per-`(key, scope)` dedup contract. It carries no
 /// secret bytes — only a stable identity over the resolved binding *names*.
-pub struct RegistrationSpec<R: Resource> {
+pub struct RegistrationSpec<R: Provider> {
     /// The fully-constructed resource value, all credential slots resolved.
     pub resource: R,
     /// The validated-on-`register` resource config.

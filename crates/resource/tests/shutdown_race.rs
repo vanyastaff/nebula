@@ -33,7 +33,7 @@ use nebula_resource::{
     AcquireOptions, Manager, RegistrationSpec, ResourceContext, ScopeLevel, ShutdownConfig,
     SlotIdentity, TopologyTag,
     error::{Error, ErrorKind},
-    resource::{HasCredentialSlots, Resource, ResourceConfig, ResourceMetadata},
+    resource::{HasCredentialSlots, Provider, ResourceConfig, ResourceMetadata},
     runtime::{TopologyRuntime, resident::ResidentRuntime},
     topology::{resident, resident::Resident},
 };
@@ -75,9 +75,9 @@ impl SlowCreateResource {
     }
 }
 
-impl Resource for SlowCreateResource {
+impl Provider for SlowCreateResource {
     type Config = SlowConfig;
-    type Runtime = ();
+    type Instance = ();
 
     fn key() -> ResourceKey {
         nebula_core::resource_key!("test.shutdown_race.slow")

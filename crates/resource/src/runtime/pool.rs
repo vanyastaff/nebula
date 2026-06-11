@@ -25,7 +25,7 @@ use crate::{
     metrics::ResourceOpsMetrics,
     options::AcquireOptions,
     release_queue::ReleaseQueue,
-    resource::Resource,
+    resource::Provider,
     topology::pooled::{InstanceMetrics, Pooled, RecycleDecision, config::Config},
     topology_tag::TopologyTag,
 };
@@ -59,8 +59,8 @@ const ERR_CREATE_TIMED_OUT: &str = "pool: create timed out";
 /// The semaphore permit no longer lives here — it is held in
 /// `GuardInner::Guarded` so that it is returned even if the release
 /// callback panics.
-struct PoolEntry<R: Resource> {
-    runtime: R::Runtime,
+struct PoolEntry<R: Provider> {
+    runtime: R::Instance,
     metrics: InstanceMetrics,
     fingerprint: u64,
     /// Snapshot of the pool's revoke epoch at the moment this instance
@@ -84,7 +84,7 @@ struct PoolEntry<R: Resource> {
 }
 
 /// Result of attempting to pop an idle instance from the pool.
-enum IdleResult<R: Resource> {
+enum IdleResult<R: Provider> {
     /// A valid idle instance was found — wrapped in a handle.
     Found(ResourceGuard<R>),
     /// No usable idle instance — the permit is returned so the caller
@@ -118,7 +118,7 @@ pub struct PoolStats {
 ///
 /// Manages an idle queue of instances, a semaphore for max-size enforcement,
 /// and acquire/release logic with broken-check, recycle, and lifetime policies.
-pub struct PoolRuntime<R: Resource> {
+pub struct PoolRuntime<R: Provider> {
     idle: Arc<Mutex<VecDeque<PoolEntry<R>>>>,
     semaphore: Arc<Semaphore>,
     /// Bounds concurrent invocations of `create_entry` (#390).
@@ -147,7 +147,7 @@ pub struct PoolRuntime<R: Resource> {
     revoke_epoch: Arc<AtomicU64>,
 }
 
-impl<R: Resource> PoolRuntime<R> {
+impl<R: Provider> PoolRuntime<R> {
     /// Fallibly creates a new pool runtime, returning a typed
     /// [`Error::permanent`] instead of aborting on an invalid
     /// `(min_size, max_size)` topology.
@@ -309,7 +309,7 @@ impl<R: Resource> PoolRuntime<R> {
     ///
     /// `refresh = true` selects `on_credential_refresh`, `false` selects
     /// `on_credential_revoke`. The hook is called inline (not via a
-    /// borrowing closure) so the per-entry `&R::Runtime` never escapes the
+    /// borrowing closure) so the per-entry `&R::Instance` never escapes the
     /// idle lock. The first hook error is returned; remaining idle
     /// instances are still visited so one bad instance doesn't skip the
     /// rest.
@@ -377,12 +377,12 @@ impl<R: Resource> PoolRuntime<R> {
     }
 }
 
-// `run_maintenance` + `should_evict` need only `R: Resource` (eviction calls
+// `run_maintenance` + `should_evict` need only `R: Provider` (eviction calls
 // `Resource::destroy` and reads pool fields — no `Pooled`/`Clone`/`Into`
 // conversions), so they live in this weak-bound block. That lets the
-// `R: Resource`-only registration path drive the background maintenance
+// `R: Provider`-only registration path drive the background maintenance
 // reaper without the acquire-path topology bounds.
-impl<R: Resource> PoolRuntime<R> {
+impl<R: Provider> PoolRuntime<R> {
     /// Runs one maintenance cycle: evicts idle-timeout, max-lifetime,
     /// stale-fingerprint, and credential-revoked entries from the idle
     /// queue.
@@ -464,7 +464,7 @@ impl<R: Resource> PoolRuntime<R> {
 impl<R> PoolRuntime<R>
 where
     R: Pooled + Clone + Send + Sync + 'static,
-    R::Runtime: Clone,
+    R::Instance: Clone,
 {
     /// Acquires an instance from the pool.
     ///
@@ -813,7 +813,7 @@ where
     )]
     fn build_guarded_handle(
         &self,
-        runtime: R::Runtime,
+        runtime: R::Instance,
         entry: PoolEntry<R>,
         permit: OwnedSemaphorePermit,
         resource: R,
@@ -831,7 +831,7 @@ where
             R::key(),
             TopologyTag::Pool,
             generation,
-            move |returned_runtime: R::Runtime, tainted| {
+            move |returned_runtime: R::Instance, tainted| {
                 if let Some(m) = &metrics {
                     m.record_release();
                 }
@@ -1308,7 +1308,7 @@ where
     }
 
     /// Returns a reference to the runtime for use in `prepare()`.
-    fn runtime(&self) -> &R::Runtime {
+    fn runtime(&self) -> &R::Instance {
         &self.entry().runtime
     }
 
@@ -1420,9 +1420,9 @@ mod tests {
         }
     }
 
-    impl Resource for MockPool {
+    impl Provider for MockPool {
         type Config = PoolTestConfig;
-        type Runtime = u32;
+        type Instance = u32;
 
         fn key() -> ResourceKey {
             resource_key!("mock-pool")

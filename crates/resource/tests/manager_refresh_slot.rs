@@ -18,7 +18,7 @@ use std::sync::{
 use nebula_core::{ResourceKey, ScopeLevel, resource_key};
 use nebula_credential::CredentialGuard;
 use nebula_resource::{
-    Manager, ManagerConfig, RegisterOptions, RegistrationSpec, ResidentConfig, Resource,
+    Manager, ManagerConfig, Provider, RegisterOptions, RegistrationSpec, ResidentConfig,
     ResourceConfig, ResourceContext, SlotCell,
     error::Error,
     resource::{HasCredentialSlots, ResourceMetadata},
@@ -105,9 +105,9 @@ mod counting {
         }
     }
 
-    impl Resource for CountingResource {
+    impl Provider for CountingResource {
         type Config = CountingConfig;
-        type Runtime = CountingRuntime;
+        type Instance = CountingRuntime;
 
         fn key() -> ResourceKey {
             resource_key!("counting-resident")
@@ -1124,7 +1124,7 @@ mod u9_gate {
     use nebula_core::{ResourceKey, ScopeLevel, resource_key, scope::Scope};
     use nebula_credential::CredentialGuard;
     use nebula_resource::{
-        AcquireOptions, Manager, RegistrationSpec, ResidentConfig, Resource, ResourceConfig,
+        AcquireOptions, Manager, Provider, RegistrationSpec, ResidentConfig, ResourceConfig,
         ResourceContext, SlotCell, SlotIdentity,
         error::Error,
         resource::{HasCredentialSlots, ResourceMetadata},
@@ -1166,7 +1166,7 @@ mod u9_gate {
     struct GateRuntime;
 
     /// Resident whose `credential_slot_epoch()` tracks a real `SlotCell`
-    /// generation (the realistic shape — exactly what `#[derive(ResourceSlots)]`
+    /// generation (the realistic shape — exactly what `#[derive(Resource)]`
     /// emits and what `resident_rotation_race.rs` mirrors). `create` reads
     /// the slot so the runtime is bound to the resolved credential.
     #[derive(Clone)]
@@ -1175,9 +1175,9 @@ mod u9_gate {
         refresh_calls: Arc<AtomicUsize>,
     }
 
-    impl Resource for GateResource {
+    impl Provider for GateResource {
         type Config = GateConfig;
-        type Runtime = GateRuntime;
+        type Instance = GateRuntime;
 
         fn key() -> ResourceKey {
             resource_key!("u9-gate-resident")
@@ -1340,7 +1340,7 @@ mod u9_gate {
 mod reload_deferral {
     use nebula_core::{ResourceKey, ScopeLevel, resource_key};
     use nebula_resource::{
-        Manager, PoolConfig, RegistrationSpec, ReloadOutcome, ResidentConfig, Resource,
+        Manager, PoolConfig, Provider, RegistrationSpec, ReloadOutcome, ResidentConfig,
         ResourceConfig, ResourceContext, SlotIdentity,
         error::Error,
         resource::{HasCredentialSlots, ResourceMetadata},
@@ -1375,9 +1375,9 @@ mod reload_deferral {
             #[derive(Clone)]
             struct $name;
 
-            impl Resource for $name {
+            impl Provider for $name {
                 type Config = VersionedConfig;
-                type Runtime = u32;
+                type Instance = u32;
 
                 fn key() -> ResourceKey {
                     resource_key!($key)
