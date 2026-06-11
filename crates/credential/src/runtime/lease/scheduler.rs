@@ -194,7 +194,7 @@ impl Scheduler {
                 self.update_active_gauge();
 
                 tracing::debug!(
-                    target: "nebula_engine::credential::lease",
+                    target: "nebula_credential::runtime::lease",
                     provider = %provider_name,
                     lease_id = %lease_id,
                     renew_in_secs = remaining.as_secs(),
@@ -283,7 +283,7 @@ impl Scheduler {
         let provider_name = provider.provider_name().to_owned();
         let lease_id = lease.lease_id.clone();
         let span = tracing::info_span!(
-            target: "nebula_engine::credential::lease",
+            target: "nebula_credential::runtime::lease",
             "lease.renew",
             provider = %provider_name,
             lease_id = %lease_id,
@@ -379,7 +379,7 @@ impl Scheduler {
         self.heap.push(Reverse((next_renew_at, token)));
 
         tracing::debug!(
-            target: "nebula_engine::credential::lease",
+            target: "nebula_credential::runtime::lease",
             provider = provider_name,
             lease_id = %event_lease_id,
             new_ttl_secs = new_ttl.as_secs(),
@@ -416,7 +416,7 @@ impl Scheduler {
         );
 
         tracing::warn!(
-            target: "nebula_engine::credential::lease",
+            target: "nebula_credential::runtime::lease",
             provider = provider_name,
             lease_id = lease_id,
             attempt,
@@ -495,7 +495,7 @@ impl Scheduler {
         }
         self.update_active_gauge();
         tracing::info!(
-            target: "nebula_engine::credential::lease",
+            target: "nebula_credential::runtime::lease",
             provider = provider_name,
             lease_id = lease_id,
             ?reason,
@@ -518,7 +518,7 @@ impl Scheduler {
         let credential_id = entry.credential_id;
 
         let span = tracing::info_span!(
-            target: "nebula_engine::credential::lease",
+            target: "nebula_credential::runtime::lease",
             "lease.revoke",
             provider = %provider_name,
             lease_id = %lease_id,
@@ -543,7 +543,7 @@ impl Scheduler {
         match result {
             Ok(_) => {
                 tracing::debug!(
-                    target: "nebula_engine::credential::lease",
+                    target: "nebula_credential::runtime::lease",
                     provider = %provider_name,
                     lease_id = %lease_id,
                     "lease revoked upstream"
@@ -565,7 +565,7 @@ impl Scheduler {
             Err(err) => {
                 let reason = err.to_string();
                 tracing::warn!(
-                    target: "nebula_engine::credential::lease",
+                    target: "nebula_credential::runtime::lease",
                     provider = %provider_name,
                     lease_id = %lease_id,
                     error = %reason,
@@ -598,7 +598,7 @@ impl Scheduler {
         for (_, entry) in entries {
             let provider_name = entry.provider.provider_name().to_owned();
             tracing::info!(
-                target: "nebula_engine::credential::lease",
+                target: "nebula_credential::runtime::lease",
                 provider = %provider_name,
                 lease_id = %entry.lease.lease_id,
                 "lease lifecycle shutdown — lease left to expire upstream"
@@ -621,7 +621,7 @@ impl Scheduler {
             let outcome = bus.emit(event);
             if !outcome.is_sent() {
                 tracing::debug!(
-                    target: "nebula_engine::credential::lease",
+                    target: "nebula_credential::runtime::lease",
                     ?outcome,
                     "lease event bus emit did not reach any subscriber"
                 );

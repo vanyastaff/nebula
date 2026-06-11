@@ -210,7 +210,7 @@ impl LeaseLifecycle {
                 mpsc::error::TrySendError::Closed(_) => "lease lifecycle is shut down",
             };
             tracing::warn!(
-                target: "nebula_engine::credential::lease",
+                target: "nebula_credential::runtime::lease",
                 %credential_id,
                 reason,
                 "revoke_for_credential is a no-op"
@@ -219,7 +219,7 @@ impl LeaseLifecycle {
         }
         reply_rx.await.unwrap_or_else(|_| {
             tracing::warn!(
-                target: "nebula_engine::credential::lease",
+                target: "nebula_credential::runtime::lease",
                 %credential_id,
                 "lease lifecycle dropped reply during revoke_for_credential"
             );
@@ -245,7 +245,7 @@ impl LeaseLifecycle {
                 mpsc::error::TrySendError::Closed(_) => "lease lifecycle is shut down",
             };
             tracing::warn!(
-                target: "nebula_engine::credential::lease",
+                target: "nebula_credential::runtime::lease",
                 reason,
                 "active_lease_count returns 0"
             );
@@ -253,7 +253,7 @@ impl LeaseLifecycle {
         }
         reply_rx.await.unwrap_or_else(|_| {
             tracing::warn!(
-                target: "nebula_engine::credential::lease",
+                target: "nebula_credential::runtime::lease",
                 "lease lifecycle dropped reply during active_lease_count"
             );
             0
