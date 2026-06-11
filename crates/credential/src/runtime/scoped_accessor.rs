@@ -1,4 +1,4 @@
-// budget-justified: migration of pre-existing ScopedCredentialAccessor module from nebula-credential::accessor — no new logic, file move only (Task 2 of stabilize sweep).
+// budget-justified: migration of ScopedCredentialAccessor from nebula-engine into nebula-credential (ADR-0092) — file move, no new logic.
 
 //! Engine-runtime credential accessor with key-based access scoping.
 //!
@@ -7,12 +7,11 @@
 //! [`ScopedCredentialAccessor`] — an engine-runtime wrapper that enforces
 //! per-action allowlists on top of a real accessor implementation.
 //!
-//! The no-op stub ([`NoopCredentialAccessor`](nebula_credential::NoopCredentialAccessor))
+//! The no-op stub ([`NoopCredentialAccessor`](crate::NoopCredentialAccessor))
 //! and default factory
-//! ([`default_credential_accessor`](nebula_credential::default_credential_accessor))
-//! remain in `nebula-credential` because `nebula-credential::CredentialContext`
-//! needs them to build a noop-defaulted context and cannot depend on
-//! `nebula-engine` without creating a layer-violating dependency cycle.
+//! ([`default_credential_accessor`](crate::default_credential_accessor))
+//! live at this crate's root because [`CredentialContext`](crate::CredentialContext)
+//! needs them to build a noop-defaulted context.
 
 use std::{fmt, future::Future, pin::Pin, sync::Arc};
 

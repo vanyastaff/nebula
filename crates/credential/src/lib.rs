@@ -113,6 +113,10 @@ pub mod error;
 pub mod event;
 /// Pending state store trait for interactive credential flows.
 pub mod pending_store;
+/// Credential lifecycle orchestration the execution engine drives —
+/// resolution executor, capability dispatchers, scoped accessor (ADR-0092,
+/// relocated from `nebula-engine::credential`).
+pub mod runtime;
 /// Credential snapshot.
 pub mod snapshot;
 /// Credential store trait with layered composition.

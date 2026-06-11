@@ -2,13 +2,14 @@
 
 use std::time::Duration;
 
-use nebula_credential::{
+use nebula_schema::FieldValues;
+
+use crate::{
     Credential, CredentialContext, Interactive, PendingToken,
     error::CredentialError,
     pending_store::{PendingStateStore, PendingStoreError},
     resolve::{InteractionRequest, ResolveResult, UserInput},
 };
-use nebula_schema::FieldValues;
 
 const CREDENTIAL_TIMEOUT: Duration = Duration::from_secs(30);
 

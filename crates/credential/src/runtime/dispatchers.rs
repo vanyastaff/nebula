@@ -4,7 +4,7 @@
 //! `where C: Revocable` / `where C: Testable` / `where C: Dynamic` so a
 //! non-capable credential cannot reach the corresponding lifecycle path.
 //! The structural barrier is identical to
-//! [`CredentialResolver::resolve_with_refresh`](crate::credential::CredentialResolver::resolve_with_refresh)
+//! `CredentialResolver::resolve_with_refresh`
 //! which binds `where C: Refreshable`. Probe 4
 //! (`compile_fail_engine_dispatch_capability`) cements the guarantee
 //! with an `E0277` at the dispatch site for any non-capable type.
@@ -27,9 +27,8 @@
 //! adds policy precisely because there is a single canonical refresh
 //! call site.
 
-use nebula_credential::{CredentialContext, Dynamic, Revocable, Testable, error::CredentialError};
-
-use crate::credential::TestResult;
+use crate::resolve::TestResult;
+use crate::{CredentialContext, Dynamic, Revocable, Testable, error::CredentialError};
 
 /// Engine-side revocation dispatcher.
 ///
