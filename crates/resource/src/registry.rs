@@ -154,7 +154,7 @@ pub trait ManagedHandle: sealed::Sealed + Send + Sync + 'static {
 
     /// Type-erased acquire for this row.
     ///
-    /// Called by [`Manager::acquire_any`] after the single registry scope
+    /// Called by `Manager::acquire_any` after the single registry scope
     /// walk resolves this row; the implementation downcasts `self` to the
     /// concrete `ManagedResource<R>` and dispatches into the topology
     /// pipeline. Receives `Arc<crate::Manager>` because `ManagedResource<R>`

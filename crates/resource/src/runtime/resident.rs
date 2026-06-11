@@ -354,6 +354,56 @@ where
     }
 }
 
+// ─── Topology impl for ResidentRuntime ───────────────────────────────────────
+//
+// `ResidentRuntime<R>` satisfies `Topology` with an infallible, zero-cost
+// `try_reserve` (resident is unbounded) and a `()` slot (the actual instance is
+// held in the resident's `Cell`, not in `InstanceStore`).  This lets the
+// open-trait dispatch path route through `ResidentRuntime` without changing the
+// internal acquire path (`ResidentRuntime::acquire`), which continues to run
+// through `TopologyKind::Resident`.
+
+use async_trait::async_trait;
+
+use crate::topology::{
+    AdmissionPhase, Lease, Load, Ticket, Topology, Unavailable, store::InstanceStore,
+};
+
+#[async_trait]
+impl<R> Topology for ResidentRuntime<R>
+where
+    R: Resident + HasCredentialSlots + Send + Sync + 'static,
+    R::Instance: Clone + Send + Sync + 'static,
+{
+    /// Permit-only slot: the resident manages its single instance internally.
+    type Slot = ();
+
+    /// Always succeeds — resident is unbounded (one shared instance).
+    fn try_reserve(&self, _store: &InstanceStore<()>) -> Result<Ticket<()>, Unavailable> {
+        Ok(Ticket::infallible())
+    }
+
+    /// Returns a zero-cost lease; the actual instance is resolved via the
+    /// `TopologyKind::Resident` dispatch path.
+    async fn acquire(
+        &self,
+        _ticket: Ticket<()>,
+        _store: &InstanceStore<()>,
+    ) -> Result<Lease<()>, Error> {
+        Ok(Lease::new((), 0, None))
+    }
+
+    /// Resident is always `Ready` — no concurrency cap.
+    fn phase(&self, _store: &InstanceStore<()>) -> AdmissionPhase {
+        AdmissionPhase::Ready
+    }
+
+    /// No load signal for resident (unbounded logical concurrency).
+    fn load(&self, _store: &InstanceStore<()>) -> Option<Load> {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};

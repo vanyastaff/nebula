@@ -1366,6 +1366,77 @@ where
     }
 }
 
+// ─── Topology impl for PoolRuntime ───────────────────────────────────────────
+//
+// `PoolRuntime<R>` exposes its concurrency gate as `impl Topology` so the
+// open-trait dispatch path can route through it.  `type Slot = ()` — the pool
+// manages instances internally in its own idle queue; this impl is permit-only
+// (the slot is the semaphore permit, not a stored instance).  The full
+// idle-queue acquire path (checkout/create/prepare) continues to run through
+// `PoolRuntime::acquire` in the existing `TopologyKind::Pool` dispatch; a
+// future phase will wire `ManagedHandle::acquire` to call
+// `topology.try_reserve` + `topology.acquire` so the two paths converge.
+
+use async_trait::async_trait;
+
+use crate::topology::{
+    AdmissionPhase, Lease, Load, Ticket, Topology, Unavailable, store::InstanceStore,
+};
+
+#[async_trait]
+impl<R> Topology for PoolRuntime<R>
+where
+    R: Provider + Pooled + crate::resource::HasCredentialSlots + Clone + Send + Sync + 'static,
+    R::Instance: Clone + Send + Sync + 'static,
+{
+    /// Permit-only slot: the pool manages instances internally.
+    type Slot = ();
+
+    /// Non-blocking concurrency gate. Returns a permit-bearing [`Ticket`] if a
+    /// semaphore slot is available, or [`Unavailable::Saturated`] when the pool
+    /// is at max capacity. The `store` argument is unused — pool uses its own
+    /// internal idle queue.
+    fn try_reserve(&self, _store: &InstanceStore<()>) -> Result<Ticket<()>, Unavailable> {
+        self.semaphore
+            .clone()
+            .try_acquire_owned()
+            .map(Ticket::permit)
+            .map_err(|_| Unavailable::Saturated { retry_after: None })
+    }
+
+    /// Consumes the ticket and returns a lease wrapping the held permit.
+    ///
+    /// The actual instance is resolved by the `TopologyKind::Pool` dispatch
+    /// path (idle checkout / create / prepare); this impl satisfies the
+    /// `Topology` contract so custom topologies and the permit gate are
+    /// uniformly expressible.
+    async fn acquire(
+        &self,
+        ticket: Ticket<()>,
+        _store: &InstanceStore<()>,
+    ) -> Result<Lease<()>, Error> {
+        let (_, permit) = ticket.take_slot();
+        Ok(Lease::new((), 0, permit))
+    }
+
+    /// Advisory admission phase. `Saturated` when no permits are available.
+    fn phase(&self, _store: &InstanceStore<()>) -> AdmissionPhase {
+        if self.semaphore.available_permits() == 0 {
+            AdmissionPhase::Saturated
+        } else {
+            AdmissionPhase::Ready
+        }
+    }
+
+    /// Advisory load snapshot: `saturation = in_use / capacity`.
+    fn load(&self, _store: &InstanceStore<()>) -> Option<Load> {
+        let available = self.semaphore.available_permits();
+        let capacity = self.config.max_size as usize;
+        let used = capacity.saturating_sub(available);
+        Some(Load::permits(used, capacity))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::AtomicBool;
