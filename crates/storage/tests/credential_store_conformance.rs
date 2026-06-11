@@ -214,11 +214,10 @@ async fn run_conformance<S: CredentialStore>(store: S) {
     );
 
     // ── 13. name uniqueness per owner ────────────────────────────────────────
-    // Two credentials with the same owner_id + name must not coexist.
-    // Every durable backend enforces this at the store level (SQLite via the
-    // partial unique index, Postgres via its mirror), so the second insert is
-    // expected to fail; the shared body records the outcome leniently and the
-    // load-bearing assertion is that `named_a` persisted and round-trips.
+    // Two credentials with the same owner_id + name must not coexist. Every
+    // durable backend enforces this at the store level (SQLite via the partial
+    // unique index, Postgres via its mirror), so the second insert MUST be
+    // rejected — asserted strictly below for every backend.
     let owner_id = "owner-xyz";
     let mut named_a = make_credential("named-a", b"data-a");
     named_a.name = Some("My Credential".into());
@@ -234,11 +233,18 @@ async fn run_conformance<S: CredentialStore>(store: S) {
         "owner_id".into(),
         serde_json::Value::String(owner_id.into()),
     );
-    // The durable backends reject this with AlreadyExists / Backend (unique
-    // index violation). We record the actual outcome but do not fail the test
-    // here — the important assertion is that named_a was stored successfully
-    // and can be retrieved.
-    let _ = store.put(named_b, PutMode::CreateOnly).await;
+    // The duplicate (owner_id, name) must be rejected by the unique index. The
+    // exact variant differs per driver (SQLite/Postgres surface the unique
+    // violation as AlreadyExists or Backend depending on which constraint the
+    // discriminator matches), so accept either — what matters is that it fails.
+    let dup = store.put(named_b, PutMode::CreateOnly).await;
+    assert!(
+        matches!(
+            dup,
+            Err(StoreError::AlreadyExists { .. } | StoreError::Backend(_))
+        ),
+        "duplicate (owner_id, name) must be rejected by the unique index: {dup:?}"
+    );
     let fetched_named = store.get("named-a").await.unwrap();
     assert_eq!(
         fetched_named.name.as_deref(),

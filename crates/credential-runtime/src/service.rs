@@ -1472,8 +1472,9 @@ pub mod test_support {
 
     /// Build an in-memory service with the three first-party builtins
     /// wired through registry + ops, accepting an arbitrary
-    /// [`AuditSink`], **and** return a `Clone` of the raw `InMemoryStore`
-    /// that shares the service's backing map.
+    /// [`AuditSink`], **and** return a `Clone` of the raw
+    /// `SqliteCredentialStore` (a pooled handle over the same unique
+    /// in-memory SQLite database the service writes through).
     ///
     /// The raw handle is a structural read-back seam for the audit
     /// fail-closed invariant (spec §6 #8): with a refusing sink every
