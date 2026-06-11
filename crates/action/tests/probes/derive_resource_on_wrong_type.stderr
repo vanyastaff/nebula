@@ -10,4 +10,8 @@ error: cannot find attribute `resource` in this scope
 15 |     #[resource]
    |       ^^^^^^^^
    |
-   = note: `resource` is an attribute that can be used by the derive macro `Resource`, you might be missing a `derive` attribute
+help: the derive macro `Error` accepts the similarly named `source` attribute
+   |
+15 -     #[resource]
+15 +     #[source]
+   |
