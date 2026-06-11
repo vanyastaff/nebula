@@ -766,7 +766,9 @@ impl WorkflowEngine {
     /// use nebula_storage::credential::SqliteCredentialStore;
     ///
     /// let store = Arc::new(SqliteCredentialStore::connect("sqlite://creds.db").await?);
-    /// let resolver = Arc::new(CredentialResolver::new(store));
+    /// let coord = Arc::new(nebula_engine::credential::default_in_memory_coordinator()?);
+    /// let transport = Arc::new(nebula_engine::credential::ReqwestRefreshTransport::default());
+    /// let resolver = Arc::new(CredentialResolver::with_dependencies(store, coord, transport));
     ///
     /// let engine = WorkflowEngine::new(runtime, metrics)?
     ///     .with_credential_resolver(move |id: &str| {

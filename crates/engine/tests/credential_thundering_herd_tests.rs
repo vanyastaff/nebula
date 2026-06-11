@@ -120,7 +120,14 @@ async fn only_one_refresh_under_concurrent_access() {
     };
     store.put(cred, PutMode::CreateOnly).await.unwrap();
 
-    let resolver = Arc::new(nebula_engine::credential::CredentialResolver::new(store).unwrap());
+    let coord = Arc::new(
+        nebula_engine::credential::default_in_memory_coordinator()
+            .expect("default coordinator must build"),
+    );
+    let transport = Arc::new(nebula_engine::credential::ReqwestRefreshTransport);
+    let resolver = Arc::new(
+        nebula_engine::credential::CredentialResolver::with_dependencies(store, coord, transport),
+    );
     let ctx = CredentialContext::for_test("test-user");
 
     let mut handles = Vec::with_capacity(10);

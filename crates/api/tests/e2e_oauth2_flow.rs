@@ -17,7 +17,9 @@ use nebula_credential::{
     Credential, CredentialContext, CredentialState, CredentialStore, ErasedCredentialStore,
     OAuth2Credential, OAuth2State, PutMode,
 };
-use nebula_engine::credential::CredentialResolver;
+use nebula_engine::credential::{
+    CredentialResolver, ReqwestRefreshTransport, default_in_memory_coordinator,
+};
 use tower::ServiceExt;
 use url::form_urlencoded;
 
@@ -286,8 +288,16 @@ async fn e2e_oauth2_flow_persists_exchanged_credential_state() {
         "manual overwrite of stale state should bump StoredCredential::version (CAS basis)"
     );
 
-    let resolver =
-        CredentialResolver::new(std::sync::Arc::new(oauth_store_handle(&state))).unwrap();
+    let coord = std::sync::Arc::new(
+        default_in_memory_coordinator()
+            .expect("default in-memory coordinator must build with static config"),
+    );
+    let transport = std::sync::Arc::new(ReqwestRefreshTransport);
+    let resolver = CredentialResolver::with_dependencies(
+        std::sync::Arc::new(oauth_store_handle(&state)),
+        coord,
+        transport,
+    );
     let ctx = CredentialContext::for_test("test-user");
     let handle = resolver
         .resolve_with_refresh::<OAuth2Credential>(credential_id, &ctx)

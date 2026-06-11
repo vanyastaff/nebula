@@ -1,79 +1,71 @@
-//! Runtime credential resolution.
+//! Runtime credential resolution (ADR-0092).
+//!
+//! Relocated from `nebula-engine::credential::resolver` so the whole
+//! credential subsystem lives in one crate. No `nebula-engine` or
+//! `nebula-storage` edge — transport is injected via [`RefreshTransport`].
 
 use std::sync::Arc;
 
-use nebula_credential::runtime::refresh::{
-    ConfigError, RefreshCoordConfig, RefreshCoordinator, RefreshError,
-};
-use nebula_credential::{
+use crate::runtime::refresh::transport::RefreshTransport;
+use crate::runtime::refresh::{RefreshCoordinator, RefreshError};
+use crate::{
     Credential, CredentialContext, CredentialEvent, CredentialHandle, CredentialId,
     CredentialState, Refreshable,
     resolve::{ReauthReason, RefreshOutcome},
     store::{CredentialStore, PutMode, StoreError, StoredCredential},
 };
 #[cfg(feature = "rotation")]
-use nebula_credential::{
+use crate::{
     ProviderErrorContext, ProviderErrorKind, SecretFreeMessage,
     credentials::{OAuth2Credential, OAuth2State},
     error::CredentialError,
 };
 use nebula_eventbus::EventBus;
-use nebula_storage_port::store::ReplicaId;
 
 #[cfg(feature = "rotation")]
-use crate::credential::rotation::refresh_oauth2_state;
+use crate::runtime::refresh::token_refresh::refresh_oauth2_state;
 
 /// Runtime credential resolver with optional coordinated refresh.
 pub struct CredentialResolver<S: CredentialStore> {
     store: Arc<S>,
     refresh_coordinator: Arc<RefreshCoordinator>,
+    transport: Arc<dyn RefreshTransport>,
     event_bus: Option<Arc<EventBus<CredentialEvent>>>,
 }
 
 impl<S: CredentialStore> CredentialResolver<S> {
-    /// Create a resolver backed by the given credential store with a
-    /// default in-memory `RefreshCoordinator`.
+    /// Construct a resolver from all required collaborators.
     ///
-    /// Production composition (CLI / API entrypoints) should call
-    /// [`Self::with_refresh_coordinator`] to wire a Postgres- or SQLite-
-    /// backed `RefreshClaimRepo` so cross-replica coordination is
-    /// durable. The default is suitable for tests and single-replica
-    /// desktop mode.
-    ///
-    /// # Errors
-    ///
-    /// Returns `ConfigError` if metric handle registration fails. In
-    /// practice this cannot occur for the static default config; test
-    /// callers may treat the error as fatal.
-    pub fn new(store: Arc<S>) -> Result<Self, ConfigError> {
-        let repo: Arc<dyn nebula_storage_port::store::RefreshClaimStore> =
-            Arc::new(nebula_storage::credential::InMemoryRefreshClaimRepo::new());
-        let coord = RefreshCoordinator::new_with(
-            repo,
-            ReplicaId::new("nebula-engine-default"),
-            RefreshCoordConfig::default(),
-        )?;
-        Ok(Self {
+    /// Production composition roots call this directly, supplying a durable
+    /// `RefreshCoordinator` (Postgres / SQLite `RefreshClaimRepo`) and a
+    /// `ReqwestRefreshTransport`. Tests may inject an in-memory coordinator
+    /// and a stub transport.
+    #[must_use]
+    pub fn with_dependencies(
+        store: Arc<S>,
+        refresh_coordinator: Arc<RefreshCoordinator>,
+        transport: Arc<dyn RefreshTransport>,
+    ) -> Self {
+        Self {
             store,
-            refresh_coordinator: Arc::new(coord),
+            refresh_coordinator,
+            transport,
             event_bus: None,
-        })
+        }
     }
 
-    #[must_use = "builder methods must be chained or built"]
     /// Attach an event bus to emit credential refresh lifecycle events.
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_event_bus(mut self, bus: Arc<EventBus<CredentialEvent>>) -> Self {
         self.event_bus = Some(bus);
         self
     }
 
-    /// Replace the default in-memory refresh coordinator with a shared
-    /// one.
+    /// Replace the refresh coordinator.
     ///
     /// Composition root threads `Arc<RefreshCoordinator>` constructed via
     /// `RefreshCoordinator::new_with(repo, replica_id, config)` (where
-    /// `repo` is a Postgres / SQLite `RefreshClaimRepo` for production)
-    /// here.
+    /// `repo` is a Postgres / SQLite `RefreshClaimRepo` for production) here.
     #[must_use = "builder methods must be chained or built"]
     pub fn with_refresh_coordinator(mut self, coord: Arc<RefreshCoordinator>) -> Self {
         self.refresh_coordinator = coord;
@@ -196,42 +188,39 @@ impl<S: CredentialStore> CredentialResolver<S> {
     {
         // The `refresh_coalesced` user closure must yield `Result<_,
         // RefreshError>`; we wrap the inner `ResolveError` in `Ok(Err(_))`
-        // so it propagates without being mistaken for a coordinator
-        // failure.
+        // so it propagates without being mistaken for a coordinator failure.
         let coord = Arc::clone(&self.refresh_coordinator);
         let repo = Arc::clone(coord.repo());
         let resolver_state = state;
         let resolver_stored = stored;
         let credential_id_owned = credential_id.to_string();
 
-        // Sub-spec post-backoff state recheck. After the L2 backoff
-        // sleep the contender's claim may have been released because
-        // their refresh succeeded — in that case the credential is now
-        // fresh and we should short-circuit rather than running the
-        // closure on a freshly-rotated refresh_token (n8n #13088
-        // lineage). We re-read the credential from the store and apply
-        // the same `needs_refresh` predicate the parent
-        // `resolve_with_refresh` used; if the credential is no longer
-        // expired, return `false` so the coordinator surfaces
-        // `CoalescedByOtherReplica`.
+        // Sub-spec post-backoff state recheck. After the L2 backoff sleep the
+        // contender's claim may have been released because their refresh
+        // succeeded — in that case the credential is now fresh and we should
+        // short-circuit rather than running the closure on a freshly-rotated
+        // refresh_token (n8n #13088 lineage). We re-read the credential from
+        // the store and apply the same `needs_refresh` predicate the parent
+        // `resolve_with_refresh` used; if the credential is no longer expired,
+        // return `false` so the coordinator surfaces `CoalescedByOtherReplica`.
         //
-        // Sub-spec ProviderRejected gap (review feedback I1): if
-        // the contender's refresh returned `ReauthRequired` it persisted
-        // `reauth_required = true` on the row before releasing the L2
-        // claim. Re-running the IdP closure here would produce another
+        // Sub-spec ProviderRejected gap (review feedback I1): if the
+        // contender's refresh returned `ReauthRequired` it persisted
+        // `reauth_required = true` on the row before releasing the L2 claim.
+        // Re-running the IdP closure here would produce another
         // `invalid_grant` rejection — `O(replicas)` rate-limit / IP-ban
-        // pressure on the IdP. Short-circuit to `false` so this caller
-        // also surfaces `CoalescedByOtherReplica` and the application
-        // layer routes the credential to interactive reauth instead.
+        // pressure on the IdP. Short-circuit to `false` so this caller also
+        // surfaces `CoalescedByOtherReplica` and the application layer routes
+        // the credential to interactive reauth instead.
         let store_for_recheck = Arc::clone(&self.store);
         let recheck_credential_id = credential_id.to_string();
         let needs_refresh_after_backoff = move |_id: &CredentialId| {
             let store = Arc::clone(&store_for_recheck);
             let credential_id = recheck_credential_id.clone();
             async move {
-                // On any read/decode failure, conservatively retry — the
-                // L2 layer will gate further work via heartbeat / claim
-                // ownership, so retrying is safe.
+                // On any read/decode failure, conservatively retry — the L2
+                // layer will gate further work via heartbeat / claim ownership,
+                // so retrying is safe.
                 let stored = match store.get(&credential_id).await {
                     Ok(s) => s,
                     Err(e) => {
@@ -266,10 +255,10 @@ impl<S: CredentialStore> CredentialResolver<S> {
                 state.expires_at().is_some_and(|exp| {
                     let now = chrono::Utc::now();
                     let policy = <C as Refreshable>::REFRESH_POLICY;
-                    // Use `early_refresh` without jitter for the recheck
-                    // — jitter belongs on the initial `needs_refresh`
-                    // decision (de-correlate replicas at startup), not
-                    // on the post-backoff coalesce gate.
+                    // Use `early_refresh` without jitter for the recheck —
+                    // jitter belongs on the initial `needs_refresh` decision
+                    // (de-correlate replicas at startup), not on the
+                    // post-backoff coalesce gate.
                     let early = chrono::Duration::from_std(policy.early_refresh)
                         .unwrap_or(chrono::Duration::zero());
                     exp - now <= early
@@ -311,9 +300,8 @@ impl<S: CredentialStore> CredentialResolver<S> {
                 self.refresh_coordinator.record_failure(credential_id);
                 Err(e)
             },
-            // CoalescedByOtherReplica is success — another replica
-            // refreshed while we were waiting on L2. Re-read state from
-            // the store.
+            // CoalescedByOtherReplica is success — another replica refreshed
+            // while we were waiting on L2. Re-read state from the store.
             Err(RefreshError::CoalescedByOtherReplica) => {
                 tracing::debug!(
                     credential_id,
@@ -348,7 +336,7 @@ impl<S: CredentialStore> CredentialResolver<S> {
     where
         C: Refreshable,
     {
-        use nebula_credential::runtime::refresh::RefreshAttempt;
+        use crate::runtime::refresh::RefreshAttempt;
 
         match self.refresh_coordinator.try_refresh(credential_id) {
             RefreshAttempt::Winner => {
@@ -445,8 +433,9 @@ impl<S: CredentialStore> CredentialResolver<S> {
         C: Refreshable,
     {
         #[cfg(feature = "rotation")]
-        async fn try_engine_oauth2_refresh<C: Refreshable>(
+        async fn try_oauth2_refresh<C: Refreshable>(
             state: &mut C::State,
+            transport: &dyn RefreshTransport,
         ) -> Result<Option<RefreshOutcome>, CredentialError> {
             if C::KEY != OAuth2Credential::KEY {
                 return Ok(None);
@@ -468,12 +457,14 @@ impl<S: CredentialStore> CredentialResolver<S> {
                     )))
                 })?;
 
-            refresh_oauth2_state(&mut oauth_state).await.map_err(|e| {
-                CredentialError::Provider(Box::new(ProviderErrorContext::new(
-                    ProviderErrorKind::ServerError,
-                    SecretFreeMessage::new(e.to_string()),
-                )))
-            })?;
+            refresh_oauth2_state(&mut oauth_state, transport)
+                .await
+                .map_err(|e| {
+                    CredentialError::Provider(Box::new(ProviderErrorContext::new(
+                        ProviderErrorKind::ServerError,
+                        SecretFreeMessage::new(e.to_string()),
+                    )))
+                })?;
 
             *state = serde_json::from_value(serde_json::to_value(oauth_state).map_err(|e| {
                 CredentialError::Provider(Box::new(ProviderErrorContext::new(
@@ -493,9 +484,11 @@ impl<S: CredentialStore> CredentialResolver<S> {
             Ok(Some(RefreshOutcome::Refreshed))
         }
 
+        #[cfg_attr(not(feature = "rotation"), allow(unused_variables))]
+        let transport = Arc::clone(&self.transport);
         let outcome = tokio::time::timeout(std::time::Duration::from_secs(30), async {
             #[cfg(feature = "rotation")]
-            if let Some(outcome) = try_engine_oauth2_refresh::<C>(&mut state).await? {
+            if let Some(outcome) = try_oauth2_refresh::<C>(&mut state, &*transport).await? {
                 return Ok(outcome);
             }
             <C as Refreshable>::refresh(&mut state, ctx).await
@@ -523,11 +516,10 @@ impl<S: CredentialStore> CredentialResolver<S> {
                         data: data.clone(),
                         updated_at: chrono::Utc::now(),
                         expires_at: state.expires_at(),
-                        // Clear the reauth flag on success — idempotent
-                        // when already false, recovers from a stale
-                        // `true` left over by a previous ReauthRequired
-                        // outcome that the application has since
-                        // re-authorized (sub-spec / I1).
+                        // Clear the reauth flag on success — idempotent when
+                        // already false, recovers from a stale `true` left
+                        // over by a previous ReauthRequired outcome that the
+                        // application has since re-authorized (sub-spec / I1).
                         reauth_required: false,
                         ..stored.clone()
                     };
@@ -547,7 +539,8 @@ impl<S: CredentialStore> CredentialResolver<S> {
                             } else {
                                 tracing::warn!(
                                     credential_id,
-                                    "credential ID is not a valid `CredentialId` (expected `cred_<ULID>`), refresh event not emitted",
+                                    "credential ID is not a valid `CredentialId` (expected \
+                                     `cred_<ULID>`), refresh event not emitted",
                                 );
                             }
                             let scheme = C::project(&state);
@@ -586,16 +579,6 @@ impl<S: CredentialStore> CredentialResolver<S> {
                 // POST. CAS conflict here means another replica already
                 // committed something — retry with the new version so
                 // our reauth flag is layered on the latest row.
-                // Outcome of the best-effort `reauth_required=true`
-                // persist loop. Distinguishing CAS exhaustion from a
-                // transient store error matters for observability: the
-                // CAS-exhausted metric (sub-spec ) MUST count only the
-                // case where every attempt lost to `VersionConflict`,
-                // because that is the failure mode that produces a
-                // duplicate IdP load on the next replica's recheck. A
-                // transient store error is a different signal already
-                // logged inside the loop body, and double-warning on the
-                // post-loop branch would smear the two failure modes.
                 enum PersistOutcome {
                     /// CAS landed; row now has `reauth_required = true`.
                     Persisted,
@@ -606,7 +589,7 @@ impl<S: CredentialStore> CredentialResolver<S> {
                 }
 
                 let mut current_version = stored.version;
-                let mut outcome: Option<PersistOutcome> = None;
+                let mut persist_outcome: Option<PersistOutcome> = None;
                 for _attempt in 0..3 {
                     let updated = StoredCredential {
                         updated_at: chrono::Utc::now(),
@@ -624,7 +607,7 @@ impl<S: CredentialStore> CredentialResolver<S> {
                         .await
                     {
                         Ok(_) => {
-                            outcome = Some(PersistOutcome::Persisted);
+                            persist_outcome = Some(PersistOutcome::Persisted);
                             break;
                         },
                         Err(StoreError::VersionConflict { actual, .. }) => {
@@ -638,45 +621,29 @@ impl<S: CredentialStore> CredentialResolver<S> {
                             continue;
                         },
                         Err(e) => {
-                            // Best-effort persist: log but still surface
-                            // the typed error to the caller. The next
-                            // refresh attempt will hit the same provider
-                            // rejection and retry the persist.
+                            // Best-effort persist: log but still surface the
+                            // typed error to the caller. The next refresh
+                            // attempt will hit the same provider rejection and
+                            // retry the persist.
                             tracing::warn!(
                                 credential_id,
                                 ?e,
                                 "failed to persist reauth_required=true; surfacing ReauthRequired anyway"
                             );
-                            outcome = Some(PersistOutcome::OtherStoreError);
+                            persist_outcome = Some(PersistOutcome::OtherStoreError);
                             break;
                         },
                     }
                 }
-                match outcome {
-                    Some(PersistOutcome::Persisted) => {},
-                    Some(PersistOutcome::OtherStoreError) => {
-                        // Already logged inside the loop body; do not
-                        // double-warn and do not increment the
-                        // CAS-exhausted counter (different signal).
-                    },
+                match persist_outcome {
+                    Some(PersistOutcome::Persisted | PersistOutcome::OtherStoreError) => {},
                     None => {
-                        // CAS budget exhausted without committing — every
-                        // attempt observed a `VersionConflict`. Without
-                        // observability this is invisible: the post-backoff
-                        // state-recheck on a different replica will read
-                        // `reauth_required = false`, re-run the IdP closure,
-                        // and produce another `invalid_grant`. Surface the
-                        // failure mode at WARN; metric wiring tracked under
-                        // `NEBULA_CREDENTIAL_RESOLVER_REAUTH_PERSIST_CAS_EXHAUSTED_TOTAL`
-                        // (sub-spec ) — increment lands when the resolver
-                        // gains a `MetricsRegistry` handle (out of scope for
-                        // this PR-583 wave 2 fix; resolver does not currently
-                        // hold a metrics handle).
-                        //
-                        // TODO(metric): wire
-                        // `NEBULA_CREDENTIAL_RESOLVER_REAUTH_PERSIST_CAS_EXHAUSTED_TOTAL`
-                        // through `CredentialResolver` constructor once the
-                        // resolver plumbs a shared `MetricsRegistry`.
+                        // CAS budget exhausted without committing — every attempt
+                        // observed a `VersionConflict`. Without observability this
+                        // is invisible: the post-backoff state-recheck on a
+                        // different replica will read `reauth_required = false`,
+                        // re-run the IdP closure, and produce another
+                        // `invalid_grant`. Surface the failure mode at WARN.
                         tracing::warn!(
                             credential_id,
                             "reauth_required CAS exhausted after 3 attempts; next refresh will retry"
@@ -688,24 +655,22 @@ impl<S: CredentialStore> CredentialResolver<S> {
                     reason,
                 })
             },
-            // CoalescedByOtherReplica is success — another replica
-            // refreshed while we were waiting on L2. Caller re-reads
-            // state from the store via the parent dispatch path. This
-            // arm reaches us from the inner `RefreshOutcome` only via a
-            // future resolver path; today the sub-spec coalesce is
-            // surfaced by the `RefreshError` layer in
-            // `RefreshCoordinator::refresh_coalesced` (handled in the
-            // outer match on `outcome` above). Keep the arm explicit so
+            // CoalescedByOtherReplica is success — another replica refreshed
+            // while we were waiting on L2. Caller re-reads state from the
+            // store via the parent dispatch path. This arm reaches us from
+            // the inner `RefreshOutcome` only via a future resolver path;
+            // today the sub-spec coalesce is surfaced by the `RefreshError`
+            // layer in `RefreshCoordinator::refresh_coalesced` (handled in
+            // the outer match on `outcome` above). Keep the arm explicit so
             // adding consumers does not silently fall through.
             RefreshOutcome::CoalescedByOtherReplica => {
                 let scheme = C::project(&state);
                 Ok(CredentialHandle::new(scheme, credential_id))
             },
-            // RefreshOutcome is `#[non_exhaustive]` — preserve the
-            // wildcard so adding future variants (e.g. partial refresh)
-            // does not silently break this match. Per Tech Spec            // the `NotSupported` variant was removed because membership
-            // in `Refreshable` already guarantees the credential
-            // supports refresh.
+            // `RefreshOutcome` is `#[non_exhaustive]`; this arm is required for
+            // forward-compatibility with future variants. Clippy flags it
+            // unreachable against current variants — that is the intent.
+            #[allow(unreachable_patterns)]
             _ => {
                 let scheme = C::project(&state);
                 Ok(CredentialHandle::new(scheme, credential_id))
@@ -759,23 +724,4 @@ pub enum ResolveError {
         /// Why re-authentication is required.
         reason: ReauthReason,
     },
-}
-
-/// Build a default in-memory [`RefreshCoordinator`] for tests and
-/// single-replica desktop mode. Production composition should call
-/// [`RefreshCoordinator::new_with`] directly with a durable
-/// [`nebula_storage_port::store::RefreshClaimStore`].
-///
-/// # Errors
-///
-/// Returns [`ConfigError`] if metric handle registration fails. In practice
-/// this cannot occur for the static default config.
-pub fn default_in_memory_coordinator() -> Result<RefreshCoordinator, ConfigError> {
-    let repo: Arc<dyn nebula_storage_port::store::RefreshClaimStore> =
-        Arc::new(nebula_storage::credential::InMemoryRefreshClaimRepo::new());
-    RefreshCoordinator::new_with(
-        repo,
-        ReplicaId::new("nebula-engine-default"),
-        RefreshCoordConfig::default(),
-    )
 }

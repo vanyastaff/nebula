@@ -9,6 +9,7 @@ pub mod dispatchers;
 pub mod executor;
 pub mod lease;
 pub mod refresh;
+pub mod resolver;
 #[cfg(feature = "rotation")]
 pub mod rotation;
 pub mod scoped_accessor;
@@ -20,7 +21,9 @@ pub use lease::{
 };
 pub use refresh::{
     ConfigError, ReclaimSweepHandle, RefreshAttempt, RefreshConfigError, RefreshCoordConfig,
-    RefreshCoordMetrics, RefreshCoordinator, RefreshError, SentinelDecision,
-    SentinelThresholdConfig, SentinelTrigger,
+    RefreshCoordMetrics, RefreshCoordinator, RefreshError, RefreshTransport, RefreshTransportError,
+    SentinelDecision, SentinelThresholdConfig, SentinelTrigger, TokenPostRequest,
+    TokenPostResponse,
 };
+pub use resolver::{CredentialResolver, ResolveError};
 pub use scoped_accessor::ScopedCredentialAccessor;

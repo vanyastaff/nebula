@@ -35,7 +35,13 @@ async fn resolve_to_typed_snapshot() {
     };
     store.put(cred, PutMode::CreateOnly).await.unwrap();
 
-    let resolver = nebula_engine::credential::CredentialResolver::new(store).unwrap();
+    let coord = Arc::new(
+        nebula_engine::credential::default_in_memory_coordinator()
+            .expect("default coordinator must build"),
+    );
+    let transport = Arc::new(nebula_engine::credential::ReqwestRefreshTransport);
+    let resolver =
+        nebula_engine::credential::CredentialResolver::with_dependencies(store, coord, transport);
     let handle = resolver
         .resolve::<ApiKeyCredential>("test-cred")
         .await

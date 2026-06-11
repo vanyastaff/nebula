@@ -1,35 +1,39 @@
-//! Engine-side OAuth2 token refresh.
+//! OAuth2 token-refresh state logic (ADR-0092).
 //!
-//! This module hosts the reqwest-based refresh client used by runtime execution
-//! paths. Keeping it in `nebula-engine` avoids coupling refresh transport logic
-//! to the contract crate.
+//! SSRF endpoint validation (SEC-10), secret-scoped form composition, response
+//! status interpretation, SEC-02 error redaction, and `OAuth2State` mutation all
+//! live here — on the `nebula-credential` side of the [`RefreshTransport`] seam.
+//! Network I/O is delegated to the injected transport; this module never links
+//! reqwest.
 //!
 //! # Sentinel marking
 //!
-//! Per sub-spec
-//! `docs/INTEGRATION_MODEL.md`//! the holder marks the L2 claim row `sentinel = RefreshInFlight`
-//! immediately before the IdP POST. That mark is set by the
-//! `CredentialResolver::refresh_via_coordinator` closure (the caller of
-//! `refresh_oauth2_state`) **outside** this module, so we do not have to
+//! Per sub-spec `docs/INTEGRATION_MODEL.md` the holder marks the L2 claim row
+//! `sentinel = RefreshInFlight` immediately before the IdP POST. That mark is
+//! set by the `CredentialResolver::refresh_via_coordinator` closure (the caller
+//! of `refresh_oauth2_state`) **outside** this module, so we do not have to
 //! thread `RefreshClaim` + `RefreshClaimRepo` into the transport layer.
 //!
 //! On the success path the row is deleted entirely by
 //! `RefreshCoordinator::refresh_coalesced` via `repo.release(token)` —
-//! the sentinel clears by row removal, no separate "clear" call is
-//! needed.
+//! the sentinel clears by row removal, no separate "clear" call is needed.
 
 use std::net::IpAddr;
 
 use chrono::Utc;
-use nebula_credential::{AuthStyle, SecretString, credentials::OAuth2State};
-use reqwest::Response;
 use serde_json::Value;
 use url::{Host, Url};
 
-use super::token_http::{
-    OAUTH_TOKEN_HTTP_MAX_RESPONSE_BYTES, oauth_token_http_client, read_token_response_limited,
-    read_token_response_text_limited,
-};
+use crate::AuthStyle;
+use crate::SecretString;
+use crate::credentials::OAuth2State;
+use crate::runtime::refresh::transport::{RefreshTransport, TokenPostRequest};
+
+/// The SEC-01 hard cap on OAuth2 token endpoint response body size.
+/// 256 KiB — tokens are small JSON documents; larger responses are anomalous.
+/// This value is a *policy constant* owned by the credential crate; the
+/// transport enforces the read bound mechanically.
+pub const OAUTH_TOKEN_HTTP_MAX_RESPONSE_BYTES: usize = 256 * 1024;
 
 /// Refresh-related failures produced by [`refresh_oauth2_state`].
 #[derive(Debug, thiserror::Error)]
@@ -37,7 +41,7 @@ pub enum TokenRefreshError {
     /// Stored state lacks a refresh token, so re-auth is required.
     #[error("no refresh_token available for token refresh")]
     MissingRefreshToken,
-    /// HTTP request failed.
+    /// HTTP request failed (transport error or SSRF pre-check).
     #[error("refresh token request failed: {0}")]
     Request(String),
     /// Token endpoint returned non-success status.
@@ -45,7 +49,7 @@ pub enum TokenRefreshError {
     TokenEndpoint {
         /// HTTP status code string.
         status: String,
-        /// Sanitized RFC6749 error summary.
+        /// Sanitized RFC 6749 error summary.
         summary: String,
     },
     /// Token endpoint response could not be parsed as JSON.
@@ -58,24 +62,37 @@ pub enum TokenRefreshError {
 
 /// Execute OAuth2 refresh-token grant and mutate `state` in place.
 ///
-/// SEC-10 (security hardening 2026-04-27 Stage 2): the three secret values
-/// (refresh_token, client_id, client_secret) are NOT extracted into
-/// `Zeroizing<String>` intermediates. Instead, secret borrows live inside
-/// an inner block that returns the built `RequestBuilder`; reqwest copies
-/// the `&str` slices into its internal request body for the HTTP
-/// round-trip, then the inner-block scope ends → secret borrows drop
-/// → `state` is free for `&mut` mutation in
-/// `update_state_from_token_response`. No owned plaintext copy lives in
-/// our code; the unavoidable in-flight copy lives in reqwest's request
-/// body and is released when the response future resolves.
-pub async fn refresh_oauth2_state(state: &mut OAuth2State) -> Result<(), TokenRefreshError> {
+/// Call order (security boundary — do not reorder):
+/// 1. [`validate_token_endpoint`] runs FIRST (SSRF: https-only, no
+///    localhost / private / link-local). Returns `Err` before any I/O.
+/// 2. Secret-scoped inner block builds a [`TokenPostRequest`] (form fields +
+///    optional `basic_auth`). Secret borrows are released when the block ends;
+///    the transport receives `SecretString` values that zeroize on drop.
+/// 3. [`RefreshTransport::post_token`] is called — the ONLY network I/O.
+/// 4. [`parse_token_response_bytes`] interprets status + bytes; SEC-02
+///    redaction runs inside this crate, not in the transport.
+/// 5. [`update_state_from_token_response`] mutates `state` on success.
+///
+/// SEC-10: the three secret values (refresh_token, client_id, client_secret)
+/// are NOT extracted into `Zeroizing<String>` intermediates. Instead, secret
+/// borrows live inside an inner block that returns the built
+/// `TokenPostRequest`; the block ends → secret borrows drop → `state` is free
+/// for `&mut` mutation in `update_state_from_token_response`. No owned
+/// plaintext copy lives in our code; the unavoidable in-flight copy lives in
+/// the transport's request serialization and is released after the response
+/// future resolves.
+pub async fn refresh_oauth2_state(
+    state: &mut OAuth2State,
+    transport: &dyn RefreshTransport,
+) -> Result<(), TokenRefreshError> {
+    // Step 1 — SSRF validation (must run before any I/O).
     validate_token_endpoint(&state.token_url).map_err(TokenRefreshError::Request)?;
+
     let scope_joined: Option<String> = (!state.scopes.is_empty()).then(|| state.scopes.join(" "));
 
-    // Inner block scopes secret borrows tightly. After the block returns
-    // the built `RequestBuilder`, reqwest owns the serialized form body
-    // (its own non-zeroizing copy — best-effort defense without forking
-    // reqwest); our borrows drop here.
+    // Step 2 — Build the request inside a tight secret-borrow scope.
+    // After this block the secret borrows have dropped; only `TokenPostRequest`
+    // (carrying `SecretString` values) crosses the block boundary.
     let req = {
         let refresh_tok = state
             .refresh_token
@@ -85,35 +102,45 @@ pub async fn refresh_oauth2_state(state: &mut OAuth2State) -> Result<(), TokenRe
         let client_id = state.client_id.expose_secret();
         let client_secret = state.client_secret.expose_secret();
 
-        let mut form: Vec<(&str, &str)> = vec![
-            ("grant_type", "refresh_token"),
-            ("refresh_token", refresh_tok),
+        let mut form: Vec<(String, SecretString)> = vec![
+            ("grant_type".to_owned(), SecretString::new("refresh_token")),
+            ("refresh_token".to_owned(), SecretString::new(refresh_tok)),
         ];
         if let Some(ref scope) = scope_joined {
-            form.push(("scope", scope.as_str()));
+            form.push(("scope".to_owned(), SecretString::new(scope.as_str())));
         }
 
-        let client = oauth_token_http_client();
-        let mut req = client.post(&state.token_url);
-        match state.auth_style {
+        let basic_auth = match state.auth_style {
             AuthStyle::Header => {
-                req = req.basic_auth(client_id, Some(client_secret));
-                req = req.form(&form);
+                // client_id / client_secret travel as HTTP Basic Auth;
+                // they do NOT go in the form body.
+                Some((client_id.to_owned(), SecretString::new(client_secret)))
             },
             AuthStyle::PostBody => {
-                form.push(("client_id", client_id));
-                form.push(("client_secret", client_secret));
-                req = req.form(&form);
+                // client_id / client_secret go in the form body.
+                form.push(("client_id".to_owned(), SecretString::new(client_id)));
+                form.push(("client_secret".to_owned(), SecretString::new(client_secret)));
+                None
             },
+        };
+
+        TokenPostRequest {
+            url: state.token_url.clone(),
+            form,
+            basic_auth,
+            max_response_bytes: OAUTH_TOKEN_HTTP_MAX_RESPONSE_BYTES,
         }
-        req
     };
 
-    let resp = req
-        .send()
+    // Step 3 — delegate I/O to the transport (dumb pipe).
+    let resp = transport
+        .post_token(req)
         .await
         .map_err(|e| TokenRefreshError::Request(e.to_string()))?;
-    let body = parse_token_response(resp).await?;
+
+    // Steps 4 + 5 — status interpretation, bounded parse, SEC-02 redaction,
+    // state mutation.  All on the credential side.
+    let body = parse_token_response_bytes(resp.status, &resp.body)?;
     update_state_from_token_response(state, &body)?;
     Ok(())
 }
@@ -169,38 +196,24 @@ fn forbidden_token_endpoint_ip(ip: IpAddr) -> bool {
     }
 }
 
-async fn parse_token_response(resp: Response) -> Result<Value, TokenRefreshError> {
-    let status = resp.status();
-    if !status.is_success() {
-        // SEC-01 (security hardening 2026-04-27 Stage 3): bounded reader.
-        // Previously `resp.text().await` was unbounded on the error path —
-        // a compromised IdP could push hundreds of MB before the 30s
-        // transport timeout fired. The 256 KiB cap matches the success
-        // path's `read_token_response_limited`.
-        let summary =
-            match read_token_response_text_limited(resp, OAUTH_TOKEN_HTTP_MAX_RESPONSE_BYTES).await
-            {
-                Ok(body_text) => oauth_token_error_summary(&body_text),
-                Err(e) => format!("failed to read token endpoint error body: {e}"),
-            };
+/// Interpret a raw `(status, body_bytes)` pair from the transport.
+///
+/// SEC-01: `body_bytes` is already bounded to `max_response_bytes` by the
+/// transport (mechanical enforcement); this function only interprets what it
+/// receives.
+/// SEC-02: non-2xx bodies run through `oauth_token_error_summary` before any
+/// string value enters `TokenRefreshError`.
+fn parse_token_response_bytes(status: u16, body: &[u8]) -> Result<Value, TokenRefreshError> {
+    if status >= 400 {
+        // Non-2xx: interpret as text for redaction-aware summarization.
+        let body_text = String::from_utf8_lossy(body).into_owned();
+        let summary = oauth_token_error_summary(&body_text);
         return Err(TokenRefreshError::TokenEndpoint {
             status: status.to_string(),
             summary,
         });
     }
-    read_token_response_limited(resp, OAUTH_TOKEN_HTTP_MAX_RESPONSE_BYTES)
-        .await
-        .map_err(|e| TokenRefreshError::Parse(e.to_string()))
-}
-
-/// Test-support hook for integration tests that validate token endpoint
-/// response parsing/redaction without weakening production endpoint validation.
-#[cfg(feature = "test-util")]
-#[doc(hidden)]
-pub async fn parse_oauth_token_response_for_tests(
-    resp: Response,
-) -> Result<Value, TokenRefreshError> {
-    parse_token_response(resp).await
+    serde_json::from_slice(body).map_err(|e| TokenRefreshError::Parse(e.to_string()))
 }
 
 fn update_state_from_token_response(
@@ -233,32 +246,32 @@ fn update_state_from_token_response(
     Ok(())
 }
 
-/// Redacts common sensitive-field-name=value patterns in IdP error
-/// strings. OAuth2 IdPs (per RFC 6749 ) sometimes echo submitted
-/// credentials inside `error_description` — most commonly
-/// `refresh_token=<value>` on `invalid_grant` from buggy or hostile
-/// providers. Without redaction those values reach operator-facing
-/// logs / SIEM via [`TokenRefreshError::TokenEndpoint`]. This helper
-/// scrubs the value while preserving the structural diagnostic.
+/// Redacts common sensitive-field-name=value patterns in IdP error strings.
 ///
-/// Implements redaction discipline at the source: the
-/// summary string emitted by [`oauth_token_error_summary`] is the
-/// single chokepoint through which non-2xx response bodies enter the
-/// error type, so applying redaction here covers all downstream
-/// renderings (`Display`, `tracing`, audit events) by construction.
+/// OAuth2 IdPs (per RFC 6749) sometimes echo submitted credentials inside
+/// `error_description` — most commonly `refresh_token=<value>` on
+/// `invalid_grant` from buggy or hostile providers. Without redaction those
+/// values reach operator-facing logs / SIEM via
+/// [`TokenRefreshError::TokenEndpoint`]. This helper scrubs the value while
+/// preserving the structural diagnostic.
+///
+/// Implements redaction discipline at the source: the summary string emitted
+/// by [`oauth_token_error_summary`] is the single chokepoint through which
+/// non-2xx response bodies enter the error type, so applying redaction here
+/// covers all downstream renderings (`Display`, `tracing`, audit events) by
+/// construction.
 ///
 /// # Pattern stability + non-panicking init
 ///
 /// [`REDACTION_PATTERN`] is the source-of-truth pattern. We attempt
 /// `Regex::new` in a `OnceLock<Option<Regex>>` so a malformed pattern
 /// (theoretically possible if a future PR edits the literal incorrectly)
-/// never panics in library code — instead the helper returns a
-/// conservative full-redaction sentinel `[REDACTED]`, which is over-redaction
-/// (not under-redaction; never leaks the input). The CI safety net
-/// (`tests::redaction_regex_compiles` lib test +
-/// `crates/engine/tests/credential_refresh_redaction.rs` integration rows
-/// per ) catches the pattern regression before merge so the
-/// fallback path is never reached in production.
+/// never panics in library code — instead the helper returns a conservative
+/// full-redaction sentinel `[REDACTED]`, which is over-redaction (not
+/// under-redaction; never leaks the input). The CI safety net
+/// (`tests::redaction_regex_compiles` lib test) catches the pattern
+/// regression before merge so the fallback path is never reached in
+/// production.
 const REDACTION_PATTERN: &str = r"(?i)\b(refresh[_-]?token|access[_-]?token|client[_-]?secret|bearer|api[_-]?key|password|secret)\s*[=:]\s*\S+";
 
 fn redact_sensitive_fields(input: &str) -> std::borrow::Cow<'_, str> {
@@ -278,21 +291,17 @@ fn redact_sensitive_fields(input: &str) -> std::borrow::Cow<'_, str> {
 ///
 /// SEC-02 (security hardening 2026-04-27 Stage 3) — without sanitization a
 /// compromised / MITM IdP could inject:
-/// - Phishing URLs disguised as legitimate help pages (different scheme, host obfuscation),
-/// - Control characters (`\x00-\x1F`, `\x7F`) that mangle SIEM rows, inject ANSI escapes into
-///   terminal renderings, or break log parsers,
+/// - Phishing URLs disguised as legitimate help pages (different scheme, host
+///   obfuscation),
+/// - Control characters (`\x00-\x1F`, `\x7F`) that mangle SIEM rows, inject
+///   ANSI escapes into terminal renderings, or break log parsers,
 /// - Arbitrarily long values that bloat audit storage.
 ///
 /// Sanitization applies in this order:
 /// 1. `Url::parse` — reject anything that is not a valid absolute URL.
-/// 2. Scheme allowlist — only `https` survives. `http`, `javascript:`, `file:`, custom schemes are
-///    rejected.
+/// 2. Scheme allowlist — only `https` survives.
 /// 3. Control-char strip — any byte `< 0x20` or `== 0x7F` is rejected.
 /// 4. Length cap — `> 256` chars truncates with a `…[truncated]` suffix.
-///
-/// Returns a placeholder for rejected inputs:
-/// - `[invalid_error_uri_redacted]` — parse fail or non-https scheme
-/// - `[control_chars_in_error_uri_redacted]` — control byte found
 fn sanitize_error_uri(raw: &str) -> std::borrow::Cow<'_, str> {
     use std::borrow::Cow;
     let parsed = match Url::parse(raw) {
@@ -430,94 +439,95 @@ mod tests {
         }
     }
 
-    use tokio::{
-        io::{AsyncReadExt, AsyncWriteExt},
-        net::TcpListener,
-    };
+    // Redaction / parse tests operate purely on bytes — no network, no reqwest.
 
-    /// Drain a single HTTP/1.1 request until the header block ends.
-    async fn drain_incoming_request(stream: &mut tokio::net::TcpStream) {
-        let mut acc = Vec::new();
-        let mut buf = [0u8; 1024];
-        loop {
-            let n = stream
-                .read(&mut buf)
-                .await
-                .expect("read request from client");
-            if n == 0 {
-                break;
-            }
-            acc.extend_from_slice(&buf[..n]);
-            if acc.windows(4).any(|w| w == b"\r\n\r\n") {
-                break;
-            }
-            if acc.len() > 64 * 1024 {
-                return;
-            }
-        }
-    }
-
-    #[tokio::test]
-    async fn parse_token_response_maps_401_to_token_endpoint_error() {
-        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
-        let addr = listener.local_addr().expect("local addr");
-        const BODY: &[u8] = b"{\"error\":\"invalid_client\"}";
-        tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.expect("accept");
-            drain_incoming_request(&mut stream).await;
-            let n = BODY.len();
-            let head = format!(
-                "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: {n}\r\nConnection: close\r\n\r\n"
-            );
-            if stream.write_all(head.as_bytes()).await.is_err() {
-                return;
-            }
-            let _ = stream.write_all(BODY).await;
-        });
-
-        let resp = oauth_token_http_client()
-            .post(format!("http://127.0.0.1:{}/token", addr.port()))
-            .send()
-            .await
-            .expect("token endpoint response");
-        let err = parse_token_response(resp)
-            .await
-            .expect_err("401 from token");
+    #[test]
+    fn parse_token_response_bytes_maps_401_to_token_endpoint_error() {
+        let body = b"{\"error\":\"invalid_client\"}";
+        let err = parse_token_response_bytes(401, body).expect_err("401 should fail");
         assert!(
             matches!(err, TokenRefreshError::TokenEndpoint { .. }),
             "expected TokenEndpoint, got: {err:?}"
         );
     }
 
-    #[tokio::test]
-    async fn parse_token_response_maps_invalid_json_to_parse_error() {
-        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
-        let addr = listener.local_addr().expect("local addr");
-        let body: &[u8] = b"not json {";
-        tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.expect("accept");
-            drain_incoming_request(&mut stream).await;
-            let n = body.len();
-            let head = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {n}\r\nConnection: close\r\n\r\n"
-            );
-            if stream.write_all(head.as_bytes()).await.is_err() {
-                return;
-            }
-            let _ = stream.write_all(body).await;
-        });
-
-        let resp = oauth_token_http_client()
-            .post(format!("http://127.0.0.1:{}/token", addr.port()))
-            .send()
-            .await
-            .expect("token endpoint response");
-        let err = parse_token_response(resp)
-            .await
-            .expect_err("invalid json body");
+    #[test]
+    fn parse_token_response_bytes_maps_invalid_json_to_parse_error() {
+        let body = b"not json {";
+        let err = parse_token_response_bytes(200, body).expect_err("invalid json should fail");
         assert!(
             matches!(err, TokenRefreshError::Parse(_)),
             "expected Parse, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn sec13_refresh_token_in_error_description_is_redacted() {
+        let body = b"{\"error\":\"invalid_grant\",\"error_description\":\"refresh_token=abc123-leaked expired\"}";
+        let err = parse_token_response_bytes(400, body).expect_err("400 should fail");
+        let TokenRefreshError::TokenEndpoint { summary, .. } = &err else {
+            panic!("expected TokenEndpoint, got: {err:?}");
+        };
+        assert!(
+            !summary.contains("abc123-leaked"),
+            "secret must not appear in summary: {summary}"
+        );
+        assert!(summary.contains("[REDACTED]"), "redaction sentinel present");
+        assert!(summary.contains("invalid_grant"), "error code preserved");
+    }
+
+    #[test]
+    fn sec02_error_uri_http_scheme_rejected() {
+        let body =
+            b"{\"error\":\"invalid_request\",\"error_uri\":\"http://attacker.example/page\"}";
+        let err = parse_token_response_bytes(400, body).expect_err("400 should fail");
+        let TokenRefreshError::TokenEndpoint { summary, .. } = &err else {
+            panic!("expected TokenEndpoint");
+        };
+        assert!(
+            summary.contains("[invalid_error_uri_redacted]"),
+            "non-https URI must be rejected: {summary}"
+        );
+        assert!(!summary.contains("attacker.example"));
+    }
+
+    #[test]
+    fn sec02_error_uri_javascript_scheme_rejected() {
+        let body = b"{\"error\":\"invalid_grant\",\"error_uri\":\"javascript:alert(1)\"}";
+        let err = parse_token_response_bytes(400, body).expect_err("400 should fail");
+        let TokenRefreshError::TokenEndpoint { summary, .. } = &err else {
+            panic!("expected TokenEndpoint");
+        };
+        assert!(summary.contains("[invalid_error_uri_redacted]"));
+        assert!(!summary.contains("alert"));
+    }
+
+    #[test]
+    fn sec02_valid_https_uri_passes_through() {
+        let body = b"{\"error\":\"invalid_grant\",\"error_uri\":\"https://valid.example/help\"}";
+        let err = parse_token_response_bytes(400, body).expect_err("400 should fail");
+        let TokenRefreshError::TokenEndpoint { summary, .. } = &err else {
+            panic!("expected TokenEndpoint");
+        };
+        assert!(
+            summary.contains("https://valid.example/help"),
+            "valid https URI preserved: {summary}"
+        );
+    }
+
+    #[test]
+    fn oversized_body_response_interpreted_as_non_json() {
+        // Simulate transport delivering a body already capped at max_response_bytes
+        // (transport enforcement). A cap-sized non-JSON blob → Parse path.
+        let body = vec![b'a'; 1024];
+        let err = parse_token_response_bytes(400, &body).expect_err("400 should fail");
+        // non-JSON body → "<non-json body>" summary (not a secret leak)
+        let TokenRefreshError::TokenEndpoint { summary, .. } = &err else {
+            panic!("expected TokenEndpoint");
+        };
+        assert!(
+            summary.contains("<non-json body>"),
+            "non-json body: {summary}"
         );
     }
 }

@@ -1,14 +1,9 @@
 //! Engine credential rotation orchestration surface.
 //!
 //! State-machine types (blue-green, grace-period, schedulers, transaction)
-//! are relocated into `nebula_credential::runtime::rotation` (ADR-0092 step 4B.1)
-//! and re-exported here so existing `nebula_engine::credential::rotation::*`
-//! paths continue to resolve.
-//!
-//! `token_http` and `token_refresh` (reqwest — next step) remain engine-local.
-
-pub mod token_http;
-pub mod token_refresh;
+//! and token-refresh logic are relocated into `nebula_credential::runtime`
+//! (ADR-0092). Re-exported here so existing
+//! `nebula_engine::credential::rotation::*` paths continue to resolve.
 
 // Re-export relocated state-machine types from nebula-credential.
 pub use nebula_credential::runtime::rotation::{
@@ -35,4 +30,5 @@ pub use nebula_credential::rotation::{
 };
 // Fan-out types relocated to nebula-resource (ADR-0092 step 5).
 pub use nebula_resource::{Bind, ResourceFanoutDriver, ResourceFanoutIndex, RotationOutcome};
-pub use token_refresh::{TokenRefreshError, refresh_oauth2_state};
+// Token-refresh logic relocated to nebula-credential (ADR-0092 step 4B.2).
+pub use nebula_credential::runtime::refresh::{TokenRefreshError, refresh_oauth2_state};

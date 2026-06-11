@@ -3447,6 +3447,7 @@ dependencies = [
  "percent-encoding",
  "pretty_assertions",
  "rand 0.10.1",
+ "regex",
  "rstest",
  "scopeguard",
  "secrecy",

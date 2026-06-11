@@ -23,6 +23,8 @@ mod l1;
 mod metrics;
 mod reclaim;
 mod sentinel;
+pub mod token_refresh;
+pub mod transport;
 
 pub use coordinator::{
     ConfigError, RefreshAttempt, RefreshConfigError, RefreshCoordConfig, RefreshCoordinator,
@@ -31,3 +33,7 @@ pub use coordinator::{
 pub use metrics::RefreshCoordMetrics;
 pub use reclaim::ReclaimSweepHandle;
 pub use sentinel::{SentinelDecision, SentinelThresholdConfig, SentinelTrigger};
+pub use token_refresh::{
+    OAUTH_TOKEN_HTTP_MAX_RESPONSE_BYTES, TokenRefreshError, refresh_oauth2_state,
+};
+pub use transport::{RefreshTransport, RefreshTransportError, TokenPostRequest, TokenPostResponse};
