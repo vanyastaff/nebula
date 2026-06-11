@@ -532,7 +532,7 @@ impl ResourceRegistrarRegistry {
     /// exists to eliminate, so the single manager-side value is propagated.
     /// For every `(slot_name, CredentialId)` in `request.credential_ids`
     /// whose `slot_name` also appears in `slot_bindings`, one
-    /// [`ResourceFanoutIndex::bind`](crate::credential::rotation::ResourceFanoutIndex::bind)
+    /// `ResourceFanoutIndex::bind`
     /// is recorded. `bind` is idempotent, so a re-registration of the
     /// same resolved row does not duplicate the entry.
     ///
@@ -621,7 +621,7 @@ impl ResourceRegistrarRegistry {
         kind: &str,
         manager: &Manager,
         request: RegisterRequest<'_>,
-        fanout_index: Option<&crate::credential::rotation::ResourceFanoutIndex>,
+        fanout_index: Option<&nebula_resource::ResourceFanoutIndex>,
     ) -> Result<ResourceRegistrationOutcome, RegistrarError> {
         // Resolve the registrar up front (same closed-allowlist lookup +
         // `UnknownKind` fault as `register`). The erased registrar yields
@@ -665,7 +665,7 @@ impl ResourceRegistrarRegistry {
                 if !request.slot_bindings.contains_key(slot_name) {
                     continue;
                 }
-                let bind = crate::credential::rotation::Bind {
+                let bind = nebula_resource::Bind {
                     resource_key: resource_key.clone(),
                     scope: request.scope.clone(),
                     slot_name: slot_name.clone(),
@@ -1075,7 +1075,7 @@ mod tests {
         use nebula_schema::HasSchema;
 
         use super::super::*;
-        use crate::credential::rotation::ResourceFanoutIndex;
+        use nebula_resource::ResourceFanoutIndex;
 
         const SLOT_KEY: &str = "auth";
 

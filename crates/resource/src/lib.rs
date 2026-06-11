@@ -39,6 +39,8 @@
 
 pub(crate) mod cell;
 pub mod context;
+#[cfg(feature = "rotation")]
+pub mod credential_fanout;
 pub mod dedup;
 pub mod error;
 pub mod events;
@@ -131,3 +133,9 @@ pub use topology::{
     resident::{Resident, config::Config as ResidentConfig},
 };
 pub use topology_tag::TopologyTag;
+// Credential-rotation fan-out — gated on the `rotation` feature so the
+// default build of `nebula-resource` does not pay for the eventbus subscriber
+// overhead or pull in the extra tokio task. Engine enables this feature when
+// it enables its own `rotation` feature.
+#[cfg(feature = "rotation")]
+pub use credential_fanout::{Bind, ResourceFanoutDriver, ResourceFanoutIndex, RotationOutcome};

@@ -9,19 +9,16 @@
 //! Ref: ADR-0028, ADR-0032 (historical — `docs/adr/HISTORICAL.md`)
 //! Ref: `docs/ARCHIVE.md` §P6.7
 
-// The layers + the durable SQLite store are feature-gated in storage. This
-// test wraps a `SqliteCredentialStore` (gated on `sqlite`, backed by a unique
-// in-memory database) with `AuditLayer` (always available) and
-// `make_credential` from `nebula-credential` (gated on `test-util`). Gate on
-// both features so `cargo test -p nebula-storage --features test-util` (without
-// `sqlite`) does not fail to compile.
-#![cfg(all(feature = "test-util", feature = "sqlite"))]
+// The layers + the durable SQLite store are feature-gated in storage. Gate on
+// `sqlite` so this file is only compiled when that backend is available.
+#![cfg(feature = "sqlite")]
 
 use std::sync::Arc;
 
-use nebula_credential::{
-    CredentialStore, PutMode, StoreError, store::test_helpers::make_credential,
-};
+mod common;
+
+use common::make_credential;
+use nebula_credential::{CredentialStore, PutMode, StoreError};
 use nebula_storage::credential::{AuditEvent, AuditLayer, AuditSink, SqliteCredentialStore};
 
 /// Sink that always refuses to record, to prove `AuditLayer` surfaces

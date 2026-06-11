@@ -1,0 +1,119 @@
+//! Pre-bound metric handles for the refresh coordinator (sub-spec ).
+//!
+//! All handles are constructed once at coordinator-build time and live
+//! for the coordinator's lifetime, so the hot path (per-`refresh_coalesced`
+//! call) pays only an atomic increment / observation — no string interning,
+//! no map lookup, no allocation.
+//!
+//! The five metrics declared in
+//! `nebula_metrics::naming::NEBULA_CREDENTIAL_REFRESH_COORD_*` are bound
+//! to their closed label sets here:
+//!
+//! - `claims_total{outcome=acquired|contended|exhausted}`
+//! - `coalesced_total{tier=l1|l2}`
+//! - `sentinel_events_total{action=recorded|reauth_triggered}`
+//! - `reclaim_sweeps_total{outcome=reclaimed|no_work}`
+//! - `hold_duration_seconds` (histogram, no labels)
+//!
+//! Production composition threads the engine-shared registry via
+//! [`RefreshCoordMetrics::with_registry`]. Tests / single-replica desktop
+//! mode use [`RefreshCoordMetrics::for_tests`] (test-only, `#[cfg(test)]`)
+//! which constructs handles backed by a fresh
+//! private registry — production code must always go through the engine
+//! registry so a scraper actually observes the series, which is why the
+//! `Default` impl has been intentionally removed.
+
+use nebula_metrics::{
+    Counter, Histogram, MetricsRegistry, MetricsResult,
+    NEBULA_CREDENTIAL_REFRESH_COORD_CLAIMS_TOTAL, NEBULA_CREDENTIAL_REFRESH_COORD_COALESCED_TOTAL,
+    NEBULA_CREDENTIAL_REFRESH_COORD_HOLD_DURATION_SECONDS,
+    NEBULA_CREDENTIAL_REFRESH_COORD_RECLAIM_SWEEPS_TOTAL,
+    NEBULA_CREDENTIAL_REFRESH_COORD_SENTINEL_EVENTS_TOTAL, refresh_coord_claim_outcome,
+    refresh_coord_coalesced_tier, refresh_coord_reclaim_outcome, refresh_coord_sentinel_action,
+};
+
+/// Pre-bound handles for the five refresh-coordinator metrics declared
+/// in sub-spec . Cheaply cloneable (each handle is `Arc<...>` under
+/// the hood).
+#[derive(Clone, Debug)]
+pub struct RefreshCoordMetrics {
+    // claims_total
+    pub(crate) claims_acquired: Counter,
+    pub(crate) claims_contended: Counter,
+    pub(crate) claims_exhausted: Counter,
+    // coalesced_total
+    pub(crate) coalesced_l1: Counter,
+    pub(crate) coalesced_l2: Counter,
+    // sentinel_events_total
+    pub(crate) sentinel_recorded: Counter,
+    pub(crate) sentinel_reauth_triggered: Counter,
+    // reclaim_sweeps_total
+    pub(crate) reclaim_reclaimed: Counter,
+    pub(crate) reclaim_no_work: Counter,
+    // hold_duration_seconds
+    pub(crate) hold_duration: Histogram,
+}
+
+impl RefreshCoordMetrics {
+    /// Build pre-bound handles against the given registry.
+    pub fn with_registry(registry: &MetricsRegistry) -> MetricsResult<Self> {
+        let interner = registry.interner();
+
+        let claim_label = |val: &str| interner.single("outcome", val);
+        let coalesced_label = |val: &str| interner.single("tier", val);
+        let sentinel_label = |val: &str| interner.single("action", val);
+        let reclaim_label = |val: &str| interner.single("outcome", val);
+
+        Ok(Self {
+            claims_acquired: registry.counter_labeled(
+                NEBULA_CREDENTIAL_REFRESH_COORD_CLAIMS_TOTAL,
+                &claim_label(refresh_coord_claim_outcome::ACQUIRED),
+            )?,
+            claims_contended: registry.counter_labeled(
+                NEBULA_CREDENTIAL_REFRESH_COORD_CLAIMS_TOTAL,
+                &claim_label(refresh_coord_claim_outcome::CONTENDED),
+            )?,
+            claims_exhausted: registry.counter_labeled(
+                NEBULA_CREDENTIAL_REFRESH_COORD_CLAIMS_TOTAL,
+                &claim_label(refresh_coord_claim_outcome::EXHAUSTED),
+            )?,
+            coalesced_l1: registry.counter_labeled(
+                NEBULA_CREDENTIAL_REFRESH_COORD_COALESCED_TOTAL,
+                &coalesced_label(refresh_coord_coalesced_tier::L1),
+            )?,
+            coalesced_l2: registry.counter_labeled(
+                NEBULA_CREDENTIAL_REFRESH_COORD_COALESCED_TOTAL,
+                &coalesced_label(refresh_coord_coalesced_tier::L2),
+            )?,
+            sentinel_recorded: registry.counter_labeled(
+                NEBULA_CREDENTIAL_REFRESH_COORD_SENTINEL_EVENTS_TOTAL,
+                &sentinel_label(refresh_coord_sentinel_action::RECORDED),
+            )?,
+            sentinel_reauth_triggered: registry.counter_labeled(
+                NEBULA_CREDENTIAL_REFRESH_COORD_SENTINEL_EVENTS_TOTAL,
+                &sentinel_label(refresh_coord_sentinel_action::REAUTH_TRIGGERED),
+            )?,
+            reclaim_reclaimed: registry.counter_labeled(
+                NEBULA_CREDENTIAL_REFRESH_COORD_RECLAIM_SWEEPS_TOTAL,
+                &reclaim_label(refresh_coord_reclaim_outcome::RECLAIMED),
+            )?,
+            reclaim_no_work: registry.counter_labeled(
+                NEBULA_CREDENTIAL_REFRESH_COORD_RECLAIM_SWEEPS_TOTAL,
+                &reclaim_label(refresh_coord_reclaim_outcome::NO_WORK),
+            )?,
+            hold_duration: registry
+                .histogram(NEBULA_CREDENTIAL_REFRESH_COORD_HOLD_DURATION_SECONDS)?,
+        })
+    }
+
+    /// Construct handles backed by a fresh private registry — for tests and
+    /// single-replica desktop mode. Returns `MetricsResult<Self>` so the
+    /// calling test can handle the error in test scope.
+    ///
+    /// Production composition MUST use [`Self::with_registry`] with the
+    /// engine-shared registry so a scraper actually observes the series.
+    #[cfg(test)]
+    pub fn for_tests() -> MetricsResult<Self> {
+        Self::with_registry(&MetricsRegistry::new())
+    }
+}

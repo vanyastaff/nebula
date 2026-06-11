@@ -86,6 +86,10 @@ pub mod secrets;
 /// The engine-runtime allowlist-enforcing accessor lives in
 /// `nebula_engine::credential::ScopedCredentialAccessor`.
 mod accessor;
+/// Audit trait and value types — [`AuditSink`], [`AuditEvent`],
+/// [`AuditOperation`], [`AuditResult`]. The audit decorator (`AuditLayer`)
+/// stays in `nebula_storage::credential` and imports these from here.
+pub mod audit;
 /// Credential operation context — CredentialContext, CredentialContextBuilder.
 mod context;
 /// Typed credential reference — `CredentialRef<C>` slot-binding handle (typed ref fields).
@@ -113,6 +117,14 @@ pub mod error;
 pub mod event;
 /// Pending state store trait for interactive credential flows.
 pub mod pending_store;
+/// Credential lifecycle orchestration the execution engine drives —
+/// resolution executor, capability dispatchers, scoped accessor (ADR-0092,
+/// relocated from `nebula-engine::credential`).
+pub mod runtime;
+/// `CredentialService` facade — the sole public entry to the credential
+/// management bounded context (ADR-0092, relocated from
+/// `nebula-credential-runtime`).
+pub mod service;
 /// Credential snapshot.
 pub mod snapshot;
 /// Credential store trait with layered composition.
@@ -144,8 +156,10 @@ pub use contract::{
 // Built-in credential implementations
 pub use credential_ref::CredentialRef;
 pub use credentials::{
-    ApiKeyCredential, ApiKeyProperties, BasicAuthCredential, BasicAuthProperties, OAuth2Credential,
-    OAuth2Pending, OAuth2Properties, OAuth2State,
+    ApiKeyCredential, ApiKeyProperties, BasicAuthCredential, BasicAuthProperties,
+    BearerTokenCredential, BearerTokenProperties, OAuth2Credential, OAuth2Pending,
+    OAuth2Properties, OAuth2State, SharedKeyCredential, SharedKeyProperties, SigningKeyCredential,
+    SigningKeyProperties, register_builtins,
 };
 pub use handle::CredentialHandle;
 pub use metrics::CredentialMetrics;
@@ -214,6 +228,8 @@ pub use lifecycle::{
 };
 // Store trait + DTOs (canonical impls live in `nebula_storage::credential` per storage credential layers)
 pub use store::{CredentialStore, PutMode, ScopeResolver, StoreError, StoredCredential};
+// Audit contract — trait + value types (decorator AuditLayer stays in nebula_storage::credential)
+pub use audit::{AuditEvent, AuditOperation, AuditResult, AuditSink};
 
 // Rotation (feature-gated)
 #[cfg(feature = "rotation")]
@@ -239,6 +255,18 @@ pub use crate::{
     },
     record::CredentialRecord,
     snapshot::{CredentialSnapshot, SnapshotError},
+};
+
+// CredentialService facade (ADR-0092, relocated from nebula-credential-runtime).
+// The `CredentialServiceBuilder` is NOT re-exported here: it pulls in
+// `nebula-storage` + `nebula-engine` deps and lives at the api composition root.
+pub use service::{
+    Acquisition, CredentialHead, CredentialObserver, CredentialService, CredentialServiceError,
+    CredentialTypeInfo, DispatchError, DispatchOps, EventMetricObserver, FixedScopeResolver,
+    NoopObserver, RefreshReport, StateSource, TenantFingerprint, TenantScope, TestReport,
+    TypeCapabilities, ValidatedCredentialBinding, ValidatedCredentialBindingError,
+    register_all_builtin_ops, register_interactive_ops, register_refreshable_ops,
+    register_revocable_ops, register_runtime_ops, register_testable_ops,
 };
 
 // ── Prelude ───────────────────────────────────────────────────────────────────

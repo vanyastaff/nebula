@@ -4,7 +4,7 @@
 //! `impl Future` in trait position (RPITIT); [`PendingStateStore`]'s
 //! non-`delete` methods are additionally generic over `<P: PendingState>`.
 //! Neither is object-safe, so neither can be stored behind `dyn`. The
-//! [`CredentialService`](../../nebula_credential_runtime/index.html) facade
+//! [`CredentialService`](crate::CredentialService) facade
 //! must be **non-generic** (ADR-0088 D4) so a durable backend can be swapped
 //! in without re-monomorphizing every consumer; that requires erasing both
 //! ports to `dyn`.

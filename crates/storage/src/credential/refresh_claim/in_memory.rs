@@ -60,9 +60,9 @@ impl InMemoryRefreshClaimRepo {
     /// Test-only: push a synthetic sentinel event with a caller-supplied
     /// `detected_at`. Used by the in-memory smoke tests to seed
     /// pre-prune-cutoff entries (24h-old) without manipulating the system
-    /// clock. Gated behind `#[cfg(any(test, feature = "test-util"))]` so
-    /// production builds cannot construct events out-of-band.
-    #[cfg(any(test, feature = "test-util"))]
+    /// clock. Gated behind `#[cfg(test)]` so production builds cannot
+    /// construct events out-of-band.
+    #[cfg(test)]
     pub fn push_sentinel_event_at(
         &self,
         credential_id: &CredentialId,
@@ -257,5 +257,55 @@ impl RefreshClaimRepo for InMemoryRefreshClaimRepo {
         // u32 is plenty — even at one sentinel event per second, 1h
         // window caps at 3600.
         Ok(u32::try_from(count).unwrap_or(u32::MAX))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verifies that `record_sentinel_event` prunes entries older than 24 h on
+    /// every insert. Seeds a synthetic 25h-old event via `push_sentinel_event_at`
+    /// (test-only, same-crate) to avoid manipulating the system clock.
+    #[tokio::test]
+    async fn record_sentinel_event_prunes_entries_older_than_24h() -> Result<(), RepoError> {
+        let repo = InMemoryRefreshClaimRepo::new();
+        let stale_cid = CredentialId::new();
+        let trigger_cid = CredentialId::new();
+        let holder = ReplicaId::new("replica-A");
+
+        let stale_timestamp = Utc::now() - chrono::Duration::hours(25);
+        repo.push_sentinel_event_at(&stale_cid, &holder, 1, stale_timestamp);
+
+        // Stale event must be visible before prune fires (48h wide window).
+        let pre_count = repo
+            .count_sentinel_events_in_window(&stale_cid, Utc::now() - chrono::Duration::hours(48))
+            .await?;
+        assert_eq!(
+            pre_count, 1,
+            "synthetic 25h-old event must be present before prune fires"
+        );
+
+        // Trigger prune by recording an unrelated event.
+        repo.record_sentinel_event(&trigger_cid, &holder, 1).await?;
+
+        // After prune the 25h-old event is gone even with a 48h window.
+        let post_count = repo
+            .count_sentinel_events_in_window(&stale_cid, Utc::now() - chrono::Duration::hours(48))
+            .await?;
+        assert_eq!(
+            post_count, 0,
+            "events older than 24h must be pruned on the next record_sentinel_event call"
+        );
+
+        // The event that triggered the prune must survive.
+        let trigger_count = repo
+            .count_sentinel_events_in_window(
+                &trigger_cid,
+                Utc::now() - chrono::Duration::seconds(60),
+            )
+            .await?;
+        assert_eq!(trigger_count, 1, "the triggering record must persist");
+        Ok(())
     }
 }

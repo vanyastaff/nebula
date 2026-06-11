@@ -171,18 +171,16 @@ pub struct WorkflowEngine {
     /// because the three are the resource-rotation triad: the registrar
     /// path [`bind`](nebula_credential_rotation_index_bind)s a row when a
     /// credential resolves into a `#[credential]` slot, and the
-    /// [`ResourceFanoutDriver`](crate::credential::rotation::ResourceFanoutDriver)
-    /// drains it on a rotation/revoke event into the `Manager` slot ports.
-    /// No `nebula-resource → nebula-engine` edge: the index lives in
-    /// `nebula-engine` and the rotation signal arrives via
-    /// `nebula-eventbus`.
+    /// `ResourceFanoutDriver` drains it on a rotation/revoke event into the
+    /// `Manager` slot ports. No `nebula-resource → nebula-engine` edge: the
+    /// index now lives in `nebula-resource` and the rotation signal arrives
+    /// via `nebula-eventbus`.
     ///
     /// Feature-gated with the index itself (`rotation`).
     ///
     /// [`resource_registrars`]: Self::resource_registrars
-    /// [`nebula_credential_rotation_index_bind`]: crate::credential::rotation::ResourceFanoutIndex::bind
     #[cfg(feature = "rotation")]
-    resource_fanout_index: Arc<crate::credential::rotation::ResourceFanoutIndex>,
+    resource_fanout_index: Arc<nebula_resource::ResourceFanoutIndex>,
     /// Single-shot guard for
     /// [`spawn_resource_rotation_fanout`](Self::spawn_resource_rotation_fanout).
     ///
@@ -286,7 +284,7 @@ pub struct WorkflowEngine {
     running: Arc<DashMap<ExecutionId, RunningEntry>>,
     /// Optional handle for the background credential-refresh reclaim
     /// sweep. When set, dropping the engine aborts the spawned task —
-    /// see [`crate::credential::refresh::ReclaimSweepHandle`] (sub-spec
+    /// see [`crate::credential::ReclaimSweepHandle`] (sub-spec
     /// , ).
     ///
     /// Wired by the composition root via
@@ -294,7 +292,7 @@ pub struct WorkflowEngine {
     /// durable [`nebula_storage::credential::RefreshClaimRepo`] (Postgres
     /// or SQLite). Single-replica desktop mode without sentinel-event
     /// recording leaves this `None`.
-    credential_reclaim_sweep: Option<crate::credential::refresh::ReclaimSweepHandle>,
+    credential_reclaim_sweep: Option<crate::credential::ReclaimSweepHandle>,
 }
 
 /// Monotonic per-registration identifier used to fence out-of-order drops
@@ -373,7 +371,7 @@ impl WorkflowEngine {
             plugin_registry: PluginRegistry::new(),
             resource_registrars: ResourceRegistrarRegistry::new(),
             #[cfg(feature = "rotation")]
-            resource_fanout_index: Arc::new(crate::credential::rotation::ResourceFanoutIndex::new()),
+            resource_fanout_index: Arc::new(nebula_resource::ResourceFanoutIndex::new()),
             #[cfg(feature = "rotation")]
             resource_fanout_spawned: std::sync::atomic::AtomicBool::new(false),
             resolver: ParamResolver::new(expression_engine),
@@ -489,9 +487,8 @@ impl WorkflowEngine {
 
     /// The engine-owned per-slot rotation reverse index.
     ///
-    /// This is the [`bind`](crate::credential::rotation::ResourceFanoutIndex::bind)
-    /// producer for the §M11.5 fan-out: the resource-activation path
-    /// (`ResourceRegistrarRegistry::register` →
+    /// This is the `bind` producer for the fan-out: the resource-activation
+    /// path (`ResourceRegistrarRegistry::register` →
     /// `Manager::register_resolved`, which resolves a credential into a
     /// `#[credential]` slot) records a row here so a later rotation /
     /// revoke fans to exactly that resolved row. It is also the index the
@@ -500,7 +497,7 @@ impl WorkflowEngine {
     /// no-op fan-out, never an error.
     #[cfg(feature = "rotation")]
     #[must_use]
-    pub fn resource_fanout_index(&self) -> &Arc<crate::credential::rotation::ResourceFanoutIndex> {
+    pub fn resource_fanout_index(&self) -> &Arc<nebula_resource::ResourceFanoutIndex> {
         &self.resource_fanout_index
     }
 
@@ -510,20 +507,17 @@ impl WorkflowEngine {
     /// credential-rotation / lease-revoke event streams the
     /// credential-runtime composition root publishes.
     ///
-    /// `credential_bus` / `lease_bus` are the buses
-    /// `EventMetricObserver::{event_bus, lease_bus}`
-    /// (`nebula-credential-runtime`, ) emits on after a refresh
-    /// CAS-persists fresh material or a lease is revoked. This closes the
-    /// "Rotation fan-out is implemented but unwired"
-    /// gap: a `CredentialEvent::Refreshed` drives
+    /// `credential_bus` / `lease_bus` are the buses the credential-runtime
+    /// composition root publishes on after a refresh CAS-persists fresh
+    /// material or a lease is revoked. A `CredentialEvent::Refreshed` drives
     /// `ResourceFanoutIndex::dispatch_refresh`, and
     /// `CredentialEvent::Revoked` / `LeaseEvent::LeaseRevoked` drive
     /// `dispatch_revoke`, for every resolved resource row that bound the
     /// credential.
     ///
-    /// Returns a [`ResourceFanoutDriver`](crate::credential::rotation::ResourceFanoutDriver)
-    /// handle; **hold it** for as long as fan-out should run — dropping
-    /// it aborts the driver task.
+    /// Returns a [`nebula_resource::ResourceFanoutDriver`] handle; **hold
+    /// it** for as long as fan-out should run — dropping it aborts the
+    /// driver task.
     ///
     /// Returns `None` (spawning nothing) when either:
     ///
@@ -542,17 +536,16 @@ impl WorkflowEngine {
     ///   single-shot — a later call once a manager is wired can still
     ///   spawn.
     ///
-    /// No `nebula-resource → nebula-engine` edge: the index lives in
-    /// `nebula-engine` and the rotation signal arrives via
-    /// `nebula-eventbus` (AGENTS.md cross-crate signal
-    /// rule).
+    /// No `nebula-resource → nebula-engine` edge: the index is now owned
+    /// by `nebula-resource` and rotation signals arrive via
+    /// `nebula-eventbus`.
     #[cfg(feature = "rotation")]
     #[must_use = "the returned driver handle must be held; dropping it aborts the fan-out"]
     pub fn spawn_resource_rotation_fanout(
         &self,
         credential_bus: Arc<nebula_eventbus::EventBus<nebula_credential::CredentialEvent>>,
         lease_bus: Option<Arc<nebula_eventbus::EventBus<nebula_credential::LeaseEvent>>>,
-    ) -> Option<crate::credential::rotation::ResourceFanoutDriver> {
+    ) -> Option<nebula_resource::ResourceFanoutDriver> {
         use std::sync::atomic::Ordering;
 
         // Only a deployment with a resource manager has anything to fan
@@ -577,7 +570,7 @@ impl WorkflowEngine {
             return None;
         }
 
-        Some(crate::credential::rotation::ResourceFanoutDriver::spawn(
+        Some(nebula_resource::ResourceFanoutDriver::spawn(
             Arc::clone(&self.resource_fanout_index),
             manager,
             credential_bus,
@@ -713,7 +706,7 @@ impl WorkflowEngine {
         kind: &str,
         manager: &nebula_resource::Manager,
         request: crate::RegisterRequest<'_>,
-        fanout_index: Option<&crate::credential::rotation::ResourceFanoutIndex>,
+        fanout_index: Option<&nebula_resource::ResourceFanoutIndex>,
     ) -> Result<(), crate::RegistrarError> {
         let outcome = self
             .resource_registrars
@@ -773,7 +766,9 @@ impl WorkflowEngine {
     /// use nebula_storage::credential::SqliteCredentialStore;
     ///
     /// let store = Arc::new(SqliteCredentialStore::connect("sqlite://creds.db").await?);
-    /// let resolver = Arc::new(CredentialResolver::new(store));
+    /// let coord = Arc::new(nebula_engine::credential::default_in_memory_coordinator()?);
+    /// let transport = Arc::new(nebula_api::ports::ReqwestRefreshTransport::default());
+    /// let resolver = Arc::new(CredentialResolver::with_dependencies(store, coord, transport));
     ///
     /// let engine = WorkflowEngine::new(runtime, metrics)?
     ///     .with_credential_resolver(move |id: &str| {
@@ -851,18 +846,18 @@ impl WorkflowEngine {
     /// Per sub-spec + the engine spawns a periodic task that
     /// calls `RefreshClaimRepo::reclaim_stuck`, routes
     /// `RefreshInFlight`-flagged stale claims through
-    /// [`crate::credential::refresh::SentinelTrigger`], and publishes
+    /// [`crate::credential::SentinelTrigger`], and publishes
     /// `CredentialEvent::ReauthRequired` once the rolling-window
     /// threshold is exceeded.
     ///
     /// The composition root constructs the handle via
-    /// [`crate::credential::refresh::ReclaimSweepHandle::spawn`] and
+    /// [`crate::credential::ReclaimSweepHandle::spawn`] and
     /// passes it here. Storing the handle on the engine ensures the
     /// task is aborted when the engine drops (clean shutdown).
     #[must_use = "builder methods must be chained or built"]
     pub fn with_credential_reclaim_sweep(
         mut self,
-        handle: crate::credential::refresh::ReclaimSweepHandle,
+        handle: crate::credential::ReclaimSweepHandle,
     ) -> Self {
         self.credential_reclaim_sweep = Some(handle);
         self

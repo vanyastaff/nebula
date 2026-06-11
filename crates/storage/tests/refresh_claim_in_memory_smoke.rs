@@ -224,14 +224,7 @@ async fn try_claim_after_expiry_bumps_generation_in_place() {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Sentinel event recording + windowed count + 24h prune
-//
-// The 24h-prune test relies on `push_sentinel_event_at` (test-only
-// helper gated behind the crate's `test-util` feature) so it can seed
-// a synthetic 25h-old row without manipulating the system clock.
-// That test is gated on `feature = "test-util"` to keep the test crate
-// compilable under the default feature set; the windowed-count test
-// uses only the public surface and is always compiled.
+// Sentinel event recording + windowed count
 // ──────────────────────────────────────────────────────────────────────────
 
 #[tokio::test]
@@ -283,67 +276,4 @@ async fn record_and_count_sentinel_events_within_window() {
         count, 3,
         "another credential's event must not pollute this credential's count"
     );
-}
-
-#[cfg(feature = "test-util")]
-#[tokio::test]
-async fn record_sentinel_event_prunes_entries_older_than_24h() {
-    // The in-memory impl prunes entries older than 24h on every
-    // `record_sentinel_event` insert (`in_memory.rs:206-207`). Verify
-    // by seeding a synthetic 25h-old event via the test-only helper,
-    // triggering a record on a DIFFERENT credential, and asserting
-    // the stale event was swept.
-    let repo = InMemoryRefreshClaimRepo::new();
-    let stale_cid = CredentialId::new();
-    let trigger_cid = CredentialId::new();
-    let holder = ReplicaId::new("replica-A");
-
-    // Seed an event whose `detected_at` is 25h in the past — past the
-    // 24h prune cutoff. Using a test-only helper avoids manipulating
-    // the system clock.
-    let stale_timestamp = chrono::Utc::now() - chrono::Duration::hours(25);
-    repo.push_sentinel_event_at(&stale_cid, &holder, 1, stale_timestamp);
-
-    // Sanity: the stale event is observable BEFORE prune fires
-    // (window goes back 48h to include it).
-    let pre_count = repo
-        .count_sentinel_events_in_window(
-            &stale_cid,
-            chrono::Utc::now() - chrono::Duration::hours(48),
-        )
-        .await
-        .unwrap();
-    assert_eq!(
-        pre_count, 1,
-        "synthetic 25h-old event must be present before prune fires"
-    );
-
-    // Trigger prune by recording an unrelated event.
-    repo.record_sentinel_event(&trigger_cid, &holder, 1)
-        .await
-        .unwrap();
-
-    // After prune the 25h-old event for `stale_cid` is gone, even
-    // when we open the window 48h wide.
-    let post_count = repo
-        .count_sentinel_events_in_window(
-            &stale_cid,
-            chrono::Utc::now() - chrono::Duration::hours(48),
-        )
-        .await
-        .unwrap();
-    assert_eq!(
-        post_count, 0,
-        "events older than 24h must be pruned on the next record_sentinel_event call"
-    );
-
-    // The trigger credential's just-recorded event survives.
-    let trigger_count = repo
-        .count_sentinel_events_in_window(
-            &trigger_cid,
-            chrono::Utc::now() - chrono::Duration::seconds(60),
-        )
-        .await
-        .unwrap();
-    assert_eq!(trigger_count, 1, "the triggering record must persist");
 }

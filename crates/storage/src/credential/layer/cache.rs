@@ -186,12 +186,11 @@ impl<S: CredentialStore> CredentialStore for CacheLayer<S> {
     }
 }
 
-// Tests require `nebula-credential/test-util` to reach `test_helpers`.
-// Storage's own `test-util` feature forwards that; clippy/check with
-// `--all-targets` (no features) skip this block.
-#[cfg(all(test, feature = "test-util", feature = "sqlite"))]
+#[cfg(all(test, feature = "sqlite"))]
 mod tests {
-    use nebula_credential::{PutMode, StoreError, store::test_helpers::make_credential};
+    use nebula_credential::{PutMode, StoreError};
+
+    use crate::credential::test_support::make_credential;
 
     use super::{super::super::sqlite::SqliteCredentialStore, *};
 

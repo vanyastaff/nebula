@@ -410,26 +410,26 @@ impl std::fmt::Debug for FileKeyProvider {
 
 /// Test-only provider that wraps an in-memory [`EncryptionKey`].
 ///
-/// Gated behind `#[cfg(any(test, feature = "test-util"))]`. Production release
-/// builds never see this type; every non-test composition path uses
-/// [`EnvKeyProvider`] or [`FileKeyProvider`].
-#[cfg(any(test, feature = "test-util"))]
-pub struct StaticKeyProvider {
+/// Gated behind `#[cfg(test)]`. Production release builds never see this
+/// type; every non-test composition path uses [`EnvKeyProvider`] or
+/// [`FileKeyProvider`].
+#[cfg(test)]
+pub(crate) struct StaticKeyProvider {
     key: Arc<EncryptionKey>,
     version: Arc<str>,
 }
 
-#[cfg(any(test, feature = "test-util"))]
+#[cfg(test)]
 impl StaticKeyProvider {
     /// Wrap `key` with the default test version `"static:test"`.
-    pub fn new(key: Arc<EncryptionKey>) -> Self {
+    pub(crate) fn new(key: Arc<EncryptionKey>) -> Self {
         Self::with_version(key, "static:test")
     }
 
     /// Wrap `key` with a caller-supplied version string. The version is
     /// stored as the envelope `key_id`, so tests that exercise rotation
     /// across versions pass distinct strings here.
-    pub fn with_version(key: Arc<EncryptionKey>, version: impl Into<Arc<str>>) -> Self {
+    pub(crate) fn with_version(key: Arc<EncryptionKey>, version: impl Into<Arc<str>>) -> Self {
         Self {
             key,
             version: version.into(),
@@ -437,7 +437,7 @@ impl StaticKeyProvider {
     }
 }
 
-#[cfg(any(test, feature = "test-util"))]
+#[cfg(test)]
 impl KeyProvider for StaticKeyProvider {
     fn current_key(&self) -> Result<Arc<EncryptionKey>, ProviderError> {
         Ok(Arc::clone(&self.key))
@@ -448,7 +448,7 @@ impl KeyProvider for StaticKeyProvider {
     }
 }
 
-#[cfg(any(test, feature = "test-util"))]
+#[cfg(test)]
 impl std::fmt::Debug for StaticKeyProvider {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("StaticKeyProvider")
@@ -464,7 +464,7 @@ impl std::fmt::Debug for StaticKeyProvider {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "test-util")]
+    #[cfg(feature = "sqlite")]
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use base64::Engine;
@@ -785,15 +785,15 @@ mod tests {
     /// re-queries the provider on each read/write rather than caching the
     /// key at construction time.
     ///
-    /// Only used by the cross-layer tests below (feature = "test-util").
-    #[cfg(all(feature = "test-util", feature = "sqlite"))]
+    /// Only used by the cross-layer tests below (sqlite feature).
+    #[cfg(feature = "sqlite")]
     struct CountingKeyProvider {
         inner: StaticKeyProvider,
         current_key_calls: AtomicUsize,
         version_calls: AtomicUsize,
     }
 
-    #[cfg(all(feature = "test-util", feature = "sqlite"))]
+    #[cfg(feature = "sqlite")]
     impl CountingKeyProvider {
         fn new(key: Arc<EncryptionKey>) -> Self {
             Self {
@@ -812,7 +812,7 @@ mod tests {
         }
     }
 
-    #[cfg(all(feature = "test-util", feature = "sqlite"))]
+    #[cfg(feature = "sqlite")]
     impl KeyProvider for CountingKeyProvider {
         fn current_key(&self) -> Result<Arc<EncryptionKey>, ProviderError> {
             self.current_key_calls.fetch_add(1, Ordering::SeqCst);
@@ -825,13 +825,14 @@ mod tests {
         }
     }
 
-    // Cross-layer test — requires credential's `test_helpers` (test-util feature)
-    // plus storage's in-memory store (credential-in-memory feature).
-    #[cfg(all(feature = "test-util", feature = "sqlite"))]
+    // Cross-layer test — requires the sqlite feature for SqliteCredentialStore.
+    #[cfg(feature = "sqlite")]
     #[tokio::test]
     async fn layer_refetches_provider_on_put_and_get() -> Result<(), nebula_credential::StoreError>
     {
-        use nebula_credential::{CredentialStore, PutMode, store::test_helpers::make_credential};
+        use nebula_credential::{CredentialStore, PutMode};
+
+        use crate::credential::test_support::make_credential;
 
         use super::super::{layer::EncryptionLayer, sqlite::SqliteCredentialStore};
 
@@ -870,11 +871,11 @@ mod tests {
     /// `StoreError::Backend` — the typed taxonomy the rest of the credential
     /// surface expects.
     ///
-    /// Only used by the cross-layer tests below (feature = "test-util").
-    #[cfg(all(feature = "test-util", feature = "sqlite"))]
+    /// Only used by the cross-layer tests below (sqlite feature).
+    #[cfg(feature = "sqlite")]
     struct FailingKeyProvider;
 
-    #[cfg(all(feature = "test-util", feature = "sqlite"))]
+    #[cfg(feature = "sqlite")]
     impl KeyProvider for FailingKeyProvider {
         fn current_key(&self) -> Result<Arc<EncryptionKey>, ProviderError> {
             Err(ProviderError::NotConfigured {
@@ -888,13 +889,13 @@ mod tests {
     }
 
     // Cross-layer test — see `layer_refetches_provider_on_put_and_get`.
-    #[cfg(all(feature = "test-util", feature = "sqlite"))]
+    #[cfg(feature = "sqlite")]
     #[tokio::test]
     async fn provider_failure_surfaces_as_backend_error()
     -> Result<(), nebula_credential::StoreError> {
-        use nebula_credential::{
-            CredentialStore, PutMode, StoreError, store::test_helpers::make_credential,
-        };
+        use nebula_credential::{CredentialStore, PutMode, StoreError};
+
+        use crate::credential::test_support::make_credential;
 
         use super::super::{layer::EncryptionLayer, sqlite::SqliteCredentialStore};
 

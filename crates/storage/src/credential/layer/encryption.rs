@@ -250,14 +250,11 @@ impl<S> EncryptionLayer<S> {
     }
 }
 
-// Tests require `nebula-credential/test-util` to reach `test_helpers` and
-// `StaticKeyProvider`. Storage's own `test-util` feature forwards that.
-#[cfg(all(test, feature = "test-util", feature = "sqlite"))]
+#[cfg(all(test, feature = "sqlite"))]
 mod tests {
-    use nebula_credential::{
-        AuthStyle, PutMode, SecretString, credentials::oauth2::OAuth2State,
-        store::test_helpers::make_credential,
-    };
+    use nebula_credential::{AuthStyle, PutMode, SecretString, credentials::oauth2::OAuth2State};
+
+    use crate::credential::test_support::make_credential;
     use nebula_crypto::encrypt_with_key_id;
 
     use super::{

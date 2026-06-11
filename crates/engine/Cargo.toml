@@ -10,7 +10,7 @@ repository.workspace = true
 
 [features]
 default = []
-rotation = ["nebula-credential/rotation", "nebula-storage/rotation"]
+rotation = ["nebula-credential/rotation", "nebula-storage/rotation", "nebula-resource/rotation"]
 # Run the full 10-min refresh-coordinator chaos test (sub-spec §5.4) in
 # `crates/engine/tests/refresh_coordinator_chaos.rs`. Default CI runs the
 # scaled-down 30s version; this feature is enabled in the nightly chaos
@@ -61,21 +61,15 @@ parking_lot = { workspace = true }
 scopeguard = "1"
 regex = { workspace = true }
 url = { workspace = true }
-reqwest = { workspace = true, default-features = false, features = [
-  "json",
-  "rustls",
-  "form",
-  "stream",
-] }
 futures = { workspace = true }
 zeroize = { version = "1.8.2", features = ["zeroize_derive"] }
 
 [dev-dependencies]
 # Dev-only: the credential moat tests build a real durable store backed by a
 # unique in-memory SQLite database (`SqliteCredentialStore::connect_memory`),
-# so the resolver exercises the same CAS path as production. `test-util` exposes
-# that constructor; both features stay out of the release build (ADR-0023).
-nebula-storage = { path = "../storage", features = ["sqlite", "test-util"] }
+# so the resolver exercises the same CAS path as production. `sqlite` is enough;
+# the nebula test-util feature was removed from nebula-storage (ADR-0092 step 8).
+nebula-storage = { path = "../storage", features = ["sqlite"] }
 chrono = { workspace = true }
 futures = { workspace = true }
 serde = { workspace = true, features = ["derive"] }

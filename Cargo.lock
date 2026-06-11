@@ -3351,7 +3351,6 @@ dependencies = [
  "nebula-api",
  "nebula-core",
  "nebula-credential",
- "nebula-credential-runtime",
  "nebula-engine",
  "nebula-env",
  "nebula-error",
@@ -3428,20 +3427,28 @@ dependencies = [
  "bitflags",
  "chrono",
  "compact_str",
+ "futures",
  "humantime-serde",
  "insta",
+ "lru",
  "mockall",
  "nebula-core",
  "nebula-credential-macros",
  "nebula-crypto",
  "nebula-error",
+ "nebula-eventbus",
  "nebula-metadata",
+ "nebula-metrics",
  "nebula-resilience",
  "nebula-schema",
+ "nebula-storage-port",
+ "parking_lot",
  "percent-encoding",
  "pretty_assertions",
  "rand 0.10.1",
+ "regex",
  "rstest",
+ "scopeguard",
  "secrecy",
  "semver",
  "serde",
@@ -3461,24 +3468,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "nebula-credential-builtin"
-version = "0.1.0"
-dependencies = [
- "nebula-core",
- "nebula-credential",
- "nebula-credential-macros",
- "nebula-error",
- "nebula-schema",
- "secrecy",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
- "trybuild",
- "zeroize",
-]
-
-[[package]]
 name = "nebula-credential-macros"
 version = "0.1.0"
 dependencies = [
@@ -3486,34 +3475,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
-]
-
-[[package]]
-name = "nebula-credential-runtime"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "nebula-core",
- "nebula-credential",
- "nebula-credential-builtin",
- "nebula-credential-runtime",
- "nebula-crypto",
- "nebula-engine",
- "nebula-error",
- "nebula-eventbus",
- "nebula-resilience",
- "nebula-schema",
- "nebula-storage",
- "nebula-storage-port",
- "pretty_assertions",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
- "tokio-util",
- "tracing",
- "trybuild",
- "zeroize",
 ]
 
 [[package]]
@@ -3564,7 +3525,6 @@ dependencies = [
  "proptest",
  "rand 0.10.1",
  "regex",
- "reqwest 0.13.4",
  "rstest",
  "scopeguard",
  "semver",

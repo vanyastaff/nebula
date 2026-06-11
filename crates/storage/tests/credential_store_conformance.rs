@@ -10,9 +10,11 @@
 //! Migration 0030 is applied inline before the store is constructed, matching
 //! the pattern used by `tests/refresh_claim_sqlite_integration.rs`.
 
-#![cfg(all(feature = "test-util", any(feature = "sqlite", feature = "postgres")))]
+#![cfg(any(feature = "sqlite", feature = "postgres"))]
 
-use nebula_credential::store::test_helpers::make_credential;
+mod common;
+
+use common::make_credential;
 use nebula_credential::{CredentialStore, PutMode, StoreError};
 
 #[cfg(feature = "postgres")]
