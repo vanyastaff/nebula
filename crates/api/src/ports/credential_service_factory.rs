@@ -13,7 +13,7 @@
 //! lifecycle. Production ([`try_default_credential_service`]) uses a **durable
 //! SQLite backend** (`SqliteCredentialStore`, encrypted-at-rest, persisted
 //! across restart) selected by `NEBULA_CRED_DB`; the ephemeral in-memory
-//! backend ([`with_memory_store`]) is for tests and throwaway dev only. The
+//! backend (`with_memory_store`) is for tests and throwaway dev only. The
 //! pending-state store is always ephemeral in-memory (OAuth handshake state,
 //! TTL ≤ 10 min). Postgres is available via `SqliteCredentialStore`'s sibling
 //! `PgCredentialStore` once a composition wires a `PgPool`.
@@ -206,7 +206,7 @@ pub async fn with_memory_store(
 /// caller-supplied [`KeyProvider`].
 ///
 /// The durable path ([`try_default_credential_service`]) passes a file-backed
-/// `SqliteCredentialStore`; the test path ([`with_memory_store`]) passes an
+/// `SqliteCredentialStore`; the test path (`with_memory_store`) passes an
 /// ephemeral in-memory one. The pending-state store is **always** the ephemeral
 /// in-memory `InMemoryPendingStore` (OAuth / device-code handshake state,
 /// TTL ≤ 10 min; durable multi-replica pending is a 1.1 concern, ADR-0084).
