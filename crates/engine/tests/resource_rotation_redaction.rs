@@ -389,10 +389,9 @@ async fn setup(
             config: Cfg,
             scope: scope.clone(),
             slot_identity: id.clone(),
-            topology: TopologyRuntime::Resident(ResidentRuntime::<SecretBearingResource>::new(
+            topology: TopologyRuntime::resident(ResidentRuntime::<SecretBearingResource>::new(
                 ResidentConfig::default(),
             )),
-            acquire_fn: nebula_resource::resident_acquire_fn::<SecretBearingResource>(),
             recovery_gate: None,
         })
         .expect("register resolved-credential row");

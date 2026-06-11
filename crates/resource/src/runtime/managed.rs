@@ -5,9 +5,6 @@
 //! topology runtime, release queue, and lifecycle metadata.
 
 use std::{
-    any::Any,
-    future::Future,
-    pin::Pin,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -26,25 +23,6 @@ use crate::{
     resource::Provider,
     state::{ResourcePhase, ResourceStatus},
 };
-
-/// Type-erased topology acquire function stored on each [`ManagedResource`].
-///
-/// Closed over at registration time by the topology-specific registration
-/// path (which holds the `R: Resident` / `R: Pooled` bounds). Calling it
-/// from [`ManagedHandle::acquire`] dispatches the correct pipeline without
-/// requiring the dyn-safe trait to carry topology bounds. The closure is
-/// `Send + Sync` so `ManagedResource` stays `Send + Sync`.
-pub type AcquireFn = Arc<
-    dyn Fn(
-            Arc<dyn Any + Send + Sync>,
-            Arc<crate::manager::Manager>,
-            crate::context::ResourceContext,
-            crate::options::AcquireOptions,
-        )
-            -> Pin<Box<dyn Future<Output = Result<Box<dyn Any + Send + Sync>, Error>> + Send>>
-        + Send
-        + Sync,
->;
 
 /// Per-registration runtime holding topology + metadata.
 ///
@@ -91,12 +69,6 @@ pub struct ManagedResource<R: Provider> {
     /// revoke-vs-acquire TOCTOU. Two-phase-revoke / drain invariant: see the
     /// [`manager`](crate::manager) module documentation.
     pub(crate) in_flight: Arc<(AtomicU64, Notify)>,
-    /// Type-erased acquire dispatch, closed over at registration time.
-    ///
-    /// Stores the topology-specific acquire pipeline (resident or pooled)
-    /// as an erased closure so [`ManagedHandle::acquire`] can dispatch
-    /// without carrying topology trait bounds on the `dyn`-safe trait.
-    pub(crate) acquire_fn: AcquireFn,
 }
 
 impl<R: Provider> ManagedResource<R> {
@@ -170,7 +142,7 @@ impl<R: Provider> ManagedResource<R> {
     ///
     /// Called synchronously by `Manager::revoke_slot` in phase 1, before the
     /// revoke hook is dispatched — the same pre-`.await` discipline as
-    /// [`taint`](Self::taint). Only the [`Pool`](TopologyRuntime::Pool)
+    /// [`taint`](Self::taint). Only the [`Pool`](super::TopologyKind::Pool)
     /// topology has an idle queue and the recycle / in-flight-create /
     /// warmup / maintenance return-to-idle paths this counter guards; the
     /// single-runtime topologies hold one shared `Arc<R::Instance>` and
@@ -179,7 +151,7 @@ impl<R: Provider> ManagedResource<R> {
     /// them. See the [`manager`](crate::manager) module docs for the
     /// canonical revoke-epoch-fence rationale.
     pub(crate) fn bump_revoke_epoch(&self) {
-        if let TopologyRuntime::Pool(rt) = &self.topology {
+        if let super::TopologyKind::Pool(rt) = &self.topology.kind {
             rt.bump_revoke_epoch();
         }
     }
@@ -245,16 +217,16 @@ impl<R: Provider> ManagedResource<R> {
     where
         R: crate::resource::HasCredentialSlots,
     {
-        match &self.topology {
+        match &self.topology.kind {
             // Reconcile-aware (per-resource revoke deferral / #680): serialises
             // against the resident `create` slow path and re-delivers the
             // hook to a runtime built against an older credential epoch
             // rather than skipping with a false success.
-            TopologyRuntime::Resident(rt) => {
+            super::TopologyKind::Resident(rt) => {
                 rt.dispatch_resident_hook(&self.resource, slot, refresh)
                     .await
             },
-            TopologyRuntime::Pool(rt) => {
+            super::TopologyKind::Pool(rt) => {
                 rt.dispatch_slot_hook_over_idle(&self.resource, slot, refresh)
                     .await
             },

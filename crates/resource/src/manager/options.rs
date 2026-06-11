@@ -242,10 +242,4 @@ pub struct RegistrationSpec<R: Provider> {
     pub topology: TopologyRuntime<R>,
     /// Optional recovery gate for thundering-herd prevention.
     pub recovery_gate: Option<Arc<RecoveryGate>>,
-    /// Type-erased topology acquire function, closed over at the call
-    /// site where topology trait bounds (`R: Resident` / `R: Pooled`) are
-    /// in scope. Stored on [`ManagedResource`](crate::runtime::managed::ManagedResource)
-    /// and invoked by [`ManagedHandle::acquire`](crate::registry::ManagedHandle) so the
-    /// dyn-safe trait need not carry topology bounds.
-    pub acquire_fn: crate::runtime::managed::AcquireFn,
 }

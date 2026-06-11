@@ -76,7 +76,6 @@ pub use guard::ResourceGuard;
 pub use manager::{
     DrainTimeoutPolicy, Manager, ManagerConfig, RegisterOptions, RegistrationSpec,
     ResourceHealthSnapshot, RevokeTail, ShutdownConfig, ShutdownError, ShutdownReport, TaintedSlot,
-    pooled_acquire_fn, resident_acquire_fn,
 };
 pub use metrics::{OutcomeCountersSnapshot, ResourceOpsMetrics, ResourceOpsSnapshot};
 pub use nebula_core::{ExecutionId, ResourceKey, ScopeLevel, WorkflowId, resource_key};
@@ -128,7 +127,7 @@ pub use slot::{CredentialSlot, SlotCell};
 // Runtime types — needed for `Manager::register()`.
 pub use runtime::TopologyRuntime;
 pub use runtime::{
-    managed::{AcquireFn, ManagedResource},
+    managed::ManagedResource,
     pool::{PoolRuntime, PoolStats},
     resident::ResidentRuntime,
 };

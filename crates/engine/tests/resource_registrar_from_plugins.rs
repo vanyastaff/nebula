@@ -21,8 +21,8 @@
 //! over `Plugin::resources()`. The wireable producer is the **explicit
 //! typed-registration path**: the composition root pairs each declared
 //! resource `kind` with the concrete-`R` resource/topology constructors it
-//! holds (exactly the shape [`nebula_engine::TypedResourceRegistrar`] takes)
-//! and threads the assembled [`nebula_engine::ResourceRegistrarRegistry`]
+//! holds (exactly the shape [`nebula_engine::KindActivator`] takes)
+//! and threads the assembled [`nebula_engine::ResourceActivatorRegistry`]
 //! into the engine — mirroring how Actions are registered by the caller
 //! (typed registration), not auto-pulled from the plugin registry.
 //!
@@ -48,9 +48,9 @@ use nebula_action::{
 };
 use nebula_core::{Dependencies, ResourceKey, action_key, node_key, resource_key};
 use nebula_engine::{
-    ActionExecutor, ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessSandbox, Plugin,
-    PluginManifest, PluginRegistry, ResolvedPlugin, ResourceRegistrarRegistry,
-    TypedResourceRegistrar, WorkflowEngine,
+    ActionExecutor, ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessSandbox,
+    KindActivator, Plugin, PluginManifest, PluginRegistry, ResolvedPlugin,
+    ResourceActivatorRegistry, WorkflowEngine,
 };
 use nebula_metrics::MetricsRegistry;
 use nebula_resource::{
@@ -211,8 +211,8 @@ fn demo_plugin_registry() -> PluginRegistry {
 /// guessed — and the topology is the one a `demo.widget` deployment uses
 /// (resident); both are supplied by the typed constructors the plugin
 /// author holds, NOT synthesized from the erased `AnyResource`.
-fn demo_registrars(plugins: &PluginRegistry) -> ResourceRegistrarRegistry {
-    let mut registrars = ResourceRegistrarRegistry::new();
+fn demo_registrars(plugins: &PluginRegistry) -> ResourceActivatorRegistry {
+    let mut registrars = ResourceActivatorRegistry::new();
 
     // The kind comes from the plugin-declared resource's catalog key.
     let kind = plugins
@@ -223,14 +223,13 @@ fn demo_registrars(plugins: &PluginRegistry) -> ResourceRegistrarRegistry {
 
     registrars.insert(
         kind.as_str().to_owned(),
-        Arc::new(TypedResourceRegistrar::<DemoResource, _, _, _>::new(
+        Arc::new(KindActivator::<DemoResource, _, _>::new(
             DemoResource::new,
             || {
-                TopologyRuntime::Resident(ResidentRuntime::<DemoResource>::new(
+                TopologyRuntime::resident(ResidentRuntime::<DemoResource>::new(
                     resident::config::Config::default(),
                 ))
             },
-            nebula_resource::resident_acquire_fn::<DemoResource>,
         )),
     );
     registrars
@@ -264,7 +263,7 @@ impl StatelessAction for NoopHandler {
     }
 }
 
-fn build_engine(registrars: ResourceRegistrarRegistry) -> WorkflowEngine {
+fn build_engine(registrars: ResourceActivatorRegistry) -> WorkflowEngine {
     let registry = Arc::new(ActionRegistry::new());
     registry.legacy_register_stateless_with_metadata(
         ActionMetadata::new(action_key!("test.noop"), "Noop", "noop"),
@@ -364,7 +363,7 @@ async fn wired_registrar_performs_typed_registration() {
 /// present in engine state (not an `Option`) and defaults closed.
 #[tokio::test]
 async fn default_engine_has_empty_failclosed_registry() {
-    let engine = build_engine(ResourceRegistrarRegistry::new());
+    let engine = build_engine(ResourceActivatorRegistry::new());
     assert!(engine.resource_registrars().is_empty());
     assert!(!engine.resource_registrars().contains("demo.widget"));
 }

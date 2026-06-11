@@ -125,8 +125,7 @@ fn register_pool_res(
         config: CountingConfig,
         scope: opts.scope,
         slot_identity,
-        topology: TopologyRuntime::Pool(PoolRuntime::<PoolRes>::new(pool_cfg(), fingerprint)),
-        acquire_fn: nebula_resource::pooled_acquire_fn::<PoolRes>(),
+        topology: TopologyRuntime::pooled(PoolRuntime::<PoolRes>::new(pool_cfg(), fingerprint)),
         recovery_gate: opts.recovery_gate,
     })
 }
@@ -143,10 +142,9 @@ fn register_res_res(
         config: CountingConfig,
         scope: opts.scope,
         slot_identity,
-        topology: TopologyRuntime::Resident(ResidentRuntime::<ResRes>::new(
+        topology: TopologyRuntime::resident(ResidentRuntime::<ResRes>::new(
             nebula_resource::ResidentConfig::default(),
         )),
-        acquire_fn: nebula_resource::resident_acquire_fn::<ResRes>(),
         recovery_gate: opts.recovery_gate,
     })
 }

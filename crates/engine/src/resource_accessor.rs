@@ -282,10 +282,9 @@ mod tests {
                 config: AccConfig,
                 scope: ScopeLevel::Global,
                 slot_identity: SlotIdentity::Unbound,
-                topology: TopologyRuntime::Resident(ResidentRuntime::<AccResource>::new(
+                topology: TopologyRuntime::resident(ResidentRuntime::<AccResource>::new(
                     ResidentConfig::default(),
                 )),
-                acquire_fn: nebula_resource::resident_acquire_fn::<AccResource>(),
                 recovery_gate: None,
             })
             .expect("register");
@@ -321,10 +320,9 @@ mod tests {
                 config: AccConfig,
                 scope: ScopeLevel::Global,
                 slot_identity: bound.clone(),
-                topology: TopologyRuntime::Resident(ResidentRuntime::<AccResource>::new(
+                topology: TopologyRuntime::resident(ResidentRuntime::<AccResource>::new(
                     ResidentConfig::default(),
                 )),
-                acquire_fn: nebula_resource::resident_acquire_fn::<AccResource>(),
                 recovery_gate: None,
             })
             .expect("register cred-bound row");

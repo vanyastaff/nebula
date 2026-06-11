@@ -132,7 +132,7 @@ impl DeclaresDependencies for Db {
 }
 
 fn topology() -> TopologyRuntime<Db> {
-    TopologyRuntime::Resident(ResidentRuntime::<Db>::new(ResidentConfig::default()))
+    TopologyRuntime::resident(ResidentRuntime::<Db>::new(ResidentConfig::default()))
 }
 
 // ── Negative: secret-shaped field is rejected (the security assertion) ──────
@@ -161,7 +161,6 @@ async fn register_from_value_rejects_inline_secret_field() {
             Db,
             ScopeLevel::Global,
             topology(),
-            nebula_resource::resident_acquire_fn::<Db>(),
             None,
         )
         .await
@@ -214,7 +213,6 @@ async fn register_from_value_accepts_clean_config_same_resource() {
             Db,
             ScopeLevel::Global,
             topology(),
-            nebula_resource::resident_acquire_fn::<Db>(),
             None,
         )
         .await

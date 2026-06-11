@@ -83,7 +83,7 @@ pub trait EngineResourceStatus: Send + Sync {
 /// [`nebula_resource::Manager`].
 ///
 /// Holds the same `Arc<Manager>` the engine is wired with and projects
-/// `AnyManagedResource::phase_erased()` through the manager's fail-closed
+/// `ManagedHandle::phase_erased()` through the manager's fail-closed
 /// `get_any` peek. Resources are looked up at [`ScopeLevel::Global`] —
 /// identical to [`EngineResourceAccessor`](crate::EngineResourceAccessor)
 /// — because tenant isolation is the caller's config-row check, not a

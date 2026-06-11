@@ -180,7 +180,7 @@ async fn use_case_1_http_client_pool() {
     // `Manager::register_pooled(resource, config, PoolConfig::default())`.
     // Instead, the pattern is:
     //   let pool_rt = PoolRuntime::<MyResource>::new(pool_config, fingerprint);
-    //   manager.register(..., TopologyRuntime::Pool(pool_rt), ...);
+    //   manager.register(..., TopologyRuntime::pooled(pool_rt), ...);
     //
     // The `fingerprint: u64` parameter to PoolRuntime::new has no
     // documentation. I had to read the source to understand it's a config
@@ -213,8 +213,7 @@ async fn use_case_1_http_client_pool() {
             },
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Pool(pool_rt),
-            acquire_fn: nebula_resource::pooled_acquire_fn::<HttpClientResource>(),
+            topology: TopologyRuntime::pooled(pool_rt),
             recovery_gate: None,
         })
         .expect("registration should succeed");
@@ -355,8 +354,7 @@ async fn use_case_2_resident_config_store() {
             },
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Resident(resident_rt),
-            acquire_fn: nebula_resource::resident_acquire_fn::<ConfigStoreResource>(),
+            topology: TopologyRuntime::resident(resident_rt),
             recovery_gate: None,
         })
         .expect("resident registration should succeed");
@@ -499,8 +497,7 @@ async fn use_case_3_db_pool_with_resilience_and_shutdown() {
             },
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Pool(pool_rt),
-            acquire_fn: nebula_resource::pooled_acquire_fn::<DbResource>(),
+            topology: TopologyRuntime::pooled(pool_rt),
             recovery_gate: None,
         })
         .expect("db registration should succeed");

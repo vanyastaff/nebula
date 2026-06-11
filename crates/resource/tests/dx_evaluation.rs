@@ -140,11 +140,10 @@ async fn use_case_1_pooled_http_client() {
             config,
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Pool(PoolRuntime::<HttpResource>::new(
+            topology: TopologyRuntime::pooled(PoolRuntime::<HttpResource>::new(
                 PoolConfig::default(),
                 fingerprint,
             )),
-            acquire_fn: nebula_resource::pooled_acquire_fn::<HttpResource>(),
             recovery_gate: None,
         })
         .expect("registration should succeed");
@@ -193,11 +192,10 @@ async fn use_case_1_invalid_config_is_rejected() {
         config,
         scope: ScopeLevel::Global,
         slot_identity: SlotIdentity::Unbound,
-        topology: TopologyRuntime::Pool(PoolRuntime::<HttpResource>::new(
+        topology: TopologyRuntime::pooled(PoolRuntime::<HttpResource>::new(
             PoolConfig::default(),
             fingerprint,
         )),
-        acquire_fn: nebula_resource::pooled_acquire_fn::<HttpResource>(),
         recovery_gate: None,
     });
     let err = result.expect_err("empty base_url must fail validation at register time");
@@ -292,10 +290,9 @@ async fn use_case_2_resident_config_store() {
             },
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Resident(ResidentRuntime::<ConfigStoreResource>::new(
+            topology: TopologyRuntime::resident(ResidentRuntime::<ConfigStoreResource>::new(
                 ResidentConfig::default(),
             )),
-            acquire_fn: nebula_resource::resident_acquire_fn::<ConfigStoreResource>(),
             recovery_gate: None,
         })
         .expect("registration should succeed");
@@ -432,11 +429,10 @@ async fn use_case_3_db_with_recovery_and_shutdown() {
             config,
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Pool(PoolRuntime::<DbResource>::new(
+            topology: TopologyRuntime::pooled(PoolRuntime::<DbResource>::new(
                 pool_config,
                 fingerprint,
             )),
-            acquire_fn: nebula_resource::pooled_acquire_fn::<DbResource>(),
             recovery_gate: None,
         })
         .expect("registration should succeed");
@@ -532,11 +528,10 @@ async fn error_cancelled_after_shutdown() {
             config,
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Pool(PoolRuntime::<HttpResource>::new(
+            topology: TopologyRuntime::pooled(PoolRuntime::<HttpResource>::new(
                 PoolConfig::default(),
                 fingerprint,
             )),
-            acquire_fn: nebula_resource::pooled_acquire_fn::<HttpResource>(),
             recovery_gate: None,
         })
         .unwrap();

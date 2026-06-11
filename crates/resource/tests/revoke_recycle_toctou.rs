@@ -230,11 +230,10 @@ async fn revoked_credential_not_reserved_via_idle_recycle() {
         config: PoolCfg,
         scope: ScopeLevel::Global,
         slot_identity: SlotIdentity::Unbound,
-        topology: TopologyRuntime::Pool(PoolRuntime::<PoolResource>::new(
+        topology: TopologyRuntime::pooled(PoolRuntime::<PoolResource>::new(
             pool_config(),
             PoolCfg.fingerprint(),
         )),
-        acquire_fn: nebula_resource::pooled_acquire_fn::<PoolResource>(),
         recovery_gate: None,
     })
     .expect("pooled registration must succeed");
@@ -319,11 +318,10 @@ async fn in_flight_create_completing_after_revoke_is_destroyed() {
         config: PoolCfg,
         scope: ScopeLevel::Global,
         slot_identity: SlotIdentity::Unbound,
-        topology: TopologyRuntime::Pool(PoolRuntime::<PoolResource>::new(
+        topology: TopologyRuntime::pooled(PoolRuntime::<PoolResource>::new(
             pool_config(),
             PoolCfg.fingerprint(),
         )),
-        acquire_fn: nebula_resource::pooled_acquire_fn::<PoolResource>(),
         recovery_gate: None,
     })
     .expect("pooled registration must succeed");
@@ -404,11 +402,10 @@ async fn revoked_pre_existing_idle_instance_not_reserved() {
         config: PoolCfg,
         scope: ScopeLevel::Global,
         slot_identity: SlotIdentity::Unbound,
-        topology: TopologyRuntime::Pool(PoolRuntime::<PoolResource>::new(
+        topology: TopologyRuntime::pooled(PoolRuntime::<PoolResource>::new(
             pool_config(),
             PoolCfg.fingerprint(),
         )),
-        acquire_fn: nebula_resource::pooled_acquire_fn::<PoolResource>(),
         recovery_gate: None,
     })
     .expect("pooled registration must succeed");
@@ -515,11 +512,10 @@ async fn warmup_after_revoke_does_not_admit_revoked_instance() {
         config: PoolCfg,
         scope: ScopeLevel::Global,
         slot_identity: SlotIdentity::Unbound,
-        topology: TopologyRuntime::Pool(PoolRuntime::<PoolResource>::new(
+        topology: TopologyRuntime::pooled(PoolRuntime::<PoolResource>::new(
             cfg,
             PoolCfg.fingerprint(),
         )),
-        acquire_fn: nebula_resource::pooled_acquire_fn::<PoolResource>(),
         recovery_gate: None,
     })
     .expect("pooled registration must succeed");

@@ -307,10 +307,9 @@ async fn resident_reconcile_fires_when_non_max_slot_rotates() {
         config: RaceCfg,
         scope: ScopeLevel::Global,
         slot_identity: SlotIdentity::Unbound,
-        topology: TopologyRuntime::Resident(ResidentRuntime::<TwoSlotResident>::new(
+        topology: TopologyRuntime::resident(ResidentRuntime::<TwoSlotResident>::new(
             ResidentConfig::default(),
         )),
-        acquire_fn: nebula_resource::resident_acquire_fn::<TwoSlotResident>(),
         recovery_gate: None,
     })
     .expect("resident registration must succeed");

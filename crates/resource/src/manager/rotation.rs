@@ -507,7 +507,7 @@ impl Manager {
     /// `R`), so they cannot use the typed `lookup::<R>`. This mirrors its
     /// shutdown-race guard (reject once `shutting_down` is observed) and
     /// resolves through the same registry the typed path uses, via the
-    /// type-erased `AnyManagedResource` view.
+    /// type-erased `ManagedHandle` view.
     fn lookup_any_for_slot(
         &self,
         key: &ResourceKey,

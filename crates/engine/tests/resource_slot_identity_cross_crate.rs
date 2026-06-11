@@ -16,7 +16,7 @@
 //! This test closes that residual at the value level, not the type level:
 //!
 //! 1. Register a resource **through the engine path**
-//!    ([`ResourceRegistrarRegistry::register`]) with a non-empty
+//!    ([`ResourceActivatorRegistry::register`]) with a non-empty
 //!    `(slot, credential)` binding.
 //! 2. Capture the [`SlotIdentity`] the manager-side `register_resolved`
 //!    *returned* (propagated verbatim into
@@ -45,7 +45,7 @@ use nebula_core::{
     resource_key,
 };
 use nebula_engine::{
-    RegisterRequest, ResourceRegistrarRegistry, TypedResourceRegistrar,
+    KindActivator, RegisterRequest, ResourceActivatorRegistry,
     resource_accessor::slot_identities_for_key,
 };
 use nebula_expression::ExpressionEngine;
@@ -178,18 +178,17 @@ impl resident::Resident for XResource {
     }
 }
 
-fn registrars() -> ResourceRegistrarRegistry {
-    let mut registrars = ResourceRegistrarRegistry::new();
+fn registrars() -> ResourceActivatorRegistry {
+    let mut registrars = ResourceActivatorRegistry::new();
     registrars.insert(
         "xcross.widget",
-        Arc::new(TypedResourceRegistrar::<XResource, _, _, _>::new(
+        Arc::new(KindActivator::<XResource, _, _>::new(
             XResource::new,
             || {
-                TopologyRuntime::Resident(ResidentRuntime::<XResource>::new(
+                TopologyRuntime::resident(ResidentRuntime::<XResource>::new(
                     resident::config::Config::default(),
                 ))
             },
-            nebula_resource::resident_acquire_fn::<XResource>,
         )),
     );
     registrars

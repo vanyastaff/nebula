@@ -249,10 +249,9 @@ async fn wired_rotation_fanout_observability_is_redaction_clean() {
         config: Cfg,
         scope: scope.clone(),
         slot_identity: slot_identity.clone(),
-        topology: TopologyRuntime::Resident(ResidentRuntime::<SecretRes>::new(
+        topology: TopologyRuntime::resident(ResidentRuntime::<SecretRes>::new(
             ResidentConfig::default(),
         )),
-        acquire_fn: nebula_resource::resident_acquire_fn::<SecretRes>(),
         recovery_gate: None,
     })
     .expect("register resolved-credential row");

@@ -230,8 +230,8 @@ impl<R: Provider + crate::resource::HasCredentialSlots + Send + Sync + 'static> 
         ctx: ResourceContext,
         opts: AcquireOptions,
     ) -> Result<Box<dyn Any + Send + Sync>, Error> {
-        let acquire_fn = Arc::clone(&self.acquire_fn);
-        acquire_fn(self, mgr, ctx, opts).await
+        let this = Arc::clone(&self);
+        self.topology.dispatch_acquire(this, mgr, ctx, opts).await
     }
 }
 
@@ -736,7 +736,7 @@ impl Registry {
 
     /// Removes all entries from the registry.
     ///
-    /// This drops every `Arc<dyn AnyManagedResource>`, releasing their
+    /// This drops every `Arc<dyn ManagedHandle>`, releasing their
     /// resources (including `Arc<ReleaseQueue>` references).
     pub fn clear(&self) {
         self.entries.clear();

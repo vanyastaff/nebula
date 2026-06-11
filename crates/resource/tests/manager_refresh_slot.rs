@@ -185,10 +185,9 @@ mod counting {
             config: CountingConfig,
             scope: opts.scope,
             slot_identity,
-            topology: TopologyRuntime::Resident(ResidentRuntime::<CountingResource>::new(
+            topology: TopologyRuntime::resident(ResidentRuntime::<CountingResource>::new(
                 ResidentConfig::default(),
             )),
-            acquire_fn: nebula_resource::resident_acquire_fn::<CountingResource>(),
             recovery_gate: opts.recovery_gate,
         })
     }
@@ -1256,10 +1255,9 @@ mod u9_gate {
             config: GateConfig,
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Resident(ResidentRuntime::<GateResource>::new(
+            topology: TopologyRuntime::resident(ResidentRuntime::<GateResource>::new(
                 ResidentConfig::default(),
             )),
-            acquire_fn: nebula_resource::resident_acquire_fn::<GateResource>(),
             recovery_gate: None,
         })
         .expect("resident registration must succeed");
@@ -1442,10 +1440,9 @@ mod reload_deferral {
             config: v(1),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Resident(ResidentRuntime::<ResidentReload>::new(
+            topology: TopologyRuntime::resident(ResidentRuntime::<ResidentReload>::new(
                 ResidentConfig::default(),
             )),
-            acquire_fn: nebula_resource::resident_acquire_fn::<ResidentReload>(),
             recovery_gate: None,
         })
         .expect("resident registration must succeed");
@@ -1461,11 +1458,10 @@ mod reload_deferral {
             config: v(1),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Pool(PoolRuntime::<PoolReload>::new(
+            topology: TopologyRuntime::pooled(PoolRuntime::<PoolReload>::new(
                 PoolConfig::default(),
                 v(1).fingerprint(),
             )),
-            acquire_fn: nebula_resource::pooled_acquire_fn::<PoolReload>(),
             recovery_gate: None,
         })
         .expect("pool registration must succeed");
@@ -1489,11 +1485,10 @@ mod reload_deferral {
             config: v(1),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Pool(PoolRuntime::<PoolReload>::new(
+            topology: TopologyRuntime::pooled(PoolRuntime::<PoolReload>::new(
                 PoolConfig::default(),
                 v(1).fingerprint(),
             )),
-            acquire_fn: nebula_resource::pooled_acquire_fn::<PoolReload>(),
             recovery_gate: None,
         })
         .expect("pool registration must succeed");
@@ -1523,10 +1518,9 @@ mod reload_deferral {
             config: v(1),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Resident(ResidentRuntime::<ResidentReload>::new(
+            topology: TopologyRuntime::resident(ResidentRuntime::<ResidentReload>::new(
                 ResidentConfig::default(),
             )),
-            acquire_fn: nebula_resource::resident_acquire_fn::<ResidentReload>(),
             recovery_gate: None,
         })
         .expect("resident registration must succeed");

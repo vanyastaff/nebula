@@ -132,8 +132,7 @@ async fn register_from_value_resolves_template_and_registers() {
             HashMap::new(),
             Postgres,
             ScopeLevel::Global,
-            TopologyRuntime::Resident(ResidentRuntime::<Postgres>::new(ResidentConfig::default())),
-            nebula_resource::resident_acquire_fn::<Postgres>(),
+            TopologyRuntime::resident(ResidentRuntime::<Postgres>::new(ResidentConfig::default())),
             None,
         )
         .await
@@ -181,8 +180,7 @@ async fn register_from_value_validates_schema_failure() {
             HashMap::new(),
             Postgres,
             ScopeLevel::Global,
-            TopologyRuntime::Resident(ResidentRuntime::<Postgres>::new(ResidentConfig::default())),
-            nebula_resource::resident_acquire_fn::<Postgres>(),
+            TopologyRuntime::resident(ResidentRuntime::<Postgres>::new(ResidentConfig::default())),
             None,
         )
         .await
@@ -213,8 +211,7 @@ async fn register_from_value_resourceconfig_validate_fires() {
             HashMap::new(),
             Postgres,
             ScopeLevel::Global,
-            TopologyRuntime::Resident(ResidentRuntime::<Postgres>::new(ResidentConfig::default())),
-            nebula_resource::resident_acquire_fn::<Postgres>(),
+            TopologyRuntime::resident(ResidentRuntime::<Postgres>::new(ResidentConfig::default())),
             None,
         )
         .await
@@ -245,8 +242,7 @@ async fn register_from_value_unknown_slot_binding_rejected() {
             bindings,
             Postgres,
             ScopeLevel::Global,
-            TopologyRuntime::Resident(ResidentRuntime::<Postgres>::new(ResidentConfig::default())),
-            nebula_resource::resident_acquire_fn::<Postgres>(),
+            TopologyRuntime::resident(ResidentRuntime::<Postgres>::new(ResidentConfig::default())),
             None,
         )
         .await
@@ -277,8 +273,7 @@ async fn register_from_value_passthrough_no_templates() {
             HashMap::new(),
             Postgres,
             ScopeLevel::Global,
-            TopologyRuntime::Resident(ResidentRuntime::<Postgres>::new(ResidentConfig::default())),
-            nebula_resource::resident_acquire_fn::<Postgres>(),
+            TopologyRuntime::resident(ResidentRuntime::<Postgres>::new(ResidentConfig::default())),
             None,
         )
         .await

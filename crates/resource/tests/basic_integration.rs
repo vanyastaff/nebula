@@ -508,8 +508,7 @@ async fn manager_register_and_acquire_pooled() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Pool(pool_rt),
-            acquire_fn: nebula_resource::pooled_acquire_fn::<PoolTestResource>(),
+            topology: TopologyRuntime::pooled(pool_rt),
             recovery_gate: None,
         })
         .expect("registration should succeed");
@@ -559,8 +558,7 @@ async fn pool_maintenance_reaper_evicts_idle_timed_out_instance() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Pool(pool_rt),
-            acquire_fn: nebula_resource::pooled_acquire_fn::<PoolTestResource>(),
+            topology: TopologyRuntime::pooled(pool_rt),
             recovery_gate: None,
         })
         .expect("registration should succeed");
@@ -638,8 +636,7 @@ async fn pool_maintenance_reaper_not_spawned_without_ttl() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Pool(pool_rt),
-            acquire_fn: nebula_resource::pooled_acquire_fn::<PoolTestResource>(),
+            topology: TopologyRuntime::pooled(pool_rt),
             recovery_gate: None,
         })
         .expect("registration should succeed");
@@ -706,8 +703,7 @@ async fn manager_register_and_acquire_resident() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Resident(resident_rt),
-            acquire_fn: nebula_resource::resident_acquire_fn::<ResidentTestResource>(),
+            topology: TopologyRuntime::resident(resident_rt),
             recovery_gate: None,
         })
         .expect("registration should succeed");
@@ -738,8 +734,7 @@ async fn manager_shutdown_rejects_acquire() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Resident(resident_rt),
-            acquire_fn: nebula_resource::resident_acquire_fn::<ResidentTestResource>(),
+            topology: TopologyRuntime::resident(resident_rt),
             recovery_gate: None,
         })
         .unwrap();
@@ -897,11 +892,10 @@ async fn pool_create_path_respects_max_concurrent_creates() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Pool(PoolRuntime::<SlowCreatePoolResource>::new(
+            topology: TopologyRuntime::pooled(PoolRuntime::<SlowCreatePoolResource>::new(
                 pool_config,
                 test_config().fingerprint(),
             )),
-            acquire_fn: nebula_resource::pooled_acquire_fn::<SlowCreatePoolResource>(),
             recovery_gate: None,
         })
         .expect("register");
@@ -951,8 +945,7 @@ async fn register_transitions_phase_to_ready() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Resident(resident_rt),
-            acquire_fn: nebula_resource::resident_acquire_fn::<ResidentTestResource>(),
+            topology: TopologyRuntime::resident(resident_rt),
             recovery_gate: None,
         })
         .expect("register");
@@ -977,8 +970,7 @@ async fn reload_config_bumps_status_generation() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Resident(resident_rt),
-            acquire_fn: nebula_resource::resident_acquire_fn::<ResidentTestResource>(),
+            topology: TopologyRuntime::resident(resident_rt),
             recovery_gate: None,
         })
         .expect("register");
@@ -1015,8 +1007,7 @@ async fn graceful_shutdown_report_marks_registry_cleared() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Resident(resident_rt),
-            acquire_fn: nebula_resource::resident_acquire_fn::<ResidentTestResource>(),
+            topology: TopologyRuntime::resident(resident_rt),
             recovery_gate: None,
         })
         .expect("register");
@@ -1175,8 +1166,7 @@ async fn register_emits_registered_event() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Resident(resident_rt),
-            acquire_fn: nebula_resource::resident_acquire_fn::<ResidentTestResource>(),
+            topology: TopologyRuntime::resident(resident_rt),
             recovery_gate: None,
         })
         .expect("registration should succeed");
@@ -1201,8 +1191,7 @@ async fn remove_emits_removed_event() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Resident(resident_rt),
-            acquire_fn: nebula_resource::resident_acquire_fn::<ResidentTestResource>(),
+            topology: TopologyRuntime::resident(resident_rt),
             recovery_gate: None,
         })
         .unwrap();
@@ -1231,8 +1220,7 @@ async fn acquire_emits_success_event() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Resident(resident_rt),
-            acquire_fn: nebula_resource::resident_acquire_fn::<ResidentTestResource>(),
+            topology: TopologyRuntime::resident(resident_rt),
             recovery_gate: None,
         })
         .unwrap();
@@ -1273,8 +1261,7 @@ async fn drop_guard_emits_released_event() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Resident(resident_rt),
-            acquire_fn: nebula_resource::resident_acquire_fn::<ResidentTestResource>(),
+            topology: TopologyRuntime::resident(resident_rt),
             recovery_gate: None,
         })
         .unwrap();
@@ -1329,8 +1316,7 @@ async fn recovery_gate_transition_emits_event_via_manager_bus() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Resident(resident_rt),
-            acquire_fn: nebula_resource::resident_acquire_fn::<ResidentTestResource>(),
+            topology: TopologyRuntime::resident(resident_rt),
             recovery_gate: Some(Arc::clone(&gate)),
         })
         .unwrap();
@@ -1488,8 +1474,7 @@ async fn manager_scope_exact_match() {
             config: test_config(),
             scope: scope.clone(),
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Resident(resident_rt),
-            acquire_fn: nebula_resource::resident_acquire_fn::<ResidentTestResource>(),
+            topology: TopologyRuntime::resident(resident_rt),
             recovery_gate: None,
         })
         .expect("registration should succeed");
@@ -1527,8 +1512,7 @@ async fn manager_scope_fallback_to_global() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Resident(resident_rt),
-            acquire_fn: nebula_resource::resident_acquire_fn::<ResidentTestResource>(),
+            topology: TopologyRuntime::resident(resident_rt),
             recovery_gate: None,
         })
         .expect("registration should succeed");
@@ -1568,8 +1552,7 @@ async fn manager_scope_mismatch_not_found() {
             config: test_config(),
             scope: ScopeLevel::Organization(org_id),
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Resident(resident_rt),
-            acquire_fn: nebula_resource::resident_acquire_fn::<ResidentTestResource>(),
+            topology: TopologyRuntime::resident(resident_rt),
             recovery_gate: None,
         })
         .expect("registration should succeed");
@@ -1617,8 +1600,7 @@ async fn metrics_track_acquire_release_create_destroy() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Resident(resident_rt),
-            acquire_fn: nebula_resource::resident_acquire_fn::<ResidentTestResource>(),
+            topology: TopologyRuntime::resident(resident_rt),
             recovery_gate: None,
         })
         .expect("registration should succeed");
@@ -1670,8 +1652,7 @@ async fn manager_multiple_resources_coexist() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Pool(pool_rt),
-            acquire_fn: nebula_resource::pooled_acquire_fn::<PoolTestResource>(),
+            topology: TopologyRuntime::pooled(pool_rt),
             recovery_gate: None,
         })
         .expect("pool registration should succeed");
@@ -1687,8 +1668,7 @@ async fn manager_multiple_resources_coexist() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Resident(resident_rt),
-            acquire_fn: nebula_resource::resident_acquire_fn::<ResidentTestResource>(),
+            topology: TopologyRuntime::resident(resident_rt),
             recovery_gate: None,
         })
         .expect("resident registration should succeed");
@@ -1921,8 +1901,7 @@ async fn registry_backed_metrics_record_operations() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Pool(pool_rt),
-            acquire_fn: nebula_resource::pooled_acquire_fn::<PoolTestResource>(),
+            topology: TopologyRuntime::pooled(pool_rt),
             recovery_gate: None,
         })
         .expect("pool registration should succeed");
@@ -1937,8 +1916,7 @@ async fn registry_backed_metrics_record_operations() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Resident(resident_rt),
-            acquire_fn: nebula_resource::resident_acquire_fn::<ResidentTestResource>(),
+            topology: TopologyRuntime::resident(resident_rt),
             recovery_gate: None,
         })
         .expect("resident registration should succeed");
@@ -2012,8 +1990,7 @@ async fn graceful_shutdown_stops_new_acquires() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Resident(resident_rt),
-            acquire_fn: nebula_resource::resident_acquire_fn::<ResidentTestResource>(),
+            topology: TopologyRuntime::resident(resident_rt),
             recovery_gate: None,
         })
         .unwrap();
@@ -2054,8 +2031,7 @@ async fn graceful_shutdown_clears_registry() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Resident(resident_rt),
-            acquire_fn: nebula_resource::resident_acquire_fn::<ResidentTestResource>(),
+            topology: TopologyRuntime::resident(resident_rt),
             recovery_gate: None,
         })
         .unwrap();
@@ -2287,8 +2263,7 @@ async fn acquire_does_not_retry_transient_at_manager_layer() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Resident(resident_rt),
-            acquire_fn: nebula_resource::resident_acquire_fn::<FailingResidentResource>(),
+            topology: TopologyRuntime::resident(resident_rt),
             recovery_gate: None,
         })
         .expect("registration should succeed");
@@ -2319,8 +2294,7 @@ async fn acquire_does_not_retry_permanent_at_manager_layer() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Resident(resident_rt),
-            acquire_fn: nebula_resource::resident_acquire_fn::<PermanentFailResource>(),
+            topology: TopologyRuntime::resident(resident_rt),
             recovery_gate: None,
         })
         .expect("registration should succeed");
@@ -2358,8 +2332,7 @@ async fn acquire_succeeds_without_resilience() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Resident(resident_rt),
-            acquire_fn: nebula_resource::resident_acquire_fn::<ResidentTestResource>(),
+            topology: TopologyRuntime::resident(resident_rt),
             recovery_gate: None,
         })
         .expect("registration should succeed");
@@ -2403,8 +2376,7 @@ async fn acquire_has_no_manager_layer_timeout() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Resident(resident_rt),
-            acquire_fn: nebula_resource::resident_acquire_fn::<BlockingResidentResource>(),
+            topology: TopologyRuntime::resident(resident_rt),
             recovery_gate: None,
         })
         .expect("registration should succeed");
@@ -2447,8 +2419,7 @@ async fn graceful_shutdown_second_call_errors_already_shutting_down() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Resident(resident_rt),
-            acquire_fn: nebula_resource::resident_acquire_fn::<ResidentTestResource>(),
+            topology: TopologyRuntime::resident(resident_rt),
             recovery_gate: None,
         })
         .unwrap();
@@ -2497,8 +2468,7 @@ async fn topology_mismatch_returns_permanent_error() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Pool(pool_rt),
-            acquire_fn: nebula_resource::pooled_acquire_fn::<PoolTestResource>(),
+            topology: TopologyRuntime::pooled(pool_rt),
             recovery_gate: None,
         })
         .unwrap();
@@ -2540,8 +2510,7 @@ async fn acquire_surfaces_underlying_transient_error_kind() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Resident(resident_rt),
-            acquire_fn: nebula_resource::resident_acquire_fn::<FailingResidentResource>(),
+            topology: TopologyRuntime::resident(resident_rt),
             recovery_gate: None,
         })
         .unwrap();
@@ -2589,8 +2558,7 @@ async fn acquire_failure_passively_triggers_recovery_gate() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Resident(resident_rt),
-            acquire_fn: nebula_resource::resident_acquire_fn::<FailingResidentResource>(),
+            topology: TopologyRuntime::resident(resident_rt),
             recovery_gate: Some(gate.clone()),
         })
         .unwrap();
@@ -2796,8 +2764,7 @@ async fn release_teardown_survives_caller_cancellation() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Pool(pool_rt),
-            acquire_fn: nebula_resource::pooled_acquire_fn::<SlowDestroyPoolResource>(),
+            topology: TopologyRuntime::pooled(pool_rt),
             recovery_gate: None,
         })
         .expect("registration should succeed");
@@ -3111,8 +3078,7 @@ async fn recovery_gate_blocks_acquire_when_permanently_failed() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Resident(resident_rt),
-            acquire_fn: nebula_resource::resident_acquire_fn::<ResidentTestResource>(),
+            topology: TopologyRuntime::resident(resident_rt),
             recovery_gate: Some(Arc::new(gate)),
         })
         .expect("registration should succeed");
@@ -3147,8 +3113,7 @@ async fn recovery_gate_blocks_acquire_when_in_progress() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Resident(resident_rt),
-            acquire_fn: nebula_resource::resident_acquire_fn::<ResidentTestResource>(),
+            topology: TopologyRuntime::resident(resident_rt),
             recovery_gate: Some(Arc::new(gate)),
         })
         .expect("registration should succeed");
@@ -3181,8 +3146,7 @@ async fn recovery_gate_allows_acquire_when_idle() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Resident(resident_rt),
-            acquire_fn: nebula_resource::resident_acquire_fn::<ResidentTestResource>(),
+            topology: TopologyRuntime::resident(resident_rt),
             recovery_gate: Some(Arc::new(gate)),
         })
         .expect("registration should succeed");
@@ -3216,8 +3180,7 @@ async fn recovery_gate_allows_acquire_after_backoff_expires() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Resident(resident_rt),
-            acquire_fn: nebula_resource::resident_acquire_fn::<ResidentTestResource>(),
+            topology: TopologyRuntime::resident(resident_rt),
             recovery_gate: Some(Arc::new(gate)),
         })
         .expect("registration should succeed");
@@ -3244,8 +3207,7 @@ async fn recovery_gate_none_does_not_affect_acquire() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Resident(resident_rt),
-            acquire_fn: nebula_resource::resident_acquire_fn::<ResidentTestResource>(),
+            topology: TopologyRuntime::resident(resident_rt),
             recovery_gate: None,
         })
         .expect("registration should succeed");
@@ -3366,8 +3328,7 @@ async fn reload_config_swaps_config_and_bumps_generation() {
             config: ReloadConfig::new(1),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Pool(pool_rt),
-            acquire_fn: nebula_resource::pooled_acquire_fn::<ReloadPoolResource>(),
+            topology: TopologyRuntime::pooled(pool_rt),
             recovery_gate: None,
         })
         .expect("register should succeed");
@@ -3404,8 +3365,7 @@ async fn reload_config_rejects_invalid_config() {
             config: ReloadConfig::new(1),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Pool(pool_rt),
-            acquire_fn: nebula_resource::pooled_acquire_fn::<ReloadPoolResource>(),
+            topology: TopologyRuntime::pooled(pool_rt),
             recovery_gate: None,
         })
         .expect("register should succeed");
@@ -3449,8 +3409,7 @@ async fn reload_config_emits_event() {
             config: ReloadConfig::new(1),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Pool(pool_rt),
-            acquire_fn: nebula_resource::pooled_acquire_fn::<ReloadPoolResource>(),
+            topology: TopologyRuntime::pooled(pool_rt),
             recovery_gate: None,
         })
         .expect("register should succeed");
@@ -3485,8 +3444,7 @@ async fn reload_config_evicts_stale_pool_instances() {
             config: ReloadConfig::new(1),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Pool(pool_rt),
-            acquire_fn: nebula_resource::pooled_acquire_fn::<ReloadPoolResource>(),
+            topology: TopologyRuntime::pooled(pool_rt),
             recovery_gate: None,
         })
         .expect("register should succeed");
@@ -3571,8 +3529,7 @@ async fn reload_config_rejected_when_shutdown() {
             config: ReloadConfig::new(1),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Pool(pool_rt),
-            acquire_fn: nebula_resource::pooled_acquire_fn::<ReloadPoolResource>(),
+            topology: TopologyRuntime::pooled(pool_rt),
             recovery_gate: None,
         })
         .expect("register should succeed");
@@ -3607,8 +3564,7 @@ async fn graceful_shutdown_abort_on_drain_timeout_preserves_registry() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Resident(resident_rt),
-            acquire_fn: nebula_resource::resident_acquire_fn::<ResidentTestResource>(),
+            topology: TopologyRuntime::resident(resident_rt),
             recovery_gate: None,
         })
         .unwrap();
@@ -3668,8 +3624,7 @@ async fn graceful_shutdown_abort_marks_resources_failed_not_ready() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Resident(resident_rt),
-            acquire_fn: nebula_resource::resident_acquire_fn::<ResidentTestResource>(),
+            topology: TopologyRuntime::resident(resident_rt),
             recovery_gate: None,
         })
         .unwrap();
@@ -3754,8 +3709,7 @@ async fn graceful_shutdown_force_clears_registry_on_timeout() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Resident(resident_rt),
-            acquire_fn: nebula_resource::resident_acquire_fn::<ResidentTestResource>(),
+            topology: TopologyRuntime::resident(resident_rt),
             recovery_gate: None,
         })
         .unwrap();
@@ -3801,8 +3755,7 @@ async fn graceful_shutdown_happy_path_returns_zero_outstanding() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Resident(resident_rt),
-            acquire_fn: nebula_resource::resident_acquire_fn::<ResidentTestResource>(),
+            topology: TopologyRuntime::resident(resident_rt),
             recovery_gate: None,
         })
         .unwrap();
@@ -3854,8 +3807,7 @@ async fn probe_boundary_serializes_callers_under_herd() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Resident(resident_rt),
-            acquire_fn: nebula_resource::resident_acquire_fn::<FailingResidentResource>(),
+            topology: TopologyRuntime::resident(resident_rt),
             recovery_gate: Some(gate.clone()),
         })
         .unwrap();
@@ -3993,8 +3945,7 @@ async fn release_owned_resident_guard_returns_ok() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Resident(resident_rt),
-            acquire_fn: nebula_resource::resident_acquire_fn::<ResidentTestResource>(),
+            topology: TopologyRuntime::resident(resident_rt),
             recovery_gate: None,
         })
         .expect("registration should succeed");
@@ -4034,8 +3985,7 @@ async fn release_then_drop_emits_exactly_one_released_event() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Resident(resident_rt),
-            acquire_fn: nebula_resource::resident_acquire_fn::<ResidentTestResource>(),
+            topology: TopologyRuntime::resident(resident_rt),
             recovery_gate: None,
         })
         .expect("registration should succeed");

@@ -161,10 +161,9 @@ async fn engine_fanout_isolates_a_wedged_resource_from_siblings() {
             config: Cfg,
             scope: scope.clone(),
             slot_identity: id.clone(),
-            topology: TopologyRuntime::Resident(ResidentRuntime::<Ctl>::new(
+            topology: TopologyRuntime::resident(ResidentRuntime::<Ctl>::new(
                 ResidentConfig::default(),
             )),
-            acquire_fn: nebula_resource::resident_acquire_fn::<Ctl>(),
             recovery_gate: None,
         })
         .expect("register resolved-credential row");

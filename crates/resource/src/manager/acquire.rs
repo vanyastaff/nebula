@@ -14,10 +14,7 @@ use crate::{
     options::AcquireOptions,
     registry::ManagedHandle,
     resource::{HasCredentialSlots, Provider},
-    runtime::{
-        TopologyRuntime,
-        managed::{AcquireFn, ManagedResource},
-    },
+    runtime::{TopologyKind, managed::ManagedResource},
     topology::{pooled::Pooled, resident::Resident},
 };
 
@@ -298,8 +295,8 @@ impl Manager {
             let config = managed.config();
             let managed = Arc::clone(&managed);
             async move {
-                match &managed.topology {
-                    TopologyRuntime::Pool(rt) => {
+                match &managed.topology.kind {
+                    TopologyKind::Pool(rt) => {
                         rt.acquire(
                             &managed.resource,
                             &config,
@@ -319,23 +316,23 @@ impl Manager {
     }
 
     /// The single typed error every topology dispatch returns when the
-    /// resolved row's [`TopologyRuntime`] variant does not match the
+    /// resolved row's [`TopologyKind`](crate::runtime::TopologyKind) variant does not match the
     /// statically-bound acquire path.
     ///
     /// Registration binds the row's topology to its trait (`R: Pooled`
-    /// registers `TopologyRuntime::Pool`, etc.), so a mismatch here is a
+    /// registers `TopologyKind::Pool`, etc.), so a mismatch here is a
     /// registration/lookup invariant breach, not a caller error — but the
-    /// per-topology dispatch closures are bound to *one* sibling topology
+    /// per-topology dispatch functions are bound to *one* sibling topology
     /// trait each (the traits are siblings, not a hierarchy), so a single
     /// generic pipeline cannot statically prove the variant. This collapses
     /// the five byte-identical `"{key}: expected X topology, registered as
     /// {tag}"` arms into one shared classifier instead of duplicating the
     /// `format!` once per topology dispatcher.
-    pub(crate) fn unexpected_topology<R: Provider>(topology: &TopologyRuntime<R>) -> Error {
+    pub(crate) fn unexpected_topology<R: Provider>(kind: &TopologyKind<R>) -> Error {
         Error::permanent(format!(
             "{}: resolved row topology {} does not match the acquired topology",
             R::key(),
-            topology.tag()
+            kind.tag()
         ))
     } // visible cross-module after impl split
 
@@ -506,7 +503,7 @@ impl Manager {
 
     /// Resident topology dispatch into the shared
     /// [`run_acquire`](Self::run_acquire) pipeline. Holds only the one-arm
-    /// `TopologyRuntime::Resident` match (resident `acquire` takes neither
+    /// `TopologyKind::Resident` match (resident `acquire` takes neither
     /// `release_queue`/`generation` nor `metrics`). `config` is recomputed
     /// inside the dispatch closure so it is re-read on every resilience
     /// retry.
@@ -524,8 +521,8 @@ impl Manager {
             let config = managed.config();
             let managed = Arc::clone(&managed);
             async move {
-                match &managed.topology {
-                    TopologyRuntime::Resident(rt) => {
+                match &managed.topology.kind {
+                    TopologyKind::Resident(rt) => {
                         rt.acquire(&managed.resource, &config, ctx, options).await
                     },
                     other => Err(Self::unexpected_topology::<R>(other)),
@@ -544,8 +541,8 @@ impl Manager {
         R::Instance: Clone + Send + Sync + 'static,
     {
         let managed = self.lookup::<R>(scope).ok()?;
-        match &managed.topology {
-            TopologyRuntime::Pool(rt) => Some(rt.stats().await),
+        match &managed.topology.kind {
+            TopologyKind::Pool(rt) => Some(rt.stats().await),
             _ => None,
         }
     }
@@ -581,8 +578,8 @@ impl Manager {
     {
         let managed = self.lookup_for_acquire_scope::<R>(ctx)?;
         let config = managed.config();
-        match &managed.topology {
-            TopologyRuntime::Pool(rt) => {
+        match &managed.topology.kind {
+            TopologyKind::Pool(rt) => {
                 // `warmup` runs `R::create` against the resolved credential
                 // to materialize fresh pool instances — it is acquire-like
                 // and must observe the SAME post-count re-check the
@@ -615,66 +612,4 @@ impl Manager {
             ))),
         }
     }
-}
-
-/// Builds the type-erased acquire closure for a [`Resident`](Resident)
-/// resource type `R`.
-///
-/// The returned [`AcquireFn`] is closed over the concrete `R` at the call site where the
-/// topology bounds are in scope, then stored on `ManagedResource` and dispatched through
-/// [`ManagedHandle::acquire`](crate::registry::ManagedHandle::acquire) without carrying
-/// topology trait bounds on the dyn-safe trait.
-///
-/// Pass this as `RegistrationSpec::acquire_fn` when registering a resident resource.
-#[must_use]
-pub fn resident_acquire_fn<R>() -> AcquireFn
-where
-    R: Resident + HasCredentialSlots + Clone + Send + Sync + 'static,
-    R::Instance: Clone + Send + Sync + 'static,
-{
-    Arc::new(
-        move |erased: Arc<dyn Any + Send + Sync>,
-              mgr: Arc<Manager>,
-              ctx: ResourceContext,
-              opts: AcquireOptions| {
-            Box::pin(async move {
-                let managed = erased
-                        .downcast::<ManagedResource<R>>()
-                        .map_err(|_| Error::permanent("resident_acquire_fn: Arc type mismatch — registration and acquire_fn must use the same R"))?;
-                let guard = mgr.resident_pipeline(managed, &ctx, &opts).await?;
-                Ok(Box::new(guard) as Box<dyn Any + Send + Sync>)
-            })
-        },
-    )
-}
-
-/// Builds the type-erased acquire closure for a [`Pooled`](Pooled)
-/// resource type `R`.
-///
-/// The returned [`AcquireFn`] is closed over the concrete `R` at the call site where the
-/// topology bounds are in scope, then stored on `ManagedResource` and dispatched through
-/// [`ManagedHandle::acquire`](crate::registry::ManagedHandle::acquire) without carrying
-/// topology trait bounds on the dyn-safe trait.
-///
-/// Pass this as `RegistrationSpec::acquire_fn` when registering a pooled resource.
-#[must_use]
-pub fn pooled_acquire_fn<R>() -> AcquireFn
-where
-    R: Pooled + HasCredentialSlots + Clone + Send + Sync + 'static,
-    R::Instance: Clone + Send + Sync + 'static,
-{
-    Arc::new(
-        move |erased: Arc<dyn Any + Send + Sync>,
-              mgr: Arc<Manager>,
-              ctx: ResourceContext,
-              opts: AcquireOptions| {
-            Box::pin(async move {
-                let managed = erased
-                        .downcast::<ManagedResource<R>>()
-                        .map_err(|_| Error::permanent("pooled_acquire_fn: Arc type mismatch — registration and acquire_fn must use the same R"))?;
-                let guard = mgr.pooled_pipeline(managed, &ctx, &opts).await?;
-                Ok(Box::new(guard) as Box<dyn Any + Send + Sync>)
-            })
-        },
-    )
 }

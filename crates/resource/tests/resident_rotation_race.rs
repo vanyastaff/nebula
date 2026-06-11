@@ -212,10 +212,9 @@ fn build(park: bool) -> (Arc<Manager>, ResourceKey, RaceResource) {
         config: RaceConfig,
         scope: ScopeLevel::Global,
         slot_identity: SlotIdentity::Unbound,
-        topology: TopologyRuntime::Resident(ResidentRuntime::<RaceResource>::new(
+        topology: TopologyRuntime::resident(ResidentRuntime::<RaceResource>::new(
             ResidentConfig::default(),
         )),
-        acquire_fn: nebula_resource::resident_acquire_fn::<RaceResource>(),
         recovery_gate: None,
     })
     .expect("resident registration must succeed");

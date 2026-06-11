@@ -1,4 +1,4 @@
-//! `ResourceRegistrarRegistry::validate` — the config-CRUD validation
+//! `ResourceActivatorRegistry::validate` — the config-CRUD validation
 //! seam (config validation, NOT live registration).
 //!
 //! A config-CRUD writer (the `POST .../resources` API handler) must
@@ -28,7 +28,7 @@
 use std::sync::Arc;
 
 use nebula_core::{ResourceKey, resource_key};
-use nebula_engine::{RegistrarError, ResourceRegistrarRegistry, TypedResourceRegistrar};
+use nebula_engine::{KindActivator, RegistrarError, ResourceActivatorRegistry};
 use nebula_resource::{
     Manager, ScopeLevel,
     error::Error as ResourceError,
@@ -129,18 +129,17 @@ impl Resident for HttpPool {
     }
 }
 
-fn registry_with_http_pool() -> ResourceRegistrarRegistry {
-    let mut registry = ResourceRegistrarRegistry::new();
+fn registry_with_http_pool() -> ResourceActivatorRegistry {
+    let mut registry = ResourceActivatorRegistry::new();
     registry.insert(
         "http_pool",
-        Arc::new(TypedResourceRegistrar::<HttpPool, _, _, _>::new(
+        Arc::new(KindActivator::<HttpPool, _, _>::new(
             || HttpPool,
             || {
-                TopologyRuntime::Resident(ResidentRuntime::<HttpPool>::new(
+                TopologyRuntime::resident(ResidentRuntime::<HttpPool>::new(
                     resident::config::Config::default(),
                 ))
             },
-            nebula_resource::resident_acquire_fn::<HttpPool>,
         )),
     );
     registry
@@ -270,7 +269,7 @@ fn unknown_kind_is_typed_unknownkind_not_silent() {
 /// An empty registry is fail-closed: every kind is `UnknownKind`.
 #[test]
 fn empty_registry_rejects_every_kind() {
-    let registry = ResourceRegistrarRegistry::new();
+    let registry = ResourceActivatorRegistry::new();
     assert!(registry.is_empty());
 
     let err = registry

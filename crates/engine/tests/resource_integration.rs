@@ -396,10 +396,9 @@ async fn engine_acquires_org_scoped_resource_through_accessor() {
             config: IntegrationProbeConfig,
             scope: ScopeLevel::Organization(org),
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Resident(ResidentRuntime::<IntegrationProbeResource>::new(
+            topology: TopologyRuntime::resident(ResidentRuntime::<IntegrationProbeResource>::new(
                 ResidentConfig::default(),
             )),
-            acquire_fn: nebula_resource::resident_acquire_fn::<IntegrationProbeResource>(),
             recovery_gate: None,
         })
         .expect("register org-scoped resource");
@@ -769,8 +768,7 @@ mod shared_resource {
                 config: test_config(),
                 scope: ScopeLevel::Organization(org),
                 slot_identity: SlotIdentity::Unbound,
-                topology: TopologyRuntime::Resident(resident_rt),
-                acquire_fn: nebula_resource::resident_acquire_fn::<TelegramBot>(),
+                topology: TopologyRuntime::resident(resident_rt),
                 recovery_gate: None,
             })
             .expect("register should succeed");
@@ -844,10 +842,9 @@ mod shared_resource {
                 config: test_config(),
                 scope: scope.clone(),
                 slot_identity: SlotIdentity::Unbound,
-                topology: TopologyRuntime::Resident(ResidentRuntime::<TelegramBot>::new(
+                topology: TopologyRuntime::resident(ResidentRuntime::<TelegramBot>::new(
                     ResidentConfig::default(),
                 )),
-                acquire_fn: nebula_resource::resident_acquire_fn::<TelegramBot>(),
                 recovery_gate: None,
             })
             .expect("register A should succeed");
@@ -857,10 +854,9 @@ mod shared_resource {
                 config: test_config(),
                 scope,
                 slot_identity: SlotIdentity::Unbound,
-                topology: TopologyRuntime::Resident(ResidentRuntime::<AlternateBot>::new(
+                topology: TopologyRuntime::resident(ResidentRuntime::<AlternateBot>::new(
                     ResidentConfig::default(),
                 )),
-                acquire_fn: nebula_resource::resident_acquire_fn::<AlternateBot>(),
                 recovery_gate: None,
             })
             .expect("register B should succeed");
@@ -920,10 +916,9 @@ mod shared_resource {
                 config: test_config(),
                 scope: ScopeLevel::Organization(org_a),
                 slot_identity: SlotIdentity::Unbound,
-                topology: TopologyRuntime::Resident(ResidentRuntime::<TelegramBot>::new(
+                topology: TopologyRuntime::resident(ResidentRuntime::<TelegramBot>::new(
                     ResidentConfig::default(),
                 )),
-                acquire_fn: nebula_resource::resident_acquire_fn::<TelegramBot>(),
                 recovery_gate: None,
             })
             .expect("register org_a should succeed");
@@ -933,10 +928,9 @@ mod shared_resource {
                 config: test_config(),
                 scope: ScopeLevel::Organization(org_b),
                 slot_identity: SlotIdentity::Unbound,
-                topology: TopologyRuntime::Resident(ResidentRuntime::<TelegramBot>::new(
+                topology: TopologyRuntime::resident(ResidentRuntime::<TelegramBot>::new(
                     ResidentConfig::default(),
                 )),
-                acquire_fn: nebula_resource::resident_acquire_fn::<TelegramBot>(),
                 recovery_gate: None,
             })
             .expect("register org_b should succeed");
@@ -996,8 +990,7 @@ mod shared_resource {
                 config: test_config(),
                 scope: scope.clone(),
                 slot_identity: SlotIdentity::Unbound,
-                topology: TopologyRuntime::Resident(resident_rt),
-                acquire_fn: nebula_resource::resident_acquire_fn::<TelegramBot>(),
+                topology: TopologyRuntime::resident(resident_rt),
                 recovery_gate: None,
             })
             .expect("register should succeed");
@@ -1074,8 +1067,7 @@ mod shared_resource {
                 config: test_config(),
                 scope: ScopeLevel::Global,
                 slot_identity: SlotIdentity::Unbound,
-                topology: TopologyRuntime::Resident(resident_rt),
-                acquire_fn: nebula_resource::resident_acquire_fn::<TelegramBot>(),
+                topology: TopologyRuntime::resident(resident_rt),
                 recovery_gate: None,
             })
             .expect("register should succeed");

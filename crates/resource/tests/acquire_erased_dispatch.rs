@@ -1,4 +1,4 @@
-//! `Manager::acquire_erased` exercises the registry-stored `ErasedAcquireFn` hook.
+//! `Manager::acquire_any` exercises the registry-stored acquire dispatch hook.
 
 use std::sync::{
     Arc,
@@ -89,10 +89,9 @@ async fn acquire_erased_returns_guard_and_runs_create_once() {
             config: ProbeConfig,
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Resident(ResidentRuntime::<ProbeResource>::new(
+            topology: TopologyRuntime::resident(ResidentRuntime::<ProbeResource>::new(
                 resident::config::Config::default(),
             )),
-            acquire_fn: nebula_resource::resident_acquire_fn::<ProbeResource>(),
             recovery_gate: None,
         })
         .expect("register");
@@ -128,10 +127,9 @@ async fn acquire_erased_finds_org_scoped_row_from_execution_scope_bag() {
             config: ProbeConfig,
             scope: ScopeLevel::Organization(org),
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Resident(ResidentRuntime::<ProbeResource>::new(
+            topology: TopologyRuntime::resident(ResidentRuntime::<ProbeResource>::new(
                 resident::config::Config::default(),
             )),
-            acquire_fn: nebula_resource::resident_acquire_fn::<ProbeResource>(),
             recovery_gate: None,
         })
         .expect("register at org scope");
@@ -191,10 +189,9 @@ async fn acquire_erased_and_typed_pick_org_not_global_fallback() {
             config: ProbeConfig,
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Resident(ResidentRuntime::<ProbeResource>::new(
+            topology: TopologyRuntime::resident(ResidentRuntime::<ProbeResource>::new(
                 resident::config::Config::default(),
             )),
-            acquire_fn: nebula_resource::resident_acquire_fn::<ProbeResource>(),
             recovery_gate: None,
         })
         .expect("register global row");
@@ -205,10 +202,9 @@ async fn acquire_erased_and_typed_pick_org_not_global_fallback() {
             config: ProbeConfig,
             scope: ScopeLevel::Organization(org),
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Resident(ResidentRuntime::<ProbeResource>::new(
+            topology: TopologyRuntime::resident(ResidentRuntime::<ProbeResource>::new(
                 resident::config::Config::default(),
             )),
-            acquire_fn: nebula_resource::resident_acquire_fn::<ProbeResource>(),
             recovery_gate: None,
         })
         .expect("register org row");
@@ -358,14 +354,13 @@ mod pool_parity {
                 config: PoolParityCfg,
                 scope: ScopeLevel::Global,
                 slot_identity: SlotIdentity::Unbound,
-                topology: TopologyRuntime::Pool(PoolRuntime::<PoolParity>::new(
+                topology: TopologyRuntime::pooled(PoolRuntime::<PoolParity>::new(
                     nebula_resource::topology::pooled::config::Config {
                         max_size: 4,
                         ..Default::default()
                     },
                     PoolParityCfg.fingerprint(),
                 )),
-                acquire_fn: nebula_resource::pooled_acquire_fn::<PoolParity>(),
                 recovery_gate: None,
             })
             .expect("register pooled Global");
@@ -484,8 +479,7 @@ mod resident_erased_reuses_runtime {
                 config: ResidentReuseCfg,
                 scope: ScopeLevel::Global,
                 slot_identity: SlotIdentity::Unbound,
-                topology: TopologyRuntime::Resident(rt),
-                acquire_fn: nebula_resource::resident_acquire_fn::<ResidentReuse>(),
+                topology: TopologyRuntime::resident(rt),
                 recovery_gate: None,
             })
             .expect("ResidentReuse must register without error");
@@ -613,8 +607,7 @@ mod pool_erased_distinct_instances {
                 config: PoolErasedCfg,
                 scope: ScopeLevel::Global,
                 slot_identity: SlotIdentity::Unbound,
-                topology: TopologyRuntime::Pool(pool_rt),
-                acquire_fn: nebula_resource::pooled_acquire_fn::<PoolErased>(),
+                topology: TopologyRuntime::pooled(pool_rt),
                 recovery_gate: None,
             })
             .expect("PoolErased must register without error");

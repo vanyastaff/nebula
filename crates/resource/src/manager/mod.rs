@@ -347,7 +347,6 @@ mod registration;
 mod rotation;
 pub(crate) mod shutdown;
 
-pub use acquire::{pooled_acquire_fn, resident_acquire_fn};
 pub use options::{
     DrainTimeoutPolicy, ManagerConfig, RegisterOptions, RegistrationSpec, ShutdownConfig,
 };
@@ -696,7 +695,7 @@ impl Manager {
     }
 
     /// Looks up a managed resource by key and scope, returning the
-    /// type-erased `Arc<dyn AnyManagedResource>`.
+    /// type-erased `Arc<dyn ManagedHandle>`.
     ///
     /// Useful for diagnostics and admin APIs that don't need typed access.
     /// Returns `None` both when nothing is registered and when several
@@ -925,34 +924,9 @@ mod shutdown_post_count_race_tests {
         error::ErrorKind,
         options::AcquireOptions,
         resource::{HasCredentialSlots, ResourceConfig, ResourceMetadata},
-        runtime::{TopologyRuntime, managed::ManagedResource, resident::ResidentRuntime},
+        runtime::{TopologyKind, TopologyRuntime, resident::ResidentRuntime},
         topology::resident::{Resident, config::Config as ResidentConfig},
     };
-
-    // Helper: builds the type-erased acquire closure for a Resident resource.
-    // Used by test `RegistrationSpec` constructors where the closure must be
-    // provided but the test does not exercise the acquire path via `acquire_fn`.
-    #[cfg(test)]
-    fn make_resident_acquire_fn<R>() -> crate::runtime::managed::AcquireFn
-    where
-        R: Resident + HasCredentialSlots + Clone + Send + Sync + 'static,
-        R::Instance: Clone + Send + Sync + 'static,
-    {
-        Arc::new(
-            move |erased: Arc<dyn std::any::Any + Send + Sync>,
-                  mgr: Arc<Manager>,
-                  ctx: ResourceContext,
-                  opts: AcquireOptions| {
-                Box::pin(async move {
-                    let managed = erased
-                        .downcast::<ManagedResource<R>>()
-                        .map_err(|_| Error::permanent("acquire_fn type mismatch"))?;
-                    let guard = mgr.resident_pipeline(managed, &ctx, &opts).await?;
-                    Ok(Box::new(guard) as Box<dyn std::any::Any + Send + Sync>)
-                })
-            },
-        )
-    }
 
     #[derive(Clone, Default)]
     struct RaceCfg;
@@ -1024,8 +998,7 @@ mod shutdown_post_count_race_tests {
                 config: RaceCfg,
                 scope: ScopeLevel::Global,
                 slot_identity: crate::dedup::SlotIdentity::Unbound,
-                topology: TopologyRuntime::Resident(resident_rt),
-                acquire_fn: make_resident_acquire_fn::<ShutdownRaceResident>(),
+                topology: TopologyRuntime::resident(resident_rt),
                 recovery_gate: None,
             })
             .expect("register succeeds");
@@ -1060,8 +1033,8 @@ mod shutdown_post_count_race_tests {
                 let managed = Arc::clone(&managed);
                 let ctx = &acquire_ctx;
                 async move {
-                    match &managed.topology {
-                        TopologyRuntime::Resident(rt) => {
+                    match &managed.topology.kind {
+                        TopologyKind::Resident(rt) => {
                             rt.acquire(
                                 &managed.resource,
                                 &managed.config(),
@@ -1114,8 +1087,7 @@ mod shutdown_post_count_race_tests {
                 config: RaceCfg,
                 scope: ScopeLevel::Global,
                 slot_identity: crate::dedup::SlotIdentity::Unbound,
-                topology: TopologyRuntime::Resident(resident_rt),
-                acquire_fn: make_resident_acquire_fn::<ShutdownRaceResident>(),
+                topology: TopologyRuntime::resident(resident_rt),
                 recovery_gate: None,
             })
             .expect("register succeeds");
@@ -1130,8 +1102,8 @@ mod shutdown_post_count_race_tests {
                 let managed = Arc::clone(&managed);
                 let ctx = &acquire_ctx;
                 async move {
-                    match &managed.topology {
-                        TopologyRuntime::Resident(rt) => {
+                    match &managed.topology.kind {
+                        TopologyKind::Resident(rt) => {
                             rt.acquire(
                                 &managed.resource,
                                 &managed.config(),

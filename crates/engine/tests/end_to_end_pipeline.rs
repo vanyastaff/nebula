@@ -350,10 +350,9 @@ async fn pipeline_with_resource_manager_resolves_and_executes() {
             },
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Resident(ResidentRuntime::<WitnessResource>::new(
+            topology: TopologyRuntime::resident(ResidentRuntime::<WitnessResource>::new(
                 ResidentConfig::default(),
             )),
-            acquire_fn: nebula_resource::resident_acquire_fn::<WitnessResource>(),
             recovery_gate: None,
         })
         .expect("register witness resource");

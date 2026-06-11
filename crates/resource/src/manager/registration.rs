@@ -10,12 +10,8 @@ use tracing::Instrument as _;
 
 use super::{Manager, RegistrationSpec, resolve_json_templates};
 use crate::{
-    error::Error,
-    events::ResourceEvent,
-    recovery::gate::RecoveryGate,
-    reload::ReloadOutcome,
-    resource::Provider,
-    runtime::{TopologyRuntime, managed::ManagedResource},
+    error::Error, events::ResourceEvent, recovery::gate::RecoveryGate, reload::ReloadOutcome,
+    resource::Provider, runtime::TopologyRuntime, runtime::managed::ManagedResource,
 };
 
 impl Manager {
@@ -67,7 +63,6 @@ impl Manager {
             slot_identity,
             topology,
             recovery_gate,
-            acquire_fn,
         } = spec;
 
         config.validate()?;
@@ -106,7 +101,6 @@ impl Manager {
             recovery_gate,
             tainted: std::sync::atomic::AtomicBool::new(false),
             in_flight: Arc::new((AtomicU64::new(0), Notify::new())),
-            acquire_fn,
         });
 
         let type_id = std::any::TypeId::of::<ManagedResource<R>>();
@@ -168,7 +162,7 @@ impl Manager {
     /// evicts revoked ones on the next sweep — only the TTL *durations* are
     /// frozen for the pool's lifetime.
     fn spawn_pool_maintenance<R: Provider>(&self, managed: &Arc<ManagedResource<R>>) {
-        let TopologyRuntime::Pool(pool) = &managed.topology else {
+        let crate::runtime::TopologyKind::Pool(pool) = &managed.topology.kind else {
             return;
         };
         let cfg = pool.config();
@@ -208,7 +202,7 @@ impl Manager {
                 let Some(managed) = weak.upgrade() else {
                     break;
                 };
-                if let TopologyRuntime::Pool(pool) = &managed.topology {
+                if let crate::runtime::TopologyKind::Pool(pool) = &managed.topology.kind {
                     let span = tracing::debug_span!("pool_maintenance", %key);
                     let evicted = pool
                         .run_maintenance(&managed.resource)
@@ -388,7 +382,6 @@ impl Manager {
         resource: R,
         scope: ScopeLevel,
         topology: TopologyRuntime<R>,
-        acquire_fn: crate::runtime::managed::AcquireFn,
         recovery_gate: Option<Arc<RecoveryGate>>,
     ) -> Result<crate::dedup::SlotIdentity, Error>
     where
@@ -456,7 +449,6 @@ impl Manager {
             scope,
             slot_identity: slot_identity.clone(),
             topology,
-            acquire_fn,
             recovery_gate,
         })?;
         Ok(slot_identity)
@@ -520,7 +512,7 @@ impl Manager {
         managed.config.store(Arc::new(new_config));
 
         // Update pool fingerprint so stale idle instances are evicted.
-        if let TopologyRuntime::Pool(ref pool_rt) = managed.topology {
+        if let crate::runtime::TopologyKind::Pool(ref pool_rt) = managed.topology.kind {
             pool_rt.set_fingerprint(new_fp);
         }
 

@@ -139,10 +139,9 @@ fn register_counting(
         config: CountingConfig,
         scope: opts.scope,
         slot_identity,
-        topology: TopologyRuntime::Resident(ResidentRuntime::<CountingResource>::new(
+        topology: TopologyRuntime::resident(ResidentRuntime::<CountingResource>::new(
             ResidentConfig::default(),
         )),
-        acquire_fn: nebula_resource::resident_acquire_fn::<CountingResource>(),
         recovery_gate: opts.recovery_gate,
     })
 }
@@ -505,10 +504,9 @@ async fn agnostic_typed_acquire_skips_sibling_type_and_falls_through_to_global()
             config: CountingConfig,
             scope: ScopeLevel::Organization(org),
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Resident(ResidentRuntime::<SiblingResidentResource>::new(
+            topology: TopologyRuntime::resident(ResidentRuntime::<SiblingResidentResource>::new(
                 ResidentConfig::default(),
             )),
-            acquire_fn: nebula_resource::resident_acquire_fn::<SiblingResidentResource>(),
             recovery_gate: None,
         })
         .expect("register sibling type at org scope must succeed");
@@ -582,10 +580,9 @@ async fn typed_lookup_skips_sibling_type_and_falls_through_to_global() {
             config: CountingConfig,
             scope: ScopeLevel::Organization(org),
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Resident(ResidentRuntime::<SiblingResidentResource>::new(
+            topology: TopologyRuntime::resident(ResidentRuntime::<SiblingResidentResource>::new(
                 ResidentConfig::default(),
             )),
-            acquire_fn: nebula_resource::resident_acquire_fn::<SiblingResidentResource>(),
             recovery_gate: None,
         })
         .expect("register sibling type at org scope must succeed");

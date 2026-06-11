@@ -189,10 +189,9 @@ async fn wire(behaviour: Behaviour) -> Wired {
         config: NoCfg,
         scope: scope.clone(),
         slot_identity: slot_identity.clone(),
-        topology: TopologyRuntime::Resident(ResidentRuntime::<Recording>::new(
+        topology: TopologyRuntime::resident(ResidentRuntime::<Recording>::new(
             ResidentConfig::default(),
         )),
-        acquire_fn: nebula_resource::resident_acquire_fn::<Recording>(),
         recovery_gate: None,
     })
     .expect("register resolved-credential row");
@@ -636,10 +635,9 @@ async fn engine_spawn_resource_rotation_fanout_is_idempotent() {
         config: NoCfg,
         scope: scope.clone(),
         slot_identity: slot_identity.clone(),
-        topology: TopologyRuntime::Resident(ResidentRuntime::<Recording>::new(
+        topology: TopologyRuntime::resident(ResidentRuntime::<Recording>::new(
             ResidentConfig::default(),
         )),
-        acquire_fn: nebula_resource::resident_acquire_fn::<Recording>(),
         recovery_gate: None,
     })
     .expect("register resolved-credential row");

@@ -1087,10 +1087,9 @@ mod tests {
                     config: Cfg,
                     scope: scope.clone(),
                     slot_identity: id.clone(),
-                    topology: TopologyRuntime::Resident(ResidentRuntime::<CtlResource>::new(
+                    topology: TopologyRuntime::resident(ResidentRuntime::<CtlResource>::new(
                         ResidentConfig::default(),
                     )),
-                    acquire_fn: nebula_resource::resident_acquire_fn::<CtlResource>(),
                     recovery_gate: None,
                 })
                 .expect("register tenant");

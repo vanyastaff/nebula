@@ -39,7 +39,6 @@
 //!     resource:      R,
 //!     scope:         ScopeLevel,
 //!     topology:      TopologyRuntime<R>,
-//!     acquire_fn:    AcquireFn,
 //!     recovery_gate: Option<Arc<RecoveryGate>>,
 //! ) -> Result<SlotIdentity, nebula_resource::Error>
 //! where R: Provider + DeclaresDependencies, R::Config: DeserializeOwned
@@ -56,7 +55,7 @@
 //! resource crate emits no `FromConfig`/constructor and no topology
 //! factory from the `#[derive(Resource)]` macro. They must therefore be
 //! closed over per concrete `R` when the registrar is built (that is what
-//! [`TypedResourceRegistrar`] does: it holds a `resource`-producing
+//! [`KindActivator`] does: it holds a `resource`-producing
 //! factory, a `TopologyRuntime<R>`-producing factory, and an erased
 //! `acquire`-hook factory). The acquire hook is **identity-independent**
 //! (the single-walk acquire resolution pins the row by the caller's
@@ -65,7 +64,7 @@
 //!
 //! `expr_engine`, `scope`, `slot_bindings`, and `recovery_gate` are
 //! type-agnostic and supplied by the *caller* of
-//! [`ErasedResourceRegistrar::register`] (the engine registration loop)
+//! [`ResourceActivator::register`] (the engine registration loop)
 //! through [`RegisterRequest`]. This keeps the trait surface honest:
 //! the registrar contributes only what is intrinsically per-`R`; the
 //! caller threads everything that depends on engine/activation context.
@@ -195,7 +194,7 @@ pub struct ResourceRegistrationOutcome {
 ///
 /// Everything here is independent of the concrete resource type `R`; the
 /// per-`R` pieces (`resource: R`, `TopologyRuntime<R>`) are supplied by
-/// the registrar itself (see [`TypedResourceRegistrar`]). Borrowed for
+/// the activator itself (see [`KindActivator`]). Borrowed for
 /// the duration of the call so the registry can be invoked without
 /// cloning the expression engine.
 pub struct RegisterRequest<'a> {
@@ -228,7 +227,7 @@ pub struct RegisterRequest<'a> {
     ///
     /// Empty (the default via [`HashMap::new`]) when the caller resolved
     /// no credential into a slot, or when no fan-out index is threaded
-    /// to [`ResourceRegistrarRegistry::register`] — registration then
+    /// to [`ResourceActivatorRegistry::register`] — registration then
     /// proceeds exactly as before with no reverse-index row (a later
     /// rotation for an unbound credential is a correct no-op fan-out).
     /// Never fabricated: a slot whose `CredentialId` the caller does not
@@ -240,17 +239,17 @@ pub struct RegisterRequest<'a> {
     pub recovery_gate: Option<Arc<RecoveryGate>>,
 }
 
-/// Object-safe, type-erased registrar for a single resource `kind`.
+/// Object-safe, type-erased activator for a single resource `kind`.
 ///
 /// One implementor exists per concrete resource type; it already knows
 /// its `R` and dispatches into the typed
 /// [`Manager::register_resolved::<R>`](nebula_resource::Manager::register_resolved).
 /// The returned future is boxed so the trait stays object-safe without
 /// `#[async_trait]` (matching `EngineResourceAccessor`'s erasure shape).
-pub trait ErasedResourceRegistrar: Send + Sync {
+pub trait ResourceActivator: Send + Sync {
     /// Registers this kind's resource against `manager` using the
     /// caller-threaded [`RegisterRequest`] plus the per-`R` resource and
-    /// topology this registrar owns.
+    /// topology this activator owns.
     ///
     /// On success returns the **collision-free structural**
     /// [`SlotIdentity`] the manager derived
@@ -264,7 +263,7 @@ pub trait ErasedResourceRegistrar: Send + Sync {
     /// `register_resolved` fails (deserialize / schema / validation /
     /// slot-binding mismatch). The registry wraps it in
     /// [`RegistrarError::Register`]; the closed-allowlist `UnknownKind`
-    /// check happens in [`ResourceRegistrarRegistry::register`] before
+    /// check happens in [`ResourceActivatorRegistry::register`] before
     /// this is ever called.
     fn register<'a>(
         &'a self,
@@ -273,14 +272,14 @@ pub trait ErasedResourceRegistrar: Send + Sync {
     ) -> BoxFut<'a, Result<SlotIdentity, nebula_resource::Error>>;
 
     /// The static, type-level [`ResourceKey`](nebula_core::ResourceKey)
-    /// (`R::key()`) of the concrete resource this registrar registers.
+    /// (`R::key()`) of the concrete resource this activator registers.
     ///
     /// The erased boundary hides `R`, but the rotation reverse index
     /// (`ResourceFanoutIndex`, the `rotation`-feature-gated reverse
     /// index in `crate::credential::rotation`)
     /// keys a bound row by `(ResourceKey, ScopeLevel, slot_identity)`.
     /// Without `R` the registry cannot name the row it just registered,
-    /// so the erased registrar exposes the key explicitly (the same
+    /// so the erased activator exposes the key explicitly (the same
     /// `R::key()` `register_resolved` registers the row under). Cheap,
     /// pure, and type-stable — it is a `const`-ish accessor, not I/O.
     fn resource_key(&self) -> nebula_core::ResourceKey;
@@ -307,75 +306,62 @@ pub trait ErasedResourceRegistrar: Send + Sync {
     /// undeclared (e.g. secret-shaped) field, or fails to deserialize. The
     /// registry wraps it in [`RegistrarError::Register`]; the
     /// closed-allowlist `UnknownKind` check happens in
-    /// [`ResourceRegistrarRegistry::validate`] before this is ever called.
+    /// [`ResourceActivatorRegistry::validate`] before this is ever called.
     fn validate(&self, config_json: serde_json::Value) -> Result<(), nebula_resource::Error>;
 }
 
-/// Per-`R` [`ErasedResourceRegistrar`] that closes over the pieces the
-/// erased boundary cannot synthesize generically: a factory that produces
-/// the `resource: R` value (with its credential slots already resolved by
-/// the engine), a factory that produces the `TopologyRuntime<R>` declared
-/// for this kind, and a factory that produces the type-erased acquire
-/// closure ([`AcquireFn`](nebula_resource::AcquireFn)) whose concrete
-/// topology dispatch is baked in at the call site where the topology
-/// bounds (`R: Resident` / `R: Pooled`) are in scope.
+/// Per-`R` [`ResourceActivator`] that closes over the pieces the erased
+/// boundary cannot synthesize generically: a factory that produces the
+/// `resource: R` value (with its credential slots already resolved by the
+/// engine), and a factory that produces the `TopologyRuntime<R>` declared
+/// for this kind.
 ///
-/// All three are factories rather than stored values because a registrar
-/// may be invoked more than once (re-activation, multiple scopes). The
-/// acquire factory takes no slot-identity argument: the single-walk
-/// acquire resolution pins the row by the caller's runtime slot identity,
-/// so the hook is identity-independent.
-///
-/// Build the `acquire_factory` using [`nebula_resource::resident_acquire_fn`]
-/// for resident topologies or [`nebula_resource::pooled_acquire_fn`] for
-/// pooled ones.
-pub struct TypedResourceRegistrar<R, FRes, FTopo, FAcq>
+/// Both are factories rather than stored values because an activator may
+/// be invoked more than once (re-activation, multiple scopes). The
+/// topology factory builds a `TopologyRuntime<R>` via
+/// [`TopologyRuntime::resident`] or [`TopologyRuntime::pooled`] — the
+/// acquire dispatch is baked into the runtime at construction, not stored
+/// separately.
+pub struct KindActivator<R, FRes, FTopo>
 where
     R: Provider + nebula_core::DeclaresDependencies,
     R::Config: serde::de::DeserializeOwned,
     FRes: Fn() -> R + Send + Sync,
     FTopo: Fn() -> TopologyRuntime<R> + Send + Sync,
-    FAcq: Fn() -> nebula_resource::AcquireFn + Send + Sync,
 {
     resource_factory: FRes,
     topology_factory: FTopo,
-    acquire_factory: FAcq,
 }
 
-impl<R, FRes, FTopo, FAcq> TypedResourceRegistrar<R, FRes, FTopo, FAcq>
+impl<R, FRes, FTopo> KindActivator<R, FRes, FTopo>
 where
     R: Provider + nebula_core::DeclaresDependencies,
     R::Config: serde::de::DeserializeOwned,
     FRes: Fn() -> R + Send + Sync,
     FTopo: Fn() -> TopologyRuntime<R> + Send + Sync,
-    FAcq: Fn() -> nebula_resource::AcquireFn + Send + Sync,
 {
-    /// Builds a typed registrar for resource type `R`.
+    /// Builds a kind activator for resource type `R`.
     ///
     /// - `resource_factory` — yields the `R` value with credential slots
     ///   already resolved by the engine per registration scope.
-    /// - `topology_factory` — yields the `TopologyRuntime<R>` for this kind.
-    /// - `acquire_factory` — builds the type-erased [`AcquireFn`](nebula_resource::AcquireFn)
-    ///   for this topology. Use [`nebula_resource::resident_acquire_fn::<R>`] for
-    ///   resident topologies or [`nebula_resource::pooled_acquire_fn::<R>`] for pooled
-    ///   ones. The factory is called once per registration, takes no slot-identity
-    ///   argument (acquire resolution is identity-independent at this layer).
-    pub fn new(resource_factory: FRes, topology_factory: FTopo, acquire_factory: FAcq) -> Self {
+    /// - `topology_factory` — yields the `TopologyRuntime<R>` for this
+    ///   kind. Use [`TopologyRuntime::resident`] for resident topologies
+    ///   or [`TopologyRuntime::pooled`] for pooled ones; the acquire
+    ///   dispatch is baked into the runtime at construction.
+    pub fn new(resource_factory: FRes, topology_factory: FTopo) -> Self {
         Self {
             resource_factory,
             topology_factory,
-            acquire_factory,
         }
     }
 }
 
-impl<R, FRes, FTopo, FAcq> ErasedResourceRegistrar for TypedResourceRegistrar<R, FRes, FTopo, FAcq>
+impl<R, FRes, FTopo> ResourceActivator for KindActivator<R, FRes, FTopo>
 where
     R: Provider + nebula_resource::HasCredentialSlots + nebula_core::DeclaresDependencies,
     R::Config: serde::de::DeserializeOwned,
     FRes: Fn() -> R + Send + Sync,
     FTopo: Fn() -> TopologyRuntime<R> + Send + Sync,
-    FAcq: Fn() -> nebula_resource::AcquireFn + Send + Sync,
 {
     fn register<'a>(
         &'a self,
@@ -384,7 +370,6 @@ where
     ) -> BoxFut<'a, Result<SlotIdentity, nebula_resource::Error>> {
         let resource = (self.resource_factory)();
         let topology = (self.topology_factory)();
-        let acquire_fn = (self.acquire_factory)();
         Box::pin(async move {
             manager
                 .register_resolved::<R>(
@@ -394,7 +379,6 @@ where
                     resource,
                     request.scope,
                     topology,
-                    acquire_fn,
                     request.recovery_gate,
                 )
                 .await
@@ -428,11 +412,11 @@ where
 /// activation error, never a panic or a silent grab of the wrong type
 ///.
 #[derive(Default)]
-pub struct ResourceRegistrarRegistry {
-    registrars: HashMap<String, Arc<dyn ErasedResourceRegistrar>>,
+pub struct ResourceActivatorRegistry {
+    registrars: HashMap<String, Arc<dyn ResourceActivator>>,
 }
 
-impl ResourceRegistrarRegistry {
+impl ResourceActivatorRegistry {
     /// Creates an empty registry.
     ///
     /// A registry with no entries rejects *every* kind with
@@ -449,8 +433,8 @@ impl ResourceRegistrarRegistry {
     pub fn insert(
         &mut self,
         kind: impl Into<String>,
-        registrar: Arc<dyn ErasedResourceRegistrar>,
-    ) -> Option<Arc<dyn ErasedResourceRegistrar>> {
+        registrar: Arc<dyn ResourceActivator>,
+    ) -> Option<Arc<dyn ResourceActivator>> {
         self.registrars.insert(kind.into(), registrar)
     }
 
@@ -890,15 +874,14 @@ mod tests {
         }
     }
 
-    fn test_registrar(create_counter: Arc<AtomicU64>) -> Arc<dyn ErasedResourceRegistrar> {
-        Arc::new(TypedResourceRegistrar::<TestRes, _, _, _>::new(
+    fn test_registrar(create_counter: Arc<AtomicU64>) -> Arc<dyn ResourceActivator> {
+        Arc::new(KindActivator::<TestRes, _, _>::new(
             move || TestRes::new(create_counter.clone()),
             || {
-                TopologyRuntime::Resident(ResidentRuntime::<TestRes>::new(
+                TopologyRuntime::resident(ResidentRuntime::<TestRes>::new(
                     resident::config::Config::default(),
                 ))
             },
-            nebula_resource::resident_acquire_fn::<TestRes>,
         ))
     }
 
@@ -919,7 +902,7 @@ mod tests {
         let expr_engine = ExpressionEngine::with_cache_size(16);
         let create_counter = Arc::new(AtomicU64::new(0));
 
-        let mut registry = ResourceRegistrarRegistry::new();
+        let mut registry = ResourceActivatorRegistry::new();
         let prev = registry.insert("test-kind", test_registrar(create_counter));
         assert!(prev.is_none(), "no prior registrar for a fresh kind");
         assert!(registry.contains("test-kind"));
@@ -945,7 +928,7 @@ mod tests {
         let expr_engine = ExpressionEngine::with_cache_size(16);
         let create_counter = Arc::new(AtomicU64::new(0));
 
-        let mut registry = ResourceRegistrarRegistry::new();
+        let mut registry = ResourceActivatorRegistry::new();
         registry.insert("test-kind", test_registrar(create_counter));
 
         let err = registry
@@ -1032,7 +1015,7 @@ mod tests {
     async fn empty_registry_rejects_every_kind() {
         let manager = Manager::new();
         let expr_engine = ExpressionEngine::with_cache_size(16);
-        let registry = ResourceRegistrarRegistry::new();
+        let registry = ResourceActivatorRegistry::new();
         assert!(registry.is_empty());
 
         let err = registry
@@ -1237,18 +1220,17 @@ mod tests {
             }
         }
 
-        fn registry() -> ResourceRegistrarRegistry {
-            let mut reg = ResourceRegistrarRegistry::new();
+        fn registry() -> ResourceActivatorRegistry {
+            let mut reg = ResourceActivatorRegistry::new();
             reg.insert(
                 "ordering.widget",
-                Arc::new(TypedResourceRegistrar::<OResource, _, _, _>::new(
+                Arc::new(KindActivator::<OResource, _, _>::new(
                     || OResource,
                     || {
-                        TopologyRuntime::Resident(ResidentRuntime::<OResource>::new(
+                        TopologyRuntime::resident(ResidentRuntime::<OResource>::new(
                             resident::config::Config::default(),
                         ))
                     },
-                    nebula_resource::resident_acquire_fn::<OResource>,
                 )),
             );
             reg
