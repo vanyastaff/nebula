@@ -23,6 +23,9 @@ These hit exactly the target use case (community plugins) and exactly the produc
 
 ## The new contract (target) — SLOT-CENTRIC (revised after plan review)
 
+# budget-justified: slot-centric TopologyBind contract — single coherent design sketch + framework-loop pseudocode for this migration, prose not decomposable into smaller functions
+
+
 `Topology::Slot` becomes **real** and carries the leasable unit for its whole lease — the guard holds the `Slot`, so per-slot metadata (`created_at` for max-lifetime, `fingerprint`, `checkout_count`) survives the checkout→lease→return round-trip. The framework store `ManagedResource.store: InstanceStore<<R::Topology as Topology>::Slot>` is the *actual* idle store the framework fences — no topology-owned store.
 
 > **Review fix (🔴):** an earlier instance-centric draft (`create -> R::Instance` + `into_slot(instance)` on release) rebuilt the slot from the bare instance on every return, resetting `created_at` → **max-lifetime eviction would never fire**. Slot-centric (`create_slot -> Slot`, guard holds the slot, release returns the *same* slot) preserves metadata. `into_slot` is deleted.
