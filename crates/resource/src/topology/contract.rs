@@ -23,15 +23,20 @@ use std::time::Duration;
 use async_trait::async_trait;
 use tokio::sync::OwnedSemaphorePermit;
 
-use crate::{error::Error, topology::store::InstanceStore};
+use crate::{
+    error::{Error, ErrorKind},
+    topology::store::InstanceStore,
+};
 
 // ─── AdmissionPhase ──────────────────────────────────────────────────────────
 
 /// Admission phase snapshot for a topology's resource instances.
 ///
-/// Minimal two-variant placeholder; a future release extends this to the full
-/// orthogonal admission axis (`Warming`, `Recovering`, `Tainted`) that is
-/// distinct from the lifecycle `ResourcePhase`.
+/// Orthogonal to the lifecycle [`ResourcePhase`](crate::state::ResourcePhase):
+/// a resource can be `Active` (lifecycle) while `Warming` (admission) until
+/// its first connection completes. The authoritative admission gate is always
+/// [`Topology::try_reserve`] — this value is advisory only (diagnostics,
+/// load-balancer hints, backoff scheduling).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum AdmissionPhase {
@@ -43,6 +48,15 @@ pub enum AdmissionPhase {
     /// Advisory only: do not gate admission on this value. The authoritative
     /// gate is `try_reserve`.
     Saturated,
+    /// The topology is warming up (cold-start, index build, not yet ready to
+    /// serve). `try_reserve` returns [`Unavailable::Warming`].
+    Warming,
+    /// The topology is mid-reconnect / mid-reset / rebalancing.
+    /// `try_reserve` returns [`Unavailable::Recovering`].
+    Recovering,
+    /// Credentials revoked or instances poisoned.
+    /// `try_reserve` returns [`Unavailable::Tainted`].
+    Tainted,
 }
 
 // ─── Load ─────────────────────────────────────────────────────────────────────
@@ -105,6 +119,51 @@ pub enum Unavailable {
     Recovering,
     /// Credentials revoked or instances poisoned. Route to recovery or fail.
     Tainted,
+}
+
+impl Unavailable {
+    /// Maps this [`Unavailable`] variant onto the resource [`Error`] the
+    /// manager returns to callers when `try_reserve` rejects an acquire.
+    ///
+    /// Mapping:
+    /// - [`Saturated`](Self::Saturated) → `Error::backpressure` (`Backpressure` — retryable with a
+    ///   short delay; `retry_after` is passed through when present).
+    /// - [`Warming`](Self::Warming) → `Error::transient` (Transient — retry on next
+    ///   phase-change event).
+    /// - [`Recovering`](Self::Recovering) → `Error::transient` (Transient — retry after
+    ///   reconnect).
+    /// - [`Tainted`](Self::Tainted) → `Error::revoked` (Revoked/Unavailable — route to
+    ///   recovery or fail with a short backoff).
+    pub fn into_error(self, context: impl std::fmt::Display) -> Error {
+        match self {
+            Self::Saturated { retry_after } => {
+                if let Some(after) = retry_after {
+                    // Topology supplied an explicit retry hint — use Exhausted
+                    // so the hint is preserved verbatim rather than overridden
+                    // by Backpressure's fixed 50 ms default.
+                    Error::new(
+                        ErrorKind::Exhausted {
+                            retry_after: Some(after),
+                        },
+                        format!("{context}: topology saturated — retry after {after:?}"),
+                    )
+                } else {
+                    Error::backpressure(format!(
+                        "{context}: topology saturated — all capacity in use"
+                    ))
+                }
+            },
+            Self::Warming => Error::transient(format!(
+                "{context}: topology warming up — not yet ready to serve"
+            )),
+            Self::Recovering => Error::transient(format!(
+                "{context}: topology recovering — mid-reconnect or rebalancing"
+            )),
+            Self::Tainted => Error::revoked(format!(
+                "{context}: topology tainted — credentials revoked or instances poisoned"
+            )),
+        }
+    }
 }
 
 // ─── Ticket ───────────────────────────────────────────────────────────────────

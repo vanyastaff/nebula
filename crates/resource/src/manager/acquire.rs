@@ -160,6 +160,22 @@ impl Manager {
             .get_acquire_for(key, ctx.scope(), slot_identity)
         {
             AcquireLookupOutcome::Found { managed } => {
+                // Sync capacity gate: rejects before the async acquire when the
+                // topology is saturated, warming, recovering, or tainted.
+                // Mapped to the typed `Error` kind the engine uses for
+                // park/reschedule decisions (`Backpressure`, `Transient`,
+                // `Revoked`). The taint-gate and shutdown-guard run first
+                // (above); this gate is the topology-level admission check.
+                if let Err(unavailable) = managed.try_reserve_gate() {
+                    let err = unavailable.into_error(key);
+                    tracing::debug!(
+                        target: "nebula.resource",
+                        %key,
+                        ?slot_identity,
+                        "acquire_any: topology admission rejected"
+                    );
+                    return Err(err);
+                }
                 managed
                     .acquire(
                         Arc::clone(&manager),

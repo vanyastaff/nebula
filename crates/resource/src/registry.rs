@@ -152,6 +152,27 @@ pub trait ManagedHandle: sealed::Sealed + Send + Sync + 'static {
     /// timer fired.
     async fn wait_for_in_flight_drain(&self, timeout: std::time::Duration) -> Result<(), u64>;
 
+    /// Current admission phase — advisory snapshot of topology availability.
+    ///
+    /// Distinct from the lifecycle [`ResourcePhase`](crate::state::ResourcePhase):
+    /// a resource can be `Active` (lifecycle) and `Warming` (admission) until
+    /// its first connection completes. The authoritative gate is
+    /// [`try_reserve_gate`](Self::try_reserve_gate); this value is for
+    /// diagnostics and load-balancer hints only.
+    fn admission_phase(&self) -> crate::topology::AdmissionPhase;
+
+    /// Sync capacity gate — returns `Ok(())` if a ticket could be taken, or
+    /// `Err(Unavailable)` with the typed reason.
+    ///
+    /// Called by `Manager::acquire_any` before the async acquire dispatch to
+    /// reject callers early when the topology is saturated, warming, recovering,
+    /// or tainted. The ticket produced internally is dropped immediately; this
+    /// method is purely a yes/no gate with a typed reason.
+    fn try_reserve_gate(&self) -> Result<(), crate::topology::Unavailable>;
+
+    /// Optional load snapshot (saturation in `0.0..=1.0`, etc.).
+    fn admission_load(&self) -> Option<crate::topology::Load>;
+
     /// Type-erased acquire for this row.
     ///
     /// Called by `Manager::acquire_any` after the single registry scope
@@ -222,6 +243,18 @@ impl<R: Provider + crate::resource::HasCredentialSlots + Send + Sync + 'static> 
 
     async fn wait_for_in_flight_drain(&self, timeout: std::time::Duration) -> Result<(), u64> {
         ManagedResource::wait_for_in_flight_drain(self, timeout).await
+    }
+
+    fn admission_phase(&self) -> crate::topology::AdmissionPhase {
+        self.topology.dispatch_admission_phase()
+    }
+
+    fn try_reserve_gate(&self) -> Result<(), crate::topology::Unavailable> {
+        self.topology.dispatch_try_reserve_gate()
+    }
+
+    fn admission_load(&self) -> Option<crate::topology::Load> {
+        self.topology.dispatch_load()
     }
 
     async fn acquire(
@@ -1017,6 +1050,15 @@ mod tests {
                     _timeout: std::time::Duration,
                 ) -> Result<(), u64> {
                     Ok(())
+                }
+                fn admission_phase(&self) -> crate::topology::AdmissionPhase {
+                    crate::topology::AdmissionPhase::Ready
+                }
+                fn try_reserve_gate(&self) -> Result<(), crate::topology::Unavailable> {
+                    Ok(())
+                }
+                fn admission_load(&self) -> Option<crate::topology::Load> {
+                    None
                 }
                 async fn acquire(
                     self: Arc<Self>,
