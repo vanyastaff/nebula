@@ -32,7 +32,7 @@ use nebula_resource::{
     resource::{HasCredentialSlots, Provider, ResourceConfig, ResourceMetadata},
     runtime::{TopologyRuntime, pool::PoolRuntime, resident::ResidentRuntime},
     topology::{
-        pooled::{BrokenCheck, InstanceMetrics, Pooled, RecycleDecision},
+        pooled::{BrokenCheck, Pooled},
         resident::Resident,
     },
 };
@@ -119,6 +119,7 @@ struct HttpClientResource {
 // derive the key, even though the struct has data. This is intentional
 // (type-level identity) but the docs don't explain this constraint. I initially
 // wrote `fn key(&self)` and got a confusing "method not in trait" error.
+#[async_trait::async_trait]
 impl Provider for HttpClientResource {
     type Config = HttpClientConfig;
     type Instance = FakeHttpClient;
@@ -127,13 +128,13 @@ impl Provider for HttpClientResource {
         resource_key!("http.client")
     }
 
-    fn create(
+    async fn create(
         &self,
         _config: &HttpClientConfig,
         _ctx: &ResourceContext,
-    ) -> impl Future<Output = Result<FakeHttpClient, Error>> + Send {
+    ) -> Result<FakeHttpClient, Error> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        async move { Ok(FakeHttpClient { connection_id: id }) }
+        Ok(FakeHttpClient { connection_id: id })
     }
 
     fn metadata() -> ResourceMetadata {
@@ -165,14 +166,6 @@ impl HasCredentialSlots for HttpClientResource {
 impl Pooled for HttpClientResource {
     fn is_broken(&self, _runtime: &FakeHttpClient) -> BrokenCheck {
         BrokenCheck::Healthy
-    }
-
-    async fn recycle(
-        &self,
-        _runtime: &FakeHttpClient,
-        _metrics: &InstanceMetrics,
-    ) -> Result<RecycleDecision, Error> {
-        Ok(RecycleDecision::Keep)
     }
 }
 
@@ -221,7 +214,7 @@ async fn use_case_1_http_client_pool() {
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
             topology: TopologyRuntime::Pool(pool_rt),
-            acquire: Manager::erased_acquire_pooled_for::<HttpClientResource>(),
+            acquire_fn: nebula_resource::pooled_acquire_fn::<HttpClientResource>(),
             recovery_gate: None,
         })
         .expect("registration should succeed");
@@ -293,6 +286,7 @@ impl ResourceConfig for ConfigStoreConfig {
 #[derive(Clone)]
 struct ConfigStoreResource;
 
+#[async_trait::async_trait]
 impl Provider for ConfigStoreResource {
     type Config = ConfigStoreConfig;
     type Instance = ConfigStore;
@@ -301,22 +295,19 @@ impl Provider for ConfigStoreResource {
         resource_key!("config.store")
     }
 
-    fn create(
+    async fn create(
         &self,
         config: &ConfigStoreConfig,
         _ctx: &ResourceContext,
-    ) -> impl Future<Output = Result<ConfigStore, Error>> + Send {
-        let path = config.path.clone();
-        async move {
-            // Simulate loading from file
-            let mut values = std::collections::HashMap::new();
-            values.insert("db.host".into(), "localhost".into());
-            values.insert("db.port".into(), "5432".into());
-            values.insert("loaded_from".into(), path);
-            Ok(ConfigStore {
-                values: Arc::new(values),
-            })
-        }
+    ) -> Result<ConfigStore, Error> {
+        // Simulate loading from file
+        let mut values = std::collections::HashMap::new();
+        values.insert("db.host".into(), "localhost".into());
+        values.insert("db.port".into(), "5432".into());
+        values.insert("loaded_from".into(), config.path.clone());
+        Ok(ConfigStore {
+            values: Arc::new(values),
+        })
     }
 }
 
@@ -332,6 +323,7 @@ impl HasCredentialSlots for ConfigStoreResource {
 // your Lease type to impl Clone. The error if you forget is a compile error
 // pointing at the Resident impl, not at the missing Clone impl on Lease.
 // This is a mild footgun — the error message doesn't say "add Clone to Lease".
+#[async_trait::async_trait]
 impl Resident for ConfigStoreResource {}
 
 // FRICTION NOTE [ResidentRuntime REQUIRES Runtime: Clone + Into<Lease>]:
@@ -364,7 +356,7 @@ async fn use_case_2_resident_config_store() {
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
             topology: TopologyRuntime::Resident(resident_rt),
-            acquire: Manager::erased_acquire_resident_for::<ConfigStoreResource>(),
+            acquire_fn: nebula_resource::resident_acquire_fn::<ConfigStoreResource>(),
             recovery_gate: None,
         })
         .expect("resident registration should succeed");
@@ -446,6 +438,7 @@ impl DbResource {
     }
 }
 
+#[async_trait::async_trait]
 impl Provider for DbResource {
     type Config = DbConfig;
     type Instance = FakeDbConnection;
@@ -454,20 +447,16 @@ impl Provider for DbResource {
         resource_key!("db.connection")
     }
 
-    fn create(
+    async fn create(
         &self,
         _config: &DbConfig,
         _ctx: &ResourceContext,
-    ) -> impl Future<Output = Result<FakeDbConnection, Error>> + Send {
-        let count = self.create_count.clone();
-        let fail = self.fail_create.clone();
-        async move {
-            if fail.load(Ordering::Relaxed) {
-                return Err(Error::transient("connection refused"));
-            }
-            let id = count.fetch_add(1, Ordering::Relaxed);
-            Ok(FakeDbConnection { id })
+    ) -> Result<FakeDbConnection, Error> {
+        if self.fail_create.load(Ordering::Relaxed) {
+            return Err(Error::transient("connection refused"));
         }
+        let id = self.create_count.fetch_add(1, Ordering::Relaxed);
+        Ok(FakeDbConnection { id })
     }
 
     fn metadata() -> ResourceMetadata {
@@ -511,7 +500,7 @@ async fn use_case_3_db_pool_with_resilience_and_shutdown() {
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
             topology: TopologyRuntime::Pool(pool_rt),
-            acquire: Manager::erased_acquire_pooled_for::<DbResource>(),
+            acquire_fn: nebula_resource::pooled_acquire_fn::<DbResource>(),
             recovery_gate: None,
         })
         .expect("db registration should succeed");

@@ -3841,6 +3841,7 @@ name = "nebula-resource"
 version = "0.1.0"
 dependencies = [
  "arc-swap",
+ "async-trait",
  "codspeed-criterion-compat",
  "dashmap",
  "futures",

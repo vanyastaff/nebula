@@ -105,6 +105,7 @@ mod counting {
         }
     }
 
+    #[async_trait::async_trait]
     impl Provider for CountingResource {
         type Config = CountingConfig;
         type Instance = CountingRuntime;
@@ -161,6 +162,7 @@ mod counting {
         }
     }
 
+    #[async_trait::async_trait]
     impl Resident for CountingResource {
         fn is_alive_sync(&self, _runtime: &CountingRuntime) -> bool {
             true
@@ -186,7 +188,7 @@ mod counting {
             topology: TopologyRuntime::Resident(ResidentRuntime::<CountingResource>::new(
                 ResidentConfig::default(),
             )),
-            acquire: Manager::erased_acquire_resident_for::<CountingResource>(),
+            acquire_fn: nebula_resource::resident_acquire_fn::<CountingResource>(),
             recovery_gate: opts.recovery_gate,
         })
     }
@@ -1175,6 +1177,7 @@ mod u9_gate {
         refresh_calls: Arc<AtomicUsize>,
     }
 
+    #[async_trait::async_trait]
     impl Provider for GateResource {
         type Config = GateConfig;
         type Instance = GateRuntime;
@@ -1218,6 +1221,7 @@ mod u9_gate {
         }
     }
 
+    #[async_trait::async_trait]
     impl Resident for GateResource {
         fn is_alive_sync(&self, _runtime: &GateRuntime) -> bool {
             true
@@ -1255,7 +1259,7 @@ mod u9_gate {
             topology: TopologyRuntime::Resident(ResidentRuntime::<GateResource>::new(
                 ResidentConfig::default(),
             )),
-            acquire: Manager::erased_acquire_resident_for::<GateResource>(),
+            acquire_fn: nebula_resource::resident_acquire_fn::<GateResource>(),
             recovery_gate: None,
         })
         .expect("resident registration must succeed");
@@ -1375,6 +1379,7 @@ mod reload_deferral {
             #[derive(Clone)]
             struct $name;
 
+            #[async_trait::async_trait]
             impl Provider for $name {
                 type Config = VersionedConfig;
                 type Instance = u32;
@@ -1411,7 +1416,9 @@ mod reload_deferral {
     reload_fixture!(PoolReload, "reload-pool");
     reload_fixture!(ResidentReload, "reload-resident");
 
+    #[async_trait::async_trait]
     impl Pooled for PoolReload {}
+    #[async_trait::async_trait]
     impl Resident for ResidentReload {
         fn is_alive_sync(&self, _r: &u32) -> bool {
             true
@@ -1438,7 +1445,7 @@ mod reload_deferral {
             topology: TopologyRuntime::Resident(ResidentRuntime::<ResidentReload>::new(
                 ResidentConfig::default(),
             )),
-            acquire: Manager::erased_acquire_resident_for::<ResidentReload>(),
+            acquire_fn: nebula_resource::resident_acquire_fn::<ResidentReload>(),
             recovery_gate: None,
         })
         .expect("resident registration must succeed");
@@ -1458,7 +1465,7 @@ mod reload_deferral {
                 PoolConfig::default(),
                 v(1).fingerprint(),
             )),
-            acquire: Manager::erased_acquire_pooled_for::<PoolReload>(),
+            acquire_fn: nebula_resource::pooled_acquire_fn::<PoolReload>(),
             recovery_gate: None,
         })
         .expect("pool registration must succeed");
@@ -1486,7 +1493,7 @@ mod reload_deferral {
                 PoolConfig::default(),
                 v(1).fingerprint(),
             )),
-            acquire: Manager::erased_acquire_pooled_for::<PoolReload>(),
+            acquire_fn: nebula_resource::pooled_acquire_fn::<PoolReload>(),
             recovery_gate: None,
         })
         .expect("pool registration must succeed");
@@ -1519,7 +1526,7 @@ mod reload_deferral {
             topology: TopologyRuntime::Resident(ResidentRuntime::<ResidentReload>::new(
                 ResidentConfig::default(),
             )),
-            acquire: Manager::erased_acquire_resident_for::<ResidentReload>(),
+            acquire_fn: nebula_resource::resident_acquire_fn::<ResidentReload>(),
             recovery_gate: None,
         })
         .expect("resident registration must succeed");

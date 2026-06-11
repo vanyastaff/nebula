@@ -147,6 +147,7 @@ struct SecretRes {
     hook_entered: Arc<AtomicUsize>,
 }
 
+#[async_trait::async_trait]
 impl Provider for SecretRes {
     type Config = Cfg;
     type Instance = SecretRuntime;
@@ -194,6 +195,7 @@ impl nebula_resource::HasCredentialSlots for SecretRes {
     }
 }
 
+#[async_trait::async_trait]
 impl Resident for SecretRes {
     fn is_alive_sync(&self, _r: &SecretRuntime) -> bool {
         true
@@ -250,7 +252,7 @@ async fn wired_rotation_fanout_observability_is_redaction_clean() {
         topology: TopologyRuntime::Resident(ResidentRuntime::<SecretRes>::new(
             ResidentConfig::default(),
         )),
-        acquire: Manager::erased_acquire_resident_for::<SecretRes>(),
+        acquire_fn: nebula_resource::resident_acquire_fn::<SecretRes>(),
         recovery_gate: None,
     })
     .expect("register resolved-credential row");

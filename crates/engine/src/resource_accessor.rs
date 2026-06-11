@@ -18,7 +18,7 @@ type BoxFut<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 ///
 /// Wraps an [`Arc<nebula_resource::Manager>`] and dispatches `acquire_any` /
 /// `try_acquire_any` through
-/// [`Manager::acquire_erased_for`](nebula_resource::Manager::acquire_erased_for)
+/// [`Manager::acquire_any`](nebula_resource::Manager::acquire_any)
 /// using the execution scope and optional per-key slot identities recorded
 /// at activation.
 pub struct EngineResourceAccessor {
@@ -110,7 +110,7 @@ impl ResourceAccessor for EngineResourceAccessor {
         let slot_identity = self.slot_identity_for(&key);
         let options = AcquireOptions::default();
         Box::pin(async move {
-            Manager::acquire_erased_for(manager, &key, &ctx, &options, &slot_identity)
+            Manager::acquire_any(manager, &key, &ctx, &options, &slot_identity)
                 .await
                 .map_err(|e| Self::map_err(&key, e))
         })
@@ -126,7 +126,7 @@ impl ResourceAccessor for EngineResourceAccessor {
         let slot_identity = self.slot_identity_for(&key);
         let options = AcquireOptions::default();
         Box::pin(async move {
-            match Manager::acquire_erased_for(manager, &key, &ctx, &options, &slot_identity).await {
+            match Manager::acquire_any(manager, &key, &ctx, &options, &slot_identity).await {
                 Ok(value) => Ok(Some(value)),
                 Err(e) if matches!(e.kind(), ErrorKind::NotFound) => Ok(None),
                 Err(e) => Err(Self::map_err(&key, e)),
@@ -207,6 +207,7 @@ mod tests {
     #[derive(Clone)]
     struct AccResource;
 
+    #[async_trait::async_trait]
     impl Provider for AccResource {
         type Config = AccConfig;
         type Instance = Arc<AtomicU64>;
@@ -234,6 +235,7 @@ mod tests {
         }
     }
 
+    #[async_trait::async_trait]
     impl Resident for AccResource {
         fn is_alive_sync(&self, _runtime: &Arc<AtomicU64>) -> bool {
             true
@@ -283,7 +285,7 @@ mod tests {
                 topology: TopologyRuntime::Resident(ResidentRuntime::<AccResource>::new(
                     ResidentConfig::default(),
                 )),
-                acquire: Manager::erased_acquire_resident_for::<AccResource>(),
+                acquire_fn: nebula_resource::resident_acquire_fn::<AccResource>(),
                 recovery_gate: None,
             })
             .expect("register");
@@ -322,7 +324,7 @@ mod tests {
                 topology: TopologyRuntime::Resident(ResidentRuntime::<AccResource>::new(
                     ResidentConfig::default(),
                 )),
-                acquire: Manager::erased_acquire_resident_for::<AccResource>(),
+                acquire_fn: nebula_resource::resident_acquire_fn::<AccResource>(),
                 recovery_gate: None,
             })
             .expect("register cred-bound row");

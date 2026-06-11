@@ -2,7 +2,7 @@
 //! lookup + taint helpers, the per-topology dispatch closures, the shared
 //! `run_acquire` pipeline, and pool diagnostics/warmup.
 
-use std::{future::Future, sync::Arc, time::Instant};
+use std::{any::Any, future::Future, sync::Arc, time::Instant};
 
 use nebula_core::{Context, ResourceKey, ScopeLevel};
 
@@ -11,47 +11,17 @@ use crate::{
     context::ResourceContext,
     error::Error,
     events::ResourceEvent,
-    manager::ErasedAcquireFn,
     options::AcquireOptions,
-    resource::Provider,
-    runtime::{TopologyRuntime, managed::ManagedResource},
+    registry::ManagedHandle,
+    resource::{HasCredentialSlots, Provider},
+    runtime::{
+        TopologyRuntime,
+        managed::{AcquireFn, ManagedResource},
+    },
+    topology::{pooled::Pooled, resident::Resident},
 };
 
 impl Manager {
-    /// Erased acquire hook for a resident row.
-    ///
-    /// Takes **no** slot-identity argument: the single-walk acquire
-    /// resolution pins the row by the *caller's* runtime slot identity, so
-    /// the registration-time identity never parameterised the hook. The
-    /// structural register path ([`register_resolved`](Self::register_resolved))
-    /// hands this hook in by value with no identity threading.
-    #[must_use]
-    pub fn erased_acquire_resident_for<R>() -> ErasedAcquireFn
-    where
-        R: crate::topology::resident::Resident
-            + crate::resource::HasCredentialSlots
-            + Provider
-            + Send
-            + Sync
-            + 'static,
-        R::Instance: Clone + Send + Sync + 'static,
-    {
-        super::acquire_dispatch::erased_acquire_resident::<R>()
-    }
-
-    /// Erased acquire hook for a pooled row, structural-identity form.
-    ///
-    /// See [`erased_acquire_resident_for`](Self::erased_acquire_resident_for)
-    /// — no slot-identity argument; the single-walk resolution pins the row.
-    #[must_use]
-    pub fn erased_acquire_pooled_for<R>() -> ErasedAcquireFn
-    where
-        R: crate::topology::pooled::Pooled + Clone + Provider + Send + Sync + 'static,
-        R::Instance: Clone + Send + Sync + 'static,
-    {
-        super::acquire_dispatch::erased_acquire_pooled::<R>()
-    }
-
     /// Typed acquire lookup walking [`scope_levels_for_acquire`](crate::context::scope_levels_for_acquire)
     /// on the context scope bag, then [`taint_gate`](Self::taint_gate).
     pub(crate) fn lookup_for_acquire_scope<R: Provider>(
@@ -80,31 +50,6 @@ impl Manager {
         Self::taint_gate::<R>(managed)
     }
 
-    /// Downcasts the row already resolved by
-    /// [`Registry::get_acquire_for`](crate::registry::Registry::get_acquire_for)'s
-    /// single scope walk, then applies the shared shutdown + taint tail.
-    ///
-    /// The erased-acquire path threads the resolved
-    /// `Arc<dyn AnyManagedResource>` out of that one walk (via
-    /// [`AcquireLookupOutcome::Found`](crate::registry::AcquireLookupOutcome::Found)),
-    /// so the typed handle is recovered by a **downcast of that exact
-    /// row** — not a second `DashMap` walk at the matched scope. The
-    /// resolved row is, by construction, the `ManagedResource<R>` the
-    /// `erased_acquire_*::<R>` hook was registered alongside, so the
-    /// downcast yields the identical handle the prior pinned re-walk
-    /// would have. Failure mapping (`NotFound` on a type mismatch) and
-    /// the [`taint_gate`](Self::taint_gate) tail are byte-identical to
-    /// the replaced pinned-lookup path.
-    fn downcast_resolved_row<R: Provider>(
-        &self,
-        managed: Arc<dyn crate::registry::AnyManagedResource>,
-    ) -> Result<Arc<ManagedResource<R>>, Error> {
-        use crate::registry::PinnedLookup;
-        self.shutdown_guard()?;
-        let managed = Self::resolve_typed_pinned::<R>(PinnedLookup::Found(managed))?;
-        Self::taint_gate::<R>(managed)
-    }
-
     /// Shared taint check tail for the acquire-side lookups.
     ///
     /// Every `acquire_*` path funnels through here so a single check
@@ -118,7 +63,7 @@ impl Manager {
     /// Taint rejects with [`ErrorKind::Revoked`](crate::error::ErrorKind::Revoked),
     /// distinct from [`ErrorKind::Cancelled`](crate::error::ErrorKind::Cancelled)
     /// raised by [`Self::shutdown_guard`].
-    fn taint_gate<R: Provider>(
+    pub(crate) fn taint_gate<R: Provider>(
         managed: Arc<ManagedResource<R>>,
     ) -> Result<Arc<ManagedResource<R>>, Error> {
         if managed.is_tainted() {
@@ -184,30 +129,26 @@ impl Manager {
         .with_resource_key(R::key())
     }
 
-    /// Acquires a [`crate::guard::ResourceGuard`] through the registry row's
-    /// erased dispatch hook, keyed by the **collision-free structural**
-    /// resolved-credential identity (key + scope + slot identity).
+    /// Acquires through the registry row's [`ManagedHandle::acquire`] method,
+    /// keyed by the **collision-free structural** resolved-credential identity
+    /// (key + scope + slot identity).
     ///
-    /// This is the object-safe engine/action-accessor acquire entry used
-    /// when the concrete resource type `R` is not known at compile time: the
-    /// accessor holds the structural
-    /// [`SlotIdentity`](crate::dedup::SlotIdentity) recorded for the key at
-    /// activation and passes it here, so the single scope walk resolves the
-    /// *exact* resolved row (no digest aliasing). The resolved row is
-    /// downcast by the hook with no second registry walk.
+    /// This is the object-safe engine/action-accessor acquire entry used when
+    /// the concrete resource type `R` is not known at compile time. The single
+    /// scope walk resolves the exact row; `ManagedHandle::acquire` dispatches
+    /// on topology internally with no second registry walk.
     ///
     /// # Errors
     ///
     /// Same as the typed `acquire_*_for_identity` family: not found,
-    /// ambiguous (when `slot_identity` does not match a row), shutdown,
-    /// taint, topology, and acquire-time failures.
-    pub async fn acquire_erased_for(
+    /// ambiguous, shutdown, taint, topology, and acquire-time failures.
+    pub async fn acquire_any(
         manager: Arc<Self>,
         key: &ResourceKey,
         ctx: &ResourceContext,
         options: &AcquireOptions,
         slot_identity: &crate::dedup::SlotIdentity,
-    ) -> Result<Box<dyn std::any::Any + Send + Sync>, Error> {
+    ) -> Result<Box<dyn Any + Send + Sync>, Error> {
         use crate::registry::AcquireLookupOutcome;
 
         manager.shutdown_guard()?;
@@ -215,21 +156,23 @@ impl Manager {
             target: "nebula.resource",
             %key,
             ?slot_identity,
-            "acquire_erased: resolving registry hook"
+            "acquire_any: resolving registry row"
         );
         match manager
             .registry
             .get_acquire_for(key, ctx.scope(), slot_identity)
         {
-            AcquireLookupOutcome::Found { acquire, managed } => {
-                // `managed` is the row this single scope walk already
-                // resolved; the hook downcasts it to the concrete
-                // `ManagedResource<R>` instead of re-walking the registry
-                // at the matched scope.
-                acquire(manager, ctx.clone_for_acquire(), options.clone(), managed).await
+            AcquireLookupOutcome::Found { managed } => {
+                managed
+                    .acquire(
+                        Arc::clone(&manager),
+                        ctx.clone_for_acquire(),
+                        options.clone(),
+                    )
+                    .await
             },
             AcquireLookupOutcome::NotFound => {
-                tracing::debug!(target: "nebula.resource", %key, "acquire_erased: not found");
+                tracing::debug!(target: "nebula.resource", %key, "acquire_any: not found");
                 Err(Error::not_found(key))
             },
             AcquireLookupOutcome::Ambiguous { rows } => {
@@ -237,7 +180,7 @@ impl Manager {
                     target: "nebula.resource",
                     %key,
                     rows,
-                    "acquire_erased: ambiguous scope/slot identity"
+                    "acquire_any: ambiguous scope/slot identity"
                 );
                 Err(Error::ambiguous(format!(
                     "{key}: {rows} resolved-credential registrations exist at this scope; \
@@ -274,7 +217,7 @@ impl Manager {
         options: &AcquireOptions,
     ) -> Result<crate::guard::ResourceGuard<R>, Error>
     where
-        R: crate::topology::pooled::Pooled + Clone + Send + Sync + 'static,
+        R: Pooled + Clone + Send + Sync + 'static,
         R::Instance: Clone + Send + Sync + 'static,
     {
         let managed = self.lookup_for_acquire_scope::<R>(ctx)?;
@@ -306,7 +249,7 @@ impl Manager {
         slot_identity: &crate::dedup::SlotIdentity,
     ) -> Result<crate::guard::ResourceGuard<R>, Error>
     where
-        R: crate::topology::pooled::Pooled + Clone + Send + Sync + 'static,
+        R: Pooled + Clone + Send + Sync + 'static,
         R::Instance: Clone + Send + Sync + 'static,
     {
         let managed = self.lookup_for_acquire_with_identity::<R>(ctx, slot_identity)?;
@@ -314,19 +257,23 @@ impl Manager {
     }
 
     /// [`acquire_pooled_for_identity`](Self::acquire_pooled_for_identity) for
-    /// a row already resolved by the erased-acquire scope walk (downcast, no
-    /// re-walk).
+    /// a row already resolved by the [`ManagedHandle::acquire`] scope walk
+    /// (downcast, no re-walk).
+    #[expect(dead_code, reason = "called by engine scope-walk dispatch once wired")]
     pub(crate) async fn acquire_pooled_at_scope<R>(
         &self,
         ctx: &ResourceContext,
         options: &AcquireOptions,
-        resolved: Arc<dyn crate::registry::AnyManagedResource>,
+        resolved: Arc<dyn ManagedHandle>,
     ) -> Result<crate::guard::ResourceGuard<R>, Error>
     where
-        R: crate::topology::pooled::Pooled + Clone + Send + Sync + 'static,
+        R: Pooled + Clone + Send + Sync + 'static,
         R::Instance: Clone + Send + Sync + 'static,
     {
-        let managed = self.downcast_resolved_row::<R>(resolved)?;
+        use crate::registry::PinnedLookup;
+        self.shutdown_guard()?;
+        let managed = Self::resolve_typed_pinned::<R>(PinnedLookup::Found(resolved))?;
+        let managed = Self::taint_gate::<R>(managed)?;
         self.pooled_pipeline(managed, ctx, options).await
     }
 
@@ -336,14 +283,14 @@ impl Manager {
     /// not a hierarchy, so the shared generic pipeline cannot prove the
     /// variant statically). `config`/`generation` are recomputed inside the
     /// dispatch closure so they are re-read on every resilience retry.
-    async fn pooled_pipeline<R>(
+    pub(crate) async fn pooled_pipeline<R>(
         &self,
         managed: Arc<ManagedResource<R>>,
         ctx: &ResourceContext,
         options: &AcquireOptions,
     ) -> Result<crate::guard::ResourceGuard<R>, Error>
     where
-        R: crate::topology::pooled::Pooled + Clone + Send + Sync + 'static,
+        R: Pooled + Clone + Send + Sync + 'static,
         R::Instance: Clone + Send + Sync + 'static,
     {
         self.run_acquire(Arc::clone(&managed), || {
@@ -495,11 +442,7 @@ impl Manager {
         options: &AcquireOptions,
     ) -> Result<crate::guard::ResourceGuard<R>, Error>
     where
-        R: crate::topology::resident::Resident
-            + crate::resource::HasCredentialSlots
-            + Send
-            + Sync
-            + 'static,
+        R: Resident + HasCredentialSlots + Send + Sync + 'static,
         R::Instance: Clone + Send + Sync + 'static,
     {
         let managed = self.lookup_for_acquire_scope::<R>(ctx)?;
@@ -533,11 +476,7 @@ impl Manager {
         slot_identity: &crate::dedup::SlotIdentity,
     ) -> Result<crate::guard::ResourceGuard<R>, Error>
     where
-        R: crate::topology::resident::Resident
-            + crate::resource::HasCredentialSlots
-            + Send
-            + Sync
-            + 'static,
+        R: Resident + HasCredentialSlots + Send + Sync + 'static,
         R::Instance: Clone + Send + Sync + 'static,
     {
         let managed = self.lookup_for_acquire_with_identity::<R>(ctx, slot_identity)?;
@@ -545,23 +484,23 @@ impl Manager {
     }
 
     /// [`acquire_resident_for_identity`](Self::acquire_resident_for_identity)
-    /// for a row already resolved by the erased-acquire scope walk
+    /// for a row already resolved by the [`ManagedHandle::acquire`] scope walk
     /// (downcast, no re-walk).
+    #[expect(dead_code, reason = "called by engine scope-walk dispatch once wired")]
     pub(crate) async fn acquire_resident_at_scope<R>(
         &self,
         ctx: &ResourceContext,
         options: &AcquireOptions,
-        resolved: Arc<dyn crate::registry::AnyManagedResource>,
+        resolved: Arc<dyn ManagedHandle>,
     ) -> Result<crate::guard::ResourceGuard<R>, Error>
     where
-        R: crate::topology::resident::Resident
-            + crate::resource::HasCredentialSlots
-            + Send
-            + Sync
-            + 'static,
+        R: Resident + HasCredentialSlots + Send + Sync + 'static,
         R::Instance: Clone + Send + Sync + 'static,
     {
-        let managed = self.downcast_resolved_row::<R>(resolved)?;
+        use crate::registry::PinnedLookup;
+        self.shutdown_guard()?;
+        let managed = Self::resolve_typed_pinned::<R>(PinnedLookup::Found(resolved))?;
+        let managed = Self::taint_gate::<R>(managed)?;
         self.resident_pipeline(managed, ctx, options).await
     }
 
@@ -571,18 +510,14 @@ impl Manager {
     /// `release_queue`/`generation` nor `metrics`). `config` is recomputed
     /// inside the dispatch closure so it is re-read on every resilience
     /// retry.
-    async fn resident_pipeline<R>(
+    pub(crate) async fn resident_pipeline<R>(
         &self,
         managed: Arc<ManagedResource<R>>,
         ctx: &ResourceContext,
         options: &AcquireOptions,
     ) -> Result<crate::guard::ResourceGuard<R>, Error>
     where
-        R: crate::topology::resident::Resident
-            + crate::resource::HasCredentialSlots
-            + Send
-            + Sync
-            + 'static,
+        R: Resident + HasCredentialSlots + Send + Sync + 'static,
         R::Instance: Clone + Send + Sync + 'static,
     {
         self.run_acquire(Arc::clone(&managed), || {
@@ -605,7 +540,7 @@ impl Manager {
     /// Returns `None` if the resource is not registered or does not use Pool topology.
     pub async fn pool_stats<R>(&self, scope: &ScopeLevel) -> Option<crate::runtime::pool::PoolStats>
     where
-        R: crate::topology::pooled::Pooled + Clone + Send + Sync + 'static,
+        R: Pooled + Clone + Send + Sync + 'static,
         R::Instance: Clone + Send + Sync + 'static,
     {
         let managed = self.lookup::<R>(scope).ok()?;
@@ -641,7 +576,7 @@ impl Manager {
     ///   ([`acquire_pooled_for_identity`](Self::acquire_pooled_for_identity)).
     pub async fn warmup_pool<R>(&self, ctx: &ResourceContext) -> Result<usize, Error>
     where
-        R: crate::topology::pooled::Pooled + Clone + Send + Sync + 'static,
+        R: Pooled + Clone + Send + Sync + 'static,
         R::Instance: Clone + Send + Sync + 'static,
     {
         let managed = self.lookup_for_acquire_scope::<R>(ctx)?;
@@ -680,4 +615,66 @@ impl Manager {
             ))),
         }
     }
+}
+
+/// Builds the type-erased acquire closure for a [`Resident`](Resident)
+/// resource type `R`.
+///
+/// The returned [`AcquireFn`] is closed over the concrete `R` at the call site where the
+/// topology bounds are in scope, then stored on `ManagedResource` and dispatched through
+/// [`ManagedHandle::acquire`](crate::registry::ManagedHandle::acquire) without carrying
+/// topology trait bounds on the dyn-safe trait.
+///
+/// Pass this as `RegistrationSpec::acquire_fn` when registering a resident resource.
+#[must_use]
+pub fn resident_acquire_fn<R>() -> AcquireFn
+where
+    R: Resident + HasCredentialSlots + Clone + Send + Sync + 'static,
+    R::Instance: Clone + Send + Sync + 'static,
+{
+    Arc::new(
+        move |erased: Arc<dyn Any + Send + Sync>,
+              mgr: Arc<Manager>,
+              ctx: ResourceContext,
+              opts: AcquireOptions| {
+            Box::pin(async move {
+                let managed = erased
+                        .downcast::<ManagedResource<R>>()
+                        .map_err(|_| Error::permanent("resident_acquire_fn: Arc type mismatch — registration and acquire_fn must use the same R"))?;
+                let guard = mgr.resident_pipeline(managed, &ctx, &opts).await?;
+                Ok(Box::new(guard) as Box<dyn Any + Send + Sync>)
+            })
+        },
+    )
+}
+
+/// Builds the type-erased acquire closure for a [`Pooled`](Pooled)
+/// resource type `R`.
+///
+/// The returned [`AcquireFn`] is closed over the concrete `R` at the call site where the
+/// topology bounds are in scope, then stored on `ManagedResource` and dispatched through
+/// [`ManagedHandle::acquire`](crate::registry::ManagedHandle::acquire) without carrying
+/// topology trait bounds on the dyn-safe trait.
+///
+/// Pass this as `RegistrationSpec::acquire_fn` when registering a pooled resource.
+#[must_use]
+pub fn pooled_acquire_fn<R>() -> AcquireFn
+where
+    R: Pooled + HasCredentialSlots + Clone + Send + Sync + 'static,
+    R::Instance: Clone + Send + Sync + 'static,
+{
+    Arc::new(
+        move |erased: Arc<dyn Any + Send + Sync>,
+              mgr: Arc<Manager>,
+              ctx: ResourceContext,
+              opts: AcquireOptions| {
+            Box::pin(async move {
+                let managed = erased
+                        .downcast::<ManagedResource<R>>()
+                        .map_err(|_| Error::permanent("pooled_acquire_fn: Arc type mismatch — registration and acquire_fn must use the same R"))?;
+                let guard = mgr.pooled_pipeline(managed, &ctx, &opts).await?;
+                Ok(Box::new(guard) as Box<dyn Any + Send + Sync>)
+            })
+        },
+    )
 }

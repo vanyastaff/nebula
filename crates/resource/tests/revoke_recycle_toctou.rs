@@ -31,11 +31,14 @@
 //! marks a shared flag. The scenarios drive the precise interleaving that
 //! exposed the defect and assert the fenced outcome.
 
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+use std::{
+    future::Future,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+    },
+    time::Duration,
 };
-use std::time::Duration;
 
 use nebula_core::{ResourceKey, ScopeLevel, resource_key, scope::Scope};
 use nebula_resource::{
@@ -118,6 +121,7 @@ impl PoolResource {
     }
 }
 
+#[async_trait::async_trait]
 impl Provider for PoolResource {
     type Config = PoolCfg;
     type Instance = PoolRt;
@@ -162,16 +166,19 @@ impl HasCredentialSlots for PoolResource {
 }
 
 impl Pooled for PoolResource {
-    async fn recycle(
+    fn recycle(
         &self,
-        _runtime: &PoolRt,
+        _instance: &PoolRt,
         _metrics: &nebula_resource::InstanceMetrics,
-    ) -> Result<RecycleDecision, Error> {
-        if self.gate.park_in_recycle.load(Ordering::SeqCst) {
-            self.gate.recycle_entered.notify_one();
-            self.gate.hold_recycle.notified().await;
+    ) -> impl Future<Output = Result<RecycleDecision, Error>> + Send {
+        let gate = self.gate.clone();
+        async move {
+            if gate.park_in_recycle.load(Ordering::SeqCst) {
+                gate.recycle_entered.notify_one();
+                gate.hold_recycle.notified().await;
+            }
+            Ok(RecycleDecision::Keep)
         }
-        Ok(RecycleDecision::Keep)
     }
 }
 
@@ -227,7 +234,7 @@ async fn revoked_credential_not_reserved_via_idle_recycle() {
             pool_config(),
             PoolCfg.fingerprint(),
         )),
-        acquire: Manager::erased_acquire_pooled_for::<PoolResource>(),
+        acquire_fn: nebula_resource::pooled_acquire_fn::<PoolResource>(),
         recovery_gate: None,
     })
     .expect("pooled registration must succeed");
@@ -316,7 +323,7 @@ async fn in_flight_create_completing_after_revoke_is_destroyed() {
             pool_config(),
             PoolCfg.fingerprint(),
         )),
-        acquire: Manager::erased_acquire_pooled_for::<PoolResource>(),
+        acquire_fn: nebula_resource::pooled_acquire_fn::<PoolResource>(),
         recovery_gate: None,
     })
     .expect("pooled registration must succeed");
@@ -401,7 +408,7 @@ async fn revoked_pre_existing_idle_instance_not_reserved() {
             pool_config(),
             PoolCfg.fingerprint(),
         )),
-        acquire: Manager::erased_acquire_pooled_for::<PoolResource>(),
+        acquire_fn: nebula_resource::pooled_acquire_fn::<PoolResource>(),
         recovery_gate: None,
     })
     .expect("pooled registration must succeed");
@@ -512,7 +519,7 @@ async fn warmup_after_revoke_does_not_admit_revoked_instance() {
             cfg,
             PoolCfg.fingerprint(),
         )),
-        acquire: Manager::erased_acquire_pooled_for::<PoolResource>(),
+        acquire_fn: nebula_resource::pooled_acquire_fn::<PoolResource>(),
         recovery_gate: None,
     })
     .expect("pooled registration must succeed");

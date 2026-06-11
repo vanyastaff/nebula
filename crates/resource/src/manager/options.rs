@@ -11,10 +11,7 @@ use std::{sync::Arc, time::Duration};
 
 use nebula_core::ScopeLevel;
 
-use crate::{
-    recovery::gate::RecoveryGate, registry::ErasedAcquireFn, resource::Provider,
-    runtime::TopologyRuntime,
-};
+use crate::{recovery::gate::RecoveryGate, resource::Provider, runtime::TopologyRuntime};
 
 /// Policy that controls what `graceful_shutdown` does when the
 /// drain phase expires with handles still outstanding (#302).
@@ -243,8 +240,12 @@ pub struct RegistrationSpec<R: Provider> {
     pub slot_identity: crate::dedup::SlotIdentity,
     /// The topology runtime backing this row.
     pub topology: TopologyRuntime<R>,
-    /// Type-erased acquire hook captured at registration time.
-    pub acquire: ErasedAcquireFn,
     /// Optional recovery gate for thundering-herd prevention.
     pub recovery_gate: Option<Arc<RecoveryGate>>,
+    /// Type-erased topology acquire function, closed over at the call
+    /// site where topology trait bounds (`R: Resident` / `R: Pooled`) are
+    /// in scope. Stored on [`ManagedResource`](crate::runtime::managed::ManagedResource)
+    /// and invoked by [`ManagedHandle::acquire`](crate::registry::ManagedHandle) so the
+    /// dyn-safe trait need not carry topology bounds.
+    pub acquire_fn: crate::runtime::managed::AcquireFn,
 }

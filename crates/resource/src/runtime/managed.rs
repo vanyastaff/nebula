@@ -5,6 +5,9 @@
 //! topology runtime, release queue, and lifecycle metadata.
 
 use std::{
+    any::Any,
+    future::Future,
+    pin::Pin,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -23,6 +26,25 @@ use crate::{
     resource::Provider,
     state::{ResourcePhase, ResourceStatus},
 };
+
+/// Type-erased topology acquire function stored on each [`ManagedResource`].
+///
+/// Closed over at registration time by the topology-specific registration
+/// path (which holds the `R: Resident` / `R: Pooled` bounds). Calling it
+/// from [`ManagedHandle::acquire`] dispatches the correct pipeline without
+/// requiring the dyn-safe trait to carry topology bounds. The closure is
+/// `Send + Sync` so `ManagedResource` stays `Send + Sync`.
+pub type AcquireFn = Arc<
+    dyn Fn(
+            Arc<dyn Any + Send + Sync>,
+            Arc<crate::manager::Manager>,
+            crate::context::ResourceContext,
+            crate::options::AcquireOptions,
+        )
+            -> Pin<Box<dyn Future<Output = Result<Box<dyn Any + Send + Sync>, Error>> + Send>>
+        + Send
+        + Sync,
+>;
 
 /// Per-registration runtime holding topology + metadata.
 ///
@@ -69,6 +91,12 @@ pub struct ManagedResource<R: Provider> {
     /// revoke-vs-acquire TOCTOU. Two-phase-revoke / drain invariant: see the
     /// [`manager`](crate::manager) module documentation.
     pub(crate) in_flight: Arc<(AtomicU64, Notify)>,
+    /// Type-erased acquire dispatch, closed over at registration time.
+    ///
+    /// Stores the topology-specific acquire pipeline (resident or pooled)
+    /// as an erased closure so [`ManagedHandle::acquire`] can dispatch
+    /// without carrying topology trait bounds on the `dyn`-safe trait.
+    pub(crate) acquire_fn: AcquireFn,
 }
 
 impl<R: Provider> ManagedResource<R> {

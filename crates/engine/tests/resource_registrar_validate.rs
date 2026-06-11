@@ -87,6 +87,7 @@ impl ResourceConfig for HttpPoolConfig {
 #[derive(Clone)]
 struct HttpPool;
 
+#[async_trait::async_trait]
 impl Provider for HttpPool {
     type Config = HttpPoolConfig;
     type Instance = ();
@@ -121,6 +122,7 @@ impl nebula_resource::HasCredentialSlots for HttpPool {
     }
 }
 
+#[async_trait::async_trait]
 impl Resident for HttpPool {
     fn is_alive_sync(&self, _runtime: &()) -> bool {
         true
@@ -138,7 +140,7 @@ fn registry_with_http_pool() -> ResourceRegistrarRegistry {
                     resident::config::Config::default(),
                 ))
             },
-            || Manager::erased_acquire_resident_for::<HttpPool>(),
+            nebula_resource::resident_acquire_fn::<HttpPool>,
         )),
     );
     registry

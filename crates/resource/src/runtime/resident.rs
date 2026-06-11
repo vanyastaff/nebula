@@ -397,6 +397,7 @@ mod tests {
         }
     }
 
+    #[async_trait::async_trait]
     impl Provider for MockResident {
         type Config = bool;
         type Instance = u32;
@@ -405,17 +406,11 @@ mod tests {
             resource_key!("mock-resident")
         }
 
-        fn create(
-            &self,
-            _config: &bool,
-            _ctx: &ResourceContext,
-        ) -> impl Future<Output = Result<u32, Error>> + Send {
+        async fn create(&self, _config: &bool, _ctx: &ResourceContext) -> Result<u32, Error> {
             let count = self.create_count.fetch_add(1, Ordering::Relaxed);
-            async move {
-                // Yield to increase the chance of concurrent interleaving.
-                tokio::task::yield_now().await;
-                Ok(count + 100)
-            }
+            // Yield to increase the chance of concurrent interleaving.
+            tokio::task::yield_now().await;
+            Ok(count + 100)
         }
 
         async fn destroy(&self, _runtime: u32) -> Result<(), Error> {
@@ -559,6 +554,7 @@ mod tests {
     #[derive(Clone)]
     struct HangingResident;
 
+    #[async_trait::async_trait]
     impl Provider for HangingResident {
         type Config = bool;
         type Instance = u32;
@@ -690,6 +686,7 @@ mod tests {
         park_before_read: Arc<AtomicBool>,
     }
 
+    #[async_trait::async_trait]
     impl Provider for SlotReadResident {
         type Config = bool;
         type Instance = u32;

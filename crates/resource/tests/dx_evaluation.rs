@@ -80,6 +80,7 @@ struct HttpResource;
 // `type Error` removed from the trait, the impl is now just `Config` and
 // `Runtime` — the two that actually matter for a simple pooled resource.
 
+#[async_trait::async_trait]
 impl Provider for HttpResource {
     type Config = HttpConfig;
     type Instance = HttpClient;
@@ -105,6 +106,7 @@ impl HasCredentialSlots for HttpResource {
     }
 }
 
+#[async_trait::async_trait]
 impl Pooled for HttpResource {
     // [FRICTION #4] Old API was `recycle_decision` + `broken_check` (methods
     // returning the enum value). New API is `is_broken` (returning BrokenCheck)
@@ -142,7 +144,7 @@ async fn use_case_1_pooled_http_client() {
                 PoolConfig::default(),
                 fingerprint,
             )),
-            acquire: Manager::erased_acquire_pooled_for::<HttpResource>(),
+            acquire_fn: nebula_resource::pooled_acquire_fn::<HttpResource>(),
             recovery_gate: None,
         })
         .expect("registration should succeed");
@@ -195,7 +197,7 @@ async fn use_case_1_invalid_config_is_rejected() {
             PoolConfig::default(),
             fingerprint,
         )),
-        acquire: Manager::erased_acquire_pooled_for::<HttpResource>(),
+        acquire_fn: nebula_resource::pooled_acquire_fn::<HttpResource>(),
         recovery_gate: None,
     });
     let err = result.expect_err("empty base_url must fail validation at register time");
@@ -235,6 +237,7 @@ struct ConfigStore {
 #[derive(Clone)]
 struct ConfigStoreResource;
 
+#[async_trait::async_trait]
 impl Provider for ConfigStoreResource {
     type Config = ConfigStoreConfig;
     type Instance = ConfigStore;
@@ -270,6 +273,7 @@ impl HasCredentialSlots for ConfigStoreResource {
 // trait definition. The compiler error if you forget Clone on Lease is cryptic:
 //   "the trait bound `ConfigStore: Clone` is not satisfied"
 // pointing to the trait impl, not the where clause source.
+#[async_trait::async_trait]
 impl Resident for ConfigStoreResource {}
 
 #[tokio::test]
@@ -291,7 +295,7 @@ async fn use_case_2_resident_config_store() {
             topology: TopologyRuntime::Resident(ResidentRuntime::<ConfigStoreResource>::new(
                 ResidentConfig::default(),
             )),
-            acquire: Manager::erased_acquire_resident_for::<ConfigStoreResource>(),
+            acquire_fn: nebula_resource::resident_acquire_fn::<ConfigStoreResource>(),
             recovery_gate: None,
         })
         .expect("registration should succeed");
@@ -378,6 +382,7 @@ impl DbResource {
     }
 }
 
+#[async_trait::async_trait]
 impl Provider for DbResource {
     type Config = DbConfig;
     type Instance = DbConnection;
@@ -402,6 +407,7 @@ impl HasCredentialSlots for DbResource {
     }
 }
 
+#[async_trait::async_trait]
 impl Pooled for DbResource {}
 
 #[tokio::test]
@@ -430,7 +436,7 @@ async fn use_case_3_db_with_recovery_and_shutdown() {
                 pool_config,
                 fingerprint,
             )),
-            acquire: Manager::erased_acquire_pooled_for::<DbResource>(),
+            acquire_fn: nebula_resource::pooled_acquire_fn::<DbResource>(),
             recovery_gate: None,
         })
         .expect("registration should succeed");
@@ -530,7 +536,7 @@ async fn error_cancelled_after_shutdown() {
                 PoolConfig::default(),
                 fingerprint,
             )),
-            acquire: Manager::erased_acquire_pooled_for::<HttpResource>(),
+            acquire_fn: nebula_resource::pooled_acquire_fn::<HttpResource>(),
             recovery_gate: None,
         })
         .unwrap();

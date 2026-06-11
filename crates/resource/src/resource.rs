@@ -30,8 +30,7 @@
 //! implement `Provider` — a blanket `impl HasCredentialSlots` for such types
 //! is unnecessary since the epoch is structurally `0`.
 
-use std::future::Future;
-
+use async_trait::async_trait;
 use nebula_core::ResourceKey;
 
 use crate::context::ResourceContext;
@@ -39,10 +38,10 @@ use crate::context::ResourceContext;
 /// Trait-object-safe marker for resource type registration and discovery.
 ///
 /// Unlike [`Provider`], this trait carries no associated types and can be
-/// used as `dyn AnyResource`. Implementors typically also implement
+/// used as `dyn ResourceDescriptor`. Implementors typically also implement
 /// [`Provider`], but this decoupling allows the engine to store heterogeneous
 /// resource descriptors without generics.
-pub trait AnyResource: Send + Sync + 'static {
+pub trait ResourceDescriptor: Send + Sync + 'static {
     /// Returns the resource key.
     fn key(&self) -> ResourceKey;
 
@@ -245,8 +244,12 @@ impl ResourceMetadataBuilder {
 
 /// Provider trait — 2 associated types + lifecycle methods (slot model).
 ///
-/// Uses return-position `impl Future` (RPITIT) instead of `async_trait`,
-/// which avoids the `Box<dyn Future>` allocation on every call.
+/// Uses `#[async_trait]` for object-safe async dispatch through
+/// `dyn ManagedHandle`. Every lifecycle method (`create`, `check`,
+/// `shutdown`, `destroy`, `on_credential_refresh`, `on_credential_revoke`)
+/// is I/O-bound and always dispatched through an erased boundary, so
+/// the `Box<dyn Future>` overhead is unavoidable regardless of the
+/// surface; `#[async_trait]` makes the surface uniform.
 ///
 /// Per slot model (supersedes credential isolation) the singular `type Credential`
 /// associated type was removed in favor of typed credential **slot
@@ -277,6 +280,7 @@ impl ResourceMetadataBuilder {
 ///   ↓
 /// destroy()  → final cleanup (consumes Instance)
 /// ```
+#[async_trait]
 pub trait Provider: Send + Sync + 'static {
     /// Operational configuration type (no secrets).
     type Config: ResourceConfig;
@@ -315,11 +319,11 @@ pub trait Provider: Send + Sync + 'static {
     /// file, spawned task) MUST be released in the dropped path —
     /// typically via RAII (`AbortOnDrop` for `JoinHandle`,
     /// `tempfile::TempPath` for transient files).
-    fn create(
+    async fn create(
         &self,
         config: &Self::Config,
         ctx: &ResourceContext,
-    ) -> impl Future<Output = Result<Self::Instance, crate::Error>> + Send;
+    ) -> Result<Self::Instance, crate::Error>;
 
     /// Called by the engine rotation fan-out after it has swapped the
     /// rotated credential into this resource's slot. `&self`: the resource
@@ -343,13 +347,13 @@ pub trait Provider: Send + Sync + 'static {
     /// remain consistent.
     ///
     /// Default: no-op.
-    fn on_credential_refresh(
+    async fn on_credential_refresh(
         &self,
         slot_name: &str,
         instance: &Self::Instance,
-    ) -> impl Future<Output = Result<(), crate::Error>> + Send {
+    ) -> Result<(), crate::Error> {
         let _ = (slot_name, instance);
-        async { Ok(()) }
+        Ok(())
     }
 
     /// Called by the engine fan-out when a slot's credential is revoked.
@@ -373,13 +377,13 @@ pub trait Provider: Send + Sync + 'static {
     /// the revoked credential. On `Err(_)` the manager treats the
     /// instance as compromised; the row stays tainted until a fresh
     /// credential is bound.
-    fn on_credential_revoke(
+    async fn on_credential_revoke(
         &self,
         slot_name: &str,
         instance: &Self::Instance,
-    ) -> impl Future<Output = Result<(), crate::Error>> + Send {
+    ) -> Result<(), crate::Error> {
         let _ = (slot_name, instance);
-        async { Ok(()) }
+        Ok(())
     }
 
     /// Health-checks an existing instance.
@@ -394,11 +398,8 @@ pub trait Provider: Send + Sync + 'static {
     /// acquire rebuild it) or
     /// [`Permanent`](crate::ErrorKind::Permanent) for a misconfiguration
     /// that no retry will fix.
-    fn check(
-        &self,
-        _instance: &Self::Instance,
-    ) -> impl Future<Output = Result<(), crate::Error>> + Send {
-        async { Ok(()) }
+    async fn check(&self, _instance: &Self::Instance) -> Result<(), crate::Error> {
+        Ok(())
     }
 
     /// Gracefully winds down an instance (e.g., drain connections).
@@ -412,11 +413,8 @@ pub trait Provider: Send + Sync + 'static {
     /// non-fatal and proceeds to [`destroy`](Self::destroy), so this
     /// method MUST be idempotent — multiple calls (or
     /// shutdown-then-destroy) leave the instance in the same final state.
-    fn shutdown(
-        &self,
-        _instance: &Self::Instance,
-    ) -> impl Future<Output = Result<(), crate::Error>> + Send {
-        async { Ok(()) }
+    async fn shutdown(&self, _instance: &Self::Instance) -> Result<(), crate::Error> {
+        Ok(())
     }
 
     /// Final cleanup — consumes the instance.
@@ -437,12 +435,9 @@ pub trait Provider: Send + Sync + 'static {
     /// [`ReleaseQueue`](crate::ReleaseQueue) so caller-side `Drop` is
     /// non-blocking. It MUST tolerate running after the manager's cancel
     /// token has fired; do not abort if you observe cancellation.
-    fn destroy(
-        &self,
-        instance: Self::Instance,
-    ) -> impl Future<Output = Result<(), crate::Error>> + Send {
+    async fn destroy(&self, instance: Self::Instance) -> Result<(), crate::Error> {
         let _ = instance;
-        async { Ok(()) }
+        Ok(())
     }
 
     /// Returns the schema for this resource's configuration.

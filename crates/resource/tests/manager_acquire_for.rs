@@ -31,7 +31,7 @@ use nebula_resource::{
     resource::{HasCredentialSlots, ResourceMetadata},
     runtime::{TopologyRuntime, pool::PoolRuntime, resident::ResidentRuntime},
     topology::{
-        pooled::{BrokenCheck, Pooled, RecycleDecision},
+        pooled::{BrokenCheck, Pooled},
         resident::Resident,
     },
 };
@@ -68,6 +68,7 @@ struct PoolRes {
     create_counter: Arc<AtomicU64>,
 }
 
+#[async_trait::async_trait]
 impl Provider for PoolRes {
     type Config = CountingConfig;
     type Instance = u64;
@@ -99,14 +100,6 @@ impl Pooled for PoolRes {
     fn is_broken(&self, _runtime: &u64) -> BrokenCheck {
         BrokenCheck::Healthy
     }
-
-    async fn recycle(
-        &self,
-        _runtime: &u64,
-        _metrics: &nebula_resource::topology::pooled::InstanceMetrics,
-    ) -> Result<RecycleDecision, Error> {
-        Ok(RecycleDecision::Keep)
-    }
 }
 
 fn pool_cfg() -> nebula_resource::topology::pooled::config::Config {
@@ -133,7 +126,7 @@ fn register_pool_res(
         scope: opts.scope,
         slot_identity,
         topology: TopologyRuntime::Pool(PoolRuntime::<PoolRes>::new(pool_cfg(), fingerprint)),
-        acquire: Manager::erased_acquire_pooled_for::<PoolRes>(),
+        acquire_fn: nebula_resource::pooled_acquire_fn::<PoolRes>(),
         recovery_gate: opts.recovery_gate,
     })
 }
@@ -153,7 +146,7 @@ fn register_res_res(
         topology: TopologyRuntime::Resident(ResidentRuntime::<ResRes>::new(
             nebula_resource::ResidentConfig::default(),
         )),
-        acquire: Manager::erased_acquire_resident_for::<ResRes>(),
+        acquire_fn: nebula_resource::resident_acquire_fn::<ResRes>(),
         recovery_gate: opts.recovery_gate,
     })
 }
@@ -227,6 +220,7 @@ struct ResRes {
     id_tag: u64,
 }
 
+#[async_trait::async_trait]
 impl Provider for ResRes {
     type Config = CountingConfig;
     type Instance = u64;
@@ -265,6 +259,7 @@ impl HasCredentialSlots for ResRes {
     }
 }
 
+#[async_trait::async_trait]
 impl Resident for ResRes {
     fn is_alive_sync(&self, _runtime: &u64) -> bool {
         true

@@ -5,11 +5,10 @@
 
 use std::{
     any::{Any, TypeId},
-    future::Future,
-    pin::Pin,
     sync::Arc,
 };
 
+use async_trait::async_trait;
 use dashmap::DashMap;
 use nebula_core::{ResourceKey, Scope, ScopeLevel};
 
@@ -23,39 +22,19 @@ use crate::{
     topology_tag::TopologyTag,
 };
 
-/// Erased acquire hook installed on each registry row at registration.
-///
-/// The `Arc<dyn AnyManagedResource>` is the row already resolved by the
-/// single `Registry::get_acquire_for` scope walk
-/// (carried out via `AcquireLookupOutcome::Found`). The hook downcasts
-/// it to the concrete `ManagedResource<R>` rather than performing a
-/// second `DashMap` walk at the matched scope — one registry resolution
-/// per erased acquire, not two.
-pub type ErasedAcquireFn = Arc<
-    dyn Fn(
-            Arc<crate::Manager>,
-            ResourceContext,
-            AcquireOptions,
-            Arc<dyn AnyManagedResource>,
-        )
-            -> Pin<Box<dyn Future<Output = Result<Box<dyn Any + Send + Sync>, Error>> + Send>>
-        + Send
-        + Sync,
->;
-
 /// Crate-private seal: only `nebula-resource` can name `sealed::Sealed`,
-/// so [`AnyManagedResource`] is **not implementable downstream**.
+/// so [`ManagedHandle`] is **not implementable downstream**.
 ///
-/// `AnyManagedResource` is engine-internal: the only purpose is to let
-/// the [`Registry`] store heterogeneous `ManagedResource<R>` behind one
-/// `dyn AnyManagedResource`, and the sole implementor is the blanket
+/// `ManagedHandle` is engine-internal: the only purpose is to let the
+/// [`Registry`] store heterogeneous `ManagedResource<R>` behind one
+/// `dyn ManagedHandle`, and the sole implementor is the blanket
 /// `impl<R: Provider>` below. Sealing makes that a *structural*
 /// guarantee rather than a convention — adding a required method (e.g.
-/// the per-resource-drain hook) can never be a downstream
-/// compile-break, because no downstream impl can exist. The
-/// `LookupOutcome::Found(Arc<dyn AnyManagedResource>)` surface stays
-/// usable (callers only *consume* the trait object); they just cannot
-/// *implement* it.
+/// the per-resource-drain hook) can never be a downstream compile-break,
+/// because no downstream impl can exist. The
+/// `LookupOutcome::Found(Arc<dyn ManagedHandle>)` surface stays usable
+/// (callers only *consume* the trait object); they just cannot *implement*
+/// it.
 mod sealed {
     /// Sealed marker. Implemented only by the crate-internal blanket
     /// `impl<R: Provider>` for `ManagedResource<R>`.
@@ -65,16 +44,21 @@ mod sealed {
 /// Type-erased trait for managed resources stored in the [`Registry`].
 ///
 /// Every `ManagedResource<R>` implements this trait, allowing the registry
-/// to store heterogeneous resource types behind a single `dyn AnyManagedResource`.
+/// to store heterogeneous resource types behind a single `dyn ManagedHandle`.
 ///
 /// **Sealed (engine-internal).** This trait has a private `sealed::Sealed`
 /// supertrait, so it can only be implemented inside `nebula-resource` (by
 /// the blanket `impl<R: Provider>`). It is an engine-internal erasure
 /// boundary, **not** a downstream extension point — new required methods
 /// may be added without it being a semver-breaking change for consumers
-/// (they only ever hold `Arc<dyn AnyManagedResource>` via
+/// (they only ever hold `Arc<dyn ManagedHandle>` via
 /// [`LookupOutcome::Found`], never implement it).
-pub trait AnyManagedResource: sealed::Sealed + Send + Sync + 'static {
+///
+/// `#[async_trait]` is applied because lifecycle dispatch goes through
+/// `dyn ManagedHandle` at runtime; native async-fn-in-trait (RPITIT)
+/// produces associated `Future` types that are not object-safe.
+#[async_trait]
+pub trait ManagedHandle: sealed::Sealed + Send + Sync + 'static {
     /// Returns the resource key for this managed resource.
     fn resource_key(&self) -> ResourceKey;
 
@@ -88,15 +72,13 @@ pub trait AnyManagedResource: sealed::Sealed + Send + Sync + 'static {
     /// when an entry is replaced in place (#382).
     fn managed_type_id(&self) -> TypeId;
 
-    /// Type-erased lifecycle phase mutation.
-    ///
-    /// Lets the manager drive phase transitions on all registered
+    /// Lifecycle phase mutation — drives phase transitions on all registered
     /// resources without needing a typed handle, which matters during
-    /// graceful shutdown where only the type-erased registry iteration
-    /// is available.
-    fn set_phase_erased(&self, phase: crate::state::ResourcePhase);
+    /// graceful shutdown where only the type-erased registry iteration is
+    /// available.
+    fn set_phase(&self, phase: crate::state::ResourcePhase);
 
-    /// Type-erased terminal failure transition.
+    /// Terminal failure transition.
     ///
     /// Transitions the resource to [`ResourcePhase::Failed`] and records
     /// the supplied human-readable reason in `last_error`. Used by
@@ -105,98 +87,95 @@ pub trait AnyManagedResource: sealed::Sealed + Send + Sync + 'static {
     /// entry.
     ///
     /// [`ResourcePhase::Failed`]: crate::state::ResourcePhase::Failed
-    fn set_failed_erased(&self, reason: &str);
+    fn set_failed(&self, reason: &str);
 
-    /// Type-erased read of the current lifecycle phase.
-    ///
-    /// Symmetric to [`Self::set_phase_erased`] / [`Self::set_failed_erased`].
-    /// Diagnostic-only — typed callers should prefer
+    /// Current lifecycle phase — diagnostic-only; typed callers should prefer
     /// `ManagedResource::status().phase` after a successful downcast.
-    fn phase_erased(&self) -> crate::state::ResourcePhase;
+    fn phase(&self) -> crate::state::ResourcePhase;
 
-    /// Type-erased topology tag — used by `Manager::{refresh,revoke}_slot`
-    /// to label the rotation tracing span without a typed downcast.
-    fn topology_tag_erased(&self) -> TopologyTag;
+    /// Topology tag — used by `Manager::{refresh,revoke}_slot` to label
+    /// the rotation tracing span without a typed downcast.
+    fn topology_tag(&self) -> TopologyTag;
 
-    /// Type-erased resource-level taint (credential revoke).
+    /// Resource-level taint (credential revoke).
     ///
     /// `Manager::revoke_slot` takes a `ResourceKey`, not a generic `R`, so
-    /// it must taint through the erased registry view. Symmetric to the
-    /// other `*_erased` hooks: it forwards to `ManagedResource::taint`,
-    /// which sets the same flag the typed `acquire_*` funnel checks.
-    fn taint_erased(&self);
+    /// it taints through the erased registry view. Forwards to
+    /// `ManagedResource::taint`, which sets the same flag the typed
+    /// `acquire_*` funnel checks.
+    fn taint(&self);
 
-    /// Type-erased credential-revoke epoch bump.
+    /// Credential-revoke epoch bump.
     ///
-    /// `Manager::revoke_slot` takes a `ResourceKey`, not a generic `R`, so
-    /// it bumps the counter through the erased registry view, symmetric to
-    /// [`Self::taint_erased`] and applied in the same synchronous
-    /// pre-`.await` step. Forwards to `ManagedResource::bump_revoke_epoch`,
-    /// which advances the pooled topology's revoke counter so every pool
-    /// return-to-idle path fences an instance authenticated with the
-    /// revoked credential (a no-op for single-runtime topologies, which
-    /// have no idle queue).
-    fn bump_revoke_epoch_erased(&self);
+    /// Bumped in the same synchronous pre-`.await` step as [`Self::taint`].
+    /// Forwards to `ManagedResource::bump_revoke_epoch`, which advances the
+    /// pooled topology's revoke counter so every pool return-to-idle path
+    /// fences an instance authenticated with the revoked credential (a no-op
+    /// for single-runtime topologies, which have no idle queue).
+    fn bump_revoke_epoch(&self);
 
-    /// Type-erased per-slot refresh dispatch.
+    /// Per-slot refresh dispatch.
     ///
-    /// Boxed future because `dyn AnyManagedResource` cannot carry an
-    /// RPITIT method. Forwards to `ManagedResource::dispatch_slot_hook`
-    /// with `refresh = true`, which borrows the live runtime per topology
-    /// and invokes the resource's `&self` hook.
+    /// `#[async_trait]` boxes the future for `dyn`-safety. Forwards to
+    /// `ManagedResource::dispatch_slot_hook` with `refresh = true`, which
+    /// borrows the live runtime per topology and invokes the resource's
+    /// `&self` hook.
     ///
     /// # Cancel Safety
     ///
-    /// This method is cancel-safe. The resource taint and revoke-epoch
-    /// bump are applied synchronously by the caller before this future is
-    /// polled. Dropping the returned future after taint leaves the
-    /// resource consistently marked as tainted — no partial-taint state
-    /// is possible and new acquires remain rejected.
-    fn dispatch_on_refresh_erased<'a>(
-        &'a self,
-        slot: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>>;
+    /// This method is cancel-safe. The resource taint and revoke-epoch bump
+    /// are applied synchronously by the caller before this future is polled.
+    /// Dropping the returned future after taint leaves the resource
+    /// consistently marked as tainted — no partial-taint state is possible
+    /// and new acquires remain rejected.
+    async fn dispatch_on_refresh(&self, slot: &str) -> Result<(), Error>;
 
-    /// Type-erased per-slot revoke dispatch (boxed for the same reason as
-    /// [`Self::dispatch_on_refresh_erased`]; forwards to
-    /// `ManagedResource::dispatch_slot_hook` with `refresh = false`).
+    /// Per-slot revoke dispatch (symmetric to [`Self::dispatch_on_refresh`];
+    /// forwards to `ManagedResource::dispatch_slot_hook` with `refresh = false`).
     ///
     /// # Cancel Safety
     ///
-    /// This method is cancel-safe. The resource taint and revoke-epoch
-    /// bump are performed synchronously before any `.await` point (in the
-    /// caller's `taint_slot_for_identity` phase). Dropping the returned
-    /// future after taint leaves the resource consistently marked as
-    /// tainted — no partial-taint state is possible, new acquires are
-    /// still rejected, and the credential is never silently un-revoked.
-    fn dispatch_on_revoke_erased<'a>(
-        &'a self,
-        slot: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>>;
+    /// This method is cancel-safe. The resource taint and revoke-epoch bump
+    /// are performed synchronously before any `.await` point (in the caller's
+    /// `taint_slot_for_identity` phase). Dropping the returned future after
+    /// taint leaves the resource consistently marked as tainted — no
+    /// partial-taint state is possible, new acquires are still rejected, and
+    /// the credential is never silently un-revoked.
+    async fn dispatch_on_revoke(&self, slot: &str) -> Result<(), Error>;
 
-    /// Type-erased bounded drain of **this resource's own** in-flight
-    /// acquires.
+    /// Bounded drain of **this resource's own** in-flight acquires.
     ///
-    /// `Manager::revoke_slot` takes a `ResourceKey`, not a generic `R`, so
-    /// it drains through the erased view. Forwards to
-    /// `ManagedResource::wait_for_in_flight_drain`, which waits on this
-    /// row's per-resource counter — *not* the manager-wide `drain_tracker`
-    /// — so a revoke is isolated from in-flight traffic to unrelated
-    /// resources (per-resource revoke deferral). Boxed for the same `dyn`-safety
-    /// reason as the dispatch hooks. `Err(outstanding)` carries the counter
-    /// snapshot at the moment the timer fired.
-    fn wait_for_in_flight_drain_erased<'a>(
-        &'a self,
-        timeout: std::time::Duration,
-    ) -> Pin<Box<dyn Future<Output = Result<(), u64>> + Send + 'a>>;
+    /// Waits on this row's per-resource counter — *not* the manager-wide
+    /// `drain_tracker` — so a revoke is isolated from in-flight traffic to
+    /// unrelated resources (per-resource revoke deferral).
+    /// `Err(outstanding)` carries the counter snapshot at the moment the
+    /// timer fired.
+    async fn wait_for_in_flight_drain(&self, timeout: std::time::Duration) -> Result<(), u64>;
+
+    /// Type-erased acquire for this row.
+    ///
+    /// Called by [`Manager::acquire_any`] after the single registry scope
+    /// walk resolves this row; the implementation downcasts `self` to the
+    /// concrete `ManagedResource<R>` and dispatches into the topology
+    /// pipeline. Receives `Arc<crate::Manager>` because `ManagedResource<R>`
+    /// does not own the manager; the manager passes a clone of itself.
+    async fn acquire(
+        self: Arc<Self>,
+        mgr: Arc<crate::manager::Manager>,
+        ctx: ResourceContext,
+        opts: AcquireOptions,
+    ) -> Result<Box<dyn Any + Send + Sync>, Error>;
 }
 
 // The one and only `Sealed` impl: every `ManagedResource<R>` (and
-// nothing else, anywhere) — this is what makes `AnyManagedResource`
+// nothing else, anywhere) — this is what makes `ManagedHandle`
 // non-implementable downstream.
 impl<R: Provider> sealed::Sealed for ManagedResource<R> {}
 
-impl<R: Provider + crate::resource::HasCredentialSlots> AnyManagedResource for ManagedResource<R> {
+#[async_trait]
+impl<R: Provider + crate::resource::HasCredentialSlots + Send + Sync + 'static> ManagedHandle
+    for ManagedResource<R>
+{
     fn resource_key(&self) -> ResourceKey {
         R::key()
     }
@@ -209,49 +188,50 @@ impl<R: Provider + crate::resource::HasCredentialSlots> AnyManagedResource for M
         TypeId::of::<ManagedResource<R>>()
     }
 
-    fn set_phase_erased(&self, phase: crate::state::ResourcePhase) {
-        self.set_phase(phase);
+    fn set_phase(&self, phase: crate::state::ResourcePhase) {
+        ManagedResource::set_phase(self, phase);
     }
 
-    fn set_failed_erased(&self, reason: &str) {
-        self.set_failed(reason.to_owned());
+    fn set_failed(&self, reason: &str) {
+        ManagedResource::set_failed(self, reason.to_owned());
     }
 
-    fn phase_erased(&self) -> crate::state::ResourcePhase {
+    fn phase(&self) -> crate::state::ResourcePhase {
         self.status().phase
     }
 
-    fn topology_tag_erased(&self) -> TopologyTag {
+    fn topology_tag(&self) -> TopologyTag {
         self.topology.tag()
     }
 
-    fn taint_erased(&self) {
-        self.taint();
+    fn taint(&self) {
+        ManagedResource::taint(self);
     }
 
-    fn bump_revoke_epoch_erased(&self) {
-        self.bump_revoke_epoch();
+    fn bump_revoke_epoch(&self) {
+        ManagedResource::bump_revoke_epoch(self);
     }
 
-    fn dispatch_on_refresh_erased<'a>(
-        &'a self,
-        slot: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>> {
-        Box::pin(self.dispatch_slot_hook(slot, true))
+    async fn dispatch_on_refresh(&self, slot: &str) -> Result<(), Error> {
+        self.dispatch_slot_hook(slot, true).await
     }
 
-    fn dispatch_on_revoke_erased<'a>(
-        &'a self,
-        slot: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>> {
-        Box::pin(self.dispatch_slot_hook(slot, false))
+    async fn dispatch_on_revoke(&self, slot: &str) -> Result<(), Error> {
+        self.dispatch_slot_hook(slot, false).await
     }
 
-    fn wait_for_in_flight_drain_erased<'a>(
-        &'a self,
-        timeout: std::time::Duration,
-    ) -> Pin<Box<dyn Future<Output = Result<(), u64>> + Send + 'a>> {
-        Box::pin(self.wait_for_in_flight_drain(timeout))
+    async fn wait_for_in_flight_drain(&self, timeout: std::time::Duration) -> Result<(), u64> {
+        ManagedResource::wait_for_in_flight_drain(self, timeout).await
+    }
+
+    async fn acquire(
+        self: Arc<Self>,
+        mgr: Arc<crate::manager::Manager>,
+        ctx: ResourceContext,
+        opts: AcquireOptions,
+    ) -> Result<Box<dyn Any + Send + Sync>, Error> {
+        let acquire_fn = Arc::clone(&self.acquire_fn);
+        acquire_fn(self, mgr, ctx, opts).await
     }
 }
 
@@ -272,7 +252,7 @@ impl<R: Provider + crate::resource::HasCredentialSlots> AnyManagedResource for M
 /// than a runtime branch a caller could mis-handle.
 pub enum LookupOutcome {
     /// Exactly one row matched — here it is.
-    Found(Arc<dyn AnyManagedResource>),
+    Found(Arc<dyn ManagedHandle>),
     /// No row matched the key/scope.
     NotFound,
     /// Multiple distinct credential rows exist for the resolved
@@ -298,28 +278,22 @@ pub enum LookupOutcome {
 /// a different tenant's row).
 pub enum PinnedLookup {
     /// Exactly one row matched the pinned `(scope, slot_identity)`.
-    Found(Arc<dyn AnyManagedResource>),
+    Found(Arc<dyn ManagedHandle>),
     /// No row matched the key/scope/identity. Never an alias to another
     /// resolved credential's row.
     NotFound,
 }
 
-/// Outcome of a registry acquire-hook lookup (same semantics as [`LookupOutcome`]).
+/// Outcome of a registry acquire lookup (same semantics as [`LookupOutcome`]).
 pub(crate) enum AcquireLookupOutcome {
-    /// Exactly one row matched — hook plus the already-resolved row.
+    /// Exactly one row matched — the already-resolved [`ManagedHandle`].
+    ///
+    /// The row is read from the same [`RegistryEntry`] in one scope walk so
+    /// `acquire_any` downcasts it directly without re-walking the `DashMap`
+    /// at the matched scope: one resolution, not two.
     Found {
-        /// Erased topology dispatch for this row.
-        acquire: ErasedAcquireFn,
         /// The managed-resource row resolved by this single scope walk.
-        ///
-        /// `acquire` and `managed` are read from the **same**
-        /// [`RegistryEntry`] in one walk, so the erased-acquire path
-        /// downcasts this `Arc` directly instead of re-walking the
-        /// `DashMap` at the matched scope: one resolution, not two. The
-        /// downcast (in `Manager`) resolves the identical row the second
-        /// walk would have — same `(scope, slot_identity)` row from the
-        /// same `entries` Vec.
-        managed: Arc<dyn AnyManagedResource>,
+        managed: Arc<dyn ManagedHandle>,
     },
     /// No row matched the key/scope/identity.
     NotFound,
@@ -342,19 +316,13 @@ pub(crate) enum AcquireLookupOutcome {
 struct RegistryEntry {
     scope: ScopeLevel,
     slot_identity: SlotIdentity,
-    managed: Arc<dyn AnyManagedResource>,
-    acquire: ErasedAcquireFn,
+    managed: Arc<dyn ManagedHandle>,
 }
 
 enum ScopeFind {
-    Hit {
-        managed: Arc<dyn AnyManagedResource>,
-        acquire: ErasedAcquireFn,
-    },
+    Hit { managed: Arc<dyn ManagedHandle> },
     NotFound,
-    Ambiguous {
-        rows: usize,
-    },
+    Ambiguous { rows: usize },
 }
 
 /// Result of a **pinned** scope lookup.
@@ -365,9 +333,7 @@ enum ScopeFind {
 /// forget to fail closed on. This is the type-level half of the
 /// [`PinnedLookup`] guarantee.
 enum PinnedFind {
-    Hit {
-        managed: Arc<dyn AnyManagedResource>,
-    },
+    Hit { managed: Arc<dyn ManagedHandle> },
     NotFound,
 }
 
@@ -410,8 +376,7 @@ impl Registry {
         type_id: TypeId,
         scope: ScopeLevel,
         slot_identity: SlotIdentity,
-        managed: Arc<dyn AnyManagedResource>,
-        acquire: ErasedAcquireFn,
+        managed: Arc<dyn ManagedHandle>,
     ) {
         // Lock order is **strictly one-way**: `entries → (release) → type_index`.
         //
@@ -449,7 +414,6 @@ impl Registry {
                     scope,
                     slot_identity,
                     managed,
-                    acquire,
                 };
 
                 if prev_type_id != type_id
@@ -466,7 +430,6 @@ impl Registry {
                     scope,
                     slot_identity,
                     managed,
-                    acquire,
                 });
                 None
             }
@@ -549,23 +512,19 @@ impl Registry {
             return AcquireLookupOutcome::NotFound;
         };
         for level in scope_levels_for_acquire(scope) {
-            // Erased acquire path: keyed only by `ResourceKey` (no concrete
-            // `R`), so no concrete-type constraint — `None`.
+            // Acquire path: keyed only by `ResourceKey` (no concrete `R`),
+            // so no concrete-type constraint — `None`.
             match Self::find_at_exact_scope(&entries, &level, Some(slot_identity), None) {
-                ScopeFind::Hit { managed, acquire } => {
-                    // `managed` and `acquire` came from the same
-                    // `RegistryEntry` in this one walk. Carry the row out
-                    // so the erased-acquire path downcasts it directly
+                ScopeFind::Hit { managed } => {
+                    // `managed` came from one scope walk — carry the row out
+                    // so `acquire_any` calls `managed.acquire(...)` directly
                     // instead of re-walking the `DashMap` at `level`.
-                    return AcquireLookupOutcome::Found { acquire, managed };
+                    return AcquireLookupOutcome::Found { managed };
                 },
                 ScopeFind::Ambiguous { rows } => {
                     return AcquireLookupOutcome::Ambiguous { rows };
                 },
                 ScopeFind::NotFound => {
-                    // Identity-agnostic erased path: keyed only by
-                    // `ResourceKey` (no concrete `R`), so no concrete-type
-                    // constraint — `None` keeps the prior semantics.
                     if slot_identity.is_unbound()
                         && Self::scope_has_cred_bound_rows_without_unbound(&entries, &level, None)
                     {
@@ -760,7 +719,7 @@ impl Registry {
     /// Used by the manager to drive lifecycle transitions (e.g. shifting
     /// every resource to `Draining` / `ShuttingDown` during graceful
     /// shutdown, #387) without needing typed access to each entry.
-    pub(crate) fn all_managed(&self) -> Vec<Arc<dyn AnyManagedResource>> {
+    pub(crate) fn all_managed(&self) -> Vec<Arc<dyn ManagedHandle>> {
         let mut out = Vec::new();
         for row in &self.entries {
             for entry in row.value() {
@@ -815,7 +774,6 @@ impl Registry {
             return match at_scope.find(|e| &e.slot_identity == id) {
                 Some(entry) => ScopeFind::Hit {
                     managed: Arc::clone(&entry.managed),
-                    acquire: Arc::clone(&entry.acquire),
                 },
                 None => ScopeFind::NotFound,
             };
@@ -828,7 +786,6 @@ impl Registry {
         if extra == 0 {
             ScopeFind::Hit {
                 managed: Arc::clone(&first.managed),
-                acquire: Arc::clone(&first.acquire),
             }
         } else {
             ScopeFind::Ambiguous { rows: 1 + extra }
@@ -1017,10 +974,6 @@ mod tests {
 
     use super::*;
 
-    fn test_acquire() -> ErasedAcquireFn {
-        crate::manager::acquire_dispatch::noop_erased_acquire()
-    }
-
     struct FakeA;
     struct FakeB;
 
@@ -1030,89 +983,57 @@ mod tests {
     impl sealed::Sealed for FakeA {}
     impl sealed::Sealed for FakeB {}
 
-    fn unit_dispatch<'a>() -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>> {
-        Box::pin(async { Ok(()) })
+    macro_rules! impl_fake_handle {
+        ($T:ty) => {
+            #[async_trait::async_trait]
+            impl ManagedHandle for $T {
+                fn resource_key(&self) -> ResourceKey {
+                    ResourceKey::new("fake").unwrap()
+                }
+                fn as_any_arc(self: Arc<Self>) -> Arc<dyn Any + Send + Sync> {
+                    self
+                }
+                fn managed_type_id(&self) -> TypeId {
+                    TypeId::of::<$T>()
+                }
+                fn set_phase(&self, _phase: crate::state::ResourcePhase) {}
+                fn set_failed(&self, _reason: &str) {}
+                fn phase(&self) -> crate::state::ResourcePhase {
+                    crate::state::ResourcePhase::Ready
+                }
+                fn topology_tag(&self) -> TopologyTag {
+                    TopologyTag::Resident
+                }
+                fn taint(&self) {}
+                fn bump_revoke_epoch(&self) {}
+                async fn dispatch_on_refresh(&self, _slot: &str) -> Result<(), Error> {
+                    Ok(())
+                }
+                async fn dispatch_on_revoke(&self, _slot: &str) -> Result<(), Error> {
+                    Ok(())
+                }
+                async fn wait_for_in_flight_drain(
+                    &self,
+                    _timeout: std::time::Duration,
+                ) -> Result<(), u64> {
+                    Ok(())
+                }
+                async fn acquire(
+                    self: Arc<Self>,
+                    _mgr: Arc<crate::manager::Manager>,
+                    _ctx: ResourceContext,
+                    _opts: AcquireOptions,
+                ) -> Result<Box<dyn Any + Send + Sync>, Error> {
+                    Err(Error::permanent(
+                        "FakeA/FakeB: acquire not implemented for registry unit tests",
+                    ))
+                }
+            }
+        };
     }
 
-    impl AnyManagedResource for FakeA {
-        fn resource_key(&self) -> ResourceKey {
-            ResourceKey::new("fake").unwrap()
-        }
-        fn as_any_arc(self: Arc<Self>) -> Arc<dyn Any + Send + Sync> {
-            self
-        }
-        fn managed_type_id(&self) -> TypeId {
-            TypeId::of::<FakeA>()
-        }
-        fn set_phase_erased(&self, _phase: crate::state::ResourcePhase) {}
-        fn set_failed_erased(&self, _reason: &str) {}
-        fn phase_erased(&self) -> crate::state::ResourcePhase {
-            crate::state::ResourcePhase::Ready
-        }
-        fn topology_tag_erased(&self) -> TopologyTag {
-            TopologyTag::Resident
-        }
-        fn taint_erased(&self) {}
-        fn bump_revoke_epoch_erased(&self) {}
-        fn dispatch_on_refresh_erased<'a>(
-            &'a self,
-            _slot: &'a str,
-        ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>> {
-            unit_dispatch()
-        }
-        fn dispatch_on_revoke_erased<'a>(
-            &'a self,
-            _slot: &'a str,
-        ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>> {
-            unit_dispatch()
-        }
-        fn wait_for_in_flight_drain_erased<'a>(
-            &'a self,
-            _timeout: std::time::Duration,
-        ) -> Pin<Box<dyn Future<Output = Result<(), u64>> + Send + 'a>> {
-            Box::pin(async { Ok(()) })
-        }
-    }
-
-    impl AnyManagedResource for FakeB {
-        fn resource_key(&self) -> ResourceKey {
-            ResourceKey::new("fake").unwrap()
-        }
-        fn as_any_arc(self: Arc<Self>) -> Arc<dyn Any + Send + Sync> {
-            self
-        }
-        fn managed_type_id(&self) -> TypeId {
-            TypeId::of::<FakeB>()
-        }
-        fn set_phase_erased(&self, _phase: crate::state::ResourcePhase) {}
-        fn set_failed_erased(&self, _reason: &str) {}
-        fn phase_erased(&self) -> crate::state::ResourcePhase {
-            crate::state::ResourcePhase::Ready
-        }
-        fn topology_tag_erased(&self) -> TopologyTag {
-            TopologyTag::Resident
-        }
-        fn taint_erased(&self) {}
-        fn bump_revoke_epoch_erased(&self) {}
-        fn dispatch_on_refresh_erased<'a>(
-            &'a self,
-            _slot: &'a str,
-        ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>> {
-            unit_dispatch()
-        }
-        fn dispatch_on_revoke_erased<'a>(
-            &'a self,
-            _slot: &'a str,
-        ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>> {
-            unit_dispatch()
-        }
-        fn wait_for_in_flight_drain_erased<'a>(
-            &'a self,
-            _timeout: std::time::Duration,
-        ) -> Pin<Box<dyn Future<Output = Result<(), u64>> + Send + 'a>> {
-            Box::pin(async { Ok(()) })
-        }
-    }
+    impl_fake_handle!(FakeA);
+    impl_fake_handle!(FakeB);
 
     fn ident(slot: &str, cred: &str) -> SlotIdentity {
         SlotIdentity::from_bindings([(slot, cred)])
@@ -1133,7 +1054,6 @@ mod tests {
             ScopeLevel::Global,
             SlotIdentity::Unbound,
             Arc::new(FakeA),
-            test_acquire(),
         );
         reg.register(
             key.clone(),
@@ -1141,7 +1061,6 @@ mod tests {
             ScopeLevel::Workspace(WorkspaceId::new()),
             SlotIdentity::Unbound,
             Arc::new(FakeA),
-            test_acquire(),
         );
 
         // Replace only the Global entry with FakeB. Workflow still
@@ -1152,7 +1071,6 @@ mod tests {
             ScopeLevel::Global,
             SlotIdentity::Unbound,
             Arc::new(FakeB),
-            test_acquire(),
         );
 
         assert!(
@@ -1174,7 +1092,6 @@ mod tests {
             scope.clone(),
             SlotIdentity::Unbound,
             Arc::new(FakeA),
-            test_acquire(),
         );
         assert!(reg.type_index.contains_key(&TypeId::of::<FakeA>()));
 
@@ -1186,7 +1103,6 @@ mod tests {
             scope,
             SlotIdentity::Unbound,
             Arc::new(FakeB),
-            test_acquire(),
         );
 
         // The stale TypeId row for FakeA must be gone (#382).
@@ -1218,7 +1134,6 @@ mod tests {
             scope.clone(),
             id_a.clone(),
             Arc::new(FakeA),
-            test_acquire(),
         );
         reg.register(
             key.clone(),
@@ -1226,7 +1141,6 @@ mod tests {
             scope.clone(),
             id_b.clone(),
             Arc::new(FakeA),
-            test_acquire(),
         );
 
         // Each resolved identity pins its own row — `PinnedLookup`, no
@@ -1268,7 +1182,6 @@ mod tests {
             scope.clone(),
             id_a.clone(),
             Arc::new(FakeA),
-            test_acquire(),
         );
         reg.register(
             key.clone(),
@@ -1276,7 +1189,6 @@ mod tests {
             scope.clone(),
             id_b,
             Arc::new(FakeA),
-            test_acquire(),
         );
 
         assert!(matches!(
@@ -1306,7 +1218,6 @@ mod tests {
             scope.clone(),
             ident("db", "cred-a"),
             Arc::new(FakeA),
-            test_acquire(),
         );
         reg.register(
             key.clone(),
@@ -1314,7 +1225,6 @@ mod tests {
             scope.clone(),
             ident("db", "cred-b"),
             Arc::new(FakeA),
-            test_acquire(),
         );
 
         match reg.get(&key, &scope) {
@@ -1337,7 +1247,6 @@ mod tests {
             scope.clone(),
             SlotIdentity::Unbound,
             Arc::new(FakeA),
-            test_acquire(),
         );
 
         assert!(matches!(reg.get(&key, &scope), LookupOutcome::Found(_)));
@@ -1363,7 +1272,6 @@ mod tests {
             scope.clone(),
             id.clone(),
             Arc::new(FakeB),
-            test_acquire(),
         );
 
         let entries = reg.entries.get(&key).unwrap();
@@ -1412,7 +1320,6 @@ mod tests {
             workspace.clone(),
             SlotIdentity::Unbound,
             Arc::new(FakeB),
-            test_acquire(),
         );
         reg.register(
             key.clone(),
@@ -1420,7 +1327,6 @@ mod tests {
             ScopeLevel::Global,
             SlotIdentity::Unbound,
             Arc::new(FakeA),
-            test_acquire(),
         );
 
         let entries = reg.entries.get(&key).unwrap();
@@ -1479,7 +1385,6 @@ mod tests {
             scope.clone(),
             id_a,
             Arc::new(FakeA),
-            test_acquire(),
         );
         reg.register(
             key.clone(),
@@ -1487,7 +1392,6 @@ mod tests {
             scope.clone(),
             id_b,
             Arc::new(FakeB),
-            test_acquire(),
         );
 
         let entries = reg.entries.get(&key).unwrap();
@@ -1533,7 +1437,6 @@ mod tests {
             workspace.clone(),
             id_b.clone(),
             Arc::new(FakeA),
-            test_acquire(),
         );
         // Tenant A: only a Global row.
         reg.register(
@@ -1542,7 +1445,6 @@ mod tests {
             ScopeLevel::Global,
             id_a.clone(),
             Arc::new(FakeA),
-            test_acquire(),
         );
 
         // Tenant A asks at `workspace`: an entry exists at that scope (B's)
@@ -1585,7 +1487,6 @@ mod tests {
             ScopeLevel::Global,
             id.clone(),
             Arc::new(FakeB),
-            test_acquire(),
         );
 
         let entries = reg.entries.get(&key).unwrap();
@@ -1632,7 +1533,6 @@ mod tests {
             scope.clone(),
             id_a.clone(),
             Arc::new(FakeA),
-            test_acquire(),
         );
         reg.register(
             key.clone(),
@@ -1640,7 +1540,6 @@ mod tests {
             scope.clone(),
             id_b.clone(),
             Arc::new(FakeB),
-            test_acquire(),
         );
 
         // Two distinct rows, each pinned, neither aliasing the other.

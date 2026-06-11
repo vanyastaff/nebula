@@ -8,7 +8,7 @@ use nebula_core::{ResourceKey, ScopeLevel};
 use tokio::sync::Notify;
 use tracing::Instrument as _;
 
-use super::{ErasedAcquireFn, Manager, RegistrationSpec, resolve_json_templates};
+use super::{Manager, RegistrationSpec, resolve_json_templates};
 use crate::{
     error::Error,
     events::ResourceEvent,
@@ -66,8 +66,8 @@ impl Manager {
             scope,
             slot_identity,
             topology,
-            acquire,
             recovery_gate,
+            acquire_fn,
         } = spec;
 
         config.validate()?;
@@ -106,17 +106,12 @@ impl Manager {
             recovery_gate,
             tainted: std::sync::atomic::AtomicBool::new(false),
             in_flight: Arc::new((AtomicU64::new(0), Notify::new())),
+            acquire_fn,
         });
 
         let type_id = std::any::TypeId::of::<ManagedResource<R>>();
-        self.registry.register(
-            key.clone(),
-            type_id,
-            scope,
-            slot_identity,
-            managed.clone(),
-            acquire,
-        );
+        self.registry
+            .register(key.clone(), type_id, scope, slot_identity, managed.clone());
 
         // #387: everything below this point is a single funnel — the
         // resource is installed, so advance its phase from `Initializing`
@@ -352,10 +347,7 @@ impl Manager {
     /// The derived structural identity is **returned** so the caller (the
     /// engine activation loop) records it for the acquire path and the
     /// rotation fan-out reverse index, addressing the *same* registry row
-    /// this method created. The erased `acquire` hook is passed by value
-    /// (not a `Fn(slot_id)` factory): the single-walk acquire resolution
-    /// pins the row by the *caller's* runtime slot identity, so the
-    /// registration-time identity no longer parameterises the hook.
+    /// this method created.
     ///
     /// `nebula-resource → nebula-expression` is allowed under deny.toml's
     /// `[[bans]]` `nebula-resource` wrapper allowlist (Business → Core layer
@@ -375,6 +367,10 @@ impl Manager {
     ///   to a declared credential slot on `R`.
     /// - Any [`Error`](Error) returned by the underlying typed
     ///   [`register`](Self::register).
+    // guard-justified: irreducible engine ABI — the engine registrar dispatches
+    // positionally with a JSON-driven shape; collapsing to a struct reintroduces
+    // the navigation hop the single register funnel removed. See issue #718.
+    #[allow(clippy::too_many_arguments)]
     #[tracing::instrument(
         level = "debug",
         target = "nebula_resource::register_resolved",
@@ -384,11 +380,6 @@ impl Manager {
             slot_count = slot_bindings.len(),
         )
     )]
-    // guard-justified: the production engine registrar dispatches into this positionally (config_json + expr_engine + slot_bindings + resource + scope + topology + acquire + recovery_gate), so the 8-param JSON-driven shape is the engine ABI — collapsing it into a struct would re-introduce the navigation hop the single funnel removed and is not warranted for the one erased call site.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "engine-facing JSON-driven structural-identity entry: the production engine registrar calls register_resolved positionally; collapsing the 8-param shape into a struct would re-introduce a navigation hop for the one erased call site, and the body itself builds one RegistrationSpec and delegates to the single register() funnel"
-    )]
     pub async fn register_resolved<R>(
         &self,
         config_json: serde_json::Value,
@@ -397,7 +388,7 @@ impl Manager {
         resource: R,
         scope: ScopeLevel,
         topology: TopologyRuntime<R>,
-        acquire: ErasedAcquireFn,
+        acquire_fn: crate::runtime::managed::AcquireFn,
         recovery_gate: Option<Arc<RecoveryGate>>,
     ) -> Result<crate::dedup::SlotIdentity, Error>
     where
@@ -465,7 +456,7 @@ impl Manager {
             scope,
             slot_identity: slot_identity.clone(),
             topology,
-            acquire,
+            acquire_fn,
             recovery_gate,
         })?;
         Ok(slot_identity)

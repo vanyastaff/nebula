@@ -1,11 +1,8 @@
 //! `Manager::acquire_erased` exercises the registry-stored `ErasedAcquireFn` hook.
 
-use std::{
-    future::Future,
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
 };
 
 use nebula_core::{ExecutionId, OrgId, ResourceKey, scope::Scope};
@@ -43,6 +40,7 @@ impl ProbeResource {
     }
 }
 
+#[async_trait::async_trait]
 impl Provider for ProbeResource {
     type Config = ProbeConfig;
     type Instance = Arc<AtomicU64>;
@@ -51,16 +49,14 @@ impl Provider for ProbeResource {
         nebula_core::resource_key!("test.acquire_erased.probe")
     }
 
-    fn create(
+    async fn create(
         &self,
         _config: &ProbeConfig,
         _ctx: &ResourceContext,
-    ) -> impl Future<Output = Result<Arc<AtomicU64>, Error>> + Send {
+    ) -> Result<Arc<AtomicU64>, Error> {
         let counter = self.create_count.clone();
-        async move {
-            counter.fetch_add(1, Ordering::Relaxed);
-            Ok(counter)
-        }
+        counter.fetch_add(1, Ordering::Relaxed);
+        Ok(counter)
     }
 
     fn metadata() -> ResourceMetadata {
@@ -74,6 +70,7 @@ impl HasCredentialSlots for ProbeResource {
     }
 }
 
+#[async_trait::async_trait]
 impl Resident for ProbeResource {
     fn is_alive_sync(&self, _runtime: &Arc<AtomicU64>) -> bool {
         true
@@ -95,14 +92,14 @@ async fn acquire_erased_returns_guard_and_runs_create_once() {
             topology: TopologyRuntime::Resident(ResidentRuntime::<ProbeResource>::new(
                 resident::config::Config::default(),
             )),
-            acquire: Manager::erased_acquire_resident_for::<ProbeResource>(),
+            acquire_fn: nebula_resource::resident_acquire_fn::<ProbeResource>(),
             recovery_gate: None,
         })
         .expect("register");
 
     let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
     let key = ProbeResource::key();
-    let boxed = Manager::acquire_erased_for(
+    let boxed = Manager::acquire_any(
         Arc::clone(&manager),
         &key,
         &ctx,
@@ -134,7 +131,7 @@ async fn acquire_erased_finds_org_scoped_row_from_execution_scope_bag() {
             topology: TopologyRuntime::Resident(ResidentRuntime::<ProbeResource>::new(
                 resident::config::Config::default(),
             )),
-            acquire: Manager::erased_acquire_resident_for::<ProbeResource>(),
+            acquire_fn: nebula_resource::resident_acquire_fn::<ProbeResource>(),
             recovery_gate: None,
         })
         .expect("register at org scope");
@@ -161,7 +158,7 @@ async fn acquire_erased_finds_org_scoped_row_from_execution_scope_bag() {
 
     let ctx = ResourceContext::minimal(scope, CancellationToken::new());
 
-    let boxed = Manager::acquire_erased_for(
+    let boxed = Manager::acquire_any(
         Arc::clone(&manager),
         &ProbeResource::key(),
         &ctx,
@@ -197,7 +194,7 @@ async fn acquire_erased_and_typed_pick_org_not_global_fallback() {
             topology: TopologyRuntime::Resident(ResidentRuntime::<ProbeResource>::new(
                 resident::config::Config::default(),
             )),
-            acquire: Manager::erased_acquire_resident_for::<ProbeResource>(),
+            acquire_fn: nebula_resource::resident_acquire_fn::<ProbeResource>(),
             recovery_gate: None,
         })
         .expect("register global row");
@@ -211,7 +208,7 @@ async fn acquire_erased_and_typed_pick_org_not_global_fallback() {
             topology: TopologyRuntime::Resident(ResidentRuntime::<ProbeResource>::new(
                 resident::config::Config::default(),
             )),
-            acquire: Manager::erased_acquire_resident_for::<ProbeResource>(),
+            acquire_fn: nebula_resource::resident_acquire_fn::<ProbeResource>(),
             recovery_gate: None,
         })
         .expect("register org row");
@@ -224,7 +221,7 @@ async fn acquire_erased_and_typed_pick_org_not_global_fallback() {
     let ctx = ResourceContext::minimal(scope, CancellationToken::new());
     let key = ProbeResource::key();
 
-    let boxed = Manager::acquire_erased_for(
+    let boxed = Manager::acquire_any(
         Arc::clone(&manager),
         &key,
         &ctx,
@@ -288,7 +285,7 @@ async fn acquire_erased_and_typed_pick_org_not_global_fallback() {
 /// reuses the erased path's resolved row (single-runtime topologies keep
 /// `create_count == 1` across both acquires).
 mod pool_parity {
-    use nebula_resource::topology::pooled::{BrokenCheck, Pooled, RecycleDecision};
+    use nebula_resource::topology::pooled::{BrokenCheck, Pooled};
 
     use super::*;
 
@@ -307,6 +304,7 @@ mod pool_parity {
         create_count: Arc<AtomicU64>,
     }
 
+    #[async_trait::async_trait]
     impl Provider for PoolParity {
         type Config = PoolParityCfg;
         type Instance = u64;
@@ -342,14 +340,6 @@ mod pool_parity {
         fn is_broken(&self, _runtime: &u64) -> BrokenCheck {
             BrokenCheck::Healthy
         }
-
-        async fn recycle(
-            &self,
-            _runtime: &u64,
-            _metrics: &nebula_resource::topology::pooled::InstanceMetrics,
-        ) -> Result<RecycleDecision, Error> {
-            Ok(RecycleDecision::Keep)
-        }
     }
 
     /// Erased acquire then typed `acquire_pooled` resolve the one Global
@@ -375,7 +365,7 @@ mod pool_parity {
                     },
                     PoolParityCfg.fingerprint(),
                 )),
-                acquire: Manager::erased_acquire_pooled_for::<PoolParity>(),
+                acquire_fn: nebula_resource::pooled_acquire_fn::<PoolParity>(),
                 recovery_gate: None,
             })
             .expect("register pooled Global");
@@ -383,7 +373,7 @@ mod pool_parity {
         let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
         let key = PoolParity::key();
 
-        let erased = Manager::acquire_erased_for(
+        let erased = Manager::acquire_any(
             Arc::clone(&manager),
             &key,
             &ctx,
@@ -443,6 +433,7 @@ mod resident_erased_reuses_runtime {
         create_count: Arc<AtomicU64>,
     }
 
+    #[async_trait::async_trait]
     impl Provider for ResidentReuse {
         type Config = ResidentReuseCfg;
         type Instance = Arc<AtomicU64>;
@@ -471,6 +462,7 @@ mod resident_erased_reuses_runtime {
         }
     }
 
+    #[async_trait::async_trait]
     impl Resident for ResidentReuse {
         fn is_alive_sync(&self, _runtime: &Arc<AtomicU64>) -> bool {
             true
@@ -493,7 +485,7 @@ mod resident_erased_reuses_runtime {
                 scope: ScopeLevel::Global,
                 slot_identity: SlotIdentity::Unbound,
                 topology: TopologyRuntime::Resident(rt),
-                acquire: Manager::erased_acquire_resident_for::<ResidentReuse>(),
+                acquire_fn: nebula_resource::resident_acquire_fn::<ResidentReuse>(),
                 recovery_gate: None,
             })
             .expect("ResidentReuse must register without error");
@@ -506,7 +498,7 @@ mod resident_erased_reuses_runtime {
         let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
         let key = ResidentReuse::key();
 
-        let g1 = Manager::acquire_erased_for(
+        let g1 = Manager::acquire_any(
             Arc::clone(&manager),
             &key,
             &ctx,
@@ -516,7 +508,7 @@ mod resident_erased_reuses_runtime {
         .await
         .expect("first erased resident acquire must succeed");
 
-        let g2 = Manager::acquire_erased_for(
+        let g2 = Manager::acquire_any(
             Arc::clone(&manager),
             &key,
             &ctx,
@@ -565,6 +557,7 @@ mod pool_erased_distinct_instances {
         create_count: Arc<AtomicU64>,
     }
 
+    #[async_trait::async_trait]
     impl Provider for PoolErased {
         type Config = PoolErasedCfg;
         type Instance = u64;
@@ -621,7 +614,7 @@ mod pool_erased_distinct_instances {
                 scope: ScopeLevel::Global,
                 slot_identity: SlotIdentity::Unbound,
                 topology: TopologyRuntime::Pool(pool_rt),
-                acquire: Manager::erased_acquire_pooled_for::<PoolErased>(),
+                acquire_fn: nebula_resource::pooled_acquire_fn::<PoolErased>(),
                 recovery_gate: None,
             })
             .expect("PoolErased must register without error");
@@ -634,7 +627,7 @@ mod pool_erased_distinct_instances {
             "registration must not trigger Resource::create for pool topology"
         );
 
-        let g1 = Manager::acquire_erased_for(
+        let g1 = Manager::acquire_any(
             Arc::clone(&manager),
             &key,
             &ctx,
@@ -647,7 +640,7 @@ mod pool_erased_distinct_instances {
             .downcast::<nebula_resource::ResourceGuard<PoolErased>>()
             .expect("g1 must downcast to PoolErased guard");
 
-        let g2 = Manager::acquire_erased_for(
+        let g2 = Manager::acquire_any(
             Arc::clone(&manager),
             &key,
             &ctx,
@@ -672,7 +665,7 @@ mod pool_erased_distinct_instances {
     }
 }
 
-/// `acquire_erased_for` on an unregistered key returns `NotFound`, not a panic.
+/// `acquire_any` on an unregistered key returns `NotFound`, not a panic.
 mod erased_acquire_not_found {
     use nebula_resource::error::ErrorKind;
 
@@ -685,7 +678,7 @@ mod erased_acquire_not_found {
         let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
         let unknown = nebula_core::resource_key!("test.ae4.unknown_key");
 
-        let result = Manager::acquire_erased_for(
+        let result = Manager::acquire_any(
             Arc::clone(&manager),
             &unknown,
             &ctx,

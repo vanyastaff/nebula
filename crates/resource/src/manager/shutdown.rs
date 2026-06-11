@@ -303,7 +303,7 @@ impl Manager {
     /// is in flight.
     pub(super) fn set_phase_all(&self, phase: crate::state::ResourcePhase) {
         for managed in self.registry.all_managed() {
-            managed.set_phase_erased(phase);
+            managed.set_phase(phase);
         }
     }
 
@@ -322,7 +322,7 @@ impl Manager {
     pub(super) fn set_phase_all_failed(&self, error: &ShutdownError) {
         let reason = error.to_string();
         for managed in self.registry.all_managed() {
-            managed.set_failed_erased(&reason);
+            managed.set_failed(&reason);
             self.emit(ResourceEvent::HealthChanged {
                 key: managed.resource_key(),
                 healthy: false,

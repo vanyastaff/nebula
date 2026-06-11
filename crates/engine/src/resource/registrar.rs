@@ -39,7 +39,7 @@
 //!     resource:      R,
 //!     scope:         ScopeLevel,
 //!     topology:      TopologyRuntime<R>,
-//!     acquire:       ErasedAcquireFn,
+//!     acquire_fn:    AcquireFn,
 //!     recovery_gate: Option<Arc<RecoveryGate>>,
 //! ) -> Result<SlotIdentity, nebula_resource::Error>
 //! where R: Provider + DeclaresDependencies, R::Config: DeserializeOwned
@@ -311,26 +311,31 @@ pub trait ErasedResourceRegistrar: Send + Sync {
     fn validate(&self, config_json: serde_json::Value) -> Result<(), nebula_resource::Error>;
 }
 
-/// Per-`R` [`ErasedResourceRegistrar`] that closes over the two pieces
-/// the erased boundary cannot synthesize generically: a factory that
-/// produces the `resource: R` value (with its credential slots already
-/// resolved by the engine) and a factory that produces the
-/// `TopologyRuntime<R>` declared for this kind.
+/// Per-`R` [`ErasedResourceRegistrar`] that closes over the pieces the
+/// erased boundary cannot synthesize generically: a factory that produces
+/// the `resource: R` value (with its credential slots already resolved by
+/// the engine), a factory that produces the `TopologyRuntime<R>` declared
+/// for this kind, and a factory that produces the type-erased acquire
+/// closure ([`AcquireFn`](nebula_resource::AcquireFn)) whose concrete
+/// topology dispatch is baked in at the call site where the topology
+/// bounds (`R: Resident` / `R: Pooled`) are in scope.
 ///
-/// `register_resolved` consumes `resource: R`, `TopologyRuntime<R>`, and
-/// the erased `acquire` hook by value, and a registrar may be invoked
-/// more than once (re-activation, multiple scopes), so all three are
-/// *factories* rather than stored values. The acquire factory takes no
-/// slot-identity argument: the single-walk acquire resolution pins the
-/// row by the caller's runtime slot identity, so the hook is
-/// identity-independent (the legacy `Fn(u64)` digest threading is gone).
+/// All three are factories rather than stored values because a registrar
+/// may be invoked more than once (re-activation, multiple scopes). The
+/// acquire factory takes no slot-identity argument: the single-walk
+/// acquire resolution pins the row by the caller's runtime slot identity,
+/// so the hook is identity-independent.
+///
+/// Build the `acquire_factory` using [`nebula_resource::resident_acquire_fn`]
+/// for resident topologies or [`nebula_resource::pooled_acquire_fn`] for
+/// pooled ones.
 pub struct TypedResourceRegistrar<R, FRes, FTopo, FAcq>
 where
     R: Provider + nebula_core::DeclaresDependencies,
     R::Config: serde::de::DeserializeOwned,
     FRes: Fn() -> R + Send + Sync,
     FTopo: Fn() -> TopologyRuntime<R> + Send + Sync,
-    FAcq: Fn() -> nebula_resource::ErasedAcquireFn + Send + Sync,
+    FAcq: Fn() -> nebula_resource::AcquireFn + Send + Sync,
 {
     resource_factory: FRes,
     topology_factory: FTopo,
@@ -343,19 +348,18 @@ where
     R::Config: serde::de::DeserializeOwned,
     FRes: Fn() -> R + Send + Sync,
     FTopo: Fn() -> TopologyRuntime<R> + Send + Sync,
-    FAcq: Fn() -> nebula_resource::ErasedAcquireFn + Send + Sync,
+    FAcq: Fn() -> nebula_resource::AcquireFn + Send + Sync,
 {
     /// Builds a typed registrar for resource type `R`.
     ///
-    /// `resource_factory` yields the `R` value (with credential slots
-    /// already resolved by the engine per registration scope).
-    /// `topology_factory` yields the `TopologyRuntime<R>` declared for
-    /// this kind. `acquire_factory` builds the erased acquire hook (for
-    /// example
-    /// [`Manager::erased_acquire_resident_for`](nebula_resource::manager::Manager::erased_acquire_resident_for))
-    /// — it takes no slot-identity argument because the acquire hook is
-    /// identity-independent. All three are invoked once per registration
-    /// call.
+    /// - `resource_factory` — yields the `R` value with credential slots
+    ///   already resolved by the engine per registration scope.
+    /// - `topology_factory` — yields the `TopologyRuntime<R>` for this kind.
+    /// - `acquire_factory` — builds the type-erased [`AcquireFn`](nebula_resource::AcquireFn)
+    ///   for this topology. Use [`nebula_resource::resident_acquire_fn::<R>`] for
+    ///   resident topologies or [`nebula_resource::pooled_acquire_fn::<R>`] for pooled
+    ///   ones. The factory is called once per registration, takes no slot-identity
+    ///   argument (acquire resolution is identity-independent at this layer).
     pub fn new(resource_factory: FRes, topology_factory: FTopo, acquire_factory: FAcq) -> Self {
         Self {
             resource_factory,
@@ -371,7 +375,7 @@ where
     R::Config: serde::de::DeserializeOwned,
     FRes: Fn() -> R + Send + Sync,
     FTopo: Fn() -> TopologyRuntime<R> + Send + Sync,
-    FAcq: Fn() -> nebula_resource::ErasedAcquireFn + Send + Sync,
+    FAcq: Fn() -> nebula_resource::AcquireFn + Send + Sync,
 {
     fn register<'a>(
         &'a self,
@@ -380,7 +384,7 @@ where
     ) -> BoxFut<'a, Result<SlotIdentity, nebula_resource::Error>> {
         let resource = (self.resource_factory)();
         let topology = (self.topology_factory)();
-        let acquire = (self.acquire_factory)();
+        let acquire_fn = (self.acquire_factory)();
         Box::pin(async move {
             manager
                 .register_resolved::<R>(
@@ -390,7 +394,7 @@ where
                     resource,
                     request.scope,
                     topology,
-                    acquire,
+                    acquire_fn,
                     request.recovery_gate,
                 )
                 .await
@@ -841,6 +845,7 @@ mod tests {
         }
     }
 
+    #[async_trait::async_trait]
     impl Provider for TestRes {
         type Config = TestConfig;
         type Instance = Arc<AtomicU64>;
@@ -849,16 +854,13 @@ mod tests {
             resource_key!("test-registrar-res")
         }
 
-        fn create(
+        async fn create(
             &self,
             _config: &TestConfig,
             _ctx: &nebula_resource::ResourceContext,
-        ) -> impl Future<Output = Result<Arc<AtomicU64>, ResourceError>> + Send {
-            let counter = self.create_counter.clone();
-            async move {
-                let id = counter.fetch_add(1, Ordering::Relaxed);
-                Ok(Arc::new(AtomicU64::new(id)))
-            }
+        ) -> Result<Arc<AtomicU64>, ResourceError> {
+            let id = self.create_counter.fetch_add(1, Ordering::Relaxed);
+            Ok(Arc::new(AtomicU64::new(id)))
         }
 
         fn metadata() -> ResourceMetadata {
@@ -881,6 +883,7 @@ mod tests {
         }
     }
 
+    #[async_trait::async_trait]
     impl Resident for TestRes {
         fn is_alive_sync(&self, runtime: &Arc<AtomicU64>) -> bool {
             runtime.load(Ordering::Relaxed) < u64::MAX
@@ -895,7 +898,7 @@ mod tests {
                     resident::config::Config::default(),
                 ))
             },
-            || Manager::erased_acquire_resident_for::<TestRes>(),
+            nebula_resource::resident_acquire_fn::<TestRes>,
         ))
     }
 
@@ -1178,6 +1181,7 @@ mod tests {
         #[derive(Clone)]
         struct OResource;
 
+        #[async_trait::async_trait]
         impl Provider for OResource {
             type Config = OConfig;
             type Instance = ();
@@ -1244,7 +1248,7 @@ mod tests {
                             resident::config::Config::default(),
                         ))
                     },
-                    || Manager::erased_acquire_resident_for::<OResource>(),
+                    nebula_resource::resident_acquire_fn::<OResource>,
                 )),
             );
             reg

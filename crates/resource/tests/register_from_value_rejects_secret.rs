@@ -87,6 +87,7 @@ impl ResourceConfig for DbConfig {
 #[derive(Clone)]
 struct Db;
 
+#[async_trait::async_trait]
 impl Provider for Db {
     type Config = DbConfig;
     type Instance = Arc<()>;
@@ -114,6 +115,7 @@ impl HasCredentialSlots for Db {
     }
 }
 
+#[async_trait::async_trait]
 impl Resident for Db {
     fn is_alive_sync(&self, _runtime: &Arc<()>) -> bool {
         true
@@ -159,7 +161,7 @@ async fn register_from_value_rejects_inline_secret_field() {
             Db,
             ScopeLevel::Global,
             topology(),
-            Manager::erased_acquire_resident_for::<Db>(),
+            nebula_resource::resident_acquire_fn::<Db>(),
             None,
         )
         .await
@@ -212,7 +214,7 @@ async fn register_from_value_accepts_clean_config_same_resource() {
             Db,
             ScopeLevel::Global,
             topology(),
-            Manager::erased_acquire_resident_for::<Db>(),
+            nebula_resource::resident_acquire_fn::<Db>(),
             None,
         )
         .await

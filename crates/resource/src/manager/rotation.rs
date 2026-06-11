@@ -102,12 +102,12 @@ impl Manager {
         &self,
         key: &ResourceKey,
         slot: &str,
-        managed: Arc<dyn crate::registry::AnyManagedResource>,
+        managed: Arc<dyn crate::registry::ManagedHandle>,
     ) -> Result<(), Error> {
         let started = Instant::now();
-        tracing::Span::current().record("topology", managed.topology_tag_erased().as_str());
+        tracing::Span::current().record("topology", managed.topology_tag().as_str());
 
-        let result = managed.dispatch_on_refresh_erased(slot).await;
+        let result = managed.dispatch_on_refresh(slot).await;
         tracing::Span::current().record("duration_ms", started.elapsed().as_millis() as u64);
 
         // Exactly one outcome per dispatch; the attempts total is the sum
@@ -245,19 +245,19 @@ impl Manager {
     fn taint_now(
         key: &ResourceKey,
         slot: &str,
-        managed: Arc<dyn crate::registry::AnyManagedResource>,
+        managed: Arc<dyn crate::registry::ManagedHandle>,
     ) -> TaintedSlot {
-        tracing::Span::current().record("topology", managed.topology_tag_erased().as_str());
+        tracing::Span::current().record("topology", managed.topology_tag().as_str());
         // Phase-1 taint, synchronously before any caller `.await`: this
         // function is not `async`, so the store has already happened by the
         // time control returns and a subsequently-dropped drain-tail timeout
         // future cannot un-apply it.
-        managed.taint_erased();
+        managed.taint();
         // Phase-1 revoke-epoch bump, in the *same* synchronous pre-`.await`
         // step as the taint, so the pooled return-to-idle paths fence any
         // instance authenticated with the now-revoked credential before the
         // hook walks the idle queue.
-        managed.bump_revoke_epoch_erased();
+        managed.bump_revoke_epoch();
         TaintedSlot {
             key: key.clone(),
             slot: slot.to_owned(),
@@ -327,7 +327,7 @@ impl Manager {
         fields(
             key = %tainted.key,
             slot = %tainted.slot,
-            topology = tainted.managed.topology_tag_erased().as_str(),
+            topology = tainted.managed.topology_tag().as_str(),
             duration_ms,
             op = "revoke",
         )
@@ -360,7 +360,7 @@ impl Manager {
         //    = exactly one outcome). The hook still runs and its event /
         //    returned outcome are unaffected — this is the contract the
         //    removed outer `tokio::time::timeout` wrapper used to break.
-        let drain_result = managed.wait_for_in_flight_drain_erased(drain_timeout).await;
+        let drain_result = managed.wait_for_in_flight_drain(drain_timeout).await;
         let drain_timed_out = drain_result.is_err();
         if let Err(outstanding) = &drain_result {
             if let Some(m) = &self.metrics {
@@ -380,7 +380,7 @@ impl Manager {
         //    has *already* consumed the metric outcome, so a hook that then
         //    also times out does not double-record.
         let hook_outcome =
-            tokio::time::timeout(drain_timeout, managed.dispatch_on_revoke_erased(&slot)).await;
+            tokio::time::timeout(drain_timeout, managed.dispatch_on_revoke(&slot)).await;
         tracing::Span::current().record("duration_ms", tainted_at.elapsed().as_millis() as u64);
 
         match hook_outcome {
@@ -512,7 +512,7 @@ impl Manager {
         &self,
         key: &ResourceKey,
         scope: &ScopeLevel,
-    ) -> Result<Arc<dyn crate::registry::AnyManagedResource>, Error> {
+    ) -> Result<Arc<dyn crate::registry::ManagedHandle>, Error> {
         use crate::registry::LookupOutcome;
         self.shutdown_guard()?;
         match self.registry.get(key, scope) {
@@ -589,7 +589,7 @@ impl Manager {
         key: &ResourceKey,
         scope: &ScopeLevel,
         slot_identity: &crate::dedup::SlotIdentity,
-    ) -> Result<Arc<dyn crate::registry::AnyManagedResource>, Error> {
+    ) -> Result<Arc<dyn crate::registry::ManagedHandle>, Error> {
         use crate::registry::PinnedLookup;
         self.shutdown_guard()?;
         match self.registry.get_for(key, scope, slot_identity) {

@@ -673,6 +673,7 @@ mod tests {
     // A trivial resource for testing. Instance = u32 so guards hold a plain integer.
     struct DummyResource;
 
+    #[async_trait::async_trait]
     impl Provider for DummyResource {
         type Config = ();
         type Instance = u32;
@@ -921,6 +922,7 @@ mod tests {
 
     struct DropProbeResource;
 
+    #[async_trait::async_trait]
     impl Provider for DropProbeResource {
         type Config = ();
         type Instance = DropProbe;

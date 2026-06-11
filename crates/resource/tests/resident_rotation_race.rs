@@ -102,6 +102,7 @@ struct RaceResource {
     revoke_calls: Arc<AtomicUsize>,
 }
 
+#[async_trait::async_trait]
 impl Provider for RaceResource {
     type Config = RaceConfig;
     type Instance = RaceRuntime;
@@ -178,6 +179,7 @@ impl HasCredentialSlots for RaceResource {
     }
 }
 
+#[async_trait::async_trait]
 impl Resident for RaceResource {
     fn is_alive_sync(&self, _runtime: &RaceRuntime) -> bool {
         true
@@ -213,7 +215,7 @@ fn build(park: bool) -> (Arc<Manager>, ResourceKey, RaceResource) {
         topology: TopologyRuntime::Resident(ResidentRuntime::<RaceResource>::new(
             ResidentConfig::default(),
         )),
-        acquire: Manager::erased_acquire_resident_for::<RaceResource>(),
+        acquire_fn: nebula_resource::resident_acquire_fn::<RaceResource>(),
         recovery_gate: None,
     })
     .expect("resident registration must succeed");

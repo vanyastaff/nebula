@@ -309,6 +309,7 @@ impl ResourceConfig for IntegrationProbeConfig {
 #[derive(Clone)]
 struct IntegrationProbeResource;
 
+#[async_trait::async_trait]
 impl Provider for IntegrationProbeResource {
     type Config = IntegrationProbeConfig;
     type Instance = Arc<AtomicU64>;
@@ -336,6 +337,7 @@ impl nebula_resource::HasCredentialSlots for IntegrationProbeResource {
     }
 }
 
+#[async_trait::async_trait]
 impl Resident for IntegrationProbeResource {
     fn is_alive_sync(&self, runtime: &Arc<AtomicU64>) -> bool {
         runtime.load(Ordering::Relaxed) > 0
@@ -397,7 +399,7 @@ async fn engine_acquires_org_scoped_resource_through_accessor() {
             topology: TopologyRuntime::Resident(ResidentRuntime::<IntegrationProbeResource>::new(
                 ResidentConfig::default(),
             )),
-            acquire: Manager::erased_acquire_resident_for::<IntegrationProbeResource>(),
+            acquire_fn: nebula_resource::resident_acquire_fn::<IntegrationProbeResource>(),
             recovery_gate: None,
         })
         .expect("register org-scoped resource");
@@ -615,6 +617,7 @@ mod shared_resource {
         }
     }
 
+    #[async_trait::async_trait]
     impl Provider for TelegramBot {
         type Config = TelegramConfig;
         type Instance = Arc<TelegramBotInner>;
@@ -623,20 +626,17 @@ mod shared_resource {
             resource_key!("telegram-bot")
         }
 
-        fn create(
+        async fn create(
             &self,
             _config: &TelegramConfig,
             _ctx: &ResourceContext,
-        ) -> impl Future<Output = Result<Arc<TelegramBotInner>, Error>> + Send {
-            let counter = Arc::clone(&self.create_counter);
-            async move {
-                // Yield once to widen the concurrent-acquire interleaving
-                // window — exposes any missing serialization in the
-                // double-checked create path.
-                tokio::task::yield_now().await;
-                let id = counter.fetch_add(1, Ordering::SeqCst);
-                Ok(Arc::new(TelegramBotInner { instance_id: id }))
-            }
+        ) -> Result<Arc<TelegramBotInner>, Error> {
+            // Yield once to widen the concurrent-acquire interleaving
+            // window — exposes any missing serialization in the
+            // double-checked create path.
+            tokio::task::yield_now().await;
+            let id = self.create_counter.fetch_add(1, Ordering::SeqCst);
+            Ok(Arc::new(TelegramBotInner { instance_id: id }))
         }
 
         async fn destroy(&self, _runtime: Arc<TelegramBotInner>) -> Result<(), Error> {
@@ -654,6 +654,7 @@ mod shared_resource {
         }
     }
 
+    #[async_trait::async_trait]
     impl Resident for TelegramBot {
         fn is_alive_sync(&self, _runtime: &Arc<TelegramBotInner>) -> bool {
             self.alive.load(Ordering::Relaxed)
@@ -678,6 +679,7 @@ mod shared_resource {
         }
     }
 
+    #[async_trait::async_trait]
     impl Provider for AlternateBot {
         type Config = TelegramConfig;
         type Instance = Arc<TelegramBotInner>;
@@ -686,19 +688,16 @@ mod shared_resource {
             resource_key!("telegram-bot-alt")
         }
 
-        fn create(
+        async fn create(
             &self,
             _config: &TelegramConfig,
             _ctx: &ResourceContext,
-        ) -> impl Future<Output = Result<Arc<TelegramBotInner>, Error>> + Send {
-            let counter = Arc::clone(&self.create_counter);
-            async move {
-                tokio::task::yield_now().await;
-                let id = counter.fetch_add(1, Ordering::SeqCst);
-                Ok(Arc::new(TelegramBotInner {
-                    instance_id: 100_000 + id,
-                }))
-            }
+        ) -> Result<Arc<TelegramBotInner>, Error> {
+            tokio::task::yield_now().await;
+            let id = self.create_counter.fetch_add(1, Ordering::SeqCst);
+            Ok(Arc::new(TelegramBotInner {
+                instance_id: 100_000 + id,
+            }))
         }
 
         async fn destroy(&self, _runtime: Arc<TelegramBotInner>) -> Result<(), Error> {
@@ -716,6 +715,7 @@ mod shared_resource {
         }
     }
 
+    #[async_trait::async_trait]
     impl Resident for AlternateBot {
         fn is_alive_sync(&self, _runtime: &Arc<TelegramBotInner>) -> bool {
             self.alive.load(Ordering::Relaxed)
@@ -770,7 +770,7 @@ mod shared_resource {
                 scope: ScopeLevel::Organization(org),
                 slot_identity: SlotIdentity::Unbound,
                 topology: TopologyRuntime::Resident(resident_rt),
-                acquire: Manager::erased_acquire_resident_for::<TelegramBot>(),
+                acquire_fn: nebula_resource::resident_acquire_fn::<TelegramBot>(),
                 recovery_gate: None,
             })
             .expect("register should succeed");
@@ -847,7 +847,7 @@ mod shared_resource {
                 topology: TopologyRuntime::Resident(ResidentRuntime::<TelegramBot>::new(
                     ResidentConfig::default(),
                 )),
-                acquire: Manager::erased_acquire_resident_for::<TelegramBot>(),
+                acquire_fn: nebula_resource::resident_acquire_fn::<TelegramBot>(),
                 recovery_gate: None,
             })
             .expect("register A should succeed");
@@ -860,7 +860,7 @@ mod shared_resource {
                 topology: TopologyRuntime::Resident(ResidentRuntime::<AlternateBot>::new(
                     ResidentConfig::default(),
                 )),
-                acquire: Manager::erased_acquire_resident_for::<AlternateBot>(),
+                acquire_fn: nebula_resource::resident_acquire_fn::<AlternateBot>(),
                 recovery_gate: None,
             })
             .expect("register B should succeed");
@@ -923,7 +923,7 @@ mod shared_resource {
                 topology: TopologyRuntime::Resident(ResidentRuntime::<TelegramBot>::new(
                     ResidentConfig::default(),
                 )),
-                acquire: Manager::erased_acquire_resident_for::<TelegramBot>(),
+                acquire_fn: nebula_resource::resident_acquire_fn::<TelegramBot>(),
                 recovery_gate: None,
             })
             .expect("register org_a should succeed");
@@ -936,7 +936,7 @@ mod shared_resource {
                 topology: TopologyRuntime::Resident(ResidentRuntime::<TelegramBot>::new(
                     ResidentConfig::default(),
                 )),
-                acquire: Manager::erased_acquire_resident_for::<TelegramBot>(),
+                acquire_fn: nebula_resource::resident_acquire_fn::<TelegramBot>(),
                 recovery_gate: None,
             })
             .expect("register org_b should succeed");
@@ -997,7 +997,7 @@ mod shared_resource {
                 scope: scope.clone(),
                 slot_identity: SlotIdentity::Unbound,
                 topology: TopologyRuntime::Resident(resident_rt),
-                acquire: Manager::erased_acquire_resident_for::<TelegramBot>(),
+                acquire_fn: nebula_resource::resident_acquire_fn::<TelegramBot>(),
                 recovery_gate: None,
             })
             .expect("register should succeed");
@@ -1075,7 +1075,7 @@ mod shared_resource {
                 scope: ScopeLevel::Global,
                 slot_identity: SlotIdentity::Unbound,
                 topology: TopologyRuntime::Resident(resident_rt),
-                acquire: Manager::erased_acquire_resident_for::<TelegramBot>(),
+                acquire_fn: nebula_resource::resident_acquire_fn::<TelegramBot>(),
                 recovery_gate: None,
             })
             .expect("register should succeed");

@@ -67,6 +67,7 @@ impl ResourceConfig for PgConfig {
 #[derive(Clone)]
 struct Postgres;
 
+#[async_trait::async_trait]
 impl Provider for Postgres {
     type Config = PgConfig;
     type Instance = Arc<()>;
@@ -94,6 +95,7 @@ impl HasCredentialSlots for Postgres {
     }
 }
 
+#[async_trait::async_trait]
 impl Resident for Postgres {
     fn is_alive_sync(&self, _runtime: &Arc<()>) -> bool {
         true
@@ -131,7 +133,7 @@ async fn register_from_value_resolves_template_and_registers() {
             Postgres,
             ScopeLevel::Global,
             TopologyRuntime::Resident(ResidentRuntime::<Postgres>::new(ResidentConfig::default())),
-            Manager::erased_acquire_resident_for::<Postgres>(),
+            nebula_resource::resident_acquire_fn::<Postgres>(),
             None,
         )
         .await
@@ -180,7 +182,7 @@ async fn register_from_value_validates_schema_failure() {
             Postgres,
             ScopeLevel::Global,
             TopologyRuntime::Resident(ResidentRuntime::<Postgres>::new(ResidentConfig::default())),
-            Manager::erased_acquire_resident_for::<Postgres>(),
+            nebula_resource::resident_acquire_fn::<Postgres>(),
             None,
         )
         .await
@@ -212,7 +214,7 @@ async fn register_from_value_resourceconfig_validate_fires() {
             Postgres,
             ScopeLevel::Global,
             TopologyRuntime::Resident(ResidentRuntime::<Postgres>::new(ResidentConfig::default())),
-            Manager::erased_acquire_resident_for::<Postgres>(),
+            nebula_resource::resident_acquire_fn::<Postgres>(),
             None,
         )
         .await
@@ -244,7 +246,7 @@ async fn register_from_value_unknown_slot_binding_rejected() {
             Postgres,
             ScopeLevel::Global,
             TopologyRuntime::Resident(ResidentRuntime::<Postgres>::new(ResidentConfig::default())),
-            Manager::erased_acquire_resident_for::<Postgres>(),
+            nebula_resource::resident_acquire_fn::<Postgres>(),
             None,
         )
         .await
@@ -276,7 +278,7 @@ async fn register_from_value_passthrough_no_templates() {
             Postgres,
             ScopeLevel::Global,
             TopologyRuntime::Resident(ResidentRuntime::<Postgres>::new(ResidentConfig::default())),
-            Manager::erased_acquire_resident_for::<Postgres>(),
+            nebula_resource::resident_acquire_fn::<Postgres>(),
             None,
         )
         .await

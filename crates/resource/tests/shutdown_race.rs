@@ -20,7 +20,6 @@
 //! the registry has been cleared.
 
 use std::{
-    future::Future,
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -75,6 +74,7 @@ impl SlowCreateResource {
     }
 }
 
+#[async_trait::async_trait]
 impl Provider for SlowCreateResource {
     type Config = SlowConfig;
     type Instance = ();
@@ -83,18 +83,12 @@ impl Provider for SlowCreateResource {
         nebula_core::resource_key!("test.shutdown_race.slow")
     }
 
-    fn create(
-        &self,
-        _config: &Self::Config,
-        _ctx: &ResourceContext,
-    ) -> impl Future<Output = Result<(), Error>> + Send {
+    async fn create(&self, _config: &Self::Config, _ctx: &ResourceContext) -> Result<(), Error> {
         let delay = self.create_delay;
         let counter = Arc::clone(&self.create_count);
-        async move {
-            tokio::time::sleep(delay).await;
-            counter.fetch_add(1, Ordering::Relaxed);
-            Ok(())
-        }
+        tokio::time::sleep(delay).await;
+        counter.fetch_add(1, Ordering::Relaxed);
+        Ok(())
     }
 
     fn metadata() -> ResourceMetadata {
@@ -108,6 +102,7 @@ impl HasCredentialSlots for SlowCreateResource {
     }
 }
 
+#[async_trait::async_trait]
 impl Resident for SlowCreateResource {
     fn is_alive_sync(&self, _runtime: &()) -> bool {
         true
@@ -155,7 +150,7 @@ async fn graceful_shutdown_blocks_in_flight_acquire() {
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
             topology: TopologyRuntime::Resident(resident_rt),
-            acquire: Manager::erased_acquire_resident_for::<SlowCreateResource>(),
+            acquire_fn: nebula_resource::resident_acquire_fn::<SlowCreateResource>(),
             recovery_gate: None,
         })
         .expect("register succeeds");
@@ -268,7 +263,7 @@ async fn lookup_rejects_acquire_after_shutdown_starts() {
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
             topology: TopologyRuntime::Resident(resident_rt),
-            acquire: Manager::erased_acquire_resident_for::<SlowCreateResource>(),
+            acquire_fn: nebula_resource::resident_acquire_fn::<SlowCreateResource>(),
             recovery_gate: None,
         })
         .expect("register succeeds");

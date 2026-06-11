@@ -473,6 +473,7 @@ mod tests {
         emitted: Arc<AtomicU32>,
     }
 
+    #[async_trait::async_trait]
     impl Provider for ThreeEventSource {
         type Config = EmptyCfg;
         type Instance = ();
@@ -593,6 +594,7 @@ mod tests {
         }
     }
 
+    #[async_trait::async_trait]
     impl Provider for PermanentlyBrokenSource {
         type Config = EmptyCfg;
         type Instance = ();

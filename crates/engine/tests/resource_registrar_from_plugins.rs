@@ -54,7 +54,7 @@ use nebula_engine::{
 };
 use nebula_metrics::MetricsRegistry;
 use nebula_resource::{
-    AnyResource, Manager, ScopeLevel,
+    ScopeLevel,
     error::Error as ResourceError,
     resource::{Provider, ResourceConfig, ResourceMetadata},
     runtime::{TopologyRuntime, resident::ResidentRuntime},
@@ -118,6 +118,7 @@ impl DemoResource {
     }
 }
 
+#[async_trait::async_trait]
 impl Provider for DemoResource {
     type Config = DemoConfig;
     type Instance = Arc<AtomicU64>;
@@ -126,16 +127,13 @@ impl Provider for DemoResource {
         resource_key!("demo.widget")
     }
 
-    fn create(
+    async fn create(
         &self,
         _config: &DemoConfig,
         _ctx: &nebula_resource::ResourceContext,
-    ) -> impl Future<Output = Result<Arc<AtomicU64>, nebula_resource::Error>> + Send {
-        let counter = self.create_counter.clone();
-        async move {
-            let id = counter.fetch_add(1, Ordering::Relaxed);
-            Ok(Arc::new(AtomicU64::new(id)))
-        }
+    ) -> Result<Arc<AtomicU64>, nebula_resource::Error> {
+        let id = self.create_counter.fetch_add(1, Ordering::Relaxed);
+        Ok(Arc::new(AtomicU64::new(id)))
     }
 
     fn metadata() -> ResourceMetadata {
@@ -167,7 +165,7 @@ impl resident::Resident for DemoResource {
 /// registry holds; it deliberately exposes **no**
 /// constructor and no topology factory, which is exactly why the engine
 /// cannot auto-build a typed registrar from `Plugin::resources()` alone.
-impl AnyResource for DemoResource {
+impl nebula_resource::ResourceDescriptor for DemoResource {
     fn key(&self) -> ResourceKey {
         <Self as Provider>::key()
     }
@@ -188,7 +186,7 @@ impl Plugin for DemoPlugin {
         &self.0
     }
 
-    fn resources(&self) -> Vec<Arc<dyn AnyResource>> {
+    fn resources(&self) -> Vec<Arc<dyn nebula_resource::ResourceDescriptor>> {
         vec![Arc::new(DemoResource::new())]
     }
 }
@@ -232,7 +230,7 @@ fn demo_registrars(plugins: &PluginRegistry) -> ResourceRegistrarRegistry {
                     resident::config::Config::default(),
                 ))
             },
-            || Manager::erased_acquire_resident_for::<DemoResource>(),
+            nebula_resource::resident_acquire_fn::<DemoResource>,
         )),
     );
     registrars

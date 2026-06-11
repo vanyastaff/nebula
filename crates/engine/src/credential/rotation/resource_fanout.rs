@@ -980,6 +980,7 @@ mod tests {
             ledger: Ledger,
         }
 
+        #[async_trait::async_trait]
         impl Provider for CtlResource {
             type Config = Cfg;
             type Instance = Runtime;
@@ -1046,6 +1047,7 @@ mod tests {
             }
         }
 
+        #[async_trait::async_trait]
         impl Resident for CtlResource {
             fn is_alive_sync(&self, _rt: &Runtime) -> bool {
                 true
@@ -1088,7 +1090,7 @@ mod tests {
                     topology: TopologyRuntime::Resident(ResidentRuntime::<CtlResource>::new(
                         ResidentConfig::default(),
                     )),
-                    acquire: Manager::erased_acquire_resident_for::<CtlResource>(),
+                    acquire_fn: nebula_resource::resident_acquire_fn::<CtlResource>(),
                     recovery_gate: None,
                 })
                 .expect("register tenant");

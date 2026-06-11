@@ -21,6 +21,7 @@ impl nebula_resource::resource::ResourceConfig for MyConfig {
     }
 }
 
+#[async_trait::async_trait]
 impl Provider for UnitResource {
     type Config = MyConfig;
     type Instance = ();

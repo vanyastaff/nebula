@@ -74,6 +74,7 @@ impl CountingResource {
     }
 }
 
+#[async_trait::async_trait]
 impl Provider for CountingResource {
     type Config = CountingConfig;
     type Instance = CountingRuntime;
@@ -106,6 +107,7 @@ impl HasCredentialSlots for CountingResource {
     }
 }
 
+#[async_trait::async_trait]
 impl Resident for CountingResource {
     fn is_alive_sync(&self, _runtime: &CountingRuntime) -> bool {
         true
@@ -140,7 +142,7 @@ fn register_counting(
         topology: TopologyRuntime::Resident(ResidentRuntime::<CountingResource>::new(
             ResidentConfig::default(),
         )),
-        acquire: Manager::erased_acquire_resident_for::<CountingResource>(),
+        acquire_fn: nebula_resource::resident_acquire_fn::<CountingResource>(),
         recovery_gate: opts.recovery_gate,
     })
 }
@@ -428,6 +430,7 @@ fn non_empty_bindings_are_never_the_unbound_identity() {
 #[derive(Clone)]
 struct SiblingResidentResource;
 
+#[async_trait::async_trait]
 impl Provider for SiblingResidentResource {
     type Config = CountingConfig;
     type Instance = CountingRuntime;
@@ -462,6 +465,7 @@ impl HasCredentialSlots for SiblingResidentResource {
     }
 }
 
+#[async_trait::async_trait]
 impl Resident for SiblingResidentResource {
     fn is_alive_sync(&self, _runtime: &CountingRuntime) -> bool {
         true
@@ -504,7 +508,7 @@ async fn agnostic_typed_acquire_skips_sibling_type_and_falls_through_to_global()
             topology: TopologyRuntime::Resident(ResidentRuntime::<SiblingResidentResource>::new(
                 ResidentConfig::default(),
             )),
-            acquire: Manager::erased_acquire_resident_for::<SiblingResidentResource>(),
+            acquire_fn: nebula_resource::resident_acquire_fn::<SiblingResidentResource>(),
             recovery_gate: None,
         })
         .expect("register sibling type at org scope must succeed");
@@ -581,7 +585,7 @@ async fn typed_lookup_skips_sibling_type_and_falls_through_to_global() {
             topology: TopologyRuntime::Resident(ResidentRuntime::<SiblingResidentResource>::new(
                 ResidentConfig::default(),
             )),
-            acquire: Manager::erased_acquire_resident_for::<SiblingResidentResource>(),
+            acquire_fn: nebula_resource::resident_acquire_fn::<SiblingResidentResource>(),
             recovery_gate: None,
         })
         .expect("register sibling type at org scope must succeed");

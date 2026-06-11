@@ -113,6 +113,7 @@ struct TwoSlotDerived {
     slot_b: SlotCell<CredentialGuard<FakeCred>>,
 }
 
+#[async_trait::async_trait]
 impl Provider for TwoSlotDerived {
     type Config = TwoSlotCfg;
     type Instance = ();
@@ -211,6 +212,7 @@ struct TwoSlotResident {
     refresh_calls: Arc<AtomicUsize>,
 }
 
+#[async_trait::async_trait]
 impl Provider for TwoSlotResident {
     type Config = RaceCfg;
     type Instance = TwoSlotRuntime;
@@ -265,6 +267,7 @@ impl HasCredentialSlots for TwoSlotResident {
     }
 }
 
+#[async_trait::async_trait]
 impl Resident for TwoSlotResident {
     fn is_alive_sync(&self, _runtime: &TwoSlotRuntime) -> bool {
         true
@@ -307,7 +310,7 @@ async fn resident_reconcile_fires_when_non_max_slot_rotates() {
         topology: TopologyRuntime::Resident(ResidentRuntime::<TwoSlotResident>::new(
             ResidentConfig::default(),
         )),
-        acquire: Manager::erased_acquire_resident_for::<TwoSlotResident>(),
+        acquire_fn: nebula_resource::resident_acquire_fn::<TwoSlotResident>(),
         recovery_gate: None,
     })
     .expect("resident registration must succeed");

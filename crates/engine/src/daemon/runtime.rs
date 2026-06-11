@@ -299,6 +299,7 @@ mod tests {
         attempts: Arc<AtomicU32>,
     }
 
+    #[async_trait::async_trait]
     impl Provider for FlakyDaemon {
         type Config = EmptyCfg;
         type Instance = ();
@@ -335,6 +336,7 @@ mod tests {
     #[derive(Clone)]
     struct OneShotDaemon;
 
+    #[async_trait::async_trait]
     impl Provider for OneShotDaemon {
         type Config = EmptyCfg;
         type Instance = ();

@@ -83,6 +83,7 @@ struct Recording {
     rec: Recorder,
 }
 
+#[async_trait::async_trait]
 impl Provider for Recording {
     type Config = NoCfg;
     type Instance = ();
@@ -116,6 +117,7 @@ impl nebula_resource::HasCredentialSlots for Recording {
     }
 }
 
+#[async_trait::async_trait]
 impl Resident for Recording {
     fn is_alive_sync(&self, _r: &()) -> bool {
         true
@@ -190,7 +192,7 @@ async fn wire(behaviour: Behaviour) -> Wired {
         topology: TopologyRuntime::Resident(ResidentRuntime::<Recording>::new(
             ResidentConfig::default(),
         )),
-        acquire: Manager::erased_acquire_resident_for::<Recording>(),
+        acquire_fn: nebula_resource::resident_acquire_fn::<Recording>(),
         recovery_gate: None,
     })
     .expect("register resolved-credential row");
@@ -637,7 +639,7 @@ async fn engine_spawn_resource_rotation_fanout_is_idempotent() {
         topology: TopologyRuntime::Resident(ResidentRuntime::<Recording>::new(
             ResidentConfig::default(),
         )),
-        acquire: Manager::erased_acquire_resident_for::<Recording>(),
+        acquire_fn: nebula_resource::resident_acquire_fn::<Recording>(),
         recovery_gate: None,
     })
     .expect("register resolved-credential row");

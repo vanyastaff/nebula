@@ -340,15 +340,14 @@ use crate::{
     runtime::managed::ManagedResource,
 };
 
-mod acquire;
-pub(crate) mod acquire_dispatch;
+pub(crate) mod acquire;
 mod gate;
 pub(crate) mod options;
 mod registration;
 mod rotation;
 pub(crate) mod shutdown;
 
-pub use crate::registry::ErasedAcquireFn;
+pub use acquire::{pooled_acquire_fn, resident_acquire_fn};
 pub use options::{
     DrainTimeoutPolicy, ManagerConfig, RegisterOptions, RegistrationSpec, ShutdownConfig,
 };
@@ -392,7 +391,7 @@ pub struct TaintedSlot {
     /// The credential slot on that row that was revoked.
     slot: String,
     /// The resolved row whose taint flag was already set synchronously.
-    managed: Arc<dyn crate::registry::AnyManagedResource>,
+    managed: Arc<dyn crate::registry::ManagedHandle>,
     /// When the synchronous taint was applied — the drain/revoke duration
     /// metric spans from here so it covers the whole revoke, not just the
     /// awaited tail.
@@ -579,7 +578,7 @@ impl Manager {
     /// Ordering: `graceful_shutdown` writes `shutting_down` with `AcqRel`,
     /// we read with `Acquire`, so we synchronize-with that write and any
     /// observation here implies the cancel will follow.
-    fn shutdown_guard(&self) -> Result<(), Error> {
+    pub(crate) fn shutdown_guard(&self) -> Result<(), Error> {
         if self.shutting_down.load(AtomicOrdering::Acquire) || self.cancel.is_cancelled() {
             return Err(Error::cancelled());
         }
@@ -707,7 +706,7 @@ impl Manager {
         &self,
         key: &ResourceKey,
         scope: &ScopeLevel,
-    ) -> Option<Arc<dyn crate::registry::AnyManagedResource>> {
+    ) -> Option<Arc<dyn crate::registry::ManagedHandle>> {
         match self.registry.get(key, scope) {
             crate::registry::LookupOutcome::Found(any) => Some(any),
             crate::registry::LookupOutcome::NotFound
@@ -926,9 +925,34 @@ mod shutdown_post_count_race_tests {
         error::ErrorKind,
         options::AcquireOptions,
         resource::{HasCredentialSlots, ResourceConfig, ResourceMetadata},
-        runtime::{TopologyRuntime, resident::ResidentRuntime},
+        runtime::{TopologyRuntime, managed::ManagedResource, resident::ResidentRuntime},
         topology::resident::{Resident, config::Config as ResidentConfig},
     };
+
+    // Helper: builds the type-erased acquire closure for a Resident resource.
+    // Used by test `RegistrationSpec` constructors where the closure must be
+    // provided but the test does not exercise the acquire path via `acquire_fn`.
+    #[cfg(test)]
+    fn make_resident_acquire_fn<R>() -> crate::runtime::managed::AcquireFn
+    where
+        R: Resident + HasCredentialSlots + Clone + Send + Sync + 'static,
+        R::Instance: Clone + Send + Sync + 'static,
+    {
+        Arc::new(
+            move |erased: Arc<dyn std::any::Any + Send + Sync>,
+                  mgr: Arc<Manager>,
+                  ctx: ResourceContext,
+                  opts: AcquireOptions| {
+                Box::pin(async move {
+                    let managed = erased
+                        .downcast::<ManagedResource<R>>()
+                        .map_err(|_| Error::permanent("acquire_fn type mismatch"))?;
+                    let guard = mgr.resident_pipeline(managed, &ctx, &opts).await?;
+                    Ok(Box::new(guard) as Box<dyn std::any::Any + Send + Sync>)
+                })
+            },
+        )
+    }
 
     #[derive(Clone, Default)]
     struct RaceCfg;
@@ -945,6 +969,7 @@ mod shutdown_post_count_race_tests {
     #[derive(Clone)]
     struct ShutdownRaceResident;
 
+    #[async_trait::async_trait]
     impl Provider for ShutdownRaceResident {
         type Config = RaceCfg;
         type Instance = ();
@@ -1000,7 +1025,7 @@ mod shutdown_post_count_race_tests {
                 scope: ScopeLevel::Global,
                 slot_identity: crate::dedup::SlotIdentity::Unbound,
                 topology: TopologyRuntime::Resident(resident_rt),
-                acquire: Manager::erased_acquire_resident_for::<ShutdownRaceResident>(),
+                acquire_fn: make_resident_acquire_fn::<ShutdownRaceResident>(),
                 recovery_gate: None,
             })
             .expect("register succeeds");
@@ -1090,7 +1115,7 @@ mod shutdown_post_count_race_tests {
                 scope: ScopeLevel::Global,
                 slot_identity: crate::dedup::SlotIdentity::Unbound,
                 topology: TopologyRuntime::Resident(resident_rt),
-                acquire: Manager::erased_acquire_resident_for::<ShutdownRaceResident>(),
+                acquire_fn: make_resident_acquire_fn::<ShutdownRaceResident>(),
                 recovery_gate: None,
             })
             .expect("register succeeds");

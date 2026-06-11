@@ -347,6 +347,7 @@ mod tests {
         attempts: Arc<AtomicU32>,
     }
 
+    #[async_trait::async_trait]
     impl Provider for CountedDaemon {
         type Config = EmptyCfg;
         type Instance = ();
@@ -456,6 +457,7 @@ mod tests {
     struct CountedDaemonB {
         attempts: Arc<AtomicU32>,
     }
+    #[async_trait::async_trait]
     impl Provider for CountedDaemonB {
         type Config = EmptyCfg;
         type Instance = ();

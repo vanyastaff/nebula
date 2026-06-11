@@ -78,6 +78,7 @@ struct Ctl {
     refresh_entered: Arc<AtomicUsize>,
 }
 
+#[async_trait::async_trait]
 impl Provider for Ctl {
     type Config = Cfg;
     type Instance = ();
@@ -120,6 +121,7 @@ impl nebula_resource::HasCredentialSlots for Ctl {
     }
 }
 
+#[async_trait::async_trait]
 impl Resident for Ctl {
     fn is_alive_sync(&self, _r: &()) -> bool {
         true
@@ -162,7 +164,7 @@ async fn engine_fanout_isolates_a_wedged_resource_from_siblings() {
             topology: TopologyRuntime::Resident(ResidentRuntime::<Ctl>::new(
                 ResidentConfig::default(),
             )),
-            acquire: Manager::erased_acquire_resident_for::<Ctl>(),
+            acquire_fn: nebula_resource::resident_acquire_fn::<Ctl>(),
             recovery_gate: None,
         })
         .expect("register resolved-credential row");

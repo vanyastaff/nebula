@@ -146,7 +146,7 @@ impl EngineResourceStatus for EngineManagerResourceStatus {
         // probe must not alias one tenant's runtime to another.
         self.manager
             .get_any(key, &ScopeLevel::Global)
-            .map(|managed| project(managed.phase_erased()))
+            .map(|managed| project(managed.phase()))
     }
 }
 

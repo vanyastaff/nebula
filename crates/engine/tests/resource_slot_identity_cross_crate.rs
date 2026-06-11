@@ -114,6 +114,7 @@ impl XResource {
     }
 }
 
+#[async_trait::async_trait]
 impl Provider for XResource {
     type Config = XConfig;
     type Instance = Arc<AtomicU64>;
@@ -122,16 +123,13 @@ impl Provider for XResource {
         resource_key!("xcross.widget")
     }
 
-    fn create(
+    async fn create(
         &self,
         _config: &XConfig,
         _ctx: &nebula_resource::ResourceContext,
-    ) -> impl Future<Output = Result<Arc<AtomicU64>, nebula_resource::Error>> + Send {
-        let counter = self.create_counter.clone();
-        async move {
-            let id = counter.fetch_add(1, Ordering::Relaxed);
-            Ok(Arc::new(AtomicU64::new(id)))
-        }
+    ) -> Result<Arc<AtomicU64>, nebula_resource::Error> {
+        let id = self.create_counter.fetch_add(1, Ordering::Relaxed);
+        Ok(Arc::new(AtomicU64::new(id)))
     }
 
     fn metadata() -> ResourceMetadata {
@@ -191,7 +189,7 @@ fn registrars() -> ResourceRegistrarRegistry {
                     resident::config::Config::default(),
                 ))
             },
-            || Manager::erased_acquire_resident_for::<XResource>(),
+            nebula_resource::resident_acquire_fn::<XResource>,
         )),
     );
     registrars

@@ -1420,6 +1420,7 @@ mod tests {
         }
     }
 
+    #[async_trait::async_trait]
     impl Provider for MockPool {
         type Config = PoolTestConfig;
         type Instance = u32;
@@ -1428,29 +1429,23 @@ mod tests {
             resource_key!("mock-pool")
         }
 
-        fn create(
+        async fn create(
             &self,
             _config: &PoolTestConfig,
             _ctx: &ResourceContext,
-        ) -> impl Future<Output = Result<u32, Error>> + Send {
-            let fail = self.fail_create.load(Ordering::Relaxed);
-            async move {
-                if fail {
-                    Err(Error::transient("create failed"))
-                } else {
-                    Ok(1)
-                }
+        ) -> Result<u32, Error> {
+            if self.fail_create.load(Ordering::Relaxed) {
+                Err(Error::transient("create failed"))
+            } else {
+                Ok(1)
             }
         }
 
-        fn check(&self, _runtime: &u32) -> impl Future<Output = Result<(), Error>> + Send {
-            let fail = self.fail_check.load(Ordering::Relaxed);
-            async move {
-                if fail {
-                    Err(Error::transient("check failed"))
-                } else {
-                    Ok(())
-                }
+        async fn check(&self, _runtime: &u32) -> Result<(), Error> {
+            if self.fail_check.load(Ordering::Relaxed) {
+                Err(Error::transient("check failed"))
+            } else {
+                Ok(())
             }
         }
 

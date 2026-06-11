@@ -223,6 +223,7 @@ struct SecretBearingResource {
     hook_entered: Arc<AtomicUsize>,
 }
 
+#[async_trait::async_trait]
 impl Provider for SecretBearingResource {
     type Config = Cfg;
     type Instance = SecretRuntime;
@@ -280,6 +281,7 @@ impl nebula_resource::HasCredentialSlots for SecretBearingResource {
     }
 }
 
+#[async_trait::async_trait]
 impl Resident for SecretBearingResource {
     fn is_alive_sync(&self, _rt: &SecretRuntime) -> bool {
         true
@@ -390,7 +392,7 @@ async fn setup(
             topology: TopologyRuntime::Resident(ResidentRuntime::<SecretBearingResource>::new(
                 ResidentConfig::default(),
             )),
-            acquire: Manager::erased_acquire_resident_for::<SecretBearingResource>(),
+            acquire_fn: nebula_resource::resident_acquire_fn::<SecretBearingResource>(),
             recovery_gate: None,
         })
         .expect("register resolved-credential row");
