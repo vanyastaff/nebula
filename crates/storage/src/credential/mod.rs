@@ -40,7 +40,10 @@ pub mod postgres;
 
 #[cfg(feature = "rotation")]
 pub use backup::RotationBackup;
-#[cfg(any(test, feature = "test-util"))]
+// `StaticKeyProvider` requires `nebula-credential/test-util`, forwarded by
+// storage's `test-util` feature. `cfg(test)` alone is insufficient — see the
+// note in `key_provider.rs` for the full explanation.
+#[cfg(feature = "test-util")]
 pub use key_provider::StaticKeyProvider;
 pub use key_provider::{EnvKeyProvider, FileKeyProvider, KeyProvider, ProviderError};
 pub use layer::{
