@@ -399,14 +399,14 @@ pub struct AppState {
     /// a resource config before it is persisted (`POST .../resources`).
     ///
     /// This is the config-CRUD validation seam, not engine activation:
-    /// [`ResourceRegistrarRegistry::validate`](nebula_engine::ResourceRegistrarRegistry::validate)
+    /// [`ResourceActivatorRegistry::validate`](nebula_engine::ResourceActivatorRegistry::validate)
     /// runs the kind's `R::Config` schema + closed-set guard with **no**
     /// `nebula_resource::Manager` mutation — live registration stays an
     /// engine-activation concern (INTEGRATION_MODEL integration seam.1). When `None`,
     /// `create_resource` fails closed (422) rather than persist an
     /// unvalidated config. Set via
     /// [`AppState::with_resource_registrars`].
-    pub resource_registrars: Option<Arc<nebula_engine::ResourceRegistrarRegistry>>,
+    pub resource_registrars: Option<Arc<nebula_engine::ResourceActivatorRegistry>>,
 
     /// Optional **read-only** resource runtime-status port.
     ///
@@ -1211,7 +1211,7 @@ impl AppState {
     #[must_use = "builder methods must be chained or built"]
     pub fn with_resource_registrars(
         mut self,
-        registrars: Arc<nebula_engine::ResourceRegistrarRegistry>,
+        registrars: Arc<nebula_engine::ResourceActivatorRegistry>,
     ) -> Self {
         self.resource_registrars = Some(registrars);
         self

@@ -538,7 +538,7 @@ async fn list_resources_without_repo_is_service_unavailable() {
 // leaking the value, unknown kind ⇒ UnknownKind, NO Manager mutation) is
 // pinned at the engine layer in
 // `crates/engine/tests/resource_registrar_validate.rs` — that is where
-// `ResourceRegistrarRegistry::validate` can be driven against a real
+// `ResourceActivatorRegistry::validate` can be driven against a real
 // `R::Config` schema. The API layer must not depend on `nebula-resource`
 // (deny.toml `[[wrappers]]`: "no upward deps from API"), so it cannot
 // build a populated registrar here. These tests therefore pin the
@@ -586,7 +586,7 @@ fn create_body(kind: &str) -> serde_json::Value {
 async fn create_resource_unknown_kind_is_409_and_not_persisted() {
     let api_config = ApiConfig::for_test();
     let repo = Arc::new(FakeResourceRepo::default());
-    let registrars = Arc::new(nebula_engine::ResourceRegistrarRegistry::new());
+    let registrars = Arc::new(nebula_engine::ResourceActivatorRegistry::new());
     let state = state_with_repo(&api_config, Arc::clone(&repo) as Arc<dyn ResourceRepo>)
         .with_resource_registrars(registrars);
     let app = app::build_app(state, &api_config);
@@ -691,7 +691,7 @@ async fn create_resource_request_body_cannot_set_workspace() {
     // create never reaches the repo regardless of the body.
     let api_config = ApiConfig::for_test();
     let repo = Arc::new(FakeResourceRepo::default());
-    let registrars = Arc::new(nebula_engine::ResourceRegistrarRegistry::new());
+    let registrars = Arc::new(nebula_engine::ResourceActivatorRegistry::new());
     let state = state_with_repo(&api_config, Arc::clone(&repo) as Arc<dyn ResourceRepo>)
         .with_resource_registrars(registrars);
     let app = app::build_app(state, &api_config);
@@ -978,7 +978,7 @@ async fn update_resource_cross_workspace_is_404_no_mutation() {
     let foreign = get_entry(id, other_workspace, "Foreign Pool", "http_pool", 4, false);
 
     let repo = Arc::new(FakeResourceRepo::with_get(Some(foreign)));
-    let registrars = Arc::new(nebula_engine::ResourceRegistrarRegistry::new());
+    let registrars = Arc::new(nebula_engine::ResourceActivatorRegistry::new());
     let state = state_with_repo(&api_config, Arc::clone(&repo) as Arc<dyn ResourceRepo>)
         .with_resource_registrars(registrars);
     let app = app::build_app(state, &api_config);
@@ -1019,7 +1019,7 @@ async fn update_resource_cross_workspace_is_404_no_mutation() {
 async fn update_resource_unknown_id_is_404_no_mutation() {
     let api_config = ApiConfig::for_test();
     let repo = Arc::new(FakeResourceRepo::with_get(None));
-    let registrars = Arc::new(nebula_engine::ResourceRegistrarRegistry::new());
+    let registrars = Arc::new(nebula_engine::ResourceActivatorRegistry::new());
     let state = state_with_repo(&api_config, Arc::clone(&repo) as Arc<dyn ResourceRepo>)
         .with_resource_registrars(registrars);
     let app = app::build_app(state, &api_config);
@@ -1050,7 +1050,7 @@ async fn update_resource_soft_deleted_is_404_no_mutation() {
     let tombstone = get_entry(id, test_ws_bytes(), "Deleted Pool", "http_pool", 7, true);
 
     let repo = Arc::new(FakeResourceRepo::with_get(Some(tombstone)));
-    let registrars = Arc::new(nebula_engine::ResourceRegistrarRegistry::new());
+    let registrars = Arc::new(nebula_engine::ResourceActivatorRegistry::new());
     let state = state_with_repo(&api_config, Arc::clone(&repo) as Arc<dyn ResourceRepo>)
         .with_resource_registrars(registrars);
     let app = app::build_app(state, &api_config);
@@ -1073,7 +1073,7 @@ async fn update_resource_soft_deleted_is_404_no_mutation() {
 async fn update_resource_malformed_id_is_404() {
     let api_config = ApiConfig::for_test();
     let repo = Arc::new(FakeResourceRepo::with_get(None));
-    let registrars = Arc::new(nebula_engine::ResourceRegistrarRegistry::new());
+    let registrars = Arc::new(nebula_engine::ResourceActivatorRegistry::new());
     let state = state_with_repo(&api_config, Arc::clone(&repo) as Arc<dyn ResourceRepo>)
         .with_resource_registrars(registrars);
     let app = app::build_app(state, &api_config);
@@ -1101,7 +1101,7 @@ async fn update_resource_unknown_kind_is_409_no_mutation() {
 
     let repo = Arc::new(FakeResourceRepo::with_get(Some(row)));
     // Empty registry ⇒ every kind is UnknownKind.
-    let registrars = Arc::new(nebula_engine::ResourceRegistrarRegistry::new());
+    let registrars = Arc::new(nebula_engine::ResourceActivatorRegistry::new());
     let state = state_with_repo(&api_config, Arc::clone(&repo) as Arc<dyn ResourceRepo>)
         .with_resource_registrars(registrars);
     let app = app::build_app(state, &api_config);

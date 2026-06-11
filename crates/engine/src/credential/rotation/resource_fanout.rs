@@ -161,7 +161,7 @@ impl ResourceFanoutIndex {
     /// `entry(cid)`, so a concurrent `bind` / `unbind_staged_entry` for the
     /// same `cid` cannot interleave between them. This closes the
     /// stage-then-roll-back TOCTOU in
-    /// [`register_and_bind`](crate::resource::ResourceRegistrarRegistry::register_and_bind):
+    /// [`register_and_bind`](crate::resource::ResourceActivatorRegistry::register_and_bind):
     /// a failing registration releases only its own reference and can
     /// never delete a row a concurrent successful registration still holds.
     pub fn bind(
@@ -254,7 +254,7 @@ impl ResourceFanoutIndex {
     ///
     /// It is the compensation primitive for the *stage-bind-before-
     /// register-then-roll-back-on-failure* ordering in
-    /// [`ResourceRegistrarRegistry::register_and_bind`]: it **releases one
+    /// [`ResourceActivatorRegistry::register_and_bind`]: it **releases one
     /// reference** taken by [`bind`](Self::bind) and removes the row only
     /// when the last referent is gone. A registration that fails after
     /// staging therefore drops just its own reference; a concurrent (or
