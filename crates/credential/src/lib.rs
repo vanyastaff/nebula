@@ -86,6 +86,10 @@ pub mod secrets;
 /// The engine-runtime allowlist-enforcing accessor lives in
 /// `nebula_engine::credential::ScopedCredentialAccessor`.
 mod accessor;
+/// Audit trait and value types — [`AuditSink`], [`AuditEvent`],
+/// [`AuditOperation`], [`AuditResult`]. The audit decorator ([`AuditLayer`])
+/// stays in `nebula_storage::credential` and imports these from here.
+pub mod audit;
 /// Credential operation context — CredentialContext, CredentialContextBuilder.
 mod context;
 /// Typed credential reference — `CredentialRef<C>` slot-binding handle (typed ref fields).
@@ -218,6 +222,8 @@ pub use lifecycle::{
 };
 // Store trait + DTOs (canonical impls live in `nebula_storage::credential` per storage credential layers)
 pub use store::{CredentialStore, PutMode, ScopeResolver, StoreError, StoredCredential};
+// Audit contract — trait + value types (decorator AuditLayer stays in nebula_storage::credential)
+pub use audit::{AuditEvent, AuditOperation, AuditResult, AuditSink};
 
 // Rotation (feature-gated)
 #[cfg(feature = "rotation")]

@@ -14,6 +14,7 @@ pub mod audit;
 pub mod cache;
 pub mod encryption;
 
-pub use audit::{AuditEvent, AuditLayer, AuditOperation, AuditResult, AuditSink};
+pub use audit::AuditLayer;
 pub use cache::{CacheConfig, CacheLayer, CacheStats};
 pub use encryption::EncryptionLayer;
+pub use nebula_credential::{AuditEvent, AuditOperation, AuditResult, AuditSink};
