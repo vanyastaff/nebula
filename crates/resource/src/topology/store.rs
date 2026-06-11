@@ -103,23 +103,56 @@ impl<S: Send + 'static> InstanceStore<S> {
         self.revoke_epoch.fetch_add(1, Ordering::Release);
     }
 
-    /// Checks out an idle slot from the store.
+    /// Checks out the first **fresh** idle slot, running the revoke-epoch
+    /// fence on pop (framework-owned).
     ///
-    /// Returns `Some(slot)` stamped with the current epoch if an idle slot
-    /// exists, `None` if the queue is empty. The epoch stamp is embedded in
-    /// `StoreEntry` and is passed back to `return_slot` via the opaque
-    /// [`CheckedOut<S>`] handle.
+    /// The fence runs on **both** directions now (checkout and return): an
+    /// idle slot whose `checkout_epoch` is behind the live revoke counter was
+    /// leased under a since-revoked credential and must **never** be handed
+    /// out again. This method pops idle entries under the idle lock; any entry
+    /// whose epoch is stale is collected into [`Checkout::stale`] (for the
+    /// framework to destroy via [`Provider::destroy`]) and is **never**
+    /// returned as fresh. The first entry whose epoch is current is returned
+    /// as [`Checkout::fresh`]; if the queue drains without a fresh slot,
+    /// `fresh` is `None`.
     ///
-    /// Topology implementations call this inside `try_reserve` or `acquire` to
-    /// pop an existing idle slot before creating a new one.
-    pub async fn checkout(&self) -> Option<CheckedOut<S>> {
-        let epoch = self.current_revoke_epoch();
-        let slot = self.idle.lock().await.pop_front()?;
-        Some(CheckedOut {
-            slot: slot.slot,
-            checkout_epoch: slot.checkout_epoch,
-            store_epoch: epoch,
-        })
+    /// The framework acquire pipeline destroys every slot in `stale` before
+    /// using `fresh`. The store cannot call `Provider::destroy` itself (it
+    /// holds no `Provider`), so it returns the stale slots to the caller for
+    /// destruction.
+    ///
+    /// # Fence guarantee
+    ///
+    /// The epoch comparison and the pop are performed while holding the idle
+    /// lock — the same lock the credential-revoke idle-walk
+    /// ([`evict_stale`](Self::evict_stale)) holds — so a slot revoked while
+    /// idle is observed as stale here even if the revoke raced the checkout.
+    ///
+    /// [`Provider::destroy`]: crate::resource::Provider::destroy
+    pub async fn checkout(&self) -> Checkout<S> {
+        let live_epoch = self.current_revoke_epoch();
+        let mut idle = self.idle.lock().await;
+        let mut stale = Vec::new();
+        while let Some(entry) = idle.pop_front() {
+            if entry.checkout_epoch != live_epoch {
+                // Leased under a since-revoked credential — never hand out.
+                debug!(
+                    checkout_epoch = entry.checkout_epoch,
+                    live_epoch, "InstanceStore::checkout: epoch mismatch — discarding stale slot"
+                );
+                stale.push(entry.slot);
+                continue;
+            }
+            return Checkout {
+                fresh: Some(CheckedOut {
+                    slot: entry.slot,
+                    checkout_epoch: entry.checkout_epoch,
+                    store_epoch: live_epoch,
+                }),
+                stale,
+            };
+        }
+        Checkout { fresh: None, stale }
     }
 
     /// Returns a slot to the idle queue, running the revoke-epoch fence.
@@ -193,7 +226,11 @@ impl<S: Send + 'static> InstanceStore<S> {
     /// Evicts all idle slots whose checkout epoch is behind the live counter.
     ///
     /// Returns the evicted slots so the caller can destroy them. Used by the
-    /// background maintenance reaper.
+    /// background maintenance reaper. The revoke-epoch fence now runs on
+    /// **all three** return-to-pool directions — [`checkout`](Self::checkout)
+    /// (on pop), [`return_slot`](Self::return_slot) (on push), and this
+    /// reaper sweep — so a stale slot can never be served regardless of which
+    /// path observes it first.
     pub async fn evict_stale(&self) -> Vec<S> {
         let live_epoch = self.current_revoke_epoch();
         let mut idle = self.idle.lock().await;
@@ -221,13 +258,36 @@ impl<S: Send + 'static> InstanceStore<S> {
     }
 }
 
+// ─── Checkout ─────────────────────────────────────────────────────────────────
+
+/// The outcome of [`InstanceStore::checkout`].
+///
+/// Carries the first **fresh** idle slot (if any) plus every **stale** slot
+/// the fence discarded on the way to it. The framework acquire pipeline must
+/// destroy each `stale` slot via [`Provider::destroy`] before leasing
+/// `fresh`: a slot whose checkout epoch is behind the live revoke counter was
+/// leased under a since-revoked credential and must never be re-handed-out
+/// nor silently leaked.
+///
+/// [`Provider::destroy`]: crate::resource::Provider::destroy
+pub struct Checkout<S> {
+    /// The first idle slot whose checkout epoch is current, or `None` if the
+    /// idle queue held no fresh slot.
+    pub fresh: Option<CheckedOut<S>>,
+    /// Idle slots whose checkout epoch was behind the live revoke counter.
+    ///
+    /// These were leased under a since-revoked credential; the framework
+    /// destroys them and never returns them to a caller.
+    pub stale: Vec<S>,
+}
+
 // ─── CheckedOut ───────────────────────────────────────────────────────────────
 
 /// A slot that has been checked out of the [`InstanceStore`].
 ///
 /// Carries the slot value and the epoch at checkout time so that
 /// `return_slot` can run the revoke-fence check. Topology implementations
-/// receive this from [`InstanceStore::checkout`].
+/// receive this from [`InstanceStore::checkout`] via [`Checkout::fresh`].
 pub struct CheckedOut<S> {
     /// The leased slot.
     pub slot: S,
@@ -334,9 +394,73 @@ mod tests {
         let store: InstanceStore<String> = InstanceStore::new(None);
         let epoch = store.stamp_epoch();
         store.return_slot("hello".to_owned(), epoch).await;
-        let checked_out = store.checkout().await.expect("should find idle slot");
-        assert_eq!(checked_out.slot, "hello");
+        let checkout = store.checkout().await;
+        assert!(checkout.stale.is_empty(), "no stale slots on a clean queue");
+        let fresh_slot = checkout.fresh.map(|c| c.slot);
+        assert_eq!(fresh_slot.as_deref(), Some("hello"));
         assert_eq!(store.len().await, 0);
+    }
+
+    // C1 fence-on-checkout (a): a slot that went idle, then had its credential
+    // revoked, must land in `stale` — never `fresh`.
+    #[tokio::test]
+    async fn checkout_evicts_slot_revoked_while_idle() {
+        let store: InstanceStore<u32> = InstanceStore::new(Some(4));
+        // Slot goes idle at epoch 0.
+        let epoch = store.stamp_epoch();
+        store.return_slot(42u32, epoch).await;
+        // Credential revoked while it sat idle.
+        store.bump_revoke_epoch();
+
+        let checkout = store.checkout().await;
+        assert!(
+            checkout.fresh.is_none(),
+            "a slot revoked while idle must never be handed out as fresh"
+        );
+        assert_eq!(
+            checkout.stale,
+            vec![42u32],
+            "the since-revoked slot must be collected for destruction"
+        );
+        assert_eq!(store.len().await, 0, "the idle queue is drained");
+    }
+
+    // C1 fence-on-checkout (b): a mix of stale and fresh slots returns only
+    // the first fresh one, with every stale slot collected.
+    #[tokio::test]
+    async fn checkout_returns_fresh_after_collecting_stale() {
+        let store: InstanceStore<u32> = InstanceStore::new(None);
+        // Two slots go idle at epoch 0.
+        let old_epoch = store.stamp_epoch();
+        store.return_slot(1u32, old_epoch).await;
+        store.return_slot(2u32, old_epoch).await;
+        // Revoke — both are now stale.
+        store.bump_revoke_epoch();
+        // A fresh slot is returned at the new epoch and queued at the back.
+        let new_epoch = store.stamp_epoch();
+        store.return_slot(3u32, new_epoch).await;
+
+        let checkout = store.checkout().await;
+        assert_eq!(
+            checkout.stale,
+            vec![1u32, 2u32],
+            "both pre-revoke slots are collected as stale, in FIFO order"
+        );
+        assert_eq!(
+            checkout.fresh.map(|c| c.slot),
+            Some(3u32),
+            "only the current-epoch slot is fresh"
+        );
+        assert_eq!(store.len().await, 0, "the idle queue is now drained");
+    }
+
+    // C1 fence-on-checkout (c): an empty queue returns no fresh and no stale.
+    #[tokio::test]
+    async fn checkout_empty_queue_returns_none() {
+        let store: InstanceStore<u32> = InstanceStore::new(None);
+        let checkout = store.checkout().await;
+        assert!(checkout.fresh.is_none());
+        assert!(checkout.stale.is_empty());
     }
 
     // evict_stale removes only entries with stale epoch.

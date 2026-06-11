@@ -115,8 +115,11 @@ impl Topology for SlotPool {
         ticket: Ticket<u32>,
         store: &InstanceStore<u32>,
     ) -> Result<Lease<u32>, Error> {
-        // Try to pop an idle slot.
-        if let Some(checked_out) = store.checkout().await {
+        // Try to pop a fresh idle slot. The fence discards any stale-epoch
+        // slot on checkout (returned in `stale`); a real framework pipeline
+        // would destroy those, but this permit-only test topology drops them.
+        let checkout = store.checkout().await;
+        if let Some(checked_out) = checkout.fresh {
             let (slot, checkout_epoch) = checked_out.into_parts();
             return Ok(Lease::new(slot, checkout_epoch, None));
         }
