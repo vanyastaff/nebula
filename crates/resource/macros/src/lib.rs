@@ -78,7 +78,7 @@
 //!
 //! ### Not classifiable here
 //!
-//! `NotFound`, `Ambiguous`, and `Revoked` [`ErrorKind`](nebula_resource::ErrorKind)
+//! `NotFound`, `Ambiguous`, and `Revoked` `ErrorKind`
 //! variants are framework-origin errors (produced by the engine lookup path, not by
 //! resource implementations). `ClassifyError` cannot emit these — use the resource
 //! `Error` constructors directly on the rare occasion your `create()` must signal one.
@@ -205,7 +205,7 @@ pub fn derive_resource_config(input: TokenStream) -> TokenStream {
 /// # Not classifiable here
 ///
 /// `NotFound`, `Ambiguous`, and `Revoked` are framework-origin
-/// [`ErrorKind`](nebula_resource::ErrorKind) variants. `ClassifyError` cannot
+/// `ErrorKind` variants. `ClassifyError` cannot
 /// emit them — use the `Error` constructors directly on the rare occasion
 /// your `create()` must signal one.
 ///
