@@ -10,3 +10,6 @@ pub mod credential_schema;
 pub mod credential_schema_registry;
 pub mod credential_service_factory;
 pub mod email;
+pub mod reqwest_transport;
+
+pub use reqwest_transport::ReqwestRefreshTransport;

@@ -12,14 +12,13 @@ use axum::{
     routing::post,
 };
 use common::{create_state_with_queue, create_test_jwt, ws_path};
+use nebula_api::ports::ReqwestRefreshTransport;
 use nebula_api::{ApiConfig, app};
 use nebula_credential::{
     Credential, CredentialContext, CredentialState, CredentialStore, ErasedCredentialStore,
     OAuth2Credential, OAuth2State, PutMode,
 };
-use nebula_engine::credential::{
-    CredentialResolver, ReqwestRefreshTransport, default_in_memory_coordinator,
-};
+use nebula_engine::credential::{CredentialResolver, default_in_memory_coordinator};
 use tower::ServiceExt;
 use url::form_urlencoded;
 

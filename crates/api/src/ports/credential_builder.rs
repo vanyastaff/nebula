@@ -20,6 +20,7 @@
 
 use std::sync::Arc;
 
+use crate::ports::reqwest_transport::ReqwestRefreshTransport;
 use nebula_credential::store::CredentialStore;
 use nebula_credential::{
     Capabilities, CredentialObserver, CredentialRegistry, CredentialService,
@@ -28,7 +29,7 @@ use nebula_credential::{
 };
 use nebula_engine::credential::{
     CredentialResolver, LeaseLifecycle, LeaseLifecycleConfig, RefreshCoordinator,
-    ReqwestRefreshTransport, default_in_memory_coordinator,
+    default_in_memory_coordinator,
 };
 use nebula_storage::credential::{
     AuditLayer, AuditSink, CacheConfig, CacheLayer, EncryptionLayer, KeyProvider,

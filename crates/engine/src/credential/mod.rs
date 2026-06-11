@@ -10,11 +10,8 @@
 //! remains here because it constructs `InMemoryRefreshClaimRepo` from
 //! `nebula-storage`, which may not be linked by credential consumers.
 
-pub mod reqwest_transport;
 #[cfg(feature = "rotation")]
 pub mod rotation;
-
-pub use reqwest_transport::ReqwestRefreshTransport;
 
 // `dispatchers` / `executor` / `scoped_accessor` / `lease` / `refresh` /
 // `resolver` were relocated to `nebula_credential::runtime` (ADR-0092);

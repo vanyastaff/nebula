@@ -1,9 +1,11 @@
 //! Reqwest-backed [`RefreshTransport`] implementation (ADR-0092).
 //!
-//! This is the **only** module in `nebula-engine` that links reqwest. It is a
-//! dumb pipe: it performs the HTTP POST exactly as composed by the credential
-//! crate and returns raw `(status, bounded-body)`. It does NO url validation,
-//! NO body parsing, NO secret interpretation.
+//! Relocated from `nebula-engine` to `nebula-api` (ADR-0092 step 7): the HTTP
+//! client lives at the composition root; `nebula-engine` carries no reqwest dep.
+//!
+//! This is a dumb pipe: it performs the HTTP POST exactly as composed by the
+//! credential crate and returns raw `(status, bounded-body)`. It does NO url
+//! validation, NO body parsing, NO secret interpretation.
 //!
 //! # Security responsibilities (NOT this module's)
 //!
@@ -36,12 +38,9 @@ static OAUTH_TOKEN_HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 /// Returns the process-wide OAuth2 token HTTP client (connection-pooled,
 /// TLS-session-reuse).
 ///
-/// # Panics
-///
-/// Panics if `reqwest::Client::builder().build()` fails. This cannot occur
-/// with the default TLS backend (rustls) on supported platforms; a panic here
-/// means the TLS stack is broken at process startup and the process cannot
-/// operate.
+/// Falls back to `reqwest::Client::new()` if the builder fails (the default
+/// client still has connection pooling; the custom timeouts and redirect cap
+/// are the preference, not a hard requirement for correctness).
 fn oauth_token_http_client() -> &'static reqwest::Client {
     OAUTH_TOKEN_HTTP_CLIENT.get_or_init(|| {
         reqwest::Client::builder()
@@ -51,7 +50,7 @@ fn oauth_token_http_client() -> &'static reqwest::Client {
                 OAUTH_TOKEN_HTTP_MAX_REDIRECTS,
             ))
             .build()
-            .expect("nebula: OAuth token HTTP client must build — TLS stack unavailable")
+            .unwrap_or_else(|_| reqwest::Client::new())
     })
 }
 

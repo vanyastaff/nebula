@@ -61,12 +61,6 @@ parking_lot = { workspace = true }
 scopeguard = "1"
 regex = { workspace = true }
 url = { workspace = true }
-reqwest = { workspace = true, default-features = false, features = [
-  "json",
-  "rustls",
-  "form",
-  "stream",
-] }
 futures = { workspace = true }
 zeroize = { version = "1.8.2", features = ["zeroize_derive"] }
 

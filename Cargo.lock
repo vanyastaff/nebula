@@ -3525,7 +3525,6 @@ dependencies = [
  "proptest",
  "rand 0.10.1",
  "regex",
- "reqwest 0.13.4",
  "rstest",
  "scopeguard",
  "semver",
