@@ -1,21 +1,21 @@
-//! Engine-owned credential rotation schedulers.
+//! Credential rotation schedulers.
 //!
-//! These schedulers operate on credential rotation policies while keeping the
-//! orchestration runtime in `nebula-engine` (exec layer). Contract/state types
-//! remain in `nebula-credential`.
+//! These schedulers operate on credential rotation policies. Contract/state types
+//! remain in `crate::rotation` (the credential data-type module).
 
 use std::{future::Future, time::Duration};
 
 use chrono::{DateTime, Utc};
-use nebula_credential::{
+use tokio::time::{Instant, sleep_until};
+use tokio_util::sync::CancellationToken;
+
+use crate::{
     CredentialId,
     rotation::{
         RotationResult,
         policy::{BeforeExpiryConfig, PeriodicConfig, ScheduledConfig},
     },
 };
-use tokio::time::{Instant, sleep_until};
-use tokio_util::sync::CancellationToken;
 
 /// Periodic scheduler with optional jitter to avoid herd rotations.
 pub struct PeriodicScheduler {

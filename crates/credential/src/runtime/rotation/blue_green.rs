@@ -10,11 +10,12 @@
 use std::future::Future;
 
 use chrono::{DateTime, Utc};
-use nebula_credential::{
+use serde::{Deserialize, Serialize};
+
+use crate::{
     CredentialId,
     rotation::error::{RotationError, RotationResult},
 };
-use serde::{Deserialize, Serialize};
 
 /// Blue-Green rotation state
 ///
@@ -70,7 +71,7 @@ impl BlueGreenState {
 /// # Example
 ///
 /// ```rust,ignore
-/// use nebula_engine::credential::rotation::blue_green::{BlueGreenRotation, BlueGreenState};
+/// use nebula_credential::runtime::rotation::blue_green::{BlueGreenRotation, BlueGreenState};
 ///
 /// let rotation = BlueGreenRotation::new(
 ///     blue_id.clone(),

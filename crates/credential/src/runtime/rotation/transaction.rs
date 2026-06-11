@@ -4,8 +4,8 @@
 
 use chrono::{DateTime, Utc};
 // Re-export domain IDs from credential contract
-pub use nebula_credential::rotation::ids::{BackupId, RotationId};
-use nebula_credential::{
+pub use crate::rotation::ids::{BackupId, RotationId};
+use crate::{
     CredentialId,
     rotation::{
         error::{RotationError, RotationResult},
@@ -573,10 +573,9 @@ impl RotationTransaction {
 
     /// Mark rotation as committed.
     ///
-    /// **Revoke-on-rotate hook .** Composition roots
-    /// that wire a [`LeaseLifecycle`](crate::credential::LeaseLifecycle)
-    /// SHOULD call
-    /// [`LeaseLifecycle::revoke_for_credential(self.credential_id)`](crate::credential::LeaseLifecycle::revoke_for_credential)
+    /// **Revoke-on-rotate hook.** Composition roots that wire a
+    /// `LeaseLifecycle` (see `crate::runtime::lease::LeaseLifecycle`)
+    /// SHOULD call `LeaseLifecycle::revoke_for_credential(self.credential_id)`
     /// after this transition succeeds, so any upstream lease attributed
     /// to the rotated credential is torn down. Revoke failures are
     /// best-effort — they do NOT roll the rotation back.

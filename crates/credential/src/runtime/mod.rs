@@ -9,6 +9,8 @@ pub mod dispatchers;
 pub mod executor;
 pub mod lease;
 pub mod refresh;
+#[cfg(feature = "rotation")]
+pub mod rotation;
 pub mod scoped_accessor;
 
 pub use dispatchers::{dispatch_release, dispatch_revoke, dispatch_test};

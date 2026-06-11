@@ -5,8 +5,9 @@
 use std::{collections::HashMap, time::Duration};
 
 use chrono::{DateTime, Utc};
-use nebula_credential::CredentialId;
 use serde::{Deserialize, Serialize};
+
+use crate::CredentialId;
 
 /// Grace period configuration
 ///
@@ -16,7 +17,7 @@ use serde::{Deserialize, Serialize};
 /// # Example
 ///
 /// ```rust,ignore
-/// use nebula_engine::credential::rotation::grace_period::GracePeriodConfig;
+/// use nebula_credential::runtime::rotation::grace_period::GracePeriodConfig;
 /// use std::time::Duration;
 ///
 /// let config = GracePeriodConfig {
