@@ -1,7 +1,8 @@
 //! Composition-root factory for the production [`CredentialService`] facade.
 //!
 //! Built here in `nebula-api` — which already depends on
-//! `nebula-credential-runtime`, `nebula-storage` (with the
+//! `nebula-credential` (the `CredentialService` facade + the api-layer
+//! credential builder), `nebula-storage` (with the
 //! `credential-in-memory` adapter), `nebula-engine`, and `tokio-util` — so
 //! `apps/server` constructs a real service through a single typed call and
 //! stays free of any credential dependency, mirroring
@@ -23,12 +24,14 @@ use std::sync::Arc;
 use nebula_credential::{
     ApiKeyCredential, BasicAuthCredential, CredentialStore, ErasedPendingStore, OAuth2Credential,
 };
-use nebula_credential_runtime::{
-    CredentialService, CredentialServiceBuilder, CredentialServiceError, DispatchError,
-    DispatchOps, NoopObserver, register_interactive_ops, register_refreshable_ops,
-    register_revocable_ops, register_runtime_ops, register_testable_ops,
+use nebula_credential::{
+    CredentialService, CredentialServiceError, DispatchError, DispatchOps, NoopObserver,
+    register_interactive_ops, register_refreshable_ops, register_revocable_ops,
+    register_runtime_ops, register_testable_ops,
 };
 use nebula_engine::credential::LeaseLifecycleConfig;
+
+use super::credential_builder::CredentialServiceBuilder;
 use nebula_storage::credential::{
     AuditEvent, AuditSink, CacheConfig, EnvKeyProvider, InMemoryPendingStore, KeyProvider,
     SqliteCredentialStore,

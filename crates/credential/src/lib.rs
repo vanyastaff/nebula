@@ -121,6 +121,10 @@ pub mod pending_store;
 /// resolution executor, capability dispatchers, scoped accessor (ADR-0092,
 /// relocated from `nebula-engine::credential`).
 pub mod runtime;
+/// `CredentialService` facade — the sole public entry to the credential
+/// management bounded context (ADR-0092, relocated from
+/// `nebula-credential-runtime`).
+pub mod service;
 /// Credential snapshot.
 pub mod snapshot;
 /// Credential store trait with layered composition.
@@ -251,6 +255,18 @@ pub use crate::{
     },
     record::CredentialRecord,
     snapshot::{CredentialSnapshot, SnapshotError},
+};
+
+// CredentialService facade (ADR-0092, relocated from nebula-credential-runtime).
+// The `CredentialServiceBuilder` is NOT re-exported here: it pulls in
+// `nebula-storage` + `nebula-engine` deps and lives at the api composition root.
+pub use service::{
+    Acquisition, CredentialHead, CredentialObserver, CredentialService, CredentialServiceError,
+    CredentialTypeInfo, DispatchError, DispatchOps, EventMetricObserver, FixedScopeResolver,
+    NoopObserver, RefreshReport, StateSource, TenantFingerprint, TenantScope, TestReport,
+    TypeCapabilities, ValidatedCredentialBinding, ValidatedCredentialBindingError,
+    register_all_builtin_ops, register_interactive_ops, register_refreshable_ops,
+    register_revocable_ops, register_runtime_ops, register_testable_ops,
 };
 
 // ── Prelude ───────────────────────────────────────────────────────────────────

@@ -1,6 +1,14 @@
 //! `CredentialServiceBuilder` — the only construction path for
 //! [`CredentialService`].
 //!
+//! Relocated to `nebula-api` (ADR-0092 step 6b): the builder is the
+//! credential composition root, so it legally pulls in `nebula-storage`
+//! (the layered store stack) and `nebula-engine` (the resolver + lease
+//! lifecycle), neither of which `nebula-credential` may depend on. The
+//! facade itself stays in `nebula-credential`; the only way to mint one is
+//! [`CredentialService::from_secure_parts`], which this builder's
+//! [`build`](CredentialServiceBuilder::build) is the sole caller of.
+//!
 //! Panel-refined shape (spec §5): every mandatory collaborator is a
 //! by-value argument to [`CredentialServiceBuilder::new`], so omitting
 //! one is a compile error; optional collaborators are chained setters;
@@ -14,7 +22,9 @@ use std::sync::Arc;
 
 use nebula_credential::store::CredentialStore;
 use nebula_credential::{
-    Capabilities, CredentialRegistry, DynCredentialStore, ErasedCredentialStore, ErasedPendingStore,
+    Capabilities, CredentialObserver, CredentialRegistry, CredentialService,
+    CredentialServiceError, DispatchOps, DynCredentialStore, ErasedCredentialStore,
+    ErasedPendingStore, StateSource,
 };
 use nebula_engine::credential::{
     CredentialResolver, LeaseLifecycle, LeaseLifecycleConfig, RefreshCoordinator,
@@ -25,11 +35,17 @@ use nebula_storage::credential::{
 };
 use tokio_util::sync::CancellationToken;
 
-use crate::error::CredentialServiceError;
-use crate::observer::CredentialObserver;
-use crate::ops::DispatchOps;
-use crate::service::CredentialService;
-use crate::state_source::StateSource;
+/// Layered store stack composed once at [`CredentialServiceBuilder::build`]:
+/// `Audit(Cache(Encryption(raw)))`. `Encryption` is adjacent to the raw
+/// backend so persisted bytes are always ciphertext (spec §6 #7); the
+/// cache+encryption core is erased once ([`ErasedCredentialStore`]) so the
+/// facade can hold a second, **un-audited** scan handle over the same
+/// cache for `list`'s owner filter.
+///
+/// `pub` so composition roots can name the concrete type without spelling
+/// out the layer wrappers. The builder's `build()` is still the only
+/// construction path — this is a type alias, not a constructor.
+pub type LayeredStore = AuditLayer<ErasedCredentialStore>;
 
 /// Builder for [`CredentialService`]. Construct via [`Self::new`] (all
 /// mandatory collaborators), chain optional setters, then [`build`].
@@ -53,6 +69,9 @@ pub struct CredentialServiceBuilder<B: CredentialStore + 'static> {
 impl<B: CredentialStore + 'static> CredentialServiceBuilder<B> {
     /// Provide every mandatory collaborator. Omitting any is a compile
     /// error (the secure-construction guarantee, no runtime check).
+    // guard-justified: the ten mandatory collaborators are the secure-construction
+    // contract; bundling them into a params struct just moves the arity to that
+    // struct's single literal at the call site.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         raw_store: B,
@@ -96,10 +115,10 @@ impl<B: CredentialStore + 'static> CredentialServiceBuilder<B> {
     /// **Not yet wired.** This records the provider on the service, but
     /// the resolution path that routes through an external chain is the
     /// external provider bridge external-source bridge, which is out of this
-    /// crate's current scope (see  / the credential-runtime
-    /// subsystem spec §8). Until that lands, a service built with an
-    /// external source rejects every secret-resolving call
-    /// (`create` / `resolve` / `continue_resolve`) with
+    /// crate's current scope (see the credential-runtime subsystem spec §8).
+    /// Until that lands, a service built with an external source rejects
+    /// every secret-resolving call (`create` / `resolve` /
+    /// `continue_resolve`) with
     /// [`CredentialServiceError::ExternalSourceNotWired`]
     /// rather than silently resolving from the local store (which would
     /// hand back material from the wrong source). The default
@@ -184,7 +203,7 @@ impl<B: CredentialStore + 'static> CredentialServiceBuilder<B> {
             self.observer.metrics(),
             self.shutdown,
         );
-        Ok(CredentialService::__from_parts(
+        Ok(CredentialService::from_secure_parts(
             store,
             scan_store,
             resolver,

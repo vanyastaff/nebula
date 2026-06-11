@@ -6,22 +6,20 @@
 //! validated handles, closing the confused-deputy non-goal left open
 //! by the ADR-0052 cascade.
 
-use crate::scope::TenantScope;
+use super::scope::TenantScope;
 
 /// Tenant-scope-checked credential binding.
 ///
 /// The only constructor is
-/// [`CredentialService::validate_credential_binding`](crate::service::CredentialService::validate_credential_binding);
+/// [`CredentialService::validate_credential_binding`](crate::CredentialService::validate_credential_binding);
 /// engine execution consumes this handle directly.
 ///
 /// Fields are private and the constructor is `pub(crate)`, so downstream
-/// code outside `nebula-credential-runtime` cannot forge a
+/// code outside `nebula-credential` cannot forge a
 /// `ValidatedCredentialBinding`.
 #[derive(Debug, Clone)]
 pub struct ValidatedCredentialBinding {
     credential_id: String,
-    // guard-justified: reserved for resolve_for_slot (Task 14); not yet read outside fingerprint()
-    #[allow(dead_code)]
     tenant_fingerprint: TenantFingerprint,
 }
 
@@ -36,6 +34,8 @@ pub struct TenantFingerprint(pub(crate) String);
 impl ValidatedCredentialBinding {
     /// Crate-private constructor — the only call site is
     /// [`CredentialService::validate_credential_binding`].
+    ///
+    /// [`CredentialService::validate_credential_binding`]: crate::CredentialService::validate_credential_binding
     pub(crate) fn new(credential_id: String, tenant_fingerprint: TenantFingerprint) -> Self {
         Self {
             credential_id,
@@ -51,9 +51,7 @@ impl ValidatedCredentialBinding {
 
     /// Crate-private access to the scope fingerprint. Consumed by the
     /// engine execution path that re-validates the binding before
-    /// dispatching secrets (`resolve_for_slot`, next task).
-    // guard-justified: reserved for resolve_for_slot (Task 14); not yet called
-    #[allow(dead_code)]
+    /// dispatching secrets (`resolve_for_slot`).
     #[must_use]
     pub(crate) fn fingerprint(&self) -> &TenantFingerprint {
         &self.tenant_fingerprint
@@ -104,5 +102,5 @@ pub enum ValidatedCredentialBindingError {
 
     /// An underlying store or service error occurred during validation.
     #[error("credential binding validator i/o: {0}")]
-    Io(#[from] crate::CredentialServiceError),
+    Io(#[from] super::error::CredentialServiceError),
 }

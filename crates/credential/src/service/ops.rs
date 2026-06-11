@@ -2,10 +2,10 @@
 //! `Credential::KEY`, parameterised by the pending store `PS`.
 //!
 //! Capability is read from the
-//! [`CredentialRegistry`](nebula_credential::CredentialRegistry) bitflag
+//! [`CredentialRegistry`](crate::CredentialRegistry) bitflag
 //! (ADR-0088 D3); this table holds only the operation closures, which cannot
 //! live on the generic-free registry: `resolve` threads the `PS` pending store
-//! through [`nebula_engine::credential::execute_resolve`], which is generic
+//! through [`crate::runtime::execute_resolve`], which is generic
 //! over `PS`. A runtime string key selects a boxed closure that captures a
 //! concrete `C`, so `Credential::resolve` / `Credential::project` run without
 //! reflection. Registration is fail-closed on a duplicate `KEY`.
@@ -15,25 +15,26 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use nebula_credential::pending_store::PendingStateStore;
-use nebula_credential::resolve::{InteractionRequest, TestResult, UserInput};
-use nebula_credential::{
-    Capabilities, Credential, CredentialContext, CredentialState, Interactive, PendingToken,
-    Refreshable, Revocable, Testable,
-};
-use nebula_engine::credential::{
-    ResolveResponse, dispatch_revoke, dispatch_test, execute_continue, execute_resolve,
-};
 use nebula_schema::FieldValues;
 use zeroize::Zeroizing;
 
-use crate::error::CredentialServiceError;
+use crate::pending_store::PendingStateStore;
+use crate::resolve::{InteractionRequest, TestResult, UserInput};
+use crate::runtime::{
+    ResolveResponse, dispatch_revoke, dispatch_test, execute_continue, execute_resolve,
+};
+use crate::{
+    Capabilities, Credential, CredentialContext, CredentialState, Interactive, PendingToken,
+    Refreshable, Revocable, Testable,
+};
+
+use super::error::CredentialServiceError;
 
 /// Registration-time failure for the operation-dispatch table
 /// ([`DispatchOps`]). Relocated here when the parallel `CredentialDispatch`
 /// capability-flag table was removed (ADR-0088 D3): the ops table owns its own
 /// registration errors, and capability is read from the
-/// [`CredentialRegistry`](nebula_credential::CredentialRegistry) bitflag.
+/// [`CredentialRegistry`](crate::CredentialRegistry) bitflag.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum DispatchError {
@@ -151,7 +152,7 @@ type TestFn = Arc<dyn for<'a> Fn(&'a [u8], &'a CredentialContext) -> TestFuture<
 /// Re-writing the un-mutated local copy on the coalesced path either
 /// spuriously `VersionConflict`s or clobbers the fresher state another
 /// replica just wrote (concurrent-refresh contract): the upstream
-/// [`RefreshOutcome::CoalescedByOtherReplica`](nebula_credential::RefreshOutcome)
+/// [`RefreshOutcome::CoalescedByOtherReplica`](crate::RefreshOutcome)
 /// contract says the caller must re-read, not re-write.
 pub(crate) enum RefreshOutcomeKind {
     /// This caller refreshed; the service CAS-persists this freshly
@@ -224,7 +225,7 @@ struct OpsEntry<PS> {
 }
 
 /// Key → erased operation closures. Built alongside the
-/// [`CredentialRegistry`](nebula_credential::CredentialRegistry) and
+/// [`CredentialRegistry`](crate::CredentialRegistry) and
 /// `register_builtins` at the composition root.
 ///
 /// The closures capture the concrete credential type `C` and thread `PS`;
@@ -280,12 +281,12 @@ impl<PS: PendingStateStore> DispatchOps<PS> {
     /// `INTERACTIVE`); `DYNAMIC` is a lease-lifecycle concern with no ops
     /// closure and is never reported here. Empty set when `key` is absent.
     ///
-    /// Used by [`CredentialServiceBuilder::build`]
+    /// Used by the api-layer credential builder's `build()`
     /// to gate the registry's advertised capabilities against the closures
     /// actually registered, so discovery cannot advertise a capability that
     /// would fail at first call.
     #[must_use]
-    pub(crate) fn capabilities_of(&self, key: &str) -> Capabilities {
+    pub fn capabilities_of(&self, key: &str) -> Capabilities {
         let Some(entry) = self.entries.get(key) else {
             return Capabilities::empty();
         };
@@ -498,7 +499,7 @@ impl<PS: PendingStateStore> DispatchOps<PS> {
 /// captured here once per type — there is no reflection at the call site.
 ///
 /// `C::Scheme: Clone` is required by
-/// [`CredentialSnapshot::new`](nebula_credential::CredentialSnapshot::new);
+/// [`CredentialSnapshot::new`](crate::CredentialSnapshot::new);
 /// every first-party scheme satisfies it.
 ///
 /// # Errors
@@ -693,10 +694,10 @@ where
 /// Transient kinds (`RefreshFailed(TransientNetwork | ProviderUnavailable)`
 /// and `Provider(Network | RateLimit | ServerError)`) → `TransientProvider`.
 /// All other failures → `Provider` (terminal / non-retryable).
-fn classify_refresh_error(e: nebula_credential::CredentialError) -> CredentialServiceError {
-    use nebula_credential::error::{ProviderErrorKind, RefreshErrorKind};
+fn classify_refresh_error(e: crate::CredentialError) -> CredentialServiceError {
+    use crate::error::{ProviderErrorKind, RefreshErrorKind};
     match &e {
-        nebula_credential::CredentialError::RefreshFailed(ctx) => match ctx.kind() {
+        crate::CredentialError::RefreshFailed(ctx) => match ctx.kind() {
             RefreshErrorKind::TransientNetwork | RefreshErrorKind::ProviderUnavailable => {
                 CredentialServiceError::TransientProvider(format!(
                     "credential refresh failed transiently: {e}"
@@ -704,7 +705,7 @@ fn classify_refresh_error(e: nebula_credential::CredentialError) -> CredentialSe
             },
             _ => CredentialServiceError::Provider(format!("credential refresh failed: {e}")),
         },
-        nebula_credential::CredentialError::Provider(ctx) => match ctx.kind() {
+        crate::CredentialError::Provider(ctx) => match ctx.kind() {
             ProviderErrorKind::Network
             | ProviderErrorKind::RateLimit
             | ProviderErrorKind::ServerError => CredentialServiceError::TransientProvider(format!(
@@ -749,7 +750,7 @@ where
                 .await
                 .map_err(classify_refresh_error)?;
             match outcome {
-                nebula_credential::RefreshOutcome::Refreshed => {
+                crate::RefreshOutcome::Refreshed => {
                     // Read the expiry off the *refreshed* state — a token
                     // rotation typically sets a new TTL. Persisting the
                     // pre-refresh `expires_at` would leave a freshly
@@ -770,21 +771,18 @@ where
                 // fresher state the other replica just persisted (the
                 // concurrent-refresh contract bug). Signal the service to skip the write
                 // and re-read instead.
-                nebula_credential::RefreshOutcome::CoalescedByOtherReplica => {
+                crate::RefreshOutcome::CoalescedByOtherReplica => {
                     Ok(RefreshOutcomeKind::CoalescedReRead)
                 },
-                nebula_credential::RefreshOutcome::ReauthRequired(reason) => {
+                crate::RefreshOutcome::ReauthRequired(reason) => {
                     Err(CredentialServiceError::Provider(format!(
                         "credential refresh requires re-authentication: {reason:?}"
                     )))
                 },
-                // `RefreshOutcome` is `#[non_exhaustive]`; an unknown
-                // future outcome is not provably a success — fail closed
-                // rather than overwrite stored state on an unrecognized
-                // result.
-                other => Err(CredentialServiceError::Provider(format!(
-                    "credential refresh returned an unrecognized outcome: {other:?}"
-                ))),
+                // `RefreshOutcome` is exhaustively matched here (this crate
+                // defines it). Adding a variant is a compile error at this
+                // match, forcing a deliberate fail-closed decision rather
+                // than silently overwriting stored state.
             }
         }) as RefreshFuture<'_>
     });
@@ -894,97 +892,8 @@ pub fn register_all_builtin_ops<PS>(ops: &mut DispatchOps<PS>) -> Result<(), Dis
 where
     PS: PendingStateStore,
 {
-    register_runtime_ops::<nebula_credential::BearerTokenCredential, PS>(ops)?;
-    register_runtime_ops::<nebula_credential::SharedKeyCredential, PS>(ops)?;
-    register_runtime_ops::<nebula_credential::SigningKeyCredential, PS>(ops)?;
+    register_runtime_ops::<crate::BearerTokenCredential, PS>(ops)?;
+    register_runtime_ops::<crate::SharedKeyCredential, PS>(ops)?;
+    register_runtime_ops::<crate::SigningKeyCredential, PS>(ops)?;
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{DispatchOps, register_refreshable_ops, register_runtime_ops};
-    use crate::test_fixtures::RefreshableFixtureCredential;
-    use nebula_credential::BearerTokenCredential;
-    use nebula_credential::{Capabilities, Credential, CredentialContext};
-    use nebula_schema::FieldValues;
-    use nebula_storage::credential::InMemoryPendingStore;
-
-    type Ops = DispatchOps<InMemoryPendingStore>;
-
-    #[test]
-    fn capabilities_of_reflects_registered_closures() {
-        let mut ops = Ops::new();
-        register_runtime_ops::<RefreshableFixtureCredential, InMemoryPendingStore>(&mut ops)
-            .expect("base ops");
-        let key = <RefreshableFixtureCredential as Credential>::KEY;
-        // Base ops only: no capability closure registered yet.
-        assert_eq!(ops.capabilities_of(key), Capabilities::empty());
-        register_refreshable_ops::<RefreshableFixtureCredential, InMemoryPendingStore>(&mut ops)
-            .expect("refreshable ops");
-        // The refresh closure is present now, and only that flag is set.
-        assert_eq!(ops.capabilities_of(key), Capabilities::REFRESHABLE);
-        // An unregistered key reports the empty set.
-        assert_eq!(ops.capabilities_of("does_not_exist"), Capabilities::empty());
-    }
-
-    #[test]
-    fn register_and_lookup() {
-        let mut ops = Ops::new();
-        register_runtime_ops::<BearerTokenCredential, InMemoryPendingStore>(&mut ops)
-            .expect("register ok");
-        assert!(ops.contains("bearer_token"));
-        assert_eq!(ops.len(), 1);
-    }
-
-    #[test]
-    fn duplicate_key_is_rejected() {
-        let mut ops = Ops::new();
-        register_runtime_ops::<BearerTokenCredential, InMemoryPendingStore>(&mut ops)
-            .expect("first ok");
-        let err = register_runtime_ops::<BearerTokenCredential, InMemoryPendingStore>(&mut ops)
-            .expect_err("second rejected");
-        assert!(matches!(
-            err,
-            crate::ops::DispatchError::DuplicateKey { .. }
-        ));
-        assert_eq!(ops.len(), 1);
-    }
-
-    #[tokio::test]
-    async fn resolve_produces_persistable_state() {
-        let mut ops = Ops::new();
-        register_runtime_ops::<BearerTokenCredential, InMemoryPendingStore>(&mut ops)
-            .expect("register ok");
-
-        let mut values = FieldValues::new();
-        values
-            .try_set_raw("token", serde_json::Value::String("sk-roundtrip".into()))
-            .expect("known-good key");
-        let ctx = CredentialContext::for_test("owner");
-        let pending = InMemoryPendingStore::new();
-
-        let resolved = ops
-            .resolve("bearer_token", &values, &ctx, &pending)
-            .await
-            .expect("resolve ok");
-        assert_eq!(resolved.state_kind, "secret_token");
-        // The serialized state bytes are valid self-describing JSON — the
-        // refresh/test/revoke closures deserialize exactly these bytes.
-        assert!(serde_json::from_slice::<serde_json::Value>(&resolved.data).is_ok());
-    }
-
-    #[tokio::test]
-    async fn resolve_unknown_key_is_type_unknown() {
-        let ops = Ops::new();
-        let values = FieldValues::new();
-        let ctx = CredentialContext::for_test("owner");
-        let pending = InMemoryPendingStore::new();
-        // `ResolvedState` is deliberately not `Debug` (it carries
-        // plaintext secret bytes), so match the `Result` directly
-        // rather than using `expect_err` (which needs `T: Debug`).
-        match ops.resolve("nope", &values, &ctx, &pending).await {
-            Err(crate::error::CredentialServiceError::TypeUnknown { .. }) => {},
-            other => panic!("expected TypeUnknown, got {:?}", other.err()),
-        }
-    }
 }

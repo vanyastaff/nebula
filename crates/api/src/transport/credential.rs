@@ -51,10 +51,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use nebula_credential::resolve::{InteractionRequest, UserInput};
-use nebula_credential::{CredentialDisplay, ErasedCredentialStore, ScopeResolver};
-use nebula_credential_runtime::{
+use nebula_credential::{
     Acquisition, CredentialHead, CredentialService, CredentialServiceError, TenantScope,
 };
+use nebula_credential::{CredentialDisplay, ErasedCredentialStore, ScopeResolver};
 use nebula_storage_port::Scope;
 use nebula_tenancy::CredentialScopeLayer;
 

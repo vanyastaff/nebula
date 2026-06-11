@@ -40,11 +40,6 @@ nebula-credential = { path = "../credential" }
 # amendments).
 nebula-schema = { path = "../schema", features = ["schemars"] }
 nebula-eventbus = { path = "../eventbus" }
-# Task 17: CredentialService facade replaces CredentialScopeLayer for credential
-# CRUD — the service owns the encryption+audit+cache stack; the api layer
-# holds it via `credential_store_handle()` (an `Arc<dyn DynCredentialStore>`).
-# Exec-tier dep; allowlisted in the deny.toml [bans].deny `wrappers` list for nebula-api.
-nebula-credential-runtime = { path = "../credential-runtime" }
 
 opentelemetry = { workspace = true }
 opentelemetry-otlp = { workspace = true }

@@ -7,10 +7,9 @@
 //! pending port additionally generic per call), so the erasure is the
 //! hand-rolled boxed-future bridge in `nebula_credential::erased`. All
 //! invariant-bearing composition is crate-private: the only constructor
-//! path is
-//! [`CredentialServiceBuilder`](crate::builder::CredentialServiceBuilder),
-//! whose `build()` wraps the raw backend in the layered store so an
-//! unencrypted/mis-composed service is unrepresentable.
+//! path is the api-layer credential builder, whose `build()` wraps the raw
+//! backend in the layered store so an unencrypted/mis-composed service is
+//! unrepresentable.
 //!
 //! ## Tenant isolation
 //!
@@ -31,29 +30,29 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use nebula_credential::resolve::{InteractionRequest, TestResult, UserInput};
-use nebula_credential::store::{PutMode, StoreError, StoredCredential};
-use nebula_credential::{
-    AuthPattern, Credential, CredentialContext, CredentialDisplay, CredentialGuard, CredentialId,
-    CredentialRegistry, DynCredentialStore, ErasedCredentialStore, ErasedPendingStore,
-    PendingToken,
-};
-use nebula_engine::credential::{CredentialResolver, LeaseLifecycle};
 use nebula_resilience::CallError;
 use nebula_resilience::retry::{BackoffConfig, RetryConfig, retry_with};
 use nebula_schema::FieldValues;
-use nebula_storage::credential::AuditLayer;
 use serde::Serialize;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 use zeroize::Zeroize;
 
-use crate::CredentialServiceError;
-use crate::head::CredentialHead;
-use crate::observer::CredentialObserver;
-use crate::ops::DispatchOps;
-use crate::scope::TenantScope;
-use crate::state_source::StateSource;
+use crate::resolve::{InteractionRequest, TestResult, UserInput};
+use crate::runtime::{CredentialResolver, LeaseLifecycle};
+use crate::store::{PutMode, StoreError, StoredCredential};
+use crate::{
+    AuthPattern, Credential, CredentialContext, CredentialDisplay, CredentialGuard, CredentialId,
+    CredentialRegistry, DynCredentialStore, ErasedCredentialStore, ErasedPendingStore,
+    PendingToken,
+};
+
+use super::error::CredentialServiceError;
+use super::head::CredentialHead;
+use super::observer::CredentialObserver;
+use super::ops::DispatchOps;
+use super::scope::TenantScope;
+use super::state_source::StateSource;
 
 /// Metadata key the facade stamps with the owning tenant. Read on every
 /// `get`/`list`/`update`/`delete` to enforce tenant isolation.
@@ -64,20 +63,6 @@ const OWNER_ID_KEY: &str = "owner_id";
 /// writes it, so the multi-writer shape conflict that affected the api's old
 /// top-level metadata layout cannot recur.
 const DISPLAY_KEY: &str = "display";
-
-/// Layered store stack composed once at `CredentialServiceBuilder::build`:
-/// `Audit(Cache(Encryption(raw)))`. `Encryption` is adjacent to the raw
-/// backend so persisted bytes are always ciphertext (spec §6 #7); the
-/// cache+encryption core is erased once ([`ErasedCredentialStore`]) so the
-/// facade can hold a second, **un-audited** scan handle over the same
-/// cache for `list`'s owner filter (enumerating foreign rows to discard
-/// them is not an access and must not mint audit `Get` events).
-///
-/// `pub` so composition roots (the api layer, server binary) can name the
-/// concrete type without spelling out the layer wrappers. The builder's
-/// `build()` is still the only construction path — this is a type alias,
-/// not a constructor.
-pub type LayeredStore = AuditLayer<ErasedCredentialStore>;
 
 /// Outcome of [`CredentialService::test`] — a secret-free health-probe
 /// summary. `message` carries only the provider's failure reason (never
@@ -154,7 +139,7 @@ pub struct TypeCapabilities {
 /// UIs / pickers. Projected from [`CredentialMetadata`] + the
 /// [`CredentialRegistry`] capability bitflag.
 ///
-/// [`CredentialMetadata`]: nebula_credential::CredentialMetadata
+/// [`CredentialMetadata`]: crate::CredentialMetadata
 #[derive(Debug, Clone, Serialize)]
 pub struct CredentialTypeInfo {
     /// `Credential::KEY` (normalized type key).
@@ -171,8 +156,7 @@ pub struct CredentialTypeInfo {
 
 /// Sole public entry to the credential management bounded context.
 ///
-/// Constructed only via
-/// [`CredentialServiceBuilder`](crate::builder::CredentialServiceBuilder).
+/// Constructed only via the api-layer credential builder.
 pub struct CredentialService {
     pub(crate) store: Arc<dyn DynCredentialStore>,
     /// Un-audited handle over the same cache+encryption core as `store`.
@@ -199,14 +183,16 @@ pub struct CredentialService {
 }
 
 impl CredentialService {
-    /// Crate-private assembly point — the builder's `build()` is the
-    /// only caller. Not `pub`: external code cannot bypass the layered
-    /// composition (compile-fail probe target, spec §6 #7).
-    // guard-justified: __from_parts mirrors the eight mandatory collaborators
+    /// Composition-root constructor — the only caller is `nebula-api`'s
+    /// credential builder. The layered store MUST already be the secure
+    /// `Audit(Cache(Encryption(raw)))` stack; assemble it via the api
+    /// builder, never by hand. Bypassing the builder forfeits the
+    /// encryption-at-rest guarantee.
+    // guard-justified: from_secure_parts mirrors the eight mandatory collaborators
     // the builder composes; bundling them into a struct would just move the
     // arity to that struct's literal at the single call site.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn __from_parts(
+    pub fn from_secure_parts(
         store: Arc<dyn DynCredentialStore>,
         scan_store: ErasedCredentialStore,
         resolver: CredentialResolver<ErasedCredentialStore>,
@@ -235,7 +221,7 @@ impl CredentialService {
     /// encrypted store without going through type dispatch.
     ///
     /// The api layer uses this to replace
-    /// `nebula_tenancy::CredentialScopeLayer<InMemoryStore>` with the
+    /// the tenancy `CredentialScopeLayer<InMemoryStore>` with the
     /// service's encryption + audit + cache stack while still managing
     /// api-level metadata (`name` / `description` / `tags`) directly in
     /// [`StoredCredential::metadata`]. The concrete layer stack is erased
@@ -247,7 +233,7 @@ impl CredentialService {
     /// Guard the resolution path against a configured-but-unwired
     /// external [`StateSource`].
     ///
-    /// [`external_providers`](crate::CredentialServiceBuilder::external_providers)
+    /// The api-layer credential builder's `external_providers`
     /// records an [`StateSource::External`] but the resolution wiring that
     /// would route through the provider chain is the external provider bridge
     /// bridge, not yet implemented in this crate. Without this guard a
@@ -358,7 +344,7 @@ impl CredentialService {
         scope: &TenantScope,
         credential_key: &str,
         id: CredentialId,
-        resolved: crate::ops::ResolvedState,
+        resolved: super::ops::ResolvedState,
         display: CredentialDisplay,
     ) -> Result<CredentialHead, CredentialServiceError> {
         let mut metadata = serde_json::Map::new();
@@ -627,13 +613,9 @@ impl CredentialService {
                 ok: false,
                 message: Some(reason),
             },
-            // `TestResult` is `#[non_exhaustive]`; an unrecognized future
-            // variant is not provably a success — report not-ok so a new
-            // outcome never silently presents as a passing probe.
-            other => TestReport {
-                ok: false,
-                message: Some(format!("unrecognized test outcome: {other:?}")),
-            },
+            // `TestResult` is exhaustively matched here (this crate defines it).
+            // Adding a variant is a compile error at this arm, forcing a
+            // deliberate decision rather than silently presenting as a pass.
         };
         tracing::info!(credential.id = %id, ok = report.ok, "credential tested");
         Ok(report)
@@ -747,13 +729,13 @@ impl CredentialService {
         })?;
 
         let (refreshed, refreshed_expires_at) = match outcome {
-            crate::ops::RefreshOutcomeKind::Rewrote { data, expires_at } => (data, expires_at),
+            super::ops::RefreshOutcomeKind::Rewrote { data, expires_at } => (data, expires_at),
             // Another replica already refreshed and persisted fresher
             // state. Re-writing the un-mutated local copy here would
             // either spuriously `VersionConflict` or clobber that fresher
             // state (concurrent-refresh contract). Skip the write entirely and return the
             // store's current (post-coalesce) head.
-            crate::ops::RefreshOutcomeKind::CoalescedReRead => {
+            super::ops::RefreshOutcomeKind::CoalescedReRead => {
                 let credential_id = CredentialId::parse(&stored.id).map_err(|e| {
                     CredentialServiceError::Internal(format!(
                         "stored credential id unparsable: {e}"
@@ -1006,10 +988,10 @@ impl CredentialService {
         &self,
         scope: &TenantScope,
         credential_key: &str,
-        outcome: crate::ops::AcquireOutcome,
+        outcome: super::ops::AcquireOutcome,
     ) -> Result<Acquisition, CredentialServiceError> {
         match outcome {
-            crate::ops::AcquireOutcome::Complete(resolved) => {
+            super::ops::AcquireOutcome::Complete(resolved) => {
                 let id = CredentialId::new();
                 // Acquisition carries no caller-supplied display metadata
                 // (the interactive/resolve flow names nothing); a later
@@ -1031,7 +1013,7 @@ impl CredentialService {
                 );
                 Ok(Acquisition::Complete { head })
             },
-            crate::ops::AcquireOutcome::Pending { token, interaction } => {
+            super::ops::AcquireOutcome::Pending { token, interaction } => {
                 // The interaction can only be completed through
                 // `continue_resolve`, which the engine binds on
                 // `(kind, owner, session, token)`. Without a session on
@@ -1048,7 +1030,7 @@ impl CredentialService {
                     interaction,
                 })
             },
-            crate::ops::AcquireOutcome::Retry { after } => Ok(Acquisition::Retry { after }),
+            super::ops::AcquireOutcome::Retry { after } => Ok(Acquisition::Retry { after }),
         }
     }
 
@@ -1061,7 +1043,7 @@ impl CredentialService {
     #[must_use]
     pub fn list_types(&self) -> Vec<CredentialTypeInfo> {
         self.registry
-            .iter_compatible(nebula_credential::Capabilities::empty())
+            .iter_compatible(crate::Capabilities::empty())
             .filter_map(|(key, _caps)| self.type_info(key))
             .collect()
     }
@@ -1103,7 +1085,7 @@ impl CredentialService {
     ///
     /// This is the **only construction path** for
     /// `ValidatedCredentialBinding`. Its `pub(crate)` constructor is
-    /// unreachable from outside `nebula-credential-runtime`, so engine code
+    /// unreachable from outside `nebula-credential`, so engine code
     /// that consumes the handle has a structural proof that the scope-check
     /// already ran.
     ///
@@ -1131,14 +1113,17 @@ impl CredentialService {
         &self,
         scope: &TenantScope,
         id: &str,
-    ) -> Result<crate::ValidatedCredentialBinding, crate::ValidatedCredentialBindingError> {
+    ) -> Result<
+        super::binding::ValidatedCredentialBinding,
+        super::binding::ValidatedCredentialBindingError,
+    > {
         let stored = self
             .store_load_raw(id)
             .await
-            .map_err(crate::ValidatedCredentialBindingError::Io)?
-            .ok_or_else(|| crate::ValidatedCredentialBindingError::NotFound {
-                id: id.to_owned(),
-            })?;
+            .map_err(super::binding::ValidatedCredentialBindingError::Io)?
+            .ok_or_else(
+                || super::binding::ValidatedCredentialBindingError::NotFound { id: id.to_owned() },
+            )?;
 
         let owner = stored
             .metadata
@@ -1147,16 +1132,18 @@ impl CredentialService {
             .unwrap_or("");
 
         if owner != scope.owner_id() {
-            return Err(crate::ValidatedCredentialBindingError::ScopeMismatch {
-                id: id.to_owned(),
-                requested: scope.owner_id().to_owned(),
-                actual: owner.to_owned(),
-            });
+            return Err(
+                super::binding::ValidatedCredentialBindingError::ScopeMismatch {
+                    id: id.to_owned(),
+                    requested: scope.owner_id().to_owned(),
+                    actual: owner.to_owned(),
+                },
+            );
         }
 
-        Ok(crate::ValidatedCredentialBinding::new(
+        Ok(super::binding::ValidatedCredentialBinding::new(
             id.to_owned(),
-            crate::binding::TenantFingerprint::from_scope(scope),
+            super::binding::TenantFingerprint::from_scope(scope),
         ))
     }
 
@@ -1199,7 +1186,7 @@ impl CredentialService {
     pub async fn resolve_for_slot<C>(
         &self,
         scope: &TenantScope,
-        binding: &crate::ValidatedCredentialBinding,
+        binding: &super::binding::ValidatedCredentialBinding,
         cancel: CancellationToken,
     ) -> Result<CredentialGuard<C::Scheme>, CredentialServiceError>
     where
@@ -1210,7 +1197,7 @@ impl CredentialService {
         //    `validate_credential_binding` enforced the scope at
         //    construction, re-verify here so mismatched bindings fail
         //    loudly at the consume site.
-        let expected_fp = crate::binding::TenantFingerprint::from_scope(scope);
+        let expected_fp = super::binding::TenantFingerprint::from_scope(scope);
         if binding.fingerprint() != &expected_fp {
             return Err(CredentialServiceError::ScopeViolation {
                 requested: scope.owner_id().to_string(),
@@ -1235,8 +1222,8 @@ impl CredentialService {
                         // — surface that as `CredentialServiceError::NotFound`
                         // so callers can branch on it. Other resolver errors
                         // collapse to `Internal` with the underlying message.
-                        use nebula_credential::store::StoreError;
-                        use nebula_engine::credential::ResolveError;
+                        use crate::runtime::ResolveError;
+                        use crate::store::StoreError;
                         match e {
                             ResolveError::Store(StoreError::NotFound { id }) => {
                                 CredentialServiceError::NotFound { id }
@@ -1405,719 +1392,6 @@ impl CredentialService {
                 CredentialServiceError::Store(format!("audit sink refused: {msg}"))
             },
             StoreError::Backend(e) => CredentialServiceError::Store(e.to_string()),
-            // `StoreError` is `#[non_exhaustive]`; a future variant maps
-            // to the generic store category until it earns a dedicated
-            // `CredentialServiceError` arm. Never embeds secret data
-            // (store errors carry ids/versions only).
-            other => CredentialServiceError::Store(other.to_string()),
         }
-    }
-}
-
-#[cfg(any(test, feature = "test-util"))]
-pub mod test_support {
-    //! In-memory `CredentialService` wiring for unit tests, the
-    //! adversarial integration suite, and Plan-3 consumers. One call
-    //! assembles a `StaticKeyProvider`, an `InMemoryStore`, an
-    //! `InMemoryPendingStore`, an `AuditSink` (no-op by default), the
-    //! three first-party builtins registered into the registry + ops
-    //! tables, and a `NoopObserver`.
-    //!
-    //! # test-util gating
-    //!
-    //! This module is gated `cfg(any(test, feature = "test-util"))`. The
-    //! `test-util` feature MUST NOT be enabled in a release/production
-    //! build: it forwards the storage in-memory test backends and wires
-    //! a `StaticKeyProvider` (fixed key) over a non-durable
-    //! `InMemoryStore`. `unwrap`/`expect` below is acceptable —
-    //! `test_support` is test-support code, never a release path.
-
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    use nebula_core::accessor::MetricsEmitter;
-    use nebula_credential::provider::LeaseEvent;
-    use nebula_credential::register_builtins;
-    use nebula_credential::store::StoreError;
-    use nebula_credential::{
-        CredentialEvent, CredentialId, CredentialRegistry, ErasedPendingStore,
-    };
-    use nebula_crypto::EncryptionKey;
-    use nebula_engine::credential::LeaseLifecycleConfig;
-    use nebula_eventbus::EventBus;
-    use nebula_storage::credential::{
-        AuditEvent, AuditSink, CacheConfig, InMemoryPendingStore, SqliteCredentialStore,
-        StaticKeyProvider,
-    };
-    use tokio_util::sync::CancellationToken;
-
-    use super::CredentialService;
-    use crate::builder::CredentialServiceBuilder;
-    use crate::observer::{CredentialObserver, NoopObserver};
-    use crate::ops::{
-        DispatchOps, register_all_builtin_ops, register_refreshable_ops, register_runtime_ops,
-    };
-    use crate::test_fixtures::RefreshableFixtureCredential;
-
-    /// No-op audit sink — accepts every event (tests assert behavior via
-    /// the store, not the audit trail).
-    #[derive(Debug)]
-    struct NoopAuditSink;
-
-    impl AuditSink for NoopAuditSink {
-        fn record(&self, _event: &AuditEvent) -> Result<(), StoreError> {
-            Ok(())
-        }
-    }
-
-    /// Build an in-memory service with the three first-party builtins
-    /// wired through registry + ops, accepting an arbitrary
-    /// [`AuditSink`], **and** return a `Clone` of the raw
-    /// `SqliteCredentialStore` (a pooled handle over the same unique
-    /// in-memory SQLite database the service writes through).
-    ///
-    /// The raw handle is a structural read-back seam for the audit
-    /// fail-closed invariant (spec §6 #8): with a refusing sink every
-    /// store op through the layered stack also fails closed, so the row
-    /// cannot be observed through the facade — the raw handle bypasses
-    /// the poisoned `AuditLayer` to prove the write did not partially
-    /// land. The secure layered composition is unchanged; only the audit
-    /// sink varies and the inner store is observable for assertions.
-    pub async fn service_and_raw_store_with_audit_sink(
-        audit_sink: Arc<dyn AuditSink>,
-    ) -> (CredentialService, SqliteCredentialStore) {
-        let mut registry = CredentialRegistry::new();
-        register_builtins(&mut registry).expect("register_builtins");
-
-        // All three builtins are static (no capability impls), so only
-        // the base ops are registered — no `register_*_ops` capability
-        // call. Closure absence is "capability not supported".
-        let mut ops = DispatchOps::<ErasedPendingStore>::new();
-        register_all_builtin_ops::<ErasedPendingStore>(&mut ops).expect("builtin ops");
-
-        // `SqliteCredentialStore` is `Arc`-backed (the pool): the clone shares
-        // the same in-memory database the layered stack writes through.
-        let raw_store = match SqliteCredentialStore::connect_memory().await {
-            Ok(store) => store,
-            // guard-justified: a fresh uniquely-named in-memory SQLite database
-            // always opens; a failure here means the host cannot create one.
-            Err(err) => unreachable!("in-memory credential store opens: {err}"),
-        };
-        let key = Arc::new(EncryptionKey::from_bytes([0x42; 32]));
-        let svc = match CredentialServiceBuilder::new(
-            raw_store.clone(),
-            Arc::new(StaticKeyProvider::new(key)),
-            audit_sink,
-            CacheConfig::default(),
-            ErasedPendingStore::new(Arc::new(InMemoryPendingStore::new())),
-            Arc::new(registry),
-            Arc::new(ops),
-            Arc::new(NoopObserver::new()),
-            LeaseLifecycleConfig::default(),
-            CancellationToken::new(),
-        )
-        .build()
-        {
-            Ok(svc) => svc,
-            // guard-justified: this test fixture registers every advertised
-            // capability's ops, so the build-time capability gate never fires.
-            Err(err) => unreachable!("fixture service is well-formed: {err}"),
-        };
-        (svc, raw_store)
-    }
-
-    /// Build an in-memory service with an arbitrary [`AuditSink`],
-    /// discarding the raw-store handle. Convenience over
-    /// [`service_and_raw_store_with_audit_sink`] for tests that do not
-    /// need to inspect the inner store.
-    pub async fn service_with_audit_sink(audit_sink: Arc<dyn AuditSink>) -> CredentialService {
-        service_and_raw_store_with_audit_sink(audit_sink).await.0
-    }
-
-    /// Build an in-memory service with a no-op audit sink — the default
-    /// fixture for tests / Plan-3 wiring.
-    pub async fn in_memory_service() -> CredentialService {
-        service_with_audit_sink(Arc::new(NoopAuditSink)).await
-    }
-
-    /// Observer that counts `on_refresh` invocations so a test can prove
-    /// the facade fired the refresh hook on the success path. Event/lease
-    /// buses are inert (a real `CredentialResolver` still needs a bus, so
-    /// one is provided, but nothing subscribes).
-    #[derive(Debug, Default)]
-    struct CountingObserver {
-        refreshes: Arc<AtomicUsize>,
-    }
-
-    impl CredentialObserver for CountingObserver {
-        fn event_bus(&self) -> Arc<EventBus<CredentialEvent>> {
-            Arc::new(EventBus::new(1))
-        }
-        fn lease_bus(&self) -> Option<Arc<EventBus<LeaseEvent>>> {
-            None
-        }
-        fn metrics(&self) -> Option<Arc<dyn MetricsEmitter>> {
-            None
-        }
-        fn on_resolve(&self, _credential_id: &CredentialId) {}
-        fn on_refresh(&self, _credential_id: &CredentialId) {
-            self.refreshes.fetch_add(1, Ordering::SeqCst);
-        }
-        fn on_revoke(&self, _credential_id: &CredentialId) {}
-    }
-
-    /// Build an in-memory service with the three static builtins **plus**
-    /// the [`RefreshableFixtureCredential`] wired through registry + ops
-    /// (`register_runtime_ops` then `register_refreshable_ops`). Its
-    /// refreshable capability is read from the registry `Capabilities` bitflag
-    /// (`registry.is_refreshable`), computed from its `Refreshable` impl — no
-    /// parallel dispatch flag. Returns the service alongside an
-    /// `Arc<AtomicUsize>` that counts `on_refresh` calls, so a test can
-    /// prove the success path fired the observer hook.
-    ///
-    /// The static builtins cannot exercise any positive capability path
-    /// (refresh CAS + retry, the coalesced re-read branch, the concurrent-refresh
-    /// version-conflict branch); this fixture-enabled variant does.
-    pub async fn in_memory_service_with_fixtures() -> (CredentialService, Arc<AtomicUsize>) {
-        let mut registry = CredentialRegistry::new();
-        register_builtins(&mut registry).expect("register_builtins");
-        registry
-            .register(RefreshableFixtureCredential, "nebula-credential-runtime")
-            .expect("register fixture");
-
-        // Capability is read from the registry's computed `Capabilities`
-        // bitflag (ADR-0088 D3): `RefreshableFixtureCredential` impls
-        // `Refreshable`, so `registry.is_refreshable(key)` is true without a
-        // parallel dispatch flag.
-        let mut ops = DispatchOps::<ErasedPendingStore>::new();
-        register_all_builtin_ops::<ErasedPendingStore>(&mut ops).expect("builtin ops");
-        // Base ops first, then the refresh capability closure (the
-        // ordering `register_refreshable_ops` enforces via
-        // `DispatchError::BaseOpsMissing`).
-        register_runtime_ops::<RefreshableFixtureCredential, ErasedPendingStore>(&mut ops)
-            .expect("fixture base ops");
-        register_refreshable_ops::<RefreshableFixtureCredential, ErasedPendingStore>(&mut ops)
-            .expect("fixture refreshable ops");
-
-        let refreshes = Arc::new(AtomicUsize::new(0));
-        let observer = CountingObserver {
-            refreshes: Arc::clone(&refreshes),
-        };
-
-        let raw_store = match SqliteCredentialStore::connect_memory().await {
-            Ok(store) => store,
-            // guard-justified: a fresh uniquely-named in-memory SQLite database
-            // always opens; a failure here means the host cannot create one.
-            Err(err) => unreachable!("in-memory credential store opens: {err}"),
-        };
-        let key = Arc::new(EncryptionKey::from_bytes([0x42; 32]));
-        let svc = match CredentialServiceBuilder::new(
-            raw_store,
-            Arc::new(StaticKeyProvider::new(key)),
-            Arc::new(NoopAuditSink),
-            CacheConfig::default(),
-            ErasedPendingStore::new(Arc::new(InMemoryPendingStore::new())),
-            Arc::new(registry),
-            Arc::new(ops),
-            Arc::new(observer),
-            LeaseLifecycleConfig::default(),
-            CancellationToken::new(),
-        )
-        .build()
-        {
-            Ok(svc) => svc,
-            // guard-justified: this test fixture registers every advertised
-            // capability's ops, so the build-time capability gate never fires.
-            Err(err) => unreachable!("fixture service is well-formed: {err}"),
-        };
-        (svc, refreshes)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::Acquisition;
-    use super::test_support::in_memory_service;
-    use crate::CredentialServiceError;
-    use crate::scope::TenantScope;
-    use nebula_credential::CredentialDisplay;
-
-    #[tokio::test]
-    async fn create_then_get_roundtrip_is_tenant_scoped() {
-        let svc = in_memory_service().await;
-        let scope = TenantScope::new("org1", "ws1");
-        let head = svc
-            .create(
-                &scope,
-                "bearer_token",
-                serde_json::json!({ "token": "sk-secret-1" }),
-                CredentialDisplay::default(),
-            )
-            .await
-            .expect("create ok");
-        assert_eq!(head.credential_key, "bearer_token");
-
-        // The id round-trips: get with the same scope returns the row.
-        let heads = svc.list(&scope).await.expect("list ok");
-        assert_eq!(heads.len(), 1);
-        assert_eq!(heads[0].id, head.id);
-        let got = svc.get(&scope, &head.id).await.expect("get ok");
-        assert_eq!(got.credential_key, "bearer_token");
-        // The secret structurally cannot appear in the head's Debug.
-        assert!(!format!("{got:?}").contains("sk-secret-1"));
-    }
-
-    #[tokio::test]
-    async fn cross_tenant_get_returns_not_found() {
-        let svc = in_memory_service().await;
-        let owner = TenantScope::new("org1", "ws1");
-        svc.create(
-            &owner,
-            "bearer_token",
-            serde_json::json!({ "token": "sk-secret-2" }),
-            CredentialDisplay::default(),
-        )
-        .await
-        .expect("create ok");
-        let heads = svc.list(&owner).await.expect("list ok");
-        let id = &heads[0].id;
-
-        // A different tenant cannot see the credential at all.
-        let other = TenantScope::new("org1", "ws2");
-        let err = svc.get(&other, id).await.expect_err("must be denied");
-        assert!(matches!(err, CredentialServiceError::NotFound { .. }));
-        // And it is invisible to the other tenant's list.
-        assert!(svc.list(&other).await.expect("list ok").is_empty());
-    }
-
-    #[tokio::test]
-    async fn expr_injection_in_props_is_rejected() {
-        let svc = in_memory_service().await;
-        let scope = TenantScope::new("org1", "ws1");
-        let err = svc
-            .create(
-                &scope,
-                "bearer_token",
-                serde_json::json!({ "token": { "$expr": "{{ $execution.id }}" } }),
-                CredentialDisplay::default(),
-            )
-            .await
-            .expect_err("expr must be rejected");
-        assert!(matches!(
-            err,
-            CredentialServiceError::ValidationFailed { .. }
-        ));
-    }
-
-    #[tokio::test]
-    async fn create_unknown_type_is_type_unknown() {
-        let svc = in_memory_service().await;
-        let scope = TenantScope::new("org1", "ws1");
-        let err = svc
-            .create(
-                &scope,
-                "no_such_type",
-                serde_json::json!({}),
-                CredentialDisplay::default(),
-            )
-            .await
-            .expect_err("unknown type");
-        assert!(matches!(err, CredentialServiceError::TypeUnknown { .. }));
-    }
-
-    #[tokio::test]
-    async fn update_with_stale_version_is_version_conflict() {
-        let svc = in_memory_service().await;
-        let scope = TenantScope::new("org1", "ws1");
-        svc.create(
-            &scope,
-            "bearer_token",
-            serde_json::json!({ "token": "sk-v1" }),
-            CredentialDisplay::default(),
-        )
-        .await
-        .expect("create ok");
-        let id = svc.list(&scope).await.expect("list")[0].id.clone();
-
-        // Stored version after CreateOnly is 1; a stale expected_version
-        // of 99 must conflict.
-        let err = svc
-            .update(
-                &scope,
-                &id,
-                Some(serde_json::json!({ "token": "sk-v2" })),
-                Some(99),
-                CredentialDisplay::default(),
-            )
-            .await
-            .expect_err("stale version");
-        assert!(matches!(
-            err,
-            CredentialServiceError::VersionConflict { .. }
-        ));
-    }
-
-    #[tokio::test]
-    async fn update_then_get_reflects_new_state_and_delete_removes() {
-        let svc = in_memory_service().await;
-        let scope = TenantScope::new("org1", "ws1");
-        svc.create(
-            &scope,
-            "bearer_token",
-            serde_json::json!({ "token": "sk-old" }),
-            CredentialDisplay::default(),
-        )
-        .await
-        .expect("create ok");
-        let id = svc.list(&scope).await.expect("list")[0].id.clone();
-
-        svc.update(
-            &scope,
-            &id,
-            Some(serde_json::json!({ "token": "sk-new" })),
-            Some(1),
-            CredentialDisplay::default(),
-        )
-        .await
-        .expect("update ok");
-        // Still readable post-update.
-        let got = svc.get(&scope, &id).await.expect("get ok");
-        assert_eq!(got.credential_key, "bearer_token");
-
-        svc.delete(&scope, &id).await.expect("delete ok");
-        let err = svc.get(&scope, &id).await.expect_err("gone");
-        assert!(matches!(err, CredentialServiceError::NotFound { .. }));
-    }
-
-    #[tokio::test]
-    async fn cross_tenant_delete_and_update_are_not_found() {
-        let svc = in_memory_service().await;
-        let owner = TenantScope::new("org1", "ws1");
-        svc.create(
-            &owner,
-            "bearer_token",
-            serde_json::json!({ "token": "sk-x" }),
-            CredentialDisplay::default(),
-        )
-        .await
-        .expect("create ok");
-        let id = svc.list(&owner).await.expect("list")[0].id.clone();
-
-        let other = TenantScope::new("org9", "ws9");
-        assert!(matches!(
-            svc.delete(&other, &id).await.expect_err("denied"),
-            CredentialServiceError::NotFound { .. }
-        ));
-        assert!(matches!(
-            svc.update(
-                &other,
-                &id,
-                Some(serde_json::json!({ "token": "z" })),
-                Some(1),
-                CredentialDisplay::default(),
-            )
-            .await
-            .expect_err("denied"),
-            CredentialServiceError::NotFound { .. }
-        ));
-    }
-
-    /// Abuse #4: a static credential type advertises no capability, so
-    /// `test` / `refresh` / `revoke` are refused with
-    /// `CapabilityUnsupported` (closure-absence = capability-absence).
-    #[tokio::test]
-    async fn static_type_capability_ops_are_unsupported() {
-        let svc = in_memory_service().await;
-        let scope = TenantScope::new("org1", "ws1");
-        svc.create(
-            &scope,
-            "bearer_token",
-            serde_json::json!({ "token": "sk-cap" }),
-            CredentialDisplay::default(),
-        )
-        .await
-        .expect("create ok");
-        let id = svc.list(&scope).await.expect("list")[0].id.clone();
-
-        let test_err = svc.test(&scope, &id).await.expect_err("not testable");
-        assert!(matches!(
-            test_err,
-            CredentialServiceError::CapabilityUnsupported { ref capability, .. }
-                if capability == "test"
-        ));
-        let refresh_err = svc.refresh(&scope, &id).await.expect_err("not refreshable");
-        assert!(matches!(
-            refresh_err,
-            CredentialServiceError::CapabilityUnsupported { ref capability, .. }
-                if capability == "refresh"
-        ));
-        let revoke_err = svc.revoke(&scope, &id).await.expect_err("not revocable");
-        assert!(matches!(
-            revoke_err,
-            CredentialServiceError::CapabilityUnsupported { ref capability, .. }
-                if capability == "revoke"
-        ));
-    }
-
-    #[tokio::test]
-    async fn resolve_complete_persists_and_is_gettable() {
-        let svc = in_memory_service().await;
-        let scope = TenantScope::new("org1", "ws1");
-        let acq = svc
-            .resolve(
-                &scope,
-                "bearer_token",
-                serde_json::json!({ "token": "sk-acquired" }),
-            )
-            .await
-            .expect("resolve ok");
-        let head = match acq {
-            Acquisition::Complete { head } => head,
-            other => panic!("expected Complete, got {other:?}"),
-        };
-        assert_eq!(head.credential_key, "bearer_token");
-
-        // The acquired credential is now a normal stored credential, and
-        // the returned head's id is the persisted row's id.
-        let heads = svc.list(&scope).await.expect("list ok");
-        assert_eq!(heads.len(), 1);
-        assert_eq!(heads[0].id, head.id);
-        let got = svc.get(&scope, &head.id).await.expect("get ok");
-        assert_eq!(got.credential_key, "bearer_token");
-        assert!(!format!("{got:?}").contains("sk-acquired"));
-    }
-
-    #[tokio::test]
-    async fn list_types_contains_builtins_with_no_capabilities() {
-        let svc = in_memory_service().await;
-        let types = svc.list_types();
-        let keys: Vec<&str> = types.iter().map(|t| t.key.as_str()).collect();
-        for expected in ["bearer_token", "shared_key", "signing_key"] {
-            assert!(keys.contains(&expected), "missing {expected} in {keys:?}");
-        }
-        for info in &types {
-            assert!(
-                !info.capabilities.refreshable
-                    && !info.capabilities.testable
-                    && !info.capabilities.revocable,
-                "static builtin {} must advertise no capabilities",
-                info.key
-            );
-        }
-        // get_type agrees with list_types for a known key, None otherwise.
-        let one = svc.get_type("bearer_token").expect("known type");
-        assert_eq!(one.key, "bearer_token");
-        assert!(svc.get_type("no_such_type").is_none());
-    }
-
-    #[tokio::test]
-    async fn cross_tenant_capability_ops_are_not_found() {
-        let svc = in_memory_service().await;
-        let owner = TenantScope::new("org1", "ws1");
-        svc.create(
-            &owner,
-            "bearer_token",
-            serde_json::json!({ "token": "sk-xt" }),
-            CredentialDisplay::default(),
-        )
-        .await
-        .expect("create ok");
-        let id = svc.list(&owner).await.expect("list")[0].id.clone();
-
-        let other = TenantScope::new("org9", "ws9");
-        // A cross-tenant id is reported as missing on every new op —
-        // never a capability leak (the owner check runs before the
-        // capability gate).
-        assert!(matches!(
-            svc.test(&other, &id).await.expect_err("denied"),
-            CredentialServiceError::NotFound { .. }
-        ));
-        assert!(matches!(
-            svc.refresh(&other, &id).await.expect_err("denied"),
-            CredentialServiceError::NotFound { .. }
-        ));
-        assert!(matches!(
-            svc.revoke(&other, &id).await.expect_err("denied"),
-            CredentialServiceError::NotFound { .. }
-        ));
-    }
-
-    #[tokio::test]
-    async fn continue_resolve_on_non_interactive_is_unsupported() {
-        let svc = in_memory_service().await;
-        // A session is present so the path reaches the capability gate
-        // (the session check runs first; see the dedicated test below).
-        let scope = TenantScope::new("org1", "ws1").with_session("sess-1");
-        // bearer_token is non-interactive: no continuation closure is
-        // registered, so the continuation path refuses with a clear
-        // capability error rather than a confusing pending-store miss.
-        let err = svc
-            .continue_resolve(
-                &scope,
-                "bearer_token",
-                "irrelevant-token",
-                nebula_credential::resolve::UserInput::Poll,
-            )
-            .await
-            .expect_err("non-interactive");
-        assert!(matches!(
-            err,
-            CredentialServiceError::CapabilityUnsupported { ref capability, .. }
-                if capability == "interactive"
-        ));
-    }
-
-    /// Without a session, `continue_resolve` must fail `SessionRequired`
-    /// *before* the capability gate: the pending-store
-    /// `(kind, owner, session, token)` binding makes a continuation
-    /// structurally impossible without one, and the bare session-less
-    /// path would otherwise collapse into a silent `ValidationFailed`
-    /// inside the engine's `execute_continue`.
-    #[tokio::test]
-    async fn continue_resolve_without_session_is_session_required() {
-        let svc = in_memory_service().await;
-        let scope = TenantScope::new("org1", "ws1"); // no .with_session
-        let err = svc
-            .continue_resolve(
-                &scope,
-                "bearer_token",
-                "irrelevant-token",
-                nebula_credential::resolve::UserInput::Poll,
-            )
-            .await
-            .expect_err("no session");
-        assert!(
-            matches!(
-                err,
-                CredentialServiceError::SessionRequired { capability } if capability == "continue"
-            ),
-            "expected SessionRequired(continue), got {err:?}"
-        );
-    }
-
-    /// `owner_context` threads the scope's session onto the
-    /// `CredentialContext` (so the engine's `execute_continue`, which
-    /// reads `ctx.session_id()`, is not structurally dead), and leaves it
-    /// `None` for a session-less CRUD scope.
-    #[test]
-    fn owner_context_threads_session_when_scope_carries_one() {
-        use super::CredentialService;
-
-        type Svc = CredentialService;
-
-        let with = TenantScope::new("org1", "ws1").with_session("sess-xyz");
-        let ctx = Svc::owner_context(&with);
-        assert_eq!(ctx.session_id(), Some("sess-xyz"));
-        assert_eq!(
-            ctx.owner_id(),
-            nebula_storage_port::Scope::new("ws1", "org1").credential_owner_id()
-        );
-
-        let without = TenantScope::new("org1", "ws1");
-        let ctx_none = Svc::owner_context(&without);
-        assert_eq!(ctx_none.session_id(), None);
-    }
-
-    /// Positive refresh path on the refreshable fixture: `refresh()`
-    /// succeeds, the *mutated* (token-rotated, counter-bumped) state is
-    /// re-persisted under CAS, and the `on_refresh` observer hook fires
-    /// exactly once. The static builtins cannot reach this path (none is
-    /// `Refreshable`), so the fixture is the only coverage for it.
-    #[tokio::test]
-    async fn fixture_refresh_succeeds_repersists_and_fires_on_refresh() {
-        let (svc, refreshes) = super::test_support::in_memory_service_with_fixtures().await;
-        let scope = TenantScope::new("org1", "ws1");
-
-        svc.create(
-            &scope,
-            "refreshable_fixture",
-            serde_json::json!({ "token": "tok-base" }),
-            CredentialDisplay::default(),
-        )
-        .await
-        .expect("create fixture ok");
-        let id = svc.list(&scope).await.expect("list")[0].id.clone();
-
-        assert_eq!(refreshes.load(std::sync::atomic::Ordering::SeqCst), 0);
-        let report = svc.refresh(&scope, &id).await.expect("refresh ok");
-        assert!(report.refreshed, "fixture refresh ran for real");
-        assert_eq!(report.head.credential_key, "refreshable_fixture");
-        // on_refresh fired exactly once on the success path.
-        assert_eq!(refreshes.load(std::sync::atomic::Ordering::SeqCst), 1);
-
-        // The re-persisted state is the *mutated* one: a second refresh
-        // observes the first rotation (counter is 2 → token `tok-base-r2`),
-        // proving the CAS write stored the refreshed bytes, not the
-        // pre-refresh copy.
-        let report2 = svc.refresh(&scope, &id).await.expect("second refresh ok");
-        assert_eq!(report2.head.credential_key, "refreshable_fixture");
-        assert_eq!(refreshes.load(std::sync::atomic::Ordering::SeqCst), 2);
-        // Still retrievable and correctly projected post-refresh.
-        let got = svc.get(&scope, &id).await.expect("get ok");
-        assert_eq!(got.credential_key, "refreshable_fixture");
-    }
-
-    /// A concurrent version bump landing between refresh's internal load
-    /// and its compare-and-swap re-persist makes `refresh()` fail
-    /// *explicitly* with `VersionConflict` rather than silently
-    /// clobbering the racing write (the concurrent-refresh contract contract).
-    ///
-    /// Determinism: the fixture's `refresh` parks on a 2-party rendezvous
-    /// barrier *after* mutating its local state but *before* the service
-    /// performs the CAS. The concurrent writer lands a successful
-    /// `update` (bumping the stored version out from under the version
-    /// `refresh` loaded) and only then releases the barrier, so the CAS
-    /// is guaranteed to observe a stale version on every run.
-    #[tokio::test]
-    async fn fixture_refresh_loses_cas_to_concurrent_write_is_version_conflict() {
-        use crate::test_fixtures::set_refresh_rendezvous;
-        use std::sync::Arc;
-
-        let (svc, _refreshes) = super::test_support::in_memory_service_with_fixtures().await;
-        let scope = TenantScope::new("org1", "ws1");
-
-        svc.create(
-            &scope,
-            "refreshable_fixture",
-            serde_json::json!({ "token": "tok-race" }),
-            CredentialDisplay::default(),
-        )
-        .await
-        .expect("create ok");
-        let id = svc.list(&scope).await.expect("list")[0].id.clone();
-
-        // 2 parties: the fixture's parked `refresh` and the writer below.
-        let barrier = Arc::new(tokio::sync::Barrier::new(2));
-        set_refresh_rendezvous(Some(Arc::clone(&barrier)));
-
-        let svc_ref = &svc;
-        let scope_ref = &scope;
-        let id_ref = &id;
-        let (refresh_res, upd_res) =
-            tokio::join!(async { svc_ref.refresh(scope_ref, id_ref).await }, async {
-                // The credential is created at stored version 1. Bump it
-                // (1 -> 2) while `refresh` is parked at the rendezvous,
-                // then release the barrier so refresh proceeds to its CAS
-                // on the now-stale version it loaded (1).
-                let r = svc_ref
-                    .update(
-                        scope_ref,
-                        id_ref,
-                        Some(serde_json::json!({ "token": "tok-race-concurrent" })),
-                        Some(1),
-                        CredentialDisplay::default(),
-                    )
-                    .await;
-                barrier.wait().await;
-                r
-            });
-        set_refresh_rendezvous(None);
-
-        upd_res.expect("concurrent update (version 1 -> 2) must succeed");
-        let err = refresh_res.expect_err("refresh lost the CAS race");
-        assert!(
-            matches!(err, CredentialServiceError::VersionConflict { .. }),
-            "a refresh that lost the CAS race must be VersionConflict, got {err:?}"
-        );
     }
 }

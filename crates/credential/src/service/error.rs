@@ -57,7 +57,7 @@ pub enum CredentialServiceError {
     /// A credential type advertises a capability in the registry but the
     /// matching operation closure was never registered in `DispatchOps`
     /// (a `register_*_ops` call was skipped at the composition root). Caught
-    /// at [`build`](crate::CredentialServiceBuilder::build) so a misconfigured
+    /// at the api-layer credential builder's `build()` so a misconfigured
     /// service fails loud at startup instead of returning
     /// [`CapabilityUnsupported`](Self::CapabilityUnsupported) at first use.
     #[classify(
@@ -88,7 +88,7 @@ pub enum CredentialServiceError {
     PendingExpired,
 
     /// An interactive capability was invoked without a session on the
-    /// [`TenantScope`](crate::scope::TenantScope). The pending store binds
+    /// [`TenantScope`](crate::TenantScope). The pending store binds
     /// on `(kind, owner, session, token)`, so an interactive
     /// acquisition/continuation is structurally impossible without one —
     /// surfaced explicitly here rather than collapsing into a misleading
@@ -115,7 +115,7 @@ pub enum CredentialServiceError {
     /// cached head instead of propagating the error.
     ///
     /// [`Provider`]: Self::Provider
-    /// [`CredentialService::refresh`]: crate::service::CredentialService::refresh
+    /// [`CredentialService::refresh`]: crate::CredentialService::refresh
     #[classify(category = "external", code = "CREDENTIAL_SERVICE:TRANSIENT_PROVIDER")]
     #[error("transient provider error during refresh: {0}")]
     TransientProvider(String),
@@ -126,10 +126,10 @@ pub enum CredentialServiceError {
     Store(String),
 
     /// An external [`StateSource`](crate::StateSource) was configured via
-    /// [`external_providers`](crate::CredentialServiceBuilder::external_providers)
+    /// the api-layer credential builder's `external_providers`
     /// but the resolution wiring that consumes it is not implemented in
     /// this crate yet — it lands with the external provider bridge external-source
-    /// bridge (see  / spec §8). Returned instead of
+    /// bridge (see spec §8). Returned instead of
     /// silently resolving from the local store, which would hand back
     /// material from the wrong source.
     #[classify(category = "internal", code = "CREDENTIAL_SERVICE:EXTERNAL_NOT_WIRED")]
@@ -162,7 +162,7 @@ pub enum CredentialServiceError {
     /// the binding is presented against a mismatched scope at
     /// `resolve_for_slot` time.
     ///
-    /// [`validate_credential_binding`]: crate::service::CredentialService::validate_credential_binding
+    /// [`validate_credential_binding`]: crate::CredentialService::validate_credential_binding
     #[classify(category = "validation", code = "CREDENTIAL_SERVICE:SCOPE_VIOLATION")]
     #[error(
         "scope violation: credential binding validated for a different tenant than `{requested}`"

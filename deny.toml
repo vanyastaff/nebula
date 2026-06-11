@@ -79,20 +79,15 @@ deny = [
     # Dev-only: `crates/api/tests/knife.rs` wires the API + Engine composition
     # for the §13 knife integration test (ADR-0008 follow-up A2).
     "nebula-api",
-    # nebula-credential-runtime is the Exec-tier owner of the credential
-    # management bounded context; its build() composes the engine-owned
-    # resolver + lease lifecycle internally. The edge is acyclic — engine
-    # does NOT depend back on runtime (see docs/adr/0081-m6-resource-credential-integration.md).
-    "nebula-credential-runtime",
+    # nebula-credential's `service/` facade composition root (the api-layer
+    # credential builder) wires the engine-owned resolver + lease lifecycle;
+    # the api crate consuming engine is already listed above (ADR-0092).
   ], reason = "Engine is exec-layer orchestration; business/core crates must not depend on it" },
   { crate = "nebula-storage", wrappers = [
     "nebula-engine",
     "nebula-api",
     # apps/server composition root wires in-memory repos directly (default_state).
     "nebula-server",
-    # nebula-credential-runtime composes the storage-owned layered
-    # CredentialStore stack (Audit/Cache/Encryption) inside build().
-    "nebula-credential-runtime",
     # examples/ member hosts the api_simple_server startup demo which
     # wires in-memory repos directly (same pattern as nebula-server).
     "nebula-examples",
@@ -112,7 +107,6 @@ deny = [
     "nebula-engine",
     "nebula-api",
     "nebula-credential",
-    "nebula-credential-runtime",
   ], reason = "Storage port is a Core-tier contract; the adapter, tenancy decorator, exec/api consumers, and nebula-credential (which hosts the refresh coordinator and depends on RefreshClaimStore, ADR-0092) may depend on it" },
 
   # nebula-tenancy is the Business-tier multi-tenancy security boundary: it
@@ -164,11 +158,6 @@ deny = [
   { crate = "nebula-credential", wrappers = [
     "nebula-action",
     "nebula-api",
-    # nebula-credential-runtime is the Exec-tier owner of the credential
-    # management bounded context; it consumes the contract crate directly
-    # (CredentialService facade + type registry + ops dispatch). See
-    # docs/adr/0081-m6-resource-credential-integration.md.
-    "nebula-credential-runtime",
     "nebula-engine",
     "nebula-plugin",
     "nebula-resource",
@@ -200,17 +189,6 @@ deny = [
     # exercise the same evaluator the runtime uses.
     "nebula-action",
   ], reason = "ADR-0043 §9 / Phase 9: register_from_value bridges resource config to expression engine for {{ }} template resolution; schema uses it for parse validation; engine resolver evaluates node parameters; examples consume both" },
-
-  # nebula-credential-runtime is the Exec-tier owner of the credential
-  # management bounded context (CredentialService facade + type registry +
-  # state-source resolution + observability). Narrowly supersedes the
-  # facade-ownership slice of ADR-0030 (see docs/adr/0081-m6-resource-credential-integration.md). The facade
-  # lands here; only the API and CLI composition roots may depend on it.
-  { crate = "nebula-credential-runtime", wrappers = [
-    "nebula-credential-runtime",
-    "nebula-api",
-    "nebula-cli",
-  ], reason = "Credential management runtime is Exec-tier; only the API and CLI composition roots may depend on it (ADR-0066, consolidated into ADR-0081)" },
 ]
 skip = [
   "bitflags",

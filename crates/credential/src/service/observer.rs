@@ -6,10 +6,11 @@
 use std::sync::Arc;
 
 use nebula_core::accessor::MetricsEmitter;
-use nebula_credential::metrics::CredentialMetrics;
-use nebula_credential::provider::LeaseEvent;
-use nebula_credential::{CredentialEvent, CredentialId};
 use nebula_eventbus::EventBus;
+
+use crate::metrics::CredentialMetrics;
+use crate::provider::LeaseEvent;
+use crate::{CredentialEvent, CredentialId};
 
 /// Observability hooks the facade calls on every lifecycle transition.
 /// Object-safe (no RPITIT / generics) so it can be `Arc<dyn …>`.
@@ -137,9 +138,10 @@ impl CredentialObserver for EventMetricObserver {
 
 #[cfg(test)]
 mod tests {
-    use super::{CredentialObserver, EventMetricObserver, NoopObserver};
-    use nebula_credential::CredentialId;
     use std::sync::Arc;
+
+    use super::{CredentialObserver, EventMetricObserver, NoopObserver};
+    use crate::CredentialId;
 
     #[test]
     fn noop_observer_is_object_safe_and_silent() {
@@ -157,9 +159,6 @@ mod tests {
         let mut sub = obs.event_bus().subscribe();
         obs.on_refresh(&CredentialId::new());
         let ev = sub.try_recv().expect("event emitted");
-        assert!(matches!(
-            ev,
-            nebula_credential::CredentialEvent::Refreshed { .. }
-        ));
+        assert!(matches!(ev, crate::CredentialEvent::Refreshed { .. }));
     }
 }

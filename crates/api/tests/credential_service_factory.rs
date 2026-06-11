@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use nebula_api::ports::credential_service_factory::{with_memory_store, with_store};
 use nebula_credential::CredentialDisplay;
-use nebula_credential_runtime::TenantScope;
+use nebula_credential::TenantScope;
 use nebula_storage::credential::{EnvKeyProvider, SqliteCredentialStore};
 use serde_json::json;
 
