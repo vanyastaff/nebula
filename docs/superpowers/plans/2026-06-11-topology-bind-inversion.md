@@ -1,3 +1,5 @@
+# budget-justified: topology bind-inversion migration plan — one coherent multi-task design document, prose + code sketch, not decomposable into smaller functions
+
 # Topology Bind Inversion — restore safe-by-construction open topology
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development or execute inline. Steps use checkbox (`- [ ]`) tracking.
