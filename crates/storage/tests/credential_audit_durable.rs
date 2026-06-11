@@ -19,9 +19,10 @@
 
 use std::sync::Arc;
 
-use nebula_credential::{
-    CredentialStore, PutMode, StoreError, store::test_helpers::make_credential,
-};
+mod common;
+
+use common::make_credential;
+use nebula_credential::{CredentialStore, PutMode, StoreError};
 use nebula_storage::credential::{AuditEvent, AuditLayer, AuditSink, SqliteCredentialStore};
 
 /// Sink that always refuses to record, to prove `AuditLayer` surfaces

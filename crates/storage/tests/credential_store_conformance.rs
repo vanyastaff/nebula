@@ -12,7 +12,9 @@
 
 #![cfg(all(feature = "test-util", any(feature = "sqlite", feature = "postgres")))]
 
-use nebula_credential::store::test_helpers::make_credential;
+mod common;
+
+use common::make_credential;
 use nebula_credential::{CredentialStore, PutMode, StoreError};
 
 #[cfg(feature = "postgres")]

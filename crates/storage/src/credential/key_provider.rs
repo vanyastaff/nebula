@@ -831,7 +831,9 @@ mod tests {
     #[tokio::test]
     async fn layer_refetches_provider_on_put_and_get() -> Result<(), nebula_credential::StoreError>
     {
-        use nebula_credential::{CredentialStore, PutMode, store::test_helpers::make_credential};
+        use nebula_credential::{CredentialStore, PutMode};
+
+        use crate::credential::test_support::make_credential;
 
         use super::super::{layer::EncryptionLayer, sqlite::SqliteCredentialStore};
 
@@ -892,9 +894,9 @@ mod tests {
     #[tokio::test]
     async fn provider_failure_surfaces_as_backend_error()
     -> Result<(), nebula_credential::StoreError> {
-        use nebula_credential::{
-            CredentialStore, PutMode, StoreError, store::test_helpers::make_credential,
-        };
+        use nebula_credential::{CredentialStore, PutMode, StoreError};
+
+        use crate::credential::test_support::make_credential;
 
         use super::super::{layer::EncryptionLayer, sqlite::SqliteCredentialStore};
 

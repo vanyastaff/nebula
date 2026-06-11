@@ -65,3 +65,29 @@ pub use refresh_claim::{
 };
 #[cfg(feature = "sqlite")]
 pub use sqlite::SqliteCredentialStore;
+
+/// Crate-local test helpers for constructing [`nebula_credential::StoredCredential`] instances.
+///
+/// Gated on `test-util` to match the call sites, which are themselves
+/// `#[cfg(all(test, feature = "test-util", ...))]`.
+#[cfg(all(test, feature = "test-util"))]
+pub(crate) mod test_support {
+    use nebula_credential::StoredCredential;
+
+    pub(crate) fn make_credential(id: &str, data: &[u8]) -> StoredCredential {
+        StoredCredential {
+            id: id.into(),
+            name: None,
+            credential_key: "test_credential".into(),
+            data: data.to_vec(),
+            state_kind: "test".into(),
+            state_version: 1,
+            version: 0,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            expires_at: None,
+            reauth_required: false,
+            metadata: Default::default(),
+        }
+    }
+}
