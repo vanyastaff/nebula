@@ -3,12 +3,10 @@
 //!
 //! # Why this exists
 //!
-//! [`ResourceFanoutIndex`] is the engine-owned reverse index + per-slot
-//! fan-out port . Until this module, every
-//! `bind` / `dispatch_refresh` / `dispatch_revoke` caller was a
-//! `#[cfg(test)]` test — the index was implemented but unwired (
-//! §Deferred "Rotation fan-out is implemented but unwired"). This module
-//! closes that: it is the single production consumer that turns a
+//! [`ResourceFanoutIndex`] is the reverse index + per-slot fan-out port.
+//! Until this module, every `bind` / `dispatch_refresh` / `dispatch_revoke`
+//! caller was a `#[cfg(test)]` test — the index was implemented but unwired.
+//! This module closes that: it is the single production consumer that turns a
 //! completed credential refresh / revoke into the typed
 //! `nebula_resource::Manager` slot ports for every resolved resource row
 //! that bound the rotated credential.
@@ -16,57 +14,46 @@
 //! # Layering (no `nebula-resource → nebula-engine` edge)
 //!
 //! The rotation/revoke *signals* originate in the credential-runtime
-//! composition root (`nebula-credential-runtime`, ), which owns
-//! the resolver, the [`RefreshCoordinator`](super::super::RefreshCoordinator),
-//! and the lease lifecycle. That crate must **not** depend on
-//! `nebula-resource` (deny.toml `[[bans]]` `nebula-resource` wrapper
-//! allowlist; ). The signals reach this driver as plain
-//! [`nebula-eventbus`](nebula_eventbus) events
+//! composition root, which owns the resolver, the `RefreshCoordinator`, and
+//! the lease lifecycle. That crate must **not** depend on `nebula-resource`.
+//! The signals reach this driver as plain [`nebula_eventbus`] events
 //! ([`CredentialEvent`] on `EventBus<CredentialEvent>`,
-//! [`LeaseEvent`] on `EventBus<LeaseEvent>`) — the AGENTS.md
-//! cross-crate-signal-via-eventbus rule, **not** a direct sibling import.
+//! [`LeaseEvent`] on `EventBus<LeaseEvent>`) — the cross-crate-signal-via-
+//! eventbus rule, **not** a direct sibling import.
 //!
-//! Only `nebula-engine` simultaneously holds `Arc<ResourceFanoutIndex>`
+//! Only the engine simultaneously holds `Arc<ResourceFanoutIndex>`
 //! and the `Arc<nebula_resource::Manager>` the engine already owns, and
-//! only `nebula-engine` legitimately depends on `nebula-resource`
-//! downward. So the fan-out driver is engine-owned: it subscribes the
-//! two credential buses and drives the typed `Manager` slot ports.
+//! only the engine legitimately depends on `nebula-resource` downward.
+//! So the fan-out driver is wired by the engine: it subscribes the two
+//! credential buses and drives the typed `Manager` slot ports.
 //!
 //! # What it does, per event
 //!
 //! - [`CredentialEvent::Refreshed`] — the credential-runtime facade has
-//!   already CAS-persisted the fresh material into the store
-//!   (`CredentialService::refresh`) before emitting this. That is exactly
-//!   the "engine has stored the fresh material" point, so
-//!   the driver calls
-//!   [`ResourceFanoutIndex::dispatch_refresh`].
-//! - [`CredentialEvent::Revoked`] and
-//!   [`LeaseEvent::LeaseRevoked`] — the credential / dynamic-secret lease
-//!   was revoked (`CredentialService::revoke` →
-//!   `LeaseLifecycle::revoke_for_credential` → the lease scheduler emits
-//!   `LeaseRevoked`; the facade additionally emits
-//!   `CredentialEvent::Revoked`). Either triggers
-//!   [`ResourceFanoutIndex::dispatch_revoke`]. The fan-out itself is
-//!   already two-phase + cancellation-safe internally (
-//!   §Deferred / #681): synchronous `taint_slot_for` outside the
-//!   per-resource timeout, then the timeout-wrapped
-//!   `drain_and_revoke` tail. This driver does **not** re-implement
-//!   that — it only invokes `dispatch_revoke`.
+//!   already CAS-persisted the fresh material into the store before emitting
+//!   this. That is exactly the "engine has stored the fresh material" point,
+//!   so the driver calls [`ResourceFanoutIndex::dispatch_refresh`].
+//! - [`CredentialEvent::Revoked`] and [`LeaseEvent::LeaseRevoked`] — the
+//!   credential / dynamic-secret lease was revoked. Either triggers
+//!   [`ResourceFanoutIndex::dispatch_revoke`]. The fan-out itself is already
+//!   two-phase + cancellation-safe internally: synchronous
+//!   `taint_slot_for` outside the per-resource timeout, then the
+//!   timeout-wrapped `drain_and_revoke` tail. This driver does **not**
+//!   re-implement that — it only invokes `dispatch_revoke`.
 //!
 //! A `LeaseRevoked` whose `credential_id` is `None` (an orphan lease
-//! tracked without a nebula credential record — `LeaseEvent` doc) cannot
-//! address a reverse-index row, so it is a no-op fan-out (logged at
-//! `debug`, not an error).
+//! tracked without a nebula credential record) cannot address a
+//! reverse-index row, so it is a no-op fan-out (logged at `debug`).
 //!
-//! # Observability//!
+//! # Observability
+//!
 //! Each dispatch returns a [`RotationOutcome`] aggregate. It is **never
 //! silently dropped**: a credential-data-free `tracing` event records
 //! `credential_id` / counts, and a non-zero `failed` / `timed_out`
-//! escalates to `warn!`.//! metrics/observability signal **only** — it is *not* an audit write
-//! and is *not* re-emitted on an eventbus (that dashboard emission stays
-//! a deferred Non-goal of this unit;//! "`RotationOutcome` → eventbus emission"). The fan-out internals
-//! already guarantee no credential/secret material reaches any span
-//! ; this driver adds only key-free counts.
+//! escalates to `warn!`. This is a metrics/observability signal **only** —
+//! it is *not* an audit write and is *not* re-emitted on an eventbus. The
+//! fan-out internals already guarantee no credential/secret material reaches
+//! any span; this driver adds only key-free counts.
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -74,9 +61,9 @@ use std::time::{Duration, Instant};
 
 use nebula_credential::{CredentialEvent, CredentialId, LeaseEvent};
 use nebula_eventbus::EventBus;
-use nebula_resource::Manager;
 
-use super::resource_fanout::{ResourceFanoutIndex, RotationOutcome};
+use crate::Manager;
+use crate::credential_fanout::index::{ResourceFanoutIndex, RotationOutcome};
 
 /// Time window in which a second revoke for the same `CredentialId` is
 /// treated as a duplicate of the first and skipped.
@@ -160,9 +147,9 @@ impl RevokeDedupe {
     }
 }
 
-/// Per-resource fan-out timeout budget applied to every resolved
-/// resource row by [`ResourceFanoutIndex::dispatch_refresh`] /
-/// [`dispatch_revoke`](ResourceFanoutIndex::dispatch_revoke).
+/// Per-resource fan-out timeout budget applied to every resolved resource
+/// row by [`ResourceFanoutIndex::dispatch_refresh`] /
+/// [`ResourceFanoutIndex::dispatch_revoke`].
 ///
 /// There is no dedicated rotation-timeout knob on any engine config
 /// today, so this driver pins the same 30s budget every other
@@ -177,9 +164,7 @@ const PER_RESOURCE_ROTATION_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Handle for the background fan-out driver task.
 ///
-/// Mirrors
-/// [`ReclaimSweepHandle`](super::super::refresh::ReclaimSweepHandle):
-/// holding the handle keeps the task alive; dropping it (or calling
+/// Holding the handle keeps the task alive; dropping it (or calling
 /// [`abort`](Self::abort)) cancels it, so the driver never outlives the
 /// engine that started it. The task itself loops forever — this handle
 /// is the only path to shutdown.
@@ -202,13 +187,12 @@ impl ResourceFanoutDriver {
     /// revoked credential.
     ///
     /// `index` and `manager` are the engine-held `Arc`s
-    /// (`WorkflowEngine` owns both); `credential_bus` /  `lease_bus`
+    /// (`WorkflowEngine` owns both); `credential_bus` / `lease_bus`
     /// are the buses the credential-runtime composition root publishes
-    /// on (`EventMetricObserver::{event_bus, lease_bus}`). `lease_bus`
-    /// is optional because a deployment without dynamic-secret leases
-    /// (no `LeasedProvider`) has no lease bus — credential-level
-    /// `CredentialEvent::Revoked` still drives revoke fan-out in that
-    /// case.
+    /// on. `lease_bus` is optional because a deployment without
+    /// dynamic-secret leases (no `LeasedProvider`) has no lease bus —
+    /// credential-level `CredentialEvent::Revoked` still drives revoke
+    /// fan-out in that case.
     pub fn spawn(
         index: Arc<ResourceFanoutIndex>,
         manager: Arc<Manager>,
@@ -227,14 +211,13 @@ impl ResourceFanoutDriver {
             loop {
                 // `tokio::select!` over both subscribers so a refresh and
                 // a lease-revoke are both observed promptly. The two
-                // buses are independent `Arc`s (credential-runtime
-                // `EventMetricObserver::{event_bus, lease_bus}`): a
-                // closed *lease* bus does not imply the *credential* bus
-                // is gone, so it degrades to credential-only rather than
-                // retiring the whole driver (mirrors the no-lease-bus
-                // deployment path below). Only the credential bus closing
-                // (the composition root went away — no further rotation
-                // signals possible) retires the driver.
+                // buses are independent `Arc`s: a closed *lease* bus does
+                // not imply the *credential* bus is gone, so it degrades
+                // to credential-only rather than retiring the whole driver
+                // (mirrors the no-lease-bus deployment path below). Only
+                // the credential bus closing (the composition root went
+                // away — no further rotation signals possible) retires
+                // the driver.
                 match &mut lease_sub {
                     Some(lsub) => {
                         tokio::select! {
@@ -259,7 +242,7 @@ impl ResourceFanoutDriver {
                                 // no-lease-bus deployment path).
                                 lease_sub = None;
                                 tracing::debug!(
-                                    target: "nebula_engine::credential::rotation",
+                                    target: "nebula_resource::credential_fanout",
                                     "resource rotation fan-out driver: lease signal \
                                      bus closed; degrading to credential-only \
                                      (CredentialEvent::Revoked still fans out revoke)"
@@ -278,7 +261,7 @@ impl ResourceFanoutDriver {
                 }
             }
             tracing::debug!(
-                target: "nebula_engine::credential::rotation",
+                target: "nebula_resource::credential_fanout",
                 "resource rotation fan-out driver stopped: credential signal bus closed"
             );
         });
@@ -343,10 +326,10 @@ impl ResourceFanoutDriver {
                 },
                 None => {
                     // Orphan lease with no nebula credential record — no
-                    // reverse-index row can be keyed by it (LeaseEvent
-                    // doc). A no-op fan-out, not an error.
+                    // reverse-index row can be keyed by it. A no-op
+                    // fan-out, not an error.
                     tracing::debug!(
-                        target: "nebula_engine::credential::rotation",
+                        target: "nebula_resource::credential_fanout",
                         "lease revoked for an orphan lease (no credential id); \
                          resource rotation fan-out skipped"
                     );
@@ -374,7 +357,7 @@ impl ResourceFanoutDriver {
     ) {
         if !revoke_dedupe.admit(credential_id, Instant::now()) {
             tracing::debug!(
-                target: "nebula_engine::credential::rotation",
+                target: "nebula_resource::credential_fanout",
                 %credential_id,
                 source,
                 "resource rotation fan-out: duplicate revoke within dedupe window \
@@ -389,19 +372,17 @@ impl ResourceFanoutDriver {
         Self::record(credential_id, "revoke", outcome);
     }
 
-    /// Consume the [`RotationOutcome`] — **never silently dropped**
-    /// ( : an observability signal, not an audit write and not
-    /// an eventbus re-emission). Only `credential_id` + counts reach the
-    /// span; the fan-out internals already guarantee no credential /
-    /// secret material on any observability surface . A
-    /// non-zero `failed` / `timed_out` escalates to `warn!` so a partial
+    /// Consume the [`RotationOutcome`] — **never silently dropped**. Only
+    /// `credential_id` + counts reach the span; the fan-out internals already
+    /// guarantee no credential / secret material on any observability surface.
+    /// A non-zero `failed` / `timed_out` escalates to `warn!` so a partial
     /// fan-out is operator-visible.
     fn record(credential_id: CredentialId, op: &'static str, outcome: RotationOutcome) {
         if outcome.dispatched() == 0 {
             // No resource row bound this credential — an expected no-op
             // for a credential no resource resolved.
             tracing::debug!(
-                target: "nebula_engine::credential::rotation",
+                target: "nebula_resource::credential_fanout",
                 %credential_id,
                 op,
                 "resource rotation fan-out: no bound resource rows (no-op)"
@@ -410,7 +391,7 @@ impl ResourceFanoutDriver {
         }
         if outcome.failed > 0 || outcome.timed_out > 0 {
             tracing::warn!(
-                target: "nebula_engine::credential::rotation",
+                target: "nebula_resource::credential_fanout",
                 %credential_id,
                 op,
                 success = outcome.success,
@@ -422,7 +403,7 @@ impl ResourceFanoutDriver {
             );
         } else {
             tracing::info!(
-                target: "nebula_engine::credential::rotation",
+                target: "nebula_resource::credential_fanout",
                 %credential_id,
                 op,
                 success = outcome.success,
@@ -448,7 +429,7 @@ impl ResourceFanoutDriver {
 impl Drop for ResourceFanoutDriver {
     fn drop(&mut self) {
         // Cancel the spawned task so the driver never outlives the
-        // engine that started it (mirrors `ReclaimSweepHandle`).
+        // engine that started it.
         self.handle.abort();
     }
 }

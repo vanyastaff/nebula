@@ -13,6 +13,10 @@ documentation.workspace = true
 
 [features]
 default = []
+# Gates the credential-rotation fan-out module (`credential_fanout`).
+# Enable this when building with credential rotation support; it adds no
+# new heavy dependencies (all deps are already in the default feature set).
+rotation = []
 
 [dependencies]
 # Nebula ecosystem

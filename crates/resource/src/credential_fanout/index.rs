@@ -1,10 +1,7 @@
-//! Engine-owned reverse index: `CredentialId` -> affected resource rows.
+//! Reverse index: `CredentialId` → affected resource rows.
 //!
-//! `nebula-engine` (exec layer) owns credential rotation
-//! orchestration; `nebula-resource` exposes only the typed
-//! `Manager::{refresh_slot_for, revoke_slot_for}` port. When a credential
-//! rotates, the engine must fan that single event out to every resource
-//! registry row whose resolved slot binding consumed it.
+//! When a credential rotates, the engine must fan that single event out to
+//! every resource registry row whose resolved slot binding consumed it.
 //!
 //! This module is the index half of that fan-out. It maps a rotated
 //! `CredentialId` to the set of resource rows that bound it, so the
@@ -15,7 +12,7 @@
 //!
 //! The resource registry is keyed structurally by
 //! `(ResourceKey, ScopeLevel, slot_identity)` — see
-//! [`nebula_resource::dedup`] and [`nebula_resource::SlotIdentity`]. Two
+//! [`crate::dedup`] and [`crate::SlotIdentity`]. Two
 //! registrations of the same resource type at the same scope whose
 //! resolved credentials differ are *distinct rows* (the multi-tenant
 //! anti-bleed barrier). A `Manager::refresh_slot` call against a multi-row
@@ -42,7 +39,8 @@ use std::time::Duration;
 use dashmap::DashMap;
 use nebula_core::{ResourceKey, ScopeLevel};
 use nebula_credential::CredentialId;
-use nebula_resource::SlotIdentity;
+
+use crate::SlotIdentity;
 
 /// One resource registry row affected by a credential rotation.
 ///
@@ -56,10 +54,9 @@ use nebula_resource::SlotIdentity;
 ///   credential. Equality is exact string equality (no digest), so two
 ///   distinct resolved binding sets can never alias this reverse-index key.
 ///
-/// [`SlotIdentity::Unbound`](nebula_resource::SlotIdentity) is the
-/// `slot_identity` for a row that resolved no credential slots
-/// (single-row-per-`(key, scope)` behaviour); such rows still appear here
-/// verbatim.
+/// `SlotIdentity::Unbound` is the `slot_identity` for a row that resolved
+/// no credential slots (single-row-per-`(key, scope)` behaviour); such rows
+/// still appear here verbatim.
 ///
 /// Fields are named (rather than a positional tuple) so call sites that
 /// destructure a bind cannot transpose `resource_key`/`scope`/`slot_name`.
@@ -80,8 +77,9 @@ pub struct Bind {
 /// registry row.
 ///
 /// One [`Bind`] contributes exactly one of the three counts, so
-/// `success + failed + timed_out == affected_rows`./// per-resource timeout-isolation invariant a slow, failed, or timed-out row
-/// never aborts or fails its siblings — each row's outcome is independent. The
+/// `success + failed + timed_out == affected_rows`. Per-resource
+/// timeout-isolation invariant: a slow, failed, or timed-out row never
+/// aborts or fails its siblings — each row's outcome is independent. The
 /// struct carries only counts (no key/slot/credential material) so it is safe
 /// to log or emit as a metrics/dashboard signal; it is **not** a substitute
 /// for an audit write.
@@ -121,8 +119,8 @@ struct BindRef {
     refs: usize,
 }
 
-/// Engine-owned reverse index from a rotated `CredentialId` to the resource
-/// registry rows that resolved it.
+/// Reverse index from a rotated `CredentialId` to the resource registry
+/// rows that resolved it.
 ///
 /// Concurrency-safe and lock-free for readers via [`DashMap`]; the
 /// orchestrator binds rows as resources register and looks them up on a
@@ -136,7 +134,7 @@ pub struct ResourceFanoutIndex {
     /// `CredentialId` -> refcounted rows whose resolved slot bound that
     /// credential.
     ///
-    /// `nebula-engine` has no direct `smallvec` dependency, so the
+    /// `nebula-resource` has no direct `smallvec` dependency, so the
     /// per-credential row list is a plain `Vec`. Promoting this to a small
     /// inline buffer is a deferred, dependency-gated optimisation.
     by_credential: DashMap<CredentialId, Vec<BindRef>>,
@@ -161,7 +159,7 @@ impl ResourceFanoutIndex {
     /// `entry(cid)`, so a concurrent `bind` / `unbind_staged_entry` for the
     /// same `cid` cannot interleave between them. This closes the
     /// stage-then-roll-back TOCTOU in
-    /// [`register_and_bind`](crate::resource::ResourceRegistrarRegistry::register_and_bind):
+    /// `ResourceRegistrarRegistry::register_and_bind`:
     /// a failing registration releases only its own reference and can
     /// never delete a row a concurrent successful registration still holds.
     pub fn bind(
@@ -254,7 +252,7 @@ impl ResourceFanoutIndex {
     ///
     /// It is the compensation primitive for the *stage-bind-before-
     /// register-then-roll-back-on-failure* ordering in
-    /// [`ResourceRegistrarRegistry::register_and_bind`]: it **releases one
+    /// `ResourceRegistrarRegistry::register_and_bind`: it **releases one
     /// reference** taken by [`bind`](Self::bind) and removes the row only
     /// when the last referent is gone. A registration that fails after
     /// staging therefore drops just its own reference; a concurrent (or
@@ -264,7 +262,7 @@ impl ResourceFanoutIndex {
     /// insert this entry?" — a decision that could not be made atomically
     /// with the insert and was the source of the cross-registration
     /// corruption.
-    pub(crate) fn unbind_staged_entry(&self, cid: &CredentialId, bind: &Bind) {
+    pub fn unbind_staged_entry(&self, cid: &CredentialId, bind: &Bind) {
         // `remove_if_mut` holds the shard lock across the whole closure:
         // the matching entry is decremented (or removed at the last
         // reference) and the credential bucket is dropped iff it became
@@ -287,16 +285,16 @@ impl ResourceFanoutIndex {
 
     /// Fans a completed credential refresh out to every resource registry
     /// row that resolved `cid`, calling
-    /// [`Manager::refresh_slot_for_identity`](nebula_resource::Manager::refresh_slot_for_identity)
+    /// [`Manager::refresh_slot_for_identity`](crate::Manager::refresh_slot_for_identity)
     /// per row.
     ///
-    /// The engine (exec layer, ) owns rotation orchestration: it has
-    /// already resolved and stored the fresh credential material before this
-    /// is called; this method only translates the single rotation signal
-    /// into the typed per-row resource port , and the resource
-    /// layer never reaches back.
+    /// The engine (exec layer) owns rotation orchestration: it has already
+    /// resolved and stored the fresh credential material before this is
+    /// called; this method only translates the single rotation signal into
+    /// the typed per-row resource port, and the resource layer never reaches
+    /// back.
     ///
-    /// **Per-resource timeout isolation .** Each row's
+    /// **Per-resource timeout isolation.** Each row's
     /// `refresh_slot_for_identity` is independently wrapped in
     /// `tokio::time::timeout(per_resource_timeout, …)` and all are driven
     /// concurrently via [`futures::future::join_all`]. One slow, failed, or
@@ -312,10 +310,9 @@ impl ResourceFanoutIndex {
     /// resolved row.
     ///
     /// Redaction: only the aggregate counts and per-row key / slot / scope /
-    /// `slot_identity` (the resolved structural identity) / duration reach
-    /// spans — never credential or secret material. The returned aggregate
-    /// is a metrics/dashboard signal, **not** an audit record ; the caller
-    /// still owns any audit write.
+    /// `slot_identity` / duration reach spans — never credential or secret
+    /// material. The returned aggregate is a metrics/dashboard signal, **not**
+    /// an audit record; the caller still owns any audit write.
     ///
     /// An empty `affected(cid)` returns
     /// [`RotationOutcome::default()`](RotationOutcome) (a no-op fan-out).
@@ -328,16 +325,16 @@ impl ResourceFanoutIndex {
     pub async fn dispatch_refresh(
         &self,
         cid: CredentialId,
-        mgr: &nebula_resource::Manager,
+        mgr: &crate::Manager,
         per_resource_timeout: Duration,
     ) -> RotationOutcome {
         self.dispatch(cid, mgr, per_resource_timeout, FanoutOp::Refresh)
             .await
     }
 
-    /// Fans a credential revoke (e.g. an lease revoke) out to every
-    /// resource registry row that resolved `cid`, calling
-    /// [`Manager::revoke_slot_for_identity`](nebula_resource::Manager::revoke_slot_for_identity)
+    /// Fans a credential revoke (e.g. a lease revoke) out to every resource
+    /// registry row that resolved `cid`, calling
+    /// [`Manager::revoke_slot_for_identity`](crate::Manager::revoke_slot_for_identity)
     /// per row.
     ///
     /// Same per-resource timeout isolation, identity routing, redaction, and
@@ -354,7 +351,7 @@ impl ResourceFanoutIndex {
     pub async fn dispatch_revoke(
         &self,
         cid: CredentialId,
-        mgr: &nebula_resource::Manager,
+        mgr: &crate::Manager,
         per_resource_timeout: Duration,
     ) -> RotationOutcome {
         self.dispatch(cid, mgr, per_resource_timeout, FanoutOp::Revoke)
@@ -367,13 +364,13 @@ impl ResourceFanoutIndex {
     /// Snapshots `affected(cid)`, then for **each** row independently wraps
     /// the matching slot-identity-pinned `Manager` port call in
     /// `tokio::time::timeout(per_resource_timeout, …)` and drives them all
-    /// concurrently via [`join_all`](futures::future::join_all). This
+    /// concurrently via [`futures::future::join_all`]. This
     /// independent per-future timeout + `join_all` is exactly what
     /// guarantees the timeout-isolation invariant: a slow, failed,
     /// or timed-out row's future resolves on its own and cannot abort or
     /// fail a sibling — every row's outcome is recorded independently.
     ///
-    /// **Revoke is two-phase and cancellation-safe .**
+    /// **Revoke is two-phase and cancellation-safe.**
     /// `Manager::revoke_slot_for_identity` is *not* called inside the
     /// timeout: a Rust `async fn` body is lazy, so a timeout future dropped
     /// before its first poll would skip the synchronous taint and leave new
@@ -399,7 +396,7 @@ impl ResourceFanoutIndex {
     async fn dispatch(
         &self,
         cid: CredentialId,
-        mgr: &nebula_resource::Manager,
+        mgr: &crate::Manager,
         per_resource_timeout: Duration,
         op: FanoutOp,
     ) -> RotationOutcome {
@@ -456,7 +453,7 @@ impl ResourceFanoutIndex {
                     // Phase 1 — SYNCHRONOUS taint, OUTSIDE the timeout. It is
                     // fully applied before `taint_slot_for` returns, so a
                     // subsequently-dropped timeout on the drain tail can
-                    // never skip it . A taint failure
+                    // never skip it. A taint failure
                     // (resolution miss / manager shutting down) is this
                     // row's terminal outcome — the drain tail is not entered.
                     let tainted = match mgr.taint_slot_for_identity(
@@ -489,12 +486,11 @@ impl ResourceFanoutIndex {
                     // be able to elapse on a slow drain and drop the whole
                     // future *before the hook ran*, silently skipping the
                     // documented "hook still runs after a timed-out drain"
-                    // guarantee . The row
-                    // is already tainted (phase 1); every tail outcome
-                    // leaves it tainted.
+                    // guarantee. The row is already tainted (phase 1); every
+                    // tail outcome leaves it tainted.
                     match mgr.drain_and_revoke(tainted, per_resource_timeout).await {
-                        nebula_resource::RevokeTail::Done => RowOutcome::Success,
-                        nebula_resource::RevokeTail::HookFailed(err) => {
+                        crate::RevokeTail::Done => RowOutcome::Success,
+                        crate::RevokeTail::HookFailed(err) => {
                             tracing::warn!(
                                 credential_id = %cid,
                                 resource_key = %b.resource_key,
@@ -506,7 +502,7 @@ impl ResourceFanoutIndex {
                             );
                             RowOutcome::Failed
                         },
-                        nebula_resource::RevokeTail::HookTimedOut => {
+                        crate::RevokeTail::HookTimedOut => {
                             tracing::warn!(
                                 credential_id = %cid,
                                 resource_key = %b.resource_key,
@@ -556,10 +552,10 @@ enum FanoutOp {
     /// `Manager::refresh_slot_for_identity` — credential rotated, fresh
     /// material already resolved and stored by the engine.
     Refresh,
-    /// Credential revoked (e.g. lease revoke). Driven as the
-    /// two-phase port: synchronous `Manager::taint_slot_for_identity`
-    /// outside the timeout, then the timeout-wrapped cancellation-safe
-    /// `Manager::drain_and_revoke` tail.
+    /// Credential revoked (e.g. lease revoke). Driven as the two-phase port:
+    /// synchronous `Manager::taint_slot_for_identity` outside the timeout,
+    /// then the timeout-wrapped cancellation-safe `Manager::drain_and_revoke`
+    /// tail.
     Revoke,
 }
 
@@ -865,7 +861,7 @@ mod tests {
     async fn dispatch_refresh_empty_is_noop() {
         // No row bound the credential -> a no-op fan-out, not an error.
         let idx = ResourceFanoutIndex::new();
-        let mgr = nebula_resource::Manager::new();
+        let mgr = crate::Manager::new();
         let out = idx
             .dispatch_refresh(cred(), &mgr, Duration::from_secs(1))
             .await;
@@ -892,14 +888,16 @@ mod tests {
         use std::time::Duration;
 
         use nebula_core::{OrgId, ResourceKey, ScopeLevel, resource_key, scope::Scope};
-        use nebula_resource::{
-            Manager, ResidentConfig, Resource, ResourceConfig, ResourceContext,
+        use tokio_util::sync::CancellationToken;
+
+        use crate::{
+            AcquireOptions, Manager, ResidentConfig, Resource, ResourceConfig, ResourceContext,
             error::Error as ResourceError,
             resource::ResourceMetadata,
             runtime::{TopologyRuntime, resident::ResidentRuntime},
             topology::resident::Resident,
         };
-        use tokio_util::sync::CancellationToken;
+        use nebula_credential::CredentialId;
 
         use super::super::*;
 
@@ -941,13 +939,16 @@ mod tests {
 
         impl Ledger {
             fn set(&self, identity: SlotIdentity, b: Behaviour) {
-                self.behaviour.lock().expect("ledger").insert(identity, b);
+                self.behaviour
+                    .lock()
+                    .expect("ledger lock")
+                    .insert(identity, b);
             }
             fn behaviour_for(&self, identity: &SlotIdentity) -> Behaviour {
                 *self
                     .behaviour
                     .lock()
-                    .expect("ledger")
+                    .expect("ledger lock")
                     .get(identity)
                     .unwrap_or(&Behaviour::FastOk)
             }
@@ -1068,7 +1069,7 @@ mod tests {
             let cid = CredentialId::new();
 
             for id in identities {
-                mgr.register(nebula_resource::RegistrationSpec {
+                mgr.register(crate::RegistrationSpec {
                     resource: CtlResource {
                         identity: id.clone(),
                         ledger: ledger.clone(),
@@ -1097,7 +1098,7 @@ mod tests {
                 let _g = mgr
                     .acquire_resident_for_identity::<CtlResource>(
                         &ctx,
-                        &nebula_resource::AcquireOptions::default(),
+                        &AcquireOptions::default(),
                         id,
                     )
                     .await
@@ -1242,7 +1243,6 @@ mod tests {
         #[tokio::test]
         async fn revoke_fanout_timed_out_drain_still_left_row_tainted() {
             use nebula_error::{Classify, ErrorCategory};
-            use nebula_resource::AcquireOptions;
 
             let hung = SlotIdentity::from_bindings([("k", "cred-0x5151_u64")]);
             let (idx, mgr, cid, _scope, org, ledger) = setup(std::slice::from_ref(&hung)).await;
@@ -1317,7 +1317,6 @@ mod tests {
         #[tokio::test]
         async fn revoke_two_phase_dropping_drain_future_keeps_taint() {
             use nebula_error::{Classify, ErrorCategory};
-            use nebula_resource::AcquireOptions;
 
             let id = SlotIdentity::from_bindings([("k", "cred-0x7a1d_u64")]);
             let (_idx, mgr, _cid, scope, org, ledger) = setup(std::slice::from_ref(&id)).await;

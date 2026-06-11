@@ -10,7 +10,7 @@ repository.workspace = true
 
 [features]
 default = []
-rotation = ["nebula-credential/rotation", "nebula-storage/rotation"]
+rotation = ["nebula-credential/rotation", "nebula-storage/rotation", "nebula-resource/rotation"]
 # Run the full 10-min refresh-coordinator chaos test (sub-spec §5.4) in
 # `crates/engine/tests/refresh_coordinator_chaos.rs`. Default CI runs the
 # scaled-down 30s version; this feature is enabled in the nightly chaos
