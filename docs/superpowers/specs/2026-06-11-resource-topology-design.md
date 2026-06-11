@@ -98,12 +98,14 @@ This split is the whole design: **authors express *lease policy*; the framework 
 
 ### 2.1 The two traits (author RPITIT + framework erasure)
 
-Authoring uses an RPITIT trait (ergonomic, no `async_trait`). The Manager consumes a boxed-future erasure of it (object-safe) — exactly mirroring the `Provider`/`AnyManagedResource` split already shipped. Authors implement the RPITIT trait; the framework's blanket impl produces the erased form. **Authors never write `Box<dyn Any>`** — the erasure boundary is closed by making `Topology` generic over its own `Slot`, not over `Any`.
+Async traits in the crate use **`#[async_trait]`** (the async methods only; see §2.7). `Topology` is reached **monomorphically** — the registry's dyn boundary is `ManagedHandle` (one per row), and `ManagedHandle::acquire` dispatches into the concrete `ManagedResource<R>`, which calls the resource's concrete `Topology`. So there is **no separate erased `Topology` twin**: the type-erasure that the registry needs (storing heterogeneous `R`) happens once at `ManagedHandle`, not per-trait. **Authors never write `Box<dyn Any>` or a boxed future** — they write `async fn` (via `#[async_trait]`) and the framework erases `R` at the `ManagedHandle` boundary.
 
 ```rust
 /// Author-facing lease policy for a resource's instances. Object-safe via a
-/// separate framework `ErasedTopology` (NOT the sealed `AnyManagedResource`).
+/// `#[async_trait]` on the async methods; reached monomorphically via
+/// `ManagedHandle`, so no separate erased twin is needed.
 /// `forbid(unsafe_code)`, thiserror errors.
+#[async_trait]
 pub trait Topology: Send + Sync + 'static {
     /// The leasable unit the framework stores. Pooled: one connection.
     /// Resident: the shared handle. Bounded: `()` (permit-only, no stored instance).
@@ -161,6 +163,7 @@ pub enum Unavailable {
 ```rust
 pub struct FfmpegPool { sem: Arc<Semaphore>, cap: usize }   // permit-only; process spawned in action body
 
+#[async_trait]
 impl Topology for FfmpegPool {
     type Slot = ();                              // permit-only Instance (case #7)
 
@@ -199,7 +202,7 @@ Closed, audited, framework-owned — these carry the revoke-fence proof so autho
 
   Bounded's cap is **runtime-set-and-queryable** because the unanimous case evidence is that *no resource in any catalog has a compile-time-fixed N* (license seats, `num_cpus`, MIG slices, peer-negotiated `MAX_CONCURRENT_STREAMS`, broker channel-max). The cap may even change at runtime — `Bounded` exposes `set_cap(n)` that grows/shrinks the semaphore via `add_permits` / `forget_permits`.
 
-The open trait does **not** reuse the sealed `AnyManagedResource`; it introduces a *separate* object-safe `ErasedTopology`, and the revoke/rotation/drain invariants stay in Manager code over `InstanceStore`, never delegated to author code.
+The revoke/rotation/drain invariants stay in Manager code over `InstanceStore`, never delegated to author code; `Topology` is dispatched monomorphically inside `ManagedResource<R>`, so it needs no erased twin (§2.7).
 
 ### 2.6 Credentials & authorization — outside the `Topology` boundary (preserved by construction)
 
@@ -217,6 +220,25 @@ The active credential lifecycle (slots, create-time resolution, OAuth refresh / 
 **Why a custom (author-written) topology cannot break authorization.** A `Topology` is handed a lifetime-bound `&InstanceStore<Slot>` it cannot retain and cannot populate with its own credential-bearing instances — instances are created by `Provider::create` (which the framework drives *after* credential resolution) and stored by the framework. The Topology only decides *which already-built, already-authorized instance* to lease and how many at once. Credential resolution, rotation fan-out, the revoke-epoch fence, and the `SlotIdentity` barrier all run in Manager code over the framework-owned store, regardless of what the topology does. An author topology with a wrong `on_release` can leak its own resource's *non-credential* state (its own bug); it cannot resurrect a revoked credential (the fence evicts it) nor cross a tenant boundary (it never owns instances).
 
 **Net: client authorization is preserved by construction. The open topology widens *lease policy*, never the credential/tenant seam.** The one credential-adjacent *improvement* the spec lands is that the revoke-epoch fence stops being a Pool-only branch and becomes uniform over `InstanceStore`, so a rotated/revoked credential is fenced on *every* topology — built-in or third-party — not just the pool.
+
+### 2.7 Async policy & erasure naming (decision D4)
+
+**Async dispatch — `#[async_trait]` crate-wide for the async traits.** Every async trait in the crate (`Provider`, `Topology`, `ManagedHandle`, `ResourceActivator`, `ResourceTools`) uses `#[async_trait]`; sync methods (`Topology::try_reserve`/`phase`/`load`, `Provider::check_cost`, `key`) stay plain sync and need no macro. Rationale: the resource lifecycle is **I/O-bound** (connect/checkout/health/teardown are micro-to-milliseconds of syscall + network), so the one `Box<dyn Future>` per call is allocation-noise next to the work; `#[async_trait]` is the trusted, ubiquitous (~54k dependents) choice with a **trivial migration-off** (delete the attribute when native `dyn` async-fn-in-trait stabilises); `dynosaur` (~64 dependents) is a heavier bet and a bigger refactor at migration. It also makes the `Send` bound automatic. This is a **conscious, recorded override** of the project's "prefer native async-fn-in-trait" stance (the I/O-bound + always-erased reality is the carve-out); it must be mirrored into the path-scoped Rust standard, the `feedback_idiom_currency` memory, and a short ADR so a future change does not silently revert it.
+
+**Consequence — the `Erased*`/`*Fn` machinery disappears.** Because async methods become real trait methods (not stored `Arc<dyn Fn → BoxFuture>` closures), the hand-written boxed-future twins vanish. The type-erasure the registry genuinely needs (storing heterogeneous `R`) survives as a single clean `dyn` boundary, renamed off the `Any*`/`Typed*`/`Erased*` jargon:
+
+| Today | New | Note |
+|---|---|---|
+| `ErasedAcquireFn` (`Arc<dyn Fn → BoxFuture<Box<dyn Any>>>`) | **gone** → `ManagedHandle::acquire()` method | acquire is a method on the row, not a stored closure |
+| `erased_acquire_pooled_for::<R>()` / `_resident_for::<R>()` | **gone** | the `ManagedHandle` impl supplies `acquire` |
+| `AnyManagedResource` (sealed dyn trait) | **`ManagedHandle`** | the type-erased registry row the Manager stores + dispatches |
+| `ManagedResource<R>` (concrete) | `ManagedResource<R>` (keep) | the per-`R` managed wrapper |
+| `AnyResource` (metadata-only dyn) | **`ResourceDescriptor`** | metadata-only catalog view |
+| engine `ErasedResourceRegistrar` (dyn) | **`ResourceActivator`** | activates a kind into the Manager at activation time |
+| engine `TypedResourceRegistrar<R>` | concrete per-kind impl of `ResourceActivator` (internal) | per-kind, engine-internal |
+| `acquire_erased_for` (Manager entry) | **`acquire_any`** | engine-facing `key → guard` entry |
+
+These types are `pub(crate)` / sealed / engine-internal, so the rename is a readability change, not a public-API break.
 
 ---
 
@@ -302,6 +324,7 @@ The cap is *peer-negotiated* (`MAX_CONCURRENT_STREAMS`, mutates mid-connection),
 ```rust
 struct GrpcStreams { channel: Channel }       // Slot = the shared HTTP/2 channel
 
+#[async_trait]
 impl Topology for GrpcStreams {
     type Slot = Channel;
     fn try_reserve(&self, s: &InstanceStore<Channel>) -> Result<Ticket<Channel>, Unavailable> {
@@ -380,6 +403,7 @@ These three were flagged by the design lead; the spec defaults them to the recom
 - **D1 — Which batteries ship in 1.0?** *Default: `Pooled` + `Resident` + `Bounded` only.* `Multiplexed` / `ExclusiveStatefulOwner` / `Ephemeral` ship as authored open-trait topologies until a concrete 1.0 integration targets them, then graduate to audited built-ins. Rationale: YAGNI — the open trait makes them cheap to add later, and each built-in carries an audit cost now.
 - **D2 — Does `load().saturation` feed Spec 2 routing?** *Default: yes* — power-of-two-choices over a single `f32` among already-reserved candidates (tower-validated minimal coupling). Override to "admit-or-park only, `load()` purely diagnostic" if scheduler↔resource coupling must be zero in 1.0. (This is really a Spec 2 decision; recorded here because it constrains the `Load` shape.)
 - **D3 — Where does the A8 durable-passivation reattach-key live?** *Default: the journal (engine/storage tier).* `nebula-resource` only exposes a `reattach_key()` and a detachable guard; durability is owned above. Confirm the tier boundary now so Spec 1's guard type reserves the detach hook without implementing it.
+- **D4 — Async dispatch policy. *Confirmed (owner):* `#[async_trait]` crate-wide for async traits** (`Provider`, `Topology`, `ManagedHandle`, `ResourceActivator`, `ResourceTools`); sync methods stay sync. See §2.7 for rationale (I/O-bound paths, trusted/ubiquitous, trivial migration-off, kills the `Erased*`/`*Fn` twins). Requires mirroring into the path-scoped Rust standard + `feedback_idiom_currency` memory + a short ADR so the deliberate override of "prefer native async-fn" is not silently reverted. Includes renaming the existing erasure types (`AnyManagedResource`→`ManagedHandle`, `AnyResource`→`ResourceDescriptor`, `ErasedResourceRegistrar`→`ResourceActivator`, `acquire_erased_for`→`acquire_any`).
 
 ---
 
@@ -405,7 +429,8 @@ Deferred items 5–7 from the prior plan (local to nebula-resource; may interlea
 
 - **Rename** `Resource` (trait) → `Provider`, `Runtime` (assoc) → `Instance`, `#[derive(ResourceSlots)]` → `#[derive(Resource)]`. Pure rename; the slot-plumbing / 2-assoc-type / fingerprint work already landed stays.
 - **Restore `Bounded`** as a built-in `Topology` impl (it was deleted). Runtime cap, three modes, `try_new`-style fail-closed validation.
-- **Promote `Topology` from closed enum to open trait** + introduce `ErasedTopology` (boxed-future object-safe form) alongside the existing sealed `AnyManagedResource` (do **not** widen the sealed trait — topology gets its own erasure so the semver seal holds).
+- **Promote `Topology` from closed enum to an open `#[async_trait]` trait** dispatched monomorphically inside `ManagedResource<R>` (no erased twin — see §2.7).
+- **Adopt `#[async_trait]` crate-wide** (D4 / §2.7): `Provider`'s lifecycle methods move from RPITIT to `#[async_trait]`; the `Erased*`/`*Fn` boxed-future machinery is deleted (folded into trait methods); the erasure types are renamed (`AnyManagedResource`→`ManagedHandle`, `AnyResource`→`ResourceDescriptor`, `ErasedResourceRegistrar`→`ResourceActivator`, `acquire_erased_for`→`acquire_any`, `ErasedAcquireFn` removed). Mirror the override into the path-standard + `feedback_idiom_currency` memory + a short ADR.
 - **Add `InstanceStore<Slot>`** as the framework-owned storage handle topologies borrow but never own. The existing `PoolRuntime` / `ResidentRuntime` internal fields become `InstanceStore` specializations; the 2-arm `match` in the revoke fence / slot-hook dispatch becomes a uniform fence over `InstanceStore`.
 - **Add the admission axis**: `AdmissionPhase` (new enum, orthogonal to `ResourcePhase`), `Load`, `LoadDetail`, `CheckCost`, `Ticket`, `Unavailable`. The legacy phase-only engine projection stays until Spec 2 lands the admission read, then is amputated (deferred #7).
 - **Lifecycle methods go async/fallible/ordered** (A4/A5/A6): `on_release`, `destroy(timeout)`, per-acquire session-init. Revises canon §11.4 — a follow-up canon edit accompanies this.
@@ -417,7 +442,7 @@ Deferred items 5–7 from the prior plan (local to nebula-resource; may interlea
 
 ### Risks
 
-1. **Erasure leak onto authors (mitigated, not eliminated).** The RPITIT `Topology` is generic over `Slot`, so authors never write `Box<dyn Any>` or `Pin<Box<dyn Future>>` — the framework's blanket impl erases. Residual risk: the `Lease<Slot>` / `Ticket<Slot>` types must be ergonomic enough that authors don't reach around them. Mitigation: ship the batteries as worked examples; consider a derive-macro path for the common cases.
+1. **Erasure leak onto authors (mitigated, not eliminated).** Authors write `async fn` (`#[async_trait]`) over a concrete `Slot`; the framework erases `R` once at the `ManagedHandle` boundary, so authors never write `Box<dyn Any>` or a boxed future. Residual risk: the `Lease<Slot>` / `Ticket<Slot>` types must be ergonomic enough that authors don't reach around them. Mitigation: ship the batteries as worked examples; consider a derive-macro path for the common cases.
 2. **TOCTOU (resolved by construction).** `try_reserve → Ticket → acquire(ticket)` makes the admission grant a held value; you cannot acquire without a ticket, cannot ticket without capacity. The only gauge (`load()`) is explicitly non-gating.
 3. **Scheduler coupling to topology internals (mitigated by the closed vocabulary).** Spec 2 couples only to `Ticket` / `Unavailable` (closed) + `AdmissionPhase` (closed) + `Load.saturation` (a single `f32`, opaque `detail` ignored). It never reads `available_permits` / `open` / `max`. A new topology with no semaphore still returns a `saturation` and a `Ticket` — no ripple into engine code.
 4. **Author implements topology wrong → cross-tenant bleed (mitigated structurally).** The adversary's sharpest attack. Mitigation is the `InstanceStore` rule, enforced by API shape: a `Topology` has no field for instance storage and is handed `&InstanceStore<Slot>` it cannot retain past a call. It physically cannot build a host-keyed `static` cache that bypasses `SlotIdentity`. The revoke-epoch fence runs in Manager code on every return-to-store path regardless of the author's `on_release`. An author can write a *slow* or *incorrect-reset* topology (their own correctness), but cannot reopen the tenant barrier or skip the revoke fence.
