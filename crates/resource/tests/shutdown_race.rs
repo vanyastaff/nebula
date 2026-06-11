@@ -33,7 +33,7 @@ use nebula_resource::{
     AcquireOptions, Manager, RegistrationSpec, ResourceContext, ScopeLevel, ShutdownConfig,
     SlotIdentity, TopologyTag,
     error::{Error, ErrorKind},
-    resource::{Resource, ResourceConfig, ResourceMetadata},
+    resource::{HasCredentialSlots, Resource, ResourceConfig, ResourceMetadata},
     runtime::{TopologyRuntime, resident::ResidentRuntime},
     topology::{resident, resident::Resident},
 };
@@ -45,22 +45,8 @@ use tokio_util::sync::CancellationToken;
 // in-flight window before triggering shutdown.
 // ---------------------------------------------------------------------------
 
-#[derive(Debug)]
-struct SlowError(&'static str);
-
-impl std::fmt::Display for SlowError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl std::error::Error for SlowError {}
-
-impl From<SlowError> for Error {
-    fn from(e: SlowError) -> Self {
-        Error::permanent(e.0)
-    }
-}
+// Custom error boilerplate removed — Resource lifecycle methods now return
+// `crate::Error` directly (HasCredentialSlots redesign).
 
 #[derive(Clone, Debug, Default)]
 struct SlowConfig;
@@ -87,8 +73,6 @@ impl SlowCreateResource {
 impl Resource for SlowCreateResource {
     type Config = SlowConfig;
     type Runtime = ();
-    type Lease = ();
-    type Error = SlowError;
 
     fn key() -> ResourceKey {
         nebula_core::resource_key!("test.shutdown_race.slow")
@@ -98,7 +82,7 @@ impl Resource for SlowCreateResource {
         &self,
         _config: &Self::Config,
         _ctx: &ResourceContext,
-    ) -> impl Future<Output = Result<(), SlowError>> + Send {
+    ) -> impl Future<Output = Result<(), Error>> + Send {
         let delay = self.create_delay;
         let counter = Arc::clone(&self.create_count);
         async move {
@@ -110,6 +94,12 @@ impl Resource for SlowCreateResource {
 
     fn metadata() -> ResourceMetadata {
         ResourceMetadata::from_key(&Self::key())
+    }
+}
+
+impl HasCredentialSlots for SlowCreateResource {
+    fn credential_slot_epoch(&self) -> u64 {
+        0
     }
 }
 

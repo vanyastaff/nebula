@@ -213,7 +213,10 @@ impl<R: Resource> ManagedResource<R> {
     /// is polled. Dropping the returned future after taint leaves the
     /// resource consistently marked as tainted — no partial-taint state
     /// is possible and new acquires remain rejected.
-    pub(crate) async fn dispatch_slot_hook(&self, slot: &str, refresh: bool) -> Result<(), Error> {
+    pub(crate) async fn dispatch_slot_hook(&self, slot: &str, refresh: bool) -> Result<(), Error>
+    where
+        R: crate::resource::HasCredentialSlots,
+    {
         match &self.topology {
             // Reconcile-aware (per-resource revoke deferral / #680): serialises
             // against the resident `create` slow path and re-delivers the
@@ -223,10 +226,10 @@ impl<R: Resource> ManagedResource<R> {
                 rt.dispatch_resident_hook(&self.resource, slot, refresh)
                     .await
             },
-            TopologyRuntime::Pool(rt) => rt
-                .dispatch_slot_hook_over_idle(&self.resource, slot, refresh)
-                .await
-                .map_err(Into::into),
+            TopologyRuntime::Pool(rt) => {
+                rt.dispatch_slot_hook_over_idle(&self.resource, slot, refresh)
+                    .await
+            },
         }
     }
 }

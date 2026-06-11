@@ -205,8 +205,6 @@ mod tests {
     impl Resource for AccResource {
         type Config = AccConfig;
         type Runtime = Arc<AtomicU64>;
-        type Lease = Arc<AtomicU64>;
-        type Error = AccError;
 
         fn key() -> ResourceKey {
             ResourceKey::new("test.engine_accessor.acc").expect("valid resource key in test")
@@ -216,12 +214,18 @@ mod tests {
             &self,
             _config: &AccConfig,
             _ctx: &ResourceContext,
-        ) -> Result<Arc<AtomicU64>, AccError> {
+        ) -> Result<Arc<AtomicU64>, Error> {
             Ok(Arc::new(AtomicU64::new(42)))
         }
 
         fn metadata() -> ResourceMetadata {
             ResourceMetadata::from_key(&Self::key())
+        }
+    }
+
+    impl nebula_resource::HasCredentialSlots for AccResource {
+        fn credential_slot_epoch(&self) -> u64 {
+            0
         }
     }
 

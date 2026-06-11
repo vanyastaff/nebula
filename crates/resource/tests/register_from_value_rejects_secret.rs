@@ -24,7 +24,7 @@ use nebula_expression::ExpressionEngine;
 use nebula_resource::{
     Manager, ResidentConfig, ResourceContext,
     error::Error,
-    resource::{Resource, ResourceConfig, ResourceMetadata},
+    resource::{HasCredentialSlots, Resource, ResourceConfig, ResourceMetadata},
     runtime::{TopologyRuntime, resident::ResidentRuntime},
     topology::resident::Resident,
 };
@@ -73,22 +73,8 @@ impl ResourceConfig for DbConfig {
     }
 }
 
-#[derive(Debug, Clone)]
-struct DbError(String);
-
-impl std::fmt::Display for DbError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for DbError {}
-
-impl From<DbError> for Error {
-    fn from(e: DbError) -> Self {
-        Error::transient(e.0)
-    }
-}
+// Custom error boilerplate removed — Resource lifecycle methods now return
+// `crate::Error` directly (HasCredentialSlots redesign).
 
 #[derive(Clone)]
 struct Db;
@@ -96,23 +82,27 @@ struct Db;
 impl Resource for Db {
     type Config = DbConfig;
     type Runtime = Arc<()>;
-    type Lease = Arc<()>;
-    type Error = DbError;
 
     fn key() -> ResourceKey {
         resource_key!("secret-config-guard-db")
     }
 
-    async fn create(&self, _config: &DbConfig, _ctx: &ResourceContext) -> Result<Arc<()>, DbError> {
+    async fn create(&self, _config: &DbConfig, _ctx: &ResourceContext) -> Result<Arc<()>, Error> {
         Ok(Arc::new(()))
     }
 
-    async fn destroy(&self, _runtime: Arc<()>) -> Result<(), DbError> {
+    async fn destroy(&self, _runtime: Arc<()>) -> Result<(), Error> {
         Ok(())
     }
 
     fn metadata() -> ResourceMetadata {
         ResourceMetadata::from_key(&Self::key())
+    }
+}
+
+impl HasCredentialSlots for Db {
+    fn credential_slot_epoch(&self) -> u64 {
+        0
     }
 }
 

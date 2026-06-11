@@ -145,20 +145,22 @@ struct SecretRes {
 impl Resource for SecretRes {
     type Config = Cfg;
     type Runtime = SecretRuntime;
-    type Lease = SecretRuntime;
-    type Error = HookError;
 
     fn key() -> ResourceKey {
         resource_key!("wired-redaction-res")
     }
 
-    async fn create(&self, _c: &Cfg, _x: &ResourceContext) -> Result<SecretRuntime, HookError> {
+    async fn create(&self, _c: &Cfg, _x: &ResourceContext) -> Result<SecretRuntime, ResourceError> {
         Ok(SecretRuntime {
             secret: SECRET.to_owned(),
         })
     }
 
-    async fn on_credential_refresh(&self, _s: &str, rt: &SecretRuntime) -> Result<(), HookError> {
+    async fn on_credential_refresh(
+        &self,
+        _s: &str,
+        rt: &SecretRuntime,
+    ) -> Result<(), ResourceError> {
         self.hook_entered.fetch_add(1, Ordering::SeqCst);
         // Genuinely handle the secret-bearing runtime on the rotation
         // path so redaction is not vacuously true.
@@ -166,7 +168,11 @@ impl Resource for SecretRes {
         Ok(())
     }
 
-    async fn on_credential_revoke(&self, _s: &str, rt: &SecretRuntime) -> Result<(), HookError> {
+    async fn on_credential_revoke(
+        &self,
+        _s: &str,
+        rt: &SecretRuntime,
+    ) -> Result<(), ResourceError> {
         self.hook_entered.fetch_add(1, Ordering::SeqCst);
         let _ = rt.secret.len();
         Ok(())
@@ -174,6 +180,12 @@ impl Resource for SecretRes {
 
     fn metadata() -> ResourceMetadata {
         ResourceMetadata::from_key(&Self::key())
+    }
+}
+
+impl nebula_resource::HasCredentialSlots for SecretRes {
+    fn credential_slot_epoch(&self) -> u64 {
+        0
     }
 }
 

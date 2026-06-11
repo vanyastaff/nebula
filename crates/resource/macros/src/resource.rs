@@ -58,8 +58,6 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
     let key_lit = &attrs.key;
     let config_ty = &attrs.config;
     let runtime_ty = &attrs.runtime;
-    let lease_ty = &attrs.lease;
-    let error_ty = &attrs.error;
     let topology_ident = attrs.topology_ident();
 
     // Resource trait impl — the `create()` body must be supplied by the implementor.
@@ -68,19 +66,17 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
         impl #impl_generics ::nebula_resource::Resource for #struct_name #ty_generics #where_clause {
             type Config = #config_ty;
             type Runtime = #runtime_ty;
-            type Lease = #lease_ty;
-            type Error = #error_ty;
 
             fn key() -> ::nebula_core::ResourceKey {
                 ::nebula_core::ResourceKey::new(#key_lit)
-                    .expect("invalid resource key in #[resource] attribute")
+                    .expect("resource key literal in #[resource(key = ...)] must be a valid ResourceKey")
             }
 
             fn create(
                 &self,
                 _config: &Self::Config,
                 _ctx: &::nebula_resource::ResourceContext,
-            ) -> impl ::std::future::Future<Output = ::std::result::Result<Self::Runtime, Self::Error>> + Send {
+            ) -> impl ::std::future::Future<Output = ::std::result::Result<Self::Runtime, ::nebula_resource::Error>> + Send {
                 async move {
                     ::std::todo!(
                         "implement `Resource::create` for `{}`",
@@ -88,14 +84,16 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
                     )
                 }
             }
+        }
+    };
 
-            // per-resource revoke deferral: an order-sensitive positional fold over
-            // every declared `#[credential]` `SlotCell` field's
-            // generation (NOT `max` — `max` misses a rotation of a
-            // non-max slot, #690 review / #680). Derive-emitted so a
-            // newly-added slot is folded in automatically (no author
-            // discipline). Closes the create-vs-rotate lost-update race
-            // when paired with the Resident build-epoch reconcile.
+    // HasCredentialSlots impl — order-sensitive positional fold over every
+    // declared `#[credential]` SlotCell field's generation (NOT `max` —
+    // `max` misses a rotation of a non-max slot, see resident reconcile
+    // invariant). Derive-emitted so a newly-added slot is folded in
+    // automatically without author discipline.
+    let has_credential_slots_impl = quote! {
+        impl #impl_generics ::nebula_resource::HasCredentialSlots for #struct_name #ty_generics #where_clause {
             fn credential_slot_epoch(&self) -> u64 {
                 #credential_slot_epoch_body
             }
@@ -137,6 +135,7 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
 
     Ok(quote! {
         #resource_impl
+        #has_credential_slots_impl
         #deps_impl
         #topology_const
         #slot_accessor_impl

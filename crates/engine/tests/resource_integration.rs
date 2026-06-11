@@ -307,8 +307,6 @@ struct IntegrationProbeResource;
 impl Resource for IntegrationProbeResource {
     type Config = IntegrationProbeConfig;
     type Runtime = Arc<AtomicU64>;
-    type Lease = Arc<AtomicU64>;
-    type Error = IntegrationProbeError;
 
     fn key() -> ResourceKey {
         resource_key!("test.engine_integration.probe")
@@ -318,12 +316,18 @@ impl Resource for IntegrationProbeResource {
         &self,
         _config: &IntegrationProbeConfig,
         _ctx: &ResourceContext,
-    ) -> Result<Arc<AtomicU64>, IntegrationProbeError> {
+    ) -> Result<Arc<AtomicU64>, ResourceError> {
         Ok(Arc::new(AtomicU64::new(7)))
     }
 
     fn metadata() -> ResourceMetadata {
         ResourceMetadata::from_key(&Self::key())
+    }
+}
+
+impl nebula_resource::HasCredentialSlots for IntegrationProbeResource {
+    fn credential_slot_epoch(&self) -> u64 {
+        0
     }
 }
 
@@ -609,8 +613,6 @@ mod shared_resource {
     impl Resource for TelegramBot {
         type Config = TelegramConfig;
         type Runtime = Arc<TelegramBotInner>;
-        type Lease = Arc<TelegramBotInner>;
-        type Error = TelegramError;
 
         fn key() -> ResourceKey {
             resource_key!("telegram-bot")
@@ -620,7 +622,7 @@ mod shared_resource {
             &self,
             _config: &TelegramConfig,
             _ctx: &ResourceContext,
-        ) -> impl Future<Output = Result<Arc<TelegramBotInner>, TelegramError>> + Send {
+        ) -> impl Future<Output = Result<Arc<TelegramBotInner>, Error>> + Send {
             let counter = Arc::clone(&self.create_counter);
             async move {
                 // Yield once to widen the concurrent-acquire interleaving
@@ -632,12 +634,18 @@ mod shared_resource {
             }
         }
 
-        async fn destroy(&self, _runtime: Arc<TelegramBotInner>) -> Result<(), TelegramError> {
+        async fn destroy(&self, _runtime: Arc<TelegramBotInner>) -> Result<(), Error> {
             Ok(())
         }
 
         fn metadata() -> ResourceMetadata {
             ResourceMetadata::from_key(&Self::key())
+        }
+    }
+
+    impl nebula_resource::HasCredentialSlots for TelegramBot {
+        fn credential_slot_epoch(&self) -> u64 {
+            0
         }
     }
 
@@ -668,8 +676,6 @@ mod shared_resource {
     impl Resource for AlternateBot {
         type Config = TelegramConfig;
         type Runtime = Arc<TelegramBotInner>;
-        type Lease = Arc<TelegramBotInner>;
-        type Error = TelegramError;
 
         fn key() -> ResourceKey {
             resource_key!("telegram-bot-alt")
@@ -679,7 +685,7 @@ mod shared_resource {
             &self,
             _config: &TelegramConfig,
             _ctx: &ResourceContext,
-        ) -> impl Future<Output = Result<Arc<TelegramBotInner>, TelegramError>> + Send {
+        ) -> impl Future<Output = Result<Arc<TelegramBotInner>, Error>> + Send {
             let counter = Arc::clone(&self.create_counter);
             async move {
                 tokio::task::yield_now().await;
@@ -690,12 +696,18 @@ mod shared_resource {
             }
         }
 
-        async fn destroy(&self, _runtime: Arc<TelegramBotInner>) -> Result<(), TelegramError> {
+        async fn destroy(&self, _runtime: Arc<TelegramBotInner>) -> Result<(), Error> {
             Ok(())
         }
 
         fn metadata() -> ResourceMetadata {
             ResourceMetadata::from_key(&Self::key())
+        }
+    }
+
+    impl nebula_resource::HasCredentialSlots for AlternateBot {
+        fn credential_slot_epoch(&self) -> u64 {
+            0
         }
     }
 

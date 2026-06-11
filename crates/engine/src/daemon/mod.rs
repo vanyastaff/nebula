@@ -57,13 +57,15 @@ pub trait Daemon: Resource {
     ///
     /// # Errors
     ///
-    /// Returns `Self::Error` if the daemon encounters a fatal error.
+    /// Returns [`nebula_resource::Error`] if the daemon encounters a fatal
+    /// error (classified via [`nebula_resource::ErrorKind`] so the restart
+    /// loop can distinguish transient from permanent exits).
     fn run(
         &self,
         runtime: &Self::Runtime,
         ctx: &ResourceContext,
         cancel: CancellationToken,
-    ) -> impl Future<Output = Result<(), Self::Error>> + Send;
+    ) -> impl Future<Output = Result<(), nebula_resource::Error>> + Send;
 }
 
 /// Configuration types for the daemon module.

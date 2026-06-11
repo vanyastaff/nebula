@@ -298,8 +298,6 @@ impl GoogleSheets {
 impl Resource for GoogleSheets {
     type Config = GoogleSheetsConfig;
     type Runtime = GoogleSheetsClient;
-    type Lease = GoogleSheetsClient;
-    type Error = SheetsError;
 
     fn key() -> ResourceKey {
         resource_key!("demo.google.sheets")
@@ -309,7 +307,7 @@ impl Resource for GoogleSheets {
         &self,
         config: &GoogleSheetsConfig,
         _ctx: &ResourceContext,
-    ) -> impl Future<Output = Result<GoogleSheetsClient, SheetsError>> + Send {
+    ) -> impl Future<Output = Result<GoogleSheetsClient, ResourceError>> + Send {
         let cred = Arc::clone(&self.cred);
         let counter = Arc::clone(&self.create_counter);
         let app = config.application.clone();
@@ -326,13 +324,19 @@ impl Resource for GoogleSheets {
         }
     }
 
-    async fn destroy(&self, _runtime: GoogleSheetsClient) -> Result<(), SheetsError> {
+    async fn destroy(&self, _runtime: GoogleSheetsClient) -> Result<(), ResourceError> {
         tracing::info!("Resource::destroy — releasing GoogleSheetsClient");
         Ok(())
     }
 
     fn metadata() -> ResourceMetadata {
         ResourceMetadata::from_key(&Self::key())
+    }
+}
+
+impl nebula_resource::HasCredentialSlots for GoogleSheets {
+    fn credential_slot_epoch(&self) -> u64 {
+        0
     }
 }
 

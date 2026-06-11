@@ -28,7 +28,7 @@ use nebula_resource::{
     AcquireOptions, Manager, RegisterOptions, RegistrationSpec, Resource, ResourceConfig,
     ResourceContext, SlotIdentity,
     error::Error,
-    resource::ResourceMetadata,
+    resource::{HasCredentialSlots, ResourceMetadata},
     runtime::{TopologyRuntime, pool::PoolRuntime, resident::ResidentRuntime},
     topology::{
         pooled::{BrokenCheck, Pooled, RecycleDecision},
@@ -37,22 +37,8 @@ use nebula_resource::{
 };
 use tokio_util::sync::CancellationToken;
 
-#[derive(Debug)]
-struct CountingError(String);
-
-impl std::fmt::Display for CountingError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for CountingError {}
-
-impl From<CountingError> for Error {
-    fn from(e: CountingError) -> Self {
-        Error::transient(e.0)
-    }
-}
+// Custom error boilerplate removed — Resource lifecycle methods now return
+// `crate::Error` directly (HasCredentialSlots redesign).
 
 /// `fingerprint()` deliberately left at the `0` default: the row separation
 /// must come from the resolved slot identity, never the author overriding
@@ -80,27 +66,27 @@ struct PoolRes {
 impl Resource for PoolRes {
     type Config = CountingConfig;
     type Runtime = u64;
-    type Lease = u64;
-    type Error = CountingError;
 
     fn key() -> ResourceKey {
         resource_key!("acquire-for-pool")
     }
 
-    async fn create(
-        &self,
-        _config: &CountingConfig,
-        _ctx: &ResourceContext,
-    ) -> Result<u64, CountingError> {
+    async fn create(&self, _config: &CountingConfig, _ctx: &ResourceContext) -> Result<u64, Error> {
         Ok(self.create_counter.fetch_add(1, Ordering::SeqCst))
     }
 
-    async fn destroy(&self, _runtime: u64) -> Result<(), CountingError> {
+    async fn destroy(&self, _runtime: u64) -> Result<(), Error> {
         Ok(())
     }
 
     fn metadata() -> ResourceMetadata {
         ResourceMetadata::from_key(&Self::key())
+    }
+}
+
+impl HasCredentialSlots for PoolRes {
+    fn credential_slot_epoch(&self) -> u64 {
+        0
     }
 }
 
@@ -113,7 +99,7 @@ impl Pooled for PoolRes {
         &self,
         _runtime: &u64,
         _metrics: &nebula_resource::topology::pooled::InstanceMetrics,
-    ) -> Result<RecycleDecision, CountingError> {
+    ) -> Result<RecycleDecision, Error> {
         Ok(RecycleDecision::Keep)
     }
 }
@@ -239,42 +225,38 @@ struct ResRes {
 impl Resource for ResRes {
     type Config = CountingConfig;
     type Runtime = u64;
-    type Lease = u64;
-    type Error = CountingError;
 
     fn key() -> ResourceKey {
         resource_key!("acquire-for-resident")
     }
 
-    async fn create(
-        &self,
-        _config: &CountingConfig,
-        _ctx: &ResourceContext,
-    ) -> Result<u64, CountingError> {
+    async fn create(&self, _config: &CountingConfig, _ctx: &ResourceContext) -> Result<u64, Error> {
         Ok(self.create_counter.fetch_add(1, Ordering::SeqCst))
     }
 
-    async fn destroy(&self, _runtime: u64) -> Result<(), CountingError> {
+    async fn destroy(&self, _runtime: u64) -> Result<(), Error> {
         Ok(())
     }
 
-    async fn on_credential_refresh(
-        &self,
-        _slot: &str,
-        _runtime: &u64,
-    ) -> Result<(), CountingError> {
+    async fn on_credential_refresh(&self, _slot: &str, _runtime: &u64) -> Result<(), Error> {
         self.refresh_total.fetch_add(1, Ordering::SeqCst);
         self.refresh_saw.store(self.id_tag, Ordering::SeqCst);
         Ok(())
     }
 
-    async fn on_credential_revoke(&self, _slot: &str, _runtime: &u64) -> Result<(), CountingError> {
+    async fn on_credential_revoke(&self, _slot: &str, _runtime: &u64) -> Result<(), Error> {
         self.revoke_saw.store(self.id_tag, Ordering::SeqCst);
         Ok(())
     }
 
     fn metadata() -> ResourceMetadata {
         ResourceMetadata::from_key(&Self::key())
+    }
+}
+
+impl HasCredentialSlots for ResRes {
+    fn credential_slot_epoch(&self) -> u64 {
+        0
     }
 }
 

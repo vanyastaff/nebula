@@ -20,7 +20,7 @@ use nebula_expression::ExpressionEngine;
 use nebula_resource::{
     Manager, ResidentConfig, ResourceContext,
     error::Error,
-    resource::{Resource, ResourceConfig, ResourceMetadata},
+    resource::{HasCredentialSlots, Resource, ResourceConfig, ResourceMetadata},
     runtime::{TopologyRuntime, resident::ResidentRuntime},
     topology::resident::Resident,
 };
@@ -56,46 +56,33 @@ impl ResourceConfig for PgConfig {
     }
 }
 
-#[derive(Debug, Clone)]
-struct PgError(String);
-
-impl std::fmt::Display for PgError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for PgError {}
-
-impl From<PgError> for Error {
-    fn from(e: PgError) -> Self {
-        Error::transient(e.0)
-    }
-}
-
 #[derive(Clone)]
 struct Postgres;
 
 impl Resource for Postgres {
     type Config = PgConfig;
     type Runtime = Arc<()>;
-    type Lease = Arc<()>;
-    type Error = PgError;
 
     fn key() -> ResourceKey {
         resource_key!("phase9-pg")
     }
 
-    async fn create(&self, _config: &PgConfig, _ctx: &ResourceContext) -> Result<Arc<()>, PgError> {
+    async fn create(&self, _config: &PgConfig, _ctx: &ResourceContext) -> Result<Arc<()>, Error> {
         Ok(Arc::new(()))
     }
 
-    async fn destroy(&self, _runtime: Arc<()>) -> Result<(), PgError> {
+    async fn destroy(&self, _runtime: Arc<()>) -> Result<(), Error> {
         Ok(())
     }
 
     fn metadata() -> ResourceMetadata {
         ResourceMetadata::from_key(&Self::key())
+    }
+}
+
+impl HasCredentialSlots for Postgres {
+    fn credential_slot_epoch(&self) -> u64 {
+        0
     }
 }
 

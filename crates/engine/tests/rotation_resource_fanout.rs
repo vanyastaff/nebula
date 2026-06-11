@@ -76,23 +76,21 @@ struct Ctl {
 impl Resource for Ctl {
     type Config = Cfg;
     type Runtime = ();
-    type Lease = ();
-    type Error = HookError;
 
     fn key() -> ResourceKey {
         resource_key!("it-fanout-ctl")
     }
 
-    async fn create(&self, _c: &Cfg, _x: &ResourceContext) -> Result<(), HookError> {
+    async fn create(&self, _c: &Cfg, _x: &ResourceContext) -> Result<(), ResourceError> {
         Ok(())
     }
 
-    async fn on_credential_refresh(&self, _s: &str, _r: &()) -> Result<(), HookError> {
+    async fn on_credential_refresh(&self, _s: &str, _r: &()) -> Result<(), ResourceError> {
         self.refresh_entered.fetch_add(1, Ordering::SeqCst);
         let b = *self
             .behaviour
             .lock()
-            .expect("behaviour map")
+            .expect("behaviour map lock poisoned")
             .get(&self.identity)
             .unwrap_or(&Behaviour::Ok);
         match b {
@@ -108,6 +106,12 @@ impl Resource for Ctl {
 
     fn metadata() -> ResourceMetadata {
         ResourceMetadata::from_key(&Self::key())
+    }
+}
+
+impl nebula_resource::HasCredentialSlots for Ctl {
+    fn credential_slot_epoch(&self) -> u64 {
+        0
     }
 }
 

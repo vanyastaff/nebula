@@ -255,6 +255,25 @@ impl<S> SlotCell<S> {
     }
 }
 
+/// Convenience alias for the standard credential slot field type.
+///
+/// `CredentialSlot<C>` is exactly `SlotCell<nebula_credential::CredentialGuard<C>>`.
+/// Use this alias in your resource struct's `#[credential]` fields to reduce
+/// field-type noise:
+///
+/// ```ignore
+/// use nebula_resource::CredentialSlot;
+///
+/// struct Postgres {
+///     #[credential("db")]
+///     iam: CredentialSlot<IamToken>,
+/// }
+/// ```
+///
+/// Both syntactic shapes — `SlotCell<CredentialGuard<C>>` and
+/// `CredentialSlot<C>` — are accepted by `#[derive(ResourceSlots)]`.
+pub type CredentialSlot<C> = SlotCell<nebula_credential::CredentialGuard<C>>;
+
 impl<S> Default for SlotCell<S> {
     fn default() -> Self {
         Self::empty()

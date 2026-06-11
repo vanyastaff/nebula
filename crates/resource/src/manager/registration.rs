@@ -54,7 +54,10 @@ impl Manager {
     /// # Errors
     ///
     /// Returns an error if config validation fails on the provided config.
-    pub fn register<R: Resource>(&self, spec: RegistrationSpec<R>) -> Result<(), Error> {
+    pub fn register<R: Resource + crate::resource::HasCredentialSlots>(
+        &self,
+        spec: RegistrationSpec<R>,
+    ) -> Result<(), Error> {
         use crate::resource::ResourceConfig as _;
 
         let RegistrationSpec {
@@ -398,7 +401,7 @@ impl Manager {
         recovery_gate: Option<Arc<RecoveryGate>>,
     ) -> Result<crate::dedup::SlotIdentity, Error>
     where
-        R: Resource + nebula_core::DeclaresDependencies,
+        R: Resource + crate::resource::HasCredentialSlots + nebula_core::DeclaresDependencies,
         R::Config: serde::de::DeserializeOwned,
     {
         // 0. Validate that every binding matches a declared credential slot.

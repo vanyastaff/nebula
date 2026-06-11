@@ -338,9 +338,9 @@ impl<R: Resource> PoolRuntime<R> {
         resource: &R,
         slot: &str,
         refresh: bool,
-    ) -> Result<(), R::Error> {
+    ) -> Result<(), Error> {
         let idle = self.idle.lock().await;
-        let mut first_err: Option<R::Error> = None;
+        let mut first_err: Option<Error> = None;
         for entry in &*idle {
             let res = if refresh {
                 resource.on_credential_refresh(slot, &entry.runtime).await
@@ -464,8 +464,6 @@ impl<R: Resource> PoolRuntime<R> {
 impl<R> PoolRuntime<R>
 where
     R: Pooled + Clone + Send + Sync + 'static,
-    R::Runtime: Into<R::Lease>,
-    R::Lease: Into<R::Runtime>,
     R::Runtime: Clone,
 {
     /// Acquires an instance from the pool.
@@ -542,16 +540,15 @@ where
             let entry = guard.defuse();
             let _ = resource.destroy(entry.runtime).await;
             // permit drops here, returning the slot.
-            return Err(e.into());
+            return Err(e);
         }
 
         let entry = guard.defuse();
         // Fence: a revoke that landed while this create was in flight must
         // not be handed onward (HikariCP #1836).
         let entry = self.fence_freshly_created(entry, resource).await?;
-        let lease: R::Lease = entry.runtime.clone().into();
         Ok(self.build_guarded_handle(
-            lease,
+            entry.runtime.clone(),
             entry,
             permit,
             resource.clone(),
@@ -645,15 +642,14 @@ where
             if let Err(e) = resource.prepare(guard.runtime(), ctx).await {
                 let entry = guard.defuse();
                 let _ = resource.destroy(entry.runtime).await;
-                return Err(e.into());
+                return Err(e);
             }
 
             let mut entry = guard.defuse();
             entry.metrics.checkout_count += 1;
 
-            let lease: R::Lease = entry.runtime.clone().into();
             return Ok(IdleResult::Found(self.build_guarded_handle(
-                lease,
+                entry.runtime.clone(),
                 entry,
                 permit,
                 resource.clone(),
@@ -753,7 +749,7 @@ where
         let runtime =
             match tokio::time::timeout_at(deadline.into(), resource.create(config, ctx)).await {
                 Ok(Ok(rt)) => rt,
-                Ok(Err(e)) => return Err(e.into()),
+                Ok(Err(e)) => return Err(e),
                 Err(_timeout) => {
                     return Err(Error::transient(ERR_CREATE_TIMED_OUT));
                 },
@@ -817,7 +813,7 @@ where
     )]
     fn build_guarded_handle(
         &self,
-        lease: R::Lease,
+        runtime: R::Runtime,
         entry: PoolEntry<R>,
         permit: OwnedSemaphorePermit,
         resource: R,
@@ -831,16 +827,16 @@ where
         let max_lifetime = self.config.max_lifetime;
 
         ResourceGuard::guarded_with_permit(
-            lease,
+            runtime,
             R::key(),
             TopologyTag::Pool,
             generation,
-            move |returned_lease: R::Lease, tainted| {
+            move |returned_runtime: R::Runtime, tainted| {
                 if let Some(m) = &metrics {
                     m.record_release();
                 }
 
-                let runtime: R::Runtime = returned_lease.into();
+                let runtime = returned_runtime;
                 // Track tainted returns in error_count so `Pooled::recycle`
                 // implementations can make informed keep-or-drop decisions
                 // based on accumulated failure history.
@@ -961,16 +957,15 @@ where
         if let Err(e) = resource.prepare(guard.runtime(), ctx).await {
             let entry = guard.defuse();
             let _ = resource.destroy(entry.runtime).await;
-            return Err(e.into());
+            return Err(e);
         }
 
         let entry = guard.defuse();
         // Fence: a revoke that landed while this create was in flight must
         // not be handed onward (HikariCP #1836).
         let entry = self.fence_freshly_created(entry, resource).await?;
-        let lease: R::Lease = entry.runtime.clone().into();
         Ok(self.build_guarded_handle(
-            lease,
+            entry.runtime.clone(),
             entry,
             permit,
             resource.clone(),
@@ -1191,12 +1186,12 @@ where
 {
     // Tainted — destroy immediately.
     if tainted {
-        return resource.destroy(entry.runtime).await.map_err(Into::into);
+        return resource.destroy(entry.runtime).await;
     }
 
     // Stale fingerprint — config changed since checkout.
     if entry.fingerprint != current_fp {
-        return resource.destroy(entry.runtime).await.map_err(Into::into);
+        return resource.destroy(entry.runtime).await;
     }
 
     // Credential revoked while this handle was checked out (or while its
@@ -1208,17 +1203,17 @@ where
     // revoke at any point up to this check destroys the instance instead of
     // returning it to idle.
     if entry.revoke_epoch != revoke_epoch.load(Ordering::Acquire) {
-        return resource.destroy(entry.runtime).await.map_err(Into::into);
+        return resource.destroy(entry.runtime).await;
     }
 
     // Max lifetime exceeded.
     if max_lifetime.is_some_and(|max| entry.metrics.created_at.elapsed() > max) {
-        return resource.destroy(entry.runtime).await.map_err(Into::into);
+        return resource.destroy(entry.runtime).await;
     }
 
     // Broken check (sync).
     if resource.is_broken(&entry.runtime).is_broken() {
-        return resource.destroy(entry.runtime).await.map_err(Into::into);
+        return resource.destroy(entry.runtime).await;
     }
 
     // Async recycle check.
@@ -1232,16 +1227,14 @@ where
             let mut idle = idle.lock().await;
             if entry.revoke_epoch != revoke_epoch.load(Ordering::Acquire) {
                 drop(idle);
-                return resource.destroy(entry.runtime).await.map_err(Into::into);
+                return resource.destroy(entry.runtime).await;
             }
             let mut entry = entry;
             entry.returned_at = Some(Instant::now());
             idle.push_back(entry);
             Ok(())
         },
-        Ok(RecycleDecision::Drop) | Err(_) => {
-            resource.destroy(entry.runtime).await.map_err(Into::into)
-        },
+        Ok(RecycleDecision::Drop) | Err(_) => resource.destroy(entry.runtime).await,
     }
 }
 
@@ -1272,7 +1265,6 @@ where
 struct CreateGuard<R>
 where
     R: Pooled + Clone + Send + Sync + 'static,
-    R::Lease: Into<R::Runtime>,
 {
     /// `None` after [`defuse`](Self::defuse) took it out; `Some(_)`
     /// for any guard a caller can still observe. `Drop` short-circuits
@@ -1292,7 +1284,6 @@ where
 impl<R> CreateGuard<R>
 where
     R: Pooled + Clone + Send + Sync + 'static,
-    R::Lease: Into<R::Runtime>,
 {
     /// Creates a new guard wrapping the given pool entry.
     fn new(entry: PoolEntry<R>, resource: R, release_queue: Arc<ReleaseQueue>) -> Self {
@@ -1341,7 +1332,6 @@ where
 impl<R> Drop for CreateGuard<R>
 where
     R: Pooled + Clone + Send + Sync + 'static,
-    R::Lease: Into<R::Runtime>,
 {
     fn drop(&mut self) {
         let Some(entry) = self.entry.take() else {
@@ -1386,7 +1376,7 @@ mod tests {
     use crate::{
         context::ResourceContext,
         options::AcquireOptions,
-        resource::{ResourceConfig, ResourceMetadata},
+        resource::{HasCredentialSlots, ResourceConfig, ResourceMetadata},
         topology::pooled::BrokenCheck,
     };
 
@@ -1414,23 +1404,6 @@ mod tests {
         }
     }
 
-    #[derive(Debug, Clone)]
-    struct MockError(String);
-
-    impl std::fmt::Display for MockError {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.write_str(&self.0)
-        }
-    }
-
-    impl std::error::Error for MockError {}
-
-    impl From<MockError> for Error {
-        fn from(e: MockError) -> Self {
-            Error::transient(e.0)
-        }
-    }
-
     #[derive(Clone)]
     struct PoolTestConfig;
 
@@ -1445,8 +1418,6 @@ mod tests {
     impl Resource for MockPool {
         type Config = PoolTestConfig;
         type Runtime = u32;
-        type Lease = u32;
-        type Error = MockError;
 
         fn key() -> ResourceKey {
             resource_key!("mock-pool")
@@ -1456,35 +1427,41 @@ mod tests {
             &self,
             _config: &PoolTestConfig,
             _ctx: &ResourceContext,
-        ) -> impl Future<Output = Result<u32, MockError>> + Send {
+        ) -> impl Future<Output = Result<u32, Error>> + Send {
             let fail = self.fail_create.load(Ordering::Relaxed);
             async move {
                 if fail {
-                    Err(MockError("create failed".into()))
+                    Err(Error::transient("create failed"))
                 } else {
                     Ok(1)
                 }
             }
         }
 
-        fn check(&self, _runtime: &u32) -> impl Future<Output = Result<(), MockError>> + Send {
+        fn check(&self, _runtime: &u32) -> impl Future<Output = Result<(), Error>> + Send {
             let fail = self.fail_check.load(Ordering::Relaxed);
             async move {
                 if fail {
-                    Err(MockError("check failed".into()))
+                    Err(Error::transient("check failed"))
                 } else {
                     Ok(())
                 }
             }
         }
 
-        async fn destroy(&self, _runtime: u32) -> Result<(), MockError> {
+        async fn destroy(&self, _runtime: u32) -> Result<(), Error> {
             self.destroy_count.fetch_add(1, Ordering::Relaxed);
             Ok(())
         }
 
         fn metadata() -> ResourceMetadata {
             ResourceMetadata::from_key(&Self::key())
+        }
+    }
+
+    impl HasCredentialSlots for MockPool {
+        fn credential_slot_epoch(&self) -> u64 {
+            0
         }
     }
 

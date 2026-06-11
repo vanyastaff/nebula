@@ -367,7 +367,7 @@ where
 
 impl<R, FRes, FTopo, FAcq> ErasedResourceRegistrar for TypedResourceRegistrar<R, FRes, FTopo, FAcq>
 where
-    R: Resource + nebula_core::DeclaresDependencies,
+    R: Resource + nebula_resource::HasCredentialSlots + nebula_core::DeclaresDependencies,
     R::Config: serde::de::DeserializeOwned,
     FRes: Fn() -> R + Send + Sync,
     FTopo: Fn() -> TopologyRuntime<R> + Send + Sync,
@@ -844,8 +844,6 @@ mod tests {
     impl Resource for TestRes {
         type Config = TestConfig;
         type Runtime = Arc<AtomicU64>;
-        type Lease = Arc<AtomicU64>;
-        type Error = TestError;
 
         fn key() -> ResourceKey {
             resource_key!("test-registrar-res")
@@ -855,7 +853,7 @@ mod tests {
             &self,
             _config: &TestConfig,
             _ctx: &nebula_resource::ResourceContext,
-        ) -> impl Future<Output = Result<Arc<AtomicU64>, TestError>> + Send {
+        ) -> impl Future<Output = Result<Arc<AtomicU64>, ResourceError>> + Send {
             let counter = self.create_counter.clone();
             async move {
                 let id = counter.fetch_add(1, Ordering::Relaxed);
@@ -876,6 +874,12 @@ mod tests {
     // `TestRes` declares no credential slots, so the default
     // `DeclaresDependencies` (empty) impl is correct.
     impl nebula_core::DeclaresDependencies for TestRes {}
+
+    impl nebula_resource::HasCredentialSlots for TestRes {
+        fn credential_slot_epoch(&self) -> u64 {
+            0
+        }
+    }
 
     impl Resident for TestRes {
         fn is_alive_sync(&self, runtime: &Arc<AtomicU64>) -> bool {
@@ -1170,8 +1174,6 @@ mod tests {
         impl Resource for OResource {
             type Config = OConfig;
             type Runtime = ();
-            type Lease = ();
-            type Error = OError;
 
             fn key() -> ResourceKey {
                 resource_key!("ordering.widget")
@@ -1181,7 +1183,7 @@ mod tests {
                 &self,
                 _config: &OConfig,
                 _ctx: &nebula_resource::ResourceContext,
-            ) -> Result<(), OError> {
+            ) -> Result<(), ResourceError> {
                 Ok(())
             }
 
@@ -1192,6 +1194,12 @@ mod tests {
                     String::new(),
                     <OConfig as HasSchema>::schema(),
                 )
+            }
+        }
+
+        impl nebula_resource::HasCredentialSlots for OResource {
+            fn credential_slot_epoch(&self) -> u64 {
+                0
             }
         }
 

@@ -4,13 +4,13 @@
 //!
 //! ## `#[derive(Resource)]`
 //!
-//! Generates `impl Resource` and `impl DeclaresDependencies` for a struct
-//! whose fields enumerate the credentials it depends on via `#[credential]`
-//! slot attributes.
+//! Generates `impl Resource`, `impl HasCredentialSlots`, and
+//! `impl DeclaresDependencies` for a struct whose fields enumerate the
+//! credentials it depends on via `#[credential]` slot attributes.
 //!
 //! ```ignore
 //! use nebula_credential::CredentialGuard;
-//! use nebula_resource::Resource;
+//! use nebula_resource::{Resource, SlotCell};
 //!
 //! #[derive(Resource)]
 //! #[resource(
@@ -18,15 +18,10 @@
 //!     topology = "pool",
 //!     config = PostgresConfig,
 //!     runtime = PgConnection,
-//!     lease = PgConnection,
-//!     error = PgError,
 //! )]
 //! struct Postgres {
 //!     #[credential(key = "db_auth", purpose = "Main DB auth")]
-//!     db_auth: CredentialGuard<DatabaseCredential>,
-//!
-//!     #[credential(key = "audit", purpose = "Audit log auth")]
-//!     audit: Option<CredentialGuard<AuditCredential>>,
+//!     db_auth: SlotCell<CredentialGuard<DatabaseCredential>>,
 //! }
 //! ```
 //!
@@ -58,21 +53,18 @@ mod resource_attrs;
 /// Derive macro for the `Resource` trait (slot model).
 ///
 /// Emits `impl Resource for Foo` (with `todo!()` `create` body — the
-/// implementor supplies it) and `impl DeclaresDependencies for Foo`
-/// enumerating credential slot fields declared via `#[credential]`.
+/// implementor supplies it), `impl HasCredentialSlots for Foo` (order-sensitive
+/// epoch fold over all `#[credential]` slots), and `impl DeclaresDependencies
+/// for Foo` enumerating credential slot fields declared via `#[credential]`.
 ///
 /// # Container attribute
 ///
-/// `#[resource(key = "...", topology = "...", config = Type, runtime = Type, lease = Type, error =
-/// Type)]`
+/// `#[resource(key = "...", topology = "...", config = Type, runtime = Type)]`
 ///
 /// - `key = "..."` — required. Unique resource identifier (lowercase + underscores).
-/// - `topology = "pool" | "resident" | "bounded"` — required. (`bounded`
-///   folds the former `service` / `transport` / `exclusive` topologies.)
+/// - `topology = "pool" | "resident"` — required.
 /// - `config = ConfigType` — required. The `Self::Config` associated type.
 /// - `runtime = RuntimeType` — optional. Defaults to `()`.
-/// - `lease = LeaseType` — optional. Defaults to `Self::Runtime`.
-/// - `error = ErrorType` — optional. Defaults to `nebula_resource::Error`.
 ///
 /// # Field attributes
 ///

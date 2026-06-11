@@ -17,7 +17,7 @@ use nebula_resource::{
     guard::ResourceGuard,
     recovery::{GateState, RecoveryGate, RecoveryGateConfig},
     release_queue::ReleaseQueue,
-    resource::{Resource, ResourceConfig, ResourceMetadata},
+    resource::{HasCredentialSlots, Resource, ResourceConfig, ResourceMetadata},
     runtime::{TopologyRuntime, pool::PoolRuntime, resident::ResidentRuntime},
     topology::{
         pooled::{BrokenCheck, Pooled, RecycleDecision},
@@ -26,26 +26,8 @@ use nebula_resource::{
     },
 };
 
-// ---------------------------------------------------------------------------
-// Mock resource error
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone)]
-struct TestError(String);
-
-impl std::fmt::Display for TestError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for TestError {}
-
-impl From<TestError> for Error {
-    fn from(e: TestError) -> Self {
-        Error::transient(e.0)
-    }
-}
+// Custom error boilerplate removed — Resource lifecycle methods now return
+// `crate::Error` directly (HasCredentialSlots redesign).
 
 // ---------------------------------------------------------------------------
 // Mock config
@@ -104,8 +86,6 @@ impl PoolTestResource {
 impl Resource for PoolTestResource {
     type Config = TestConfig;
     type Runtime = Arc<AtomicU64>;
-    type Lease = Arc<AtomicU64>;
-    type Error = TestError;
 
     fn key() -> ResourceKey {
         resource_key!("test-pool")
@@ -115,7 +95,7 @@ impl Resource for PoolTestResource {
         &self,
         _config: &TestConfig,
         _ctx: &ResourceContext,
-    ) -> impl Future<Output = Result<Arc<AtomicU64>, TestError>> + Send {
+    ) -> impl Future<Output = Result<Arc<AtomicU64>, Error>> + Send {
         let counter = self.create_counter.clone();
         async move {
             let id = counter.fetch_add(1, Ordering::Relaxed);
@@ -123,13 +103,19 @@ impl Resource for PoolTestResource {
         }
     }
 
-    async fn destroy(&self, _runtime: Arc<AtomicU64>) -> Result<(), TestError> {
+    async fn destroy(&self, _runtime: Arc<AtomicU64>) -> Result<(), Error> {
         self.destroy_counter.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 
     fn metadata() -> ResourceMetadata {
         ResourceMetadata::from_key(&Self::key())
+    }
+}
+
+impl HasCredentialSlots for PoolTestResource {
+    fn credential_slot_epoch(&self) -> u64 {
+        0
     }
 }
 
@@ -146,7 +132,7 @@ impl Pooled for PoolTestResource {
         &self,
         _runtime: &Arc<AtomicU64>,
         _metrics: &nebula_resource::topology::pooled::InstanceMetrics,
-    ) -> Result<RecycleDecision, TestError> {
+    ) -> Result<RecycleDecision, Error> {
         Ok(RecycleDecision::Keep)
     }
 }
@@ -179,8 +165,6 @@ impl ResidentTestResource {
 impl Resource for ResidentTestResource {
     type Config = TestConfig;
     type Runtime = Arc<AtomicU64>;
-    type Lease = Arc<AtomicU64>;
-    type Error = TestError;
 
     fn key() -> ResourceKey {
         resource_key!("test-resident")
@@ -190,7 +174,7 @@ impl Resource for ResidentTestResource {
         &self,
         _config: &TestConfig,
         _ctx: &ResourceContext,
-    ) -> impl Future<Output = Result<Arc<AtomicU64>, TestError>> + Send {
+    ) -> impl Future<Output = Result<Arc<AtomicU64>, Error>> + Send {
         let counter = self.create_counter.clone();
         async move {
             let id = counter.fetch_add(1, Ordering::Relaxed);
@@ -198,12 +182,18 @@ impl Resource for ResidentTestResource {
         }
     }
 
-    async fn destroy(&self, _runtime: Arc<AtomicU64>) -> Result<(), TestError> {
+    async fn destroy(&self, _runtime: Arc<AtomicU64>) -> Result<(), Error> {
         Ok(())
     }
 
     fn metadata() -> ResourceMetadata {
         ResourceMetadata::from_key(&Self::key())
+    }
+}
+
+impl HasCredentialSlots for ResidentTestResource {
+    fn credential_slot_epoch(&self) -> u64 {
+        0
     }
 }
 
@@ -259,8 +249,7 @@ async fn poll_until(deadline: std::time::Duration, mut cond: impl FnMut() -> boo
 async fn wait_idle_count<R>(pool: &PoolRuntime<R>, expected: usize)
 where
     R: Pooled + Clone + Send + Sync + 'static,
-    R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
-    R::Lease: Into<R::Runtime> + Send + 'static,
+    R::Runtime: Clone + Send + Sync + 'static,
 {
     let deadline = std::time::Duration::from_secs(2);
     let start = std::time::Instant::now();
@@ -851,8 +840,6 @@ struct SlowCreatePoolResource {
 impl Resource for SlowCreatePoolResource {
     type Config = TestConfig;
     type Runtime = Arc<AtomicU64>;
-    type Lease = Arc<AtomicU64>;
-    type Error = TestError;
 
     fn key() -> ResourceKey {
         resource_key!("slow-create-pool")
@@ -862,7 +849,7 @@ impl Resource for SlowCreatePoolResource {
         &self,
         _config: &TestConfig,
         _ctx: &ResourceContext,
-    ) -> Result<Arc<AtomicU64>, TestError> {
+    ) -> Result<Arc<AtomicU64>, Error> {
         let now = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
         // Update peak = max(peak, now) via `AtomicU64::update` (Rust 1.95).
         // Load and store orderings both SeqCst — match the prior CAS loop.
@@ -874,12 +861,18 @@ impl Resource for SlowCreatePoolResource {
         Ok(Arc::new(AtomicU64::new(0)))
     }
 
-    async fn destroy(&self, _runtime: Arc<AtomicU64>) -> Result<(), TestError> {
+    async fn destroy(&self, _runtime: Arc<AtomicU64>) -> Result<(), Error> {
         Ok(())
     }
 
     fn metadata() -> ResourceMetadata {
         ResourceMetadata::from_key(&Self::key())
+    }
+}
+
+impl HasCredentialSlots for SlowCreatePoolResource {
+    fn credential_slot_epoch(&self) -> u64 {
+        0
     }
 }
 
@@ -892,7 +885,7 @@ impl Pooled for SlowCreatePoolResource {
         &self,
         _runtime: &Arc<AtomicU64>,
         _metrics: &nebula_resource::topology::pooled::InstanceMetrics,
-    ) -> Result<RecycleDecision, TestError> {
+    ) -> Result<RecycleDecision, Error> {
         Ok(RecycleDecision::Keep)
     }
 }
@@ -2143,8 +2136,6 @@ impl FailingResidentResource {
 impl Resource for FailingResidentResource {
     type Config = TestConfig;
     type Runtime = Arc<AtomicU64>;
-    type Lease = Arc<AtomicU64>;
-    type Error = TestError;
 
     fn key() -> ResourceKey {
         resource_key!("test-failing-resident")
@@ -2154,24 +2145,30 @@ impl Resource for FailingResidentResource {
         &self,
         _config: &TestConfig,
         _ctx: &ResourceContext,
-    ) -> impl Future<Output = Result<Arc<AtomicU64>, TestError>> + Send {
+    ) -> impl Future<Output = Result<Arc<AtomicU64>, Error>> + Send {
         let count = self.create_count.fetch_add(1, Ordering::Relaxed);
         let threshold = self.failures_before_success;
         async move {
             if count < threshold {
-                Err(TestError("transient failure".into()))
+                Err(Error::transient("transient failure"))
             } else {
                 Ok(Arc::new(AtomicU64::new(count)))
             }
         }
     }
 
-    async fn destroy(&self, _runtime: Arc<AtomicU64>) -> Result<(), TestError> {
+    async fn destroy(&self, _runtime: Arc<AtomicU64>) -> Result<(), Error> {
         Ok(())
     }
 
     fn metadata() -> ResourceMetadata {
         ResourceMetadata::from_key(&Self::key())
+    }
+}
+
+impl HasCredentialSlots for FailingResidentResource {
+    fn credential_slot_epoch(&self) -> u64 {
+        0
     }
 }
 
@@ -2202,8 +2199,6 @@ impl BlockingResidentResource {
 impl Resource for BlockingResidentResource {
     type Config = TestConfig;
     type Runtime = Arc<AtomicU64>;
-    type Lease = Arc<AtomicU64>;
-    type Error = TestError;
 
     fn key() -> ResourceKey {
         resource_key!("test-blocking-resident")
@@ -2213,15 +2208,15 @@ impl Resource for BlockingResidentResource {
         &self,
         _config: &TestConfig,
         _ctx: &ResourceContext,
-    ) -> impl Future<Output = Result<Arc<AtomicU64>, TestError>> + Send {
+    ) -> impl Future<Output = Result<Arc<AtomicU64>, Error>> + Send {
         let unblock = Arc::clone(&self.unblock);
         async move {
             unblock.notified().await;
-            Err(TestError("unblocked but never satisfied".into()))
+            Err(Error::transient("unblocked but never satisfied"))
         }
     }
 
-    async fn destroy(&self, _runtime: Arc<AtomicU64>) -> Result<(), TestError> {
+    async fn destroy(&self, _runtime: Arc<AtomicU64>) -> Result<(), Error> {
         Ok(())
     }
 
@@ -2230,27 +2225,15 @@ impl Resource for BlockingResidentResource {
     }
 }
 
+impl HasCredentialSlots for BlockingResidentResource {
+    fn credential_slot_epoch(&self) -> u64 {
+        0
+    }
+}
+
 impl Resident for BlockingResidentResource {
     fn is_alive_sync(&self, _runtime: &Arc<AtomicU64>) -> bool {
         true
-    }
-}
-
-/// Error that maps to a permanent (non-retryable) resource error.
-#[derive(Debug, Clone)]
-struct PermanentTestError(String);
-
-impl std::fmt::Display for PermanentTestError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for PermanentTestError {}
-
-impl From<PermanentTestError> for Error {
-    fn from(e: PermanentTestError) -> Self {
-        Error::permanent(e.0)
     }
 }
 
@@ -2271,8 +2254,6 @@ impl PermanentFailResource {
 impl Resource for PermanentFailResource {
     type Config = TestConfig;
     type Runtime = Arc<AtomicU64>;
-    type Lease = Arc<AtomicU64>;
-    type Error = PermanentTestError;
 
     fn key() -> ResourceKey {
         resource_key!("test-permanent-fail")
@@ -2282,17 +2263,23 @@ impl Resource for PermanentFailResource {
         &self,
         _config: &TestConfig,
         _ctx: &ResourceContext,
-    ) -> impl Future<Output = Result<Arc<AtomicU64>, PermanentTestError>> + Send {
+    ) -> impl Future<Output = Result<Arc<AtomicU64>, Error>> + Send {
         self.create_count.fetch_add(1, Ordering::Relaxed);
-        async { Err(PermanentTestError("permanent failure".into())) }
+        async { Err(Error::permanent("permanent failure")) }
     }
 
-    async fn destroy(&self, _runtime: Arc<AtomicU64>) -> Result<(), PermanentTestError> {
+    async fn destroy(&self, _runtime: Arc<AtomicU64>) -> Result<(), Error> {
         Ok(())
     }
 
     fn metadata() -> ResourceMetadata {
         ResourceMetadata::from_key(&Self::key())
+    }
+}
+
+impl HasCredentialSlots for PermanentFailResource {
+    fn credential_slot_epoch(&self) -> u64 {
+        0
     }
 }
 
@@ -2651,19 +2638,23 @@ struct HandleDummyResource;
 impl Resource for HandleDummyResource {
     type Config = TestConfig;
     type Runtime = u32;
-    type Lease = u32;
-    type Error = TestError;
 
     fn key() -> ResourceKey {
         resource_key!("handle-dummy")
     }
 
-    async fn create(&self, _config: &TestConfig, _ctx: &ResourceContext) -> Result<u32, TestError> {
+    async fn create(&self, _config: &TestConfig, _ctx: &ResourceContext) -> Result<u32, Error> {
         Ok(1)
     }
 
     fn metadata() -> ResourceMetadata {
         ResourceMetadata::from_key(&Self::key())
+    }
+}
+
+impl HasCredentialSlots for HandleDummyResource {
+    fn credential_slot_epoch(&self) -> u64 {
+        0
     }
 }
 
@@ -2709,31 +2700,27 @@ fn panic_in_release_callback_does_not_abort() {
 }
 
 #[tokio::test]
-async fn release_shared_guard_runs_teardown_and_returns_ok() {
-    // The `Shared` (Arc-wrapped) arm of `release()` has no production topology
-    // producer today, but `ResourceGuard::shared` is public API. Exercise that
-    // match arm directly: `release()` must run the teardown future to
-    // completion (awaited via the detached teardown task, not left to the
-    // `Drop` queue) and surface its `Ok`.
+async fn release_guarded_handle_runs_teardown_and_returns_ok() {
+    // `release()` on a guarded handle must run the release callback to
+    // completion and surface its `Ok` — the callback must be invoked before
+    // `release()` returns, not deferred to the Drop queue.
     use nebula_resource::guard::ResourceGuard;
 
     let (queue, _queue_handle) = ReleaseQueue::new(1);
     let queue = Arc::new(queue);
 
     let ran = Arc::new(AtomicBool::new(false));
-    let ran_cb = Arc::clone(&ran);
+    let ran_clone = Arc::clone(&ran);
 
-    let guard = ResourceGuard::<HandleDummyResource>::shared(
-        Arc::new(42_u32),
+    let guard = ResourceGuard::<HandleDummyResource>::guarded(
+        42_u32,
         resource_key!("handle-dummy"),
         nebula_resource::TopologyTag::Resident,
         1,
-        move |_tainted: bool| {
-            let ran = Arc::clone(&ran_cb);
-            Box::pin(async move {
-                ran.store(true, Ordering::Relaxed);
-                Ok::<(), Error>(())
-            }) as std::pin::Pin<Box<dyn Future<Output = Result<(), Error>> + Send>>
+        move |_runtime, _tainted| {
+            ran_clone.store(true, Ordering::Relaxed);
+            Box::pin(async { Ok::<(), Error>(()) })
+                as std::pin::Pin<Box<dyn Future<Output = Result<(), Error>> + Send>>
         },
         queue,
     );
@@ -2741,10 +2728,10 @@ async fn release_shared_guard_runs_teardown_and_returns_ok() {
     guard
         .release()
         .await
-        .expect("release of a shared guard runs its teardown future and returns Ok");
+        .expect("release() on a guarded handle must complete without error");
     assert!(
         ran.load(Ordering::Relaxed),
-        "the shared release future must have run to completion (awaited by release(), not left to the Drop queue)"
+        "release callback must have run before release() returned"
     );
 }
 
@@ -2769,19 +2756,17 @@ impl SlowDestroyPoolResource {
 impl Resource for SlowDestroyPoolResource {
     type Config = TestConfig;
     type Runtime = ();
-    type Lease = ();
-    type Error = TestError;
 
     fn key() -> ResourceKey {
         resource_key!("slow-destroy-pool")
     }
 
-    async fn create(&self, _config: &TestConfig, _ctx: &ResourceContext) -> Result<(), TestError> {
+    async fn create(&self, _config: &TestConfig, _ctx: &ResourceContext) -> Result<(), Error> {
         self.create_counter.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 
-    async fn destroy(&self, _runtime: ()) -> Result<(), TestError> {
+    async fn destroy(&self, _runtime: ()) -> Result<(), Error> {
         // Long enough that a 20ms release() timeout reliably fires first.
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         self.destroy_counter.fetch_add(1, Ordering::Relaxed);
@@ -2790,6 +2775,12 @@ impl Resource for SlowDestroyPoolResource {
 
     fn metadata() -> ResourceMetadata {
         ResourceMetadata::from_key(&Self::key())
+    }
+}
+
+impl HasCredentialSlots for SlowDestroyPoolResource {
+    fn credential_slot_epoch(&self) -> u64 {
+        0
     }
 }
 
@@ -3023,8 +3014,6 @@ impl DropOnRecycleResource {
 impl Resource for DropOnRecycleResource {
     type Config = TestConfig;
     type Runtime = Arc<AtomicU64>;
-    type Lease = Arc<AtomicU64>;
-    type Error = TestError;
 
     fn key() -> ResourceKey {
         resource_key!("drop-on-recycle")
@@ -3034,7 +3023,7 @@ impl Resource for DropOnRecycleResource {
         &self,
         _config: &TestConfig,
         _ctx: &ResourceContext,
-    ) -> impl Future<Output = Result<Arc<AtomicU64>, TestError>> + Send {
+    ) -> impl Future<Output = Result<Arc<AtomicU64>, Error>> + Send {
         let counter = self.create_counter.clone();
         async move {
             let id = counter.fetch_add(1, Ordering::Relaxed);
@@ -3042,7 +3031,7 @@ impl Resource for DropOnRecycleResource {
         }
     }
 
-    async fn destroy(&self, _runtime: Arc<AtomicU64>) -> Result<(), TestError> {
+    async fn destroy(&self, _runtime: Arc<AtomicU64>) -> Result<(), Error> {
         self.destroy_counter.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
@@ -3052,12 +3041,18 @@ impl Resource for DropOnRecycleResource {
     }
 }
 
+impl HasCredentialSlots for DropOnRecycleResource {
+    fn credential_slot_epoch(&self) -> u64 {
+        0
+    }
+}
+
 impl Pooled for DropOnRecycleResource {
     async fn recycle(
         &self,
         _runtime: &Arc<AtomicU64>,
         _metrics: &nebula_resource::topology::pooled::InstanceMetrics,
-    ) -> Result<RecycleDecision, TestError> {
+    ) -> Result<RecycleDecision, Error> {
         Ok(RecycleDecision::Drop)
     }
 }
@@ -3339,8 +3334,6 @@ impl ReloadPoolResource {
 impl Resource for ReloadPoolResource {
     type Config = ReloadConfig;
     type Runtime = Arc<AtomicU64>;
-    type Lease = Arc<AtomicU64>;
-    type Error = TestError;
 
     fn key() -> ResourceKey {
         resource_key!("test-reload-pool")
@@ -3350,7 +3343,7 @@ impl Resource for ReloadPoolResource {
         &self,
         _config: &ReloadConfig,
         _ctx: &ResourceContext,
-    ) -> impl Future<Output = Result<Arc<AtomicU64>, TestError>> + Send {
+    ) -> impl Future<Output = Result<Arc<AtomicU64>, Error>> + Send {
         let counter = self.create_counter.clone();
         async move {
             let id = counter.fetch_add(1, Ordering::Relaxed);
@@ -3360,6 +3353,12 @@ impl Resource for ReloadPoolResource {
 
     fn metadata() -> ResourceMetadata {
         ResourceMetadata::from_key(&Self::key())
+    }
+}
+
+impl HasCredentialSlots for ReloadPoolResource {
+    fn credential_slot_epoch(&self) -> u64 {
+        0
     }
 }
 

@@ -302,8 +302,6 @@ mod tests {
     impl Resource for FlakyDaemon {
         type Config = EmptyCfg;
         type Runtime = ();
-        type Lease = ();
-        type Error = TestError;
 
         fn key() -> ResourceKey {
             ResourceKey::new("daemon-flaky").unwrap()
@@ -313,7 +311,7 @@ mod tests {
             &self,
             _config: &Self::Config,
             _ctx: &ResourceContext,
-        ) -> Result<(), TestError> {
+        ) -> Result<(), ResourceError> {
             Ok(())
         }
 
@@ -328,9 +326,9 @@ mod tests {
             _runtime: &Self::Runtime,
             _ctx: &ResourceContext,
             _cancel: CancellationToken,
-        ) -> Result<(), TestError> {
+        ) -> Result<(), ResourceError> {
             self.attempts.fetch_add(1, Ordering::SeqCst);
-            Err(TestError("intentional"))
+            Err(TestError("intentional").into())
         }
     }
 
@@ -340,8 +338,6 @@ mod tests {
     impl Resource for OneShotDaemon {
         type Config = EmptyCfg;
         type Runtime = ();
-        type Lease = ();
-        type Error = TestError;
 
         fn key() -> ResourceKey {
             ResourceKey::new("daemon-oneshot").unwrap()
@@ -351,7 +347,7 @@ mod tests {
             &self,
             _config: &Self::Config,
             _ctx: &ResourceContext,
-        ) -> Result<(), TestError> {
+        ) -> Result<(), ResourceError> {
             Ok(())
         }
 
@@ -366,7 +362,7 @@ mod tests {
             _runtime: &Self::Runtime,
             _ctx: &ResourceContext,
             _cancel: CancellationToken,
-        ) -> Result<(), TestError> {
+        ) -> Result<(), ResourceError> {
             Ok(())
         }
     }

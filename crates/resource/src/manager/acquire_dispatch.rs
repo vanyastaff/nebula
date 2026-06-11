@@ -32,9 +32,12 @@ pub(crate) fn noop_erased_acquire() -> ErasedAcquireFn {
 
 fn arc_acquire_resident<R>() -> ErasedAcquireFn
 where
-    R: crate::topology::resident::Resident + Send + Sync + 'static,
-    R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
-    R::Lease: Clone + Send + 'static,
+    R: crate::topology::resident::Resident
+        + crate::resource::HasCredentialSlots
+        + Send
+        + Sync
+        + 'static,
+    R::Runtime: Clone + Send + Sync + 'static,
 {
     Arc::new(move |mgr, ctx, opts, resolved| {
         Box::pin(async move {
@@ -49,8 +52,7 @@ where
 fn arc_acquire_pooled<R>() -> ErasedAcquireFn
 where
     R: crate::topology::pooled::Pooled + Clone + Send + Sync + 'static,
-    R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
-    R::Lease: Into<R::Runtime> + Send + 'static,
+    R::Runtime: Clone + Send + Sync + 'static,
 {
     Arc::new(move |mgr, ctx, opts, resolved| {
         Box::pin(async move {
@@ -70,9 +72,12 @@ where
 /// re-pinned by a captured slot identity (walk-1 already matched it).
 pub(crate) fn erased_acquire_resident<R>() -> ErasedAcquireFn
 where
-    R: crate::topology::resident::Resident + Send + Sync + 'static,
-    R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
-    R::Lease: Clone + Send + 'static,
+    R: crate::topology::resident::Resident
+        + crate::resource::HasCredentialSlots
+        + Send
+        + Sync
+        + 'static,
+    R::Runtime: Clone + Send + Sync + 'static,
 {
     arc_acquire_resident::<R>()
 }
@@ -84,8 +89,7 @@ where
 pub(crate) fn erased_acquire_pooled<R>() -> ErasedAcquireFn
 where
     R: crate::topology::pooled::Pooled + Clone + Send + Sync + 'static,
-    R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
-    R::Lease: Into<R::Runtime> + Send + 'static,
+    R::Runtime: Clone + Send + Sync + 'static,
 {
     arc_acquire_pooled::<R>()
 }

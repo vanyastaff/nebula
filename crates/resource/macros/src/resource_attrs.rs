@@ -28,16 +28,12 @@ pub(crate) struct ResourceAttrs {
     pub config: Type,
     /// Optional `Self::Runtime` type — defaults to `()`.
     pub runtime: Type,
-    /// Optional `Self::Lease` type — defaults to `Self::Runtime`.
-    pub lease: Type,
-    /// Optional `Self::Error` type — defaults to `nebula_resource::Error`.
-    pub error: Type,
 }
 
 impl ResourceAttrs {
     /// Parse from `#[resource(...)]` attribute args.
     pub(crate) fn parse(attr_args: &attrs::AttrArgs, struct_name: &Ident) -> Result<Self> {
-        const ALLOWED: &[&str] = &["key", "topology", "config", "runtime", "lease", "error"];
+        const ALLOWED: &[&str] = &["key", "topology", "config", "runtime"];
         for item in &attr_args.items {
             let key = match item {
                 attrs::AttrItem::KeyValue { key, .. }
@@ -87,20 +83,12 @@ impl ResourceAttrs {
         let runtime = attr_args
             .get_type("runtime")?
             .unwrap_or_else(|| syn::parse_quote!(()));
-        let lease = attr_args
-            .get_type("lease")?
-            .unwrap_or_else(|| runtime.clone());
-        let error = attr_args
-            .get_type("error")?
-            .unwrap_or_else(|| syn::parse_quote!(::nebula_resource::Error));
 
         Ok(Self {
             key,
             topology,
             config,
             runtime,
-            lease,
-            error,
         })
     }
 

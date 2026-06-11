@@ -21,7 +21,7 @@ use crate::{
     error::Error,
     guard::ResourceGuard,
     options::AcquireOptions,
-    resource::Resource,
+    resource::{HasCredentialSlots, Resource},
     topology::resident::{Resident, config::Config},
     topology_tag::TopologyTag,
 };
@@ -75,7 +75,7 @@ pub struct ResidentRuntime<R: Resource> {
     built_epoch: AtomicU64,
 }
 
-impl<R: Resource> ResidentRuntime<R> {
+impl<R: Resource + HasCredentialSlots> ResidentRuntime<R> {
     /// Creates a new resident runtime with the given configuration.
     pub fn new(config: Config) -> Self {
         Self {
@@ -211,7 +211,7 @@ impl<R: Resource> ResidentRuntime<R> {
                 // credential, so the next dispatch must re-attempt. The
                 // error propagates so the dispatch outcome is recorded as
                 // failed — never a skipped-because-stale success.
-                Err(e.into())
+                Err(e)
             },
         }
     }
@@ -219,8 +219,7 @@ impl<R: Resource> ResidentRuntime<R> {
 
 impl<R> ResidentRuntime<R>
 where
-    R: Resident + Send + Sync + 'static,
-    R::Lease: Clone,
+    R: Resident + HasCredentialSlots + Send + Sync + 'static,
     R::Runtime: Clone + Send + 'static,
 {
     /// Acquires a clone of the shared runtime instance.
@@ -241,16 +240,17 @@ where
         resource_config: &R::Config,
         ctx: &ResourceContext,
         _options: &AcquireOptions,
-    ) -> Result<ResourceGuard<R>, Error>
-    where
-        R::Runtime: Into<R::Lease>,
-    {
+    ) -> Result<ResourceGuard<R>, Error> {
         // Fast path — lock-free load + liveness check.
         if let Some(existing) = self.cell.load()
             && resource.is_alive_sync(&existing)
         {
-            let lease: R::Lease = (*existing).clone().into();
-            return Ok(ResourceGuard::owned(lease, R::key(), TopologyTag::Resident));
+            let runtime = (*existing).clone();
+            return Ok(ResourceGuard::owned(
+                runtime,
+                R::key(),
+                TopologyTag::Resident,
+            ));
         }
 
         // Slow path — serialise create / recreate.
@@ -259,8 +259,12 @@ where
         // Double-check: another task may have created while we waited.
         if let Some(existing) = self.cell.load() {
             if resource.is_alive_sync(&existing) {
-                let lease: R::Lease = (*existing).clone().into();
-                return Ok(ResourceGuard::owned(lease, R::key(), TopologyTag::Resident));
+                let runtime = (*existing).clone();
+                return Ok(ResourceGuard::owned(
+                    runtime,
+                    R::key(),
+                    TopologyTag::Resident,
+                ));
             }
 
             // Still not alive — destroy and recreate if configured.
@@ -299,7 +303,7 @@ where
         .await
         {
             Ok(Ok(rt)) => rt,
-            Ok(Err(e)) => return Err(e.into()),
+            Ok(Err(e)) => return Err(e),
             Err(_) => return Err(Error::transient("resident: create timed out")),
         };
 
@@ -334,7 +338,7 @@ where
         // dispatch / create-vs-rotate semantics.
         let built_epoch = resource.credential_slot_epoch();
 
-        let lease: R::Lease = runtime.clone().into();
+        let cloned = runtime.clone();
         self.cell.store(Arc::new(runtime));
         // Publish the (runtime, built_epoch) pair. Both writes happen
         // under `create_lock`; the rotation dispatch reads both under the
@@ -342,7 +346,11 @@ where
         // (un-updated) `built_epoch`.
         self.built_epoch.store(built_epoch, Ordering::Release);
 
-        Ok(ResourceGuard::owned(lease, R::key(), TopologyTag::Resident))
+        Ok(ResourceGuard::owned(
+            cloned,
+            R::key(),
+            TopologyTag::Resident,
+        ))
     }
 }
 
@@ -356,7 +364,7 @@ mod tests {
     use crate::{
         context::ResourceContext,
         options::AcquireOptions,
-        resource::{ResourceConfig, ResourceMetadata},
+        resource::{HasCredentialSlots, ResourceConfig, ResourceMetadata},
     };
 
     #[derive(Clone)]
@@ -374,23 +382,6 @@ mod tests {
         }
     }
 
-    #[derive(Debug, Clone)]
-    struct MockError(String);
-
-    impl std::fmt::Display for MockError {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.write_str(&self.0)
-        }
-    }
-
-    impl std::error::Error for MockError {}
-
-    impl From<MockError> for Error {
-        fn from(e: MockError) -> Self {
-            Error::transient(e.0)
-        }
-    }
-
     impl ResourceConfig for bool {
         fn validate(&self) -> Result<(), Error> {
             Ok(())
@@ -400,8 +391,6 @@ mod tests {
     impl Resource for MockResident {
         type Config = bool;
         type Runtime = u32;
-        type Lease = u32;
-        type Error = MockError;
 
         fn key() -> ResourceKey {
             resource_key!("mock-resident")
@@ -411,7 +400,7 @@ mod tests {
             &self,
             _config: &bool,
             _ctx: &ResourceContext,
-        ) -> impl Future<Output = Result<u32, MockError>> + Send {
+        ) -> impl Future<Output = Result<u32, Error>> + Send {
             let count = self.create_count.fetch_add(1, Ordering::Relaxed);
             async move {
                 // Yield to increase the chance of concurrent interleaving.
@@ -420,12 +409,18 @@ mod tests {
             }
         }
 
-        async fn destroy(&self, _runtime: u32) -> Result<(), MockError> {
+        async fn destroy(&self, _runtime: u32) -> Result<(), Error> {
             Ok(())
         }
 
         fn metadata() -> ResourceMetadata {
             ResourceMetadata::from_key(&Self::key())
+        }
+    }
+
+    impl HasCredentialSlots for MockResident {
+        fn credential_slot_epoch(&self) -> u64 {
+            0
         }
     }
 
@@ -558,24 +553,28 @@ mod tests {
     impl Resource for HangingResident {
         type Config = bool;
         type Runtime = u32;
-        type Lease = u32;
-        type Error = MockError;
 
         fn key() -> ResourceKey {
             resource_key!("hanging-resident")
         }
 
-        async fn create(&self, _config: &bool, _ctx: &ResourceContext) -> Result<u32, MockError> {
+        async fn create(&self, _config: &bool, _ctx: &ResourceContext) -> Result<u32, Error> {
             tokio::time::sleep(Duration::from_hours(1)).await;
             Ok(0)
         }
 
-        async fn destroy(&self, _runtime: u32) -> Result<(), MockError> {
+        async fn destroy(&self, _runtime: u32) -> Result<(), Error> {
             Ok(())
         }
 
         fn metadata() -> ResourceMetadata {
             ResourceMetadata::from_key(&Self::key())
+        }
+    }
+
+    impl HasCredentialSlots for HangingResident {
+        fn credential_slot_epoch(&self) -> u64 {
+            0
         }
     }
 
@@ -657,7 +656,7 @@ mod tests {
 
     use tokio::sync::Notify;
 
-    use crate::slot::SlotCell;
+    use crate::{Error, slot::SlotCell};
 
     #[derive(Default)]
     struct FakeCred(u32);
@@ -685,14 +684,12 @@ mod tests {
     impl Resource for SlotReadResident {
         type Config = bool;
         type Runtime = u32;
-        type Lease = u32;
-        type Error = MockError;
 
         fn key() -> ResourceKey {
             resource_key!("slot-read-resident")
         }
 
-        async fn create(&self, _config: &bool, _ctx: &ResourceContext) -> Result<u32, MockError> {
+        async fn create(&self, _config: &bool, _ctx: &ResourceContext) -> Result<u32, Error> {
             // Signal "entered, NOT yet read the slot", then park (if armed)
             // so the test can store a fresh credential strictly after
             // `acquire` sampled `credential_slot_epoch()` and strictly
@@ -705,21 +702,23 @@ mod tests {
                 .slot
                 .load()
                 .map(|g| g.0)
-                .ok_or(MockError("slot unbound at create".to_owned()))?;
+                .ok_or_else(|| Error::permanent("slot unbound at create"))?;
             Ok(cred)
         }
 
-        async fn destroy(&self, _runtime: u32) -> Result<(), MockError> {
+        async fn destroy(&self, _runtime: u32) -> Result<(), Error> {
             Ok(())
-        }
-
-        // Mirror the derive: single slot ⇒ epoch == slot generation.
-        fn credential_slot_epoch(&self) -> u64 {
-            self.slot.generation()
         }
 
         fn metadata() -> ResourceMetadata {
             ResourceMetadata::from_key(&Self::key())
+        }
+    }
+
+    impl crate::resource::HasCredentialSlots for SlotReadResident {
+        // Mirror the derive: single slot ⇒ epoch == slot generation.
+        fn credential_slot_epoch(&self) -> u64 {
+            self.slot.generation()
         }
     }
 

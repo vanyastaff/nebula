@@ -123,8 +123,6 @@ impl TelegramBot {
 impl Resource for TelegramBot {
     type Config = TelegramConfig;
     type Runtime = Arc<TelegramBotInner>;
-    type Lease = Arc<TelegramBotInner>;
-    type Error = TelegramError;
 
     fn key() -> ResourceKey {
         resource_key!("demo.telegram.bot")
@@ -134,7 +132,7 @@ impl Resource for TelegramBot {
         &self,
         config: &TelegramConfig,
         _ctx: &ResourceContext,
-    ) -> impl Future<Output = Result<Arc<TelegramBotInner>, TelegramError>> + Send {
+    ) -> impl Future<Output = Result<Arc<TelegramBotInner>, ResourceError>> + Send {
         let counter = Arc::clone(&self.create_counter);
         let handle = config.handle.clone();
         async move {
@@ -152,13 +150,19 @@ impl Resource for TelegramBot {
         }
     }
 
-    async fn destroy(&self, runtime: Arc<TelegramBotInner>) -> Result<(), TelegramError> {
+    async fn destroy(&self, runtime: Arc<TelegramBotInner>) -> Result<(), ResourceError> {
         tracing::info!(instance_id = runtime.instance_id, "destroying Telegram bot");
         Ok(())
     }
 
     fn metadata() -> ResourceMetadata {
         ResourceMetadata::from_key(&Self::key())
+    }
+}
+
+impl nebula_resource::HasCredentialSlots for TelegramBot {
+    fn credential_slot_epoch(&self) -> u64 {
+        0
     }
 }
 

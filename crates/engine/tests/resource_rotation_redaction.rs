@@ -221,14 +221,12 @@ struct SecretBearingResource {
 impl Resource for SecretBearingResource {
     type Config = Cfg;
     type Runtime = SecretRuntime;
-    type Lease = SecretRuntime;
-    type Error = HookError;
 
     fn key() -> ResourceKey {
         resource_key!("rotation-redaction-res")
     }
 
-    async fn create(&self, _c: &Cfg, _x: &ResourceContext) -> Result<SecretRuntime, HookError> {
+    async fn create(&self, _c: &Cfg, _x: &ResourceContext) -> Result<SecretRuntime, ResourceError> {
         Ok(SecretRuntime {
             secret: SECRET.to_owned(),
         })
@@ -238,7 +236,7 @@ impl Resource for SecretBearingResource {
         &self,
         _slot: &str,
         rt: &SecretRuntime,
-    ) -> Result<(), HookError> {
+    ) -> Result<(), ResourceError> {
         self.hook_entered.fetch_add(1, Ordering::SeqCst);
         // Genuinely touch the secret-bearing runtime on the rotation
         // path so this is not a no-op the redaction is vacuously true
@@ -247,21 +245,33 @@ impl Resource for SecretBearingResource {
         match self.behaviour {
             Behaviour::Ok => Ok(()),
             // Credential-free message by construction.
-            Behaviour::Err => Err(HookError("refresh hook rejected: simulated upstream 503")),
+            Behaviour::Err => {
+                Err(HookError("refresh hook rejected: simulated upstream 503").into())
+            },
         }
     }
 
-    async fn on_credential_revoke(&self, _slot: &str, rt: &SecretRuntime) -> Result<(), HookError> {
+    async fn on_credential_revoke(
+        &self,
+        _slot: &str,
+        rt: &SecretRuntime,
+    ) -> Result<(), ResourceError> {
         self.hook_entered.fetch_add(1, Ordering::SeqCst);
         let _ = rt.secret.len();
         match self.behaviour {
             Behaviour::Ok => Ok(()),
-            Behaviour::Err => Err(HookError("revoke hook rejected: simulated upstream 503")),
+            Behaviour::Err => Err(HookError("revoke hook rejected: simulated upstream 503").into()),
         }
     }
 
     fn metadata() -> ResourceMetadata {
         ResourceMetadata::from_key(&Self::key())
+    }
+}
+
+impl nebula_resource::HasCredentialSlots for SecretBearingResource {
+    fn credential_slot_epoch(&self) -> u64 {
+        0
     }
 }
 

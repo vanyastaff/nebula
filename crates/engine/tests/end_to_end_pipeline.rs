@@ -159,8 +159,6 @@ impl From<WitnessError> for ResourceError {
 impl Resource for WitnessResource {
     type Config = WitnessResourceConfig;
     type Runtime = Arc<WitnessResourceInner>;
-    type Lease = Arc<WitnessResourceInner>;
-    type Error = WitnessError;
 
     fn key() -> ResourceKey {
         resource_key!("phase9-witness-resource")
@@ -170,7 +168,7 @@ impl Resource for WitnessResource {
         &self,
         config: &WitnessResourceConfig,
         _ctx: &ResourceContext,
-    ) -> impl Future<Output = Result<Arc<WitnessResourceInner>, WitnessError>> + Send {
+    ) -> impl Future<Output = Result<Arc<WitnessResourceInner>, ResourceError>> + Send {
         let counter = Arc::clone(&self.create_counter);
         let label = config.label.clone();
         async move {
@@ -182,12 +180,18 @@ impl Resource for WitnessResource {
         }
     }
 
-    async fn destroy(&self, _runtime: Arc<WitnessResourceInner>) -> Result<(), WitnessError> {
+    async fn destroy(&self, _runtime: Arc<WitnessResourceInner>) -> Result<(), ResourceError> {
         Ok(())
     }
 
     fn metadata() -> ResourceMetadata {
         ResourceMetadata::from_key(&Self::key())
+    }
+}
+
+impl nebula_resource::HasCredentialSlots for WitnessResource {
+    fn credential_slot_epoch(&self) -> u64 {
+        0
     }
 }
 

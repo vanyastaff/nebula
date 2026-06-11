@@ -21,7 +21,7 @@ use nebula_resource::{
     Manager, ManagerConfig, RegisterOptions, RegistrationSpec, ResidentConfig, Resource,
     ResourceConfig, ResourceContext, SlotCell,
     error::Error,
-    resource::ResourceMetadata,
+    resource::{HasCredentialSlots, ResourceMetadata},
     runtime::{TopologyRuntime, resident::ResidentRuntime},
     topology::resident::Resident,
 };
@@ -86,22 +86,8 @@ mod counting {
         pub db: Arc<SlotCell<CredentialGuard<FakeCred>>>,
     }
 
-    #[derive(Debug)]
-    pub struct CountingError(pub String);
-
-    impl std::fmt::Display for CountingError {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.write_str(&self.0)
-        }
-    }
-
-    impl std::error::Error for CountingError {}
-
-    impl From<CountingError> for Error {
-        fn from(e: CountingError) -> Self {
-            Error::transient(e.0)
-        }
-    }
+    // Custom error boilerplate removed — Resource lifecycle methods now return
+    // `crate::Error` directly (HasCredentialSlots redesign).
 
     #[derive(Clone)]
     pub struct CountingConfig;
@@ -117,8 +103,6 @@ mod counting {
     impl Resource for CountingResource {
         type Config = CountingConfig;
         type Runtime = CountingRuntime;
-        type Lease = CountingRuntime;
-        type Error = CountingError;
 
         fn key() -> ResourceKey {
             resource_key!("counting-resident")
@@ -128,7 +112,7 @@ mod counting {
             &self,
             _config: &CountingConfig,
             _ctx: &ResourceContext,
-        ) -> Result<CountingRuntime, CountingError> {
+        ) -> Result<CountingRuntime, Error> {
             Ok(CountingRuntime {
                 ledger: self.ledger.clone(),
                 tag: RUNTIME_TAG,
@@ -139,7 +123,7 @@ mod counting {
             &self,
             _slot_name: &str,
             runtime: &CountingRuntime,
-        ) -> Result<(), CountingError> {
+        ) -> Result<(), Error> {
             // Proves the live `&Runtime` reached the `&self` hook: we read
             // the tag off the runtime we were handed.
             self.ledger
@@ -153,16 +137,22 @@ mod counting {
             &self,
             _slot_name: &str,
             runtime: &CountingRuntime,
-        ) -> Result<(), CountingError> {
+        ) -> Result<(), Error> {
             runtime.ledger.revoke_calls.fetch_add(1, Ordering::SeqCst);
             if runtime.ledger.revoke_should_fail.load(Ordering::SeqCst) {
-                return Err(CountingError("revoke hook boom".to_owned()));
+                return Err(Error::transient("revoke hook boom"));
             }
             Ok(())
         }
 
         fn metadata() -> ResourceMetadata {
             ResourceMetadata::from_key(&Self::key())
+        }
+    }
+
+    impl HasCredentialSlots for CountingResource {
+        fn credential_slot_epoch(&self) -> u64 {
+            0
         }
     }
 
@@ -1132,7 +1122,7 @@ mod u9_gate {
         AcquireOptions, Manager, RegistrationSpec, ResidentConfig, Resource, ResourceConfig,
         ResourceContext, SlotCell, SlotIdentity,
         error::Error,
-        resource::ResourceMetadata,
+        resource::{HasCredentialSlots, ResourceMetadata},
         runtime::{TopologyRuntime, resident::ResidentRuntime},
         topology::resident::Resident,
     };
@@ -1148,22 +1138,8 @@ mod u9_gate {
         }
     }
 
-    #[derive(Debug)]
-    struct GateErr(String);
-
-    impl std::fmt::Display for GateErr {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.write_str(&self.0)
-        }
-    }
-
-    impl std::error::Error for GateErr {}
-
-    impl From<GateErr> for Error {
-        fn from(e: GateErr) -> Self {
-            Error::transient(e.0)
-        }
-    }
+    // Custom error boilerplate removed — Resource lifecycle methods now return
+    // `crate::Error` directly (HasCredentialSlots redesign).
 
     #[derive(Clone)]
     struct GateConfig;
@@ -1192,8 +1168,6 @@ mod u9_gate {
     impl Resource for GateResource {
         type Config = GateConfig;
         type Runtime = GateRuntime;
-        type Lease = GateRuntime;
-        type Error = GateErr;
 
         fn key() -> ResourceKey {
             resource_key!("u9-gate-resident")
@@ -1203,13 +1177,13 @@ mod u9_gate {
             &self,
             _config: &GateConfig,
             _ctx: &ResourceContext,
-        ) -> Result<GateRuntime, GateErr> {
+        ) -> Result<GateRuntime, Error> {
             // Bind to whatever the slot holds now (realistic resident).
             let _ = self.db.load();
             Ok(GateRuntime)
         }
 
-        async fn destroy(&self, _runtime: GateRuntime) -> Result<(), GateErr> {
+        async fn destroy(&self, _runtime: GateRuntime) -> Result<(), Error> {
             Ok(())
         }
 
@@ -1217,18 +1191,20 @@ mod u9_gate {
             &self,
             _slot: &str,
             _runtime: &GateRuntime,
-        ) -> Result<(), GateErr> {
+        ) -> Result<(), Error> {
             self.refresh_calls.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
 
+        fn metadata() -> ResourceMetadata {
+            ResourceMetadata::from_key(&Self::key())
+        }
+    }
+
+    impl HasCredentialSlots for GateResource {
         // The create-vs-rotate reconcile counter (derive emits exactly this).
         fn credential_slot_epoch(&self) -> u64 {
             self.db.generation()
-        }
-
-        fn metadata() -> ResourceMetadata {
-            ResourceMetadata::from_key(&Self::key())
         }
     }
 
@@ -1357,27 +1333,13 @@ mod reload_deferral {
         Manager, PoolConfig, RegistrationSpec, ReloadOutcome, ResidentConfig, Resource,
         ResourceConfig, ResourceContext, SlotIdentity,
         error::Error,
-        resource::ResourceMetadata,
+        resource::{HasCredentialSlots, ResourceMetadata},
         runtime::{TopologyRuntime, pool::PoolRuntime, resident::ResidentRuntime},
         topology::{pooled::Pooled, resident::Resident},
     };
 
-    #[derive(Debug)]
-    struct RErr(String);
-
-    impl std::fmt::Display for RErr {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.write_str(&self.0)
-        }
-    }
-
-    impl std::error::Error for RErr {}
-
-    impl From<RErr> for Error {
-        fn from(e: RErr) -> Self {
-            Error::transient(e.0)
-        }
-    }
+    // Custom error boilerplate removed — Resource lifecycle methods now return
+    // `crate::Error` directly (HasCredentialSlots redesign).
 
     /// A config whose `fingerprint()` is its `version` field, so a reload
     /// with a different version is actually detected as a change (the `0`
@@ -1406,8 +1368,6 @@ mod reload_deferral {
             impl Resource for $name {
                 type Config = VersionedConfig;
                 type Runtime = u32;
-                type Lease = u32;
-                type Error = RErr;
 
                 fn key() -> ResourceKey {
                     resource_key!($key)
@@ -1417,16 +1377,22 @@ mod reload_deferral {
                     &self,
                     _config: &VersionedConfig,
                     _ctx: &ResourceContext,
-                ) -> Result<u32, RErr> {
+                ) -> Result<u32, Error> {
                     Ok(1)
                 }
 
-                async fn destroy(&self, _runtime: u32) -> Result<(), RErr> {
+                async fn destroy(&self, _runtime: u32) -> Result<(), Error> {
                     Ok(())
                 }
 
                 fn metadata() -> ResourceMetadata {
                     ResourceMetadata::from_key(&Self::key())
+                }
+            }
+
+            impl HasCredentialSlots for $name {
+                fn credential_slot_epoch(&self) -> u64 {
+                    0
                 }
             }
         };

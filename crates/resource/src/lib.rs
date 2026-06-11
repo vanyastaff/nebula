@@ -107,10 +107,11 @@ pub use registry::{AnyManagedResource, LookupOutcome, Registry};
 pub use release_queue::ReleaseQueue;
 pub use reload::ReloadOutcome;
 pub use resource::{
-    AnyResource, MetadataCompatibilityError, Resource, ResourceConfig, ResourceMetadata,
+    AnyResource, HasCredentialSlots, MetadataCompatibilityError, Resource, ResourceConfig,
+    ResourceMetadata,
 };
 pub use resource_ref::ResourceRef;
-pub use slot::SlotCell;
+pub use slot::{CredentialSlot, SlotCell};
 // Runtime types — needed for `Manager::register()`.
 pub use runtime::TopologyRuntime;
 pub use runtime::{

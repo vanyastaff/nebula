@@ -13,14 +13,10 @@ use crate::resource::Resource;
 ///
 /// [`Manager::acquire_resident`](crate::Manager::acquire_resident) requires:
 /// - `R: Send + Sync + 'static`
-/// - `R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static`
-/// - `R::Lease: Clone + Send + 'static`
-///
-/// If `Runtime` and `Lease` are the same type, the blanket
-/// `impl<T> From<T> for T` satisfies the conversion bound automatically.
+/// - `R::Runtime: Clone + Send + Sync + 'static`
 pub trait Resident: Resource
 where
-    Self::Lease: Clone,
+    Self::Runtime: Clone,
 {
     /// Sync O(1) liveness check. NO I/O, NO blocking.
     ///

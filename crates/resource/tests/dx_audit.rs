@@ -29,7 +29,7 @@ use nebula_resource::{
     AcquireOptions, Manager, PoolConfig, RegistrationSpec, ResidentConfig, ResourceContext,
     ResourceGuard, ScopeLevel, ShutdownConfig, SlotIdentity,
     error::{Error, ErrorKind},
-    resource::{Resource, ResourceConfig, ResourceMetadata},
+    resource::{HasCredentialSlots, Resource, ResourceConfig, ResourceMetadata},
     runtime::{TopologyRuntime, pool::PoolRuntime, resident::ResidentRuntime},
     topology::{
         pooled::{BrokenCheck, InstanceMetrics, Pooled, RecycleDecision},
@@ -47,25 +47,9 @@ use nebula_resource::{
 // ============================================================================
 
 // ============================================================================
-// Shared test error type
+// Shared test error type (preserved: documents real newcomer friction with
+// `From<CustomError> for Error` boilerplate before Resource impls compile)
 // ============================================================================
-
-#[derive(Debug, Clone)]
-struct DxTestError(String);
-
-impl std::fmt::Display for DxTestError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for DxTestError {}
-
-impl From<DxTestError> for Error {
-    fn from(e: DxTestError) -> Self {
-        Error::transient(e.0)
-    }
-}
 
 fn test_ctx() -> ResourceContext {
     use nebula_core::scope::Scope;
@@ -130,8 +114,6 @@ struct HttpClientResource {
 impl Resource for HttpClientResource {
     type Config = HttpClientConfig;
     type Runtime = FakeHttpClient;
-    type Lease = FakeHttpClient;
-    type Error = DxTestError;
 
     fn key() -> ResourceKey {
         resource_key!("http.client")
@@ -141,13 +123,19 @@ impl Resource for HttpClientResource {
         &self,
         _config: &HttpClientConfig,
         _ctx: &ResourceContext,
-    ) -> impl Future<Output = Result<FakeHttpClient, DxTestError>> + Send {
+    ) -> impl Future<Output = Result<FakeHttpClient, Error>> + Send {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         async move { Ok(FakeHttpClient { connection_id: id }) }
     }
 
     fn metadata() -> ResourceMetadata {
         ResourceMetadata::from_key(&Self::key())
+    }
+}
+
+impl HasCredentialSlots for HttpClientResource {
+    fn credential_slot_epoch(&self) -> u64 {
+        0
     }
 }
 
@@ -175,7 +163,7 @@ impl Pooled for HttpClientResource {
         &self,
         _runtime: &FakeHttpClient,
         _metrics: &InstanceMetrics,
-    ) -> Result<RecycleDecision, DxTestError> {
+    ) -> Result<RecycleDecision, Error> {
         Ok(RecycleDecision::Keep)
     }
 }
@@ -293,8 +281,6 @@ struct ConfigStoreResource;
 impl Resource for ConfigStoreResource {
     type Config = ConfigStoreConfig;
     type Runtime = ConfigStore;
-    type Lease = ConfigStore;
-    type Error = DxTestError;
 
     fn key() -> ResourceKey {
         resource_key!("config.store")
@@ -304,7 +290,7 @@ impl Resource for ConfigStoreResource {
         &self,
         config: &ConfigStoreConfig,
         _ctx: &ResourceContext,
-    ) -> impl Future<Output = Result<ConfigStore, DxTestError>> + Send {
+    ) -> impl Future<Output = Result<ConfigStore, Error>> + Send {
         let path = config.path.clone();
         async move {
             // Simulate loading from file
@@ -316,6 +302,12 @@ impl Resource for ConfigStoreResource {
                 values: Arc::new(values),
             })
         }
+    }
+}
+
+impl HasCredentialSlots for ConfigStoreResource {
+    fn credential_slot_epoch(&self) -> u64 {
+        0
     }
 }
 
@@ -435,8 +427,6 @@ impl DbResource {
 impl Resource for DbResource {
     type Config = DbConfig;
     type Runtime = FakeDbConnection;
-    type Lease = FakeDbConnection;
-    type Error = DxTestError;
 
     fn key() -> ResourceKey {
         resource_key!("db.connection")
@@ -446,12 +436,12 @@ impl Resource for DbResource {
         &self,
         _config: &DbConfig,
         _ctx: &ResourceContext,
-    ) -> impl Future<Output = Result<FakeDbConnection, DxTestError>> + Send {
+    ) -> impl Future<Output = Result<FakeDbConnection, Error>> + Send {
         let count = self.create_count.clone();
         let fail = self.fail_create.clone();
         async move {
             if fail.load(Ordering::Relaxed) {
-                return Err(DxTestError("connection refused".into()));
+                return Err(Error::transient("connection refused"));
             }
             let id = count.fetch_add(1, Ordering::Relaxed);
             Ok(FakeDbConnection { id })
@@ -460,6 +450,12 @@ impl Resource for DbResource {
 
     fn metadata() -> ResourceMetadata {
         ResourceMetadata::from_key(&Self::key())
+    }
+}
+
+impl HasCredentialSlots for DbResource {
+    fn credential_slot_epoch(&self) -> u64 {
+        0
     }
 }
 

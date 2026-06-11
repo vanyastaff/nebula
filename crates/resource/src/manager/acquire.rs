@@ -28,9 +28,13 @@ impl Manager {
     #[must_use]
     pub fn erased_acquire_resident_for<R>() -> ErasedAcquireFn
     where
-        R: crate::topology::resident::Resident + Resource + Send + Sync + 'static,
-        R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
-        R::Lease: Clone + Send + 'static,
+        R: crate::topology::resident::Resident
+            + crate::resource::HasCredentialSlots
+            + Resource
+            + Send
+            + Sync
+            + 'static,
+        R::Runtime: Clone + Send + Sync + 'static,
     {
         super::acquire_dispatch::erased_acquire_resident::<R>()
     }
@@ -43,8 +47,7 @@ impl Manager {
     pub fn erased_acquire_pooled_for<R>() -> ErasedAcquireFn
     where
         R: crate::topology::pooled::Pooled + Clone + Resource + Send + Sync + 'static,
-        R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
-        R::Lease: Into<R::Runtime> + Send + 'static,
+        R::Runtime: Clone + Send + Sync + 'static,
     {
         super::acquire_dispatch::erased_acquire_pooled::<R>()
     }
@@ -272,8 +275,7 @@ impl Manager {
     ) -> Result<crate::guard::ResourceGuard<R>, Error>
     where
         R: crate::topology::pooled::Pooled + Clone + Send + Sync + 'static,
-        R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
-        R::Lease: Into<R::Runtime> + Send + 'static,
+        R::Runtime: Clone + Send + Sync + 'static,
     {
         let managed = self.lookup_for_acquire_scope::<R>(ctx)?;
         self.pooled_pipeline(managed, ctx, options).await
@@ -305,8 +307,7 @@ impl Manager {
     ) -> Result<crate::guard::ResourceGuard<R>, Error>
     where
         R: crate::topology::pooled::Pooled + Clone + Send + Sync + 'static,
-        R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
-        R::Lease: Into<R::Runtime> + Send + 'static,
+        R::Runtime: Clone + Send + Sync + 'static,
     {
         let managed = self.lookup_for_acquire_with_identity::<R>(ctx, slot_identity)?;
         self.pooled_pipeline(managed, ctx, options).await
@@ -323,8 +324,7 @@ impl Manager {
     ) -> Result<crate::guard::ResourceGuard<R>, Error>
     where
         R: crate::topology::pooled::Pooled + Clone + Send + Sync + 'static,
-        R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
-        R::Lease: Into<R::Runtime> + Send + 'static,
+        R::Runtime: Clone + Send + Sync + 'static,
     {
         let managed = self.downcast_resolved_row::<R>(resolved)?;
         self.pooled_pipeline(managed, ctx, options).await
@@ -344,8 +344,7 @@ impl Manager {
     ) -> Result<crate::guard::ResourceGuard<R>, Error>
     where
         R: crate::topology::pooled::Pooled + Clone + Send + Sync + 'static,
-        R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
-        R::Lease: Into<R::Runtime> + Send + 'static,
+        R::Runtime: Clone + Send + Sync + 'static,
     {
         self.run_acquire(Arc::clone(&managed), || {
             let generation = managed.generation();
@@ -496,9 +495,12 @@ impl Manager {
         options: &AcquireOptions,
     ) -> Result<crate::guard::ResourceGuard<R>, Error>
     where
-        R: crate::topology::resident::Resident + Send + Sync + 'static,
-        R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
-        R::Lease: Clone + Send + 'static,
+        R: crate::topology::resident::Resident
+            + crate::resource::HasCredentialSlots
+            + Send
+            + Sync
+            + 'static,
+        R::Runtime: Clone + Send + Sync + 'static,
     {
         let managed = self.lookup_for_acquire_scope::<R>(ctx)?;
         self.resident_pipeline(managed, ctx, options).await
@@ -531,9 +533,12 @@ impl Manager {
         slot_identity: &crate::dedup::SlotIdentity,
     ) -> Result<crate::guard::ResourceGuard<R>, Error>
     where
-        R: crate::topology::resident::Resident + Send + Sync + 'static,
-        R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
-        R::Lease: Clone + Send + 'static,
+        R: crate::topology::resident::Resident
+            + crate::resource::HasCredentialSlots
+            + Send
+            + Sync
+            + 'static,
+        R::Runtime: Clone + Send + Sync + 'static,
     {
         let managed = self.lookup_for_acquire_with_identity::<R>(ctx, slot_identity)?;
         self.resident_pipeline(managed, ctx, options).await
@@ -549,9 +554,12 @@ impl Manager {
         resolved: Arc<dyn crate::registry::AnyManagedResource>,
     ) -> Result<crate::guard::ResourceGuard<R>, Error>
     where
-        R: crate::topology::resident::Resident + Send + Sync + 'static,
-        R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
-        R::Lease: Clone + Send + 'static,
+        R: crate::topology::resident::Resident
+            + crate::resource::HasCredentialSlots
+            + Send
+            + Sync
+            + 'static,
+        R::Runtime: Clone + Send + Sync + 'static,
     {
         let managed = self.downcast_resolved_row::<R>(resolved)?;
         self.resident_pipeline(managed, ctx, options).await
@@ -570,9 +578,12 @@ impl Manager {
         options: &AcquireOptions,
     ) -> Result<crate::guard::ResourceGuard<R>, Error>
     where
-        R: crate::topology::resident::Resident + Send + Sync + 'static,
-        R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
-        R::Lease: Clone + Send + 'static,
+        R: crate::topology::resident::Resident
+            + crate::resource::HasCredentialSlots
+            + Send
+            + Sync
+            + 'static,
+        R::Runtime: Clone + Send + Sync + 'static,
     {
         self.run_acquire(Arc::clone(&managed), || {
             let config = managed.config();
@@ -595,8 +606,7 @@ impl Manager {
     pub async fn pool_stats<R>(&self, scope: &ScopeLevel) -> Option<crate::runtime::pool::PoolStats>
     where
         R: crate::topology::pooled::Pooled + Clone + Send + Sync + 'static,
-        R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
-        R::Lease: Into<R::Runtime> + Send + 'static,
+        R::Runtime: Clone + Send + Sync + 'static,
     {
         let managed = self.lookup::<R>(scope).ok()?;
         match &managed.topology {
@@ -632,8 +642,7 @@ impl Manager {
     pub async fn warmup_pool<R>(&self, ctx: &ResourceContext) -> Result<usize, Error>
     where
         R: crate::topology::pooled::Pooled + Clone + Send + Sync + 'static,
-        R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
-        R::Lease: Into<R::Runtime> + Send + 'static,
+        R::Runtime: Clone + Send + Sync + 'static,
     {
         let managed = self.lookup_for_acquire_scope::<R>(ctx)?;
         let config = managed.config();

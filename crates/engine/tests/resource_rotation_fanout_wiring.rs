@@ -86,23 +86,21 @@ struct Recording {
 impl Resource for Recording {
     type Config = NoCfg;
     type Runtime = ();
-    type Lease = ();
-    type Error = HookError;
 
     fn key() -> ResourceKey {
         resource_key!("fanout-wiring-rec")
     }
 
-    async fn create(&self, _c: &NoCfg, _x: &ResourceContext) -> Result<(), HookError> {
+    async fn create(&self, _c: &NoCfg, _x: &ResourceContext) -> Result<(), ResourceError> {
         Ok(())
     }
 
-    async fn on_credential_refresh(&self, _s: &str, _r: &()) -> Result<(), HookError> {
+    async fn on_credential_refresh(&self, _s: &str, _r: &()) -> Result<(), ResourceError> {
         self.rec.refresh.fetch_add(1, Ordering::SeqCst);
         drive(self.behaviour).await
     }
 
-    async fn on_credential_revoke(&self, _s: &str, _r: &()) -> Result<(), HookError> {
+    async fn on_credential_revoke(&self, _s: &str, _r: &()) -> Result<(), ResourceError> {
         self.rec.revoke.fetch_add(1, Ordering::SeqCst);
         drive(self.behaviour).await
     }
@@ -112,13 +110,19 @@ impl Resource for Recording {
     }
 }
 
+impl nebula_resource::HasCredentialSlots for Recording {
+    fn credential_slot_epoch(&self) -> u64 {
+        0
+    }
+}
+
 impl Resident for Recording {
     fn is_alive_sync(&self, _r: &()) -> bool {
         true
     }
 }
 
-async fn drive(b: Behaviour) -> Result<(), HookError> {
+async fn drive(b: Behaviour) -> Result<(), ResourceError> {
     match b {
         Behaviour::Ok => Ok(()),
         Behaviour::Hang => {

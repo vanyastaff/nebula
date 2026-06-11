@@ -12,28 +12,11 @@ use nebula_core::{ExecutionId, OrgId, ResourceKey, scope::Scope};
 use nebula_resource::{
     AcquireOptions, Manager, RegistrationSpec, ResourceContext, ScopeLevel, SlotIdentity,
     error::Error,
-    resource::{Resource, ResourceConfig, ResourceMetadata},
+    resource::{HasCredentialSlots, Resource, ResourceConfig, ResourceMetadata},
     runtime::{TopologyRuntime, pool::PoolRuntime, resident::ResidentRuntime},
     topology::resident::{self, Resident},
 };
 use tokio_util::sync::CancellationToken;
-
-#[derive(Debug, Clone)]
-struct ProbeError(String);
-
-impl std::fmt::Display for ProbeError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for ProbeError {}
-
-impl From<ProbeError> for Error {
-    fn from(e: ProbeError) -> Self {
-        Error::permanent(e.0)
-    }
-}
 
 #[derive(Clone, Debug, Default)]
 struct ProbeConfig;
@@ -58,8 +41,6 @@ impl ProbeResource {
 impl Resource for ProbeResource {
     type Config = ProbeConfig;
     type Runtime = Arc<AtomicU64>;
-    type Lease = Arc<AtomicU64>;
-    type Error = ProbeError;
 
     fn key() -> ResourceKey {
         nebula_core::resource_key!("test.acquire_erased.probe")
@@ -69,7 +50,7 @@ impl Resource for ProbeResource {
         &self,
         _config: &ProbeConfig,
         _ctx: &ResourceContext,
-    ) -> impl Future<Output = Result<Arc<AtomicU64>, ProbeError>> + Send {
+    ) -> impl Future<Output = Result<Arc<AtomicU64>, Error>> + Send {
         let counter = self.create_count.clone();
         async move {
             counter.fetch_add(1, Ordering::Relaxed);
@@ -79,6 +60,12 @@ impl Resource for ProbeResource {
 
     fn metadata() -> ResourceMetadata {
         ResourceMetadata::from_key(&Self::key())
+    }
+}
+
+impl HasCredentialSlots for ProbeResource {
+    fn credential_slot_epoch(&self) -> u64 {
+        0
     }
 }
 
@@ -295,33 +282,10 @@ async fn acquire_erased_and_typed_pick_org_not_global_fallback() {
 /// distinct `Resource::create` is observable: parity means the typed path
 /// reuses the erased path's resolved row (single-runtime topologies keep
 /// `create_count == 1` across both acquires).
-macro_rules! parity_error {
-    ($name:ident) => {
-        #[derive(Debug)]
-        struct $name(String);
-
-        impl std::fmt::Display for $name {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                f.write_str(&self.0)
-            }
-        }
-
-        impl std::error::Error for $name {}
-
-        impl From<$name> for Error {
-            fn from(e: $name) -> Self {
-                Error::permanent(e.0)
-            }
-        }
-    };
-}
-
 mod pool_parity {
     use nebula_resource::topology::pooled::{BrokenCheck, Pooled, RecycleDecision};
 
     use super::*;
-
-    parity_error!(PoolParityErr);
 
     #[derive(Clone, Default)]
     struct PoolParityCfg;
@@ -336,8 +300,6 @@ mod pool_parity {
     impl Resource for PoolParity {
         type Config = PoolParityCfg;
         type Runtime = u64;
-        type Lease = u64;
-        type Error = PoolParityErr;
 
         fn key() -> ResourceKey {
             nebula_core::resource_key!("test.ae4.pool")
@@ -347,16 +309,22 @@ mod pool_parity {
             &self,
             _config: &PoolParityCfg,
             _ctx: &ResourceContext,
-        ) -> Result<u64, PoolParityErr> {
+        ) -> Result<u64, Error> {
             Ok(self.create_count.fetch_add(1, Ordering::SeqCst))
         }
 
-        async fn destroy(&self, _runtime: u64) -> Result<(), PoolParityErr> {
+        async fn destroy(&self, _runtime: u64) -> Result<(), Error> {
             Ok(())
         }
 
         fn metadata() -> ResourceMetadata {
             ResourceMetadata::from_key(&Self::key())
+        }
+    }
+
+    impl HasCredentialSlots for PoolParity {
+        fn credential_slot_epoch(&self) -> u64 {
+            0
         }
     }
 
@@ -369,7 +337,7 @@ mod pool_parity {
             &self,
             _runtime: &u64,
             _metrics: &nebula_resource::topology::pooled::InstanceMetrics,
-        ) -> Result<RecycleDecision, PoolParityErr> {
+        ) -> Result<RecycleDecision, Error> {
             Ok(RecycleDecision::Keep)
         }
     }
@@ -450,8 +418,6 @@ mod pool_parity {
 mod resident_erased_reuses_runtime {
     use super::*;
 
-    parity_error!(ResidentReuseErr);
-
     #[derive(Clone, Default)]
     struct ResidentReuseCfg;
     nebula_schema::impl_empty_has_schema!(ResidentReuseCfg);
@@ -465,8 +431,6 @@ mod resident_erased_reuses_runtime {
     impl Resource for ResidentReuse {
         type Config = ResidentReuseCfg;
         type Runtime = Arc<AtomicU64>;
-        type Lease = Arc<AtomicU64>;
-        type Error = ResidentReuseErr;
 
         fn key() -> ResourceKey {
             nebula_core::resource_key!("test.ae4.resident_reuse")
@@ -476,13 +440,19 @@ mod resident_erased_reuses_runtime {
             &self,
             _config: &ResidentReuseCfg,
             _ctx: &ResourceContext,
-        ) -> Result<Arc<AtomicU64>, ResidentReuseErr> {
+        ) -> Result<Arc<AtomicU64>, Error> {
             self.create_count.fetch_add(1, Ordering::SeqCst);
             Ok(Arc::clone(&self.create_count))
         }
 
         fn metadata() -> ResourceMetadata {
             ResourceMetadata::from_key(&Self::key())
+        }
+    }
+
+    impl HasCredentialSlots for ResidentReuse {
+        fn credential_slot_epoch(&self) -> u64 {
+            0
         }
     }
 
@@ -565,8 +535,6 @@ mod resident_erased_reuses_runtime {
 mod pool_erased_distinct_instances {
     use super::*;
 
-    parity_error!(PoolErasedErr);
-
     #[derive(Clone, Default)]
     struct PoolErasedCfg;
     nebula_schema::impl_empty_has_schema!(PoolErasedCfg);
@@ -580,8 +548,6 @@ mod pool_erased_distinct_instances {
     impl Resource for PoolErased {
         type Config = PoolErasedCfg;
         type Runtime = u64;
-        type Lease = u64;
-        type Error = PoolErasedErr;
 
         fn key() -> ResourceKey {
             nebula_core::resource_key!("test.ae4.pool_erased")
@@ -591,12 +557,18 @@ mod pool_erased_distinct_instances {
             &self,
             _config: &PoolErasedCfg,
             _ctx: &ResourceContext,
-        ) -> Result<u64, PoolErasedErr> {
+        ) -> Result<u64, Error> {
             Ok(self.create_count.fetch_add(1, Ordering::SeqCst))
         }
 
         fn metadata() -> ResourceMetadata {
             ResourceMetadata::from_key(&Self::key())
+        }
+    }
+
+    impl HasCredentialSlots for PoolErased {
+        fn credential_slot_epoch(&self) -> u64 {
+            0
         }
     }
 
@@ -685,8 +657,6 @@ mod erased_acquire_not_found {
     use nebula_resource::error::ErrorKind;
 
     use super::*;
-
-    parity_error!(NotFoundErr);
 
     /// Erased acquire on an unknown key must return `ErrorKind::NotFound`.
     #[tokio::test]

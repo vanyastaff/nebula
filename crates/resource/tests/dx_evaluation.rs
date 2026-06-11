@@ -14,6 +14,7 @@ use nebula_resource::{
     AcquireOptions, Manager, PoolConfig, RegistrationSpec, ResidentConfig, Resource,
     ResourceConfig, ResourceContext, ScopeLevel, ShutdownConfig, SlotIdentity,
     error::{Error, ErrorKind},
+    resource::HasCredentialSlots,
     resource_key,
     runtime::{TopologyRuntime, pool::PoolRuntime, resident::ResidentRuntime},
     topology::{
@@ -31,26 +32,11 @@ use tokio_util::sync::CancellationToken;
 // I expected: something like `impl ResourceConfig for String {}` or at least
 // a `#[derive(ResourceConfig)]` to generate a zero-overhead impl.
 
-/// Our domain error — a required stepping stone.
-/// [FRICTION #2] There is no blanket `impl From<anyhow::Error> for Error`.
-/// For a quick prototype I need a custom error type AND a From impl.
-/// That's 8+ lines before I've even gotten to my resource.
-#[derive(Debug)]
-struct MyError(String);
-
-impl std::fmt::Display for MyError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for MyError {}
-
-impl From<MyError> for Error {
-    fn from(e: MyError) -> Self {
-        Error::transient(e.0)
-    }
-}
+// [FRICTION #2] There is no blanket `impl From<anyhow::Error> for Error`.
+// For a quick prototype a custom error type AND a From impl were previously
+// required — 8+ lines before the resource itself. With the redesigned
+// `Resource` trait (no `type Error` associated type) the lifecycle methods
+// return `crate::Error` directly, so this boilerplate is gone.
 
 // ---------------------------------------------------------------------------
 // Use Case 1: Pooled HTTP client
@@ -83,19 +69,13 @@ struct HttpClient {
 #[derive(Clone)]
 struct HttpResource;
 
-// [FRICTION #3] 5 associated types. For a simple case where
-// Lease == Runtime, that's fine once you know it. But the README uses
-// `type Lease = HttpRuntime` without explaining *why* — I had to stare
-// at the trait definition to understand that Pooled requires
-// `Runtime: Into<Lease>` and `Lease: Into<Runtime>`. If they're the same
-// type the blanket impl<T> From<T> for T covers it, but this is nowhere
-// in the quick-start — only buried in the Pooled trait's doc comment.
+// [FRICTION #3] Previously 5 associated types. With `type Lease` and
+// `type Error` removed from the trait, the impl is now just `Config` and
+// `Runtime` — the two that actually matter for a simple pooled resource.
 
 impl Resource for HttpResource {
     type Config = HttpConfig;
     type Runtime = HttpClient;
-    type Lease = HttpClient; // same as Runtime — blanket From<T> for T covers the bounds
-    type Error = MyError;
 
     fn key() -> ResourceKey {
         resource_key!("http.client")
@@ -105,10 +85,16 @@ impl Resource for HttpResource {
         &self,
         config: &HttpConfig,
         _ctx: &ResourceContext,
-    ) -> Result<HttpClient, MyError> {
+    ) -> Result<HttpClient, Error> {
         Ok(HttpClient {
             base_url: config.base_url.clone(),
         })
+    }
+}
+
+impl HasCredentialSlots for HttpResource {
+    fn credential_slot_epoch(&self) -> u64 {
+        0
     }
 }
 
@@ -238,8 +224,6 @@ struct ConfigStoreResource;
 impl Resource for ConfigStoreResource {
     type Config = ConfigStoreConfig;
     type Runtime = ConfigStore;
-    type Lease = ConfigStore;
-    type Error = MyError;
 
     fn key() -> ResourceKey {
         resource_key!("config.store")
@@ -249,7 +233,7 @@ impl Resource for ConfigStoreResource {
         &self,
         config: &ConfigStoreConfig,
         _ctx: &ResourceContext,
-    ) -> Result<ConfigStore, MyError> {
+    ) -> Result<ConfigStore, Error> {
         let mut map = std::collections::HashMap::new();
         map.insert("environment".to_string(), config.env.clone());
         map.insert("log_level".to_string(), "info".to_string());
@@ -257,6 +241,12 @@ impl Resource for ConfigStoreResource {
             env: config.env.clone(),
             values: Arc::new(map),
         })
+    }
+}
+
+impl HasCredentialSlots for ConfigStoreResource {
+    fn credential_slot_epoch(&self) -> u64 {
+        0
     }
 }
 
@@ -369,8 +359,6 @@ impl DbResource {
 impl Resource for DbResource {
     type Config = DbConfig;
     type Runtime = DbConnection;
-    type Lease = DbConnection;
-    type Error = MyError;
 
     fn key() -> ResourceKey {
         resource_key!("db.connection")
@@ -380,9 +368,15 @@ impl Resource for DbResource {
         &self,
         _config: &DbConfig,
         _ctx: &ResourceContext,
-    ) -> Result<DbConnection, MyError> {
+    ) -> Result<DbConnection, Error> {
         let id = self.counter.fetch_add(1, Ordering::Relaxed);
         Ok(DbConnection { id })
+    }
+}
+
+impl HasCredentialSlots for DbResource {
+    fn credential_slot_epoch(&self) -> u64 {
+        0
     }
 }
 

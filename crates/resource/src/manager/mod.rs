@@ -925,27 +925,10 @@ mod shutdown_post_count_race_tests {
         context::ResourceContext,
         error::ErrorKind,
         options::AcquireOptions,
-        resource::{ResourceConfig, ResourceMetadata},
+        resource::{HasCredentialSlots, ResourceConfig, ResourceMetadata},
         runtime::{TopologyRuntime, resident::ResidentRuntime},
         topology::resident::{Resident, config::Config as ResidentConfig},
     };
-
-    #[derive(Debug)]
-    struct RaceErr(&'static str);
-
-    impl std::fmt::Display for RaceErr {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.write_str(self.0)
-        }
-    }
-
-    impl std::error::Error for RaceErr {}
-
-    impl From<RaceErr> for Error {
-        fn from(e: RaceErr) -> Self {
-            Error::permanent(e.0)
-        }
-    }
 
     #[derive(Clone, Default)]
     struct RaceCfg;
@@ -960,19 +943,23 @@ mod shutdown_post_count_race_tests {
     impl Resource for ShutdownRaceResident {
         type Config = RaceCfg;
         type Runtime = ();
-        type Lease = ();
-        type Error = RaceErr;
 
         fn key() -> ResourceKey {
             resource_key!("test.shutdown_post_count_race.resident")
         }
 
-        async fn create(&self, _config: &RaceCfg, _ctx: &ResourceContext) -> Result<(), RaceErr> {
+        async fn create(&self, _config: &RaceCfg, _ctx: &ResourceContext) -> Result<(), Error> {
             Ok(())
         }
 
         fn metadata() -> ResourceMetadata {
             ResourceMetadata::from_key(&Self::key())
+        }
+    }
+
+    impl HasCredentialSlots for ShutdownRaceResident {
+        fn credential_slot_epoch(&self) -> u64 {
+            0
         }
     }
 

@@ -68,11 +68,7 @@ impl InstanceMetrics {
 ///
 /// [`Manager::acquire_pooled`](crate::Manager::acquire_pooled) requires:
 /// - `R: Clone + Send + Sync + 'static`
-/// - `R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static`
-/// - `R::Lease: Into<R::Runtime> + Send + 'static`
-///
-/// If `Runtime` and `Lease` are the same type, the blanket
-/// `impl<T> From<T> for T` satisfies both conversion bounds automatically.
+/// - `R::Runtime: Clone + Send + Sync + 'static`
 pub trait Pooled: Resource {
     /// Sync O(1) broken check. Called in the `Drop` path — NO async, NO I/O.
     ///
@@ -89,24 +85,24 @@ pub trait Pooled: Resource {
         &self,
         _runtime: &Self::Runtime,
         _metrics: &InstanceMetrics,
-    ) -> impl Future<Output = Result<RecycleDecision, Self::Error>> + Send {
+    ) -> impl Future<Output = Result<RecycleDecision, crate::Error>> + Send {
         async { Ok(RecycleDecision::Keep) }
     }
 
     /// Prepares an instance for a specific execution context.
     ///
-    /// Called after checkout, before the caller receives the lease.
+    /// Called after checkout, before the caller receives the runtime.
     /// Use this for operations like `SET search_path` or `USE database`.
     ///
     /// # Errors
     ///
-    /// Returns `Self::Error` if preparation fails. The pool manager will
+    /// Returns `crate::Error` if preparation fails. The pool manager will
     /// destroy the instance and try another one.
     fn prepare(
         &self,
         _runtime: &Self::Runtime,
         _ctx: &ResourceContext,
-    ) -> impl Future<Output = Result<(), Self::Error>> + Send {
+    ) -> impl Future<Output = Result<(), crate::Error>> + Send {
         async { Ok(()) }
     }
 }

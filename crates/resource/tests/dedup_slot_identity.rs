@@ -28,28 +28,11 @@ use nebula_resource::{
     AcquireOptions, Manager, RegisterOptions, RegistrationSpec, ResidentConfig, Resource,
     ResourceConfig, ResourceContext, SlotIdentity,
     error::Error,
-    resource::ResourceMetadata,
+    resource::{HasCredentialSlots, ResourceMetadata},
     runtime::{TopologyRuntime, resident::ResidentRuntime},
     topology::resident::Resident,
 };
 use tokio_util::sync::CancellationToken;
-
-#[derive(Debug)]
-struct CountingError(String);
-
-impl std::fmt::Display for CountingError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for CountingError {}
-
-impl From<CountingError> for Error {
-    fn from(e: CountingError) -> Self {
-        Error::transient(e.0)
-    }
-}
 
 /// Config whose `fingerprint()` is left at the `0` default on purpose: the
 /// dedup separation must come from the resolved slot identity, never from the
@@ -90,8 +73,6 @@ impl CountingResource {
 impl Resource for CountingResource {
     type Config = CountingConfig;
     type Runtime = CountingRuntime;
-    type Lease = CountingRuntime;
-    type Error = CountingError;
 
     fn key() -> ResourceKey {
         resource_key!("dedup-slot-ident")
@@ -101,17 +82,23 @@ impl Resource for CountingResource {
         &self,
         _config: &CountingConfig,
         _ctx: &ResourceContext,
-    ) -> Result<CountingRuntime, CountingError> {
+    ) -> Result<CountingRuntime, Error> {
         let id = self.create_counter.fetch_add(1, Ordering::SeqCst);
         Ok(CountingRuntime { id })
     }
 
-    async fn destroy(&self, _runtime: CountingRuntime) -> Result<(), CountingError> {
+    async fn destroy(&self, _runtime: CountingRuntime) -> Result<(), Error> {
         Ok(())
     }
 
     fn metadata() -> ResourceMetadata {
         ResourceMetadata::from_key(&Self::key())
+    }
+}
+
+impl HasCredentialSlots for CountingResource {
+    fn credential_slot_epoch(&self) -> u64 {
+        0
     }
 }
 
@@ -440,8 +427,6 @@ struct SiblingResidentResource;
 impl Resource for SiblingResidentResource {
     type Config = CountingConfig;
     type Runtime = CountingRuntime;
-    type Lease = CountingRuntime;
-    type Error = CountingError;
 
     fn key() -> ResourceKey {
         // SAME string as `CountingResource::key()` on purpose.
@@ -452,18 +437,24 @@ impl Resource for SiblingResidentResource {
         &self,
         _config: &CountingConfig,
         _ctx: &ResourceContext,
-    ) -> Result<CountingRuntime, CountingError> {
+    ) -> Result<CountingRuntime, Error> {
         // A distinguishable runtime id space; never observed on the
         // success path of the test below (the sibling row must be skipped).
         Ok(CountingRuntime { id: 9_999 })
     }
 
-    async fn destroy(&self, _runtime: CountingRuntime) -> Result<(), CountingError> {
+    async fn destroy(&self, _runtime: CountingRuntime) -> Result<(), Error> {
         Ok(())
     }
 
     fn metadata() -> ResourceMetadata {
         ResourceMetadata::from_key(&Self::key())
+    }
+}
+
+impl HasCredentialSlots for SiblingResidentResource {
+    fn credential_slot_epoch(&self) -> u64 {
+        0
     }
 }
 

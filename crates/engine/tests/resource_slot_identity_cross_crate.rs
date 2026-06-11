@@ -110,8 +110,6 @@ impl XResource {
 impl Resource for XResource {
     type Config = XConfig;
     type Runtime = Arc<AtomicU64>;
-    type Lease = Arc<AtomicU64>;
-    type Error = XError;
 
     fn key() -> ResourceKey {
         resource_key!("xcross.widget")
@@ -121,7 +119,7 @@ impl Resource for XResource {
         &self,
         _config: &XConfig,
         _ctx: &nebula_resource::ResourceContext,
-    ) -> impl Future<Output = Result<Arc<AtomicU64>, XError>> + Send {
+    ) -> impl Future<Output = Result<Arc<AtomicU64>, nebula_resource::Error>> + Send {
         let counter = self.create_counter.clone();
         async move {
             let id = counter.fetch_add(1, Ordering::Relaxed);
@@ -159,6 +157,12 @@ impl DeclaresDependencies for XResource {
             required: true,
             lazy: false,
         })
+    }
+}
+
+impl nebula_resource::HasCredentialSlots for XResource {
+    fn credential_slot_epoch(&self) -> u64 {
+        0
     }
 }
 

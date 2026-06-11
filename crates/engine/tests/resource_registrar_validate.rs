@@ -86,8 +86,6 @@ struct HttpPool;
 impl Resource for HttpPool {
     type Config = HttpPoolConfig;
     type Runtime = ();
-    type Lease = ();
-    type Error = HttpPoolError;
 
     fn key() -> ResourceKey {
         resource_key!("http_pool")
@@ -97,7 +95,7 @@ impl Resource for HttpPool {
         &self,
         _config: &HttpPoolConfig,
         _ctx: &nebula_resource::ResourceContext,
-    ) -> Result<(), HttpPoolError> {
+    ) -> Result<(), nebula_resource::Error> {
         Ok(())
     }
 
@@ -112,6 +110,12 @@ impl Resource for HttpPool {
 }
 
 impl nebula_core::DeclaresDependencies for HttpPool {}
+
+impl nebula_resource::HasCredentialSlots for HttpPool {
+    fn credential_slot_epoch(&self) -> u64 {
+        0
+    }
+}
 
 impl Resident for HttpPool {
     fn is_alive_sync(&self, _runtime: &()) -> bool {

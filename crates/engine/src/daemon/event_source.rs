@@ -7,7 +7,7 @@
 //!
 //! # Why an adapter, not a TriggerAction extension
 //!
-//! `EventSource: Resource` (needs `R::Runtime`, `R::Error`, `ResourceContext`)
+//! `EventSource: Resource` (needs `R::Runtime`, `nebula_resource::Error`, `ResourceContext`)
 //! and `TriggerAction: Action` (needs `ActionMetadata`, `TriggerContext`,
 //! `ActionError`) sit on different bases. Rather than refactor either trait,
 //! `EventSourceAdapter<E>` bridges them at construction time:
@@ -39,12 +39,13 @@ pub trait EventSource: Resource {
     ///
     /// # Errors
     ///
-    /// Returns `Self::Error` if the subscription cannot be created.
+    /// Returns [`nebula_resource::Error`] if the subscription cannot be
+    /// created.
     fn subscribe(
         &self,
         runtime: &Self::Runtime,
         ctx: &ResourceContext,
-    ) -> impl Future<Output = Result<Self::Subscription, Self::Error>> + Send;
+    ) -> impl Future<Output = Result<Self::Subscription, nebula_resource::Error>> + Send;
 
     /// Receives the next event from a subscription.
     ///
@@ -52,12 +53,12 @@ pub trait EventSource: Resource {
     ///
     /// # Errors
     ///
-    /// Returns `Self::Error` if the subscription is broken or the source
-    /// has been shut down.
+    /// Returns [`nebula_resource::Error`] if the subscription is broken or
+    /// the source has been shut down.
     fn recv(
         &self,
         subscription: &mut Self::Subscription,
-    ) -> impl Future<Output = Result<Self::Event, Self::Error>> + Send;
+    ) -> impl Future<Output = Result<Self::Event, nebula_resource::Error>> + Send;
 }
 
 /// EventSource configuration.
@@ -113,9 +114,6 @@ where
 {
     /// Creates a new subscription to the event source.
     ///
-    /// `E::Error: Into<nebula_resource::Error>` is implied by the `Resource`
-    /// supertrait declaration (`type Error: ... + Into<crate::Error>`).
-    ///
     /// # Errors
     ///
     /// Propagates errors from `EventSource::subscribe`.
@@ -125,7 +123,7 @@ where
         runtime: &E::Runtime,
         ctx: &ResourceContext,
     ) -> Result<E::Subscription, nebula_resource::Error> {
-        resource.subscribe(runtime, ctx).await.map_err(Into::into)
+        resource.subscribe(runtime, ctx).await
     }
 
     /// Receives the next event from a subscription.
@@ -138,7 +136,7 @@ where
         resource: &E,
         subscription: &mut E::Subscription,
     ) -> Result<E::Event, nebula_resource::Error> {
-        resource.recv(subscription).await.map_err(Into::into)
+        resource.recv(subscription).await
     }
 }
 
@@ -232,7 +230,7 @@ where
                 // permanent / not-found subscribe error doesn't loop the
                 // engine's restart supervisor against a broken source.
                 ctx.health().record_error();
-                return Err(classify_resource_error(e.into()));
+                return Err(classify_resource_error(e));
             },
         };
 
@@ -254,8 +252,7 @@ where
                         }
                         Err(e) => {
                             ctx.health().record_error();
-                            let res_err: nebula_resource::Error = e.into();
-                            match classify_resource_error_outcome(res_err) {
+                            match classify_resource_error_outcome(e) {
                                 RecvOutcome::Continue => continue,
                                 RecvOutcome::Cancelled => return Ok(()),
                                 RecvOutcome::Fatal(action_err) => return Err(action_err),
@@ -479,8 +476,6 @@ mod tests {
     impl Resource for ThreeEventSource {
         type Config = EmptyCfg;
         type Runtime = ();
-        type Lease = ();
-        type Error = TestError;
 
         fn key() -> ResourceKey {
             ResourceKey::new("event-three").unwrap()
@@ -490,7 +485,7 @@ mod tests {
             &self,
             _config: &Self::Config,
             _ctx: &ResourceContext,
-        ) -> Result<(), TestError> {
+        ) -> Result<(), ResourceError> {
             Ok(())
         }
 
@@ -507,14 +502,14 @@ mod tests {
             &self,
             _runtime: &Self::Runtime,
             _ctx: &ResourceContext,
-        ) -> Result<Self::Subscription, TestError> {
+        ) -> Result<Self::Subscription, ResourceError> {
             Ok(())
         }
 
         async fn recv(
             &self,
             _subscription: &mut Self::Subscription,
-        ) -> Result<Self::Event, TestError> {
+        ) -> Result<Self::Event, ResourceError> {
             let n = self.emitted.fetch_add(1, Ordering::SeqCst);
             if n < 3 {
                 Ok(n)
@@ -601,8 +596,6 @@ mod tests {
     impl Resource for PermanentlyBrokenSource {
         type Config = EmptyCfg;
         type Runtime = ();
-        type Lease = ();
-        type Error = PermanentError;
 
         fn key() -> ResourceKey {
             ResourceKey::new("event-permanently-broken").unwrap()
@@ -612,7 +605,7 @@ mod tests {
             &self,
             _config: &Self::Config,
             _ctx: &ResourceContext,
-        ) -> Result<(), PermanentError> {
+        ) -> Result<(), ResourceError> {
             Ok(())
         }
 
@@ -629,15 +622,15 @@ mod tests {
             &self,
             _runtime: &Self::Runtime,
             _ctx: &ResourceContext,
-        ) -> Result<Self::Subscription, PermanentError> {
+        ) -> Result<Self::Subscription, ResourceError> {
             Ok(())
         }
 
         async fn recv(
             &self,
             _subscription: &mut Self::Subscription,
-        ) -> Result<Self::Event, PermanentError> {
-            Err(PermanentError("source torn down"))
+        ) -> Result<Self::Event, ResourceError> {
+            Err(PermanentError("source torn down").into())
         }
     }
 

@@ -978,8 +978,6 @@ mod tests {
         impl Resource for CtlResource {
             type Config = Cfg;
             type Runtime = Runtime;
-            type Lease = Runtime;
-            type Error = HookError;
 
             fn key() -> ResourceKey {
                 resource_key!("fanout-ctl")
@@ -989,7 +987,7 @@ mod tests {
                 &self,
                 _config: &Cfg,
                 _ctx: &ResourceContext,
-            ) -> Result<Runtime, HookError> {
+            ) -> Result<Runtime, ResourceError> {
                 Ok(Runtime)
             }
 
@@ -997,11 +995,11 @@ mod tests {
                 &self,
                 _slot: &str,
                 _rt: &Runtime,
-            ) -> Result<(), HookError> {
+            ) -> Result<(), ResourceError> {
                 self.ledger.refresh_entered.fetch_add(1, Ordering::SeqCst);
                 match self.ledger.behaviour_for(&self.identity) {
                     Behaviour::FastOk => Ok(()),
-                    Behaviour::FastErr => Err(HookError("refresh boom".to_owned())),
+                    Behaviour::FastErr => Err(HookError("refresh boom".to_owned()).into()),
                     Behaviour::Hang => {
                         // Never completes; the fan-out's per-resource
                         // timeout must elapse and record TimedOut without
@@ -1018,11 +1016,11 @@ mod tests {
                 &self,
                 _slot: &str,
                 _rt: &Runtime,
-            ) -> Result<(), HookError> {
+            ) -> Result<(), ResourceError> {
                 self.ledger.revoke_entered.fetch_add(1, Ordering::SeqCst);
                 match self.ledger.behaviour_for(&self.identity) {
                     Behaviour::FastOk => Ok(()),
-                    Behaviour::FastErr => Err(HookError("revoke boom".to_owned())),
+                    Behaviour::FastErr => Err(HookError("revoke boom".to_owned()).into()),
                     Behaviour::Hang => {
                         std::future::pending::<()>().await;
                         // guard-justified: `std::future::pending()` never
@@ -1034,6 +1032,12 @@ mod tests {
 
             fn metadata() -> ResourceMetadata {
                 ResourceMetadata::from_key(&Self::key())
+            }
+        }
+
+        impl nebula_resource::HasCredentialSlots for CtlResource {
+            fn credential_slot_epoch(&self) -> u64 {
+                0
             }
         }
 

@@ -35,7 +35,7 @@ use nebula_resource::{
     AcquireOptions, Manager, RegistrationSpec, ResidentConfig, Resource, ResourceConfig,
     ResourceContext, SlotCell, SlotIdentity,
     error::Error,
-    resource::ResourceMetadata,
+    resource::{HasCredentialSlots, ResourceMetadata},
     runtime::{TopologyRuntime, resident::ResidentRuntime},
     topology::resident::Resident,
 };
@@ -162,20 +162,6 @@ fn derived_epoch_changes_when_non_max_slot_rotates() {
 
 // ── Part 2: the resident reconcile keys off the order-sensitive epoch ─
 
-#[derive(Debug)]
-struct RaceError(String);
-impl std::fmt::Display for RaceError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-impl std::error::Error for RaceError {}
-impl From<RaceError> for Error {
-    fn from(e: RaceError) -> Self {
-        Error::transient(e.0)
-    }
-}
-
 #[derive(Clone)]
 struct RaceCfg;
 nebula_schema::impl_empty_has_schema!(RaceCfg);
@@ -206,8 +192,6 @@ struct TwoSlotResident {
 impl Resource for TwoSlotResident {
     type Config = RaceCfg;
     type Runtime = TwoSlotRuntime;
-    type Lease = TwoSlotRuntime;
-    type Error = RaceError;
 
     fn key() -> ResourceKey {
         resource_key!("epochfold-resident")
@@ -217,14 +201,14 @@ impl Resource for TwoSlotResident {
         &self,
         _config: &RaceCfg,
         _ctx: &ResourceContext,
-    ) -> Result<TwoSlotRuntime, RaceError> {
+    ) -> Result<TwoSlotRuntime, Error> {
         // Bind the runtime to slot_b's current credential tag (the
         // realistic shape — a connection bound to a resolved credential).
         let b = self
             .slot_b
             .load()
             .map(|g| g.0)
-            .ok_or_else(|| RaceError("slot_b unbound at create".to_owned()))?;
+            .ok_or_else(|| Error::transient("slot_b unbound at create"))?;
         Ok(TwoSlotRuntime {
             bound_b: Arc::new(AtomicU32::new(b)),
             refresh_calls: self.refresh_calls.clone(),
@@ -235,7 +219,7 @@ impl Resource for TwoSlotResident {
         &self,
         _slot_name: &str,
         runtime: &TwoSlotRuntime,
-    ) -> Result<(), RaceError> {
+    ) -> Result<(), Error> {
         if let Some(g) = self.slot_b.load() {
             runtime.bound_b.store(g.0, Ordering::SeqCst);
         }
@@ -243,9 +227,15 @@ impl Resource for TwoSlotResident {
         Ok(())
     }
 
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::from_key(&Self::key())
+    }
+}
+
+impl HasCredentialSlots for TwoSlotResident {
     // The exact positional fold the derive emits (FNV-1a 64-bit prime,
     // wrapping). NOT author discipline for production resources —
-    // `#[derive(Resource)]` generates this; hand-mirrored only because
+    // `#[derive(ResourceSlots)]` generates this; hand-mirrored only because
     // this fixture cannot be derived (derive `create` is `todo!()`).
     fn credential_slot_epoch(&self) -> u64 {
         const K: u64 = 0x0000_0100_0000_01b3;
@@ -254,10 +244,6 @@ impl Resource for TwoSlotResident {
             .fold(0u64, |acc, slot_gen| {
                 acc.wrapping_mul(K).wrapping_add(slot_gen)
             })
-    }
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::from_key(&Self::key())
     }
 }
 

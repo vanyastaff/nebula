@@ -2,20 +2,21 @@
 //!
 //! [`Resource`] is the central abstraction: it describes how to create,
 //! health-check, and tear down a single resource type. Implementors supply
-//! four associated types and the lifecycle methods (slot model).
+//! two associated types (`Config`, `Runtime`) and the lifecycle methods
+//! (slot model).
 //!
 //! Per slot model (supersedes credential isolation) the singular `type Credential`
 //! associated type was deleted in favor of typed credential **slot fields**
 //! declared on the resource struct via `#[credential(key = "...")]` (the
-//! `#[derive(Resource)]` macro emits a `DeclaresDependencies` impl that
-//! enumerates them).
+//! `#[derive(ResourceSlots)]` macro emits a `DeclaresDependencies` impl that
+//! enumerates them, plus slot accessors, plus `impl HasCredentialSlots`).
 //!
 //! `Resource::create(&self, ctx)` no longer takes an explicit
 //! `scheme: &<R::Credential as Credential>::Scheme` argument: the framework
 //! resolves every declared `#[credential]` slot **before** invoking
 //! `create`. Each slot field is a `SlotCell<CredentialGuard<C>>` cell; the
-//! implementation reads the resolved guard through the `#[derive(Resource)]`-
-//! emitted `<field>_slot()` accessor (`Option<Arc<CredentialGuard<C>>>`).
+//! implementation reads the resolved guard through the derive-emitted
+//! `<field>_slot()` accessor (`Option<Arc<CredentialGuard<C>>>`).
 //!
 //! Per-credential rotation is exposed via
 //! [`Resource::on_credential_refresh`], which receives the **slot name**
@@ -23,6 +24,11 @@
 //! resources can choose to refresh only the affected pool, headers, etc.
 //! via interior mutability). Revocation is signalled via
 //! [`Resource::on_credential_revoke`].
+//!
+//! [`HasCredentialSlots`] is a separate trait (not on `Resource`) implemented
+//! by `#[derive(ResourceSlots)]`. Resources with no credential slots need only
+//! implement `Resource` — a blanket `impl HasCredentialSlots` for such types
+//! is unnecessary since the epoch is structurally `0`.
 
 use std::future::Future;
 
@@ -210,7 +216,7 @@ impl ResourceMetadataBuilder {
     }
 }
 
-/// Core resource trait — 4 associated types + lifecycle methods (slot model).
+/// Core resource trait — 2 associated types + lifecycle methods (slot model).
 ///
 /// Uses return-position `impl Future` (RPITIT) instead of `async_trait`,
 /// which avoids the `Box<dyn Future>` allocation on every call.
@@ -218,7 +224,7 @@ impl ResourceMetadataBuilder {
 /// Per slot model (supersedes credential isolation) the singular `type Credential`
 /// associated type was removed in favor of typed credential **slot
 /// fields** on the resource struct (declared via `#[credential(...)]`
-/// field attributes; the `#[derive(Resource)]` macro emits an impl of
+/// field attributes; the `#[derive(ResourceSlots)]` macro emits an impl of
 /// [`nebula_core::DeclaresDependencies`] enumerating them). Each slot
 /// field is a `SlotCell<CredentialGuard<C>>` cell. The framework
 /// resolves slot fields **before** calling [`create`](Self::create) —
@@ -232,8 +238,6 @@ impl ResourceMetadataBuilder {
 /// |------|---------|
 /// | `Config` | Operational config (no secrets) |
 /// | `Runtime` | The live resource handle (connection, client, etc.) |
-/// | `Lease` | What callers hold while using the resource |
-/// | `Error` | Resource-specific error, convertible to [`crate::Error`] |
 ///
 /// # Lifecycle
 ///
@@ -251,10 +255,6 @@ pub trait Resource: Send + Sync + 'static {
     type Config: ResourceConfig;
     /// The live resource handle.
     type Runtime: Send + Sync + 'static;
-    /// What callers hold during use.
-    type Lease: Send + Sync + 'static;
-    /// Resource-specific error type.
-    type Error: std::error::Error + Send + Sync + Into<crate::Error> + 'static;
 
     /// Returns the unique key identifying this resource type.
     fn key() -> ResourceKey;
@@ -271,8 +271,7 @@ pub trait Resource: Send + Sync + 'static {
     /// # Errors
     ///
     /// Map driver errors to [`crate::ErrorKind`] via
-    /// `impl Into<crate::Error> for Self::Error` (or
-    /// `#[derive(ClassifyError)]`) so the manager can decide retry:
+    /// `#[derive(ClassifyError)]` so the manager can decide retry:
     ///
     /// - [`Transient`](crate::ErrorKind::Transient) — connect timeout, network blip.
     /// - [`Permanent`](crate::ErrorKind::Permanent) — auth failure, malformed config.
@@ -293,7 +292,7 @@ pub trait Resource: Send + Sync + 'static {
         &self,
         config: &Self::Config,
         ctx: &ResourceContext,
-    ) -> impl Future<Output = Result<Self::Runtime, Self::Error>> + Send;
+    ) -> impl Future<Output = Result<Self::Runtime, crate::Error>> + Send;
 
     /// Called by the engine rotation fan-out after it has swapped the
     /// rotated credential into this resource's slot. `&self`: the resource
@@ -321,7 +320,7 @@ pub trait Resource: Send + Sync + 'static {
         &self,
         slot_name: &str,
         runtime: &Self::Runtime,
-    ) -> impl Future<Output = Result<(), Self::Error>> + Send {
+    ) -> impl Future<Output = Result<(), crate::Error>> + Send {
         let _ = (slot_name, runtime);
         async { Ok(()) }
     }
@@ -333,7 +332,7 @@ pub trait Resource: Send + Sync + 'static {
     ///
     /// # Errors
     ///
-    /// Returns `Self::Error` if the runtime cannot stop emitting
+    /// Returns `crate::Error` if the runtime cannot stop emitting
     /// authenticated traffic on the revoked credential. The manager
     /// surfaces the error as
     /// [`SlotRevokeFailed`](crate::ResourceEvent::SlotRevokeFailed) on
@@ -351,54 +350,9 @@ pub trait Resource: Send + Sync + 'static {
         &self,
         slot_name: &str,
         runtime: &Self::Runtime,
-    ) -> impl Future<Output = Result<(), Self::Error>> + Send {
+    ) -> impl Future<Output = Result<(), crate::Error>> + Send {
         let _ = (slot_name, runtime);
         async { Ok(()) }
-    }
-
-    /// An opaque change-token over **all** of this resource's
-    /// `#[credential]` slot field generations — the resource's current
-    /// *credential epoch*.
-    ///
-    /// **Contract:** the returned value **changes whenever ANY slot's
-    /// generation changes** — not just the slot with the largest
-    /// generation. It is compared **only for equality** by the
-    /// create-vs-rotate reconcile (built-epoch vs live-epoch), never by
-    /// magnitude, so it is a change-token rather than a monotone counter.
-    ///
-    /// `0` means "no credential slot has ever been bound" (also the default
-    /// for resources with no credential slots). Each `SlotCell` transition
-    /// (`store` *or* `take`/clear) strictly advances its per-slot
-    /// generation, so any post-build slot transition yields a different
-    /// epoch — proving a credential rotated/was revoked in between.
-    ///
-    /// For resources with no `#[credential]` slots, this returns `0`
-    /// permanently (slot-less resources rely on runtime-presence checks
-    /// only, not epoch-based rotation tracking).
-    ///
-    /// `#[derive(Resource)]` emits the real implementation: an
-    /// order-sensitive positional fold
-    /// (`acc = acc * K + slot.generation()`, fixed odd `K`) over every
-    /// declared `#[credential]` field's
-    /// [`SlotCell::generation`](crate::SlotCell::generation). A plain
-    /// `max` would be wrong here — a runtime built at
-    /// `(slot_a=5, slot_b=10)` then rotated `slot_a→6` still maxes to
-    /// `10`, so the reconcile would miss the now-stale runtime; the
-    /// positional fold changes on every slot transition regardless of
-    /// which slot moved. It is derive-generated, not author-maintained,
-    /// so a new slot field cannot be silently omitted from the epoch. The
-    /// default `0` keeps hand-written impls (and slot-less resources)
-    /// compiling; for such impls the create-vs-rotate reconcile degrades
-    /// to the runtime-presence path only (it never *falsely* reports a
-    /// stale runtime, it just cannot prove staleness by epoch).
-    ///
-    /// Used by the per-slot rotation dispatch and the Resident create slow
-    /// path to close the create-vs-rotate lost-update race (resource runtime status
-    /// §Deferred): the Resident runtime records the epoch it was built
-    /// against and the dispatch reconciles a runtime built against an
-    /// older epoch instead of silently reporting success.
-    fn credential_slot_epoch(&self) -> u64 {
-        0
     }
 
     /// Health-checks an existing runtime.
@@ -407,7 +361,7 @@ pub trait Resource: Send + Sync + 'static {
     ///
     /// # Errors
     ///
-    /// Returns `Self::Error` classified as
+    /// Returns `crate::Error` classified as
     /// [`Transient`](crate::ErrorKind::Transient) for a recoverable health
     /// failure (the manager will tear the runtime down and let the next
     /// acquire rebuild it) or
@@ -416,7 +370,7 @@ pub trait Resource: Send + Sync + 'static {
     fn check(
         &self,
         _runtime: &Self::Runtime,
-    ) -> impl Future<Output = Result<(), Self::Error>> + Send {
+    ) -> impl Future<Output = Result<(), crate::Error>> + Send {
         async { Ok(()) }
     }
 
@@ -426,7 +380,7 @@ pub trait Resource: Send + Sync + 'static {
     ///
     /// # Errors
     ///
-    /// Returns `Self::Error` if graceful shutdown failed and the runtime
+    /// Returns `crate::Error` if graceful shutdown failed and the runtime
     /// state is now indeterminate. The manager treats any error here as
     /// non-fatal and proceeds to [`destroy`](Self::destroy), so this
     /// method MUST be idempotent — multiple calls (or
@@ -434,7 +388,7 @@ pub trait Resource: Send + Sync + 'static {
     fn shutdown(
         &self,
         _runtime: &Self::Runtime,
-    ) -> impl Future<Output = Result<(), Self::Error>> + Send {
+    ) -> impl Future<Output = Result<(), crate::Error>> + Send {
         async { Ok(()) }
     }
 
@@ -444,7 +398,7 @@ pub trait Resource: Send + Sync + 'static {
     ///
     /// # Errors
     ///
-    /// Returns `Self::Error` only if final cleanup cannot complete (e.g.,
+    /// Returns `crate::Error` only if final cleanup cannot complete (e.g.,
     /// background workers refused to join). The manager logs the error
     /// and discards the runtime regardless — `destroy` is the last
     /// chance to release server-side handles, so prefer side-effects
@@ -459,7 +413,7 @@ pub trait Resource: Send + Sync + 'static {
     fn destroy(
         &self,
         runtime: Self::Runtime,
-    ) -> impl Future<Output = Result<(), Self::Error>> + Send {
+    ) -> impl Future<Output = Result<(), crate::Error>> + Send {
         let _ = runtime;
         async { Ok(()) }
     }
@@ -486,6 +440,33 @@ pub trait Resource: Send + Sync + 'static {
             Self::schema(),
         )
     }
+}
+
+/// Credential-slot epoch provider — implemented by `#[derive(ResourceSlots)]`.
+///
+/// An order-sensitive positional fold over every credential slot's generation.
+/// `0` = no slot ever bound (also the only value for slot-less resources).
+///
+/// **Contract:** the returned value **changes whenever ANY slot's generation
+/// changes** — not just the slot with the largest generation. It is compared
+/// **only for equality** by the create-vs-rotate reconcile (built-epoch vs
+/// live-epoch), never by magnitude, so it is a change-token rather than a
+/// monotone counter.
+///
+/// `#[derive(ResourceSlots)]` emits the real implementation: an
+/// order-sensitive positional fold
+/// (`acc = acc * K + slot.generation()`, fixed odd `K`) over every
+/// declared `#[credential]` field's
+/// [`SlotCell::generation`](crate::SlotCell::generation). A plain
+/// `max` would be wrong here — a runtime built at
+/// `(slot_a=5, slot_b=10)` then rotated `slot_a→6` still maxes to
+/// `10`, so the reconcile would miss the now-stale runtime; the
+/// positional fold changes on every slot transition regardless of
+/// which slot moved. Slot-less resources always return `0`.
+pub trait HasCredentialSlots {
+    /// Order-sensitive positional fold over every credential slot's generation.
+    /// `0` = no slot ever bound (also the only value for slot-less resources).
+    fn credential_slot_epoch(&self) -> u64;
 }
 
 #[cfg(test)]

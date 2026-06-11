@@ -42,29 +42,12 @@ use nebula_resource::{
     AcquireOptions, Manager, PoolConfig, RegistrationSpec, Resource, ResourceConfig,
     ResourceContext, SlotIdentity,
     error::{Error, ErrorKind},
-    resource::ResourceMetadata,
+    resource::{HasCredentialSlots, ResourceMetadata},
     runtime::{TopologyRuntime, pool::PoolRuntime},
     topology::pooled::{Pooled, RecycleDecision, config::WarmupStrategy},
 };
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
-
-#[derive(Debug)]
-struct PoolErr(String);
-
-impl std::fmt::Display for PoolErr {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for PoolErr {}
-
-impl From<PoolErr> for Error {
-    fn from(e: PoolErr) -> Self {
-        Error::transient(e.0)
-    }
-}
 
 #[derive(Clone)]
 struct PoolCfg;
@@ -133,14 +116,12 @@ impl PoolResource {
 impl Resource for PoolResource {
     type Config = PoolCfg;
     type Runtime = PoolRt;
-    type Lease = PoolRt;
-    type Error = PoolErr;
 
     fn key() -> ResourceKey {
         resource_key!("r16-pool")
     }
 
-    async fn create(&self, _config: &PoolCfg, _ctx: &ResourceContext) -> Result<PoolRt, PoolErr> {
+    async fn create(&self, _config: &PoolCfg, _ctx: &ResourceContext) -> Result<PoolRt, Error> {
         let seq = self.create_seq.fetch_add(1, Ordering::SeqCst);
         if self.gate.park_in_create.swap(false, Ordering::SeqCst) {
             self.gate.create_entered.notify_one();
@@ -152,12 +133,12 @@ impl Resource for PoolResource {
         })
     }
 
-    async fn destroy(&self, _runtime: PoolRt) -> Result<(), PoolErr> {
+    async fn destroy(&self, _runtime: PoolRt) -> Result<(), Error> {
         self.destroy_calls.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
 
-    async fn on_credential_revoke(&self, _slot: &str, runtime: &PoolRt) -> Result<(), PoolErr> {
+    async fn on_credential_revoke(&self, _slot: &str, runtime: &PoolRt) -> Result<(), Error> {
         // Model "stop serving the revoked credential": mark the shared flag.
         runtime.revoked.store(true, Ordering::SeqCst);
         self.revoke_calls.fetch_add(1, Ordering::SeqCst);
@@ -169,12 +150,18 @@ impl Resource for PoolResource {
     }
 }
 
+impl HasCredentialSlots for PoolResource {
+    fn credential_slot_epoch(&self) -> u64 {
+        0
+    }
+}
+
 impl Pooled for PoolResource {
     async fn recycle(
         &self,
         _runtime: &PoolRt,
         _metrics: &nebula_resource::InstanceMetrics,
-    ) -> Result<RecycleDecision, PoolErr> {
+    ) -> Result<RecycleDecision, Error> {
         if self.gate.park_in_recycle.load(Ordering::SeqCst) {
             self.gate.recycle_entered.notify_one();
             self.gate.hold_recycle.notified().await;

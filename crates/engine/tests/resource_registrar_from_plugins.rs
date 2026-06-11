@@ -121,8 +121,6 @@ impl DemoResource {
 impl Resource for DemoResource {
     type Config = DemoConfig;
     type Runtime = Arc<AtomicU64>;
-    type Lease = Arc<AtomicU64>;
-    type Error = DemoError;
 
     fn key() -> ResourceKey {
         resource_key!("demo.widget")
@@ -132,7 +130,7 @@ impl Resource for DemoResource {
         &self,
         _config: &DemoConfig,
         _ctx: &nebula_resource::ResourceContext,
-    ) -> impl Future<Output = Result<Arc<AtomicU64>, DemoError>> + Send {
+    ) -> impl Future<Output = Result<Arc<AtomicU64>, nebula_resource::Error>> + Send {
         let counter = self.create_counter.clone();
         async move {
             let id = counter.fetch_add(1, Ordering::Relaxed);
@@ -151,6 +149,12 @@ impl Resource for DemoResource {
 }
 
 impl nebula_core::DeclaresDependencies for DemoResource {}
+
+impl nebula_resource::HasCredentialSlots for DemoResource {
+    fn credential_slot_epoch(&self) -> u64 {
+        0
+    }
+}
 
 impl resident::Resident for DemoResource {
     fn is_alive_sync(&self, runtime: &Arc<AtomicU64>) -> bool {

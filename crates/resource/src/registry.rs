@@ -196,7 +196,7 @@ pub trait AnyManagedResource: sealed::Sealed + Send + Sync + 'static {
 // non-implementable downstream.
 impl<R: Resource> sealed::Sealed for ManagedResource<R> {}
 
-impl<R: Resource> AnyManagedResource for ManagedResource<R> {
+impl<R: Resource + crate::resource::HasCredentialSlots> AnyManagedResource for ManagedResource<R> {
     fn resource_key(&self) -> ResourceKey {
         R::key()
     }

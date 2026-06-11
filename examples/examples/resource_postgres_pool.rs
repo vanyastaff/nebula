@@ -184,8 +184,6 @@ impl Postgres {
 impl Resource for Postgres {
     type Config = PostgresConfig;
     type Runtime = Arc<MockPgConnection>;
-    type Lease = Arc<MockPgConnection>;
-    type Error = PgError;
 
     fn key() -> ResourceKey {
         resource_key!("demo.postgres")
@@ -195,7 +193,7 @@ impl Resource for Postgres {
         &self,
         config: &PostgresConfig,
         _ctx: &ResourceContext,
-    ) -> impl Future<Output = Result<Arc<MockPgConnection>, PgError>> + Send {
+    ) -> impl Future<Output = Result<Arc<MockPgConnection>, ResourceError>> + Send {
         let counter = Arc::clone(&self.create_counter);
         let app = config.application_name.clone();
         async move {
@@ -206,7 +204,7 @@ impl Resource for Postgres {
         }
     }
 
-    async fn destroy(&self, runtime: Arc<MockPgConnection>) -> Result<(), PgError> {
+    async fn destroy(&self, runtime: Arc<MockPgConnection>) -> Result<(), ResourceError> {
         tracing::info!(
             connection_id = runtime.id,
             "destroying mock postgres connection"
@@ -216,6 +214,12 @@ impl Resource for Postgres {
 
     fn metadata() -> ResourceMetadata {
         ResourceMetadata::from_key(&Self::key())
+    }
+}
+
+impl nebula_resource::HasCredentialSlots for Postgres {
+    fn credential_slot_epoch(&self) -> u64 {
+        0
     }
 }
 
@@ -232,7 +236,7 @@ impl Pooled for Postgres {
         &self,
         runtime: &Arc<MockPgConnection>,
         metrics: &nebula_resource::topology::pooled::InstanceMetrics,
-    ) -> Result<RecycleDecision, PgError> {
+    ) -> Result<RecycleDecision, ResourceError> {
         // Drop after 100 queries to demonstrate the recycle hook; real impl
         // would `DISCARD ALL` for transactional cleanliness.
         if runtime.queries_issued.load(Ordering::Acquire) >= 100 {

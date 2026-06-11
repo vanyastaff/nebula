@@ -350,8 +350,6 @@ mod tests {
     impl Resource for CountedDaemon {
         type Config = EmptyCfg;
         type Runtime = ();
-        type Lease = ();
-        type Error = TestError;
 
         fn key() -> ResourceKey {
             ResourceKey::new("registry-counted").unwrap()
@@ -361,7 +359,7 @@ mod tests {
             &self,
             _config: &Self::Config,
             _ctx: &ResourceContext,
-        ) -> Result<(), TestError> {
+        ) -> Result<(), ResourceError> {
             Ok(())
         }
 
@@ -376,7 +374,7 @@ mod tests {
             _runtime: &Self::Runtime,
             _ctx: &ResourceContext,
             cancel: CancellationToken,
-        ) -> Result<(), TestError> {
+        ) -> Result<(), ResourceError> {
             self.attempts.fetch_add(1, Ordering::SeqCst);
             cancel.cancelled().await;
             Ok(())
@@ -461,8 +459,6 @@ mod tests {
     impl Resource for CountedDaemonB {
         type Config = EmptyCfg;
         type Runtime = ();
-        type Lease = ();
-        type Error = TestError;
         fn key() -> ResourceKey {
             ResourceKey::new("registry-counted-b").unwrap()
         }
@@ -470,7 +466,7 @@ mod tests {
             &self,
             _config: &Self::Config,
             _ctx: &ResourceContext,
-        ) -> Result<(), TestError> {
+        ) -> Result<(), ResourceError> {
             Ok(())
         }
         fn metadata() -> ResourceMetadata {
@@ -483,7 +479,7 @@ mod tests {
             _runtime: &Self::Runtime,
             _ctx: &ResourceContext,
             cancel: CancellationToken,
-        ) -> Result<(), TestError> {
+        ) -> Result<(), ResourceError> {
             self.attempts.fetch_add(1, Ordering::SeqCst);
             cancel.cancelled().await;
             Ok(())
