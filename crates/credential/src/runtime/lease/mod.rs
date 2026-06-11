@@ -60,10 +60,8 @@ mod scheduler;
 
 use std::sync::Arc;
 
+use crate::{CredentialId, LeaseEvent, LeasedProvider, ProviderError, ProviderResolution};
 use nebula_core::accessor::MetricsEmitter;
-use nebula_credential::{
-    CredentialId, LeaseEvent, LeasedProvider, ProviderError, ProviderResolution,
-};
 use nebula_eventbus::EventBus;
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
@@ -331,14 +329,14 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::time::Duration;
 
-    use nebula_credential::{
+    use crate::{
         CredentialId, ExternalProvider, ExternalReference, LeaseHandle, LeasedProvider,
         ProviderError, ProviderFuture, ProviderResolution, SecretString,
     };
     use tokio_util::sync::CancellationToken;
 
     use super::*;
-    use crate::credential::lease::scheduler::LeaseLifecycleConfig;
+    use crate::runtime::lease::scheduler::LeaseLifecycleConfig;
 
     // ────────────────────────────────────────────────────────────────────
     // Mock leased provider with configurable renew / revoke behaviour.

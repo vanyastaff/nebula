@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use nebula_credential::{CredentialId, LeaseHandle, LeasedProvider};
+use crate::{CredentialId, LeaseHandle, LeasedProvider};
 use tokio::time::Instant;
 
 /// Opaque registry key — handed back from

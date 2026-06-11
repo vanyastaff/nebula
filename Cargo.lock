@@ -3437,6 +3437,7 @@ dependencies = [
  "nebula-crypto",
  "nebula-env",
  "nebula-error",
+ "nebula-eventbus",
  "nebula-metadata",
  "nebula-resilience",
  "nebula-schema",

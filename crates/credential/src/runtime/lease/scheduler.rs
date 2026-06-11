@@ -11,11 +11,11 @@ use std::collections::{BinaryHeap, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
 
-use nebula_core::accessor::MetricsEmitter;
-use nebula_credential::{
+use crate::{
     CredentialId, CredentialMetrics, LeaseEvent, LeaseExpiryReason, LeaseHandle, LeasedProvider,
     ProviderError, ProviderResolution,
 };
+use nebula_core::accessor::MetricsEmitter;
 use nebula_eventbus::EventBus;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
@@ -650,8 +650,5 @@ fn failure_reason_label(err: &ProviderError) -> &'static str {
         ProviderError::Unavailable { .. } => "unavailable",
         ProviderError::AccessDenied { .. } => "access_denied",
         ProviderError::Backend(_) => "backend",
-        // `ProviderError` is `#[non_exhaustive]`; future variants will
-        // label as `other` until classified explicitly.
-        _ => "other",
     }
 }

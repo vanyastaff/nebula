@@ -6,20 +6,17 @@
 //! and (`crates/engine/README.md`). It does
 //! not implement platform/operator authentication (**Plane A**).
 
-pub mod lease;
 pub mod refresh;
 pub mod resolver;
 #[cfg(feature = "rotation")]
 pub mod rotation;
 
-// `dispatchers` / `executor` / `scoped_accessor` were relocated to
+// `dispatchers` / `executor` / `scoped_accessor` / `lease` were relocated to
 // `nebula_credential::runtime` (ADR-0092); re-exported here so
 // `nebula_engine::credential::*` consumers keep resolving.
-pub use lease::{
-    LeaseLifecycle, LeaseLifecycleConfig, LeaseLifecycleError, LeaseToken, RenewalPolicy,
-};
 pub use nebula_credential::runtime::{
-    ExecutorError, ResolveResponse, ScopedCredentialAccessor, dispatch_release, dispatch_revoke,
+    ExecutorError, LeaseLifecycle, LeaseLifecycleConfig, LeaseLifecycleError, LeaseToken,
+    RenewalPolicy, ResolveResponse, ScopedCredentialAccessor, dispatch_release, dispatch_revoke,
     dispatch_test, execute_continue, execute_resolve,
 };
 // Re-export TestResult for the dispatchers module to reference, and to
