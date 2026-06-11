@@ -5,7 +5,7 @@
 //! contract layer so credential-tier code (e.g. the refresh coordinator) can
 //! emit audit events without an upward dependency on `nebula-storage`.
 //!
-//! The audit **decorator** ([`nebula_storage::credential::AuditLayer`]) stays
+//! The audit **decorator** (`nebula_storage::credential::AuditLayer`) stays
 //! in `nebula-storage` and imports these types from here.
 //!
 //! # Contract

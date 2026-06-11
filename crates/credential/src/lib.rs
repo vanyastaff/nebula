@@ -87,7 +87,7 @@ pub mod secrets;
 /// `nebula_engine::credential::ScopedCredentialAccessor`.
 mod accessor;
 /// Audit trait and value types — [`AuditSink`], [`AuditEvent`],
-/// [`AuditOperation`], [`AuditResult`]. The audit decorator ([`AuditLayer`])
+/// [`AuditOperation`], [`AuditResult`]. The audit decorator (`AuditLayer`)
 /// stays in `nebula_storage::credential` and imports these from here.
 pub mod audit;
 /// Credential operation context — CredentialContext, CredentialContextBuilder.

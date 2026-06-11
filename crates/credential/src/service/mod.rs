@@ -5,7 +5,7 @@
 //! All invariant-bearing composition is crate-private so the secure
 //! construction path is the only path; the composition root
 //! (`nebula-api`'s credential builder) is the only place that calls
-//! [`facade::CredentialService::from_secure_parts`].
+//! `CredentialService::from_secure_parts`.
 pub mod binding;
 pub mod error;
 pub mod facade;

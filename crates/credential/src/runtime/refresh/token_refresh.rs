@@ -63,15 +63,15 @@ pub enum TokenRefreshError {
 /// Execute OAuth2 refresh-token grant and mutate `state` in place.
 ///
 /// Call order (security boundary — do not reorder):
-/// 1. [`validate_token_endpoint`] runs FIRST (SSRF: https-only, no
+/// 1. `validate_token_endpoint` runs FIRST (SSRF: https-only, no
 ///    localhost / private / link-local). Returns `Err` before any I/O.
 /// 2. Secret-scoped inner block builds a [`TokenPostRequest`] (form fields +
 ///    optional `basic_auth`). Secret borrows are released when the block ends;
 ///    the transport receives `SecretString` values that zeroize on drop.
 /// 3. [`RefreshTransport::post_token`] is called — the ONLY network I/O.
-/// 4. [`parse_token_response_bytes`] interprets status + bytes; SEC-02
+/// 4. `parse_token_response_bytes` interprets status + bytes; SEC-02
 ///    redaction runs inside this crate, not in the transport.
-/// 5. [`update_state_from_token_response`] mutates `state` on success.
+/// 5. `update_state_from_token_response` mutates `state` on success.
 ///
 /// SEC-10: the three secret values (refresh_token, client_id, client_secret)
 /// are NOT extracted into `Zeroizing<String>` intermediates. Instead, secret
