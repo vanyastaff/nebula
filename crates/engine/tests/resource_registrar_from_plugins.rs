@@ -9,9 +9,9 @@
 //! "Plugin packaging" §). But `Plugin::resources()` yields
 //! `Vec<Arc<dyn nebula_resource::AnyResource>>`, and `AnyResource` carries
 //! **only** `key()` + `metadata()` — no associated types, no constructor,
-//! no `TopologyRuntime<R>` factory. `#[derive(Resource)]` emits an
-//! `impl Resource` whose `create` body is `todo!()`, a `DeclaresDependencies`
-//! impl, and a purely-informational `RESOURCE_TOPOLOGY` tag const — it emits
+//! no `TopologyRuntime<R>` factory. `#[derive(ResourceSlots)]` emits only
+//! slot plumbing (`DeclaresDependencies`, slot accessors,
+//! `HasCredentialSlots`) — it emits
 //! no per-`R` value factory and no topology-runtime factory. The typed
 //! `Manager::register_resolved::<R>` consumes a `resource: R` and a
 //! `TopologyRuntime<R>` *by value*, monomorphized; neither is recoverable
@@ -163,8 +163,8 @@ impl resident::Resident for DemoResource {
 }
 
 /// `AnyResource` is the type-erased shape `Plugin::resources()` returns —
-/// metadata-only. This impl mirrors what `#[derive(Resource)]` would emit
-/// for the erased view (key + metadata); it deliberately exposes **no**
+/// metadata-only. This impl is the erased view (key + metadata) the plugin
+/// registry holds; it deliberately exposes **no**
 /// constructor and no topology factory, which is exactly why the engine
 /// cannot auto-build a typed registrar from `Plugin::resources()` alone.
 impl AnyResource for DemoResource {

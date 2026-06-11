@@ -248,6 +248,7 @@ pub(crate) fn emit_slot_field_registrations(slots: &[ParsedSlotField]) -> TokenS
                     kind: #kind_tokens,
                     required: #required,
                     lazy: #lazy,
+                    purpose: ::core::option::Option::None,
                 })
             }
         })

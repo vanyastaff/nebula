@@ -3872,6 +3872,7 @@ dependencies = [
 name = "nebula-resource-macros"
 version = "0.1.0"
 dependencies = [
+ "nebula-core",
  "nebula-macro-support",
  "proc-macro2",
  "quote",

@@ -2,39 +2,86 @@
 //!
 //! Proc-macros for the `nebula-resource` crate (slot model).
 //!
-//! ## `#[derive(Resource)]`
+//! ## Two-derive pattern
 //!
-//! Generates `impl Resource`, `impl HasCredentialSlots`, and
-//! `impl DeclaresDependencies` for a struct whose fields enumerate the
-//! credentials it depends on via `#[credential]` slot attributes.
+//! Resource authors use two derives:
+//!
+//! 1. **`#[derive(ResourceSlots)]`** — emits slot plumbing only:
+//!    - `impl DeclaresDependencies` enumerating `#[credential]` slot fields.
+//!    - An inherent `pub fn <field>_slot(&self) -> Option<Arc<...>>` accessor per slot.
+//!    - `impl HasCredentialSlots` with the order-sensitive positional epoch fold.
+//!
+//! 2. **Hand-written `impl Resource`** — the implementor supplies `key()`, the two
+//!    associated types (`Config`, `Runtime`), and the lifecycle methods (`create`,
+//!    optionally `check`, `shutdown`, `destroy`, credential-rotation hooks).
 //!
 //! ```ignore
 //! use nebula_credential::CredentialGuard;
 //! use nebula_resource::{Resource, SlotCell};
 //!
-//! #[derive(Resource)]
-//! #[resource(
-//!     key = "postgres",
-//!     topology = "pool",
-//!     config = PostgresConfig,
-//!     runtime = PgConnection,
-//! )]
+//! #[derive(ResourceSlots)]
 //! struct Postgres {
 //!     #[credential(key = "db_auth", purpose = "Main DB auth")]
 //!     db_auth: SlotCell<CredentialGuard<DatabaseCredential>>,
 //! }
+//!
+//! impl Resource for Postgres {
+//!     type Config = PostgresConfig;
+//!     type Runtime = PgConnection;
+//!
+//!     fn key() -> nebula_core::ResourceKey { resource_key!("postgres") }
+//!
+//!     async fn create(&self, cfg: &PostgresConfig, ctx: &ResourceContext)
+//!         -> Result<PgConnection, nebula_resource::Error>
+//!     {
+//!         let guard = self.db_auth_slot().ok_or_else(|| Error::transient("slot unbound"))?;
+//!         // ... connect using guard ...
+//!     }
+//! }
 //! ```
 //!
-//! The macro emits the trait shape with a `todo!()` body for `create()`;
-//! the implementor supplies the `create` implementation reading credentials
-//! directly off `&self.<field>`.
+//! The `#[resource(...)]` container attribute is not accepted by `ResourceSlots` — it
+//! existed only on the retired `#[derive(Resource)]` which emitted a `todo!()` body.
 //!
 //! ## `#[derive(ClassifyError)]`
 //!
 //! Generates `From<UserError> for nebula_resource::Error` based on
 //! `#[classify(...)]` attributes on enum variants. Independent of the
-//! Resource derive — used by resource implementors to bridge their domain
+//! `ResourceSlots` derive — used by resource implementors to bridge their domain
 //! errors into the framework's `Error` type.
+//!
+//! Source-error chains are preserved: the original error is attached via
+//! `Error::with_source(err)` so `std::error::Error::source()` returns it.
+//!
+//! ```ignore
+//! #[derive(thiserror::Error, Debug, ClassifyError)]
+//! enum DbError {
+//!     #[error("connect timeout")]
+//!     #[classify(transient)]
+//!     ConnectTimeout,
+//!
+//!     #[error("rate-limited")]
+//!     #[classify(exhausted, retry_after = "30s")]
+//!     RateLimited,
+//!
+//!     // retry_after from a Duration field (tuple field `.0`):
+//!     #[error("throttled")]
+//!     #[classify(exhausted, retry_after = .0)]
+//!     Throttled(std::time::Duration),
+//!
+//!     // retry_after from a named Duration field:
+//!     #[error("quota exceeded")]
+//!     #[classify(exhausted, retry_after = wait)]
+//!     QuotaExceeded { wait: std::time::Duration },
+//! }
+//! ```
+//!
+//! ### Not classifiable here
+//!
+//! `NotFound`, `Ambiguous`, and `Revoked` [`ErrorKind`](nebula_resource::ErrorKind)
+//! variants are framework-origin errors (produced by the engine lookup path, not by
+//! resource implementations). `ClassifyError` cannot emit these — use the resource
+//! `Error` constructors directly on the rare occasion your `create()` must signal one.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -47,54 +94,76 @@ use quote::quote;
 use syn::{Data, DeriveInput, Fields, Ident, parse_macro_input};
 
 mod field_slots;
-mod resource;
-mod resource_attrs;
+mod slots;
 
-/// Derive macro for the `Resource` trait (slot model).
+/// Derive macro that emits slot plumbing for a resource struct (slot model).
 ///
-/// Emits `impl Resource for Foo` (with `todo!()` `create` body — the
-/// implementor supplies it), `impl HasCredentialSlots for Foo` (order-sensitive
-/// epoch fold over all `#[credential]` slots), and `impl DeclaresDependencies
-/// for Foo` enumerating credential slot fields declared via `#[credential]`.
+/// ## What is emitted
 ///
-/// # Container attribute
+/// - `impl DeclaresDependencies` enumerating each `#[credential]` slot field.
+/// - An inherent `pub fn <field>_slot(&self) -> Option<Arc<CredentialGuard<C>>>` accessor per slot.
+/// - `impl HasCredentialSlots` with the order-sensitive positional epoch fold.
 ///
-/// `#[resource(key = "...", topology = "...", config = Type, runtime = Type)]`
+/// ## What is NOT emitted
 ///
-/// - `key = "..."` — required. Unique resource identifier (lowercase + underscores).
-/// - `topology = "pool" | "resident"` — required.
-/// - `config = ConfigType` — required. The `Self::Config` associated type.
-/// - `runtime = RuntimeType` — optional. Defaults to `()`.
+/// This derive does **not** emit any `Resource` impl, `todo!()`, `key()`,
+/// `metadata()`, or topology constant. The implementor writes `impl Resource`
+/// by hand (2 associated types + `create`).
 ///
-/// # Field attributes
+/// ## Field attributes
 ///
 /// `#[credential]` / `#[credential(key = "...", purpose = "...")]`
 ///
-/// Field types:
-/// - `CredentialGuard<C>` — required + eager
-/// - `Option<CredentialGuard<C>>` — optional + eager
-/// - `Lazy<CredentialGuard<C>>` — required + lazy
-/// - `Option<Lazy<CredentialGuard<C>>>` — optional + lazy
+/// - `key = "..."` — slot key override (defaults to field name). Validated
+///   at expansion time against `CredentialKey` rules.
+/// - `purpose = "..."` — human-readable description (catalog / UI).
 ///
-/// `#[resource]` field attributes are rejected — resources cannot depend
-/// on other resources via slot binding.
-#[proc_macro_derive(Resource, attributes(resource, credential))]
-pub fn derive_resource(input: TokenStream) -> TokenStream {
-    resource::derive(input)
+/// Field types accepted (path-tail matching, bare or fully qualified):
+/// - `SlotCell<CredentialGuard<C>>`
+/// - `CredentialSlot<C>` (type alias for the above)
+///
+/// ## Slot-less structs
+///
+/// Deriving on a struct with no `#[credential]` fields is legal and emits
+/// empty `DeclaresDependencies` + `HasCredentialSlots { epoch → 0 }`.
+///
+/// ## Rejected forms
+///
+/// - Enums and unions: compile error at the type ident.
+/// - Tuple structs with a `#[credential]` field: compile error.
+/// - Wrong field type: compile error naming both accepted shapes.
+/// - `#[resource(...)]` container attribute: compile error (removed).
+#[proc_macro_derive(ResourceSlots, attributes(credential))]
+pub fn derive_resource_slots(input: TokenStream) -> TokenStream {
+    slots::derive(input)
 }
 
 /// Derive macro that generates `From<T> for nebula_resource::Error`.
 ///
 /// Place `#[classify(kind)]` on each enum variant to specify how the
-/// framework should handle errors of that variant.
+/// framework should handle errors of that variant. Source-error chains are
+/// preserved: the original error is attached via `Error::with_source(err)`.
 ///
 /// # Supported kinds
 ///
 /// - `transient` — retry with backoff
 /// - `permanent` — never retry
-/// - `exhausted` — retry after cooldown (optionally with `retry_after = "30s"`)
+/// - `exhausted` — retry after cooldown (optionally with `retry_after`)
 /// - `backpressure` — caller decides
 /// - `cancelled` — operation was cancelled
+///
+/// # `retry_after` forms (only valid with `exhausted`)
+///
+/// - Literal string: `retry_after = "30s"` (parsed at expansion time)
+/// - Tuple-field index: `retry_after = .0` (reads `Duration` at runtime)
+/// - Named field: `retry_after = field_name` (reads `Duration` at runtime)
+///
+/// # Not classifiable here
+///
+/// `NotFound`, `Ambiguous`, and `Revoked` are framework-origin
+/// [`ErrorKind`](nebula_resource::ErrorKind) variants. `ClassifyError` cannot
+/// emit them — use the `Error` constructors directly on the rare occasion
+/// your `create()` must signal one.
 ///
 /// # Errors
 ///
@@ -120,11 +189,21 @@ struct Classification {
 enum ClassifyKind {
     Transient,
     Permanent,
-    Exhausted {
-        retry_after: Option<std::time::Duration>,
-    },
+    Exhausted { retry_after: ExhaustedRetryAfter },
     Backpressure,
     Cancelled,
+}
+
+/// How the `retry_after` duration is supplied for an `exhausted` variant.
+enum ExhaustedRetryAfter {
+    /// No `retry_after` specified — `None` is passed to `Error::exhausted`.
+    None,
+    /// Static literal parsed at expansion time.
+    Static(std::time::Duration),
+    /// Runtime field: tuple index (e.g. `.0`).
+    TupleIndex(syn::Index),
+    /// Runtime field: named field ident.
+    NamedField(Ident),
 }
 
 fn classify_error_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
@@ -146,21 +225,19 @@ fn classify_error_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
     for variant in &data.variants {
         let variant_name = &variant.ident;
         let classification = parse_classify_attr(variant)?;
-        let pattern = build_pattern(enum_name, variant_name, &variant.fields);
-        let constructor = build_constructor(&classification);
-
-        match_arms.push(quote! {
-            #pattern => #constructor,
-        });
+        let arm = build_arm(enum_name, variant_name, &variant.fields, &classification);
+        match_arms.push(arm);
     }
 
+    // The `From` impl binds the original error by value in each arm so
+    // `with_source` can consume it, preserving the full source chain.
+    // `EnumType: std::error::Error + Send + Sync + 'static` is always true
+    // for `thiserror`-derived enums, which is the target use case.
     Ok(quote! {
         impl #impl_generics ::core::convert::From<#enum_name #ty_generics> for nebula_resource::Error
         #where_clause
         {
             fn from(err: #enum_name #ty_generics) -> Self {
-                // Use Display to get the message before moving into the match.
-                let __msg = ::std::string::ToString::to_string(&err);
                 match err {
                     #(#match_arms)*
                 }
@@ -169,51 +246,121 @@ fn classify_error_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
     })
 }
 
-/// Build a match pattern for a variant, ignoring all fields.
-fn build_pattern(enum_name: &Ident, variant_name: &Ident, fields: &Fields) -> TokenStream2 {
-    match fields {
-        Fields::Unit => quote! { #enum_name::#variant_name },
-        Fields::Unnamed(_) => quote! { #enum_name::#variant_name(..) },
-        Fields::Named(_) => quote! { #enum_name::#variant_name { .. } },
+/// Build a complete match arm: pattern ⇒ Error constructor with source chain.
+///
+/// Each arm binds `__orig` (by value) for `with_source`, and additionally
+/// binds `__retry_after` (by ref) for runtime `retry_after` field forms.
+fn build_arm(
+    enum_name: &Ident,
+    variant_name: &Ident,
+    fields: &Fields,
+    classification: &Classification,
+) -> TokenStream2 {
+    let pattern = build_arm_pattern(enum_name, variant_name, fields, classification);
+    let constructor = build_arm_constructor(classification);
+
+    quote! {
+        #pattern => {
+            let __msg = ::std::string::ToString::to_string(&__orig);
+            #constructor.with_source(__orig)
+        },
     }
 }
 
-/// Build the `nebula_resource::Error::*` constructor call for a classification.
-fn build_constructor(classification: &Classification) -> TokenStream2 {
+/// Build the pattern for one match arm.
+///
+/// All arms bind the variant by value as `__orig` so `with_source` can consume
+/// it. For `exhausted` variants with runtime `retry_after`, the relevant field
+/// is additionally bound as `__retry_after` (by ref, before `__orig` moves).
+fn build_arm_pattern(
+    enum_name: &Ident,
+    variant_name: &Ident,
+    fields: &Fields,
+    classification: &Classification,
+) -> TokenStream2 {
     match &classification.kind {
-        ClassifyKind::Transient => {
-            quote! { nebula_resource::Error::transient(__msg) }
+        ClassifyKind::Exhausted {
+            retry_after: ExhaustedRetryAfter::TupleIndex(idx),
+        } => {
+            // Bind the Duration field by ref before moving the whole variant.
+            let pos = idx.index as usize;
+            let count = match fields {
+                Fields::Unnamed(f) => f.unnamed.len(),
+                _ => 0,
+            };
+            let pats: Vec<TokenStream2> = (0..count)
+                .map(|i| {
+                    if i == pos {
+                        quote! { ref __retry_after }
+                    } else {
+                        quote! { _ }
+                    }
+                })
+                .collect();
+            // After binding by-ref sub-fields we also need the whole variant
+            // for `with_source`. We use `__orig @` to bind the whole arm.
+            quote! { __orig @ #enum_name::#variant_name(#(#pats),*) }
         },
-        ClassifyKind::Permanent => {
-            quote! { nebula_resource::Error::permanent(__msg) }
+        ClassifyKind::Exhausted {
+            retry_after: ExhaustedRetryAfter::NamedField(field_ident),
+        } => {
+            quote! {
+                __orig @ #enum_name::#variant_name { #field_ident: ref __retry_after, .. }
+            }
         },
-        ClassifyKind::Exhausted { retry_after } => match retry_after {
-            Some(dur) => {
-                let secs = dur.as_secs();
-                let nanos = dur.subsec_nanos();
-                quote! {
-                    nebula_resource::Error::exhausted(
-                        __msg,
-                        ::core::option::Option::Some(
-                            ::core::time::Duration::new(#secs, #nanos)
-                        ),
-                    )
-                }
-            },
-            None => {
-                quote! {
-                    nebula_resource::Error::exhausted(
-                        __msg,
-                        ::core::option::Option::None,
-                    )
-                }
-            },
+        _ => {
+            // All other arms: bind the whole value as `__orig`.
+            let inner = match fields {
+                Fields::Unit => quote! { #enum_name::#variant_name },
+                Fields::Unnamed(_) => quote! { #enum_name::#variant_name(..) },
+                Fields::Named(_) => quote! { #enum_name::#variant_name { .. } },
+            };
+            quote! { __orig @ #inner }
         },
-        ClassifyKind::Backpressure => {
-            quote! { nebula_resource::Error::backpressure(__msg) }
+    }
+}
+
+/// Build the `nebula_resource::Error::*` constructor (without `with_source`).
+///
+/// `__msg` and `__retry_after` are expected to be in scope when the emitted
+/// code runs (bound by `build_arm`).
+fn build_arm_constructor(classification: &Classification) -> TokenStream2 {
+    match &classification.kind {
+        ClassifyKind::Transient => quote! { nebula_resource::Error::transient(__msg) },
+        ClassifyKind::Permanent => quote! { nebula_resource::Error::permanent(__msg) },
+        ClassifyKind::Exhausted { retry_after } => build_exhausted_constructor(retry_after),
+        ClassifyKind::Backpressure => quote! { nebula_resource::Error::backpressure(__msg) },
+        ClassifyKind::Cancelled => quote! { nebula_resource::Error::cancelled() },
+    }
+}
+
+fn build_exhausted_constructor(retry_after: &ExhaustedRetryAfter) -> TokenStream2 {
+    match retry_after {
+        ExhaustedRetryAfter::None => {
+            quote! {
+                nebula_resource::Error::exhausted(__msg, ::core::option::Option::None)
+            }
         },
-        ClassifyKind::Cancelled => {
-            quote! { nebula_resource::Error::cancelled() }
+        ExhaustedRetryAfter::Static(dur) => {
+            let secs = dur.as_secs();
+            let nanos = dur.subsec_nanos();
+            quote! {
+                nebula_resource::Error::exhausted(
+                    __msg,
+                    ::core::option::Option::Some(
+                        ::core::time::Duration::new(#secs, #nanos)
+                    ),
+                )
+            }
+        },
+        ExhaustedRetryAfter::TupleIndex(_) | ExhaustedRetryAfter::NamedField(_) => {
+            // `__retry_after: &Duration` was bound by ref in the pattern arm.
+            quote! {
+                nebula_resource::Error::exhausted(
+                    __msg,
+                    ::core::option::Option::Some(*__retry_after),
+                )
+            }
         },
     }
 }
@@ -251,7 +398,7 @@ fn parse_classify_attr(variant: &syn::Variant) -> syn::Result<Classification> {
 /// Parse the inner contents of `#[classify(...)]`.
 fn parse_classify_meta(attr: &syn::Attribute) -> syn::Result<Classification> {
     let mut kind_ident: Option<Ident> = None;
-    let mut retry_after: Option<std::time::Duration> = None;
+    let mut retry_after: Option<ExhaustedRetryAfter> = None;
 
     attr.parse_nested_meta(|meta| {
         let ident = meta
@@ -272,11 +419,33 @@ fn parse_classify_meta(attr: &syn::Attribute) -> syn::Result<Classification> {
                 Ok(())
             },
             "retry_after" => {
+                // Three forms:
+                //   retry_after = "30s"    — static literal string
+                //   retry_after = .0       — tuple field index (Duration)
+                //   retry_after = name     — named field ident (Duration)
                 let value = meta.value()?;
-                let lit: syn::LitStr = value.parse()?;
-                let dur = parse_duration(&lit.value())
-                    .map_err(|msg| syn::Error::new_spanned(&lit, msg))?;
-                retry_after = Some(dur);
+
+                // Try static string literal first.
+                if value.peek(syn::LitStr) {
+                    let lit: syn::LitStr = value.parse()?;
+                    let dur = parse_duration(&lit.value())
+                        .map_err(|msg| syn::Error::new_spanned(&lit, msg))?;
+                    retry_after = Some(ExhaustedRetryAfter::Static(dur));
+                    return Ok(());
+                }
+
+                // Try `.N` (tuple field index): the stream starts with `.`.
+                use syn::Token;
+                if value.peek(Token![.]) {
+                    value.parse::<Token![.]>()?;
+                    let idx: syn::Index = value.parse()?;
+                    retry_after = Some(ExhaustedRetryAfter::TupleIndex(idx));
+                    return Ok(());
+                }
+
+                // Remaining: plain ident for a named field.
+                let field_ident: Ident = value.parse()?;
+                retry_after = Some(ExhaustedRetryAfter::NamedField(field_ident));
                 Ok(())
             },
             _ => Err(syn::Error::new_spanned(
@@ -287,7 +456,10 @@ fn parse_classify_meta(attr: &syn::Attribute) -> syn::Result<Classification> {
     })?;
 
     let kind_ident = kind_ident.ok_or_else(|| {
-        syn::Error::new_spanned(attr, "missing classification kind (transient, permanent, exhausted, backpressure, cancelled)")
+        syn::Error::new_spanned(
+            attr,
+            "missing classification kind (transient, permanent, exhausted, backpressure, cancelled)",
+        )
     })?;
 
     if retry_after.is_some() && kind_ident != "exhausted" {
@@ -300,10 +472,12 @@ fn parse_classify_meta(attr: &syn::Attribute) -> syn::Result<Classification> {
     let kind = match kind_ident.to_string().as_str() {
         "transient" => ClassifyKind::Transient,
         "permanent" => ClassifyKind::Permanent,
-        "exhausted" => ClassifyKind::Exhausted { retry_after },
+        "exhausted" => ClassifyKind::Exhausted {
+            retry_after: retry_after.unwrap_or(ExhaustedRetryAfter::None),
+        },
         "backpressure" => ClassifyKind::Backpressure,
         "cancelled" => ClassifyKind::Cancelled,
-        _ => unreachable!(),
+        _ => unreachable!("kind_ident was validated against the match above"),
     };
 
     Ok(Classification { kind })
@@ -351,7 +525,7 @@ fn parse_duration(s: &str) -> Result<std::time::Duration, String> {
         return Ok(std::time::Duration::from_secs(n * 3600));
     }
 
-    // Bare number = seconds
+    // Bare number = seconds.
     let n: u64 = s
         .parse()
         .map_err(|_| format!("invalid duration: `{s}` (use a suffix: s, m, h, ms)"))?;

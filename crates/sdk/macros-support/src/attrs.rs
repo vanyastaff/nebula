@@ -206,14 +206,37 @@ impl AttrArgs {
         Ok(types)
     }
 
-    /// Require a string value, returning an error if missing.
+    /// Require a string value, returning an error if missing or the wrong type.
+    ///
+    /// Distinguishes two failure cases:
+    /// - Key absent → "missing required attribute `key = \"...\"`"
+    /// - Key present but not a string literal → "expected a string literal for `key`, got `<kind>`"
     pub fn require_string(&self, key: &str, span: &impl quote::ToTokens) -> Result<String> {
-        self.get_string(key).ok_or_else(|| {
-            diag::error_spanned(
+        match self.get_value(key) {
+            None => Err(diag::error_spanned(
                 span,
                 format!("missing required attribute `{key} = \"...\"`"),
-            )
-        })
+            )),
+            Some(AttrValue::Lit(Lit::Str(s))) => Ok(s.value()),
+            Some(AttrValue::Ident(i)) => Err(diag::error_spanned(
+                i,
+                format!(
+                    "expected a string literal for `{key}` — got an identifier `{i}`; \
+                     did you mean `{key} = \"{i}\"`?"
+                ),
+            )),
+            Some(AttrValue::Lit(other)) => Err(diag::error_spanned(
+                other,
+                format!("expected a string literal for `{key}` — got a non-string literal"),
+            )),
+            Some(AttrValue::Tokens(ts)) => Err(diag::error_spanned(
+                ts,
+                format!(
+                    "expected a string literal for `{key}` — got a token expression; \
+                     use `{key} = \"...\"`"
+                ),
+            )),
+        }
     }
 }
 

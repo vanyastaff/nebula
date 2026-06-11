@@ -1,4 +1,3 @@
-//! #690 review (CRITICAL, comment 3255607655 / #680) — the
 //! `credential_slot_epoch` fold must be **order-sensitive**, not `max`.
 //!
 //! The load-bearing contract: the epoch changes whenever *any*
@@ -11,15 +10,15 @@
 //!
 //! Two independent proofs:
 //!
-//! 1. **Derive fold** — a real `#[derive(Resource)]` two-slot struct:
+//! 1. **Derive fold** — a real `#[derive(ResourceSlots)]` two-slot struct:
 //!    rotating the NON-max slot must change the *derive-emitted*
-//!    `credential_slot_epoch()` (this is the exact macro output #680
-//!    depends on).
+//!    `credential_slot_epoch()` (this is the exact macro output the
+//!    epoch-fold contract depends on).
 //! 2. **Resident reconcile** — a two-slot resident whose
 //!    `credential_slot_epoch()` uses the same positional fold: rotating
 //!    the NON-max slot under a warm runtime must make the reconcile
 //!    treat the runtime as stale and deliver `on_credential_refresh`
-//!    (the end-to-end #680 invariant).
+//!    (the end-to-end rotation invariant).
 
 use std::sync::{
     Arc,
@@ -33,9 +32,9 @@ use nebula_credential::{
 };
 use nebula_resource::{
     AcquireOptions, Manager, RegistrationSpec, ResidentConfig, Resource, ResourceConfig,
-    ResourceContext, SlotCell, SlotIdentity,
+    ResourceContext, ResourceSlots, SlotCell, SlotIdentity,
     error::Error,
-    resource::{HasCredentialSlots, ResourceMetadata},
+    resource::HasCredentialSlots,
     runtime::{TopologyRuntime, resident::ResidentRuntime},
     topology::resident::Resident,
 };
@@ -100,14 +99,26 @@ impl nebula_schema::HasSchema for TwoSlotCfg {
 impl ResourceConfig for TwoSlotCfg {}
 
 /// A real derived two-slot resource — `credential_slot_epoch()` here is
-/// the exact token stream `#[derive(Resource)]` emits.
-#[derive(Resource)]
-#[resource(key = "epochfold-derived", topology = "resident", config = TwoSlotCfg)]
+/// the exact token stream `#[derive(ResourceSlots)]` emits.
+#[derive(ResourceSlots)]
 struct TwoSlotDerived {
     #[credential(key = "slot_a")]
     slot_a: SlotCell<CredentialGuard<FakeCred>>,
     #[credential(key = "slot_b")]
     slot_b: SlotCell<CredentialGuard<FakeCred>>,
+}
+
+impl Resource for TwoSlotDerived {
+    type Config = TwoSlotCfg;
+    type Runtime = ();
+
+    fn key() -> ResourceKey {
+        nebula_resource::resource_key!("epochfold-derived")
+    }
+
+    async fn create(&self, _config: &TwoSlotCfg, _ctx: &ResourceContext) -> Result<(), Error> {
+        Ok(())
+    }
 }
 
 #[test]
@@ -178,10 +189,11 @@ struct TwoSlotRuntime {
 }
 
 /// Hand-written two-slot resident. `credential_slot_epoch()` mirrors the
-/// exact positional fold `#[derive(Resource)]` emits (this fixture is not
-/// derived because the derive's `create` body is `todo!()`); the point is
-/// that the *reconcile* keys off an order-sensitive epoch, so rotating
-/// the non-max slot makes a warm runtime stale.
+/// exact positional fold `#[derive(ResourceSlots)]` emits; hand-written
+/// here so the `Arc<SlotCell<…>>` fields can be shared with test scaffolding
+/// without borrowing constraints. The point is that the *reconcile* keys
+/// off an order-sensitive epoch, so rotating the non-max slot makes a
+/// warm runtime stale.
 #[derive(Clone)]
 struct TwoSlotResident {
     slot_a: Arc<SlotCell<CredentialGuard<FakeCred>>>,
@@ -225,10 +237,6 @@ impl Resource for TwoSlotResident {
         }
         runtime.refresh_calls.fetch_add(1, Ordering::SeqCst);
         Ok(())
-    }
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::from_key(&Self::key())
     }
 }
 

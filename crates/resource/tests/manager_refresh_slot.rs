@@ -1156,7 +1156,7 @@ mod u9_gate {
     struct GateRuntime;
 
     /// Resident whose `credential_slot_epoch()` tracks a real `SlotCell`
-    /// generation (the realistic shape — exactly what `#[derive(Resource)]`
+    /// generation (the realistic shape — exactly what `#[derive(ResourceSlots)]`
     /// emits and what `resident_rotation_race.rs` mirrors). `create` reads
     /// the slot so the runtime is bound to the resolved credential.
     #[derive(Clone)]

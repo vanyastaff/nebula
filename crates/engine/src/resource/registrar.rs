@@ -54,7 +54,7 @@
 //! `resource: R` and `topology: TopologyRuntime<R>` are **`R`-typed** and
 //! cannot be constructed generically at the erased boundary — the
 //! resource crate emits no `FromConfig`/constructor and no topology
-//! factory from the `#[derive(Resource)]` macro. They must therefore be
+//! factory from the `#[derive(ResourceSlots)]` macro. They must therefore be
 //! closed over per concrete `R` when the registrar is built (that is what
 //! [`TypedResourceRegistrar`] does: it holds a `resource`-producing
 //! factory, a `TopologyRuntime<R>`-producing factory, and an erased
@@ -1215,6 +1215,7 @@ mod tests {
                     },
                     required: true,
                     lazy: false,
+                    purpose: None,
                 })
             }
         }

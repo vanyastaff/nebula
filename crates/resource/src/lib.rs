@@ -93,7 +93,13 @@ pub use nebula_credential::{Credential, CredentialContext, CredentialId};
 ///
 /// See [`nebula_resource_macros::ClassifyError`] for full documentation.
 pub use nebula_resource_macros::ClassifyError;
-pub use nebula_resource_macros::Resource;
+/// Derive macro that emits slot plumbing for a resource struct.
+///
+/// Generates `impl DeclaresDependencies`, slot accessor methods, and
+/// `impl HasCredentialSlots`. Used together with a hand-written `impl Resource`.
+///
+/// See [`nebula_resource_macros::ResourceSlots`] for full documentation.
+pub use nebula_resource_macros::ResourceSlots;
 // Schema surface — re-exported so adapter crates don't need a direct
 // nebula-schema dep just to satisfy `ResourceConfig`'s `HasSchema`
 // super-bound. `Schema` covers both the type and the derive macro

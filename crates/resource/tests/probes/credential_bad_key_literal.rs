@@ -1,6 +1,6 @@
-//! Compile-fail probe: `#[derive(ResourceSlots)]` rejects `#[credential]`
-//! on a tuple-struct field. Named-field structs are the only accepted form
-//! for slot declarations.
+//! Compile-fail probe: `#[credential(key = "...")]` with an invalid key literal
+//! is rejected at expansion time with a compile error at the literal span.
+//! Invalid: trailing separator (`foo_`) violates CredentialKey rules.
 
 use nebula_credential::{
     AuthPattern, Credential, CredentialContext, CredentialError, CredentialGuard,
@@ -11,7 +11,10 @@ use nebula_schema::FieldValues;
 use zeroize::Zeroize;
 
 #[derive(ResourceSlots)]
-struct TupleResource(#[credential(key = "auth")] SlotCell<CredentialGuard<FakeCred>>);
+struct Demo {
+    #[credential(key = "bad_key_")]
+    auth: SlotCell<CredentialGuard<FakeCred>>,
+}
 
 struct FakeCred;
 impl Zeroize for FakeCred {
@@ -21,12 +24,12 @@ impl Credential for FakeCred {
     type Properties = ();
     type Scheme = SecretToken;
     type State = SecretToken;
-    const KEY: &'static str = "fake.cred";
+    const KEY: &'static str = "demo.fake";
     fn metadata() -> CredentialMetadata {
         CredentialMetadata::builder()
-            .key(nebula_core::credential_key!("fake.cred"))
+            .key(nebula_core::credential_key!("demo.fake"))
             .name("FakeCred")
-            .description("fixture")
+            .description("trybuild bad-key fixture")
             .schema(nebula_credential::schema_of::<Self::Properties>())
             .pattern(AuthPattern::SecretToken)
             .build()
@@ -40,7 +43,7 @@ impl Credential for FakeCred {
         _ctx: &CredentialContext,
     ) -> Result<ResolveResult<SecretToken, ()>, CredentialError> {
         Ok(ResolveResult::Complete(SecretToken::new(
-            SecretString::new("t"),
+            SecretString::new("fake-token"),
         )))
     }
 }

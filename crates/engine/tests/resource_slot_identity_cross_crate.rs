@@ -156,6 +156,7 @@ impl DeclaresDependencies for XResource {
             },
             required: true,
             lazy: false,
+            purpose: None,
         })
     }
 }

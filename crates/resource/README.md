@@ -56,21 +56,18 @@ pub trait Resource: Send + Sync + 'static {
 
 **`type Credential` was dropped.** There is no longer a singular credential associated type; resources declare credentials as slot fields. The opt-out alias `NoCredential` is no longer required — resources without credentials simply have no `#[credential]` fields.
 
-### Slot-binding pattern — `#[derive(Resource)]` + `#[credential]` field attrs
+### Slot-binding pattern — `#[derive(ResourceSlots)]` + hand-written `impl Resource`
+
+The **two-derive pattern**: `#[derive(ResourceSlots)]` emits only the slot
+plumbing; you supply a hand-written `impl Resource` with real `create` /
+`check` / `shutdown` / `destroy` bodies. No container `#[resource(...)]`
+attribute is needed or accepted.
 
 ```rust
 use nebula_credential::CredentialGuard;
-use nebula_resource::{Resource, SlotCell};
+use nebula_resource::{Resource, ResourceSlots, SlotCell};
 
-#[derive(Resource)]
-#[resource(
-    key      = "postgres",
-    topology = "pool",
-    config   = PostgresConfig,
-    runtime  = PgPool,
-    lease    = PgConnection,
-    error    = PgError,
-)]
+#[derive(ResourceSlots)]
 struct Postgres {
     #[credential(key = "db_auth", purpose = "Main DB auth")]
     db_auth: SlotCell<CredentialGuard<DatabaseCredential>>,
@@ -78,13 +75,32 @@ struct Postgres {
     #[credential(key = "audit", purpose = "Audit log auth")]
     audit: SlotCell<CredentialGuard<AuditCredential>>,
 }
+
+impl Resource for Postgres {
+    type Config  = PostgresConfig;
+    type Runtime = PgPool;
+    type Lease   = PgConnection;
+    type Error   = PgError;
+
+    fn key() -> ResourceKey { resource_key!("postgres") }
+
+    async fn create(&self, config: &PostgresConfig, _ctx: &ResourceContext)
+        -> Result<PgPool, PgError>
+    {
+        // read resolved credentials through derive-emitted accessors
+        let guard = self.db_auth_slot().expect("db_auth slot must be bound");
+        // … build pool …
+    }
+    // check / shutdown / destroy …
+}
 ```
 
-The derive emits:
-- `impl Resource for Postgres { type Config = …; type Runtime = …; … fn key() … }` with a `todo!()` `create` body — the implementor supplies it.
-- `impl DeclaresDependencies for Postgres` enumerating the credential slot fields so the engine can resolve each before `create` runs.
+`#[derive(ResourceSlots)]` emits:
+- `impl DeclaresDependencies for Postgres` — enumerates credential slot fields so the engine resolves each before `create` runs.
 - A read accessor per slot field: `pub fn <field>_slot(&self) -> Option<Arc<CredentialGuard<C>>>` returning the resolved guard, or `None` until the framework binds it. Implementations read the credential through this accessor — never off the raw cell field. A pure derive cannot add or rewrite struct fields and `ManagedResource` hands out `Arc<R>` (no `&mut R`), so the author declares the `SlotCell` cell and the framework populates / rotates it through `&self` via `SlotCell::store`.
-- A topology marker (`Pooled` / `Resident`) is **not** auto-derived — the topology attribute is informational; the implementor still writes `impl Pooled for Postgres { … }` (or the chosen topology trait) by hand.
+- `impl HasCredentialSlots for Postgres` — order-sensitive epoch fold used by the engine's hot-reload path.
+
+Topology traits (`Pooled`, `Resident`, etc.) are always hand-written — the derive does not emit them.
 
 #### Field-type shape
 
@@ -135,7 +151,7 @@ The framework resolves declared `#[credential]` slots **before** invoking `Resou
 - Topology traits: `Pooled`, `Resident`.
 - Topology runtimes: `PoolRuntime`, `ResidentRuntime`.
 - Topology configs: `PoolConfig`, `ResidentConfig`.
-- `#[derive(Resource)]`, `#[derive(ClassifyError)]` — proc-macro derivations.
+- `#[derive(ResourceSlots)]`, `#[derive(ClassifyError)]` — proc-macro derivations.
 - `resource_key!` — macro for declaring resource keys.
 
 ## Migration recipe (pre-v4 → v4)
@@ -146,7 +162,7 @@ The slot-binding break is hard. To migrate an existing `Resource` impl:
 2. **Drop the `scheme: &<R::Credential as Credential>::Scheme` parameter** from `create`. The framework populates the slot cells before `create` runs; read the resolved guard via `self.<field>_slot()` (`Option<Arc<CredentialGuard<C>>>`) and handle the `None` (unbound) case explicitly.
 3. **Replace `on_credential_refresh(scheme, ctx)` with `on_credential_refresh(&self, slot_name, runtime)`** and add an `on_credential_revoke(&self, slot_name, runtime)` override where the resource held revoke logic. The engine swaps the rotated guard into the slot cell before the call; `&self` is an immutable descriptor, so blue-green / re-auth acts on `runtime`'s interior mutability. Multi-credential resources can branch on `slot_name` to refresh only the affected sub-system.
 4. **Drop `nebula_credential::NoCredential`.** Resources without credentials simply have no `#[credential]` fields. The `NoCredential` opt-out is no longer needed.
-5. **For `#[derive(Resource)]`** (new), parse `#[resource(key, topology, config, runtime, lease, error)]` struct attribute; the derive emits `Resource` trait shape (with `todo!()` `create` body — you supply it) and a `DeclaresDependencies` impl enumerating slot fields. Topology traits (`Pooled`, `Resident`, etc.) are still hand-written.
+5. **Use the two-derive pattern**: annotate the struct with `#[derive(ResourceSlots)]`; write a hand-written `impl Resource` with real `create` / `check` / `shutdown` / `destroy` bodies. No `#[resource(...)]` container attribute. Topology traits (`Pooled`, `Resident`, etc.) are still hand-written.
 6. **Update test code** — registration now goes through one funnel: `Manager::register::<R>(RegistrationSpec { resource, config, scope, slot_identity, topology, acquire, resilience, recovery_gate })`. The per-topology `register_<topo>[_with]` shorthands and the previous `acquire_*_default` shorthand were removed; acquire is the single `acquire_<topo>` / `acquire_<topo>_for_identity` family (or the erased `acquire_erased_for`).
 7. **For credential slot identity**, pass `SlotIdentity::Unbound` for the historical single-row dedup, or build a `SlotIdentity::Structural` from the resolved `(slot, credential)` pairs for per-binding row separation. The old `u64` `slot_identity` digest was removed.
 

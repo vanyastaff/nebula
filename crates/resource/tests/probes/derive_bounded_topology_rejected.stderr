@@ -1,5 +1,0 @@
-error: invalid `topology = "bounded"` — must be one of: pool, resident
-  --> tests/probes/derive_bounded_topology_rejected.rs:14:8
-   |
-14 | struct BoundedRes;
-   |        ^^^^^^^^^^

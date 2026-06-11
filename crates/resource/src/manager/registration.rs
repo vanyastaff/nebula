@@ -34,8 +34,8 @@ impl Manager {
     /// `#[credential]` slot fields already resolved and populated**.
     /// `Manager::register` does not itself resolve credential bindings —
     /// that is the responsibility of the caller (typically the engine
-    /// dispatch layer that assembles `R` via the `FromConfig` trait emitted
-    /// by `#[derive(Resource)]`).
+    /// dispatch layer, which holds a per-`R` constructor closure — the
+    /// derive emits no constructor).
     ///
     /// `spec.slot_identity` is the structural anti-bleed seam: two
     /// registrations of the same resource type at the same `spec.scope`
