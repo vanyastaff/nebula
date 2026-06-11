@@ -121,10 +121,6 @@ pub mod runtime;
 pub mod snapshot;
 /// Credential store trait with layered composition.
 pub mod store;
-/// Composable credential-store decorators: `EncryptionLayer`, `CacheLayer`,
-/// `AuditLayer`, `KeyProvider` impls (ADR-0092 step 3, relocated from
-/// `nebula-storage::credential::layer` + `key_provider`).
-pub mod store_layer;
 
 // ── Backward-compat re-export: `nebula_credential::resolve::*` ──────────
 // The proc-macro and downstream crates reference `nebula_credential::resolve::`.

@@ -94,11 +94,19 @@ runtime) compile-firewall split, accepting the LoC growth.
   token-refresh **state logic**). Engine loses its `reqwest` dependency and keeps
   only the `credential_accessor` / `resource_accessor` bridges, which now consume
   the facade from `nebula-credential`.
-- **Out of `nebula-storage` → `nebula-credential`:** the `Encryption` / `Cache` /
-  `Audit` decorators + the `KeyProvider` / `AuditSink` trait declarations. The
-  genuine sqlx adapters (`SqliteCredentialStore` / `PgCredentialStore`, the
-  durable `RefreshClaimStore` impls) **stay** in storage and are injected as
-  `Arc<dyn DynCredentialStore>`.
+- **The `Encryption` / `Cache` / `Audit` decorators + `KeyProvider` / `AuditSink`
+  STAY in `nebula-storage`** (amended 2026-06-11). Although they are generic over
+  the Core `CredentialStore` port and *could* compile in Core, they are
+  **storage-coupled for testing**: a decorator can only be exercised against a
+  concrete `CredentialStore`, and the credentials are durable-only — the durable
+  stores (`SqliteCredentialStore` / `PgCredentialStore`) deliberately live in
+  `nebula-storage` (#789), and the in-memory credential store was deliberately
+  **deleted** (#790). Relocating the decorators into Core forced reintroducing an
+  in-memory `CredentialStore` double to test them — reversing #790 and barred by
+  [the durable-only rule](#). So the decorators stay in storage and are tested
+  there over `SqliteCredentialStore`. Only the `Cipher` / `Kdf` generalization
+  (below) applies — wiring `EncryptionLayer` onto the `Cipher` port is a storage
+  follow-up. The credential subsystem links no in-memory store double.
 - **Out of `nebula-engine` → `nebula-resource`:** the resource-fanout pair
   (`fanout_driver` + `resource_fanout`) — the only genuinely cross-Business
   piece. It co-locates with `Manager` (where it already reaches) and stays an
@@ -179,8 +187,9 @@ This ADR bets that reactive refresh (1.0) is free of scheduler coupling.
 
 0. **This ADR.** 1. Declare ports (`Cipher`/`Kdf` in crypto; `RefreshTransport`
 in credential — additive). 2. `storage-port` `RefreshClaimRepo` pass-through.
-3. Move decorators storage→credential (`EncryptionLayer` calls the `Cipher`
-port). 4. Move engine lifecycle subtree → credential; route the IdP POST through
+3. ~~Move decorators storage→credential~~ **(reverted)** — decorators stay in
+`nebula-storage` (tested durably there); wiring `EncryptionLayer` onto the
+`Cipher` port is a storage-local follow-up. 4. Move engine lifecycle subtree → credential; route the IdP POST through
 `RefreshTransport`; engine loses `reqwest`. 5. Carve the resource-fanout pair →
 `nebula-resource`. 6. Fold the facade + builtins into `nebula-credential`.
 7. `nebula-api` composition root injects `ReqwestRefreshTransport::hardened()` +
