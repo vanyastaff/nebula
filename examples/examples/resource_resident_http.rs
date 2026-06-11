@@ -36,13 +36,13 @@ use std::{
 };
 
 use nebula_core::{ResourceKey, ScopeLevel, resource_key, scope::Scope};
+use nebula_resource::Resident;
 use nebula_resource::{
     AcquireOptions, Manager, RegistrationSpec, ResidentConfig, ResourceContext,
     dedup::SlotIdentity,
     error::Error as ResourceError,
     resource::{Provider, ResourceConfig, ResourceMetadata},
-    runtime::{TopologyRuntime, resident::ResidentRuntime},
-    topology::resident::Resident,
+    topology::resident::ResidentProvider,
 };
 use parking_lot::RwLock;
 use tokio_util::sync::CancellationToken;
@@ -297,33 +297,33 @@ impl GoogleSheets {
     }
 }
 
+#[async_trait::async_trait]
 impl Provider for GoogleSheets {
     type Config = GoogleSheetsConfig;
     type Instance = GoogleSheetsClient;
+    type Topology = Resident<Self>;
 
     fn key() -> ResourceKey {
         resource_key!("demo.google.sheets")
     }
 
-    fn create(
+    async fn create(
         &self,
         config: &GoogleSheetsConfig,
         _ctx: &ResourceContext,
-    ) -> impl Future<Output = Result<GoogleSheetsClient, ResourceError>> + Send {
+    ) -> Result<GoogleSheetsClient, ResourceError> {
         let cred = Arc::clone(&self.cred);
         let counter = Arc::clone(&self.create_counter);
         let app = config.application.clone();
-        async move {
-            counter.fetch_add(1, Ordering::SeqCst);
-            tracing::info!(application = %app, "Resource::create — minting initial OAuth access token");
-            // Initial token exchange.
-            let access_token = token_server().refresh(&cred);
-            sheets_api().update_known_token(&access_token.value);
-            Ok(GoogleSheetsClient {
-                cred,
-                access_token: Arc::new(RwLock::new(access_token)),
-            })
-        }
+        counter.fetch_add(1, Ordering::SeqCst);
+        tracing::info!(application = %app, "Resource::create — minting initial OAuth access token");
+        // Initial token exchange.
+        let access_token = token_server().refresh(&cred);
+        sheets_api().update_known_token(&access_token.value);
+        Ok(GoogleSheetsClient {
+            cred,
+            access_token: Arc::new(RwLock::new(access_token)),
+        })
     }
 
     async fn destroy(&self, _runtime: GoogleSheetsClient) -> Result<(), ResourceError> {
@@ -342,7 +342,7 @@ impl nebula_resource::HasCredentialSlots for GoogleSheets {
     }
 }
 
-impl Resident for GoogleSheets {
+impl ResidentProvider for GoogleSheets {
     fn is_alive_sync(&self, _runtime: &GoogleSheetsClient) -> bool {
         true
     }
@@ -371,7 +371,7 @@ async fn main() -> anyhow::Result<()> {
     let manager = Arc::new(Manager::new());
     let sheets = GoogleSheets::new(cred);
     let create_counter = Arc::clone(&sheets.create_counter);
-    let resident_runtime = ResidentRuntime::<GoogleSheets>::new(ResidentConfig::default());
+    let resident_runtime = Resident::<GoogleSheets>::new(ResidentConfig::default());
 
     manager.register(RegistrationSpec {
         resource: sheets,
@@ -380,8 +380,7 @@ async fn main() -> anyhow::Result<()> {
         },
         scope: ScopeLevel::Global,
         slot_identity: SlotIdentity::Unbound,
-        topology: TopologyRuntime::Resident(resident_runtime),
-        acquire: Manager::erased_acquire_resident_for::<GoogleSheets>(),
+        topology: resident_runtime,
         recovery_gate: None,
     })?;
     println!("[1] GoogleSheets resource registered (Resident topology, Global scope)");

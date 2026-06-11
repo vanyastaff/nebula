@@ -58,14 +58,11 @@ use std::time::Duration;
 use nebula_core::{OrgId, ResourceKey, ScopeLevel, resource_key, scope::Scope};
 use nebula_credential::{CredentialGuard, CredentialId};
 use nebula_engine::credential::rotation::{ResourceFanoutIndex, RotationOutcome};
+use nebula_resource::Resident;
 use nebula_resource::{
     AcquireOptions, Manager, ManagerConfig, Provider, RegistrationSpec, ResidentConfig,
-    ResourceConfig, ResourceContext, SlotCell, SlotIdentity,
-    error::Error as ResourceError,
-    events::ResourceEvent,
-    resource::ResourceMetadata,
-    runtime::{TopologyRuntime, resident::ResidentRuntime},
-    topology::resident::Resident,
+    ResourceConfig, ResourceContext, SlotCell, SlotIdentity, error::Error as ResourceError,
+    events::ResourceEvent, resource::ResourceMetadata, topology::resident::ResidentProvider,
 };
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::fmt::MakeWriter;
@@ -227,6 +224,7 @@ struct SecretBearingResource {
 impl Provider for SecretBearingResource {
     type Config = Cfg;
     type Instance = SecretRuntime;
+    type Topology = Resident<Self>;
 
     fn key() -> ResourceKey {
         resource_key!("rotation-redaction-res")
@@ -282,7 +280,7 @@ impl nebula_resource::HasCredentialSlots for SecretBearingResource {
 }
 
 #[async_trait::async_trait]
-impl Resident for SecretBearingResource {
+impl ResidentProvider for SecretBearingResource {
     fn is_alive_sync(&self, _rt: &SecretRuntime) -> bool {
         true
     }
@@ -389,9 +387,7 @@ async fn setup(
             config: Cfg,
             scope: scope.clone(),
             slot_identity: id.clone(),
-            topology: TopologyRuntime::resident(ResidentRuntime::<SecretBearingResource>::new(
-                ResidentConfig::default(),
-            )),
+            topology: Resident::<SecretBearingResource>::new(ResidentConfig::default()),
             recovery_gate: None,
         })
         .expect("register resolved-credential row");

@@ -35,13 +35,11 @@ use nebula_engine::{
 };
 use nebula_eventbus::EventBus;
 use nebula_metrics::MetricsRegistry;
+use nebula_resource::Resident;
 use nebula_resource::{
     AcquireOptions, Manager, Provider, RegistrationSpec, ResidentConfig, ResourceConfig,
-    ResourceContext, SlotIdentity,
-    error::Error as ResourceError,
-    resource::ResourceMetadata,
-    runtime::{TopologyRuntime, resident::ResidentRuntime},
-    topology::resident::Resident,
+    ResourceContext, SlotIdentity, error::Error as ResourceError, resource::ResourceMetadata,
+    topology::resident::ResidentProvider,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -87,6 +85,7 @@ struct Recording {
 impl Provider for Recording {
     type Config = NoCfg;
     type Instance = ();
+    type Topology = Resident<Self>;
 
     fn key() -> ResourceKey {
         resource_key!("fanout-wiring-rec")
@@ -118,7 +117,7 @@ impl nebula_resource::HasCredentialSlots for Recording {
 }
 
 #[async_trait::async_trait]
-impl Resident for Recording {
+impl ResidentProvider for Recording {
     fn is_alive_sync(&self, _r: &()) -> bool {
         true
     }
@@ -189,9 +188,7 @@ async fn wire(behaviour: Behaviour) -> Wired {
         config: NoCfg,
         scope: scope.clone(),
         slot_identity: slot_identity.clone(),
-        topology: TopologyRuntime::resident(ResidentRuntime::<Recording>::new(
-            ResidentConfig::default(),
-        )),
+        topology: Resident::<Recording>::new(ResidentConfig::default()),
         recovery_gate: None,
     })
     .expect("register resolved-credential row");
@@ -635,9 +632,7 @@ async fn engine_spawn_resource_rotation_fanout_is_idempotent() {
         config: NoCfg,
         scope: scope.clone(),
         slot_identity: slot_identity.clone(),
-        topology: TopologyRuntime::resident(ResidentRuntime::<Recording>::new(
-            ResidentConfig::default(),
-        )),
+        topology: Resident::<Recording>::new(ResidentConfig::default()),
         recovery_gate: None,
     })
     .expect("register resolved-credential row");

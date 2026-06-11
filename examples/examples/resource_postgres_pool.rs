@@ -38,13 +38,14 @@ use std::{
 };
 
 use nebula_core::{ResourceKey, ScopeLevel, resource_key, scope::Scope};
+use nebula_resource::Pooled;
+use nebula_resource::topology::pooled::PoolProvider;
 use nebula_resource::{
     AcquireOptions, Manager, RegistrationSpec, ResourceContext,
     dedup::SlotIdentity,
     error::Error as ResourceError,
     resource::{Provider, ResourceConfig, ResourceMetadata},
-    runtime::{TopologyRuntime, pool::PoolRuntime},
-    topology::pooled::{BrokenCheck, Pooled, RecycleDecision, config::Config as PoolConfig},
+    topology::pooled::{BrokenCheck, RecycleDecision, config::Config as PoolConfig},
 };
 use serde::Deserialize;
 use tokio_util::sync::CancellationToken;
@@ -181,27 +182,27 @@ impl Postgres {
     }
 }
 
+#[async_trait::async_trait]
 impl Provider for Postgres {
     type Config = PostgresConfig;
     type Instance = Arc<MockPgConnection>;
+    type Topology = Pooled<Self>;
 
     fn key() -> ResourceKey {
         resource_key!("demo.postgres")
     }
 
-    fn create(
+    async fn create(
         &self,
         config: &PostgresConfig,
         _ctx: &ResourceContext,
-    ) -> impl Future<Output = Result<Arc<MockPgConnection>, ResourceError>> + Send {
+    ) -> Result<Arc<MockPgConnection>, ResourceError> {
         let counter = Arc::clone(&self.create_counter);
         let app = config.application_name.clone();
-        async move {
-            let id = counter.fetch_add(1, Ordering::SeqCst);
-            tracing::info!(connection_id = id, application_name = %app, "creating mock postgres connection");
-            // Real impl would call `tokio_postgres::Config::connect` here.
-            Ok(Arc::new(MockPgConnection::new(id)))
-        }
+        let id = counter.fetch_add(1, Ordering::SeqCst);
+        tracing::info!(connection_id = id, application_name = %app, "creating mock postgres connection");
+        // Real impl would call `tokio_postgres::Config::connect` here.
+        Ok(Arc::new(MockPgConnection::new(id)))
     }
 
     async fn destroy(&self, runtime: Arc<MockPgConnection>) -> Result<(), ResourceError> {
@@ -223,7 +224,7 @@ impl nebula_resource::HasCredentialSlots for Postgres {
     }
 }
 
-impl Pooled for Postgres {
+impl PoolProvider for Postgres {
     fn is_broken(&self, runtime: &Arc<MockPgConnection>) -> BrokenCheck {
         if runtime.is_broken_flag.load(Ordering::Acquire) {
             BrokenCheck::Broken("mock connection flagged broken".into())
@@ -372,14 +373,13 @@ async fn main() -> anyhow::Result<()> {
         statement_timeout_ms: 30_000,
     };
     let pool_runtime =
-        PoolRuntime::<Postgres>::new(pool_config, ResourceConfig::fingerprint(&pg_config));
+        Pooled::<Postgres>::new(pool_config, ResourceConfig::fingerprint(&pg_config));
     manager.register(RegistrationSpec {
         resource: postgres.clone(),
         config: pg_config,
         scope: ScopeLevel::Global,
         slot_identity: SlotIdentity::Unbound,
-        topology: TopologyRuntime::Pool(pool_runtime),
-        acquire: Manager::erased_acquire_pooled_for::<Postgres>(),
+        topology: pool_runtime,
         recovery_gate: None,
     })?;
     println!("[1] Postgres pool registered (min=0, max=4)");

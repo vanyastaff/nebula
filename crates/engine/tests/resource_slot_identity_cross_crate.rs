@@ -49,11 +49,11 @@ use nebula_engine::{
     resource_accessor::slot_identities_for_key,
 };
 use nebula_expression::ExpressionEngine;
+use nebula_resource::Resident;
 use nebula_resource::{
     Manager, ScopeLevel, SlotIdentity,
     error::Error as ResourceError,
     resource::{Provider, ResourceConfig, ResourceMetadata},
-    runtime::{TopologyRuntime, resident::ResidentRuntime},
     topology::resident,
 };
 use nebula_schema::HasSchema;
@@ -118,6 +118,7 @@ impl XResource {
 impl Provider for XResource {
     type Config = XConfig;
     type Instance = Arc<AtomicU64>;
+    type Topology = Resident<Self>;
 
     fn key() -> ResourceKey {
         resource_key!("xcross.widget")
@@ -172,7 +173,7 @@ impl nebula_resource::HasCredentialSlots for XResource {
     }
 }
 
-impl resident::Resident for XResource {
+impl resident::ResidentProvider for XResource {
     fn is_alive_sync(&self, runtime: &Arc<AtomicU64>) -> bool {
         runtime.load(Ordering::Relaxed) < u64::MAX
     }
@@ -184,11 +185,7 @@ fn registrars() -> ResourceActivatorRegistry {
         "xcross.widget",
         Arc::new(KindActivator::<XResource, _, _>::new(
             XResource::new,
-            || {
-                TopologyRuntime::resident(ResidentRuntime::<XResource>::new(
-                    resident::config::Config::default(),
-                ))
-            },
+            || Resident::<XResource>::new(resident::config::Config::default()),
         )),
     );
     registrars

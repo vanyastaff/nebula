@@ -29,13 +29,13 @@ use std::sync::Arc;
 
 use nebula_core::{ResourceKey, resource_key};
 use nebula_engine::{KindActivator, RegistrarError, ResourceActivatorRegistry};
+use nebula_resource::Resident;
 use nebula_resource::{
     Manager, ScopeLevel,
     error::Error as ResourceError,
     resource::{Provider, ResourceConfig, ResourceMetadata},
-    runtime::{TopologyRuntime, resident::ResidentRuntime},
     topology::resident,
-    topology::resident::Resident,
+    topology::resident::ResidentProvider,
 };
 use nebula_schema::{HasSchema, Schema};
 use serde::Deserialize;
@@ -91,6 +91,7 @@ struct HttpPool;
 impl Provider for HttpPool {
     type Config = HttpPoolConfig;
     type Instance = ();
+    type Topology = Resident<Self>;
 
     fn key() -> ResourceKey {
         resource_key!("http_pool")
@@ -123,7 +124,7 @@ impl nebula_resource::HasCredentialSlots for HttpPool {
 }
 
 #[async_trait::async_trait]
-impl Resident for HttpPool {
+impl ResidentProvider for HttpPool {
     fn is_alive_sync(&self, _runtime: &()) -> bool {
         true
     }
@@ -135,11 +136,7 @@ fn registry_with_http_pool() -> ResourceActivatorRegistry {
         "http_pool",
         Arc::new(KindActivator::<HttpPool, _, _>::new(
             || HttpPool,
-            || {
-                TopologyRuntime::resident(ResidentRuntime::<HttpPool>::new(
-                    resident::config::Config::default(),
-                ))
-            },
+            || Resident::<HttpPool>::new(resident::config::Config::default()),
         )),
     );
     registry

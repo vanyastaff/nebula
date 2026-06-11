@@ -33,13 +33,11 @@ use nebula_core::{OrgId, ResourceKey, ScopeLevel, resource_key, scope::Scope};
 use nebula_credential::{CredentialEvent, CredentialGuard, CredentialId, LeaseEvent};
 use nebula_engine::credential::rotation::{ResourceFanoutDriver, ResourceFanoutIndex};
 use nebula_eventbus::EventBus;
+use nebula_resource::Resident;
 use nebula_resource::{
     AcquireOptions, Manager, Provider, RegistrationSpec, ResidentConfig, ResourceConfig,
-    ResourceContext, SlotCell, SlotIdentity,
-    error::Error as ResourceError,
-    resource::ResourceMetadata,
-    runtime::{TopologyRuntime, resident::ResidentRuntime},
-    topology::resident::Resident,
+    ResourceContext, SlotCell, SlotIdentity, error::Error as ResourceError,
+    resource::ResourceMetadata, topology::resident::ResidentProvider,
 };
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::fmt::MakeWriter;
@@ -151,6 +149,7 @@ struct SecretRes {
 impl Provider for SecretRes {
     type Config = Cfg;
     type Instance = SecretRuntime;
+    type Topology = Resident<Self>;
 
     fn key() -> ResourceKey {
         resource_key!("wired-redaction-res")
@@ -196,7 +195,7 @@ impl nebula_resource::HasCredentialSlots for SecretRes {
 }
 
 #[async_trait::async_trait]
-impl Resident for SecretRes {
+impl ResidentProvider for SecretRes {
     fn is_alive_sync(&self, _r: &SecretRuntime) -> bool {
         true
     }
@@ -249,9 +248,7 @@ async fn wired_rotation_fanout_observability_is_redaction_clean() {
         config: Cfg,
         scope: scope.clone(),
         slot_identity: slot_identity.clone(),
-        topology: TopologyRuntime::resident(ResidentRuntime::<SecretRes>::new(
-            ResidentConfig::default(),
-        )),
+        topology: Resident::<SecretRes>::new(ResidentConfig::default()),
         recovery_gate: None,
     })
     .expect("register resolved-credential row");

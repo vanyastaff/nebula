@@ -53,11 +53,11 @@ use nebula_engine::{
     ResourceActivatorRegistry, WorkflowEngine,
 };
 use nebula_metrics::MetricsRegistry;
+use nebula_resource::Resident;
 use nebula_resource::{
     ScopeLevel,
     error::Error as ResourceError,
     resource::{Provider, ResourceConfig, ResourceMetadata},
-    runtime::{TopologyRuntime, resident::ResidentRuntime},
     topology::resident,
 };
 use nebula_schema::HasSchema;
@@ -122,6 +122,7 @@ impl DemoResource {
 impl Provider for DemoResource {
     type Config = DemoConfig;
     type Instance = Arc<AtomicU64>;
+    type Topology = Resident<Self>;
 
     fn key() -> ResourceKey {
         resource_key!("demo.widget")
@@ -154,7 +155,7 @@ impl nebula_resource::HasCredentialSlots for DemoResource {
     }
 }
 
-impl resident::Resident for DemoResource {
+impl resident::ResidentProvider for DemoResource {
     fn is_alive_sync(&self, runtime: &Arc<AtomicU64>) -> bool {
         runtime.load(Ordering::Relaxed) < u64::MAX
     }
@@ -225,11 +226,7 @@ fn demo_registrars(plugins: &PluginRegistry) -> ResourceActivatorRegistry {
         kind.as_str().to_owned(),
         Arc::new(KindActivator::<DemoResource, _, _>::new(
             DemoResource::new,
-            || {
-                TopologyRuntime::resident(ResidentRuntime::<DemoResource>::new(
-                    resident::config::Config::default(),
-                ))
-            },
+            || Resident::<DemoResource>::new(resident::config::Config::default()),
         )),
     );
     registrars

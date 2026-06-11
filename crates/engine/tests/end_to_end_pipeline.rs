@@ -45,12 +45,12 @@ use nebula_engine::{
 };
 use nebula_execution::context::ExecutionBudget;
 use nebula_metrics::MetricsRegistry;
+use nebula_resource::Resident;
 use nebula_resource::{
     Manager, RegistrationSpec, ResidentConfig, ResourceContext, SlotIdentity,
     error::Error as ResourceError,
     resource::{Provider, ResourceConfig, ResourceMetadata},
-    runtime::{TopologyRuntime, resident::ResidentRuntime},
-    topology::resident::Resident,
+    topology::resident::ResidentProvider,
 };
 use nebula_workflow::{NodeDefinition, ParamValue, Version, WorkflowConfig, WorkflowDefinition};
 
@@ -160,6 +160,7 @@ impl From<WitnessError> for ResourceError {
 impl Provider for WitnessResource {
     type Config = WitnessResourceConfig;
     type Instance = Arc<WitnessResourceInner>;
+    type Topology = Resident<Self>;
 
     fn key() -> ResourceKey {
         resource_key!("phase9-witness-resource")
@@ -193,7 +194,7 @@ impl nebula_resource::HasCredentialSlots for WitnessResource {
 }
 
 #[async_trait::async_trait]
-impl Resident for WitnessResource {
+impl ResidentProvider for WitnessResource {
     fn is_alive_sync(&self, _runtime: &Arc<WitnessResourceInner>) -> bool {
         true
     }
@@ -350,9 +351,7 @@ async fn pipeline_with_resource_manager_resolves_and_executes() {
             },
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::resident(ResidentRuntime::<WitnessResource>::new(
-                ResidentConfig::default(),
-            )),
+            topology: Resident::<WitnessResource>::new(ResidentConfig::default()),
             recovery_gate: None,
         })
         .expect("register witness resource");

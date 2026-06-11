@@ -477,6 +477,7 @@ mod tests {
     impl Provider for ThreeEventSource {
         type Config = EmptyCfg;
         type Instance = ();
+        type Topology = nebula_resource::NoTopology;
 
         fn key() -> ResourceKey {
             ResourceKey::new("event-three").unwrap()
@@ -598,6 +599,7 @@ mod tests {
     impl Provider for PermanentlyBrokenSource {
         type Config = EmptyCfg;
         type Instance = ();
+        type Topology = nebula_resource::NoTopology;
 
         fn key() -> ResourceKey {
             ResourceKey::new("event-permanently-broken").unwrap()

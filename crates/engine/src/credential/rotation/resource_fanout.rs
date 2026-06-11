@@ -42,7 +42,9 @@ use std::time::Duration;
 use dashmap::DashMap;
 use nebula_core::{ResourceKey, ScopeLevel};
 use nebula_credential::CredentialId;
+use nebula_resource::Resident;
 use nebula_resource::SlotIdentity;
+use nebula_resource::topology::resident::ResidentProvider;
 
 /// One resource registry row affected by a credential rotation.
 ///
@@ -894,10 +896,8 @@ mod tests {
         use nebula_core::{OrgId, ResourceKey, ScopeLevel, resource_key, scope::Scope};
         use nebula_resource::{
             Manager, Provider, ResidentConfig, ResourceConfig, ResourceContext,
-            error::Error as ResourceError,
-            resource::ResourceMetadata,
-            runtime::{TopologyRuntime, resident::ResidentRuntime},
-            topology::resident::Resident,
+            error::Error as ResourceError, resource::ResourceMetadata,
+            topology::resident::ResidentProvider,
         };
         use tokio_util::sync::CancellationToken;
 
@@ -984,6 +984,7 @@ mod tests {
         impl Provider for CtlResource {
             type Config = Cfg;
             type Instance = Runtime;
+            type Topology = Resident<Self>;
 
             fn key() -> ResourceKey {
                 resource_key!("fanout-ctl")
@@ -1048,7 +1049,7 @@ mod tests {
         }
 
         #[async_trait::async_trait]
-        impl Resident for CtlResource {
+        impl ResidentProvider for CtlResource {
             fn is_alive_sync(&self, _rt: &Runtime) -> bool {
                 true
             }
@@ -1087,9 +1088,7 @@ mod tests {
                     config: Cfg,
                     scope: scope.clone(),
                     slot_identity: id.clone(),
-                    topology: TopologyRuntime::resident(ResidentRuntime::<CtlResource>::new(
-                        ResidentConfig::default(),
-                    )),
+                    topology: Resident::<CtlResource>::new(ResidentConfig::default()),
                     recovery_gate: None,
                 })
                 .expect("register tenant");

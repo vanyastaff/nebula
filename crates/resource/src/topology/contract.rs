@@ -437,3 +437,38 @@ pub trait Topology: Send + Sync + 'static {
         TopologyTag::Custom
     }
 }
+
+// ─── NoTopology ─────────────────────────────────────────────────────────────
+
+/// A zero-cost no-op topology for resources whose lifecycle is **not** managed
+/// by the resource [`Manager`](crate::Manager).
+///
+/// Some `Provider` types (e.g. engine daemon sources) implement the
+/// [`Provider`](crate::resource::Provider) trait for its metadata / lifecycle
+/// hooks but are never acquired through the resource Manager's lease pipeline —
+/// they are owned by a different runtime. Such a resource still has to name a
+/// [`Provider::Topology`](crate::resource::Provider::Topology); `NoTopology`
+/// is the marker that says "this resource is not leased here". Its
+/// [`try_reserve`](Topology::try_reserve) always grants an infallible ticket
+/// and its `acquire` returns a zero-cost lease, but the type carries **no**
+/// `TopologyDispatch` bridge, so a `NoTopology` resource cannot be registered
+/// through `Manager::register` — by construction, not by convention.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoTopology;
+
+#[async_trait]
+impl Topology for NoTopology {
+    type Slot = ();
+
+    fn try_reserve(&self, _store: &InstanceStore<()>) -> Result<Ticket<()>, Unavailable> {
+        Ok(Ticket::infallible())
+    }
+
+    async fn acquire(
+        &self,
+        _ticket: Ticket<()>,
+        _store: &InstanceStore<()>,
+    ) -> Result<Lease<()>, Error> {
+        Ok(Lease::new((), 0, None))
+    }
+}

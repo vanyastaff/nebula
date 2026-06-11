@@ -16,6 +16,7 @@ path = "src/lib.rs"
 doc = false
 
 [dependencies]
+async-trait = { workspace = true }
 nebula-expression = { path = "../crates/expression" }
 nebula-core = { path = "../crates/core" }
 nebula-resource = { path = "../crates/resource" }

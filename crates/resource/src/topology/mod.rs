@@ -21,7 +21,7 @@ pub mod pooled;
 pub mod resident;
 pub mod store;
 
-pub use contract::{AdmissionPhase, Lease, Load, Ticket, Topology, Unavailable};
+pub use contract::{AdmissionPhase, Lease, Load, NoTopology, Ticket, Topology, Unavailable};
 pub use pooled::{BrokenCheck, InstanceMetrics, PoolProvider, RecycleDecision};
 pub use resident::ResidentProvider;
 pub use store::{CheckedOut, Checkout, InstanceStore, ReturnOutcome};

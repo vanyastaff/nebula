@@ -303,6 +303,7 @@ mod tests {
     impl Provider for FlakyDaemon {
         type Config = EmptyCfg;
         type Instance = ();
+        type Topology = nebula_resource::NoTopology;
 
         fn key() -> ResourceKey {
             ResourceKey::new("daemon-flaky").unwrap()
@@ -340,6 +341,7 @@ mod tests {
     impl Provider for OneShotDaemon {
         type Config = EmptyCfg;
         type Instance = ();
+        type Topology = nebula_resource::NoTopology;
 
         fn key() -> ResourceKey {
             ResourceKey::new("daemon-oneshot").unwrap()

@@ -166,11 +166,11 @@ mod tests {
     };
 
     use nebula_resource::{
-        Manager, RegistrationSpec, ResidentConfig, ResourceContext, ScopeLevel, SlotIdentity,
+        Manager, RegistrationSpec, Resident, ResidentConfig, ResourceContext, ScopeLevel,
+        SlotIdentity,
         error::Error,
         resource::{Provider, ResourceConfig, ResourceMetadata},
-        runtime::{TopologyRuntime, resident::ResidentRuntime},
-        topology::resident::Resident,
+        topology::resident::ResidentProvider,
     };
 
     use super::*;
@@ -211,6 +211,7 @@ mod tests {
     impl Provider for AccResource {
         type Config = AccConfig;
         type Instance = Arc<AtomicU64>;
+        type Topology = Resident<Self>;
 
         fn key() -> ResourceKey {
             ResourceKey::new("test.engine_accessor.acc").expect("valid resource key in test")
@@ -236,7 +237,7 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl Resident for AccResource {
+    impl ResidentProvider for AccResource {
         fn is_alive_sync(&self, _runtime: &Arc<AtomicU64>) -> bool {
             true
         }
@@ -282,9 +283,7 @@ mod tests {
                 config: AccConfig,
                 scope: ScopeLevel::Global,
                 slot_identity: SlotIdentity::Unbound,
-                topology: TopologyRuntime::resident(ResidentRuntime::<AccResource>::new(
-                    ResidentConfig::default(),
-                )),
+                topology: Resident::<AccResource>::new(ResidentConfig::default()),
                 recovery_gate: None,
             })
             .expect("register");
@@ -320,9 +319,7 @@ mod tests {
                 config: AccConfig,
                 scope: ScopeLevel::Global,
                 slot_identity: bound.clone(),
-                topology: TopologyRuntime::resident(ResidentRuntime::<AccResource>::new(
-                    ResidentConfig::default(),
-                )),
+                topology: Resident::<AccResource>::new(ResidentConfig::default()),
                 recovery_gate: None,
             })
             .expect("register cred-bound row");

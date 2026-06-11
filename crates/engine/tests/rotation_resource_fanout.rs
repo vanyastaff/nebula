@@ -20,13 +20,11 @@ use std::time::Duration;
 use nebula_core::{OrgId, ResourceKey, ScopeLevel, resource_key, scope::Scope};
 use nebula_credential::CredentialId;
 use nebula_engine::credential::rotation::{ResourceFanoutIndex, RotationOutcome};
+use nebula_resource::Resident;
 use nebula_resource::{
     AcquireOptions, Manager, Provider, RegistrationSpec, ResidentConfig, ResourceConfig,
-    ResourceContext, SlotIdentity,
-    error::Error as ResourceError,
-    resource::ResourceMetadata,
-    runtime::{TopologyRuntime, resident::ResidentRuntime},
-    topology::resident::Resident,
+    ResourceContext, SlotIdentity, error::Error as ResourceError, resource::ResourceMetadata,
+    topology::resident::ResidentProvider,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -82,6 +80,7 @@ struct Ctl {
 impl Provider for Ctl {
     type Config = Cfg;
     type Instance = ();
+    type Topology = Resident<Self>;
 
     fn key() -> ResourceKey {
         resource_key!("it-fanout-ctl")
@@ -122,7 +121,7 @@ impl nebula_resource::HasCredentialSlots for Ctl {
 }
 
 #[async_trait::async_trait]
-impl Resident for Ctl {
+impl ResidentProvider for Ctl {
     fn is_alive_sync(&self, _r: &()) -> bool {
         true
     }
@@ -161,9 +160,7 @@ async fn engine_fanout_isolates_a_wedged_resource_from_siblings() {
             config: Cfg,
             scope: scope.clone(),
             slot_identity: id.clone(),
-            topology: TopologyRuntime::resident(ResidentRuntime::<Ctl>::new(
-                ResidentConfig::default(),
-            )),
+            topology: Resident::<Ctl>::new(ResidentConfig::default()),
             recovery_gate: None,
         })
         .expect("register resolved-credential row");

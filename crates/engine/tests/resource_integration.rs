@@ -27,12 +27,12 @@ use nebula_engine::{
 };
 use nebula_execution::context::ExecutionBudget;
 use nebula_metrics::MetricsRegistry;
+use nebula_resource::Resident;
 use nebula_resource::{
     Manager, RegistrationSpec, ResidentConfig, ResourceContext, SlotIdentity,
     error::Error as ResourceError,
     resource::{Provider, ResourceConfig, ResourceMetadata},
-    runtime::{TopologyRuntime, resident::ResidentRuntime},
-    topology::resident::Resident,
+    topology::resident::ResidentProvider,
 };
 use nebula_workflow::{NodeDefinition, Version, WorkflowConfig, WorkflowDefinition};
 
@@ -313,6 +313,7 @@ struct IntegrationProbeResource;
 impl Provider for IntegrationProbeResource {
     type Config = IntegrationProbeConfig;
     type Instance = Arc<AtomicU64>;
+    type Topology = Resident<Self>;
 
     fn key() -> ResourceKey {
         resource_key!("test.engine_integration.probe")
@@ -338,7 +339,7 @@ impl nebula_resource::HasCredentialSlots for IntegrationProbeResource {
 }
 
 #[async_trait::async_trait]
-impl Resident for IntegrationProbeResource {
+impl ResidentProvider for IntegrationProbeResource {
     fn is_alive_sync(&self, runtime: &Arc<AtomicU64>) -> bool {
         runtime.load(Ordering::Relaxed) > 0
     }
@@ -396,9 +397,7 @@ async fn engine_acquires_org_scoped_resource_through_accessor() {
             config: IntegrationProbeConfig,
             scope: ScopeLevel::Organization(org),
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::resident(ResidentRuntime::<IntegrationProbeResource>::new(
-                ResidentConfig::default(),
-            )),
+            topology: Resident::<IntegrationProbeResource>::new(ResidentConfig::default()),
             recovery_gate: None,
         })
         .expect("register org-scoped resource");
@@ -526,11 +525,11 @@ mod shared_resource {
 
     use nebula_core::{ExecutionId, OrgId, ResourceKey, ScopeLevel, resource_key, scope::Scope};
     use nebula_resource::{
-        AcquireOptions, Manager, RegistrationSpec, ResidentConfig, ResourceContext, SlotIdentity,
+        AcquireOptions, Manager, RegistrationSpec, Resident, ResidentConfig, ResourceContext,
+        SlotIdentity,
         error::Error,
         resource::{Provider, ResourceConfig, ResourceMetadata},
-        runtime::{TopologyRuntime, resident::ResidentRuntime},
-        topology::resident::Resident,
+        topology::resident::ResidentProvider,
     };
     use tokio_util::sync::CancellationToken;
 
@@ -620,6 +619,7 @@ mod shared_resource {
     impl Provider for TelegramBot {
         type Config = TelegramConfig;
         type Instance = Arc<TelegramBotInner>;
+        type Topology = Resident<Self>;
 
         fn key() -> ResourceKey {
             resource_key!("telegram-bot")
@@ -654,7 +654,7 @@ mod shared_resource {
     }
 
     #[async_trait::async_trait]
-    impl Resident for TelegramBot {
+    impl ResidentProvider for TelegramBot {
         fn is_alive_sync(&self, _runtime: &Arc<TelegramBotInner>) -> bool {
             self.alive.load(Ordering::Relaxed)
         }
@@ -682,6 +682,7 @@ mod shared_resource {
     impl Provider for AlternateBot {
         type Config = TelegramConfig;
         type Instance = Arc<TelegramBotInner>;
+        type Topology = Resident<Self>;
 
         fn key() -> ResourceKey {
             resource_key!("telegram-bot-alt")
@@ -715,7 +716,7 @@ mod shared_resource {
     }
 
     #[async_trait::async_trait]
-    impl Resident for AlternateBot {
+    impl ResidentProvider for AlternateBot {
         fn is_alive_sync(&self, _runtime: &Arc<TelegramBotInner>) -> bool {
             self.alive.load(Ordering::Relaxed)
         }
@@ -759,7 +760,7 @@ mod shared_resource {
         let manager = Arc::new(Manager::new());
         let bot = TelegramBot::new();
         let create_counter = Arc::clone(&bot.create_counter);
-        let resident_rt = ResidentRuntime::<TelegramBot>::new(ResidentConfig::default());
+        let resident_rt = Resident::<TelegramBot>::new(ResidentConfig::default());
         let org = OrgId::new();
 
         manager
@@ -768,7 +769,7 @@ mod shared_resource {
                 config: test_config(),
                 scope: ScopeLevel::Organization(org),
                 slot_identity: SlotIdentity::Unbound,
-                topology: TopologyRuntime::resident(resident_rt),
+                topology: resident_rt,
                 recovery_gate: None,
             })
             .expect("register should succeed");
@@ -842,9 +843,7 @@ mod shared_resource {
                 config: test_config(),
                 scope: scope.clone(),
                 slot_identity: SlotIdentity::Unbound,
-                topology: TopologyRuntime::resident(ResidentRuntime::<TelegramBot>::new(
-                    ResidentConfig::default(),
-                )),
+                topology: Resident::<TelegramBot>::new(ResidentConfig::default()),
                 recovery_gate: None,
             })
             .expect("register A should succeed");
@@ -854,9 +853,7 @@ mod shared_resource {
                 config: test_config(),
                 scope,
                 slot_identity: SlotIdentity::Unbound,
-                topology: TopologyRuntime::resident(ResidentRuntime::<AlternateBot>::new(
-                    ResidentConfig::default(),
-                )),
+                topology: Resident::<AlternateBot>::new(ResidentConfig::default()),
                 recovery_gate: None,
             })
             .expect("register B should succeed");
@@ -916,9 +913,7 @@ mod shared_resource {
                 config: test_config(),
                 scope: ScopeLevel::Organization(org_a),
                 slot_identity: SlotIdentity::Unbound,
-                topology: TopologyRuntime::resident(ResidentRuntime::<TelegramBot>::new(
-                    ResidentConfig::default(),
-                )),
+                topology: Resident::<TelegramBot>::new(ResidentConfig::default()),
                 recovery_gate: None,
             })
             .expect("register org_a should succeed");
@@ -928,9 +923,7 @@ mod shared_resource {
                 config: test_config(),
                 scope: ScopeLevel::Organization(org_b),
                 slot_identity: SlotIdentity::Unbound,
-                topology: TopologyRuntime::resident(ResidentRuntime::<TelegramBot>::new(
-                    ResidentConfig::default(),
-                )),
+                topology: Resident::<TelegramBot>::new(ResidentConfig::default()),
                 recovery_gate: None,
             })
             .expect("register org_b should succeed");
@@ -980,7 +973,7 @@ mod shared_resource {
 
         let manager = Manager::new();
         let bot = TelegramBot::new();
-        let resident_rt = ResidentRuntime::<TelegramBot>::new(ResidentConfig::default());
+        let resident_rt = Resident::<TelegramBot>::new(ResidentConfig::default());
         let org = OrgId::new();
         let scope = ScopeLevel::Organization(org);
 
@@ -990,7 +983,7 @@ mod shared_resource {
                 config: test_config(),
                 scope: scope.clone(),
                 slot_identity: SlotIdentity::Unbound,
-                topology: TopologyRuntime::resident(resident_rt),
+                topology: resident_rt,
                 recovery_gate: None,
             })
             .expect("register should succeed");
@@ -1059,7 +1052,7 @@ mod shared_resource {
         let manager = Manager::new();
         let bot = TelegramBot::new();
         let counter = Arc::clone(&bot.create_counter);
-        let resident_rt = ResidentRuntime::<TelegramBot>::new(ResidentConfig::default());
+        let resident_rt = Resident::<TelegramBot>::new(ResidentConfig::default());
 
         manager
             .register(RegistrationSpec {
@@ -1067,7 +1060,7 @@ mod shared_resource {
                 config: test_config(),
                 scope: ScopeLevel::Global,
                 slot_identity: SlotIdentity::Unbound,
-                topology: TopologyRuntime::resident(resident_rt),
+                topology: resident_rt,
                 recovery_gate: None,
             })
             .expect("register should succeed");

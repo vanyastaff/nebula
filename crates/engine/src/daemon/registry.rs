@@ -351,6 +351,7 @@ mod tests {
     impl Provider for CountedDaemon {
         type Config = EmptyCfg;
         type Instance = ();
+        type Topology = nebula_resource::NoTopology;
 
         fn key() -> ResourceKey {
             ResourceKey::new("registry-counted").unwrap()
@@ -461,6 +462,7 @@ mod tests {
     impl Provider for CountedDaemonB {
         type Config = EmptyCfg;
         type Instance = ();
+        type Topology = nebula_resource::NoTopology;
         fn key() -> ResourceKey {
             ResourceKey::new("registry-counted-b").unwrap()
         }

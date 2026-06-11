@@ -72,7 +72,7 @@
 use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc};
 
 use nebula_resource::{
-    Manager, ScopeLevel, SlotIdentity, TopologyRuntime, recovery::RecoveryGate, resource::Provider,
+    Manager, ScopeLevel, SlotIdentity, TopologyDispatch, recovery::RecoveryGate, resource::Provider,
 };
 
 /// Boxed, `Send` future returned across the erased registrar boundary.
@@ -327,7 +327,7 @@ where
     R: Provider + nebula_core::DeclaresDependencies,
     R::Config: serde::de::DeserializeOwned,
     FRes: Fn() -> R + Send + Sync,
-    FTopo: Fn() -> TopologyRuntime<R> + Send + Sync,
+    FTopo: Fn() -> R::Topology + Send + Sync,
 {
     resource_factory: FRes,
     topology_factory: FTopo,
@@ -338,7 +338,7 @@ where
     R: Provider + nebula_core::DeclaresDependencies,
     R::Config: serde::de::DeserializeOwned,
     FRes: Fn() -> R + Send + Sync,
-    FTopo: Fn() -> TopologyRuntime<R> + Send + Sync,
+    FTopo: Fn() -> R::Topology + Send + Sync,
 {
     /// Builds a kind activator for resource type `R`.
     ///
@@ -360,8 +360,9 @@ impl<R, FRes, FTopo> ResourceActivator for KindActivator<R, FRes, FTopo>
 where
     R: Provider + nebula_resource::HasCredentialSlots + nebula_core::DeclaresDependencies,
     R::Config: serde::de::DeserializeOwned,
+    R::Topology: TopologyDispatch<R>,
     FRes: Fn() -> R + Send + Sync,
-    FTopo: Fn() -> TopologyRuntime<R> + Send + Sync,
+    FTopo: Fn() -> R::Topology + Send + Sync,
 {
     fn register<'a>(
         &'a self,
@@ -762,11 +763,10 @@ mod tests {
     use nebula_error::{Classify, ErrorCategory};
     use nebula_expression::ExpressionEngine;
     use nebula_resource::{
-        Manager, ScopeLevel,
+        Manager, Resident, ScopeLevel,
         error::Error as ResourceError,
         resource::{Provider, ResourceConfig, ResourceMetadata},
-        runtime::{TopologyRuntime, resident::ResidentRuntime},
-        topology::resident::{self, Resident},
+        topology::resident::{self, ResidentProvider},
     };
 
     use super::*;
@@ -833,6 +833,7 @@ mod tests {
     impl Provider for TestRes {
         type Config = TestConfig;
         type Instance = Arc<AtomicU64>;
+        type Topology = Resident<Self>;
 
         fn key() -> ResourceKey {
             resource_key!("test-registrar-res")
@@ -868,7 +869,7 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl Resident for TestRes {
+    impl ResidentProvider for TestRes {
         fn is_alive_sync(&self, runtime: &Arc<AtomicU64>) -> bool {
             runtime.load(Ordering::Relaxed) < u64::MAX
         }
@@ -877,11 +878,7 @@ mod tests {
     fn test_registrar(create_counter: Arc<AtomicU64>) -> Arc<dyn ResourceActivator> {
         Arc::new(KindActivator::<TestRes, _, _>::new(
             move || TestRes::new(create_counter.clone()),
-            || {
-                TopologyRuntime::resident(ResidentRuntime::<TestRes>::new(
-                    resident::config::Config::default(),
-                ))
-            },
+            || Resident::<TestRes>::new(resident::config::Config::default()),
         ))
     }
 
@@ -1056,11 +1053,10 @@ mod tests {
         use nebula_credential::CredentialId;
         use nebula_expression::ExpressionEngine;
         use nebula_resource::{
-            Manager, ScopeLevel,
+            Manager, Resident, ScopeLevel,
             error::Error as ResourceError,
             resource::{Provider, ResourceConfig, ResourceMetadata},
-            runtime::{TopologyRuntime, resident::ResidentRuntime},
-            topology::resident,
+            topology::resident::{self, ResidentProvider},
         };
         use nebula_schema::HasSchema;
 
@@ -1168,6 +1164,7 @@ mod tests {
         impl Provider for OResource {
             type Config = OConfig;
             type Instance = ();
+            type Topology = Pooled<Self>;
 
             fn key() -> ResourceKey {
                 resource_key!("ordering.widget")
@@ -1214,7 +1211,7 @@ mod tests {
             }
         }
 
-        impl resident::Resident for OResource {
+        impl resident::ResidentProvider for OResource {
             fn is_alive_sync(&self, _runtime: &()) -> bool {
                 true
             }
@@ -1226,11 +1223,7 @@ mod tests {
                 "ordering.widget",
                 Arc::new(KindActivator::<OResource, _, _>::new(
                     || OResource,
-                    || {
-                        TopologyRuntime::resident(ResidentRuntime::<OResource>::new(
-                            resident::config::Config::default(),
-                        ))
-                    },
+                    || Resident::<OResource>::new(resident::config::Config::default()),
                 )),
             );
             reg
