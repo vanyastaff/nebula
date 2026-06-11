@@ -201,6 +201,23 @@ Closed, audited, framework-owned — these carry the revoke-fence proof so autho
 
 The open trait does **not** reuse the sealed `AnyManagedResource`; it introduces a *separate* object-safe `ErasedTopology`, and the revoke/rotation/drain invariants stay in Manager code over `InstanceStore`, never delegated to author code.
 
+### 2.6 Credentials & authorization — outside the `Topology` boundary (preserved by construction)
+
+The active credential lifecycle (slots, create-time resolution, OAuth refresh / rotation / revocation, per-tenant owner scoping, the revoke-epoch fence) is **the product moat and is not changed by this spec**. Every credential mechanism lives on the **`Provider`** side or is **UNIFORM-in-Manager** — explicitly *outside* the `Topology` trait. A `Topology` (built-in or custom) never sees a credential, a `CredentialGuard`, or a `SlotIdentity`.
+
+| Credential mechanism | Where it lives | Changed? |
+|---|---|---|
+| `#[credential(key)]` slot fields, `CredentialSlot<C>`, `HasCredentialSlots` epoch | `#[derive(Resource)]` + the resource struct (Provider side) | **No** — derive renamed, plumbing identical |
+| Slot resolution before `create` (engine binds `CredentialGuard` into the cell) | engine → `Provider::create` | **No** — `create` still runs after resolution |
+| Rotation hooks `on_credential_refresh` / `on_credential_revoke` | `Provider`, called by the Manager rotation fan-out | **No** — fan-out is UNIFORM-in-Manager, walks `InstanceStore` |
+| Revoke-epoch fence (`credential_slot_epoch`, create-vs-rotate race) | Manager, every return-to-store path | **Strengthened** — becomes a uniform fence over `InstanceStore` (today a Pool-only 2-arm `match`), so it now covers custom topologies too |
+| `SlotIdentity` cross-tenant barrier, `(key, scope, SlotIdentity)` dedup | Manager registry | **No** — the `InstanceStore` rule (§1) exists *precisely* to keep it intact for custom topologies |
+| Two-phase revoke (sync taint + epoch bump, then drain + hook) | Manager | **No** |
+
+**Why a custom (author-written) topology cannot break authorization.** A `Topology` is handed a lifetime-bound `&InstanceStore<Slot>` it cannot retain and cannot populate with its own credential-bearing instances — instances are created by `Provider::create` (which the framework drives *after* credential resolution) and stored by the framework. The Topology only decides *which already-built, already-authorized instance* to lease and how many at once. Credential resolution, rotation fan-out, the revoke-epoch fence, and the `SlotIdentity` barrier all run in Manager code over the framework-owned store, regardless of what the topology does. An author topology with a wrong `on_release` can leak its own resource's *non-credential* state (its own bug); it cannot resurrect a revoked credential (the fence evicts it) nor cross a tenant boundary (it never owns instances).
+
+**Net: client authorization is preserved by construction. The open topology widens *lease policy*, never the credential/tenant seam.** The one credential-adjacent *improvement* the spec lands is that the revoke-epoch fence stops being a Pool-only branch and becomes uniform over `InstanceStore`, so a rotated/revoked credential is fenced on *every* topology — built-in or third-party — not just the pool.
+
 ---
 
 ## 3. The availability / admission surface (the seam for Spec 2)
