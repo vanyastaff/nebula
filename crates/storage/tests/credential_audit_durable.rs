@@ -9,20 +9,20 @@
 //! Ref: ADR-0028, ADR-0032 (historical — `docs/adr/HISTORICAL.md`)
 //! Ref: `docs/ARCHIVE.md` §P6.7
 
-// The layers + `InMemoryStore` are feature-gated in storage. This test
-// uses `InMemoryStore` (gated on `credential-in-memory`) wrapped by
-// `AuditLayer` (always available) with `make_credential` from
-// `nebula-credential` (gated on `test-util`). Gate on both features so
-// `cargo test -p nebula-storage --features test-util` (without
-// `credential-in-memory`) does not fail to compile.
-#![cfg(all(feature = "test-util", feature = "credential-in-memory"))]
+// The layers + the durable SQLite store are feature-gated in storage. This
+// test wraps a `SqliteCredentialStore` (gated on `sqlite`, backed by a unique
+// in-memory database) with `AuditLayer` (always available) and
+// `make_credential` from `nebula-credential` (gated on `test-util`). Gate on
+// both features so `cargo test -p nebula-storage --features test-util` (without
+// `sqlite`) does not fail to compile.
+#![cfg(all(feature = "test-util", feature = "sqlite"))]
 
 use std::sync::Arc;
 
 use nebula_credential::{
     CredentialStore, PutMode, StoreError, store::test_helpers::make_credential,
 };
-use nebula_storage::credential::{AuditEvent, AuditLayer, AuditSink, InMemoryStore};
+use nebula_storage::credential::{AuditEvent, AuditLayer, AuditSink, SqliteCredentialStore};
 
 /// Sink that always refuses to record, to prove `AuditLayer` surfaces
 /// (does not swallow) audit failures.
@@ -42,9 +42,12 @@ impl AuditSink for FailingAuditSink {
 /// unchanged (fail-closed — the write is rolled back).
 #[tokio::test]
 async fn put_returns_audit_failure_and_rolls_back_inner() {
-    let inner = InMemoryStore::new();
+    let inner = SqliteCredentialStore::connect_memory()
+        .await
+        .expect("in-memory SQLite store");
     // Share the inner store so the test can inspect it directly after
-    // the failed put. `InMemoryStore` is cheap-cloneable (Arc-backed).
+    // the failed put. `SqliteCredentialStore` is cheap-cloneable (the pool is
+    // `Arc`-backed), so the clone observes the same in-memory database.
     let audited = AuditLayer::new(inner.clone(), Arc::new(FailingAuditSink));
 
     let credential_id = "cred_audit_durable_put";
@@ -83,7 +86,9 @@ async fn put_returns_audit_failure_and_rolls_back_inner() {
 /// Exercises the `?` after `sink.record` in the `get` impl.
 #[tokio::test]
 async fn get_is_fail_closed_under_audit_failure() {
-    let inner = InMemoryStore::new();
+    let inner = SqliteCredentialStore::connect_memory()
+        .await
+        .expect("in-memory SQLite store");
     // Pre-populate via the raw inner (no AuditLayer) so the test
     // isolates the read-path invariant.
     inner
@@ -110,7 +115,9 @@ async fn get_is_fail_closed_under_audit_failure() {
 /// retry-and-observe rather than silently succeed.
 #[tokio::test]
 async fn delete_is_fail_closed_under_audit_failure() {
-    let inner = InMemoryStore::new();
+    let inner = SqliteCredentialStore::connect_memory()
+        .await
+        .expect("in-memory SQLite store");
     inner
         .put(
             make_credential("cred_audit_delete", b"x"),
@@ -134,7 +141,12 @@ async fn delete_is_fail_closed_under_audit_failure() {
 /// identically to id-scoped operations.
 #[tokio::test]
 async fn list_is_fail_closed_under_audit_failure() {
-    let audited = AuditLayer::new(InMemoryStore::new(), Arc::new(FailingAuditSink));
+    let audited = AuditLayer::new(
+        SqliteCredentialStore::connect_memory()
+            .await
+            .expect("in-memory SQLite store"),
+        Arc::new(FailingAuditSink),
+    );
 
     let result = audited.list(None).await;
 
@@ -148,7 +160,12 @@ async fn list_is_fail_closed_under_audit_failure() {
 /// mutating/non-mutating surface on `CredentialStore`.
 #[tokio::test]
 async fn exists_is_fail_closed_under_audit_failure() {
-    let audited = AuditLayer::new(InMemoryStore::new(), Arc::new(FailingAuditSink));
+    let audited = AuditLayer::new(
+        SqliteCredentialStore::connect_memory()
+            .await
+            .expect("in-memory SQLite store"),
+        Arc::new(FailingAuditSink),
+    );
 
     let result = audited.exists("anything").await;
 

@@ -68,9 +68,9 @@ type ResolveFn = Arc<
 /// use std::sync::Arc;
 /// use nebula_engine::credential::CredentialResolver;
 /// use nebula_engine::credential_accessor::EngineCredentialAccessor;
-/// use nebula_storage::credential::InMemoryStore;
+/// use nebula_storage::credential::SqliteCredentialStore;
 ///
-/// let store = Arc::new(InMemoryStore::new());
+/// let store = Arc::new(SqliteCredentialStore::connect("sqlite://creds.db").await?);
 /// let resolver = Arc::new(CredentialResolver::new(store));
 ///
 /// let allowed = HashSet::from(["github_token".to_string()]);

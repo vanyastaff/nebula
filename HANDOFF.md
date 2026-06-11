@@ -108,7 +108,6 @@ Pick the crate by intent. One-liners are condensed; the crate's own
 | **Touch credentials** (contract / secret primitives) | `nebula-credential` | Shared-infra | Typed Credential Contract: stored-State vs projected auth-Scheme split + secret primitives. |
 | Add a concrete credential type | `nebula-credential-builtin` | Business | First-party impls (`bearer_token`, `shared_key`, `signing_key`) + `register_builtins()` + `sealed_caps`. |
 | Wire the credential **lifecycle** (resolve/refresh/rotate/revoke/bind) | `nebula-credential-runtime` | Exec | `CredentialService<B,PS>` facade — the owner-isolated lifecycle behind one typed entry point. |
-| Add a Vault-backed secret source | `nebula-credential-vault` | Business | HashiCorp Vault backend (KV v2 + dynamic secrets + lease renew/revoke). |
 | Crypto primitives (AEAD / KDF) | `nebula-crypto` | Cross-cutting | AES-256-GCM (mandatory AAD) + Argon2id, `EncryptedData` envelope, `CryptoError`. |
 | **Storage / persistence** — define a port | `nebula-storage-port` | Core | Object-safe repo traits, port-local DTO rows, `Scope`, `StorageError`, `TransitionBatch`. No backend code. |
 | Storage — implement a backend (PG/SQLite/mem) | `nebula-storage` | Exec | Sole spec-16 adapter: execution CAS, journal, control-queue outbox, idempotency, leases, refresh claims. |

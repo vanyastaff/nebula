@@ -28,8 +28,8 @@ use nebula_engine::credential::{
 };
 use nebula_schema::FieldValues;
 use nebula_storage::credential::{
-    ClaimAttempt, ClaimToken, HeartbeatError, InMemoryRefreshClaimRepo, InMemoryStore,
-    ReclaimedClaim, RefreshClaimRepo, ReplicaId, RepoError,
+    ClaimAttempt, ClaimToken, HeartbeatError, InMemoryRefreshClaimRepo, ReclaimedClaim,
+    RefreshClaimRepo, ReplicaId, RepoError, SqliteCredentialStore,
 };
 
 /// Counting wrapper around [`RefreshClaimRepo`] used to verify the L2
@@ -167,7 +167,11 @@ impl Refreshable for TwoTierCredential {
 async fn typed_id_routes_through_refresh_coalesced() {
     REFRESH_COUNT.store(0, Ordering::SeqCst);
 
-    let store = Arc::new(InMemoryStore::new());
+    let store = Arc::new(
+        SqliteCredentialStore::connect_memory()
+            .await
+            .expect("in-memory SQLite store"),
+    );
     // Generate a real `cred_<ULID>` id so the resolver takes the typed
     // path through `refresh_coalesced` (Stage 2.3 migration).
     let typed_id = nebula_core::CredentialId::new();

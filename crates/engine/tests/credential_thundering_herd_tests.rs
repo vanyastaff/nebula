@@ -13,7 +13,7 @@ use nebula_credential::{
     store::{PutMode, StoredCredential},
 };
 use nebula_schema::FieldValues;
-use nebula_storage::credential::InMemoryStore;
+use nebula_storage::credential::SqliteCredentialStore;
 
 static REFRESH_COUNT: AtomicU32 = AtomicU32::new(0);
 
@@ -92,7 +92,11 @@ impl Refreshable for ThunderingHerdCredential {
 async fn only_one_refresh_under_concurrent_access() {
     REFRESH_COUNT.store(0, Ordering::SeqCst);
 
-    let store = Arc::new(InMemoryStore::new());
+    let store = Arc::new(
+        SqliteCredentialStore::connect_memory()
+            .await
+            .expect("in-memory SQLite store"),
+    );
     let expires_at = chrono::Utc::now() + chrono::Duration::minutes(2);
     let state = ThunderingHerdState {
         token: "old-token".into(),

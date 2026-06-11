@@ -548,7 +548,7 @@ mod tests {
         InMemoryNodeResultStore, InMemoryWorkflowStore, InMemoryWorkflowVersionStore,
     };
 
-    fn test_app_state() -> AppState {
+    async fn test_app_state() -> AppState {
         let jwt_secret =
             JwtSecret::new("test-jwt-secret-1234567890-abcdef").expect("valid test secret");
 
@@ -565,8 +565,12 @@ mod tests {
         let key = Arc::new(
             EnvKeyProvider::from_base64(TEST_KEY_B64).expect("valid 32-byte AES key fixture"),
         );
-        let svc = crate::ports::credential_service_factory::with_key_provider(key)
-            .expect("service composes");
+        let svc = match crate::ports::credential_service_factory::with_memory_store(key).await {
+            Ok(svc) => svc,
+            // guard-justified: the fixed AES key fixture + ephemeral in-memory
+            // store always compose; a failure means the host cannot open one.
+            Err(err) => unreachable!("test credential service composes: {err}"),
+        };
 
         AppState::new(
             Arc::new(workflow_store),
@@ -661,7 +665,7 @@ mod tests {
 
     #[tokio::test]
     async fn callback_persists_oauth_state_in_credential_store() {
-        let state = test_app_state();
+        let state = test_app_state().await;
         let credential_id = "cred-123";
         let user = AuthenticatedUser {
             user_id: "user-123".to_owned(),
@@ -704,7 +708,7 @@ mod tests {
 
     #[tokio::test]
     async fn second_callback_round_replaces_tokens_and_preserves_created_at() {
-        let state = test_app_state();
+        let state = test_app_state().await;
         let credential_id = "cred-456";
         let user = AuthenticatedUser {
             user_id: "user-456".to_owned(),
@@ -764,7 +768,7 @@ mod tests {
     /// foreign owner sees nothing.
     #[tokio::test]
     async fn oauth_row_is_visible_to_the_crud_plane() {
-        let state = test_app_state();
+        let state = test_app_state().await;
         let credential_id = "cred-crud-visible";
         let user = AuthenticatedUser {
             user_id: "user-vis".to_owned(),
@@ -803,7 +807,7 @@ mod tests {
     /// on a version pinned at authorize time.
     #[tokio::test]
     async fn concurrent_row_write_between_authorize_and_callback_does_not_break_exchange() {
-        let state = test_app_state();
+        let state = test_app_state().await;
         let credential_id = "cred-rename-race";
         let user = AuthenticatedUser {
             user_id: "user-race".to_owned(),
@@ -884,7 +888,7 @@ mod tests {
     }
     #[tokio::test]
     async fn tenant_mismatch_does_not_consume_pending_state() {
-        let state = test_app_state();
+        let state = test_app_state().await;
         let credential_id = "cred-tenant-mismatch";
         let user = AuthenticatedUser {
             user_id: "user-tenant-mismatch".to_owned(),

@@ -1446,7 +1446,8 @@ pub mod test_support {
     use nebula_engine::credential::LeaseLifecycleConfig;
     use nebula_eventbus::EventBus;
     use nebula_storage::credential::{
-        AuditEvent, AuditSink, CacheConfig, InMemoryPendingStore, InMemoryStore, StaticKeyProvider,
+        AuditEvent, AuditSink, CacheConfig, InMemoryPendingStore, SqliteCredentialStore,
+        StaticKeyProvider,
     };
     use tokio_util::sync::CancellationToken;
 
@@ -1471,8 +1472,9 @@ pub mod test_support {
 
     /// Build an in-memory service with the three first-party builtins
     /// wired through registry + ops, accepting an arbitrary
-    /// [`AuditSink`], **and** return a `Clone` of the raw `InMemoryStore`
-    /// that shares the service's backing map.
+    /// [`AuditSink`], **and** return a `Clone` of the raw
+    /// `SqliteCredentialStore` (a pooled handle over the same unique
+    /// in-memory SQLite database the service writes through).
     ///
     /// The raw handle is a structural read-back seam for the audit
     /// fail-closed invariant (spec §6 #8): with a refusing sink every
@@ -1481,9 +1483,9 @@ pub mod test_support {
     /// the poisoned `AuditLayer` to prove the write did not partially
     /// land. The secure layered composition is unchanged; only the audit
     /// sink varies and the inner store is observable for assertions.
-    pub fn service_and_raw_store_with_audit_sink(
+    pub async fn service_and_raw_store_with_audit_sink(
         audit_sink: Arc<dyn AuditSink>,
-    ) -> (CredentialService, InMemoryStore) {
+    ) -> (CredentialService, SqliteCredentialStore) {
         let mut registry = CredentialRegistry::new();
         register_builtins(&mut registry).expect("register_builtins");
 
@@ -1493,9 +1495,14 @@ pub mod test_support {
         let mut ops = DispatchOps::<ErasedPendingStore>::new();
         register_all_builtin_ops::<ErasedPendingStore>(&mut ops).expect("builtin ops");
 
-        // `InMemoryStore` is `Arc<RwLock<..>>`-backed: the clone shares
-        // the same map the layered stack writes through.
-        let raw_store = InMemoryStore::new();
+        // `SqliteCredentialStore` is `Arc`-backed (the pool): the clone shares
+        // the same in-memory database the layered stack writes through.
+        let raw_store = match SqliteCredentialStore::connect_memory().await {
+            Ok(store) => store,
+            // guard-justified: a fresh uniquely-named in-memory SQLite database
+            // always opens; a failure here means the host cannot create one.
+            Err(err) => unreachable!("in-memory credential store opens: {err}"),
+        };
         let key = Arc::new(EncryptionKey::from_bytes([0x42; 32]));
         let svc = match CredentialServiceBuilder::new(
             raw_store.clone(),
@@ -1523,14 +1530,14 @@ pub mod test_support {
     /// discarding the raw-store handle. Convenience over
     /// [`service_and_raw_store_with_audit_sink`] for tests that do not
     /// need to inspect the inner store.
-    pub fn service_with_audit_sink(audit_sink: Arc<dyn AuditSink>) -> CredentialService {
-        service_and_raw_store_with_audit_sink(audit_sink).0
+    pub async fn service_with_audit_sink(audit_sink: Arc<dyn AuditSink>) -> CredentialService {
+        service_and_raw_store_with_audit_sink(audit_sink).await.0
     }
 
     /// Build an in-memory service with a no-op audit sink — the default
     /// fixture for tests / Plan-3 wiring.
-    pub fn in_memory_service() -> CredentialService {
-        service_with_audit_sink(Arc::new(NoopAuditSink))
+    pub async fn in_memory_service() -> CredentialService {
+        service_with_audit_sink(Arc::new(NoopAuditSink)).await
     }
 
     /// Observer that counts `on_refresh` invocations so a test can prove
@@ -1571,7 +1578,7 @@ pub mod test_support {
     /// The static builtins cannot exercise any positive capability path
     /// (refresh CAS + retry, the coalesced re-read branch, the concurrent-refresh
     /// version-conflict branch); this fixture-enabled variant does.
-    pub fn in_memory_service_with_fixtures() -> (CredentialService, Arc<AtomicUsize>) {
+    pub async fn in_memory_service_with_fixtures() -> (CredentialService, Arc<AtomicUsize>) {
         let mut registry = CredentialRegistry::new();
         register_builtins(&mut registry).expect("register_builtins");
         registry
@@ -1597,7 +1604,12 @@ pub mod test_support {
             refreshes: Arc::clone(&refreshes),
         };
 
-        let raw_store = InMemoryStore::new();
+        let raw_store = match SqliteCredentialStore::connect_memory().await {
+            Ok(store) => store,
+            // guard-justified: a fresh uniquely-named in-memory SQLite database
+            // always opens; a failure here means the host cannot create one.
+            Err(err) => unreachable!("in-memory credential store opens: {err}"),
+        };
         let key = Arc::new(EncryptionKey::from_bytes([0x42; 32]));
         let svc = match CredentialServiceBuilder::new(
             raw_store,
@@ -1632,7 +1644,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_then_get_roundtrip_is_tenant_scoped() {
-        let svc = in_memory_service();
+        let svc = in_memory_service().await;
         let scope = TenantScope::new("org1", "ws1");
         let head = svc
             .create(
@@ -1657,7 +1669,7 @@ mod tests {
 
     #[tokio::test]
     async fn cross_tenant_get_returns_not_found() {
-        let svc = in_memory_service();
+        let svc = in_memory_service().await;
         let owner = TenantScope::new("org1", "ws1");
         svc.create(
             &owner,
@@ -1680,7 +1692,7 @@ mod tests {
 
     #[tokio::test]
     async fn expr_injection_in_props_is_rejected() {
-        let svc = in_memory_service();
+        let svc = in_memory_service().await;
         let scope = TenantScope::new("org1", "ws1");
         let err = svc
             .create(
@@ -1699,7 +1711,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_unknown_type_is_type_unknown() {
-        let svc = in_memory_service();
+        let svc = in_memory_service().await;
         let scope = TenantScope::new("org1", "ws1");
         let err = svc
             .create(
@@ -1715,7 +1727,7 @@ mod tests {
 
     #[tokio::test]
     async fn update_with_stale_version_is_version_conflict() {
-        let svc = in_memory_service();
+        let svc = in_memory_service().await;
         let scope = TenantScope::new("org1", "ws1");
         svc.create(
             &scope,
@@ -1747,7 +1759,7 @@ mod tests {
 
     #[tokio::test]
     async fn update_then_get_reflects_new_state_and_delete_removes() {
-        let svc = in_memory_service();
+        let svc = in_memory_service().await;
         let scope = TenantScope::new("org1", "ws1");
         svc.create(
             &scope,
@@ -1779,7 +1791,7 @@ mod tests {
 
     #[tokio::test]
     async fn cross_tenant_delete_and_update_are_not_found() {
-        let svc = in_memory_service();
+        let svc = in_memory_service().await;
         let owner = TenantScope::new("org1", "ws1");
         svc.create(
             &owner,
@@ -1815,7 +1827,7 @@ mod tests {
     /// `CapabilityUnsupported` (closure-absence = capability-absence).
     #[tokio::test]
     async fn static_type_capability_ops_are_unsupported() {
-        let svc = in_memory_service();
+        let svc = in_memory_service().await;
         let scope = TenantScope::new("org1", "ws1");
         svc.create(
             &scope,
@@ -1849,7 +1861,7 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_complete_persists_and_is_gettable() {
-        let svc = in_memory_service();
+        let svc = in_memory_service().await;
         let scope = TenantScope::new("org1", "ws1");
         let acq = svc
             .resolve(
@@ -1877,7 +1889,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_types_contains_builtins_with_no_capabilities() {
-        let svc = in_memory_service();
+        let svc = in_memory_service().await;
         let types = svc.list_types();
         let keys: Vec<&str> = types.iter().map(|t| t.key.as_str()).collect();
         for expected in ["bearer_token", "shared_key", "signing_key"] {
@@ -1900,7 +1912,7 @@ mod tests {
 
     #[tokio::test]
     async fn cross_tenant_capability_ops_are_not_found() {
-        let svc = in_memory_service();
+        let svc = in_memory_service().await;
         let owner = TenantScope::new("org1", "ws1");
         svc.create(
             &owner,
@@ -1932,7 +1944,7 @@ mod tests {
 
     #[tokio::test]
     async fn continue_resolve_on_non_interactive_is_unsupported() {
-        let svc = in_memory_service();
+        let svc = in_memory_service().await;
         // A session is present so the path reaches the capability gate
         // (the session check runs first; see the dedicated test below).
         let scope = TenantScope::new("org1", "ws1").with_session("sess-1");
@@ -1963,7 +1975,7 @@ mod tests {
     /// inside the engine's `execute_continue`.
     #[tokio::test]
     async fn continue_resolve_without_session_is_session_required() {
-        let svc = in_memory_service();
+        let svc = in_memory_service().await;
         let scope = TenantScope::new("org1", "ws1"); // no .with_session
         let err = svc
             .continue_resolve(
@@ -2013,7 +2025,7 @@ mod tests {
     /// `Refreshable`), so the fixture is the only coverage for it.
     #[tokio::test]
     async fn fixture_refresh_succeeds_repersists_and_fires_on_refresh() {
-        let (svc, refreshes) = super::test_support::in_memory_service_with_fixtures();
+        let (svc, refreshes) = super::test_support::in_memory_service_with_fixtures().await;
         let scope = TenantScope::new("org1", "ws1");
 
         svc.create(
@@ -2061,7 +2073,7 @@ mod tests {
         use crate::test_fixtures::set_refresh_rendezvous;
         use std::sync::Arc;
 
-        let (svc, _refreshes) = super::test_support::in_memory_service_with_fixtures();
+        let (svc, _refreshes) = super::test_support::in_memory_service_with_fixtures().await;
         let scope = TenantScope::new("org1", "ws1");
 
         svc.create(

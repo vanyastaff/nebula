@@ -143,11 +143,11 @@ pub enum AuditResult {
 /// # Examples
 ///
 /// ```rust,ignore
-/// use nebula_storage::credential::{AuditLayer, InMemoryStore};
+/// use nebula_storage::credential::{AuditLayer, SqliteCredentialStore};
 /// use std::sync::Arc;
 ///
 /// let sink = Arc::new(my_audit_sink);
-/// let store = AuditLayer::new(InMemoryStore::new(), sink);
+/// let store = AuditLayer::new(SqliteCredentialStore::connect("sqlite://creds.db").await?, sink);
 /// ```
 pub struct AuditLayer<S> {
     inner: S,
@@ -257,13 +257,13 @@ fn audit_result<T>(result: &Result<T, StoreError>) -> AuditResult {
 
 // Tests gated on `test-util` so storage compiles without features
 // (credential's `test_helpers` is itself behind `test-util`).
-#[cfg(all(test, feature = "test-util"))]
+#[cfg(all(test, feature = "test-util", feature = "sqlite"))]
 mod tests {
     use std::sync::Mutex;
 
     use nebula_credential::PutMode;
 
-    use super::{super::super::memory::InMemoryStore, *};
+    use super::{super::super::sqlite::SqliteCredentialStore, *};
 
     struct CollectingSink {
         events: Mutex<Vec<AuditEvent>>,
@@ -305,14 +305,19 @@ mod tests {
         }
     }
 
-    fn make_store(sink: &Arc<CollectingSink>) -> AuditLayer<InMemoryStore> {
-        AuditLayer::new(InMemoryStore::new(), Arc::clone(sink) as Arc<dyn AuditSink>)
+    async fn make_store(
+        sink: &Arc<CollectingSink>,
+    ) -> Result<AuditLayer<SqliteCredentialStore>, StoreError> {
+        Ok(AuditLayer::new(
+            SqliteCredentialStore::connect_memory().await?,
+            Arc::clone(sink) as Arc<dyn AuditSink>,
+        ))
     }
 
     #[tokio::test]
-    async fn get_logs_audit_event() {
+    async fn get_logs_audit_event() -> Result<(), StoreError> {
         let sink = Arc::new(CollectingSink::new());
-        let store = make_store(&sink);
+        let store = make_store(&sink).await?;
 
         let cred = make_credential("audit-1");
         store.put(cred, PutMode::CreateOnly).await.unwrap();
@@ -326,12 +331,13 @@ mod tests {
             .unwrap();
         assert_eq!(get_event.credential_id, "audit-1");
         assert_eq!(get_event.result, AuditResult::Success);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn put_logs_audit_event() {
+    async fn put_logs_audit_event() -> Result<(), StoreError> {
         let sink = Arc::new(CollectingSink::new());
-        let store = make_store(&sink);
+        let store = make_store(&sink).await?;
 
         let cred = make_credential("audit-2");
         store.put(cred, PutMode::CreateOnly).await.unwrap();
@@ -343,12 +349,13 @@ mod tests {
             .unwrap();
         assert_eq!(put_event.credential_id, "audit-2");
         assert_eq!(put_event.result, AuditResult::Success);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn delete_not_found_logs_not_found() {
+    async fn delete_not_found_logs_not_found() -> Result<(), StoreError> {
         let sink = Arc::new(CollectingSink::new());
-        let store = make_store(&sink);
+        let store = make_store(&sink).await?;
 
         let result = store.delete("nonexistent").await;
         assert!(result.is_err());
@@ -357,12 +364,13 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].operation, AuditOperation::Delete);
         assert_eq!(events[0].result, AuditResult::NotFound);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn operations_pass_through_to_inner() {
+    async fn operations_pass_through_to_inner() -> Result<(), StoreError> {
         let sink = Arc::new(CollectingSink::new());
-        let store = make_store(&sink);
+        let store = make_store(&sink).await?;
 
         // Put a credential
         let cred = make_credential("audit-3");
@@ -384,12 +392,13 @@ mod tests {
         // Delete succeeds
         store.delete("audit-3").await.unwrap();
         assert!(!store.exists("audit-3").await.unwrap());
+        Ok(())
     }
 
     #[tokio::test]
-    async fn list_uses_wildcard_credential_id() {
+    async fn list_uses_wildcard_credential_id() -> Result<(), StoreError> {
         let sink = Arc::new(CollectingSink::new());
-        let store = make_store(&sink);
+        let store = make_store(&sink).await?;
 
         store.list(None).await.unwrap();
 
@@ -397,12 +406,13 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].credential_id, "*");
         assert_eq!(events[0].operation, AuditOperation::List);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn duplicate_put_logs_conflict() {
+    async fn duplicate_put_logs_conflict() -> Result<(), StoreError> {
         let sink = Arc::new(CollectingSink::new());
-        let store = make_store(&sink);
+        let store = make_store(&sink).await?;
 
         let cred = make_credential("audit-dup");
         store.put(cred, PutMode::CreateOnly).await.unwrap();
@@ -417,5 +427,6 @@ mod tests {
             .rfind(|e| e.operation == AuditOperation::Put)
             .unwrap();
         assert_eq!(conflict_event.result, AuditResult::Conflict);
+        Ok(())
     }
 }

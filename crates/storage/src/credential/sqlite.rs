@@ -95,6 +95,58 @@ impl SqliteCredentialStore {
 
         Ok(Self { pool })
     }
+
+    /// Open a fresh, uniquely-named in-memory SQLite store with migration 0030
+    /// applied — the standard test backend for credential-store consumers.
+    ///
+    /// Each call gets an isolated `mode=memory&cache=shared` database keyed by a
+    /// random name, so concurrent tests in the same process never collide and a
+    /// pool with multiple connections all observe the same data (plain
+    /// `sqlite::memory:` gives each connection a private, invisible database).
+    /// A shared-cache in-memory database is destroyed when its **last**
+    /// connection closes, so the pool pins one live connection
+    /// (`min_connections(1)`) for its lifetime; the database survives idle gaps
+    /// between operations and dies only when the store (and its pool) is
+    /// dropped. Hold the returned store for the lifetime of the test.
+    ///
+    /// Test-only (`test-util` feature / `cfg(test)`); never compiled into a
+    /// release build (ADR-0023).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Backend`] if the pool cannot be opened or migration
+    /// 0030 fails to apply.
+    #[cfg(any(test, feature = "test-util"))]
+    pub async fn connect_memory() -> Result<Self, StoreError> {
+        use std::str::FromStr;
+
+        let name = uuid::Uuid::new_v4();
+        let url = format!("sqlite:file:nebula-cred-mem-{name}?mode=memory&cache=shared");
+        let options = sqlx::sqlite::SqliteConnectOptions::from_str(&url)
+            .map_err(|e| StoreError::Backend(format!("invalid SQLite URL `{url}`: {e}").into()))?
+            .create_if_missing(true);
+        // `min_connections(1)` keeps one connection open for the pool's lifetime
+        // so the shared-cache in-memory database is not destroyed during idle
+        // gaps; `max_connections(4)` lets the concurrency tests exercise real
+        // SQL-layer contention.
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .min_connections(1)
+            .max_connections(4)
+            .connect_with(options)
+            .await
+            .map_err(|e| {
+                StoreError::Backend(format!("open in-memory SQLite `{url}`: {e}").into())
+            })?;
+
+        sqlx::query(include_str!(
+            "../../migrations/sqlite/0030_credentials_store.sql"
+        ))
+        .execute(&pool)
+        .await
+        .map_err(|e| StoreError::Backend(format!("apply migration 0030: {e}").into()))?;
+
+        Ok(Self { pool })
+    }
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────

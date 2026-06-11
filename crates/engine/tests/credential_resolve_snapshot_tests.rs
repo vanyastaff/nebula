@@ -8,11 +8,15 @@ use nebula_credential::{
     scheme::{ConnectionUri, SecretToken},
     store::{PutMode, StoredCredential},
 };
-use nebula_storage::credential::InMemoryStore;
+use nebula_storage::credential::SqliteCredentialStore;
 
 #[tokio::test]
 async fn resolve_to_typed_snapshot() {
-    let store = Arc::new(InMemoryStore::new());
+    let store = Arc::new(
+        SqliteCredentialStore::connect_memory()
+            .await
+            .expect("in-memory SQLite store"),
+    );
 
     let data = br#"{"token":"test-key"}"#.to_vec();
     let cred = StoredCredential {

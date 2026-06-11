@@ -102,7 +102,6 @@
             "nebula-sdk",
             "nebula-action",
             "nebula-credential-builtin",
-            "nebula-credential-vault",
             "nebula-credential-runtime",
             "nebula-resource",
             "nebula-plugin",
@@ -111,7 +110,7 @@
         },
         {
           "id": "deps.business-not-exec-api",
-          "from": "crates/{credential,credential-builtin,credential-vault,credential-runtime,resource,action,plugin,tenancy}/",
+          "from": "crates/{credential,credential-builtin,credential-runtime,resource,action,plugin,tenancy}/",
           "forbid": [
             "nebula-engine",
             "nebula-storage",

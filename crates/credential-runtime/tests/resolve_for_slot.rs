@@ -18,7 +18,7 @@ use tokio_util::sync::CancellationToken;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn resolve_for_slot_produces_guard() {
-    let service = in_memory_service();
+    let service = in_memory_service().await;
     let scope = TenantScope::new("org", "ws");
 
     // Step 1: create a credential.
@@ -58,7 +58,7 @@ async fn resolve_for_slot_produces_guard() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn resolve_for_slot_scope_violation_rejected() {
-    let service = in_memory_service();
+    let service = in_memory_service().await;
     let scope_a = TenantScope::new("org", "ws-a");
     let scope_b = TenantScope::new("org", "ws-b");
 
@@ -98,7 +98,7 @@ async fn resolve_for_slot_scope_violation_rejected() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn resolve_for_slot_cancellation_returns_cancelled() {
-    let service = in_memory_service();
+    let service = in_memory_service().await;
     let scope = TenantScope::new("org", "ws");
 
     service

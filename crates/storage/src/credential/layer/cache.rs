@@ -90,9 +90,10 @@ impl CacheStats {
 /// # Examples
 ///
 /// ```rust,ignore
-/// use nebula_storage::credential::{CacheConfig, CacheLayer, InMemoryStore};
+/// use nebula_storage::credential::{CacheConfig, CacheLayer, SqliteCredentialStore};
 ///
-/// let store = CacheLayer::new(InMemoryStore::new(), CacheConfig::default());
+/// let backend = SqliteCredentialStore::connect("sqlite://creds.db").await?;
+/// let store = CacheLayer::new(backend, CacheConfig::default());
 /// ```
 pub struct CacheLayer<S> {
     /// The wrapped inner store.
@@ -188,15 +189,18 @@ impl<S: CredentialStore> CredentialStore for CacheLayer<S> {
 // Tests require `nebula-credential/test-util` to reach `test_helpers`.
 // Storage's own `test-util` feature forwards that; clippy/check with
 // `--all-targets` (no features) skip this block.
-#[cfg(all(test, feature = "test-util"))]
+#[cfg(all(test, feature = "test-util", feature = "sqlite"))]
 mod tests {
-    use nebula_credential::{PutMode, store::test_helpers::make_credential};
+    use nebula_credential::{PutMode, StoreError, store::test_helpers::make_credential};
 
-    use super::{super::super::memory::InMemoryStore, *};
+    use super::{super::super::sqlite::SqliteCredentialStore, *};
 
     #[tokio::test]
-    async fn cache_hit_returns_cached() {
-        let store = CacheLayer::new(InMemoryStore::new(), CacheConfig::default());
+    async fn cache_hit_returns_cached() -> Result<(), StoreError> {
+        let store = CacheLayer::new(
+            SqliteCredentialStore::connect_memory().await?,
+            CacheConfig::default(),
+        );
         let cred = make_credential("c1", b"data");
         store.put(cred, PutMode::CreateOnly).await.unwrap();
 
@@ -209,11 +213,15 @@ mod tests {
         assert_eq!(second.data, b"data");
 
         assert!(store.stats().hits >= 1);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn put_invalidates_and_caches_new_value() {
-        let store = CacheLayer::new(InMemoryStore::new(), CacheConfig::default());
+    async fn put_invalidates_and_caches_new_value() -> Result<(), StoreError> {
+        let store = CacheLayer::new(
+            SqliteCredentialStore::connect_memory().await?,
+            CacheConfig::default(),
+        );
         let cred = make_credential("c1", b"v1");
         store.put(cred, PutMode::CreateOnly).await.unwrap();
 
@@ -227,11 +235,15 @@ mod tests {
         // Should see the new data (not stale cache).
         let fetched = store.get("c1").await.unwrap();
         assert_eq!(fetched.data, b"v2");
+        Ok(())
     }
 
     #[tokio::test]
-    async fn delete_invalidates_cache() {
-        let store = CacheLayer::new(InMemoryStore::new(), CacheConfig::default());
+    async fn delete_invalidates_cache() -> Result<(), StoreError> {
+        let store = CacheLayer::new(
+            SqliteCredentialStore::connect_memory().await?,
+            CacheConfig::default(),
+        );
         let cred = make_credential("c1", b"data");
         store.put(cred, PutMode::CreateOnly).await.unwrap();
 
@@ -244,11 +256,15 @@ mod tests {
         // Should be gone.
         let err = store.get("c1").await.unwrap_err();
         assert!(matches!(err, StoreError::NotFound { .. }));
+        Ok(())
     }
 
     #[tokio::test]
-    async fn stats_track_hits_and_misses() {
-        let store = CacheLayer::new(InMemoryStore::new(), CacheConfig::default());
+    async fn stats_track_hits_and_misses() -> Result<(), StoreError> {
+        let store = CacheLayer::new(
+            SqliteCredentialStore::connect_memory().await?,
+            CacheConfig::default(),
+        );
         let cred = make_credential("c1", b"data");
         store.put(cred, PutMode::CreateOnly).await.unwrap();
 
@@ -260,11 +276,15 @@ mod tests {
         // Hit — now cached.
         let _ = store.get("c1").await.unwrap();
         assert_eq!(store.stats().hits, 1);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn exists_uses_cache() {
-        let store = CacheLayer::new(InMemoryStore::new(), CacheConfig::default());
+    async fn exists_uses_cache() -> Result<(), StoreError> {
+        let store = CacheLayer::new(
+            SqliteCredentialStore::connect_memory().await?,
+            CacheConfig::default(),
+        );
         let cred = make_credential("c1", b"data");
         store.put(cred, PutMode::CreateOnly).await.unwrap();
 
@@ -276,11 +296,15 @@ mod tests {
 
         // Non-existent should fall through to inner.
         assert!(!store.exists("missing").await.unwrap());
+        Ok(())
     }
 
     #[tokio::test]
-    async fn list_passes_through() {
-        let store = CacheLayer::new(InMemoryStore::new(), CacheConfig::default());
+    async fn list_passes_through() -> Result<(), StoreError> {
+        let store = CacheLayer::new(
+            SqliteCredentialStore::connect_memory().await?,
+            CacheConfig::default(),
+        );
         let cred = make_credential("c1", b"data");
         store.put(cred, PutMode::CreateOnly).await.unwrap();
 
@@ -292,5 +316,6 @@ mod tests {
 
         let empty = store.list(Some("nonexistent")).await.unwrap();
         assert!(empty.is_empty());
+        Ok(())
     }
 }

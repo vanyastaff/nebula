@@ -27,7 +27,7 @@ use std::sync::Arc;
 /// indistinguishable from a missing one).
 #[tokio::test]
 async fn abuse1_cross_tenant_is_uniformly_not_found_no_existence_leak() {
-    let svc = in_memory_service();
+    let svc = in_memory_service().await;
     let a = TenantScope::new("orgA", "wsA");
     let b = TenantScope::new("orgB", "wsB");
 
@@ -90,7 +90,7 @@ async fn abuse1_cross_tenant_is_uniformly_not_found_no_existence_leak() {
 /// well-formed control proves the pipeline accepts a legitimate payload.
 #[tokio::test]
 async fn abuse2_expr_injection_is_validation_failed_control_succeeds() {
-    let svc = in_memory_service();
+    let svc = in_memory_service().await;
     let scope = TenantScope::new("org1", "ws1");
 
     let err = svc
@@ -133,7 +133,7 @@ async fn abuse2_expr_injection_is_validation_failed_control_succeeds() {
 #[tokio::test]
 async fn abuse3_no_secret_in_head_debug_or_serialize_on_create_and_get() {
     const SECRET: &str = "sk-do-not-leak-7f3a";
-    let svc = in_memory_service();
+    let svc = in_memory_service().await;
     let scope = TenantScope::new("org1", "ws1");
 
     let created = svc
@@ -179,7 +179,7 @@ async fn abuse3_no_secret_in_head_debug_or_serialize_on_create_and_get() {
 /// never reaches a provider call, so there is no request to forge.
 #[tokio::test]
 async fn abuse4_static_type_capability_ops_are_unsupported() {
-    let svc = in_memory_service();
+    let svc = in_memory_service().await;
     let scope = TenantScope::new("org1", "ws1");
     svc.create(
         &scope,
@@ -261,7 +261,7 @@ async fn abuse4_static_type_capability_ops_are_unsupported() {
 /// revoke entry point to the owner-scoped id.
 #[tokio::test]
 async fn abuse5_cross_tenant_revoke_is_not_found_before_lease_scan() {
-    let svc = in_memory_service();
+    let svc = in_memory_service().await;
     let owner = TenantScope::new("orgX", "wsX");
     let attacker = TenantScope::new("orgY", "wsY");
 
@@ -302,7 +302,7 @@ async fn abuse5_cross_tenant_revoke_is_not_found_before_lease_scan() {
 ///   `PendingStateStore::consume` is rejected one layer down.)
 #[tokio::test]
 async fn abuse6_forged_pending_token_never_resolves() {
-    let svc = in_memory_service();
+    let svc = in_memory_service().await;
     let no_session = TenantScope::new("org1", "ws1");
     let with_session = no_session.clone().with_session("sess-6");
 
@@ -364,7 +364,7 @@ async fn abuse6_forged_pending_token_never_resolves() {
 #[tokio::test]
 async fn abuse7_layered_store_roundtrips_without_exposing_plaintext() {
     const SECRET: &str = "sk-at-rest-c0ffee";
-    let svc = in_memory_service();
+    let svc = in_memory_service().await;
     let scope = TenantScope::new("org1", "ws1");
 
     svc.create(
@@ -416,7 +416,7 @@ impl AuditSink for FailingAuditSink {
 /// `CreateOnly` rollback (delete-on-sink-refusal) actually executed.
 #[tokio::test]
 async fn abuse8_audit_refusal_fails_closed_no_partial_write() {
-    let (svc, raw_store) = service_and_raw_store_with_audit_sink(Arc::new(FailingAuditSink));
+    let (svc, raw_store) = service_and_raw_store_with_audit_sink(Arc::new(FailingAuditSink)).await;
     let scope = TenantScope::new("org1", "ws1");
 
     let err = svc

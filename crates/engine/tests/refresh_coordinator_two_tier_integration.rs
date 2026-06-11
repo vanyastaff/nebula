@@ -34,7 +34,7 @@ use nebula_credential::{
 };
 use nebula_engine::credential::refresh::{RefreshCoordConfig, RefreshCoordinator, RefreshError};
 use nebula_storage::credential::{
-    ClaimAttempt, InMemoryRefreshClaimRepo, InMemoryStore, RefreshClaimRepo, ReplicaId,
+    ClaimAttempt, InMemoryRefreshClaimRepo, RefreshClaimRepo, ReplicaId, SqliteCredentialStore,
 };
 
 #[tokio::test]
@@ -256,7 +256,11 @@ async fn two_replicas_collapse_to_one_idp_call_after_stage_3_1() {
 #[tokio::test]
 async fn replica_b_does_not_retry_after_replica_a_reauth_required() {
     let repo: Arc<dyn RefreshClaimRepo> = Arc::new(InMemoryRefreshClaimRepo::new());
-    let store = Arc::new(InMemoryStore::new());
+    let store = Arc::new(
+        SqliteCredentialStore::connect_memory()
+            .await
+            .expect("in-memory SQLite store"),
+    );
 
     // Seed an expired credential so the predicate's secondary
     // `expires_at` check would normally return `true` (still needs

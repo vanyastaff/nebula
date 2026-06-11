@@ -44,12 +44,13 @@ use super::super::key_provider::KeyProvider;
 /// # Examples
 ///
 /// ```rust,ignore
-/// use nebula_storage::credential::{EncryptionLayer, EnvKeyProvider, InMemoryStore};
+/// use nebula_storage::credential::{EncryptionLayer, EnvKeyProvider, SqliteCredentialStore};
 /// use std::sync::Arc;
 ///
 /// // Production: read the key from NEBULA_CRED_MASTER_KEY.
 /// let provider = Arc::new(EnvKeyProvider::from_env()?);
-/// let store = EncryptionLayer::new(InMemoryStore::new(), provider);
+/// let backend = SqliteCredentialStore::connect("sqlite://creds.db").await?;
+/// let store = EncryptionLayer::new(backend, provider);
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 pub struct EncryptionLayer<S> {
@@ -251,7 +252,7 @@ impl<S> EncryptionLayer<S> {
 
 // Tests require `nebula-credential/test-util` to reach `test_helpers` and
 // `StaticKeyProvider`. Storage's own `test-util` feature forwards that.
-#[cfg(all(test, feature = "test-util"))]
+#[cfg(all(test, feature = "test-util", feature = "sqlite"))]
 mod tests {
     use nebula_credential::{
         AuthStyle, PutMode, SecretString, credentials::oauth2::OAuth2State,
@@ -260,7 +261,7 @@ mod tests {
     use nebula_crypto::encrypt_with_key_id;
 
     use super::{
-        super::super::{key_provider::StaticKeyProvider, memory::InMemoryStore},
+        super::super::{key_provider::StaticKeyProvider, sqlite::SqliteCredentialStore},
         *,
     };
 
@@ -285,8 +286,11 @@ mod tests {
     // =========================================================================
 
     #[tokio::test]
-    async fn round_trip_encrypts_and_decrypts() {
-        let store = EncryptionLayer::new(InMemoryStore::new(), default_provider());
+    async fn round_trip_encrypts_and_decrypts() -> Result<(), StoreError> {
+        let store = EncryptionLayer::new(
+            SqliteCredentialStore::connect_memory().await?,
+            default_provider(),
+        );
         let cred = make_credential("enc-1", b"super-secret");
 
         let stored = store.put(cred, PutMode::CreateOnly).await.unwrap();
@@ -294,11 +298,12 @@ mod tests {
 
         let fetched = store.get("enc-1").await.unwrap();
         assert_eq!(fetched.data, b"super-secret");
+        Ok(())
     }
 
     #[tokio::test]
-    async fn data_is_encrypted_at_rest() {
-        let inner = InMemoryStore::new();
+    async fn data_is_encrypted_at_rest() -> Result<(), StoreError> {
+        let inner = SqliteCredentialStore::connect_memory().await?;
         let store = EncryptionLayer::new(inner.clone(), default_provider());
 
         let cred = make_credential("enc-2", b"plaintext-secret");
@@ -307,16 +312,17 @@ mod tests {
         // Read directly from inner store — data should NOT be plaintext
         let raw = inner.get("enc-2").await.unwrap();
         assert_ne!(raw.data, b"plaintext-secret");
+        Ok(())
     }
 
     /// Integration-style check: an OAuth2 credential blob must not be stored as raw JSON
     /// strings in the backend row (at-rest encryption regression).
     #[tokio::test]
-    async fn oauth2_state_secrets_not_plaintext_in_inner_store() {
+    async fn oauth2_state_secrets_not_plaintext_in_inner_store() -> Result<(), StoreError> {
         const PLAINTEXT_ACCESS: &str = "nebula-integration-plaintext-access-token-zz";
         const PLAINTEXT_REFRESH: &str = "nebula-integration-plaintext-refresh-zz";
 
-        let inner = InMemoryStore::new();
+        let inner = SqliteCredentialStore::connect_memory().await?;
         let store = EncryptionLayer::new(inner.clone(), default_provider());
 
         let state = OAuth2State {
@@ -341,11 +347,15 @@ mod tests {
             !lossy.contains(PLAINTEXT_ACCESS) && !lossy.contains(PLAINTEXT_REFRESH),
             "inner row must not contain discoverable credential secrets (stored bytes: {stored_len})"
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn passthrough_operations() {
-        let store = EncryptionLayer::new(InMemoryStore::new(), default_provider());
+    async fn passthrough_operations() -> Result<(), StoreError> {
+        let store = EncryptionLayer::new(
+            SqliteCredentialStore::connect_memory().await?,
+            default_provider(),
+        );
 
         let cred = make_credential("enc-3", b"data");
         store.put(cred, PutMode::CreateOnly).await.unwrap();
@@ -358,11 +368,12 @@ mod tests {
 
         store.delete("enc-3").await.unwrap();
         assert!(!store.exists("enc-3").await.unwrap());
+        Ok(())
     }
 
     #[tokio::test]
-    async fn aad_prevents_record_swapping() {
-        let inner = InMemoryStore::new();
+    async fn aad_prevents_record_swapping() -> Result<(), StoreError> {
+        let inner = SqliteCredentialStore::connect_memory().await?;
         let store = EncryptionLayer::new(inner.clone(), default_provider());
 
         let cred = make_credential("cred-1", b"secret-data");
@@ -380,11 +391,12 @@ mod tests {
         // the AAD (credential ID) doesn't match
         let err = store.get("cred-2").await.unwrap_err();
         assert!(matches!(err, StoreError::Backend(_)));
+        Ok(())
     }
 
     #[tokio::test]
-    async fn rejects_data_without_aad() {
-        let inner = InMemoryStore::new();
+    async fn rejects_data_without_aad() -> Result<(), StoreError> {
+        let inner = SqliteCredentialStore::connect_memory().await?;
         let key = EncryptionKey::from_bytes([0x42; 32]);
 
         // Construct a legacy-shaped envelope: encrypted with the *current*
@@ -426,11 +438,12 @@ mod tests {
         let store = EncryptionLayer::new(inner, default_provider());
         let err = store.get("legacy-1").await.unwrap_err();
         assert!(matches!(err, StoreError::Backend(_)));
+        Ok(())
     }
 
     #[tokio::test]
-    async fn wrong_key_fails_decryption() {
-        let inner = InMemoryStore::new();
+    async fn wrong_key_fails_decryption() -> Result<(), StoreError> {
+        let inner = SqliteCredentialStore::connect_memory().await?;
         let provider1 = static_provider_with_version([0x01; 32], "default");
         let provider2 = static_provider_with_version([0x02; 32], "default");
 
@@ -441,6 +454,7 @@ mod tests {
         let store2 = EncryptionLayer::new(inner, provider2);
         let err = store2.get("enc-4").await.unwrap_err();
         assert!(matches!(err, StoreError::Backend(_)));
+        Ok(())
     }
 
     // =========================================================================
@@ -448,8 +462,8 @@ mod tests {
     // =========================================================================
 
     #[tokio::test]
-    async fn single_key_mode_stores_key_id() {
-        let inner = InMemoryStore::new();
+    async fn single_key_mode_stores_key_id() -> Result<(), StoreError> {
+        let inner = SqliteCredentialStore::connect_memory().await?;
         let store = EncryptionLayer::new(inner.clone(), default_provider());
 
         let cred = make_credential("key-id-check", b"secret");
@@ -459,17 +473,18 @@ mod tests {
         let raw = inner.get("key-id-check").await.unwrap();
         let envelope: EncryptedData = serde_json::from_slice(&raw.data).unwrap();
         assert_eq!(envelope.key_id, "default");
+        Ok(())
     }
 
     #[tokio::test]
-    async fn multi_key_round_trip() {
+    async fn multi_key_round_trip() -> Result<(), StoreError> {
         let key1 = Arc::new(EncryptionKey::from_bytes([0x01; 32]));
         let provider = Arc::new(StaticKeyProvider::with_version(
             Arc::new(EncryptionKey::from_bytes([0x02; 32])),
             "key-2",
         )) as Arc<dyn KeyProvider>;
         let store = EncryptionLayer::with_legacy_keys(
-            InMemoryStore::new(),
+            SqliteCredentialStore::connect_memory().await?,
             provider,
             vec![("key-1".to_string(), key1)],
         );
@@ -479,11 +494,12 @@ mod tests {
 
         let fetched = store.get("mk-1").await.unwrap();
         assert_eq!(fetched.data, b"multi-key-secret");
+        Ok(())
     }
 
     #[tokio::test]
-    async fn decrypt_with_old_key_succeeds() {
-        let inner = InMemoryStore::new();
+    async fn decrypt_with_old_key_succeeds() -> Result<(), StoreError> {
+        let inner = SqliteCredentialStore::connect_memory().await?;
         let key1_bytes = [0x01; 32];
         let key2_bytes = [0x02; 32];
 
@@ -507,6 +523,7 @@ mod tests {
 
         let fetched = store_new.get("rotate-1").await.unwrap();
         assert_eq!(fetched.data, b"old-key-data");
+        Ok(())
     }
 
     /// Regression for GitHub issue #282: `get()` on a record that triggers
@@ -516,8 +533,8 @@ mod tests {
     /// row we just bumped. The returned struct must carry the post-rotation
     /// `version` (and `updated_at`) so downstream CAS targets the fresh row.
     #[tokio::test]
-    async fn lazy_reencryption_returns_post_rotation_version() {
-        let inner = InMemoryStore::new();
+    async fn lazy_reencryption_returns_post_rotation_version() -> Result<(), StoreError> {
+        let inner = SqliteCredentialStore::connect_memory().await?;
         let key1_bytes = [0x01; 32];
         let key2_bytes = [0x02; 32];
 
@@ -553,11 +570,12 @@ mod tests {
             fetched.version > version_before_rotation,
             "returned version must be bumped past pre-rotation value"
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn lazy_reencryption_on_read_when_key_id_differs() {
-        let inner = InMemoryStore::new();
+    async fn lazy_reencryption_on_read_when_key_id_differs() -> Result<(), StoreError> {
+        let inner = SqliteCredentialStore::connect_memory().await?;
         let key1_bytes = [0x01; 32];
         let key2_bytes = [0x02; 32];
 
@@ -585,6 +603,7 @@ mod tests {
         let raw = inner.get("lazy-1").await.unwrap();
         let envelope: EncryptedData = serde_json::from_slice(&raw.data).unwrap();
         assert_eq!(envelope.key_id, "key-2");
+        Ok(())
     }
 
     /// Regression for GitHub issue #281: `new()` no longer aliases the key
@@ -596,8 +615,8 @@ mod tests {
     /// with an empty `key_id`, so this test mutates a legitimately-encrypted
     /// envelope to simulate a pre-guard legacy record.
     #[tokio::test]
-    async fn new_does_not_silently_decrypt_empty_key_id_envelopes() {
-        let inner = InMemoryStore::new();
+    async fn new_does_not_silently_decrypt_empty_key_id_envelopes() -> Result<(), StoreError> {
+        let inner = SqliteCredentialStore::connect_memory().await?;
         let key_bytes = [0x42; 32];
         let key = Arc::new(EncryptionKey::from_bytes(key_bytes));
 
@@ -646,5 +665,6 @@ mod tests {
         );
         let fetched = store_with_legacy.get("legacy-1").await.unwrap();
         assert_eq!(fetched.data, plaintext);
+        Ok(())
     }
 }

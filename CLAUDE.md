@@ -115,8 +115,8 @@ non-goal for now (canon §12.6).
 `nebula-credential` is **shared infra**, not a single-tier Business crate:
 the Exec tier (`engine`, `storage`) and the API tier consume the
 credential contract directly alongside Business (`action`, `plugin`,
-`resource`) and the first-party backends (`credential-builtin`,
-`credential-vault`). Like the cross-cutting crates it is importable from
+`resource`) and the first-party backends (`credential-builtin`). Like
+the cross-cutting crates it is importable from
 those tiers; the `deny.toml` `[bans].deny` `wrappers` allowlist locks the exact
 consumer set.
 

@@ -62,7 +62,7 @@ const OWNER_KEY: &str = "owner_id";
 /// use nebula_tenancy::{CredentialScopeLayer, CredentialScopeResolver};
 /// // Composition roots wrap the real storage-side store; the Exec-tier
 /// // adapter is reachable from api/engine (not from this Business crate).
-/// use nebula_storage::credential::InMemoryStore;
+/// use nebula_storage::credential::SqliteCredentialStore;
 /// use std::sync::Arc;
 ///
 /// struct TenantScope(String);
@@ -71,7 +71,7 @@ const OWNER_KEY: &str = "owner_id";
 /// }
 ///
 /// let store = CredentialScopeLayer::new(
-/// InMemoryStore::new(),
+/// SqliteCredentialStore::connect("sqlite://creds.db").await?,
 /// Arc::new(TenantScope("tenant-1".into())),
 /// );
 /// ```

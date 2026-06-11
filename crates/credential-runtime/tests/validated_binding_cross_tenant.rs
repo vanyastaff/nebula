@@ -9,7 +9,7 @@ use serde_json::json;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn cross_tenant_binding_rejected() {
-    let service = in_memory_service();
+    let service = in_memory_service().await;
 
     let scope_a = TenantScope::new("org", "ws-a");
     let scope_b = TenantScope::new("org", "ws-b");
@@ -56,7 +56,7 @@ async fn cross_tenant_binding_rejected() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn missing_credential_is_not_found() {
-    let service = in_memory_service();
+    let service = in_memory_service().await;
     let scope = TenantScope::new("org", "ws-a");
 
     let err = service
