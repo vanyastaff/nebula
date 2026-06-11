@@ -673,12 +673,6 @@ mod tests {
     // A trivial resource for testing. Runtime = u32 so guards hold a plain integer.
     struct DummyResource;
 
-    impl crate::resource::ResourceConfig for () {
-        fn validate(&self) -> Result<(), crate::Error> {
-            Ok(())
-        }
-    }
-
     impl Resource for DummyResource {
         type Config = ();
         type Runtime = u32;

@@ -23,7 +23,11 @@ impl nebula_schema::HasSchema for DemoCfg {
         nebula_schema::ValidSchema::empty()
     }
 }
-impl nebula_resource::ResourceConfig for DemoCfg {}
+impl nebula_resource::ResourceConfig for DemoCfg {
+    fn fingerprint(&self) -> u64 {
+        0
+    }
+}
 
 struct FakeCred;
 impl Zeroize for FakeCred {

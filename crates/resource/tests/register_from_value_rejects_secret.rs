@@ -71,6 +71,14 @@ impl ResourceConfig for DbConfig {
             Ok(())
         }
     }
+
+    fn fingerprint(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        self.host.hash(&mut h);
+        self.port.hash(&mut h);
+        h.finish()
+    }
 }
 
 // Custom error boilerplate removed — Resource lifecycle methods now return

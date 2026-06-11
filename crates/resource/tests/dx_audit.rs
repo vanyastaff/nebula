@@ -93,7 +93,15 @@ struct HttpClientConfig {
 
 nebula_schema::impl_empty_has_schema!(HttpClientConfig);
 
-impl ResourceConfig for HttpClientConfig {}
+impl ResourceConfig for HttpClientConfig {
+    fn fingerprint(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        self.base_url.hash(&mut h);
+        self.pool_size.hash(&mut h);
+        h.finish()
+    }
+}
 
 // FRICTION NOTE [ResourceConfig::validate]: The default impl accepts
 // everything, which is fine — but the doc says "returns an error if invalid"
@@ -273,7 +281,14 @@ struct ConfigStoreConfig {
 
 nebula_schema::impl_empty_has_schema!(ConfigStoreConfig);
 
-impl ResourceConfig for ConfigStoreConfig {}
+impl ResourceConfig for ConfigStoreConfig {
+    fn fingerprint(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        self.path.hash(&mut h);
+        h.finish()
+    }
+}
 
 #[derive(Clone)]
 struct ConfigStoreResource;
@@ -406,6 +421,13 @@ impl ResourceConfig for DbConfig {
             return Err(Error::permanent("host must not be empty"));
         }
         Ok(())
+    }
+
+    fn fingerprint(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        self.host.hash(&mut h);
+        h.finish()
     }
 }
 
@@ -599,6 +621,11 @@ async fn error_handling_invalid_config_validate() {
     impl ResourceConfig for AlwaysInvalidConfig {
         fn validate(&self) -> Result<(), Error> {
             Err(Error::permanent("invalid config"))
+        }
+
+        fn fingerprint(&self) -> u64 {
+            // Unit struct: all instances identical — constant 0 is correct.
+            0
         }
     }
 

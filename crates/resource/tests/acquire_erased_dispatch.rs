@@ -23,7 +23,12 @@ struct ProbeConfig;
 
 nebula_schema::impl_empty_has_schema!(ProbeConfig);
 
-impl ResourceConfig for ProbeConfig {}
+impl ResourceConfig for ProbeConfig {
+    fn fingerprint(&self) -> u64 {
+        // Unit struct: all instances identical — constant 0 is correct.
+        0
+    }
+}
 
 #[derive(Clone)]
 struct ProbeResource {
@@ -290,7 +295,12 @@ mod pool_parity {
     #[derive(Clone, Default)]
     struct PoolParityCfg;
     nebula_schema::impl_empty_has_schema!(PoolParityCfg);
-    impl ResourceConfig for PoolParityCfg {}
+    impl ResourceConfig for PoolParityCfg {
+        fn fingerprint(&self) -> u64 {
+            // Unit struct: all instances identical — constant 0 is correct.
+            0
+        }
+    }
 
     #[derive(Clone)]
     struct PoolParity {
@@ -421,7 +431,12 @@ mod resident_erased_reuses_runtime {
     #[derive(Clone, Default)]
     struct ResidentReuseCfg;
     nebula_schema::impl_empty_has_schema!(ResidentReuseCfg);
-    impl ResourceConfig for ResidentReuseCfg {}
+    impl ResourceConfig for ResidentReuseCfg {
+        fn fingerprint(&self) -> u64 {
+            // Unit struct: all instances identical — constant 0 is correct.
+            0
+        }
+    }
 
     #[derive(Clone)]
     struct ResidentReuse {
@@ -538,7 +553,12 @@ mod pool_erased_distinct_instances {
     #[derive(Clone, Default)]
     struct PoolErasedCfg;
     nebula_schema::impl_empty_has_schema!(PoolErasedCfg);
-    impl ResourceConfig for PoolErasedCfg {}
+    impl ResourceConfig for PoolErasedCfg {
+        fn fingerprint(&self) -> u64 {
+            // Unit struct: all instances identical — constant 0 is correct.
+            0
+        }
+    }
 
     #[derive(Clone)]
     struct PoolErased {

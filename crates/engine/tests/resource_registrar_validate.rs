@@ -45,10 +45,6 @@ use serde_json::json;
 //    `#[validate]` rules are exercised, unlike `impl_empty_has_schema!`) ──
 
 #[derive(Clone, Debug, Deserialize, Schema)]
-#[expect(
-    dead_code,
-    reason = "fields are exercised through the schema pass + serde::Deserialize, not direct read"
-)]
 struct HttpPoolConfig {
     /// Required, must be a non-empty URL ≤ 256 chars.
     #[field(label = "Base URL", hint = "url")]
@@ -78,7 +74,15 @@ impl From<HttpPoolError> for ResourceError {
     }
 }
 
-impl ResourceConfig for HttpPoolConfig {}
+impl ResourceConfig for HttpPoolConfig {
+    fn fingerprint(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        self.base_url.hash(&mut h);
+        self.max_connections.hash(&mut h);
+        h.finish()
+    }
+}
 
 #[derive(Clone)]
 struct HttpPool;

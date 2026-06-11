@@ -92,6 +92,13 @@ impl ResourceConfig for XConfig {
         }
         Ok(())
     }
+
+    fn fingerprint(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        self.label.hash(&mut h);
+        h.finish()
+    }
 }
 
 #[derive(Clone)]

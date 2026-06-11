@@ -15,7 +15,11 @@ struct UnitResource;
 #[derive(Clone, Default)]
 struct MyConfig;
 nebula_schema::impl_empty_has_schema!(MyConfig);
-impl nebula_resource::resource::ResourceConfig for MyConfig {}
+impl nebula_resource::resource::ResourceConfig for MyConfig {
+    fn fingerprint(&self) -> u64 {
+        0
+    }
+}
 
 impl Resource for UnitResource {
     type Config = MyConfig;

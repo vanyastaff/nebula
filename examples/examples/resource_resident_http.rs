@@ -199,9 +199,11 @@ impl ResourceConfig for GoogleSheetsConfig {
         }
     }
 
-    // Resident: single instance, config change forces destroy+recreate.
     fn fingerprint(&self) -> u64 {
-        0
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        self.application.hash(&mut h);
+        h.finish()
     }
 }
 

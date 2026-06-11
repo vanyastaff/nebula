@@ -69,9 +69,36 @@ pub trait ResourceConfig: nebula_schema::HasSchema + Send + Sync + Clone + 'stat
 
     /// Returns a fingerprint for change-detection during hot-reload.
     ///
-    /// Two configs with the same fingerprint are treated as identical.
-    /// The default returns `0` (always different).
+    /// Two configs with equal fingerprints are treated as **identical** by the
+    /// manager's hot-reload path: a reload where the old and new fingerprints
+    /// match returns [`ReloadOutcome::NoChange`](crate::reload::ReloadOutcome)
+    /// without swapping the live config or bumping the generation counter.
+    ///
+    /// **You MUST return a value that differs whenever any operationally-significant
+    /// field differs.** Returning a constant from a struct that has fields is
+    /// incorrect — it permanently disables hot-reload change-detection for that
+    /// config type. Derive [`ResourceConfig`](nebula_resource_macros::ResourceConfig)
+    /// for a correct structural default:
+    ///
+    /// ```ignore
+    /// #[derive(ResourceConfig, Clone)]
+    /// struct PgConfig { url: String, max_conns: u32 }
+    /// // fingerprint() is emitted automatically — no manual impl needed.
+    /// ```
+    ///
+    /// The only correct use of a constant fingerprint is for a **fieldless** config
+    /// (unit struct or `()`), where all instances are structurally identical.
+    fn fingerprint(&self) -> u64;
+}
+
+/// `()` is the canonical no-config sentinel for resources that take no user configuration.
+///
+/// All `()` values are structurally identical, so fingerprint `0` is correct:
+/// two unit configs are always the same, and a reload with `()` ↔ `()` is
+/// always a no-op — which is exactly what you want.
+impl ResourceConfig for () {
     fn fingerprint(&self) -> u64 {
+        // Unit type: no fields, all instances identical — 0 is the correct constant.
         0
     }
 }

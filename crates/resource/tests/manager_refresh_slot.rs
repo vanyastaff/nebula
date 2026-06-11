@@ -98,6 +98,11 @@ mod counting {
         fn validate(&self) -> Result<(), Error> {
             Ok(())
         }
+
+        fn fingerprint(&self) -> u64 {
+            // Unit struct: all instances identical — constant 0 is correct.
+            0
+        }
     }
 
     impl Resource for CountingResource {
@@ -1149,6 +1154,11 @@ mod u9_gate {
     impl ResourceConfig for GateConfig {
         fn validate(&self) -> Result<(), Error> {
             Ok(())
+        }
+
+        fn fingerprint(&self) -> u64 {
+            // Unit struct: all instances identical — constant 0 is correct.
+            0
         }
     }
 

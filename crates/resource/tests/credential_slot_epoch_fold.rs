@@ -96,7 +96,12 @@ impl nebula_schema::HasSchema for TwoSlotCfg {
         nebula_schema::ValidSchema::empty()
     }
 }
-impl ResourceConfig for TwoSlotCfg {}
+impl ResourceConfig for TwoSlotCfg {
+    fn fingerprint(&self) -> u64 {
+        // Unit struct: all instances identical — constant 0 is correct.
+        0
+    }
+}
 
 /// A real derived two-slot resource — `credential_slot_epoch()` here is
 /// the exact token stream `#[derive(ResourceSlots)]` emits.
@@ -179,6 +184,11 @@ nebula_schema::impl_empty_has_schema!(RaceCfg);
 impl ResourceConfig for RaceCfg {
     fn validate(&self) -> Result<(), Error> {
         Ok(())
+    }
+
+    fn fingerprint(&self) -> u64 {
+        // Unit struct: all instances identical — constant 0 is correct.
+        0
     }
 }
 

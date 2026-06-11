@@ -58,6 +58,11 @@ impl ResourceConfig for PoolCfg {
     fn validate(&self) -> Result<(), Error> {
         Ok(())
     }
+
+    fn fingerprint(&self) -> u64 {
+        // Unit struct: all instances identical — constant 0 is correct.
+        0
+    }
 }
 
 /// The pooled instance. `seq` is the unique creation id; `revoked` is set by

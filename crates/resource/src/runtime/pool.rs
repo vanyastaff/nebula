@@ -1413,6 +1413,11 @@ mod tests {
         fn validate(&self) -> Result<(), Error> {
             Ok(())
         }
+
+        fn fingerprint(&self) -> u64 {
+            // Unit struct: all instances identical — constant 0 is correct.
+            0
+        }
     }
 
     impl Resource for MockPool {

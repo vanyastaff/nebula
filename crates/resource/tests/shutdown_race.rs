@@ -53,7 +53,12 @@ struct SlowConfig;
 
 nebula_schema::impl_empty_has_schema!(SlowConfig);
 
-impl ResourceConfig for SlowConfig {}
+impl ResourceConfig for SlowConfig {
+    fn fingerprint(&self) -> u64 {
+        // Unit struct: all instances identical — constant 0 is correct.
+        0
+    }
+}
 
 #[derive(Clone)]
 struct SlowCreateResource {

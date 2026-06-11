@@ -56,6 +56,13 @@ impl ResourceConfig for HttpConfig {
         }
         Ok(())
     }
+
+    fn fingerprint(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        self.base_url.hash(&mut h);
+        h.finish()
+    }
 }
 
 /// The "live" handle — a thin wrapper around a URL.
@@ -209,7 +216,14 @@ struct ConfigStoreConfig {
 
 nebula_schema::impl_empty_has_schema!(ConfigStoreConfig);
 
-impl ResourceConfig for ConfigStoreConfig {}
+impl ResourceConfig for ConfigStoreConfig {
+    fn fingerprint(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        self.env.hash(&mut h);
+        h.finish()
+    }
+}
 
 /// Our config store runtime — an in-memory map.
 #[derive(Clone, Debug)]
@@ -335,6 +349,14 @@ impl ResourceConfig for DbConfig {
             return Err(Error::permanent("dsn must not be empty"));
         }
         Ok(())
+    }
+
+    fn fingerprint(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        self.dsn.hash(&mut h);
+        self.pool_size.hash(&mut h);
+        h.finish()
     }
 }
 

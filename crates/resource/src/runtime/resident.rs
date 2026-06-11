@@ -386,6 +386,15 @@ mod tests {
         fn validate(&self) -> Result<(), Error> {
             Ok(())
         }
+
+        fn fingerprint(&self) -> u64 {
+            // bool has two distinct values — hash it so reloading true→false
+            // (or vice versa) is detected as a real config change.
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            self.hash(&mut h);
+            h.finish()
+        }
     }
 
     impl Resource for MockResident {

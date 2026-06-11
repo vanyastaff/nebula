@@ -93,6 +93,11 @@ pub use nebula_credential::{Credential, CredentialContext, CredentialId};
 ///
 /// See [`nebula_resource_macros::ClassifyError`] for full documentation.
 pub use nebula_resource_macros::ClassifyError;
+/// Derive macro that generates `impl ResourceConfig` with a structural fingerprint
+/// and an optional default empty `impl HasSchema`.
+///
+/// See [`nebula_resource_macros::ResourceConfig`] for full documentation.
+pub use nebula_resource_macros::ResourceConfig;
 /// Derive macro that emits slot plumbing for a resource struct.
 ///
 /// Generates `impl DeclaresDependencies`, slot accessor methods, and

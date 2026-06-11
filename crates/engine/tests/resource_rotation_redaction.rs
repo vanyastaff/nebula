@@ -189,6 +189,11 @@ impl ResourceConfig for Cfg {
     fn validate(&self) -> Result<(), ResourceError> {
         Ok(())
     }
+
+    fn fingerprint(&self) -> u64 {
+        // Unit struct: all instances identical — constant 0 is correct.
+        0
+    }
 }
 
 /// Live runtime handed by `&Runtime` to the rotation hooks. Holds the

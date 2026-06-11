@@ -299,7 +299,12 @@ struct IntegrationProbeConfig;
 
 nebula_schema::impl_empty_has_schema!(IntegrationProbeConfig);
 
-impl ResourceConfig for IntegrationProbeConfig {}
+impl ResourceConfig for IntegrationProbeConfig {
+    fn fingerprint(&self) -> u64 {
+        // Unit struct: all instances identical — constant 0 is correct.
+        0
+    }
+}
 
 #[derive(Clone)]
 struct IntegrationProbeResource;

@@ -935,7 +935,12 @@ mod shutdown_post_count_race_tests {
 
     nebula_schema::impl_empty_has_schema!(RaceCfg);
 
-    impl ResourceConfig for RaceCfg {}
+    impl ResourceConfig for RaceCfg {
+        fn fingerprint(&self) -> u64 {
+            // Unit struct: all instances identical — constant 0 is correct.
+            0
+        }
+    }
 
     #[derive(Clone)]
     struct ShutdownRaceResident;

@@ -93,6 +93,7 @@ use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 use syn::{Data, DeriveInput, Fields, Ident, parse_macro_input};
 
+mod config;
 mod field_slots;
 mod slots;
 
@@ -136,6 +137,49 @@ mod slots;
 #[proc_macro_derive(ResourceSlots, attributes(credential))]
 pub fn derive_resource_slots(input: TokenStream) -> TokenStream {
     slots::derive(input)
+}
+
+/// Derive macro that generates `impl ResourceConfig` with a deterministic structural
+/// fingerprint and an optional default empty `impl HasSchema`.
+///
+/// ## What is emitted
+///
+/// - `impl nebula_resource::ResourceConfig` with:
+///   - `fn fingerprint(&self) -> u64` — structural hash over all fields that implement
+///     [`std::hash::Hash`]. Fields tagged `#[config(skip_fingerprint)]` are excluded.
+///   - `fn validate(&self) -> Result<(), Error>` — only emitted if
+///     `#[config(validate = path)]` is specified; otherwise the trait default (`Ok(())`)
+///     applies.
+/// - `impl nebula_schema::HasSchema` returning an empty schema — suppressed when
+///   `#[config(schema = external)]` is present (use alongside `#[derive(Schema)]`).
+///
+/// ## Container attribute (`#[config(...)]`)
+///
+/// | Key | Effect |
+/// |-----|--------|
+/// | `validate = path` | Delegates `validate(&self)` to `path(self)`. |
+/// | `schema = external` | Suppresses the default `HasSchema` emission. |
+///
+/// ## Field attribute (`#[config(skip_fingerprint)]`)
+///
+/// Excludes the annotated field from the fingerprint hash fold. The field type is not
+/// required to implement [`std::hash::Hash`] when skipped.
+///
+/// ## Example
+///
+/// ```ignore
+/// #[derive(ResourceConfig, serde::Deserialize, Clone)]
+/// struct PgConfig {
+///     url: String,
+///     max_conns: u32,
+///     /// Excluded from change-detection — label changes never trigger hot-reload.
+///     #[config(skip_fingerprint)]
+///     label: String,
+/// }
+/// ```
+#[proc_macro_derive(ResourceConfig, attributes(config))]
+pub fn derive_resource_config(input: TokenStream) -> TokenStream {
+    config::derive(input)
 }
 
 /// Derive macro that generates `From<T> for nebula_resource::Error`.

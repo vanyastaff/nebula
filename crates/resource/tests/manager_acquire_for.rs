@@ -52,6 +52,11 @@ impl ResourceConfig for CountingConfig {
     fn validate(&self) -> Result<(), Error> {
         Ok(())
     }
+
+    fn fingerprint(&self) -> u64 {
+        // Unit struct: all instances identical — constant 0 is correct.
+        0
+    }
 }
 
 /// Each `create` mints a unique runtime id from a shared counter so a
