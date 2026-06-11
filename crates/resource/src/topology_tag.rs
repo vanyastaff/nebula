@@ -10,10 +10,6 @@ pub enum TopologyTag {
     Pool,
     /// Resident — one shared instance, clone on acquire.
     Resident,
-    /// Bounded — one runtime, capped short-lived leases. The cap typestate
-    /// (`Unbounded` / `Capped<N>` / `Exclusive`) selects the concurrency
-    /// bound and release shape.
-    Bounded,
 }
 
 impl TopologyTag {
@@ -22,7 +18,6 @@ impl TopologyTag {
         match self {
             Self::Pool => "pool",
             Self::Resident => "resident",
-            Self::Bounded => "bounded",
         }
     }
 }

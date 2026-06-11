@@ -85,9 +85,6 @@ pub(crate) type DrainTrackers = (DrainTracker, DrainTracker);
 ///      destroy on the release queue.
 ///    - **Resident** — the `Arc` strong-count is decremented; no
 ///      per-acquire release work.
-///    - **Bounded** — the semaphore permit is released; if
-///      `BoundedRelease` is implemented, its reset is queued on the
-///      release queue.
 /// 4. Emit
 ///    [`ResourceEvent::Released { held, tainted }`](crate::events::ResourceEvent::Released).
 ///
@@ -98,7 +95,7 @@ pub(crate) type DrainTrackers = (DrainTracker, DrainTracker);
 ///
 /// Drop runs in any cancellation context, including a cancelled
 /// `tokio::task`. The drop path itself contains no `.await`; any async
-/// work (destroy, `BoundedRelease::reset`) is pushed onto the release
+/// work (destroy, recycle) is pushed onto the release
 /// queue which survives task cancellation. **Async release is
 /// best-effort on crash** — see canon §11.4.
 ///

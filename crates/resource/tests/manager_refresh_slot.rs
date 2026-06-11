@@ -1354,16 +1354,12 @@ mod u9_gate {
 mod reload_deferral {
     use nebula_core::{ResourceKey, ScopeLevel, resource_key};
     use nebula_resource::{
-        BoundedConfig, BoundedRuntime, Manager, PoolConfig, RegistrationSpec, ReloadOutcome,
-        ResidentConfig, Resource, ResourceConfig, ResourceContext, SlotIdentity,
+        Manager, PoolConfig, RegistrationSpec, ReloadOutcome, ResidentConfig, Resource,
+        ResourceConfig, ResourceContext, SlotIdentity,
         error::Error,
         resource::ResourceMetadata,
         runtime::{TopologyRuntime, pool::PoolRuntime, resident::ResidentRuntime},
-        topology::{
-            bounded::{Bounded, BoundedRelease, Capped, Exclusive as ExclusiveCap, Unbounded},
-            pooled::Pooled,
-            resident::Resident,
-        },
+        topology::{pooled::Pooled, resident::Resident},
     };
 
     #[derive(Debug)]
@@ -1438,9 +1434,6 @@ mod reload_deferral {
 
     reload_fixture!(PoolReload, "reload-pool");
     reload_fixture!(ResidentReload, "reload-resident");
-    reload_fixture!(ServiceReload, "reload-service");
-    reload_fixture!(ExclusiveReload, "reload-exclusive");
-    reload_fixture!(TransportReload, "reload-transport");
 
     impl Pooled for PoolReload {}
     impl Resident for ResidentReload {
@@ -1448,54 +1441,19 @@ mod reload_deferral {
             true
         }
     }
-    // The three folded topologies are now `Bounded` caps. Reload behavior
-    // (`reload_config`) does not inspect the cap, so the cap choice here
-    // only needs to compile; it mirrors the original topology
-    // (Service-Cloned → Unbounded, Exclusive → Exclusive cap, Transport →
-    // Capped). `Unbounded` uses the blanket no-op `BoundedRelease`; the
-    // release-bearing caps supply a trivial `release_one`.
-    impl Bounded for ServiceReload {
-        type Cap = Unbounded;
-        async fn acquire_one(&self, _runtime: &u32, _ctx: &ResourceContext) -> Result<u32, RErr> {
-            Ok(1)
-        }
-    }
-    impl Bounded for ExclusiveReload {
-        type Cap = ExclusiveCap;
-        async fn acquire_one(&self, runtime: &u32, _ctx: &ResourceContext) -> Result<u32, RErr> {
-            Ok(*runtime)
-        }
-    }
-    impl BoundedRelease for ExclusiveReload {
-        async fn release_one(
-            &self,
-            _runtime: &u32,
-            _lease: u32,
-            _healthy: bool,
-        ) -> Result<(), RErr> {
-            Ok(())
-        }
-    }
-    impl Bounded for TransportReload {
-        type Cap = Capped<8>;
-        async fn acquire_one(&self, _t: &u32, _ctx: &ResourceContext) -> Result<u32, RErr> {
-            Ok(1)
-        }
-    }
-    impl BoundedRelease for TransportReload {
-        async fn release_one(&self, _t: &u32, _l: u32, _h: bool) -> Result<(), RErr> {
-            Ok(())
-        }
-    }
 
     fn v(version: u64) -> VersionedConfig {
         VersionedConfig { version }
     }
 
-    /// Fingerprint unchanged ⇒ `NoChange`, regardless of topology.
+    /// Fingerprint unchanged ⇒ `NoChange` for both Pool and Resident.
+    /// Pins the early-return path so any regression that skips the
+    /// fingerprint check and returns `SwappedImmediately` on a no-op
+    /// reload is caught immediately.
     #[tokio::test]
     async fn reload_with_unchanged_fingerprint_is_nochange() {
         let mgr = Manager::new();
+
         mgr.register(RegistrationSpec {
             resource: ResidentReload,
             config: v(1),
@@ -1507,71 +1465,13 @@ mod reload_deferral {
             acquire: Manager::erased_acquire_resident_for::<ResidentReload>(),
             recovery_gate: None,
         })
-        .expect("register");
-        let outcome = mgr
-            .reload_config::<ResidentReload>(v(1), &ScopeLevel::Global)
-            .expect("reload must not error");
+        .expect("resident registration must succeed");
         assert_eq!(
-            outcome,
+            mgr.reload_config::<ResidentReload>(v(1), &ScopeLevel::Global)
+                .expect("resident reload must not error"),
             ReloadOutcome::NoChange,
-            "an unchanged fingerprint must early-return NoChange"
+            "an unchanged fingerprint must early-return NoChange for Resident"
         );
-    }
-
-    /// Former-Service (now a `Bounded` cap), fingerprint changed.
-    ///
-    /// **Fold-induced outcome change, auditable here — NOT silent.** The
-    /// pre-fold `reload_config` returned `PendingDrain` *only* for the
-    /// `TopologyRuntime::Service` variant (it keys on the enum variant, not
-    /// any cap/token notion). Service is no longer a distinct topology — it
-    /// is the `Unbounded`/`Capped` cap typestate of `Bounded` — so a
-    /// former-Service resource is now a `TopologyRuntime::Bounded` row and
-    /// `reload_config`'s `_ => SwappedImmediately` arm applies. The
-    /// **observable runtime behavior is unchanged**: `reload_config` never
-    /// drained or rebuilt the live Service runtime either — the
-    /// `PendingDrain`-without-drain reload no-op is the explicitly
-    /// *deferred* latent bug (plan Deferred-to-Follow-Up,
-    /// `reload_config`/`PendingDrain`, MED-HIGH). Only the returned
-    /// `ReloadOutcome` *variant* changed (`PendingDrain` → `Swapped\
-    /// Immediately`); the config fingerprint is still bumped, the
-    /// generation still advances, and the runtime is still NOT rebuilt.
-    /// This test pins the post-fold value so the change is recorded, not
-    /// papered over (see the U11 report / U13 deferred-bug ledger).
-    #[tokio::test]
-    async fn reload_former_service_changed_is_swapped_immediately() {
-        let mgr = Manager::new();
-        let resource = ServiceReload;
-        let bounded =
-            BoundedRuntime::<ServiceReload>::new(&resource, 1u32, BoundedConfig::default());
-        mgr.register(RegistrationSpec {
-            resource,
-            config: v(1),
-            scope: ScopeLevel::Global,
-            slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Bounded(bounded),
-            acquire: Manager::erased_acquire_bounded_for::<ServiceReload>(),
-            recovery_gate: None,
-        })
-        .expect("register");
-        let outcome = mgr
-            .reload_config::<ServiceReload>(v(2), &ScopeLevel::Global)
-            .expect("reload must not error");
-        assert_eq!(
-            outcome,
-            ReloadOutcome::SwappedImmediately,
-            "a former-Service resource is now a Bounded row; reload_config's \
-             non-Service arm yields SwappedImmediately (the underlying \
-             reload remains the deferred no-op), got {outcome:?}"
-        );
-    }
-
-    /// Pool / Resident / former-Exclusive / former-Transport (all
-    /// `SwappedImmediately`), fingerprint changed. Post-fold no variant
-    /// yields `PendingDrain` (the former-Service `PendingDrain` arm is
-    /// `reload_former_service_changed_is_swapped_immediately` above).
-    #[tokio::test]
-    async fn reload_non_service_changed_is_swapped_immediately() {
-        let mgr = Manager::new();
 
         mgr.register(RegistrationSpec {
             resource: PoolReload,
@@ -1585,14 +1485,56 @@ mod reload_deferral {
             acquire: Manager::erased_acquire_pooled_for::<PoolReload>(),
             recovery_gate: None,
         })
-        .expect("register pool");
+        .expect("pool registration must succeed");
         assert_eq!(
-            mgr.reload_config::<PoolReload>(v(2), &ScopeLevel::Global)
-                .expect("pool reload"),
-            ReloadOutcome::SwappedImmediately,
-            "Pool reload (changed) must be SwappedImmediately"
+            mgr.reload_config::<PoolReload>(v(1), &ScopeLevel::Global)
+                .expect("pool reload must not error"),
+            ReloadOutcome::NoChange,
+            "an unchanged fingerprint must early-return NoChange for Pool"
         );
+    }
 
+    /// Pool topology with a changed fingerprint ⇒ `SwappedImmediately`.
+    /// Also pins that the outcome is NOT `NoChange` — a regression that
+    /// misapplies the early-return for a version bump would return
+    /// `NoChange` and silently skip the swap.
+    #[tokio::test]
+    async fn reload_pool_changed_fingerprint_is_swapped_immediately() {
+        let mgr = Manager::new();
+        mgr.register(RegistrationSpec {
+            resource: PoolReload,
+            config: v(1),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Pool(PoolRuntime::<PoolReload>::new(
+                PoolConfig::default(),
+                v(1).fingerprint(),
+            )),
+            acquire: Manager::erased_acquire_pooled_for::<PoolReload>(),
+            recovery_gate: None,
+        })
+        .expect("pool registration must succeed");
+        let outcome = mgr
+            .reload_config::<PoolReload>(v(2), &ScopeLevel::Global)
+            .expect("pool reload must not error");
+        assert_eq!(
+            outcome,
+            ReloadOutcome::SwappedImmediately,
+            "Pool reload with a changed fingerprint must return SwappedImmediately"
+        );
+        assert_ne!(
+            outcome,
+            ReloadOutcome::NoChange,
+            "a version bump must NOT early-return NoChange for Pool"
+        );
+    }
+
+    /// Resident topology with a changed fingerprint ⇒ `SwappedImmediately`.
+    /// Both topology arms are pinned independently so a regression in either
+    /// arm is caught without shared state between tests.
+    #[tokio::test]
+    async fn reload_resident_changed_fingerprint_is_swapped_immediately() {
+        let mgr = Manager::new();
         mgr.register(RegistrationSpec {
             resource: ResidentReload,
             config: v(1),
@@ -1604,55 +1546,19 @@ mod reload_deferral {
             acquire: Manager::erased_acquire_resident_for::<ResidentReload>(),
             recovery_gate: None,
         })
-        .expect("register resident");
+        .expect("resident registration must succeed");
+        let outcome = mgr
+            .reload_config::<ResidentReload>(v(2), &ScopeLevel::Global)
+            .expect("resident reload must not error");
         assert_eq!(
-            mgr.reload_config::<ResidentReload>(v(2), &ScopeLevel::Global)
-                .expect("resident reload"),
+            outcome,
             ReloadOutcome::SwappedImmediately,
-            "Resident reload (changed) must be SwappedImmediately"
+            "Resident reload with a changed fingerprint must return SwappedImmediately"
         );
-
-        let excl = ExclusiveReload;
-        let excl_rt = BoundedRuntime::<ExclusiveReload>::new(&excl, 1u32, BoundedConfig::default());
-        mgr.register(RegistrationSpec {
-            resource: excl,
-            config: v(1),
-            scope: ScopeLevel::Global,
-            slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Bounded(excl_rt),
-            acquire: Manager::erased_acquire_bounded_for::<ExclusiveReload>(),
-            recovery_gate: None,
-        })
-        .expect("register exclusive");
-        assert_eq!(
-            mgr.reload_config::<ExclusiveReload>(v(2), &ScopeLevel::Global)
-                .expect("exclusive reload"),
-            ReloadOutcome::SwappedImmediately,
-            "former-Exclusive (Bounded) reload (changed) must be \
-             SwappedImmediately (unchanged by the fold — Exclusive never \
-             yielded PendingDrain)"
-        );
-
-        let tport = TransportReload;
-        let tport_rt =
-            BoundedRuntime::<TransportReload>::new(&tport, 1u32, BoundedConfig::default());
-        mgr.register(RegistrationSpec {
-            resource: tport,
-            config: v(1),
-            scope: ScopeLevel::Global,
-            slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Bounded(tport_rt),
-            acquire: Manager::erased_acquire_bounded_for::<TransportReload>(),
-            recovery_gate: None,
-        })
-        .expect("register transport");
-        assert_eq!(
-            mgr.reload_config::<TransportReload>(v(2), &ScopeLevel::Global)
-                .expect("transport reload"),
-            ReloadOutcome::SwappedImmediately,
-            "former-Transport (Bounded) reload (changed) must be \
-             SwappedImmediately (unchanged by the fold — Transport never \
-             yielded PendingDrain)"
+        assert_ne!(
+            outcome,
+            ReloadOutcome::NoChange,
+            "a version bump must NOT early-return NoChange for Resident"
         );
     }
 }

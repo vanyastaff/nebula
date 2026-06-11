@@ -183,34 +183,28 @@ impl<R: Resource> ManagedResource<R> {
     /// per-slot credential hook — [`Resource::on_credential_refresh`] when
     /// `refresh` is `true`, [`Resource::on_credential_revoke`] otherwise.
     ///
-    /// Resident dispatches once against its lazily-built runtime; Bounded
-    /// dispatches once against its caller-supplied shared runtime; Pool
-    /// dispatches per idle instance (delegating to
-    /// [`PoolRuntime::dispatch_slot_hook_over_idle`](super::pool::PoolRuntime::dispatch_slot_hook_over_idle),
-    /// which carries the same `refresh` selector). The `Bounded` arm is the
-    /// single-runtime hook: it holds one shared `Arc<R::Runtime>` and
-    /// dispatches the hook against it exactly once, regardless of the
-    /// resource's [`Cap`](crate::topology::bounded::Bounded::Cap) typestate.
+    /// Resident dispatches once against its lazily-built runtime (reconcile-
+    /// aware: serialises against the resident `create` slow path to re-deliver
+    /// the hook to a runtime built against an older credential epoch rather
+    /// than skipping with a false success); Pool dispatches per idle instance
+    /// delegating to
+    /// [`PoolRuntime::dispatch_slot_hook_over_idle`](super::pool::PoolRuntime::dispatch_slot_hook_over_idle).
     ///
     /// **Topology audit of the `current() == None → Ok(())` stale-skip
     /// (per-resource revoke deferral / #680).** Only **Resident** lazily builds its
     /// runtime internally via `resource.create()` (under its `create_lock`,
     /// with a `None`-cell window), so only Resident had the lost-update
     /// where a rotation racing the first `create` could be recorded as a
-    /// success with the hook never delivered. Its dispatch now goes through
+    /// success with the hook never delivered. Its dispatch goes through
     /// [`ResidentRuntime::dispatch_resident_hook`](super::resident::ResidentRuntime::dispatch_resident_hook),
     /// which serialises against `create` on the same lock and reconciles a
     /// runtime built against an older credential epoch instead of silently
-    /// succeeding. The other arms do **not** share the defect:
-    /// `Bounded` takes a caller-supplied runtime at register time (no
-    /// `None` window — the hook is always delivered); Pool dispatches over
-    /// every idle entry and rebuilds fresh instances against the current
-    /// (lock-free) slot, so an empty idle queue masks no stale-bound
-    /// runtime.
+    /// succeeding. Pool dispatches over every idle entry and rebuilds fresh
+    /// instances against the current (lock-free) slot, so an empty idle
+    /// queue masks no stale-bound runtime.
     ///
-    /// The `refresh` flag selects the hook exactly once per topology arm
-    /// (mirroring the pool selector); both directions share identical
-    /// per-topology runtime-borrow semantics.
+    /// The `refresh` flag selects the hook exactly once per topology arm;
+    /// both directions share identical per-topology runtime-borrow semantics.
     ///
     /// # Cancel Safety
     ///
@@ -229,34 +223,10 @@ impl<R: Resource> ManagedResource<R> {
                 rt.dispatch_resident_hook(&self.resource, slot, refresh)
                     .await
             },
-            // Single-runtime hook: one shared `Arc<R::Runtime>`, dispatched
-            // once, for every cap typestate.
-            TopologyRuntime::Bounded(rt) => {
-                self.invoke_slot_hook(slot, refresh, rt.runtime()).await
-            },
             TopologyRuntime::Pool(rt) => rt
                 .dispatch_slot_hook_over_idle(&self.resource, slot, refresh)
                 .await
                 .map_err(Into::into),
         }
-    }
-
-    /// Invokes the selected `&self` credential hook against one borrowed
-    /// runtime. Single-runtime topologies call this once; Pool uses its
-    /// own per-idle fan-out. The `refresh` selector is applied here so the
-    /// per-topology match in [`dispatch_slot_hook`](Self::dispatch_slot_hook)
-    /// stays written once.
-    async fn invoke_slot_hook(
-        &self,
-        slot: &str,
-        refresh: bool,
-        runtime: &R::Runtime,
-    ) -> Result<(), Error> {
-        let res = if refresh {
-            self.resource.on_credential_refresh(slot, runtime).await
-        } else {
-            self.resource.on_credential_revoke(slot, runtime).await
-        };
-        res.map_err(Into::into)
     }
 }

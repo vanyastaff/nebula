@@ -14,10 +14,9 @@ this page intentionally does not duplicate it.
   ```
 
 - **[`../README.md`](../README.md)** — the shipped public surface in prose:
-  the `Resource` trait and its four associated types, the three topologies
-  (`Pooled`, `Resident`, and the parameterized `Bounded` with its sealed
-  `Cap` typestate — `Unbounded` / `Capped<N>` / `Exclusive` — plus
-  `BoundedRelease`), the single `Manager::register(RegistrationSpec { … })`
+  the `Resource` trait and its associated types, the two topologies
+  (`Pooled` and `Resident`), the single
+  `Manager::register(RegistrationSpec { … })`
   registration funnel, the structural `SlotIdentity` cross-tenant barrier
   (`Unbound` / `Structural`), the `acquire_<topology>` /
   `acquire_<topology>_for_identity` acquire family and `acquire_erased_for`,

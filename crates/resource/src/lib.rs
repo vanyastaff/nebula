@@ -6,9 +6,8 @@
 //! The engine is the owner of the resource lifecycle: acquire, health-check,
 //! hot-reload via `ReloadOutcome`, and scope-bounded release. Action code
 //! receives a `ResourceGuard` that derefs to the lease type and releases on
-//! drop. Three topology traits cover the integration space: `Pooled`,
-//! `Resident`, and the parameterised `Bounded` (with sealed `Cap` typestate
-//! `Unbounded` / `Capped<N>` / `Exclusive`).
+//! drop. Two topology traits cover the integration space: `Pooled` and
+//! `Resident`.
 //!
 //! ## Key types
 //!
@@ -115,7 +114,6 @@ pub use slot::SlotCell;
 // Runtime types — needed for `Manager::register()`.
 pub use runtime::TopologyRuntime;
 pub use runtime::{
-    bounded::BoundedRuntime,
     managed::ManagedResource,
     pool::{PoolRuntime, PoolStats},
     resident::ResidentRuntime,
@@ -123,10 +121,6 @@ pub use runtime::{
 pub use state::{ResourcePhase, ResourceStatus};
 // Topology configurations — used at registration time.
 pub use topology::{
-    bounded::{
-        Bounded, BoundedRelease, CapMarker, Capped, Exclusive as ExclusiveCap, Unbounded,
-        config::Config as BoundedConfig,
-    },
     pooled::{BrokenCheck, InstanceMetrics, Pooled, RecycleDecision, config::Config as PoolConfig},
     resident::{Resident, config::Config as ResidentConfig},
 };

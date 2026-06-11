@@ -1,9 +1,8 @@
 # Topology Reference for Resource Authors
 
 > **Audience:** plugin authors writing a new `Resource` impl. Maps each of
-> the three topology traits (`Pooled`, `Resident`, `Bounded`) to a minimal
-> Rust skeleton, the trait set you must implement, when to pick it, and
-> the friction points learned during the Bounded-fold pass.
+> the two topology traits (`Pooled`, `Resident`) to a minimal Rust skeleton,
+> the trait set you must implement, when to pick it, and the friction points.
 >
 > See [`README.md`](README.md) for the full library overview, and the
 > `examples/` workspace member for runnable end-to-end demonstrations of
@@ -13,17 +12,10 @@
 
 ## Decision matrix
 
-| Topology                  | Lease == Runtime?       | Use when…                                                                              | Don't use for…                                                            |
-|---------------------------|-------------------------|----------------------------------------------------------------------------------------|---------------------------------------------------------------------------|
-| **[Pool](#pool)**         | Yes (`Lease = Runtime`) | N interchangeable stateful instances; expensive to create (DB connections).            | Single-shared HTTP client (use Resident); multiplexed sessions (Bounded). |
-| **[Resident](#resident)** | Yes (`Lease = Runtime`, `Clone`) | One instance shared widely; `Arc::clone` is cheap (`reqwest::Client`, in-memory cache). | Per-caller mutable state (use Pool); multiplexed sessions (Bounded).      |
-| **[Bounded](#bounded)**   | configurable            | Anything else: token-gated services, multiplexed sessions, exclusive resources.        | Pool semantics (use Pool); shared-clone semantics (use Resident).         |
-
-The `Bounded` topology folded the former standalone `Service` /
-`Transport` / `Exclusive` traits into one runtime. A `Bounded` resource
-picks a `Cap` typestate as `Bounded::Cap` (`Unbounded` / `Capped<N>` /
-`Exclusive`); the compiler enforces the concurrency arity and whether
-`BoundedRelease` is mandatory.
+| Topology                  | Lease == Runtime?              | Use when…                                                                               | Don't use for…                                                    |
+|---------------------------|--------------------------------|-----------------------------------------------------------------------------------------|-------------------------------------------------------------------|
+| **[Pool](#pool)**         | Yes (`Lease = Runtime`)        | N interchangeable stateful instances; expensive to create (DB connections).             | Single-shared HTTP client (use Resident).                         |
+| **[Resident](#resident)** | Yes (`Lease = Runtime`, `Clone`) | One instance shared widely; `Arc::clone` is cheap (`reqwest::Client`, in-memory cache). | Per-caller mutable state (use Pool).                              |
 
 ---
 
@@ -172,108 +164,6 @@ for the dedupe assertion.
 
 - [`examples/examples/resource_resident_http.rs`](../../../examples/examples/resource_resident_http.rs) — OAuth refresh
 - [`examples/examples/resource_telegram_multi_workflow.rs`](../../../examples/examples/resource_telegram_multi_workflow.rs) — cross-workflow dedupe assertion
-
----
-
-## Bounded
-
-**One runtime + per-acquire `Lease` shape selected at compile time by the `Cap` typestate.**
-
-### Cap typestates
-
-| `type Cap`        | Semantics                                                                           | `BoundedRelease`? |
-|-------------------|-------------------------------------------------------------------------------------|-------------------|
-| `Unbounded`       | Long-lived runtime, no per-acquire concurrency cap, no release work (token-gated).  | Forbidden         |
-| `Capped<N>`       | At most `N` concurrent leases via a `Semaphore(N)`; tracked release.                | Required          |
-| `Exclusive`       | Exactly one caller at a time via `Semaphore(1)`; reset-on-release ordering.         | Required          |
-
-The compiler enforces the matrix. Pairing `Unbounded` with `BoundedRelease`,
-or omitting `BoundedRelease` for `Capped` / `Exclusive`, is a build error.
-
-### `Unbounded` — token-gated service (formerly Service topology)
-
-```rust,ignore
-impl Resource for TelegramBot {
-    type Config = TelegramConfig;
-    type Runtime = TelegramBotRuntime;     // owns Arc<BotInner>
-    type Lease = TelegramBotHandle;        // outbound-only API
-    type Error = TelegramError;
-    // create / destroy as for Pool/Resident
-}
-
-impl Bounded for TelegramBot {
-    type Cap = Unbounded;
-
-    async fn acquire_lease(
-        &self, runtime: &Self::Runtime, ctx: &ResourceContext,
-    ) -> Result<Self::Lease, Self::Error> { /* hand out a token */ }
-}
-```
-
-### `Capped<N>` — multiplexed sessions (formerly Transport topology)
-
-```rust,ignore
-impl Bounded for Ssh {
-    type Cap = Capped<8>;
-
-    async fn acquire_lease(
-        &self, runtime: &Self::Runtime, ctx: &ResourceContext,
-    ) -> Result<Self::Lease, Self::Error> { /* open a session */ }
-}
-
-impl BoundedRelease for Ssh {
-    async fn release_lease(
-        &self, runtime: &Self::Runtime, lease: Self::Lease, healthy: bool,
-    ) -> Result<(), Self::Error> { /* close session */ }
-}
-```
-
-### `Exclusive` — single-caller serialized access
-
-```rust,ignore
-impl Bounded for FileLock {
-    type Cap = Exclusive;
-
-    async fn acquire_lease(
-        &self, runtime: &Self::Runtime, ctx: &ResourceContext,
-    ) -> Result<Self::Lease, Self::Error> { /* take the file lock */ }
-}
-
-impl BoundedRelease for FileLock {
-    async fn release_lease(
-        &self, runtime: &Self::Runtime, lease: Self::Lease, healthy: bool,
-    ) -> Result<(), Self::Error> { /* release + reset */ }
-}
-```
-
-### Registration
-
-```rust,ignore
-let bounded_rt = BoundedRuntime::<TelegramBot>::new(BoundedConfig::default())?;
-
-manager.register(RegistrationSpec {
-    resource: TelegramBot::new(cred),
-    config: telegram_config,
-    scope: ScopeLevel::Organization(org_id),
-    slot_identity: SlotIdentity::Unbound,
-    topology: TopologyRuntime::Bounded(bounded_rt),
-    acquire: Manager::erased_acquire_bounded_for::<TelegramBot>(),
-    recovery_gate: None,
-})?;
-```
-
-### Friction points
-
-- **Lease shape vs Runtime.** Anything more complex than `Lease = Runtime`
-  belongs on `Bounded`. The `Lease` type is what an action receives; the
-  `Runtime` is what the framework owns and rotates credentials on.
-- **`BoundedRelease` runs through `ReleaseQueue`.** Don't block the
-  caller-side `Drop`; the release future is scheduled on the manager's
-  background workers.
-- **Temp resources inside `create`.** If `create` writes a temp file (SSH
-  key, TLS cert), delete it in `destroy`. If `create` is cancelled
-  mid-flight the file leaks — that's acceptable; the OS reclaims `/tmp`.
-  For long-term safety, prefer agent forwarding / certificate pinning.
 
 ---
 

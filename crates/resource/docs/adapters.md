@@ -19,10 +19,9 @@ An adapter crate owns three things:
 2. A **resource struct** — implements `Resource` with four associated
    types (`Config`, `Runtime`, `Lease`, `Error`) plus the lifecycle
    methods. The factory.
-3. A **topology impl** — [`Pooled`], [`Resident`], or [`Bounded`] (with
-   a sealed `Cap` typestate: `Unbounded` / `Capped<N>` / `Exclusive`).
-   Most database adapters use `Pooled`; HTTP clients use `Resident`;
-   OAuth / gRPC / file-lock patterns use `Bounded` with the matching cap.
+3. A **topology impl** — [`Pooled`] or [`Resident`].
+   Most database adapters use `Pooled`; HTTP clients and token-gated
+   SDK clients use `Resident`.
 
 **Credential binding.** If your resource binds to a credential, declare a slot field
 `#[credential(key = "...")] auth: SlotCell<CredentialGuard<C>>` and read the
@@ -322,9 +321,6 @@ fn on_credential_refresh(
 |------------------------|-----------------------------------------------------------------------------------------------------------|
 | `Pooled`               | Stateful connections (DBs, gRPC channels). N instances, one-at-a-time checkout.                           |
 | `Resident`             | Stateless or internally-pooled clients (`reqwest::Client`, AWS SDK). `Arc::clone` on acquire.             |
-| `Bounded<Unbounded>`   | Token-gated services (OAuth, fan-out APIs). Long-lived runtime, no per-acquire release.                   |
-| `Bounded<Capped<N>>`   | Multiplexed sessions over one shared connection (SSH, gRPC channel). Tracked release via `BoundedRelease`. |
-| `Bounded<Exclusive>`   | Mutex-style — one acquirer at a time, reset-on-release ordering.                                          |
 
 ### Pooled implementation
 

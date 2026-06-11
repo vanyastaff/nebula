@@ -159,22 +159,14 @@
 //! These decisions have no separate ADR; this section is their durable
 //! record.
 //!
-//! ## Why the topology taxonomy is three runtimes, not five
+//! ## Why there are two topology runtimes
 //!
-//! The resource topologies were collapsed from five to three. Two axes carry
-//! all real variation: the **concurrency cap** and the **per-acquire hook
-//! pair** (acquire / release-shape). `Pooled` and `Resident` stay distinct
-//! runtimes — `Resident` has a `Lease: Clone` super-bound and a
-//! create-vs-rotate epoch reconcile that the folded runtime cannot express,
-//! and `Pooled` owns the idle queue and the revoke-epoch fence above. The
-//! former `Service` / `Transport` / `Exclusive` topologies differed only in
-//! cap and release-shape, so they fold into one parameterized `Bounded`
-//! runtime whose cap and release-shape are **type-enforced** via a sealed
-//! `Cap` typestate marker (`Unbounded` / `Capped<N>` / `Exclusive`). A
-//! sealed typestate makes "a tracked service that never releases" or "an
-//! exclusive runtime without reset ordering" a compile error instead of a
-//! runtime `==` branch that could silently no-op — invalid states are
-//! unrepresentable rather than discipline-checked.
+//! `Pooled` and `Resident` are distinct runtimes because their semantics
+//! are structurally different. `Resident` has a `Lease: Clone` super-bound
+//! and a create-vs-rotate epoch reconcile that a shared parameterized
+//! runtime cannot express. `Pooled` owns the idle queue and the
+//! revoke-epoch fence described above. These differences require distinct
+//! runtime implementations rather than a shared parameterization.
 //!
 //! ## Why RCU was rejected for [`SlotCell`](crate::slot::SlotCell)
 //!
@@ -262,10 +254,10 @@
 //!
 //! ## Further `Manager` code-line reduction — LOW ([#719])
 //!
-//! `crates/resource/src/manager/mod.rs` is 2552 lines: ~1224 comment/doc,
-//! ~117 blank, ~1211 code. The structural de-spaghettification root-cause
-//! goals **are** met — 5→3 topology, one generic `run_acquire` (no
-//! `run_*_acquire` clones), the ~17 register shorthands + 3-deep chain
+//! `crates/resource/src/manager/mod.rs` is large. The structural
+//! de-spaghettification root-cause goals **are** met — two topologies, one
+//! generic `run_acquire` (no `run_*_acquire` clones), the ~17 register
+//! shorthands + 3-deep chain
 //! folded into one `register(RegistrationSpec)` funnel, the 8 prose
 //! restatements of the revoke invariant collapsed into the single canonical
 //! block above, dead surface removed, all type-enforced so the duplication
@@ -279,18 +271,12 @@
 //!
 //! ## Accepted carve-outs (recorded, not silently inherited)
 //!
-//! - **`reload_config` outcome relabel — no-op-preserving.** The former
-//!   `Service` topology returned a separate draining outcome; post-collapse
-//!   a former-Service row is `TopologyRuntime::Bounded` and that arm is
-//!   gone, so `reload_config` now returns
-//!   `ReloadOutcome::SwappedImmediately` for every variant. This is **only
-//!   an enum label change**: `reload_config` never drained or rebuilt the
-//!   live runtime for that topology under either label (that missing
-//!   behavior is exactly [#712]). A characterization net pins the
-//!   per-topology `reload_config` outcome so the relabel is auditable as a
-//!   preserved no-op, not a silent behavior change. The now-unreachable
-//!   draining variant was removed from `ReloadOutcome` once that net
-//!   landed.
+//! - **`reload_config` returns `ReloadOutcome::SwappedImmediately` for all
+//!   variants.** `reload_config` swaps the config `ArcSwap` (and the Pool
+//!   fingerprint) but never drains or rebuilds the live runtime for any
+//!   topology — that missing behavior is exactly [#712]. The enum label is
+//!   accurate for the current behavior; the missing drain/rebuild is the
+//!   deferred work.
 //! - **`register_resolved` carries one `// guard-justified:`
 //!   `#[allow(clippy::too_many_arguments)]`.** The four register-chain
 //!   `too_many_arguments` allows the collapse targeted are gone; this last

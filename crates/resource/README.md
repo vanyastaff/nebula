@@ -15,7 +15,7 @@ External connections — database pools, HTTP clients, message brokers — are a
 
 ## Role
 
-**Bulkhead Pool** (Release It! ch "Stability Patterns — Bulkhead"). Isolates resource exhaustion per topology so one depleted pool cannot cascade to unrelated paths. Three topologies cover the full integration space: `Pooled`, `Resident`, and one parameterized `Bounded` whose concurrency cap and release shape are type-enforced via a sealed `Cap` typestate marker (`Unbounded` / `Capped<N>` / `Exclusive`). The `Resource` trait declares four associated types and lifecycle methods; topology traits add pool-specific recycle and broken-instance decisions. Long-running workers (`Daemon`) and pull-based subscriptions (`EventSource`) live in `nebula_engine::daemon` — canon §3.5 reserves "Resource" for pool/SDK clients.
+**Bulkhead Pool** (Release It! ch "Stability Patterns — Bulkhead"). Isolates resource exhaustion per topology so one depleted pool cannot cascade to unrelated paths. Two topologies cover the integration space: `Pooled` (N interchangeable stateful instances) and `Resident` (one shared instance, cloned on acquire). The `Resource` trait declares four associated types and lifecycle methods; topology traits add pool-specific recycle and broken-instance decisions. Long-running workers (`Daemon`) and pull-based subscriptions (`EventSource`) live in `nebula_engine::daemon` — canon §3.5 reserves "Resource" for pool/SDK clients.
 
 ## Public API (v4 — slot-binding pattern, 2026-04-29)
 
@@ -84,7 +84,7 @@ The derive emits:
 - `impl Resource for Postgres { type Config = …; type Runtime = …; … fn key() … }` with a `todo!()` `create` body — the implementor supplies it.
 - `impl DeclaresDependencies for Postgres` enumerating the credential slot fields so the engine can resolve each before `create` runs.
 - A read accessor per slot field: `pub fn <field>_slot(&self) -> Option<Arc<CredentialGuard<C>>>` returning the resolved guard, or `None` until the framework binds it. Implementations read the credential through this accessor — never off the raw cell field. A pure derive cannot add or rewrite struct fields and `ManagedResource` hands out `Arc<R>` (no `&mut R`), so the author declares the `SlotCell` cell and the framework populates / rotates it through `&self` via `SlotCell::store`.
-- A topology marker (`Pooled` / `Resident` / `Bounded`) is **not** auto-derived — the topology attribute is informational; the implementor still writes `impl Pooled for Postgres { … }` (or the chosen topology trait) by hand. A `Bounded` resource additionally picks a `Cap` (`Unbounded` / `Capped<N>` / `Exclusive`) as the trait's associated type and, for `Capped`/`Exclusive`, implements `BoundedRelease` — a `Tracked`-style resource that never releases, or an exclusive one without reset ordering, is a **compile error**, not a runtime branch.
+- A topology marker (`Pooled` / `Resident`) is **not** auto-derived — the topology attribute is informational; the implementor still writes `impl Pooled for Postgres { … }` (or the chosen topology trait) by hand.
 
 #### Field-type shape
 
@@ -131,10 +131,10 @@ The framework resolves declared `#[credential]` slots **before** invoking `Resou
 - `ResourceEvent` — lifecycle events (`Registered`, `Removed`, `AcquireSuccess`, `AcquireFailed`, `Released`, `HealthChanged`, `ConfigReloaded`, `RetryAttempt`, `BackpressureDetected`, `RecoveryGateChanged`, `SlotRefreshed`, `SlotRevoked`, `SlotRefreshFailed`, `SlotRevokeFailed`).
 - `ResourceOpsMetrics`, `ResourceOpsSnapshot` — registry-backed operation counters.
 - `RecoveryGate`, `RecoveryGateConfig`, `RecoveryTicket`, `RecoveryWaiter`, `GateState` — thundering-herd recovery gate.
-- `TopologyRuntime` — enum dispatching to the 3 topology runtime variants (`Pool` / `Resident` / `Bounded`).
-- Topology traits: `Pooled`, `Resident`, `Bounded` (+ `BoundedRelease`, the `CapMarker` typestates `Unbounded` / `Capped<N>` / `Exclusive`).
-- Topology runtimes: `PoolRuntime`, `ResidentRuntime`, `BoundedRuntime`.
-- Topology configs: `PoolConfig`, `ResidentConfig`, `BoundedConfig`.
+- `TopologyRuntime` — enum dispatching to the two topology runtime variants (`Pool` / `Resident`).
+- Topology traits: `Pooled`, `Resident`.
+- Topology runtimes: `PoolRuntime`, `ResidentRuntime`.
+- Topology configs: `PoolConfig`, `ResidentConfig`.
 - `#[derive(Resource)]`, `#[derive(ClassifyError)]` — proc-macro derivations.
 - `resource_key!` — macro for declaring resource keys.
 
@@ -148,8 +148,7 @@ The slot-binding break is hard. To migrate an existing `Resource` impl:
 4. **Drop `nebula_credential::NoCredential`.** Resources without credentials simply have no `#[credential]` fields. The `NoCredential` opt-out is no longer needed.
 5. **For `#[derive(Resource)]`** (new), parse `#[resource(key, topology, config, runtime, lease, error)]` struct attribute; the derive emits `Resource` trait shape (with `todo!()` `create` body — you supply it) and a `DeclaresDependencies` impl enumerating slot fields. Topology traits (`Pooled`, `Resident`, etc.) are still hand-written.
 6. **Update test code** — registration now goes through one funnel: `Manager::register::<R>(RegistrationSpec { resource, config, scope, slot_identity, topology, acquire, resilience, recovery_gate })`. The per-topology `register_<topo>[_with]` shorthands and the previous `acquire_*_default` shorthand were removed; acquire is the single `acquire_<topo>` / `acquire_<topo>_for_identity` family (or the erased `acquire_erased_for`).
-7. **If you authored a `Service` / `Transport` / `Exclusive` resource**, re-author it onto `Bounded`: implement `Bounded` with the matching `type Cap` (`Unbounded` for the old Cloned/Service shape, `Capped<N>` for tracked/bounded concurrency, `Exclusive` for one-at-a-time), implement `BoundedRelease` if the cap requires a release, and register with `TopologyRuntime::Bounded(BoundedRuntime::new(…))`. Semaphore / reset-ordering / session semantics are preserved.
-8. **For credential slot identity**, pass `SlotIdentity::Unbound` for the historical single-row dedup, or build a `SlotIdentity::Structural` from the resolved `(slot, credential)` pairs for per-binding row separation. The old `u64` `slot_identity` digest was removed.
+7. **For credential slot identity**, pass `SlotIdentity::Unbound` for the historical single-row dedup, or build a `SlotIdentity::Structural` from the resolved `(slot, credential)` pairs for per-binding row separation. The old `u64` `slot_identity` digest was removed.
 
 The trait-shape changes ship complete; the engine-side fan-out machinery for delivering slot-name rotation events lands in a follow-up.
 
@@ -179,7 +178,7 @@ The headline patterns and topology selection guidance are distilled into `crates
 
 See `docs/MATURITY.md` row for `nebula-resource`.
 
-- API stability: `frontier` — slot-binding pattern shipped; 3 topologies (`Pooled` / `Resident` / `Bounded`), `Manager`, `ReleaseQueue`, and `ResourceGuard` are the authoritative lifecycle surface; topology runtime variants are actively evolving.
+- API stability: `frontier` — slot-binding pattern shipped; 2 topologies (`Pooled` / `Resident`), `Manager`, `ReleaseQueue`, and `ResourceGuard` are the authoritative lifecycle surface; topology runtime variants are actively evolving.
 - `#![forbid(unsafe_code)]` enforced, `#![warn(missing_docs)]` active.
 - Integration tests: shared-resource cross-workflow path is verified in `crates/engine/tests/resource_integration.rs::shared_resource::cross_workflow_resource_sharing`.
 - Per-slot rotation fan-out: lands in a follow-up.
@@ -203,15 +202,10 @@ These types are L4 implementation detail — rename/refactor without canon revis
 
 ### Topology reference
 
-| Topology | Cap | Use case | Instance model |
-|---|---|---|---|
-| `Pooled` | — | Databases (Postgres, Redis) | N interchangeable instances with checkout/recycle |
-| `Resident` | — | HTTP clients (`reqwest::Client`) | One shared instance, clone on acquire |
-| `Bounded<Unbounded>` | `Unbounded` | OAuth APIs, token-gated services | Long-lived runtime with short-lived tokens; no per-acquire release |
-| `Bounded<Capped<N>>` | `Capped<N>` | WebSocket, gRPC channels | Shared connection, ≤ N multiplexed sessions, tracked release |
-| `Bounded<Exclusive>` | `Exclusive` | File locks, hardware ports | One caller at a time via semaphore(1), reset-on-release ordering |
-
-`Bounded` folds the former `Service` / `Transport` / `Exclusive` topologies into one runtime; the `Cap` typestate (`Unbounded` / `Capped<N>` / `Exclusive`) selects the concurrency arity and whether `BoundedRelease` is mandatory at **compile time**.
+| Topology   | Use case                        | Instance model                                    |
+|------------|---------------------------------|---------------------------------------------------|
+| `Pooled`   | Databases (Postgres, Redis)     | N interchangeable instances with checkout/recycle |
+| `Resident` | HTTP clients (`reqwest::Client`) | One shared instance, clone on acquire             |
 
 Long-running workers (`Daemon`) and pull-based event subscriptions (`EventSource`) live in `nebula_engine::daemon`; this crate retains pool/SDK-client topologies only (canon §3.5).
 
@@ -269,11 +263,7 @@ for _ in 0..10 {
 ```
 
 Resident is the natural topology for a shared bot client; the same dedupe
-guarantee applies to `Pooled` (one pool with N interchangeable instances)
-and to `Bounded<Unbounded>` / `Bounded<Capped<N>>` (a long-lived runtime
-with refreshable tokens or a shared connection with multiplexed sessions).
-`Bounded<Exclusive>` deliberately opts out — its semantics are "one caller
-at a time," not "one shared instance."
+guarantee applies to `Pooled` (one pool with N interchangeable instances).
 
 Verification: see `crates/engine/tests/resource_integration.rs::shared_resource::cross_workflow_resource_sharing`
 — 10 simulated workflows × 1 `TelegramBot` resource × Organization scope ⇒

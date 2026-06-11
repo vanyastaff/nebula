@@ -7,9 +7,7 @@ use syn::{Ident, Result, Type};
 /// Validated resource topology.
 ///
 /// Parsed once in [`ResourceAttrs::parse`] from the accepted
-/// `pool` / `resident` / `bounded` strings (the former
-/// `service` / `transport` / `exclusive` topologies are folded into
-/// `bounded`, selected by the resource's `Bounded::Cap` typestate).
+/// `pool` / `resident` strings.
 /// Holding the validated enum instead of the raw string lets
 /// [`ResourceAttrs::topology_ident`] be an exhaustive match with no
 /// panic path — a panicking proc macro is a poor failure mode.
@@ -17,7 +15,6 @@ use syn::{Ident, Result, Type};
 pub(crate) enum Topology {
     Pool,
     Resident,
-    Bounded,
 }
 
 /// Parsed resource container attributes.
@@ -63,22 +60,18 @@ impl ResourceAttrs {
         let topology = attr_args.get_string("topology").ok_or_else(|| {
             diag::error_spanned(
                 struct_name,
-                "missing required attribute `topology = \"pool|resident|bounded\"`",
+                "missing required attribute `topology = \"pool|resident\"`",
             )
         })?;
-        // Validate + classify the topology value. The former
-        // `service` / `transport` / `exclusive` topologies are folded
-        // into `bounded`.
         let topology = match topology.as_str() {
             "pool" => Topology::Pool,
             "resident" => Topology::Resident,
-            "bounded" => Topology::Bounded,
             other => {
                 return Err(syn::Error::new_spanned(
                     struct_name,
                     format!(
                         "invalid `topology = \"{other}\"` — \
-                         must be one of: pool, resident, bounded"
+                         must be one of: pool, resident"
                     ),
                 ));
             },
@@ -116,7 +109,6 @@ impl ResourceAttrs {
         let variant = match self.topology {
             Topology::Pool => "Pool",
             Topology::Resident => "Resident",
-            Topology::Bounded => "Bounded",
         };
         Ident::new(variant, proc_macro2::Span::call_site())
     }

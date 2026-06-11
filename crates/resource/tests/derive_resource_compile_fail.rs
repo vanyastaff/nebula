@@ -6,8 +6,7 @@
 //!
 //! - missing `config = ...` argument,
 //! - missing `topology = "..."` argument,
-//! - invalid `topology = "..."` value (not in {pool, resident,
-//!   bounded}),
+//! - invalid `topology = "..."` value (not in {pool, resident}),
 //! - unknown keys inside `#[resource(...)]`,
 //! - tuple struct rejection.
 //!
@@ -32,14 +31,13 @@ fn derive_resource_compile_pass_positive() {
     t.pass("tests/probes/derive_positive_unit_resource.rs");
 }
 
-/// `topology = "bounded"` is accepted (the folded topology that replaced
-/// the legacy `service` / `transport` / `exclusive` strings), alongside
-/// `pool` / `resident`. Each maps to its `TopologyTag` via the emitted
-/// informational const — the collapsed 3-tag set.
+/// `topology = "bounded"` is now rejected — the Bounded topology was
+/// removed. The accepted set is `pool` / `resident` only; any other
+/// string, including the former `bounded`, produces a compile error.
 #[test]
-fn derive_resource_accepts_collapsed_topologies() {
+fn derive_resource_rejects_bounded_topology() {
     let t = trybuild::TestCases::new();
-    t.pass("tests/probes/derive_bounded_topology.rs");
+    t.compile_fail("tests/probes/derive_bounded_topology_rejected.rs");
 }
 
 #[test]
@@ -48,14 +46,13 @@ fn derive_emits_slot_accessor() {
     t.pass("tests/trybuild/derive_slot_accessor.rs");
 }
 
-/// The `Bounded` cap typestate makes "release-bearing cap with no release
-/// hook" a compile error: a `Capped<N>` / `Exclusive` resource that omits
-/// `impl BoundedRelease` fails the `R: BoundedRelease` bound the runtime
-/// requires (the blanket no-op covers only `Cap = Unbounded`). This is the
-/// type-enforcement that replaced the old silent `TOKEN_MODE ==` no-op.
+/// `topology = "bounded"` used to be the third accepted string alongside
+/// `pool` / `resident`; verify it now appears in the invalid-topology
+/// error message as just the two-element set.
 #[test]
-fn bounded_release_shape_is_type_enforced() {
+fn derive_invalid_topology_error_lists_two_variants() {
     let t = trybuild::TestCases::new();
-    t.compile_fail("tests/probes/bounded_capped_without_release.rs");
-    t.compile_fail("tests/probes/bounded_exclusive_without_reset.rs");
+    // `derive_invalid_topology.rs` uses `topology = "wat"` which hits the
+    // same error-message branch; the .stderr golden pins the exact wording.
+    t.compile_fail("tests/probes/derive_invalid_topology.rs");
 }

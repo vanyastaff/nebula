@@ -1,4 +1,0 @@
-[
-  {"step": "acquired", "detail": "token=svc-runtime-token"},
-  {"step": "release_callback_fired", "detail": "false"}
-]

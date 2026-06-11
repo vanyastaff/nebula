@@ -16,13 +16,12 @@
 - `src/slot.rs` / `src/cell.rs` — `SlotCell` (public, generation-stamped) vs internal epoch-blind `cell::Cell`
 - `src/registry.rs` — type-erased registry, scope-aware lookup, `(key, scope)` dedup
 - `src/manager/` — `Manager::register(RegistrationSpec)` funnel, acquire dispatch, shutdown/drain
-- `src/topology/` + `src/runtime/` — `Pooled` / `Resident` / `Bounded<Cap>` traits and their runtimes
+- `src/topology/` + `src/runtime/` — `Pooled` / `Resident` traits and their runtimes
 - `src/release_queue.rs` — `ReleaseQueue` best-effort async drain (canon §11.4); `src/recovery/` — thundering-herd `RecoveryGate`
 
 ## Conventions & never-do
 - Credentials are declared as `#[credential(key="…")] field: SlotCell<CredentialGuard<C>>`; read via derive-emitted `self.<field>_slot()` (`Option<Arc<…>>`, handle `None`/unbound) — never off the raw cell. No singular `Resource::Credential`; `NoCredential` is gone.
 - This crate is NOT a connection driver, retry pipeline, secret holder, or expression evaluator — it owns the lifecycle wrapper only (see Non-goals).
-- `Bounded` cap mismatch (e.g. `Capped`/`Exclusive` without `BoundedRelease`) is a compile error, not a runtime branch — keep it typestate-enforced.
 - Async release is best-effort on crash; never assume "release ran" without an explicit checkpoint (canon §11.4).
 - `#![forbid(unsafe_code)]` + `#![warn(missing_docs)]` are active; lifecycle work emits a `ResourceEvent` variant (observability is DoD).
 - Cross-crate calls go through `nebula-eventbus`, not direct sibling imports.
