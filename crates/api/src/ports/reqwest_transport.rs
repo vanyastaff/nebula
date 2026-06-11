@@ -50,7 +50,14 @@ fn oauth_token_http_client() -> &'static reqwest::Client {
                 OAUTH_TOKEN_HTTP_MAX_REDIRECTS,
             ))
             .build()
-            .unwrap_or_else(|_| reqwest::Client::new())
+            .unwrap_or_else(|e| {
+                tracing::warn!(
+                    error = %e,
+                    "OAuth token HTTP client builder failed; falling back to the \
+                     default client — connect timeout and redirect cap are lost"
+                );
+                reqwest::Client::new()
+            })
     })
 }
 

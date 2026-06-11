@@ -188,6 +188,12 @@ impl CredentialService {
     /// `Audit(Cache(Encryption(raw)))` stack; assemble it via the api
     /// builder, never by hand. Bypassing the builder forfeits the
     /// encryption-at-rest guarantee.
+    // `#[doc(hidden)]`: `pub` only so the `nebula-api` composition-root builder
+    // (a different crate) can call it after composing the decorator stack. It is
+    // NOT supported surface — `nebula-sdk` never re-exports it, and the
+    // `deny.toml` wrappers allowlist limits who may depend on `nebula-credential`
+    // to the trusted in-workspace composition roots, so no external crate reaches it.
+    #[doc(hidden)]
     // guard-justified: from_secure_parts mirrors the eight mandatory collaborators
     // the builder composes; bundling them into a struct would just move the
     // arity to that struct's literal at the single call site.

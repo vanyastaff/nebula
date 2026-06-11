@@ -37,7 +37,11 @@ pub use signing_key::{SigningKeyCredential, SigningKeyProperties};
 )]
 pub use crate::scheme::oauth2::AuthStyle;
 
-/// Register every first-party reference credential into `registry`.
+/// Register the first-party **reference** credentials — `bearer_token`,
+/// `shared_key`, and `signing_key` — into `registry`.
+///
+/// The richer contract types (`api_key`, `basic_auth`, `oauth2`) are not
+/// auto-registered here; a composition root opts those in explicitly.
 ///
 /// Fail-closed on duplicate KEY (Tech Spec §15.6): if a KEY is already
 /// present the second registration is **rejected** with

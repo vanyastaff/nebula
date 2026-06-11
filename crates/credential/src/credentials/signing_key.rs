@@ -107,10 +107,7 @@ mod tests {
     async fn resolve_wraps_key_and_algorithm() {
         let mut values = FieldValues::new();
         values
-            .try_set_raw(
-                "key",
-                serde_json::Value::String("test-signing-secret".into()),
-            )
+            .try_set_raw("key", serde_json::Value::String("whsec_1".into()))
             .expect("test-only known-good key");
         values
             .try_set_raw("algorithm", serde_json::Value::String("hmac-sha256".into()))
@@ -121,7 +118,7 @@ mod tests {
             .expect("ok");
         match r {
             ResolveResult::Complete(s) => {
-                assert!(!s.key().expose_secret().is_empty());
+                assert_eq!(s.key().expose_secret(), "whsec_1");
                 assert_eq!(s.algorithm(), "hmac-sha256");
             },
             _ => panic!("expected Complete"),

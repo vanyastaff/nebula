@@ -96,10 +96,7 @@ mod tests {
     async fn resolve_wraps_token_into_secret_token() {
         let mut values = FieldValues::new();
         values
-            .try_set_raw(
-                "token",
-                serde_json::Value::String("test-bearer-token".into()),
-            )
+            .try_set_raw("token", serde_json::Value::String("sk-abc123".into()))
             .expect("test-only known-good key");
         let ctx = CredentialContext::for_test("test-user");
         let result = BearerTokenCredential::resolve(&values, &ctx)
@@ -108,7 +105,7 @@ mod tests {
         match result {
             ResolveResult::Complete(scheme) => {
                 let _: &SecretToken = &scheme;
-                assert!(!scheme.token().expose_secret().is_empty());
+                assert_eq!(scheme.token().expose_secret(), "sk-abc123");
             },
             _ => panic!("expected Complete"),
         }

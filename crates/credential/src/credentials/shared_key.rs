@@ -96,7 +96,7 @@ mod tests {
     async fn resolve_wraps_key_into_shared_key() {
         let mut values = FieldValues::new();
         values
-            .try_set_raw("key", serde_json::Value::String("psk-test-value".into()))
+            .try_set_raw("key", serde_json::Value::String("psk-xyz".into()))
             .expect("test-only known-good key");
         let ctx = CredentialContext::for_test("u");
         let r = SharedKeyCredential::resolve(&values, &ctx)
@@ -104,7 +104,7 @@ mod tests {
             .expect("ok");
         match r {
             ResolveResult::Complete(s) => {
-                assert!(!s.key().expose_secret().is_empty());
+                assert_eq!(s.key().expose_secret(), "psk-xyz");
             },
             _ => panic!("expected Complete"),
         }
