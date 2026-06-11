@@ -21,86 +21,119 @@ These hit exactly the target use case (community plugins) and exactly the produc
 
 ---
 
-## The new contract (target)
+## The new contract (target) — SLOT-CENTRIC (revised after plan review)
 
-`Topology::Slot` becomes **real** (carries the leasable unit), not `()` for storing topologies. The framework store `ManagedResource.store: InstanceStore<<R::Topology as Topology>::Slot>` becomes the *actual* idle store the framework fences — no separate topology-owned store.
+`Topology::Slot` becomes **real** and carries the leasable unit for its whole lease — the guard holds the `Slot`, so per-slot metadata (`created_at` for max-lifetime, `fingerprint`, `checkout_count`) survives the checkout→lease→return round-trip. The framework store `ManagedResource.store: InstanceStore<<R::Topology as Topology>::Slot>` is the *actual* idle store the framework fences — no topology-owned store.
+
+> **Review fix (🔴):** an earlier instance-centric draft (`create -> R::Instance` + `into_slot(instance)` on release) rebuilt the slot from the bare instance on every return, resetting `created_at` → **max-lifetime eviction would never fire**. Slot-centric (`create_slot -> Slot`, guard holds the slot, release returns the *same* slot) preserves metadata. `into_slot` is deleted.
 
 ```rust
 // crates/resource/src/runtime/managed.rs — replaces TopologyDispatch<R>
 /// R-aware policy hooks the framework calls *inside* its own acquire loop.
 /// The framework owns try_reserve, the fenced checkout, stale-destroy, the
-/// store, guard-wrapping, and on-release return — so a bind impl CANNOT skip
-/// the revoke fence or retain the store. The open `Topology` (R-agnostic)
-/// supplies the concurrency gate + admission surface; this supplies the
-/// instance lifecycle keyed to `R`.
+/// store, guard-wrapping, warmup, maintenance, and on-release return — so a
+/// bind impl CANNOT skip the revoke fence or retain the store. The open
+/// `Topology` (R-agnostic) supplies the concurrency gate + admission surface;
+/// this supplies the slot lifecycle keyed to `R`.
 #[async_trait]
 pub trait TopologyBind<R: Provider>: Topology {
-    /// Make one fresh, already-credential-resolved instance. The framework
-    /// drives this only when no fresh idle slot is available; credentials are
-    /// resolved into the resource's slot cells before this runs (§2.6).
-    async fn create(&self, resource: &R, config: &R::Config, ctx: &ResourceContext)
-        -> Result<R::Instance, Error>;
+    /// Make one fresh, credential-resolved leasable slot. Pool builds
+    /// `PoolSlot { instance: <create>, metrics: now, fingerprint }`; Resident
+    /// clones the shared handle into `Slot = R::Instance`; a permit pool stores
+    /// an id/handle. Credentials are resolved into the resource's slot cells
+    /// before this runs (§2.6). Framework drives it (on idle-miss / warmup).
+    async fn create_slot(&self, resource: &R, config: &R::Config, ctx: &ResourceContext)
+        -> Result<Self::Slot, Error>;
 
-    /// Wrap an instance into a storable `Slot` for the framework idle store,
-    /// or `None` to never store (Resident / pure-permit). Pooled wraps
-    /// `PoolSlot { instance, metrics, fingerprint, returned_at }`.
-    fn into_slot(&self, instance: R::Instance) -> Option<Self::Slot> { let _ = instance; None }
+    /// Project a held slot to its leasable instance — the guard's `Deref`
+    /// target. Pool: `&slot.instance`; Resident: the slot itself.
+    fn slot_instance<'s>(&self, slot: &'s Self::Slot) -> &'s R::Instance;
 
-    /// Consume a `Slot` back into its instance (for guard-wrapping after a
-    /// fresh checkout, and for `Provider::destroy` on a stale/evicted slot).
-    fn slot_into_instance(&self, slot: Self::Slot) -> R::Instance;
+    /// Consume a slot back into its instance for `Provider::destroy`
+    /// (stale-fenced / accept-rejected / maintenance-evicted slots).
+    fn into_instance(&self, slot: Self::Slot) -> R::Instance;
 
-    /// Decide whether a checked-out idle slot is still usable (Pooled:
-    /// fingerprint / max-lifetime / is_broken / test_on_checkout). `Discard`
-    /// makes the framework destroy it and loop to the next idle / create.
-    /// Default `Use` (no post-checkout policy).
-    async fn accept(&self, instance: R::Instance, _resource: &R, _ctx: &ResourceContext)
-        -> Accept<R::Instance> { Accept::Use(instance) }
+    /// Validate a checked-out idle slot **in place** (Pool: stale-fingerprint /
+    /// max-lifetime / `is_broken` / `test_on_checkout`). `false` => the
+    /// framework destroys it (`into_instance` → `destroy`) and loops to the
+    /// next idle slot / create. Default `true` (no post-checkout policy).
+    async fn accept(&self, _slot: &mut Self::Slot, _resource: &R, _ctx: &ResourceContext) -> bool { true }
 
-    /// Per-acquire session-init on the instance about to be leased (Pooled
-    /// `prepare`; `SET search_path`, etc.). Err => framework destroys + fails.
-    async fn prepare(&self, _instance: &R::Instance, _ctx: &ResourceContext)
+    /// Per-acquire session-init on the slot about to be leased (Pool `prepare`,
+    /// `SET search_path`, …). Err => framework destroys the slot + fails the acquire.
+    async fn prepare(&self, _slot: &mut Self::Slot, _ctx: &ResourceContext) -> Result<(), Error> { Ok(()) }
+
+    /// Whether a released slot returns to the framework idle store (Pool: true;
+    /// Resident / pure-permit: false → released slot is dropped, not pooled).
+    fn pools(&self) -> bool { false }
+
+    /// Idle count the framework pre-warms by calling `create_slot` + storing
+    /// (fenced) at registration. 0 = no warmup.
+    fn warmup_target(&self, _config: &R::Config) -> usize { 0 }
+
+    /// Predicate for the framework maintenance reaper: should this idle slot be
+    /// evicted now (Pool: stale-fingerprint / max-lifetime / idle-timeout)?
+    /// The framework already evicts revoke-stale slots via `store.evict_stale()`.
+    fn idle_evictable(&self, _slot: &Self::Slot) -> bool { false }
+
+    /// `Some((idle_timeout, max_lifetime, interval))` if the framework should
+    /// spawn a maintenance reaper for this topology; `None` = none.
+    fn maintenance_schedule(&self) -> Option<MaintenanceSchedule> { None }
+
+    /// Per-slot credential rotation hook, framework-driven over the live store.
+    /// Default no-op (a topology with no pooled instances has nothing to rotate).
+    async fn dispatch_credential_hook(&self, _resource: &R, _slot: &str, _refresh: bool)
         -> Result<(), Error> { Ok(()) }
 
-    // maintenance / rotation hooks (unchanged from TopologyDispatch, still
-    // framework-driven, default no-op): warmup, run_maintenance,
-    // maintenance_schedule, dispatch_credential_hook, set_fingerprint.
+    /// Update the config fingerprint so stale idle slots evict on next sweep/acquire.
+    fn set_fingerprint(&self, _fingerprint: u64) {}
 }
-
-pub enum Accept<I> { Use(I), Discard }
 ```
 
 ```text
-// crates/resource/src/registry.rs (or a Manager helper) — the ONE framework loop.
+// crates/resource/src/registry.rs (inside Manager::run_acquire's dispatch closure,
+// which keeps owning resilience-gate + drain bookkeeping + post-taint re-check).
 // blanket impl<R> ManagedHandle for ManagedResource<R> where R::Topology: TopologyBind<R>
-async fn acquire(self, mgr, ctx, opts) -> ResourceGuard<R> {
-    let ticket = self.topology.try_reserve(&self.store)?;        // gate (sync)
-    loop {
-        let checkout = self.store.checkout().await;              // FRAMEWORK fences on pop
-        for stale in checkout.stale {                            // FRAMEWORK destroys stale — author cannot skip
-            let _ = self.resource.destroy(self.topology.slot_into_instance(stale)).await;
+async fn acquire(self: Arc<Self>, mgr, ctx, opts) -> ResourceGuard<R> {
+    let ticket = self.topology.try_reserve(&self.store)?;          // gate (sync)
+    let (slot, epoch) = loop {
+        let checkout = self.store.checkout().await;                // FRAMEWORK fences on pop
+        for stale in checkout.stale {                              // FRAMEWORK destroys stale — author cannot skip
+            let _ = self.resource.destroy(self.topology.into_instance(stale)).await;
         }
-        let (instance, slot_epoch) = match checkout.fresh {
+        match checkout.fresh {
             Some(co) => {
-                let (slot, epoch) = co.into_parts();
-                let inst = self.topology.slot_into_instance(slot);
-                match self.topology.accept(inst, &self.resource, &ctx).await {
-                    Accept::Use(i) => (i, epoch),
-                    Accept::Discard => { self.resource.destroy(/* i was moved; accept returns nothing on Discard — see note */).await; continue }
+                let (mut slot, epoch) = co.into_parts();
+                if self.topology.accept(&mut slot, &self.resource, &ctx).await {
+                    break (slot, epoch);
                 }
+                let _ = self.resource.destroy(self.topology.into_instance(slot)).await;
+                // loop: try next idle, then create
             }
-            None => (self.topology.create(&self.resource, self.config(), &ctx).await?, self.store.stamp_epoch()),
-        };
-        self.topology.prepare(&instance, &ctx).await?;           // FRAMEWORK runs session-init
-        return Ok(ResourceGuard::pooled(instance, slot_epoch, ticket, /* return-to-store closure */));
-    }
+            None => break (self.topology.create_slot(&self.resource, self.config(), &ctx).await?,
+                           self.store.stamp_epoch()),
+        }
+    };
+    // Cancel-safety: from create_slot/checkout until the guard is built, a drop
+    // here must `destroy` `slot` via the ReleaseQueue (reuse the existing
+    // `CreateGuard` pattern, generalized over `Slot`) — without it a cancelled
+    // acquire leaks a server-side instance (guarded by the cancel-drop test).
+    let mut slot = /* CreateGuard-wrapped */ slot;
+    self.topology.prepare(&mut slot, &ctx).await?;                 // FRAMEWORK session-init; Err => destroy + fail
+    let guard = ResourceGuard::leased(self.clone(), slot, epoch, ticket);
+    Ok(guard)
 }
-// On guard drop: topology.on_release(&mut slot)?  -> store.return_slot(into_slot(instance), epoch)  (FRAMEWORK, fenced)
+// Guard `Deref` = self.topology.slot_instance(&slot).
+// On guard drop, scheduled on the ReleaseQueue, the closure captures
+// `Arc<ManagedResource<R>>` (giving store + topology + resource):
+//   topology.on_release(&mut slot)? ;
+//   if topology.pools() && kept { store.return_slot(slot, epoch).await }   // FENCE: under-lock epoch re-read
+//   else { resource.destroy(topology.into_instance(slot)).await }
 ```
 
-> **Implementer note on `Accept::Discard`:** `accept` must give the framework the instance back to destroy on `Discard`. Use `enum Accept<I> { Use(I), Discard(I) }` (Discard carries the rejected instance) so the framework destroys it without a second projection. Adjust the loop accordingly.
+**Resident** (review fix 🟡): `Slot = R::Instance` (the cloned shared handle the guard holds), `create_slot` clones the master handle, `slot_instance`/`into_instance` are identity, `pools() = false` (released clone is dropped, never pooled), `accept`/`prepare` default. The framework idle store stays empty (nothing is ever `return_slot`-ed), so every acquire `create_slot`s a fresh clone — correct clone-on-acquire, zero pooled machinery. Resident keeps its **own** master-handle cell (`ArcSwap`) inside `Resident<R>`, separate from the empty framework store; `dispatch_credential_hook` rebuilds that cell.
 
-`Resident<R>`: `Slot = ()`, `into_slot` returns `None` (never stores), `create` clones the shared handle, `accept`/`prepare` default. The framework loop's `checkout` is always empty (no idle), so it always `create`s — correct clone-on-acquire, zero pooled machinery.
+**Warmup / maintenance** (review fix 🟠): both are **framework-driven over `self.store`** — warmup loops `create_slot` → `store.return_slot` (fenced) `warmup_target` times; the reaper runs `store.evict_stale()` (revoke) + `store.retain(|s| !topology.idle_evictable(s))` (fingerprint/lifetime/idle-timeout), destroying evicted slots via `into_instance`. No hook needs `&store`; the framework holds it.
 
 ---
 
@@ -111,33 +144,34 @@ async fn acquire(self, mgr, ctx, opts) -> ResourceGuard<R> {
 **Files:** `crates/resource/src/runtime/pool.rs`, `crates/resource/src/runtime/managed.rs`, `crates/resource/src/topology/contract.rs`.
 
 - [ ] **1a.** Change `impl Topology for Pooled<R>` from `type Slot = ()` to `type Slot = PoolSlot<R>` (the `PoolSlot { instance, metrics, fingerprint, returned_at }` the convergence already defined). `Pooled<R>` no longer holds its own `InstanceStore<PoolSlot<R>>` — it keeps only the `semaphore`, `create_semaphore`, `config`, `current_fingerprint`; the idle store now lives in `ManagedResource.store` (`InstanceStore<PoolSlot<R>>`), reached as the `&store` argument.
-- [ ] **1b.** `Resident<R>::Slot` stays `()` (honest — no idle store). Confirm `ManagedResource.store` for a resident is `InstanceStore<()>` and is never pushed to.
+- [ ] **1b.** `Resident<R>::Slot = R::Instance` (the cloned shared handle the guard holds; `pools()=false` so it never enters the store). `ManagedResource.store` for a resident is `InstanceStore<R::Instance>` and stays empty (never `return_slot`-ed). Resident keeps its master-handle `ArcSwap` cell inside `Resident<R>`, separate from that empty store.
 - [ ] **1c.** Build: `cargo check -p nebula-resource --lib`. Expect errors at the bridge + loop sites — fixed in Tasks 2-3. Commit only when Task 3 compiles.
 
 ### Task 2 — replace `TopologyDispatch<R>` with `TopologyBind<R>` (thin R-aware hooks)
 
 **Files:** `crates/resource/src/runtime/managed.rs` (trait def), `crates/resource/src/runtime/pool.rs` + `resident.rs` (impls).
 
-- [ ] **2a.** Define `TopologyBind<R>` + `Accept<I>` per the contract above (rename signals the contract change; delete `acquire_guard`/`TopologyDispatch`). Re-export from `lib.rs`.
-- [ ] **2b.** `impl TopologyBind<R> for Pooled<R>`: map the *existing* inherent pool logic into hooks — `create` = `create_entry`'s `Provider::create` path; `into_slot` = build `PoolSlot` with metrics/fingerprint; `slot_into_instance` = `slot.instance`; `accept` = the `try_acquire_idle` checks (stale-fingerprint / max-lifetime / `is_broken` / `test_on_checkout` → `Accept::Discard`, else `Accept::Use`); `prepare` = `Provider::prepare`. Keep `warmup`/`run_maintenance`/`maintenance_schedule`/`dispatch_credential_hook`/`set_fingerprint`/`bump_revoke_epoch` (now operating over `&store` passed by the framework, or over `Pooled`'s own counters as today for fingerprint).
-- [ ] **2c.** `impl TopologyBind<R> for Resident<R>`: `create` = clone/create the shared handle; `into_slot` = `None`; `slot_into_instance` = unreachable for `Slot=()` (document — resident never stores, so the framework never calls it; provide a body that cannot be reached, justified).
+- [ ] **2a.** Define `TopologyBind<R>` per the contract above (the rename signals the contract change; delete `acquire_guard`/`TopologyDispatch`). `accept` returns `bool` (no `Accept` enum). Re-export from `lib.rs`.
+- [ ] **2b.** `impl TopologyBind<R> for Pooled<R>`: map the *existing* inherent pool logic into hooks — `create_slot` = `create_entry` (`Provider::create` + build `PoolSlot { instance, metrics: now, fingerprint }`); `slot_instance` = `&slot.instance`; `into_instance` = `slot.instance`; `accept(&mut slot)` = the `try_acquire_idle` checks (stale-fingerprint / max-lifetime / `is_broken` / `test_on_checkout` → `false`, else `true`); `prepare(&mut slot)` = `Provider::prepare(&slot.instance)`; `pools()` = `true`; `warmup_target` = `config.min_size`; `idle_evictable` = `should_evict` minus the revoke arm (framework owns revoke via `store.evict_stale`); `maintenance_schedule` / `dispatch_credential_hook` (walks `store.lock_idle()`) / `set_fingerprint` as today. `bump_revoke_epoch` moves to the framework store (`ManagedResource::bump_revoke_epoch` → `store.bump_revoke_epoch`).
+- [ ] **2c.** `impl TopologyBind<R> for Resident<R>`: `Slot = R::Instance`; `create_slot` = clone the master shared handle (build it on first acquire if the cell is empty); `slot_instance` / `into_instance` = identity; `pools()` = `false` (released clone dropped, never pooled); `accept` / `prepare` / `warmup_target` / `idle_evictable` default. Resident keeps its master-handle `ArcSwap` cell internally; `dispatch_credential_hook` rebuilds that cell. The framework idle store stays empty.
 - [ ] **2d.** `cargo check -p nebula-resource --lib`.
 
 ### Task 3 — framework owns the acquire loop + release (the safety core)
 
 **Files:** `crates/resource/src/registry.rs` (blanket `ManagedHandle::acquire`), `crates/resource/src/manager/acquire.rs`, `crates/resource/src/runtime/managed.rs`, `crates/resource/src/guard.rs`.
 
-- [ ] **3a.** Rewrite the blanket `ManagedHandle::acquire` (and/or the `Manager::run_acquire` dispatch closure) as the framework loop above: `try_reserve` → `store.checkout()` → **framework** destroys `checkout.stale` via `Provider::destroy(slot_into_instance(...))` → `accept`-or-`create` → `prepare` → wrap. The `&store` is `self.store` (the real `InstanceStore<PoolSlot<R>>` for pool). Bound `R::Topology: TopologyBind<R>`.
-- [ ] **3b.** Release path: the `ResourceGuard<R>` drop schedules (via `ReleaseQueue`, current best-effort contract — **do not** upgrade to Phase E semantics) `topology.on_release(&mut slot)` then `store.return_slot(into_slot(instance), epoch)` — the framework runs the fence, not the topology. Preserve the verified C3 atomicity: `recycle`/policy → `return_slot` last, `return_slot`'s under-lock epoch re-read is the fence; rotation walks `store.lock_idle()`.
-- [ ] **3c.** `ResourceGuard<R>` carries what release needs (the instance + the `checkout_epoch` + the bind handle to call `into_slot`/`on_release`). Adapt `guard.rs` minimally; keep `Deref → R::Instance`.
-- [ ] **3d.** Delete the now-dead open `Topology::acquire`? Decide: either (i) keep `Topology::acquire` as the R-agnostic "ticket → Lease<Slot>" the framework calls for the *gate-to-slot* step, or (ii) remove it from the trait if the framework loop fully subsumes it. Pick whichever leaves no dead method. State the choice in the commit.
-- [ ] **3e.** Gates: `cargo check/clippy/nextest -p nebula-resource` (bare). **345-floor holds with unchanged intent** — especially `revoke_recycle_toctou::*`, `resident_rotation_race::*`, `shutdown_race::*` (these prove the fence still runs and the re-seat preserved atomicity). Commit milestone.
+- [ ] **3a.** Rewrite the blanket `ManagedHandle::acquire` (inside `Manager::run_acquire`'s dispatch closure, which keeps the resilience-gate + drain bookkeeping + post-taint re-check) as the framework loop above: `try_reserve` → `store.checkout()` → **framework** destroys `checkout.stale` via `destroy(into_instance(stale))` → `accept(&mut slot)`-or-`create_slot` → **`CreateGuard`-wrap the slot (cancel-safety)** → `prepare(&mut slot)` → build guard. `&store` = `self.store` (real `InstanceStore<PoolSlot<R>>` for pool; empty `InstanceStore<R::Instance>` for resident). Bound `R::Topology: TopologyBind<R>`.
+- [ ] **3b.** Cancel-safety (🟠 review fix): reuse/generalize the existing `CreateGuard` so a drop between `create_slot`/checkout and the built guard schedules `destroy(into_instance(slot))` on the `ReleaseQueue` — the `cancel-drop` regression test guards this; do not regress it.
+- [ ] **3c.** Release path: `ResourceGuard<R>` drop schedules (via `ReleaseQueue`, current best-effort contract — **do not** upgrade to Phase E) `topology.on_release(&mut slot)` (recycle decision), then **if `topology.pools()` and kept** `store.return_slot(slot, epoch)` — the **same** slot, metadata intact; **else** `destroy(into_instance(slot))`. The framework runs the fence, not the topology. Preserve the verified C3 atomicity: `on_release`/recycle → `return_slot` last; `return_slot`'s under-lock epoch re-read is the fence; rotation walks `store.lock_idle()`.
+- [ ] **3d.** `ResourceGuard<R>` holds the `Slot` + `checkout_epoch` + `Arc<ManagedResource<R>>` (store + topology + resource for the release closure). `Deref → R::Instance` via `self.topology.slot_instance(&slot)`. Adapt `guard.rs`; the release closure is the **only** site that returns-or-destroys a slot.
+- [ ] **3e.** Resolve the now-dead open `Topology::acquire`/`on_release`: either (i) the framework loop calls `Topology::acquire` as the R-agnostic gate→ticket→slot step *and* `Topology::on_release` for the reset (so the open methods are live, `TopologyBind` only adds the R-aware create/project/destroy), or (ii) fold them into `TopologyBind` and slim the open `Topology` to gate + admission (`try_reserve`/`phase`/`load`) only. Prefer (i) if it leaves no dead method; state the choice in the commit. **No method may be dead.**
+- [ ] **3f.** Gates: `cargo check/clippy/nextest -p nebula-resource` (bare). **345-floor holds with unchanged intent** — especially `revoke_recycle_toctou::*`, `resident_rotation_race::*`, `shutdown_race::*` (they prove the fence still runs and the re-seat preserved atomicity). Commit milestone.
 
 ### Task 4 — rewrite the custom-topology proof to be safe-by-construction
 
 **Files:** `crates/resource/tests/custom_topology_manager.rs`.
 
-- [ ] **4a.** Rewrite `FfmpegPool` to the new shape: `impl Topology` (try_reserve / phase / load) + `impl TopologyBind<Ffmpeg>` with only `create` (spawn/allocate a `Transcoder`) and, if it stores, `into_slot`/`slot_into_instance`. **It must NOT own an `InstanceStore` field and MUST NOT contain any `resource.destroy`/stale-handling code** — the framework owns that. If a reviewer can find author code touching the fence, the fix failed.
+- [ ] **4a.** Rewrite `FfmpegPool` to the new shape: `impl Topology` (try_reserve / phase / load) + `impl TopologyBind<Ffmpeg>` with `create_slot` (spawn/allocate a `Transcoder` slot) + `slot_instance`/`into_instance` projections (+ `pools()` if it pools). **It must NOT own an `InstanceStore` field and MUST NOT contain any `resource.destroy` / `store.checkout` / stale-handling code** — the framework owns the store, checkout, fence, and destroy. If a reviewer finds author code touching the store or the fence, the fix failed.
 - [ ] **4b.** Keep both C8 assertions: (1) registers + acquires through `Manager::register`/`acquire_any` reporting `TopologyTag::Custom`; (2) **a slot idle before a revoke is evicted on the next acquire WITHOUT any author fence code** — i.e. bump the epoch via `Manager`/`ManagedHandle::bump_revoke_epoch`, then assert the next acquire does not hand out the stale slot and the framework destroyed it. This is the safety-by-construction proof the convergence lacked.
 - [ ] **4c.** Add an assertion or doc-comment that `FfmpegPool` holds no store and no destroy logic (the structural proof). The 321-line block shrinks well under the intent-gate cap; if still large, decompose, do not `budget-justify`.
 
