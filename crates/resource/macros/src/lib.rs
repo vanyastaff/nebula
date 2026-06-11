@@ -273,27 +273,33 @@ fn classify_error_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
         match_arms.push(arm);
     }
 
-    // The `From` impl binds the original error by value in each arm so
-    // `with_source` can consume it, preserving the full source chain.
-    // `EnumType: std::error::Error + Send + Sync + 'static` is always true
-    // for `thiserror`-derived enums, which is the target use case.
+    // Classify by **reference** to `err` (so a `retry_after` field can be read
+    // as a `&Duration` without moving the variant), build the `Error`, end the
+    // borrow, and only then move `err` into `with_source` to preserve the full
+    // source chain. Binding the whole value with `@` while a sub-field is
+    // borrowed by `ref` is E0505 (borrow of a moved value); reading first and
+    // moving last avoids it. `EnumType: std::error::Error + Send + Sync +
+    // 'static` always holds for `thiserror`-derived enums, the target use case.
     Ok(quote! {
         impl #impl_generics ::core::convert::From<#enum_name #ty_generics> for nebula_resource::Error
         #where_clause
         {
             fn from(err: #enum_name #ty_generics) -> Self {
-                match err {
+                let __msg = ::std::string::ToString::to_string(&err);
+                let __built: nebula_resource::Error = match &err {
                     #(#match_arms)*
-                }
+                };
+                __built.with_source(err)
             }
         }
     })
 }
 
-/// Build a complete match arm: pattern ⇒ Error constructor with source chain.
+/// Build a complete match arm: `&`-pattern ⇒ Error constructor.
 ///
-/// Each arm binds `__orig` (by value) for `with_source`, and additionally
-/// binds `__retry_after` (by ref) for runtime `retry_after` field forms.
+/// Arms match `&err`, so any bound field (e.g. a runtime `retry_after`
+/// `Duration`) is a shared reference and is copied out, never moved. The
+/// `with_source(err)` move happens once after the match, not per arm.
 fn build_arm(
     enum_name: &Ident,
     variant_name: &Ident,
@@ -304,18 +310,15 @@ fn build_arm(
     let constructor = build_arm_constructor(classification);
 
     quote! {
-        #pattern => {
-            let __msg = ::std::string::ToString::to_string(&__orig);
-            #constructor.with_source(__orig)
-        },
+        #pattern => #constructor,
     }
 }
 
-/// Build the pattern for one match arm.
+/// Build the pattern for one match arm over `&err`.
 ///
-/// All arms bind the variant by value as `__orig` so `with_source` can consume
-/// it. For `exhausted` variants with runtime `retry_after`, the relevant field
-/// is additionally bound as `__retry_after` (by ref, before `__orig` moves).
+/// For `exhausted` variants with a runtime `retry_after`, the relevant field is
+/// bound as `__retry_after` (a `&Duration` under match-ergonomics); all other
+/// fields are ignored. No arm moves out of `err`.
 fn build_arm_pattern(
     enum_name: &Ident,
     variant_name: &Ident,
@@ -326,7 +329,6 @@ fn build_arm_pattern(
         ClassifyKind::Exhausted {
             retry_after: ExhaustedRetryAfter::TupleIndex(idx),
         } => {
-            // Bind the Duration field by ref before moving the whole variant.
             let pos = idx.index as usize;
             let count = match fields {
                 Fields::Unnamed(f) => f.unnamed.len(),
@@ -335,31 +337,25 @@ fn build_arm_pattern(
             let pats: Vec<TokenStream2> = (0..count)
                 .map(|i| {
                     if i == pos {
-                        quote! { ref __retry_after }
+                        quote! { __retry_after }
                     } else {
                         quote! { _ }
                     }
                 })
                 .collect();
-            // After binding by-ref sub-fields we also need the whole variant
-            // for `with_source`. We use `__orig @` to bind the whole arm.
-            quote! { __orig @ #enum_name::#variant_name(#(#pats),*) }
+            quote! { #enum_name::#variant_name(#(#pats),*) }
         },
         ClassifyKind::Exhausted {
             retry_after: ExhaustedRetryAfter::NamedField(field_ident),
         } => {
             quote! {
-                __orig @ #enum_name::#variant_name { #field_ident: ref __retry_after, .. }
+                #enum_name::#variant_name { #field_ident: __retry_after, .. }
             }
         },
-        _ => {
-            // All other arms: bind the whole value as `__orig`.
-            let inner = match fields {
-                Fields::Unit => quote! { #enum_name::#variant_name },
-                Fields::Unnamed(_) => quote! { #enum_name::#variant_name(..) },
-                Fields::Named(_) => quote! { #enum_name::#variant_name { .. } },
-            };
-            quote! { __orig @ #inner }
+        _ => match fields {
+            Fields::Unit => quote! { #enum_name::#variant_name },
+            Fields::Unnamed(_) => quote! { #enum_name::#variant_name(..) },
+            Fields::Named(_) => quote! { #enum_name::#variant_name { .. } },
         },
     }
 }

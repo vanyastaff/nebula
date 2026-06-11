@@ -11,48 +11,53 @@ related: [nebula-core, nebula-schema, nebula-error, nebula-resilience, nebula-cr
 
 ## Purpose
 
-External connections — database pools, HTTP clients, message brokers — are a primary failure surface in workflow engines. When an action creates its own client on demand and never releases it, pool exhaustion and orphaned handles accumulate silently. `nebula-resource` solves this by making the engine the owner of the resource lifecycle: acquire, health-check, hot-reload, and scope-bounded release are engine concerns, not per-action boilerplate. Actions receive a `ResourceGuard` that derefs to the lease type and releases on drop; the engine ensures the backing runtime is healthy before granting the guard.
+External connections — database pools, HTTP clients, message brokers — are a primary failure surface in workflow engines. When an action creates its own client on demand and never releases it, pool exhaustion and orphaned handles accumulate silently. `nebula-resource` solves this by making the engine the owner of the resource lifecycle: acquire, health-check, hot-reload, and scope-bounded release are engine concerns, not per-action boilerplate. Actions receive a `ResourceGuard` that derefs to `R::Runtime` and releases on drop; the engine ensures the backing runtime is healthy before granting the guard.
 
 ## Role
 
-**Bulkhead Pool** (Release It! ch "Stability Patterns — Bulkhead"). Isolates resource exhaustion per topology so one depleted pool cannot cascade to unrelated paths. Two topologies cover the integration space: `Pooled` (N interchangeable stateful instances) and `Resident` (one shared instance, cloned on acquire). The `Resource` trait declares four associated types and lifecycle methods; topology traits add pool-specific recycle and broken-instance decisions. Long-running workers (`Daemon`) and pull-based subscriptions (`EventSource`) live in `nebula_engine::daemon` — canon §3.5 reserves "Resource" for pool/SDK clients.
+**Bulkhead Pool** (Release It! ch "Stability Patterns — Bulkhead"). Isolates resource exhaustion per topology so one depleted pool cannot cascade to unrelated paths. Two topologies cover the integration space: `Pooled` (N interchangeable stateful instances) and `Resident` (one shared instance, cloned on acquire). The `Resource` trait declares two associated types (`Config`, `Runtime`) and lifecycle methods; topology traits add pool-specific recycle and broken-instance decisions. Long-running workers (`Daemon`) and pull-based subscriptions (`EventSource`) live in `nebula_engine::daemon` — canon §3.5 reserves "Resource" for pool/SDK clients.
 
 ## Public API (v4 — slot-binding pattern, 2026-04-29)
 
 The v4 surface — singular `type Credential` is dropped in favor of typed credential **slot fields** declared via `#[credential(key = "…")]` field attributes on the resource struct. Each slot field is a lock-free `SlotCell<CredentialGuard<C>>` the framework populates and rotates through `&self`; the derive emits a `<field>_slot()` read accessor. Multi-credential resources are now natural; per-slot rotation lands via `Resource::on_credential_refresh(&self, slot_name, runtime)` with a companion `Resource::on_credential_revoke(&self, slot_name, runtime)`.
 
-### `Resource` trait — 4 associated types, slot fields on Self
+### `Resource` trait — 2 associated types, slot fields on Self
 
 ```rust
 pub trait Resource: Send + Sync + 'static {
     type Config:  ResourceConfig;
     type Runtime: Send + Sync + 'static;
-    type Lease:   Send + Sync + 'static;
-    type Error:   std::error::Error + Send + Sync + Into<crate::Error> + 'static;
 
     fn key() -> ResourceKey;
 
     /// Slot cells are populated on `&self` BEFORE create runs; read the
     /// resolved guard via the derive-emitted `<field>_slot()` accessor.
+    /// All lifecycle methods return the crate's typed `Error` — author
+    /// error enums convert in via `#[derive(ClassifyError)]` + `?`.
     fn create(&self, config: &Self::Config, ctx: &ResourceContext)
-        -> impl Future<Output = Result<Self::Runtime, Self::Error>> + Send;
+        -> impl Future<Output = Result<Self::Runtime, Error>> + Send;
 
     /// Per-slot rotation: the engine swaps the rotated guard into the slot
     /// cell, then calls this with the slot name + live `Runtime`. `&self` —
     /// re-auth acts on `runtime`'s interior mutability. Default no-op.
     fn on_credential_refresh(&self, slot_name: &str, runtime: &Self::Runtime)
-        -> impl Future<Output = Result<(), Self::Error>> + Send { /* default no-op */ }
+        -> impl Future<Output = Result<(), Error>> + Send { /* default no-op */ }
 
     /// Per-slot revocation: post-invocation the resource emits no further
     /// authenticated traffic on the revoked credential. Default no-op.
     fn on_credential_revoke(&self, slot_name: &str, runtime: &Self::Runtime)
-        -> impl Future<Output = Result<(), Self::Error>> + Send { /* default no-op */ }
+        -> impl Future<Output = Result<(), Error>> + Send { /* default no-op */ }
 
-    fn check    (&self, runtime: &Self::Runtime) -> impl Future<Output = Result<(), Self::Error>> + Send;
-    fn shutdown (&self, runtime: &Self::Runtime) -> impl Future<Output = Result<(), Self::Error>> + Send;
-    fn destroy  (&self, runtime: Self::Runtime)  -> impl Future<Output = Result<(), Self::Error>> + Send;
+    fn check    (&self, runtime: &Self::Runtime) -> impl Future<Output = Result<(), Error>> + Send;
+    fn shutdown (&self, runtime: &Self::Runtime) -> impl Future<Output = Result<(), Error>> + Send;
+    fn destroy  (&self, runtime: Self::Runtime)  -> impl Future<Output = Result<(), Error>> + Send;
 }
 ```
+
+The per-resource **credential epoch** (an order-sensitive fold over every
+`#[credential]` slot's generation, used by the rotation reconcile) lives on a
+separate `HasCredentialSlots` trait, emitted by `#[derive(ResourceSlots)]` —
+never hand-maintained.
 
 **`type Credential` was dropped.** There is no longer a singular credential associated type; resources declare credentials as slot fields. The opt-out alias `NoCredential` is no longer required — resources without credentials simply have no `#[credential]` fields.
 
@@ -79,8 +84,6 @@ struct Postgres {
 impl Resource for Postgres {
     type Config  = PostgresConfig;
     type Runtime = PgPool;
-    type Lease   = PgConnection;
-    type Error   = PgError;
 
     fn key() -> ResourceKey { resource_key!("postgres") }
 
@@ -128,7 +131,7 @@ The framework resolves declared `#[credential]` slots **before** invoking `Resou
 
 ### Other public API
 
-- `ResourceGuard` — RAII lease guard with `Owned`/`Guarded`/`Shared` modes; deref to lease type, release on drop.
+- `ResourceGuard` — RAII runtime guard with `Owned`/`Guarded` modes; derefs to `R::Runtime`, releases on drop.
 - `ResourceRef<R>` — lazy reference type holding a `ResourceId` string + `PhantomData<R>`. Resolves to a `ResourceGuard<R>` via `.resolve(ctx).await`.
 - `RegistrationSpec` — the single registration param aggregate (see above).
 - `SlotIdentity` — collision-free structural resolved-credential identity (`Unbound` / `Structural`); the cross-tenant barrier.

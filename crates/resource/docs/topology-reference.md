@@ -12,10 +12,10 @@
 
 ## Decision matrix
 
-| Topology                  | Lease == Runtime?              | Use when…                                                                               | Don't use for…                                                    |
-|---------------------------|--------------------------------|-----------------------------------------------------------------------------------------|-------------------------------------------------------------------|
-| **[Pool](#pool)**         | Yes (`Lease = Runtime`)        | N interchangeable stateful instances; expensive to create (DB connections).             | Single-shared HTTP client (use Resident).                         |
-| **[Resident](#resident)** | Yes (`Lease = Runtime`, `Clone`) | One instance shared widely; `Arc::clone` is cheap (`reqwest::Client`, in-memory cache). | Per-caller mutable state (use Pool).                              |
+| Topology                  | `Runtime: Clone`?    | Use when…                                                                               | Don't use for…                                                    |
+|---------------------------|----------------------|-----------------------------------------------------------------------------------------|-------------------------------------------------------------------|
+| **[Pool](#pool)**         | Yes                  | N interchangeable stateful instances; expensive to create (DB connections).             | Single-shared HTTP client (use Resident).                         |
+| **[Resident](#resident)** | Yes (`Arc::clone`)   | One instance shared widely; `Arc::clone` is cheap (`reqwest::Client`, in-memory cache). | Per-caller mutable state (use Pool).                              |
 
 ---
 
@@ -28,17 +28,15 @@
 ```rust,ignore
 impl Resource for Postgres {
     type Config = PostgresConfig;
-    type Runtime = PgConnection;
-    type Lease = PgConnection;       // Pool: Lease = Runtime
-    type Error = PgError;
+    type Runtime = PgConnection;     // Pool checks out / recycles instances of this
 
     fn key() -> ResourceKey { resource_key!("demo.postgres") }
 
     fn create(
         &self, config: &Self::Config, ctx: &ResourceContext,
-    ) -> impl Future<Output = Result<Self::Runtime, Self::Error>> + Send { /* … */ }
+    ) -> impl Future<Output = Result<Self::Runtime, Error>> + Send { /* … */ }
 
-    async fn destroy(&self, runtime: Self::Runtime) -> Result<(), Self::Error> { /* … */ }
+    async fn destroy(&self, runtime: Self::Runtime) -> Result<(), Error> { /* … */ }
 }
 
 impl Pooled for Postgres {
@@ -46,7 +44,7 @@ impl Pooled for Postgres {
 
     async fn recycle(
         &self, runtime: &Self::Runtime, metrics: &InstanceMetrics,
-    ) -> Result<RecycleDecision, Self::Error> { /* … */ }
+    ) -> Result<RecycleDecision, Error> { /* … */ }
 
     // Optional: `prepare(&self, runtime, ctx)` for per-checkout setup.
 }
@@ -104,15 +102,13 @@ healthy? → `recycle` returns `Keep` / `Drop` → idle queue or destroy.
 ```rust,ignore
 impl Resource for GoogleSheets {
     type Config = GoogleSheetsConfig;
-    type Runtime = GoogleSheetsClient;       // typically wraps Arc internals
-    type Lease = GoogleSheetsClient;         // Resident: Lease = Runtime, Clone
-    type Error = SheetsError;
+    type Runtime = GoogleSheetsClient;       // Resident: Clone, cloned on each acquire
 
     fn key() -> ResourceKey { resource_key!("demo.google.sheets") }
 
     fn create(
         &self, config: &Self::Config, ctx: &ResourceContext,
-    ) -> impl Future<Output = Result<Self::Runtime, Self::Error>> + Send { /* … */ }
+    ) -> impl Future<Output = Result<Self::Runtime, Error>> + Send { /* … */ }
 }
 
 impl Resident for GoogleSheets {

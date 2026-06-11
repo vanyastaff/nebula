@@ -12,7 +12,7 @@
 
 ## Key files
 - `src/lib.rs` — crate facade + re-exports; `cell::Cell` deliberately NOT re-exported (use `SlotCell`)
-- `src/resource.rs` — `Resource` trait (4 assoc types, slot-rotation hooks), `ResourceConfig`, `ResourceMetadata`
+- `src/resource.rs` — `Resource` trait (`Config`/`Runtime` assoc types, slot-rotation hooks), `HasCredentialSlots`, `ResourceConfig`, `ResourceMetadata`
 - `src/slot.rs` / `src/cell.rs` — `SlotCell` (public, generation-stamped) vs internal epoch-blind `cell::Cell`
 - `src/registry.rs` — type-erased registry, scope-aware lookup, `(key, scope)` dedup
 - `src/manager/` — `Manager::register(RegistrationSpec)` funnel, acquire dispatch, shutdown/drain

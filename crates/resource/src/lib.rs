@@ -5,7 +5,7 @@
 //!
 //! The engine is the owner of the resource lifecycle: acquire, health-check,
 //! hot-reload via `ReloadOutcome`, and scope-bounded release. Action code
-//! receives a `ResourceGuard` that derefs to the lease type and releases on
+//! receives a `ResourceGuard` that derefs to `R::Runtime` and releases on
 //! drop. Two topology traits cover the integration space: `Pooled` and
 //! `Resident`.
 //!
@@ -13,8 +13,8 @@
 //!
 //! | Type | Purpose |
 //! |------|---------|
-//! | `Resource` | Core trait — 4 associated types + lifecycle + slot-rotation hooks |
-//! | `ResourceGuard` | RAII lease guard with Owned/Guarded/Shared modes |
+//! | `Resource` | Core trait — `Config`/`Runtime` + lifecycle + slot-rotation hooks |
+//! | `ResourceGuard` | RAII runtime guard with Owned/Guarded modes |
 //! | `Manager` | Central registry with acquire dispatch and shutdown |
 //! | `ReleaseQueue` | Background worker pool for async cleanup (best-effort on crash) |
 //! | `DrainTimeoutPolicy` | Drain operation timeout policy |
