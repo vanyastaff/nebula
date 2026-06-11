@@ -9,8 +9,8 @@ use crate::resource::Provider;
 /// The instance is created once and shared across all callers via `Clone`.
 /// Suitable for stateless or internally-pooled clients (e.g., `reqwest::Client`).
 /// A resource that declares `type Topology = Resident<Self>` implements this
-/// trait so the framework [`Resident`](crate::topology::resident::Resident)
-/// topology can drive its liveness policy.
+/// trait so the framework [`Resident`](crate::topology::Resident) topology can
+/// drive its liveness policy.
 ///
 /// # Acquire bounds
 ///

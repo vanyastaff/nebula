@@ -37,7 +37,7 @@ use crate::{
 /// A `create_lock` mutex serialises the slow path (create / recreate) while
 /// keeping the fast path (load + liveness check) entirely lock-free.
 ///
-/// Implements the open [`Topology`](crate::topology::Topology) contract with
+/// Implements the open [`Topology`] contract with
 /// `type Slot = ()`: a resident legitimately holds **no idle store** (its one
 /// instance lives in the `Cell`), so the empty `store` field it carries for
 /// the open contract is unused-by-design, exactly like a permit-only custom

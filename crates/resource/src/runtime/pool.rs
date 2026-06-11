@@ -124,8 +124,8 @@ pub struct PoolStats {
 /// `Pooled<R>` holds the resource handle and an [`InstanceStore<PoolSlot<R>>`]
 /// idle queue, and drives the [`PoolProvider`] hooks (`is_broken` / `recycle`
 /// / `prepare`) plus the [`Provider`] lifecycle (`create` / `destroy` /
-/// `check`) itself. It implements the open [`Topology`](crate::topology::Topology)
-/// contract so a resource that declares `type Topology = Pooled<Self>` is
+/// `check`) itself. It implements the open [`Topology`] contract so a resource
+/// that declares `type Topology = Pooled<Self>` is
 /// dispatched through the uniform framework acquire pipeline.
 ///
 /// The store owns the revoke-epoch fence; this struct holds no separate

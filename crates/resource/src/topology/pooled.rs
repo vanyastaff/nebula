@@ -38,7 +38,7 @@ pub enum RecycleDecision {
 /// Metrics available during the recycle check.
 ///
 /// These are maintained by the pool manager and passed to
-/// [`Pooled::recycle`] so the implementation can make informed
+/// [`PoolProvider::recycle`] so the implementation can make informed
 /// keep-or-drop decisions.
 #[derive(Debug, Clone)]
 pub struct InstanceMetrics {
@@ -64,8 +64,7 @@ impl InstanceMetrics {
 /// a sync broken check (for the `Drop` path), an async recycle step,
 /// and an optional per-checkout prepare step. A resource that declares
 /// `type Topology = Pooled<Self>` implements this trait so the framework
-/// [`Pooled`](crate::topology::pooled::Pooled) topology can drive its pool
-/// policy.
+/// [`Pooled`](crate::topology::Pooled) topology can drive its pool policy.
 ///
 /// # Acquire bounds
 ///

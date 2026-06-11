@@ -2,11 +2,11 @@
 //!
 //! [`ManagedResource`] is the internal representation of a registered
 //! resource. It bundles the resource implementation, hot-swappable config,
-//! the resource's [`Provider::Topology`](crate::resource::Provider::Topology),
+//! the resource's [`Provider::Topology`],
 //! release queue, and lifecycle metadata.
 //!
 //! The framework reaches the topology monomorphically through the resource's
-//! associated [`Topology`](crate::topology::Topology) type. The
+//! associated [`Topology`] type. The
 //! topology-specific operations the manager pipeline needs — produce a
 //! [`ResourceGuard`], warm up, run the maintenance reaper, dispatch a
 //! credential rotation hook, advance the revoke fence, and report the
