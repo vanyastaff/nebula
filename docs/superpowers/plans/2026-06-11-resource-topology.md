@@ -196,56 +196,94 @@ git -C . commit -m "refactor(resource)!: #[async_trait] crate-wide; rename erasu
 
 ---
 
-## Phase C — `InstanceStore<Slot>` + open `Topology` trait
+## Phase C — Topology convergence via `Provider::Topology` assoc type (REWORK)
 
-**Why:** the core of the spec — make topology open (author-implementable) while keeping storage framework-owned (the InstanceStore rule, §1) so the credential/tenant seam (§2.6) stays closed. Spec §2.1–§2.5.
+**Status of the original Phase C (commit `9667e821` + partial `fa0b4070`):** the *types* landed and are real — `InstanceStore<S>` (`topology/store.rs`, revoke-fenced on `return_slot`, 8 tests), the open `Topology` `#[async_trait]` trait (`topology/contract.rs`), `Ticket`/`Lease`/`Unavailable`, `AdmissionPhase`, and a standalone `tests/custom_topology.rs`. **But the convergence was faked, not built.** This rework finishes it. The deviations to close:
 
-**New types (target API from spec §2.1):**
+1. **`TopologyKind<R>` is still a closed `Pool|Resident` enum** with fn-pointer dispatch (`runtime/mod.rs`). There is **no path from `Manager::register()` to a custom `impl Topology`** — "open" is cosmetic; `custom_topology.rs` only exercises a topology *standalone*, never through the Manager.
+2. **Built-in `impl Topology for PoolRuntime`** (`pool.rs:1387`) is a **façade**: its `acquire` is a 2-line permit no-op (real acquire is the inherent 7-arg `PoolRuntime::acquire` via `pooled_pipeline`), and every dispatch hands it a throwaway `InstanceStore::new(None)` it ignores (`runtime/mod.rs:199,212,224,278,290,302`).
+3. **Two revoke fences coexist** — `PoolRuntime.revoke_epoch` + idle-queue eviction (live) and `InstanceStore.return_slot` (only `custom_topology.rs` uses it).
+4. **`InstanceStore::checkout()` has a fence-on-checkout GAP (security).** It pops and hands out an idle slot **without** comparing its `checkout_epoch` to the live revoke counter — only `return_slot`/`evict_stale` fence. A slot that went idle at epoch 0, then had its credential revoked (live→1), is **served to the next acquirer** under a since-revoked credential. The built-in pool is safe today only because `try_acquire_idle` re-checks (`pool.rs:610`); the new `InstanceStore` path is **not**, so the spec's "uniform fence covers custom topologies too" (§2.6) is currently false on the checkout direction.
+
+**Decision (spike-proven GREEN against production types — `cargo check -p nebula-resource --lib`):** topology is reached monomorphically via a new `Provider::Topology` **associated type**. `ManagedResource<R>` stays single-parameter (`InstanceStore<<R::Topology as Topology>::Slot>` needs no extra generic); one blanket `impl<R: Provider> ManagedHandle for ManagedResource<R>` dispatches `self.topology.{try_reserve,acquire}` directly; the entire `TopologyKind`/`TopologyRuntime`/`*Dispatch` fn-pointer table is **deleted**. The alternative (`ManagedResource<R, T>` second generic) was rejected: it threads `T` through all 22 `ManagedResource<R>` sites and **breaks `get_typed::<R>`** (the `TypeId` registry index would need `T` at lookup, callers only have `R`).
 
 ```rust
-// crates/resource/src/topology/mod.rs (or a new topology/contract.rs)
 #[async_trait]
-pub trait Topology: Send + Sync + 'static {
-    type Slot: Send + Sync;
-    fn try_reserve(&self, store: &InstanceStore<Self::Slot>) -> Result<Ticket<Self::Slot>, Unavailable>;
-    async fn acquire(&self, ticket: Ticket<Self::Slot>, store: &InstanceStore<Self::Slot>) -> Result<Lease<Self::Slot>, Error>;
-    async fn on_release(&self, slot: &mut Self::Slot) -> Result<(), Error> { Ok(()) }
-    fn phase(&self, store: &InstanceStore<Self::Slot>) -> AdmissionPhase;   // (enum lands in Phase D; stub Ready here)
-    fn load(&self, store: &InstanceStore<Self::Slot>) -> Option<Load> { None }   // (Load lands in Phase D)
+pub trait Provider: Send + Sync + 'static {
+    type Config;
+    type Instance: Send + Sync + 'static;
+    type Topology: Topology;                       // ← NEW: topology pinned to the resource type
+    // ...existing lifecycle (create/check/shutdown/destroy/on_credential_*)...
 }
 ```
 
-- [ ] **Step C1: Introduce `InstanceStore<Slot>`.**
+The `Topology` trait, `InstanceStore`, `Ticket`/`Lease`/`Unavailable`, `AdmissionPhase` already exist — keep them. This rework wires them and deletes the enum.
 
-Create `crates/resource/src/topology/store.rs`:
-- `pub struct InstanceStore<S> { /* framework-owned idle queue + generation/epoch + revoke-fence state */ }` — move the idle-queue + epoch fields currently inside `PoolRuntime`/`ResidentRuntime` here. It exposes only **borrowed**, lifetime-bound access (no `'static` handle a topology can stash): e.g. `fn checkout(&self) -> Option<Slot>`, `fn return_slot(&self, slot: Slot)` (which runs the revoke-epoch fence internally), `fn len(&self) -> usize`, `fn cap(&self) -> usize`.
-- The revoke-epoch fence (currently the Pool-only 2-arm `match` in `bump_revoke_epoch`/`dispatch_slot_hook`) moves into `InstanceStore::return_slot` so it runs for **every** topology uniformly (spec §2.6 "strengthened").
-- Write a unit test: a slot returned after the epoch advanced is evicted, not re-pooled (port the existing revoke-fence test to the store level).
+**Spike-confirmed facts the executor must honor:**
+- Every `impl`/method touching the store re-states `<R::Topology as Topology>::Slot: Send + Sync + 'static` in its where-clause (the projection doesn't carry its own bounds). ~6-8 repeated clauses in the manager — annoying, not blocking. This is the accepted tax.
+- `#[async_trait]` is **required** (not optional) — `ManagedHandle` must stay object-safe (`Arc<dyn ManagedHandle>`); native async-fn-in-trait can't give that. The blanket impl's where-clause must carry the `Slot: Send + Sync + 'static` bound or the boxed future isn't provably `Send`.
+- Orphan rules are a non-issue: one blanket impl over crate-local `ManagedResource<R>`, sealed `ManagedHandle`. No per-topology impls.
+- The fence-fix stays framework-owned and is *easier* here: `checkout` + fence + destroy live in `InstanceStore`/the blanket pipeline; `Topology::Slot` is opaque to the framework, so the author never sees the epoch.
 
-- [ ] **Step C2: Define `Topology` trait + `Ticket`/`Lease`/`Unavailable` (phase/load stubbed).**
+**Scope guard:** this rework re-seats storage and routes release **through** the store fence, but keeps the *current* release contract (best-effort via `ReleaseQueue`). Making `on_release`/`destroy` fully async/fallible/ordered/poison-on-panic is **Phase E** — do not pull it forward. Pool *correctness policy* (fingerprint/lifetime/broken/health/prepare) is preserved verbatim, only re-homed over the checked-out slot.
 
-Create `crates/resource/src/topology/contract.rs` with the trait above + `pub struct Ticket<S>` (carries `Option<OwnedSemaphorePermit>` + optional checked-out slot), `pub struct Lease<S>`, `pub enum Unavailable { Saturated{retry_after:Option<Duration>}, Warming, Recovering, Tainted }`. Stub `AdmissionPhase::Ready`/`Load=()`-shaped returns until Phase D (or land Phase D's enums first — see note). Re-export from lib.rs.
+- [ ] **Step C1: Fix the `InstanceStore::checkout()` fence-on-checkout gap (security).**
 
-- [ ] **Step C3: Reimplement `Pooled` and `Resident` as `Topology` impls over `InstanceStore`.**
+In `crates/resource/src/topology/store.rs`: `checkout()` must run the revoke fence on pop, framework-owned. Pop entries under the idle lock; an entry whose `checkout_epoch != live_revoke_epoch` is **stale** — it must NOT be handed out. Because the store cannot call `Provider::destroy` (it has no `Provider`), return the skipped stale slots to the caller for destruction. Change the signature to e.g.:
+```rust
+/// Pops the first fresh idle slot, discarding (and returning for destruction)
+/// any slots whose checkout epoch is behind the live revoke counter.
+pub async fn checkout(&self) -> Checkout<S>;   // { fresh: Option<CheckedOut<S>>, stale: Vec<S> }
+```
+The framework acquire pipeline (Step C5) destroys `stale` via `Provider::destroy`/`ReleaseQueue` before using `fresh`. Add unit tests: (a) idle slot revoked-while-idle is in `stale`, never `fresh`; (b) a mix returns only fresh ones, all stale collected; (c) the existing return-fence tests still pass. Update `evict_stale`/`drain_all` doc to state the fence now runs on *both* checkout and return.
 
-Modify `crates/resource/src/runtime/pool.rs` and `resident.rs`:
-- `PoolRuntime<R>` becomes a thin wrapper whose lease policy is an `impl Topology` (Slot = the connection); its idle queue/epoch state lives in `InstanceStore`. `try_reserve` takes a semaphore permit + checks out an idle slot or signals create; `acquire` produces the `Lease`; `on_release` runs recycle (Phase E makes it async/fallible).
-- `ResidentRuntime<R>` similarly (Slot = shared handle, `try_reserve` infallible, `on_release` no-op).
-- **Rule for `pool.rs` (2121 LoC):** preserve all existing pool behavior (idle handling, health, fairness, timeouts) — this task only re-seats storage into `InstanceStore` and exposes the lease policy as `Topology`. Do NOT change pool correctness logic here (that is out of scope for Spec 1; see spec §5 deferred).
-- `ManagedHandle::acquire` (Phase B) now calls `topology.try_reserve` then `topology.acquire`.
+- [ ] **Step C2: Add `Provider::Topology` associated type.**
 
-- [ ] **Step C4: Make `Topology` author-open + registration accepts a `Box<dyn>`-free monomorphic topology.**
+In `crates/resource/src/resource.rs`: add `type Topology: Topology;` to `trait Provider`. The assoc type **cannot** be defaulted (no per-resource associated-type defaults in stable Rust), so every `impl Provider` must spell it (`type Topology = Pooled<Self>` / `= Resident<Self>` / `= TheirCustom`). Add a `fn build_topology(&self, config: &Self::Config) -> Self::Topology` (or carry the built topology through registration — see C6) so the framework can construct the topology instance at registration where config is known.
 
-The registry stores `ManagedResource<R>` which holds the resource's concrete topology. Registration (`RegistrationSpec`/`Registration`) carries the topology by value (monomorphic). An author plugin implements `impl Topology for TheirThing` and registers it — no `dyn Topology` needed (dispatch is monomorphic inside `ManagedResource<R>` per §2.1). Add a compile test (`crates/resource/tests/` trybuild or a normal test) proving a custom `impl Topology` registers and acquires.
+- [ ] **Step C3: `PoolSlot<R>` + built-in `Pooled<R>` framework topology; re-seat pool storage.**
 
-- [ ] **Step C5: Tests + gates + commit.**
+In `crates/resource/src/runtime/pool.rs`:
+- Define `pub struct PoolSlot<R: Provider> { instance: R::Instance, metrics: InstanceMetrics, fingerprint: u64, returned_at: Option<Instant> }`. **Note `revoke_epoch` leaves the slot** — it becomes the store's `checkout_epoch` (the store owns the fence now).
+- Reframe the pool runtime as a framework topology TYPE `pub struct Pooled<R> { store: InstanceStore<PoolSlot<R>>, semaphore: Arc<Semaphore>, create_semaphore: Arc<Semaphore>, config: PoolConfig, current_fingerprint: Arc<AtomicU64> }` (drop the old `idle: VecDeque` and `revoke_epoch: AtomicU64` — both move into `store`). `impl Topology for Pooled<R>` with `type Slot = PoolSlot<R>`:
+  - `try_reserve(&self, store)` — take a semaphore permit (non-blocking `try_acquire_owned`); on success `Ticket::permit(...)`. (Idle checkout is async → deferred to `acquire`/the framework pipeline, per the existing `Ticket` model.)
+  - `acquire(&self, ticket, store)` — drive the existing `try_acquire_idle` logic over `store.checkout()` (now fenced — C1): inspect the checked-out `PoolSlot` for **pool policy** (stale fingerprint, max-lifetime, `is_broken`, `test_on_checkout`, `prepare`); a slot failing any → destroy + loop; empty → create via the existing `create_entry` funnel (gated on `create_semaphore`). The revoke-epoch re-check at the old `pool.rs:610` is **deleted** — `store.checkout()` already fenced it.
+  - `on_release(&self, slot)` — the recycle decision (`RecycleDecision`); keep current best-effort contract (Phase E hardens). The framework returns the slot via `store.return_slot(slot, checkout_epoch)` (uniform fence).
+  - `phase`/`load` — honest `Saturated`/`Load::permits` off the semaphore (already implemented on the façade; move them here).
+- `bump_revoke_epoch` delegates to `store.bump_revoke_epoch()`. `run_maintenance` uses `store.evict_stale()` for the revoke arm + a new `store.retain(|s| !pool_should_evict_nonrevoke(s, fp, now)) -> Vec<S>` for fingerprint/lifetime/idle-timeout (add `retain` to `InstanceStore`). `dispatch_slot_hook_over_idle` (rotation fan-out) needs locked idle iteration with `&R::Instance` — add `pub(crate) async fn lock_idle(&self) -> MutexGuard<'_, VecDeque<StoreEntry<S>>>` to `InstanceStore` (crate-internal; authors only get `&InstanceStore`, never the guard, so the "cannot retain" rule holds). Preserve the head-of-line-blocking-but-correct rotation semantics verbatim (`pool.rs:336` doc).
 
-Port existing pool/resident lifecycle + rotation + revoke-fence tests (they must pass unchanged in intent). Add: the InstanceStore revoke-fence unit test (C1), the custom-topology round-trip test (C4). Gates for resource + engine. Commit:
+- [ ] **Step C4: Built-in `Resident<R>` framework topology (store-less, honest).**
+
+In `crates/resource/src/runtime/resident.rs`: reframe as `pub struct Resident<R> { /* shared-handle cell + config */ }`, `impl Topology for Resident<R>` with `type Slot = ()` (or the shared handle). `try_reserve` infallible (`Ticket::infallible()`), `acquire` clones the resident handle, `on_release` no-op, `phase` `Ready`, `load` `None`. Resident legitimately holds **no idle store** — document that the `&InstanceStore` arg is unused-by-design (like permit-only topologies), NOT a façade. No `InstanceStore::new(None)` dummy is passed per-call; the resident's (empty) store lives in `ManagedResource`.
+
+- [ ] **Step C5: `ManagedResource<R>` holds `R::Topology`; one blanket `ManagedHandle` impl; delete the dispatch enum.**
+
+- `crates/resource/src/runtime/managed.rs`: `ManagedResource<R>` drops `topology: TopologyRuntime<R>`, gains `topology: R::Topology` + `store: InstanceStore<<R::Topology as Topology>::Slot>`. Add the `<R::Topology as Topology>::Slot: Send + Sync + 'static` where-clause where needed.
+- `crates/resource/src/registry.rs`: the blanket `impl ManagedHandle for ManagedResource<R>` (from Phase B) becomes the **single** dispatch: `acquire` runs the framework pipeline — `topology.try_reserve(&store)` (sync gate) → framework fenced-checkout + destroy-stale (C1) → `topology.acquire(ticket, &store)` → wrap `Lease` in `ResourceGuard` whose drop schedules `on_release` + `store.return_slot`. `admission_phase`/`admission_load`/`try_reserve_gate` call `topology.{phase,load,try_reserve}` directly. **Delete** `runtime/mod.rs` wholesale (`TopologyKind`, `TopologyRuntime`, `AcquireDispatch`, `AdmissionPhaseDispatch`, `TryReserveGateDispatch`, `LoadDispatch`, both constructors). Collapse `manager/acquire.rs` `pooled_pipeline`/`resident_pipeline`/`unexpected_topology` + the `match managed.topology.kind` arms in `manager/{registration,rotation,mod}.rs` and `runtime/managed.rs` into the one monomorphic path. Remove the dummy-store dispatch and the dead façade `impl Topology for PoolRuntime`.
+
+- [ ] **Step C6: Registration carries `R::Topology` by value; derive emits `type Topology`.**
+
+- `crates/resource/src/manager/{options,registration}.rs`: `RegistrationSpec<R>` drops `topology: TopologyRuntime<R>`, carries the built `R::Topology` (or builds it from config via `Provider::build_topology`). `register`/`register_resolved` thread it into `ManagedResource`.
+- `crates/resource/macros/src/{resource_attrs,resource}.rs`: `#[resource(topology = Pooled)]` must now **emit `type Topology = Pooled<Self>;`** into the generated `impl Provider` (today it emits only a `RESOURCE_TOPOLOGY` `TopologyTag` const — keep the tag for diagnostics, add the assoc-type emission) plus the `build_topology` body constructing `Pooled::new(config_attrs)`. A hand-written `impl Provider` spells `type Topology` itself. Add a trybuild pass proving `#[resource(topology = Pooled)]` expands with the assoc type.
+
+- [ ] **Step C7: Migrate engine + examples off `TopologyRuntime`.**
+
+- `crates/engine/src/resource/registrar.rs` (the `FTopo` closures at 332/345/373 + `TopologyRuntime::Resident` constructs) and `crates/engine/src/resource_accessor.rs` (269/308 specs, 274/313 constructs): the activator builds `R::Topology` from config instead of a `TopologyRuntime` variant. Topology **kind** is static per `R` (a Postgres is always `Pooled`); only the **config** (cap, sizes) stays runtime — this fits the erased registration (spike §6).
+- `examples/examples/resource_{postgres_pool,resident_http,telegram_multi_workflow}.rs`: set `type Topology` + construct via the registration helper.
+
+- [ ] **Step C8: Manager-integration test (the missing proof) + port all existing tests.**
+
+- Add `crates/resource/tests/custom_topology_manager.rs`: a custom permit-only `FfmpegPool` (own struct, `type Slot = ()`) on a resource whose `type Topology = FfmpegPool`, **registered through `Manager::register()`**, acquired + released end-to-end, and proven to receive the revoke fence (bump epoch → in-flight slot evicted on return). This is the proof the standalone `custom_topology.rs` never gave.
+- Port every existing pool/resident/rotation/toctou/revoke test — they must stay green **with unchanged intent**, especially `revoke_recycle_toctou::*`, `resident_rotation_race::*`, `shutdown_race::*`, `basic_integration::pool_maintenance_reaper_*` (340 tests green at HEAD `b799b54d` — that is the floor).
+
+- [ ] **Step C9: Gates + commit.**
+
+Full per-crate gates for `nebula-resource`, `nebula-resource-macros`, `nebula-engine`, `nebula-examples` (bare `-p`, never `--all`; `cargo fmt -p` per crate). Rustdoc gate on resource. Commit:
 ```bash
-git -C . commit -m "feat(resource)!: open Topology #[async_trait] trait + framework-owned InstanceStore; uniform revoke fence"
+git -C . commit -m "feat(resource)!: converge topology onto Prov::Topology assoc type — open trait through Manager, uniform fence (incl. checkout), delete TopologyKind dispatch"
 ```
 
-**Acceptance:** a custom `impl Topology` in a test registers + acquires + releases and gets the revoke fence for free; the revoke-fence test passes at the `InstanceStore` level for both Pooled and a custom topology; no `dyn Topology` in the codebase.
+**Acceptance:** a custom `impl Topology` registers through `Manager::register()` + acquires + releases + gets the revoke fence (C8 test green); `InstanceStore::checkout` evicts stale-epoch slots (C1 tests green); `git grep "TopologyKind\|TopologyRuntime\|AcquireDispatch\|InstanceStore::new(None)"` over `crates/` returns no live hits; `ManagedResource<R>` is still single-parameter (`get_typed::<R>` unchanged); the 340-test floor passes with unchanged intent; clippy `-D warnings` + rustdoc `-D warnings` clean.
 
 ---
 
