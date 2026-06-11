@@ -24,16 +24,14 @@ use std::sync::{
 };
 
 use nebula_core::{OrgId, ResourceKey, ScopeLevel, resource_key, scope::Scope};
+use nebula_resource::Pooled;
+use nebula_resource::topology::{pooled::PoolProvider, resident::ResidentProvider};
 use nebula_resource::{
     AcquireOptions, Manager, Provider, RegisterOptions, RegistrationSpec, ResourceConfig,
     ResourceContext, SlotIdentity,
     error::Error,
     resource::{HasCredentialSlots, ResourceMetadata},
-    runtime::{TopologyRuntime, pool::PoolRuntime, resident::ResidentRuntime},
-    topology::{
-        pooled::{BrokenCheck, Pooled},
-        resident::Resident,
-    },
+    topology::{Resident, pooled::BrokenCheck},
 };
 use tokio_util::sync::CancellationToken;
 
@@ -72,6 +70,7 @@ struct PoolRes {
 impl Provider for PoolRes {
     type Config = CountingConfig;
     type Instance = u64;
+    type Topology = Pooled<Self>;
 
     fn key() -> ResourceKey {
         resource_key!("acquire-for-pool")
@@ -96,7 +95,7 @@ impl HasCredentialSlots for PoolRes {
     }
 }
 
-impl Pooled for PoolRes {
+impl PoolProvider for PoolRes {
     fn is_broken(&self, _runtime: &u64) -> BrokenCheck {
         BrokenCheck::Healthy
     }
@@ -125,7 +124,7 @@ fn register_pool_res(
         config: CountingConfig,
         scope: opts.scope,
         slot_identity,
-        topology: TopologyRuntime::pooled(PoolRuntime::<PoolRes>::new(pool_cfg(), fingerprint)),
+        topology: Pooled::<PoolRes>::new(pool_cfg(), fingerprint),
         recovery_gate: opts.recovery_gate,
     })
 }
@@ -142,9 +141,7 @@ fn register_res_res(
         config: CountingConfig,
         scope: opts.scope,
         slot_identity,
-        topology: TopologyRuntime::resident(ResidentRuntime::<ResRes>::new(
-            nebula_resource::ResidentConfig::default(),
-        )),
+        topology: Resident::<ResRes>::new(nebula_resource::ResidentConfig::default()),
         recovery_gate: opts.recovery_gate,
     })
 }
@@ -222,6 +219,7 @@ struct ResRes {
 impl Provider for ResRes {
     type Config = CountingConfig;
     type Instance = u64;
+    type Topology = Resident<Self>;
 
     fn key() -> ResourceKey {
         resource_key!("acquire-for-resident")
@@ -258,7 +256,7 @@ impl HasCredentialSlots for ResRes {
 }
 
 #[async_trait::async_trait]
-impl Resident for ResRes {
+impl ResidentProvider for ResRes {
     fn is_alive_sync(&self, _runtime: &u64) -> bool {
         true
     }

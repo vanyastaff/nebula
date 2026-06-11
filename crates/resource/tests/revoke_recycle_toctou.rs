@@ -42,12 +42,11 @@ use std::{
 
 use nebula_core::{ResourceKey, ScopeLevel, resource_key, scope::Scope};
 use nebula_resource::{
-    AcquireOptions, Manager, PoolConfig, Provider, RegistrationSpec, ResourceConfig,
+    AcquireOptions, Manager, PoolConfig, Pooled, Provider, RegistrationSpec, ResourceConfig,
     ResourceContext, SlotIdentity,
     error::{Error, ErrorKind},
     resource::{HasCredentialSlots, ResourceMetadata},
-    runtime::{TopologyRuntime, pool::PoolRuntime},
-    topology::pooled::{Pooled, RecycleDecision, config::WarmupStrategy},
+    topology::pooled::{PoolProvider, RecycleDecision, config::WarmupStrategy},
 };
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
@@ -125,6 +124,7 @@ impl PoolResource {
 impl Provider for PoolResource {
     type Config = PoolCfg;
     type Instance = PoolRt;
+    type Topology = Pooled<Self>;
 
     fn key() -> ResourceKey {
         resource_key!("r16-pool")
@@ -165,7 +165,7 @@ impl HasCredentialSlots for PoolResource {
     }
 }
 
-impl Pooled for PoolResource {
+impl PoolProvider for PoolResource {
     fn recycle(
         &self,
         _instance: &PoolRt,
@@ -230,10 +230,7 @@ async fn revoked_credential_not_reserved_via_idle_recycle() {
         config: PoolCfg,
         scope: ScopeLevel::Global,
         slot_identity: SlotIdentity::Unbound,
-        topology: TopologyRuntime::pooled(PoolRuntime::<PoolResource>::new(
-            pool_config(),
-            PoolCfg.fingerprint(),
-        )),
+        topology: Pooled::<PoolResource>::new(pool_config(), PoolCfg.fingerprint()),
         recovery_gate: None,
     })
     .expect("pooled registration must succeed");
@@ -318,10 +315,7 @@ async fn in_flight_create_completing_after_revoke_is_destroyed() {
         config: PoolCfg,
         scope: ScopeLevel::Global,
         slot_identity: SlotIdentity::Unbound,
-        topology: TopologyRuntime::pooled(PoolRuntime::<PoolResource>::new(
-            pool_config(),
-            PoolCfg.fingerprint(),
-        )),
+        topology: Pooled::<PoolResource>::new(pool_config(), PoolCfg.fingerprint()),
         recovery_gate: None,
     })
     .expect("pooled registration must succeed");
@@ -402,10 +396,7 @@ async fn revoked_pre_existing_idle_instance_not_reserved() {
         config: PoolCfg,
         scope: ScopeLevel::Global,
         slot_identity: SlotIdentity::Unbound,
-        topology: TopologyRuntime::pooled(PoolRuntime::<PoolResource>::new(
-            pool_config(),
-            PoolCfg.fingerprint(),
-        )),
+        topology: Pooled::<PoolResource>::new(pool_config(), PoolCfg.fingerprint()),
         recovery_gate: None,
     })
     .expect("pooled registration must succeed");
@@ -512,10 +503,7 @@ async fn warmup_after_revoke_does_not_admit_revoked_instance() {
         config: PoolCfg,
         scope: ScopeLevel::Global,
         slot_identity: SlotIdentity::Unbound,
-        topology: TopologyRuntime::pooled(PoolRuntime::<PoolResource>::new(
-            cfg,
-            PoolCfg.fingerprint(),
-        )),
+        topology: Pooled::<PoolResource>::new(cfg, PoolCfg.fingerprint()),
         recovery_gate: None,
     })
     .expect("pooled registration must succeed");

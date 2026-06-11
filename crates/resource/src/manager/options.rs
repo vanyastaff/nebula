@@ -11,7 +11,7 @@ use std::{sync::Arc, time::Duration};
 
 use nebula_core::ScopeLevel;
 
-use crate::{recovery::gate::RecoveryGate, resource::Provider, runtime::TopologyRuntime};
+use crate::{recovery::gate::RecoveryGate, resource::Provider};
 
 /// Policy that controls what `graceful_shutdown` does when the
 /// drain phase expires with handles still outstanding (#302).
@@ -238,8 +238,12 @@ pub struct RegistrationSpec<R: Provider> {
     /// [`SlotIdentity::Unbound`](crate::dedup::SlotIdentity) for the
     /// historical single-row-per-`(key, scope)` behaviour.
     pub slot_identity: crate::dedup::SlotIdentity,
-    /// The topology runtime backing this row.
-    pub topology: TopologyRuntime<R>,
+    /// The resource's lease topology, by value. The topology *kind* is static
+    /// per `R` (a Postgres is always `Pooled`); only its config (cap, sizes) is
+    /// runtime, so callers construct the concrete
+    /// [`Provider::Topology`](crate::resource::Provider::Topology) — e.g.
+    /// `Pooled::new(resource.clone(), config, fingerprint)` — and hand it here.
+    pub topology: R::Topology,
     /// Optional recovery gate for thundering-herd prevention.
     pub recovery_gate: Option<Arc<RecoveryGate>>,
 }

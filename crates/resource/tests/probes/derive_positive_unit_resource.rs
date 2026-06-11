@@ -7,7 +7,10 @@
 //! - No `#[resource(...)]` container attribute is required.
 
 use nebula_core::ResourceKey;
-use nebula_resource::{Error, Resource, ResourceContext, resource_key, resource::Provider};
+use nebula_resource::topology::resident::ResidentProvider;
+use nebula_resource::{
+    Error, Resident, Resource, ResourceContext, resource::Provider, resource_key,
+};
 
 #[derive(Clone, Resource)]
 struct UnitResource;
@@ -25,6 +28,7 @@ impl nebula_resource::resource::ResourceConfig for MyConfig {
 impl Provider for UnitResource {
     type Config = MyConfig;
     type Instance = ();
+    type Topology = Resident<Self>;
 
     fn key() -> ResourceKey {
         resource_key!("positive.unit")
@@ -34,6 +38,8 @@ impl Provider for UnitResource {
         Ok(())
     }
 }
+
+impl ResidentProvider for UnitResource {}
 
 fn main() {
     let _ = <UnitResource as Provider>::key();

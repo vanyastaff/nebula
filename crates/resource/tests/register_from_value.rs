@@ -17,12 +17,12 @@ use nebula_core::{
     CredentialKey, DeclaresDependencies, Dependencies, ResourceKey, ScopeLevel, resource_key,
 };
 use nebula_expression::ExpressionEngine;
+use nebula_resource::Resident;
 use nebula_resource::{
     Manager, ResidentConfig, ResourceContext,
     error::Error,
     resource::{HasCredentialSlots, Provider, ResourceConfig, ResourceMetadata},
-    runtime::{TopologyRuntime, resident::ResidentRuntime},
-    topology::resident::Resident,
+    topology::resident::ResidentProvider,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -71,6 +71,7 @@ struct Postgres;
 impl Provider for Postgres {
     type Config = PgConfig;
     type Instance = Arc<()>;
+    type Topology = Resident<Self>;
 
     fn key() -> ResourceKey {
         resource_key!("phase9-pg")
@@ -96,7 +97,7 @@ impl HasCredentialSlots for Postgres {
 }
 
 #[async_trait::async_trait]
-impl Resident for Postgres {
+impl ResidentProvider for Postgres {
     fn is_alive_sync(&self, _runtime: &Arc<()>) -> bool {
         true
     }
@@ -132,7 +133,7 @@ async fn register_from_value_resolves_template_and_registers() {
             HashMap::new(),
             Postgres,
             ScopeLevel::Global,
-            TopologyRuntime::resident(ResidentRuntime::<Postgres>::new(ResidentConfig::default())),
+            Resident::<Postgres>::new(ResidentConfig::default()),
             None,
         )
         .await
@@ -180,7 +181,7 @@ async fn register_from_value_validates_schema_failure() {
             HashMap::new(),
             Postgres,
             ScopeLevel::Global,
-            TopologyRuntime::resident(ResidentRuntime::<Postgres>::new(ResidentConfig::default())),
+            Resident::<Postgres>::new(ResidentConfig::default()),
             None,
         )
         .await
@@ -211,7 +212,7 @@ async fn register_from_value_resourceconfig_validate_fires() {
             HashMap::new(),
             Postgres,
             ScopeLevel::Global,
-            TopologyRuntime::resident(ResidentRuntime::<Postgres>::new(ResidentConfig::default())),
+            Resident::<Postgres>::new(ResidentConfig::default()),
             None,
         )
         .await
@@ -242,7 +243,7 @@ async fn register_from_value_unknown_slot_binding_rejected() {
             bindings,
             Postgres,
             ScopeLevel::Global,
-            TopologyRuntime::resident(ResidentRuntime::<Postgres>::new(ResidentConfig::default())),
+            Resident::<Postgres>::new(ResidentConfig::default()),
             None,
         )
         .await
@@ -273,7 +274,7 @@ async fn register_from_value_passthrough_no_templates() {
             HashMap::new(),
             Postgres,
             ScopeLevel::Global,
-            TopologyRuntime::resident(ResidentRuntime::<Postgres>::new(ResidentConfig::default())),
+            Resident::<Postgres>::new(ResidentConfig::default()),
             None,
         )
         .await

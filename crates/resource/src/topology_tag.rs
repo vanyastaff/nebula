@@ -10,6 +10,10 @@ pub enum TopologyTag {
     Pool,
     /// Resident — one shared instance, clone on acquire.
     Resident,
+    /// A custom author-supplied [`Topology`](crate::topology::Topology) that is
+    /// neither the built-in pool nor resident — used to label rotation /
+    /// diagnostic spans for open topologies.
+    Custom,
 }
 
 impl TopologyTag {
@@ -18,6 +22,7 @@ impl TopologyTag {
         match self {
             Self::Pool => "pool",
             Self::Resident => "resident",
+            Self::Custom => "custom",
         }
     }
 }

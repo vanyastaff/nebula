@@ -28,13 +28,13 @@ use std::{
 };
 
 use nebula_core::{ExecutionId, ResourceKey, scope::Scope};
+use nebula_resource::ResidentConfig;
 use nebula_resource::{
-    AcquireOptions, Manager, RegistrationSpec, ResourceContext, ScopeLevel, ShutdownConfig,
-    SlotIdentity, TopologyTag,
+    AcquireOptions, Manager, RegistrationSpec, Resident, ResourceContext, ScopeLevel,
+    ShutdownConfig, SlotIdentity, TopologyTag,
     error::{Error, ErrorKind},
     resource::{HasCredentialSlots, Provider, ResourceConfig, ResourceMetadata},
-    runtime::{TopologyRuntime, resident::ResidentRuntime},
-    topology::{resident, resident::Resident},
+    topology::resident::ResidentProvider,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -78,6 +78,7 @@ impl SlowCreateResource {
 impl Provider for SlowCreateResource {
     type Config = SlowConfig;
     type Instance = ();
+    type Topology = Resident<Self>;
 
     fn key() -> ResourceKey {
         nebula_core::resource_key!("test.shutdown_race.slow")
@@ -103,7 +104,7 @@ impl HasCredentialSlots for SlowCreateResource {
 }
 
 #[async_trait::async_trait]
-impl Resident for SlowCreateResource {
+impl ResidentProvider for SlowCreateResource {
     fn is_alive_sync(&self, _runtime: &()) -> bool {
         true
     }
@@ -140,8 +141,7 @@ async fn graceful_shutdown_blocks_in_flight_acquire() {
     let create_counter = Arc::clone(&resource.create_count);
 
     let manager = Arc::new(Manager::new());
-    let resident_rt =
-        ResidentRuntime::<SlowCreateResource>::new(resident::config::Config::default());
+    let resident_rt = Resident::<SlowCreateResource>::new(ResidentConfig::default());
 
     manager
         .register(RegistrationSpec {
@@ -149,7 +149,7 @@ async fn graceful_shutdown_blocks_in_flight_acquire() {
             config: SlowConfig,
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::resident(resident_rt),
+            topology: resident_rt,
             recovery_gate: None,
         })
         .expect("register succeeds");
@@ -252,8 +252,7 @@ async fn graceful_shutdown_blocks_in_flight_acquire() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn lookup_rejects_acquire_after_shutdown_starts() {
     let manager = Arc::new(Manager::new());
-    let resident_rt =
-        ResidentRuntime::<SlowCreateResource>::new(resident::config::Config::default());
+    let resident_rt = Resident::<SlowCreateResource>::new(ResidentConfig::default());
 
     manager
         .register(RegistrationSpec {
@@ -261,7 +260,7 @@ async fn lookup_rejects_acquire_after_shutdown_starts() {
             config: SlowConfig,
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::resident(resident_rt),
+            topology: resident_rt,
             recovery_gate: None,
         })
         .expect("register succeeds");

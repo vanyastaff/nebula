@@ -6,13 +6,14 @@ use std::sync::{
 };
 
 use nebula_core::{ExecutionId, OrgId, ResourceKey, scope::Scope};
+use nebula_resource::topology::pooled::PoolProvider;
+use nebula_resource::topology::resident::ResidentProvider;
 use nebula_resource::{
     AcquireOptions, Manager, RegistrationSpec, ResourceContext, ScopeLevel, SlotIdentity,
     error::Error,
     resource::{HasCredentialSlots, Provider, ResourceConfig, ResourceMetadata},
-    runtime::{TopologyRuntime, pool::PoolRuntime, resident::ResidentRuntime},
-    topology::resident::{self, Resident},
 };
+use nebula_resource::{Pooled, Resident, ResidentConfig};
 use tokio_util::sync::CancellationToken;
 
 #[derive(Clone, Debug, Default)]
@@ -44,6 +45,7 @@ impl ProbeResource {
 impl Provider for ProbeResource {
     type Config = ProbeConfig;
     type Instance = Arc<AtomicU64>;
+    type Topology = Resident<Self>;
 
     fn key() -> ResourceKey {
         nebula_core::resource_key!("test.acquire_erased.probe")
@@ -71,7 +73,7 @@ impl HasCredentialSlots for ProbeResource {
 }
 
 #[async_trait::async_trait]
-impl Resident for ProbeResource {
+impl ResidentProvider for ProbeResource {
     fn is_alive_sync(&self, _runtime: &Arc<AtomicU64>) -> bool {
         true
     }
@@ -89,9 +91,7 @@ async fn acquire_erased_returns_guard_and_runs_create_once() {
             config: ProbeConfig,
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::resident(ResidentRuntime::<ProbeResource>::new(
-                resident::config::Config::default(),
-            )),
+            topology: Resident::<ProbeResource>::new(ResidentConfig::default()),
             recovery_gate: None,
         })
         .expect("register");
@@ -127,9 +127,7 @@ async fn acquire_erased_finds_org_scoped_row_from_execution_scope_bag() {
             config: ProbeConfig,
             scope: ScopeLevel::Organization(org),
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::resident(ResidentRuntime::<ProbeResource>::new(
-                resident::config::Config::default(),
-            )),
+            topology: Resident::<ProbeResource>::new(ResidentConfig::default()),
             recovery_gate: None,
         })
         .expect("register at org scope");
@@ -189,9 +187,7 @@ async fn acquire_erased_and_typed_pick_org_not_global_fallback() {
             config: ProbeConfig,
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::resident(ResidentRuntime::<ProbeResource>::new(
-                resident::config::Config::default(),
-            )),
+            topology: Resident::<ProbeResource>::new(ResidentConfig::default()),
             recovery_gate: None,
         })
         .expect("register global row");
@@ -202,9 +198,7 @@ async fn acquire_erased_and_typed_pick_org_not_global_fallback() {
             config: ProbeConfig,
             scope: ScopeLevel::Organization(org),
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::resident(ResidentRuntime::<ProbeResource>::new(
-                resident::config::Config::default(),
-            )),
+            topology: Resident::<ProbeResource>::new(ResidentConfig::default()),
             recovery_gate: None,
         })
         .expect("register org row");
@@ -281,7 +275,7 @@ async fn acquire_erased_and_typed_pick_org_not_global_fallback() {
 /// reuses the erased path's resolved row (single-runtime topologies keep
 /// `create_count == 1` across both acquires).
 mod pool_parity {
-    use nebula_resource::topology::pooled::{BrokenCheck, Pooled};
+    use nebula_resource::topology::pooled::BrokenCheck;
 
     use super::*;
 
@@ -304,6 +298,7 @@ mod pool_parity {
     impl Provider for PoolParity {
         type Config = PoolParityCfg;
         type Instance = u64;
+        type Topology = Pooled<Self>;
 
         fn key() -> ResourceKey {
             nebula_core::resource_key!("test.ae4.pool")
@@ -332,7 +327,7 @@ mod pool_parity {
         }
     }
 
-    impl Pooled for PoolParity {
+    impl PoolProvider for PoolParity {
         fn is_broken(&self, _runtime: &u64) -> BrokenCheck {
             BrokenCheck::Healthy
         }
@@ -354,13 +349,13 @@ mod pool_parity {
                 config: PoolParityCfg,
                 scope: ScopeLevel::Global,
                 slot_identity: SlotIdentity::Unbound,
-                topology: TopologyRuntime::pooled(PoolRuntime::<PoolParity>::new(
+                topology: Pooled::<PoolParity>::new(
                     nebula_resource::topology::pooled::config::Config {
                         max_size: 4,
                         ..Default::default()
                     },
                     PoolParityCfg.fingerprint(),
-                )),
+                ),
                 recovery_gate: None,
             })
             .expect("register pooled Global");
@@ -432,6 +427,7 @@ mod resident_erased_reuses_runtime {
     impl Provider for ResidentReuse {
         type Config = ResidentReuseCfg;
         type Instance = Arc<AtomicU64>;
+        type Topology = Resident<Self>;
 
         fn key() -> ResourceKey {
             nebula_core::resource_key!("test.ae4.resident_reuse")
@@ -458,7 +454,7 @@ mod resident_erased_reuses_runtime {
     }
 
     #[async_trait::async_trait]
-    impl Resident for ResidentReuse {
+    impl ResidentProvider for ResidentReuse {
         fn is_alive_sync(&self, _runtime: &Arc<AtomicU64>) -> bool {
             true
         }
@@ -470,7 +466,7 @@ mod resident_erased_reuses_runtime {
     async fn resident_erased_acquires_share_one_create() {
         let create_count = Arc::new(AtomicU64::new(0));
         let manager = Arc::new(Manager::new());
-        let rt = ResidentRuntime::<ResidentReuse>::new(resident::config::Config::default());
+        let rt = Resident::<ResidentReuse>::new(ResidentConfig::default());
         manager
             .register(RegistrationSpec {
                 resource: ResidentReuse {
@@ -479,7 +475,7 @@ mod resident_erased_reuses_runtime {
                 config: ResidentReuseCfg,
                 scope: ScopeLevel::Global,
                 slot_identity: SlotIdentity::Unbound,
-                topology: TopologyRuntime::resident(rt),
+                topology: rt,
                 recovery_gate: None,
             })
             .expect("ResidentReuse must register without error");
@@ -555,6 +551,7 @@ mod pool_erased_distinct_instances {
     impl Provider for PoolErased {
         type Config = PoolErasedCfg;
         type Instance = u64;
+        type Topology = Pooled<Self>;
 
         fn key() -> ResourceKey {
             nebula_core::resource_key!("test.ae4.pool_erased")
@@ -579,7 +576,7 @@ mod pool_erased_distinct_instances {
         }
     }
 
-    impl nebula_resource::topology::pooled::Pooled for PoolErased {
+    impl PoolProvider for PoolErased {
         fn is_broken(&self, _runtime: &u64) -> nebula_resource::topology::pooled::BrokenCheck {
             nebula_resource::topology::pooled::BrokenCheck::Healthy
         }
@@ -590,7 +587,7 @@ mod pool_erased_distinct_instances {
     async fn pool_erased_acquires_produce_distinct_instances() {
         let create_count = Arc::new(AtomicU64::new(0));
         let manager = Arc::new(Manager::new());
-        let pool_rt = PoolRuntime::<PoolErased>::try_new(
+        let pool_rt = Pooled::<PoolErased>::try_new(
             nebula_resource::topology::pooled::config::Config {
                 min_size: 0,
                 max_size: 4,
@@ -607,7 +604,7 @@ mod pool_erased_distinct_instances {
                 config: PoolErasedCfg,
                 scope: ScopeLevel::Global,
                 slot_identity: SlotIdentity::Unbound,
-                topology: TopologyRuntime::pooled(pool_rt),
+                topology: pool_rt,
                 recovery_gate: None,
             })
             .expect("PoolErased must register without error");

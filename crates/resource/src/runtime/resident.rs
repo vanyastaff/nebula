@@ -22,18 +22,27 @@ use crate::{
     guard::ResourceGuard,
     options::AcquireOptions,
     resource::{HasCredentialSlots, Provider},
-    topology::resident::{Resident, config::Config},
+    topology::{
+        resident::{ResidentProvider, config::Config},
+        store::InstanceStore,
+    },
     topology_tag::TopologyTag,
 };
 
-/// Runtime state for a resident topology.
+/// Framework resident topology — one shared instance, clone on acquire.
 ///
 /// Holds a single shared runtime instance in a lock-free `Cell`.
 /// On acquire, the runtime is cloned into an owned [`ResourceGuard`].
 ///
 /// A `create_lock` mutex serialises the slow path (create / recreate) while
 /// keeping the fast path (load + liveness check) entirely lock-free.
-pub struct ResidentRuntime<R: Provider> {
+///
+/// Implements the open [`Topology`](crate::topology::Topology) contract with
+/// `type Slot = ()`: a resident legitimately holds **no idle store** (its one
+/// instance lives in the `Cell`), so the empty `store` field it carries for
+/// the open contract is unused-by-design, exactly like a permit-only custom
+/// topology. A resource declares `type Topology = Resident<Self>`.
+pub struct Resident<R: Provider> {
     cell: Cell<R::Instance>,
     config: Config,
     /// Serialises the create / recreate slow path **and** the per-slot
@@ -75,8 +84,8 @@ pub struct ResidentRuntime<R: Provider> {
     built_epoch: AtomicU64,
 }
 
-impl<R: Provider + HasCredentialSlots> ResidentRuntime<R> {
-    /// Creates a new resident runtime with the given configuration.
+impl<R: Provider + HasCredentialSlots> Resident<R> {
+    /// Creates a new resident topology with the given configuration.
     pub fn new(config: Config) -> Self {
         Self {
             cell: Cell::new(),
@@ -217,9 +226,9 @@ impl<R: Provider + HasCredentialSlots> ResidentRuntime<R> {
     }
 }
 
-impl<R> ResidentRuntime<R>
+impl<R> Resident<R>
 where
-    R: Resident + HasCredentialSlots + Send + Sync + 'static,
+    R: ResidentProvider + HasCredentialSlots + Send + Sync + 'static,
     R::Instance: Clone + Send + 'static,
 {
     /// Acquires a clone of the shared runtime instance.
@@ -354,25 +363,24 @@ where
     }
 }
 
-// ─── Topology impl for ResidentRuntime ───────────────────────────────────────
+// ─── Topology impl for Resident ───────────────────────────────────────────────
 //
-// `ResidentRuntime<R>` satisfies `Topology` with an infallible, zero-cost
-// `try_reserve` (resident is unbounded) and a `()` slot (the actual instance is
-// held in the resident's `Cell`, not in `InstanceStore`).  This lets the
-// open-trait dispatch path route through `ResidentRuntime` without changing the
-// internal acquire path (`ResidentRuntime::acquire`), which continues to run
-// through `TopologyKind::Resident`.
+// `Resident<R>` satisfies the open `Topology` contract with an infallible,
+// zero-cost `try_reserve` (resident is unbounded) and a `()` slot — the actual
+// instance is held in the resident's `Cell`, not in `InstanceStore`. The
+// open-contract `acquire` returns a zero-cost lease; the real instance
+// lifecycle runs through the inherent `Resident::acquire` the framework manager
+// pipeline calls. The `&InstanceStore` arg is unused-by-design (resident has no
+// idle queue), not a façade.
 
 use async_trait::async_trait;
 
-use crate::topology::{
-    AdmissionPhase, Lease, Load, Ticket, Topology, Unavailable, store::InstanceStore,
-};
+use crate::topology::{AdmissionPhase, Lease, Load, Ticket, Topology, Unavailable};
 
 #[async_trait]
-impl<R> Topology for ResidentRuntime<R>
+impl<R> Topology for Resident<R>
 where
-    R: Resident + HasCredentialSlots + Send + Sync + 'static,
+    R: ResidentProvider + HasCredentialSlots + Send + Sync + 'static,
     R::Instance: Clone + Send + Sync + 'static,
 {
     /// Permit-only slot: the resident manages its single instance internally.
@@ -383,8 +391,8 @@ where
         Ok(Ticket::infallible())
     }
 
-    /// Returns a zero-cost lease; the actual instance is resolved via the
-    /// `TopologyKind::Resident` dispatch path.
+    /// Returns a zero-cost lease; the real instance is resolved via the
+    /// inherent [`Resident::acquire`] the framework manager pipeline calls.
     async fn acquire(
         &self,
         _ticket: Ticket<()>,
@@ -401,6 +409,53 @@ where
     /// No load signal for resident (unbounded logical concurrency).
     fn load(&self, _store: &InstanceStore<()>) -> Option<Load> {
         None
+    }
+
+    fn tag(&self) -> TopologyTag {
+        TopologyTag::Resident
+    }
+}
+
+// ─── TopologyDispatch bridge for Resident ────────────────────────────────────
+//
+// The framework manager pipeline reaches `Resident<R>` through this bridge:
+// `acquire_guard` runs the inherent `Resident::acquire` (clone-or-create); the
+// rotation dispatch runs the create-vs-rotate reconcile. Resident has no idle
+// queue, so warmup / maintenance / revoke-fence stay at their no-op defaults.
+
+use crate::{metrics::ResourceOpsMetrics, runtime::managed::TopologyDispatch};
+
+#[async_trait]
+impl<R> TopologyDispatch<R> for Resident<R>
+where
+    R: Provider<Topology = Resident<R>>
+        + ResidentProvider
+        + HasCredentialSlots
+        + Send
+        + Sync
+        + 'static,
+    R::Instance: Clone + Send + Sync + 'static,
+{
+    async fn acquire_guard(
+        &self,
+        resource: &R,
+        config: &R::Config,
+        ctx: &ResourceContext,
+        _release_queue: &Arc<crate::release_queue::ReleaseQueue>,
+        _generation: u64,
+        options: &AcquireOptions,
+        _metrics: Option<ResourceOpsMetrics>,
+    ) -> Result<ResourceGuard<R>, Error> {
+        self.acquire(resource, config, ctx, options).await
+    }
+
+    async fn dispatch_credential_hook(
+        &self,
+        resource: &R,
+        slot: &str,
+        refresh: bool,
+    ) -> Result<(), Error> {
+        self.dispatch_resident_hook(resource, slot, refresh).await
     }
 }
 
@@ -451,6 +506,7 @@ mod tests {
     impl Provider for MockResident {
         type Config = bool;
         type Instance = u32;
+        type Topology = Resident<Self>;
 
         fn key() -> ResourceKey {
             resource_key!("mock-resident")
@@ -478,7 +534,7 @@ mod tests {
         }
     }
 
-    impl Resident for MockResident {
+    impl ResidentProvider for MockResident {
         fn is_alive_sync(&self, _runtime: &u32) -> bool {
             self.alive.load(Ordering::Relaxed)
         }
@@ -497,7 +553,7 @@ mod tests {
     #[tokio::test]
     async fn concurrent_acquire_creates_only_once() {
         let resource = MockResident::new();
-        let rt = Arc::new(ResidentRuntime::<MockResident>::new(Config::default()));
+        let rt = Arc::new(Resident::<MockResident>::new(Config::default()));
         let ctx = Arc::new(test_ctx());
 
         // Spawn 10 concurrent acquires on an empty cell.
@@ -529,7 +585,7 @@ mod tests {
     #[tokio::test]
     async fn acquire_creates_on_first_call() {
         let resource = MockResident::new();
-        let rt = ResidentRuntime::<MockResident>::new(Config::default());
+        let rt = Resident::<MockResident>::new(Config::default());
         let ctx = test_ctx();
 
         let handle = rt
@@ -543,7 +599,7 @@ mod tests {
     #[tokio::test]
     async fn acquire_reuses_existing_instance() {
         let resource = MockResident::new();
-        let rt = ResidentRuntime::<MockResident>::new(Config::default());
+        let rt = Resident::<MockResident>::new(Config::default());
         let ctx = test_ctx();
 
         let h1 = rt
@@ -567,7 +623,7 @@ mod tests {
             recreate_on_failure: true,
             ..Default::default()
         };
-        let rt = ResidentRuntime::<MockResident>::new(config);
+        let rt = Resident::<MockResident>::new(config);
         let ctx = test_ctx();
 
         // First acquire — creates.
@@ -608,6 +664,7 @@ mod tests {
     impl Provider for HangingResident {
         type Config = bool;
         type Instance = u32;
+        type Topology = Resident<Self>;
 
         fn key() -> ResourceKey {
             resource_key!("hanging-resident")
@@ -633,7 +690,7 @@ mod tests {
         }
     }
 
-    impl Resident for HangingResident {}
+    impl ResidentProvider for HangingResident {}
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn resident_create_timeout_does_not_deadlock() {
@@ -642,7 +699,7 @@ mod tests {
             create_timeout: Duration::from_millis(50),
             ..Default::default()
         };
-        let rt = Arc::new(ResidentRuntime::<HangingResident>::new(config));
+        let rt = Arc::new(Resident::<HangingResident>::new(config));
         let ctx = Arc::new(test_ctx());
 
         // First acquire should fail quickly with a timeout, not hang.
@@ -669,7 +726,7 @@ mod tests {
             recreate_on_failure: false,
             ..Default::default()
         };
-        let rt = ResidentRuntime::<MockResident>::new(config);
+        let rt = Resident::<MockResident>::new(config);
         let ctx = test_ctx();
 
         // First acquire — creates.
@@ -740,6 +797,7 @@ mod tests {
     impl Provider for SlotReadResident {
         type Config = bool;
         type Instance = u32;
+        type Topology = Resident<Self>;
 
         fn key() -> ResourceKey {
             resource_key!("slot-read-resident")
@@ -778,7 +836,7 @@ mod tests {
         }
     }
 
-    impl Resident for SlotReadResident {
+    impl ResidentProvider for SlotReadResident {
         fn is_alive_sync(&self, _runtime: &u32) -> bool {
             true
         }
@@ -818,7 +876,7 @@ mod tests {
             release_read: Arc::new(Notify::new()),
             park_before_read: Arc::new(AtomicBool::new(true)),
         };
-        let rt = Arc::new(ResidentRuntime::<SlotReadResident>::new(Config::default()));
+        let rt = Arc::new(Resident::<SlotReadResident>::new(Config::default()));
         let ctx = Arc::new(test_ctx());
 
         let acquire_task = {
@@ -915,7 +973,7 @@ mod tests {
             release_read: Arc::new(Notify::new()),
             park_before_read: Arc::new(AtomicBool::new(false)),
         };
-        let rt = ResidentRuntime::<SlotReadResident>::new(Config::default());
+        let rt = Resident::<SlotReadResident>::new(Config::default());
         let ctx = test_ctx();
 
         let guard = rt

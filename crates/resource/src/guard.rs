@@ -669,6 +669,36 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
     use super::*;
+    use crate::topology::{
+        AdmissionPhase, Lease, Ticket, Topology, Unavailable, store::InstanceStore,
+    };
+
+    /// Minimal fixture topology for guard-only tests: it satisfies the
+    /// `Provider::Topology` bound for resources whose `Instance` is **not**
+    /// `Clone` (e.g. a `Drop`-probe), so the guard tests can construct
+    /// `ResourceGuard<R>` directly without going through registration/acquire.
+    struct FixtureTopology;
+
+    #[async_trait::async_trait]
+    impl Topology for FixtureTopology {
+        type Slot = ();
+
+        fn try_reserve(&self, _s: &InstanceStore<()>) -> Result<Ticket<()>, Unavailable> {
+            Ok(Ticket::infallible())
+        }
+
+        async fn acquire(
+            &self,
+            _ticket: Ticket<()>,
+            _s: &InstanceStore<()>,
+        ) -> Result<Lease<()>, crate::Error> {
+            Ok(Lease::new((), 0, None))
+        }
+
+        fn phase(&self, _s: &InstanceStore<()>) -> AdmissionPhase {
+            AdmissionPhase::Ready
+        }
+    }
 
     // A trivial resource for testing. Instance = u32 so guards hold a plain integer.
     struct DummyResource;
@@ -677,6 +707,7 @@ mod tests {
     impl Provider for DummyResource {
         type Config = ();
         type Instance = u32;
+        type Topology = FixtureTopology;
         fn key() -> ResourceKey {
             nebula_core::resource_key!("dummy")
         }
@@ -926,6 +957,7 @@ mod tests {
     impl Provider for DropProbeResource {
         type Config = ();
         type Instance = DropProbe;
+        type Topology = FixtureTopology;
         fn key() -> ResourceKey {
             nebula_core::resource_key!("dropprobe")
         }

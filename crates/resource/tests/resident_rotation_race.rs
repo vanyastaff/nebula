@@ -23,13 +23,13 @@ use std::sync::{
 
 use nebula_core::{ResourceKey, ScopeLevel, resource_key, scope::Scope};
 use nebula_credential::CredentialGuard;
+use nebula_resource::Resident;
 use nebula_resource::{
     AcquireOptions, Manager, Provider, RegistrationSpec, ResidentConfig, ResourceConfig,
     ResourceContext, SlotCell, SlotIdentity,
     error::Error,
     resource::{HasCredentialSlots, ResourceMetadata},
-    runtime::{TopologyRuntime, resident::ResidentRuntime},
-    topology::resident::Resident,
+    topology::resident::ResidentProvider,
 };
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
@@ -106,6 +106,7 @@ struct RaceResource {
 impl Provider for RaceResource {
     type Config = RaceConfig;
     type Instance = RaceRuntime;
+    type Topology = Resident<Self>;
 
     fn key() -> ResourceKey {
         resource_key!("race-resident")
@@ -180,7 +181,7 @@ impl HasCredentialSlots for RaceResource {
 }
 
 #[async_trait::async_trait]
-impl Resident for RaceResource {
+impl ResidentProvider for RaceResource {
     fn is_alive_sync(&self, _runtime: &RaceRuntime) -> bool {
         true
     }
@@ -212,9 +213,7 @@ fn build(park: bool) -> (Arc<Manager>, ResourceKey, RaceResource) {
         config: RaceConfig,
         scope: ScopeLevel::Global,
         slot_identity: SlotIdentity::Unbound,
-        topology: TopologyRuntime::resident(ResidentRuntime::<RaceResource>::new(
-            ResidentConfig::default(),
-        )),
+        topology: Resident::<RaceResource>::new(ResidentConfig::default()),
         recovery_gate: None,
     })
     .expect("resident registration must succeed");

@@ -17,13 +17,13 @@ use std::sync::{
 
 use nebula_core::{ResourceKey, ScopeLevel, resource_key};
 use nebula_credential::CredentialGuard;
+use nebula_resource::Resident;
 use nebula_resource::{
     Manager, ManagerConfig, Provider, RegisterOptions, RegistrationSpec, ResidentConfig,
     ResourceConfig, ResourceContext, SlotCell,
     error::Error,
     resource::{HasCredentialSlots, ResourceMetadata},
-    runtime::{TopologyRuntime, resident::ResidentRuntime},
-    topology::resident::Resident,
+    topology::resident::ResidentProvider,
 };
 use zeroize::Zeroize;
 
@@ -109,6 +109,7 @@ mod counting {
     impl Provider for CountingResource {
         type Config = CountingConfig;
         type Instance = CountingRuntime;
+        type Topology = Resident<Self>;
 
         fn key() -> ResourceKey {
             resource_key!("counting-resident")
@@ -163,7 +164,7 @@ mod counting {
     }
 
     #[async_trait::async_trait]
-    impl Resident for CountingResource {
+    impl ResidentProvider for CountingResource {
         fn is_alive_sync(&self, _runtime: &CountingRuntime) -> bool {
             true
         }
@@ -185,9 +186,7 @@ mod counting {
             config: CountingConfig,
             scope: opts.scope,
             slot_identity,
-            topology: TopologyRuntime::resident(ResidentRuntime::<CountingResource>::new(
-                ResidentConfig::default(),
-            )),
+            topology: Resident::<CountingResource>::new(ResidentConfig::default()),
             recovery_gate: opts.recovery_gate,
         })
     }
@@ -1125,12 +1124,11 @@ mod u9_gate {
     use nebula_core::{ResourceKey, ScopeLevel, resource_key, scope::Scope};
     use nebula_credential::CredentialGuard;
     use nebula_resource::{
-        AcquireOptions, Manager, Provider, RegistrationSpec, ResidentConfig, ResourceConfig,
-        ResourceContext, SlotCell, SlotIdentity,
+        AcquireOptions, Manager, Provider, RegistrationSpec, Resident, ResidentConfig,
+        ResourceConfig, ResourceContext, SlotCell, SlotIdentity,
         error::Error,
         resource::{HasCredentialSlots, ResourceMetadata},
-        runtime::{TopologyRuntime, resident::ResidentRuntime},
-        topology::resident::Resident,
+        topology::resident::ResidentProvider,
     };
     use tokio_util::sync::CancellationToken;
     use zeroize::Zeroize;
@@ -1180,6 +1178,7 @@ mod u9_gate {
     impl Provider for GateResource {
         type Config = GateConfig;
         type Instance = GateRuntime;
+        type Topology = Resident<Self>;
 
         fn key() -> ResourceKey {
             resource_key!("u9-gate-resident")
@@ -1221,7 +1220,7 @@ mod u9_gate {
     }
 
     #[async_trait::async_trait]
-    impl Resident for GateResource {
+    impl ResidentProvider for GateResource {
         fn is_alive_sync(&self, _runtime: &GateRuntime) -> bool {
             true
         }
@@ -1255,9 +1254,7 @@ mod u9_gate {
             config: GateConfig,
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::resident(ResidentRuntime::<GateResource>::new(
-                ResidentConfig::default(),
-            )),
+            topology: Resident::<GateResource>::new(ResidentConfig::default()),
             recovery_gate: None,
         })
         .expect("resident registration must succeed");
@@ -1346,8 +1343,7 @@ mod reload_deferral {
         ResourceConfig, ResourceContext, SlotIdentity,
         error::Error,
         resource::{HasCredentialSlots, ResourceMetadata},
-        runtime::{TopologyRuntime, pool::PoolRuntime, resident::ResidentRuntime},
-        topology::{pooled::Pooled, resident::Resident},
+        topology::{Pooled, Resident, pooled::PoolProvider, resident::ResidentProvider},
     };
 
     // Custom error boilerplate removed — Resource lifecycle methods now return
@@ -1373,7 +1369,7 @@ mod reload_deferral {
     }
 
     macro_rules! reload_fixture {
-        ($name:ident, $key:literal) => {
+        ($name:ident, $key:literal, $topo:ty) => {
             #[derive(Clone)]
             struct $name;
 
@@ -1381,6 +1377,7 @@ mod reload_deferral {
             impl Provider for $name {
                 type Config = VersionedConfig;
                 type Instance = u32;
+                type Topology = $topo;
 
                 fn key() -> ResourceKey {
                     resource_key!($key)
@@ -1411,13 +1408,13 @@ mod reload_deferral {
         };
     }
 
-    reload_fixture!(PoolReload, "reload-pool");
-    reload_fixture!(ResidentReload, "reload-resident");
+    reload_fixture!(PoolReload, "reload-pool", Pooled<Self>);
+    reload_fixture!(ResidentReload, "reload-resident", Resident<Self>);
 
     #[async_trait::async_trait]
-    impl Pooled for PoolReload {}
+    impl PoolProvider for PoolReload {}
     #[async_trait::async_trait]
-    impl Resident for ResidentReload {
+    impl ResidentProvider for ResidentReload {
         fn is_alive_sync(&self, _r: &u32) -> bool {
             true
         }
@@ -1440,9 +1437,7 @@ mod reload_deferral {
             config: v(1),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::resident(ResidentRuntime::<ResidentReload>::new(
-                ResidentConfig::default(),
-            )),
+            topology: Resident::<ResidentReload>::new(ResidentConfig::default()),
             recovery_gate: None,
         })
         .expect("resident registration must succeed");
@@ -1458,10 +1453,7 @@ mod reload_deferral {
             config: v(1),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::pooled(PoolRuntime::<PoolReload>::new(
-                PoolConfig::default(),
-                v(1).fingerprint(),
-            )),
+            topology: Pooled::<PoolReload>::new(PoolConfig::default(), v(1).fingerprint()),
             recovery_gate: None,
         })
         .expect("pool registration must succeed");
@@ -1485,10 +1477,7 @@ mod reload_deferral {
             config: v(1),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::pooled(PoolRuntime::<PoolReload>::new(
-                PoolConfig::default(),
-                v(1).fingerprint(),
-            )),
+            topology: Pooled::<PoolReload>::new(PoolConfig::default(), v(1).fingerprint()),
             recovery_gate: None,
         })
         .expect("pool registration must succeed");
@@ -1518,9 +1507,7 @@ mod reload_deferral {
             config: v(1),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::resident(ResidentRuntime::<ResidentReload>::new(
-                ResidentConfig::default(),
-            )),
+            topology: Resident::<ResidentReload>::new(ResidentConfig::default()),
             recovery_gate: None,
         })
         .expect("resident registration must succeed");

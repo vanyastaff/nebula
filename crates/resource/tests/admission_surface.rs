@@ -12,12 +12,12 @@
 use std::sync::Arc;
 
 use nebula_core::{ExecutionId, ResourceKey, resource_key, scope::Scope};
+use nebula_resource::topology::{pooled::PoolProvider, resident::ResidentProvider};
 use nebula_resource::{
     AcquireOptions, Manager, RegistrationSpec, ResourceContext, ScopeLevel, SlotIdentity,
     error::{Error, ErrorKind},
     resource::{HasCredentialSlots, Provider, ResourceConfig, ResourceMetadata},
-    runtime::{TopologyRuntime, pool::PoolRuntime, resident::ResidentRuntime},
-    topology::{AdmissionPhase, Load, Unavailable, pooled::Pooled, resident::Resident},
+    topology::{AdmissionPhase, Load, Pooled, Resident, Unavailable},
 };
 use tokio_util::sync::CancellationToken;
 
@@ -57,6 +57,7 @@ impl HasCredentialSlots for TinyPool {
 impl Provider for TinyPool {
     type Config = MinCfg;
     type Instance = ();
+    type Topology = Pooled<Self>;
 
     fn key() -> ResourceKey {
         resource_key!("test.admission.tiny_pool")
@@ -71,7 +72,7 @@ impl Provider for TinyPool {
     }
 }
 
-impl Pooled for TinyPool {}
+impl PoolProvider for TinyPool {}
 
 // ─── Minimal resident resource ───────────────────────────────────────────────
 
@@ -88,6 +89,7 @@ impl HasCredentialSlots for SimpleResident {
 impl Provider for SimpleResident {
     type Config = MinCfg;
     type Instance = ();
+    type Topology = Resident<Self>;
 
     fn key() -> ResourceKey {
         resource_key!("test.admission.simple_resident")
@@ -102,7 +104,7 @@ impl Provider for SimpleResident {
     }
 }
 
-impl Resident for SimpleResident {
+impl ResidentProvider for SimpleResident {
     fn is_alive_sync(&self, _runtime: &()) -> bool {
         true
     }
@@ -117,7 +119,7 @@ async fn pool_saturated_phase_and_load() {
     use nebula_resource::topology::pooled::config::Config as PoolConfig;
 
     let manager = Manager::new();
-    let pool_rt = PoolRuntime::<TinyPool>::new(
+    let pool_rt = Pooled::<TinyPool>::new(
         PoolConfig {
             max_size: 1,
             ..Default::default()
@@ -130,7 +132,7 @@ async fn pool_saturated_phase_and_load() {
             config: MinCfg,
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::pooled(pool_rt),
+            topology: pool_rt,
             recovery_gate: None,
         })
         .expect("register succeeds");
@@ -175,7 +177,7 @@ async fn acquire_any_saturated_returns_backpressure() {
     use nebula_resource::topology::pooled::config::Config as PoolConfig;
 
     let manager = Arc::new(Manager::new());
-    let pool_rt = PoolRuntime::<TinyPool>::new(
+    let pool_rt = Pooled::<TinyPool>::new(
         PoolConfig {
             max_size: 1,
             ..Default::default()
@@ -188,7 +190,7 @@ async fn acquire_any_saturated_returns_backpressure() {
             config: MinCfg,
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::pooled(pool_rt),
+            topology: pool_rt,
             recovery_gate: None,
         })
         .expect("register succeeds");
@@ -223,14 +225,14 @@ async fn acquire_any_saturated_returns_backpressure() {
 #[tokio::test]
 async fn resident_always_ready_no_load() {
     let manager = Manager::new();
-    let rt = ResidentRuntime::<SimpleResident>::new(Default::default());
+    let rt = Resident::<SimpleResident>::new(Default::default());
     manager
         .register(RegistrationSpec {
             resource: SimpleResident,
             config: MinCfg,
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::resident(rt),
+            topology: rt,
             recovery_gate: None,
         })
         .expect("register succeeds");

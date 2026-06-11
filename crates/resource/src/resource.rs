@@ -286,6 +286,16 @@ pub trait Provider: Send + Sync + 'static {
     type Config: ResourceConfig;
     /// The live resource handle.
     type Instance: Send + Sync + 'static;
+    /// The lease topology backing this resource — the framework dispatches
+    /// acquire / release / admission through it.
+    ///
+    /// Pin this to a built-in framework topology
+    /// ([`Pooled<Self>`](crate::topology::Pooled) /
+    /// [`Resident<Self>`](crate::topology::Resident)) or a custom
+    /// [`Topology`](crate::topology::Topology) implementation. Stable Rust has
+    /// no per-resource associated-type defaults, so every `impl Provider` must
+    /// spell this — `type Topology = Pooled<Self>;`, etc.
+    type Topology: crate::topology::Topology;
 
     /// Returns the unique key identifying this resource type.
     fn key() -> ResourceKey;

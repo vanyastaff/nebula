@@ -26,6 +26,7 @@ use tokio::sync::OwnedSemaphorePermit;
 use crate::{
     error::{Error, ErrorKind},
     topology::store::InstanceStore,
+    topology_tag::TopologyTag,
 };
 
 // ─── AdmissionPhase ──────────────────────────────────────────────────────────
@@ -424,5 +425,15 @@ pub trait Topology: Send + Sync + 'static {
     /// Returns an optional load snapshot.
     fn load(&self, _store: &InstanceStore<Self::Slot>) -> Option<Load> {
         None
+    }
+
+    /// Topology identifier tag for rotation / diagnostic spans.
+    ///
+    /// The built-in [`Pooled`](crate::topology::Pooled) /
+    /// [`Resident`](crate::topology::Resident) topologies override this with
+    /// [`TopologyTag::Pool`] / [`TopologyTag::Resident`]; the default
+    /// [`TopologyTag::Custom`] labels an author-supplied open topology.
+    fn tag(&self) -> TopologyTag {
+        TopologyTag::Custom
     }
 }

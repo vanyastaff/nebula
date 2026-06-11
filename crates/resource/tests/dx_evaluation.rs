@@ -10,17 +10,14 @@
 use std::sync::Arc;
 
 use nebula_core::{ExecutionId, ResourceKey};
+use nebula_resource::topology::pooled::PoolProvider;
 use nebula_resource::{
-    AcquireOptions, Manager, PoolConfig, Provider, RegistrationSpec, ResidentConfig,
+    AcquireOptions, Manager, PoolConfig, Pooled, Provider, RegistrationSpec, ResidentConfig,
     ResourceConfig, ResourceContext, ScopeLevel, ShutdownConfig, SlotIdentity,
     error::{Error, ErrorKind},
     resource::HasCredentialSlots,
     resource_key,
-    runtime::{TopologyRuntime, pool::PoolRuntime, resident::ResidentRuntime},
-    topology::{
-        pooled::{BrokenCheck, Pooled},
-        resident::Resident,
-    },
+    topology::{Resident, pooled::BrokenCheck, resident::ResidentProvider},
 };
 use tokio_util::sync::CancellationToken;
 
@@ -84,6 +81,7 @@ struct HttpResource;
 impl Provider for HttpResource {
     type Config = HttpConfig;
     type Instance = HttpClient;
+    type Topology = Pooled<Self>;
 
     fn key() -> ResourceKey {
         resource_key!("http.client")
@@ -107,7 +105,7 @@ impl HasCredentialSlots for HttpResource {
 }
 
 #[async_trait::async_trait]
-impl Pooled for HttpResource {
+impl PoolProvider for HttpResource {
     // [FRICTION #4] Old API was `recycle_decision` + `broken_check` (methods
     // returning the enum value). New API is `is_broken` (returning BrokenCheck)
     // and `recycle` (async fn returning Result<RecycleDecision>).
@@ -140,10 +138,7 @@ async fn use_case_1_pooled_http_client() {
             config,
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::pooled(PoolRuntime::<HttpResource>::new(
-                PoolConfig::default(),
-                fingerprint,
-            )),
+            topology: Pooled::<HttpResource>::new(PoolConfig::default(), fingerprint),
             recovery_gate: None,
         })
         .expect("registration should succeed");
@@ -192,10 +187,7 @@ async fn use_case_1_invalid_config_is_rejected() {
         config,
         scope: ScopeLevel::Global,
         slot_identity: SlotIdentity::Unbound,
-        topology: TopologyRuntime::pooled(PoolRuntime::<HttpResource>::new(
-            PoolConfig::default(),
-            fingerprint,
-        )),
+        topology: Pooled::<HttpResource>::new(PoolConfig::default(), fingerprint),
         recovery_gate: None,
     });
     let err = result.expect_err("empty base_url must fail validation at register time");
@@ -239,6 +231,7 @@ struct ConfigStoreResource;
 impl Provider for ConfigStoreResource {
     type Config = ConfigStoreConfig;
     type Instance = ConfigStore;
+    type Topology = Resident<Self>;
 
     fn key() -> ResourceKey {
         resource_key!("config.store")
@@ -272,7 +265,7 @@ impl HasCredentialSlots for ConfigStoreResource {
 //   "the trait bound `ConfigStore: Clone` is not satisfied"
 // pointing to the trait impl, not the where clause source.
 #[async_trait::async_trait]
-impl Resident for ConfigStoreResource {}
+impl ResidentProvider for ConfigStoreResource {}
 
 #[tokio::test]
 async fn use_case_2_resident_config_store() {
@@ -290,9 +283,7 @@ async fn use_case_2_resident_config_store() {
             },
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::resident(ResidentRuntime::<ConfigStoreResource>::new(
-                ResidentConfig::default(),
-            )),
+            topology: Resident::<ConfigStoreResource>::new(ResidentConfig::default()),
             recovery_gate: None,
         })
         .expect("registration should succeed");
@@ -383,6 +374,7 @@ impl DbResource {
 impl Provider for DbResource {
     type Config = DbConfig;
     type Instance = DbConnection;
+    type Topology = Pooled<Self>;
 
     fn key() -> ResourceKey {
         resource_key!("db.connection")
@@ -405,7 +397,7 @@ impl HasCredentialSlots for DbResource {
 }
 
 #[async_trait::async_trait]
-impl Pooled for DbResource {}
+impl PoolProvider for DbResource {}
 
 #[tokio::test]
 async fn use_case_3_db_with_recovery_and_shutdown() {
@@ -429,10 +421,7 @@ async fn use_case_3_db_with_recovery_and_shutdown() {
             config,
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::pooled(PoolRuntime::<DbResource>::new(
-                pool_config,
-                fingerprint,
-            )),
+            topology: Pooled::<DbResource>::new(pool_config, fingerprint),
             recovery_gate: None,
         })
         .expect("registration should succeed");
@@ -528,10 +517,7 @@ async fn error_cancelled_after_shutdown() {
             config,
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::pooled(PoolRuntime::<HttpResource>::new(
-                PoolConfig::default(),
-                fingerprint,
-            )),
+            topology: Pooled::<HttpResource>::new(PoolConfig::default(), fingerprint),
             recovery_gate: None,
         })
         .unwrap();

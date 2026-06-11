@@ -16,7 +16,7 @@ use std::{
     },
 };
 
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, MutexGuard};
 use tracing::debug;
 
 // ─── InstanceStore ────────────────────────────────────────────────────────────
@@ -27,11 +27,17 @@ use tracing::debug;
 /// The epoch is captured at checkout time so a `return_slot` after a
 /// `bump_revoke_epoch()` detects the stale epoch and evicts rather than
 /// re-pooling.
-struct StoreEntry<S> {
-    slot: S,
+///
+/// `pub(crate)` so the built-in [`Pooled`](crate::topology::pooled::Pooled)
+/// pipeline can iterate the idle queue under [`InstanceStore::lock_idle`] and
+/// read each entry's `.slot` during rotation fan-out without copying it out of
+/// the store. The fields stay crate-visible only — author topologies receive a
+/// `&InstanceStore` and never name `StoreEntry`.
+pub(crate) struct StoreEntry<S> {
+    pub(crate) slot: S,
     /// The store's revoke-epoch as observed when this slot was **checked out**
     /// (via [`InstanceStore::checkout`] → stamps with the live counter).
-    checkout_epoch: u64,
+    pub(crate) checkout_epoch: u64,
 }
 
 /// Framework-owned idle queue and revoke-epoch state for a
@@ -65,6 +71,10 @@ struct StoreEntry<S> {
 pub struct InstanceStore<S> {
     /// Framework-held idle queue; slots are `(S, checkout_epoch)` pairs.
     idle: Arc<Mutex<VecDeque<StoreEntry<S>>>>,
+    // `Clone` (below) is hand-written, not derived: it shares the same `Arc`
+    // backing — a cloned handle returns slots into the *same* idle queue and
+    // observes the *same* revoke counter. This is what lets the release
+    // closure hold a cloned `InstanceStore` and recycle into the live store.
     /// Monotonic credential-revoke counter. Bumped synchronously by the
     /// manager on credential revoke — before any async revoke hook dispatch.
     /// Every `return_slot` compares the slot's checkout epoch against this;
@@ -73,6 +83,16 @@ pub struct InstanceStore<S> {
     /// Maximum number of slots the store will hold idle.
     /// `None` = unbounded (Resident / permit-only topologies).
     capacity: Option<usize>,
+}
+
+impl<S> Clone for InstanceStore<S> {
+    fn clone(&self) -> Self {
+        Self {
+            idle: Arc::clone(&self.idle),
+            revoke_epoch: Arc::clone(&self.revoke_epoch),
+            capacity: self.capacity,
+        }
+    }
 }
 
 impl<S: Send + 'static> InstanceStore<S> {
@@ -158,14 +178,15 @@ impl<S: Send + 'static> InstanceStore<S> {
     /// Returns a slot to the idle queue, running the revoke-epoch fence.
     ///
     /// If the slot's `checkout_epoch` is behind the live revoke counter, the
-    /// slot was leased under a since-revoked credential; `action` is called
-    /// with `Return::Evict` and the slot is NOT re-queued. If the epoch is
-    /// current and the optional capacity cap has not been reached, the slot
-    /// is returned to the idle queue and `action` is called with
-    /// `Return::Recycled`.
+    /// slot was leased under a since-revoked credential and is **not**
+    /// re-queued — it is handed back via [`ReturnOutcome::Evict`] for the
+    /// caller to destroy. Same when the optional capacity cap is already
+    /// reached. Otherwise the slot is enqueued and [`ReturnOutcome::Recycled`]
+    /// is returned.
     ///
-    /// The `action` callback lets the topology drive async eviction (e.g.
-    /// calling `Provider::destroy`) without the store owning `Provider`.
+    /// Returning the evicted slot (rather than swallowing it) lets the
+    /// topology drive async eviction (e.g. calling `Provider::destroy`)
+    /// without the store owning `Provider`.
     ///
     /// # Fence guarantee
     ///
@@ -173,7 +194,7 @@ impl<S: Send + 'static> InstanceStore<S> {
     /// lock, so a concurrent `bump_revoke_epoch` followed by an idle-walk
     /// cannot enqueue a stale slot: the walk holds the same lock and sees the
     /// already-bumped counter.
-    pub async fn return_slot(&self, slot: S, checkout_epoch: u64) -> ReturnOutcome {
+    pub async fn return_slot(&self, slot: S, checkout_epoch: u64) -> ReturnOutcome<S> {
         let mut idle = self.idle.lock().await;
         // Revoke-epoch fence: re-read under the idle lock (same lock the
         // credential-revoke idle-walk holds) to make compare-then-push
@@ -185,13 +206,13 @@ impl<S: Send + 'static> InstanceStore<S> {
                 checkout_epoch,
                 live_epoch, "InstanceStore::return_slot: epoch mismatch — evicting slot"
             );
-            return ReturnOutcome::Evict;
+            return ReturnOutcome::Evict(slot);
         }
         // Capacity check.
         if let Some(cap) = self.capacity
             && idle.len() >= cap
         {
-            return ReturnOutcome::Evict;
+            return ReturnOutcome::Evict(slot);
         }
         idle.push_back(StoreEntry {
             slot,
@@ -256,6 +277,93 @@ impl<S: Send + 'static> InstanceStore<S> {
     pub fn stamp_epoch(&self) -> u64 {
         self.current_revoke_epoch()
     }
+
+    /// Locks the idle queue and returns the guard for in-place iteration.
+    ///
+    /// Crate-internal: the built-in
+    /// [`Pooled`](crate::topology::pooled::Pooled) rotation fan-out holds this
+    /// guard across **every** `&R::Instance` credential hook `.await` so no
+    /// checkout / return can interleave mid-rotation — the same lock
+    /// [`checkout`](Self::checkout) / [`return_slot`](Self::return_slot) take.
+    /// Author topologies receive a `&InstanceStore` and can never name the
+    /// guard, so the "cannot retain the store" rule still holds: only the
+    /// framework can lock the queue, never the author.
+    ///
+    /// Holding this guard across an `.await` is a deliberate head-of-line
+    /// block: rotation is rare and the alternative (drop-and-reacquire between
+    /// entries) reopens the window for a slot to be checked out mid-rotation
+    /// and miss its hook (a credential-isolation violation). Do not widen the
+    /// unlocked window.
+    pub(crate) async fn lock_idle(&self) -> MutexGuard<'_, VecDeque<StoreEntry<S>>> {
+        self.idle.lock().await
+    }
+
+    /// Removes and returns every idle slot for which `should_evict` is `true`,
+    /// keeping the rest in original order.
+    ///
+    /// The eviction predicate is evaluated under the idle lock, atomic against
+    /// concurrent checkout/return. Used by the background maintenance reaper
+    /// for the fingerprint / max-lifetime / idle-timeout arms; the
+    /// revoke-epoch arm runs through [`evict_stale`](Self::evict_stale).
+    ///
+    /// Complexity: O(n) over the idle queue (average and worst case), bounded
+    /// by the configured idle capacity.
+    pub(crate) async fn retain<F>(&self, mut should_evict: F) -> Vec<S>
+    where
+        F: FnMut(&S, u64) -> bool,
+    {
+        let mut idle = self.idle.lock().await;
+        let mut evicted = Vec::new();
+        let mut keep = VecDeque::with_capacity(idle.len());
+        for entry in idle.drain(..) {
+            if should_evict(&entry.slot, entry.checkout_epoch) {
+                evicted.push(entry.slot);
+            } else {
+                keep.push_back(entry);
+            }
+        }
+        *idle = keep;
+        evicted
+    }
+
+    /// Deposits a freshly-created slot into the idle queue, stamping it with
+    /// the live revoke epoch **under the idle lock**, fenced against a
+    /// concurrent revoke.
+    ///
+    /// This is the first-deposit counterpart to [`return_slot`](Self::return_slot):
+    /// a slot whose creation straddled a revoke is stamped with the live
+    /// counter so a revoke that already landed evicts it immediately
+    /// ([`ReturnOutcome::Evict`]); otherwise it is queued (capacity
+    /// permitting). The `created_epoch` is the snapshot taken at the *start*
+    /// of creation; if it is already behind the live counter the slot was
+    /// built against a since-revoked credential and is rejected.
+    ///
+    /// # Fence guarantee
+    ///
+    /// The epoch read and the push happen under the idle lock — the same lock
+    /// the revoke idle-walk holds — so the compare-then-push is atomic against
+    /// a concurrent `bump_revoke_epoch` + reaper sweep.
+    pub async fn deposit_fresh(&self, slot: S, created_epoch: u64) -> ReturnOutcome<S> {
+        let mut idle = self.idle.lock().await;
+        let live_epoch = self.revoke_epoch.load(Ordering::Acquire);
+        if created_epoch != live_epoch {
+            debug!(
+                created_epoch,
+                live_epoch, "InstanceStore::deposit_fresh: epoch mismatch — rejecting fresh slot"
+            );
+            return ReturnOutcome::Evict(slot);
+        }
+        if let Some(cap) = self.capacity
+            && idle.len() >= cap
+        {
+            return ReturnOutcome::Evict(slot);
+        }
+        idle.push_back(StoreEntry {
+            slot,
+            checkout_epoch: created_epoch,
+        });
+        ReturnOutcome::Recycled
+    }
 }
 
 // ─── Checkout ─────────────────────────────────────────────────────────────────
@@ -308,22 +416,22 @@ impl<S> CheckedOut<S> {
 
 // ─── ReturnOutcome ─────────────────────────────────────────────────────────────
 
-/// The outcome of [`InstanceStore::return_slot`].
+/// The outcome of [`InstanceStore::return_slot`] / [`InstanceStore::deposit_fresh`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReturnOutcome {
+pub enum ReturnOutcome<S> {
     /// The slot was returned to the idle queue — it is clean and ready to
     /// be leased again.
     Recycled,
     /// The slot was NOT returned because its checkout epoch is behind the
-    /// live revoke counter, or the capacity cap was reached. The caller
-    /// should destroy the slot.
-    Evict,
+    /// live revoke counter, or the capacity cap was reached. The slot is
+    /// handed back for the caller to destroy.
+    Evict(S),
 }
 
-impl ReturnOutcome {
+impl<S> ReturnOutcome<S> {
     /// Returns `true` if the slot was evicted and must be destroyed.
-    pub fn is_evict(self) -> bool {
-        self == Self::Evict
+    pub fn is_evict(&self) -> bool {
+        matches!(self, Self::Evict(_))
     }
 }
 
@@ -353,9 +461,8 @@ mod tests {
         store.bump_revoke_epoch();
         // Now return — the checkout_epoch is behind the live counter.
         let outcome = store.return_slot(42u32, checkout_epoch).await;
-        assert_eq!(
-            outcome,
-            ReturnOutcome::Evict,
+        assert!(
+            outcome.is_evict(),
             "a slot checked out before a revoke must be evicted, not re-pooled"
         );
         assert_eq!(
@@ -373,7 +480,7 @@ mod tests {
         store.bump_revoke_epoch();
         store.bump_revoke_epoch();
         let outcome = store.return_slot(99u32, checkout_epoch).await;
-        assert_eq!(outcome, ReturnOutcome::Evict);
+        assert!(outcome.is_evict());
     }
 
     // Slot returned at the same epoch after a bump is recycled.
@@ -488,9 +595,8 @@ mod tests {
         let epoch = store.stamp_epoch();
         assert_eq!(store.return_slot(1, epoch).await, ReturnOutcome::Recycled);
         assert_eq!(store.return_slot(2, epoch).await, ReturnOutcome::Recycled);
-        assert_eq!(
-            store.return_slot(3, epoch).await,
-            ReturnOutcome::Evict,
+        assert!(
+            store.return_slot(3, epoch).await.is_evict(),
             "third slot exceeds cap of 2 → evicted"
         );
         assert_eq!(store.len().await, 2);

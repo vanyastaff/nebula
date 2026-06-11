@@ -21,12 +21,12 @@ use std::{collections::HashMap, sync::Arc};
 
 use nebula_core::{DeclaresDependencies, Dependencies, ResourceKey, ScopeLevel, resource_key};
 use nebula_expression::ExpressionEngine;
+use nebula_resource::Resident;
 use nebula_resource::{
     Manager, ResidentConfig, ResourceContext,
     error::Error,
     resource::{HasCredentialSlots, Provider, ResourceConfig, ResourceMetadata},
-    runtime::{TopologyRuntime, resident::ResidentRuntime},
-    topology::resident::Resident,
+    topology::resident::ResidentProvider,
 };
 use nebula_schema::{Field, HasSchema, Schema, ValidSchema, field_key};
 use serde::Deserialize;
@@ -91,6 +91,7 @@ struct Db;
 impl Provider for Db {
     type Config = DbConfig;
     type Instance = Arc<()>;
+    type Topology = Resident<Self>;
 
     fn key() -> ResourceKey {
         resource_key!("secret-config-guard-db")
@@ -116,7 +117,7 @@ impl HasCredentialSlots for Db {
 }
 
 #[async_trait::async_trait]
-impl Resident for Db {
+impl ResidentProvider for Db {
     fn is_alive_sync(&self, _runtime: &Arc<()>) -> bool {
         true
     }
@@ -131,8 +132,8 @@ impl DeclaresDependencies for Db {
     }
 }
 
-fn topology() -> TopologyRuntime<Db> {
-    TopologyRuntime::resident(ResidentRuntime::<Db>::new(ResidentConfig::default()))
+fn topology() -> Resident<Db> {
+    Resident::<Db>::new(ResidentConfig::default())
 }
 
 // ── Negative: secret-shaped field is rejected (the security assertion) ──────

@@ -2,7 +2,18 @@
 //!
 //! [`ManagedResource`] is the internal representation of a registered
 //! resource. It bundles the resource implementation, hot-swappable config,
-//! topology runtime, release queue, and lifecycle metadata.
+//! the resource's [`Provider::Topology`](crate::resource::Provider::Topology),
+//! release queue, and lifecycle metadata.
+//!
+//! The framework reaches the topology monomorphically through the resource's
+//! associated [`Topology`](crate::topology::Topology) type. The
+//! topology-specific operations the manager pipeline needs — produce a
+//! [`ResourceGuard`], warm up, run the maintenance reaper, dispatch a
+//! credential rotation hook, advance the revoke fence, and report the
+//! admission surface — are expressed through the crate-internal
+//! [`TopologyDispatch`] bridge, implemented by the built-in
+//! [`Pooled`](crate::topology::Pooled) / [`Resident`](crate::topology::Resident)
+//! topologies and by any custom topology a resource pins.
 
 use std::{
     sync::{
@@ -13,16 +24,114 @@ use std::{
 };
 
 use arc_swap::ArcSwap;
+use async_trait::async_trait;
 use tokio::sync::Notify;
 
-use super::TopologyRuntime;
 use crate::{
+    context::ResourceContext,
     error::Error,
+    guard::ResourceGuard,
+    metrics::ResourceOpsMetrics,
+    options::AcquireOptions,
     recovery::RecoveryGate,
     release_queue::ReleaseQueue,
-    resource::Provider,
+    resource::{HasCredentialSlots, Provider},
     state::{ResourcePhase, ResourceStatus},
+    topology::{AdmissionPhase, Load, Topology, Unavailable},
+    topology_tag::TopologyTag,
 };
+
+/// Crate-internal bridge from the framework manager pipeline to a concrete
+/// topology, monomorphic in the resource type `R`.
+///
+/// `Provider::Topology` only guarantees [`Topology`] (the open lease/admission
+/// contract). The manager pipeline additionally needs operations that produce a
+/// typed [`ResourceGuard<R>`], drive warmup / maintenance, and dispatch the
+/// per-slot credential rotation hook against the resource handle. Those are
+/// expressed here, keyed to `R`, and implemented by the built-in
+/// [`Pooled<R>`](crate::topology::Pooled) /
+/// [`Resident<R>`](crate::topology::Resident) topologies (and any custom
+/// topology a resource pins as its `type Topology`).
+///
+/// The trait is `#[async_trait]` so the manager can hold a `dyn`-free but
+/// `async`-method bridge; it is reached monomorphically (never behind a `dyn`),
+/// so the boxed-future cost is negligible next to the I/O each method performs.
+#[async_trait]
+pub trait TopologyDispatch<R: Provider>: Topology + Send + Sync + 'static {
+    /// Runs the full acquire pipeline for this topology and returns a typed
+    /// [`ResourceGuard<R>`]. This is the inherent acquire (idle checkout /
+    /// create / prepare for pool; clone-or-create for resident), distinct from
+    /// the open [`Topology::acquire`] (which only consumes the admission
+    /// ticket).
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "mirrors the inherent pool acquire — resource/config/ctx/queue/gen/options/metrics are distinct concerns"
+    )]
+    async fn acquire_guard(
+        &self,
+        resource: &R,
+        config: &R::Config,
+        ctx: &ResourceContext,
+        release_queue: &Arc<ReleaseQueue>,
+        generation: u64,
+        options: &AcquireOptions,
+        metrics: Option<ResourceOpsMetrics>,
+    ) -> Result<ResourceGuard<R>, Error>;
+
+    /// Pre-warms the topology (no-op for topologies without an idle queue).
+    /// Returns the number of instances created.
+    async fn warmup(&self, _resource: &R, _config: &R::Config, _ctx: &ResourceContext) -> usize {
+        0
+    }
+
+    /// Runs one background maintenance sweep (idle-timeout / max-lifetime /
+    /// stale-fingerprint / revoke eviction). Returns the number evicted.
+    /// No-op for topologies without an idle queue.
+    async fn run_maintenance(&self, _resource: &R) -> usize {
+        0
+    }
+
+    /// `Some((idle_timeout, max_lifetime, maintenance_interval))` if this
+    /// topology runs a background maintenance reaper, else `None`.
+    ///
+    /// The manager only spawns the reaper task when this returns `Some` and at
+    /// least one TTL is configured, so topologies with no idle eviction pay
+    /// zero background cost.
+    fn maintenance_schedule(&self) -> Option<MaintenanceSchedule> {
+        None
+    }
+
+    /// Advances the credential-revoke fence (no-op for topologies with no idle
+    /// queue to fence).
+    fn bump_revoke_epoch(&self) {}
+
+    /// Updates the config fingerprint so stale idle instances are evicted on
+    /// the next acquire / sweep (no-op for topologies without a fingerprint).
+    fn set_fingerprint(&self, _fingerprint: u64) {}
+
+    /// Dispatches the per-slot credential rotation hook against this topology's
+    /// live instances. Default no-op: a topology that manages no framework idle
+    /// queue has nothing to rotate.
+    async fn dispatch_credential_hook(
+        &self,
+        _resource: &R,
+        _slot: &str,
+        _refresh: bool,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+/// Background-maintenance cadence + TTLs for a topology that runs a reaper.
+#[derive(Debug, Clone, Copy)]
+pub struct MaintenanceSchedule {
+    /// Idle-timeout TTL, if configured.
+    pub idle_timeout: Option<Duration>,
+    /// Max-lifetime TTL, if configured.
+    pub max_lifetime: Option<Duration>,
+    /// Interval between maintenance sweeps.
+    pub maintenance_interval: Duration,
+}
 
 /// Per-registration runtime holding topology + metadata.
 ///
@@ -30,12 +139,26 @@ use crate::{
 /// lifetime of the resource. The `config` and `status` fields are
 /// atomically swappable for hot-reload.
 pub struct ManagedResource<R: Provider> {
-    /// The resource implementation (topology trait impl).
+    /// The resource implementation. Held alongside the topology so the
+    /// framework's uniform credential-rotation / maintenance walks can hand
+    /// the resource handle to the topology's hooks (the topology drives the
+    /// hooks; the resource value is owned here).
     pub(crate) resource: R,
     /// Hot-swappable operational configuration.
     pub(crate) config: ArcSwap<R::Config>,
-    /// Topology-specific runtime state.
-    pub(crate) topology: TopologyRuntime<R>,
+    /// The resource's lease topology, reached monomorphically.
+    pub(crate) topology: R::Topology,
+    /// Framework-owned storage borrowed by the open
+    /// [`Topology`](crate::topology::Topology) admission methods.
+    ///
+    /// The built-in [`Pooled`](crate::topology::Pooled) /
+    /// [`Resident`](crate::topology::Resident) topologies manage their own
+    /// internal storage and ignore this (their `Slot = ()`); it exists so the
+    /// open contract's `&InstanceStore<Slot>` argument has a real, borrowable
+    /// store without a per-call allocation. A custom topology receives a
+    /// borrowed `&store` it cannot retain — the structural barrier against a
+    /// cross-scope instance cache.
+    pub(crate) store: crate::topology::store::InstanceStore<<R::Topology as Topology>::Slot>,
     /// Background worker pool for async cleanup.
     pub(crate) release_queue: Arc<ReleaseQueue>,
     /// Monotonically increasing generation counter (bumped on reload).
@@ -136,26 +259,6 @@ impl<R: Provider> ManagedResource<R> {
         self.tainted.load(Ordering::Acquire)
     }
 
-    /// Advances the credential-revoke counter for a pooled topology so
-    /// every pool return-to-idle path destroys (never recycles or admits)
-    /// an instance authenticated with the now-revoked credential.
-    ///
-    /// Called synchronously by `Manager::revoke_slot` in phase 1, before the
-    /// revoke hook is dispatched — the same pre-`.await` discipline as
-    /// [`taint`](Self::taint). Only the [`Pool`](super::TopologyKind::Pool)
-    /// topology has an idle queue and the recycle / in-flight-create /
-    /// warmup / maintenance return-to-idle paths this counter guards; the
-    /// single-runtime topologies hold one shared `Arc<R::Instance>` and
-    /// dispatch the revoke hook directly against it under no idle-queue race,
-    /// so there is no return-to-idle site to fence and this is a no-op for
-    /// them. See the [`manager`](crate::manager) module docs for the
-    /// canonical revoke-epoch-fence rationale.
-    pub(crate) fn bump_revoke_epoch(&self) {
-        if let super::TopologyKind::Pool(rt) = &self.topology.kind {
-            rt.bump_revoke_epoch();
-        }
-    }
-
     /// Returns a clone of this resource's per-resource in-flight tracker so
     /// an acquire pipeline can pre-count against it (and hand it to the
     /// resulting guard). Distinct from the manager-wide `drain_tracker`:
@@ -178,58 +281,72 @@ impl<R: Provider> ManagedResource<R> {
     pub(crate) async fn wait_for_in_flight_drain(&self, timeout: Duration) -> Result<(), u64> {
         crate::manager::shutdown::wait_for_tracker_drain(&self.in_flight, timeout).await
     }
+}
 
-    /// Borrows the live runtime(s) for this topology and invokes the
-    /// per-slot credential hook — [`Resource::on_credential_refresh`] when
-    /// `refresh` is `true`, [`Resource::on_credential_revoke`] otherwise.
+// ── Operations that need the topology bridge (`R::Topology: TopologyDispatch<R>`).
+//
+// Split into its own `impl` block so the weak `R: Provider` block above stays
+// usable by code that never touches the topology (status / phase / taint /
+// drain). Everything that reaches into the topology — revoke fence, rotation
+// dispatch, the typed acquire pipeline — lives here behind the bridge bound.
+
+impl<R: Provider> ManagedResource<R>
+where
+    R: HasCredentialSlots,
+    R::Topology: TopologyDispatch<R>,
+{
+    /// Advances the credential-revoke fence so every return-to-idle path
+    /// destroys (never recycles or admits) an instance authenticated with the
+    /// now-revoked credential.
     ///
-    /// Resident dispatches once against its lazily-built runtime (reconcile-
-    /// aware: serialises against the resident `create` slow path to re-deliver
-    /// the hook to a runtime built against an older credential epoch rather
-    /// than skipping with a false success); Pool dispatches per idle instance
-    /// delegating to
-    /// [`PoolRuntime::dispatch_slot_hook_over_idle`](super::pool::PoolRuntime::dispatch_slot_hook_over_idle).
+    /// Called synchronously by `Manager::revoke_slot` in phase 1, before the
+    /// revoke hook is dispatched — the same pre-`.await` discipline as
+    /// [`taint`](Self::taint). Delegates to the topology, which owns the fence
+    /// (a no-op for topologies with no idle queue).
+    pub(crate) fn bump_revoke_epoch(&self) {
+        self.topology.bump_revoke_epoch();
+    }
+
+    /// Borrows the live topology and invokes the per-slot credential hook —
+    /// [`Provider::on_credential_refresh`] when `refresh` is `true`,
+    /// [`Provider::on_credential_revoke`] otherwise — against this resource's
+    /// instances.
     ///
-    /// **Topology audit of the `current() == None → Ok(())` stale-skip
-    /// (per-resource revoke deferral / #680).** Only **Resident** lazily builds its
-    /// runtime internally via `resource.create()` (under its `create_lock`,
-    /// with a `None`-cell window), so only Resident had the lost-update
-    /// where a rotation racing the first `create` could be recorded as a
-    /// success with the hook never delivered. Its dispatch goes through
-    /// [`ResidentRuntime::dispatch_resident_hook`](super::resident::ResidentRuntime::dispatch_resident_hook),
-    /// which serialises against `create` on the same lock and reconciles a
-    /// runtime built against an older credential epoch instead of silently
-    /// succeeding. Pool dispatches over every idle entry and rebuilds fresh
-    /// instances against the current (lock-free) slot, so an empty idle
-    /// queue masks no stale-bound runtime.
-    ///
-    /// The `refresh` flag selects the hook exactly once per topology arm;
-    /// both directions share identical per-topology runtime-borrow semantics.
+    /// The dispatch is topology-specific (resident reconcile vs pool idle
+    /// fan-out) and lives behind [`TopologyDispatch::dispatch_credential_hook`];
+    /// the resource handle the hook needs is supplied from `self.resource`.
     ///
     /// # Cancel Safety
     ///
-    /// This method is cancel-safe. The resource taint and revoke-epoch
-    /// bump are performed synchronously by the caller before this future
-    /// is polled. Dropping the returned future after taint leaves the
-    /// resource consistently marked as tainted — no partial-taint state
-    /// is possible and new acquires remain rejected.
-    pub(crate) async fn dispatch_slot_hook(&self, slot: &str, refresh: bool) -> Result<(), Error>
-    where
-        R: crate::resource::HasCredentialSlots,
-    {
-        match &self.topology.kind {
-            // Reconcile-aware (per-resource revoke deferral / #680): serialises
-            // against the resident `create` slow path and re-delivers the
-            // hook to a runtime built against an older credential epoch
-            // rather than skipping with a false success.
-            super::TopologyKind::Resident(rt) => {
-                rt.dispatch_resident_hook(&self.resource, slot, refresh)
-                    .await
-            },
-            super::TopologyKind::Pool(rt) => {
-                rt.dispatch_slot_hook_over_idle(&self.resource, slot, refresh)
-                    .await
-            },
-        }
+    /// This method is cancel-safe. The resource taint and revoke-epoch bump
+    /// are performed synchronously by the caller before this future is polled.
+    /// Dropping the returned future after taint leaves the resource
+    /// consistently marked as tainted — no partial-taint state is possible and
+    /// new acquires remain rejected.
+    pub(crate) async fn dispatch_slot_hook(&self, slot: &str, refresh: bool) -> Result<(), Error> {
+        self.topology
+            .dispatch_credential_hook(&self.resource, slot, refresh)
+            .await
+    }
+
+    /// The topology tag for rotation / diagnostic spans.
+    pub(crate) fn topology_tag(&self) -> TopologyTag {
+        self.topology.tag()
+    }
+
+    /// Admission phase snapshot from the topology.
+    pub(crate) fn admission_phase(&self) -> AdmissionPhase {
+        self.topology.phase(&self.store)
+    }
+
+    /// Admission load snapshot from the topology.
+    pub(crate) fn admission_load(&self) -> Option<Load> {
+        self.topology.load(&self.store)
+    }
+
+    /// Sync capacity gate from the topology (the ticket is dropped — this is a
+    /// yes/no gate with a typed reason).
+    pub(crate) fn try_reserve_gate(&self) -> Result<(), Unavailable> {
+        self.topology.try_reserve(&self.store).map(|_ticket| ())
     }
 }

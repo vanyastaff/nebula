@@ -16,6 +16,7 @@
 // understand the import pattern.
 // ============================================================================
 
+use nebula_resource::topology::resident::ResidentProvider;
 use std::{
     sync::{
         Arc,
@@ -25,16 +26,14 @@ use std::{
 };
 
 use nebula_core::{ExecutionId, ResourceKey, resource_key};
+use nebula_resource::Pooled;
+use nebula_resource::topology::pooled::PoolProvider;
 use nebula_resource::{
     AcquireOptions, Manager, PoolConfig, RegistrationSpec, ResidentConfig, ResourceContext,
     ResourceGuard, ScopeLevel, ShutdownConfig, SlotIdentity,
     error::{Error, ErrorKind},
     resource::{HasCredentialSlots, Provider, ResourceConfig, ResourceMetadata},
-    runtime::{TopologyRuntime, pool::PoolRuntime, resident::ResidentRuntime},
-    topology::{
-        pooled::{BrokenCheck, Pooled},
-        resident::Resident,
-    },
+    topology::{Resident, pooled::BrokenCheck},
 };
 
 // ============================================================================
@@ -123,6 +122,7 @@ struct HttpClientResource {
 impl Provider for HttpClientResource {
     type Config = HttpClientConfig;
     type Instance = FakeHttpClient;
+    type Topology = Pooled<Self>;
 
     fn key() -> ResourceKey {
         resource_key!("http.client")
@@ -163,7 +163,7 @@ impl HasCredentialSlots for HttpClientResource {
 // nothing in the docs says "if Runtime == Lease you don't need From impls".
 // SEVERITY: Minor — confusing compile error for newcomers.
 
-impl Pooled for HttpClientResource {
+impl PoolProvider for HttpClientResource {
     fn is_broken(&self, _runtime: &FakeHttpClient) -> BrokenCheck {
         BrokenCheck::Healthy
     }
@@ -179,15 +179,15 @@ async fn use_case_1_http_client_pool() {
     // I must construct a TopologyRuntime<R> manually. There is no
     // `Manager::register_pooled(resource, config, PoolConfig::default())`.
     // Instead, the pattern is:
-    //   let pool_rt = PoolRuntime::<MyResource>::new(pool_config, fingerprint);
-    //   manager.register(..., TopologyRuntime::pooled(pool_rt), ...);
+    //   let pool_rt = Pooled::<MyResource>::new(pool_config, fingerprint);
+    //   manager.register(..., pool_rt, ...);
     //
     // The `fingerprint: u64` parameter to PoolRuntime::new has no
     // documentation. I had to read the source to understand it's a config
     // change-detection token (zero is fine for initial registration).
     // SEVERITY: Major — forces every user to understand internal pool plumbing.
 
-    let pool_rt = PoolRuntime::<HttpClientResource>::new(
+    let pool_rt = Pooled::<HttpClientResource>::new(
         PoolConfig {
             max_size: 4,
             ..PoolConfig::default()
@@ -213,7 +213,7 @@ async fn use_case_1_http_client_pool() {
             },
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::pooled(pool_rt),
+            topology: pool_rt,
             recovery_gate: None,
         })
         .expect("registration should succeed");
@@ -289,6 +289,7 @@ struct ConfigStoreResource;
 impl Provider for ConfigStoreResource {
     type Config = ConfigStoreConfig;
     type Instance = ConfigStore;
+    type Topology = Resident<Self>;
 
     fn key() -> ResourceKey {
         resource_key!("config.store")
@@ -323,7 +324,7 @@ impl HasCredentialSlots for ConfigStoreResource {
 // pointing at the Resident impl, not at the missing Clone impl on Lease.
 // This is a mild footgun — the error message doesn't say "add Clone to Lease".
 #[async_trait::async_trait]
-impl Resident for ConfigStoreResource {}
+impl ResidentProvider for ConfigStoreResource {}
 
 // FRICTION NOTE [ResidentRuntime REQUIRES Runtime: Clone + Into<Lease>]:
 // Same issue as pooled — the bounds are on the impl block inside
@@ -333,7 +334,7 @@ impl Resident for ConfigStoreResource {}
 async fn use_case_2_resident_config_store() {
     let manager = Manager::new();
 
-    let resident_rt = ResidentRuntime::<ConfigStoreResource>::new(ResidentConfig {
+    let resident_rt = Resident::<ConfigStoreResource>::new(ResidentConfig {
         recreate_on_failure: false,
         create_timeout: Duration::from_secs(5),
     });
@@ -354,7 +355,7 @@ async fn use_case_2_resident_config_store() {
             },
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::resident(resident_rt),
+            topology: resident_rt,
             recovery_gate: None,
         })
         .expect("resident registration should succeed");
@@ -440,6 +441,7 @@ impl DbResource {
 impl Provider for DbResource {
     type Config = DbConfig;
     type Instance = FakeDbConnection;
+    type Topology = Pooled<Self>;
 
     fn key() -> ResourceKey {
         resource_key!("db.connection")
@@ -468,7 +470,7 @@ impl HasCredentialSlots for DbResource {
     }
 }
 
-impl Pooled for DbResource {
+impl PoolProvider for DbResource {
     fn is_broken(&self, _runtime: &FakeDbConnection) -> BrokenCheck {
         BrokenCheck::Healthy
     }
@@ -477,7 +479,7 @@ impl Pooled for DbResource {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn use_case_3_db_pool_with_resilience_and_shutdown() {
     let db = DbResource::new();
-    let pool_rt = PoolRuntime::<DbResource>::new(
+    let pool_rt = Pooled::<DbResource>::new(
         PoolConfig {
             max_size: 5,
             min_size: 1,
@@ -497,7 +499,7 @@ async fn use_case_3_db_pool_with_resilience_and_shutdown() {
             },
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::pooled(pool_rt),
+            topology: pool_rt,
             recovery_gate: None,
         })
         .expect("db registration should succeed");

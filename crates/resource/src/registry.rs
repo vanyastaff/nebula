@@ -194,8 +194,10 @@ pub trait ManagedHandle: sealed::Sealed + Send + Sync + 'static {
 impl<R: Provider> sealed::Sealed for ManagedResource<R> {}
 
 #[async_trait]
-impl<R: Provider + crate::resource::HasCredentialSlots + Send + Sync + 'static> ManagedHandle
-    for ManagedResource<R>
+impl<R> ManagedHandle for ManagedResource<R>
+where
+    R: Provider + crate::resource::HasCredentialSlots + Send + Sync + 'static,
+    R::Topology: crate::runtime::managed::TopologyDispatch<R>,
 {
     fn resource_key(&self) -> ResourceKey {
         R::key()
@@ -222,7 +224,7 @@ impl<R: Provider + crate::resource::HasCredentialSlots + Send + Sync + 'static> 
     }
 
     fn topology_tag(&self) -> TopologyTag {
-        self.topology.tag()
+        ManagedResource::topology_tag(self)
     }
 
     fn taint(&self) {
@@ -246,15 +248,15 @@ impl<R: Provider + crate::resource::HasCredentialSlots + Send + Sync + 'static> 
     }
 
     fn admission_phase(&self) -> crate::topology::AdmissionPhase {
-        self.topology.dispatch_admission_phase()
+        ManagedResource::admission_phase(self)
     }
 
     fn try_reserve_gate(&self) -> Result<(), crate::topology::Unavailable> {
-        self.topology.dispatch_try_reserve_gate()
+        ManagedResource::try_reserve_gate(self)
     }
 
     fn admission_load(&self) -> Option<crate::topology::Load> {
-        self.topology.dispatch_load()
+        ManagedResource::admission_load(self)
     }
 
     async fn acquire(
@@ -263,8 +265,16 @@ impl<R: Provider + crate::resource::HasCredentialSlots + Send + Sync + 'static> 
         ctx: ResourceContext,
         opts: AcquireOptions,
     ) -> Result<Box<dyn Any + Send + Sync>, Error> {
-        let this = Arc::clone(&self);
-        self.topology.dispatch_acquire(this, mgr, ctx, opts).await
+        // Single monomorphic acquire path: run the framework pipeline through
+        // the topology bridge, producing a typed `ResourceGuard<R>`, then box
+        // it for the erased caller. `Manager::run_acquire` owns the
+        // resilience-gate + drain bookkeeping + post-taint re-check; the
+        // dispatch closure runs the topology's inherent acquire.
+        let guard = mgr
+            .clone()
+            .run_acquire_dispatch::<R>(self, &ctx, &opts)
+            .await?;
+        Ok(Box::new(guard) as Box<dyn Any + Send + Sync>)
     }
 }
 

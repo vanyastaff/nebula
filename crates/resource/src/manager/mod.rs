@@ -924,8 +924,7 @@ mod shutdown_post_count_race_tests {
         error::ErrorKind,
         options::AcquireOptions,
         resource::{HasCredentialSlots, ResourceConfig, ResourceMetadata},
-        runtime::{TopologyKind, TopologyRuntime, resident::ResidentRuntime},
-        topology::resident::{Resident, config::Config as ResidentConfig},
+        topology::{Resident, resident::config::Config as ResidentConfig},
     };
 
     #[derive(Clone, Default)]
@@ -947,6 +946,7 @@ mod shutdown_post_count_race_tests {
     impl Provider for ShutdownRaceResident {
         type Config = RaceCfg;
         type Instance = ();
+        type Topology = Resident<Self>;
 
         fn key() -> ResourceKey {
             resource_key!("test.shutdown_post_count_race.resident")
@@ -967,7 +967,7 @@ mod shutdown_post_count_race_tests {
         }
     }
 
-    impl Resident for ShutdownRaceResident {
+    impl crate::topology::ResidentProvider for ShutdownRaceResident {
         fn is_alive_sync(&self, _runtime: &()) -> bool {
             true
         }
@@ -981,6 +981,39 @@ mod shutdown_post_count_race_tests {
         ResourceContext::minimal(scope, CancellationToken::new())
     }
 
+    fn register_race_resident(manager: &Manager, topology: Resident<ShutdownRaceResident>) {
+        let spec = RegistrationSpec {
+            resource: ShutdownRaceResident,
+            config: RaceCfg,
+            scope: ScopeLevel::Global,
+            slot_identity: crate::dedup::SlotIdentity::Unbound,
+            topology,
+            recovery_gate: None,
+        };
+        assert!(manager.register(spec).is_ok(), "register succeeds");
+    }
+
+    /// Runs the resident acquire pipeline through the topology bridge — the
+    /// same monomorphic dispatch `run_acquire_dispatch` performs.
+    async fn race_resident_acquire(
+        managed: &Arc<ManagedResource<ShutdownRaceResident>>,
+        ctx: &ResourceContext,
+    ) -> Result<crate::guard::ResourceGuard<ShutdownRaceResident>, Error> {
+        use crate::runtime::managed::TopologyDispatch as _;
+        managed
+            .topology
+            .acquire_guard(
+                &managed.resource,
+                &managed.config(),
+                ctx,
+                &managed.release_queue,
+                managed.generation(),
+                &AcquireOptions::default(),
+                None,
+            )
+            .await
+    }
+
     /// Deterministic reproduction of the use-after-drain. The acquire
     /// resolves its row *before* shutdown (Defense A passes), shutdown then
     /// drains (sees `0` because the acquire has not yet hit
@@ -991,17 +1024,8 @@ mod shutdown_post_count_race_tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn run_acquire_rejects_when_drain_completed_after_lookup_passed() {
         let manager = Manager::new();
-        let resident_rt = ResidentRuntime::<ShutdownRaceResident>::new(ResidentConfig::default());
-        manager
-            .register(RegistrationSpec {
-                resource: ShutdownRaceResident,
-                config: RaceCfg,
-                scope: ScopeLevel::Global,
-                slot_identity: crate::dedup::SlotIdentity::Unbound,
-                topology: TopologyRuntime::resident(resident_rt),
-                recovery_gate: None,
-            })
-            .expect("register succeeds");
+        let resident_rt = Resident::<ShutdownRaceResident>::new(ResidentConfig::default());
+        register_race_resident(&manager, resident_rt);
 
         let acquire_ctx = ctx();
 
@@ -1032,20 +1056,7 @@ mod shutdown_post_count_race_tests {
             .run_acquire(Arc::clone(&managed), || {
                 let managed = Arc::clone(&managed);
                 let ctx = &acquire_ctx;
-                async move {
-                    match &managed.topology.kind {
-                        TopologyKind::Resident(rt) => {
-                            rt.acquire(
-                                &managed.resource,
-                                &managed.config(),
-                                ctx,
-                                &AcquireOptions::default(),
-                            )
-                            .await
-                        },
-                        other => Err(Manager::unexpected_topology::<ShutdownRaceResident>(other)),
-                    }
-                }
+                async move { race_resident_acquire(&managed, ctx).await }
             })
             .await;
 
@@ -1080,17 +1091,8 @@ mod shutdown_post_count_race_tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn run_acquire_still_succeeds_when_not_shutting_down() {
         let manager = Manager::new();
-        let resident_rt = ResidentRuntime::<ShutdownRaceResident>::new(ResidentConfig::default());
-        manager
-            .register(RegistrationSpec {
-                resource: ShutdownRaceResident,
-                config: RaceCfg,
-                scope: ScopeLevel::Global,
-                slot_identity: crate::dedup::SlotIdentity::Unbound,
-                topology: TopologyRuntime::resident(resident_rt),
-                recovery_gate: None,
-            })
-            .expect("register succeeds");
+        let resident_rt = Resident::<ShutdownRaceResident>::new(ResidentConfig::default());
+        register_race_resident(&manager, resident_rt);
 
         let acquire_ctx = ctx();
         let managed = manager
@@ -1101,20 +1103,7 @@ mod shutdown_post_count_race_tests {
             .run_acquire(Arc::clone(&managed), || {
                 let managed = Arc::clone(&managed);
                 let ctx = &acquire_ctx;
-                async move {
-                    match &managed.topology.kind {
-                        TopologyKind::Resident(rt) => {
-                            rt.acquire(
-                                &managed.resource,
-                                &managed.config(),
-                                ctx,
-                                &AcquireOptions::default(),
-                            )
-                            .await
-                        },
-                        other => Err(Manager::unexpected_topology::<ShutdownRaceResident>(other)),
-                    }
-                }
+                async move { race_resident_acquire(&managed, ctx).await }
             })
             .await;
 

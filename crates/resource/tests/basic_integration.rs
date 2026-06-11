@@ -10,19 +10,18 @@ use std::sync::{
 };
 
 use nebula_core::{ExecutionId, ResourceKey, resource_key};
+use nebula_resource::ResidentConfig;
 use nebula_resource::{
-    AcquireOptions, Manager, RegistrationSpec, ResourceContext, ScopeLevel, ShutdownConfig,
-    SlotIdentity,
+    AcquireOptions, Manager, Pooled, RegistrationSpec, Resident, ResourceContext, ScopeLevel,
+    ShutdownConfig, SlotIdentity, TopologyTag,
     error::{Error, ErrorKind},
     guard::ResourceGuard,
     recovery::{GateState, RecoveryGate, RecoveryGateConfig},
     release_queue::ReleaseQueue,
     resource::{HasCredentialSlots, Provider, ResourceConfig, ResourceMetadata},
-    runtime::{TopologyRuntime, pool::PoolRuntime, resident::ResidentRuntime},
     topology::{
-        pooled::{BrokenCheck, Pooled, RecycleDecision},
-        resident,
-        resident::Resident,
+        pooled::{BrokenCheck, PoolProvider, RecycleDecision},
+        resident::ResidentProvider,
     },
 };
 
@@ -87,6 +86,7 @@ impl PoolTestResource {
 impl Provider for PoolTestResource {
     type Config = TestConfig;
     type Instance = Arc<AtomicU64>;
+    type Topology = Pooled<Self>;
 
     fn key() -> ResourceKey {
         resource_key!("test-pool")
@@ -117,7 +117,7 @@ impl HasCredentialSlots for PoolTestResource {
     }
 }
 
-impl Pooled for PoolTestResource {
+impl PoolProvider for PoolTestResource {
     fn is_broken(&self, _runtime: &Arc<AtomicU64>) -> BrokenCheck {
         if self.break_flag.load(Ordering::Relaxed) {
             BrokenCheck::Broken("forced".into())
@@ -126,13 +126,6 @@ impl Pooled for PoolTestResource {
         }
     }
 }
-
-// Also impl `Resident` so the topology-mismatch test can call the resident
-// acquire path against a row registered as Pool and assert the runtime
-// `unexpected_topology` rejection (the resident body never runs — the
-// pipeline errors on the mismatch before dispatch).
-#[async_trait::async_trait]
-impl Resident for PoolTestResource {}
 
 // ---------------------------------------------------------------------------
 // Resident mock resource
@@ -157,6 +150,7 @@ impl ResidentTestResource {
 impl Provider for ResidentTestResource {
     type Config = TestConfig;
     type Instance = Arc<AtomicU64>;
+    type Topology = Resident<Self>;
 
     fn key() -> ResourceKey {
         resource_key!("test-resident")
@@ -187,7 +181,7 @@ impl HasCredentialSlots for ResidentTestResource {
 }
 
 #[async_trait::async_trait]
-impl Resident for ResidentTestResource {
+impl ResidentProvider for ResidentTestResource {
     fn is_alive_sync(&self, _runtime: &Arc<AtomicU64>) -> bool {
         self.alive.load(Ordering::Relaxed)
     }
@@ -236,9 +230,9 @@ async fn poll_until(deadline: std::time::Duration, mut cond: impl FnMut() -> boo
 /// Waits until a pool's idle count equals `expected` (bounded), failing the
 /// test with the observed count if it never does. The deterministic
 /// replacement for `drop(handle); sleep(50ms); assert_eq!(idle_count, n)`.
-async fn wait_idle_count<R>(pool: &PoolRuntime<R>, expected: usize)
+async fn wait_idle_count<R>(pool: &Pooled<R>, expected: usize)
 where
-    R: Pooled + Clone + Send + Sync + 'static,
+    R: PoolProvider + Clone + Send + Sync + 'static,
     R::Instance: Clone + Send + Sync + 'static,
 {
     let deadline = std::time::Duration::from_secs(2);
@@ -287,7 +281,7 @@ async fn pool_acquire_use_release_reacquire() {
         max_size: 4,
         ..Default::default()
     };
-    let pool = PoolRuntime::<PoolTestResource>::new(config, 1);
+    let pool = Pooled::<PoolTestResource>::new(config, 1);
     let (rq, rq_handle) = ReleaseQueue::new(1);
     let rq = Arc::new(rq);
     let ctx = test_ctx();
@@ -306,7 +300,7 @@ async fn pool_acquire_use_release_reacquire() {
         .await
         .expect("first acquire should succeed");
 
-    assert_eq!(handle.topology_tag(), nebula_resource::TopologyTag::Pool);
+    assert_eq!(handle.topology_tag(), TopologyTag::Pool);
     assert_eq!(resource.create_counter.load(Ordering::Relaxed), 1);
 
     // Use the lease.
@@ -354,7 +348,7 @@ async fn pool_broken_instance_gets_replaced() {
         max_size: 2,
         ..Default::default()
     };
-    let pool = PoolRuntime::<PoolTestResource>::new(config, 1);
+    let pool = Pooled::<PoolTestResource>::new(config, 1);
     let (rq, rq_handle) = ReleaseQueue::new(1);
     let rq = Arc::new(rq);
     let ctx = test_ctx();
@@ -431,7 +425,7 @@ async fn pool_broken_instance_gets_replaced() {
 #[tokio::test]
 async fn resident_acquire_creates_then_clones() {
     let resource = ResidentTestResource::new();
-    let rt = ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
+    let rt = Resident::<ResidentTestResource>::new(ResidentConfig::default());
     let ctx = test_ctx();
 
     // First acquire creates.
@@ -440,7 +434,7 @@ async fn resident_acquire_creates_then_clones() {
         .await
         .expect("first acquire");
     assert_eq!(resource.create_counter.load(Ordering::Relaxed), 1);
-    assert_eq!(h1.topology_tag(), nebula_resource::TopologyTag::Resident);
+    assert_eq!(h1.topology_tag(), TopologyTag::Resident);
 
     // Second acquire clones (no new creation).
     let h2 = rt
@@ -460,11 +454,11 @@ async fn resident_acquire_creates_then_clones() {
 #[tokio::test]
 async fn resident_recreates_when_not_alive() {
     let resource = ResidentTestResource::new();
-    let config = resident::config::Config {
+    let config = ResidentConfig {
         recreate_on_failure: true,
         ..Default::default()
     };
-    let rt = ResidentRuntime::<ResidentTestResource>::new(config);
+    let rt = Resident::<ResidentTestResource>::new(config);
     let ctx = test_ctx();
 
     let _h1 = rt
@@ -500,7 +494,7 @@ async fn manager_register_and_acquire_pooled() {
         max_size: 4,
         ..Default::default()
     };
-    let pool_rt = PoolRuntime::<PoolTestResource>::new(pool_config, 1);
+    let pool_rt = Pooled::<PoolTestResource>::new(pool_config, 1);
 
     manager
         .register(RegistrationSpec {
@@ -508,7 +502,7 @@ async fn manager_register_and_acquire_pooled() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::pooled(pool_rt),
+            topology: pool_rt,
             recovery_gate: None,
         })
         .expect("registration should succeed");
@@ -521,7 +515,7 @@ async fn manager_register_and_acquire_pooled() {
         .await
         .expect("acquire should succeed");
 
-    assert_eq!(handle.topology_tag(), nebula_resource::TopologyTag::Pool);
+    assert_eq!(handle.topology_tag(), TopologyTag::Pool);
     assert_eq!(resource.create_counter.load(Ordering::Relaxed), 1);
 
     drop(handle);
@@ -548,7 +542,7 @@ async fn pool_maintenance_reaper_evicts_idle_timed_out_instance() {
         maintenance_interval: std::time::Duration::from_millis(50),
         ..Default::default()
     };
-    let pool_rt = PoolRuntime::<PoolTestResource>::new(pool_config, 1);
+    let pool_rt = Pooled::<PoolTestResource>::new(pool_config, 1);
 
     let mut events = manager.subscribe_events();
 
@@ -558,7 +552,7 @@ async fn pool_maintenance_reaper_evicts_idle_timed_out_instance() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::pooled(pool_rt),
+            topology: pool_rt,
             recovery_gate: None,
         })
         .expect("registration should succeed");
@@ -628,7 +622,7 @@ async fn pool_maintenance_reaper_not_spawned_without_ttl() {
         maintenance_interval: std::time::Duration::from_millis(50),
         ..Default::default()
     };
-    let pool_rt = PoolRuntime::<PoolTestResource>::new(pool_config, 1);
+    let pool_rt = Pooled::<PoolTestResource>::new(pool_config, 1);
 
     manager
         .register(RegistrationSpec {
@@ -636,7 +630,7 @@ async fn pool_maintenance_reaper_not_spawned_without_ttl() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::pooled(pool_rt),
+            topology: pool_rt,
             recovery_gate: None,
         })
         .expect("registration should succeed");
@@ -694,8 +688,7 @@ async fn pool_maintenance_reaper_not_spawned_without_ttl() {
 async fn manager_register_and_acquire_resident() {
     let manager = Manager::new();
     let resource = ResidentTestResource::new();
-    let resident_rt =
-        ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
+    let resident_rt = Resident::<ResidentTestResource>::new(ResidentConfig::default());
 
     manager
         .register(RegistrationSpec {
@@ -703,7 +696,7 @@ async fn manager_register_and_acquire_resident() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::resident(resident_rt),
+            topology: resident_rt,
             recovery_gate: None,
         })
         .expect("registration should succeed");
@@ -714,10 +707,7 @@ async fn manager_register_and_acquire_resident() {
         .await
         .expect("acquire should succeed");
 
-    assert_eq!(
-        handle.topology_tag(),
-        nebula_resource::TopologyTag::Resident
-    );
+    assert_eq!(handle.topology_tag(), TopologyTag::Resident);
     assert_eq!(resource.create_counter.load(Ordering::Relaxed), 1);
 }
 
@@ -725,8 +715,7 @@ async fn manager_register_and_acquire_resident() {
 async fn manager_shutdown_rejects_acquire() {
     let manager = Manager::new();
     let resource = ResidentTestResource::new();
-    let resident_rt =
-        ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
+    let resident_rt = Resident::<ResidentTestResource>::new(ResidentConfig::default());
 
     manager
         .register(RegistrationSpec {
@@ -734,7 +723,7 @@ async fn manager_shutdown_rejects_acquire() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::resident(resident_rt),
+            topology: resident_rt,
             recovery_gate: None,
         })
         .unwrap();
@@ -774,7 +763,7 @@ fn pool_runtime_rejects_min_greater_than_max() {
         ..Default::default()
     };
     let result = std::panic::catch_unwind(|| {
-        PoolRuntime::<PoolTestResource>::new(pool_config, test_config().fingerprint())
+        Pooled::<PoolTestResource>::new(pool_config, test_config().fingerprint())
     });
     let panic = match result {
         Ok(_) => panic!("min > max must be rejected at PoolRuntime construction"),
@@ -799,7 +788,7 @@ fn pool_runtime_rejects_max_size_zero() {
         ..Default::default()
     };
     let result = std::panic::catch_unwind(|| {
-        PoolRuntime::<PoolTestResource>::new(pool_config, test_config().fingerprint())
+        Pooled::<PoolTestResource>::new(pool_config, test_config().fingerprint())
     });
     let panic = match result {
         Ok(_) => panic!("max_size == 0 must be rejected at PoolRuntime construction"),
@@ -826,6 +815,7 @@ struct SlowCreatePoolResource {
 impl Provider for SlowCreatePoolResource {
     type Config = TestConfig;
     type Instance = Arc<AtomicU64>;
+    type Topology = Pooled<Self>;
 
     fn key() -> ResourceKey {
         resource_key!("slow-create-pool")
@@ -862,7 +852,7 @@ impl HasCredentialSlots for SlowCreatePoolResource {
     }
 }
 
-impl Pooled for SlowCreatePoolResource {
+impl PoolProvider for SlowCreatePoolResource {
     fn is_broken(&self, _runtime: &Arc<AtomicU64>) -> BrokenCheck {
         BrokenCheck::Healthy
     }
@@ -892,10 +882,10 @@ async fn pool_create_path_respects_max_concurrent_creates() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::pooled(PoolRuntime::<SlowCreatePoolResource>::new(
+            topology: Pooled::<SlowCreatePoolResource>::new(
                 pool_config,
                 test_config().fingerprint(),
-            )),
+            ),
             recovery_gate: None,
         })
         .expect("register");
@@ -936,8 +926,7 @@ async fn pool_create_path_respects_max_concurrent_creates() {
 async fn register_transitions_phase_to_ready() {
     let manager = Manager::new();
     let resource = ResidentTestResource::new();
-    let resident_rt =
-        ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
+    let resident_rt = Resident::<ResidentTestResource>::new(ResidentConfig::default());
 
     manager
         .register(RegistrationSpec {
@@ -945,7 +934,7 @@ async fn register_transitions_phase_to_ready() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::resident(resident_rt),
+            topology: resident_rt,
             recovery_gate: None,
         })
         .expect("register");
@@ -961,8 +950,7 @@ async fn register_transitions_phase_to_ready() {
 async fn reload_config_bumps_status_generation() {
     let manager = Manager::new();
     let resource = ResidentTestResource::new();
-    let resident_rt =
-        ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
+    let resident_rt = Resident::<ResidentTestResource>::new(ResidentConfig::default());
 
     manager
         .register(RegistrationSpec {
@@ -970,7 +958,7 @@ async fn reload_config_bumps_status_generation() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::resident(resident_rt),
+            topology: resident_rt,
             recovery_gate: None,
         })
         .expect("register");
@@ -998,8 +986,7 @@ async fn graceful_shutdown_report_marks_registry_cleared() {
 
     let manager = Manager::new();
     let resource = ResidentTestResource::new();
-    let resident_rt =
-        ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
+    let resident_rt = Resident::<ResidentTestResource>::new(ResidentConfig::default());
 
     manager
         .register(RegistrationSpec {
@@ -1007,7 +994,7 @@ async fn graceful_shutdown_report_marks_registry_cleared() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::resident(resident_rt),
+            topology: resident_rt,
             recovery_gate: None,
         })
         .expect("register");
@@ -1115,7 +1102,7 @@ async fn tainted_handle_not_recycled() {
         max_size: 2,
         ..Default::default()
     };
-    let pool = PoolRuntime::<PoolTestResource>::new(config, 1);
+    let pool = Pooled::<PoolTestResource>::new(config, 1);
     let (rq, rq_handle) = ReleaseQueue::new(1);
     let rq = Arc::new(rq);
     let ctx = test_ctx();
@@ -1157,8 +1144,7 @@ async fn register_emits_registered_event() {
     let mut rx = manager.subscribe_events();
 
     let resource = ResidentTestResource::new();
-    let resident_rt =
-        ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
+    let resident_rt = Resident::<ResidentTestResource>::new(ResidentConfig::default());
 
     manager
         .register(RegistrationSpec {
@@ -1166,7 +1152,7 @@ async fn register_emits_registered_event() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::resident(resident_rt),
+            topology: resident_rt,
             recovery_gate: None,
         })
         .expect("registration should succeed");
@@ -1182,8 +1168,7 @@ async fn register_emits_registered_event() {
 async fn remove_emits_removed_event() {
     let manager = Manager::new();
     let resource = ResidentTestResource::new();
-    let resident_rt =
-        ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
+    let resident_rt = Resident::<ResidentTestResource>::new(ResidentConfig::default());
 
     manager
         .register(RegistrationSpec {
@@ -1191,7 +1176,7 @@ async fn remove_emits_removed_event() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::resident(resident_rt),
+            topology: resident_rt,
             recovery_gate: None,
         })
         .unwrap();
@@ -1211,8 +1196,7 @@ async fn remove_emits_removed_event() {
 async fn acquire_emits_success_event() {
     let manager = Manager::new();
     let resource = ResidentTestResource::new();
-    let resident_rt =
-        ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
+    let resident_rt = Resident::<ResidentTestResource>::new(ResidentConfig::default());
 
     manager
         .register(RegistrationSpec {
@@ -1220,7 +1204,7 @@ async fn acquire_emits_success_event() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::resident(resident_rt),
+            topology: resident_rt,
             recovery_gate: None,
         })
         .unwrap();
@@ -1252,8 +1236,7 @@ async fn acquire_emits_success_event() {
 async fn drop_guard_emits_released_event() {
     let manager = Manager::new();
     let resource = ResidentTestResource::new();
-    let resident_rt =
-        ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
+    let resident_rt = Resident::<ResidentTestResource>::new(ResidentConfig::default());
 
     manager
         .register(RegistrationSpec {
@@ -1261,7 +1244,7 @@ async fn drop_guard_emits_released_event() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::resident(resident_rt),
+            topology: resident_rt,
             recovery_gate: None,
         })
         .unwrap();
@@ -1306,8 +1289,7 @@ async fn drop_guard_emits_released_event() {
 async fn recovery_gate_transition_emits_event_via_manager_bus() {
     let manager = Manager::new();
     let resource = ResidentTestResource::new();
-    let resident_rt =
-        ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
+    let resident_rt = Resident::<ResidentTestResource>::new(ResidentConfig::default());
     let gate = Arc::new(RecoveryGate::new(RecoveryGateConfig::default()));
 
     manager
@@ -1316,7 +1298,7 @@ async fn recovery_gate_transition_emits_event_via_manager_bus() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::resident(resident_rt),
+            topology: resident_rt,
             recovery_gate: Some(Arc::clone(&gate)),
         })
         .unwrap();
@@ -1362,7 +1344,7 @@ async fn pool_concurrent_acquire_respects_max_size() {
         create_timeout: std::time::Duration::from_millis(200),
         ..Default::default()
     };
-    let pool = PoolRuntime::<PoolTestResource>::new(config, 1);
+    let pool = Pooled::<PoolTestResource>::new(config, 1);
     let (rq, rq_handle) = ReleaseQueue::new(1);
     let rq = Arc::new(rq);
     let ctx = test_ctx();
@@ -1416,7 +1398,7 @@ async fn pool_backpressure_when_full() {
         create_timeout: std::time::Duration::from_millis(200),
         ..Default::default()
     };
-    let pool = PoolRuntime::<PoolTestResource>::new(config, 1);
+    let pool = Pooled::<PoolTestResource>::new(config, 1);
     let (rq, rq_handle) = ReleaseQueue::new(1);
     let rq = Arc::new(rq);
     let ctx = test_ctx();
@@ -1463,8 +1445,7 @@ async fn pool_backpressure_when_full() {
 async fn manager_scope_exact_match() {
     let manager = Manager::new();
     let resource = ResidentTestResource::new();
-    let resident_rt =
-        ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
+    let resident_rt = Resident::<ResidentTestResource>::new(ResidentConfig::default());
 
     let org_id = nebula_core::OrgId::new();
     let scope = ScopeLevel::Organization(org_id);
@@ -1474,7 +1455,7 @@ async fn manager_scope_exact_match() {
             config: test_config(),
             scope: scope.clone(),
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::resident(resident_rt),
+            topology: resident_rt,
             recovery_gate: None,
         })
         .expect("registration should succeed");
@@ -1502,8 +1483,7 @@ async fn manager_scope_exact_match() {
 async fn manager_scope_fallback_to_global() {
     let manager = Manager::new();
     let resource = ResidentTestResource::new();
-    let resident_rt =
-        ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
+    let resident_rt = Resident::<ResidentTestResource>::new(ResidentConfig::default());
 
     // Register at Global scope.
     manager
@@ -1512,7 +1492,7 @@ async fn manager_scope_fallback_to_global() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::resident(resident_rt),
+            topology: resident_rt,
             recovery_gate: None,
         })
         .expect("registration should succeed");
@@ -1541,8 +1521,7 @@ async fn manager_scope_fallback_to_global() {
 async fn manager_scope_mismatch_not_found() {
     let manager = Manager::new();
     let resource = ResidentTestResource::new();
-    let resident_rt =
-        ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
+    let resident_rt = Resident::<ResidentTestResource>::new(ResidentConfig::default());
 
     // Register at Organization(org_id) — no Global fallback.
     let org_id = nebula_core::OrgId::new();
@@ -1552,7 +1531,7 @@ async fn manager_scope_mismatch_not_found() {
             config: test_config(),
             scope: ScopeLevel::Organization(org_id),
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::resident(resident_rt),
+            topology: resident_rt,
             recovery_gate: None,
         })
         .expect("registration should succeed");
@@ -1591,8 +1570,7 @@ async fn metrics_track_acquire_release_create_destroy() {
         metrics_registry: Some(registry.clone()),
     });
     let resource = ResidentTestResource::new();
-    let resident_rt =
-        ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
+    let resident_rt = Resident::<ResidentTestResource>::new(ResidentConfig::default());
 
     manager
         .register(RegistrationSpec {
@@ -1600,7 +1578,7 @@ async fn metrics_track_acquire_release_create_destroy() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::resident(resident_rt),
+            topology: resident_rt,
             recovery_gate: None,
         })
         .expect("registration should succeed");
@@ -1644,7 +1622,7 @@ async fn manager_multiple_resources_coexist() {
         max_size: 2,
         ..Default::default()
     };
-    let pool_rt = PoolRuntime::<PoolTestResource>::new(pool_config, 1);
+    let pool_rt = Pooled::<PoolTestResource>::new(pool_config, 1);
 
     manager
         .register(RegistrationSpec {
@@ -1652,15 +1630,14 @@ async fn manager_multiple_resources_coexist() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::pooled(pool_rt),
+            topology: pool_rt,
             recovery_gate: None,
         })
         .expect("pool registration should succeed");
 
     // Register a resident resource.
     let resident_resource = ResidentTestResource::new();
-    let resident_rt =
-        ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
+    let resident_rt = Resident::<ResidentTestResource>::new(ResidentConfig::default());
 
     manager
         .register(RegistrationSpec {
@@ -1668,7 +1645,7 @@ async fn manager_multiple_resources_coexist() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::resident(resident_rt),
+            topology: resident_rt,
             recovery_gate: None,
         })
         .expect("resident registration should succeed");
@@ -1689,14 +1666,8 @@ async fn manager_multiple_resources_coexist() {
         .await
         .expect("resident acquire should succeed");
 
-    assert_eq!(
-        pool_handle.topology_tag(),
-        nebula_resource::TopologyTag::Pool
-    );
-    assert_eq!(
-        resident_handle.topology_tag(),
-        nebula_resource::TopologyTag::Resident
-    );
+    assert_eq!(pool_handle.topology_tag(), TopologyTag::Pool);
+    assert_eq!(resident_handle.topology_tag(), TopologyTag::Resident);
     assert_eq!(pool_resource.create_counter.load(Ordering::Relaxed), 1);
     assert_eq!(resident_resource.create_counter.load(Ordering::Relaxed), 1);
 
@@ -1724,7 +1695,7 @@ async fn pool_acquire_with_deadline() {
         create_timeout: std::time::Duration::from_secs(30),
         ..Default::default()
     };
-    let pool = PoolRuntime::<PoolTestResource>::new(config, 1);
+    let pool = Pooled::<PoolTestResource>::new(config, 1);
     let (rq, rq_handle) = ReleaseQueue::new(1);
     let rq = Arc::new(rq);
     let ctx = test_ctx();
@@ -1781,7 +1752,7 @@ async fn pool_detach_removes_from_pool() {
         max_size: 2,
         ..Default::default()
     };
-    let pool = PoolRuntime::<PoolTestResource>::new(config, 1);
+    let pool = Pooled::<PoolTestResource>::new(config, 1);
     let (rq, rq_handle) = ReleaseQueue::new(1);
     let rq = Arc::new(rq);
     let ctx = test_ctx();
@@ -1834,7 +1805,7 @@ async fn pool_permit_not_leaked_after_release() {
         max_size: 1,
         ..Default::default()
     };
-    let pool = PoolRuntime::<PoolTestResource>::new(config, 1);
+    let pool = Pooled::<PoolTestResource>::new(config, 1);
     let (rq, rq_handle) = ReleaseQueue::new(1);
     let rq = Arc::new(rq);
     let ctx = test_ctx();
@@ -1893,7 +1864,7 @@ async fn registry_backed_metrics_record_operations() {
         max_size: 4,
         ..Default::default()
     };
-    let pool_rt = PoolRuntime::<PoolTestResource>::new(pool_config, 1);
+    let pool_rt = Pooled::<PoolTestResource>::new(pool_config, 1);
 
     manager
         .register(RegistrationSpec {
@@ -1901,14 +1872,13 @@ async fn registry_backed_metrics_record_operations() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::pooled(pool_rt),
+            topology: pool_rt,
             recovery_gate: None,
         })
         .expect("pool registration should succeed");
 
     let resident_resource = ResidentTestResource::new();
-    let resident_rt =
-        ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
+    let resident_rt = Resident::<ResidentTestResource>::new(ResidentConfig::default());
 
     manager
         .register(RegistrationSpec {
@@ -1916,7 +1886,7 @@ async fn registry_backed_metrics_record_operations() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::resident(resident_rt),
+            topology: resident_rt,
             recovery_gate: None,
         })
         .expect("resident registration should succeed");
@@ -1981,8 +1951,7 @@ async fn metrics_none_when_no_registry() {
 async fn graceful_shutdown_stops_new_acquires() {
     let manager = Manager::new();
     let resource = ResidentTestResource::new();
-    let resident_rt =
-        ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
+    let resident_rt = Resident::<ResidentTestResource>::new(ResidentConfig::default());
 
     manager
         .register(RegistrationSpec {
@@ -1990,7 +1959,7 @@ async fn graceful_shutdown_stops_new_acquires() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::resident(resident_rt),
+            topology: resident_rt,
             recovery_gate: None,
         })
         .unwrap();
@@ -2022,8 +1991,7 @@ async fn graceful_shutdown_stops_new_acquires() {
 async fn graceful_shutdown_clears_registry() {
     let manager = Manager::new();
     let resource = ResidentTestResource::new();
-    let resident_rt =
-        ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
+    let resident_rt = Resident::<ResidentTestResource>::new(ResidentConfig::default());
 
     manager
         .register(RegistrationSpec {
@@ -2031,7 +1999,7 @@ async fn graceful_shutdown_clears_registry() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::resident(resident_rt),
+            topology: resident_rt,
             recovery_gate: None,
         })
         .unwrap();
@@ -2096,6 +2064,7 @@ impl FailingResidentResource {
 impl Provider for FailingResidentResource {
     type Config = TestConfig;
     type Instance = Arc<AtomicU64>;
+    type Topology = Resident<Self>;
 
     fn key() -> ResourceKey {
         resource_key!("test-failing-resident")
@@ -2130,7 +2099,7 @@ impl HasCredentialSlots for FailingResidentResource {
 }
 
 #[async_trait::async_trait]
-impl Resident for FailingResidentResource {
+impl ResidentProvider for FailingResidentResource {
     fn is_alive_sync(&self, _runtime: &Arc<AtomicU64>) -> bool {
         self.alive.load(Ordering::Relaxed)
     }
@@ -2158,6 +2127,7 @@ impl BlockingResidentResource {
 impl Provider for BlockingResidentResource {
     type Config = TestConfig;
     type Instance = Arc<AtomicU64>;
+    type Topology = Resident<Self>;
 
     fn key() -> ResourceKey {
         resource_key!("test-blocking-resident")
@@ -2188,7 +2158,7 @@ impl HasCredentialSlots for BlockingResidentResource {
 }
 
 #[async_trait::async_trait]
-impl Resident for BlockingResidentResource {
+impl ResidentProvider for BlockingResidentResource {
     fn is_alive_sync(&self, _runtime: &Arc<AtomicU64>) -> bool {
         true
     }
@@ -2212,6 +2182,7 @@ impl PermanentFailResource {
 impl Provider for PermanentFailResource {
     type Config = TestConfig;
     type Instance = Arc<AtomicU64>;
+    type Topology = Resident<Self>;
 
     fn key() -> ResourceKey {
         resource_key!("test-permanent-fail")
@@ -2242,7 +2213,7 @@ impl HasCredentialSlots for PermanentFailResource {
 }
 
 #[async_trait::async_trait]
-impl Resident for PermanentFailResource {
+impl ResidentProvider for PermanentFailResource {
     fn is_alive_sync(&self, _runtime: &Arc<AtomicU64>) -> bool {
         true
     }
@@ -2254,8 +2225,7 @@ async fn acquire_does_not_retry_transient_at_manager_layer() {
     // failure surfaces immediately to the caller; retry is composed above.
     let manager = Manager::new();
     let resource = FailingResidentResource::new(1);
-    let resident_rt =
-        ResidentRuntime::<FailingResidentResource>::new(resident::config::Config::default());
+    let resident_rt = Resident::<FailingResidentResource>::new(ResidentConfig::default());
 
     manager
         .register(RegistrationSpec {
@@ -2263,7 +2233,7 @@ async fn acquire_does_not_retry_transient_at_manager_layer() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::resident(resident_rt),
+            topology: resident_rt,
             recovery_gate: None,
         })
         .expect("registration should succeed");
@@ -2285,8 +2255,7 @@ async fn acquire_does_not_retry_transient_at_manager_layer() {
 async fn acquire_does_not_retry_permanent_at_manager_layer() {
     let manager = Manager::new();
     let resource = PermanentFailResource::new();
-    let resident_rt =
-        ResidentRuntime::<PermanentFailResource>::new(resident::config::Config::default());
+    let resident_rt = Resident::<PermanentFailResource>::new(ResidentConfig::default());
 
     manager
         .register(RegistrationSpec {
@@ -2294,7 +2263,7 @@ async fn acquire_does_not_retry_permanent_at_manager_layer() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::resident(resident_rt),
+            topology: resident_rt,
             recovery_gate: None,
         })
         .expect("registration should succeed");
@@ -2323,8 +2292,7 @@ async fn acquire_does_not_retry_permanent_at_manager_layer() {
 async fn acquire_succeeds_without_resilience() {
     let manager = Manager::new();
     let resource = ResidentTestResource::new();
-    let resident_rt =
-        ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
+    let resident_rt = Resident::<ResidentTestResource>::new(ResidentConfig::default());
 
     manager
         .register(RegistrationSpec {
@@ -2332,7 +2300,7 @@ async fn acquire_succeeds_without_resilience() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::resident(resident_rt),
+            topology: resident_rt,
             recovery_gate: None,
         })
         .expect("registration should succeed");
@@ -2367,8 +2335,7 @@ async fn acquire_has_no_manager_layer_timeout() {
     // internal clock manipulation without sleeping wall-time.
     let manager = Manager::new();
     let resource = BlockingResidentResource::new();
-    let resident_rt =
-        ResidentRuntime::<BlockingResidentResource>::new(resident::config::Config::default());
+    let resident_rt = Resident::<BlockingResidentResource>::new(ResidentConfig::default());
 
     manager
         .register(RegistrationSpec {
@@ -2376,7 +2343,7 @@ async fn acquire_has_no_manager_layer_timeout() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::resident(resident_rt),
+            topology: resident_rt,
             recovery_gate: None,
         })
         .expect("registration should succeed");
@@ -2410,8 +2377,7 @@ async fn graceful_shutdown_second_call_errors_already_shutting_down() {
 
     let manager = Manager::new();
     let resource = ResidentTestResource::new();
-    let resident_rt =
-        ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
+    let resident_rt = Resident::<ResidentTestResource>::new(ResidentConfig::default());
 
     manager
         .register(RegistrationSpec {
@@ -2419,7 +2385,7 @@ async fn graceful_shutdown_second_call_errors_already_shutting_down() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::resident(resident_rt),
+            topology: resident_rt,
             recovery_gate: None,
         })
         .unwrap();
@@ -2452,15 +2418,23 @@ async fn graceful_shutdown_second_call_errors_already_shutting_down() {
 // Topology mismatch
 // ---------------------------------------------------------------------------
 
+// The former `topology_mismatch_returns_permanent_error` exercised a *runtime*
+// rejection when a pool-registered resource was acquired via the resident path.
+// With the converged `Provider::Topology` associated type a resource pins
+// exactly one topology, so `acquire_resident::<PoolTestResource>` no longer
+// compiles (`PoolTestResource::Topology = Pooled<Self>`, not `Resident<Self>`)
+// — the mismatch is now a compile error, a strictly stronger guarantee. This
+// positive test pins the surviving behavior: a pool resource acquired through
+// the pool path succeeds, and its guard reports `TopologyTag::Pool`.
 #[tokio::test]
-async fn topology_mismatch_returns_permanent_error() {
+async fn pool_resource_acquires_through_pool_path() {
     let manager = Manager::new();
     let resource = PoolTestResource::new();
     let pool_config = nebula_resource::topology::pooled::config::Config {
         max_size: 2,
         ..Default::default()
     };
-    let pool_rt = PoolRuntime::<PoolTestResource>::new(pool_config, 1);
+    let pool_rt = Pooled::<PoolTestResource>::new(pool_config, 1);
 
     manager
         .register(RegistrationSpec {
@@ -2468,26 +2442,21 @@ async fn topology_mismatch_returns_permanent_error() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::pooled(pool_rt),
+            topology: pool_rt,
             recovery_gate: None,
         })
-        .unwrap();
+        .expect("pool registration must succeed");
 
     let ctx = test_ctx();
-
-    // Pool resource, but we call the resident acquire path — wrong topology.
-    let result = manager
-        .acquire_resident::<PoolTestResource>(&ctx, &AcquireOptions::default())
-        .await;
-
-    match result {
-        Err(e) => assert!(
-            matches!(e.kind(), ErrorKind::Permanent),
-            "topology mismatch should be a permanent error, got {:?}",
-            e.kind()
-        ),
-        Ok(_) => panic!("wrong topology should fail"),
-    }
+    let guard = manager
+        .acquire_pooled::<PoolTestResource>(&ctx, &AcquireOptions::default())
+        .await
+        .expect("pool acquire must succeed through the pool path");
+    assert_eq!(
+        guard.topology_tag(),
+        TopologyTag::Pool,
+        "a pool-registered resource must report the Pool topology tag"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -2501,8 +2470,7 @@ async fn acquire_surfaces_underlying_transient_error_kind() {
     // `Classify` for any upstream pipeline composed by the caller.
     let manager = Manager::new();
     let resource = FailingResidentResource::new(100);
-    let resident_rt =
-        ResidentRuntime::<FailingResidentResource>::new(resident::config::Config::default());
+    let resident_rt = Resident::<FailingResidentResource>::new(ResidentConfig::default());
 
     manager
         .register(RegistrationSpec {
@@ -2510,7 +2478,7 @@ async fn acquire_surfaces_underlying_transient_error_kind() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::resident(resident_rt),
+            topology: resident_rt,
             recovery_gate: None,
         })
         .unwrap();
@@ -2549,8 +2517,7 @@ async fn acquire_failure_passively_triggers_recovery_gate() {
         max_attempts: 5,
         base_backoff: std::time::Duration::from_mins(5),
     }));
-    let resident_rt =
-        ResidentRuntime::<FailingResidentResource>::new(resident::config::Config::default());
+    let resident_rt = Resident::<FailingResidentResource>::new(ResidentConfig::default());
 
     manager
         .register(RegistrationSpec {
@@ -2558,7 +2525,7 @@ async fn acquire_failure_passively_triggers_recovery_gate() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::resident(resident_rt),
+            topology: resident_rt,
             recovery_gate: Some(gate.clone()),
         })
         .unwrap();
@@ -2590,6 +2557,7 @@ struct HandleDummyResource;
 impl Provider for HandleDummyResource {
     type Config = TestConfig;
     type Instance = u32;
+    type Topology = Resident<Self>;
 
     fn key() -> ResourceKey {
         resource_key!("handle-dummy")
@@ -2603,6 +2571,8 @@ impl Provider for HandleDummyResource {
         ResourceMetadata::from_key(&Self::key())
     }
 }
+
+impl ResidentProvider for HandleDummyResource {}
 
 impl HasCredentialSlots for HandleDummyResource {
     fn credential_slot_epoch(&self) -> u64 {
@@ -2635,7 +2605,7 @@ fn panic_in_release_callback_does_not_abort() {
         let _handle = ResourceGuard::<HandleDummyResource>::guarded(
             42,
             resource_key!("handle-dummy"),
-            nebula_resource::TopologyTag::Pool,
+            TopologyTag::Pool,
             1,
             move |_lease, _tainted| {
                 entered.store(true, Ordering::Relaxed);
@@ -2667,7 +2637,7 @@ async fn release_guarded_handle_runs_teardown_and_returns_ok() {
     let guard = ResourceGuard::<HandleDummyResource>::guarded(
         42_u32,
         resource_key!("handle-dummy"),
-        nebula_resource::TopologyTag::Resident,
+        TopologyTag::Resident,
         1,
         move |_runtime, _tainted| {
             ran_clone.store(true, Ordering::Relaxed);
@@ -2709,6 +2679,7 @@ impl SlowDestroyPoolResource {
 impl Provider for SlowDestroyPoolResource {
     type Config = TestConfig;
     type Instance = ();
+    type Topology = Pooled<Self>;
 
     fn key() -> ResourceKey {
         resource_key!("slow-destroy-pool")
@@ -2738,7 +2709,7 @@ impl HasCredentialSlots for SlowDestroyPoolResource {
 }
 
 #[async_trait::async_trait]
-impl Pooled for SlowDestroyPoolResource {}
+impl PoolProvider for SlowDestroyPoolResource {}
 
 #[tokio::test]
 async fn release_teardown_survives_caller_cancellation() {
@@ -2756,7 +2727,7 @@ async fn release_teardown_survives_caller_cancellation() {
         max_lifetime: None,
         ..Default::default()
     };
-    let pool_rt = PoolRuntime::<SlowDestroyPoolResource>::new(pool_config, 1);
+    let pool_rt = Pooled::<SlowDestroyPoolResource>::new(pool_config, 1);
 
     manager
         .register(RegistrationSpec {
@@ -2764,7 +2735,7 @@ async fn release_teardown_survives_caller_cancellation() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::pooled(pool_rt),
+            topology: pool_rt,
             recovery_gate: None,
         })
         .expect("registration should succeed");
@@ -2820,7 +2791,7 @@ async fn pool_stale_fingerprint_evicts_idle_entry() {
         max_size: 4,
         ..Default::default()
     };
-    let pool = PoolRuntime::<PoolTestResource>::new(config, 1);
+    let pool = Pooled::<PoolTestResource>::new(config, 1);
     let (rq, rq_handle) = ReleaseQueue::new(1);
     let rq = Arc::new(rq);
     let ctx = test_ctx();
@@ -2886,7 +2857,7 @@ async fn pool_max_lifetime_evicts_expired_entry() {
         max_lifetime: Some(std::time::Duration::from_millis(50)),
         ..Default::default()
     };
-    let pool = PoolRuntime::<PoolTestResource>::new(config, 1);
+    let pool = Pooled::<PoolTestResource>::new(config, 1);
     let (rq, rq_handle) = ReleaseQueue::new(1);
     let rq = Arc::new(rq);
     let ctx = test_ctx();
@@ -2968,6 +2939,7 @@ impl DropOnRecycleResource {
 impl Provider for DropOnRecycleResource {
     type Config = TestConfig;
     type Instance = Arc<AtomicU64>;
+    type Topology = Pooled<Self>;
 
     fn key() -> ResourceKey {
         resource_key!("drop-on-recycle")
@@ -2998,7 +2970,7 @@ impl HasCredentialSlots for DropOnRecycleResource {
     }
 }
 
-impl Pooled for DropOnRecycleResource {
+impl PoolProvider for DropOnRecycleResource {
     async fn recycle(
         &self,
         _instance: &Arc<AtomicU64>,
@@ -3015,7 +2987,7 @@ async fn pool_recycle_drop_destroys_entry() {
         max_size: 4,
         ..Default::default()
     };
-    let pool = PoolRuntime::<DropOnRecycleResource>::new(config, 1);
+    let pool = Pooled::<DropOnRecycleResource>::new(config, 1);
     let (rq, rq_handle) = ReleaseQueue::new(1);
     let rq = Arc::new(rq);
     let ctx = test_ctx();
@@ -3063,8 +3035,7 @@ async fn pool_recycle_drop_destroys_entry() {
 #[tokio::test]
 async fn recovery_gate_blocks_acquire_when_permanently_failed() {
     let resource = ResidentTestResource::new();
-    let resident_rt =
-        ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
+    let resident_rt = Resident::<ResidentTestResource>::new(ResidentConfig::default());
 
     let gate = RecoveryGate::new(RecoveryGateConfig::default());
     // Force permanent failure.
@@ -3078,7 +3049,7 @@ async fn recovery_gate_blocks_acquire_when_permanently_failed() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::resident(resident_rt),
+            topology: resident_rt,
             recovery_gate: Some(Arc::new(gate)),
         })
         .expect("registration should succeed");
@@ -3099,8 +3070,7 @@ async fn recovery_gate_blocks_acquire_when_permanently_failed() {
 #[tokio::test]
 async fn recovery_gate_blocks_acquire_when_in_progress() {
     let resource = ResidentTestResource::new();
-    let resident_rt =
-        ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
+    let resident_rt = Resident::<ResidentTestResource>::new(ResidentConfig::default());
 
     let gate = RecoveryGate::new(RecoveryGateConfig::default());
     // Hold the ticket — gate is InProgress.
@@ -3113,7 +3083,7 @@ async fn recovery_gate_blocks_acquire_when_in_progress() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::resident(resident_rt),
+            topology: resident_rt,
             recovery_gate: Some(Arc::new(gate)),
         })
         .expect("registration should succeed");
@@ -3134,8 +3104,7 @@ async fn recovery_gate_blocks_acquire_when_in_progress() {
 #[tokio::test]
 async fn recovery_gate_allows_acquire_when_idle() {
     let resource = ResidentTestResource::new();
-    let resident_rt =
-        ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
+    let resident_rt = Resident::<ResidentTestResource>::new(ResidentConfig::default());
 
     let gate = RecoveryGate::new(RecoveryGateConfig::default());
 
@@ -3146,7 +3115,7 @@ async fn recovery_gate_allows_acquire_when_idle() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::resident(resident_rt),
+            topology: resident_rt,
             recovery_gate: Some(Arc::new(gate)),
         })
         .expect("registration should succeed");
@@ -3162,8 +3131,7 @@ async fn recovery_gate_allows_acquire_when_idle() {
 #[tokio::test]
 async fn recovery_gate_allows_acquire_after_backoff_expires() {
     let resource = ResidentTestResource::new();
-    let resident_rt =
-        ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
+    let resident_rt = Resident::<ResidentTestResource>::new(ResidentConfig::default());
 
     let gate = RecoveryGate::new(RecoveryGateConfig {
         max_attempts: 5,
@@ -3180,7 +3148,7 @@ async fn recovery_gate_allows_acquire_after_backoff_expires() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::resident(resident_rt),
+            topology: resident_rt,
             recovery_gate: Some(Arc::new(gate)),
         })
         .expect("registration should succeed");
@@ -3197,8 +3165,7 @@ async fn recovery_gate_allows_acquire_after_backoff_expires() {
 #[tokio::test]
 async fn recovery_gate_none_does_not_affect_acquire() {
     let resource = ResidentTestResource::new();
-    let resident_rt =
-        ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
+    let resident_rt = Resident::<ResidentTestResource>::new(ResidentConfig::default());
 
     let manager = Manager::new();
     manager
@@ -3207,7 +3174,7 @@ async fn recovery_gate_none_does_not_affect_acquire() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::resident(resident_rt),
+            topology: resident_rt,
             recovery_gate: None,
         })
         .expect("registration should succeed");
@@ -3281,6 +3248,7 @@ impl ReloadPoolResource {
 impl Provider for ReloadPoolResource {
     type Config = ReloadConfig;
     type Instance = Arc<AtomicU64>;
+    type Topology = Pooled<Self>;
 
     fn key() -> ResourceKey {
         resource_key!("test-reload-pool")
@@ -3306,7 +3274,7 @@ impl HasCredentialSlots for ReloadPoolResource {
     }
 }
 
-impl Pooled for ReloadPoolResource {
+impl PoolProvider for ReloadPoolResource {
     fn is_broken(&self, _runtime: &Arc<AtomicU64>) -> BrokenCheck {
         BrokenCheck::Healthy
     }
@@ -3320,7 +3288,7 @@ async fn reload_config_swaps_config_and_bumps_generation() {
         max_size: 4,
         ..Default::default()
     };
-    let pool_rt = PoolRuntime::<ReloadPoolResource>::new(pool_config, 1);
+    let pool_rt = Pooled::<ReloadPoolResource>::new(pool_config, 1);
 
     manager
         .register(RegistrationSpec {
@@ -3328,7 +3296,7 @@ async fn reload_config_swaps_config_and_bumps_generation() {
             config: ReloadConfig::new(1),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::pooled(pool_rt),
+            topology: pool_rt,
             recovery_gate: None,
         })
         .expect("register should succeed");
@@ -3357,7 +3325,7 @@ async fn reload_config_rejects_invalid_config() {
         max_size: 4,
         ..Default::default()
     };
-    let pool_rt = PoolRuntime::<ReloadPoolResource>::new(pool_config, 1);
+    let pool_rt = Pooled::<ReloadPoolResource>::new(pool_config, 1);
 
     manager
         .register(RegistrationSpec {
@@ -3365,7 +3333,7 @@ async fn reload_config_rejects_invalid_config() {
             config: ReloadConfig::new(1),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::pooled(pool_rt),
+            topology: pool_rt,
             recovery_gate: None,
         })
         .expect("register should succeed");
@@ -3401,7 +3369,7 @@ async fn reload_config_emits_event() {
         max_size: 4,
         ..Default::default()
     };
-    let pool_rt = PoolRuntime::<ReloadPoolResource>::new(pool_config, 1);
+    let pool_rt = Pooled::<ReloadPoolResource>::new(pool_config, 1);
 
     manager
         .register(RegistrationSpec {
@@ -3409,7 +3377,7 @@ async fn reload_config_emits_event() {
             config: ReloadConfig::new(1),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::pooled(pool_rt),
+            topology: pool_rt,
             recovery_gate: None,
         })
         .expect("register should succeed");
@@ -3436,7 +3404,7 @@ async fn reload_config_evicts_stale_pool_instances() {
         max_size: 4,
         ..Default::default()
     };
-    let pool_rt = PoolRuntime::<ReloadPoolResource>::new(pool_config, 1);
+    let pool_rt = Pooled::<ReloadPoolResource>::new(pool_config, 1);
 
     manager
         .register(RegistrationSpec {
@@ -3444,7 +3412,7 @@ async fn reload_config_evicts_stale_pool_instances() {
             config: ReloadConfig::new(1),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::pooled(pool_rt),
+            topology: pool_rt,
             recovery_gate: None,
         })
         .expect("register should succeed");
@@ -3521,7 +3489,7 @@ async fn reload_config_rejected_when_shutdown() {
     let manager = Manager::new();
     let resource = ReloadPoolResource::new();
     let pool_config = nebula_resource::topology::pooled::config::Config::default();
-    let pool_rt = PoolRuntime::<ReloadPoolResource>::new(pool_config, 1);
+    let pool_rt = Pooled::<ReloadPoolResource>::new(pool_config, 1);
 
     manager
         .register(RegistrationSpec {
@@ -3529,7 +3497,7 @@ async fn reload_config_rejected_when_shutdown() {
             config: ReloadConfig::new(1),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::pooled(pool_rt),
+            topology: pool_rt,
             recovery_gate: None,
         })
         .expect("register should succeed");
@@ -3555,8 +3523,7 @@ async fn graceful_shutdown_abort_on_drain_timeout_preserves_registry() {
 
     let manager = Manager::new();
     let resource = ResidentTestResource::new();
-    let resident_rt =
-        ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
+    let resident_rt = Resident::<ResidentTestResource>::new(ResidentConfig::default());
 
     manager
         .register(RegistrationSpec {
@@ -3564,7 +3531,7 @@ async fn graceful_shutdown_abort_on_drain_timeout_preserves_registry() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::resident(resident_rt),
+            topology: resident_rt,
             recovery_gate: None,
         })
         .unwrap();
@@ -3615,8 +3582,7 @@ async fn graceful_shutdown_abort_marks_resources_failed_not_ready() {
 
     let manager = Manager::new();
     let resource = ResidentTestResource::new();
-    let resident_rt =
-        ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
+    let resident_rt = Resident::<ResidentTestResource>::new(ResidentConfig::default());
 
     manager
         .register(RegistrationSpec {
@@ -3624,7 +3590,7 @@ async fn graceful_shutdown_abort_marks_resources_failed_not_ready() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::resident(resident_rt),
+            topology: resident_rt,
             recovery_gate: None,
         })
         .unwrap();
@@ -3700,8 +3666,7 @@ async fn graceful_shutdown_force_clears_registry_on_timeout() {
 
     let manager = Manager::new();
     let resource = ResidentTestResource::new();
-    let resident_rt =
-        ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
+    let resident_rt = Resident::<ResidentTestResource>::new(ResidentConfig::default());
 
     manager
         .register(RegistrationSpec {
@@ -3709,7 +3674,7 @@ async fn graceful_shutdown_force_clears_registry_on_timeout() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::resident(resident_rt),
+            topology: resident_rt,
             recovery_gate: None,
         })
         .unwrap();
@@ -3746,8 +3711,7 @@ async fn graceful_shutdown_force_clears_registry_on_timeout() {
 async fn graceful_shutdown_happy_path_returns_zero_outstanding() {
     let manager = Manager::new();
     let resource = ResidentTestResource::new();
-    let resident_rt =
-        ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
+    let resident_rt = Resident::<ResidentTestResource>::new(ResidentConfig::default());
 
     manager
         .register(RegistrationSpec {
@@ -3755,7 +3719,7 @@ async fn graceful_shutdown_happy_path_returns_zero_outstanding() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::resident(resident_rt),
+            topology: resident_rt,
             recovery_gate: None,
         })
         .unwrap();
@@ -3798,8 +3762,7 @@ async fn probe_boundary_serializes_callers_under_herd() {
         base_backoff: std::time::Duration::from_millis(15),
     }));
 
-    let resident_rt =
-        ResidentRuntime::<FailingResidentResource>::new(resident::config::Config::default());
+    let resident_rt = Resident::<FailingResidentResource>::new(ResidentConfig::default());
 
     manager
         .register(RegistrationSpec {
@@ -3807,7 +3770,7 @@ async fn probe_boundary_serializes_callers_under_herd() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::resident(resident_rt),
+            topology: resident_rt,
             recovery_gate: Some(gate.clone()),
         })
         .unwrap();
@@ -3872,7 +3835,7 @@ async fn release_pooled_guard_recycles_and_returns_ok() {
         max_size: 4,
         ..Default::default()
     };
-    let pool = PoolRuntime::<PoolTestResource>::new(config, 1);
+    let pool = Pooled::<PoolTestResource>::new(config, 1);
     let (rq, rq_handle) = ReleaseQueue::new(1);
     let rq = Arc::new(rq);
     let ctx = test_ctx();
@@ -3936,8 +3899,7 @@ async fn release_pooled_guard_recycles_and_returns_ok() {
 async fn release_owned_resident_guard_returns_ok() {
     let manager = Manager::new();
     let resource = ResidentTestResource::new();
-    let resident_rt =
-        ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
+    let resident_rt = Resident::<ResidentTestResource>::new(ResidentConfig::default());
 
     manager
         .register(RegistrationSpec {
@@ -3945,7 +3907,7 @@ async fn release_owned_resident_guard_returns_ok() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::resident(resident_rt),
+            topology: resident_rt,
             recovery_gate: None,
         })
         .expect("registration should succeed");
@@ -3976,8 +3938,7 @@ async fn release_owned_resident_guard_returns_ok() {
 async fn release_then_drop_emits_exactly_one_released_event() {
     let manager = Manager::new();
     let resource = ResidentTestResource::new();
-    let resident_rt =
-        ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
+    let resident_rt = Resident::<ResidentTestResource>::new(ResidentConfig::default());
 
     manager
         .register(RegistrationSpec {
@@ -3985,7 +3946,7 @@ async fn release_then_drop_emits_exactly_one_released_event() {
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::resident(resident_rt),
+            topology: resident_rt,
             recovery_gate: None,
         })
         .expect("registration should succeed");

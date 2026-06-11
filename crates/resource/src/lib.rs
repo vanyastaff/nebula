@@ -124,19 +124,21 @@ pub use resource::{
 };
 pub use resource_ref::ResourceRef;
 pub use slot::{CredentialSlot, SlotCell};
-// Runtime types — needed for `Manager::register()`.
-pub use runtime::TopologyRuntime;
+// Runtime types — the framework topologies and the manager bridge needed for
+// `Manager::register()`.
+pub use runtime::managed::{MaintenanceSchedule, ManagedResource, TopologyDispatch};
 pub use runtime::{
-    managed::ManagedResource,
-    pool::{PoolRuntime, PoolStats},
-    resident::ResidentRuntime,
+    pool::{PoolStats, Pooled},
+    resident::Resident,
 };
 pub use state::{ResourcePhase, ResourceStatus};
 // Topology configurations — used at registration time.
 pub use topology::{
     AdmissionPhase, CheckedOut, Checkout, InstanceStore, Lease, Load, ReturnOutcome, Ticket,
     Topology, Unavailable,
-    pooled::{BrokenCheck, InstanceMetrics, Pooled, RecycleDecision, config::Config as PoolConfig},
-    resident::{Resident, config::Config as ResidentConfig},
+    pooled::{
+        BrokenCheck, InstanceMetrics, PoolProvider, RecycleDecision, config::Config as PoolConfig,
+    },
+    resident::{ResidentProvider, config::Config as ResidentConfig},
 };
 pub use topology_tag::TopologyTag;

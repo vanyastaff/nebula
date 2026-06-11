@@ -57,19 +57,22 @@ impl InstanceMetrics {
     }
 }
 
-/// Pool topology — N interchangeable stateful instances with
+/// Pool provider hooks — N interchangeable stateful instances with
 /// checkout/recycle/destroy.
 ///
 /// Implementors extend [`Provider`] with pool-aware lifecycle hooks:
 /// a sync broken check (for the `Drop` path), an async recycle step,
-/// and an optional per-checkout prepare step.
+/// and an optional per-checkout prepare step. A resource that declares
+/// `type Topology = Pooled<Self>` implements this trait so the framework
+/// [`Pooled`](crate::topology::pooled::Pooled) topology can drive its pool
+/// policy.
 ///
 /// # Acquire bounds
 ///
 /// [`Manager::acquire_pooled`](crate::Manager::acquire_pooled) requires:
 /// - `R: Clone + Send + Sync + 'static`
 /// - `R::Instance: Clone + Send + Sync + 'static`
-pub trait Pooled: Provider {
+pub trait PoolProvider: Provider {
     /// Sync O(1) broken check. Called in the `Drop` path — NO async, NO I/O.
     ///
     /// The default implementation reports all instances as healthy.

@@ -24,13 +24,13 @@ use std::sync::{
 };
 
 use nebula_core::{OrgId, ResourceKey, ScopeLevel, resource_key, scope::Scope};
+use nebula_resource::Resident;
 use nebula_resource::{
     AcquireOptions, Manager, Provider, RegisterOptions, RegistrationSpec, ResidentConfig,
     ResourceConfig, ResourceContext, SlotIdentity,
     error::Error,
     resource::{HasCredentialSlots, ResourceMetadata},
-    runtime::{TopologyRuntime, resident::ResidentRuntime},
-    topology::resident::Resident,
+    topology::resident::ResidentProvider,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -78,6 +78,7 @@ impl CountingResource {
 impl Provider for CountingResource {
     type Config = CountingConfig;
     type Instance = CountingRuntime;
+    type Topology = Resident<Self>;
 
     fn key() -> ResourceKey {
         resource_key!("dedup-slot-ident")
@@ -108,7 +109,7 @@ impl HasCredentialSlots for CountingResource {
 }
 
 #[async_trait::async_trait]
-impl Resident for CountingResource {
+impl ResidentProvider for CountingResource {
     fn is_alive_sync(&self, _runtime: &CountingRuntime) -> bool {
         true
     }
@@ -139,9 +140,7 @@ fn register_counting(
         config: CountingConfig,
         scope: opts.scope,
         slot_identity,
-        topology: TopologyRuntime::resident(ResidentRuntime::<CountingResource>::new(
-            ResidentConfig::default(),
-        )),
+        topology: Resident::<CountingResource>::new(ResidentConfig::default()),
         recovery_gate: opts.recovery_gate,
     })
 }
@@ -433,6 +432,7 @@ struct SiblingResidentResource;
 impl Provider for SiblingResidentResource {
     type Config = CountingConfig;
     type Instance = CountingRuntime;
+    type Topology = Resident<Self>;
 
     fn key() -> ResourceKey {
         // SAME string as `CountingResource::key()` on purpose.
@@ -465,7 +465,7 @@ impl HasCredentialSlots for SiblingResidentResource {
 }
 
 #[async_trait::async_trait]
-impl Resident for SiblingResidentResource {
+impl ResidentProvider for SiblingResidentResource {
     fn is_alive_sync(&self, _runtime: &CountingRuntime) -> bool {
         true
     }
@@ -504,9 +504,7 @@ async fn agnostic_typed_acquire_skips_sibling_type_and_falls_through_to_global()
             config: CountingConfig,
             scope: ScopeLevel::Organization(org),
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::resident(ResidentRuntime::<SiblingResidentResource>::new(
-                ResidentConfig::default(),
-            )),
+            topology: Resident::<SiblingResidentResource>::new(ResidentConfig::default()),
             recovery_gate: None,
         })
         .expect("register sibling type at org scope must succeed");
@@ -580,9 +578,7 @@ async fn typed_lookup_skips_sibling_type_and_falls_through_to_global() {
             config: CountingConfig,
             scope: ScopeLevel::Organization(org),
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::resident(ResidentRuntime::<SiblingResidentResource>::new(
-                ResidentConfig::default(),
-            )),
+            topology: Resident::<SiblingResidentResource>::new(ResidentConfig::default()),
             recovery_gate: None,
         })
         .expect("register sibling type at org scope must succeed");

@@ -10,8 +10,12 @@ use tracing::Instrument as _;
 
 use super::{Manager, RegistrationSpec, resolve_json_templates};
 use crate::{
-    error::Error, events::ResourceEvent, recovery::gate::RecoveryGate, reload::ReloadOutcome,
-    resource::Provider, runtime::TopologyRuntime, runtime::managed::ManagedResource,
+    error::Error,
+    events::ResourceEvent,
+    recovery::gate::RecoveryGate,
+    reload::ReloadOutcome,
+    resource::Provider,
+    runtime::managed::{ManagedResource, TopologyDispatch},
 };
 
 impl Manager {
@@ -50,10 +54,11 @@ impl Manager {
     /// # Errors
     ///
     /// Returns an error if config validation fails on the provided config.
-    pub fn register<R: Provider + crate::resource::HasCredentialSlots>(
-        &self,
-        spec: RegistrationSpec<R>,
-    ) -> Result<(), Error> {
+    pub fn register<R>(&self, spec: RegistrationSpec<R>) -> Result<(), Error>
+    where
+        R: Provider + crate::resource::HasCredentialSlots,
+        R::Topology: TopologyDispatch<R>,
+    {
         use crate::resource::ResourceConfig as _;
 
         let RegistrationSpec {
@@ -67,12 +72,12 @@ impl Manager {
 
         config.validate()?;
 
-        // #390 (pool min/max sanity) is enforced at `PoolRuntime`
+        // #390 (pool min/max sanity) is enforced at `Pooled`
         // construction, which the caller has already invoked to build the
-        // `TopologyRuntime::Pool` handed in here. No separate
+        // `Pooled<R>` topology handed in here. No separate
         // register-time pool-config check is needed: an invalid
         // `(min_size, max_size)` from operator/JSON config is rejected by
-        // the fallible `PoolRuntime::try_new` (typed `Error::permanent`)
+        // the fallible `Pooled::try_new` (typed `Error::permanent`)
         // that the engine registrar uses to construct the runtime, so the
         // failure surfaces *before* this funnel as a registration error
         // rather than an abort. (The deleted `register_pooled[_with]`
@@ -95,6 +100,9 @@ impl Manager {
             resource,
             config: arc_swap::ArcSwap::from_pointee(config),
             topology,
+            // Empty store handed to the open-contract admission methods; the
+            // built-in topologies ignore it (they manage their own storage).
+            store: crate::topology::store::InstanceStore::new(None),
             release_queue: Arc::clone(&self.release_queue),
             generation: AtomicU64::new(0),
             status: arc_swap::ArcSwap::from_pointee(crate::state::ResourceStatus::new()),
@@ -137,7 +145,9 @@ impl Manager {
     /// goes idle and simply ages out past `idle_timeout` is never swept
     /// unless this reaper runs — so without it `idle_timeout` is dead config.
     ///
-    /// Spawned **only** for the [`Pool`](TopologyRuntime::Pool) topology and
+    /// Spawned **only** for topologies whose
+    /// [`TopologyDispatch::maintenance_schedule`](crate::runtime::managed::TopologyDispatch::maintenance_schedule)
+    /// returns `Some` (the built-in [`Pooled`](crate::topology::Pooled)) and
     /// **only** when a TTL (`idle_timeout` or `max_lifetime`) is configured,
     /// so pools that never expire instances pay zero background cost (bb8's
     /// guard). The task:
@@ -161,19 +171,25 @@ impl Manager {
     /// reload still evicts stale-fingerprint instances and a revoke still
     /// evicts revoked ones on the next sweep — only the TTL *durations* are
     /// frozen for the pool's lifetime.
-    fn spawn_pool_maintenance<R: Provider>(&self, managed: &Arc<ManagedResource<R>>) {
-        let crate::runtime::TopologyKind::Pool(pool) = &managed.topology.kind else {
+    fn spawn_pool_maintenance<R>(&self, managed: &Arc<ManagedResource<R>>)
+    where
+        R: Provider + crate::resource::HasCredentialSlots,
+        R::Topology: TopologyDispatch<R>,
+    {
+        // Only topologies that run a maintenance reaper return a schedule; a
+        // topology with no idle eviction returns `None` and pays zero
+        // background cost.
+        let Some(schedule) = managed.topology.maintenance_schedule() else {
             return;
         };
-        let cfg = pool.config();
-        if cfg.idle_timeout.is_none() && cfg.max_lifetime.is_none() {
+        if schedule.idle_timeout.is_none() && schedule.max_lifetime.is_none() {
             return;
         }
         // `tokio::time::interval` panics on a zero period, and a sub-second
         // maintenance cadence would burn CPU for no benefit (eviction is
         // coarse-grained). Floor a zero/too-small operator-supplied
         // `maintenance_interval` at 1s rather than panicking or spinning.
-        let period = cfg
+        let period = schedule
             .maintenance_interval
             .max(std::time::Duration::from_secs(1));
         let weak = Arc::downgrade(managed);
@@ -202,18 +218,17 @@ impl Manager {
                 let Some(managed) = weak.upgrade() else {
                     break;
                 };
-                if let crate::runtime::TopologyKind::Pool(pool) = &managed.topology.kind {
-                    let span = tracing::debug_span!("pool_maintenance", %key);
-                    let evicted = pool
-                        .run_maintenance(&managed.resource)
-                        .instrument(span)
-                        .await;
-                    if evicted > 0 {
-                        let _ = bus.emit(ResourceEvent::MaintenanceEvicted {
-                            key: key.clone(),
-                            evicted,
-                        });
-                    }
+                let span = tracing::debug_span!("pool_maintenance", %key);
+                let evicted = managed
+                    .topology
+                    .run_maintenance(&managed.resource)
+                    .instrument(span)
+                    .await;
+                if evicted > 0 {
+                    let _ = bus.emit(ResourceEvent::MaintenanceEvicted {
+                        key: key.clone(),
+                        evicted,
+                    });
                 }
             }
         });
@@ -228,7 +243,7 @@ impl Manager {
     /// deserialize step that the live path runs *after* template
     /// resolution — but performs **no** `{{ … }}` resolution, **no**
     /// `Manager` mutation, and constructs **no** `resource: R` /
-    /// `TopologyRuntime<R>`. It is the seam a config-CRUD writer uses to
+    /// `R::Topology`. It is the seam a config-CRUD writer uses to
     /// reject a bad `ResourceEntry.config` *before* persistence, keeping
     /// config validation strictly separate from engine-activation live
     /// registration (INTEGRATION_MODEL integration seam.1 — live registration happens
@@ -381,12 +396,13 @@ impl Manager {
         slot_bindings: std::collections::HashMap<String, nebula_core::CredentialKey>,
         resource: R,
         scope: ScopeLevel,
-        topology: TopologyRuntime<R>,
+        topology: R::Topology,
         recovery_gate: Option<Arc<RecoveryGate>>,
     ) -> Result<crate::dedup::SlotIdentity, Error>
     where
         R: Provider + crate::resource::HasCredentialSlots + nebula_core::DeclaresDependencies,
         R::Config: serde::de::DeserializeOwned,
+        R::Topology: TopologyDispatch<R>,
     {
         // 0. Validate that every binding matches a declared credential slot.
         //    Hard error on unknown slot — refuses to register a resource
@@ -486,11 +502,15 @@ impl Manager {
     ///   registered for the given scope.
     /// - [`ErrorKind::Permanent`](crate::error::ErrorKind::Permanent) if config validation fails.
     /// - [`ErrorKind::Cancelled`](crate::error::ErrorKind::Cancelled) if the manager is shut down.
-    pub fn reload_config<R: Provider>(
+    pub fn reload_config<R>(
         &self,
         new_config: R::Config,
         scope: &ScopeLevel,
-    ) -> Result<ReloadOutcome, Error> {
+    ) -> Result<ReloadOutcome, Error>
+    where
+        R: Provider + crate::resource::HasCredentialSlots,
+        R::Topology: TopologyDispatch<R>,
+    {
         use crate::resource::ResourceConfig as _;
 
         new_config.validate()?;
@@ -511,10 +531,10 @@ impl Manager {
         // Atomically swap the config.
         managed.config.store(Arc::new(new_config));
 
-        // Update pool fingerprint so stale idle instances are evicted.
-        if let crate::runtime::TopologyKind::Pool(ref pool_rt) = managed.topology.kind {
-            pool_rt.set_fingerprint(new_fp);
-        }
+        // Update the topology fingerprint so stale idle instances are evicted
+        // on the next acquire / sweep (a no-op for topologies that track no
+        // config fingerprint).
+        managed.topology.set_fingerprint(new_fp);
 
         // Bump generation — readers snapshot this to detect changes.
         managed

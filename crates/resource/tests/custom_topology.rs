@@ -209,9 +209,8 @@ async fn slot_topology_revoke_fence_via_instance_store() {
 
     // Return the slot — checkout_epoch (0) < live epoch (1) → must evict.
     let outcome = store.return_slot(lease.slot, checkout_epoch).await;
-    assert_eq!(
-        outcome,
-        ReturnOutcome::Evict,
+    assert!(
+        outcome.is_evict(),
         "slot checked out before revoke must be evicted by the uniform fence"
     );
     assert!(

@@ -30,13 +30,11 @@ use nebula_credential::{
     AuthPattern, Credential, CredentialContext, CredentialError, CredentialGuard,
     CredentialMetadata, ResolveResult, SecretString, SecretToken,
 };
+use nebula_resource::Resident;
 use nebula_resource::{
     AcquireOptions, Manager, Provider, RegistrationSpec, ResidentConfig, Resource, ResourceConfig,
-    ResourceContext, SlotCell, SlotIdentity,
-    error::Error,
-    resource::HasCredentialSlots,
-    runtime::{TopologyRuntime, resident::ResidentRuntime},
-    topology::resident::Resident,
+    ResourceContext, SlotCell, SlotIdentity, error::Error, resource::HasCredentialSlots,
+    topology::resident::ResidentProvider,
 };
 use nebula_schema::FieldValues;
 use tokio_util::sync::CancellationToken;
@@ -117,6 +115,7 @@ struct TwoSlotDerived {
 impl Provider for TwoSlotDerived {
     type Config = TwoSlotCfg;
     type Instance = ();
+    type Topology = Resident<Self>;
 
     fn key() -> ResourceKey {
         nebula_resource::resource_key!("epochfold-derived")
@@ -126,6 +125,8 @@ impl Provider for TwoSlotDerived {
         Ok(())
     }
 }
+
+impl ResidentProvider for TwoSlotDerived {}
 
 #[test]
 fn derived_epoch_changes_when_non_max_slot_rotates() {
@@ -216,6 +217,7 @@ struct TwoSlotResident {
 impl Provider for TwoSlotResident {
     type Config = RaceCfg;
     type Instance = TwoSlotRuntime;
+    type Topology = Resident<Self>;
 
     fn key() -> ResourceKey {
         resource_key!("epochfold-resident")
@@ -268,7 +270,7 @@ impl HasCredentialSlots for TwoSlotResident {
 }
 
 #[async_trait::async_trait]
-impl Resident for TwoSlotResident {
+impl ResidentProvider for TwoSlotResident {
     fn is_alive_sync(&self, _runtime: &TwoSlotRuntime) -> bool {
         true
     }
@@ -307,9 +309,7 @@ async fn resident_reconcile_fires_when_non_max_slot_rotates() {
         config: RaceCfg,
         scope: ScopeLevel::Global,
         slot_identity: SlotIdentity::Unbound,
-        topology: TopologyRuntime::resident(ResidentRuntime::<TwoSlotResident>::new(
-            ResidentConfig::default(),
-        )),
+        topology: Resident::<TwoSlotResident>::new(ResidentConfig::default()),
         recovery_gate: None,
     })
     .expect("resident registration must succeed");
