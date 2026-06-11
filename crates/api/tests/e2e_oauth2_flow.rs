@@ -286,7 +286,8 @@ async fn e2e_oauth2_flow_persists_exchanged_credential_state() {
         "manual overwrite of stale state should bump StoredCredential::version (CAS basis)"
     );
 
-    let resolver = CredentialResolver::new(std::sync::Arc::new(oauth_store_handle(&state)));
+    let resolver =
+        CredentialResolver::new(std::sync::Arc::new(oauth_store_handle(&state))).unwrap();
     let ctx = CredentialContext::for_test("test-user");
     let handle = resolver
         .resolve_with_refresh::<OAuth2Credential>(credential_id, &ctx)

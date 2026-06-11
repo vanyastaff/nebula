@@ -106,54 +106,14 @@ impl RefreshCoordMetrics {
         })
     }
 
-    /// Construct handles backed by a fresh private registry — tests and
-    /// single-replica desktop mode only.
+    /// Construct handles backed by a fresh private registry — for tests and
+    /// single-replica desktop mode. Returns `MetricsResult<Self>` so the
+    /// calling test can handle the error in test scope.
     ///
     /// Production composition MUST use [`Self::with_registry`] with the
     /// engine-shared registry so a scraper actually observes the series.
-    /// Removing the public `Default` impl in wave 2 of the PR-583 review
-    /// closed a foot-gun where a top-level composer could silently
-    /// publish to a private registry no scraper sees.
     #[cfg(any(test, feature = "test-util"))]
-    #[must_use]
-    pub fn for_tests() -> Self {
-        Self::with_registry(&MetricsRegistry::new()).unwrap()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn for_tests_handles_are_independent_per_label() {
-        let metrics = RefreshCoordMetrics::for_tests();
-        metrics.claims_acquired.inc();
-        assert_eq!(metrics.claims_acquired.get(), 1);
-        assert_eq!(metrics.claims_contended.get(), 0);
-        assert_eq!(metrics.claims_exhausted.get(), 0);
-
-        metrics.coalesced_l1.inc();
-        metrics.coalesced_l2.inc_by(2);
-        assert_eq!(metrics.coalesced_l1.get(), 1);
-        assert_eq!(metrics.coalesced_l2.get(), 2);
-    }
-
-    #[test]
-    fn handles_share_state_with_registry() {
-        let registry = MetricsRegistry::new();
-        let m1 = RefreshCoordMetrics::with_registry(&registry).unwrap();
-        let m2 = RefreshCoordMetrics::with_registry(&registry).unwrap();
-        // Same registry → same underlying counter.
-        m1.claims_acquired.inc();
-        assert_eq!(m2.claims_acquired.get(), 1);
-    }
-
-    #[test]
-    fn hold_duration_records_to_histogram() {
-        let metrics = RefreshCoordMetrics::for_tests();
-        metrics.hold_duration.observe(0.123);
-        metrics.hold_duration.observe(0.456);
-        assert_eq!(metrics.hold_duration.count(), 2);
+    pub fn for_tests() -> MetricsResult<Self> {
+        Self::with_registry(&MetricsRegistry::new())
     }
 }

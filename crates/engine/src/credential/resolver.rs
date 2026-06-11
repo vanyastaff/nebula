@@ -2,6 +2,9 @@
 
 use std::sync::Arc;
 
+use nebula_credential::runtime::refresh::{
+    ConfigError, RefreshCoordConfig, RefreshCoordinator, RefreshError,
+};
 use nebula_credential::{
     Credential, CredentialContext, CredentialEvent, CredentialHandle, CredentialId,
     CredentialState, Refreshable,
@@ -15,8 +18,8 @@ use nebula_credential::{
     error::CredentialError,
 };
 use nebula_eventbus::EventBus;
+use nebula_storage_port::store::ReplicaId;
 
-use crate::credential::refresh::{RefreshCoordinator, RefreshError};
 #[cfg(feature = "rotation")]
 use crate::credential::rotation::refresh_oauth2_state;
 
@@ -36,13 +39,25 @@ impl<S: CredentialStore> CredentialResolver<S> {
     /// backed `RefreshClaimRepo` so cross-replica coordination is
     /// durable. The default is suitable for tests and single-replica
     /// desktop mode.
-    #[must_use]
-    pub fn new(store: Arc<S>) -> Self {
-        Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns `ConfigError` if metric handle registration fails. In
+    /// practice this cannot occur for the static default config; test
+    /// callers may treat the error as fatal.
+    pub fn new(store: Arc<S>) -> Result<Self, ConfigError> {
+        let repo: Arc<dyn nebula_storage_port::store::RefreshClaimStore> =
+            Arc::new(nebula_storage::credential::InMemoryRefreshClaimRepo::new());
+        let coord = RefreshCoordinator::new_with(
+            repo,
+            ReplicaId::new("nebula-engine-default"),
+            RefreshCoordConfig::default(),
+        )?;
+        Ok(Self {
             store,
-            refresh_coordinator: Arc::new(RefreshCoordinator::new()),
+            refresh_coordinator: Arc::new(coord),
             event_bus: None,
-        }
+        })
     }
 
     #[must_use = "builder methods must be chained or built"]
@@ -333,7 +348,7 @@ impl<S: CredentialStore> CredentialResolver<S> {
     where
         C: Refreshable,
     {
-        use crate::credential::refresh::RefreshAttempt;
+        use nebula_credential::runtime::refresh::RefreshAttempt;
 
         match self.refresh_coordinator.try_refresh(credential_id) {
             RefreshAttempt::Winner => {
@@ -744,4 +759,23 @@ pub enum ResolveError {
         /// Why re-authentication is required.
         reason: ReauthReason,
     },
+}
+
+/// Build a default in-memory [`RefreshCoordinator`] for tests and
+/// single-replica desktop mode. Production composition should call
+/// [`RefreshCoordinator::new_with`] directly with a durable
+/// [`nebula_storage_port::store::RefreshClaimStore`].
+///
+/// # Errors
+///
+/// Returns [`ConfigError`] if metric handle registration fails. In practice
+/// this cannot occur for the static default config.
+pub fn default_in_memory_coordinator() -> Result<RefreshCoordinator, ConfigError> {
+    let repo: Arc<dyn nebula_storage_port::store::RefreshClaimStore> =
+        Arc::new(nebula_storage::credential::InMemoryRefreshClaimRepo::new());
+    RefreshCoordinator::new_with(
+        repo,
+        ReplicaId::new("nebula-engine-default"),
+        RefreshCoordConfig::default(),
+    )
 }

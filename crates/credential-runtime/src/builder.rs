@@ -18,6 +18,7 @@ use nebula_credential::{
 };
 use nebula_engine::credential::{
     CredentialResolver, LeaseLifecycle, LeaseLifecycleConfig, RefreshCoordinator,
+    default_in_memory_coordinator,
 };
 use nebula_storage::credential::{
     AuditLayer, AuditSink, CacheConfig, CacheLayer, EncryptionLayer, KeyProvider,
@@ -163,11 +164,16 @@ impl<B: CredentialStore + 'static> CredentialServiceBuilder<B> {
         let scan_store = ErasedCredentialStore::new(Arc::clone(&scan));
         let layered = AuditLayer::new(scan_store.clone(), self.audit_sink);
         let store: Arc<dyn DynCredentialStore> = Arc::new(layered);
-        let refresh_coordinator = self
-            .refresh_coordinator
-            .unwrap_or_else(|| Arc::new(RefreshCoordinator::new()));
+        let refresh_coordinator = if let Some(rc) = self.refresh_coordinator {
+            rc
+        } else {
+            let coord = default_in_memory_coordinator()
+                .map_err(|e| CredentialServiceError::Internal(e.to_string()))?;
+            Arc::new(coord)
+        };
         let resolver =
             CredentialResolver::new(Arc::new(ErasedCredentialStore::new(Arc::clone(&store))))
+                .map_err(|e| CredentialServiceError::Internal(e.to_string()))?
                 .with_refresh_coordinator(refresh_coordinator)
                 .with_event_bus(self.observer.event_bus());
         let lease = LeaseLifecycle::spawn(

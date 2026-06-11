@@ -284,7 +284,7 @@ pub struct WorkflowEngine {
     running: Arc<DashMap<ExecutionId, RunningEntry>>,
     /// Optional handle for the background credential-refresh reclaim
     /// sweep. When set, dropping the engine aborts the spawned task —
-    /// see [`crate::credential::refresh::ReclaimSweepHandle`] (sub-spec
+    /// see [`crate::credential::ReclaimSweepHandle`] (sub-spec
     /// , ).
     ///
     /// Wired by the composition root via
@@ -292,7 +292,7 @@ pub struct WorkflowEngine {
     /// durable [`nebula_storage::credential::RefreshClaimRepo`] (Postgres
     /// or SQLite). Single-replica desktop mode without sentinel-event
     /// recording leaves this `None`.
-    credential_reclaim_sweep: Option<crate::credential::refresh::ReclaimSweepHandle>,
+    credential_reclaim_sweep: Option<crate::credential::ReclaimSweepHandle>,
 }
 
 /// Monotonic per-registration identifier used to fence out-of-order drops
@@ -844,18 +844,18 @@ impl WorkflowEngine {
     /// Per sub-spec + the engine spawns a periodic task that
     /// calls `RefreshClaimRepo::reclaim_stuck`, routes
     /// `RefreshInFlight`-flagged stale claims through
-    /// [`crate::credential::refresh::SentinelTrigger`], and publishes
+    /// [`crate::credential::SentinelTrigger`], and publishes
     /// `CredentialEvent::ReauthRequired` once the rolling-window
     /// threshold is exceeded.
     ///
     /// The composition root constructs the handle via
-    /// [`crate::credential::refresh::ReclaimSweepHandle::spawn`] and
+    /// [`crate::credential::ReclaimSweepHandle::spawn`] and
     /// passes it here. Storing the handle on the engine ensures the
     /// task is aborted when the engine drops (clean shutdown).
     #[must_use = "builder methods must be chained or built"]
     pub fn with_credential_reclaim_sweep(
         mut self,
-        handle: crate::credential::refresh::ReclaimSweepHandle,
+        handle: crate::credential::ReclaimSweepHandle,
     ) -> Self {
         self.credential_reclaim_sweep = Some(handle);
         self

@@ -7,7 +7,7 @@
 //! **inside one replica**. Cross-replica safety is the responsibility of
 //! the outer two-tier coordinator (`super::coordinator::RefreshCoordinator`),
 //! which acquires this L1 coalescer first, then a durable L2 claim via
-//! `RefreshClaimRepo`.
+//! `RefreshClaimStore`.
 //!
 //! # Design
 //!
@@ -124,7 +124,7 @@ struct InFlightEntry {
 /// to half-open to probe recovery.
 ///
 /// This is the **L1** layer — a process-local coalescer. The outer two-tier
-/// `RefreshCoordinator` composes this with an L2 `RefreshClaimRepo` for
+/// `RefreshCoordinator` composes this with an L2 `RefreshClaimStore` for
 /// cross-replica coordination.
 pub(crate) struct L1RefreshCoalescer {
     /// In-flight refresh entries. Uses `parking_lot::Mutex` (not `tokio::sync::Mutex`)
@@ -143,8 +143,8 @@ pub(crate) struct L1RefreshCoalescer {
     /// - `RefreshCoordinator::refresh_coalesced` (typed `CredentialId` path) — acquires a permit
     ///   Winner-only after the L1 in-flight check, holds it for the L2 acquisition + IdP POST
     ///   window, releases on RAII Drop.
-    /// - `RefreshCoordinator::acquire_permit` (legacy `String`-id path, deprecated — see
-    ///   coordinator.rs) — caller binds the permit explicitly via `let _permit = ...`.
+    /// - `RefreshCoordinator::acquire_permit` (legacy `String`-id path, deprecated) — caller binds
+    ///   the permit explicitly via `let _permit = ...`.
     ///
     /// The Winner-only acquisition pattern matches the per-credential
     /// coalescing model: Waiters already park on the in-flight oneshot
@@ -209,58 +209,22 @@ const MAX_TRACKED_CIRCUIT_BREAKERS_CAP: usize = 4096;
 /// forever (see GitHub issue #278). Eviction follows LRU semantics: the least
 /// recently touched breaker may be dropped when the cap is exceeded.
 ///
-/// The `unwrap` is evaluated at compile time: `MAX_TRACKED_CIRCUIT_BREAKERS_CAP` is non-zero.
+/// The value is non-zero by construction (`MAX_TRACKED_CIRCUIT_BREAKERS_CAP`
+/// is a positive constant so `NonZeroUsize::new` is infallible here).
 const MAX_TRACKED_CIRCUIT_BREAKERS: NonZeroUsize =
     NonZeroUsize::new(MAX_TRACKED_CIRCUIT_BREAKERS_CAP).unwrap();
-
-/// Configuration errors returned by `L1RefreshCoalescer` constructors.
-///
-/// `L1RefreshCoalescer::with_max_concurrent(0)` would back the coalescer
-/// with a `tokio::sync::Semaphore::new(0)`, deadlocking every caller that
-/// awaits a permit. Rather than silently clamp to `1` (which would hide the
-/// misconfiguration), construction fails with a typed error so the caller is
-/// forced to handle the bad input at startup.
-#[derive(Debug, thiserror::Error)]
-#[non_exhaustive]
-pub(crate) enum RefreshConfigError {
-    /// `max_concurrent` must be at least `1`; `0` would deadlock any caller
-    /// awaiting an `OwnedSemaphorePermit`.
-    #[error("L1RefreshCoalescer::max_concurrent must be >= 1, got 0")]
-    ZeroConcurrency,
-}
 
 impl L1RefreshCoalescer {
     /// Creates a new coalescer with no in-flight refreshes and a default
     /// concurrency limit of 32.
     pub(crate) fn new() -> Self {
         // DEFAULT_MAX_CONCURRENT_REFRESHES is a compile-time const > 0, so
-        // this construction is statically valid and we use the infallible
-        // private constructor. Do NOT `.unwrap()` the public fallible one —
-        // that would propagate a needless panic path into `Default`.
+        // this construction is statically valid.
         Self::with_max_concurrent_unchecked(DEFAULT_MAX_CONCURRENT_REFRESHES)
     }
 
-    /// Creates a new coalescer with a custom concurrency limit.
-    ///
-    /// The `max` parameter controls how many refresh HTTP calls can run
-    /// in parallel across all credentials. Set this based on the provider's
-    /// rate limit tolerance.
-    ///
-    /// # Errors
-    ///
-    /// Returns `RefreshConfigError::ZeroConcurrency` if `max == 0`. A
-    /// zero-permit semaphore would deadlock every caller that awaits
-    /// `acquire_permit`, so construction is rejected rather than silently
-    /// clamped.
-    pub(crate) fn with_max_concurrent(max: usize) -> Result<Self, RefreshConfigError> {
-        if max == 0 {
-            return Err(RefreshConfigError::ZeroConcurrency);
-        }
-        Ok(Self::with_max_concurrent_unchecked(max))
-    }
-
-    /// Infallible constructor used by `new()` and by the validated fallible
-    /// path. Private so external callers cannot skip the `max >= 1` check.
+    /// Infallible constructor. `max` must be >= 1; enforced by the const
+    /// default path and by `RefreshCoordinator` config validation.
     fn with_max_concurrent_unchecked(max: usize) -> Self {
         debug_assert!(max > 0, "with_max_concurrent_unchecked requires max >= 1");
         Self {
@@ -367,7 +331,15 @@ impl L1RefreshCoalescer {
             .clone()
             .acquire_owned()
             .await
-            .expect("refresh semaphore closed unexpectedly")
+            // The semaphore is never explicitly closed — it lives for the
+            // coordinator's lifetime and is only closed when the coordinator
+            // is dropped, at which point no new `acquire_permit` callers exist.
+            .unwrap_or_else(|_| {
+                unreachable!(
+                    "refresh semaphore closed while coordinator is still live — \
+                     the semaphore must not be closed while in use"
+                )
+            })
     }
 
     /// Returns the number of available permits in the concurrency limiter.
@@ -413,6 +385,8 @@ impl L1RefreshCoalescer {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
 
     #[test]
@@ -459,13 +433,11 @@ mod tests {
     async fn complete_wakes_waiters() {
         let coord = Arc::new(L1RefreshCoalescer::new());
 
-        // Winner starts refresh
         assert!(matches!(
             coord.try_refresh("cred-1"),
             RefreshAttempt::Winner
         ));
 
-        // Waiter gets the receiver
         let waiter_rx = match coord.try_refresh("cred-1") {
             RefreshAttempt::Waiter(rx) => rx,
             RefreshAttempt::Winner => panic!("expected Waiter"),
@@ -473,10 +445,8 @@ mod tests {
 
         let waiter = tokio::spawn(async move { waiter_rx.await.is_ok() });
 
-        // Winner completes: remove entry + drain senders
         coord.complete("cred-1");
 
-        // Waiter observes the completion
         let result = waiter.await.unwrap();
         assert!(result);
     }
@@ -488,7 +458,6 @@ mod tests {
         let a = coord.try_refresh("cred-a");
         let b = coord.try_refresh("cred-b");
 
-        // Both should win -- different credentials
         assert!(matches!(a, RefreshAttempt::Winner));
         assert!(matches!(b, RefreshAttempt::Winner));
         assert_eq!(coord.in_flight_count(), 2);
@@ -503,7 +472,6 @@ mod tests {
     #[tokio::test]
     async fn complete_on_unknown_credential_is_noop() {
         let coord = L1RefreshCoalescer::new();
-        // Should not panic
         coord.complete("nonexistent");
         assert_eq!(coord.in_flight_count(), 0);
     }
@@ -512,12 +480,10 @@ mod tests {
     async fn winner_after_complete_can_refresh_again() {
         let coord = L1RefreshCoalescer::new();
 
-        // First round
         let first = coord.try_refresh("cred-1");
         assert!(matches!(first, RefreshAttempt::Winner));
         coord.complete("cred-1");
 
-        // Second round -- same credential can be refreshed again
         let second = coord.try_refresh("cred-1");
         assert!(matches!(second, RefreshAttempt::Winner));
         coord.complete("cred-1");
@@ -527,13 +493,11 @@ mod tests {
     async fn multiple_waiters_all_notified() {
         let coord = Arc::new(L1RefreshCoalescer::new());
 
-        // Winner
         assert!(matches!(
             coord.try_refresh("cred-1"),
             RefreshAttempt::Winner
         ));
 
-        // Create 5 waiters; each just awaits its receiver.
         let mut handles = Vec::new();
         for _ in 0..5 {
             let rx = match coord.try_refresh("cred-1") {
@@ -543,7 +507,6 @@ mod tests {
             handles.push(tokio::spawn(async move { rx.await.is_ok() }));
         }
 
-        // Complete drains every sender
         coord.complete("cred-1");
 
         for handle in handles {
@@ -561,16 +524,11 @@ mod tests {
     async fn waiter_registered_under_lock_is_never_missed() {
         let coord = Arc::new(L1RefreshCoalescer::new());
 
-        // Winner takes the entry.
         assert!(matches!(
             coord.try_refresh("cred-1"),
             RefreshAttempt::Winner
         ));
 
-        // Register a waiter then immediately complete — with the old
-        // Notify-based design, a post-return `enable()` could miss the
-        // wakeup fired here. With oneshot-under-lock, the sender is
-        // already in the entry's Vec when `complete()` drains it.
         let rx = match coord.try_refresh("cred-1") {
             RefreshAttempt::Waiter(rx) => rx,
             RefreshAttempt::Winner => panic!("expected Waiter"),
@@ -631,45 +589,19 @@ mod tests {
     async fn inflight_entry_cleaned_after_sync_complete() {
         let coord = L1RefreshCoalescer::new();
 
-        // Get Winner
         let attempt = coord.try_refresh("cred-1");
         assert!(matches!(attempt, RefreshAttempt::Winner));
         assert_eq!(coord.in_flight_count(), 1);
 
-        // Drop without calling complete -- simulates panic before scopeguard
         drop(attempt);
-
-        // Entry is still in-flight (poisoned state without scopeguard)
         assert_eq!(coord.in_flight_count(), 1);
 
-        // Manually call complete (as scopeguard would on drop)
         coord.complete("cred-1");
         assert_eq!(coord.in_flight_count(), 0);
 
-        // Next call should get Winner (entry was cleaned)
         let attempt2 = coord.try_refresh("cred-1");
         assert!(matches!(attempt2, RefreshAttempt::Winner));
         coord.complete("cred-1");
-    }
-
-    #[tokio::test]
-    async fn semaphore_limits_concurrent_refreshes() {
-        let coord =
-            L1RefreshCoalescer::with_max_concurrent(2).expect("max=2 is a valid concurrency limit");
-        assert_eq!(coord.available_permits(), 2);
-
-        let _p1 = coord.acquire_permit().await;
-        assert_eq!(coord.available_permits(), 1);
-
-        let _p2 = coord.acquire_permit().await;
-        assert_eq!(coord.available_permits(), 0);
-
-        // Third acquire would block -- just verify count is zero
-        drop(_p1);
-        assert_eq!(coord.available_permits(), 1);
-
-        drop(_p2);
-        assert_eq!(coord.available_permits(), 2);
     }
 
     #[tokio::test]
@@ -678,27 +610,8 @@ mod tests {
         assert_eq!(coord.available_permits(), DEFAULT_MAX_CONCURRENT_REFRESHES);
     }
 
-    /// #314: `with_max_concurrent(0)` must not construct a deadlocking
-    /// coalescer. Before the fix this returned `Self` backed by
-    /// `Semaphore::new(0)`, so any `acquire_permit().await` hung forever.
-    #[tokio::test]
-    async fn zero_max_concurrent_returns_config_error() {
-        let err = L1RefreshCoalescer::with_max_concurrent(0)
-            .expect_err("zero concurrency must be rejected");
-        assert!(matches!(err, RefreshConfigError::ZeroConcurrency));
-    }
-
-    #[tokio::test]
-    async fn one_max_concurrent_is_valid() {
-        let coord = L1RefreshCoalescer::with_max_concurrent(1).expect("max=1 is valid");
-        assert_eq!(coord.available_permits(), 1);
-        let _p = coord.acquire_permit().await;
-        assert_eq!(coord.available_permits(), 0);
-    }
-
     /// Regression guard: a waiter that drops its receiver (cancellation)
-    /// must not prevent the winner from completing — `oneshot::Sender::send`
-    /// on a dropped receiver returns `Err(_)` which we silently ignore.
+    /// must not prevent the winner from completing.
     #[tokio::test]
     async fn cancelled_waiter_does_not_stall_winner() {
         let coord = Arc::new(L1RefreshCoalescer::new());
@@ -707,9 +620,6 @@ mod tests {
             RefreshAttempt::Winner
         ));
 
-        // Register a waiter and then immediately drop the receiver
-        // (simulates the waiting task being cancelled before the winner
-        // completes). `complete()` must still run cleanly.
         match coord.try_refresh("cred-1") {
             RefreshAttempt::Waiter(rx) => drop(rx),
             RefreshAttempt::Winner => panic!("expected Waiter"),

@@ -35,7 +35,7 @@ async fn resolve_to_typed_snapshot() {
     };
     store.put(cred, PutMode::CreateOnly).await.unwrap();
 
-    let resolver = nebula_engine::credential::CredentialResolver::new(store);
+    let resolver = nebula_engine::credential::CredentialResolver::new(store).unwrap();
     let handle = resolver
         .resolve::<ApiKeyCredential>("test-cred")
         .await
