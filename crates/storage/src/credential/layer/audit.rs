@@ -155,9 +155,7 @@ fn audit_result<T>(result: &Result<T, StoreError>) -> AuditResult {
     }
 }
 
-// Tests gated on `test-util` so storage compiles without features
-// (credential's `test_helpers` is itself behind `test-util`).
-#[cfg(all(test, feature = "test-util", feature = "sqlite"))]
+#[cfg(all(test, feature = "sqlite"))]
 mod tests {
     use std::sync::Mutex;
 

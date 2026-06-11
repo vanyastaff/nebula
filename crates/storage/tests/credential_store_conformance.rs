@@ -10,7 +10,7 @@
 //! Migration 0030 is applied inline before the store is constructed, matching
 //! the pattern used by `tests/refresh_claim_sqlite_integration.rs`.
 
-#![cfg(all(feature = "test-util", any(feature = "sqlite", feature = "postgres")))]
+#![cfg(any(feature = "sqlite", feature = "postgres"))]
 
 mod common;
 

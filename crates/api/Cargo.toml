@@ -131,7 +131,7 @@ nebula-api = { path = ".", features = ["test-util"] }
 # database via `SqliteCredentialStore::connect_memory`; `test-util` exposes that
 # constructor. `sqlite`/`credential-in-memory` already come from the normal dep;
 # `test-util` stays out of the release build (ADR-0023).
-nebula-storage = { path = "../storage", features = ["test-util"] }
+nebula-storage = { path = "../storage" }
 # `testing` feature adds EnvGuard for the config env-precedence unit tests.
 nebula-env = { workspace = true, features = ["testing"] }
 # Spec validation in tests — typed 3.1 parser (ADR-0047). Round-trip via

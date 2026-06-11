@@ -250,9 +250,7 @@ impl<S> EncryptionLayer<S> {
     }
 }
 
-// `StaticKeyProvider` requires `nebula-credential/test-util`, forwarded by
-// storage's own `test-util` feature.
-#[cfg(all(test, feature = "test-util", feature = "sqlite"))]
+#[cfg(all(test, feature = "sqlite"))]
 mod tests {
     use nebula_credential::{AuthStyle, PutMode, SecretString, credentials::oauth2::OAuth2State};
 

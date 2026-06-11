@@ -109,14 +109,16 @@ impl SqliteCredentialStore {
     /// between operations and dies only when the store (and its pool) is
     /// dropped. Hold the returned store for the lifetime of the test.
     ///
-    /// Test-only (`test-util` feature / `cfg(test)`); never compiled into a
-    /// release build (ADR-0023).
+    /// Creates a unique shared-cache in-memory SQLite store for testing.
+    ///
+    /// Available whenever the `sqlite` feature is enabled. Intended for unit and
+    /// integration tests; production composition roots use [`Self::connect`]
+    /// with a real URL instead.
     ///
     /// # Errors
     ///
     /// Returns [`StoreError::Backend`] if the pool cannot be opened or migration
     /// 0030 fails to apply.
-    #[cfg(any(test, feature = "test-util"))]
     pub async fn connect_memory() -> Result<Self, StoreError> {
         use std::str::FromStr;
 

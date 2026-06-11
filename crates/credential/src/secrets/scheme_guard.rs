@@ -89,18 +89,16 @@ impl<C: Credential> SchemeGuard<'_, C> {
         }
     }
 
-    /// Test-only constructor for resource-side integration tests.
+    /// Test-only constructor for in-crate tests.
     ///
-    /// Mirrors [`SchemeGuard::new`] but is publicly callable so external
-    /// integration tests (notably `nebula-resource`'s rotation dispatch
-    /// suite) can fabricate guards for fixture resources. Gated behind
-    /// `#[cfg(any(test, feature = "test-util"))]` per test-util gating — this
+    /// Mirrors [`SchemeGuard::new`] but is publicly callable within the
+    /// crate's own test suite. Gated behind `#[cfg(test)]` — this
     /// constructor MUST NOT be exposed in a production release build.
     ///
     /// Production code paths use the engine-driven flow that calls
     /// [`SchemeFactory::acquire`], which hands out a borrow-pinned guard
     /// the borrow checker rejects retention on (Probe 6).
-    #[cfg(any(test, feature = "test-util"))]
+    #[cfg(test)]
     pub fn for_test(scheme: <C as Credential>::Scheme) -> Self {
         Self::new(scheme)
     }
@@ -183,20 +181,17 @@ impl<C: Credential> SchemeFactory<C> {
         Self { inner: Arc::new(f) }
     }
 
-    /// Test-only constructor for resource-side integration tests.
+    /// Test-only constructor for in-crate tests.
     ///
-    /// Mirrors [`SchemeFactory::new`] but is publicly callable so external
-    /// integration tests (notably `nebula-resource`'s rotation dispatch
-    /// suite) can fabricate factories for fixture resources. Gated behind
-    /// `#[cfg(any(test, feature = "test-util"))]` per test-util gating — this
+    /// Mirrors [`SchemeFactory::new`] but is publicly callable within the
+    /// crate's own test suite. Gated behind `#[cfg(test)]` — this
     /// constructor MUST NOT be exposed in a production release build.
     ///
     /// The closure shape matches the canonical engine wiring: per call it
     /// must produce a pinned future yielding a fresh `SchemeGuard<'static, C>`
     /// (which `acquire` re-binds to `&self`). Tests typically capture an
-    /// owned scheme prototype and clone it inside the closure body — see
-    /// `crates/resource/tests/rotation.rs` for the canonical fixture form.
-    #[cfg(any(test, feature = "test-util"))]
+    /// owned scheme prototype and clone it inside the closure body.
+    #[cfg(test)]
     pub fn for_test<F>(f: F) -> Self
     where
         F: Fn() -> AcquireFuture<C> + Send + Sync + 'static,
@@ -219,7 +214,7 @@ impl<C: Credential> SchemeFactory<C> {
     }
 }
 
-#[cfg(any(test, feature = "test-util"))]
+#[cfg(test)]
 impl<C: Credential> SchemeFactory<C>
 where
     <C as Credential>::Scheme: Clone,
@@ -234,7 +229,7 @@ where
     /// Production code never relies on `Scheme: Clone`; only the test path
     /// requires it.
     ///
-    /// Gated behind `#[cfg(any(test, feature = "test-util"))]` per test-util gating.
+    /// Gated behind `#[cfg(test)]` — test-only, not part of the public surface.
     pub fn for_test_static(scheme: <C as Credential>::Scheme) -> Self {
         Self::for_test(move || {
             let scheme = scheme.clone();

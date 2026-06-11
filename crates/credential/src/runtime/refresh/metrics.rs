@@ -17,8 +17,8 @@
 //!
 //! Production composition threads the engine-shared registry via
 //! [`RefreshCoordMetrics::with_registry`]. Tests / single-replica desktop
-//! mode use [`RefreshCoordMetrics::for_tests`] (gated on `cfg(test)` /
-//! `feature = "test-util"`) which constructs handles backed by a fresh
+//! mode use [`RefreshCoordMetrics::for_tests`] (test-only, `#[cfg(test)]`)
+//! which constructs handles backed by a fresh
 //! private registry — production code must always go through the engine
 //! registry so a scraper actually observes the series, which is why the
 //! `Default` impl has been intentionally removed.
@@ -112,7 +112,7 @@ impl RefreshCoordMetrics {
     ///
     /// Production composition MUST use [`Self::with_registry`] with the
     /// engine-shared registry so a scraper actually observes the series.
-    #[cfg(any(test, feature = "test-util"))]
+    #[cfg(test)]
     pub fn for_tests() -> MetricsResult<Self> {
         Self::with_registry(&MetricsRegistry::new())
     }

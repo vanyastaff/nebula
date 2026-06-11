@@ -40,11 +40,6 @@ pub mod postgres;
 
 #[cfg(feature = "rotation")]
 pub use backup::RotationBackup;
-// `StaticKeyProvider` requires `nebula-credential/test-util`, forwarded by
-// storage's `test-util` feature. `cfg(test)` alone is insufficient — see the
-// note in `key_provider.rs` for the full explanation.
-#[cfg(feature = "test-util")]
-pub use key_provider::StaticKeyProvider;
 pub use key_provider::{EnvKeyProvider, FileKeyProvider, KeyProvider, ProviderError};
 pub use layer::{
     AuditEvent, AuditLayer, AuditOperation, AuditResult, AuditSink, CacheConfig, CacheLayer,
@@ -67,10 +62,8 @@ pub use refresh_claim::{
 pub use sqlite::SqliteCredentialStore;
 
 /// Crate-local test helpers for constructing [`nebula_credential::StoredCredential`] instances.
-///
-/// Gated on `test-util` to match the call sites, which are themselves
-/// `#[cfg(all(test, feature = "test-util", ...))]`.
-#[cfg(all(test, feature = "test-util"))]
+/// Gated on `sqlite` because all callers are `#[cfg(all(test, feature = "sqlite"))]` test modules.
+#[cfg(all(test, feature = "sqlite"))]
 pub(crate) mod test_support {
     use nebula_credential::StoredCredential;
 

@@ -255,10 +255,10 @@ impl CredentialService {
     }
 
     /// Active dynamic-lease count — a test-only smoke accessor. Gated
-    /// `cfg(any(test, feature = "test-util"))` so it is **not** part of
-    /// the stable public surface of this security-critical facade
-    /// (lease-count introspection is a test affordance, not an API).
-    #[cfg(any(test, feature = "test-util"))]
+    /// `#[cfg(test)]` so it is **not** part of the stable public surface
+    /// of this security-critical facade (lease-count introspection is a
+    /// test affordance, not an API).
+    #[cfg(test)]
     pub async fn active_lease_count(&self) -> usize {
         self.lease.active_lease_count().await
     }

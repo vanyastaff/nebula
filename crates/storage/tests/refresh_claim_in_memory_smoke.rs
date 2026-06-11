@@ -224,14 +224,7 @@ async fn try_claim_after_expiry_bumps_generation_in_place() {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Sentinel event recording + windowed count + 24h prune
-//
-// The 24h-prune test relies on `push_sentinel_event_at` (test-only
-// helper gated behind the crate's `test-util` feature) so it can seed
-// a synthetic 25h-old row without manipulating the system clock.
-// That test is gated on `feature = "test-util"` to keep the test crate
-// compilable under the default feature set; the windowed-count test
-// uses only the public surface and is always compiled.
+// Sentinel event recording + windowed count
 // ──────────────────────────────────────────────────────────────────────────
 
 #[tokio::test]
@@ -285,14 +278,14 @@ async fn record_and_count_sentinel_events_within_window() {
     );
 }
 
-#[cfg(feature = "test-util")]
+// Relocated to `src/credential/refresh_claim/in_memory.rs` (inline
+// `#[cfg(test)] mod tests`) because `push_sentinel_event_at` is now
+// `#[cfg(test)]` and not visible to integration test binaries.
+// `#[cfg(any())]` keeps the original body in-tree for reference without
+// compiling it.
+#[cfg(any())]
 #[tokio::test]
 async fn record_sentinel_event_prunes_entries_older_than_24h() {
-    // The in-memory impl prunes entries older than 24h on every
-    // `record_sentinel_event` insert (`in_memory.rs:206-207`). Verify
-    // by seeding a synthetic 25h-old event via the test-only helper,
-    // triggering a record on a DIFFERENT credential, and asserting
-    // the stale event was swept.
     let repo = InMemoryRefreshClaimRepo::new();
     let stale_cid = CredentialId::new();
     let trigger_cid = CredentialId::new();
