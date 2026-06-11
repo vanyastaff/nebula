@@ -429,4 +429,22 @@ The three decision points (D1/D2/D3) in §6 plus: does the canon §11.4 revision
 
 ---
 
+## 9. Forward-compatibility with planned resource features
+
+The redesign was checked against every resource feature already on the books — ADR-0089 `ResourceTools` (agent tools advertised by a resource), and the 1.1 line `InfraProvider` / `ConnectionAware` / `ResourceGroup` / `Authenticate<C>`, plus M12.4 bind-population and M12.4.2 frontier cleanup. **None conflicts**, because `Topology` widens *only* "how an already-built, already-authorized instance is leased under concurrency." Every other feature sits on the `Provider`/Manager side of the `InstanceStore` line — the same line that keeps the credential/tenant seam safe (§2.6). Several are *enabled* by the new contract.
+
+| Planned feature | Where it lives | Interaction with this spec |
+|---|---|---|
+| **`ResourceTools`** (ADR-0089) | a separate `#[async_trait] ResourceTools` on the resource + a `tools()` accessor on the sealed `AnyManagedResource` | **Orthogonal.** A *capability* read off the guard; `Topology` is *lease policy*. `ResourceGuard` is kept (derefs to `Instance`), so `invoke(&self, …)`-borrows-the-guard works unchanged. `AnyManagedResource` gains `tools()` (a framework-side method on the sealed trait — exactly what sealing permits); the open topology uses a *separate* `ErasedTopology`, so the two erasures don't collide. Mechanical only: the bound `R: Resource + ResourceTools` becomes `R: Provider + ResourceTools`. |
+| **`InfraProvider`** (resource-on-resource dependency) | `Provider` + Manager dependency resolution (the `#[credential]` pattern, for a resource dep) | **Orthogonal, same pattern as credentials (§2.6).** Resource deps resolve before `create`, outside `Topology`; the dependency's own topology is independent. |
+| **`ConnectionAware`** (disconnect detection) | `Provider::check` + the admission axis | **Enabled.** Maps directly onto `AdmissionPhase::Recovering`/`Tainted`, `check_cost` (A11), and parent-generation recovery (A12). |
+| **`ResourceGroup`** (multi-resource atomic acquire / txn) | a composition *over* `acquire` / `try_reserve` | **Enabled by the ticket model.** All-or-nothing acquire is `try_reserve` over N resources; if any returns `Unavailable`, drop the held `Ticket`s (release) and park — a clean two-phase group reservation the boolean readiness model could not express. |
+| **`Authenticate<C>`** | credential / `Provider` side | **Orthogonal** — credential seam (§2.6). |
+| **M12.4 bind-population** (production credential→slot resolver) | engine + Manager | **Orthogonal** — resolution feeds `create`; `Topology` never sees it. |
+| **M12.4.2 frontier per-branch cleanup** | engine scope teardown + guard drop | **Composes** with scoped release; the async/fallible release path (A5/A6) makes branch cleanup truthful. |
+
+**The load-bearing reason none conflicts:** a resource can be `Pooled` **and** advertise `ResourceTools` **and** depend on another resource via `InfraProvider` **and** be `ConnectionAware` — four independent axes that never touch the topology trait. Opening `Topology` does not foreclose, complicate, or reroute any of them.
+
+---
+
 **Net:** `Topology` becomes an **open trait** made safe by the **framework-owns-storage** rule that defuses the adversary's bleed/erasure/revoke objections; the admission seam is **ticket-based `try_reserve`** (gate) + advisory `phase()`/`load()` (route/diagnose), resolving TOCTOU by construction; **`Bounded` is restored** with a runtime cap; durability/streaming/renewal are deferred to the engine tier or 1.1. The contract additions cluster around one truth the catalogs forced: **`on_release`/`destroy`/`check` are real async work, not `Drop` glue**, and **admission is an orthogonal axis fed by try-reserve outcomes, not a gauge**. Vocabulary: **Resource → Provider → Instance → Topology → ResourceGuard**.
