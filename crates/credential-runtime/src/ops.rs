@@ -493,7 +493,7 @@ impl<PS: PendingStateStore> DispatchOps<PS> {
 /// type `C` into `ops`. Fail-closed on a duplicate `C::KEY`.
 ///
 /// The composition root enumerates the first-party types explicitly
-/// (mirroring `nebula_credential_builtin::register_builtins`), so the
+/// (mirroring `nebula_credential::register_builtins`), so the
 /// monomorphised `execute_resolve::<C, PS>` / `C::project` calls are
 /// captured here once per type — there is no reflection at the call site.
 ///
@@ -885,7 +885,7 @@ where
 /// (`bearer_token`, `shared_key`, `signing_key`). All three are static
 /// (no capability impls), so no capability-bounded `register_*_ops` is
 /// called for them — that is correct: closure absence is "capability not
-/// supported". Mirrors `nebula_credential_builtin::register_builtins`.
+/// supported". Mirrors [`nebula_credential::register_builtins`].
 ///
 /// # Errors
 ///
@@ -894,9 +894,9 @@ pub fn register_all_builtin_ops<PS>(ops: &mut DispatchOps<PS>) -> Result<(), Dis
 where
     PS: PendingStateStore,
 {
-    register_runtime_ops::<nebula_credential_builtin::BearerTokenCredential, PS>(ops)?;
-    register_runtime_ops::<nebula_credential_builtin::SharedKeyCredential, PS>(ops)?;
-    register_runtime_ops::<nebula_credential_builtin::SigningKeyCredential, PS>(ops)?;
+    register_runtime_ops::<nebula_credential::BearerTokenCredential, PS>(ops)?;
+    register_runtime_ops::<nebula_credential::SharedKeyCredential, PS>(ops)?;
+    register_runtime_ops::<nebula_credential::SigningKeyCredential, PS>(ops)?;
     Ok(())
 }
 
@@ -904,8 +904,8 @@ where
 mod tests {
     use super::{DispatchOps, register_refreshable_ops, register_runtime_ops};
     use crate::test_fixtures::RefreshableFixtureCredential;
+    use nebula_credential::BearerTokenCredential;
     use nebula_credential::{Capabilities, Credential, CredentialContext};
-    use nebula_credential_builtin::BearerTokenCredential;
     use nebula_schema::FieldValues;
     use nebula_storage::credential::InMemoryPendingStore;
 

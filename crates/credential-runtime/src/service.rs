@@ -1437,11 +1437,11 @@ pub mod test_support {
 
     use nebula_core::accessor::MetricsEmitter;
     use nebula_credential::provider::LeaseEvent;
+    use nebula_credential::register_builtins;
     use nebula_credential::store::StoreError;
     use nebula_credential::{
         CredentialEvent, CredentialId, CredentialRegistry, ErasedPendingStore,
     };
-    use nebula_credential_builtin::register_builtins;
     use nebula_crypto::EncryptionKey;
     use nebula_engine::credential::LeaseLifecycleConfig;
     use nebula_eventbus::EventBus;

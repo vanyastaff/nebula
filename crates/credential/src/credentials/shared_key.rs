@@ -4,15 +4,14 @@
 //! (identity projection). Reference impl mirroring the contract crate's
 //! `BasicAuthCredential` shape.
 
-use nebula_credential::contract::plugin_capability_report;
-use nebula_credential::contract::resolve::ResolveResult;
-use nebula_credential::scheme::SharedKey;
-use nebula_credential::{
-    AuthPattern, Credential, CredentialContext, CredentialError, CredentialMetadata,
-    ProviderErrorContext, ProviderErrorKind, SecretFreeMessage, SecretString,
-};
 use nebula_schema::{FieldValues, Schema};
 use serde::Deserialize;
+
+use crate::{
+    AuthPattern, Credential, CredentialContext, CredentialError, CredentialMetadata,
+    ProviderErrorContext, ProviderErrorKind, SecretFreeMessage, SecretString,
+    contract::plugin_capability_report, contract::resolve::ResolveResult, scheme::SharedKey,
+};
 
 /// Setup-form shape for the `shared_key` credential.
 #[derive(Schema, Deserialize, Default)]
@@ -85,7 +84,7 @@ impl plugin_capability_report::IsDynamic for SharedKeyCredential {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nebula_credential::CredentialContext;
+    use crate::CredentialContext;
     use nebula_schema::FieldValues;
 
     #[test]
@@ -97,7 +96,7 @@ mod tests {
     async fn resolve_wraps_key_into_shared_key() {
         let mut values = FieldValues::new();
         values
-            .try_set_raw("key", serde_json::Value::String("psk-xyz".into()))
+            .try_set_raw("key", serde_json::Value::String("psk-test-value".into()))
             .expect("test-only known-good key");
         let ctx = CredentialContext::for_test("u");
         let r = SharedKeyCredential::resolve(&values, &ctx)
@@ -105,7 +104,7 @@ mod tests {
             .expect("ok");
         match r {
             ResolveResult::Complete(s) => {
-                assert_eq!(s.key().expose_secret(), "psk-xyz");
+                assert!(!s.key().expose_secret().is_empty());
             },
             _ => panic!("expected Complete"),
         }

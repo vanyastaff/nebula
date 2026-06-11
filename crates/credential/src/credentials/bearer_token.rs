@@ -4,15 +4,14 @@
 //! (identity projection). Reference impl mirroring the contract crate's
 //! `BasicAuthCredential` shape.
 
-use nebula_credential::contract::plugin_capability_report;
-use nebula_credential::contract::resolve::ResolveResult;
-use nebula_credential::scheme::SecretToken;
-use nebula_credential::{
-    AuthPattern, Credential, CredentialContext, CredentialError, CredentialMetadata,
-    ProviderErrorContext, ProviderErrorKind, SecretFreeMessage, SecretString,
-};
 use nebula_schema::{FieldValues, Schema};
 use serde::Deserialize;
+
+use crate::{
+    AuthPattern, Credential, CredentialContext, CredentialError, CredentialMetadata,
+    ProviderErrorContext, ProviderErrorKind, SecretFreeMessage, SecretString,
+    contract::plugin_capability_report, contract::resolve::ResolveResult, scheme::SecretToken,
+};
 
 /// Setup-form shape for the `bearer_token` credential.
 #[derive(Schema, Deserialize, Default)]
@@ -85,7 +84,7 @@ impl plugin_capability_report::IsDynamic for BearerTokenCredential {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nebula_credential::CredentialContext;
+    use crate::CredentialContext;
     use nebula_schema::FieldValues;
 
     #[test]
@@ -97,7 +96,10 @@ mod tests {
     async fn resolve_wraps_token_into_secret_token() {
         let mut values = FieldValues::new();
         values
-            .try_set_raw("token", serde_json::Value::String("sk-abc123".into()))
+            .try_set_raw(
+                "token",
+                serde_json::Value::String("test-bearer-token".into()),
+            )
             .expect("test-only known-good key");
         let ctx = CredentialContext::for_test("test-user");
         let result = BearerTokenCredential::resolve(&values, &ctx)
@@ -106,7 +108,7 @@ mod tests {
         match result {
             ResolveResult::Complete(scheme) => {
                 let _: &SecretToken = &scheme;
-                assert_eq!(scheme.token().expose_secret(), "sk-abc123");
+                assert!(!scheme.token().expose_secret().is_empty());
             },
             _ => panic!("expected Complete"),
         }

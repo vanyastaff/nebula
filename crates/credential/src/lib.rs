@@ -152,8 +152,10 @@ pub use contract::{
 // Built-in credential implementations
 pub use credential_ref::CredentialRef;
 pub use credentials::{
-    ApiKeyCredential, ApiKeyProperties, BasicAuthCredential, BasicAuthProperties, OAuth2Credential,
-    OAuth2Pending, OAuth2Properties, OAuth2State,
+    ApiKeyCredential, ApiKeyProperties, BasicAuthCredential, BasicAuthProperties,
+    BearerTokenCredential, BearerTokenProperties, OAuth2Credential, OAuth2Pending,
+    OAuth2Properties, OAuth2State, SharedKeyCredential, SharedKeyProperties, SigningKeyCredential,
+    SigningKeyProperties, register_builtins,
 };
 pub use handle::CredentialHandle;
 pub use metrics::CredentialMetrics;

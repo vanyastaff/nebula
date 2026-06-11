@@ -157,15 +157,13 @@ deny = [
   # nebula-credential is the credential contract crate. It is shared infra
   # (not a single-tier Business crate): the Exec tier (engine/storage) and
   # the API tier consume it directly alongside the Business tier
-  # (action/plugin/resource) and the first-party backends
-  # (credential-builtin). The AGENTS.md layer map reflects this as a
+  # (action/plugin/resource). The AGENTS.md layer map reflects this as a
   # shared-infra note rather than a Business row. The allowlist locks the
   # current consumer set so a future PR cannot introduce an unreviewed
   # upward dependency from core/*.
   { crate = "nebula-credential", wrappers = [
     "nebula-action",
     "nebula-api",
-    "nebula-credential-builtin",
     # nebula-credential-runtime is the Exec-tier owner of the credential
     # management bounded context; it consumes the contract crate directly
     # (CredentialService facade + type registry + ops dispatch). See
@@ -202,25 +200,6 @@ deny = [
     # exercise the same evaluator the runtime uses.
     "nebula-action",
   ], reason = "ADR-0043 §9 / Phase 9: register_from_value bridges resource config to expression engine for {{ }} template resolution; schema uses it for parse validation; engine resolver evaluates node parameters; examples consume both" },
-
-  # nebula-credential-builtin is a Business-tier crate that ships first-party
-  # concrete credential types. Plugin authors depend on the contract crate
-  # (`nebula-credential`), NOT on this one — see crate README and
-  # `docs/INTEGRATION_MODEL.md` §2.4.
-  # The wrappers allowlist is widened when a composition-root crate wires
-  # the concrete types in via `register_builtins`. nebula-credential-runtime
-  # is exactly that root (Exec-tier owner of the credential management
-  # bounded context, docs/adr/0081-m6-resource-credential-integration.md). Upward deps from other Exec/API tier
-  # crates (nebula-engine, -storage, -api, -resource, -action, -sandbox,
-  # -plugin, -sdk) remain forbidden by the wrapper allowlists on each of
-  # those crates, which deliberately omit nebula-credential-builtin.
-  { crate = "nebula-credential-builtin", wrappers = [
-    "nebula-credential-builtin",
-    # The credential-runtime composition root calls
-    # `nebula_credential_builtin::register_builtins` to populate the
-    # CredentialRegistry/CredentialDispatch (docs/adr/0081-m6-resource-credential-integration.md).
-    "nebula-credential-runtime",
-  ], reason = "Built-in credential types are first-party; the credential-runtime composition root wires them via register_builtins (ADR-0066, consolidated into ADR-0081)" },
 
   # nebula-credential-runtime is the Exec-tier owner of the credential
   # management bounded context (CredentialService facade + type registry +

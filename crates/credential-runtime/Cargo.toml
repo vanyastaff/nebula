@@ -17,7 +17,6 @@ nebula-credential = { path = "../credential" }
 # wiring (ADR-0088: crypto primitives live in nebula-crypto). Already in the tree
 # transitively via nebula-credential / nebula-storage.
 nebula-crypto = { path = "../crypto" }
-nebula-credential-builtin = { path = "../credential-builtin" }
 # Production deps use only the unconditionally-public storage layer
 # types (EncryptionLayer/CacheLayer/AuditLayer/KeyProvider/AuditSink).
 # The `credential-in-memory` / `test-util` features (InMemoryStore,

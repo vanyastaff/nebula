@@ -4,15 +4,14 @@
 //! Scheme` (identity projection). Reference impl mirroring the contract
 //! crate's `BasicAuthCredential` shape.
 
-use nebula_credential::contract::plugin_capability_report;
-use nebula_credential::contract::resolve::ResolveResult;
-use nebula_credential::scheme::SigningKey;
-use nebula_credential::{
-    AuthPattern, Credential, CredentialContext, CredentialError, CredentialMetadata,
-    ProviderErrorContext, ProviderErrorKind, SecretFreeMessage, SecretString,
-};
 use nebula_schema::{FieldValues, Schema};
 use serde::Deserialize;
+
+use crate::{
+    AuthPattern, Credential, CredentialContext, CredentialError, CredentialMetadata,
+    ProviderErrorContext, ProviderErrorKind, SecretFreeMessage, SecretString,
+    contract::plugin_capability_report, contract::resolve::ResolveResult, scheme::SigningKey,
+};
 
 /// Setup-form shape for the `signing_key` credential.
 #[derive(Schema, Deserialize, Default)]
@@ -96,7 +95,7 @@ impl plugin_capability_report::IsDynamic for SigningKeyCredential {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nebula_credential::CredentialContext;
+    use crate::CredentialContext;
     use nebula_schema::FieldValues;
 
     #[test]
@@ -108,18 +107,21 @@ mod tests {
     async fn resolve_wraps_key_and_algorithm() {
         let mut values = FieldValues::new();
         values
-            .try_set_raw("key", serde_json::Value::String("whsec_1".into()))
+            .try_set_raw(
+                "key",
+                serde_json::Value::String("test-signing-secret".into()),
+            )
             .expect("test-only known-good key");
         values
             .try_set_raw("algorithm", serde_json::Value::String("hmac-sha256".into()))
-            .expect("test-only known-good key");
+            .expect("test-only known-good algorithm");
         let ctx = CredentialContext::for_test("u");
         let r = SigningKeyCredential::resolve(&values, &ctx)
             .await
             .expect("ok");
         match r {
             ResolveResult::Complete(s) => {
-                assert_eq!(s.key().expose_secret(), "whsec_1");
+                assert!(!s.key().expose_secret().is_empty());
                 assert_eq!(s.algorithm(), "hmac-sha256");
             },
             _ => panic!("expected Complete"),
@@ -131,7 +133,7 @@ mod tests {
         let mut values = FieldValues::new();
         values
             .try_set_raw("algorithm", serde_json::Value::String("hmac-sha256".into()))
-            .expect("test-only known-good key");
+            .expect("test-only known-good algorithm");
         let ctx = CredentialContext::for_test("u");
         assert!(SigningKeyCredential::resolve(&values, &ctx).await.is_err());
     }

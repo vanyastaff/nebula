@@ -2,15 +2,13 @@
 //! validated binding. End-to-end: create → validate_binding → resolve
 //! → guard ready for action consumption.
 //!
-//! Uses `BearerTokenCredential` (from `nebula-credential-builtin`) because
-//! `in_memory_service()` registers the three first-party builtins:
-//! `bearer_token`, `shared_key`, and `signing_key`. `ApiKeyCredential` is in
-//! `nebula-credential` (a different crate) and is not wired into the
+//! Uses `BearerTokenCredential` because `in_memory_service()` registers
+//! the three first-party builtins: `bearer_token`, `shared_key`, and
+//! `signing_key`. `ApiKeyCredential` is not wired into the
 //! `in_memory_service()` fixture.
 
-use nebula_credential::Credential;
 use nebula_credential::scheme::SecretToken;
-use nebula_credential_builtin::BearerTokenCredential;
+use nebula_credential::{BearerTokenCredential, Credential};
 use nebula_credential_runtime::test_support::in_memory_service;
 use nebula_credential_runtime::{CredentialServiceError, TenantScope};
 use serde_json::json;
