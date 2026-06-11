@@ -47,7 +47,7 @@
 //!
 //! Generates `From<UserError> for nebula_resource::Error` based on
 //! `#[classify(...)]` attributes on enum variants. Independent of the
-//! `ResourceSlots` derive — used by resource implementors to bridge their domain
+//! `Resource` derive — used by resource implementors to bridge their domain
 //! errors into the framework's `Error` type.
 //!
 //! Source-error chains are preserved: the original error is attached via

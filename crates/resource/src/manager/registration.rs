@@ -548,7 +548,7 @@ impl Manager {
         self.emit(ResourceEvent::ConfigReloaded { key: R::key() });
 
         // Reload outcome. `reload_config` swaps the config `ArcSwap`
-        // without rebuilding the caller-supplied live `Arc<R::Runtime>` for
+        // without rebuilding the caller-supplied live `Arc<R::Instance>` for
         // *any* topology — only the Pool fingerprint is updated, above. So
         // the honest outcome is `SwappedImmediately` for every variant: the
         // config is swapped, the live runtime is not rebuilt. The genuine

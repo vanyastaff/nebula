@@ -388,7 +388,7 @@ impl<R: Provider> PoolRuntime<R> {
     /// queue.
     ///
     /// Returns the number of entries evicted. Each evicted entry is destroyed
-    /// via [`Resource::destroy`].
+    /// via [`Provider::destroy`].
     pub async fn run_maintenance(&self, resource: &R) -> usize {
         let to_destroy = {
             let mut idle = self.idle.lock().await;

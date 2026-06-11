@@ -149,7 +149,7 @@ pub struct WorkflowEngine {
     /// resource's `kind` reaches a typed registration. It is **not**
     /// auto-derivable from `Plugin::resources()`: that yields
     /// `dyn AnyResource` (metadata-only — no constructor, no
-    /// `TopologyRuntime<R>`), and `#[derive(ResourceSlots)]` emits no per-`R`
+    /// `TopologyRuntime<R>`), and `#[derive(Resource)]` emits no per-`R`
     /// value/topology factory. The composition root pairs each declared
     /// resource `kind` with the concrete-`R` constructors it holds and
     /// threads the assembled registry in via
@@ -730,7 +730,7 @@ impl WorkflowEngine {
     /// INTEGRATION_MODEL, "Plugin packaging" §). But `Plugin::resources()`
     /// yields `Vec<Arc<dyn nebula_resource::AnyResource>>`, and
     /// `AnyResource` is **metadata-only** (`key()` + `metadata()`, no
-    /// associated types, no constructor); `#[derive(ResourceSlots)]` emits
+    /// associated types, no constructor); `#[derive(Resource)]` emits
     /// only slot plumbing (`DeclaresDependencies`, slot accessors,
     /// `HasCredentialSlots`) — it emits no per-`R` value factory and no
     /// `TopologyRuntime<R>` factory. The typed

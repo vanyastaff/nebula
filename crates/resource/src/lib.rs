@@ -5,7 +5,7 @@
 //!
 //! The engine is the owner of the resource lifecycle: acquire, health-check,
 //! hot-reload via `ReloadOutcome`, and scope-bounded release. Action code
-//! receives a `ResourceGuard` that derefs to `R::Runtime` and releases on
+//! receives a `ResourceGuard` that derefs to `R::Instance` and releases on
 //! drop. Two topology traits cover the integration space: `Pooled` and
 //! `Resident`.
 //!

@@ -145,7 +145,7 @@ impl<R: Provider> ManagedResource<R> {
     /// [`taint`](Self::taint). Only the [`Pool`](TopologyRuntime::Pool)
     /// topology has an idle queue and the recycle / in-flight-create /
     /// warmup / maintenance return-to-idle paths this counter guards; the
-    /// single-runtime topologies hold one shared `Arc<R::Runtime>` and
+    /// single-runtime topologies hold one shared `Arc<R::Instance>` and
     /// dispatch the revoke hook directly against it under no idle-queue race,
     /// so there is no return-to-idle site to fence and this is a no-op for
     /// them. See the [`manager`](crate::manager) module docs for the

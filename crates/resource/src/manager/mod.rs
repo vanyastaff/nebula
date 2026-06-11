@@ -201,7 +201,7 @@
 //! - **`reload_config` never drains/rebuilds the live runtime — MED-HIGH**
 //!   ([#712]). `reload_config` swaps the config `ArcSwap` (and the Pool
 //!   fingerprint) but never drains in-flight work or rebuilds the
-//!   caller-supplied live `Arc<R::Runtime>` for any topology, so a reload
+//!   caller-supplied live `Arc<R::Instance>` for any topology, so a reload
 //!   that should rotate the running runtime is silently not applied to it.
 //!   Deferred because the reload redesign (drain-then-rebuild + a truthful
 //!   outcome contract) is a separate concern; see the **accepted relabel**

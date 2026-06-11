@@ -271,7 +271,7 @@ impl<S> SlotCell<S> {
 /// ```
 ///
 /// Both syntactic shapes — `SlotCell<CredentialGuard<C>>` and
-/// `CredentialSlot<C>` — are accepted by `#[derive(ResourceSlots)]`.
+/// `CredentialSlot<C>` — are accepted by `#[derive(Resource)]`.
 pub type CredentialSlot<C> = SlotCell<nebula_credential::CredentialGuard<C>>;
 
 impl<S> Default for SlotCell<S> {

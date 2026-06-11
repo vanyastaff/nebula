@@ -9,7 +9,7 @@
 //! "Plugin packaging" §). But `Plugin::resources()` yields
 //! `Vec<Arc<dyn nebula_resource::AnyResource>>`, and `AnyResource` carries
 //! **only** `key()` + `metadata()` — no associated types, no constructor,
-//! no `TopologyRuntime<R>` factory. `#[derive(ResourceSlots)]` emits only
+//! no `TopologyRuntime<R>` factory. `#[derive(Resource)]` emits only
 //! slot plumbing (`DeclaresDependencies`, slot accessors,
 //! `HasCredentialSlots`) — it emits
 //! no per-`R` value factory and no topology-runtime factory. The typed

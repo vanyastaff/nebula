@@ -106,7 +106,7 @@ pub(crate) fn is_valid_credential_key(s: &str) -> bool {
 // ── Main parse entry points ────────────────────────────────────────────────
 
 /// Walk the struct fields looking for `#[credential]` attrs — variant used by
-/// `#[derive(ResourceSlots)]`.
+/// `#[derive(Resource)]`.
 ///
 /// Returns the parsed slot list. Returns an error on:
 /// - `#[resource]` attribute on a field (resources don't declare resource slots)
@@ -251,7 +251,7 @@ fn find_key_litstr(field: &Field) -> Option<LitStr> {
     None
 }
 
-/// Decode a `#[credential]` field type for the `ResourceSlots` derive.
+/// Decode a `#[credential]` field type for the `Resource` derive.
 ///
 /// Accepted shapes (path-tail detection — bare or fully qualified):
 /// - `SlotCell<CredentialGuard<C>>`
