@@ -43,7 +43,7 @@ working tree (evicted 2026-05-18). Do not expect `docs/adr/00NN-*.md` to exist.
 | [0081](./0081-m6-resource-credential-integration.md) | M6 resource & credential integration | accepted |
 | [0082](./0082-api-webhooks-idempotency.md) | API edge — OpenAPI, idempotency, webhooks | accepted |
 
-## Index (live standalone, 0046–0089)
+## Index (live standalone, 0046–0093)
 
 Stubs 0042–0067 that Wave B folded into the contract ADRs were evicted
 2026-05-18 (full text in git history; supersession recorded below). Only
@@ -68,6 +68,7 @@ live standalone decisions remain as individual files:
 | [0086](./0086-nebula-env-cross-cutting-reader.md) | `nebula-env` cross-cutting typed environment reader | accepted |
 | [0088](./0088-credential-subsystem-rewrite.md) | Credential subsystem rewrite — Protocol model, policy-as-data lifecycle, crate re-layering | proposed |
 | [0089](./0089-resource-advertised-agent-tools.md) | Resource-advertised agent tools (`ResourceTools`, MCP-shaped internal trait) — amends 0057 | proposed |
+| [0093](./0093-resource-teardown-contract-and-foolproofing.md) | Resource teardown contract — fallible-async reset/destroy, framework-owned deadline backstop, author-foolproofing ladder; revises canon §11.4 | accepted |
 
 ## Supersession (audit trail — text-only; superseded bodies in git history)
 
