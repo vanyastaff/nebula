@@ -15,7 +15,7 @@ External connections — database pools, HTTP clients, message brokers — are a
 
 ## Role
 
-**Bulkhead Pool** (Release It! ch "Stability Patterns — Bulkhead"). Isolates resource exhaustion per topology so one depleted pool cannot cascade to unrelated paths. Two topologies cover the integration space: `Pooled` (N interchangeable stateful instances) and `Resident` (one shared instance, cloned on acquire). The `Resource` trait declares two associated types (`Config`, `Runtime`) and lifecycle methods; topology traits add pool-specific recycle and broken-instance decisions. Long-running workers (`Daemon`) and pull-based subscriptions (`EventSource`) live in `nebula_engine::daemon` — canon §3.5 reserves "Resource" for pool/SDK clients.
+**Bulkhead Pool** (Release It! ch "Stability Patterns — Bulkhead"). Isolates resource exhaustion per topology so one depleted pool cannot cascade to unrelated paths. Three built-in topologies cover the integration space: `Pooled` (N interchangeable stateful instances), `Resident` (one shared instance, cloned on acquire), and `Bounded` (a runtime concurrency cap with no warm idle pool — capped / exclusive / unbounded). The `Provider` trait declares three associated types (`Config`, `Instance`, `Topology`) and lifecycle methods; per-topology hook traits (`PoolProvider` / `ResidentProvider` / `BoundedProvider`) add recycle / liveness / reset decisions. The framework owns the acquire loop and the credential-revoke fence; a custom `Topology<R>` impl can register through the same `Manager`. Long-running workers (`Daemon`) and pull-based subscriptions (`EventSource`) live in `nebula_engine::daemon` — canon §3.5 reserves "Resource" for pool/SDK clients.
 
 ## Public API (v4 — slot-binding pattern, 2026-04-29)
 
@@ -150,10 +150,10 @@ The framework resolves declared `#[credential]` slots **before** invoking `Resou
 - `ResourceEvent` — lifecycle events (`Registered`, `Removed`, `AcquireSuccess`, `AcquireFailed`, `Released`, `HealthChanged`, `ConfigReloaded`, `RetryAttempt`, `BackpressureDetected`, `RecoveryGateChanged`, `SlotRefreshed`, `SlotRevoked`, `SlotRefreshFailed`, `SlotRevokeFailed`).
 - `ResourceOpsMetrics`, `ResourceOpsSnapshot` — registry-backed operation counters.
 - `RecoveryGate`, `RecoveryGateConfig`, `RecoveryTicket`, `RecoveryWaiter`, `GateState` — thundering-herd recovery gate.
-- `TopologyRuntime` — enum dispatching to the two topology runtime variants (`Pool` / `Resident`).
-- Topology traits: `Pooled`, `Resident`.
-- Topology runtimes: `PoolRuntime`, `ResidentRuntime`.
-- Topology configs: `PoolConfig`, `ResidentConfig`.
+- Open `Topology<R>` trait + framework topology structs `Pooled<R>` / `Resident<R>` / `Bounded<R>` (reached monomorphically through `Provider::Topology`; no dispatch enum — the framework owns the acquire loop).
+- Per-topology hook traits: `PoolProvider`, `ResidentProvider`, `BoundedProvider`.
+- Topology configs / constructors: `PoolConfig`, `ResidentConfig`, `BoundedMode` (`Bounded::capped`/`exclusive`/`unbounded`).
+- `CheckCost` — relative `check` probe cost driving the maintenance reaper's health-probe cadence.
 - `#[derive(ResourceSlots)]`, `#[derive(ClassifyError)]` — proc-macro derivations.
 - `resource_key!` — macro for declaring resource keys.
 
@@ -225,6 +225,7 @@ These types are L4 implementation detail — rename/refactor without canon revis
 |------------|---------------------------------|---------------------------------------------------|
 | `Pooled`   | Databases (Postgres, Redis)     | N interchangeable instances with checkout/recycle |
 | `Resident` | HTTP clients (`reqwest::Client`) | One shared instance, clone on acquire             |
+| `Bounded`  | License seats, serial device    | Concurrency cap, no warm pool (capped/exclusive/unbounded) |
 
 Long-running workers (`Daemon`) and pull-based event subscriptions (`EventSource`) live in `nebula_engine::daemon`; this crate retains pool/SDK-client topologies only (canon §3.5).
 

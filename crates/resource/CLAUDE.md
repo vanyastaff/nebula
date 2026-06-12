@@ -17,7 +17,7 @@
 - `src/registry.rs` — type-erased registry, scope-aware lookup, `(key, scope)` dedup
 - `src/manager/` — `Manager::register(RegistrationSpec)` funnel, acquire dispatch, shutdown/drain
 - `src/topology/contract.rs` — the open `Topology<R>` trait (slot-centric, framework-driven). The **framework** owns the acquire loop (`ManagedResource::run_acquire_loop`): fenced `store.checkout()`, stale-slot destroy, cancel-safe wrap, on-release return-or-destroy. A topology supplies only thin R-aware hooks (`create_slot` / `slot_instance` / `into_instance` / `accept` / `prepare` / `on_release` / `pools` / `store_capacity` / `dispatch_credential_hook` / …) and **cannot** reach the revoke fence — never write `store.checkout` / `resource.destroy` / a stale loop / an epoch compare in a `Topology` impl.
-- `src/topology/` + `src/runtime/` — `Pooled<R>` / `Resident<R>` built-in topologies (`Topology<R>` impls); the framework-owned `InstanceStore<Slot>` is the real idle queue (`ManagedResource.store`)
+- `src/topology/` + `src/runtime/` — `Pooled<R>` / `Resident<R>` / `Bounded<R>` built-in topologies (`Topology<R>` impls; Bounded = runtime concurrency cap, capped/exclusive/unbounded, no warm pool); the framework-owned `InstanceStore<Slot>` is the real idle queue (`ManagedResource.store`)
 - `src/release_queue.rs` — `ReleaseQueue` best-effort async drain (canon §11.4); `src/recovery/` — thundering-herd `RecoveryGate`
 
 ## Conventions & never-do

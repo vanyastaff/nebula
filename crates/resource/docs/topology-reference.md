@@ -1,91 +1,105 @@
 # Topology Reference for Resource Authors
 
-> **Audience:** plugin authors writing a new `Resource` impl. Maps each of
-> the two topology traits (`Pooled`, `Resident`) to a minimal Rust skeleton,
-> the trait set you must implement, when to pick it, and the friction points.
+> **Audience:** authors writing a new `Provider` impl. Maps each built-in
+> topology (`Pooled`, `Resident`, `Bounded`) to a minimal Rust skeleton, the
+> hook trait you implement, when to pick it, and the friction points.
 >
 > See [`README.md`](README.md) for the full library overview, and the
-> `examples/` workspace member for runnable end-to-end demonstrations of
+> root `examples/` workspace member for runnable end-to-end demonstrations of
 > each pattern.
+
+A resource declares its lease behaviour with a `type Topology` associated type
+on its `Provider` impl. The **framework** owns the acquire loop and the
+credential-revoke fence; a topology supplies only thin, R-aware hooks (it cannot
+touch the idle store or the fence — see
+[`topology/contract.rs`](../src/topology/contract.rs)). The three built-ins:
 
 ---
 
 ## Decision matrix
 
-| Topology                  | `Runtime: Clone`?    | Use when…                                                                               | Don't use for…                                                    |
-|---------------------------|----------------------|-----------------------------------------------------------------------------------------|-------------------------------------------------------------------|
-| **[Pool](#pool)**         | Yes                  | N interchangeable stateful instances; expensive to create (DB connections).             | Single-shared HTTP client (use Resident).                         |
-| **[Resident](#resident)** | Yes (`Arc::clone`)   | One instance shared widely; `Arc::clone` is cheap (`reqwest::Client`, in-memory cache). | Per-caller mutable state (use Pool).                              |
+| Topology                    | Instance model                                              | Use when…                                                                      | Don't use for…                                          |
+|-----------------------------|------------------------------------------------------------|--------------------------------------------------------------------------------|---------------------------------------------------------|
+| **[Pool](#pool)**           | N interchangeable instances, checkout / recycle / destroy  | N stateful instances, expensive to create, reused (DB connections).            | A single shared client (use Resident).                  |
+| **[Resident](#resident)**   | One shared instance, `Arc::clone` on acquire               | One instance shared widely; clone is cheap (`reqwest::Client`, in-mem cache).  | Per-caller mutable state (use Pool).                    |
+| **[Bounded](#bounded)**     | Concurrency-capped, **no** warm idle pool                  | Cap concurrent leases without pooling: license seats, serial-exclusive device. | N reusable warm instances (use Pool).                   |
+
+`type Topology` is static per resource type; only its *config* (sizes, cap) is a
+runtime value. The author constructs the concrete topology and hands it to
+`Manager::register` in a `RegistrationSpec`.
 
 ---
 
 ## Pool
 
-**N interchangeable stateful instances managed by a checkout / recycle / destroy lifecycle.**
+**N interchangeable instances managed by a checkout / recycle / destroy lifecycle.**
 
 ### Trait set
 
 ```rust,ignore
-impl Resource for Postgres {
+use nebula_resource::{
+    Provider, ResourceContext, ResourceMetadata, TeardownCx,
+    error::Error, resource::ResourceConfig,
+    topology::{Pooled, PoolProvider, BrokenCheck, InstanceMetrics, RecycleDecision},
+};
+
+#[async_trait::async_trait]
+impl Provider for Postgres {
     type Config = PostgresConfig;
-    type Runtime = PgConnection;     // Pool checks out / recycles instances of this
+    type Instance = PgConnection;
+    type Topology = Pooled<Self>;          // ← static topology choice
 
     fn key() -> ResourceKey { resource_key!("demo.postgres") }
 
-    fn create(
-        &self, config: &Self::Config, ctx: &ResourceContext,
-    ) -> impl Future<Output = Result<Self::Runtime, Error>> + Send { /* … */ }
+    async fn create(&self, config: &Self::Config, ctx: &ResourceContext)
+        -> Result<Self::Instance, Error> { /* … */ }
 
-    async fn destroy(&self, runtime: Self::Runtime) -> Result<(), Error> { /* … */ }
+    async fn destroy(&self, instance: Self::Instance, cx: TeardownCx)
+        -> Result<(), Error> { /* flush/close before drop; cx.deadline bounds it */ }
+
+    fn metadata() -> ResourceMetadata { ResourceMetadata::from_key(&Self::key()) }
 }
 
-impl Pooled for Postgres {
-    fn is_broken(&self, runtime: &Self::Runtime) -> BrokenCheck { /* sync, O(1) */ }
+impl PoolProvider for Postgres {
+    fn is_broken(&self, instance: &Self::Instance) -> BrokenCheck { /* sync, O(1) */ }
 
-    async fn recycle(
-        &self, runtime: &Self::Runtime, metrics: &InstanceMetrics,
-    ) -> Result<RecycleDecision, Error> { /* … */ }
+    async fn recycle(&self, instance: &Self::Instance, metrics: &InstanceMetrics)
+        -> Result<RecycleDecision, Error> { /* wipe per-lease state → Keep / Drop */ }
 
-    // Optional: `prepare(&self, runtime, ctx)` for per-checkout setup.
+    // Optional: `prepare(&self, instance, ctx)` for per-checkout session setup.
 }
 ```
 
 ### Registration
 
 ```rust,ignore
-let pool_rt = PoolRuntime::<Postgres>::try_new(
-    PoolConfig { min_size: 0, max_size: 8, ..PoolConfig::default() },
-    pg_config.fingerprint(),
-)?;
-
 manager.register(RegistrationSpec {
     resource: Postgres,
-    config: pg_config,
+    config: pg_config.clone(),
     scope: ScopeLevel::Global,
     slot_identity: SlotIdentity::Unbound,
-    topology: TopologyRuntime::Pool(pool_rt),
-    acquire: Manager::erased_acquire_pooled_for::<Postgres>(),
+    topology: Pooled::new(PoolConfig { max_size: 8, ..Default::default() }, pg_config.fingerprint()),
     recovery_gate: None,
 })?;
 ```
 
 ### Lifecycle
 
-`create` (lazy on first acquire, eager via `warmup`) → optional `prepare`
-(per checkout) → caller holds `ResourceGuard` → on drop: tainted? destroy.
-healthy? → `recycle` returns `Keep` / `Drop` → idle queue or destroy.
+`create` (lazy on first acquire, eager via warmup) → optional `prepare` (per
+checkout) → caller holds `ResourceGuard` → on drop: tainted? destroy. healthy? →
+`recycle` returns `Keep` (return to the framework idle store, under the revoke
+fence) / `Drop` (destroy).
 
 ### Friction points
 
-- **Sync `is_broken`.** Runs in the `Drop` path of `ResourceGuard`. No I/O,
-  no async — read atomic flags only. If you must check the network, do it
-  in `recycle` (async).
-- **`fingerprint()` semantics.** Hash only fields that make existing
-  instances stale. `application_name` and `statement_timeout` matter;
-  `max_size` does not.
-- **`AbortOnDrop` for spawned tasks.** If your `create` spawns a background
-  task, wrap the `JoinHandle` in an `AbortOnDrop` so it is killed when the
-  runtime drops mid-acquire.
+- **Sync `is_broken`.** Read atomic flags only — no I/O, no async. For a network
+  check, do it in `recycle` (async).
+- **`fingerprint()` semantics.** Hash only fields that make existing instances
+  stale (`application_name`, `statement_timeout`) — not `max_size`.
+- **Credentialed pools discard by default.** If the resource declares credential
+  slots, the default `recycle` **discards** rather than re-pools a dirty
+  connection (cross-lease state bleed prevention, ADR-0093). Override `recycle`
+  to wipe per-lease state and return `Keep` to actually pool.
 
 ### Runnable example
 
@@ -100,19 +114,27 @@ healthy? → `recycle` returns `Keep` / `Drop` → idle queue or destroy.
 ### Trait set
 
 ```rust,ignore
-impl Resource for GoogleSheets {
+use nebula_resource::topology::{Resident, ResidentProvider};
+
+#[async_trait::async_trait]
+impl Provider for GoogleSheets {
     type Config = GoogleSheetsConfig;
-    type Runtime = GoogleSheetsClient;       // Resident: Clone, cloned on each acquire
+    type Instance = GoogleSheetsClient;    // Clone — cloned on each acquire
+    type Topology = Resident<Self>;
 
     fn key() -> ResourceKey { resource_key!("demo.google.sheets") }
 
-    fn create(
-        &self, config: &Self::Config, ctx: &ResourceContext,
-    ) -> impl Future<Output = Result<Self::Runtime, Error>> + Send { /* … */ }
+    async fn create(&self, config: &Self::Config, ctx: &ResourceContext)
+        -> Result<Self::Instance, Error> { /* … */ }
+
+    async fn destroy(&self, instance: Self::Instance, cx: TeardownCx)
+        -> Result<(), Error> { Ok(()) }
+
+    fn metadata() -> ResourceMetadata { ResourceMetadata::from_key(&Self::key()) }
 }
 
-impl Resident for GoogleSheets {
-    fn is_alive_sync(&self, _runtime: &Self::Runtime) -> bool { true }
+impl ResidentProvider for GoogleSheets {
+    fn is_alive_sync(&self, _instance: &Self::Instance) -> bool { true }
     fn stale_after(&self) -> Option<Duration> { None }
 }
 ```
@@ -120,66 +142,146 @@ impl Resident for GoogleSheets {
 ### Registration
 
 ```rust,ignore
-let resident_rt = ResidentRuntime::<GoogleSheets>::new(ResidentConfig::default());
-
 manager.register(RegistrationSpec {
     resource: GoogleSheets::new(cred),
     config: GoogleSheetsConfig { application: "nebula-demo".into() },
     scope: ScopeLevel::Global,
     slot_identity: SlotIdentity::Unbound,
-    topology: TopologyRuntime::Resident(resident_rt),
-    acquire: Manager::erased_acquire_resident_for::<GoogleSheets>(),
+    topology: Resident::new(ResidentConfig::default()),
     recovery_gate: None,
 })?;
 ```
 
 ### Cross-workflow dedupe
 
-Manager dedupes by `(R::key(), ScopeLevel)`. 10 concurrent acquires at the
-same scope produce **one** `Resource::create` invocation; every lease is
-`Arc::ptr_eq` to every other. See
-[`examples/examples/resource_telegram_multi_workflow.rs`](../../../examples/examples/resource_telegram_multi_workflow.rs)
-for the dedupe assertion.
+The Manager dedupes by `(R::key(), ScopeLevel, SlotIdentity)`. 10 concurrent
+acquires at the same scope and credential identity produce **one**
+`Provider::create`; every lease is a clone of the one master handle. See
+[`examples/examples/resource_telegram_multi_workflow.rs`](../../../examples/examples/resource_telegram_multi_workflow.rs).
 
 ### Friction points
 
-- **`fingerprint() = 0` is correct.** Resident has only one instance, so a
-  config change forces destroy + recreate; there's no "stale fingerprint"
-  sweep to drive.
-- **Token caching inside `Runtime`.** OAuth-style integrations cache an
-  access token inside the Runtime. Two valid patterns:
-  - **Reactive:** detect 401 → refresh inline + retry (used by
-    [`resource_resident_http.rs`](../../../examples/examples/resource_resident_http.rs)).
-  - **Proactive (preferred for high throughput):** use
-    `Resident::stale_after(Some(token_ttl - margin))` and let the manager
-    destroy + recreate before tokens expire.
-- **`Clone` requirement on `Runtime`.** Inner state typically lives behind
-  `Arc<Inner>` so `Clone` is a refcount bump.
+- **`Clone` on `Instance`.** Inner state typically lives behind `Arc<Inner>`, so
+  `Clone` is a refcount bump.
+- **Revoke teardown runs through the credential hook.** The master handle is
+  never in the framework idle store, so the store revoke-fence cannot reach it;
+  Resident handles its own revoke via `dispatch_credential_hook`
+  (`handles_own_revoke() == true`).
+- **Token caching inside `Instance`.** OAuth-style integrations cache a token in
+  the handle. Reactive (detect 401 → refresh inline) or proactive
+  (`stale_after(Some(ttl - margin))` → the framework recreates before expiry).
 
 ### Runnable examples
 
 - [`examples/examples/resource_resident_http.rs`](../../../examples/examples/resource_resident_http.rs) — OAuth refresh
-- [`examples/examples/resource_telegram_multi_workflow.rs`](../../../examples/examples/resource_telegram_multi_workflow.rs) — cross-workflow dedupe assertion
+- [`examples/examples/resource_telegram_multi_workflow.rs`](../../../examples/examples/resource_telegram_multi_workflow.rs) — cross-workflow dedupe
 
 ---
 
-## Cross-cutting checklist for a new Resource impl
+## Bounded
+
+**A runtime concurrency cap over a resource that does *not* keep a warm idle pool.**
+
+Fills the gap Pool and Resident leave open: limit how many leases are live at
+once, without an idle pool of interchangeable instances. Three modes, chosen by
+a runtime value (not a const generic):
+
+| Mode | Cap | Instance lifecycle | Use case |
+|------|-----|--------------------|----------|
+| `Bounded::capped(n)` | `Semaphore(n)` | fresh per lease, destroyed on release | license seats, connection cap |
+| `Bounded::exclusive()` | `Semaphore(1)` | **one** instance reused, reset on release | serial device / single session |
+| `Bounded::unbounded()` | none | fresh per lease, destroyed on release | no cap, no reuse |
+
+### Trait set
+
+```rust,ignore
+use nebula_resource::topology::{Bounded, BoundedProvider};
+
+#[async_trait::async_trait]
+impl Provider for SerialPort {
+    type Config = SerialCfg;
+    type Instance = PortHandle;
+    type Topology = Bounded<Self>;
+
+    fn key() -> ResourceKey { resource_key!("demo.serial") }
+
+    async fn create(&self, config: &Self::Config, ctx: &ResourceContext)
+        -> Result<Self::Instance, Error> { /* open the port */ }
+
+    async fn destroy(&self, instance: Self::Instance, cx: TeardownCx)
+        -> Result<(), Error> { /* close */ }
+
+    fn metadata() -> ResourceMetadata { ResourceMetadata::from_key(&Self::key()) }
+}
+
+// Only Exclusive reuses its instance and therefore resets; Capped / Unbounded
+// destroy on release and use the default no-op reset.
+impl BoundedProvider for SerialPort {
+    async fn reset(&self, instance: &mut Self::Instance) -> Result<(), Error> {
+        /* clear per-lease state before the next acquirer */ Ok(())
+    }
+}
+```
+
+### Registration
+
+```rust,ignore
+manager.register(RegistrationSpec {
+    resource: SerialPort,
+    config: SerialCfg::default(),
+    scope: ScopeLevel::Global,
+    slot_identity: SlotIdentity::Unbound,
+    topology: Bounded::exclusive(),      // or Bounded::capped(seats)? / Bounded::unbounded()
+    recovery_gate: None,
+})?;
+```
+
+### Friction points
+
+- **`capped(0)` is rejected** at construction with a typed `Error` — a zero cap
+  can never admit. `Bounded::capped(n)` returns `Result`; use `?`.
+- **A failed `Exclusive` reset destroys the instance** instead of reissuing a
+  half-reset one (the S4 invariant) and surfaces the error to an awaited
+  `release()`; a fresh instance is built on the next acquire. The single permit
+  is held until the reset resolves, so no acquirer observes the in-between state.
+- **Bounded is not a pool.** `Capped` / `Unbounded` pay a full `create` per
+  lease (no idle reuse). If you want a cap *and* warm reuse, use Pool with
+  `max_size = n`.
+- **`set_cap(n)`** resizes a `Capped` topology at runtime (grow immediately;
+  shrink as in-flight leases return).
+
+---
+
+## Background health probes (`CheckCost`)
+
+The framework maintenance reaper health-probes idle Pool instances via
+`Provider::check`, spaced by `Provider::check_cost()`:
+
+- `CheckCost::Cheap` (default) — probed every maintenance sweep (an in-process
+  liveness flag).
+- `CheckCost::Moderate` / `CheckCost::Expensive` — probed less often (every 4th /
+  16th sweep) so a network-round-trip check does not hammer an idle pool.
+
+A slot whose `check` fails is evicted and destroyed; the next acquire rebuilds a
+fresh one. Override `check_cost()` to match the real cost of your `check`.
+
+---
+
+## Cross-cutting checklist for a new Provider impl
 
 Before sending the PR, verify:
 
 - [ ] **`fingerprint`** hashes only fields that make existing instances stale.
 - [ ] **`is_broken` / `is_alive_sync`** are sync, O(1), no I/O.
-- [ ] **`destroy`** consumes `Runtime` (takes `self: Self::Runtime`, not a reference).
-- [ ] **`Drop`** of the `Runtime` releases OS resources without `await`.
-      If the runtime spawns tasks, wrap their `JoinHandle` in `AbortOnDrop`.
-- [ ] **Cancel-safety:** if `create` does anything observable before
-      returning a Runtime, ensure that path is idempotent or has a guard
-      that cleans up on cancel.
-- [ ] **Errors:** every variant of your `Error` enum classifies via
-      `nebula_resource::ClassifyError` (transient / permanent / exhausted /
-      backpressure). Action authors rely on this for retry decisions.
-- [ ] **Credential slots** are declared as `#[credential(key = "...")]` fields,
-      **not** through any deprecated singular associated type.
+- [ ] **`check_cost`** reflects the real cost of `check` (default `Cheap`).
+- [ ] **`destroy`** consumes the `Instance` and honours `cx.deadline`; the
+      sync `Drop` of the `Instance` must release OS resources without `await`.
+      If `create` spawns tasks, wrap their `JoinHandle` in an abort-on-drop.
+- [ ] **Cancel-safety:** if `create` does anything observable before returning,
+      ensure that path is idempotent or cleaned up on cancel.
+- [ ] **Errors** classify via `nebula_resource::ClassifyError` (transient /
+      permanent / exhausted / backpressure) — action authors retry on this.
+- [ ] **Credential slots** are declared as `#[credential(key = "...")]` fields.
 
 ---
 
@@ -189,5 +291,4 @@ Before sending the PR, verify:
 - [`pooling.md`](pooling.md) — Pool topology deep-dive (warmup, metrics, stats)
 - [`recovery.md`](recovery.md) — recovery gating and resilience composition
 - [`events.md`](events.md) — lifecycle event streaming
-- [`adapters.md`](adapters.md) — accessor adapters (`HasResources`, `ScopedResourceAccessor`)
 - [`api-reference.md`](api-reference.md) — full surface API listing
