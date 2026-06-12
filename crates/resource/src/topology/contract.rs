@@ -96,6 +96,25 @@ impl Load {
     }
 }
 
+// ─── AdmissionStatus ────────────────────────────────────────────────────────
+
+/// Diagnostic admission snapshot for a registered resource: its advisory
+/// [`AdmissionPhase`] plus an optional [`Load`]. Returned by
+/// [`Manager::admission_status`](crate::Manager::admission_status).
+///
+/// Advisory only — the authoritative admission gate is always
+/// [`Topology::try_reserve`]. Use this for admin APIs, dashboards, and
+/// load-balancer hints, never to gate admission.
+#[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
+pub struct AdmissionStatus {
+    /// Advisory admission phase.
+    pub phase: AdmissionPhase,
+    /// Optional load snapshot — `None` for topologies that do not report load
+    /// (e.g. resident / permit-less).
+    pub load: Option<Load>,
+}
+
 // ─── Unavailable ──────────────────────────────────────────────────────────────
 
 /// Typed reason a [`Topology`]'s `try_reserve` could not grant a ticket.

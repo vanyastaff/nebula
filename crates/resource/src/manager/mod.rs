@@ -713,6 +713,31 @@ impl Manager {
         }
     }
 
+    /// Diagnostic admission snapshot for a registered resource at
+    /// `(key, scope)` — its advisory [`AdmissionPhase`](crate::topology::AdmissionPhase)
+    /// and optional [`Load`](crate::topology::Load), bundled into an
+    /// [`AdmissionStatus`](crate::topology::AdmissionStatus).
+    ///
+    /// Returns `None` both when nothing is registered and when several
+    /// resolved-credential rows share `(key, scope)` (ambiguous) — mirroring
+    /// [`get_any`](Self::get_any), a diagnostic peek must not arbitrarily pick
+    /// one tenant's row.
+    ///
+    /// Advisory only: the authoritative admission gate is the acquire path's
+    /// `try_reserve`. This surface is for admin APIs, dashboards, and
+    /// load-balancer hints.
+    pub fn admission_status(
+        &self,
+        key: &ResourceKey,
+        scope: &ScopeLevel,
+    ) -> Option<crate::topology::AdmissionStatus> {
+        let handle = self.get_any(key, scope)?;
+        Some(crate::topology::AdmissionStatus {
+            phase: handle.admission_phase(),
+            load: handle.admission_load(),
+        })
+    }
+
     /// Records acquire success/failure in aggregate metrics and emits
     /// the corresponding [`ResourceEvent`].
     fn record_acquire_result<R: Provider>(

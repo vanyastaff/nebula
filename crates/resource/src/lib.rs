@@ -134,8 +134,8 @@ pub use runtime::{
 pub use state::{ResourcePhase, ResourceStatus};
 // Topology configurations — used at registration time.
 pub use topology::{
-    AdmissionPhase, CheckedOut, Checkout, InstanceStore, Load, MaintenanceSchedule, NoTopology,
-    ReturnOutcome, Ticket, Topology, Unavailable,
+    AdmissionPhase, AdmissionStatus, CheckedOut, Checkout, InstanceStore, Load,
+    MaintenanceSchedule, NoTopology, ReturnOutcome, Ticket, Topology, Unavailable,
     pooled::{
         BrokenCheck, InstanceMetrics, PoolProvider, RecycleDecision, config::Config as PoolConfig,
     },

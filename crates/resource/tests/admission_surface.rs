@@ -170,6 +170,62 @@ async fn pool_saturated_phase_and_load() {
     );
 }
 
+/// `Manager::admission_status` reports a `Saturated` snapshot (`load == 1.0`)
+/// for a fully occupied pool and `None` for an unregistered key.
+#[tokio::test]
+async fn admission_status_reports_saturated_snapshot_and_none_for_unknown() {
+    use nebula_resource::topology::pooled::config::Config as PoolConfig;
+
+    let manager = Manager::new();
+    let pool_rt = Pooled::<TinyPool>::new(
+        PoolConfig {
+            max_size: 1,
+            ..Default::default()
+        },
+        0,
+    );
+    manager
+        .register(RegistrationSpec {
+            resource: TinyPool,
+            config: MinCfg,
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: pool_rt,
+            recovery_gate: None,
+        })
+        .expect("register succeeds");
+
+    // Acquire the single permit — pool is now saturated.
+    let _guard = manager
+        .acquire_pooled::<TinyPool>(&ctx(), &AcquireOptions::default())
+        .await
+        .expect("first acquire succeeds");
+
+    let status = manager
+        .admission_status(&TinyPool::key(), &ScopeLevel::Global)
+        .expect("registered row yields an admission snapshot");
+    assert_eq!(
+        status.phase,
+        AdmissionPhase::Saturated,
+        "saturated pool must report Saturated phase, got {:?}",
+        status.phase
+    );
+    let load = status.load.expect("pool must report load");
+    assert!(
+        (load.saturation - 1.0_f32).abs() < f32::EPSILON,
+        "saturation must be 1.0 when fully occupied, got {}",
+        load.saturation
+    );
+
+    let unknown = resource_key!("test.admission.unregistered");
+    assert!(
+        manager
+            .admission_status(&unknown, &ScopeLevel::Global)
+            .is_none(),
+        "unregistered key must yield None"
+    );
+}
+
 /// `acquire_any` on a saturated pool maps the gate denial to
 /// `ErrorKind::Backpressure`.
 #[tokio::test]

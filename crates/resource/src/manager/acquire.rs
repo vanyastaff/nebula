@@ -168,14 +168,14 @@ impl Manager {
                 // `Revoked`). The taint-gate and shutdown-guard run first
                 // (above); this gate is the topology-level admission check.
                 if let Err(unavailable) = managed.try_reserve_gate() {
-                    let err = unavailable.into_error(key);
                     tracing::debug!(
                         target: "nebula.resource",
                         %key,
                         ?slot_identity,
+                        reason = ?unavailable,
                         "acquire_any: topology admission rejected"
                     );
-                    return Err(err);
+                    return Err(unavailable.into_error(key));
                 }
                 managed
                     .acquire(
