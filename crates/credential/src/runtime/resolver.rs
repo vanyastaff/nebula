@@ -10,6 +10,8 @@ use std::{
     sync::Arc,
 };
 
+#[cfg(feature = "rotation")]
+use crate::credentials::{OAuth2Credential, OAuth2State};
 use crate::error::{CredentialError, ProviderErrorContext, ProviderErrorKind};
 use crate::runtime::refresh::transport::RefreshTransport;
 use crate::runtime::refresh::{RefreshCoordinator, RefreshError};
@@ -18,12 +20,6 @@ use crate::{
     CredentialState, Refreshable, SchemeFactory, SchemeGuard, SecretFreeMessage,
     resolve::{ReauthReason, RefreshOutcome},
     store::{CredentialStore, PutMode, StoreError, StoredCredential},
-};
-#[cfg(feature = "rotation")]
-use crate::{
-    ProviderErrorContext, ProviderErrorKind, SecretFreeMessage,
-    credentials::{OAuth2Credential, OAuth2State},
-    error::CredentialError,
 };
 use nebula_eventbus::EventBus;
 use parking_lot::Mutex;
