@@ -17,7 +17,7 @@ struct Inner<S: AuthScheme> {
 /// Handle to a resolved credential with a specific AuthScheme.
 ///
 /// Uses `ArcSwap` internally so [`CredentialResolver`](crate::runtime::CredentialResolver)
-/// can hot-swap refreshed auth material via [`replace`](Self::replace).
+/// can hot-swap refreshed auth material via the crate-internal `replace`.
 /// [`Clone`](Self::clone) shares the same live scheme cell — a refresh updates
 /// every clone's next [`snapshot`](Self::snapshot), while prior snapshots stay valid.
 ///
