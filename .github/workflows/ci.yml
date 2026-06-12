@@ -46,7 +46,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # ── Formatting (gate — everything else waits) ─────────────────────────────
+  # ── Formatting (parallel, non-blocking gate) ──────────────────────────────
   fmt:
     name: Formatting
     runs-on: ubuntu-latest
@@ -62,10 +62,12 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
-  # ── Linting ────────────────────────────────────────────────────────────────
-  clippy:
-    name: Clippy
-    needs: [fmt]
+  # ── Check + Lint (merged — clippy subsumes type-check) ────────────────────
+  # Running clippy with the same flags as `cargo check` avoids a second full
+  # workspace compilation. Feature-gated checks run afterwards on the warm
+  # incremental cache.
+  check:
+    name: Check + Clippy
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -79,33 +81,11 @@ jobs:
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@8cbdedb5103daa674dcf46d3590fe06a76645684 # v2.9.1
         with:
-          shared-key: ci-clippy
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-          cache-on-failure: true
-      - name: Run Clippy lints
-        run: cargo clippy --workspace -- -D warnings
-
-  # ── Type check (includes --all-features) ───────────────────────────────────
-  check:
-    name: Check
-    needs: [fmt]
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
-        with:
-          toolchain: "1.96"
-      - name: Cache Cargo artifacts
-        uses: Swatinem/rust-cache@8cbdedb5103daa674dcf46d3590fe06a76645684 # v2.9.1
-        with:
           shared-key: ci-check
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: true
-      - name: Run cargo check
-        run: cargo check --workspace --all-features --all-targets
+      - name: Clippy (workspace, all features, all targets)
+        run: cargo clippy --workspace --all-features --all-targets -- -D warnings
       - name: Check nebula-resilience (no-default-features)
         run: cargo check -p nebula-resilience --no-default-features
       - name: Check nebula-log (no-default-features)
@@ -250,18 +230,16 @@ jobs:
   # ── Required aggregator ───────────────────────────────────────────────────
   # Single required check for branch protection. Treats `skipped` (draft-gated
   # tier 2 jobs) as success, but `failure`/`cancelled` fails the whole suite.
-  # Replace the 6 individual required checks in the ruleset with just `CI`.
   required:
     name: CI
     if: always()
-    needs: [fmt, clippy, check, doctests, msrv, doc, deny]
+    needs: [fmt, check, doctests, msrv, doc, deny]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Verify required jobs
         env:
           FMT: ${{ needs.fmt.result }}
-          CLIPPY: ${{ needs.clippy.result }}
           CHECK: ${{ needs.check.result }}
           DOCTESTS: ${{ needs.doctests.result }}
           MSRV: ${{ needs.msrv.result }}
@@ -270,7 +248,7 @@ jobs:
         run: |
           set -euo pipefail
           fail=0
-          for pair in "fmt=$FMT" "clippy=$CLIPPY" "check=$CHECK" \
+          for pair in "fmt=$FMT" "check=$CHECK" \
                      "doctests=$DOCTESTS" "msrv=$MSRV" "doc=$DOC" "deny=$DENY"; do
             name="${pair%%=*}"
             result="${pair#*=}"
