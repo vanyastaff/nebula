@@ -1058,7 +1058,7 @@ mod tests {
             Manager, Resident, ScopeLevel,
             error::Error as ResourceError,
             resource::{Provider, ResourceConfig, ResourceMetadata},
-            topology::resident::{self, ResidentProvider},
+            topology::resident,
         };
         use nebula_schema::HasSchema;
 
@@ -1166,7 +1166,7 @@ mod tests {
         impl Provider for OResource {
             type Config = OConfig;
             type Instance = ();
-            type Topology = Pooled<Self>;
+            type Topology = Resident<Self>;
 
             fn key() -> ResourceKey {
                 resource_key!("ordering.widget")

@@ -42,9 +42,7 @@ use std::time::Duration;
 use dashmap::DashMap;
 use nebula_core::{ResourceKey, ScopeLevel};
 use nebula_credential::CredentialId;
-use nebula_resource::Resident;
 use nebula_resource::SlotIdentity;
-use nebula_resource::topology::resident::ResidentProvider;
 
 /// One resource registry row affected by a credential rotation.
 ///
@@ -895,7 +893,7 @@ mod tests {
 
         use nebula_core::{OrgId, ResourceKey, ScopeLevel, resource_key, scope::Scope};
         use nebula_resource::{
-            Manager, Provider, ResidentConfig, ResourceConfig, ResourceContext,
+            Manager, Provider, Resident, ResidentConfig, ResourceConfig, ResourceContext,
             error::Error as ResourceError, resource::ResourceMetadata,
             topology::resident::ResidentProvider,
         };
