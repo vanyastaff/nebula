@@ -1314,7 +1314,11 @@ mod u9_gate {
             Ok(GateRuntime)
         }
 
-        async fn destroy(&self, _runtime: GateRuntime) -> Result<(), Error> {
+        async fn destroy(
+            &self,
+            _runtime: GateRuntime,
+            _cx: nebula_resource::TeardownCx,
+        ) -> Result<(), Error> {
             Ok(())
         }
 
@@ -1511,7 +1515,11 @@ mod reload_deferral {
                     Ok(1)
                 }
 
-                async fn destroy(&self, _runtime: u32) -> Result<(), Error> {
+                async fn destroy(
+                    &self,
+                    _runtime: u32,
+                    _cx: nebula_resource::TeardownCx,
+                ) -> Result<(), Error> {
                     Ok(())
                 }
 

@@ -178,7 +178,11 @@ impl Provider for WitnessResource {
         }))
     }
 
-    async fn destroy(&self, _runtime: Arc<WitnessResourceInner>) -> Result<(), ResourceError> {
+    async fn destroy(
+        &self,
+        _runtime: Arc<WitnessResourceInner>,
+        _cx: nebula_resource::TeardownCx,
+    ) -> Result<(), ResourceError> {
         Ok(())
     }
 

@@ -101,7 +101,11 @@ impl Provider for Db {
         Ok(Arc::new(()))
     }
 
-    async fn destroy(&self, _runtime: Arc<()>) -> Result<(), Error> {
+    async fn destroy(
+        &self,
+        _runtime: Arc<()>,
+        _cx: nebula_resource::TeardownCx,
+    ) -> Result<(), Error> {
         Ok(())
     }
 

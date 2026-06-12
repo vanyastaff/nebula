@@ -38,7 +38,16 @@ type ReleaseTask = Pin<Box<dyn Future<Output = ()> + Send>>;
 type TaskFactory = Box<dyn FnOnce() -> ReleaseTask + Send>;
 
 /// Maximum time a single release task may execute before being aborted.
-const TASK_EXECUTION_TIMEOUT: Duration = Duration::from_secs(30);
+///
+/// This is the teardown-path catch-all backstop (ADR-0093): the effective bound
+/// is the per-resource `timeout_at(cx.deadline)` the `Provider::destroy` future
+/// already carries (composed from `Provider::teardown_budget`). This outer
+/// ceiling must always sit above the largest composed deadline so it never
+/// undercuts a resource declaring a budget larger than the legacy 30s — it only
+/// trips on a truly wedged framework future. Mirrors the
+/// [`MAX_TEARDOWN_CEILING`](crate::hook_guard::MAX_TEARDOWN_CEILING) used on the
+/// awaited-`release()` path.
+const TASK_EXECUTION_TIMEOUT: Duration = crate::hook_guard::MAX_TEARDOWN_CEILING;
 
 /// Channel buffer size per primary worker.
 const CHANNEL_BUFFER: usize = 256;
@@ -625,14 +634,14 @@ mod tests {
 
         queue.submit(move || {
             Box::pin(async move {
-                // Sleep longer than TASK_EXECUTION_TIMEOUT (30s).
-                tokio::time::sleep(Duration::from_mins(1)).await;
+                // Sleep longer than TASK_EXECUTION_TIMEOUT (the teardown ceiling).
+                tokio::time::sleep(Duration::from_secs(150)).await;
                 c.store(true, Ordering::Relaxed);
             })
         });
 
         // Advance past the task timeout.
-        tokio::time::sleep(Duration::from_secs(35)).await;
+        tokio::time::sleep(Duration::from_secs(125)).await;
 
         drop(queue);
         ReleaseQueue::shutdown(handle).await;
@@ -660,7 +669,7 @@ mod tests {
         // Advance the paused clock past the execution timeout so the guard
         // fires and the worker records the drop. Same time-control technique
         // as `slow_task_is_aborted_after_execution_timeout`.
-        tokio::time::sleep(Duration::from_secs(35)).await;
+        tokio::time::sleep(Duration::from_secs(125)).await;
 
         // Yield once more so the worker that woke from the timeout finishes
         // recording the drop before we observe it.

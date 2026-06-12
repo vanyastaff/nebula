@@ -638,7 +638,11 @@ mod shared_resource {
             Ok(Arc::new(TelegramBotInner { instance_id: id }))
         }
 
-        async fn destroy(&self, _runtime: Arc<TelegramBotInner>) -> Result<(), Error> {
+        async fn destroy(
+            &self,
+            _runtime: Arc<TelegramBotInner>,
+            _cx: nebula_resource::TeardownCx,
+        ) -> Result<(), Error> {
             Ok(())
         }
 
@@ -700,7 +704,11 @@ mod shared_resource {
             }))
         }
 
-        async fn destroy(&self, _runtime: Arc<TelegramBotInner>) -> Result<(), Error> {
+        async fn destroy(
+            &self,
+            _runtime: Arc<TelegramBotInner>,
+            _cx: nebula_resource::TeardownCx,
+        ) -> Result<(), Error> {
             Ok(())
         }
 

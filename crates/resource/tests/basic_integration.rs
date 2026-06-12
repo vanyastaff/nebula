@@ -101,7 +101,11 @@ impl Provider for PoolTestResource {
         Ok(Arc::new(AtomicU64::new(id)))
     }
 
-    async fn destroy(&self, _runtime: Arc<AtomicU64>) -> Result<(), Error> {
+    async fn destroy(
+        &self,
+        _runtime: Arc<AtomicU64>,
+        _cx: nebula_resource::TeardownCx,
+    ) -> Result<(), Error> {
         self.destroy_counter.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
@@ -165,7 +169,11 @@ impl Provider for ResidentTestResource {
         Ok(Arc::new(AtomicU64::new(id)))
     }
 
-    async fn destroy(&self, _runtime: Arc<AtomicU64>) -> Result<(), Error> {
+    async fn destroy(
+        &self,
+        _runtime: Arc<AtomicU64>,
+        _cx: nebula_resource::TeardownCx,
+    ) -> Result<(), Error> {
         Ok(())
     }
 
@@ -974,7 +982,11 @@ impl Provider for SlowCreatePoolResource {
         Ok(Arc::new(AtomicU64::new(0)))
     }
 
-    async fn destroy(&self, _runtime: Arc<AtomicU64>) -> Result<(), Error> {
+    async fn destroy(
+        &self,
+        _runtime: Arc<AtomicU64>,
+        _cx: nebula_resource::TeardownCx,
+    ) -> Result<(), Error> {
         Ok(())
     }
 
@@ -2140,7 +2152,11 @@ impl Provider for FailingResidentResource {
         }
     }
 
-    async fn destroy(&self, _runtime: Arc<AtomicU64>) -> Result<(), Error> {
+    async fn destroy(
+        &self,
+        _runtime: Arc<AtomicU64>,
+        _cx: nebula_resource::TeardownCx,
+    ) -> Result<(), Error> {
         Ok(())
     }
 
@@ -2199,7 +2215,11 @@ impl Provider for BlockingResidentResource {
         Err(Error::transient("unblocked but never satisfied"))
     }
 
-    async fn destroy(&self, _runtime: Arc<AtomicU64>) -> Result<(), Error> {
+    async fn destroy(
+        &self,
+        _runtime: Arc<AtomicU64>,
+        _cx: nebula_resource::TeardownCx,
+    ) -> Result<(), Error> {
         Ok(())
     }
 
@@ -2254,7 +2274,11 @@ impl Provider for PermanentFailResource {
         Err(Error::permanent("permanent failure"))
     }
 
-    async fn destroy(&self, _runtime: Arc<AtomicU64>) -> Result<(), Error> {
+    async fn destroy(
+        &self,
+        _runtime: Arc<AtomicU64>,
+        _cx: nebula_resource::TeardownCx,
+    ) -> Result<(), Error> {
         Ok(())
     }
 
@@ -2747,7 +2771,7 @@ impl Provider for SlowDestroyPoolResource {
         Ok(())
     }
 
-    async fn destroy(&self, _runtime: ()) -> Result<(), Error> {
+    async fn destroy(&self, _runtime: (), _cx: nebula_resource::TeardownCx) -> Result<(), Error> {
         // Long enough that a 20ms release() timeout reliably fires first.
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         self.destroy_counter.fetch_add(1, Ordering::Relaxed);
@@ -2869,7 +2893,7 @@ impl Provider for HangingDestroyPoolResource {
         Ok(())
     }
 
-    async fn destroy(&self, _runtime: ()) -> Result<(), Error> {
+    async fn destroy(&self, _runtime: (), _cx: nebula_resource::TeardownCx) -> Result<(), Error> {
         // Hangs forever: the only thing that may unwedge `release()` is the
         // shared author-hook ceiling, not this future ever resolving.
         std::future::pending::<()>().await;
@@ -2921,7 +2945,7 @@ impl Provider for PanickingDestroyPoolResource {
         Ok(())
     }
 
-    async fn destroy(&self, _runtime: ()) -> Result<(), Error> {
+    async fn destroy(&self, _runtime: (), _cx: nebula_resource::TeardownCx) -> Result<(), Error> {
         panic!("author Provider::destroy panics on purpose");
     }
 
@@ -2942,10 +2966,12 @@ impl PoolProvider for PanickingDestroyPoolResource {}
 #[tokio::test(start_paused = true)]
 async fn release_bounds_a_hanging_author_teardown() {
     // A careless author `Provider::destroy` that hangs forever must NOT wedge
-    // a caller that awaited `release()`: the teardown runs through the shared
-    // `hook_guard` chokepoint, so the author-hook ceiling fires and `release()`
-    // returns a typed `TimedOut` error. `start_paused` advances virtual time
-    // to the 30s ceiling instantly + deterministically — no wall-clock wait.
+    // a caller that awaited `release()`. Per ADR-0093 the per-resource teardown
+    // deadline is the effective bound: a tainted lease is a revoke teardown, so
+    // the default 30s budget is capped to the 5s revoke cap, and `destroy_within`
+    // abandons the hang with a typed `backpressure` error well before the outer
+    // `hook_guard` ceiling. `start_paused` advances virtual time to the deadline
+    // instantly + deterministically — no wall-clock wait.
     let manager = Manager::new();
     let resource = HangingDestroyPoolResource::new();
     let pool_config = nebula_resource::topology::pooled::config::Config {
@@ -2969,8 +2995,8 @@ async fn release_bounds_a_hanging_author_teardown() {
     let outcome = handle.release().await;
     let err = outcome.expect_err("a hanging author teardown must make release() return Err");
     assert!(
-        err.to_string().contains("did not complete within"),
-        "release() must surface the bounded-teardown TimedOut message, got: {err}"
+        err.to_string().contains("destroy exceeded teardown budget"),
+        "release() must surface the per-resource teardown-budget bound, got: {err}"
     );
 }
 
@@ -3031,7 +3057,7 @@ impl Provider for PanickingCreatePoolResource {
         panic!("author Provider::create panics on purpose during warmup");
     }
 
-    async fn destroy(&self, _runtime: ()) -> Result<(), Error> {
+    async fn destroy(&self, _runtime: (), _cx: nebula_resource::TeardownCx) -> Result<(), Error> {
         Ok(())
     }
 
@@ -3222,7 +3248,11 @@ impl Provider for DropOnRecycleResource {
         Ok(Arc::new(AtomicU64::new(id)))
     }
 
-    async fn destroy(&self, _runtime: Arc<AtomicU64>) -> Result<(), Error> {
+    async fn destroy(
+        &self,
+        _runtime: Arc<AtomicU64>,
+        _cx: nebula_resource::TeardownCx,
+    ) -> Result<(), Error> {
         self.destroy_counter.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
@@ -3328,7 +3358,11 @@ impl Provider for CredentialedDefaultPoolResource {
         Ok(Arc::new(AtomicU64::new(id)))
     }
 
-    async fn destroy(&self, _runtime: Arc<AtomicU64>) -> Result<(), Error> {
+    async fn destroy(
+        &self,
+        _runtime: Arc<AtomicU64>,
+        _cx: nebula_resource::TeardownCx,
+    ) -> Result<(), Error> {
         self.destroy_counter.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }

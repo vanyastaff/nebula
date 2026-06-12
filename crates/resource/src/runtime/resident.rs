@@ -21,12 +21,9 @@
 //!
 //! [`Topology<R>`]: crate::topology::Topology
 
-use std::{
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
-    time::Duration,
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
 };
 
 use async_trait::async_trait;
@@ -37,7 +34,8 @@ use crate::{
     cell::Cell,
     context::ResourceContext,
     error::Error,
-    resource::{HasCredentialSlots, Provider},
+    resource::{HasCredentialSlots, Provider, TeardownReason},
+    runtime::managed::destroy_within,
     topology::{Ticket, Topology, Unavailable, resident::config::Config, store::InstanceStore},
     topology_tag::TopologyTag,
 };
@@ -259,13 +257,12 @@ where
                 return Err(Error::transient("resident runtime is not alive"));
             }
 
-            // Take the old runtime out and best-effort destroy.
+            // Take the old runtime out and best-effort destroy under the
+            // resource's per-instance teardown budget (an evict-and-recreate).
             if let Some(old) = self.cell.take() {
                 match Arc::try_unwrap(old) {
                     Ok(owned) => {
-                        let _ =
-                            tokio::time::timeout(Duration::from_secs(10), resource.destroy(owned))
-                                .await;
+                        let _ = destroy_within(resource, owned, TeardownReason::Evicted).await;
                     },
                     Err(arc) => {
                         warn!(
@@ -390,7 +387,10 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+    use std::{
+        sync::atomic::{AtomicBool, AtomicU32, Ordering},
+        time::Duration,
+    };
 
     use nebula_core::{ExecutionId, ResourceKey, resource_key};
 
@@ -445,7 +445,7 @@ mod tests {
             Ok(count + 100)
         }
 
-        async fn destroy(&self, _runtime: u32) -> Result<(), Error> {
+        async fn destroy(&self, _runtime: u32, _cx: crate::TeardownCx) -> Result<(), Error> {
             Ok(())
         }
 
@@ -600,7 +600,7 @@ mod tests {
             Ok(0)
         }
 
-        async fn destroy(&self, _runtime: u32) -> Result<(), Error> {
+        async fn destroy(&self, _runtime: u32, _cx: crate::TeardownCx) -> Result<(), Error> {
             Ok(())
         }
 
@@ -691,7 +691,7 @@ mod tests {
             Ok(cred)
         }
 
-        async fn destroy(&self, _runtime: u32) -> Result<(), Error> {
+        async fn destroy(&self, _runtime: u32, _cx: crate::TeardownCx) -> Result<(), Error> {
             Ok(())
         }
 

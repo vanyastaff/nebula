@@ -205,7 +205,11 @@ impl Provider for Postgres {
         Ok(Arc::new(MockPgConnection::new(id)))
     }
 
-    async fn destroy(&self, runtime: Arc<MockPgConnection>) -> Result<(), ResourceError> {
+    async fn destroy(
+        &self,
+        runtime: Arc<MockPgConnection>,
+        _cx: nebula_resource::TeardownCx,
+    ) -> Result<(), ResourceError> {
         tracing::info!(
             connection_id = runtime.id,
             "destroying mock postgres connection"

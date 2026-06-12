@@ -150,7 +150,11 @@ impl Provider for TelegramBot {
         }))
     }
 
-    async fn destroy(&self, runtime: Arc<TelegramBotInner>) -> Result<(), ResourceError> {
+    async fn destroy(
+        &self,
+        runtime: Arc<TelegramBotInner>,
+        _cx: nebula_resource::TeardownCx,
+    ) -> Result<(), ResourceError> {
         tracing::info!(instance_id = runtime.instance_id, "destroying Telegram bot");
         Ok(())
     }

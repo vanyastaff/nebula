@@ -80,7 +80,7 @@ impl Provider for PoolRes {
         Ok(self.create_counter.fetch_add(1, Ordering::SeqCst))
     }
 
-    async fn destroy(&self, _runtime: u64) -> Result<(), Error> {
+    async fn destroy(&self, _runtime: u64, _cx: nebula_resource::TeardownCx) -> Result<(), Error> {
         Ok(())
     }
 
@@ -229,7 +229,7 @@ impl Provider for ResRes {
         Ok(self.create_counter.fetch_add(1, Ordering::SeqCst))
     }
 
-    async fn destroy(&self, _runtime: u64) -> Result<(), Error> {
+    async fn destroy(&self, _runtime: u64, _cx: nebula_resource::TeardownCx) -> Result<(), Error> {
         Ok(())
     }
 

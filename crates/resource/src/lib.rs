@@ -121,7 +121,7 @@ pub use release_queue::ReleaseQueue;
 pub use reload::ReloadOutcome;
 pub use resource::{
     HasCredentialSlots, MetadataCompatibilityError, Provider, ResourceConfig, ResourceDescriptor,
-    ResourceMetadata,
+    ResourceMetadata, TeardownCx, TeardownReason,
 };
 pub use resource_ref::ResourceRef;
 pub use slot::{CredentialSlot, SlotCell};

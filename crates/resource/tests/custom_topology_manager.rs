@@ -94,7 +94,11 @@ impl Provider for Ffmpeg {
         Ok(Transcoder(id))
     }
 
-    async fn destroy(&self, _runtime: Transcoder) -> Result<(), Error> {
+    async fn destroy(
+        &self,
+        _runtime: Transcoder,
+        _cx: nebula_resource::TeardownCx,
+    ) -> Result<(), Error> {
         self.destroy_count.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }

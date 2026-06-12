@@ -326,7 +326,11 @@ impl Provider for GoogleSheets {
         })
     }
 
-    async fn destroy(&self, _runtime: GoogleSheetsClient) -> Result<(), ResourceError> {
+    async fn destroy(
+        &self,
+        _runtime: GoogleSheetsClient,
+        _cx: nebula_resource::TeardownCx,
+    ) -> Result<(), ResourceError> {
         tracing::info!("Resource::destroy — releasing GoogleSheetsClient");
         Ok(())
     }

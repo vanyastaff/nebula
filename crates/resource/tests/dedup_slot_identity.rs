@@ -93,7 +93,11 @@ impl Provider for CountingResource {
         Ok(CountingRuntime { id })
     }
 
-    async fn destroy(&self, _runtime: CountingRuntime) -> Result<(), Error> {
+    async fn destroy(
+        &self,
+        _runtime: CountingRuntime,
+        _cx: nebula_resource::TeardownCx,
+    ) -> Result<(), Error> {
         Ok(())
     }
 
@@ -449,7 +453,11 @@ impl Provider for SiblingResidentResource {
         Ok(CountingRuntime { id: 9_999 })
     }
 
-    async fn destroy(&self, _runtime: CountingRuntime) -> Result<(), Error> {
+    async fn destroy(
+        &self,
+        _runtime: CountingRuntime,
+        _cx: nebula_resource::TeardownCx,
+    ) -> Result<(), Error> {
         Ok(())
     }
 

@@ -312,7 +312,11 @@ mod pool_parity {
             Ok(self.create_count.fetch_add(1, Ordering::SeqCst))
         }
 
-        async fn destroy(&self, _runtime: u64) -> Result<(), Error> {
+        async fn destroy(
+            &self,
+            _runtime: u64,
+            _cx: nebula_resource::TeardownCx,
+        ) -> Result<(), Error> {
             Ok(())
         }
 

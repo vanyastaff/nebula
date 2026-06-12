@@ -18,9 +18,12 @@
 //! makes the open trait safe-by-construction: a custom topology author writes
 //! zero store / checkout / destroy / fence code.
 
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, AtomicU64, Ordering},
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    },
+    time::{Duration, Instant},
 };
 
 use arc_swap::ArcSwap;
@@ -34,7 +37,7 @@ use crate::{
     options::AcquireOptions,
     recovery::RecoveryGate,
     release_queue::ReleaseQueue,
-    resource::{HasCredentialSlots, Provider},
+    resource::{HasCredentialSlots, Provider, TeardownCx, TeardownReason},
     state::{ResourcePhase, ResourceStatus},
     topology::{
         AdmissionPhase, Load, MaintenanceSchedule, Topology, Unavailable,
@@ -46,6 +49,50 @@ use crate::{
 /// The `Slot` type of a resource's topology — the leasable unit the framework
 /// stores and the guard holds for its whole lease.
 pub(crate) type SlotOf<R> = <<R as Provider>::Topology as Topology<R>>::Slot;
+
+/// A `Revoked` teardown is urgent — a credential is no longer trustworthy, so
+/// the framework will not wait the resource's full declared budget. The
+/// composed deadline is capped at this for revoke, even if
+/// [`Provider::teardown_budget`] is larger. See ADR-0093.
+const REVOKE_TEARDOWN_CAP: Duration = Duration::from_secs(5);
+
+/// Compose the teardown deadline: the resource's declared
+/// [`teardown_budget`](Provider::teardown_budget), capped short for a revoke
+/// (urgent). `now` is taken once at call time. See ADR-0093.
+pub(crate) fn teardown_deadline<R: Provider>(resource: &R, reason: TeardownReason) -> Instant {
+    let budget = resource.teardown_budget();
+    let effective = if matches!(reason, TeardownReason::Revoked) {
+        budget.min(REVOKE_TEARDOWN_CAP)
+    } else {
+        budget
+    };
+    Instant::now() + effective
+}
+
+/// Tear one instance down under a per-resource, per-context deadline.
+///
+/// Composes the deadline from [`teardown_deadline`], builds the read-only
+/// [`TeardownCx`], and runs [`Provider::destroy`] under
+/// [`tokio::time::timeout_at`]. On timeout the in-flight destroy future is
+/// dropped (abandoned) and a typed [`Error::backpressure`] is returned so the
+/// caller can record the abandoned teardown — the framework never blocks past
+/// the deadline. An author doing graceful work bounds it to the same
+/// `cx.deadline`, so the two deadlines coincide. See ADR-0093.
+pub(crate) async fn destroy_within<R: Provider>(
+    resource: &R,
+    instance: R::Instance,
+    reason: TeardownReason,
+) -> Result<(), Error> {
+    let deadline = teardown_deadline(resource, reason);
+    let cx = TeardownCx::new(deadline, reason);
+    match tokio::time::timeout_at(deadline.into(), resource.destroy(instance, cx)).await {
+        Ok(res) => res,
+        Err(_elapsed) => Err(Error::backpressure(format!(
+            "{}: destroy exceeded teardown budget",
+            R::key()
+        ))),
+    }
+}
 
 /// Per-registration runtime holding topology + metadata.
 ///
@@ -191,10 +238,7 @@ impl<R: Provider> ManagedResource<R> {
     /// the taint and proceeds to the revoke hook regardless; the timeout is
     /// best-effort because the taint already stops *new* leases). See the
     /// [`manager`](crate::manager) module docs for the canonical invariant.
-    pub(crate) async fn wait_for_in_flight_drain(
-        &self,
-        timeout: std::time::Duration,
-    ) -> Result<(), u64> {
+    pub(crate) async fn wait_for_in_flight_drain(&self, timeout: Duration) -> Result<(), u64> {
         crate::manager::shutdown::wait_for_tracker_drain(&self.in_flight, timeout).await
     }
 }
@@ -292,10 +336,12 @@ where
             .await
         {
             let slot = cancel_guard.defuse();
-            let _ = self
-                .resource
-                .destroy(self.topology.into_instance(slot))
-                .await;
+            let _ = destroy_within(
+                &self.resource,
+                self.topology.into_instance(slot),
+                TeardownReason::Released,
+            )
+            .await;
             return Err(e);
         }
 
@@ -326,10 +372,12 @@ where
             // FRAMEWORK destroys since-revoked stale slots — the author can
             // never skip this fence.
             for stale in checkout.stale {
-                let _ = self
-                    .resource
-                    .destroy(self.topology.into_instance(stale))
-                    .await;
+                let _ = destroy_within(
+                    &self.resource,
+                    self.topology.into_instance(stale),
+                    TeardownReason::Revoked,
+                )
+                .await;
             }
             let Some(co) = checkout.fresh else {
                 // Idle-miss — create a fresh slot. Snapshot the revoke epoch
@@ -352,10 +400,12 @@ where
                 // hook (it serves, then the hook clears the shared binding), so
                 // they must NOT fail-closed here.
                 if self.topology.pools() && self.store.current_revoke_epoch() != create_epoch {
-                    let _ = self
-                        .resource
-                        .destroy(self.topology.into_instance(slot))
-                        .await;
+                    let _ = destroy_within(
+                        &self.resource,
+                        self.topology.into_instance(slot),
+                        TeardownReason::Revoked,
+                    )
+                    .await;
                     return Err(Error::revoked(format!(
                         "{}: credential revoked while the instance was being \
                          created — fenced before admission (HikariCP #1836)",
@@ -370,10 +420,12 @@ where
             }
             // Rejected (stale fingerprint / max-lifetime / broken) — destroy and
             // loop to the next idle slot, then create.
-            let _ = self
-                .resource
-                .destroy(self.topology.into_instance(slot))
-                .await;
+            let _ = destroy_within(
+                &self.resource,
+                self.topology.into_instance(slot),
+                TeardownReason::Evicted,
+            )
+            .await;
         }
     }
 
@@ -479,10 +531,12 @@ where
                 Ok(slot) => match self.store.deposit_fresh(slot, created_epoch).await {
                     ReturnOutcome::Recycled => created += 1,
                     ReturnOutcome::Evict(slot) => {
-                        let _ = self
-                            .resource
-                            .destroy(self.topology.into_instance(slot))
-                            .await;
+                        let _ = destroy_within(
+                            &self.resource,
+                            self.topology.into_instance(slot),
+                            TeardownReason::Evicted,
+                        )
+                        .await;
                     },
                 },
                 Err(e) => {
@@ -527,10 +581,12 @@ where
 
         let evicted = to_destroy.len();
         for slot in to_destroy {
-            let _ = self
-                .resource
-                .destroy(self.topology.into_instance(slot))
-                .await;
+            let _ = destroy_within(
+                &self.resource,
+                self.topology.into_instance(slot),
+                TeardownReason::Evicted,
+            )
+            .await;
         }
         if evicted > 0 {
             tracing::debug!(evicted, "resource maintenance: evicted idle/expired slots");
@@ -615,13 +671,16 @@ where
         }
     };
 
-    // Tainted lease — destroy immediately, never recycle.
+    // Tainted lease — destroy immediately, never recycle. Taint is set by the
+    // credential-revoke fan-out, so this is the revoke teardown path.
     if tainted {
         record(RecycleOutcome::Discarded);
-        return managed
-            .resource
-            .destroy(managed.topology.into_instance(slot))
-            .await;
+        return destroy_within(
+            &managed.resource,
+            managed.topology.into_instance(slot),
+            TeardownReason::Revoked,
+        )
+        .await;
     }
 
     // Topology reset / recycle decision (runs before the store fence).
@@ -635,10 +694,12 @@ where
             // Reset failed — destroy. Surface the reset error (so an awaited
             // `release()` sees the failed teardown) once the slot is torn down.
             record(RecycleOutcome::Discarded);
-            let destroy = managed
-                .resource
-                .destroy(managed.topology.into_instance(slot))
-                .await;
+            let destroy = destroy_within(
+                &managed.resource,
+                managed.topology.into_instance(slot),
+                TeardownReason::Released,
+            )
+            .await;
             return destroy.and(Err(e));
         },
     };
@@ -652,20 +713,24 @@ where
             },
             ReturnOutcome::Evict(slot) => {
                 record(RecycleOutcome::Discarded);
-                managed
-                    .resource
-                    .destroy(managed.topology.into_instance(slot))
-                    .await
+                destroy_within(
+                    &managed.resource,
+                    managed.topology.into_instance(slot),
+                    TeardownReason::Evicted,
+                )
+                .await
             },
         }
     } else {
         // Non-pooling topology (Resident / permit-only) or a `Drop` decision:
         // the released slot is destroyed, never pooled.
         record(RecycleOutcome::Discarded);
-        managed
-            .resource
-            .destroy(managed.topology.into_instance(slot))
-            .await
+        destroy_within(
+            &managed.resource,
+            managed.topology.into_instance(slot),
+            TeardownReason::Released,
+        )
+        .await
     }
 }
 
@@ -772,10 +837,12 @@ where
                 // A slot cancelled before reaching the built guard was never
                 // admitted to the store or handed to a caller; the only correct
                 // cleanup is destroy.
-                let _ = managed
-                    .resource
-                    .destroy(managed.topology.into_instance(slot))
-                    .await;
+                let _ = destroy_within(
+                    &managed.resource,
+                    managed.topology.into_instance(slot),
+                    TeardownReason::Evicted,
+                )
+                .await;
             })
         });
     }
@@ -847,7 +914,7 @@ mod tests {
             Ok(id)
         }
 
-        async fn destroy(&self, _runtime: u64) -> Result<(), Error> {
+        async fn destroy(&self, _runtime: u64, _cx: TeardownCx) -> Result<(), Error> {
             self.destroyed.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
@@ -1151,5 +1218,144 @@ mod tests {
         let created = mr.warmup(&test_ctx()).await;
         assert_eq!(created, 3, "warmup creates `min_size` slots");
         assert_eq!(mr.store.len().await, 3, "warmed slots land in the store");
+    }
+
+    // ----- ADR-0093 per-resource teardown deadline -----
+
+    /// A resource that declares a short `teardown_budget` and whose `destroy`
+    /// hangs forever. Drives the per-resource deadline tests.
+    #[derive(Clone)]
+    struct SlowTeardown {
+        budget: Duration,
+        last_reason: Arc<std::sync::Mutex<Option<TeardownReason>>>,
+    }
+
+    impl SlowTeardown {
+        fn new(budget: Duration) -> Self {
+            Self {
+                budget,
+                last_reason: Arc::new(std::sync::Mutex::new(None)),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for SlowTeardown {
+        type Config = PoolCfg;
+        type Instance = u64;
+        type Topology = Pooled<Self>;
+
+        fn key() -> ResourceKey {
+            resource_key!("slow-teardown-mock")
+        }
+
+        async fn create(&self, _config: &PoolCfg, _ctx: &ResourceContext) -> Result<u64, Error> {
+            Ok(0)
+        }
+
+        fn teardown_budget(&self) -> Duration {
+            self.budget
+        }
+
+        async fn destroy(&self, _runtime: u64, cx: TeardownCx) -> Result<(), Error> {
+            if let Ok(mut slot) = self.last_reason.lock() {
+                *slot = Some(cx.reason);
+            }
+            // Hang forever: the framework's per-resource deadline must abandon
+            // this — the test proves the bound bites, not the body.
+            std::future::pending::<()>().await;
+            Ok(())
+        }
+
+        fn metadata() -> ResourceMetadata {
+            ResourceMetadata::from_key(&Self::key())
+        }
+    }
+
+    impl HasCredentialSlots for SlowTeardown {
+        fn credential_slot_epoch(&self) -> u64 {
+            0
+        }
+    }
+
+    impl crate::topology::pooled::PoolProvider for SlowTeardown {}
+
+    /// A sub-30s per-resource `teardown_budget` bounds a hanging `destroy`: the
+    /// framework abandons it at the deadline and returns a typed error rather
+    /// than blocking. `start_paused` fires the deadline deterministically with
+    /// no wall-clock wait. This is the deferred per-resource-deadline landing —
+    /// the previous release-hang test relied on the global 30s ceiling.
+    #[tokio::test(start_paused = true)]
+    async fn destroy_within_abandons_hanging_destroy_at_short_budget() {
+        let resource = SlowTeardown::new(Duration::from_millis(50));
+        let started = Instant::now();
+        let outcome = destroy_within(&resource, 0u64, TeardownReason::Released).await;
+        assert!(
+            outcome.is_err(),
+            "a hanging destroy must be abandoned at the per-resource deadline"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "the 50ms budget — not the 30s global ceiling — bounded the teardown"
+        );
+    }
+
+    /// A `Revoked` teardown caps at 5s even when the resource declares a 60s
+    /// budget: the composed deadline must sit at or below now+5s.
+    #[tokio::test(start_paused = true)]
+    async fn revoked_teardown_caps_at_five_seconds() {
+        let resource = SlowTeardown::new(Duration::from_mins(1));
+
+        // `teardown_deadline` adds the budget to a fresh `Instant::now()`. The
+        // monotonic clock keeps ticking under `start_paused` (only tokio's timer
+        // is paused), so bracket the cap with a small tolerance rather than an
+        // exact equality: the revoke deadline must land close to now+5s and far
+        // below the declared 60s.
+        let before = Instant::now();
+        let revoke_deadline = teardown_deadline(&resource, TeardownReason::Revoked);
+        assert!(
+            revoke_deadline <= before + Duration::from_secs(6),
+            "a revoke teardown is capped at ~5s regardless of the declared 60s budget"
+        );
+        assert!(
+            revoke_deadline >= before + Duration::from_secs(4),
+            "the revoke cap is the 5s budget, not an over-aggressive clamp"
+        );
+
+        // The non-revoke path honors the full declared budget (sanity: the cap
+        // is revoke-specific, not a blanket clamp).
+        let release_deadline = teardown_deadline(&resource, TeardownReason::Released);
+        assert!(
+            release_deadline >= before + Duration::from_secs(59),
+            "a non-revoke teardown keeps the full 60s budget"
+        );
+
+        // And a 60s-hanging destroy under revoke is abandoned ~5s in.
+        let started = Instant::now();
+        let outcome = destroy_within(&resource, 0u64, TeardownReason::Revoked).await;
+        assert!(outcome.is_err(), "revoke teardown abandoned at the 5s cap");
+        assert!(
+            started.elapsed() <= Duration::from_secs(6),
+            "the revoke cap (5s), not the 60s budget, bounded the teardown"
+        );
+    }
+
+    /// A `destroy` impl observes `cx.reason`: the framework hands the reason it
+    /// composed the teardown for, so an author can adapt graceful behavior.
+    #[tokio::test(start_paused = true)]
+    async fn destroy_observes_teardown_reason() {
+        let resource = SlowTeardown::new(Duration::from_millis(10));
+        let recorder = Arc::clone(&resource.last_reason);
+
+        // Hanging destroy is abandoned at the 10ms budget, but the reason is
+        // recorded synchronously on entry before the hang.
+        let _ = destroy_within(&resource, 0u64, TeardownReason::Shutdown).await;
+
+        let observed = recorder.lock().ok().and_then(|g| *g);
+        assert_eq!(
+            observed,
+            Some(TeardownReason::Shutdown),
+            "the destroy impl saw the reason the framework tore it down for"
+        );
     }
 }

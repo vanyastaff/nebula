@@ -242,6 +242,48 @@ impl ResourceMetadataBuilder {
     }
 }
 
+/// Why an instance is being torn down — lets a `destroy` impl adapt its
+/// graceful-shutdown behavior (e.g. full flush on `Shutdown`, fast abandon on
+/// `Revoked`). See ADR-0093.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TeardownReason {
+    /// Normal lease end (clean release).
+    Released,
+    /// Pool eviction (stale fingerprint / max-lifetime / idle / broken).
+    Evicted,
+    /// The instance's credential was revoked.
+    Revoked,
+    /// Graceful manager shutdown drain.
+    Shutdown,
+}
+
+/// Framework-owned teardown context handed to [`Provider::destroy`].
+///
+/// `deadline` is the budget the framework will wait before abandoning the
+/// teardown (it also hard-bounds the call). An author doing graceful work
+/// (`flush`/`drain`/`close`) should bound it to this same deadline via
+/// `tokio::time::timeout_at(cx.deadline, …)` so it composes with the framework
+/// backstop. Read-only by construction (`#[non_exhaustive]`): an author cannot
+/// extend the deadline or disarm the backstop. See ADR-0093.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy)]
+pub struct TeardownCx {
+    /// The instant by which teardown must complete or be abandoned.
+    pub deadline: std::time::Instant,
+    /// Why this instance is being torn down.
+    pub reason: TeardownReason,
+}
+
+impl TeardownCx {
+    /// Constructs a teardown context. The framework builds these; exposed for
+    /// tests and out-of-crate `Provider` impls.
+    #[must_use]
+    pub fn new(deadline: std::time::Instant, reason: TeardownReason) -> Self {
+        Self { deadline, reason }
+    }
+}
+
 /// Provider trait — 2 associated types + lifecycle methods (slot model).
 ///
 /// Uses `#[async_trait]` for object-safe async dispatch through
@@ -436,6 +478,14 @@ pub trait Provider: Send + Sync + Sized + 'static {
         Ok(())
     }
 
+    /// Worst-case time this resource may need to tear down one instance
+    /// (`shutdown`/`destroy` flush/drain/close). The framework composes the actual
+    /// teardown deadline from this and the operation context; a `Revoked` teardown
+    /// is additionally capped short. Default 30s. See ADR-0093.
+    fn teardown_budget(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(30)
+    }
+
     /// Final cleanup — consumes the instance.
     ///
     /// The default implementation drops the instance.
@@ -448,14 +498,24 @@ pub trait Provider: Send + Sync + Sized + 'static {
     /// chance to release server-side handles, so prefer side-effects
     /// over `Err` here.
     ///
+    /// # Teardown context
+    ///
+    /// `cx.deadline` is the instant by which teardown must finish or be
+    /// abandoned — an author doing graceful work (`flush`/`drain`/`close`)
+    /// should bound it via `tokio::time::timeout_at(cx.deadline, …)` so it
+    /// composes with the framework's per-resource backstop (derived from
+    /// [`teardown_budget`](Self::teardown_budget)). `cx.reason` says why the
+    /// instance is going away ([`TeardownReason`]), letting an impl adapt
+    /// (full flush on `Shutdown`, fast abandon on `Revoked`).
+    ///
     /// # Cancellation
     ///
     /// `destroy` typically runs through
     /// [`ReleaseQueue`](crate::ReleaseQueue) so caller-side `Drop` is
     /// non-blocking. It MUST tolerate running after the manager's cancel
     /// token has fired; do not abort if you observe cancellation.
-    async fn destroy(&self, instance: Self::Instance) -> Result<(), crate::Error> {
-        let _ = instance;
+    async fn destroy(&self, instance: Self::Instance, cx: TeardownCx) -> Result<(), crate::Error> {
+        let _ = (instance, cx);
         Ok(())
     }
 

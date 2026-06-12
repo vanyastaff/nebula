@@ -631,7 +631,7 @@ mod tests {
             }
         }
 
-        async fn destroy(&self, _runtime: u64) -> Result<(), Error> {
+        async fn destroy(&self, _runtime: u64, _cx: crate::TeardownCx) -> Result<(), Error> {
             self.destroyed.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }

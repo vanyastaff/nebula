@@ -142,7 +142,11 @@ impl Provider for PoolResource {
         })
     }
 
-    async fn destroy(&self, _runtime: PoolRt) -> Result<(), Error> {
+    async fn destroy(
+        &self,
+        _runtime: PoolRt,
+        _cx: nebula_resource::TeardownCx,
+    ) -> Result<(), Error> {
         self.destroy_calls.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }

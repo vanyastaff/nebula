@@ -24,6 +24,18 @@ use nebula_core::ResourceKey;
 /// tighter than this backstop).
 pub(crate) const DEFAULT_AUTHOR_HOOK_CEILING: Duration = Duration::from_secs(30);
 
+/// Catch-all backstop for the **teardown** path (`Provider::destroy` /
+/// `on_release`) only. The effective teardown bound is the per-resource
+/// `timeout_at(cx.deadline)` derived from
+/// [`Provider::teardown_budget`](crate::Provider::teardown_budget) (ADR-0093);
+/// this outer ceiling must always sit *above* the largest composed deadline so
+/// it never undercuts a resource that declares a budget larger than
+/// [`DEFAULT_AUTHOR_HOOK_CEILING`]. It only catches a truly wedged framework
+/// future (one that ignored its own per-destroy deadline). Used solely for the
+/// two teardown-path [`guard_author_hook`] calls — acquire / warmup / rotation
+/// keep [`DEFAULT_AUTHOR_HOOK_CEILING`].
+pub(crate) const MAX_TEARDOWN_CEILING: Duration = Duration::from_mins(2);
+
 /// How a guarded author hook failed the *framework*, independent of any error
 /// the hook itself returned.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
