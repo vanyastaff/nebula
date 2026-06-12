@@ -16,6 +16,8 @@
 
 use std::{future::Future, panic::AssertUnwindSafe, time::Duration};
 
+use nebula_core::ResourceKey;
+
 /// Worst-case ceiling on a single author-hook dispatch when the caller carries
 /// no tighter deadline of its own. A blocking hook can never hang past this; a
 /// caller-supplied deadline, when present, takes precedence (it is usually
@@ -30,6 +32,32 @@ pub(crate) enum HookFault {
     Panicked,
     /// The hook did not complete within its budget.
     TimedOut,
+}
+
+impl HookFault {
+    /// Emit a structured observability record for a caught author-hook fault.
+    ///
+    /// A panic is a plugin bug (`error!`); a timeout is misbehavior or runaway
+    /// load (`warn!`). `site` names the framework call site (`"acquire"`,
+    /// `"warmup"`, `"release"`). This makes a misbehaving third-party hook
+    /// distinguishable in logs from healthy backpressure — the framework caught
+    /// and bounded the fault, but an operator must still be able to see it.
+    pub(crate) fn observe(self, key: &ResourceKey, site: &'static str) {
+        match self {
+            HookFault::Panicked => tracing::error!(
+                resource.key = %key,
+                hook.site = site,
+                hook.fault = "panicked",
+                "author resource hook panicked — caught and isolated by the framework"
+            ),
+            HookFault::TimedOut => tracing::warn!(
+                resource.key = %key,
+                hook.site = site,
+                hook.fault = "timed_out",
+                "author resource hook exceeded its time budget — bounded by the framework"
+            ),
+        }
+    }
 }
 
 /// Runs an author-supplied hook future under the framework's bound + isolate

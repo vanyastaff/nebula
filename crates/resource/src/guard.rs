@@ -490,13 +490,20 @@ async fn spawn_teardown_and_settle(
         .await
         {
             Ok(res) => res,
-            Err(crate::hook_guard::HookFault::Panicked) => Err(crate::Error::transient(
-                "resource teardown panicked during release() (isolated, caller not crashed)",
-            )),
-            Err(crate::hook_guard::HookFault::TimedOut) => Err(crate::Error::transient(format!(
-                "resource teardown did not complete within {:?} during release()",
-                crate::hook_guard::DEFAULT_AUTHOR_HOOK_CEILING
-            ))),
+            Err(fault) => {
+                fault.observe(&key, "release");
+                match fault {
+                    crate::hook_guard::HookFault::Panicked => Err(crate::Error::transient(
+                        "resource teardown panicked during release() (isolated, caller not crashed)",
+                    )),
+                    crate::hook_guard::HookFault::TimedOut => {
+                        Err(crate::Error::transient(format!(
+                            "resource teardown did not complete within {:?} during release()",
+                            crate::hook_guard::DEFAULT_AUTHOR_HOOK_CEILING
+                        )))
+                    },
+                }
+            },
         };
         // #384: the permit outlives the teardown (a bounded `Exclusive` reset
         // must complete before the slot frees), then drops here.

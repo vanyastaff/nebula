@@ -351,16 +351,21 @@ impl Manager {
                 .await
                 {
                     Ok(result) => result,
-                    Err(HookFault::Panicked) => Err(Error::permanent(format!(
-                        "{}: topology acquire pipeline panicked — the resource's \
-                         `impl Topology` hook unwound (isolated, caller not crashed)",
-                        R::key()
-                    ))),
-                    Err(HookFault::TimedOut) => Err(Error::backpressure(format!(
-                        "{}: acquire exceeded {hook_timeout:?} — the topology's \
-                         create/accept/prepare hooks did not complete in time",
-                        R::key()
-                    ))),
+                    Err(fault) => {
+                        fault.observe(&R::key(), "acquire");
+                        match fault {
+                            HookFault::Panicked => Err(Error::permanent(format!(
+                                "{}: topology acquire pipeline panicked — the resource's \
+                                 `impl Topology` hook unwound (isolated, caller not crashed)",
+                                R::key()
+                            ))),
+                            HookFault::TimedOut => Err(Error::backpressure(format!(
+                                "{}: acquire exceeded {hook_timeout:?} — the topology's \
+                                 create/accept/prepare hooks did not complete in time",
+                                R::key()
+                            ))),
+                        }
+                    },
                 }
             }
         })
@@ -631,19 +636,24 @@ impl Manager {
         let count = match guard_author_hook(DEFAULT_AUTHOR_HOOK_CEILING, managed.warmup(ctx)).await
         {
             Ok(n) => n,
-            Err(HookFault::Panicked) => {
-                return Err(Error::permanent(format!(
-                    "{}: warmup panicked — the topology's `create_slot` hook unwound \
-                     (isolated, caller not crashed)",
-                    R::key()
-                )));
-            },
-            Err(HookFault::TimedOut) => {
-                return Err(Error::backpressure(format!(
-                    "{}: warmup exceeded {DEFAULT_AUTHOR_HOOK_CEILING:?} — the topology's \
-                     `create_slot` hook did not complete in time",
-                    R::key()
-                )));
+            Err(fault) => {
+                fault.observe(&R::key(), "warmup");
+                match fault {
+                    HookFault::Panicked => {
+                        return Err(Error::permanent(format!(
+                            "{}: warmup panicked — the topology's `create_slot` hook unwound \
+                             (isolated, caller not crashed)",
+                            R::key()
+                        )));
+                    },
+                    HookFault::TimedOut => {
+                        return Err(Error::backpressure(format!(
+                            "{}: warmup exceeded {DEFAULT_AUTHOR_HOOK_CEILING:?} — the topology's \
+                             `create_slot` hook did not complete in time",
+                            R::key()
+                        )));
+                    },
+                }
             },
         };
         Ok(count)

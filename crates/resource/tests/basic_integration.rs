@@ -2908,6 +2908,78 @@ async fn release_isolates_a_panicking_author_teardown() {
     );
 }
 
+// budget-justified: panicking-create warmup fixture + warmup author-hook-bound regression test
+/// A pooled resource whose `create` panics, modelling a careless author
+/// `Provider::create` that unwinds during warmup. `warmup_pool` runs
+/// `create_slot` (→ `Provider::create`) through the shared `hook_guard`
+/// chokepoint, so the panic is caught + isolated and `warmup_pool` returns a
+/// typed Permanent error rather than crashing the caller.
+#[derive(Clone)]
+struct PanickingCreatePoolResource;
+
+#[async_trait::async_trait]
+impl Provider for PanickingCreatePoolResource {
+    type Config = TestConfig;
+    type Instance = ();
+    type Topology = Pooled<Self>;
+
+    fn key() -> ResourceKey {
+        resource_key!("panicking-create-pool")
+    }
+
+    async fn create(&self, _config: &TestConfig, _ctx: &ResourceContext) -> Result<(), Error> {
+        panic!("author Provider::create panics on purpose during warmup");
+    }
+
+    async fn destroy(&self, _runtime: ()) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::from_key(&Self::key())
+    }
+}
+
+impl HasCredentialSlots for PanickingCreatePoolResource {
+    fn credential_slot_epoch(&self) -> u64 {
+        0
+    }
+}
+
+#[async_trait::async_trait]
+impl PoolProvider for PanickingCreatePoolResource {}
+
+#[tokio::test]
+async fn warmup_isolates_a_panicking_author_create() {
+    // A careless author `Provider::create` that panics during warmup must NOT
+    // crash the caller: `warmup_pool` runs `create_slot` through the shared
+    // `hook_guard` chokepoint, which catches the unwind and surfaces a typed
+    // Permanent error. `min_size: 1` makes warmup target exactly one create,
+    // so the panic fires. Reaching the assertion at all proves the process was
+    // not aborted.
+    let manager = Manager::new();
+    let resource = PanickingCreatePoolResource;
+    let pool_config = nebula_resource::topology::pooled::config::Config {
+        min_size: 1,
+        max_size: 4,
+        idle_timeout: None,
+        max_lifetime: None,
+        ..Default::default()
+    };
+    let pool_rt = Pooled::<PanickingCreatePoolResource>::new(pool_config, 1);
+    register_pool(&manager, resource, test_config(), pool_rt);
+
+    let ctx = test_ctx();
+    let err = manager
+        .warmup_pool::<PanickingCreatePoolResource>(&ctx)
+        .await
+        .expect_err("a panicking author create must make warmup_pool return Err");
+    assert!(
+        err.to_string().contains("panicked"),
+        "warmup_pool must surface the isolated-panic message, got: {err}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // 2. Pool stale fingerprint evicts idle entry
 // ---------------------------------------------------------------------------
