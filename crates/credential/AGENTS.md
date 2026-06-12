@@ -34,11 +34,14 @@
 - **No expressions in credential property values** — property JSON validates then `serde_json::from_value::<C::Properties>` directly; never run `ValidValues::resolve`. Secrets must not depend on runtime workflow state (seam: `tests/properties_pipeline.rs`).
 - **Crypto lives in `nebula-crypto`** (ADR-0088): import AES-256-GCM/`EncryptedData`/`encrypt_with_aad` from there, NOT this crate. AAD-free `encrypt` is deliberately unexposed (SEC-11). This crate is not a secret-manager/storage backend (`CredentialStore` impls live in `nebula_storage::credential`; scope layer in `nebula_tenancy`).
 - **Capabilities are sub-trait membership, never const flags** — duplicate-KEY `register` is fatal in debug AND release; a declared-but-unimplemented capability is a compile error. Don't reintroduce capability bools or per-trait `*_schema` (schema = `Properties: HasSchema`, read via `schema_of`).
+- **Adding OAuth? Pick the plane first** (DESIGN.md §10): Plane A (operator login) → `api/domain/auth` only; Plane B ceremony (redirect/callback/token HTTP) → `api/transport/oauth` + `api/domain/credential/oauth.rs` only. This crate **never mounts HTTP routes**.
+- **New SaaS API ≠ new OAuth2 credential type** — add `OAuth2ProviderConfig` data for a shared protocol, not a Rust type per provider (DESIGN.md §11).
+- **Parameters vs slots** (DESIGN.md §6–§8): `#[property]` fields → schema from types, values-only persistence; credentials/resources → `slot_bindings`, never `parameters`. Execute style: `self.*` for declared slots; `ctx` only for factory/ad-hoc.
 - `CredentialState` requires `ZeroizeOnDrop`; `Debug` redacts secrets; `SchemeGuard` is `!Clone` and drop-zeroizes.
 - Cross-crate calls go through `nebula-eventbus`, not direct sibling imports.
 - Library code uses typed `thiserror`/`NebulaError`; no panicking unwrap/expect/panic in lib code (`#![forbid(unsafe_code)]`).
 
 ## See also
-- `docs/DESIGN.md` — **spec-first subsystem redesign** (ADR-0092 completion, cross-crate Action/Resource/schema); approve before runtime refactor
+- `docs/DESIGN.md` — **spec-first subsystem redesign** (ADR-0092 completion, cross-crate Action/Resource/schema); **Accepted 2026-06-12**, phased rollout in §17
 - `README.md` — current shipped design (v4 / Phase 5 trait shape, §15.4–15.8, migration recipe)
 - Canon §3.5 / §12.5 / §13.2; `docs/adr/0081-m6-resource-credential-integration.md`; ADR-0088 (crypto split), ADR-0051 (external providers), ADR-0033 (Plane B, in `HISTORICAL.md`)

@@ -2,10 +2,10 @@
 
 | Field | Value |
 |-------|-------|
-| **Status** | Draft — review before implementation |
+| **Status** | Accepted (2026-06-12) — implementation proceeds per §17 phasing |
 | **Scope** | Primary: `nebula-credential` runtime/management rewrite (ADR-0092 completion). Cross-crate: `nebula-action`, `nebula-resource`, `nebula-schema`, `nebula-metadata`, `nebula-api`, `nebula-engine` contracts touched for one coherent picture. |
 | **Supersedes** | Ad-hoc merge layout from #791; incomplete ADR-0088 migration steps 2–3–6–8 |
-| **Related** | [ADR-0088](../../../docs/adr/0088-credential-subsystem-rewrite.md), [ADR-0092](../../../docs/adr/0092-credential-subsystem-consolidation.md), [ADR-0081](../../../docs/adr/0081-m6-resource-credential-integration.md), [ADR-0084](../../../docs/adr/0084-credential-refresh-reactive-only.md), [ADR-0085](../../../docs/adr/0085-api-operator-oauth.md), [ADR-0056](../../../docs/adr/0056-type-safe-dag.md), [INTEGRATION_MODEL](../../../docs/INTEGRATION_MODEL.md), [PRODUCT_CANON](../../../docs/PRODUCT_CANON.md) §3.5 / §15 |
+| **Related** | [ADR-0088](../../../docs/adr/0088-credential-subsystem-rewrite.md), [ADR-0092](../../../docs/adr/0092-credential-subsystem-consolidation.md), [ADR-0081](../../../docs/adr/0081-m6-resource-credential-integration.md), [ADR-0084](../../../docs/adr/0084-pre-expiry-credential-refresh-deferred.md), [ADR-0085](../../../docs/adr/0085-oauth-identity-providers-from-secrets.md), [ADR-0056](../../../docs/adr/0056-type-safe-dag.md), [INTEGRATION_MODEL](../../../docs/INTEGRATION_MODEL.md), [PRODUCT_CANON](../../../docs/PRODUCT_CANON.md) §3.5 / §15 |
 
 ---
 
@@ -22,7 +22,12 @@ This design specifies:
 5. **Shared integration authoring** across Action, Resource, and Credential: `#[property]` / `#[credential]` / `#[resource]`, with **schema from types** (`nebula-schema` + `nebula-metadata`) and **values-only persistence** in storage.
 6. **Consumption unchanged at the edge** — `CredentialGuard<Scheme>`, slot bindings, `ResourceGuard`, engine accessor; refactor is **under** that surface.
 
-**No Rust refactor ships until this document is approved.**
+**Approved 2026-06-12 (§20); implementation proceeds per §17 phasing — no folder-only refactors outside that plan.**
+
+### Prior work consumed
+
+- `docs/plans/2026-06-03-credential-facade-nongeneric.md` — **executed**: `CredentialService` is non-generic; collaborators are dyn-erased (`Arc<dyn DynCredentialStore>`, `ErasedPendingStore`).
+- `f35e6e35` — `CredentialHandle` is a shared live cell (`Arc<Inner>` + `ArcSwap`: clones share the cell, a refresh is visible to every clone's next `snapshot()`); `HandleCache` + `materialize_handle` live in the resolver; `SchemeFactory` is wired for resource pools. Phase 1 must keep the hot-swap handle test green.
 
 ---
 
@@ -31,7 +36,7 @@ This design specifies:
 ### In scope (1.0)
 
 - Finish ADR-0088 migration in ADR-0092 topology (single crate).
-- Reactive refresh only ([ADR-0084](../../../docs/adr/0084-credential-refresh-reactive-only.md)).
+- Reactive refresh only ([ADR-0084](../../../docs/adr/0084-pre-expiry-credential-refresh-deferred.md)).
 - Plane B credential lifecycle ([ADR-0033](../../../docs/adr/HISTORICAL.md) mechanics; storage [ADR-0029](../../../docs/adr/HISTORICAL.md)).
 - Resource ↔ credential binding ([ADR-0081](../../../docs/adr/0081-m6-resource-credential-integration.md)).
 - Unified DX plan for Action / Resource / Credential macros (Phase 5 — after runtime green).
@@ -40,7 +45,7 @@ This design specifies:
 
 | Area | Out of scope |
 |------|----------------|
-| **Plane A** | Operator OAuth / Nebula session ([ADR-0085](../../../docs/adr/0085-api-operator-oauth.md)) — `api/domain/auth` only |
+| **Plane A** | Operator OAuth / Nebula session ([ADR-0085](../../../docs/adr/0085-oauth-identity-providers-from-secrets.md)) — `api/domain/auth` only |
 | **Storage implementation** | Decorators, CAS, encryption layers stay in `nebula-storage` |
 | **Resource fan-out** | Rotation fan-out, `on_credential_refresh` — `nebula-resource` + engine |
 | **Proactive refresh scheduler** | 1.1 — not 1.0 |
@@ -391,6 +396,10 @@ flowchart TB
 | `CredentialService` | api management routes | CRUD + delegate runtime |
 | `rotation::*` | storage, api | Contract + orchestration unified tree |
 
+The public `refresh` verb stays on `CredentialService` (it delegates to the
+runtime). A warm-up / proactive scheduler would need an ADR-0084 amendment —
+1.1, not this design.
+
 ### Data flow (canon §15.4–15.5)
 
 ```
@@ -415,7 +424,7 @@ Macro `#[credential]` derives policy from which methods exist; runtime must **no
 ### Remove as public concepts
 
 - Parallel `execute_resolve` / facade resolve / resolver refresh / `DispatchOps` consumer API → internal to one pipeline.
-- `nebula_engine::credential::*` (except test `default_in_memory_coordinator`).
+- `nebula_engine::credential::*` (except test `default_in_memory_coordinator`). The "shim" is precisely the `engine/src/credential/mod.rs` re-exports; the engine's `credential_accessor` closure bridge **stays**.
 - Legacy `#[derive(Credential)]` if `#[credential]` attr covers all cases.
 
 ### OAuth2 target (not 1500-line type)
@@ -431,6 +440,29 @@ Single tree: `rotation::{contract, orchestration}` — not duplicate `rotation/`
 ### Tenant isolation
 
 Single `owner_id` format via `Scope::credential_owner_id` (0088 D7 amend). Facade + `ScopeLayer` roles documented; no `org/workspace` vs `org:workspace` split.
+
+### Concurrency & failure model
+
+- **Persist-then-swap ordering.** A refresh writes the new state to the
+  store via CAS **before** swapping the live scheme cell of cached handles
+  (`CredentialHandle::replace`). On CAS conflict the winner's state is
+  re-read and projected; the loser never swaps. If a process dies between
+  CAS and swap, cached handles keep serving the stale-but-valid scheme until
+  the next resolve re-materializes from the store — recovery is read-repair;
+  no compensating write exists or is needed.
+- **`refresh_via_l1_only` is removed** (Phase 1). Non-parseable string ids
+  exist only in test fixtures; `resolve_with_refresh` parses the id up front
+  and returns a typed error for non-parseable input. One coordinated path
+  remains: L1 coalescer + L2 `RefreshClaimRepo` (ADR-0041).
+- **Reclaim / sentinel invariants** (`runtime/refresh/{reclaim,sentinel}.rs`)
+  are preserved by the pipeline merge: claims are heartbeat-owned, expired
+  claims are reclaimed, and a provider-rejected refresh marks the row
+  (`reauth_required`) instead of letting other replicas re-hit the IdP.
+- **Phase 1 DoD includes the chaos test**
+  ([ADR-0084](../../../docs/adr/0084-pre-expiry-credential-refresh-deferred.md)
+  lineage): 3 replicas × 100 credentials — exactly one IdP refresh per
+  credential, no token loss, `ReauthRequired` routing under
+  `ProviderRejected`.
 
 ---
 
@@ -470,6 +502,20 @@ sequenceDiagram
 5. **Credential crate owns** — `OAuth2State`, pending **types**, `continue_resolve` **logic**, `refresh` with transport.
 6. **Remove dual kickoff** — deprecate `OAuth2Credential::initiate_authorization_code` as public; single workspace API kickoff.
 7. **AGENTS.md** — “Adding OAuth? Which plane?”
+
+### Pending-state handling (named Phase 3 deliverable)
+
+Pending OAuth state is **secret-bearing** (PKCE verifier, CSRF secret,
+provider refs):
+
+- Encrypted at rest through the same `Cipher` port as credential `State`.
+- Mandatory TTL; zeroize on consume **and** on expiry.
+- **One pending store.** Today there are three (`PendingStateStore`,
+  `AppState.oauth_pending_store`, `oauth_state_tokens`). Phase 3 DoD: one
+  store; `oauth_pending_store` / `oauth_state_tokens` deleted; the signed
+  state parameter carries only a lookup key and is validated against the
+  stored row. Migration is expand-contract with a drain window for
+  in-flight OAuth flows.
 
 ### Current pain (dual path)
 
@@ -619,39 +665,61 @@ Nebula merge debt = violating single runtime helper + incomplete protocol/config
 
 - `CredentialRuntime` merges resolve/continue/refresh/revoke/test.
 - `DispatchOps` internal only; auto-wire on `register::<C>()`.
-- Policy before `Refreshable::refresh`.
+- Policy before `Refreshable::refresh`; `refresh_via_l1_only` deleted.
 
-**DoD:** one call graph; OAuth2 ReAcquire vs RefreshToken tests.
+**DoD:** one call graph; OAuth2 ReAcquire vs RefreshToken routing tests;
+ADR-0084 chaos test green; hot-swap handle test stays green.
+
+**Phase 1.5 — M12.4 bind-population (immediately after Phase 1):** first
+production consumer of `CredentialRuntime::resolve_for_slot` wires the
+engine `register_and_bind` contract (`ValidatedCredentialBinding`,
+tenant-fingerprint). DoD: e2e workflow with a resource slot bound to a live
+credential through registry → bind → acquire → guard.
 
 ### Phase 2 — Management vs runtime
 
 - Thin `CredentialService`; facade delegates.
 - Unified `owner_id`; single validation path with API schema port.
+- **owner_id data migration**: rewrite existing rows or dual-read with
+  cutover; document why a separator collision is impossible.
 
-**DoD:** facade < 400 LOC; tenant tests green.
+**DoD:** facade < 400 LOC; facade makes **no direct store/resolver/ops
+calls** in runtime verbs; tenant tests green; old-format fixture rows
+resolve.
 
 ### Phase 3 — Protocol model + OAuth2
 
 - `OAuth2Protocol` + provider registry data; shrink monolith.
+- One pending store (§10 deliverable); one kickoff path.
 - Plugin static credential registration test.
 
-**DoD:** oauth2 core < 500 LOC; e2e OAuth green.
+**DoD:** oauth2 core < 500 LOC; **one exchange/refresh path**; e2e OAuth
+green; CSRF/PKCE negative tests preserved.
 
 ### Phase 4 — Cleanup
 
 - Remove engine shim, unify rotation, deprecated shims.
 - **4b:** `SlotContextExt` symmetric ctx API.
 
-**DoD:** `task dev:check`; no `nebula_engine::credential` except test harness.
+**DoD:** `task dev:check`; `rg nebula_engine::credential` empty outside the
+test harness; **one rotation tree**; canon/README "engine orchestrates"
+drift fixed.
 
 ### Phase 5 — Unified macros (DX, cross-crate)
 
 - **5a** Action unified struct
 - **5b** Resource unified struct
 - **5c** Credential unified + T1/T2/T3 docs
-- Optional: activation validator with action registry port
+- Optional: activation validator with action registry port (warning-lint in
+  1.0 per §19.4)
 
-Credential Phases 1–4 **do not block** Phase 5; Phase 5 must not block runtime refactor.
+**Interface freezes** (replaces "phases do not block each other"):
+
+- Phase 1 freezes the `CredentialPolicy` / `RegisterOps` emission contract
+  of `#[credential]` — Phase 5c unified derive must emit the identical
+  contract.
+- Phase 4b ships **before** 5a/5b so unified macros target the final ctx
+  names (`*_by_key`).
 
 ---
 
@@ -666,12 +734,20 @@ Credential Phases 1–4 **do not block** Phase 5; Phase 5 must not block runtime
 
 ---
 
-## 19. Open questions for review
+## 19. Resolved decisions (review 2026-06-12)
 
-1. Exact module path for unified PKCE kernel (credential `secrets` vs api `transport/oauth` re-export).
-2. OAuth2 KEY strategy: one `oauth2` KEY + config blob vs per-provider KEYS.
-3. Phase 5 default: opt-in `unified` vs auto-detect `#[property]` fields.
-4. Activation-time parameter schema check: required for 1.0 or 1.1?
+1. **PKCE kernel** → `nebula_credential::secrets::pkce` (pure crypto, zero
+   HTTP). `nebula-api` re-exports it; Plane A callers in
+   `api/transport/oauth/flow.rs` switch to the re-export — one kernel for
+   both planes.
+2. **OAuth2 KEY strategy** → **per-provider KEYS** (`github_oauth`,
+   `slack_oauth`, …): pairs of (shared protocol code,
+   `OAuth2ProviderConfig` data) registered per provider.
+3. **Phase 5 mode** → explicit opt-in `unified` flag; no auto-detect from
+   `#[property]` fields.
+4. **Activation-time parameter schema check** → warning-lint behind the
+   registry port in 1.0; blocking in 1.1. Typed dispatch-time validation
+   remains the 1.0 gate.
 
 ---
 
@@ -679,6 +755,6 @@ Credential Phases 1–4 **do not block** Phase 5; Phase 5 must not block runtime
 
 | Reviewer | Date | Status |
 |----------|------|--------|
-| | | Pending |
+| vanyastaff | 2026-06-12 | Accepted |
 
 **After approval:** implement Phase 1; no folder-only refactors before pipeline design is coded.
