@@ -629,9 +629,18 @@ impl<R: Provider> Drop for ResourceGuard<R> {
                         if let Some(rq) = release_queue {
                             rq.submit(move || {
                                 Box::pin(async move {
-                                    let _ = fut.await;
+                                    // Bound + isolate the queued teardown through
+                                    // the same chokepoint the awaited `release()`
+                                    // path uses: a hanging/panicking destroy must
+                                    // not wedge this worker or leak the permit.
+                                    let _ = crate::hook_guard::guard_author_hook(
+                                        crate::hook_guard::MAX_TEARDOWN_CEILING,
+                                        fut,
+                                    )
+                                    .await;
                                     // Permit held across the teardown, freed only
-                                    // now that reset/destroy has resolved.
+                                    // now that reset/destroy has resolved or the
+                                    // guard abandoned it.
                                     drop(permit_guard);
                                 })
                             });

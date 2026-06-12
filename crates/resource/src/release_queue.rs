@@ -395,8 +395,18 @@ impl ReleaseQueue {
         // SAFETY (unwind): `factory()` builds a self-contained teardown future
         // that owns its slot; the worker holds no alias to it, so a caught panic
         // drops the owned slot and the worker loops to the next queued task — no
-        // shared queue state is torn.
-        match crate::hook_guard::guard_author_hook(TASK_EXECUTION_TIMEOUT, factory()).await {
+        // shared queue state is torn. The outer `catch_unwind` also catches a
+        // panic in `factory()` itself (the closure that builds the future),
+        // not just in polling the returned future.
+        let task = if let Ok(task) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(factory))
+        {
+            task
+        } else {
+            tracing::error!("release task factory panicked during future construction — isolated");
+            record_drop(dropped_count, "factory_panic");
+            return;
+        };
+        match crate::hook_guard::guard_author_hook(TASK_EXECUTION_TIMEOUT, task).await {
             Ok(()) => {},
             Err(crate::hook_guard::HookFault::Panicked) => {
                 tracing::error!(

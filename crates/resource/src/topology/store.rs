@@ -180,8 +180,13 @@ impl<S: Send + 'static> InstanceStore<S> {
     ///
     /// [`Provider::destroy`]: crate::resource::Provider::destroy
     pub async fn checkout(&self) -> Checkout<S> {
-        let live_epoch = self.current_revoke_epoch();
         let mut idle = self.idle.lock().await;
+        // Revoke-epoch fence: read under the idle lock (same lock the
+        // credential-revoke idle-walk holds) so the epoch snapshot is
+        // atomic against a concurrent `bump_revoke_epoch`. Without this,
+        // a revoke landing between the snapshot and the lock acquire would
+        // let a stale slot escape as `fresh`.
+        let live_epoch = self.current_revoke_epoch();
         let mut stale = Vec::new();
         while let Some(entry) = idle.pop_front() {
             if entry.checkout_epoch != live_epoch {

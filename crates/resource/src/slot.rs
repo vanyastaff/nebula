@@ -265,7 +265,7 @@ impl<S> SlotCell<S> {
 /// use nebula_resource::CredentialSlot;
 ///
 /// struct Postgres {
-///     #[credential("db")]
+///     #[credential(key = "db")]
 ///     iam: CredentialSlot<IamToken>,
 /// }
 /// ```

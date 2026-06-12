@@ -119,8 +119,7 @@ manager.register(RegistrationSpec {
     config,                                    // validated on register
     scope: ScopeLevel::Global,
     slot_identity: SlotIdentity::Unbound,      // structural anti-bleed identity (see below)
-    topology: TopologyRuntime::Resident(resident_runtime),
-    acquire: Manager::erased_acquire_resident_for::<R>(),
+    topology: Resident::new(ResidentConfig::default()),
     recovery_gate: None,                       // Option<Arc<RecoveryGate>>
 })?;
 ```
@@ -268,7 +267,7 @@ use std::sync::Arc;
 use nebula_resource::{
     AcquireOptions, Manager, RegistrationSpec, ResidentConfig, ScopeLevel,
     dedup::SlotIdentity,
-    runtime::{TopologyRuntime, resident::ResidentRuntime},
+    topology::Resident,
 };
 
 // One bot, registered once at organization scope through the single funnel.
@@ -280,8 +279,7 @@ manager.register(RegistrationSpec {
     config: bot_config,
     scope: ScopeLevel::Organization(org_id),
     slot_identity: SlotIdentity::Unbound,
-    topology: TopologyRuntime::Resident(resident_rt),
-    acquire: Manager::erased_acquire_resident_for::<TelegramBot>(),
+    topology: Resident::new(ResidentConfig::default()),
     resilience: None,
     recovery_gate: None,
 })?;
