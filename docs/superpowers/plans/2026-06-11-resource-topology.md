@@ -341,10 +341,10 @@ git -C . commit -m "feat(resource)!: async fallible ordered release/destroy + pe
 
 **Why:** the one undisputed capability gap (gRPC-cap / serial-exclusive / license-seats). Spec §2.5, A1. It was deleted in commit `445854ce`; re-add as a built-in `impl Topology`, NOT the old const-generic `Capped<N>`.
 
-- [ ] **Step F1: `Bounded` topology with runtime cap.** Create `crates/resource/src/topology/bounded.rs`: `pub struct Bounded { mode: BoundedMode, sem: Arc<Semaphore>, … }` where `pub enum BoundedMode { Capped(usize), Exclusive, Unbounded }`. `Capped(n)`/`Exclusive(n=1)` back the gate with a `tokio::Semaphore`; `Unbounded` is infallible `try_reserve`. `set_cap(n)` grows/shrinks via `add_permits`/`forget_permits`. Cap validated at registration as a typed `Error` (n≥1 for Capped/Exclusive), never a panic — mirror the old `PoolRuntime::try_new` fail-closed shape.
-- [ ] **Step F2: `Exclusive` reset-ordering + poison.** `on_release` for `Exclusive` runs reset-before-reissue; reset `Err` poisons until recovery-gate clears. Port the old exclusive/transport tests' *intent* (they were deleted with Bounded) as fresh tests over the new `Bounded` impl — Capped<2> session count, Exclusive one-at-a-time, reset-Err-poisons, cap-shrink-mid-run.
-- [ ] **Step F3: Registration + derive attr.** `#[resource(topology = bounded)]` (or `bounded(mode=…, cap=…)`) selects it; or author registers `Bounded::capped(n)` directly. Re-add the `TopologyTag::Bounded` discriminant + lib.rs exports.
-- [ ] **Step F4: Gates + commit.**
+- [x] **Step F1: `Bounded` topology with runtime cap.** Create `crates/resource/src/topology/bounded.rs`: `pub struct Bounded { mode: BoundedMode, sem: Arc<Semaphore>, … }` where `pub enum BoundedMode { Capped(usize), Exclusive, Unbounded }`. `Capped(n)`/`Exclusive(n=1)` back the gate with a `tokio::Semaphore`; `Unbounded` is infallible `try_reserve`. `set_cap(n)` grows/shrinks via `add_permits`/`forget_permits`. Cap validated at registration as a typed `Error` (n≥1 for Capped/Exclusive), never a panic — mirror the old `PoolRuntime::try_new` fail-closed shape.
+- [x] **Step F2: `Exclusive` reset-ordering + poison.** `on_release` for `Exclusive` runs reset-before-reissue; reset `Err` poisons until recovery-gate clears. Port the old exclusive/transport tests' *intent* (they were deleted with Bounded) as fresh tests over the new `Bounded` impl — Capped<2> session count, Exclusive one-at-a-time, reset-Err-poisons, cap-shrink-mid-run.
+- [x] **Step F3: Registration + derive attr.** `#[resource(topology = bounded)]` (or `bounded(mode=…, cap=…)`) selects it; or author registers `Bounded::capped(n)` directly. Re-add the `TopologyTag::Bounded` discriminant + lib.rs exports.
+- [x] **Step F4: Gates + commit.**
 ```bash
 git -C . commit -m "feat(resource): restore Bounded as a runtime-cap built-in Topology (Capped/Exclusive/Unbounded)"
 ```
