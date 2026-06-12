@@ -19,12 +19,12 @@ correct, and observability ships with every state and error path.**
 - **One way to do it.** We delete shortcuts when they drift from the canon.
 
 Machine-enforced agent rules and the canonical workspace map live in
-[`CLAUDE.md`](CLAUDE.md). Product canon lives in `docs/PRODUCT_CANON.md`.
+[`AGENTS.md`](AGENTS.md). Product canon lives in `docs/PRODUCT_CANON.md`.
 
 ## Repository Layout
 
 See the *Workspace Layout* and *Layered Dependency Map* sections of
-[`CLAUDE.md`](CLAUDE.md). Short version:
+[`AGENTS.md`](AGENTS.md). Short version:
 
 - `crates/` — 36 workspace members.
 - `examples/` — runnable examples (one workspace member, not per-crate).
@@ -83,7 +83,7 @@ Use `task --list` for the full catalog.
 - **No async locks across `.await`.** No unbounded channels without explicit
   justification.
 - **Layered dependency.** New code must respect the *Layered Dependency Map*
-  in [`CLAUDE.md`](CLAUDE.md); `cargo-deny` will reject layer violations.
+  in [`AGENTS.md`](AGENTS.md); `cargo-deny` will reject layer violations.
 
 ## Documentation Standards
 

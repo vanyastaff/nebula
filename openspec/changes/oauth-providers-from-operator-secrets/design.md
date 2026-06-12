@@ -450,7 +450,7 @@ Spec Scenario cred-001.3 says HTTP-only URLs are rejected in non-test mode. D-3 
 
 ### Rationale
 
-1. **No `#[cfg(test)]` leak to runtime behavior**. The harness rule (CLAUDE.md) forbids `#[cfg(test)]` paths that change production behavior. A runtime flag is testable end-to-end via the same code path operators hit.
+1. **No `#[cfg(test)]` leak to runtime behavior**. The harness rule (AGENTS.md) forbids `#[cfg(test)]` paths that change production behavior. A runtime flag is testable end-to-end via the same code path operators hit.
 2. **Auditable posture**. An operator who genuinely wants a localhost-only deployment for in-cluster dev can explicitly opt in. The `warn!` event makes the opt-in visible in observability dashboards.
 3. **Matches existing SMTP precedent**. `SmtpTlsMode::None` follows the same pattern (allowed but warns at boot).
 

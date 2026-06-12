@@ -428,7 +428,7 @@ Behavior is fully governed by REQ-oauth-003 through REQ-oauth-005.
 
 **Status**: ADDED.
 
-Per CLAUDE.md "Observability is part of Definition of Done", every new state, error, or hot path in this change MUST carry a typed `thiserror` variant, a `tracing` span or event, and an invariant check.
+Per AGENTS.md "Observability is part of Definition of Done", every new state, error, or hot path in this change MUST carry a typed `thiserror` variant, a `tracing` span or event, and an invariant check.
 
 **Required spans/events**:
 

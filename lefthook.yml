@@ -27,21 +27,26 @@ pre-commit:
       # working-tree path is deep, e.g. under `.worktrees/`). CI Linux still
       # runs `cargo fmt --all -- --check` as the authoritative gate.
       run: bash scripts/pre-commit-fmt-check.sh {staged_files}
+      stage_fixed: false
     clippy:
       glob: "**/*.rs"
       # Changed-crate scoped (spec D3): the authoritative full-workspace
-      # clippy moved to pre-push. Mirrors the per-crate fmt-check strategy.
+      # clippy moved to pre-commit. Mirrors the per-crate fmt-check strategy.
       run: bash scripts/pre-commit-clippy-changed.sh {staged_files}
+      stage_fixed: false
     typos:
       run: typos --quiet
+      stage_fixed: false
     taplo:
       glob: "**/*.toml"
       env:
         RUST_LOG: "warn"
       run: taplo fmt --check
+      stage_fixed: false
     cargo-deny:
       glob: "{Cargo.toml,Cargo.lock,deny.toml}"
       run: cargo deny --log-level error check 2>&1
+      stage_fixed: false
 
 commit-msg:
   commands:

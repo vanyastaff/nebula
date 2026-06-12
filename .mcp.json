@@ -7,6 +7,36 @@
         "@modelcontextprotocol/server-filesystem",
         "."
       ]
+    },
+    "serena": {
+      "command": "serena",
+      "args": [
+        "start-mcp-server",
+        "--context",
+        "claude-code",
+        "--project",
+        "."
+      ]
+    },
+    "memory": {
+      "command": "cmd",
+      "args": ["/c", "npx", "-y", "@modelcontextprotocol/server-memory"],
+      "env": {
+        "MEMORY_FILE_PATH": ".mimocode/memory.jsonl"
+      }
+    },
+    "cratesio": {
+      "command": "cratesio-mcp"
+    },
+    "rust-docs": {
+      "command": "rust-docs-mcp"
+    },
+    "rust-mcp-server": {
+      "command": "rust-mcp-server",
+      "args": ["--workspace", "."]
+    },
+    "rust-analyzer-mcp": {
+      "command": "rust-analyzer-mcp"
     }
   }
 }

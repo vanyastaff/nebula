@@ -105,7 +105,7 @@ See `docs/MATURITY.md` row for `nebula-workflow`.
 ### Architecture notes
 
 - Minimal dependency surface: only `nebula-core` and `nebula-error`. No imports from
-  engine, runtime, storage, or API layers — the `CLAUDE.md` Core-layer direction is respected.
+  engine, runtime, storage, or API layers — the `AGENTS.md` Core-layer direction is respected.
 - Nine modules split cleanly: `definition` (data), `graph` (structure), `validate` (contract
   enforcement), `builder` (authoring DX), `state` (runtime progress tracking).
 - No dead code or compatibility shims.

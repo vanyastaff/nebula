@@ -3,7 +3,7 @@
 How Nebula mechanically enforces code quality in the toolchain. Normative
 product rules live in [`docs/PRODUCT_CANON.md`](./PRODUCT_CANON.md); the
 agent-facing discipline contract is the **Enforced Discipline** table in
-[`CLAUDE.md`](../CLAUDE.md). This file is only about *how* the knobs work and
+[`AGENTS.md`](../AGENTS.md). This file is only about *how* the knobs work and
 *why* some Clippy lints are intentionally `allow`. The knobs themselves live in
 `Cargo.toml` (`[workspace.lints]`), `clippy.toml`, `deny.toml`, and
 `.claude/hooks/` — extend them in place; do not duplicate them elsewhere.
@@ -23,7 +23,7 @@ What is enforced today, observable in the repo (the `Cargo.toml`
 | `std::mem::forget` misuse | `mem_forget = "deny"` (`Cargo.toml`). |
 | `Rc<Mutex>` / non-`Send`/`Sync` `Arc` footguns | `rc_mutex` / `arc_with_non_send_sync` = **warn** — cites [C-SEND-SYNC](https://rust-lang.github.io/api-guidelines/interoperability.html#c-send-sync). |
 | `dbg!` shipped in non-test code | `dbg_macro = "warn"` (tests exempt via `clippy.toml`). |
-| `unwrap()` / `expect()` / `panic!()` in library code | **Enforced**, no escape, by `.claude/hooks/edit-guard.sh` (CLAUDE.md "Enforced Discipline" / D10) — not via `clippy::unwrap_used`, which would need a workspace-wide burn-down first. |
+| `unwrap()` / `expect()` / `panic!()` in library code | **Enforced**, no escape, by `.claude/hooks/edit-guard.sh` (AGENTS.md "Enforced Discipline" / D10) — not via `clippy::unwrap_used`, which would need a workspace-wide burn-down first. |
 | `unsafe` without local reasoning | `undocumented_unsafe_blocks` + `clippy.toml` (`accept-comment-above-statement/attributes`); convention `// SAFETY:` above the block. |
 | Function bloat / cognitive complexity / nesting | `clippy.toml` thresholds (`too-many-lines = 100`, `cognitive-complexity = 25`, `excessive-nesting = 5`) are **inert workspace-wide** (the lints are `allow` — see next section) but enforced **diff-scoped on new code** by `.claude/hooks/intent-gate.sh` (ADR-0083). |
 | Duplicate utility / oversized / file-sprawling turns | `.claude/hooks/intent-gate.sh` net-LoC / new-file / large-blob / duplicate-public-symbol budgets (ADR-0083), with a `// budget-justified:` escape. |

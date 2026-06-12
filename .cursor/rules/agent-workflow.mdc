@@ -4,8 +4,8 @@ alwaysApply: true
 
 # Nebula Agent Workflow
 
-Use [`CLAUDE.md`](../../CLAUDE.md) as the canonical source of truth for project
-layout, architecture, Git workflow, and coding rules. (`AGENTS.md` is only a
+Use [`AGENTS.md`](../../AGENTS.md) as the canonical source of truth for project
+layout, architecture, Git workflow, and coding rules. (`CLAUDE.md` is only a
 thin pointer to it.)
 
 For product/architecture markdown, read [`docs/README.md`](../../docs/README.md)

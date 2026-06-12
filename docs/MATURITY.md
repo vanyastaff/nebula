@@ -66,7 +66,7 @@ The `.ai-factory/` directory, `.ai-factory.json` install manifest,
 (loop-*, *-sidecar, plan-*, implement-*, commit-preparer, docs-auditor)
 were removed from the repository. Coding workflow now runs through
 `task` + `worktree.sh` + guard hooks; AI tooling rules live in
-`CLAUDE.md`. External references in CLAUDE.md, `crates/action/README.md`,
+`AGENTS.md`. External references in AGENTS.md, `crates/action/README.md`,
 `crates/engine/src/lib.rs`, `crates/engine/tests/scoped_resources.rs`,
 `docs/ROADMAP.md`, ADR-0046, ADR-0050, this file, and the recon
 working notes were rewritten in the same change. Earlier AI Factory

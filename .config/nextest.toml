@@ -4,6 +4,8 @@
 [profile.default]
 # Use up to all available CPUs
 test-threads = "num-cpus"
+# Run all tests even if some fail (report full picture)
+fail-fast = false
 
 [profile.ci]
 # Retry flaky tests up to 2 times

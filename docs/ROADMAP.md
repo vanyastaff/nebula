@@ -14,7 +14,7 @@
 > **Provenance:** this doc was relocated from the retired `.ai-factory/`
 > tree (the AI Factory framework has been removed from the repository).
 > It is now the git-tracked roadmap of record under `docs/`. The crate /
-> layer inventory is sourced from [`CLAUDE.md`](../CLAUDE.md) (canonical).
+> layer inventory is sourced from [`AGENTS.md`](../AGENTS.md) (canonical).
 >
 > **Maintenance:** add a milestone with one-line evidence (`file:line` or
 > `#PR`) when a new gap is discovered; tick it off only after the exit
@@ -112,7 +112,7 @@ A milestone exits only when **all** of these hold for its scope:
 
 - [ ] **Behaviour**: every claim in README / canon / per-crate docs is backed
       by code that exercises the path; no "false capability" per canon §4.5.
-- [ ] **Observability** (per CLAUDE.md "Observability is part of Definition
+- [ ] **Observability** (per AGENTS.md "Observability is part of Definition
       of Done"): typed `thiserror` variant + `tracing` span / event +
       invariant check on every new state, error, or hot path.
 - [ ] **Tests**: unit + integration + (where applicable) loom / chaos / fuzz.
@@ -1229,4 +1229,4 @@ Not all parallelizable. Suggested ordering (M0–M2, M6, M11 closed
 Open a plan under `docs/plans/<milestone-or-branch>.md` for the chosen
 sub-project (the roadmap entry's bullets become the tasks). Branch via
 `scripts/worktree.sh new <slug> <type> <scope>` per the
-[`CLAUDE.md`](../CLAUDE.md) Agent Git Workflow; squash-merge back to `main`.
+[`AGENTS.md`](../AGENTS.md) Agent Git Workflow; squash-merge back to `main`.
