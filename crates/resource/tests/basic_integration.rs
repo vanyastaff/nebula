@@ -12,8 +12,8 @@ use std::sync::{
 use nebula_core::{ExecutionId, ResourceKey, resource_key};
 use nebula_resource::ResidentConfig;
 use nebula_resource::{
-    AcquireOptions, Manager, Pooled, RegistrationSpec, Resident, ResourceContext, ScopeLevel,
-    ShutdownConfig, SlotIdentity, TopologyTag,
+    AcquireOptions, Manager, ManagerConfig, Pooled, RegistrationSpec, Resident, ResourceContext,
+    ScopeLevel, ShutdownConfig, SlotIdentity, TopologyTag,
     error::{Error, ErrorKind},
     guard::ResourceGuard,
     recovery::{GateState, RecoveryGate, RecoveryGateConfig},
@@ -300,6 +300,29 @@ where
     .expect("pool registration must succeed");
 }
 
+/// Builds a metrics-wired `Manager` and registers a pool against it,
+/// returning both so a test can read `manager.metrics().snapshot()` to
+/// assert the recycle-vs-discard outcome split (ADR-0093 Tier-4).
+fn pool_manager_with_metrics<R>(resource: R, config: R::Config, pool: Pooled<R>) -> Manager
+where
+    R: PoolProvider
+        + Provider<Topology = Pooled<R>>
+        + HasCredentialSlots
+        + Clone
+        + Send
+        + Sync
+        + 'static,
+    R::Instance: Clone + Send + Sync + 'static,
+{
+    let registry = Arc::new(nebula_metrics::MetricsRegistry::new());
+    let mgr = Manager::with_config(ManagerConfig {
+        metrics_registry: Some(registry),
+        ..ManagerConfig::default()
+    });
+    register_pool(&mgr, resource, config, pool);
+    mgr
+}
+
 /// Registers a resident resource at `Global` through the Manager funnel.
 fn register_resident<R>(mgr: &Manager, resource: R, config: R::Config, rt: Resident<R>)
 where
@@ -448,6 +471,83 @@ async fn pool_broken_instance_gets_replaced() {
         idle_count::<PoolTestResource>(&mgr).await,
         0,
         "destroyed instance must not return to the pool"
+    );
+}
+
+/// ADR-0093 Tier-4: a clean pooled release records `recycled`, never
+/// `discarded`. The recycled counter is the operator's positive signal that
+/// the pool is actually reusing instances.
+#[tokio::test]
+async fn pool_clean_release_records_recycled() {
+    let resource = PoolTestResource::new();
+    let config = nebula_resource::topology::pooled::config::Config {
+        max_size: 4,
+        ..Default::default()
+    };
+    let pool = Pooled::<PoolTestResource>::new(config, 1);
+    let mgr = pool_manager_with_metrics(resource.clone(), test_config(), pool);
+    let ctx = test_ctx();
+
+    let handle = mgr
+        .acquire_pooled::<PoolTestResource>(&ctx, &AcquireOptions::default())
+        .await
+        .expect("acquire should succeed");
+    drop(handle);
+
+    // The clean instance is recycled back into idle: that is the settle
+    // signal, and it is the same event the recycled counter observes.
+    wait_idle_count::<PoolTestResource>(&mgr, 1).await;
+
+    let snap = mgr
+        .metrics()
+        .expect("manager was built with a metrics registry")
+        .snapshot()
+        .recycle_outcomes;
+    assert_eq!(snap.recycled, 1, "clean release must record recycled");
+    assert_eq!(snap.discarded, 0, "clean release must not discard");
+    // Exactly one outcome per release: recycled XOR discarded.
+    assert_eq!(snap.recycled + snap.discarded, 1, "one outcome per release");
+}
+
+/// ADR-0093 Tier-4: a release whose instance is not kept (here: broken, so
+/// the recycle decision drops it) records `discarded`, never `recycled` —
+/// the signature an operator watches to catch a silently-evicting pool.
+#[tokio::test]
+async fn pool_discarded_release_records_discarded() {
+    let resource = PoolTestResource::new();
+    let config = nebula_resource::topology::pooled::config::Config {
+        max_size: 4,
+        ..Default::default()
+    };
+    let pool = Pooled::<PoolTestResource>::new(config, 1);
+    let mgr = pool_manager_with_metrics(resource.clone(), test_config(), pool);
+    let ctx = test_ctx();
+
+    let handle = mgr
+        .acquire_pooled::<PoolTestResource>(&ctx, &AcquireOptions::default())
+        .await
+        .expect("acquire should succeed");
+    // Force the on-release recycle decision to drop the instance.
+    resource.break_flag.store(true, Ordering::Relaxed);
+    drop(handle);
+
+    // Destroyed-not-recycled: idle stays 0, so the destroy counter is the
+    // settle signal — the same event the discarded counter observes.
+    wait_count_at_least(&resource.destroy_counter, 1).await;
+
+    let snap = mgr
+        .metrics()
+        .expect("manager was built with a metrics registry")
+        .snapshot()
+        .recycle_outcomes;
+    assert_eq!(snap.discarded, 1, "dropped release must record discarded");
+    assert_eq!(snap.recycled, 0, "dropped release must not recycle");
+    // Exactly one outcome per release: recycled XOR discarded.
+    assert_eq!(snap.recycled + snap.discarded, 1, "one outcome per release");
+    assert_eq!(
+        idle_count::<PoolTestResource>(&mgr).await,
+        0,
+        "discarded instance must not return to the pool"
     );
 }
 
@@ -1563,7 +1663,7 @@ async fn manager_scope_mismatch_not_found() {
 #[tokio::test]
 async fn metrics_track_acquire_release_create_destroy() {
     let registry = Arc::new(nebula_metrics::MetricsRegistry::new());
-    let manager = Manager::with_config(nebula_resource::ManagerConfig {
+    let manager = Manager::with_config(ManagerConfig {
         release_queue_workers: 2,
         metrics_registry: Some(registry.clone()),
     });
@@ -1810,7 +1910,7 @@ async fn pool_permit_not_leaked_after_release() {
 #[tokio::test]
 async fn registry_backed_metrics_record_operations() {
     let registry = Arc::new(nebula_metrics::MetricsRegistry::new());
-    let manager = Manager::with_config(nebula_resource::ManagerConfig {
+    let manager = Manager::with_config(ManagerConfig {
         release_queue_workers: 1,
         metrics_registry: Some(registry.clone()),
     });

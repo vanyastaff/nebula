@@ -568,6 +568,20 @@ pub const NEBULA_RESOURCE_CREDENTIAL_ROTATION_DISPATCH_LATENCY_SECONDS: &str =
 pub const NEBULA_RESOURCE_CREDENTIAL_ROTATION_SKIPPED_TOTAL: &str =
     "nebula_resource_credential_rotation_skipped_total";
 
+/// Counter: pooled-release recycle-vs-discard outcomes (ADR-0093 Tier-4).
+///
+/// Labeled by `outcome` (see [`recycle_outcome`]). Bumped exactly once on
+/// the framework release path: `recycled` when a clean lease is returned to
+/// the idle store, `discarded` on every teardown path (tainted lease, reset
+/// error, evict-on-return, or a non-pooling / `Drop` recycle decision). A
+/// pool stuck at `discarded == releases` with `recycled == 0` is the visible
+/// signature of a silently-evicting pool — a missing `recycle` override that
+/// defaults to `Drop`, or a session-stateful resource that always evicts.
+///
+/// Bounded cardinality (2 closed values) — no `resource_key` label, which
+/// would explode cardinality on the hot release path.
+pub const NEBULA_RESOURCE_RECYCLE_OUTCOME_TOTAL: &str = "nebula_resource_recycle_outcome_total";
+
 /// Outcome labels for the credential rotation dispatch counters and
 /// histogram ([`NEBULA_RESOURCE_CREDENTIAL_ROTATION_ATTEMPTS_TOTAL`],
 /// [`NEBULA_RESOURCE_CREDENTIAL_REVOKE_ATTEMPTS_TOTAL`],
@@ -582,6 +596,21 @@ pub mod rotation_outcome {
     pub const FAILED: &str = "failed";
     /// Per-resource budget elapsed before the hook completed.
     pub const TIMED_OUT: &str = "timed_out";
+}
+
+/// Outcome labels for the pooled-release recycle counter
+/// ([`NEBULA_RESOURCE_RECYCLE_OUTCOME_TOTAL`]).
+///
+/// Closed set of two values — every framework release resolves to exactly
+/// one of them (`recycled` XOR `discarded`), so the unlabeled release total
+/// equals `recycled + discarded`. Adding another value permanently inflates
+/// the cardinality floor and requires a sub-spec amendment.
+pub mod recycle_outcome {
+    /// Clean lease returned to the idle store and reusable.
+    pub const RECYCLED: &str = "recycled";
+    /// Lease torn down instead of pooled (tainted, reset error, evicted on
+    /// return, or a non-pooling / `Drop` recycle decision).
+    pub const DISCARDED: &str = "discarded";
 }
 
 // ---------------------------------------------------------------------------
@@ -792,13 +821,14 @@ mod tests {
         NEBULA_RESOURCE_ERROR_TOTAL, NEBULA_RESOURCE_HEALTH_STATE,
         NEBULA_RESOURCE_POOL_EXHAUSTED_TOTAL, NEBULA_RESOURCE_POOL_WAITERS,
         NEBULA_RESOURCE_QUARANTINE_RELEASED_TOTAL, NEBULA_RESOURCE_QUARANTINE_TOTAL,
-        NEBULA_RESOURCE_RELEASE_ERROR_TOTAL, NEBULA_RESOURCE_RELEASE_TOTAL,
-        NEBULA_RESOURCE_USAGE_DURATION_SECONDS, auth_oauth_provider, auth_outcome,
-        idempotency_reject_reason, refresh_coord_claim_outcome, refresh_coord_coalesced_tier,
-        refresh_coord_reclaim_outcome, refresh_coord_sentinel_action, rotation_outcome,
+        NEBULA_RESOURCE_RECYCLE_OUTCOME_TOTAL, NEBULA_RESOURCE_RELEASE_ERROR_TOTAL,
+        NEBULA_RESOURCE_RELEASE_TOTAL, NEBULA_RESOURCE_USAGE_DURATION_SECONDS, auth_oauth_provider,
+        auth_outcome, idempotency_reject_reason, recycle_outcome, refresh_coord_claim_outcome,
+        refresh_coord_coalesced_tier, refresh_coord_reclaim_outcome, refresh_coord_sentinel_action,
+        rotation_outcome,
     };
 
-    const RESOURCE_METRIC_NAMES: [&str; 21] = [
+    const RESOURCE_METRIC_NAMES: [&str; 22] = [
         NEBULA_RESOURCE_CREATE_TOTAL,
         NEBULA_RESOURCE_ACQUIRE_TOTAL,
         NEBULA_RESOURCE_ACQUIRE_WAIT_DURATION_SECONDS,
@@ -820,6 +850,7 @@ mod tests {
         NEBULA_RESOURCE_CREDENTIAL_ROTATION_SKIPPED_TOTAL,
         NEBULA_RESOURCE_DESTROY_TOTAL,
         NEBULA_RESOURCE_ACQUIRE_ERROR_TOTAL,
+        NEBULA_RESOURCE_RECYCLE_OUTCOME_TOTAL,
     ];
 
     const RESOURCE_GAUGE_NAMES: [&str; 2] =
@@ -862,7 +893,7 @@ mod tests {
             }
         }
 
-        assert_eq!(unique.len(), 21);
+        assert_eq!(unique.len(), 22);
     }
 
     #[test]
@@ -882,6 +913,21 @@ mod tests {
             assert!(unique.insert(label));
         }
         assert_eq!(unique.len(), 3);
+    }
+
+    #[test]
+    fn recycle_outcome_labels_are_closed_set() {
+        // Closed label set — every framework release records exactly one of
+        // these, so `recycled + discarded` is the release total. Adding a
+        // value permanently inflates cardinality; this test is the CI gate.
+        let labels = [recycle_outcome::RECYCLED, recycle_outcome::DISCARDED];
+        let mut unique = HashSet::new();
+        for label in labels {
+            assert!(!label.is_empty());
+            assert!(label.chars().all(|ch| ch.is_ascii_lowercase() || ch == '_'));
+            assert!(unique.insert(label));
+        }
+        assert_eq!(unique.len(), 2);
     }
 
     const CREDENTIAL_METRIC_NAMES: [&str; 6] = [

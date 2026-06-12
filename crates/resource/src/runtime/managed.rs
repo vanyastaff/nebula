@@ -30,7 +30,7 @@ use crate::{
     context::ResourceContext,
     error::Error,
     guard::ResourceGuard,
-    metrics::ResourceOpsMetrics,
+    metrics::{RecycleOutcome, ResourceOpsMetrics},
     options::AcquireOptions,
     recovery::RecoveryGate,
     release_queue::ReleaseQueue,
@@ -407,7 +407,13 @@ where
                 if let Some(m) = &metrics {
                     m.record_release();
                 }
-                Box::pin(release_slot(managed, slot, checkout_epoch, tainted))
+                Box::pin(release_slot(
+                    managed,
+                    slot,
+                    checkout_epoch,
+                    tainted,
+                    metrics,
+                ))
             },
             permit,
             release_queue,
@@ -590,14 +596,28 @@ async fn release_slot<R>(
     mut slot: SlotOf<R>,
     checkout_epoch: u64,
     tainted: bool,
+    metrics: Option<ResourceOpsMetrics>,
 ) -> Result<(), Error>
 where
     R: Provider + HasCredentialSlots,
     R::Instance: Clone,
     R::Topology: Topology<R>,
 {
+    // Recycle-vs-discard observability (ADR-0093 Tier-4): exactly one
+    // outcome is recorded per release — `Recycled` only on the clean
+    // return-to-store arm, `Discarded` on every teardown path (tainted,
+    // reset error, evict-on-return, non-pooling / `Drop` decision). The
+    // `record` helper makes the `Option<metrics>` no-op explicit and keeps
+    // the no-double-count discipline local to one call per arm.
+    let record = |outcome: RecycleOutcome| {
+        if let Some(m) = &metrics {
+            m.record_recycle_outcome(outcome);
+        }
+    };
+
     // Tainted lease — destroy immediately, never recycle.
     if tainted {
+        record(RecycleOutcome::Discarded);
         return managed
             .resource
             .destroy(managed.topology.into_instance(slot))
@@ -614,6 +634,7 @@ where
         Err(e) => {
             // Reset failed — destroy. Surface the reset error (so an awaited
             // `release()` sees the failed teardown) once the slot is torn down.
+            record(RecycleOutcome::Discarded);
             let destroy = managed
                 .resource
                 .destroy(managed.topology.into_instance(slot))
@@ -625,8 +646,12 @@ where
     if keep && managed.topology.pools() {
         // FENCE: `return_slot` re-reads the revoke epoch under the idle lock.
         match managed.store.return_slot(slot, checkout_epoch).await {
-            ReturnOutcome::Recycled => Ok(()),
+            ReturnOutcome::Recycled => {
+                record(RecycleOutcome::Recycled);
+                Ok(())
+            },
             ReturnOutcome::Evict(slot) => {
+                record(RecycleOutcome::Discarded);
                 managed
                     .resource
                     .destroy(managed.topology.into_instance(slot))
@@ -636,6 +661,7 @@ where
     } else {
         // Non-pooling topology (Resident / permit-only) or a `Drop` decision:
         // the released slot is destroyed, never pooled.
+        record(RecycleOutcome::Discarded);
         managed
             .resource
             .destroy(managed.topology.into_instance(slot))
