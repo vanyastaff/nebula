@@ -66,12 +66,21 @@ impl InstanceMetrics {
 /// `type Topology = Pooled<Self>` implements this trait so the framework
 /// [`Pooled`](crate::topology::Pooled) topology can drive its pool policy.
 ///
+/// # Safe-default recycling (ADR-0093)
+///
+/// [`recycle`](Self::recycle)'s default is *safe by construction*: a resource
+/// that declares `#[credential]` slots holds per-lease/session state, so the
+/// framework DISCARDS it on release rather than re-pool a dirty instance
+/// (cross-lease state bleed). Stateless (slot-less) resources still recycle.
+/// Override [`recycle`](Self::recycle) to wipe session state and return
+/// [`RecycleDecision::Keep`] to enable pooling of a stateful resource.
+///
 /// # Acquire bounds
 ///
 /// [`Manager::acquire_pooled`](crate::Manager::acquire_pooled) requires:
 /// - `R: Clone + Send + Sync + 'static`
 /// - `R::Instance: Clone + Send + Sync + 'static`
-pub trait PoolProvider: Provider {
+pub trait PoolProvider: Provider + crate::resource::HasCredentialSlots {
     /// Sync O(1) broken check. Called in the `Drop` path — NO async, NO I/O.
     ///
     /// The default implementation reports all instances as healthy.
@@ -82,13 +91,31 @@ pub trait PoolProvider: Provider {
     /// Async recycle check performed when an instance is returned to the pool.
     ///
     /// Implementations can inspect [`InstanceMetrics`] to decide whether to
-    /// keep or drop the instance. The default keeps everything.
+    /// keep or drop the instance.
+    ///
+    /// The default is *safe by construction* (ADR-0093): a resource that
+    /// declares `#[credential]` slots is treated as session-stateful and
+    /// DISCARDED on release ([`RecycleDecision::Drop`]) so a dirty instance is
+    /// never re-pooled; a slot-less resource is kept ([`RecycleDecision::Keep`]).
+    /// Override this hook to wipe per-lease session state and return
+    /// [`RecycleDecision::Keep`] to enable pooling of a stateful resource.
     fn recycle(
         &self,
         _instance: &Self::Instance,
         _metrics: &InstanceMetrics,
     ) -> impl Future<Output = Result<RecycleDecision, crate::Error>> + Send {
-        async { Ok(RecycleDecision::Keep) }
+        // Safe by default: a resource that declares `#[credential]` slots holds
+        // per-lease/session state, so the framework DISCARDS it on release rather
+        // than re-pool a dirty instance (cross-lease bleed). Override this hook to
+        // wipe session state and return `Keep` to enable pooling. See ADR-0093.
+        let keep = !Self::declares_credential_slots();
+        async move {
+            Ok(if keep {
+                RecycleDecision::Keep
+            } else {
+                RecycleDecision::Drop
+            })
+        }
     }
 
     /// Prepares an instance for a specific execution context.

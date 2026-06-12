@@ -3286,6 +3286,270 @@ async fn pool_recycle_drop_destroys_entry() {
 }
 
 // ---------------------------------------------------------------------------
+// ADR-0093: credentialed pooled resources DISCARD on the default `recycle`
+// ---------------------------------------------------------------------------
+
+/// A credentialed pooled resource (declares a `#[credential]` slot at the type
+/// level) that leaves `PoolProvider::recycle` at its default. Under ADR-0093
+/// the default is safe-by-construction: a credentialed pooled instance is
+/// session-stateful, so the framework DISCARDS it on release rather than
+/// re-pool a dirty instance.
+#[derive(Clone)]
+struct CredentialedDefaultPoolResource {
+    create_counter: Arc<AtomicU64>,
+    destroy_counter: Arc<AtomicU64>,
+}
+
+impl CredentialedDefaultPoolResource {
+    fn new() -> Self {
+        Self {
+            create_counter: Arc::new(AtomicU64::new(0)),
+            destroy_counter: Arc::new(AtomicU64::new(0)),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for CredentialedDefaultPoolResource {
+    type Config = TestConfig;
+    type Instance = Arc<AtomicU64>;
+    type Topology = Pooled<Self>;
+
+    fn key() -> ResourceKey {
+        resource_key!("cred-pool-default")
+    }
+
+    async fn create(
+        &self,
+        _config: &TestConfig,
+        _ctx: &ResourceContext,
+    ) -> Result<Arc<AtomicU64>, Error> {
+        let id = self.create_counter.fetch_add(1, Ordering::Relaxed);
+        Ok(Arc::new(AtomicU64::new(id)))
+    }
+
+    async fn destroy(&self, _runtime: Arc<AtomicU64>) -> Result<(), Error> {
+        self.destroy_counter.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::from_key(&Self::key())
+    }
+}
+
+impl HasCredentialSlots for CredentialedDefaultPoolResource {
+    fn credential_slot_epoch(&self) -> u64 {
+        0
+    }
+
+    // Hand-mirrors what the derive emits for a `#[credential]`-bearing struct:
+    // this is the combination ADR-0093 safe default targets (Pooled +
+    // credentialed). `recycle` is intentionally left at its default below.
+    fn declares_credential_slots() -> bool {
+        true
+    }
+}
+
+// Default `recycle` — under ADR-0093 a credentialed pooled resource DISCARDS.
+impl PoolProvider for CredentialedDefaultPoolResource {}
+
+/// A credentialed pooled resource that OVERRIDES `recycle` to return `Keep`,
+/// modeling an author who wipes per-lease session state and so opts back into
+/// pooling. This re-enables instance reuse despite the credential slot.
+#[derive(Clone)]
+struct CredentialedKeepPoolResource {
+    create_counter: Arc<AtomicU64>,
+}
+
+impl CredentialedKeepPoolResource {
+    fn new() -> Self {
+        Self {
+            create_counter: Arc::new(AtomicU64::new(0)),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for CredentialedKeepPoolResource {
+    type Config = TestConfig;
+    type Instance = Arc<AtomicU64>;
+    type Topology = Pooled<Self>;
+
+    fn key() -> ResourceKey {
+        resource_key!("cred-pool-keep")
+    }
+
+    async fn create(
+        &self,
+        _config: &TestConfig,
+        _ctx: &ResourceContext,
+    ) -> Result<Arc<AtomicU64>, Error> {
+        let id = self.create_counter.fetch_add(1, Ordering::Relaxed);
+        Ok(Arc::new(AtomicU64::new(id)))
+    }
+
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::from_key(&Self::key())
+    }
+}
+
+impl HasCredentialSlots for CredentialedKeepPoolResource {
+    fn credential_slot_epoch(&self) -> u64 {
+        0
+    }
+
+    fn declares_credential_slots() -> bool {
+        true
+    }
+}
+
+impl PoolProvider for CredentialedKeepPoolResource {
+    async fn recycle(
+        &self,
+        _instance: &Arc<AtomicU64>,
+        _metrics: &nebula_resource::topology::pooled::InstanceMetrics,
+    ) -> Result<RecycleDecision, Error> {
+        // Author wipes per-lease session state, so pooling is safe to re-enable.
+        Ok(RecycleDecision::Keep)
+    }
+}
+
+/// ADR-0093 safe default: a credentialed pooled resource on the DEFAULT
+/// `recycle` DISCARDS its instance on a clean release — the instance is never
+/// returned to idle and a subsequent acquire creates a fresh one (no
+/// cross-lease state bleed). Asserted three ways: the destroy counter fires,
+/// idle stays empty, and the metrics snapshot records `discarded` not
+/// `recycled`.
+#[tokio::test]
+async fn credentialed_pool_default_recycle_discards() {
+    let resource = CredentialedDefaultPoolResource::new();
+    let config = nebula_resource::topology::pooled::config::Config {
+        max_size: 4,
+        ..Default::default()
+    };
+    let pool = Pooled::<CredentialedDefaultPoolResource>::new(config, 1);
+    let mgr = pool_manager_with_metrics(resource.clone(), test_config(), pool);
+    let ctx = test_ctx();
+
+    let handle = mgr
+        .acquire_pooled::<CredentialedDefaultPoolResource>(&ctx, &AcquireOptions::default())
+        .await
+        .expect("first acquire should succeed");
+    assert_eq!(resource.create_counter.load(Ordering::Relaxed), 1);
+    drop(handle);
+
+    // Discarded-not-recycled: idle stays 0, so the destroy counter is the
+    // settle signal (the same event the discarded counter observes).
+    wait_count_at_least(&resource.destroy_counter, 1).await;
+    assert_eq!(
+        idle_count::<CredentialedDefaultPoolResource>(&mgr).await,
+        0,
+        "credentialed default recycle must DISCARD, not return to idle"
+    );
+
+    let snap = mgr
+        .metrics()
+        .expect("manager was built with a metrics registry")
+        .snapshot()
+        .recycle_outcomes;
+    assert_eq!(
+        snap.discarded, 1,
+        "credentialed default recycle must record discarded"
+    );
+    assert_eq!(
+        snap.recycled, 0,
+        "credentialed default recycle must not recycle"
+    );
+
+    // A subsequent acquire creates a fresh instance — nothing was reused.
+    let handle2 = mgr
+        .acquire_pooled::<CredentialedDefaultPoolResource>(&ctx, &AcquireOptions::default())
+        .await
+        .expect("second acquire should succeed");
+    assert_eq!(
+        resource.create_counter.load(Ordering::Relaxed),
+        2,
+        "discarded instance must not be reused — a fresh one is created"
+    );
+    drop(handle2);
+}
+
+/// ADR-0093 control: a non-credentialed pooled resource still RECYCLES on the
+/// default `recycle` (Keep) — the safe default only changes behavior for
+/// credentialed resources. The instance returns to idle and is reused.
+#[tokio::test]
+async fn non_credentialed_pool_default_recycle_keeps() {
+    let resource = PoolTestResource::new();
+    let config = nebula_resource::topology::pooled::config::Config {
+        max_size: 4,
+        ..Default::default()
+    };
+    let pool = Pooled::<PoolTestResource>::new(config, 1);
+    let mgr = Manager::new();
+    register_pool(&mgr, resource.clone(), test_config(), pool);
+    let ctx = test_ctx();
+
+    let handle = mgr
+        .acquire_pooled::<PoolTestResource>(&ctx, &AcquireOptions::default())
+        .await
+        .expect("first acquire should succeed");
+    assert_eq!(resource.create_counter.load(Ordering::Relaxed), 1);
+    drop(handle);
+
+    // Default Keep for a slot-less resource: instance returns to idle.
+    wait_idle_count::<PoolTestResource>(&mgr, 1).await;
+
+    let handle2 = mgr
+        .acquire_pooled::<PoolTestResource>(&ctx, &AcquireOptions::default())
+        .await
+        .expect("second acquire should succeed");
+    assert_eq!(
+        resource.create_counter.load(Ordering::Relaxed),
+        1,
+        "non-credentialed default recycle KEEPS — the idle instance is reused"
+    );
+    drop(handle2);
+}
+
+/// ADR-0093 opt-in: a credentialed pooled resource that OVERRIDES `recycle` to
+/// return `Keep` (modeling an author who wipes session state) re-enables
+/// pooling — the instance returns to idle and a subsequent acquire reuses it.
+#[tokio::test]
+async fn credentialed_pool_recycle_keep_override_reuses() {
+    let resource = CredentialedKeepPoolResource::new();
+    let config = nebula_resource::topology::pooled::config::Config {
+        max_size: 4,
+        ..Default::default()
+    };
+    let pool = Pooled::<CredentialedKeepPoolResource>::new(config, 1);
+    let mgr = Manager::new();
+    register_pool(&mgr, resource.clone(), test_config(), pool);
+    let ctx = test_ctx();
+
+    let handle = mgr
+        .acquire_pooled::<CredentialedKeepPoolResource>(&ctx, &AcquireOptions::default())
+        .await
+        .expect("first acquire should succeed");
+    assert_eq!(resource.create_counter.load(Ordering::Relaxed), 1);
+    drop(handle);
+
+    // The Keep override returns the instance to idle despite the credential slot.
+    wait_idle_count::<CredentialedKeepPoolResource>(&mgr, 1).await;
+
+    let handle2 = mgr
+        .acquire_pooled::<CredentialedKeepPoolResource>(&ctx, &AcquireOptions::default())
+        .await
+        .expect("second acquire should succeed");
+    assert_eq!(
+        resource.create_counter.load(Ordering::Relaxed),
+        1,
+        "credentialed `recycle -> Keep` override re-enables reuse"
+    );
+    drop(handle2);
+}
+
+// ---------------------------------------------------------------------------
 // Recovery gate integration tests
 // ---------------------------------------------------------------------------
 

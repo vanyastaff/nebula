@@ -99,19 +99,19 @@ impl Manager {
         // `None`, store stays empty). Read before moving `topology` in.
         let store_capacity = <R::Topology as Topology<R>>::store_capacity(&topology);
 
-        // Tier-3 foolproofing (ADR-0093): a credentialed *Pooled* resource whose
-        // `PoolProvider::recycle` is left at its `Keep` default re-pools a
-        // session-stateful instance without wiping per-lease state — so a `SET`,
-        // `PRAGMA`, or open transaction set under one lease can bleed into the
-        // next lease that checks the same instance back out. This is a
-        // dev-time nudge, not a correctness gate: a resource MAY legitimately
-        // keep state, so it only warns. Keyed on the *type-level* slot signal
-        // (`declares_credential_slots`) rather than the runtime epoch, which is
-        // `0` for both slot-less and declared-but-unbound resources.
+        // Tier-3 foolproofing (ADR-0093): a credentialed *Pooled* resource is
+        // safe by default — `PoolProvider::recycle` DISCARDS on release, so the
+        // pool never reuses a session-stateful instance and never bleeds a
+        // `SET`/`PRAGMA`/open-txn across leases. The cost is that this pool gets
+        // no reuse at all. This dev-time nudge points authors at the override
+        // that re-enables pooling once they wipe per-lease state. Keyed on the
+        // *type-level* slot signal (`declares_credential_slots`) rather than the
+        // runtime epoch, which is `0` for both slot-less and declared-but-unbound
+        // resources.
         if Topology::<R>::tag(&topology) == TopologyTag::Pool && R::declares_credential_slots() {
             tracing::warn!(
                 resource.key = %R::key(),
-                "credentialed pooled resource: `recycle` returns Keep by default — a session-stateful instance re-pooled without wiping per-lease state (SET/PRAGMA/txn) can bleed across leases. Override `PoolProvider::recycle` to reset state (or return Drop). See ADR-0093."
+                "credentialed pooled resource: `recycle` DISCARDS by default (safe — no cross-lease state bleed), so this pool never reuses instances. Override `PoolProvider::recycle` to wipe per-lease session state (SET/PRAGMA/txn) and return Keep to enable pooling. See ADR-0093."
             );
         }
 
