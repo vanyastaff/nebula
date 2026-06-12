@@ -76,7 +76,7 @@ impl Manager {
         // register-time pool-config check is needed: an invalid
         // `(min_size, max_size)` from operator/JSON config is rejected by
         // the fallible `Pooled::try_new` (typed `Error::permanent`)
-        // that the engine registrar uses to construct the runtime, so the
+        // that the engine registrar uses to construct the topology, so the
         // failure surfaces *before* this funnel as a registration error
         // rather than an abort. (The deleted `register_pooled[_with]`
         // shorthands re-validated the raw config only because they took

@@ -1,8 +1,8 @@
 //! Resource guard — the value callers hold while using a resource.
 //!
-//! [`ResourceGuard`] wraps a runtime in one of two ownership modes:
+//! [`ResourceGuard`] wraps an instance in one of two ownership modes:
 //!
-//! - **Owned**: caller owns the runtime outright (no pool return).
+//! - **Owned**: caller owns the instance outright (no pool return).
 //! - **Guarded**: exclusive runtime returned to pool on drop.
 
 use std::{
@@ -260,7 +260,7 @@ impl<R: Provider> ResourceGuard<R> {
         self
     }
 
-    /// Marks the runtime as tainted — it will be destroyed instead of recycled.
+    /// Marks the instance as tainted — it will be destroyed instead of recycled.
     pub fn taint(&mut self) {
         match &mut self.inner {
             None | Some(GuardInner::Owned(_)) => {}, // no-op for owned / detached
@@ -270,7 +270,7 @@ impl<R: Provider> ResourceGuard<R> {
         }
     }
 
-    /// Detaches the runtime from pool management, converting to owned.
+    /// Detaches the instance from pool management, converting to owned.
     ///
     /// Returns `Some(runtime)` for owned and guarded guards. Returns `None`
     /// only for the post-detach state, which is structurally unreachable for

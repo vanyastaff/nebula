@@ -395,6 +395,14 @@ pub struct Registry {
     type_index: DashMap<TypeId, ResourceKey>,
 }
 
+impl std::fmt::Debug for Registry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Registry")
+            .field("keys", &self.entries.len())
+            .finish()
+    }
+}
+
 impl Registry {
     /// Creates an empty registry.
     pub fn new() -> Self {

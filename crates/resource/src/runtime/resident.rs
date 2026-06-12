@@ -111,7 +111,7 @@ impl<R: Provider + HasCredentialSlots> Resident<R> {
         &self.config
     }
 
-    /// Returns `true` if the cell currently holds a runtime instance.
+    /// Returns `true` if the cell currently holds an instance.
     pub fn is_initialized(&self) -> bool {
         self.cell.is_some()
     }
@@ -136,19 +136,19 @@ impl<R: Provider + HasCredentialSlots> Resident<R> {
     /// can never interleave, which is what makes the reconcile exactly-once.
     /// Under the lock:
     ///
-    /// - **Runtime present, built epoch ≥ slot epoch** — up to date: deliver
+    /// - **Instance present, built epoch ≥ slot epoch** — up to date: deliver
     ///   the hook normally.
-    /// - **Runtime present, built epoch < slot epoch** — the runtime was
+    /// - **Instance present, built epoch < slot epoch** — the instance was
     ///   bound to a pre-rotation credential (the lost-update): still deliver
     ///   the hook (the resource's `&self` reaction rebinds against the now
     ///   current slot) and, on success, advance the recorded epoch.
-    /// - **No runtime** — nothing live to refresh. Genuinely a no-op
-    ///   `Ok(())`: a never-created resident has no stale runtime to leave
+    /// - **No instance** — nothing live to refresh. Genuinely a no-op
+    ///   `Ok(())`: a never-created resident has no stale instance to leave
     ///   behind, and a create *racing* this dispatch is serialised by
     ///   `create_lock` — it runs strictly before or after.
     ///
     /// `refresh = true` selects `on_credential_refresh`, `false`
-    /// `on_credential_revoke`. The revoke direction is symmetric: a runtime
+    /// `on_credential_revoke`. The revoke direction is symmetric: an instance
     /// built against an older epoch is still delivered the revoke hook (it
     /// must stop emitting on the now-revoked credential); a never-created
     /// resident has nothing emitting, so the no-op is correct there too.
@@ -165,7 +165,7 @@ impl<R: Provider + HasCredentialSlots> Resident<R> {
         refresh: bool,
     ) -> Result<(), Error> {
         // Serialise against the create slow path: the reconcile must not
-        // interleave with a runtime being built / its epoch being
+        // interleave with an instance being built / its epoch being
         // published, so delivery is exactly-once.
         let _guard = self.create_lock.lock().await;
 
@@ -291,12 +291,12 @@ where
         // Capture the credential epoch *after* `create` has read the slot, not
         // before it. A pre-`create` sample is a stale approximation: a
         // lock-free `SlotCell::store` (engine rotation fan-out) landing
-        // *between* the sample and `create`'s own slot read builds the runtime
+        // *between* the sample and `create`'s own slot read builds the instance
         // against the **fresh** credential while `built_epoch` would record the
         // **old** epoch, so the create-vs-rotate reconcile spuriously
-        // classifies an already-fresh runtime as stale. Sampling *after*
+        // classifies an already-fresh instance as stale. Sampling *after*
         // `create` returns makes `built_epoch` an at-or-after-read bound. The
-        // sample stays under `create_lock` and is published with the runtime,
+        // sample stays under `create_lock` and is published with the instance,
         // preserving the exactly-once dispatch / create-vs-rotate semantics.
         let built_epoch = resource.credential_slot_epoch();
 
@@ -755,12 +755,12 @@ mod tests {
         assert_eq!(
             rt.built_epoch_for_test(),
             gen_new,
-            "built_epoch must be the epoch the runtime actually bound \
+            "built_epoch must be the epoch the instance actually bound \
              (post-create slot read), not the pre-create sample"
         );
         assert!(
             rt.built_epoch_for_test() >= slot.generation(),
-            "a runtime built reading the current slot must not be older \
+            "an instance built reading the current slot must not be older \
              than the live slot epoch (no spurious stale reconcile)"
         );
     }

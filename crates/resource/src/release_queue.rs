@@ -124,6 +124,20 @@ pub struct ReleaseQueue {
     rescued_count: Arc<AtomicUsize>,
 }
 
+impl std::fmt::Debug for ReleaseQueue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ReleaseQueue")
+            .field("worker_count", &self.senders.len())
+            .field(
+                "fallback_count",
+                &self.fallback_count.load(Ordering::Relaxed),
+            )
+            .field("dropped_count", &self.dropped_count.load(Ordering::Relaxed))
+            .field("rescued_count", &self.rescued_count.load(Ordering::Relaxed))
+            .finish()
+    }
+}
+
 impl ReleaseQueue {
     /// Creates a new release queue with `worker_count` primary workers
     /// and its own internal cancellation token.

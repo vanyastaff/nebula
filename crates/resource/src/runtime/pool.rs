@@ -69,12 +69,23 @@ const ERR_CREATE_TIMED_OUT: &str = "pool: create timed out";
 /// release callback panics. The credential-revoke snapshot is not a field
 /// either: it lives in the framework store's `checkout_epoch`.
 pub struct PoolSlot<R: Provider> {
-    runtime: R::Instance,
+    instance: R::Instance,
     metrics: InstanceMetrics,
     fingerprint: u64,
     /// When this slot was last returned to the idle queue.
     /// `None` for freshly created slots that have never been idle.
     returned_at: Option<Instant>,
+}
+
+impl<R: Provider> std::fmt::Debug for PoolSlot<R> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PoolSlot")
+            .field("fingerprint", &self.fingerprint)
+            .field("checkout_count", &self.metrics.checkout_count)
+            .field("error_count", &self.metrics.error_count)
+            .field("returned_at", &self.returned_at)
+            .finish()
+    }
 }
 
 /// A point-in-time snapshot of pool utilization.
@@ -329,7 +340,7 @@ where
         // Use `timeout_at` with the same absolute deadline so the budget is
         // shared: a long permit wait shortens the time available to
         // `resource.create`.
-        let runtime =
+        let instance =
             match tokio::time::timeout_at(deadline.into(), resource.create(config, ctx)).await {
                 Ok(Ok(rt)) => rt,
                 Ok(Err(e)) => return Err(e),
@@ -337,7 +348,7 @@ where
             };
 
         Ok(PoolSlot {
-            runtime,
+            instance,
             metrics: InstanceMetrics {
                 error_count: 0,
                 checkout_count: 1,
@@ -388,11 +399,11 @@ where
     }
 
     fn slot_instance<'s>(&self, slot: &'s PoolSlot<R>) -> &'s R::Instance {
-        &slot.runtime
+        &slot.instance
     }
 
     fn into_instance(&self, slot: PoolSlot<R>) -> R::Instance {
-        slot.runtime
+        slot.instance
     }
 
     async fn accept(&self, slot: &mut PoolSlot<R>, resource: &R, _ctx: &ResourceContext) -> bool {
@@ -410,10 +421,10 @@ where
         {
             return false;
         }
-        if resource.is_broken(&slot.runtime).is_broken() {
+        if resource.is_broken(&slot.instance).is_broken() {
             return false;
         }
-        if self.config.test_on_checkout && resource.check(&slot.runtime).await.is_err() {
+        if self.config.test_on_checkout && resource.check(&slot.instance).await.is_err() {
             return false;
         }
         slot.metrics.checkout_count += 1;
@@ -426,7 +437,7 @@ where
         resource: &R,
         ctx: &ResourceContext,
     ) -> Result<(), Error> {
-        resource.prepare(&slot.runtime, ctx).await
+        resource.prepare(&slot.instance, ctx).await
     }
 
     async fn on_release(&self, slot: &mut PoolSlot<R>, resource: &R) -> Result<bool, Error> {
@@ -444,10 +455,10 @@ where
         {
             return Ok(false);
         }
-        if resource.is_broken(&slot.runtime).is_broken() {
+        if resource.is_broken(&slot.instance).is_broken() {
             return Ok(false);
         }
-        match resource.recycle(&slot.runtime, &slot.metrics).await {
+        match resource.recycle(&slot.instance, &slot.metrics).await {
             Ok(RecycleDecision::Keep) => {
                 // Stamp the return time so idle-timeout can fire on the next
                 // sweep.
@@ -509,11 +520,11 @@ where
         for entry in &*idle {
             let res = if refresh {
                 resource
-                    .on_credential_refresh(slot, &entry.slot.runtime)
+                    .on_credential_refresh(slot, &entry.slot.instance)
                     .await
             } else {
                 resource
-                    .on_credential_revoke(slot, &entry.slot.runtime)
+                    .on_credential_revoke(slot, &entry.slot.instance)
                     .await
             };
             if let Err(e) = res
@@ -714,7 +725,7 @@ mod tests {
             .expect("create");
         let id = *topo.slot_instance(&slot);
         let owned = topo.into_instance(slot);
-        assert_eq!(owned, id, "into_instance returns the same runtime");
+        assert_eq!(owned, id, "into_instance returns the same instance");
     }
 
     #[tokio::test]

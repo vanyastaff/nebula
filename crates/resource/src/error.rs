@@ -84,6 +84,27 @@ impl ErrorKind {
     }
 }
 
+impl fmt::Display for ErrorKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Transient => f.write_str("transient"),
+            Self::Permanent => f.write_str("permanent"),
+            Self::Exhausted { retry_after } => {
+                if let Some(after) = retry_after {
+                    write!(f, "exhausted (retry after {after:?})")
+                } else {
+                    f.write_str("exhausted")
+                }
+            },
+            Self::Backpressure => f.write_str("backpressure"),
+            Self::NotFound => f.write_str("not found"),
+            Self::Cancelled => f.write_str("cancelled"),
+            Self::Revoked => f.write_str("revoked"),
+            Self::Ambiguous => f.write_str("ambiguous"),
+        }
+    }
+}
+
 /// Whether the error is resource-wide or target-specific.
 ///
 /// Currently a single-variant `#[non_exhaustive]` enum: only [`Resource`]

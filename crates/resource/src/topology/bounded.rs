@@ -23,6 +23,8 @@
 //! [`BoundedProvider`] hook trait so the framework
 //! [`Bounded`](crate::topology::Bounded) topology can drive its reset policy.
 
+use std::num::NonZeroUsize;
+
 use async_trait::async_trait;
 
 use crate::{error::Error, resource::Provider};
@@ -44,7 +46,7 @@ pub enum BoundedMode {
     /// At most `n` concurrent leases (`n >= 1`). Each lease is an independent
     /// instance, created on acquire and destroyed on release — there is no idle
     /// reuse. Backs the gate with a `tokio::Semaphore(n)`.
-    Capped(usize),
+    Capped(NonZeroUsize),
     /// Exactly one lease at a time, over a single reused instance. Backs the
     /// gate with a `tokio::Semaphore(1)`; the instance is reset on release
     /// (see [`BoundedProvider::reset`]) and the permit is held until the reset

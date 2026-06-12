@@ -322,12 +322,12 @@ impl CheckCost {
 
 /// Provider trait — 2 associated types + lifecycle methods (slot model).
 ///
-/// Uses `#[async_trait]` for object-safe async dispatch through
-/// `dyn ManagedHandle`. Every lifecycle method (`create`, `check`,
-/// `shutdown`, `destroy`, `on_credential_refresh`, `on_credential_revoke`)
-/// is I/O-bound and always dispatched through an erased boundary, so
-/// the `Box<dyn Future>` overhead is unavoidable regardless of the
-/// surface; `#[async_trait]` makes the surface uniform.
+/// Uses `#[async_trait]` to keep return types uniform with the blanket
+/// `impl<R: Provider> ManagedHandle for ManagedResource<R>`, which
+/// dispatches through `dyn ManagedHandle` (object-safe, boxed futures).
+/// `Provider` itself is not object-safe (`fn key()` has no receiver,
+/// `Sized` bound) — the attribute is for the blanket impl's convenience,
+/// not for `dyn Provider` dispatch.
 ///
 /// Per slot model (supersedes credential isolation) the singular `type Credential`
 /// associated type was removed in favor of typed credential **slot
@@ -610,9 +610,9 @@ pub trait Provider: Send + Sync + Sized + 'static {
 /// (`acc = acc * K + slot.generation()`, fixed odd `K`) over every
 /// declared `#[credential]` field's
 /// [`SlotCell::generation`](crate::SlotCell::generation). A plain
-/// `max` would be wrong here — a runtime built at
+/// `max` would be wrong here — an instance built at
 /// `(slot_a=5, slot_b=10)` then rotated `slot_a→6` still maxes to
-/// `10`, so the reconcile would miss the now-stale runtime; the
+/// `10`, so the reconcile would miss the now-stale instance; the
 /// positional fold changes on every slot transition regardless of
 /// which slot moved. Slot-less resources always return `0`.
 pub trait HasCredentialSlots {

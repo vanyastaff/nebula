@@ -46,6 +46,15 @@ pub(crate) enum HookFault {
     TimedOut,
 }
 
+impl std::fmt::Display for HookFault {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Panicked => f.write_str("panicked"),
+            Self::TimedOut => f.write_str("timed out"),
+        }
+    }
+}
+
 impl HookFault {
     /// Emit a structured observability record for a caught author-hook fault.
     ///

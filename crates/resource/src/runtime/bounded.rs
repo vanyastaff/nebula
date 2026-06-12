@@ -26,6 +26,7 @@
 
 use std::{
     marker::PhantomData,
+    num::NonZeroUsize,
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -86,15 +87,12 @@ impl<R: Provider> Bounded<R> {
     /// lease, so it is rejected at construction rather than silently dead-locked
     /// every acquire.
     pub fn capped(n: usize) -> Result<Self, Error> {
-        if n == 0 {
-            return Err(Error::permanent(
-                "Bounded::capped requires a cap of at least 1",
-            ));
-        }
+        let n = NonZeroUsize::new(n)
+            .ok_or_else(|| Error::permanent("Bounded::capped requires a cap of at least 1"))?;
         Ok(Self {
             mode: BoundedMode::Capped(n),
-            sem: Some(Arc::new(Semaphore::new(n))),
-            cap: AtomicUsize::new(n),
+            sem: Some(Arc::new(Semaphore::new(n.get()))),
+            cap: AtomicUsize::new(n.get()),
             resize_lock: std::sync::Mutex::new(()),
             _marker: PhantomData,
         })

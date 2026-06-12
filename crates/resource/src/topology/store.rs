@@ -60,6 +60,28 @@ pub(crate) struct StoreEntry<S> {
 /// called by the framework synchronously when a credential is revoked —
 /// exactly as `PoolRuntime::bump_revoke_epoch` is called today.
 ///
+/// # Examples
+///
+/// ```ignore
+/// let store: InstanceStore<u32> = InstanceStore::new(Some(4));
+/// let epoch = store.stamp_epoch();
+///
+/// // Deposit a slot.
+/// store.return_slot(42u32, epoch).await;
+/// assert_eq!(store.len().await, 1);
+///
+/// // Check out the slot (fenced on revoke).
+/// let checkout = store.checkout().await;
+/// assert!(checkout.stale.is_empty());
+/// assert_eq!(checkout.fresh.map(|c| c.slot), Some(42u32));
+///
+/// // Simulate a credential revoke.
+/// store.bump_revoke_epoch();
+/// // The old epoch is now stale — returning it evicts.
+/// let outcome = store.return_slot(99u32, epoch).await;
+/// assert!(outcome.is_evict());
+/// ```
+///
 /// [`Manager`]: crate::Manager
 /// [`try_reserve`]: crate::topology::Topology::try_reserve
 /// [`on_release`]: crate::topology::Topology::on_release
@@ -91,6 +113,15 @@ impl<S> Clone for InstanceStore<S> {
             revoke_epoch: Arc::clone(&self.revoke_epoch),
             capacity: self.capacity,
         }
+    }
+}
+
+impl<S> std::fmt::Debug for InstanceStore<S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InstanceStore")
+            .field("capacity", &self.capacity)
+            .field("revoke_epoch", &self.revoke_epoch.load(Ordering::Acquire))
+            .finish()
     }
 }
 
@@ -377,6 +408,7 @@ impl<S: Send + 'static> InstanceStore<S> {
 /// nor silently leaked.
 ///
 /// [`Provider::destroy`]: crate::resource::Provider::destroy
+#[must_use = "Checkout contains slots that must be processed (fresh used, stale destroyed)"]
 pub struct Checkout<S> {
     /// The first idle slot whose checkout epoch is current, or `None` if the
     /// idle queue held no fresh slot.
@@ -386,6 +418,15 @@ pub struct Checkout<S> {
     /// These were leased under a since-revoked credential; the framework
     /// destroys them and never returns them to a caller.
     pub stale: Vec<S>,
+}
+
+impl<S> std::fmt::Debug for Checkout<S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Checkout")
+            .field("has_fresh", &self.fresh.is_some())
+            .field("stale_count", &self.stale.len())
+            .finish()
+    }
 }
 
 // ─── CheckedOut ───────────────────────────────────────────────────────────────
@@ -405,9 +446,18 @@ pub struct CheckedOut<S> {
     pub(crate) store_epoch: u64,
 }
 
+impl<S> std::fmt::Debug for CheckedOut<S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CheckedOut")
+            .field("checkout_epoch", &self.checkout_epoch)
+            .finish()
+    }
+}
+
 impl<S> CheckedOut<S> {
     /// Consumes the `CheckedOut`, returning the slot and the checkout epoch
     /// for passing to [`InstanceStore::return_slot`].
+    #[must_use]
     pub fn into_parts(self) -> (S, u64) {
         (self.slot, self.checkout_epoch)
     }

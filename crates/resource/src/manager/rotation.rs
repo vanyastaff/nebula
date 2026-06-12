@@ -20,7 +20,7 @@ impl Manager {
     ///
     /// Resolves `(key, scope)` to the live [`ManagedResource`](crate::ManagedResource) via the same
     /// registry lookup the `acquire_*` family uses, then borrows the live
-    /// `Runtime` per topology and invokes
+    /// `Instance` per topology and invokes
     /// [`Provider::on_credential_refresh`](crate::resource::Provider::on_credential_refresh)
     /// for `slot`. The slot cell itself
     /// lives on the author's resource struct and is populated/rotated by

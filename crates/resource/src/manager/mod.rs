@@ -206,8 +206,8 @@
 //!   Deferred because the reload redesign (drain-then-rebuild + a truthful
 //!   outcome contract) is a separate concern; see the **accepted relabel**
 //!   note below for why this is a preserved no-op, not a regression.
-//! - **Pool `CreateGuard` cancel-drop leaks the runtime — MED** ([#713]).
-//!   A *cancelled* acquire whose in-flight `create` already built a runtime
+//! - **Pool `CreateGuard` cancel-drop leaks the instance — MED** ([#713]).
+//!   A *cancelled* acquire whose in-flight `create` already built an instance
 //!   drops it synchronously without the async `destroy()`, leaking the
 //!   server-side handle. (The *other* `CreateGuard` race — an in-flight
 //!   create completing *after a revoke* — is the same isolation defect as

@@ -15,11 +15,11 @@
 //! published through one `ArcSwapOption` swap, so a reader observes the
 //! generation and the guard it belongs to with **no torn read** (a separate
 //! `AtomicU64` read alongside an `ArcSwap` load could observe a generation
-//! from one transition and a guard from another). A built resource runtime
+//! from one transition and a guard from another). A built resource instance
 //! records the generation it was constructed against; the per-slot rotation
-//! dispatch compares that against the live generation to detect a runtime
+//! dispatch compares that against the live generation to detect an instance
 //! left bound to a pre-rotation credential by a create-vs-rotate race
-//! (per-resource revoke deferral). See `ResidentRuntime` / `ManagedResource::
+//! (per-resource revoke deferral). See `Resident` / `ManagedResource::
 //! dispatch_slot_hook`.
 
 use std::sync::{
@@ -173,7 +173,7 @@ impl<S> SlotCell<S> {
     /// generation of the latest transition (`store` *or* `take`).
     ///
     /// A cleared slot keeps the generation of the `take` that cleared it
-    /// (a clear is itself a credential-state transition — a runtime built
+    /// (a clear is itself a credential-state transition — an instance built
     /// before a revoke must still see a strictly newer epoch), so this is
     /// `> 0` after the first transition even when [`load`](Self::load)
     /// returns `None`.
@@ -205,9 +205,9 @@ impl<S> SlotCell<S> {
     /// Revoke the slot, returning the previously held value (if any).
     ///
     /// A clear is a credential-state transition, so it advances the
-    /// generation: a runtime built against the pre-clear guard is then
+    /// generation: an instance built against the pre-clear guard is then
     /// detectably stale on the next rotation/revoke dispatch (resource
-    /// runtime status §Deferred). The post-clear generation is observable
+    /// instance status §Deferred). The post-clear generation is observable
     /// via [`generation`](Self::generation) even though [`load`](Self::load)
     /// is now `None`.
     ///
@@ -354,7 +354,7 @@ mod tests {
         assert_eq!(g_after_store, 1);
 
         // A clear is a credential-state transition: the generation must
-        // advance so a runtime built against the pre-clear guard is
+        // advance so an instance built against the pre-clear guard is
         // detectably stale, and it stays observable while empty.
         let _ = cell.take();
         assert!(cell.load().is_none(), "slot is cleared");

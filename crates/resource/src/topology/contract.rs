@@ -70,6 +70,18 @@ pub enum AdmissionPhase {
     Tainted,
 }
 
+impl std::fmt::Display for AdmissionPhase {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Ready => f.write_str("ready"),
+            Self::Saturated => f.write_str("saturated"),
+            Self::Warming => f.write_str("warming"),
+            Self::Recovering => f.write_str("recovering"),
+            Self::Tainted => f.write_str("tainted"),
+        }
+    }
+}
+
 // ─── Load ─────────────────────────────────────────────────────────────────────
 
 /// Optional load snapshot from a topology.
@@ -151,6 +163,23 @@ pub enum Unavailable {
     Tainted,
 }
 
+impl std::fmt::Display for Unavailable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Saturated { retry_after } => {
+                if let Some(after) = retry_after {
+                    write!(f, "saturated (retry after {after:?})")
+                } else {
+                    f.write_str("saturated")
+                }
+            },
+            Self::Warming => f.write_str("warming"),
+            Self::Recovering => f.write_str("recovering"),
+            Self::Tainted => f.write_str("tainted"),
+        }
+    }
+}
+
 impl Unavailable {
     /// Maps this [`Unavailable`] variant onto the resource [`Error`] the
     /// manager returns to callers when `try_reserve` rejects an acquire.
@@ -213,8 +242,31 @@ impl Unavailable {
 ///   one permit to the pool.
 /// - **Infallible**: zero-cost (no capacity constraint, e.g. Resident).
 ///   Dropping it is a no-op.
+///
+/// # Examples
+///
+/// ```ignore
+/// // Capacity-gated topology (Pooled, Bounded::Capped):
+/// let permit = semaphore.acquire_owned().await?;
+/// let ticket = Ticket::permit(permit);
+/// // ... use ticket for acquire ...
+///
+/// // Unconstrained topology (Resident, Unbounded):
+/// let ticket = Ticket::infallible();
+/// // ... use ticket for acquire ...
+/// ```
+#[must_use = "dropping a Ticket releases the held permit — use it or explicitly drop"]
 pub struct Ticket {
+    /// The held permit, or `None` for an infallible (permit-less) ticket.
     permit: Option<OwnedSemaphorePermit>,
+}
+
+impl std::fmt::Debug for Ticket {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Ticket")
+            .field("has_permit", &self.permit.is_some())
+            .finish()
+    }
 }
 
 impl Ticket {
@@ -235,6 +287,7 @@ impl Ticket {
     /// The framework calls this to move the permit into the
     /// [`ResourceGuard`](crate::guard::ResourceGuard) so it is held for the
     /// whole lease and returned on guard drop.
+    #[must_use]
     pub fn into_permit(self) -> Option<OwnedSemaphorePermit> {
         self.permit
     }
