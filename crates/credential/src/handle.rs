@@ -1,8 +1,7 @@
 //! Typed credential handle returned by the resolver.
 //!
-//! Wraps a resolved AuthScheme in an ArcSwap so the
-//! RefreshCoordinator (in `nebula-engine`) can hot-swap refreshed auth material without creating a
-//! new handle.
+//! Wraps a resolved AuthScheme in an `ArcSwap` so the refresh coordinator can
+//! hot-swap refreshed auth material without creating a new handle.
 
 use std::sync::Arc;
 
@@ -10,11 +9,17 @@ use arc_swap::ArcSwap;
 
 use crate::AuthScheme;
 
+struct Inner<S: AuthScheme> {
+    scheme: ArcSwap<S>,
+    credential_id: String,
+}
+
 /// Handle to a resolved credential with a specific AuthScheme.
 ///
-/// Uses ArcSwap internally so the RefreshCoordinator (in `nebula-engine`) can
-/// hot-swap refreshed auth material. Callers use [`snapshot()`](Self::snapshot)
-/// to get an immutable `Arc<S>` that remains valid even during concurrent refresh.
+/// Uses `ArcSwap` internally so [`CredentialResolver`](crate::runtime::CredentialResolver)
+/// can hot-swap refreshed auth material via [`replace`](Self::replace).
+/// [`Clone`](Self::clone) shares the same live scheme cell — a refresh updates
+/// every clone's next [`snapshot`](Self::snapshot), while prior snapshots stay valid.
 ///
 /// # Examples
 ///
@@ -24,15 +29,13 @@ use crate::AuthScheme;
 /// token.token().expose_secret();
 /// ```
 pub struct CredentialHandle<S: AuthScheme> {
-    scheme: ArcSwap<S>,
-    credential_id: String,
+    inner: Arc<Inner<S>>,
 }
 
 impl<S: AuthScheme> Clone for CredentialHandle<S> {
     fn clone(&self) -> Self {
         Self {
-            scheme: ArcSwap::new(self.scheme.load_full()),
-            credential_id: self.credential_id.clone(),
+            inner: Arc::clone(&self.inner),
         }
     }
 }
@@ -41,42 +44,42 @@ impl<S: AuthScheme> CredentialHandle<S> {
     /// Creates a new handle wrapping the given scheme.
     pub fn new(scheme: S, credential_id: impl Into<String>) -> Self {
         Self {
-            scheme: ArcSwap::from_pointee(scheme),
-            credential_id: credential_id.into(),
+            inner: Arc::new(Inner {
+                scheme: ArcSwap::from_pointee(scheme),
+                credential_id: credential_id.into(),
+            }),
         }
     }
 
     /// Returns an immutable snapshot of the current auth material.
     ///
     /// The returned `Arc<S>` is valid even if refresh swaps the
-    /// underlying value concurrently. Next `snapshot()` call returns
-    /// the refreshed value.
+    /// underlying value concurrently. The next [`snapshot`](Self::snapshot)
+    /// call returns the refreshed value.
     pub fn snapshot(&self) -> Arc<S> {
-        self.scheme.load_full()
+        self.inner.scheme.load_full()
     }
 
     /// Swaps in refreshed auth material.
     ///
-    /// Used by [`RefreshCoordinator`](nebula_engine::credential::refresh::RefreshCoordinator)
-    /// to hot-swap credentials after a successful refresh, without
-    /// invalidating existing snapshots held by callers.
-    // Reason: consumer (RefreshCoordinator) lands in task 1.5
-    #[allow(dead_code)]
+    /// Used by [`CredentialResolver`](crate::runtime::CredentialResolver) after
+    /// a successful refresh so callers holding this handle (or a [`Clone`] of
+    /// it) observe the new scheme on their next [`snapshot`](Self::snapshot).
     pub(crate) fn replace(&self, next: S) {
-        self.scheme.store(Arc::new(next));
+        self.inner.scheme.store(Arc::new(next));
     }
 
     /// Returns the credential ID this handle was resolved from.
     pub fn credential_id(&self) -> &str {
-        &self.credential_id
+        &self.inner.credential_id
     }
 }
 
 impl<S: AuthScheme + std::fmt::Debug> std::fmt::Debug for CredentialHandle<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CredentialHandle")
-            .field("credential_id", &self.credential_id)
-            .field("scheme", &*self.scheme.load_full())
+            .field("credential_id", &self.inner.credential_id)
+            .field("scheme", &*self.inner.scheme.load_full())
             .finish()
     }
 }
@@ -104,20 +107,18 @@ mod tests {
     }
 
     #[test]
-    fn clone_creates_independent_handle() {
+    fn clone_shares_live_scheme() {
         let token = SecretToken::new(SecretString::new("shared"));
         let handle = CredentialHandle::new(token, "c1");
         let cloned = handle.clone();
 
-        // Both return the same underlying Arc
         assert!(Arc::ptr_eq(&handle.snapshot(), &cloned.snapshot()));
 
-        // Replacing on one does not affect the other (independent ArcSwap)
         handle.replace(SecretToken::new(SecretString::new("updated")));
         let orig_val = handle.snapshot().token().expose_secret().to_owned();
         let clone_val = cloned.snapshot().token().expose_secret().to_owned();
         assert_eq!(orig_val, "updated");
-        assert_eq!(clone_val, "shared");
+        assert_eq!(clone_val, "updated");
     }
 
     #[test]

@@ -44,7 +44,7 @@ use crate::store::{PutMode, StoreError, StoredCredential};
 use crate::{
     AuthPattern, Credential, CredentialContext, CredentialDisplay, CredentialGuard, CredentialId,
     CredentialRegistry, DynCredentialStore, ErasedCredentialStore, ErasedPendingStore,
-    PendingToken,
+    PendingToken, Refreshable, SchemeFactory,
 };
 
 use super::error::CredentialServiceError;
@@ -1238,12 +1238,9 @@ impl CredentialService {
                         }
                     })?;
 
-                // Extract the owned scheme from the Arc returned by
-                // `snapshot()`. `CredentialResolver::resolve` constructs a
-                // fresh `CredentialHandle` with a new `ArcSwap`, so there
-                // is exactly one strong reference — `try_unwrap` succeeds.
-                // The `Clone` fallback is a belt-and-braces guard for any
-                // future caller that holds an extra reference.
+                // Extract the owned scheme from the snapshot `Arc`. The
+                // resolver caches live handles, so `try_unwrap` succeeds when
+                // this is the only outstanding snapshot; otherwise clone.
                 let arc = handle.snapshot();
                 let owned = Arc::try_unwrap(arc).unwrap_or_else(|arc| (*arc).clone());
                 Ok::<_, CredentialServiceError>(owned)
@@ -1256,6 +1253,20 @@ impl CredentialService {
             "credential resolved for slot"
         );
         Ok(CredentialGuard::new(scheme))
+    }
+
+    /// Per-request scheme re-acquisition for long-lived resources (§15.7).
+    ///
+    /// Stash the returned [`SchemeFactory`] on the resource instance at
+    /// `create` and call [`SchemeFactory::acquire`] once per outbound
+    /// request instead of retaining a [`CredentialGuard`] across spawn
+    /// boundaries (which is forbidden — see SEC-05).
+    pub fn scheme_factory<C>(&self, credential_id: &str, ctx: CredentialContext) -> SchemeFactory<C>
+    where
+        C: Refreshable,
+        C::Scheme: Zeroize + Clone + Send + Sync + 'static,
+    {
+        self.resolver.scheme_factory(credential_id, ctx)
     }
 
     /// Load the raw stored credential row **without** applying the

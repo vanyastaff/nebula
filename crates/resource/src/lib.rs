@@ -152,3 +152,36 @@ pub use topology_tag::TopologyTag;
 // it enables its own `rotation` feature.
 #[cfg(feature = "rotation")]
 pub use credential_fanout::{Bind, ResourceFanoutDriver, ResourceFanoutIndex, RotationOutcome};
+
+/// Prelude — common types for resource authors and engine integrators.
+///
+/// ```no_run
+/// use nebula_resource::prelude::*;
+/// use nebula_resource::topology::pooled::PoolProvider;
+///
+/// #[derive(Clone)]
+/// struct MyResource;
+///
+/// #[async_trait::async_trait]
+/// impl Provider for MyResource {
+///     type Config = ();
+///     type Instance = ();
+///     type Topology = Pooled<Self>;
+///     fn key() -> ResourceKey { resource_key!("my.resource") }
+///     async fn create(&self, _: &(), _: &ResourceContext) -> Result<(), Error> {
+///         Ok(())
+///     }
+/// }
+///
+/// impl HasCredentialSlots for MyResource {
+///     fn credential_slot_epoch(&self) -> u64 { 0 }
+/// }
+/// ```
+pub mod prelude {
+    pub use crate::{
+        AcquireOptions, Error, ErrorKind, HasCredentialSlots, Manager, PoolConfig, Pooled,
+        Provider, RegistrationSpec, Resident, ResidentConfig, ResourceConfig, ResourceContext,
+        ResourceGuard, ResourceKey, ResourceMetadata, ScopeLevel, ShutdownConfig, SlotCell,
+        SlotIdentity, TopologyTag, resource_key,
+    };
+}

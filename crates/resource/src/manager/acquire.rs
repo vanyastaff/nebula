@@ -13,7 +13,6 @@ use crate::{
     events::ResourceEvent,
     hook_guard::{DEFAULT_AUTHOR_HOOK_CEILING, HookFault, guard_author_hook},
     options::AcquireOptions,
-    registry::ManagedHandle,
     resource::{HasCredentialSlots, Provider},
     runtime::managed::ManagedResource,
     topology::{PoolProvider, ResidentProvider, Topology},
@@ -282,33 +281,6 @@ impl Manager {
         self.run_acquire_dispatch(managed, ctx, options).await
     }
 
-    /// [`acquire_pooled_for_identity`](Self::acquire_pooled_for_identity) for
-    /// a row already resolved by the [`ManagedHandle::acquire`] scope walk
-    /// (downcast, no re-walk).
-    #[expect(dead_code, reason = "called by engine scope-walk dispatch once wired")]
-    pub(crate) async fn acquire_pooled_at_scope<R>(
-        &self,
-        ctx: &ResourceContext,
-        options: &AcquireOptions,
-        resolved: Arc<dyn ManagedHandle>,
-    ) -> Result<crate::guard::ResourceGuard<R>, Error>
-    where
-        R: PoolProvider
-            + Provider<Topology = crate::topology::Pooled<R>>
-            + HasCredentialSlots
-            + Clone
-            + Send
-            + Sync
-            + 'static,
-        R::Instance: Clone + Send + Sync + 'static,
-    {
-        use crate::registry::PinnedLookup;
-        self.shutdown_guard()?;
-        let managed = Self::resolve_typed_pinned::<R>(PinnedLookup::Found(resolved))?;
-        let managed = Self::taint_gate::<R>(managed)?;
-        self.run_acquire_dispatch(managed, ctx, options).await
-    }
-
     /// Single generic topology dispatch into the shared
     /// [`run_acquire`](Self::run_acquire) pipeline.
     ///
@@ -528,32 +500,6 @@ impl Manager {
         R::Instance: Clone + Send + Sync + 'static,
     {
         let managed = self.lookup_for_acquire_with_identity::<R>(ctx, slot_identity)?;
-        self.run_acquire_dispatch(managed, ctx, options).await
-    }
-
-    /// [`acquire_resident_for_identity`](Self::acquire_resident_for_identity)
-    /// for a row already resolved by the [`ManagedHandle::acquire`] scope walk
-    /// (downcast, no re-walk).
-    #[expect(dead_code, reason = "called by engine scope-walk dispatch once wired")]
-    pub(crate) async fn acquire_resident_at_scope<R>(
-        &self,
-        ctx: &ResourceContext,
-        options: &AcquireOptions,
-        resolved: Arc<dyn ManagedHandle>,
-    ) -> Result<crate::guard::ResourceGuard<R>, Error>
-    where
-        R: ResidentProvider
-            + Provider<Topology = crate::topology::Resident<R>>
-            + HasCredentialSlots
-            + Send
-            + Sync
-            + 'static,
-        R::Instance: Clone + Send + Sync + 'static,
-    {
-        use crate::registry::PinnedLookup;
-        self.shutdown_guard()?;
-        let managed = Self::resolve_typed_pinned::<R>(PinnedLookup::Found(resolved))?;
-        let managed = Self::taint_gate::<R>(managed)?;
         self.run_acquire_dispatch(managed, ctx, options).await
     }
 

@@ -76,12 +76,6 @@ pub struct SchemeGuard<'a, C: Credential> {
 impl<C: Credential> SchemeGuard<'_, C> {
     /// Crate-private constructor — only the engine creates these.
     ///
-    /// `#[allow(dead_code)]` is deliberate: the engine wiring that calls
-    /// this constructor lands in a follow-up cascade (engine `refresh()`
-    /// hook + `SchemeFactory` driver). Stage 6 lands the type surface so
-    /// the engine has something to call into; the call site is wired in
-    /// the subsequent stage.
-    #[allow(dead_code)]
     pub(crate) fn new(scheme: <C as Credential>::Scheme) -> Self {
         Self {
             scheme,
@@ -171,9 +165,6 @@ impl<C: Credential> SchemeFactory<C> {
     /// Engine code wires the closure to the credential resolution pipeline
     /// (`refresh` → `project` → `SchemeGuard::new`).
     ///
-    /// `#[allow(dead_code)]` is deliberate (same rationale as
-    /// [`SchemeGuard::new`]): the engine driver lands in a follow-up cascade.
-    #[allow(dead_code)]
     pub(crate) fn new<F>(f: F) -> Self
     where
         F: Fn() -> AcquireFuture<C> + Send + Sync + 'static,

@@ -65,5 +65,9 @@ path = "examples/resource_telegram_multi_workflow.rs"
 name = "resource_resident_http"
 path = "examples/resource_resident_http.rs"
 
+[[example]]
+name = "resource_pooled_http_prelude"
+path = "examples/resource_pooled_http_prelude.rs"
+
 [lints]
 workspace = true

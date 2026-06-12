@@ -1,7 +1,7 @@
 # nebula-credential — Agent orientation
 > Agent quick-map for `crates/credential/`. Full design: `README.md`. Repo-wide rules: root `AGENTS.md`.
 
-**Purpose:** The typed Credential Contract — declares the split between stored `State` (encrypted at rest) and projected auth `Scheme` (what action code receives); runtime resolve/refresh/rotation orchestration lives in `nebula-engine::credential`, not here.
+**Purpose:** The typed Credential Contract — declares the split between stored `State` (encrypted at rest) and projected auth `Scheme` (what action code receives). Runtime resolve/refresh/rotation **orchestration** lives in `src/runtime/` and `CredentialService` (ADR-0092); `nebula-engine` and `nebula-api` are composition roots that wire transport, store layers, and tenant scope — they do not duplicate resolver logic.
 **Layer:** Shared-infra (credential contract) — importable by Exec/API/Business per the `deny.toml` `[bans].deny` `wrappers` allowlist; depends only on Core + cross-cutting (root AGENTS.md → Layered Dependency Map).
 
 ## Common Tasks
@@ -25,6 +25,8 @@
 - `src/contract/` — `Credential` base trait + capability sub-traits (`Interactive`/`Refreshable`/`Revocable`/`Testable`/`Dynamic`), `CredentialRegistry`, resolve types.
 - `src/scheme/` — `AuthScheme` base + `SensitiveScheme`/`PublicScheme` dichotomy (§15.5) + 9 built-in scheme types.
 - `src/secrets/` — `SecretString`, `CredentialGuard`, `SchemeGuard`/`SchemeFactory` refresh surface, PKCE helpers (AES-GCM crypto moved out, see below).
+- `src/runtime/resolver.rs` — `CredentialResolver` (cached handles, `scheme_factory`, `resolve_with_refresh`).
+- `src/service/facade.rs` — `CredentialService` (`resolve_for_slot`, `scheme_factory` for §15.7 resource pools).
 - `src/lifecycle.rs` — capabilities-as-data (`CredentialPolicy`/`RefreshStrategy`/`RevokeStrategy`, ADR-0088 D2).
 - `src/provider/` — `ExternalProvider` chain for Vault/AWS/GCP/Azure secret managers (ADR-0051); error-discriminated fallback (only `NotFound` falls through).
 

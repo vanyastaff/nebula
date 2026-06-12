@@ -4,13 +4,18 @@
 //! credential subsystem lives in one crate. No `nebula-engine` or
 //! `nebula-storage` edge — transport is injected via [`RefreshTransport`].
 
-use std::sync::Arc;
+use std::{
+    any::{Any, TypeId},
+    collections::HashMap,
+    sync::Arc,
+};
 
+use crate::error::{CredentialError, ProviderErrorContext, ProviderErrorKind};
 use crate::runtime::refresh::transport::RefreshTransport;
 use crate::runtime::refresh::{RefreshCoordinator, RefreshError};
 use crate::{
     Credential, CredentialContext, CredentialEvent, CredentialHandle, CredentialId,
-    CredentialState, Refreshable,
+    CredentialState, Refreshable, SchemeFactory, SchemeGuard, SecretFreeMessage,
     resolve::{ReauthReason, RefreshOutcome},
     store::{CredentialStore, PutMode, StoreError, StoredCredential},
 };
@@ -21,9 +26,12 @@ use crate::{
     error::CredentialError,
 };
 use nebula_eventbus::EventBus;
+use parking_lot::Mutex;
 
 #[cfg(feature = "rotation")]
 use crate::runtime::refresh::token_refresh::refresh_oauth2_state;
+
+type HandleCache = Mutex<HashMap<(String, TypeId), Arc<dyn Any + Send + Sync>>>;
 
 /// Runtime credential resolver with optional coordinated refresh.
 pub struct CredentialResolver<S: CredentialStore> {
@@ -31,6 +39,22 @@ pub struct CredentialResolver<S: CredentialStore> {
     refresh_coordinator: Arc<RefreshCoordinator>,
     transport: Arc<dyn RefreshTransport>,
     event_bus: Option<Arc<EventBus<CredentialEvent>>>,
+    /// Live [`CredentialHandle`]s keyed by `(credential_id, scheme TypeId)` so
+    /// refresh can [`CredentialHandle::replace`] in place instead of minting
+    /// disconnected handles on every resolve/refresh cycle.
+    handle_cache: Arc<HandleCache>,
+}
+
+impl<S: CredentialStore> Clone for CredentialResolver<S> {
+    fn clone(&self) -> Self {
+        Self {
+            store: Arc::clone(&self.store),
+            refresh_coordinator: Arc::clone(&self.refresh_coordinator),
+            transport: Arc::clone(&self.transport),
+            event_bus: self.event_bus.clone(),
+            handle_cache: Arc::clone(&self.handle_cache),
+        }
+    }
 }
 
 impl<S: CredentialStore> CredentialResolver<S> {
@@ -51,7 +75,83 @@ impl<S: CredentialStore> CredentialResolver<S> {
             refresh_coordinator,
             transport,
             event_bus: None,
+            handle_cache: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    fn handle_cache_key<C: Credential>(credential_id: &str) -> (String, TypeId) {
+        (credential_id.to_string(), TypeId::of::<C::Scheme>())
+    }
+
+    fn cached_handle<C: Credential>(
+        &self,
+        credential_id: &str,
+    ) -> Option<CredentialHandle<C::Scheme>> {
+        let key = Self::handle_cache_key::<C>(credential_id);
+        self.handle_cache.lock().get(&key).and_then(|entry| {
+            entry
+                .clone()
+                .downcast::<CredentialHandle<C::Scheme>>()
+                .ok()
+                .map(|arc| (*arc).clone())
+        })
+    }
+
+    fn store_handle<C: Credential>(
+        &self,
+        credential_id: &str,
+        handle: CredentialHandle<C::Scheme>,
+    ) {
+        let key = Self::handle_cache_key::<C>(credential_id);
+        self.handle_cache.lock().insert(key, Arc::new(handle));
+    }
+
+    fn materialize_handle<C: Credential>(
+        &self,
+        credential_id: &str,
+        scheme: C::Scheme,
+    ) -> CredentialHandle<C::Scheme> {
+        if let Some(existing) = self.cached_handle::<C>(credential_id) {
+            existing.replace(scheme);
+            return existing;
+        }
+        let handle = CredentialHandle::new(scheme, credential_id);
+        self.store_handle::<C>(credential_id, handle.clone());
+        handle
+    }
+
+    /// Per-request scheme re-acquisition for long-lived resources (Tech Spec §15.7).
+    ///
+    /// The returned [`SchemeFactory`] delegates to
+    /// [`resolve_with_refresh`](Self::resolve_with_refresh) on each
+    /// [`SchemeFactory::acquire`] call, yielding a lifetime-pinned
+    /// [`SchemeGuard`] suitable for scoped use inside a single task.
+    pub fn scheme_factory<C>(
+        &self,
+        credential_id: impl Into<String>,
+        ctx: CredentialContext,
+    ) -> SchemeFactory<C>
+    where
+        S: CredentialStore + 'static,
+        C: Refreshable,
+        C::Scheme: zeroize::Zeroize + Clone + Send + Sync + 'static,
+    {
+        let resolver = self.clone();
+        let credential_id = credential_id.into();
+        SchemeFactory::new(move || {
+            let resolver = resolver.clone();
+            let credential_id = credential_id.clone();
+            let ctx = ctx.clone();
+            Box::pin(async move {
+                let handle = resolver
+                    .resolve_with_refresh::<C>(&credential_id, &ctx)
+                    .await
+                    .map_err(resolve_error_to_credential_error)?;
+                let scheme =
+                    Arc::try_unwrap(handle.snapshot()).unwrap_or_else(|arc| (*arc).clone());
+                Ok(SchemeGuard::new(scheme))
+            })
+        })
     }
 
     /// Attach an event bus to emit credential refresh lifecycle events.
@@ -83,7 +183,7 @@ impl<S: CredentialStore> CredentialResolver<S> {
         let stored = self.load_and_verify::<C>(credential_id).await?;
         let state: C::State = self.deserialize::<C>(credential_id, &stored)?;
         let scheme = C::project(&state);
-        Ok(CredentialHandle::new(scheme, credential_id))
+        Ok(self.materialize_handle::<C>(credential_id, scheme))
     }
 
     /// Resolve a credential and refresh it when it enters the early-refresh window.
@@ -132,7 +232,7 @@ impl<S: CredentialStore> CredentialResolver<S> {
 
         if !needs_refresh {
             let scheme = C::project(&state);
-            return Ok(CredentialHandle::new(scheme, credential_id));
+            return Ok(self.materialize_handle::<C>(credential_id, scheme));
         }
 
         if self.refresh_coordinator.is_circuit_open(credential_id) {
@@ -153,7 +253,7 @@ impl<S: CredentialStore> CredentialResolver<S> {
                 "circuit breaker open: too many refresh failures, serving stale-but-valid credential within early-refresh window"
             );
             let scheme = C::project(&state);
-            return Ok(CredentialHandle::new(scheme, credential_id));
+            return Ok(self.materialize_handle::<C>(credential_id, scheme));
         }
 
         // Parse the string id; the typed `CredentialId` is required by
@@ -544,7 +644,7 @@ impl<S: CredentialStore> CredentialResolver<S> {
                                 );
                             }
                             let scheme = C::project(&state);
-                            return Ok(CredentialHandle::new(scheme, credential_id));
+                            return Ok(self.materialize_handle::<C>(credential_id, scheme));
                         },
                         Err(StoreError::VersionConflict { actual, .. }) => {
                             tracing::warn!(
@@ -665,7 +765,7 @@ impl<S: CredentialStore> CredentialResolver<S> {
             // adding consumers does not silently fall through.
             RefreshOutcome::CoalescedByOtherReplica => {
                 let scheme = C::project(&state);
-                Ok(CredentialHandle::new(scheme, credential_id))
+                Ok(self.materialize_handle::<C>(credential_id, scheme))
             },
             // `RefreshOutcome` is `#[non_exhaustive]`; this arm is required for
             // forward-compatibility with future variants. Clippy flags it
@@ -673,10 +773,17 @@ impl<S: CredentialStore> CredentialResolver<S> {
             #[allow(unreachable_patterns)]
             _ => {
                 let scheme = C::project(&state);
-                Ok(CredentialHandle::new(scheme, credential_id))
+                Ok(self.materialize_handle::<C>(credential_id, scheme))
             },
         }
     }
+}
+
+fn resolve_error_to_credential_error(err: ResolveError) -> CredentialError {
+    CredentialError::Provider(Box::new(ProviderErrorContext::new(
+        ProviderErrorKind::ServerError,
+        SecretFreeMessage::new(err.to_string()),
+    )))
 }
 
 /// Errors produced by [`CredentialResolver`].

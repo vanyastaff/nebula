@@ -278,30 +278,11 @@ pub use service::{
 /// ```
 pub mod prelude {
     pub use crate::{
-        AuthPattern,
-        AuthScheme,
-        // Core contract
-        Credential,
-        // Context
-        CredentialContext,
-        CredentialContextBuilder,
-        // Errors
-        CredentialError,
-        // Guards and handles
-        CredentialGuard,
-        CredentialHandle,
-        // IDs
-        CredentialId,
-        CredentialKey,
-        // Metadata
-        CredentialMetadata,
-        CredentialState,
-        HasCredentialsExt,
-        // Sensitivity dichotomy (§15.5)
-        PublicScheme,
-        // Secrets
-        SecretString,
-        SensitiveScheme,
-        credential_key,
+        AuthPattern, AuthScheme, Credential, CredentialContext, CredentialContextBuilder,
+        CredentialError, CredentialGuard, CredentialHandle, CredentialId, CredentialKey,
+        CredentialMetadata, CredentialPolicy, CredentialRecord, CredentialRegistry,
+        CredentialService, CredentialState, Dynamic, HasCredentialsExt, Interactive, PublicScheme,
+        Refreshable, Revocable, SecretString, SensitiveScheme, Testable, credential,
+        credential_key, schema_of,
     };
 }
