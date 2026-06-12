@@ -9,6 +9,7 @@
 //! |---------|----------------|--------------------|
 //! | Pool    | [`PoolProvider`] | [`Pooled<R>`](crate::runtime::pool::Pooled) |
 //! | Resident| [`ResidentProvider`] | [`Resident<R>`](crate::runtime::resident::Resident) |
+//! | Bounded | [`BoundedProvider`] | [`Bounded<R>`](crate::runtime::bounded::Bounded) |
 //!
 //! `Daemon` and `EventSource` live in `nebula_engine::daemon` per engine daemon topology —
 //! integration model boundary reserves "Resource" for pool/SDK clients.
@@ -16,11 +17,13 @@
 //! For custom topologies see the open [`Topology`] trait in [`contract`] and the
 //! framework-owned [`InstanceStore`] in [`store`].
 
+pub mod bounded;
 pub mod contract;
 pub mod pooled;
 pub mod resident;
 pub mod store;
 
+pub use bounded::{BoundedMode, BoundedProvider};
 pub use contract::{
     AdmissionPhase, AdmissionStatus, Load, MaintenanceSchedule, NoTopology, Ticket, Topology,
     Unavailable,
@@ -35,5 +38,6 @@ pub use store::{CheckedOut, Checkout, InstanceStore, ReturnOutcome};
 /// the [`PoolProvider`] / [`ResidentProvider`] hooks over an
 /// [`InstanceStore`]); re-exported here so authors write
 /// `type Topology = nebula_resource::topology::Pooled<Self>`.
+pub use crate::runtime::bounded::Bounded;
 pub use crate::runtime::pool::Pooled;
 pub use crate::runtime::resident::Resident;

@@ -128,6 +128,7 @@ pub use slot::{CredentialSlot, SlotCell};
 // Runtime types — the framework topologies needed for `Manager::register()`.
 pub use runtime::managed::ManagedResource;
 pub use runtime::{
+    bounded::Bounded,
     pool::{PoolStats, Pooled},
     resident::Resident,
 };
@@ -136,6 +137,7 @@ pub use state::{ResourcePhase, ResourceStatus};
 pub use topology::{
     AdmissionPhase, AdmissionStatus, CheckedOut, Checkout, InstanceStore, Load,
     MaintenanceSchedule, NoTopology, ReturnOutcome, Ticket, Topology, Unavailable,
+    bounded::{BoundedMode, BoundedProvider},
     pooled::{
         BrokenCheck, InstanceMetrics, PoolProvider, RecycleDecision, config::Config as PoolConfig,
     },
