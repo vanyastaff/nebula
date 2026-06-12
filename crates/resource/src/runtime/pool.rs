@@ -57,7 +57,7 @@ const ERR_CREATE_TIMED_OUT: &str = "pool: create timed out";
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// A single pooled instance with its metrics and config fingerprint — the
-/// [`Topology::Slot`](crate::topology::Topology::Slot) for [`Pooled`].
+/// [`Topology::Slot`] for [`Pooled`].
 ///
 /// The framework holds this slot for the whole lease (the guard owns it via the
 /// release closure), so `metrics.created_at` survives checkout → lease → return:

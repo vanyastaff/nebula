@@ -59,6 +59,13 @@ mod counting {
         /// When set, `on_credential_revoke` returns `Err` (drives the
         /// failure-event arm of `revoke_slot`).
         pub revoke_should_fail: Arc<AtomicBool>,
+        /// When set, `on_credential_revoke` panics — proves the framework
+        /// isolates a careless author hook (caught, mapped to a failed
+        /// outcome) instead of unwinding into the rotation fan-out.
+        pub revoke_should_panic: Arc<AtomicBool>,
+        /// When set, `on_credential_refresh` panics — the refresh-side twin of
+        /// `revoke_should_panic`.
+        pub refresh_should_panic: Arc<AtomicBool>,
     }
 
     /// The live runtime handle. Carries the ledger + a tag so the hook can
@@ -137,6 +144,10 @@ mod counting {
                 .refresh_saw_runtime_tag
                 .store(runtime.tag, Ordering::SeqCst);
             self.ledger.refresh_calls.fetch_add(1, Ordering::SeqCst);
+            assert!(
+                !runtime.ledger.refresh_should_panic.load(Ordering::SeqCst),
+                "careless on_credential_refresh hook unwinds"
+            );
             Ok(())
         }
 
@@ -146,6 +157,10 @@ mod counting {
             runtime: &CountingRuntime,
         ) -> Result<(), Error> {
             runtime.ledger.revoke_calls.fetch_add(1, Ordering::SeqCst);
+            assert!(
+                !runtime.ledger.revoke_should_panic.load(Ordering::SeqCst),
+                "careless on_credential_revoke hook unwinds"
+            );
             if runtime.ledger.revoke_should_fail.load(Ordering::SeqCst) {
                 return Err(Error::transient("revoke hook boom"));
             }
@@ -599,6 +614,111 @@ async fn revoke_failure_emits_slot_revoke_failed_not_refresh() {
     assert!(
         saw_revoke_failed,
         "a failed revoke must emit ResourceEvent::SlotRevokeFailed"
+    );
+}
+
+/// Foolproofing: a careless `on_credential_revoke` that **panics** must be
+/// caught by the framework — `revoke_slot` returns a typed error (the fan-out
+/// is not crashed), the row stays tainted, and the failure surfaces as
+/// `SlotRevokeFailed`, never `SlotRefreshFailed`.
+#[tokio::test]
+async fn revoke_hook_panic_is_isolated_and_emits_revoke_failed() {
+    use nebula_core::scope::Scope;
+    use nebula_resource::{AcquireOptions, events::ResourceEvent};
+    use tokio_util::sync::CancellationToken;
+
+    let (mgr, key, ledger) = registered().await;
+
+    // Warm the resident runtime so the revoke hook has a live `&Runtime`.
+    {
+        let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
+        let _g = mgr
+            .acquire_resident::<counting::CountingResource>(&ctx, &AcquireOptions::default())
+            .await
+            .expect("acquire must succeed");
+    }
+
+    ledger.revoke_should_panic.store(true, Ordering::SeqCst);
+    let mut events = mgr.subscribe_events();
+
+    let err = mgr
+        .revoke_slot(&key, ScopeLevel::Global, "db")
+        .await
+        .expect_err("a panicking revoke hook must surface a typed error, not unwind the fan-out");
+    assert!(
+        err.to_string().contains("panicked"),
+        "revoke_slot must surface the isolated-panic error, got: {err}"
+    );
+
+    let mut saw_revoke_failed = false;
+    while let Some(evt) = events.try_recv() {
+        match evt {
+            ResourceEvent::SlotRevokeFailed { slot, error, .. } => {
+                saw_revoke_failed = true;
+                assert_eq!(slot, "db");
+                assert!(
+                    error.contains("panicked"),
+                    "event error must report the isolated panic, got: {error}"
+                );
+            },
+            ResourceEvent::SlotRefreshFailed { .. } => {
+                panic!("a revoke-hook panic must NOT emit SlotRefreshFailed");
+            },
+            _ => {},
+        }
+    }
+    assert!(
+        saw_revoke_failed,
+        "an isolated revoke-hook panic must emit ResourceEvent::SlotRevokeFailed"
+    );
+}
+
+/// Foolproofing: a careless `on_credential_refresh` that **panics** must be
+/// caught by the framework — `refresh_slot` returns a typed error (the fan-out
+/// is not crashed) and the failure surfaces as `SlotRefreshFailed`.
+#[tokio::test]
+async fn refresh_hook_panic_is_isolated_and_emits_refresh_failed() {
+    use nebula_core::scope::Scope;
+    use nebula_resource::{AcquireOptions, events::ResourceEvent};
+    use tokio_util::sync::CancellationToken;
+
+    let (mgr, key, ledger) = registered().await;
+
+    // Warm the resident runtime so the refresh hook has a live `&Runtime`.
+    {
+        let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
+        let _g = mgr
+            .acquire_resident::<counting::CountingResource>(&ctx, &AcquireOptions::default())
+            .await
+            .expect("acquire must succeed");
+    }
+
+    ledger.refresh_should_panic.store(true, Ordering::SeqCst);
+    let mut events = mgr.subscribe_events();
+
+    let err = mgr
+        .refresh_slot(&key, ScopeLevel::Global, "db")
+        .await
+        .expect_err("a panicking refresh hook must surface a typed error, not unwind the fan-out");
+    assert!(
+        err.to_string().contains("panicked"),
+        "refresh_slot must surface the isolated-panic error, got: {err}"
+    );
+
+    let mut saw_refresh_failed = false;
+    while let Some(evt) = events.try_recv() {
+        if let ResourceEvent::SlotRefreshFailed { slot, error, .. } = evt {
+            saw_refresh_failed = true;
+            assert_eq!(slot, "db");
+            assert!(
+                error.contains("panicked"),
+                "event error must report the isolated panic, got: {error}"
+            );
+        }
+    }
+    assert!(
+        saw_refresh_failed,
+        "an isolated refresh-hook panic must emit ResourceEvent::SlotRefreshFailed"
     );
 }
 

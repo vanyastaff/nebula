@@ -347,15 +347,24 @@ impl ReleaseQueue {
     }
 
     async fn execute_task(factory: TaskFactory) {
-        let task = factory();
-        if tokio::time::timeout(TASK_EXECUTION_TIMEOUT, task)
-            .await
-            .is_err()
-        {
-            tracing::warn!(
-                "release task timed out after {}s, skipping",
-                TASK_EXECUTION_TIMEOUT.as_secs()
-            );
+        // Foolproofing: a release task runs a third-party topology's
+        // `on_release` / `Provider::destroy`. The shared author-hook guard
+        // bounds it (timeout) AND isolates a panic so one careless or hostile
+        // hook can neither stall nor kill this worker — the queue keeps draining
+        // every other slot.
+        match crate::hook_guard::guard_author_hook(TASK_EXECUTION_TIMEOUT, factory()).await {
+            Ok(()) => {},
+            Err(crate::hook_guard::HookFault::Panicked) => {
+                tracing::error!(
+                    "release task panicked — isolated; the release worker keeps draining"
+                );
+            },
+            Err(crate::hook_guard::HookFault::TimedOut) => {
+                tracing::warn!(
+                    "release task timed out after {}s, skipping",
+                    TASK_EXECUTION_TIMEOUT.as_secs()
+                );
+            },
         }
     }
 }

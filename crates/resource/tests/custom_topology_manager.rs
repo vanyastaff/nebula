@@ -29,7 +29,7 @@ use std::sync::{
 use nebula_core::{ResourceKey, ScopeLevel, resource_key, scope::Scope};
 use nebula_resource::{
     AcquireOptions, Manager, RegistrationSpec, ResourceContext, SlotIdentity,
-    error::Error,
+    error::{Error, ErrorKind},
     resource::{HasCredentialSlots, Provider, ResourceConfig, ResourceMetadata},
     topology::{InstanceStore, Ticket, Topology, Unavailable},
 };
@@ -125,13 +125,33 @@ impl HasCredentialSlots for Ffmpeg {
 struct FfmpegPool {
     sem: Arc<Semaphore>,
     cap: usize,
+    mode: CreateMode,
+}
+
+/// How a [`FfmpegPool`]'s `create_slot` (mis)behaves — drives the foolproofing
+/// tests proving the framework bounds + isolates a careless `impl Topology`.
+#[derive(Clone, Copy)]
+enum CreateMode {
+    /// Builds a transcoder normally.
+    Normal,
+    /// Never completes — proves the acquire deadline / ceiling caps a hanging
+    /// hook instead of wedging the caller (and drain) forever.
+    Hang,
+    /// Panics — proves `catch_unwind` turns it into a typed error instead of
+    /// crashing the caller's acquire.
+    Panic,
 }
 
 impl FfmpegPool {
     fn new(cap: usize) -> Self {
+        Self::with_mode(cap, CreateMode::Normal)
+    }
+
+    fn with_mode(cap: usize, mode: CreateMode) -> Self {
         Self {
             sem: Arc::new(Semaphore::new(cap)),
             cap,
+            mode,
         }
     }
 }
@@ -158,7 +178,15 @@ impl Topology<Ffmpeg> for FfmpegPool {
     ) -> Result<Transcoder, Error> {
         // Make one fresh transcoder. The framework decides WHEN to call this
         // (on an idle-miss / warmup); the author only knows HOW to build one.
-        resource.create(config, ctx).await
+        match self.mode {
+            CreateMode::Normal => resource.create(config, ctx).await,
+            CreateMode::Hang => std::future::pending().await,
+            CreateMode::Panic => panic!(
+                "foolproofing: a careless create_slot panics — the framework must \
+                 isolate it via catch_unwind and surface a typed error, not crash \
+                 the caller's acquire"
+            ),
+        }
     }
 
     fn slot_instance<'s>(&self, slot: &'s Transcoder) -> &'s Transcoder {
@@ -187,12 +215,16 @@ fn ctx() -> ResourceContext {
 }
 
 fn register(manager: &Manager, ffmpeg: Ffmpeg) {
+    register_topo(manager, ffmpeg, FfmpegPool::new(2));
+}
+
+fn register_topo(manager: &Manager, ffmpeg: Ffmpeg, topology: FfmpegPool) {
     let spec = RegistrationSpec {
         resource: ffmpeg,
         config: FfmpegCfg,
         scope: ScopeLevel::Global,
         slot_identity: SlotIdentity::Unbound,
-        topology: FfmpegPool::new(2),
+        topology,
         recovery_gate: None,
     };
     manager
@@ -339,19 +371,81 @@ async fn poll_until(deadline: std::time::Duration, mut cond: impl FnMut() -> boo
 
 /// The structural proof that backs acceptance item #2: `FfmpegPool` holds no
 /// `InstanceStore`, no `Provider` handle, and no revoke-epoch counter — only a
-/// semaphore and a capacity. There is no place for an author to write fence /
-/// store / destroy code, so the fence is framework-owned by construction.
+/// semaphore, a capacity, and a test-only create mode. There is no place for an
+/// author to write fence / store / destroy code, so the fence is framework-owned
+/// by construction.
 #[test]
 fn ffmpeg_pool_holds_no_store_or_fence() {
-    // `FfmpegPool` is `{ sem: Arc<Semaphore>, cap: usize }`. If a future edit
-    // added an `InstanceStore` / `Provider` / epoch field, this size assertion
-    // is a tripwire prompting a re-review of whether the author re-introduced
-    // fence code. (Two words: the `Arc` pointer + the `usize` cap.)
-    assert_eq!(
-        size_of::<FfmpegPool>(),
-        size_of::<Arc<Semaphore>>() + size_of::<usize>(),
-        "FfmpegPool must hold ONLY a semaphore + capacity — no InstanceStore, \
-         no Provider handle, no revoke-epoch counter; the framework owns the \
-         store and the fence"
+    // `FfmpegPool` is `{ sem: Arc<Semaphore>, cap: usize, mode: CreateMode }`.
+    // An embedded `InstanceStore` / `Provider` / epoch field would push the size
+    // well past `{ Arc + usize + a byte-sized enum }`; the bound is the tripwire
+    // prompting a re-review of whether an author re-introduced fence code.
+    assert!(
+        size_of::<FfmpegPool>() <= size_of::<Arc<Semaphore>>() + 2 * size_of::<usize>(),
+        "FfmpegPool grew past {{ semaphore + capacity + create-mode }} — re-review \
+         whether an author re-introduced an InstanceStore / Provider / fence field; \
+         the framework, not the topology, owns the store and the revoke fence"
+    );
+}
+
+/// Foolproofing (G2): a third-party topology whose `create_slot` **panics** must
+/// not unwind into the caller — the acquire pipeline `catch_unwind`s author
+/// hooks and surfaces a typed `Permanent` error instead of crashing the acquire.
+#[tokio::test]
+async fn custom_topology_panic_in_create_is_isolated() {
+    let manager = Arc::new(Manager::new());
+    register_topo(
+        &manager,
+        Ffmpeg::new(),
+        FfmpegPool::with_mode(2, CreateMode::Panic),
+    );
+
+    let err = Manager::acquire_any(
+        Arc::clone(&manager),
+        &Ffmpeg::key(),
+        &ctx(),
+        &AcquireOptions::default(),
+        &SlotIdentity::Unbound,
+    )
+    .await
+    .expect_err(
+        "a panicking topology hook must surface a typed error, not unwind into the \
+         caller — the acquire pipeline isolates author hooks via catch_unwind",
+    );
+    assert!(
+        matches!(*err.kind(), ErrorKind::Permanent),
+        "an isolated topology-hook panic fails closed as Permanent (got {err:?})"
+    );
+}
+
+/// Foolproofing (G1): a third-party topology whose `create_slot` **hangs** must
+/// not wedge the caller — the acquire deadline bounds it and it fails closed.
+/// `start_paused` fires the deadline instantly + deterministically, so a real
+/// "hang forever" hook resolves to a bounded error with no wall-clock wait.
+#[tokio::test(start_paused = true)]
+async fn custom_topology_hang_in_create_is_bounded_by_deadline() {
+    let manager = Arc::new(Manager::new());
+    register_topo(
+        &manager,
+        Ffmpeg::new(),
+        FfmpegPool::with_mode(2, CreateMode::Hang),
+    );
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(50);
+    let err = Manager::acquire_any(
+        Arc::clone(&manager),
+        &Ffmpeg::key(),
+        &ctx(),
+        &AcquireOptions::default().with_deadline(deadline),
+        &SlotIdentity::Unbound,
+    )
+    .await
+    .expect_err(
+        "a hanging create_slot must be bounded by the acquire deadline and fail \
+         closed, never wedge the caller forever",
+    );
+    assert!(
+        matches!(*err.kind(), ErrorKind::Backpressure),
+        "a deadline-bounded hang fails closed as Backpressure (got {err:?})"
     );
 }

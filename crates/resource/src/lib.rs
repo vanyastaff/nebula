@@ -44,6 +44,7 @@ pub mod error;
 pub mod events;
 pub mod ext;
 pub mod guard;
+pub(crate) mod hook_guard;
 pub mod manager;
 pub mod metrics;
 pub mod options;

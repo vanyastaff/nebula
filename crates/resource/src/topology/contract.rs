@@ -544,10 +544,10 @@ pub trait Topology<R: Provider>: Send + Sync + 'static {
 /// by the resource [`Manager`](crate::Manager).
 ///
 /// Some `Provider` types (e.g. engine daemon sources) implement the
-/// [`Provider`](crate::resource::Provider) trait for its metadata / lifecycle
+/// [`Provider`] trait for its metadata / lifecycle
 /// hooks but are never acquired through the resource Manager's lease pipeline —
 /// they are owned by a different runtime. Such a resource still has to name a
-/// [`Provider::Topology`](crate::resource::Provider::Topology); `NoTopology`
+/// [`Provider::Topology`]; `NoTopology`
 /// is the marker that says "this resource is not leased here". Its
 /// [`try_reserve`](Topology::try_reserve) always grants an infallible ticket and
 /// its `create_slot` always errors, so a `NoTopology` resource is never actually

@@ -45,7 +45,7 @@ pub(crate) struct StoreEntry<S> {
 ///
 /// An `InstanceStore<S>` is the storage the [`Manager`] owns; a
 /// [`Topology`](crate::topology::Topology) implementation receives a borrowed
-/// `&InstanceStore<Self::Slot>` in [`try_reserve`] / [`acquire`] /
+/// `&InstanceStore<Self::Slot>` in [`try_reserve`] /
 /// [`on_release`] and [`phase`] / [`load`] but **cannot retain it** (it is a
 /// `&` reference, not an `Arc`). This makes it structurally impossible for an
 /// author topology to build a cross-scope instance cache that bypasses the
@@ -62,7 +62,6 @@ pub(crate) struct StoreEntry<S> {
 ///
 /// [`Manager`]: crate::Manager
 /// [`try_reserve`]: crate::topology::Topology::try_reserve
-/// [`acquire`]: crate::topology::Topology::acquire
 /// [`on_release`]: crate::topology::Topology::on_release
 /// [`phase`]: crate::topology::Topology::phase
 /// [`load`]: crate::topology::Topology::load

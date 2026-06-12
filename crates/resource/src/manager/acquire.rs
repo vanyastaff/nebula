@@ -11,6 +11,7 @@ use crate::{
     context::ResourceContext,
     error::Error,
     events::ResourceEvent,
+    hook_guard::{DEFAULT_AUTHOR_HOOK_CEILING, HookFault, guard_author_hook},
     options::AcquireOptions,
     registry::ManagedHandle,
     resource::{HasCredentialSlots, Provider},
@@ -331,12 +332,36 @@ impl Manager {
         R::Instance: Clone,
         R::Topology: Topology<R>,
     {
+        // Foolproofing for open (third-party) topologies: bound the author's
+        // acquire hooks (`try_reserve` / `create_slot` / `accept` / `prepare`)
+        // so a careless `impl Topology` cannot wedge the caller by hanging, nor
+        // crash it by panicking. The caller's deadline wins; absent one, a
+        // framework ceiling caps the worst case so a blocking hook can never
+        // hang forever. The dropped loop future releases the permit and
+        // destroys any in-flight slot via `SlotCreateGuard`.
+        let hook_timeout = options.remaining().unwrap_or(DEFAULT_AUTHOR_HOOK_CEILING);
         self.run_acquire(Arc::clone(&managed), || {
             let managed = Arc::clone(&managed);
+            let metrics = self.metrics.clone();
             async move {
-                managed
-                    .run_acquire_loop(ctx, options, self.metrics.clone())
-                    .await
+                match guard_author_hook(
+                    hook_timeout,
+                    managed.run_acquire_loop(ctx, options, metrics),
+                )
+                .await
+                {
+                    Ok(result) => result,
+                    Err(HookFault::Panicked) => Err(Error::permanent(format!(
+                        "{}: topology acquire pipeline panicked — the resource's \
+                         `impl Topology` hook unwound (isolated, caller not crashed)",
+                        R::key()
+                    ))),
+                    Err(HookFault::TimedOut) => Err(Error::backpressure(format!(
+                        "{}: acquire exceeded {hook_timeout:?} — the topology's \
+                         create/accept/prepare hooks did not complete in time",
+                        R::key()
+                    ))),
+                }
             }
         })
         .await
@@ -597,10 +622,30 @@ impl Manager {
             InFlightCounter::new(self.drain_tracker.clone(), managed.in_flight_tracker());
         self.reject_if_tainted_or_shutting_down_post_count::<R>(&managed)?;
         // The framework-owned warmup creates `warmup_target` slots via the
-        // topology's `create_slot` and deposits them (fenced) into the
-        // framework store. `config` is read inside `warmup` itself.
+        // topology's `create_slot` (which runs the author's `Provider::create`)
+        // and deposits them (fenced) into the framework store. `config` is read
+        // inside `warmup` itself. Bound + isolate it through the same guard the
+        // acquire pipeline uses: a careless `Provider::create` that hangs or
+        // panics during warmup must fail closed, not wedge or crash the caller.
         let _ = config;
-        let count = managed.warmup(ctx).await;
+        let count = match guard_author_hook(DEFAULT_AUTHOR_HOOK_CEILING, managed.warmup(ctx)).await
+        {
+            Ok(n) => n,
+            Err(HookFault::Panicked) => {
+                return Err(Error::permanent(format!(
+                    "{}: warmup panicked — the topology's `create_slot` hook unwound \
+                     (isolated, caller not crashed)",
+                    R::key()
+                )));
+            },
+            Err(HookFault::TimedOut) => {
+                return Err(Error::backpressure(format!(
+                    "{}: warmup exceeded {DEFAULT_AUTHOR_HOOK_CEILING:?} — the topology's \
+                     `create_slot` hook did not complete in time",
+                    R::key()
+                )));
+            },
+        };
         Ok(count)
     }
 }

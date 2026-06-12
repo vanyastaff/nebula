@@ -8,7 +8,11 @@ use std::{sync::Arc, time::Instant};
 use nebula_core::{ResourceKey, ScopeLevel};
 
 use super::{Manager, RevokeTail, TaintedSlot};
-use crate::{error::Error, events::ResourceEvent};
+use crate::{
+    error::Error,
+    events::ResourceEvent,
+    hook_guard::{DEFAULT_AUTHOR_HOOK_CEILING, HookFault, guard_author_hook},
+};
 
 impl Manager {
     /// Notifies a registered resource that one of its `#[credential]`
@@ -107,16 +111,45 @@ impl Manager {
         let started = Instant::now();
         tracing::Span::current().record("topology", managed.topology_tag().as_str());
 
-        let result = managed.dispatch_on_refresh(slot).await;
+        // Bound + isolate the author's `on_credential_refresh` hook: one that
+        // hangs or panics must fail closed as a recorded refresh outcome, never
+        // wedge or crash the rotation fan-out. No caller threads a refresh
+        // budget here, so the framework ceiling is the backstop — which is what
+        // makes the `timed_out` outcome reachable for refresh at all.
+        let guarded = guard_author_hook(
+            DEFAULT_AUTHOR_HOOK_CEILING,
+            managed.dispatch_on_refresh(slot),
+        )
+        .await;
         tracing::Span::current().record("duration_ms", started.elapsed().as_millis() as u64);
 
         // Exactly one outcome per dispatch; the attempts total is the sum
         // across `outcome` labels (success + failed + timed_out).
+        let (outcome, result): (crate::metrics::SlotDispatchOutcome, Result<(), Error>) =
+            match guarded {
+                Ok(Ok(())) => (crate::metrics::SlotDispatchOutcome::Success, Ok(())),
+                Ok(Err(e)) => (crate::metrics::SlotDispatchOutcome::Failed, Err(e)),
+                Err(HookFault::Panicked) => (
+                    crate::metrics::SlotDispatchOutcome::Failed,
+                    Err(Error::permanent(
+                        "slot refresh hook panicked — the topology's \
+                         `on_credential_refresh` hook unwound (isolated, fan-out not crashed)",
+                    )),
+                ),
+                Err(HookFault::TimedOut) => (
+                    crate::metrics::SlotDispatchOutcome::TimedOut,
+                    Err(Error::backpressure(
+                        "slot refresh hook timed out — the topology's \
+                         `on_credential_refresh` hook did not complete in time",
+                    )),
+                ),
+            };
+
+        if let Some(m) = &self.metrics {
+            m.record_slot_refresh_outcome(outcome);
+        }
         match &result {
             Ok(()) => {
-                if let Some(m) = &self.metrics {
-                    m.record_slot_refresh_outcome(crate::metrics::SlotDispatchOutcome::Success);
-                }
                 self.emit(ResourceEvent::SlotRefreshed {
                     key: key.clone(),
                     slot: slot.to_owned(),
@@ -124,9 +157,6 @@ impl Manager {
                 tracing::debug!("slot refresh hook completed");
             },
             Err(e) => {
-                if let Some(m) = &self.metrics {
-                    m.record_slot_refresh_outcome(crate::metrics::SlotDispatchOutcome::Failed);
-                }
                 self.emit(ResourceEvent::SlotRefreshFailed {
                     key: key.clone(),
                     slot: slot.to_owned(),
@@ -374,13 +404,15 @@ impl Manager {
         }
 
         // 2. Dispatch the revoke hook against the live runtime, bounded by
-        //    the SAME per-resource budget. This is the only place the
-        //    budget can cut the tail short: a wedged `on_credential_revoke`
-        //    must not pin the fan-out row forever. A timed-out drain (above)
-        //    has *already* consumed the metric outcome, so a hook that then
-        //    also times out does not double-record.
+        //    the SAME per-resource budget AND isolated from an unwinding panic.
+        //    This is the only place the budget can cut the tail short: a wedged
+        //    `on_credential_revoke` must not pin the fan-out row forever, and a
+        //    panicking one must not crash the fan-out — both fail closed with
+        //    the row left tainted. A timed-out drain (above) has *already*
+        //    consumed the metric outcome, so a hook that then also faults does
+        //    not double-record.
         let hook_outcome =
-            tokio::time::timeout(drain_timeout, managed.dispatch_on_revoke(&slot)).await;
+            guard_author_hook(drain_timeout, managed.dispatch_on_revoke(&slot)).await;
         tracing::Span::current().record("duration_ms", tainted_at.elapsed().as_millis() as u64);
 
         match hook_outcome {
@@ -409,7 +441,27 @@ impl Manager {
                 tracing::warn!(error = %e, "slot revoke hook failed");
                 RevokeTail::HookFailed(e)
             },
-            Err(_elapsed) => {
+            Err(HookFault::Panicked) => {
+                // The hook unwound. Caught — the fan-out is not crashed and the
+                // row stays tainted (phase 1). A panicking revoke is a hook
+                // failure: record `Failed` unless the drain already recorded a
+                // terminal outcome for this dispatch.
+                if !drain_timed_out && let Some(m) = &self.metrics {
+                    m.record_slot_revoke_outcome(crate::metrics::SlotDispatchOutcome::Failed);
+                }
+                let e = Error::permanent(
+                    "slot revoke hook panicked — the topology's `on_credential_revoke` \
+                     hook unwound (isolated, fan-out not crashed)",
+                );
+                self.emit(ResourceEvent::SlotRevokeFailed {
+                    key,
+                    slot,
+                    error: e.to_string(),
+                });
+                tracing::error!("slot revoke hook panicked (row stays tainted, no new leases)");
+                RevokeTail::HookFailed(e)
+            },
+            Err(HookFault::TimedOut) => {
                 // The hook itself wedged. The row stays tainted (phase 1).
                 // Record `TimedOut` unless the drain already did (one
                 // dispatch = exactly one outcome).
