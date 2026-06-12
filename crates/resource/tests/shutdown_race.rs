@@ -20,7 +20,6 @@
 //! the registry has been cleared.
 
 use std::{
-    future::Future,
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -29,13 +28,13 @@ use std::{
 };
 
 use nebula_core::{ExecutionId, ResourceKey, scope::Scope};
+use nebula_resource::ResidentConfig;
 use nebula_resource::{
-    AcquireOptions, Manager, RegistrationSpec, ResourceContext, ScopeLevel, ShutdownConfig,
-    SlotIdentity, TopologyTag,
+    AcquireOptions, Manager, RegistrationSpec, Resident, ResourceContext, ScopeLevel,
+    ShutdownConfig, SlotIdentity, TopologyTag,
     error::{Error, ErrorKind},
-    resource::{Resource, ResourceConfig, ResourceMetadata},
-    runtime::{TopologyRuntime, resident::ResidentRuntime},
-    topology::{resident, resident::Resident},
+    resource::{HasCredentialSlots, Provider, ResourceConfig, ResourceMetadata},
+    topology::resident::ResidentProvider,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -45,29 +44,20 @@ use tokio_util::sync::CancellationToken;
 // in-flight window before triggering shutdown.
 // ---------------------------------------------------------------------------
 
-#[derive(Debug)]
-struct SlowError(&'static str);
-
-impl std::fmt::Display for SlowError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl std::error::Error for SlowError {}
-
-impl From<SlowError> for Error {
-    fn from(e: SlowError) -> Self {
-        Error::permanent(e.0)
-    }
-}
+// Custom error boilerplate removed — Resource lifecycle methods now return
+// `crate::Error` directly (HasCredentialSlots redesign).
 
 #[derive(Clone, Debug, Default)]
 struct SlowConfig;
 
 nebula_schema::impl_empty_has_schema!(SlowConfig);
 
-impl ResourceConfig for SlowConfig {}
+impl ResourceConfig for SlowConfig {
+    fn fingerprint(&self) -> u64 {
+        // Unit struct: all instances identical — constant 0 is correct.
+        0
+    }
+}
 
 #[derive(Clone)]
 struct SlowCreateResource {
@@ -84,28 +74,22 @@ impl SlowCreateResource {
     }
 }
 
-impl Resource for SlowCreateResource {
+#[async_trait::async_trait]
+impl Provider for SlowCreateResource {
     type Config = SlowConfig;
-    type Runtime = ();
-    type Lease = ();
-    type Error = SlowError;
+    type Instance = ();
+    type Topology = Resident<Self>;
 
     fn key() -> ResourceKey {
         nebula_core::resource_key!("test.shutdown_race.slow")
     }
 
-    fn create(
-        &self,
-        _config: &Self::Config,
-        _ctx: &ResourceContext,
-    ) -> impl Future<Output = Result<(), SlowError>> + Send {
+    async fn create(&self, _config: &Self::Config, _ctx: &ResourceContext) -> Result<(), Error> {
         let delay = self.create_delay;
         let counter = Arc::clone(&self.create_count);
-        async move {
-            tokio::time::sleep(delay).await;
-            counter.fetch_add(1, Ordering::Relaxed);
-            Ok(())
-        }
+        tokio::time::sleep(delay).await;
+        counter.fetch_add(1, Ordering::Relaxed);
+        Ok(())
     }
 
     fn metadata() -> ResourceMetadata {
@@ -113,7 +97,14 @@ impl Resource for SlowCreateResource {
     }
 }
 
-impl Resident for SlowCreateResource {
+impl HasCredentialSlots for SlowCreateResource {
+    fn credential_slot_epoch(&self) -> u64 {
+        0
+    }
+}
+
+#[async_trait::async_trait]
+impl ResidentProvider for SlowCreateResource {
     fn is_alive_sync(&self, _runtime: &()) -> bool {
         true
     }
@@ -150,8 +141,7 @@ async fn graceful_shutdown_blocks_in_flight_acquire() {
     let create_counter = Arc::clone(&resource.create_count);
 
     let manager = Arc::new(Manager::new());
-    let resident_rt =
-        ResidentRuntime::<SlowCreateResource>::new(resident::config::Config::default());
+    let resident_rt = Resident::<SlowCreateResource>::new(ResidentConfig::default());
 
     manager
         .register(RegistrationSpec {
@@ -159,8 +149,7 @@ async fn graceful_shutdown_blocks_in_flight_acquire() {
             config: SlowConfig,
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Resident(resident_rt),
-            acquire: Manager::erased_acquire_resident_for::<SlowCreateResource>(),
+            topology: resident_rt,
             recovery_gate: None,
         })
         .expect("register succeeds");
@@ -263,8 +252,7 @@ async fn graceful_shutdown_blocks_in_flight_acquire() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn lookup_rejects_acquire_after_shutdown_starts() {
     let manager = Arc::new(Manager::new());
-    let resident_rt =
-        ResidentRuntime::<SlowCreateResource>::new(resident::config::Config::default());
+    let resident_rt = Resident::<SlowCreateResource>::new(ResidentConfig::default());
 
     manager
         .register(RegistrationSpec {
@@ -272,8 +260,7 @@ async fn lookup_rejects_acquire_after_shutdown_starts() {
             config: SlowConfig,
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Resident(resident_rt),
-            acquire: Manager::erased_acquire_resident_for::<SlowCreateResource>(),
+            topology: resident_rt,
             recovery_gate: None,
         })
         .expect("register succeeds");

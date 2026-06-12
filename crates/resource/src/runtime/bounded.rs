@@ -1,532 +1,559 @@
-//! Bounded runtime — one runtime, capped short-lived leases.
+//! Bounded topology — a runtime concurrency cap over a non-pooled resource.
 //!
-//! Folds `ServiceRuntime`, `TransportRuntime`, and `ExclusiveRuntime` into
-//! one runtime parameterized by the [`Cap`](crate::topology::bounded::Bounded::Cap)
-//! typestate:
+//! `Bounded<R>` is the built-in framework topology for resources that limit how
+//! many leases are live at once without keeping a warm idle pool. It backs the
+//! gate with a `tokio::Semaphore` whose size is read from a runtime value (not a
+//! const generic), so a config-driven seat count flows through the same code:
 //!
-//! - **`Unbounded`** (Service `Cloned`): no semaphore, owned handle, no
-//!   release callback.
-//! - **`Capped<N>`** (Service `Tracked`, Transport): `Semaphore(N)`,
-//!   guarded handle, `release_one` returns the token / closes the session.
-//! - **`Exclusive`**: `Semaphore(1)`, guarded handle, `release_one` is the
-//!   reset; the permit is held until the reset resolves (#384) and a
-//!   failed reset **poisons** the runtime so the next acquire fails closed
-//!   instead of being served the half-reset instance (S4).
+//! - [`BoundedMode::Capped`] (cap `n`) / [`BoundedMode::Unbounded`] — `pools()`
+//!   is `false`: each acquire builds a fresh instance via
+//!   [`create_slot`](crate::topology::Topology::create_slot) and destroys it on
+//!   release. There is no idle reuse (that is [`Pooled`](crate::topology::Pooled)).
+//! - [`BoundedMode::Exclusive`] — `pools()` is `true` with a store capacity of
+//!   one: the single instance is reset on release and returned to the framework
+//!   store for the next lease. A failed reset destroys it instead (the S4
+//!   invariant — a half-reset instance is never reissued), and the next acquire
+//!   builds a fresh one.
 //!
-//! Unlike the three runtimes it replaces, the release **error is observed**
-//! (a `tracing::warn!` plus the release-error metric), never
-//! `let _ =`-swallowed — this is the R17 fix.
+//! Because `Capped`/`Unbounded` keep no idle credentialed instance, the store
+//! revoke-fence (which only reaches *pooled* idle slots) has nothing to evict
+//! and there is no revoke leak to guard against — they report
+//! [`handles_own_revoke`](crate::topology::Topology::handles_own_revoke) so the
+//! registration footgun-guard stays quiet. `Exclusive` pools its one instance,
+//! so the store fence covers its revoke teardown directly.
 //!
-//! The keepalive task is **not** spawned from the synchronous constructor
-//! (that would `panic!` outside a Tokio runtime — a library panic). It is
-//! lazily started on the first `acquire`, where an async runtime is
-//! guaranteed, and is still aborted on `Drop`.
+//! [`Topology<R>`]: crate::topology::Topology
 
-use std::sync::{
-    Arc, Mutex, Once,
-    atomic::{AtomicBool, Ordering},
+use std::{
+    marker::PhantomData,
+    num::NonZeroUsize,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
-use tokio::{sync::Semaphore, task::JoinHandle, time};
+use async_trait::async_trait;
+use tokio::sync::{Semaphore, TryAcquireError};
 
 use crate::{
     context::ResourceContext,
     error::Error,
-    guard::ResourceGuard,
-    metrics::ResourceOpsMetrics,
-    options::AcquireOptions,
-    release_queue::ReleaseQueue,
-    resource::Resource,
-    topology::bounded::{BoundedRelease, CapMarker, config::Config},
+    resource::{HasCredentialSlots, Provider},
+    topology::{
+        AdmissionPhase, Load, Ticket, Topology, Unavailable, bounded::BoundedMode,
+        store::InstanceStore,
+    },
     topology_tag::TopologyTag,
 };
 
-// ─── Static error messages ───────────────────────────────────────────────────
-
-/// The concurrency semaphore was closed (runtime is shutting down).
-const ERR_SEMAPHORE_CLOSED: &str = "bounded: semaphore closed";
-
-/// Timed out waiting for a concurrency permit.
-const ERR_PERMIT_TIMEOUT: &str = "bounded: timed out waiting for a permit";
-
-/// Exclusive runtime was poisoned by a prior failed reset (S4).
-const ERR_POISONED: &str = "bounded: exclusive runtime poisoned by a prior failed reset \
-     (S4) — re-register the resource to obtain a fresh instance";
-
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Runtime state for a [`Bounded`](crate::topology::bounded::Bounded)
-/// resource.
+/// Framework bounded topology — a runtime concurrency cap over a non-pooled
+/// resource. See the [module docs](self) for the mode table.
 ///
-/// Holds the long-lived runtime, an optional concurrency semaphore sized
-/// by the cap typestate, and (when configured) a background keepalive
-/// task. The cap (`R::Cap`) decides every release-shape branch at compile
-/// time — there is no runtime topology discriminant.
-pub struct BoundedRuntime<R: Resource> {
-    runtime: Arc<R::Runtime>,
-    /// `None` for the [`Unbounded`](crate::topology::bounded::Unbounded)
-    /// cap (acquire is never gated); `Some(Semaphore(n))` otherwise, where
-    /// `n` is `Capped<N>`'s `N` or `1` for `Exclusive`.
-    semaphore: Option<Arc<Semaphore>>,
-    config: Config,
-    /// S4 fail-closed latch. Set **only** for the
-    /// [`Exclusive`](crate::topology::bounded::Exclusive) cap
-    /// (`Cap::RESET_ON_RELEASE`) when a `release_one` *reset* fails: the
-    /// single shared instance is then in an unknown half-reset state, so
-    /// every subsequent `acquire` returns an error rather than handing the
-    /// poisoned instance onward. Never set for `Unbounded` / `Capped<N>`
-    /// (their `release_one` does not reset the shared runtime), so those
-    /// caps are wholly unaffected. Shared with the release closure via an
-    /// `Arc` so the release path can latch it after the failed reset.
-    poisoned: Arc<AtomicBool>,
-    /// Background keepalive driver. **Lazily** started on the first
-    /// `acquire` (a `tokio::spawn` from the synchronous constructor would
-    /// `panic!` when there is no ambient runtime — a library panic).
-    /// Populated only when `config.keepalive_interval` is `Some` and the
-    /// resource overrides
-    /// [`BoundedRelease::keepalive`](crate::topology::bounded::BoundedRelease::keepalive);
-    /// aborted on `Drop`. The [`Once`] guards a single spawn even under
-    /// concurrent first acquires.
-    keepalive_started: Once,
-    keepalive: Mutex<Option<JoinHandle<()>>>,
+/// [`Topology<R>`]: crate::topology::Topology
+pub struct Bounded<R: Provider> {
+    mode: BoundedMode,
+    /// The concurrency gate. `None` for [`BoundedMode::Unbounded`] (no cap);
+    /// `Some(Semaphore(n))` for `Capped(n)` / `Exclusive` (`n == 1`).
+    sem: Option<Arc<Semaphore>>,
+    /// The current effective cap (permit total). `0` for `Unbounded`. Tracked
+    /// alongside the semaphore so [`load`](Topology::load) can report saturation
+    /// and [`set_cap`](Self::set_cap) can diff against it.
+    cap: AtomicUsize,
+    /// Serializes [`set_cap`](Self::set_cap): the resize is a compound
+    /// read-modify-write over both the semaphore (`add_permits` /
+    /// `forget_permits`) and `cap`, so two concurrent `&self` calls would
+    /// otherwise lose an update and leave `cap` inconsistent with the real
+    /// permit count. Uncontended in the common case (resize is a rare admin op).
+    resize_lock: std::sync::Mutex<()>,
+    _marker: PhantomData<fn() -> R>,
 }
 
-impl<R: Resource> BoundedRuntime<R> {
-    /// Returns the current configuration.
-    pub fn config(&self) -> &Config {
-        &self.config
-    }
-
-    /// Returns a reference to the underlying long-lived runtime.
-    pub fn runtime(&self) -> &R::Runtime {
-        &self.runtime
+impl<R: Provider> std::fmt::Debug for Bounded<R> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Bounded")
+            .field("mode", &self.mode)
+            .field("cap", &self.cap.load(Ordering::Relaxed))
+            .finish()
     }
 }
 
-impl<R: Resource> Drop for BoundedRuntime<R> {
-    fn drop(&mut self) {
-        // The lazily-spawned keepalive task (if it was ever started) is
-        // aborted here so it cannot outlive the runtime. `get_mut` cannot
-        // be poisoned-by-panic-relevant here: we have `&mut self`, so no
-        // other thread holds the lock.
-        if let Ok(slot) = self.keepalive.get_mut()
-            && let Some(handle) = slot.take()
-        {
-            handle.abort();
-        }
-    }
-}
-
-impl<R> BoundedRuntime<R>
-where
-    R: BoundedRelease + Clone + Send + Sync + 'static,
-    R::Lease: Send + 'static,
-    R::Runtime: Clone + Send + Sync + 'static,
-{
-    /// Creates a new bounded runtime wrapping an existing runtime instance.
-    ///
-    /// The semaphore is sized from the cap typestate
-    /// ([`CapMarker::PERMITS`]): `None` → unbounded, `Some(n)` →
-    /// `Semaphore(n)`. When `config.keepalive_interval` is `Some`, a
-    /// background task drives [`BoundedRelease::keepalive`] on that
-    /// interval (folds the previously-unwired `Transport::keepalive`).
-    ///
-    /// This constructor is **synchronous and does not spawn**: the
-    /// keepalive task is started lazily on the first [`acquire`](Self::acquire)
-    /// (where an ambient Tokio runtime is guaranteed). Spawning here would
-    /// `panic!` for a caller that builds the runtime with
-    /// `keepalive_interval: Some(_)` outside a Tokio runtime — a library
-    /// panic this fold must not introduce.
-    ///
-    /// # `Capped<0>` is rejected by construction
-    ///
-    /// A [`Capped<0>`](crate::topology::bounded::Capped) cap would size the
-    /// semaphore at zero permits — every acquire would stall until
-    /// `acquire_timeout` and fail, a permanently unavailable resource. An
-    /// inline `const { assert!(..) }` here is const-evaluated per
-    /// monomorphization, so building a `BoundedRuntime` whose
-    /// [`Cap`](crate::topology::bounded::Bounded::Cap) is `Capped<0>` is a
-    /// **compile error**, not a runtime dead end. `Capped<1>`+, `Unbounded`
-    /// and `Exclusive` are unaffected.
-    ///
-    /// ```compile_fail
-    /// use nebula_core::{ResourceKey, resource_key};
-    /// use nebula_resource::{
-    ///     BoundedConfig, BoundedRuntime, Resource, ResourceConfig,
-    ///     ResourceContext, error::Error, resource::ResourceMetadata,
-    ///     topology::bounded::{Bounded, BoundedRelease, Capped},
-    /// };
-    ///
-    /// #[derive(Clone)]
-    /// struct Cfg;
-    /// nebula_resource::impl_empty_has_schema!(Cfg);
-    /// impl ResourceConfig for Cfg {
-    ///     fn validate(&self) -> Result<(), Error> { Ok(()) }
-    /// }
-    ///
-    /// #[derive(Debug)]
-    /// struct E(String);
-    /// impl std::fmt::Display for E {
-    ///     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    ///         f.write_str(&self.0)
-    ///     }
-    /// }
-    /// impl std::error::Error for E {}
-    /// impl From<E> for Error {
-    ///     fn from(e: E) -> Self { Error::transient(e.0) }
-    /// }
-    ///
-    /// #[derive(Clone)]
-    /// struct CappedZero;
-    ///
-    /// impl Resource for CappedZero {
-    ///     type Config = Cfg;
-    ///     type Runtime = u32;
-    ///     type Lease = u32;
-    ///     type Error = E;
-    ///     fn key() -> ResourceKey { resource_key!("doc.capped_zero") }
-    ///     async fn create(&self, _c: &Cfg, _x: &ResourceContext) -> Result<u32, E> {
-    ///         Ok(1)
-    ///     }
-    ///     fn metadata() -> ResourceMetadata {
-    ///         ResourceMetadata::from_key(&Self::key())
-    ///     }
-    /// }
-    ///
-    /// impl Bounded for CappedZero {
-    ///     type Cap = Capped<0>;
-    ///     async fn acquire_one(&self, runtime: &u32, _x: &ResourceContext) -> Result<u32, E> {
-    ///         Ok(*runtime)
-    ///     }
-    /// }
-    ///
-    /// impl BoundedRelease for CappedZero {
-    ///     async fn release_one(&self, _r: &u32, _l: u32, _h: bool) -> Result<(), E> {
-    ///         Ok(())
-    ///     }
-    /// }
-    ///
-    /// // `Capped<0>` makes this `new` call a hard compile error: the inline
-    /// // `const` assert in the monomorphized constructor body fires.
-    /// let r = CappedZero;
-    /// let _rt: BoundedRuntime<CappedZero> =
-    ///     BoundedRuntime::new(&r, 1u32, BoundedConfig::default());
-    /// ```
-    pub fn new(resource: &R, runtime: R::Runtime, config: Config) -> Self {
-        // Reject a zero-permit cap (`Capped<0>`) by construction: a
-        // `Semaphore(0)` never grants a permit, so every acquire would stall
-        // until `acquire_timeout` and fail — a permanently unavailable
-        // resource. This inline `const` block is const-evaluated per
-        // monomorphization of `new`, so `BoundedRuntime::<R>::new` with
-        // `R::Cap = Capped<0>` is a hard compile error rather than a runtime
-        // dead end. `Unbounded` (`None`), `Exclusive` (`Some(1)`) and
-        // `Capped<N>` (N >= 1) const-evaluate this with no panic.
-        const {
-            assert!(
-                !matches!(R::Cap::PERMITS, Some(0)),
-                "bounded cap must have a non-zero permit count (Capped<0> is invalid)"
-            );
-        };
-        let _ = resource;
-        let runtime = Arc::new(runtime);
-        let semaphore = R::Cap::PERMITS.map(|n| Arc::new(Semaphore::new(n)));
-        Self {
-            runtime,
-            semaphore,
-            config,
-            poisoned: Arc::new(AtomicBool::new(false)),
-            keepalive_started: Once::new(),
-            keepalive: Mutex::new(None),
-        }
-    }
-
-    /// Lazily starts the background keepalive task on the first call.
-    ///
-    /// Called from [`acquire`](Self::acquire), so `tokio::spawn` always
-    /// runs inside an ambient runtime (no library panic, unlike spawning
-    /// from the synchronous [`new`](Self::new)). The [`Once`] guarantees a
-    /// single spawn even under concurrent first acquires; a no-keepalive
-    /// config makes this a cheap one-time no-op. The spawned task is parked
-    /// in `self.keepalive` so [`Drop`] still aborts it (no task leak).
-    fn ensure_keepalive(&self, resource: &R) {
-        let Some(interval) = self.config.keepalive_interval else {
-            return;
-        };
-        self.keepalive_started.call_once(|| {
-            let resource = resource.clone();
-            let runtime = Arc::clone(&self.runtime);
-            let handle = tokio::spawn(async move {
-                let mut ticker = time::interval(interval);
-                ticker.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
-                // First tick fires immediately; skip it so the first
-                // keepalive is one interval after the first acquire.
-                ticker.tick().await;
-                loop {
-                    ticker.tick().await;
-                    if let Err(e) = resource.keepalive(&runtime).await {
-                        tracing::warn!(
-                            resource = %R::key(),
-                            error = %Into::<Error>::into(e),
-                            "bounded: keepalive failed"
-                        );
-                    }
-                }
-            });
-            // Lock contention here is impossible: `call_once` serializes
-            // the single initializer and `Drop` needs `&mut self`.
-            if let Ok(mut slot) = self.keepalive.lock() {
-                *slot = Some(handle);
-            }
-        });
-    }
-
-    /// Acquires one lease from the bounded runtime.
-    ///
-    /// 1. If the cap has a permit count, acquires a permit (bounded by
-    ///    `config.acquire_timeout` or the caller's remaining deadline).
-    /// 2. Calls [`Bounded::acquire_one`](crate::topology::bounded::Bounded::acquire_one).
-    /// 3. If the cap does not require release
-    ///    ([`Unbounded`](crate::topology::bounded::Unbounded)) — returns
-    ///    an owned handle (no callback). Otherwise returns a guarded
-    ///    handle whose drop submits the release to the [`ReleaseQueue`].
-    ///
-    /// The semaphore permit (when present) is moved into the release
-    /// closure and then into the submitted release future, so it is
-    /// dropped **after** `release_one` resolves — preserving the
-    /// permit-held-until-release ordering (#384) the `Exclusive` cap
-    /// relies on.
+impl<R: Provider> Bounded<R> {
+    /// Builds a `Capped(n)` topology: at most `n` concurrent leases.
     ///
     /// # Errors
     ///
-    /// - `permanent` if the semaphore is closed, **or** (Exclusive cap
-    ///   only) the runtime was poisoned by a prior failed reset (S4
-    ///   fail-closed — the half-reset instance is never handed onward).
-    /// - `backpressure` if the permit acquire times out.
-    /// - Propagates `acquire_one` errors.
-    pub async fn acquire(
-        &self,
-        resource: &R,
-        ctx: &ResourceContext,
-        release_queue: &Arc<ReleaseQueue>,
-        generation: u64,
-        options: &AcquireOptions,
-        metrics: Option<ResourceOpsMetrics>,
-    ) -> Result<ResourceGuard<R>, Error> {
-        // Lazily start the keepalive task now that an ambient Tokio
-        // runtime is guaranteed (it must NOT be spawned from the
-        // synchronous `new`; that panics with no runtime). The `Once`
-        // makes every call after the first a cheap no-op.
-        self.ensure_keepalive(resource);
+    /// Returns a permanent [`Error`] if `n == 0` — a zero cap can never admit a
+    /// lease, so it is rejected at construction rather than silently dead-locked
+    /// every acquire.
+    pub fn capped(n: usize) -> Result<Self, Error> {
+        let n = NonZeroUsize::new(n)
+            .ok_or_else(|| Error::permanent("Bounded::capped requires a cap of at least 1"))?;
+        Ok(Self {
+            mode: BoundedMode::Capped(n),
+            sem: Some(Arc::new(Semaphore::new(n.get()))),
+            cap: AtomicUsize::new(n.get()),
+            resize_lock: std::sync::Mutex::new(()),
+            _marker: PhantomData,
+        })
+    }
 
-        // 1. Gate on the cap's concurrency permit, if any.
-        let permit = match &self.semaphore {
-            None => None,
-            Some(sem) => {
-                let timeout = options.remaining().unwrap_or(self.config.acquire_timeout);
-                match time::timeout(timeout, sem.clone().acquire_owned()).await {
-                    Ok(Ok(p)) => Some(p),
-                    Ok(Err(_)) => return Err(Error::permanent(ERR_SEMAPHORE_CLOSED)),
-                    Err(_) => {
-                        return Err(Error::backpressure(ERR_PERMIT_TIMEOUT));
-                    },
-                }
+    /// Builds an `Exclusive` topology: exactly one lease at a time over a single
+    /// reused instance, reset between leases.
+    #[must_use]
+    pub fn exclusive() -> Self {
+        Self {
+            mode: BoundedMode::Exclusive,
+            sem: Some(Arc::new(Semaphore::new(1))),
+            cap: AtomicUsize::new(1),
+            resize_lock: std::sync::Mutex::new(()),
+            _marker: PhantomData,
+        }
+    }
+
+    /// Builds an `Unbounded` topology: no concurrency limit, fresh instance per
+    /// lease.
+    #[must_use]
+    pub fn unbounded() -> Self {
+        Self {
+            mode: BoundedMode::Unbounded,
+            sem: None,
+            cap: AtomicUsize::new(0),
+            resize_lock: std::sync::Mutex::new(()),
+            _marker: PhantomData,
+        }
+    }
+
+    /// Returns the topology's mode.
+    #[must_use]
+    pub fn mode(&self) -> BoundedMode {
+        self.mode
+    }
+
+    /// Resizes a `Capped` topology's concurrency limit at runtime.
+    ///
+    /// Growing adds permits immediately. Shrinking forgets currently-available
+    /// permits immediately; if fewer permits are free than the requested
+    /// reduction (leases are in flight), only the free ones are forgotten and
+    /// the effective cap settles at `cur - forgotten` — call again once leases
+    /// return to complete the shrink. The effective cap reported by
+    /// [`load`](Topology::load) always reflects what actually took effect.
+    ///
+    /// # Errors
+    ///
+    /// Returns a permanent [`Error`] if the topology is not `Capped` (an
+    /// `Exclusive` cap is fixed at one and `Unbounded` has no cap) or if `n ==
+    /// 0`.
+    pub fn set_cap(&self, n: usize) -> Result<(), Error> {
+        let sem = match (self.mode, &self.sem) {
+            (BoundedMode::Capped(_), Some(sem)) => sem,
+            _ => {
+                return Err(Error::permanent(
+                    "Bounded::set_cap applies only to a Capped topology",
+                ));
             },
         };
-
-        // 1b. S4 fail-closed (Exclusive cap only). A prior `release_one`
-        //     reset failed, leaving the single shared instance in an
-        //     unknown half-reset state. `acquire_one` for the Exclusive
-        //     cap hands out that very instance (the lease *is* a clone of
-        //     the shared, interior-mutable runtime), so serving it would
-        //     propagate corrupted session state to the next caller. Refuse
-        //     instead — the permit acquired above is dropped on this early
-        //     return, so the semaphore is not wedged. Gated on
-        //     `RESET_ON_RELEASE` (true *only* for Exclusive): `Unbounded` /
-        //     `Capped<N>` never set the latch and never read it here, so
-        //     they are wholly unaffected. There is no rebuild primitive on
-        //     this path (no `Config` / `ResourceContext` for `create`), so
-        //     fail-closed — not silent recycling — is the S4 guarantee.
-        if R::Cap::RESET_ON_RELEASE && self.poisoned.load(Ordering::Acquire) {
-            if let Some(m) = &metrics {
-                m.record_acquire_error();
-            }
-            return Err(Error::permanent(ERR_POISONED));
+        if n == 0 {
+            return Err(Error::permanent(
+                "Bounded::set_cap requires a cap of at least 1",
+            ));
         }
-
-        // 2. Mint the lease.
-        let lease = resource
-            .acquire_one(&self.runtime, ctx)
-            .await
-            .map_err(Into::into)?;
-
-        // 3a. Unbounded / Cloned: owned handle, no release callback. The
-        //     cap typestate guarantees `release_one` is not part of this
-        //     resource's contract, so there is nothing to run on drop.
-        if !R::Cap::RELEASE_REQUIRED {
-            return Ok(ResourceGuard::owned(lease, R::key(), TopologyTag::Bounded));
-        }
-
-        // 3b. Capped / Exclusive: guarded handle. The permit lives in the
-        //     release closure → submitted future so it outlives
-        //     `release_one` (permit-held-until-release, #384). For the
-        //     Exclusive cap a failed reset additionally poisons the
-        //     runtime (S4) so the next acquire fails closed instead of
-        //     being handed the half-reset instance.
-        let runtime = Arc::clone(&self.runtime);
-        let resource_clone = resource.clone();
-        let rq = Arc::clone(release_queue);
-        let poisoned = Arc::clone(&self.poisoned);
-
-        Ok(ResourceGuard::guarded(
-            lease,
-            R::key(),
-            TopologyTag::Bounded,
-            generation,
-            move |returned_lease, tainted| {
-                if let Some(m) = &metrics {
-                    m.record_release();
-                }
-                // Return the teardown future. The guard awaits it inline on
-                // `ResourceGuard::release` (surfacing the `release_one`
-                // / S4-reset `Result`) or submits it to its `ReleaseQueue`
-                // on `Drop` (best-effort, `Result` discarded). The permit is
-                // moved into the future and dropped only after `release_one`
-                // resolves — permit-held-until-release (#384) — on both
-                // paths; the S4 poison-latch + destroy-on-failed-reset is
-                // unchanged and lives inside `release_one_observed`.
-                Box::pin(release_one_observed(
-                    resource_clone,
-                    runtime,
-                    returned_lease,
-                    !tainted,
-                    permit,
-                    poisoned,
-                    metrics,
-                ))
+        // Serialize the compound semaphore+cap read-modify-write so two
+        // concurrent resizes cannot lose an update. Recover from a poisoned
+        // lock — the guarded `()` carries no state a prior panic could corrupt.
+        let _resize = self
+            .resize_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let cur = self.cap.load(Ordering::Acquire);
+        match n.cmp(&cur) {
+            std::cmp::Ordering::Greater => {
+                sem.add_permits(n - cur);
+                self.cap.store(n, Ordering::Release);
             },
-            rq,
-        ))
+            std::cmp::Ordering::Less => {
+                let forgotten = sem.forget_permits(cur - n);
+                self.cap.fetch_sub(forgotten, Ordering::Release);
+            },
+            std::cmp::Ordering::Equal => {},
+        }
+        Ok(())
     }
 }
 
-/// Runs `release_one` and **observes** its outcome (R17).
-///
-/// On `Err`:
-/// - emits a `tracing::warn!` carrying the resource key and error, and
-/// - increments the release-error metric
-///   ([`ResourceOpsMetrics::record_release_error`]).
-///
-/// For the [`Exclusive`](crate::topology::bounded::Exclusive) cap an `Err`
-/// additionally **poisons the runtime** (S4): the `poisoned` latch is set
-/// so every subsequent [`BoundedRuntime::acquire`] fails closed rather than
-/// minting a lease over the half-reset instance. For the Exclusive cap the
-/// lease *is* a clone of the shared, interior-mutable runtime and
-/// `release_one` is a reset that mutates it in place, so a `(*runtime).clone()`
-/// destroy alone does **not** isolate the next caller — the live shared
-/// instance is what `acquire_one` would hand out next. Poisoning is what
-/// enforces the S4 isolation guarantee; the clone is still `destroy`d
-/// (best-effort, observed) to release whatever OS / connection resources
-/// that instance holds, but it is the latch — not the destroy — that
-/// protects the next acquirer. There is no in-place rebuild on this path
-/// (it has no `Config` / `ResourceContext` for `create`), so fail-closed,
-/// not silent recycling, is the contract; recovery is re-registration.
-///
-/// The latch is **only ever set for the Exclusive cap** (`RESET_ON_RELEASE`,
-/// `true` *only* there). `Capped<N>` — including `Capped<1>` — is a shared
-/// multiplexer: `release_one` returns a token / closes one session rather
-/// than resetting the shared runtime, the next acquirer needs that runtime,
-/// and it is neither poisoned nor destroyed (the failed release is still
-/// observed and the permit still returned). `Unbounded` has no release
-/// hook.
-///
-/// The semaphore `permit` (if any) is the last value dropped, **after**
-/// `release_one` (and any destroy) completes — this is the
-/// permit-held-until-release ordering (#384). It is always returned, even
-/// on a failed reset, so a reset error cannot deadlock the semaphore (S4
-/// preserve): the next acquire reaches the poison check and fails closed
-/// with an error, it does not block forever on the permit.
-///
-/// This **is** the teardown future the guard's release callback returns:
-/// `ResourceGuard::release` awaits it and surfaces the `Result`; `Drop`
-/// submits it to the [`ReleaseQueue`] discarding the `Result`. On a failed
-/// reset the **original `release_one` error is returned** (so an awaited
-/// `release()` observes it) — but only **after** the poison latch is set,
-/// the matching instance is destroyed, and the permit is dropped, so the S4
-/// fail-closed + #384 permit-held-until-reset semantics are byte-for-byte
-/// unchanged regardless of whether the caller awaits the `Result` or
-/// discards it. The S4 destroy's own error is still observed (warn +
-/// metric) but never overrides the reset error that is surfaced.
-async fn release_one_observed<R>(
-    resource: R,
-    runtime: Arc<R::Runtime>,
-    lease: R::Lease,
-    healthy: bool,
-    permit: Option<tokio::sync::OwnedSemaphorePermit>,
-    poisoned: Arc<AtomicBool>,
-    metrics: Option<ResourceOpsMetrics>,
-) -> Result<(), Error>
-where
-    R: BoundedRelease + Send + Sync + 'static,
-    R::Runtime: Clone + Send + Sync + 'static,
-    R::Lease: Send + 'static,
-{
-    let outcome = match resource.release_one(&runtime, lease, healthy).await {
-        Ok(()) => Ok(()),
-        Err(e) => {
-            // Convert once, into a value-typed `Error`, so the same error is
-            // both logged and returned to an awaiting `release()` caller.
-            let err: Error = e.into();
-            tracing::warn!(
-                resource = %R::key(),
-                error = %err,
-                "bounded: release hook failed (observed, not swallowed)"
-            );
-            if let Some(m) = &metrics {
-                m.record_release_error();
-            }
+// ─── Topology impl for Bounded ────────────────────────────────────────────────
+//
+// `Bounded<R>` gates concurrency with a semaphore. `Slot = R::Instance`,
+// `slot_instance` / `into_instance` are identity. Only `Exclusive` pools (one
+// reused instance, reset on release); `Capped` / `Unbounded` destroy every
+// instance on release.
 
-            // S4: a failed *reset* for the Exclusive cap means the single
-            // underlying instance is in an unknown half-reset state. Latch the
-            // runtime poisoned so the *next* `acquire` fails closed instead of
-            // minting a lease over it — destroying a throwaway `(*runtime).clone()`
-            // would not have isolated the next caller, because for the
-            // Exclusive cap the lease is itself a clone of the shared
-            // interior-mutable runtime that `acquire_one` hands out next.
-            // Gated on `RESET_ON_RELEASE` (`true` *only* for `Exclusive`):
-            // `Capped<N>` (incl. `Capped<1>`) is a shared multiplexer the next
-            // acquirer still needs — never poisoned or destroyed. The
-            // failed-release error is still observed above and the permit is
-            // still returned below for every cap.
-            if R::Cap::RESET_ON_RELEASE {
-                poisoned.store(true, Ordering::Release);
-                // Best-effort teardown of the matching owned instance so its
-                // OS / connection resources are released promptly (the live
-                // shared runtime is now unreachable behind the poison latch).
-                // `destroy` consumes an owned `R::Runtime`; the lease was
-                // minted by cloning the runtime, so a clone is the matching
-                // instance. Its outcome is observed, never swallowed.
-                let instance = (*runtime).clone();
-                if let Err(de) = resource.destroy(instance).await {
-                    tracing::warn!(
-                        resource = %R::key(),
-                        error = %Into::<Error>::into(de),
-                        "bounded: destroy after failed reset also failed \
-                         (runtime already poisoned; acquires fail closed)"
-                    );
-                    if let Some(m) = &metrics {
-                        m.record_release_error();
-                    }
-                }
-            }
-            // Surface the original reset error: a caller who awaits
-            // `release()` observes it. The poison/destroy/permit semantics
-            // above are unchanged whether or not the `Result` is consumed.
-            Err(err)
-        },
+#[async_trait]
+impl<R> Topology<R> for Bounded<R>
+where
+    R: Provider<Topology = Bounded<R>>
+        + crate::topology::bounded::BoundedProvider
+        + HasCredentialSlots
+        + Send
+        + Sync
+        + 'static,
+    R::Instance: Clone + Send + Sync + 'static,
+{
+    type Slot = R::Instance;
+
+    fn try_reserve(&self, _store: &InstanceStore<R::Instance>) -> Result<Ticket, Unavailable> {
+        match &self.sem {
+            // Unbounded: no gate.
+            None => Ok(Ticket::infallible()),
+            Some(sem) => match Arc::clone(sem).try_acquire_owned() {
+                Ok(permit) => Ok(Ticket::permit(permit)),
+                Err(TryAcquireError::NoPermits) => {
+                    Err(Unavailable::Saturated { retry_after: None })
+                },
+                // A closed semaphore means the topology is being torn down — no
+                // new leases. Surface it as tainted so the acquire fails closed.
+                Err(TryAcquireError::Closed) => Err(Unavailable::Tainted),
+            },
+        }
+    }
+
+    async fn create_slot(
+        &self,
+        resource: &R,
+        config: &R::Config,
+        ctx: &ResourceContext,
+    ) -> Result<R::Instance, Error> {
+        resource.create(config, ctx).await
+    }
+
+    fn slot_instance<'s>(&self, slot: &'s R::Instance) -> &'s R::Instance {
+        slot
+    }
+
+    fn into_instance(&self, slot: R::Instance) -> R::Instance {
+        slot
+    }
+
+    async fn on_release(&self, slot: &mut R::Instance, resource: &R) -> Result<bool, Error> {
+        match self.mode {
+            // The single instance is reset and reused. A failed reset returns
+            // `Err`, so the framework destroys it (never reissues a half-reset
+            // instance — S4) and surfaces the error; a fresh one is built next
+            // acquire.
+            BoundedMode::Exclusive => {
+                resource.reset(slot).await?;
+                Ok(true)
+            },
+            // No reuse: every released instance is destroyed.
+            BoundedMode::Capped(_) | BoundedMode::Unbounded => Ok(false),
+        }
+    }
+
+    fn pools(&self) -> bool {
+        matches!(self.mode, BoundedMode::Exclusive)
+    }
+
+    fn handles_own_revoke(&self) -> bool {
+        // Capped / Unbounded keep no idle credentialed instance to leak on
+        // revoke (every lease is created fresh and destroyed on release), so
+        // they legitimately "handle their own revoke" and the footgun-guard
+        // stays quiet. Exclusive pools its one instance, so `pools() == true`
+        // and this is ignored — the store fence covers it.
+        !matches!(self.mode, BoundedMode::Exclusive)
+    }
+
+    fn store_capacity(&self) -> Option<usize> {
+        match self.mode {
+            // The one reused instance lives in the framework store.
+            BoundedMode::Exclusive => Some(1),
+            // Non-pooling: the store stays empty.
+            BoundedMode::Capped(_) | BoundedMode::Unbounded => None,
+        }
+    }
+
+    fn phase(&self, _store: &InstanceStore<R::Instance>) -> AdmissionPhase {
+        match &self.sem {
+            Some(sem) if sem.available_permits() == 0 => AdmissionPhase::Saturated,
+            _ => AdmissionPhase::Ready,
+        }
+    }
+
+    fn load(&self, _store: &InstanceStore<R::Instance>) -> Option<Load> {
+        let sem = self.sem.as_ref()?;
+        let total = self.cap.load(Ordering::Acquire);
+        let used = total.saturating_sub(sem.available_permits());
+        Some(Load::permits(used, total))
+    }
+
+    fn tag(&self) -> TopologyTag {
+        TopologyTag::Bounded
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::AtomicBool;
+
+    use nebula_core::{ExecutionId, ResourceKey, resource_key};
+
+    use super::*;
+    use crate::{
+        resource::{ResourceConfig, ResourceMetadata},
+        topology::bounded::BoundedProvider,
     };
-    // `permit` drops here — after release_one (and any S4 destroy) has
-    // resolved. The next acquirer cannot enter mid-reset (#384); for the
-    // Exclusive cap it then hits the poison check and fails closed.
-    drop(permit);
-    outcome
+
+    #[derive(Debug, Clone, Copy)]
+    struct BoundedCfg;
+
+    nebula_schema::impl_empty_has_schema!(BoundedCfg);
+
+    impl ResourceConfig for BoundedCfg {
+        fn validate(&self) -> Result<(), Error> {
+            Ok(())
+        }
+
+        fn fingerprint(&self) -> u64 {
+            // Unit struct: all instances identical — constant 0 is correct.
+            0
+        }
+    }
+
+    #[derive(Clone)]
+    struct MockBounded {
+        reset_ok: Arc<AtomicBool>,
+        reset_calls: Arc<AtomicUsize>,
+    }
+
+    impl MockBounded {
+        fn new() -> Self {
+            Self {
+                reset_ok: Arc::new(AtomicBool::new(true)),
+                reset_calls: Arc::new(AtomicUsize::new(0)),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl Provider for MockBounded {
+        type Config = BoundedCfg;
+        type Instance = u32;
+        type Topology = Bounded<Self>;
+
+        fn key() -> ResourceKey {
+            resource_key!("mock-bounded")
+        }
+
+        async fn create(&self, _config: &BoundedCfg, _ctx: &ResourceContext) -> Result<u32, Error> {
+            Ok(7)
+        }
+
+        async fn destroy(&self, _instance: u32, _cx: crate::TeardownCx) -> Result<(), Error> {
+            Ok(())
+        }
+
+        fn metadata() -> ResourceMetadata {
+            ResourceMetadata::from_key(&Self::key())
+        }
+    }
+
+    impl HasCredentialSlots for MockBounded {
+        fn credential_slot_epoch(&self) -> u64 {
+            0
+        }
+    }
+
+    #[async_trait]
+    impl BoundedProvider for MockBounded {
+        async fn reset(&self, _instance: &mut u32) -> Result<(), Error> {
+            self.reset_calls.fetch_add(1, Ordering::Relaxed);
+            if self.reset_ok.load(Ordering::Relaxed) {
+                Ok(())
+            } else {
+                Err(Error::transient("reset failed"))
+            }
+        }
+    }
+
+    fn store() -> InstanceStore<u32> {
+        InstanceStore::new(None)
+    }
+
+    fn test_ctx() -> ResourceContext {
+        use nebula_core::scope::Scope;
+        use tokio_util::sync::CancellationToken;
+        let scope = Scope {
+            execution_id: Some(ExecutionId::new()),
+            ..Default::default()
+        };
+        ResourceContext::minimal(scope, CancellationToken::new())
+    }
+
+    #[test]
+    fn capped_rejects_zero_cap() {
+        assert!(
+            Bounded::<MockBounded>::capped(0).is_err(),
+            "a zero cap can never admit and must be rejected at construction"
+        );
+        assert!(Bounded::<MockBounded>::capped(1).is_ok());
+    }
+
+    #[tokio::test]
+    async fn capped_gate_admits_up_to_n() {
+        let topo = Bounded::<MockBounded>::capped(2).expect("cap >= 1");
+        let st = store();
+
+        let t1 = topo.try_reserve(&st).expect("first lease admitted");
+        let t2 = topo.try_reserve(&st).expect("second lease admitted");
+        assert!(
+            topo.try_reserve(&st).is_err(),
+            "third lease exceeds the cap of 2 — must be rejected"
+        );
+        assert_eq!(topo.phase(&st), AdmissionPhase::Saturated);
+        assert_eq!(topo.load(&st).expect("capped reports load").saturation, 1.0);
+
+        // Releasing a ticket returns its permit; capacity frees up.
+        drop(t1);
+        let t3 = topo.try_reserve(&st).expect("a freed permit re-admits");
+        drop((t2, t3));
+    }
+
+    #[tokio::test]
+    async fn exclusive_serialises_to_one() {
+        let topo = Bounded::<MockBounded>::exclusive();
+        let st = store();
+
+        let held = topo.try_reserve(&st).expect("first exclusive lease");
+        assert!(
+            topo.try_reserve(&st).is_err(),
+            "exclusive admits exactly one at a time"
+        );
+        drop(held);
+        let _next = topo
+            .try_reserve(&st)
+            .expect("the next lease admits once the first releases");
+    }
+
+    #[tokio::test]
+    async fn exclusive_resets_and_keeps_on_release() {
+        let resource = MockBounded::new();
+        let topo = Bounded::<MockBounded>::exclusive();
+        let mut slot = 7u32;
+
+        let keep = topo
+            .on_release(&mut slot, &resource)
+            .await
+            .expect("a clean reset keeps the instance");
+        assert!(
+            keep,
+            "exclusive reuses its one instance after a clean reset"
+        );
+        assert_eq!(resource.reset_calls.load(Ordering::Relaxed), 1);
+        assert!(
+            topo.pools(),
+            "exclusive pools its single reused instance (store cap 1)"
+        );
+        assert_eq!(topo.store_capacity(), Some(1));
+    }
+
+    #[tokio::test]
+    async fn exclusive_reset_error_discards_and_surfaces() {
+        let resource = MockBounded::new();
+        resource.reset_ok.store(false, Ordering::Relaxed);
+        let topo = Bounded::<MockBounded>::exclusive();
+        let mut slot = 7u32;
+
+        let outcome = topo.on_release(&mut slot, &resource).await;
+        assert!(
+            outcome.is_err(),
+            "a failed reset surfaces the error so the framework destroys the \
+             instance (never reissues a half-reset one — S4)"
+        );
+    }
+
+    #[tokio::test]
+    async fn capped_destroys_on_release() {
+        let resource = MockBounded::new();
+        let topo = Bounded::<MockBounded>::capped(4).expect("cap >= 1");
+        let mut slot = 7u32;
+
+        let keep = topo.on_release(&mut slot, &resource).await.expect("ok");
+        assert!(
+            !keep,
+            "capped does not pool — released instances are destroyed"
+        );
+        assert_eq!(
+            resource.reset_calls.load(Ordering::Relaxed),
+            0,
+            "only exclusive resets; capped never calls reset"
+        );
+        assert!(!topo.pools());
+        assert!(
+            topo.handles_own_revoke(),
+            "non-pooling bounded keeps no idle credentialed state to leak"
+        );
+    }
+
+    #[tokio::test]
+    async fn unbounded_always_admits() {
+        let topo = Bounded::<MockBounded>::unbounded();
+        let st = store();
+
+        let held: Vec<_> = (0..64).map(|_| topo.try_reserve(&st).ok()).collect();
+        assert!(
+            held.iter().all(Option::is_some),
+            "unbounded never rejects a lease"
+        );
+        assert_eq!(topo.phase(&st), AdmissionPhase::Ready);
+        assert!(topo.load(&st).is_none(), "unbounded reports no load");
+    }
+
+    #[tokio::test]
+    async fn set_cap_grows_and_shrinks() {
+        let topo = Bounded::<MockBounded>::capped(2).expect("cap >= 1");
+        let st = store();
+
+        // Grow 2 → 4: two more leases now fit.
+        topo.set_cap(4).expect("grow");
+        let leases: Vec<_> = (0..4)
+            .map(|_| topo.try_reserve(&st).expect("4 leases fit after grow"))
+            .collect();
+        assert!(
+            topo.try_reserve(&st).is_err(),
+            "the 5th exceeds the grown cap"
+        );
+        drop(leases);
+
+        // Shrink 4 → 1 while idle: only one lease fits.
+        topo.set_cap(1).expect("shrink while idle");
+        let _one = topo.try_reserve(&st).expect("one lease fits");
+        assert!(
+            topo.try_reserve(&st).is_err(),
+            "the cap shrank to 1 — a second lease is rejected"
+        );
+    }
+
+    #[test]
+    fn set_cap_rejects_non_capped_and_zero() {
+        let exclusive = Bounded::<MockBounded>::exclusive();
+        assert!(
+            exclusive.set_cap(4).is_err(),
+            "exclusive cap is fixed at one"
+        );
+        let unbounded = Bounded::<MockBounded>::unbounded();
+        assert!(unbounded.set_cap(4).is_err(), "unbounded has no cap to set");
+        let capped = Bounded::<MockBounded>::capped(2).expect("cap >= 1");
+        assert!(capped.set_cap(0).is_err(), "a zero cap is rejected");
+    }
+
+    #[tokio::test]
+    async fn create_slot_builds_a_fresh_instance() {
+        let resource = MockBounded::new();
+        let topo = Bounded::<MockBounded>::capped(2).expect("cap >= 1");
+        let inst = topo
+            .create_slot(&resource, &BoundedCfg, &test_ctx())
+            .await
+            .expect("create");
+        assert_eq!(inst, 7);
+        assert_eq!(topo.tag(), TopologyTag::Bounded);
+    }
 }

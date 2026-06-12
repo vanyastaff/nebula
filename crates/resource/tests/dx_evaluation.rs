@@ -10,16 +10,14 @@
 use std::sync::Arc;
 
 use nebula_core::{ExecutionId, ResourceKey};
+use nebula_resource::topology::pooled::PoolProvider;
 use nebula_resource::{
-    AcquireOptions, Manager, PoolConfig, RegistrationSpec, ResidentConfig, Resource,
+    AcquireOptions, Manager, PoolConfig, Pooled, Provider, RegistrationSpec, ResidentConfig,
     ResourceConfig, ResourceContext, ScopeLevel, ShutdownConfig, SlotIdentity,
     error::{Error, ErrorKind},
+    resource::HasCredentialSlots,
     resource_key,
-    runtime::{TopologyRuntime, pool::PoolRuntime, resident::ResidentRuntime},
-    topology::{
-        pooled::{BrokenCheck, Pooled},
-        resident::Resident,
-    },
+    topology::{Resident, pooled::BrokenCheck, resident::ResidentProvider},
 };
 use tokio_util::sync::CancellationToken;
 
@@ -31,26 +29,11 @@ use tokio_util::sync::CancellationToken;
 // I expected: something like `impl ResourceConfig for String {}` or at least
 // a `#[derive(ResourceConfig)]` to generate a zero-overhead impl.
 
-/// Our domain error — a required stepping stone.
-/// [FRICTION #2] There is no blanket `impl From<anyhow::Error> for Error`.
-/// For a quick prototype I need a custom error type AND a From impl.
-/// That's 8+ lines before I've even gotten to my resource.
-#[derive(Debug)]
-struct MyError(String);
-
-impl std::fmt::Display for MyError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for MyError {}
-
-impl From<MyError> for Error {
-    fn from(e: MyError) -> Self {
-        Error::transient(e.0)
-    }
-}
+// [FRICTION #2] There is no blanket `impl From<anyhow::Error> for Error`.
+// For a quick prototype a custom error type AND a From impl were previously
+// required — 8+ lines before the resource itself. With the redesigned
+// `Resource` trait (no `type Error` associated type) the lifecycle methods
+// return `crate::Error` directly, so this boilerplate is gone.
 
 // ---------------------------------------------------------------------------
 // Use Case 1: Pooled HTTP client
@@ -70,6 +53,13 @@ impl ResourceConfig for HttpConfig {
         }
         Ok(())
     }
+
+    fn fingerprint(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        self.base_url.hash(&mut h);
+        h.finish()
+    }
 }
 
 /// The "live" handle — a thin wrapper around a URL.
@@ -83,19 +73,15 @@ struct HttpClient {
 #[derive(Clone)]
 struct HttpResource;
 
-// [FRICTION #3] 5 associated types. For a simple case where
-// Lease == Runtime, that's fine once you know it. But the README uses
-// `type Lease = HttpRuntime` without explaining *why* — I had to stare
-// at the trait definition to understand that Pooled requires
-// `Runtime: Into<Lease>` and `Lease: Into<Runtime>`. If they're the same
-// type the blanket impl<T> From<T> for T covers it, but this is nowhere
-// in the quick-start — only buried in the Pooled trait's doc comment.
+// [FRICTION #3] Previously 5 associated types. With `type Lease` and
+// `type Error` removed from the trait, the impl is now just `Config` and
+// `Runtime` — the two that actually matter for a simple pooled resource.
 
-impl Resource for HttpResource {
+#[async_trait::async_trait]
+impl Provider for HttpResource {
     type Config = HttpConfig;
-    type Runtime = HttpClient;
-    type Lease = HttpClient; // same as Runtime — blanket From<T> for T covers the bounds
-    type Error = MyError;
+    type Instance = HttpClient;
+    type Topology = Pooled<Self>;
 
     fn key() -> ResourceKey {
         resource_key!("http.client")
@@ -105,14 +91,21 @@ impl Resource for HttpResource {
         &self,
         config: &HttpConfig,
         _ctx: &ResourceContext,
-    ) -> Result<HttpClient, MyError> {
+    ) -> Result<HttpClient, Error> {
         Ok(HttpClient {
             base_url: config.base_url.clone(),
         })
     }
 }
 
-impl Pooled for HttpResource {
+impl HasCredentialSlots for HttpResource {
+    fn credential_slot_epoch(&self) -> u64 {
+        0
+    }
+}
+
+#[async_trait::async_trait]
+impl PoolProvider for HttpResource {
     // [FRICTION #4] Old API was `recycle_decision` + `broken_check` (methods
     // returning the enum value). New API is `is_broken` (returning BrokenCheck)
     // and `recycle` (async fn returning Result<RecycleDecision>).
@@ -145,11 +138,7 @@ async fn use_case_1_pooled_http_client() {
             config,
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Pool(PoolRuntime::<HttpResource>::new(
-                PoolConfig::default(),
-                fingerprint,
-            )),
-            acquire: Manager::erased_acquire_pooled_for::<HttpResource>(),
+            topology: Pooled::<HttpResource>::new(PoolConfig::default(), fingerprint),
             recovery_gate: None,
         })
         .expect("registration should succeed");
@@ -198,11 +187,7 @@ async fn use_case_1_invalid_config_is_rejected() {
         config,
         scope: ScopeLevel::Global,
         slot_identity: SlotIdentity::Unbound,
-        topology: TopologyRuntime::Pool(PoolRuntime::<HttpResource>::new(
-            PoolConfig::default(),
-            fingerprint,
-        )),
-        acquire: Manager::erased_acquire_pooled_for::<HttpResource>(),
+        topology: Pooled::<HttpResource>::new(PoolConfig::default(), fingerprint),
         recovery_gate: None,
     });
     let err = result.expect_err("empty base_url must fail validation at register time");
@@ -223,7 +208,14 @@ struct ConfigStoreConfig {
 
 nebula_schema::impl_empty_has_schema!(ConfigStoreConfig);
 
-impl ResourceConfig for ConfigStoreConfig {}
+impl ResourceConfig for ConfigStoreConfig {
+    fn fingerprint(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        self.env.hash(&mut h);
+        h.finish()
+    }
+}
 
 /// Our config store runtime — an in-memory map.
 #[derive(Clone, Debug)]
@@ -235,11 +227,11 @@ struct ConfigStore {
 #[derive(Clone)]
 struct ConfigStoreResource;
 
-impl Resource for ConfigStoreResource {
+#[async_trait::async_trait]
+impl Provider for ConfigStoreResource {
     type Config = ConfigStoreConfig;
-    type Runtime = ConfigStore;
-    type Lease = ConfigStore;
-    type Error = MyError;
+    type Instance = ConfigStore;
+    type Topology = Resident<Self>;
 
     fn key() -> ResourceKey {
         resource_key!("config.store")
@@ -249,7 +241,7 @@ impl Resource for ConfigStoreResource {
         &self,
         config: &ConfigStoreConfig,
         _ctx: &ResourceContext,
-    ) -> Result<ConfigStore, MyError> {
+    ) -> Result<ConfigStore, Error> {
         let mut map = std::collections::HashMap::new();
         map.insert("environment".to_string(), config.env.clone());
         map.insert("log_level".to_string(), "info".to_string());
@@ -260,13 +252,20 @@ impl Resource for ConfigStoreResource {
     }
 }
 
+impl HasCredentialSlots for ConfigStoreResource {
+    fn credential_slot_epoch(&self) -> u64 {
+        0
+    }
+}
+
 // [FRICTION #8] Resident trait has a `where Self::Lease: Clone` bound on the
 // trait itself. This is fine, my Lease is Clone. But it's an unusual pattern —
 // most Rust traits don't have a bound on an associated type of Self in the
 // trait definition. The compiler error if you forget Clone on Lease is cryptic:
 //   "the trait bound `ConfigStore: Clone` is not satisfied"
 // pointing to the trait impl, not the where clause source.
-impl Resident for ConfigStoreResource {}
+#[async_trait::async_trait]
+impl ResidentProvider for ConfigStoreResource {}
 
 #[tokio::test]
 async fn use_case_2_resident_config_store() {
@@ -284,10 +283,7 @@ async fn use_case_2_resident_config_store() {
             },
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Resident(ResidentRuntime::<ConfigStoreResource>::new(
-                ResidentConfig::default(),
-            )),
-            acquire: Manager::erased_acquire_resident_for::<ConfigStoreResource>(),
+            topology: Resident::<ConfigStoreResource>::new(ResidentConfig::default()),
             recovery_gate: None,
         })
         .expect("registration should succeed");
@@ -346,6 +342,14 @@ impl ResourceConfig for DbConfig {
         }
         Ok(())
     }
+
+    fn fingerprint(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        self.dsn.hash(&mut h);
+        self.pool_size.hash(&mut h);
+        h.finish()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -366,11 +370,11 @@ impl DbResource {
     }
 }
 
-impl Resource for DbResource {
+#[async_trait::async_trait]
+impl Provider for DbResource {
     type Config = DbConfig;
-    type Runtime = DbConnection;
-    type Lease = DbConnection;
-    type Error = MyError;
+    type Instance = DbConnection;
+    type Topology = Pooled<Self>;
 
     fn key() -> ResourceKey {
         resource_key!("db.connection")
@@ -380,13 +384,20 @@ impl Resource for DbResource {
         &self,
         _config: &DbConfig,
         _ctx: &ResourceContext,
-    ) -> Result<DbConnection, MyError> {
+    ) -> Result<DbConnection, Error> {
         let id = self.counter.fetch_add(1, Ordering::Relaxed);
         Ok(DbConnection { id })
     }
 }
 
-impl Pooled for DbResource {}
+impl HasCredentialSlots for DbResource {
+    fn credential_slot_epoch(&self) -> u64 {
+        0
+    }
+}
+
+#[async_trait::async_trait]
+impl PoolProvider for DbResource {}
 
 #[tokio::test]
 async fn use_case_3_db_with_recovery_and_shutdown() {
@@ -410,11 +421,7 @@ async fn use_case_3_db_with_recovery_and_shutdown() {
             config,
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Pool(PoolRuntime::<DbResource>::new(
-                pool_config,
-                fingerprint,
-            )),
-            acquire: Manager::erased_acquire_pooled_for::<DbResource>(),
+            topology: Pooled::<DbResource>::new(pool_config, fingerprint),
             recovery_gate: None,
         })
         .expect("registration should succeed");
@@ -510,11 +517,7 @@ async fn error_cancelled_after_shutdown() {
             config,
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Pool(PoolRuntime::<HttpResource>::new(
-                PoolConfig::default(),
-                fingerprint,
-            )),
-            acquire: Manager::erased_acquire_pooled_for::<HttpResource>(),
+            topology: Pooled::<HttpResource>::new(PoolConfig::default(), fingerprint),
             recovery_gate: None,
         })
         .unwrap();

@@ -1,47 +1,32 @@
-//! `Manager::acquire_erased` exercises the registry-stored `ErasedAcquireFn` hook.
+//! `Manager::acquire_any` exercises the registry-stored acquire dispatch hook.
 
-use std::{
-    future::Future,
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
 };
 
 use nebula_core::{ExecutionId, OrgId, ResourceKey, scope::Scope};
+use nebula_resource::topology::pooled::PoolProvider;
+use nebula_resource::topology::resident::ResidentProvider;
 use nebula_resource::{
-    AcquireOptions, BoundedRuntime, Manager, RegistrationSpec, ResourceContext, ScopeLevel,
-    SlotIdentity,
+    AcquireOptions, Manager, RegistrationSpec, ResourceContext, ScopeLevel, SlotIdentity,
     error::Error,
-    resource::{Resource, ResourceConfig, ResourceMetadata},
-    runtime::{TopologyRuntime, pool::PoolRuntime, resident::ResidentRuntime},
-    topology::resident::{self, Resident},
+    resource::{HasCredentialSlots, Provider, ResourceConfig, ResourceMetadata},
 };
+use nebula_resource::{Pooled, Resident, ResidentConfig};
 use tokio_util::sync::CancellationToken;
-
-#[derive(Debug, Clone)]
-struct ProbeError(String);
-
-impl std::fmt::Display for ProbeError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for ProbeError {}
-
-impl From<ProbeError> for Error {
-    fn from(e: ProbeError) -> Self {
-        Error::permanent(e.0)
-    }
-}
 
 #[derive(Clone, Debug, Default)]
 struct ProbeConfig;
 
 nebula_schema::impl_empty_has_schema!(ProbeConfig);
 
-impl ResourceConfig for ProbeConfig {}
+impl ResourceConfig for ProbeConfig {
+    fn fingerprint(&self) -> u64 {
+        // Unit struct: all instances identical — constant 0 is correct.
+        0
+    }
+}
 
 #[derive(Clone)]
 struct ProbeResource {
@@ -56,26 +41,24 @@ impl ProbeResource {
     }
 }
 
-impl Resource for ProbeResource {
+#[async_trait::async_trait]
+impl Provider for ProbeResource {
     type Config = ProbeConfig;
-    type Runtime = Arc<AtomicU64>;
-    type Lease = Arc<AtomicU64>;
-    type Error = ProbeError;
+    type Instance = Arc<AtomicU64>;
+    type Topology = Resident<Self>;
 
     fn key() -> ResourceKey {
         nebula_core::resource_key!("test.acquire_erased.probe")
     }
 
-    fn create(
+    async fn create(
         &self,
         _config: &ProbeConfig,
         _ctx: &ResourceContext,
-    ) -> impl Future<Output = Result<Arc<AtomicU64>, ProbeError>> + Send {
+    ) -> Result<Arc<AtomicU64>, Error> {
         let counter = self.create_count.clone();
-        async move {
-            counter.fetch_add(1, Ordering::Relaxed);
-            Ok(counter)
-        }
+        counter.fetch_add(1, Ordering::Relaxed);
+        Ok(counter)
     }
 
     fn metadata() -> ResourceMetadata {
@@ -83,7 +66,14 @@ impl Resource for ProbeResource {
     }
 }
 
-impl Resident for ProbeResource {
+impl HasCredentialSlots for ProbeResource {
+    fn credential_slot_epoch(&self) -> u64 {
+        0
+    }
+}
+
+#[async_trait::async_trait]
+impl ResidentProvider for ProbeResource {
     fn is_alive_sync(&self, _runtime: &Arc<AtomicU64>) -> bool {
         true
     }
@@ -101,17 +91,14 @@ async fn acquire_erased_returns_guard_and_runs_create_once() {
             config: ProbeConfig,
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Resident(ResidentRuntime::<ProbeResource>::new(
-                resident::config::Config::default(),
-            )),
-            acquire: Manager::erased_acquire_resident_for::<ProbeResource>(),
+            topology: Resident::<ProbeResource>::new(ResidentConfig::default()),
             recovery_gate: None,
         })
         .expect("register");
 
     let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
     let key = ProbeResource::key();
-    let boxed = Manager::acquire_erased_for(
+    let boxed = Manager::acquire_any(
         Arc::clone(&manager),
         &key,
         &ctx,
@@ -140,10 +127,7 @@ async fn acquire_erased_finds_org_scoped_row_from_execution_scope_bag() {
             config: ProbeConfig,
             scope: ScopeLevel::Organization(org),
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Resident(ResidentRuntime::<ProbeResource>::new(
-                resident::config::Config::default(),
-            )),
-            acquire: Manager::erased_acquire_resident_for::<ProbeResource>(),
+            topology: Resident::<ProbeResource>::new(ResidentConfig::default()),
             recovery_gate: None,
         })
         .expect("register at org scope");
@@ -170,7 +154,7 @@ async fn acquire_erased_finds_org_scoped_row_from_execution_scope_bag() {
 
     let ctx = ResourceContext::minimal(scope, CancellationToken::new());
 
-    let boxed = Manager::acquire_erased_for(
+    let boxed = Manager::acquire_any(
         Arc::clone(&manager),
         &ProbeResource::key(),
         &ctx,
@@ -203,10 +187,7 @@ async fn acquire_erased_and_typed_pick_org_not_global_fallback() {
             config: ProbeConfig,
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Resident(ResidentRuntime::<ProbeResource>::new(
-                resident::config::Config::default(),
-            )),
-            acquire: Manager::erased_acquire_resident_for::<ProbeResource>(),
+            topology: Resident::<ProbeResource>::new(ResidentConfig::default()),
             recovery_gate: None,
         })
         .expect("register global row");
@@ -217,10 +198,7 @@ async fn acquire_erased_and_typed_pick_org_not_global_fallback() {
             config: ProbeConfig,
             scope: ScopeLevel::Organization(org),
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Resident(ResidentRuntime::<ProbeResource>::new(
-                resident::config::Config::default(),
-            )),
-            acquire: Manager::erased_acquire_resident_for::<ProbeResource>(),
+            topology: Resident::<ProbeResource>::new(ResidentConfig::default()),
             recovery_gate: None,
         })
         .expect("register org row");
@@ -233,7 +211,7 @@ async fn acquire_erased_and_typed_pick_org_not_global_fallback() {
     let ctx = ResourceContext::minimal(scope, CancellationToken::new());
     let key = ProbeResource::key();
 
-    let boxed = Manager::acquire_erased_for(
+    let boxed = Manager::acquire_any(
         Arc::clone(&manager),
         &key,
         &ctx,
@@ -296,49 +274,31 @@ async fn acquire_erased_and_typed_pick_org_not_global_fallback() {
 /// distinct `Resource::create` is observable: parity means the typed path
 /// reuses the erased path's resolved row (single-runtime topologies keep
 /// `create_count == 1` across both acquires).
-macro_rules! parity_error {
-    ($name:ident) => {
-        #[derive(Debug)]
-        struct $name(String);
-
-        impl std::fmt::Display for $name {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                f.write_str(&self.0)
-            }
-        }
-
-        impl std::error::Error for $name {}
-
-        impl From<$name> for Error {
-            fn from(e: $name) -> Self {
-                Error::permanent(e.0)
-            }
-        }
-    };
-}
-
 mod pool_parity {
-    use nebula_resource::topology::pooled::{BrokenCheck, Pooled, RecycleDecision};
+    use nebula_resource::topology::pooled::BrokenCheck;
 
     use super::*;
-
-    parity_error!(PoolParityErr);
 
     #[derive(Clone, Default)]
     struct PoolParityCfg;
     nebula_schema::impl_empty_has_schema!(PoolParityCfg);
-    impl ResourceConfig for PoolParityCfg {}
+    impl ResourceConfig for PoolParityCfg {
+        fn fingerprint(&self) -> u64 {
+            // Unit struct: all instances identical — constant 0 is correct.
+            0
+        }
+    }
 
     #[derive(Clone)]
     struct PoolParity {
         create_count: Arc<AtomicU64>,
     }
 
-    impl Resource for PoolParity {
+    #[async_trait::async_trait]
+    impl Provider for PoolParity {
         type Config = PoolParityCfg;
-        type Runtime = u64;
-        type Lease = u64;
-        type Error = PoolParityErr;
+        type Instance = u64;
+        type Topology = Pooled<Self>;
 
         fn key() -> ResourceKey {
             nebula_core::resource_key!("test.ae4.pool")
@@ -348,11 +308,15 @@ mod pool_parity {
             &self,
             _config: &PoolParityCfg,
             _ctx: &ResourceContext,
-        ) -> Result<u64, PoolParityErr> {
+        ) -> Result<u64, Error> {
             Ok(self.create_count.fetch_add(1, Ordering::SeqCst))
         }
 
-        async fn destroy(&self, _runtime: u64) -> Result<(), PoolParityErr> {
+        async fn destroy(
+            &self,
+            _runtime: u64,
+            _cx: nebula_resource::TeardownCx,
+        ) -> Result<(), Error> {
             Ok(())
         }
 
@@ -361,17 +325,15 @@ mod pool_parity {
         }
     }
 
-    impl Pooled for PoolParity {
+    impl HasCredentialSlots for PoolParity {
+        fn credential_slot_epoch(&self) -> u64 {
+            0
+        }
+    }
+
+    impl PoolProvider for PoolParity {
         fn is_broken(&self, _runtime: &u64) -> BrokenCheck {
             BrokenCheck::Healthy
-        }
-
-        async fn recycle(
-            &self,
-            _runtime: &u64,
-            _metrics: &nebula_resource::topology::pooled::InstanceMetrics,
-        ) -> Result<RecycleDecision, PoolParityErr> {
-            Ok(RecycleDecision::Keep)
         }
     }
 
@@ -391,14 +353,13 @@ mod pool_parity {
                 config: PoolParityCfg,
                 scope: ScopeLevel::Global,
                 slot_identity: SlotIdentity::Unbound,
-                topology: TopologyRuntime::Pool(PoolRuntime::<PoolParity>::new(
+                topology: Pooled::<PoolParity>::new(
                     nebula_resource::topology::pooled::config::Config {
                         max_size: 4,
                         ..Default::default()
                     },
                     PoolParityCfg.fingerprint(),
-                )),
-                acquire: Manager::erased_acquire_pooled_for::<PoolParity>(),
+                ),
                 recovery_gate: None,
             })
             .expect("register pooled Global");
@@ -406,7 +367,7 @@ mod pool_parity {
         let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
         let key = PoolParity::key();
 
-        let erased = Manager::acquire_erased_for(
+        let erased = Manager::acquire_any(
             Arc::clone(&manager),
             &key,
             &ctx,
@@ -446,41 +407,41 @@ mod pool_parity {
     }
 }
 
-mod service_parity {
-    use nebula_resource::{
-        BoundedConfig,
-        topology::bounded::{Bounded, Unbounded},
-    };
-
+/// Resident erased dispatch parity: two erased acquires on the same row
+/// reuse the same runtime (no extra `Resource::create`).
+mod resident_erased_reuses_runtime {
     use super::*;
 
-    parity_error!(SvcParityErr);
-
     #[derive(Clone, Default)]
-    struct SvcParityCfg;
-    nebula_schema::impl_empty_has_schema!(SvcParityCfg);
-    impl ResourceConfig for SvcParityCfg {}
+    struct ResidentReuseCfg;
+    nebula_schema::impl_empty_has_schema!(ResidentReuseCfg);
+    impl ResourceConfig for ResidentReuseCfg {
+        fn fingerprint(&self) -> u64 {
+            // Unit struct: all instances identical — constant 0 is correct.
+            0
+        }
+    }
 
     #[derive(Clone)]
-    struct SvcParity {
+    struct ResidentReuse {
         create_count: Arc<AtomicU64>,
     }
 
-    impl Resource for SvcParity {
-        type Config = SvcParityCfg;
-        type Runtime = Arc<AtomicU64>;
-        type Lease = u64;
-        type Error = SvcParityErr;
+    #[async_trait::async_trait]
+    impl Provider for ResidentReuse {
+        type Config = ResidentReuseCfg;
+        type Instance = Arc<AtomicU64>;
+        type Topology = Resident<Self>;
 
         fn key() -> ResourceKey {
-            nebula_core::resource_key!("test.ae4.service")
+            nebula_core::resource_key!("test.ae4.resident_reuse")
         }
 
         async fn create(
             &self,
-            _config: &SvcParityCfg,
+            _config: &ResidentReuseCfg,
             _ctx: &ResourceContext,
-        ) -> Result<Arc<AtomicU64>, SvcParityErr> {
+        ) -> Result<Arc<AtomicU64>, Error> {
             self.create_count.fetch_add(1, Ordering::SeqCst);
             Ok(Arc::clone(&self.create_count))
         }
@@ -490,61 +451,48 @@ mod service_parity {
         }
     }
 
-    // Folds the former `Service` (Cloned token mode): `Cap = Unbounded`
-    // ⇒ owned handle, the blanket no-op `BoundedRelease` applies (a Cloned
-    // service writes no release boilerplate), `acquire_token` is now
-    // `acquire_one`.
-    impl Bounded for SvcParity {
-        type Cap = Unbounded;
-
-        async fn acquire_one(
-            &self,
-            runtime: &Arc<AtomicU64>,
-            _ctx: &ResourceContext,
-        ) -> Result<u64, SvcParityErr> {
-            Ok(runtime.load(Ordering::SeqCst))
+    impl HasCredentialSlots for ResidentReuse {
+        fn credential_slot_epoch(&self) -> u64 {
+            0
         }
     }
 
-    /// Service's runtime is supplied at registration and shared across
-    /// acquires (no `Resource::create` on the acquire path). Erased and
-    /// typed `acquire_service` must both route through the single
-    /// `run_acquire` to the SAME shared runtime — so both tokens read the
-    /// same runtime value and `Resource::create` is never called.
+    #[async_trait::async_trait]
+    impl ResidentProvider for ResidentReuse {
+        fn is_alive_sync(&self, _runtime: &Arc<AtomicU64>) -> bool {
+            true
+        }
+    }
+
+    /// Two erased acquires on a resident row produce exactly one
+    /// `Resource::create` and pointer-equal leases.
     #[tokio::test]
-    async fn service_erased_and_typed_share_one_run_acquire() {
+    async fn resident_erased_acquires_share_one_create() {
         let create_count = Arc::new(AtomicU64::new(0));
-        // Shared runtime carries a sentinel the token echoes, so an
-        // erased↔typed value match proves both reached the same runtime.
-        let shared_runtime = Arc::new(AtomicU64::new(0xA5A5));
         let manager = Arc::new(Manager::new());
-        // `BoundedRuntime::new` borrows the resource (for the optional
-        // keepalive driver), so the resource is bound before the runtime
-        // and moved into the spec after.
-        let resource = SvcParity {
-            create_count: Arc::clone(&create_count),
-        };
-        let bounded = BoundedRuntime::<SvcParity>::new(
-            &resource,
-            Arc::clone(&shared_runtime),
-            BoundedConfig::default(),
-        );
+        let rt = Resident::<ResidentReuse>::new(ResidentConfig::default());
         manager
             .register(RegistrationSpec {
-                resource,
-                config: SvcParityCfg,
+                resource: ResidentReuse {
+                    create_count: Arc::clone(&create_count),
+                },
+                config: ResidentReuseCfg,
                 scope: ScopeLevel::Global,
                 slot_identity: SlotIdentity::Unbound,
-                topology: TopologyRuntime::Bounded(bounded),
-                acquire: Manager::erased_acquire_bounded_for::<SvcParity>(),
+                topology: rt,
                 recovery_gate: None,
             })
-            .expect("register service Global");
+            .expect("ResidentReuse must register without error");
+        assert_eq!(
+            create_count.load(Ordering::SeqCst),
+            0,
+            "registration must not trigger Resource::create"
+        );
 
         let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
-        let key = SvcParity::key();
+        let key = ResidentReuse::key();
 
-        let erased = Manager::acquire_erased_for(
+        let g1 = Manager::acquire_any(
             Arc::clone(&manager),
             &key,
             &ctx,
@@ -552,137 +500,9 @@ mod service_parity {
             &SlotIdentity::Unbound,
         )
         .await
-        .expect("erased service acquire");
-        let erased_token: u64 = **erased
-            .downcast::<nebula_resource::ResourceGuard<SvcParity>>()
-            .expect("downcast service guard");
-        assert_eq!(erased_token, 0xA5A5, "erased token from shared runtime");
+        .expect("first erased resident acquire must succeed");
 
-        let typed = manager
-            .acquire_bounded::<SvcParity>(&ctx, &AcquireOptions::default())
-            .await
-            .expect("typed service acquire (single-tenant Global)");
-        let typed_token: u64 = *typed;
-        assert_eq!(
-            typed_token, erased_token,
-            "service runtime is shared: erased+typed over one Global row \
-             through the single run_acquire must read the SAME runtime"
-        );
-        assert_eq!(
-            create_count.load(Ordering::SeqCst),
-            0,
-            "service runtime is supplied at register; the acquire pipeline \
-             must never call Resource::create"
-        );
-    }
-}
-
-mod transport_parity {
-    use nebula_resource::{
-        BoundedConfig,
-        topology::bounded::{Bounded, BoundedRelease, Capped},
-    };
-
-    use super::*;
-
-    parity_error!(TportParityErr);
-
-    #[derive(Clone, Default)]
-    struct TportParityCfg;
-    nebula_schema::impl_empty_has_schema!(TportParityCfg);
-    impl ResourceConfig for TportParityCfg {}
-
-    #[derive(Clone)]
-    struct TportParity {
-        create_count: Arc<AtomicU64>,
-    }
-
-    impl Resource for TportParity {
-        type Config = TportParityCfg;
-        type Runtime = Arc<AtomicU64>;
-        type Lease = u64;
-        type Error = TportParityErr;
-
-        fn key() -> ResourceKey {
-            nebula_core::resource_key!("test.ae4.transport")
-        }
-
-        async fn create(
-            &self,
-            _config: &TportParityCfg,
-            _ctx: &ResourceContext,
-        ) -> Result<Arc<AtomicU64>, TportParityErr> {
-            self.create_count.fetch_add(1, Ordering::SeqCst);
-            Ok(Arc::clone(&self.create_count))
-        }
-
-        fn metadata() -> ResourceMetadata {
-            ResourceMetadata::from_key(&Self::key())
-        }
-    }
-
-    // Folds the former `Transport`: `open_session` is `acquire_one`,
-    // `close_session` is `release_one` (the old default close was a
-    // no-op `Ok`; `Capped` has no blanket release so it is supplied
-    // explicitly). The concurrency bound is the cap typestate; the
-    // parity test does not exercise it, so a generous `Capped<8>` stands
-    // in for the old `TransportConfig::default().max_sessions`.
-    impl Bounded for TportParity {
-        type Cap = Capped<8>;
-
-        async fn acquire_one(
-            &self,
-            transport: &Arc<AtomicU64>,
-            _ctx: &ResourceContext,
-        ) -> Result<u64, TportParityErr> {
-            Ok(transport.load(Ordering::SeqCst))
-        }
-    }
-
-    impl BoundedRelease for TportParity {
-        async fn release_one(
-            &self,
-            _transport: &Arc<AtomicU64>,
-            _session: u64,
-            _healthy: bool,
-        ) -> Result<(), TportParityErr> {
-            Ok(())
-        }
-    }
-
-    /// Transport's runtime is supplied at registration and shared across
-    /// sessions (no `Resource::create` on the acquire path). Erased and
-    /// typed `acquire_transport` must both route through the single
-    /// `run_acquire` to the SAME shared runtime.
-    #[tokio::test]
-    async fn transport_erased_and_typed_share_one_run_acquire() {
-        let create_count = Arc::new(AtomicU64::new(0));
-        let shared_runtime = Arc::new(AtomicU64::new(0x7E7E));
-        let manager = Arc::new(Manager::new());
-        let resource = TportParity {
-            create_count: Arc::clone(&create_count),
-        };
-        let bounded = BoundedRuntime::<TportParity>::new(
-            &resource,
-            Arc::clone(&shared_runtime),
-            BoundedConfig::default(),
-        );
-        manager
-            .register(RegistrationSpec {
-                resource,
-                config: TportParityCfg,
-                scope: ScopeLevel::Global,
-                slot_identity: SlotIdentity::Unbound,
-                topology: TopologyRuntime::Bounded(bounded),
-                acquire: Manager::erased_acquire_bounded_for::<TportParity>(),
-                recovery_gate: None,
-            })
-            .expect("register transport Global");
-
-        let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
-        let key = TportParity::key();
-
-        let erased = Manager::acquire_erased_for(
+        let g2 = Manager::acquire_any(
             Arc::clone(&manager),
             &key,
             &ctx,
@@ -690,136 +510,118 @@ mod transport_parity {
             &SlotIdentity::Unbound,
         )
         .await
-        .expect("erased transport acquire");
-        let erased_session: u64 = **erased
-            .downcast::<nebula_resource::ResourceGuard<TportParity>>()
-            .expect("downcast transport guard");
-        assert_eq!(erased_session, 0x7E7E, "erased session from shared runtime");
+        .expect("second erased resident acquire must succeed");
 
-        let typed = manager
-            .acquire_bounded::<TportParity>(&ctx, &AcquireOptions::default())
-            .await
-            .expect("typed transport acquire (single-tenant Global)");
-        let typed_session: u64 = *typed;
-        assert_eq!(
-            typed_session, erased_session,
-            "transport runtime is shared: erased+typed over one Global row \
-             through the single run_acquire must read the SAME runtime"
-        );
         assert_eq!(
             create_count.load(Ordering::SeqCst),
-            0,
-            "transport runtime is supplied at register; the acquire \
-             pipeline must never call Resource::create"
+            1,
+            "resident creates exactly once; both erased acquires share the same runtime"
         );
+        let p1 = Arc::as_ptr(
+            g1.downcast::<nebula_resource::ResourceGuard<ResidentReuse>>()
+                .expect("g1 must downcast to ResidentReuse guard")
+                .as_ref(),
+        );
+        let p2 = Arc::as_ptr(
+            g2.downcast::<nebula_resource::ResourceGuard<ResidentReuse>>()
+                .expect("g2 must downcast to ResidentReuse guard")
+                .as_ref(),
+        );
+        assert_eq!(p1, p2, "both erased resident leases must be pointer-equal");
     }
 }
 
-mod exclusive_parity {
-    use nebula_resource::{
-        BoundedConfig,
-        topology::bounded::{Bounded, BoundedRelease, Exclusive as ExclusiveCap},
-    };
-
+/// Pool erased dispatch parity: two concurrent erased pool acquires on the
+/// same row produce two distinct instances and two `Resource::create` calls.
+mod pool_erased_distinct_instances {
     use super::*;
 
-    parity_error!(ExclParityErr);
-
     #[derive(Clone, Default)]
-    struct ExclParityCfg;
-    nebula_schema::impl_empty_has_schema!(ExclParityCfg);
-    impl ResourceConfig for ExclParityCfg {}
+    struct PoolErasedCfg;
+    nebula_schema::impl_empty_has_schema!(PoolErasedCfg);
+    impl ResourceConfig for PoolErasedCfg {
+        fn fingerprint(&self) -> u64 {
+            // Unit struct: all instances identical — constant 0 is correct.
+            0
+        }
+    }
 
     #[derive(Clone)]
-    struct ExclParity {
+    struct PoolErased {
         create_count: Arc<AtomicU64>,
     }
 
-    impl Resource for ExclParity {
-        type Config = ExclParityCfg;
-        type Runtime = u64;
-        type Lease = u64;
-        type Error = ExclParityErr;
+    #[async_trait::async_trait]
+    impl Provider for PoolErased {
+        type Config = PoolErasedCfg;
+        type Instance = u64;
+        type Topology = Pooled<Self>;
 
         fn key() -> ResourceKey {
-            nebula_core::resource_key!("test.ae4.exclusive")
+            nebula_core::resource_key!("test.ae4.pool_erased")
         }
 
         async fn create(
             &self,
-            _config: &ExclParityCfg,
+            _config: &PoolErasedCfg,
             _ctx: &ResourceContext,
-        ) -> Result<u64, ExclParityErr> {
+        ) -> Result<u64, Error> {
             Ok(self.create_count.fetch_add(1, Ordering::SeqCst))
         }
 
-        async fn destroy(&self, _runtime: u64) -> Result<(), ExclParityErr> {
-            Ok(())
-        }
-
         fn metadata() -> ResourceMetadata {
             ResourceMetadata::from_key(&Self::key())
         }
     }
 
-    // Folds the former `Exclusive`: the old `ExclusiveRuntime` cloned the
-    // shared runtime into the lease, so `acquire_one` returns `*runtime`;
-    // the old default `reset` was a no-op `Ok`, so `release_one` (the
-    // reset) is `Ok(())`. `Cap = Exclusive` ⇒ Semaphore(1),
-    // permit-held-until-`release_one` (#384).
-    impl Bounded for ExclParity {
-        type Cap = ExclusiveCap;
-
-        async fn acquire_one(
-            &self,
-            runtime: &u64,
-            _ctx: &ResourceContext,
-        ) -> Result<u64, ExclParityErr> {
-            Ok(*runtime)
+    impl HasCredentialSlots for PoolErased {
+        fn credential_slot_epoch(&self) -> u64 {
+            0
         }
     }
 
-    impl BoundedRelease for ExclParity {
-        async fn release_one(
-            &self,
-            _runtime: &u64,
-            _lease: u64,
-            _healthy: bool,
-        ) -> Result<(), ExclParityErr> {
-            Ok(())
+    impl PoolProvider for PoolErased {
+        fn is_broken(&self, _runtime: &u64) -> nebula_resource::topology::pooled::BrokenCheck {
+            nebula_resource::topology::pooled::BrokenCheck::Healthy
         }
     }
 
-    /// Exclusive's runtime is supplied at registration and handed to one
-    /// caller at a time (no `Resource::create` on the acquire path). The
-    /// erased acquire then (after its guard drops + `reset`) the typed
-    /// `acquire_exclusive` must both route through the single `run_acquire`
-    /// to the SAME shared runtime; permit-held-until-`reset` preserved.
+    /// Two concurrent erased pool acquires produce two distinct instances.
     #[tokio::test]
-    async fn exclusive_erased_and_typed_share_one_run_acquire() {
+    async fn pool_erased_acquires_produce_distinct_instances() {
         let create_count = Arc::new(AtomicU64::new(0));
         let manager = Arc::new(Manager::new());
-        let resource = ExclParity {
-            create_count: Arc::clone(&create_count),
-        };
-        let bounded =
-            BoundedRuntime::<ExclParity>::new(&resource, 0xE0E0u64, BoundedConfig::default());
+        let pool_rt = Pooled::<PoolErased>::try_new(
+            nebula_resource::topology::pooled::config::Config {
+                min_size: 0,
+                max_size: 4,
+                ..Default::default()
+            },
+            0,
+        )
+        .expect("PoolRuntime must construct with valid min/max");
         manager
             .register(RegistrationSpec {
-                resource,
-                config: ExclParityCfg,
+                resource: PoolErased {
+                    create_count: Arc::clone(&create_count),
+                },
+                config: PoolErasedCfg,
                 scope: ScopeLevel::Global,
                 slot_identity: SlotIdentity::Unbound,
-                topology: TopologyRuntime::Bounded(bounded),
-                acquire: Manager::erased_acquire_bounded_for::<ExclParity>(),
+                topology: pool_rt,
                 recovery_gate: None,
             })
-            .expect("register exclusive Global");
+            .expect("PoolErased must register without error");
 
         let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
-        let key = ExclParity::key();
+        let key = PoolErased::key();
+        assert_eq!(
+            create_count.load(Ordering::SeqCst),
+            0,
+            "registration must not trigger Resource::create for pool topology"
+        );
 
-        let erased = Manager::acquire_erased_for(
+        let g1 = Manager::acquire_any(
             Arc::clone(&manager),
             &key,
             &ctx,
@@ -827,32 +629,71 @@ mod exclusive_parity {
             &SlotIdentity::Unbound,
         )
         .await
-        .expect("erased exclusive acquire");
-        let erased_lease: u64 = **erased
-            .downcast::<nebula_resource::ResourceGuard<ExclParity>>()
-            .expect("downcast exclusive guard");
-        assert_eq!(erased_lease, 0xE0E0, "erased lease from shared runtime");
-        // Release the exclusive permit before the typed acquire (one caller
-        // at a time); reset runs before the next caller is admitted.
-        // Re-`downcast` would move the guard; instead drop the typed guard
-        // explicitly below — the erased box was already consumed above.
+        .expect("first erased pool acquire must succeed");
+        let id1: u64 = **g1
+            .downcast::<nebula_resource::ResourceGuard<PoolErased>>()
+            .expect("g1 must downcast to PoolErased guard");
 
-        let typed = manager
-            .acquire_bounded::<ExclParity>(&ctx, &AcquireOptions::default())
-            .await
-            .expect("typed exclusive acquire (single-tenant Global)");
-        let typed_lease: u64 = *typed;
-        assert_eq!(
-            typed_lease, erased_lease,
-            "exclusive runtime is shared: erased+typed over one Global row \
-             through the single run_acquire must read the SAME runtime"
+        let g2 = Manager::acquire_any(
+            Arc::clone(&manager),
+            &key,
+            &ctx,
+            &AcquireOptions::default(),
+            &SlotIdentity::Unbound,
+        )
+        .await
+        .expect("second erased pool acquire must succeed");
+        let id2: u64 = **g2
+            .downcast::<nebula_resource::ResourceGuard<PoolErased>>()
+            .expect("g2 must downcast to PoolErased guard");
+
+        assert_ne!(
+            id1, id2,
+            "pool issues distinct instances per concurrent checkout"
         );
         assert_eq!(
             create_count.load(Ordering::SeqCst),
-            0,
-            "exclusive runtime is supplied at register; the acquire \
-             pipeline must never call Resource::create"
+            2,
+            "pool drove two Resource::create calls for two concurrent checkouts"
         );
-        drop(typed);
+    }
+}
+
+/// `acquire_any` on an unregistered key returns `NotFound`, not a panic.
+mod erased_acquire_not_found {
+    use nebula_resource::error::ErrorKind;
+
+    use super::*;
+
+    /// Erased acquire on an unknown key must return `ErrorKind::NotFound`.
+    #[tokio::test]
+    async fn erased_acquire_returns_not_found_for_unknown_key() {
+        let manager = Arc::new(Manager::new());
+        let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
+        let unknown = nebula_core::resource_key!("test.ae4.unknown_key");
+
+        let result = Manager::acquire_any(
+            Arc::clone(&manager),
+            &unknown,
+            &ctx,
+            &AcquireOptions::default(),
+            &SlotIdentity::Unbound,
+        )
+        .await;
+
+        assert!(
+            result.is_err(),
+            "acquire on unregistered key must return Err, not Ok"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err.kind(), ErrorKind::NotFound),
+            "acquire on unregistered key must return NotFound, got {:?}",
+            err.kind()
+        );
+        assert!(
+            manager.keys().is_empty(),
+            "manager must remain empty — no side-effects from a failed erased acquire"
+        );
     }
 }

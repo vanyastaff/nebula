@@ -159,7 +159,7 @@ impl ResourceFanoutIndex {
     /// `entry(cid)`, so a concurrent `bind` / `unbind_staged_entry` for the
     /// same `cid` cannot interleave between them. This closes the
     /// stage-then-roll-back TOCTOU in
-    /// `ResourceRegistrarRegistry::register_and_bind`:
+    /// `ResourceActivatorRegistry::register_and_bind`:
     /// a failing registration releases only its own reference and can
     /// never delete a row a concurrent successful registration still holds.
     pub fn bind(
@@ -252,7 +252,7 @@ impl ResourceFanoutIndex {
     ///
     /// It is the compensation primitive for the *stage-bind-before-
     /// register-then-roll-back-on-failure* ordering in
-    /// `ResourceRegistrarRegistry::register_and_bind`: it **releases one
+    /// `ResourceActivatorRegistry::register_and_bind`: it **releases one
     /// reference** taken by [`bind`](Self::bind) and removes the row only
     /// when the last referent is gone. A registration that fails after
     /// staging therefore drops just its own reference; a concurrent (or
@@ -887,17 +887,14 @@ mod tests {
         };
         use std::time::Duration;
 
-        use nebula_core::{OrgId, ResourceKey, ScopeLevel, resource_key, scope::Scope};
-        use tokio_util::sync::CancellationToken;
-
         use crate::{
-            AcquireOptions, Manager, ResidentConfig, Resource, ResourceConfig, ResourceContext,
-            error::Error as ResourceError,
-            resource::ResourceMetadata,
-            runtime::{TopologyRuntime, resident::ResidentRuntime},
-            topology::resident::Resident,
+            AcquireOptions, Manager, Provider, Resident, ResidentConfig, ResourceConfig,
+            ResourceContext, error::Error as ResourceError, resource::ResourceMetadata,
+            topology::resident::ResidentProvider,
         };
+        use nebula_core::{OrgId, ResourceKey, ScopeLevel, resource_key, scope::Scope};
         use nebula_credential::CredentialId;
+        use tokio_util::sync::CancellationToken;
 
         use super::super::*;
 
@@ -965,6 +962,11 @@ mod tests {
             fn validate(&self) -> Result<(), ResourceError> {
                 Ok(())
             }
+
+            fn fingerprint(&self) -> u64 {
+                // Unit struct: all instances identical — constant 0 is correct.
+                0
+            }
         }
 
         #[derive(Clone)]
@@ -976,11 +978,11 @@ mod tests {
             ledger: Ledger,
         }
 
-        impl Resource for CtlResource {
+        #[async_trait::async_trait]
+        impl Provider for CtlResource {
             type Config = Cfg;
-            type Runtime = Runtime;
-            type Lease = Runtime;
-            type Error = HookError;
+            type Instance = Runtime;
+            type Topology = Resident<Self>;
 
             fn key() -> ResourceKey {
                 resource_key!("fanout-ctl")
@@ -990,7 +992,7 @@ mod tests {
                 &self,
                 _config: &Cfg,
                 _ctx: &ResourceContext,
-            ) -> Result<Runtime, HookError> {
+            ) -> Result<Runtime, ResourceError> {
                 Ok(Runtime)
             }
 
@@ -998,11 +1000,11 @@ mod tests {
                 &self,
                 _slot: &str,
                 _rt: &Runtime,
-            ) -> Result<(), HookError> {
+            ) -> Result<(), ResourceError> {
                 self.ledger.refresh_entered.fetch_add(1, Ordering::SeqCst);
                 match self.ledger.behaviour_for(&self.identity) {
                     Behaviour::FastOk => Ok(()),
-                    Behaviour::FastErr => Err(HookError("refresh boom".to_owned())),
+                    Behaviour::FastErr => Err(HookError("refresh boom".to_owned()).into()),
                     Behaviour::Hang => {
                         // Never completes; the fan-out's per-resource
                         // timeout must elapse and record TimedOut without
@@ -1019,11 +1021,11 @@ mod tests {
                 &self,
                 _slot: &str,
                 _rt: &Runtime,
-            ) -> Result<(), HookError> {
+            ) -> Result<(), ResourceError> {
                 self.ledger.revoke_entered.fetch_add(1, Ordering::SeqCst);
                 match self.ledger.behaviour_for(&self.identity) {
                     Behaviour::FastOk => Ok(()),
-                    Behaviour::FastErr => Err(HookError("revoke boom".to_owned())),
+                    Behaviour::FastErr => Err(HookError("revoke boom".to_owned()).into()),
                     Behaviour::Hang => {
                         std::future::pending::<()>().await;
                         // guard-justified: `std::future::pending()` never
@@ -1038,7 +1040,14 @@ mod tests {
             }
         }
 
-        impl Resident for CtlResource {
+        impl crate::HasCredentialSlots for CtlResource {
+            fn credential_slot_epoch(&self) -> u64 {
+                0
+            }
+        }
+
+        #[async_trait::async_trait]
+        impl ResidentProvider for CtlResource {
             fn is_alive_sync(&self, _rt: &Runtime) -> bool {
                 true
             }
@@ -1077,10 +1086,7 @@ mod tests {
                     config: Cfg,
                     scope: scope.clone(),
                     slot_identity: id.clone(),
-                    topology: TopologyRuntime::Resident(ResidentRuntime::<CtlResource>::new(
-                        ResidentConfig::default(),
-                    )),
-                    acquire: Manager::erased_acquire_resident_for::<CtlResource>(),
+                    topology: Resident::<CtlResource>::new(ResidentConfig::default()),
                     recovery_gate: None,
                 })
                 .expect("register tenant");

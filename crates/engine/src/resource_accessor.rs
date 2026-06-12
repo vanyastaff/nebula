@@ -18,7 +18,7 @@ type BoxFut<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 ///
 /// Wraps an [`Arc<nebula_resource::Manager>`] and dispatches `acquire_any` /
 /// `try_acquire_any` through
-/// [`Manager::acquire_erased_for`](nebula_resource::Manager::acquire_erased_for)
+/// [`Manager::acquire_any`](nebula_resource::Manager::acquire_any)
 /// using the execution scope and optional per-key slot identities recorded
 /// at activation.
 pub struct EngineResourceAccessor {
@@ -110,7 +110,7 @@ impl ResourceAccessor for EngineResourceAccessor {
         let slot_identity = self.slot_identity_for(&key);
         let options = AcquireOptions::default();
         Box::pin(async move {
-            Manager::acquire_erased_for(manager, &key, &ctx, &options, &slot_identity)
+            Manager::acquire_any(manager, &key, &ctx, &options, &slot_identity)
                 .await
                 .map_err(|e| Self::map_err(&key, e))
         })
@@ -126,7 +126,7 @@ impl ResourceAccessor for EngineResourceAccessor {
         let slot_identity = self.slot_identity_for(&key);
         let options = AcquireOptions::default();
         Box::pin(async move {
-            match Manager::acquire_erased_for(manager, &key, &ctx, &options, &slot_identity).await {
+            match Manager::acquire_any(manager, &key, &ctx, &options, &slot_identity).await {
                 Ok(value) => Ok(Some(value)),
                 Err(e) if matches!(e.kind(), ErrorKind::NotFound) => Ok(None),
                 Err(e) => Err(Self::map_err(&key, e)),
@@ -166,11 +166,11 @@ mod tests {
     };
 
     use nebula_resource::{
-        Manager, RegistrationSpec, ResidentConfig, ResourceContext, ScopeLevel, SlotIdentity,
+        Manager, RegistrationSpec, Resident, ResidentConfig, ResourceContext, ScopeLevel,
+        SlotIdentity,
         error::Error,
-        resource::{Resource, ResourceConfig, ResourceMetadata},
-        runtime::{TopologyRuntime, resident::ResidentRuntime},
-        topology::resident::Resident,
+        resource::{Provider, ResourceConfig, ResourceMetadata},
+        topology::resident::ResidentProvider,
     };
 
     use super::*;
@@ -197,16 +197,21 @@ mod tests {
 
     nebula_schema::impl_empty_has_schema!(AccConfig);
 
-    impl ResourceConfig for AccConfig {}
+    impl ResourceConfig for AccConfig {
+        fn fingerprint(&self) -> u64 {
+            // Unit struct: all instances identical — constant 0 is correct.
+            0
+        }
+    }
 
     #[derive(Clone)]
     struct AccResource;
 
-    impl Resource for AccResource {
+    #[async_trait::async_trait]
+    impl Provider for AccResource {
         type Config = AccConfig;
-        type Runtime = Arc<AtomicU64>;
-        type Lease = Arc<AtomicU64>;
-        type Error = AccError;
+        type Instance = Arc<AtomicU64>;
+        type Topology = Resident<Self>;
 
         fn key() -> ResourceKey {
             ResourceKey::new("test.engine_accessor.acc").expect("valid resource key in test")
@@ -216,7 +221,7 @@ mod tests {
             &self,
             _config: &AccConfig,
             _ctx: &ResourceContext,
-        ) -> Result<Arc<AtomicU64>, AccError> {
+        ) -> Result<Arc<AtomicU64>, Error> {
             Ok(Arc::new(AtomicU64::new(42)))
         }
 
@@ -225,7 +230,14 @@ mod tests {
         }
     }
 
-    impl Resident for AccResource {
+    impl nebula_resource::HasCredentialSlots for AccResource {
+        fn credential_slot_epoch(&self) -> u64 {
+            0
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ResidentProvider for AccResource {
         fn is_alive_sync(&self, _runtime: &Arc<AtomicU64>) -> bool {
             true
         }
@@ -271,10 +283,7 @@ mod tests {
                 config: AccConfig,
                 scope: ScopeLevel::Global,
                 slot_identity: SlotIdentity::Unbound,
-                topology: TopologyRuntime::Resident(ResidentRuntime::<AccResource>::new(
-                    ResidentConfig::default(),
-                )),
-                acquire: Manager::erased_acquire_resident_for::<AccResource>(),
+                topology: Resident::<AccResource>::new(ResidentConfig::default()),
                 recovery_gate: None,
             })
             .expect("register");
@@ -310,10 +319,7 @@ mod tests {
                 config: AccConfig,
                 scope: ScopeLevel::Global,
                 slot_identity: bound.clone(),
-                topology: TopologyRuntime::Resident(ResidentRuntime::<AccResource>::new(
-                    ResidentConfig::default(),
-                )),
-                acquire: Manager::erased_acquire_resident_for::<AccResource>(),
+                topology: Resident::<AccResource>::new(ResidentConfig::default()),
                 recovery_gate: None,
             })
             .expect("register cred-bound row");

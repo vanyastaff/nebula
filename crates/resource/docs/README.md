@@ -16,12 +16,11 @@ event streaming.
 
 | Type | Role |
 |------|------|
-| [`Resource`] | Central trait — 4 associated types + lifecycle methods (`create`, `check`, `shutdown`, `destroy`) + slot-rotation hooks (`on_credential_refresh`, `on_credential_revoke`) |
+| [`Resource`] | Central trait — 2 associated types (Config, Runtime) + lifecycle methods (`create`, `check`, `shutdown`, `destroy`) + slot-rotation hooks (`on_credential_refresh`, `on_credential_revoke`) |
 | [`Pooled`] | Topology trait — N interchangeable instances with checkout/recycle |
 | [`Resident`] | Topology trait — one shared instance cloned on each acquire |
-| [`Bounded`] | Topology trait — parameterised on a sealed `Cap` typestate: `Unbounded`, `Capped<N>`, `Exclusive` |
 | [`Manager`] | Central registry — single `register(RegistrationSpec { … })` funnel, typed acquire dispatch, slot rotation, graceful shutdown |
-| [`ResourceGuard`] | RAII lease guard; releases on drop, tainting supported |
+| [`ResourceGuard`] | RAII runtime guard; derefs to `R::Runtime`, releases on drop, tainting supported |
 | [`ResourceContext`] | Execution context — scope, cancellation, capability traits |
 | [`Error`] / [`ErrorKind`] | Unified error with retryability, scope, and optional retry-after hint |
 
@@ -32,15 +31,7 @@ event streaming.
 | Topology | Use when | Example |
 |----------|----------|---------|
 | `Pooled` | N interchangeable connections; checkout/recycle | PostgreSQL, Redis |
-| `Resident` | One shared object; cheap to `Arc::clone` for each caller | `reqwest::Client`, in-memory cache |
-| `Bounded<Unbounded>` | Long-lived runtime issuing short-lived tokens | OAuth client |
-| `Bounded<Capped<N>>` | Multiplexed sessions over one shared connection | gRPC channel, AMQP |
-| `Bounded<Exclusive>` | One caller at a time, semaphore(1) + reset-on-release | File lock, USB-serial |
-
-The `Bounded` topology folded the former standalone `Service` / `Transport` /
-`Exclusive` traits into one runtime; the `Cap` typestate selects concurrency
-arity at **compile time** — using `BoundedRelease` against `Unbounded`, or
-omitting it for `Capped` / `Exclusive`, is a build error.
+| `Resident` | One shared object; cheap to `Arc::clone` for each caller | `reqwest::Client`, in-memory cache; OAuth/token-gated SDK clients |
 
 > **Background workers and event sources** live in
 > [`nebula-engine`](https://docs.rs/nebula-engine) (`nebula_engine::daemon::*`).
@@ -88,8 +79,6 @@ struct HttpResource;
 impl Resource for HttpResource {
     type Config = HttpConfig;
     type Runtime = HttpRuntime;
-    type Lease = HttpRuntime;   // Pooled / Resident: Lease == Runtime
-    type Error = Error;
 
     fn key() -> ResourceKey { resource_key!("http.client") }
 
@@ -245,9 +234,7 @@ Supported kinds: `transient`, `permanent`, `exhausted` (with optional
 |---------------------------------------------|---------------------------------------------------------------|
 | Bounded connection pooling                  | `RegistrationSpec { topology: TopologyRuntime::Pool(_), .. }` |
 | Shared singleton with clone-on-acquire      | `RegistrationSpec { topology: TopologyRuntime::Resident(_), .. }` |
-| Long-lived runtime, short-lived tokens      | `RegistrationSpec { topology: TopologyRuntime::Bounded(_), .. }` with `Cap = Unbounded` |
-| Multiplexed sessions over shared transport  | `Cap = Capped<N>` + `impl BoundedRelease`                     |
-| Single-caller serialized access             | `Cap = Exclusive` + `impl BoundedRelease`                     |
+| Long-lived runtime, short-lived tokens      | `RegistrationSpec { topology: TopologyRuntime::Resident(_), .. }` (token cached inside `Runtime`, refreshed via `on_credential_refresh`) |
 | Fast-fail during backend recovery           | `RegistrationSpec::recovery_gate: Some(Arc<RecoveryGate>)`    |
 | Config hot-reload (fingerprint-based)       | Implement `ResourceConfig::fingerprint`; call `Manager::reload_config` |
 | Per-tenant credential isolation             | Build `SlotIdentity::from_bindings(…)` and acquire via `acquire_<topo>_for_identity` |
@@ -267,7 +254,7 @@ the create step.
 crates/resource/
 ├── src/
 │   ├── lib.rs              re-exports, crate-level docs
-│   ├── resource.rs         Resource trait (4 associated types + lifecycle + slot-rotation hooks)
+│   ├── resource.rs         Resource trait (Config/Runtime assoc types + lifecycle + slot-rotation hooks)
 │   ├── slot.rs             SlotCell — public, generation-stamped, lock-free credential-slot holder
 │   ├── cell.rs             internal lock-free cell (Resident runtime; not re-exported)
 │   ├── manager/
@@ -288,7 +275,7 @@ crates/resource/
 │   ├── release_queue.rs    ReleaseQueue — background async cleanup workers
 │   ├── reload.rs           ReloadOutcome (NoChange / SwappedImmediately)
 │   ├── resource_ref.rs     ResourceRef — lazy reference type for action contexts
-│   ├── topology_tag.rs     TopologyTag — Pool / Resident / Bounded discriminant
+│   ├── topology_tag.rs     TopologyTag — Pool / Resident discriminant
 │   ├── ext.rs              HasResourcesExt (sealed)
 │   ├── recovery/           RecoveryGate, RecoveryTicket, RecoveryWaiter, GateState
 │   ├── runtime/            per-topology runtime wrappers + ManagedResource
@@ -310,7 +297,7 @@ crates/resource/
 | Document                                          | Contents                                                                 |
 |---------------------------------------------------|--------------------------------------------------------------------------|
 | [`api-reference.md`](api-reference.md)            | Generated-rustdoc pointer + prose surface anchor                         |
-| [`topology-reference.md`](topology-reference.md)  | Topology selection guide + minimal skeletons (Pool / Resident / Bounded) |
+| [`topology-reference.md`](topology-reference.md)  | Topology selection guide + minimal skeletons (Pool / Resident) |
 | [`adapters.md`](adapters.md)                      | Writing a `Resource` adapter crate                                       |
 | [`pooling.md`](pooling.md)                        | `PoolConfig`, recycle, broken-check, max-lifetime                        |
 | [`events.md`](events.md)                          | `ResourceEvent` catalog + `subscribe_events` patterns                    |

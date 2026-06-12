@@ -2,7 +2,7 @@
 //! lookup + taint helpers, the per-topology dispatch closures, the shared
 //! `run_acquire` pipeline, and pool diagnostics/warmup.
 
-use std::{future::Future, sync::Arc, time::Instant};
+use std::{any::Any, future::Future, sync::Arc, time::Instant};
 
 use nebula_core::{Context, ResourceKey, ScopeLevel};
 
@@ -11,66 +11,18 @@ use crate::{
     context::ResourceContext,
     error::Error,
     events::ResourceEvent,
-    manager::ErasedAcquireFn,
+    hook_guard::{DEFAULT_AUTHOR_HOOK_CEILING, HookFault, guard_author_hook},
     options::AcquireOptions,
-    resource::Resource,
-    runtime::{TopologyRuntime, managed::ManagedResource},
+    registry::ManagedHandle,
+    resource::{HasCredentialSlots, Provider},
+    runtime::managed::ManagedResource,
+    topology::{PoolProvider, ResidentProvider, Topology},
 };
 
 impl Manager {
-    /// Erased acquire hook for a resident row.
-    ///
-    /// Takes **no** slot-identity argument: the single-walk acquire
-    /// resolution pins the row by the *caller's* runtime slot identity, so
-    /// the registration-time identity never parameterised the hook. The
-    /// structural register path ([`register_resolved`](Self::register_resolved))
-    /// hands this hook in by value with no identity threading.
-    #[must_use]
-    pub fn erased_acquire_resident_for<R>() -> ErasedAcquireFn
-    where
-        R: crate::topology::resident::Resident + Resource + Send + Sync + 'static,
-        R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
-        R::Lease: Clone + Send + 'static,
-    {
-        super::acquire_dispatch::erased_acquire_resident::<R>()
-    }
-
-    /// Erased acquire hook for a pooled row, structural-identity form.
-    ///
-    /// See [`erased_acquire_resident_for`](Self::erased_acquire_resident_for)
-    /// — no slot-identity argument; the single-walk resolution pins the row.
-    #[must_use]
-    pub fn erased_acquire_pooled_for<R>() -> ErasedAcquireFn
-    where
-        R: crate::topology::pooled::Pooled + Clone + Resource + Send + Sync + 'static,
-        R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
-        R::Lease: Into<R::Runtime> + Send + 'static,
-    {
-        super::acquire_dispatch::erased_acquire_pooled::<R>()
-    }
-
-    /// Erased acquire hook for a [`Bounded`](crate::topology::bounded::Bounded)
-    /// row.
-    ///
-    /// The registration-time hook for a `TopologyRuntime::Bounded` row. No
-    /// slot-identity argument — the single-walk acquire resolution pins
-    /// the row by the caller's runtime slot identity, and the release
-    /// shape is the resource's [`Cap`](crate::topology::bounded::Bounded::Cap)
-    /// typestate (resolved inside the pipeline), not a registration
-    /// parameter.
-    #[must_use]
-    pub fn erased_acquire_bounded_for<R>() -> ErasedAcquireFn
-    where
-        R: crate::topology::bounded::BoundedRelease + Clone + Resource + Send + Sync + 'static,
-        R::Runtime: Clone + Send + Sync + 'static,
-        R::Lease: Send + 'static,
-    {
-        super::acquire_dispatch::erased_acquire_bounded::<R>()
-    }
-
     /// Typed acquire lookup walking [`scope_levels_for_acquire`](crate::context::scope_levels_for_acquire)
     /// on the context scope bag, then [`taint_gate`](Self::taint_gate).
-    pub(crate) fn lookup_for_acquire_scope<R: Resource>(
+    pub(crate) fn lookup_for_acquire_scope<R: Provider>(
         &self,
         ctx: &ResourceContext,
     ) -> Result<Arc<ManagedResource<R>>, Error> {
@@ -83,7 +35,7 @@ impl Manager {
     /// [`lookup_for_acquire_scope`](Self::lookup_for_acquire_scope) pinned to
     /// the **collision-free structural** resolved per-slot credential
     /// identity. The pinned lookup is 2-variant (no `Ambiguous`).
-    fn lookup_for_acquire_with_identity<R: Resource>(
+    fn lookup_for_acquire_with_identity<R: Provider>(
         &self,
         ctx: &ResourceContext,
         slot_identity: &crate::dedup::SlotIdentity,
@@ -93,31 +45,6 @@ impl Manager {
             self.registry
                 .get_typed_for_acquire::<R>(ctx.scope(), slot_identity),
         )?;
-        Self::taint_gate::<R>(managed)
-    }
-
-    /// Downcasts the row already resolved by
-    /// [`Registry::get_acquire_for`](crate::registry::Registry::get_acquire_for)'s
-    /// single scope walk, then applies the shared shutdown + taint tail.
-    ///
-    /// The erased-acquire path threads the resolved
-    /// `Arc<dyn AnyManagedResource>` out of that one walk (via
-    /// [`AcquireLookupOutcome::Found`](crate::registry::AcquireLookupOutcome::Found)),
-    /// so the typed handle is recovered by a **downcast of that exact
-    /// row** — not a second `DashMap` walk at the matched scope. The
-    /// resolved row is, by construction, the `ManagedResource<R>` the
-    /// `erased_acquire_*::<R>` hook was registered alongside, so the
-    /// downcast yields the identical handle the prior pinned re-walk
-    /// would have. Failure mapping (`NotFound` on a type mismatch) and
-    /// the [`taint_gate`](Self::taint_gate) tail are byte-identical to
-    /// the replaced pinned-lookup path.
-    fn downcast_resolved_row<R: Resource>(
-        &self,
-        managed: Arc<dyn crate::registry::AnyManagedResource>,
-    ) -> Result<Arc<ManagedResource<R>>, Error> {
-        use crate::registry::PinnedLookup;
-        self.shutdown_guard()?;
-        let managed = Self::resolve_typed_pinned::<R>(PinnedLookup::Found(managed))?;
         Self::taint_gate::<R>(managed)
     }
 
@@ -134,7 +61,7 @@ impl Manager {
     /// Taint rejects with [`ErrorKind::Revoked`](crate::error::ErrorKind::Revoked),
     /// distinct from [`ErrorKind::Cancelled`](crate::error::ErrorKind::Cancelled)
     /// raised by [`Self::shutdown_guard`].
-    fn taint_gate<R: Resource>(
+    pub(crate) fn taint_gate<R: Provider>(
         managed: Arc<ManagedResource<R>>,
     ) -> Result<Arc<ManagedResource<R>>, Error> {
         if managed.is_tainted() {
@@ -174,7 +101,7 @@ impl Manager {
     /// invariant. Taint maps to `Revoked` → `ErrorCategory::Unavailable`
     /// (unchanged from the gate); shutdown maps to `Cancelled` (unchanged
     /// from `lookup`'s Defense A), so neither caller-facing category moves.
-    fn reject_if_tainted_or_shutting_down_post_count<R: Resource>(
+    fn reject_if_tainted_or_shutting_down_post_count<R: Provider>(
         &self,
         managed: &Arc<ManagedResource<R>>,
     ) -> Result<(), Error> {
@@ -192,7 +119,7 @@ impl Manager {
     /// The single typed error both taint checks return — keeps the message
     /// and `Revoked` (→ `Unavailable`) classification identical at the
     /// pre-count gate and the post-count re-check.
-    fn tainted_error<R: Resource>() -> Error {
+    fn tainted_error<R: Provider>() -> Error {
         Error::revoked(format!(
             "{}: resource tainted by credential revoke — new acquires rejected",
             R::key()
@@ -200,30 +127,26 @@ impl Manager {
         .with_resource_key(R::key())
     }
 
-    /// Acquires a [`crate::guard::ResourceGuard`] through the registry row's
-    /// erased dispatch hook, keyed by the **collision-free structural**
-    /// resolved-credential identity (key + scope + slot identity).
+    /// Acquires through the registry row's [`ManagedHandle::acquire`] method,
+    /// keyed by the **collision-free structural** resolved-credential identity
+    /// (key + scope + slot identity).
     ///
-    /// This is the object-safe engine/action-accessor acquire entry used
-    /// when the concrete resource type `R` is not known at compile time: the
-    /// accessor holds the structural
-    /// [`SlotIdentity`](crate::dedup::SlotIdentity) recorded for the key at
-    /// activation and passes it here, so the single scope walk resolves the
-    /// *exact* resolved row (no digest aliasing). The resolved row is
-    /// downcast by the hook with no second registry walk.
+    /// This is the object-safe engine/action-accessor acquire entry used when
+    /// the concrete resource type `R` is not known at compile time. The single
+    /// scope walk resolves the exact row; `ManagedHandle::acquire` dispatches
+    /// on topology internally with no second registry walk.
     ///
     /// # Errors
     ///
     /// Same as the typed `acquire_*_for_identity` family: not found,
-    /// ambiguous (when `slot_identity` does not match a row), shutdown,
-    /// taint, topology, and acquire-time failures.
-    pub async fn acquire_erased_for(
+    /// ambiguous, shutdown, taint, topology, and acquire-time failures.
+    pub async fn acquire_any(
         manager: Arc<Self>,
         key: &ResourceKey,
         ctx: &ResourceContext,
         options: &AcquireOptions,
         slot_identity: &crate::dedup::SlotIdentity,
-    ) -> Result<Box<dyn std::any::Any + Send + Sync>, Error> {
+    ) -> Result<Box<dyn Any + Send + Sync>, Error> {
         use crate::registry::AcquireLookupOutcome;
 
         manager.shutdown_guard()?;
@@ -231,21 +154,39 @@ impl Manager {
             target: "nebula.resource",
             %key,
             ?slot_identity,
-            "acquire_erased: resolving registry hook"
+            "acquire_any: resolving registry row"
         );
         match manager
             .registry
             .get_acquire_for(key, ctx.scope(), slot_identity)
         {
-            AcquireLookupOutcome::Found { acquire, managed } => {
-                // `managed` is the row this single scope walk already
-                // resolved; the hook downcasts it to the concrete
-                // `ManagedResource<R>` instead of re-walking the registry
-                // at the matched scope.
-                acquire(manager, ctx.clone_for_acquire(), options.clone(), managed).await
+            AcquireLookupOutcome::Found { managed } => {
+                // Sync capacity gate: rejects before the async acquire when the
+                // topology is saturated, warming, recovering, or tainted.
+                // Mapped to the typed `Error` kind the engine uses for
+                // park/reschedule decisions (`Backpressure`, `Transient`,
+                // `Revoked`). The taint-gate and shutdown-guard run first
+                // (above); this gate is the topology-level admission check.
+                if let Err(unavailable) = managed.try_reserve_gate() {
+                    tracing::debug!(
+                        target: "nebula.resource",
+                        %key,
+                        ?slot_identity,
+                        reason = ?unavailable,
+                        "acquire_any: topology admission rejected"
+                    );
+                    return Err(unavailable.into_error(key));
+                }
+                managed
+                    .acquire(
+                        Arc::clone(&manager),
+                        ctx.clone_for_acquire(),
+                        options.clone(),
+                    )
+                    .await
             },
             AcquireLookupOutcome::NotFound => {
-                tracing::debug!(target: "nebula.resource", %key, "acquire_erased: not found");
+                tracing::debug!(target: "nebula.resource", %key, "acquire_any: not found");
                 Err(Error::not_found(key))
             },
             AcquireLookupOutcome::Ambiguous { rows } => {
@@ -253,7 +194,7 @@ impl Manager {
                     target: "nebula.resource",
                     %key,
                     rows,
-                    "acquire_erased: ambiguous scope/slot identity"
+                    "acquire_any: ambiguous scope/slot identity"
                 );
                 Err(Error::ambiguous(format!(
                     "{key}: {rows} resolved-credential registrations exist at this scope; \
@@ -290,12 +231,17 @@ impl Manager {
         options: &AcquireOptions,
     ) -> Result<crate::guard::ResourceGuard<R>, Error>
     where
-        R: crate::topology::pooled::Pooled + Clone + Send + Sync + 'static,
-        R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
-        R::Lease: Into<R::Runtime> + Send + 'static,
+        R: PoolProvider
+            + Provider<Topology = crate::topology::Pooled<R>>
+            + HasCredentialSlots
+            + Clone
+            + Send
+            + Sync
+            + 'static,
+        R::Instance: Clone + Send + Sync + 'static,
     {
         let managed = self.lookup_for_acquire_scope::<R>(ctx)?;
-        self.pooled_pipeline(managed, ctx, options).await
+        self.run_acquire_dispatch(managed, ctx, options).await
     }
 
     /// [`acquire_pooled`](Self::acquire_pooled) pinned to the
@@ -323,94 +269,113 @@ impl Manager {
         slot_identity: &crate::dedup::SlotIdentity,
     ) -> Result<crate::guard::ResourceGuard<R>, Error>
     where
-        R: crate::topology::pooled::Pooled + Clone + Send + Sync + 'static,
-        R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
-        R::Lease: Into<R::Runtime> + Send + 'static,
+        R: PoolProvider
+            + Provider<Topology = crate::topology::Pooled<R>>
+            + HasCredentialSlots
+            + Clone
+            + Send
+            + Sync
+            + 'static,
+        R::Instance: Clone + Send + Sync + 'static,
     {
         let managed = self.lookup_for_acquire_with_identity::<R>(ctx, slot_identity)?;
-        self.pooled_pipeline(managed, ctx, options).await
+        self.run_acquire_dispatch(managed, ctx, options).await
     }
 
     /// [`acquire_pooled_for_identity`](Self::acquire_pooled_for_identity) for
-    /// a row already resolved by the erased-acquire scope walk (downcast, no
-    /// re-walk).
+    /// a row already resolved by the [`ManagedHandle::acquire`] scope walk
+    /// (downcast, no re-walk).
+    #[expect(dead_code, reason = "called by engine scope-walk dispatch once wired")]
     pub(crate) async fn acquire_pooled_at_scope<R>(
         &self,
         ctx: &ResourceContext,
         options: &AcquireOptions,
-        resolved: Arc<dyn crate::registry::AnyManagedResource>,
+        resolved: Arc<dyn ManagedHandle>,
     ) -> Result<crate::guard::ResourceGuard<R>, Error>
     where
-        R: crate::topology::pooled::Pooled + Clone + Send + Sync + 'static,
-        R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
-        R::Lease: Into<R::Runtime> + Send + 'static,
+        R: PoolProvider
+            + Provider<Topology = crate::topology::Pooled<R>>
+            + HasCredentialSlots
+            + Clone
+            + Send
+            + Sync
+            + 'static,
+        R::Instance: Clone + Send + Sync + 'static,
     {
-        let managed = self.downcast_resolved_row::<R>(resolved)?;
-        self.pooled_pipeline(managed, ctx, options).await
+        use crate::registry::PinnedLookup;
+        self.shutdown_guard()?;
+        let managed = Self::resolve_typed_pinned::<R>(PinnedLookup::Found(resolved))?;
+        let managed = Self::taint_gate::<R>(managed)?;
+        self.run_acquire_dispatch(managed, ctx, options).await
     }
 
-    /// Pool topology dispatch into the shared [`run_acquire`](Self::run_acquire)
-    /// pipeline. Holds only the one-arm `TopologyRuntime::Pool` match (the
-    /// irreducible per-topology surface: the topology traits are siblings,
-    /// not a hierarchy, so the shared generic pipeline cannot prove the
-    /// variant statically). `config`/`generation` are recomputed inside the
-    /// dispatch closure so they are re-read on every resilience retry.
-    async fn pooled_pipeline<R>(
+    /// Single generic topology dispatch into the shared
+    /// [`run_acquire`](Self::run_acquire) pipeline.
+    ///
+    /// The dispatch closure runs the **framework acquire loop**
+    /// ([`ManagedResource::run_acquire_loop`]): the framework owns the fenced
+    /// checkout, stale-slot destroy, cancel-safe guard-wrap, and on-release
+    /// return-or-destroy; the resource's
+    /// [`Provider::Topology`](crate::resource::Provider::Topology) supplies only
+    /// thin R-aware hooks. There is no runtime variant to mismatch — the
+    /// topology is pinned to `R` by the associated type. The loop re-reads
+    /// `config`/`generation` itself, so they are fresh on every resilience
+    /// retry.
+    pub(crate) async fn run_acquire_dispatch<R>(
         &self,
         managed: Arc<ManagedResource<R>>,
         ctx: &ResourceContext,
         options: &AcquireOptions,
     ) -> Result<crate::guard::ResourceGuard<R>, Error>
     where
-        R: crate::topology::pooled::Pooled + Clone + Send + Sync + 'static,
-        R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
-        R::Lease: Into<R::Runtime> + Send + 'static,
+        R: Provider + HasCredentialSlots,
+        R::Instance: Clone,
+        R::Topology: Topology<R>,
     {
+        // Foolproofing for open (third-party) topologies: bound the author's
+        // acquire hooks (`try_reserve` / `create_slot` / `accept` / `prepare`)
+        // so a careless `impl Topology` cannot wedge the caller by hanging, nor
+        // crash it by panicking. The caller's deadline wins; absent one, a
+        // framework ceiling caps the worst case so a blocking hook can never
+        // hang forever. The dropped loop future releases the permit and
+        // destroys any in-flight slot via `SlotCreateGuard`.
+        let hook_timeout = options.remaining().unwrap_or(DEFAULT_AUTHOR_HOOK_CEILING);
         self.run_acquire(Arc::clone(&managed), || {
-            let generation = managed.generation();
-            let config = managed.config();
             let managed = Arc::clone(&managed);
+            let metrics = self.metrics.clone();
             async move {
-                match &managed.topology {
-                    TopologyRuntime::Pool(rt) => {
-                        rt.acquire(
-                            &managed.resource,
-                            &config,
-                            ctx,
-                            &managed.release_queue,
-                            generation,
-                            options,
-                            self.metrics.clone(),
-                        )
-                        .await
+                // SAFETY (unwind): any instance in flight inside the acquire
+                // loop is held by a `SlotCreateGuard` whose `Drop` destroys it,
+                // and the revoke-epoch/taint reads happen before the guarded
+                // await — so a caught panic unwinds through the `SlotCreateGuard`
+                // (tearing the half-built slot down) and leaves no torn state.
+                match guard_author_hook(
+                    hook_timeout,
+                    managed.run_acquire_loop(ctx, options, metrics),
+                )
+                .await
+                {
+                    Ok(result) => result,
+                    Err(fault) => {
+                        fault.observe(&R::key(), "acquire");
+                        match fault {
+                            HookFault::Panicked => Err(Error::permanent(format!(
+                                "{}: topology acquire pipeline panicked — the resource's \
+                                 `impl Topology` hook unwound (isolated, caller not crashed)",
+                                R::key()
+                            ))),
+                            HookFault::TimedOut => Err(Error::backpressure(format!(
+                                "{}: acquire exceeded {hook_timeout:?} — the topology's \
+                                 create/accept/prepare hooks did not complete in time",
+                                R::key()
+                            ))),
+                        }
                     },
-                    other => Err(Self::unexpected_topology::<R>(other)),
                 }
             }
         })
         .await
     }
-
-    /// The single typed error every topology dispatch returns when the
-    /// resolved row's [`TopologyRuntime`] variant does not match the
-    /// statically-bound acquire path.
-    ///
-    /// Registration binds the row's topology to its trait (`R: Pooled`
-    /// registers `TopologyRuntime::Pool`, etc.), so a mismatch here is a
-    /// registration/lookup invariant breach, not a caller error — but the
-    /// per-topology dispatch closures are bound to *one* sibling topology
-    /// trait each (the traits are siblings, not a hierarchy), so a single
-    /// generic pipeline cannot statically prove the variant. This collapses
-    /// the five byte-identical `"{key}: expected X topology, registered as
-    /// {tag}"` arms into one shared classifier instead of duplicating the
-    /// `format!` once per topology dispatcher.
-    pub(crate) fn unexpected_topology<R: Resource>(topology: &TopologyRuntime<R>) -> Error {
-        Error::permanent(format!(
-            "{}: resolved row topology {} does not match the acquired topology",
-            R::key(),
-            topology.tag()
-        ))
-    } // visible cross-module after impl split
 
     /// Single generic acquire pipeline (resilience + gate + drain
     /// bookkeeping) over an already-resolved [`ManagedResource`], replacing
@@ -429,7 +394,7 @@ impl Manager {
         mut dispatch: F,
     ) -> Result<crate::guard::ResourceGuard<R>, Error>
     where
-        R: Resource,
+        R: Provider,
         F: FnMut() -> Fut,
         Fut: Future<Output = Result<crate::guard::ResourceGuard<R>, Error>> + Send,
     {
@@ -515,12 +480,16 @@ impl Manager {
         options: &AcquireOptions,
     ) -> Result<crate::guard::ResourceGuard<R>, Error>
     where
-        R: crate::topology::resident::Resident + Send + Sync + 'static,
-        R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
-        R::Lease: Clone + Send + 'static,
+        R: ResidentProvider
+            + Provider<Topology = crate::topology::Resident<R>>
+            + HasCredentialSlots
+            + Send
+            + Sync
+            + 'static,
+        R::Instance: Clone + Send + Sync + 'static,
     {
         let managed = self.lookup_for_acquire_scope::<R>(ctx)?;
-        self.resident_pipeline(managed, ctx, options).await
+        self.run_acquire_dispatch(managed, ctx, options).await
     }
 
     /// [`acquire_resident`](Self::acquire_resident) pinned to the
@@ -550,183 +519,42 @@ impl Manager {
         slot_identity: &crate::dedup::SlotIdentity,
     ) -> Result<crate::guard::ResourceGuard<R>, Error>
     where
-        R: crate::topology::resident::Resident + Send + Sync + 'static,
-        R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
-        R::Lease: Clone + Send + 'static,
+        R: ResidentProvider
+            + Provider<Topology = crate::topology::Resident<R>>
+            + HasCredentialSlots
+            + Send
+            + Sync
+            + 'static,
+        R::Instance: Clone + Send + Sync + 'static,
     {
         let managed = self.lookup_for_acquire_with_identity::<R>(ctx, slot_identity)?;
-        self.resident_pipeline(managed, ctx, options).await
+        self.run_acquire_dispatch(managed, ctx, options).await
     }
 
     /// [`acquire_resident_for_identity`](Self::acquire_resident_for_identity)
-    /// for a row already resolved by the erased-acquire scope walk
+    /// for a row already resolved by the [`ManagedHandle::acquire`] scope walk
     /// (downcast, no re-walk).
+    #[expect(dead_code, reason = "called by engine scope-walk dispatch once wired")]
     pub(crate) async fn acquire_resident_at_scope<R>(
         &self,
         ctx: &ResourceContext,
         options: &AcquireOptions,
-        resolved: Arc<dyn crate::registry::AnyManagedResource>,
+        resolved: Arc<dyn ManagedHandle>,
     ) -> Result<crate::guard::ResourceGuard<R>, Error>
     where
-        R: crate::topology::resident::Resident + Send + Sync + 'static,
-        R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
-        R::Lease: Clone + Send + 'static,
+        R: ResidentProvider
+            + Provider<Topology = crate::topology::Resident<R>>
+            + HasCredentialSlots
+            + Send
+            + Sync
+            + 'static,
+        R::Instance: Clone + Send + Sync + 'static,
     {
-        let managed = self.downcast_resolved_row::<R>(resolved)?;
-        self.resident_pipeline(managed, ctx, options).await
-    }
-
-    /// Resident topology dispatch into the shared
-    /// [`run_acquire`](Self::run_acquire) pipeline. Holds only the one-arm
-    /// `TopologyRuntime::Resident` match (resident `acquire` takes neither
-    /// `release_queue`/`generation` nor `metrics`). `config` is recomputed
-    /// inside the dispatch closure so it is re-read on every resilience
-    /// retry.
-    async fn resident_pipeline<R>(
-        &self,
-        managed: Arc<ManagedResource<R>>,
-        ctx: &ResourceContext,
-        options: &AcquireOptions,
-    ) -> Result<crate::guard::ResourceGuard<R>, Error>
-    where
-        R: crate::topology::resident::Resident + Send + Sync + 'static,
-        R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
-        R::Lease: Clone + Send + 'static,
-    {
-        self.run_acquire(Arc::clone(&managed), || {
-            let config = managed.config();
-            let managed = Arc::clone(&managed);
-            async move {
-                match &managed.topology {
-                    TopologyRuntime::Resident(rt) => {
-                        rt.acquire(&managed.resource, &config, ctx, options).await
-                    },
-                    other => Err(Self::unexpected_topology::<R>(other)),
-                }
-            }
-        })
-        .await
-    }
-
-    /// Acquires a handle to a [`Bounded`](crate::topology::bounded::Bounded)
-    /// resource.
-    ///
-    /// The release shape is the resource's [`Cap`](crate::topology::bounded::Bounded::Cap)
-    /// typestate — `Unbounded` → owned handle (no release), `Capped<N>` /
-    /// `Exclusive` → guarded handle whose drop runs the observed
-    /// `release_one` (R17). Identity-agnostic: a multi-tenant `(R, scope)`
-    /// fails closed with
-    /// [`Ambiguous`](crate::error::ErrorKind::Ambiguous); use
-    /// [`acquire_bounded_for_identity`](Self::acquire_bounded_for_identity)
-    /// with the resolved structural identity.
-    ///
-    /// # Errors
-    ///
-    /// - [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound) if no resource of type `R` is
-    ///   registered.
-    /// - [`ErrorKind::Permanent`](crate::error::ErrorKind::Permanent) if the resource is not using
-    ///   bounded topology.
-    /// - [`ErrorKind::Ambiguous`](crate::error::ErrorKind::Ambiguous) if more
-    ///   than one resolved-credential registration exists for `(R, scope)`.
-    /// - Propagates the cap's acquire errors (permit timeout / closed).
-    pub async fn acquire_bounded<R>(
-        &self,
-        ctx: &ResourceContext,
-        options: &AcquireOptions,
-    ) -> Result<crate::guard::ResourceGuard<R>, Error>
-    where
-        R: crate::topology::bounded::BoundedRelease + Clone + Send + Sync + 'static,
-        R::Runtime: Clone + Send + Sync + 'static,
-        R::Lease: Send + 'static,
-    {
-        let managed = self.lookup_for_acquire_scope::<R>(ctx)?;
-        self.bounded_pipeline(managed, ctx, options).await
-    }
-
-    /// [`acquire_bounded`](Self::acquire_bounded) keyed by the
-    /// **collision-free structural** resolved-credential identity.
-    ///
-    /// Resolves the registry row whose `slot_identity` matches exactly (no
-    /// digest aliasing), so a caller that resolved tenant A's credential
-    /// reaches tenant A's runtime and never tenant B's.
-    ///
-    /// # Errors
-    ///
-    /// - [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound) if no row of type `R` matches
-    ///   `(scope, slot_identity)`.
-    /// - [`ErrorKind::Permanent`](crate::error::ErrorKind::Permanent) if the resource is not using
-    ///   bounded topology.
-    /// - Propagates the cap's acquire errors.
-    pub async fn acquire_bounded_for_identity<R>(
-        &self,
-        ctx: &ResourceContext,
-        options: &AcquireOptions,
-        slot_identity: &crate::dedup::SlotIdentity,
-    ) -> Result<crate::guard::ResourceGuard<R>, Error>
-    where
-        R: crate::topology::bounded::BoundedRelease + Clone + Send + Sync + 'static,
-        R::Runtime: Clone + Send + Sync + 'static,
-        R::Lease: Send + 'static,
-    {
-        let managed = self.lookup_for_acquire_with_identity::<R>(ctx, slot_identity)?;
-        self.bounded_pipeline(managed, ctx, options).await
-    }
-
-    /// [`acquire_bounded`](Self::acquire_bounded) for a row already resolved
-    /// by the erased-acquire scope walk (downcast, no re-walk).
-    pub(crate) async fn acquire_bounded_at_scope<R>(
-        &self,
-        ctx: &ResourceContext,
-        options: &AcquireOptions,
-        resolved: Arc<dyn crate::registry::AnyManagedResource>,
-    ) -> Result<crate::guard::ResourceGuard<R>, Error>
-    where
-        R: crate::topology::bounded::BoundedRelease + Clone + Send + Sync + 'static,
-        R::Runtime: Clone + Send + Sync + 'static,
-        R::Lease: Send + 'static,
-    {
-        let managed = self.downcast_resolved_row::<R>(resolved)?;
-        self.bounded_pipeline(managed, ctx, options).await
-    }
-
-    /// Bounded topology dispatch into the shared
-    /// [`run_acquire`](Self::run_acquire) pipeline. One-arm
-    /// `TopologyRuntime::Bounded` match (same shape as transport:
-    /// `release_queue`/`generation`/`metrics`, no `config`). `generation`
-    /// is recomputed inside the dispatch closure so it is re-read on every
-    /// resilience retry.
-    async fn bounded_pipeline<R>(
-        &self,
-        managed: Arc<ManagedResource<R>>,
-        ctx: &ResourceContext,
-        options: &AcquireOptions,
-    ) -> Result<crate::guard::ResourceGuard<R>, Error>
-    where
-        R: crate::topology::bounded::BoundedRelease + Clone + Send + Sync + 'static,
-        R::Runtime: Clone + Send + Sync + 'static,
-        R::Lease: Send + 'static,
-    {
-        self.run_acquire(Arc::clone(&managed), || {
-            let generation = managed.generation();
-            let managed = Arc::clone(&managed);
-            async move {
-                match &managed.topology {
-                    TopologyRuntime::Bounded(rt) => {
-                        rt.acquire(
-                            &managed.resource,
-                            ctx,
-                            &managed.release_queue,
-                            generation,
-                            options,
-                            self.metrics.clone(),
-                        )
-                        .await
-                    },
-                    other => Err(Self::unexpected_topology::<R>(other)),
-                }
-            }
-        })
-        .await
+        use crate::registry::PinnedLookup;
+        self.shutdown_guard()?;
+        let managed = Self::resolve_typed_pinned::<R>(PinnedLookup::Found(resolved))?;
+        let managed = Self::taint_gate::<R>(managed)?;
+        self.run_acquire_dispatch(managed, ctx, options).await
     }
 
     /// Returns a snapshot of current pool utilization for a registered Pool resource.
@@ -734,15 +562,17 @@ impl Manager {
     /// Returns `None` if the resource is not registered or does not use Pool topology.
     pub async fn pool_stats<R>(&self, scope: &ScopeLevel) -> Option<crate::runtime::pool::PoolStats>
     where
-        R: crate::topology::pooled::Pooled + Clone + Send + Sync + 'static,
-        R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
-        R::Lease: Into<R::Runtime> + Send + 'static,
+        R: PoolProvider
+            + Provider<Topology = crate::topology::Pooled<R>>
+            + HasCredentialSlots
+            + Clone
+            + Send
+            + Sync
+            + 'static,
+        R::Instance: Clone + Send + Sync + 'static,
     {
         let managed = self.lookup::<R>(scope).ok()?;
-        match &managed.topology {
-            TopologyRuntime::Pool(rt) => Some(rt.stats().await),
-            _ => None,
-        }
+        Some(managed.topology.stats(&managed.store).await)
     }
 
     /// Pre-warms a registered Pool resource.
@@ -771,44 +601,70 @@ impl Manager {
     ///   ([`acquire_pooled_for_identity`](Self::acquire_pooled_for_identity)).
     pub async fn warmup_pool<R>(&self, ctx: &ResourceContext) -> Result<usize, Error>
     where
-        R: crate::topology::pooled::Pooled + Clone + Send + Sync + 'static,
-        R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
-        R::Lease: Into<R::Runtime> + Send + 'static,
+        R: PoolProvider
+            + Provider<Topology = crate::topology::Pooled<R>>
+            + HasCredentialSlots
+            + Clone
+            + Send
+            + Sync
+            + 'static,
+        R::Instance: Clone + Send + Sync + 'static,
     {
         let managed = self.lookup_for_acquire_scope::<R>(ctx)?;
         let config = managed.config();
-        match &managed.topology {
-            TopologyRuntime::Pool(rt) => {
-                // `warmup` runs `R::create` against the resolved credential
-                // to materialize fresh pool instances — it is acquire-like
-                // and must observe the SAME post-count re-check the
-                // `run_*_acquire` pipelines use (#679 / slot + isolation model).
-                // `lookup_for_acquire`'s taint gate *and* `shutdown_guard`
-                // both ran *before* this in-flight increment, leaving the
-                // two symmetric windows: a concurrent `revoke_slot` could
-                // taint, or `graceful_shutdown` could drain-see-`0` +
-                // clear the registry, after the gate yet before warmup
-                // creates entries. Pre-count this work in both the
-                // resource's own in-flight counter (the exact counter
-                // `revoke_slot` drains) and the manager-wide `drain_tracker`
-                // (`graceful_shutdown`), then re-check both: either we
-                // observe taint / `shutting_down` here and reject, or our
-                // increment is visible to the respective drain — so no
-                // fresh pool entry is ever created on a just-revoked
-                // credential or after a completed shutdown drain. The
-                // counter is held for the whole `warmup` await (RAII drop
-                // on every exit path).
-                let _in_flight =
-                    InFlightCounter::new(self.drain_tracker.clone(), managed.in_flight_tracker());
-                self.reject_if_tainted_or_shutting_down_post_count::<R>(&managed)?;
-                let count = rt.warmup(&managed.resource, &config, ctx).await;
-                Ok(count)
+        // `warmup` runs `R::create` against the resolved credential to
+        // materialize fresh pool instances — it is acquire-like and must
+        // observe the SAME post-count re-check the `run_*_acquire` pipelines
+        // use (#679 / slot + isolation model). `lookup_for_acquire`'s taint
+        // gate *and* `shutdown_guard` both ran *before* this in-flight
+        // increment, leaving the two symmetric windows: a concurrent
+        // `revoke_slot` could taint, or `graceful_shutdown` could
+        // drain-see-`0` + clear the registry, after the gate yet before
+        // warmup creates entries. Pre-count this work in both the resource's
+        // own in-flight counter (the exact counter `revoke_slot` drains) and
+        // the manager-wide `drain_tracker` (`graceful_shutdown`), then
+        // re-check both: either we observe taint / `shutting_down` here and
+        // reject, or our increment is visible to the respective drain — so no
+        // fresh pool entry is ever created on a just-revoked credential or
+        // after a completed shutdown drain. The counter is held for the whole
+        // `warmup` await (RAII drop on every exit path).
+        let _in_flight =
+            InFlightCounter::new(self.drain_tracker.clone(), managed.in_flight_tracker());
+        self.reject_if_tainted_or_shutting_down_post_count::<R>(&managed)?;
+        // The framework-owned warmup creates `warmup_target` slots via the
+        // topology's `create_slot` (which runs the author's `Provider::create`)
+        // and deposits them (fenced) into the framework store. `config` is read
+        // inside `warmup` itself. Bound + isolate it through the same guard the
+        // acquire pipeline uses: a careless `Provider::create` that hangs or
+        // panics during warmup must fail closed, not wedge or crash the caller.
+        let _ = config;
+        // SAFETY (unwind): a slot being built inside `warmup` is held by its
+        // `SlotCreateGuard` (destroyed on unwind) and a slot already warmed is
+        // deposited into the fenced store before the next is built — so a caught
+        // panic tears down only the in-flight slot and leaves no torn state.
+        let count = match guard_author_hook(DEFAULT_AUTHOR_HOOK_CEILING, managed.warmup(ctx)).await
+        {
+            Ok(n) => n,
+            Err(fault) => {
+                fault.observe(&R::key(), "warmup");
+                match fault {
+                    HookFault::Panicked => {
+                        return Err(Error::permanent(format!(
+                            "{}: warmup panicked — the topology's `create_slot` hook unwound \
+                             (isolated, caller not crashed)",
+                            R::key()
+                        )));
+                    },
+                    HookFault::TimedOut => {
+                        return Err(Error::backpressure(format!(
+                            "{}: warmup exceeded {DEFAULT_AUTHOR_HOOK_CEILING:?} — the topology's \
+                             `create_slot` hook did not complete in time",
+                            R::key()
+                        )));
+                    },
+                }
             },
-            _ => Err(Error::permanent(format!(
-                "{}: warmup_pool requires Pool topology, registered as {}",
-                R::key(),
-                managed.topology.tag()
-            ))),
-        }
+        };
+        Ok(count)
     }
 }

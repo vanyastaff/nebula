@@ -102,8 +102,8 @@ pub use event::ExecutionEvent;
 pub use nebula_plugin::{Plugin, PluginKey, PluginManifest, PluginRegistry, ResolvedPlugin};
 pub use node_output::NodeOutput;
 pub use resource::{
-    ErasedResourceRegistrar, RegisterRequest, RegistrarError, ResourceRegistrarRegistry,
-    ResourceRegistrationOutcome, TypedResourceRegistrar,
+    KindActivator, RegisterRequest, RegistrarError, ResourceActivator, ResourceActivatorRegistry,
+    ResourceRegistrationOutcome,
 };
 pub use resource_accessor::EngineResourceAccessor;
 pub use resource_status::{

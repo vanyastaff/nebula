@@ -12,17 +12,17 @@
 
 ## Key files
 - `src/lib.rs` — crate facade + re-exports; `cell::Cell` deliberately NOT re-exported (use `SlotCell`)
-- `src/resource.rs` — `Resource` trait (4 assoc types, slot-rotation hooks), `ResourceConfig`, `ResourceMetadata`
+- `src/resource.rs` — `Provider` trait (`Config`/`Instance` assoc types, slot-rotation hooks), `HasCredentialSlots`, `ResourceConfig`, `ResourceMetadata`; `Resource` is the derive macro (slot plumbing only)
 - `src/slot.rs` / `src/cell.rs` — `SlotCell` (public, generation-stamped) vs internal epoch-blind `cell::Cell`
 - `src/registry.rs` — type-erased registry, scope-aware lookup, `(key, scope)` dedup
 - `src/manager/` — `Manager::register(RegistrationSpec)` funnel, acquire dispatch, shutdown/drain
-- `src/topology/` + `src/runtime/` — `Pooled` / `Resident` / `Bounded<Cap>` traits and their runtimes
+- `src/topology/contract.rs` — the open `Topology<R>` trait (slot-centric, framework-driven). The **framework** owns the acquire loop (`ManagedResource::run_acquire_loop`): fenced `store.checkout()`, stale-slot destroy, cancel-safe wrap, on-release return-or-destroy. A topology supplies only thin R-aware hooks (`create_slot` / `slot_instance` / `into_instance` / `accept` / `prepare` / `on_release` / `pools` / `store_capacity` / `dispatch_credential_hook` / …) and **cannot** reach the revoke fence — never write `store.checkout` / `resource.destroy` / a stale loop / an epoch compare in a `Topology` impl.
+- `src/topology/` + `src/runtime/` — `Pooled<R>` / `Resident<R>` / `Bounded<R>` built-in topologies (`Topology<R>` impls; Bounded = runtime concurrency cap, capped/exclusive/unbounded, no warm pool); the framework-owned `InstanceStore<Slot>` is the real idle queue (`ManagedResource.store`)
 - `src/release_queue.rs` — `ReleaseQueue` best-effort async drain (canon §11.4); `src/recovery/` — thundering-herd `RecoveryGate`
 
 ## Conventions & never-do
 - Credentials are declared as `#[credential(key="…")] field: SlotCell<CredentialGuard<C>>`; read via derive-emitted `self.<field>_slot()` (`Option<Arc<…>>`, handle `None`/unbound) — never off the raw cell. No singular `Resource::Credential`; `NoCredential` is gone.
 - This crate is NOT a connection driver, retry pipeline, secret holder, or expression evaluator — it owns the lifecycle wrapper only (see Non-goals).
-- `Bounded` cap mismatch (e.g. `Capped`/`Exclusive` without `BoundedRelease`) is a compile error, not a runtime branch — keep it typestate-enforced.
 - Async release is best-effort on crash; never assume "release ran" without an explicit checkpoint (canon §11.4).
 - `#![forbid(unsafe_code)]` + `#![warn(missing_docs)]` are active; lifecycle work emits a `ResourceEvent` variant (observability is DoD).
 - Cross-crate calls go through `nebula-eventbus`, not direct sibling imports.

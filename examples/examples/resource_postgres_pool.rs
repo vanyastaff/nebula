@@ -38,13 +38,14 @@ use std::{
 };
 
 use nebula_core::{ResourceKey, ScopeLevel, resource_key, scope::Scope};
+use nebula_resource::Pooled;
+use nebula_resource::topology::pooled::PoolProvider;
 use nebula_resource::{
     AcquireOptions, Manager, RegistrationSpec, ResourceContext,
     dedup::SlotIdentity,
     error::Error as ResourceError,
-    resource::{Resource, ResourceConfig, ResourceMetadata},
-    runtime::{TopologyRuntime, pool::PoolRuntime},
-    topology::pooled::{BrokenCheck, Pooled, RecycleDecision, config::Config as PoolConfig},
+    resource::{Provider, ResourceConfig, ResourceMetadata},
+    topology::pooled::{BrokenCheck, RecycleDecision, config::Config as PoolConfig},
 };
 use serde::Deserialize;
 use tokio_util::sync::CancellationToken;
@@ -181,32 +182,34 @@ impl Postgres {
     }
 }
 
-impl Resource for Postgres {
+#[async_trait::async_trait]
+impl Provider for Postgres {
     type Config = PostgresConfig;
-    type Runtime = Arc<MockPgConnection>;
-    type Lease = Arc<MockPgConnection>;
-    type Error = PgError;
+    type Instance = Arc<MockPgConnection>;
+    type Topology = Pooled<Self>;
 
     fn key() -> ResourceKey {
         resource_key!("demo.postgres")
     }
 
-    fn create(
+    async fn create(
         &self,
         config: &PostgresConfig,
         _ctx: &ResourceContext,
-    ) -> impl Future<Output = Result<Arc<MockPgConnection>, PgError>> + Send {
+    ) -> Result<Arc<MockPgConnection>, ResourceError> {
         let counter = Arc::clone(&self.create_counter);
         let app = config.application_name.clone();
-        async move {
-            let id = counter.fetch_add(1, Ordering::SeqCst);
-            tracing::info!(connection_id = id, application_name = %app, "creating mock postgres connection");
-            // Real impl would call `tokio_postgres::Config::connect` here.
-            Ok(Arc::new(MockPgConnection::new(id)))
-        }
+        let id = counter.fetch_add(1, Ordering::SeqCst);
+        tracing::info!(connection_id = id, application_name = %app, "creating mock postgres connection");
+        // Real impl would call `tokio_postgres::Config::connect` here.
+        Ok(Arc::new(MockPgConnection::new(id)))
     }
 
-    async fn destroy(&self, runtime: Arc<MockPgConnection>) -> Result<(), PgError> {
+    async fn destroy(
+        &self,
+        runtime: Arc<MockPgConnection>,
+        _cx: nebula_resource::TeardownCx,
+    ) -> Result<(), ResourceError> {
         tracing::info!(
             connection_id = runtime.id,
             "destroying mock postgres connection"
@@ -219,7 +222,13 @@ impl Resource for Postgres {
     }
 }
 
-impl Pooled for Postgres {
+impl nebula_resource::HasCredentialSlots for Postgres {
+    fn credential_slot_epoch(&self) -> u64 {
+        0
+    }
+}
+
+impl PoolProvider for Postgres {
     fn is_broken(&self, runtime: &Arc<MockPgConnection>) -> BrokenCheck {
         if runtime.is_broken_flag.load(Ordering::Acquire) {
             BrokenCheck::Broken("mock connection flagged broken".into())
@@ -232,7 +241,7 @@ impl Pooled for Postgres {
         &self,
         runtime: &Arc<MockPgConnection>,
         metrics: &nebula_resource::topology::pooled::InstanceMetrics,
-    ) -> Result<RecycleDecision, PgError> {
+    ) -> Result<RecycleDecision, ResourceError> {
         // Drop after 100 queries to demonstrate the recycle hook; real impl
         // would `DISCARD ALL` for transactional cleanliness.
         if runtime.queries_issued.load(Ordering::Acquire) >= 100 {
@@ -368,14 +377,13 @@ async fn main() -> anyhow::Result<()> {
         statement_timeout_ms: 30_000,
     };
     let pool_runtime =
-        PoolRuntime::<Postgres>::new(pool_config, ResourceConfig::fingerprint(&pg_config));
+        Pooled::<Postgres>::new(pool_config, ResourceConfig::fingerprint(&pg_config));
     manager.register(RegistrationSpec {
         resource: postgres.clone(),
         config: pg_config,
         scope: ScopeLevel::Global,
         slot_identity: SlotIdentity::Unbound,
-        topology: TopologyRuntime::Pool(pool_runtime),
-        acquire: Manager::erased_acquire_pooled_for::<Postgres>(),
+        topology: pool_runtime,
         recovery_gate: None,
     })?;
     println!("[1] Postgres pool registered (min=0, max=4)");

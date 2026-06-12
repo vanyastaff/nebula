@@ -20,13 +20,11 @@ use std::time::Duration;
 use nebula_core::{OrgId, ResourceKey, ScopeLevel, resource_key, scope::Scope};
 use nebula_credential::CredentialId;
 use nebula_engine::credential::rotation::{ResourceFanoutIndex, RotationOutcome};
+use nebula_resource::Resident;
 use nebula_resource::{
-    AcquireOptions, Manager, RegistrationSpec, ResidentConfig, Resource, ResourceConfig,
-    ResourceContext, SlotIdentity,
-    error::Error as ResourceError,
-    resource::ResourceMetadata,
-    runtime::{TopologyRuntime, resident::ResidentRuntime},
-    topology::resident::Resident,
+    AcquireOptions, Manager, Provider, RegistrationSpec, ResidentConfig, ResourceConfig,
+    ResourceContext, SlotIdentity, error::Error as ResourceError, resource::ResourceMetadata,
+    topology::resident::ResidentProvider,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -51,6 +49,11 @@ impl ResourceConfig for Cfg {
     fn validate(&self) -> Result<(), ResourceError> {
         Ok(())
     }
+
+    fn fingerprint(&self) -> u64 {
+        // Unit struct: all instances identical — constant 0 is correct.
+        0
+    }
 }
 
 /// `Err` is intentionally absent here — the mixed ok/err/timeout case is
@@ -73,26 +76,26 @@ struct Ctl {
     refresh_entered: Arc<AtomicUsize>,
 }
 
-impl Resource for Ctl {
+#[async_trait::async_trait]
+impl Provider for Ctl {
     type Config = Cfg;
-    type Runtime = ();
-    type Lease = ();
-    type Error = HookError;
+    type Instance = ();
+    type Topology = Resident<Self>;
 
     fn key() -> ResourceKey {
         resource_key!("it-fanout-ctl")
     }
 
-    async fn create(&self, _c: &Cfg, _x: &ResourceContext) -> Result<(), HookError> {
+    async fn create(&self, _c: &Cfg, _x: &ResourceContext) -> Result<(), ResourceError> {
         Ok(())
     }
 
-    async fn on_credential_refresh(&self, _s: &str, _r: &()) -> Result<(), HookError> {
+    async fn on_credential_refresh(&self, _s: &str, _r: &()) -> Result<(), ResourceError> {
         self.refresh_entered.fetch_add(1, Ordering::SeqCst);
         let b = *self
             .behaviour
             .lock()
-            .expect("behaviour map")
+            .expect("behaviour map lock poisoned")
             .get(&self.identity)
             .unwrap_or(&Behaviour::Ok);
         match b {
@@ -111,7 +114,14 @@ impl Resource for Ctl {
     }
 }
 
-impl Resident for Ctl {
+impl nebula_resource::HasCredentialSlots for Ctl {
+    fn credential_slot_epoch(&self) -> u64 {
+        0
+    }
+}
+
+#[async_trait::async_trait]
+impl ResidentProvider for Ctl {
     fn is_alive_sync(&self, _r: &()) -> bool {
         true
     }
@@ -150,10 +160,7 @@ async fn engine_fanout_isolates_a_wedged_resource_from_siblings() {
             config: Cfg,
             scope: scope.clone(),
             slot_identity: id.clone(),
-            topology: TopologyRuntime::Resident(ResidentRuntime::<Ctl>::new(
-                ResidentConfig::default(),
-            )),
-            acquire: Manager::erased_acquire_resident_for::<Ctl>(),
+            topology: Resident::<Ctl>::new(ResidentConfig::default()),
             recovery_gate: None,
         })
         .expect("register resolved-credential row");

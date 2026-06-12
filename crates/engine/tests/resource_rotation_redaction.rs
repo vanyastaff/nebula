@@ -58,14 +58,11 @@ use std::time::Duration;
 use nebula_core::{OrgId, ResourceKey, ScopeLevel, resource_key, scope::Scope};
 use nebula_credential::{CredentialGuard, CredentialId};
 use nebula_engine::credential::rotation::{ResourceFanoutIndex, RotationOutcome};
+use nebula_resource::Resident;
 use nebula_resource::{
-    AcquireOptions, Manager, ManagerConfig, RegistrationSpec, ResidentConfig, Resource,
-    ResourceConfig, ResourceContext, SlotCell, SlotIdentity,
-    error::Error as ResourceError,
-    events::ResourceEvent,
-    resource::ResourceMetadata,
-    runtime::{TopologyRuntime, resident::ResidentRuntime},
-    topology::resident::Resident,
+    AcquireOptions, Manager, ManagerConfig, Provider, RegistrationSpec, ResidentConfig,
+    ResourceConfig, ResourceContext, SlotCell, SlotIdentity, error::Error as ResourceError,
+    events::ResourceEvent, resource::ResourceMetadata, topology::resident::ResidentProvider,
 };
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::fmt::MakeWriter;
@@ -189,6 +186,11 @@ impl ResourceConfig for Cfg {
     fn validate(&self) -> Result<(), ResourceError> {
         Ok(())
     }
+
+    fn fingerprint(&self) -> u64 {
+        // Unit struct: all instances identical — constant 0 is correct.
+        0
+    }
 }
 
 /// Live runtime handed by `&Runtime` to the rotation hooks. Holds the
@@ -218,17 +220,17 @@ struct SecretBearingResource {
     hook_entered: Arc<AtomicUsize>,
 }
 
-impl Resource for SecretBearingResource {
+#[async_trait::async_trait]
+impl Provider for SecretBearingResource {
     type Config = Cfg;
-    type Runtime = SecretRuntime;
-    type Lease = SecretRuntime;
-    type Error = HookError;
+    type Instance = SecretRuntime;
+    type Topology = Resident<Self>;
 
     fn key() -> ResourceKey {
         resource_key!("rotation-redaction-res")
     }
 
-    async fn create(&self, _c: &Cfg, _x: &ResourceContext) -> Result<SecretRuntime, HookError> {
+    async fn create(&self, _c: &Cfg, _x: &ResourceContext) -> Result<SecretRuntime, ResourceError> {
         Ok(SecretRuntime {
             secret: SECRET.to_owned(),
         })
@@ -238,7 +240,7 @@ impl Resource for SecretBearingResource {
         &self,
         _slot: &str,
         rt: &SecretRuntime,
-    ) -> Result<(), HookError> {
+    ) -> Result<(), ResourceError> {
         self.hook_entered.fetch_add(1, Ordering::SeqCst);
         // Genuinely touch the secret-bearing runtime on the rotation
         // path so this is not a no-op the redaction is vacuously true
@@ -247,16 +249,22 @@ impl Resource for SecretBearingResource {
         match self.behaviour {
             Behaviour::Ok => Ok(()),
             // Credential-free message by construction.
-            Behaviour::Err => Err(HookError("refresh hook rejected: simulated upstream 503")),
+            Behaviour::Err => {
+                Err(HookError("refresh hook rejected: simulated upstream 503").into())
+            },
         }
     }
 
-    async fn on_credential_revoke(&self, _slot: &str, rt: &SecretRuntime) -> Result<(), HookError> {
+    async fn on_credential_revoke(
+        &self,
+        _slot: &str,
+        rt: &SecretRuntime,
+    ) -> Result<(), ResourceError> {
         self.hook_entered.fetch_add(1, Ordering::SeqCst);
         let _ = rt.secret.len();
         match self.behaviour {
             Behaviour::Ok => Ok(()),
-            Behaviour::Err => Err(HookError("revoke hook rejected: simulated upstream 503")),
+            Behaviour::Err => Err(HookError("revoke hook rejected: simulated upstream 503").into()),
         }
     }
 
@@ -265,7 +273,14 @@ impl Resource for SecretBearingResource {
     }
 }
 
-impl Resident for SecretBearingResource {
+impl nebula_resource::HasCredentialSlots for SecretBearingResource {
+    fn credential_slot_epoch(&self) -> u64 {
+        0
+    }
+}
+
+#[async_trait::async_trait]
+impl ResidentProvider for SecretBearingResource {
     fn is_alive_sync(&self, _rt: &SecretRuntime) -> bool {
         true
     }
@@ -372,10 +387,7 @@ async fn setup(
             config: Cfg,
             scope: scope.clone(),
             slot_identity: id.clone(),
-            topology: TopologyRuntime::Resident(ResidentRuntime::<SecretBearingResource>::new(
-                ResidentConfig::default(),
-            )),
-            acquire: Manager::erased_acquire_resident_for::<SecretBearingResource>(),
+            topology: Resident::<SecretBearingResource>::new(ResidentConfig::default()),
             recovery_gate: None,
         })
         .expect("register resolved-credential row");

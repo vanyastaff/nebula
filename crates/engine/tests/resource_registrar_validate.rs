@@ -1,4 +1,4 @@
-//! `ResourceRegistrarRegistry::validate` — the config-CRUD validation
+//! `ResourceActivatorRegistry::validate` — the config-CRUD validation
 //! seam (config validation, NOT live registration).
 //!
 //! A config-CRUD writer (the `POST .../resources` API handler) must
@@ -28,14 +28,14 @@
 use std::sync::Arc;
 
 use nebula_core::{ResourceKey, resource_key};
-use nebula_engine::{RegistrarError, ResourceRegistrarRegistry, TypedResourceRegistrar};
+use nebula_engine::{KindActivator, RegistrarError, ResourceActivatorRegistry};
+use nebula_resource::Resident;
 use nebula_resource::{
     Manager, ScopeLevel,
     error::Error as ResourceError,
-    resource::{Resource, ResourceConfig, ResourceMetadata},
-    runtime::{TopologyRuntime, resident::ResidentRuntime},
+    resource::{Provider, ResourceConfig, ResourceMetadata},
     topology::resident,
-    topology::resident::Resident,
+    topology::resident::ResidentProvider,
 };
 use nebula_schema::{HasSchema, Schema};
 use serde::Deserialize;
@@ -45,10 +45,6 @@ use serde_json::json;
 //    `#[validate]` rules are exercised, unlike `impl_empty_has_schema!`) ──
 
 #[derive(Clone, Debug, Deserialize, Schema)]
-#[expect(
-    dead_code,
-    reason = "fields are exercised through the schema pass + serde::Deserialize, not direct read"
-)]
 struct HttpPoolConfig {
     /// Required, must be a non-empty URL ≤ 256 chars.
     #[field(label = "Base URL", hint = "url")]
@@ -78,16 +74,24 @@ impl From<HttpPoolError> for ResourceError {
     }
 }
 
-impl ResourceConfig for HttpPoolConfig {}
+impl ResourceConfig for HttpPoolConfig {
+    fn fingerprint(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        self.base_url.hash(&mut h);
+        self.max_connections.hash(&mut h);
+        h.finish()
+    }
+}
 
 #[derive(Clone)]
 struct HttpPool;
 
-impl Resource for HttpPool {
+#[async_trait::async_trait]
+impl Provider for HttpPool {
     type Config = HttpPoolConfig;
-    type Runtime = ();
-    type Lease = ();
-    type Error = HttpPoolError;
+    type Instance = ();
+    type Topology = Resident<Self>;
 
     fn key() -> ResourceKey {
         resource_key!("http_pool")
@@ -97,13 +101,13 @@ impl Resource for HttpPool {
         &self,
         _config: &HttpPoolConfig,
         _ctx: &nebula_resource::ResourceContext,
-    ) -> Result<(), HttpPoolError> {
+    ) -> Result<(), nebula_resource::Error> {
         Ok(())
     }
 
     fn metadata() -> ResourceMetadata {
         ResourceMetadata::new(
-            <Self as Resource>::key(),
+            <Self as Provider>::key(),
             "http_pool".to_owned(),
             String::new(),
             <HttpPoolConfig as HasSchema>::schema(),
@@ -113,24 +117,26 @@ impl Resource for HttpPool {
 
 impl nebula_core::DeclaresDependencies for HttpPool {}
 
-impl Resident for HttpPool {
+impl nebula_resource::HasCredentialSlots for HttpPool {
+    fn credential_slot_epoch(&self) -> u64 {
+        0
+    }
+}
+
+#[async_trait::async_trait]
+impl ResidentProvider for HttpPool {
     fn is_alive_sync(&self, _runtime: &()) -> bool {
         true
     }
 }
 
-fn registry_with_http_pool() -> ResourceRegistrarRegistry {
-    let mut registry = ResourceRegistrarRegistry::new();
+fn registry_with_http_pool() -> ResourceActivatorRegistry {
+    let mut registry = ResourceActivatorRegistry::new();
     registry.insert(
         "http_pool",
-        Arc::new(TypedResourceRegistrar::<HttpPool, _, _, _>::new(
+        Arc::new(KindActivator::<HttpPool, _, _>::new(
             || HttpPool,
-            || {
-                TopologyRuntime::Resident(ResidentRuntime::<HttpPool>::new(
-                    resident::config::Config::default(),
-                ))
-            },
-            || Manager::erased_acquire_resident_for::<HttpPool>(),
+            || Resident::<HttpPool>::new(resident::config::Config::default()),
         )),
     );
     registry
@@ -161,7 +167,7 @@ async fn known_kind_schema_valid_config_is_ok_and_no_manager_mutation() {
     let manager = Manager::new();
     assert!(
         manager
-            .get_any(&<HttpPool as Resource>::key(), &ScopeLevel::Global)
+            .get_any(&<HttpPool as Provider>::key(), &ScopeLevel::Global)
             .is_none(),
         "validating a config must NEVER live-register the resource \
          (config CRUD is separate from engine activation — §13.1)"
@@ -260,7 +266,7 @@ fn unknown_kind_is_typed_unknownkind_not_silent() {
 /// An empty registry is fail-closed: every kind is `UnknownKind`.
 #[test]
 fn empty_registry_rejects_every_kind() {
-    let registry = ResourceRegistrarRegistry::new();
+    let registry = ResourceActivatorRegistry::new();
     assert!(registry.is_empty());
 
     let err = registry

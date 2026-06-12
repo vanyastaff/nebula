@@ -7,7 +7,7 @@ use nebula_core::{ActionKey, CredentialKey, ResourceKey};
 use nebula_credential::{AnyCredential, AuthPattern, CredentialMetadata};
 use nebula_metadata::PluginManifest;
 use nebula_plugin::{ComponentKind, Plugin, PluginError, ResolvedPlugin};
-use nebula_resource::{AnyResource, ResourceMetadata};
+use nebula_resource::{ResourceDescriptor, ResourceMetadata};
 use nebula_schema::ValidSchema;
 use nebula_workflow::NodeDefinition;
 
@@ -102,7 +102,7 @@ impl AnyCredential for StubCredential {
     }
 }
 
-// ── Stub AnyResource ─────────────────────────────────────────────────────────
+// ── Stub ResourceDescriptor ─────────────────────────────────────────────────────────
 
 struct StubResource {
     key: ResourceKey,
@@ -124,7 +124,7 @@ impl std::fmt::Debug for StubResource {
     }
 }
 
-impl AnyResource for StubResource {
+impl ResourceDescriptor for StubResource {
     fn key(&self) -> ResourceKey {
         self.key.clone()
     }
@@ -140,7 +140,7 @@ struct StubPlugin {
     manifest: PluginManifest,
     actions: Vec<Arc<dyn ActionFactory>>,
     credentials: Vec<Arc<dyn AnyCredential>>,
-    resources: Vec<Arc<dyn AnyResource>>,
+    resources: Vec<Arc<dyn ResourceDescriptor>>,
 }
 
 impl std::fmt::Debug for StubPlugin {
@@ -191,7 +191,7 @@ impl Plugin for StubPlugin {
         self.credentials.clone()
     }
 
-    fn resources(&self) -> Vec<Arc<dyn AnyResource>> {
+    fn resources(&self) -> Vec<Arc<dyn ResourceDescriptor>> {
         self.resources.clone()
     }
 }

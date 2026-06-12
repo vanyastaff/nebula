@@ -1,61 +1,57 @@
 //! Compile-fail / compile-pass probes for `#[derive(Resource)]`
-//! (slot model).
+//! (slot model, two-derive pattern).
 //!
-//! Each compile-fail probe under `tests/probes/derive_*.rs` exercises one
-//! diagnostic contract of the macro:
+//! Compile-fail probes under `tests/probes/` exercise diagnostic contracts:
 //!
-//! - missing `config = ...` argument,
-//! - missing `topology = "..."` argument,
-//! - invalid `topology = "..."` value (not in {pool, resident,
-//!   bounded}),
-//! - unknown keys inside `#[resource(...)]`,
-//! - tuple struct rejection.
+//! - enum rejected at the type-ident span
+//! - `#[credential]` on a tuple-struct field rejected with clear span
+//! - `#[credential]` field with wrong type rejected naming both accepted shapes
+//! - `#[credential(key = "...")]` invalid key literal rejected at the literal span
+//! - `Option<SlotCell<CredentialGuard<C>>>` rejected (must be the bare shape)
 //!
-//! The positive probe (`tests/probes/derive_positive_unit_resource.rs`)
-//! exercises a clean derive expansion against a minimal `ResourceConfig`
-//! (`Pool` topology, all attribute defaults exercised).
+//! The positive probes exercise a clean two-derive expansion:
+//!
+//! - slot-less unit struct with hand-written `impl Provider`
+//! - named slot field with derive-emitted `<field>_slot()` accessor
 
 #[test]
-fn derive_resource_compile_fail_probes() {
+fn resource_slots_rejects_enum() {
     let t = trybuild::TestCases::new();
-    t.compile_fail("tests/probes/derive_missing_config.rs");
-    t.compile_fail("tests/probes/derive_missing_topology.rs");
-    t.compile_fail("tests/probes/derive_invalid_topology.rs");
-    t.compile_fail("tests/probes/derive_unknown_attr_key.rs");
+    t.compile_fail("tests/probes/derive_on_enum.rs");
+}
+
+#[test]
+fn resource_slots_rejects_credential_on_tuple_field() {
+    let t = trybuild::TestCases::new();
     t.compile_fail("tests/probes/derive_tuple_struct.rs");
+}
+
+#[test]
+fn resource_slots_rejects_wrong_field_type() {
+    let t = trybuild::TestCases::new();
+    t.compile_fail("tests/probes/slot_field_wrong_type.rs");
+}
+
+#[test]
+fn resource_slots_rejects_bad_key_literal() {
+    let t = trybuild::TestCases::new();
+    t.compile_fail("tests/probes/credential_bad_key_literal.rs");
+}
+
+#[test]
+fn resource_slots_rejects_option_wrapped_slot() {
+    let t = trybuild::TestCases::new();
     t.compile_fail("tests/probes/derive_slot_option_wrapped.rs");
 }
 
 #[test]
-fn derive_resource_compile_pass_positive() {
+fn resource_slots_compile_pass_unit_struct() {
     let t = trybuild::TestCases::new();
     t.pass("tests/probes/derive_positive_unit_resource.rs");
 }
 
-/// `topology = "bounded"` is accepted (the folded topology that replaced
-/// the legacy `service` / `transport` / `exclusive` strings), alongside
-/// `pool` / `resident`. Each maps to its `TopologyTag` via the emitted
-/// informational const — the collapsed 3-tag set.
 #[test]
-fn derive_resource_accepts_collapsed_topologies() {
-    let t = trybuild::TestCases::new();
-    t.pass("tests/probes/derive_bounded_topology.rs");
-}
-
-#[test]
-fn derive_emits_slot_accessor() {
+fn resource_slots_compile_pass_slot_accessor() {
     let t = trybuild::TestCases::new();
     t.pass("tests/trybuild/derive_slot_accessor.rs");
-}
-
-/// The `Bounded` cap typestate makes "release-bearing cap with no release
-/// hook" a compile error: a `Capped<N>` / `Exclusive` resource that omits
-/// `impl BoundedRelease` fails the `R: BoundedRelease` bound the runtime
-/// requires (the blanket no-op covers only `Cap = Unbounded`). This is the
-/// type-enforcement that replaced the old silent `TOKEN_MODE ==` no-op.
-#[test]
-fn bounded_release_shape_is_type_enforced() {
-    let t = trybuild::TestCases::new();
-    t.compile_fail("tests/probes/bounded_capped_without_release.rs");
-    t.compile_fail("tests/probes/bounded_exclusive_without_reset.rs");
 }

@@ -10,10 +10,13 @@ pub enum TopologyTag {
     Pool,
     /// Resident — one shared instance, clone on acquire.
     Resident,
-    /// Bounded — one runtime, capped short-lived leases. The cap typestate
-    /// (`Unbounded` / `Capped<N>` / `Exclusive`) selects the concurrency
-    /// bound and release shape.
+    /// Bounded — a runtime concurrency cap over a non-pooled resource
+    /// (capped / exclusive / unbounded).
     Bounded,
+    /// A custom author-supplied [`Topology`](crate::topology::Topology) that is
+    /// neither the built-in pool nor resident — used to label rotation /
+    /// diagnostic spans for open topologies.
+    Custom,
 }
 
 impl TopologyTag {
@@ -23,6 +26,7 @@ impl TopologyTag {
             Self::Pool => "pool",
             Self::Resident => "resident",
             Self::Bounded => "bounded",
+            Self::Custom => "custom",
         }
     }
 }

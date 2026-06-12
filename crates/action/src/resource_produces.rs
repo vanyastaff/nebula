@@ -27,7 +27,7 @@
 use std::{fmt, marker::PhantomData};
 
 use nebula_core::ResourceKey;
-use nebula_resource::{Resource, topology_tag::TopologyTag};
+use nebula_resource::{resource::Provider, topology_tag::TopologyTag};
 
 /// Marker type returned by a [`ResourceAction`](crate::resource::ResourceAction)
 /// in its `Action::Output` slot.
@@ -51,8 +51,7 @@ use nebula_resource::{Resource, topology_tag::TopologyTag};
 /// ```
 pub struct ResourceProduces<R: ?Sized> {
     /// The topology the scoped resource is provided through (Pool,
-    /// Resident, Bounded — Bounded folds the former Service / Transport /
-    /// Exclusive). Mirrors the resource's primary topology trait impl.
+    /// Resident). Mirrors the resource's primary topology trait impl.
     topology: TopologyTag,
     /// Type-level marker for the concrete `Resource` impl. `fn() -> R` so
     /// `ResourceProduces<R>` is `Send + Sync` regardless of `R`.
@@ -81,7 +80,7 @@ impl<R: ?Sized> ResourceProduces<R> {
     }
 }
 
-impl<R: Resource> ResourceProduces<R> {
+impl<R: Provider> ResourceProduces<R> {
     /// Returns the registered resource key for the produced resource type.
     ///
     /// Read at catalog-construction time to label workflow-graph edges with
@@ -135,21 +134,16 @@ mod tests {
 
     #[test]
     fn debug_includes_topology_and_type() {
-        let m: ResourceProduces<FakeRes> = ResourceProduces::new(TopologyTag::Bounded);
+        let m: ResourceProduces<FakeRes> = ResourceProduces::new(TopologyTag::Pool);
         let s = format!("{m:?}");
-        assert!(s.contains("Bounded"));
+        assert!(s.contains("Pool"));
         assert!(s.contains("FakeRes"));
     }
 
     #[test]
     fn each_topology_variant_constructs() {
-        // Smoke test: every TopologyTag variant should be storable in the
-        // marker (the collapsed Pool / Resident / Bounded set).
-        for tag in [
-            TopologyTag::Pool,
-            TopologyTag::Resident,
-            TopologyTag::Bounded,
-        ] {
+        // Smoke test: every TopologyTag variant should be storable in the marker.
+        for tag in [TopologyTag::Pool, TopologyTag::Resident] {
             let m: ResourceProduces<FakeRes> = ResourceProduces::new(tag);
             assert_eq!(m.topology(), tag);
         }

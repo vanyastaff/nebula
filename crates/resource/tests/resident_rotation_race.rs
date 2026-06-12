@@ -23,13 +23,13 @@ use std::sync::{
 
 use nebula_core::{ResourceKey, ScopeLevel, resource_key, scope::Scope};
 use nebula_credential::CredentialGuard;
+use nebula_resource::Resident;
 use nebula_resource::{
-    AcquireOptions, Manager, RegistrationSpec, ResidentConfig, Resource, ResourceConfig,
+    AcquireOptions, Manager, Provider, RegistrationSpec, ResidentConfig, ResourceConfig,
     ResourceContext, SlotCell, SlotIdentity,
     error::Error,
-    resource::ResourceMetadata,
-    runtime::{TopologyRuntime, resident::ResidentRuntime},
-    topology::resident::Resident,
+    resource::{HasCredentialSlots, ResourceMetadata},
+    topology::resident::ResidentProvider,
 };
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
@@ -47,23 +47,6 @@ impl Zeroize for FakeCred {
     }
 }
 
-#[derive(Debug)]
-struct RaceError(String);
-
-impl std::fmt::Display for RaceError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for RaceError {}
-
-impl From<RaceError> for Error {
-    fn from(e: RaceError) -> Self {
-        Error::transient(e.0)
-    }
-}
-
 #[derive(Clone)]
 struct RaceConfig;
 
@@ -72,6 +55,11 @@ nebula_schema::impl_empty_has_schema!(RaceConfig);
 impl ResourceConfig for RaceConfig {
     fn validate(&self) -> Result<(), Error> {
         Ok(())
+    }
+
+    fn fingerprint(&self) -> u64 {
+        // Unit struct: all instances identical — constant 0 is correct.
+        0
     }
 }
 
@@ -114,11 +102,11 @@ struct RaceResource {
     revoke_calls: Arc<AtomicUsize>,
 }
 
-impl Resource for RaceResource {
+#[async_trait::async_trait]
+impl Provider for RaceResource {
     type Config = RaceConfig;
-    type Runtime = RaceRuntime;
-    type Lease = RaceRuntime;
-    type Error = RaceError;
+    type Instance = RaceRuntime;
+    type Topology = Resident<Self>;
 
     fn key() -> ResourceKey {
         resource_key!("race-resident")
@@ -128,14 +116,14 @@ impl Resource for RaceResource {
         &self,
         _config: &RaceConfig,
         _ctx: &ResourceContext,
-    ) -> Result<RaceRuntime, RaceError> {
+    ) -> Result<RaceRuntime, Error> {
         // Read the resolved credential exactly as a real resource would
         // (bind the runtime to whatever the slot holds *now*).
         let cred = self
             .db
             .load()
             .map(|g| g.0)
-            .ok_or_else(|| RaceError("slot unbound at create".to_owned()))?;
+            .ok_or_else(|| Error::transient("slot unbound at create"))?;
         let runtime = RaceRuntime {
             bound_cred: Arc::new(AtomicU32::new(cred)),
             refresh_calls: self.refresh_calls.clone(),
@@ -156,7 +144,7 @@ impl Resource for RaceResource {
         &self,
         _slot_name: &str,
         runtime: &RaceRuntime,
-    ) -> Result<(), RaceError> {
+    ) -> Result<(), Error> {
         // The blue-green `&self` reaction: re-read the (now rotated) slot
         // and rebind the live runtime to it via interior mutability.
         if let Some(g) = self.db.load() {
@@ -170,20 +158,11 @@ impl Resource for RaceResource {
         &self,
         _slot_name: &str,
         runtime: &RaceRuntime,
-    ) -> Result<(), RaceError> {
+    ) -> Result<(), Error> {
         // Model "stop serving the revoked credential": clear the binding.
         runtime.bound_cred.store(0, Ordering::SeqCst);
         runtime.revoke_calls.fetch_add(1, Ordering::SeqCst);
         Ok(())
-    }
-
-    // Activate the create-vs-rotate epoch reconcile: a hand-written impl
-    // would otherwise inherit the `0` default and never detect staleness.
-    // The derive emits exactly this (the `max` slot generation); we mirror
-    // it by hand because this fixture is not derived. NOT author discipline
-    // for production resources — `#[derive(Resource)]` generates it.
-    fn credential_slot_epoch(&self) -> u64 {
-        self.db.generation()
     }
 
     fn metadata() -> ResourceMetadata {
@@ -191,7 +170,18 @@ impl Resource for RaceResource {
     }
 }
 
-impl Resident for RaceResource {
+impl HasCredentialSlots for RaceResource {
+    // Activate the create-vs-rotate epoch reconcile: a hand-written impl
+    // would otherwise inherit the `0` default and never detect staleness.
+    // `#[derive(Resource)]` generates this; mirrored here because
+    // this fixture is not derived. NOT author discipline for production code.
+    fn credential_slot_epoch(&self) -> u64 {
+        self.db.generation()
+    }
+}
+
+#[async_trait::async_trait]
+impl ResidentProvider for RaceResource {
     fn is_alive_sync(&self, _runtime: &RaceRuntime) -> bool {
         true
     }
@@ -223,10 +213,7 @@ fn build(park: bool) -> (Arc<Manager>, ResourceKey, RaceResource) {
         config: RaceConfig,
         scope: ScopeLevel::Global,
         slot_identity: SlotIdentity::Unbound,
-        topology: TopologyRuntime::Resident(ResidentRuntime::<RaceResource>::new(
-            ResidentConfig::default(),
-        )),
-        acquire: Manager::erased_acquire_resident_for::<RaceResource>(),
+        topology: Resident::<RaceResource>::new(ResidentConfig::default()),
         recovery_gate: None,
     })
     .expect("resident registration must succeed");

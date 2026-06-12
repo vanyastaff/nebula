@@ -34,7 +34,8 @@ use nebula_metrics::{
         NEBULA_RESOURCE_ACQUIRE_ERROR_TOTAL, NEBULA_RESOURCE_ACQUIRE_TOTAL,
         NEBULA_RESOURCE_CREATE_TOTAL, NEBULA_RESOURCE_CREDENTIAL_REVOKE_ATTEMPTS_TOTAL,
         NEBULA_RESOURCE_CREDENTIAL_ROTATION_ATTEMPTS_TOTAL, NEBULA_RESOURCE_DESTROY_TOTAL,
-        NEBULA_RESOURCE_RELEASE_ERROR_TOTAL, NEBULA_RESOURCE_RELEASE_TOTAL, rotation_outcome,
+        NEBULA_RESOURCE_RECYCLE_OUTCOME_TOTAL, NEBULA_RESOURCE_RELEASE_ERROR_TOTAL,
+        NEBULA_RESOURCE_RELEASE_TOTAL, recycle_outcome, rotation_outcome,
     },
 };
 
@@ -83,6 +84,7 @@ pub struct ResourceOpsMetrics {
     destroy_total: Counter,
     slot_refresh_outcomes: OutcomeCounters,
     slot_revoke_outcomes: OutcomeCounters,
+    recycle_outcomes: RecycleOutcomeCounters,
 }
 
 /// How a single per-slot dispatch resolved.
@@ -149,6 +151,66 @@ impl OutcomeCounters {
     }
 }
 
+/// How a single pooled-release resolved on the framework release path.
+///
+/// Closed two-way split mirroring `nebula_metrics::naming::recycle_outcome`.
+/// Every `release_slot` call records **exactly one** value: `Recycled` when
+/// the clean lease is returned to the idle store, `Discarded` on every
+/// teardown path (tainted, reset error, evict-on-return, non-pooling / `Drop`
+/// decision). The release total is `recycled + discarded`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecycleOutcome {
+    /// Clean lease returned to the idle store and reusable.
+    Recycled,
+    /// Lease torn down instead of pooled.
+    Discarded,
+}
+
+/// Registry-bound `outcome` split for the pooled-release recycle counter.
+///
+/// One physical counter ([`NEBULA_RESOURCE_RECYCLE_OUTCOME_TOTAL`]) carrying
+/// the closed `outcome={recycled,discarded}` label set; the two handles
+/// below are those two series, built via
+/// [`MetricsRegistry::counter_labeled`] so a scraper observes them. `Clone`
+/// is cheap (each [`Counter`] is an `Arc` handle into the shared registry),
+/// so clones share the same atomics.
+#[derive(Debug, Clone)]
+struct RecycleOutcomeCounters {
+    recycled: Counter,
+    discarded: Counter,
+}
+
+impl RecycleOutcomeCounters {
+    /// Binds the two `outcome`-labeled series of
+    /// [`NEBULA_RESOURCE_RECYCLE_OUTCOME_TOTAL`] against `registry`.
+    fn new(registry: &MetricsRegistry) -> MetricsResult<Self> {
+        Ok(Self {
+            recycled: registry.counter_labeled(
+                NEBULA_RESOURCE_RECYCLE_OUTCOME_TOTAL,
+                &outcome_label(registry, recycle_outcome::RECYCLED),
+            )?,
+            discarded: registry.counter_labeled(
+                NEBULA_RESOURCE_RECYCLE_OUTCOME_TOTAL,
+                &outcome_label(registry, recycle_outcome::DISCARDED),
+            )?,
+        })
+    }
+
+    fn record(&self, outcome: RecycleOutcome) {
+        match outcome {
+            RecycleOutcome::Recycled => self.recycled.inc(),
+            RecycleOutcome::Discarded => self.discarded.inc(),
+        }
+    }
+
+    fn snapshot(&self) -> RecycleOutcomeSnapshot {
+        RecycleOutcomeSnapshot {
+            recycled: self.recycled.get(),
+            discarded: self.discarded.get(),
+        }
+    }
+}
+
 impl ResourceOpsMetrics {
     /// Creates a new metrics instance backed by the given registry.
     ///
@@ -170,6 +232,7 @@ impl ResourceOpsMetrics {
                 registry,
                 NEBULA_RESOURCE_CREDENTIAL_REVOKE_ATTEMPTS_TOTAL,
             )?,
+            recycle_outcomes: RecycleOutcomeCounters::new(registry)?,
         })
     }
 
@@ -231,6 +294,20 @@ impl ResourceOpsMetrics {
         self.slot_revoke_outcomes.record(outcome);
     }
 
+    /// Records how one pooled release resolved, bumping the matching
+    /// `outcome` series of the recycle counter.
+    ///
+    /// Called exactly once per framework release (`release_slot`):
+    /// [`Recycled`](RecycleOutcome::Recycled) when the clean lease is returned
+    /// to the idle store, [`Discarded`](RecycleOutcome::Discarded) on every
+    /// teardown path (tainted lease, reset error, evict-on-return, or a
+    /// non-pooling / `Drop` recycle decision). One outcome per release, so the
+    /// release total is `recycled + discarded`; a pool stuck at
+    /// `discarded == releases` with zero recycles is a silently-evicting pool.
+    pub fn record_recycle_outcome(&self, outcome: RecycleOutcome) {
+        self.recycle_outcomes.record(outcome);
+    }
+
     /// Captures a point-in-time snapshot of all counters.
     ///
     /// Each counter is read with [`Relaxed`](std::sync::atomic::Ordering::Relaxed)
@@ -248,6 +325,7 @@ impl ResourceOpsMetrics {
             destroy_total: self.destroy_total.get(),
             slot_refresh_outcomes: self.slot_refresh_outcomes.snapshot(),
             slot_revoke_outcomes: self.slot_revoke_outcomes.snapshot(),
+            recycle_outcomes: self.recycle_outcomes.snapshot(),
         }
     }
 }
@@ -269,6 +347,22 @@ pub struct OutcomeCountersSnapshot {
     pub failed: u64,
     /// Resources whose hook exceeded the per-resource timeout budget.
     pub timed_out: u64,
+}
+
+/// Snapshot of the two `outcome`-labeled series of the pooled-release recycle
+/// counter. Mirrors the `nebula_metrics::naming::recycle_outcome` closed
+/// label set.
+///
+/// `release_slot` records exactly one of these per release, so the release
+/// total is `recycled + discarded`. This is an in-process view of the same
+/// registry series a scraper reads off the
+/// `NEBULA_RESOURCE_RECYCLE_OUTCOME_TOTAL` `outcome` label.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RecycleOutcomeSnapshot {
+    /// Clean leases returned to the idle store.
+    pub recycled: u64,
+    /// Leases torn down instead of pooled.
+    pub discarded: u64,
 }
 
 /// Point-in-time snapshot of resource operation counters.
@@ -295,6 +389,11 @@ pub struct ResourceOpsSnapshot {
     /// one increment per dispatch. The revoke attempts total is
     /// `success + failed + timed_out`.
     pub slot_revoke_outcomes: OutcomeCountersSnapshot,
+    /// Per-`outcome` split of pooled releases, one increment per release.
+    /// The release total is `recycled + discarded`; see
+    /// [`RecycleOutcomeSnapshot`]. A pool with `recycled == 0` and
+    /// `discarded > 0` is silently discarding every instance.
+    pub recycle_outcomes: RecycleOutcomeSnapshot,
 }
 
 #[cfg(test)]

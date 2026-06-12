@@ -159,22 +159,14 @@
 //! These decisions have no separate ADR; this section is their durable
 //! record.
 //!
-//! ## Why the topology taxonomy is three runtimes, not five
+//! ## Why there are two topology runtimes
 //!
-//! The resource topologies were collapsed from five to three. Two axes carry
-//! all real variation: the **concurrency cap** and the **per-acquire hook
-//! pair** (acquire / release-shape). `Pooled` and `Resident` stay distinct
-//! runtimes — `Resident` has a `Lease: Clone` super-bound and a
-//! create-vs-rotate epoch reconcile that the folded runtime cannot express,
-//! and `Pooled` owns the idle queue and the revoke-epoch fence above. The
-//! former `Service` / `Transport` / `Exclusive` topologies differed only in
-//! cap and release-shape, so they fold into one parameterized `Bounded`
-//! runtime whose cap and release-shape are **type-enforced** via a sealed
-//! `Cap` typestate marker (`Unbounded` / `Capped<N>` / `Exclusive`). A
-//! sealed typestate makes "a tracked service that never releases" or "an
-//! exclusive runtime without reset ordering" a compile error instead of a
-//! runtime `==` branch that could silently no-op — invalid states are
-//! unrepresentable rather than discipline-checked.
+//! `Pooled` and `Resident` are distinct runtimes because their semantics
+//! are structurally different. `Resident` has a `Lease: Clone` super-bound
+//! and a create-vs-rotate epoch reconcile that a shared parameterized
+//! runtime cannot express. `Pooled` owns the idle queue and the
+//! revoke-epoch fence described above. These differences require distinct
+//! runtime implementations rather than a shared parameterization.
 //!
 //! ## Why RCU was rejected for [`SlotCell`](crate::slot::SlotCell)
 //!
@@ -209,13 +201,13 @@
 //! - **`reload_config` never drains/rebuilds the live runtime — MED-HIGH**
 //!   ([#712]). `reload_config` swaps the config `ArcSwap` (and the Pool
 //!   fingerprint) but never drains in-flight work or rebuilds the
-//!   caller-supplied live `Arc<R::Runtime>` for any topology, so a reload
+//!   caller-supplied live `Arc<R::Instance>` for any topology, so a reload
 //!   that should rotate the running runtime is silently not applied to it.
 //!   Deferred because the reload redesign (drain-then-rebuild + a truthful
 //!   outcome contract) is a separate concern; see the **accepted relabel**
 //!   note below for why this is a preserved no-op, not a regression.
-//! - **Pool `CreateGuard` cancel-drop leaks the runtime — MED** ([#713]).
-//!   A *cancelled* acquire whose in-flight `create` already built a runtime
+//! - **Pool `CreateGuard` cancel-drop leaks the instance — MED** ([#713]).
+//!   A *cancelled* acquire whose in-flight `create` already built an instance
 //!   drops it synchronously without the async `destroy()`, leaking the
 //!   server-side handle. (The *other* `CreateGuard` race — an in-flight
 //!   create completing *after a revoke* — is the same isolation defect as
@@ -262,10 +254,10 @@
 //!
 //! ## Further `Manager` code-line reduction — LOW ([#719])
 //!
-//! `crates/resource/src/manager/mod.rs` is 2552 lines: ~1224 comment/doc,
-//! ~117 blank, ~1211 code. The structural de-spaghettification root-cause
-//! goals **are** met — 5→3 topology, one generic `run_acquire` (no
-//! `run_*_acquire` clones), the ~17 register shorthands + 3-deep chain
+//! `crates/resource/src/manager/mod.rs` is large. The structural
+//! de-spaghettification root-cause goals **are** met — two topologies, one
+//! generic `run_acquire` (no `run_*_acquire` clones), the ~17 register
+//! shorthands + 3-deep chain
 //! folded into one `register(RegistrationSpec)` funnel, the 8 prose
 //! restatements of the revoke invariant collapsed into the single canonical
 //! block above, dead surface removed, all type-enforced so the duplication
@@ -279,18 +271,12 @@
 //!
 //! ## Accepted carve-outs (recorded, not silently inherited)
 //!
-//! - **`reload_config` outcome relabel — no-op-preserving.** The former
-//!   `Service` topology returned a separate draining outcome; post-collapse
-//!   a former-Service row is `TopologyRuntime::Bounded` and that arm is
-//!   gone, so `reload_config` now returns
-//!   `ReloadOutcome::SwappedImmediately` for every variant. This is **only
-//!   an enum label change**: `reload_config` never drained or rebuilt the
-//!   live runtime for that topology under either label (that missing
-//!   behavior is exactly [#712]). A characterization net pins the
-//!   per-topology `reload_config` outcome so the relabel is auditable as a
-//!   preserved no-op, not a silent behavior change. The now-unreachable
-//!   draining variant was removed from `ReloadOutcome` once that net
-//!   landed.
+//! - **`reload_config` returns `ReloadOutcome::SwappedImmediately` for all
+//!   variants.** `reload_config` swaps the config `ArcSwap` (and the Pool
+//!   fingerprint) but never drains or rebuilds the live runtime for any
+//!   topology — that missing behavior is exactly [#712]. The enum label is
+//!   accurate for the current behavior; the missing drain/rebuild is the
+//!   deferred work.
 //! - **`register_resolved` carries one `// guard-justified:`
 //!   `#[allow(clippy::too_many_arguments)]`.** The four register-chain
 //!   `too_many_arguments` allows the collapse targeted are gone; this last
@@ -350,19 +336,17 @@ use crate::{
     recovery::gate::GateState,
     registry::Registry,
     release_queue::{ReleaseQueue, ReleaseQueueHandle},
-    resource::Resource,
+    resource::Provider,
     runtime::managed::ManagedResource,
 };
 
-mod acquire;
-pub(crate) mod acquire_dispatch;
+pub(crate) mod acquire;
 mod gate;
 pub(crate) mod options;
 mod registration;
 mod rotation;
 pub(crate) mod shutdown;
 
-pub use crate::registry::ErasedAcquireFn;
 pub use options::{
     DrainTimeoutPolicy, ManagerConfig, RegisterOptions, RegistrationSpec, ShutdownConfig,
 };
@@ -406,7 +390,7 @@ pub struct TaintedSlot {
     /// The credential slot on that row that was revoked.
     slot: String,
     /// The resolved row whose taint flag was already set synchronously.
-    managed: Arc<dyn crate::registry::AnyManagedResource>,
+    managed: Arc<dyn crate::registry::ManagedHandle>,
     /// When the synchronous taint was applied — the drain/revoke duration
     /// metric spans from here so it covers the whole revoke, not just the
     /// awaited tail.
@@ -593,7 +577,7 @@ impl Manager {
     /// Ordering: `graceful_shutdown` writes `shutting_down` with `AcqRel`,
     /// we read with `Acquire`, so we synchronize-with that write and any
     /// observation here implies the cancel will follow.
-    fn shutdown_guard(&self) -> Result<(), Error> {
+    pub(crate) fn shutdown_guard(&self) -> Result<(), Error> {
         if self.shutting_down.load(AtomicOrdering::Acquire) || self.cancel.is_cancelled() {
             return Err(Error::cancelled());
         }
@@ -607,7 +591,7 @@ impl Manager {
     /// a caller conflict, not a server error — rather than a
     /// silently-picked row, so two resolved credentials sharing one
     /// `(key, scope)` can never bleed into each other.
-    fn resolve_typed<R: Resource>(
+    fn resolve_typed<R: Provider>(
         outcome: crate::registry::LookupOutcome,
     ) -> Result<Arc<ManagedResource<R>>, Error> {
         use crate::registry::LookupOutcome;
@@ -637,7 +621,7 @@ impl Manager {
     /// failure mode the agnostic [`resolve_typed`](Self::resolve_typed)
     /// guards against is type-unrepresentable on the pinned path rather
     /// than a runtime branch.
-    fn resolve_typed_pinned<R: Resource>(
+    fn resolve_typed_pinned<R: Provider>(
         outcome: crate::registry::PinnedLookup,
     ) -> Result<Arc<ManagedResource<R>>, Error> {
         use crate::registry::PinnedLookup;
@@ -696,7 +680,7 @@ impl Manager {
     ///
     /// Returns [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound)
     /// if the resource is not registered for the given scope.
-    pub fn health_check<R: Resource>(
+    pub fn health_check<R: Provider>(
         &self,
         scope: &ScopeLevel,
     ) -> Result<ResourceHealthSnapshot, Error> {
@@ -711,7 +695,7 @@ impl Manager {
     }
 
     /// Looks up a managed resource by key and scope, returning the
-    /// type-erased `Arc<dyn AnyManagedResource>`.
+    /// type-erased `Arc<dyn ManagedHandle>`.
     ///
     /// Useful for diagnostics and admin APIs that don't need typed access.
     /// Returns `None` both when nothing is registered and when several
@@ -721,7 +705,7 @@ impl Manager {
         &self,
         key: &ResourceKey,
         scope: &ScopeLevel,
-    ) -> Option<Arc<dyn crate::registry::AnyManagedResource>> {
+    ) -> Option<Arc<dyn crate::registry::ManagedHandle>> {
         match self.registry.get(key, scope) {
             crate::registry::LookupOutcome::Found(any) => Some(any),
             crate::registry::LookupOutcome::NotFound
@@ -729,9 +713,34 @@ impl Manager {
         }
     }
 
+    /// Diagnostic admission snapshot for a registered resource at
+    /// `(key, scope)` — its advisory [`AdmissionPhase`](crate::topology::AdmissionPhase)
+    /// and optional [`Load`](crate::topology::Load), bundled into an
+    /// [`AdmissionStatus`](crate::topology::AdmissionStatus).
+    ///
+    /// Returns `None` both when nothing is registered and when several
+    /// resolved-credential rows share `(key, scope)` (ambiguous) — mirroring
+    /// [`get_any`](Self::get_any), a diagnostic peek must not arbitrarily pick
+    /// one tenant's row.
+    ///
+    /// Advisory only: the authoritative admission gate is the acquire path's
+    /// `try_reserve`. This surface is for admin APIs, dashboards, and
+    /// load-balancer hints.
+    pub fn admission_status(
+        &self,
+        key: &ResourceKey,
+        scope: &ScopeLevel,
+    ) -> Option<crate::topology::AdmissionStatus> {
+        let handle = self.get_any(key, scope)?;
+        Some(crate::topology::AdmissionStatus {
+            phase: handle.admission_phase(),
+            load: handle.admission_load(),
+        })
+    }
+
     /// Records acquire success/failure in aggregate metrics and emits
     /// the corresponding [`ResourceEvent`].
-    fn record_acquire_result<R: Resource>(
+    fn record_acquire_result<R: Provider>(
         &self,
         result: &Result<crate::guard::ResourceGuard<R>, Error>,
         started: Instant,
@@ -939,49 +948,36 @@ mod shutdown_post_count_race_tests {
         context::ResourceContext,
         error::ErrorKind,
         options::AcquireOptions,
-        resource::{ResourceConfig, ResourceMetadata},
-        runtime::{TopologyRuntime, resident::ResidentRuntime},
-        topology::resident::{Resident, config::Config as ResidentConfig},
+        resource::{HasCredentialSlots, ResourceConfig, ResourceMetadata},
+        topology::{Resident, resident::config::Config as ResidentConfig},
     };
-
-    #[derive(Debug)]
-    struct RaceErr(&'static str);
-
-    impl std::fmt::Display for RaceErr {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.write_str(self.0)
-        }
-    }
-
-    impl std::error::Error for RaceErr {}
-
-    impl From<RaceErr> for Error {
-        fn from(e: RaceErr) -> Self {
-            Error::permanent(e.0)
-        }
-    }
 
     #[derive(Clone, Default)]
     struct RaceCfg;
 
     nebula_schema::impl_empty_has_schema!(RaceCfg);
 
-    impl ResourceConfig for RaceCfg {}
+    impl ResourceConfig for RaceCfg {
+        fn fingerprint(&self) -> u64 {
+            // Unit struct: all instances identical — constant 0 is correct.
+            0
+        }
+    }
 
     #[derive(Clone)]
     struct ShutdownRaceResident;
 
-    impl Resource for ShutdownRaceResident {
+    #[async_trait::async_trait]
+    impl Provider for ShutdownRaceResident {
         type Config = RaceCfg;
-        type Runtime = ();
-        type Lease = ();
-        type Error = RaceErr;
+        type Instance = ();
+        type Topology = Resident<Self>;
 
         fn key() -> ResourceKey {
             resource_key!("test.shutdown_post_count_race.resident")
         }
 
-        async fn create(&self, _config: &RaceCfg, _ctx: &ResourceContext) -> Result<(), RaceErr> {
+        async fn create(&self, _config: &RaceCfg, _ctx: &ResourceContext) -> Result<(), Error> {
             Ok(())
         }
 
@@ -990,7 +986,13 @@ mod shutdown_post_count_race_tests {
         }
     }
 
-    impl Resident for ShutdownRaceResident {
+    impl HasCredentialSlots for ShutdownRaceResident {
+        fn credential_slot_epoch(&self) -> u64 {
+            0
+        }
+    }
+
+    impl crate::topology::ResidentProvider for ShutdownRaceResident {
         fn is_alive_sync(&self, _runtime: &()) -> bool {
             true
         }
@@ -1004,6 +1006,29 @@ mod shutdown_post_count_race_tests {
         ResourceContext::minimal(scope, CancellationToken::new())
     }
 
+    fn register_race_resident(manager: &Manager, topology: Resident<ShutdownRaceResident>) {
+        let spec = RegistrationSpec {
+            resource: ShutdownRaceResident,
+            config: RaceCfg,
+            scope: ScopeLevel::Global,
+            slot_identity: crate::dedup::SlotIdentity::Unbound,
+            topology,
+            recovery_gate: None,
+        };
+        assert!(manager.register(spec).is_ok(), "register succeeds");
+    }
+
+    /// Runs the resident acquire through the framework loop — the same
+    /// monomorphic dispatch `run_acquire_dispatch` performs.
+    async fn race_resident_acquire(
+        managed: &Arc<ManagedResource<ShutdownRaceResident>>,
+        ctx: &ResourceContext,
+    ) -> Result<crate::guard::ResourceGuard<ShutdownRaceResident>, Error> {
+        managed
+            .run_acquire_loop(ctx, &AcquireOptions::default(), None)
+            .await
+    }
+
     /// Deterministic reproduction of the use-after-drain. The acquire
     /// resolves its row *before* shutdown (Defense A passes), shutdown then
     /// drains (sees `0` because the acquire has not yet hit
@@ -1014,18 +1039,8 @@ mod shutdown_post_count_race_tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn run_acquire_rejects_when_drain_completed_after_lookup_passed() {
         let manager = Manager::new();
-        let resident_rt = ResidentRuntime::<ShutdownRaceResident>::new(ResidentConfig::default());
-        manager
-            .register(RegistrationSpec {
-                resource: ShutdownRaceResident,
-                config: RaceCfg,
-                scope: ScopeLevel::Global,
-                slot_identity: crate::dedup::SlotIdentity::Unbound,
-                topology: TopologyRuntime::Resident(resident_rt),
-                acquire: Manager::erased_acquire_resident_for::<ShutdownRaceResident>(),
-                recovery_gate: None,
-            })
-            .expect("register succeeds");
+        let resident_rt = Resident::<ShutdownRaceResident>::new(ResidentConfig::default());
+        register_race_resident(&manager, resident_rt);
 
         let acquire_ctx = ctx();
 
@@ -1056,20 +1071,7 @@ mod shutdown_post_count_race_tests {
             .run_acquire(Arc::clone(&managed), || {
                 let managed = Arc::clone(&managed);
                 let ctx = &acquire_ctx;
-                async move {
-                    match &managed.topology {
-                        TopologyRuntime::Resident(rt) => {
-                            rt.acquire(
-                                &managed.resource,
-                                &managed.config(),
-                                ctx,
-                                &AcquireOptions::default(),
-                            )
-                            .await
-                        },
-                        other => Err(Manager::unexpected_topology::<ShutdownRaceResident>(other)),
-                    }
-                }
+                async move { race_resident_acquire(&managed, ctx).await }
             })
             .await;
 
@@ -1104,18 +1106,8 @@ mod shutdown_post_count_race_tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn run_acquire_still_succeeds_when_not_shutting_down() {
         let manager = Manager::new();
-        let resident_rt = ResidentRuntime::<ShutdownRaceResident>::new(ResidentConfig::default());
-        manager
-            .register(RegistrationSpec {
-                resource: ShutdownRaceResident,
-                config: RaceCfg,
-                scope: ScopeLevel::Global,
-                slot_identity: crate::dedup::SlotIdentity::Unbound,
-                topology: TopologyRuntime::Resident(resident_rt),
-                acquire: Manager::erased_acquire_resident_for::<ShutdownRaceResident>(),
-                recovery_gate: None,
-            })
-            .expect("register succeeds");
+        let resident_rt = Resident::<ShutdownRaceResident>::new(ResidentConfig::default());
+        register_race_resident(&manager, resident_rt);
 
         let acquire_ctx = ctx();
         let managed = manager
@@ -1126,20 +1118,7 @@ mod shutdown_post_count_race_tests {
             .run_acquire(Arc::clone(&managed), || {
                 let managed = Arc::clone(&managed);
                 let ctx = &acquire_ctx;
-                async move {
-                    match &managed.topology {
-                        TopologyRuntime::Resident(rt) => {
-                            rt.acquire(
-                                &managed.resource,
-                                &managed.config(),
-                                ctx,
-                                &AcquireOptions::default(),
-                            )
-                            .await
-                        },
-                        other => Err(Manager::unexpected_topology::<ShutdownRaceResident>(other)),
-                    }
-                }
+                async move { race_resident_acquire(&managed, ctx).await }
             })
             .await;
 

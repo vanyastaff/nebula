@@ -8,14 +8,11 @@ use nebula_core::{ResourceKey, ScopeLevel};
 use tokio::sync::Notify;
 use tracing::Instrument as _;
 
-use super::{ErasedAcquireFn, Manager, RegistrationSpec, resolve_json_templates};
+use super::{Manager, RegistrationSpec, resolve_json_templates};
 use crate::{
-    error::Error,
-    events::ResourceEvent,
-    recovery::gate::RecoveryGate,
-    reload::ReloadOutcome,
-    resource::Resource,
-    runtime::{TopologyRuntime, managed::ManagedResource},
+    error::Error, events::ResourceEvent, recovery::gate::RecoveryGate, reload::ReloadOutcome,
+    resource::Provider, runtime::managed::ManagedResource, topology::Topology,
+    topology_tag::TopologyTag,
 };
 
 impl Manager {
@@ -34,8 +31,8 @@ impl Manager {
     /// `#[credential]` slot fields already resolved and populated**.
     /// `Manager::register` does not itself resolve credential bindings —
     /// that is the responsibility of the caller (typically the engine
-    /// dispatch layer that assembles `R` via the `FromConfig` trait emitted
-    /// by `#[derive(Resource)]`).
+    /// dispatch layer, which holds a per-`R` constructor closure — the
+    /// derive emits no constructor).
     ///
     /// `spec.slot_identity` is the structural anti-bleed seam: two
     /// registrations of the same resource type at the same `spec.scope`
@@ -54,7 +51,12 @@ impl Manager {
     /// # Errors
     ///
     /// Returns an error if config validation fails on the provided config.
-    pub fn register<R: Resource>(&self, spec: RegistrationSpec<R>) -> Result<(), Error> {
+    pub fn register<R>(&self, spec: RegistrationSpec<R>) -> Result<(), Error>
+    where
+        R: Provider + crate::resource::HasCredentialSlots,
+        R::Instance: Clone,
+        R::Topology: Topology<R>,
+    {
         use crate::resource::ResourceConfig as _;
 
         let RegistrationSpec {
@@ -63,19 +65,18 @@ impl Manager {
             scope,
             slot_identity,
             topology,
-            acquire,
             recovery_gate,
         } = spec;
 
         config.validate()?;
 
-        // #390 (pool min/max sanity) is enforced at `PoolRuntime`
+        // #390 (pool min/max sanity) is enforced at `Pooled`
         // construction, which the caller has already invoked to build the
-        // `TopologyRuntime::Pool` handed in here. No separate
+        // `Pooled<R>` topology handed in here. No separate
         // register-time pool-config check is needed: an invalid
         // `(min_size, max_size)` from operator/JSON config is rejected by
-        // the fallible `PoolRuntime::try_new` (typed `Error::permanent`)
-        // that the engine registrar uses to construct the runtime, so the
+        // the fallible `Pooled::try_new` (typed `Error::permanent`)
+        // that the engine registrar uses to construct the topology, so the
         // failure surfaces *before* this funnel as a registration error
         // rather than an abort. (The deleted `register_pooled[_with]`
         // shorthands re-validated the raw config only because they took
@@ -93,27 +94,46 @@ impl Manager {
             gate.set_event_sink(Arc::clone(&self.event_bus), key.clone());
         }
 
+        // The framework-owned idle store the acquire loop fences. Its capacity
+        // is the topology's (`Pooled`: `max_size`; non-pooling topologies:
+        // `None`, store stays empty). Read before moving `topology` in.
+        let store_capacity = <R::Topology as Topology<R>>::store_capacity(&topology);
+
+        // Tier-3 foolproofing (ADR-0093): a credentialed *Pooled* resource is
+        // safe by default — `PoolProvider::recycle` DISCARDS on release, so the
+        // pool never reuses a session-stateful instance and never bleeds a
+        // `SET`/`PRAGMA`/open-txn across leases. The cost is that this pool gets
+        // no reuse at all. This dev-time nudge points authors at the override
+        // that re-enables pooling once they wipe per-lease state. Keyed on the
+        // *type-level* slot signal (`declares_credential_slots`) rather than the
+        // runtime epoch, which is `0` for both slot-less and declared-but-unbound
+        // resources.
+        if Topology::<R>::tag(&topology) == TopologyTag::Pool && R::declares_credential_slots() {
+            tracing::warn!(
+                resource.key = %R::key(),
+                "credentialed pooled resource: `recycle` DISCARDS by default (safe — no cross-lease state bleed), so this pool never reuses instances. Override `PoolProvider::recycle` to wipe per-lease session state (SET/PRAGMA/txn) and return Keep to enable pooling. See ADR-0093."
+            );
+        }
+
         let managed = Arc::new(ManagedResource {
             resource,
             config: arc_swap::ArcSwap::from_pointee(config),
             topology,
+            // Framework-owned idle store the acquire loop runs checkout / return
+            // / evict against — the real idle queue, not a throwaway sentinel.
+            store: crate::topology::store::InstanceStore::new(store_capacity),
             release_queue: Arc::clone(&self.release_queue),
             generation: AtomicU64::new(0),
             status: arc_swap::ArcSwap::from_pointee(crate::state::ResourceStatus::new()),
             recovery_gate,
             tainted: std::sync::atomic::AtomicBool::new(false),
             in_flight: Arc::new((AtomicU64::new(0), Notify::new())),
+            maintenance_sweeps: AtomicU64::new(0),
         });
 
         let type_id = std::any::TypeId::of::<ManagedResource<R>>();
-        self.registry.register(
-            key.clone(),
-            type_id,
-            scope,
-            slot_identity,
-            managed.clone(),
-            acquire,
-        );
+        self.registry
+            .register(key.clone(), type_id, scope, slot_identity, managed.clone());
 
         // #387: everything below this point is a single funnel — the
         // resource is installed, so advance its phase from `Initializing`
@@ -145,7 +165,9 @@ impl Manager {
     /// goes idle and simply ages out past `idle_timeout` is never swept
     /// unless this reaper runs — so without it `idle_timeout` is dead config.
     ///
-    /// Spawned **only** for the [`Pool`](TopologyRuntime::Pool) topology and
+    /// Spawned **only** for topologies whose
+    /// [`Topology::maintenance_schedule`](crate::topology::Topology::maintenance_schedule)
+    /// returns `Some` (the built-in [`Pooled`](crate::topology::Pooled)) and
     /// **only** when a TTL (`idle_timeout` or `max_lifetime`) is configured,
     /// so pools that never expire instances pay zero background cost (bb8's
     /// guard). The task:
@@ -169,19 +191,26 @@ impl Manager {
     /// reload still evicts stale-fingerprint instances and a revoke still
     /// evicts revoked ones on the next sweep — only the TTL *durations* are
     /// frozen for the pool's lifetime.
-    fn spawn_pool_maintenance<R: Resource>(&self, managed: &Arc<ManagedResource<R>>) {
-        let TopologyRuntime::Pool(pool) = &managed.topology else {
+    fn spawn_pool_maintenance<R>(&self, managed: &Arc<ManagedResource<R>>)
+    where
+        R: Provider + crate::resource::HasCredentialSlots,
+        R::Instance: Clone,
+        R::Topology: Topology<R>,
+    {
+        // Only topologies that run a maintenance reaper return a schedule; a
+        // topology with no idle eviction returns `None` and pays zero
+        // background cost.
+        let Some(schedule) = managed.maintenance_schedule() else {
             return;
         };
-        let cfg = pool.config();
-        if cfg.idle_timeout.is_none() && cfg.max_lifetime.is_none() {
+        if schedule.idle_timeout.is_none() && schedule.max_lifetime.is_none() {
             return;
         }
         // `tokio::time::interval` panics on a zero period, and a sub-second
         // maintenance cadence would burn CPU for no benefit (eviction is
         // coarse-grained). Floor a zero/too-small operator-supplied
         // `maintenance_interval` at 1s rather than panicking or spinning.
-        let period = cfg
+        let period = schedule
             .maintenance_interval
             .max(std::time::Duration::from_secs(1));
         let weak = Arc::downgrade(managed);
@@ -210,18 +239,13 @@ impl Manager {
                 let Some(managed) = weak.upgrade() else {
                     break;
                 };
-                if let TopologyRuntime::Pool(pool) = &managed.topology {
-                    let span = tracing::debug_span!("pool_maintenance", %key);
-                    let evicted = pool
-                        .run_maintenance(&managed.resource)
-                        .instrument(span)
-                        .await;
-                    if evicted > 0 {
-                        let _ = bus.emit(ResourceEvent::MaintenanceEvicted {
-                            key: key.clone(),
-                            evicted,
-                        });
-                    }
+                let span = tracing::debug_span!("pool_maintenance", %key);
+                let evicted = managed.run_maintenance().instrument(span).await;
+                if evicted > 0 {
+                    let _ = bus.emit(ResourceEvent::MaintenanceEvicted {
+                        key: key.clone(),
+                        evicted,
+                    });
                 }
             }
         });
@@ -236,7 +260,7 @@ impl Manager {
     /// deserialize step that the live path runs *after* template
     /// resolution — but performs **no** `{{ … }}` resolution, **no**
     /// `Manager` mutation, and constructs **no** `resource: R` /
-    /// `TopologyRuntime<R>`. It is the seam a config-CRUD writer uses to
+    /// `R::Topology`. It is the seam a config-CRUD writer uses to
     /// reject a bad `ResourceEntry.config` *before* persistence, keeping
     /// config validation strictly separate from engine-activation live
     /// registration (INTEGRATION_MODEL integration seam.1 — live registration happens
@@ -266,7 +290,7 @@ impl Manager {
     ///   never its value.
     pub fn validate_config_value<R>(config_json: serde_json::Value) -> Result<R::Config, Error>
     where
-        R: Resource,
+        R: Provider,
         R::Config: serde::de::DeserializeOwned,
     {
         // Schema-validate against <R::Config as HasSchema>::schema(). This is
@@ -349,10 +373,7 @@ impl Manager {
     /// The derived structural identity is **returned** so the caller (the
     /// engine activation loop) records it for the acquire path and the
     /// rotation fan-out reverse index, addressing the *same* registry row
-    /// this method created. The erased `acquire` hook is passed by value
-    /// (not a `Fn(slot_id)` factory): the single-walk acquire resolution
-    /// pins the row by the *caller's* runtime slot identity, so the
-    /// registration-time identity no longer parameterises the hook.
+    /// this method created.
     ///
     /// `nebula-resource → nebula-expression` is allowed under deny.toml's
     /// `[[bans]]` `nebula-resource` wrapper allowlist (Business → Core layer
@@ -372,6 +393,10 @@ impl Manager {
     ///   to a declared credential slot on `R`.
     /// - Any [`Error`](Error) returned by the underlying typed
     ///   [`register`](Self::register).
+    // guard-justified: irreducible engine ABI — the engine registrar dispatches
+    // positionally with a JSON-driven shape; collapsing to a struct reintroduces
+    // the navigation hop the single register funnel removed. See issue #718.
+    #[allow(clippy::too_many_arguments)]
     #[tracing::instrument(
         level = "debug",
         target = "nebula_resource::register_resolved",
@@ -381,11 +406,6 @@ impl Manager {
             slot_count = slot_bindings.len(),
         )
     )]
-    // guard-justified: the production engine registrar dispatches into this positionally (config_json + expr_engine + slot_bindings + resource + scope + topology + acquire + recovery_gate), so the 8-param JSON-driven shape is the engine ABI — collapsing it into a struct would re-introduce the navigation hop the single funnel removed and is not warranted for the one erased call site.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "engine-facing JSON-driven structural-identity entry: the production engine registrar calls register_resolved positionally; collapsing the 8-param shape into a struct would re-introduce a navigation hop for the one erased call site, and the body itself builds one RegistrationSpec and delegates to the single register() funnel"
-    )]
     pub async fn register_resolved<R>(
         &self,
         config_json: serde_json::Value,
@@ -393,13 +413,14 @@ impl Manager {
         slot_bindings: std::collections::HashMap<String, nebula_core::CredentialKey>,
         resource: R,
         scope: ScopeLevel,
-        topology: TopologyRuntime<R>,
-        acquire: ErasedAcquireFn,
+        topology: R::Topology,
         recovery_gate: Option<Arc<RecoveryGate>>,
     ) -> Result<crate::dedup::SlotIdentity, Error>
     where
-        R: Resource + nebula_core::DeclaresDependencies,
+        R: Provider + crate::resource::HasCredentialSlots + nebula_core::DeclaresDependencies,
         R::Config: serde::de::DeserializeOwned,
+        R::Instance: Clone,
+        R::Topology: Topology<R>,
     {
         // 0. Validate that every binding matches a declared credential slot.
         //    Hard error on unknown slot — refuses to register a resource
@@ -447,6 +468,45 @@ impl Manager {
                 .map(|(slot, cred)| (slot.as_str(), cred.as_str())),
         );
 
+        // 4b. Shared-topology revoke footgun guard (observability / DoD). A
+        //     non-pooling topology (`pools() == false`) holding a
+        //     credential-bearing singleton — a gRPC channel, a WebSocket — is
+        //     NOT in the framework store, so the revoke-epoch fence cannot evict
+        //     it; its revoke teardown runs through
+        //     `Topology::dispatch_credential_hook`, which DEFAULTS to a no-op.
+        //     For such a topology the default no-op leaks streams on revoke, so
+        //     the author MUST override the hook. The built-in `Resident`
+        //     overrides it; this fires only for under-built custom topologies
+        //     that pair a credential slot with a non-pooling topology. Make it
+        //     loud — it is the one place a careful author still matters.
+        if !slot_bindings.is_empty()
+            && !Topology::<R>::pools(&topology)
+            && !Topology::<R>::handles_own_revoke(&topology)
+        {
+            tracing::warn!(
+                target: "nebula_resource::register_resolved",
+                resource = %R::key(),
+                slot_count = slot_bindings.len(),
+                "registering a credential-bearing resource on a non-pooling \
+                 topology: the framework store revoke-fence cannot reach a \
+                 shared/multiplexed instance — the topology MUST override \
+                 `dispatch_credential_hook` to tear down on revoke, or a \
+                 revoked credential will keep serving live streams"
+            );
+            // guard-justified: a debug-build trip for the shared-topology revoke
+            // footgun — a non-pooling topology with credential slots that never
+            // overrides `dispatch_credential_hook` leaks on revoke; the invariant
+            // is enforced loudly in dev, the `tracing::warn` above carries it in
+            // release. Built-in `Resident` overrides the hook, so this never
+            // fires for first-party topologies.
+            debug_assert!(
+                false,
+                "non-pooling topology with {} credential slot(s) must override \
+                 Topology::dispatch_credential_hook (a no-op leaks on revoke)",
+                slot_bindings.len(),
+            );
+        }
+
         // 5. Dispatch into the single typed register funnel via a
         //    `RegistrationSpec`. ResourceConfig::validate() runs inside
         //    `register`, so domain-level rules (PoolConfig sanity, host
@@ -462,7 +522,6 @@ impl Manager {
             scope,
             slot_identity: slot_identity.clone(),
             topology,
-            acquire,
             recovery_gate,
         })?;
         Ok(slot_identity)
@@ -479,7 +538,7 @@ impl Manager {
     ///   registered for the given scope.
     /// - [`ErrorKind::Cancelled`](crate::error::ErrorKind::Cancelled) if the manager is shutting
     ///   down.
-    pub fn lookup<R: Resource>(
+    pub fn lookup<R: Provider>(
         &self,
         scope: &ScopeLevel,
     ) -> Result<Arc<ManagedResource<R>>, Error> {
@@ -500,11 +559,16 @@ impl Manager {
     ///   registered for the given scope.
     /// - [`ErrorKind::Permanent`](crate::error::ErrorKind::Permanent) if config validation fails.
     /// - [`ErrorKind::Cancelled`](crate::error::ErrorKind::Cancelled) if the manager is shut down.
-    pub fn reload_config<R: Resource>(
+    pub fn reload_config<R>(
         &self,
         new_config: R::Config,
         scope: &ScopeLevel,
-    ) -> Result<ReloadOutcome, Error> {
+    ) -> Result<ReloadOutcome, Error>
+    where
+        R: Provider + crate::resource::HasCredentialSlots,
+        R::Instance: Clone,
+        R::Topology: Topology<R>,
+    {
         use crate::resource::ResourceConfig as _;
 
         new_config.validate()?;
@@ -525,10 +589,10 @@ impl Manager {
         // Atomically swap the config.
         managed.config.store(Arc::new(new_config));
 
-        // Update pool fingerprint so stale idle instances are evicted.
-        if let TopologyRuntime::Pool(ref pool_rt) = managed.topology {
-            pool_rt.set_fingerprint(new_fp);
-        }
+        // Update the topology fingerprint so stale idle instances are evicted
+        // on the next acquire / sweep (a no-op for topologies that track no
+        // config fingerprint).
+        managed.set_fingerprint(new_fp);
 
         // Bump generation — readers snapshot this to detect changes.
         managed
@@ -545,7 +609,7 @@ impl Manager {
         self.emit(ResourceEvent::ConfigReloaded { key: R::key() });
 
         // Reload outcome. `reload_config` swaps the config `ArcSwap`
-        // without rebuilding the caller-supplied live `Arc<R::Runtime>` for
+        // without rebuilding the caller-supplied live `Arc<R::Instance>` for
         // *any* topology — only the Pool fingerprint is updated, above. So
         // the honest outcome is `SwappedImmediately` for every variant: the
         // config is swapped, the live runtime is not rebuilt. The genuine

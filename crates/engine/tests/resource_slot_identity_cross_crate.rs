@@ -16,7 +16,7 @@
 //! This test closes that residual at the value level, not the type level:
 //!
 //! 1. Register a resource **through the engine path**
-//!    ([`ResourceRegistrarRegistry::register`]) with a non-empty
+//!    ([`ResourceActivatorRegistry::register`]) with a non-empty
 //!    `(slot, credential)` binding.
 //! 2. Capture the [`SlotIdentity`] the manager-side `register_resolved`
 //!    *returned* (propagated verbatim into
@@ -45,15 +45,15 @@ use nebula_core::{
     resource_key,
 };
 use nebula_engine::{
-    RegisterRequest, ResourceRegistrarRegistry, TypedResourceRegistrar,
+    KindActivator, RegisterRequest, ResourceActivatorRegistry,
     resource_accessor::slot_identities_for_key,
 };
 use nebula_expression::ExpressionEngine;
+use nebula_resource::Resident;
 use nebula_resource::{
     Manager, ScopeLevel, SlotIdentity,
     error::Error as ResourceError,
-    resource::{Resource, ResourceConfig, ResourceMetadata},
-    runtime::{TopologyRuntime, resident::ResidentRuntime},
+    resource::{Provider, ResourceConfig, ResourceMetadata},
     topology::resident,
 };
 use nebula_schema::HasSchema;
@@ -92,6 +92,13 @@ impl ResourceConfig for XConfig {
         }
         Ok(())
     }
+
+    fn fingerprint(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        self.label.hash(&mut h);
+        h.finish()
+    }
 }
 
 #[derive(Clone)]
@@ -107,31 +114,28 @@ impl XResource {
     }
 }
 
-impl Resource for XResource {
+#[async_trait::async_trait]
+impl Provider for XResource {
     type Config = XConfig;
-    type Runtime = Arc<AtomicU64>;
-    type Lease = Arc<AtomicU64>;
-    type Error = XError;
+    type Instance = Arc<AtomicU64>;
+    type Topology = Resident<Self>;
 
     fn key() -> ResourceKey {
         resource_key!("xcross.widget")
     }
 
-    fn create(
+    async fn create(
         &self,
         _config: &XConfig,
         _ctx: &nebula_resource::ResourceContext,
-    ) -> impl Future<Output = Result<Arc<AtomicU64>, XError>> + Send {
-        let counter = self.create_counter.clone();
-        async move {
-            let id = counter.fetch_add(1, Ordering::Relaxed);
-            Ok(Arc::new(AtomicU64::new(id)))
-        }
+    ) -> Result<Arc<AtomicU64>, nebula_resource::Error> {
+        let id = self.create_counter.fetch_add(1, Ordering::Relaxed);
+        Ok(Arc::new(AtomicU64::new(id)))
     }
 
     fn metadata() -> ResourceMetadata {
         ResourceMetadata::new(
-            <Self as Resource>::key(),
+            <Self as Provider>::key(),
             "xcross.widget".to_owned(),
             String::new(),
             <XConfig as HasSchema>::schema(),
@@ -158,28 +162,30 @@ impl DeclaresDependencies for XResource {
             },
             required: true,
             lazy: false,
+            purpose: None,
         })
     }
 }
 
-impl resident::Resident for XResource {
+impl nebula_resource::HasCredentialSlots for XResource {
+    fn credential_slot_epoch(&self) -> u64 {
+        0
+    }
+}
+
+impl resident::ResidentProvider for XResource {
     fn is_alive_sync(&self, runtime: &Arc<AtomicU64>) -> bool {
         runtime.load(Ordering::Relaxed) < u64::MAX
     }
 }
 
-fn registrars() -> ResourceRegistrarRegistry {
-    let mut registrars = ResourceRegistrarRegistry::new();
+fn registrars() -> ResourceActivatorRegistry {
+    let mut registrars = ResourceActivatorRegistry::new();
     registrars.insert(
         "xcross.widget",
-        Arc::new(TypedResourceRegistrar::<XResource, _, _, _>::new(
+        Arc::new(KindActivator::<XResource, _, _>::new(
             XResource::new,
-            || {
-                TopologyRuntime::Resident(ResidentRuntime::<XResource>::new(
-                    resident::config::Config::default(),
-                ))
-            },
-            || Manager::erased_acquire_resident_for::<XResource>(),
+            || Resident::<XResource>::new(resident::config::Config::default()),
         )),
     );
     registrars
@@ -257,7 +263,7 @@ async fn engine_recorded_identity_is_byte_identical_to_resource_side_derive() {
     // under — not some other digest).
     assert!(
         manager.has_registered_for_identity(
-            &<XResource as Resource>::key(),
+            &<XResource as Provider>::key(),
             &ScopeLevel::Global,
             &outcome.slot_identity,
         ),
@@ -288,9 +294,9 @@ async fn accessor_acquire_path_derive_agrees_with_register_path() {
     // The accessor builds its acquire-path identity map from the resolved
     // `(slot, credential)` pairs via `slot_identities_for_key` — a separate
     // construction site from the register path.
-    let acquire_map = slot_identities_for_key(<XResource as Resource>::key(), &bindings);
+    let acquire_map = slot_identities_for_key(<XResource as Provider>::key(), &bindings);
     let acquire_side = acquire_map
-        .get(&<XResource as Resource>::key())
+        .get(&<XResource as Provider>::key())
         .expect("accessor acquire-path identity is present for the key");
 
     assert_eq!(
@@ -342,7 +348,7 @@ async fn distinct_resolved_credentials_never_alias_cross_crate() {
 
     // Both rows are independently resolvable under their own identity, and
     // neither is visible under the other's — fail-closed isolation.
-    let key = <XResource as Resource>::key();
+    let key = <XResource as Provider>::key();
     assert!(manager.has_registered_for_identity(
         &key,
         &ScopeLevel::Global,

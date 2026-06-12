@@ -34,13 +34,13 @@ use std::{
 };
 
 use nebula_core::{OrgId, ResourceKey, ScopeLevel, resource_key, scope::Scope};
+use nebula_resource::Resident;
 use nebula_resource::{
     AcquireOptions, Manager, RegistrationSpec, ResidentConfig, ResourceContext,
     dedup::SlotIdentity,
     error::Error as ResourceError,
-    resource::{Resource, ResourceConfig, ResourceMetadata},
-    runtime::{TopologyRuntime, resident::ResidentRuntime},
-    topology::resident::Resident,
+    resource::{Provider, ResourceConfig, ResourceMetadata},
+    topology::resident::ResidentProvider,
 };
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
@@ -120,39 +120,41 @@ impl TelegramBot {
     }
 }
 
-impl Resource for TelegramBot {
+#[async_trait::async_trait]
+impl Provider for TelegramBot {
     type Config = TelegramConfig;
-    type Runtime = Arc<TelegramBotInner>;
-    type Lease = Arc<TelegramBotInner>;
-    type Error = TelegramError;
+    type Instance = Arc<TelegramBotInner>;
+    type Topology = Resident<Self>;
 
     fn key() -> ResourceKey {
         resource_key!("demo.telegram.bot")
     }
 
-    fn create(
+    async fn create(
         &self,
         config: &TelegramConfig,
         _ctx: &ResourceContext,
-    ) -> impl Future<Output = Result<Arc<TelegramBotInner>, TelegramError>> + Send {
+    ) -> Result<Arc<TelegramBotInner>, ResourceError> {
         let counter = Arc::clone(&self.create_counter);
         let handle = config.handle.clone();
-        async move {
-            // Yield once so concurrent acquires can interleave more
-            // aggressively — exposes any missing serialization in the
-            // double-checked create path.
-            tokio::task::yield_now().await;
-            let id = counter.fetch_add(1, Ordering::SeqCst);
-            let (update_tx, _) = broadcast::channel(64);
-            tracing::info!(instance_id = id, handle = %handle, "creating shared Telegram bot");
-            Ok(Arc::new(TelegramBotInner {
-                instance_id: id,
-                update_tx,
-            }))
-        }
+        // Yield once so concurrent acquires can interleave more
+        // aggressively — exposes any missing serialization in the
+        // double-checked create path.
+        tokio::task::yield_now().await;
+        let id = counter.fetch_add(1, Ordering::SeqCst);
+        let (update_tx, _) = broadcast::channel(64);
+        tracing::info!(instance_id = id, handle = %handle, "creating shared Telegram bot");
+        Ok(Arc::new(TelegramBotInner {
+            instance_id: id,
+            update_tx,
+        }))
     }
 
-    async fn destroy(&self, runtime: Arc<TelegramBotInner>) -> Result<(), TelegramError> {
+    async fn destroy(
+        &self,
+        runtime: Arc<TelegramBotInner>,
+        _cx: nebula_resource::TeardownCx,
+    ) -> Result<(), ResourceError> {
         tracing::info!(instance_id = runtime.instance_id, "destroying Telegram bot");
         Ok(())
     }
@@ -162,7 +164,13 @@ impl Resource for TelegramBot {
     }
 }
 
-impl Resident for TelegramBot {
+impl nebula_resource::HasCredentialSlots for TelegramBot {
+    fn credential_slot_epoch(&self) -> u64 {
+        0
+    }
+}
+
+impl ResidentProvider for TelegramBot {
     fn is_alive_sync(&self, _runtime: &Arc<TelegramBotInner>) -> bool {
         self.alive.load(Ordering::Relaxed)
     }
@@ -187,7 +195,7 @@ async fn main() -> anyhow::Result<()> {
     let manager = Arc::new(Manager::new());
     let bot = TelegramBot::new();
     let create_counter = Arc::clone(&bot.create_counter);
-    let resident_runtime = ResidentRuntime::<TelegramBot>::new(ResidentConfig::default());
+    let resident_runtime = Resident::<TelegramBot>::new(ResidentConfig::default());
     let org = OrgId::new();
 
     manager.register(RegistrationSpec {
@@ -197,8 +205,7 @@ async fn main() -> anyhow::Result<()> {
         },
         scope: ScopeLevel::Organization(org),
         slot_identity: SlotIdentity::Unbound,
-        topology: TopologyRuntime::Resident(resident_runtime),
-        acquire: Manager::erased_acquire_resident_for::<TelegramBot>(),
+        topology: resident_runtime,
         recovery_gate: None,
     })?;
     println!("[1] TelegramBot registered at Organization scope (org={org:?})");

@@ -210,7 +210,7 @@ pub use scheme::{
 };
 // credential secrecy secret-handling primitives — crypto, guard, zeroizing wrappers,
 // scheme-guard refresh surface (§15.7). The refresh-notification hook
-// itself lives on `nebula_resource::Resource::on_credential_refresh`
+// itself lives on `nebula_resource::resource::Provider::on_credential_refresh`
 // per credential isolation; the previously-defined parallel `OnCredentialRefresh<C>`
 // trait was removed in nebula-resource П2.
 //

@@ -1,5 +1,5 @@
-error: `#[credential]` slot must currently be exactly `SlotCell<CredentialGuard<C>>` — `Option<…>`- and `Lazy<…>`-wrapped slots are not yet supported by the generated accessor; got: Option < SlotCell < CredentialGuard < FakeCred > > >
-  --> tests/probes/derive_slot_option_wrapped.rs:18:9
+error: field with `#[credential]` must have type `SlotCell<CredentialGuard<C>>` or `CredentialSlot<C>` — got: Option < SlotCell < CredentialGuard < FakeCred > > >
+  --> tests/probes/derive_slot_option_wrapped.rs:16:9
    |
-18 |     db: Option<SlotCell<CredentialGuard<FakeCred>>>,
+16 |     db: Option<SlotCell<CredentialGuard<FakeCred>>>,
    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

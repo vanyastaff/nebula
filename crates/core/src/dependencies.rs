@@ -75,6 +75,9 @@ pub struct SlotField {
     pub required: bool,
     /// Whether the slot is lazy (resolution deferred until use).
     pub lazy: bool,
+    /// Human-readable purpose description (catalog / UI). `None` when the
+    /// author did not supply a `purpose = "..."` on the `#[credential]` field.
+    pub purpose: Option<&'static str>,
 }
 
 /// The kind of slot a [`SlotField`] declares.

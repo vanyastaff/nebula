@@ -34,14 +34,14 @@ use std::{fmt, marker::PhantomData};
 use nebula_core::{ResourceKey, context::HasResources};
 
 use crate::{
-    Resource, ResourceGuard,
+    Provider, ResourceGuard,
     error::{Error, ErrorKind},
 };
 
 /// Typed reference to a registered resource.
 ///
 /// The reference carries a resource id (slot binding per slot binding) and a
-/// type-level marker selecting the concrete `Resource` impl whose
+/// type-level marker selecting the concrete `Provider` impl whose
 /// `Lease` should be acquired on resolve. The field type alone tells the
 /// framework what slot kind, what concrete resource type, and (via wrapper
 /// composition) whether resolution is eager / lazy / optional.
@@ -82,7 +82,7 @@ impl<R: ?Sized> ResourceRef<R> {
     }
 }
 
-impl<R: Resource> ResourceRef<R> {
+impl<R: Provider> ResourceRef<R> {
     /// Resolves the reference to a [`ResourceGuard<R>`].
     ///
     /// Builds a [`ResourceKey`] from the carried id, calls `acquire_any` on

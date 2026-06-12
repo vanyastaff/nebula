@@ -35,13 +35,11 @@ use nebula_engine::{
 };
 use nebula_eventbus::EventBus;
 use nebula_metrics::MetricsRegistry;
+use nebula_resource::Resident;
 use nebula_resource::{
-    AcquireOptions, Manager, RegistrationSpec, ResidentConfig, Resource, ResourceConfig,
-    ResourceContext, SlotIdentity,
-    error::Error as ResourceError,
-    resource::ResourceMetadata,
-    runtime::{TopologyRuntime, resident::ResidentRuntime},
-    topology::resident::Resident,
+    AcquireOptions, Manager, Provider, RegistrationSpec, ResidentConfig, ResourceConfig,
+    ResourceContext, SlotIdentity, error::Error as ResourceError, resource::ResourceMetadata,
+    topology::resident::ResidentProvider,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -83,26 +81,26 @@ struct Recording {
     rec: Recorder,
 }
 
-impl Resource for Recording {
+#[async_trait::async_trait]
+impl Provider for Recording {
     type Config = NoCfg;
-    type Runtime = ();
-    type Lease = ();
-    type Error = HookError;
+    type Instance = ();
+    type Topology = Resident<Self>;
 
     fn key() -> ResourceKey {
         resource_key!("fanout-wiring-rec")
     }
 
-    async fn create(&self, _c: &NoCfg, _x: &ResourceContext) -> Result<(), HookError> {
+    async fn create(&self, _c: &NoCfg, _x: &ResourceContext) -> Result<(), ResourceError> {
         Ok(())
     }
 
-    async fn on_credential_refresh(&self, _s: &str, _r: &()) -> Result<(), HookError> {
+    async fn on_credential_refresh(&self, _s: &str, _r: &()) -> Result<(), ResourceError> {
         self.rec.refresh.fetch_add(1, Ordering::SeqCst);
         drive(self.behaviour).await
     }
 
-    async fn on_credential_revoke(&self, _s: &str, _r: &()) -> Result<(), HookError> {
+    async fn on_credential_revoke(&self, _s: &str, _r: &()) -> Result<(), ResourceError> {
         self.rec.revoke.fetch_add(1, Ordering::SeqCst);
         drive(self.behaviour).await
     }
@@ -112,13 +110,20 @@ impl Resource for Recording {
     }
 }
 
-impl Resident for Recording {
+impl nebula_resource::HasCredentialSlots for Recording {
+    fn credential_slot_epoch(&self) -> u64 {
+        0
+    }
+}
+
+#[async_trait::async_trait]
+impl ResidentProvider for Recording {
     fn is_alive_sync(&self, _r: &()) -> bool {
         true
     }
 }
 
-async fn drive(b: Behaviour) -> Result<(), HookError> {
+async fn drive(b: Behaviour) -> Result<(), ResourceError> {
     match b {
         Behaviour::Ok => Ok(()),
         Behaviour::Hang => {
@@ -136,6 +141,11 @@ nebula_schema::impl_empty_has_schema!(NoCfg);
 impl ResourceConfig for NoCfg {
     fn validate(&self) -> Result<(), ResourceError> {
         Ok(())
+    }
+
+    fn fingerprint(&self) -> u64 {
+        // Unit struct: all instances identical — constant 0 is correct.
+        0
     }
 }
 
@@ -178,10 +188,7 @@ async fn wire(behaviour: Behaviour) -> Wired {
         config: NoCfg,
         scope: scope.clone(),
         slot_identity: slot_identity.clone(),
-        topology: TopologyRuntime::Resident(ResidentRuntime::<Recording>::new(
-            ResidentConfig::default(),
-        )),
-        acquire: Manager::erased_acquire_resident_for::<Recording>(),
+        topology: Resident::<Recording>::new(ResidentConfig::default()),
         recovery_gate: None,
     })
     .expect("register resolved-credential row");
@@ -625,10 +632,7 @@ async fn engine_spawn_resource_rotation_fanout_is_idempotent() {
         config: NoCfg,
         scope: scope.clone(),
         slot_identity: slot_identity.clone(),
-        topology: TopologyRuntime::Resident(ResidentRuntime::<Recording>::new(
-            ResidentConfig::default(),
-        )),
-        acquire: Manager::erased_acquire_resident_for::<Recording>(),
+        topology: Resident::<Recording>::new(ResidentConfig::default()),
         recovery_gate: None,
     })
     .expect("register resolved-credential row");

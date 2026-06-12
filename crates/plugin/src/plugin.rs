@@ -53,7 +53,7 @@ pub trait Plugin: Send + Sync + Debug + 'static {
     ///
     /// Called once at registration time by [`crate::ResolvedPlugin::from`].
     /// Returns an empty list by default.
-    fn resources(&self) -> Vec<Arc<dyn nebula_resource::AnyResource>> {
+    fn resources(&self) -> Vec<Arc<dyn nebula_resource::ResourceDescriptor>> {
         vec![]
     }
 

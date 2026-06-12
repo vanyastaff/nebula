@@ -51,7 +51,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     credential_accessor::EngineCredentialAccessor, error::EngineError, event::ExecutionEvent,
-    resolver::ParamResolver, resource::ResourceRegistrarRegistry,
+    resolver::ParamResolver, resource::ResourceActivatorRegistry,
     resource_accessor::EngineResourceAccessor, result::ExecutionResult, runtime::ActionRuntime,
     scoped_resources::LayeredResourceAccessor,
 };
@@ -137,8 +137,8 @@ pub struct WorkflowEngine {
     /// A persisted resource row carries only a `kind` string plus opaque
     /// JSON; turning it into a typed `Manager::register_resolved::<R>`
     /// call needs a per-concrete-`R` registrar that already knows its
-    /// resource and `TopologyRuntime<R>` (see [`ResourceRegistrarRegistry`]
-    /// / [`crate::TypedResourceRegistrar`]). The map is **closed**: a kind
+    /// resource and `R::Topology` (see [`ResourceActivatorRegistry`]
+    /// / [`crate::KindActivator`]). The map is **closed**: a kind
     /// is registrable only if a registrar was explicitly inserted; an
     /// unknown kind is a wiring fault caught at activation, never a silent
     /// no-op.
@@ -149,7 +149,7 @@ pub struct WorkflowEngine {
     /// resource's `kind` reaches a typed registration. It is **not**
     /// auto-derivable from `Plugin::resources()`: that yields
     /// `dyn AnyResource` (metadata-only — no constructor, no
-    /// `TopologyRuntime<R>`), and `#[derive(Resource)]` emits no per-`R`
+    /// `R::Topology`), and `#[derive(Resource)]` emits no per-`R`
     /// value/topology factory. The composition root pairs each declared
     /// resource `kind` with the concrete-`R` constructors it holds and
     /// threads the assembled registry in via
@@ -161,7 +161,7 @@ pub struct WorkflowEngine {
     /// without resource activation.
     ///
     /// [`plugin_registry`]: Self::plugin_registry
-    resource_registrars: ResourceRegistrarRegistry,
+    resource_registrars: ResourceActivatorRegistry,
     /// Engine-owned reverse index `CredentialId → resolved resource rows`
     /// for the per-slot rotation fan-out.
     ///
@@ -369,7 +369,7 @@ impl WorkflowEngine {
             workflow_executions_failed,
             workflow_execution_duration_seconds,
             plugin_registry: PluginRegistry::new(),
-            resource_registrars: ResourceRegistrarRegistry::new(),
+            resource_registrars: ResourceActivatorRegistry::new(),
             #[cfg(feature = "rotation")]
             resource_fanout_index: Arc::new(nebula_resource::ResourceFanoutIndex::new()),
             #[cfg(feature = "rotation")]
@@ -481,14 +481,14 @@ impl WorkflowEngine {
     /// this allowlist) is built on top of this accessor; this method is
     /// the live producer the §M11.5 fan-out / resource activation consumes.
     #[must_use]
-    pub fn resource_registrars(&self) -> &ResourceRegistrarRegistry {
+    pub fn resource_registrars(&self) -> &ResourceActivatorRegistry {
         &self.resource_registrars
     }
 
     /// The engine-owned per-slot rotation reverse index.
     ///
-    /// This is the `bind` producer for the fan-out: the resource-activation
-    /// path (`ResourceRegistrarRegistry::register` →
+    /// This is the `bind` producer for the §M11.5 fan-out: the
+    /// resource-activation path (`ResourceActivatorRegistry::register` →
     /// `Manager::register_resolved`, which resolves a credential into a
     /// `#[credential]` slot) records a row here so a later rotation /
     /// revoke fans to exactly that resolved row. It is also the index the
@@ -674,13 +674,13 @@ impl WorkflowEngine {
     /// Live-register a resource kind and record its slot identity for acquire.
     ///
     /// Callers should prefer this over
-    /// [`ResourceRegistrarRegistry::register`](crate::ResourceRegistrarRegistry::register)
+    /// [`ResourceActivatorRegistry::register`](crate::ResourceActivatorRegistry::register)
     /// alone so action-time `acquire_any` uses the same `slot_identity` as the
     /// manager registry row.
     ///
     /// # Errors
     ///
-    /// Same as [`ResourceRegistrarRegistry::register`].
+    /// Same as [`ResourceActivatorRegistry::register`].
     pub async fn register_resource(
         &self,
         kind: &str,
@@ -699,7 +699,7 @@ impl WorkflowEngine {
     ///
     /// # Errors
     ///
-    /// Same as [`ResourceRegistrarRegistry::register_and_bind`].
+    /// Same as [`ResourceActivatorRegistry::register_and_bind`].
     #[cfg(feature = "rotation")]
     pub async fn register_resource_and_bind(
         &self,
@@ -723,13 +723,12 @@ impl WorkflowEngine {
     /// INTEGRATION_MODEL, "Plugin packaging" §). But `Plugin::resources()`
     /// yields `Vec<Arc<dyn nebula_resource::AnyResource>>`, and
     /// `AnyResource` is **metadata-only** (`key()` + `metadata()`, no
-    /// associated types, no constructor); `#[derive(Resource)]` emits an
-    /// `impl Resource` whose `create` body is `todo!()`, a
-    /// `DeclaresDependencies` impl, and an informational topology *tag*
-    /// const — it emits no per-`R` value factory and no
-    /// `TopologyRuntime<R>` factory. The typed
+    /// associated types, no constructor); `#[derive(Resource)]` emits
+    /// only slot plumbing (`DeclaresDependencies`, slot accessors,
+    /// `HasCredentialSlots`) — it emits no per-`R` value factory and no
+    /// `R::Topology` factory. The typed
     /// `Manager::register_resolved::<R>` consumes a `resource: R` and a
-    /// `TopologyRuntime<R>` by value, monomorphized, so neither is
+    /// `R::Topology` by value, monomorphized, so neither is
     /// recoverable from `dyn AnyResource`.
     ///
     /// The engine therefore cannot synthesize this allowlist by reflecting
@@ -737,15 +736,15 @@ impl WorkflowEngine {
     /// plugin-declared resource `kind` (taken from the resource's own
     /// catalog key — never guessed) with the concrete-`R`
     /// resource/topology constructors it holds (the shape
-    /// [`crate::TypedResourceRegistrar`] takes) and threads the assembled
-    /// [`ResourceRegistrarRegistry`] in here — mirroring how Actions are
+    /// [`crate::KindActivator`] takes) and threads the assembled
+    /// [`ResourceActivatorRegistry`] in here — mirroring how Actions are
     /// registered by the caller (typed registration), not auto-pulled from
     /// the plugin registry. Scope is row/activation context, not a
     /// plugin-declaration field, and is supplied per-call via
     /// [`RegisterRequest`](crate::RegisterRequest) — never defaulted, since
     /// a wrong scope is an isolation hole.
     #[must_use = "builder methods must be chained or built"]
-    pub fn with_resource_registrars(mut self, registrars: ResourceRegistrarRegistry) -> Self {
+    pub fn with_resource_registrars(mut self, registrars: ResourceActivatorRegistry) -> Self {
         self.resource_registrars = registrars;
         self
     }

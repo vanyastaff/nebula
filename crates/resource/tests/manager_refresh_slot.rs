@@ -17,13 +17,13 @@ use std::sync::{
 
 use nebula_core::{ResourceKey, ScopeLevel, resource_key};
 use nebula_credential::CredentialGuard;
+use nebula_resource::Resident;
 use nebula_resource::{
-    Manager, ManagerConfig, RegisterOptions, RegistrationSpec, ResidentConfig, Resource,
+    Manager, ManagerConfig, Provider, RegisterOptions, RegistrationSpec, ResidentConfig,
     ResourceConfig, ResourceContext, SlotCell,
     error::Error,
-    resource::ResourceMetadata,
-    runtime::{TopologyRuntime, resident::ResidentRuntime},
-    topology::resident::Resident,
+    resource::{HasCredentialSlots, ResourceMetadata},
+    topology::resident::ResidentProvider,
 };
 use zeroize::Zeroize;
 
@@ -59,6 +59,13 @@ mod counting {
         /// When set, `on_credential_revoke` returns `Err` (drives the
         /// failure-event arm of `revoke_slot`).
         pub revoke_should_fail: Arc<AtomicBool>,
+        /// When set, `on_credential_revoke` panics — proves the framework
+        /// isolates a careless author hook (caught, mapped to a failed
+        /// outcome) instead of unwinding into the rotation fan-out.
+        pub revoke_should_panic: Arc<AtomicBool>,
+        /// When set, `on_credential_refresh` panics — the refresh-side twin of
+        /// `revoke_should_panic`.
+        pub refresh_should_panic: Arc<AtomicBool>,
     }
 
     /// The live runtime handle. Carries the ledger + a tag so the hook can
@@ -86,22 +93,8 @@ mod counting {
         pub db: Arc<SlotCell<CredentialGuard<FakeCred>>>,
     }
 
-    #[derive(Debug)]
-    pub struct CountingError(pub String);
-
-    impl std::fmt::Display for CountingError {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.write_str(&self.0)
-        }
-    }
-
-    impl std::error::Error for CountingError {}
-
-    impl From<CountingError> for Error {
-        fn from(e: CountingError) -> Self {
-            Error::transient(e.0)
-        }
-    }
+    // Custom error boilerplate removed — Resource lifecycle methods now return
+    // `crate::Error` directly (HasCredentialSlots redesign).
 
     #[derive(Clone)]
     pub struct CountingConfig;
@@ -112,13 +105,18 @@ mod counting {
         fn validate(&self) -> Result<(), Error> {
             Ok(())
         }
+
+        fn fingerprint(&self) -> u64 {
+            // Unit struct: all instances identical — constant 0 is correct.
+            0
+        }
     }
 
-    impl Resource for CountingResource {
+    #[async_trait::async_trait]
+    impl Provider for CountingResource {
         type Config = CountingConfig;
-        type Runtime = CountingRuntime;
-        type Lease = CountingRuntime;
-        type Error = CountingError;
+        type Instance = CountingRuntime;
+        type Topology = Resident<Self>;
 
         fn key() -> ResourceKey {
             resource_key!("counting-resident")
@@ -128,7 +126,7 @@ mod counting {
             &self,
             _config: &CountingConfig,
             _ctx: &ResourceContext,
-        ) -> Result<CountingRuntime, CountingError> {
+        ) -> Result<CountingRuntime, Error> {
             Ok(CountingRuntime {
                 ledger: self.ledger.clone(),
                 tag: RUNTIME_TAG,
@@ -139,13 +137,17 @@ mod counting {
             &self,
             _slot_name: &str,
             runtime: &CountingRuntime,
-        ) -> Result<(), CountingError> {
+        ) -> Result<(), Error> {
             // Proves the live `&Runtime` reached the `&self` hook: we read
             // the tag off the runtime we were handed.
             self.ledger
                 .refresh_saw_runtime_tag
                 .store(runtime.tag, Ordering::SeqCst);
             self.ledger.refresh_calls.fetch_add(1, Ordering::SeqCst);
+            assert!(
+                !runtime.ledger.refresh_should_panic.load(Ordering::SeqCst),
+                "careless on_credential_refresh hook unwinds"
+            );
             Ok(())
         }
 
@@ -153,10 +155,14 @@ mod counting {
             &self,
             _slot_name: &str,
             runtime: &CountingRuntime,
-        ) -> Result<(), CountingError> {
+        ) -> Result<(), Error> {
             runtime.ledger.revoke_calls.fetch_add(1, Ordering::SeqCst);
+            assert!(
+                !runtime.ledger.revoke_should_panic.load(Ordering::SeqCst),
+                "careless on_credential_revoke hook unwinds"
+            );
             if runtime.ledger.revoke_should_fail.load(Ordering::SeqCst) {
-                return Err(CountingError("revoke hook boom".to_owned()));
+                return Err(Error::transient("revoke hook boom"));
             }
             Ok(())
         }
@@ -166,7 +172,14 @@ mod counting {
         }
     }
 
-    impl Resident for CountingResource {
+    impl HasCredentialSlots for CountingResource {
+        fn credential_slot_epoch(&self) -> u64 {
+            0
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ResidentProvider for CountingResource {
         fn is_alive_sync(&self, _runtime: &CountingRuntime) -> bool {
             true
         }
@@ -188,10 +201,7 @@ mod counting {
             config: CountingConfig,
             scope: opts.scope,
             slot_identity,
-            topology: TopologyRuntime::Resident(ResidentRuntime::<CountingResource>::new(
-                ResidentConfig::default(),
-            )),
-            acquire: Manager::erased_acquire_resident_for::<CountingResource>(),
+            topology: Resident::<CountingResource>::new(ResidentConfig::default()),
             recovery_gate: opts.recovery_gate,
         })
     }
@@ -604,6 +614,111 @@ async fn revoke_failure_emits_slot_revoke_failed_not_refresh() {
     assert!(
         saw_revoke_failed,
         "a failed revoke must emit ResourceEvent::SlotRevokeFailed"
+    );
+}
+
+/// Foolproofing: a careless `on_credential_revoke` that **panics** must be
+/// caught by the framework — `revoke_slot` returns a typed error (the fan-out
+/// is not crashed), the row stays tainted, and the failure surfaces as
+/// `SlotRevokeFailed`, never `SlotRefreshFailed`.
+#[tokio::test]
+async fn revoke_hook_panic_is_isolated_and_emits_revoke_failed() {
+    use nebula_core::scope::Scope;
+    use nebula_resource::{AcquireOptions, events::ResourceEvent};
+    use tokio_util::sync::CancellationToken;
+
+    let (mgr, key, ledger) = registered().await;
+
+    // Warm the resident runtime so the revoke hook has a live `&Runtime`.
+    {
+        let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
+        let _g = mgr
+            .acquire_resident::<counting::CountingResource>(&ctx, &AcquireOptions::default())
+            .await
+            .expect("acquire must succeed");
+    }
+
+    ledger.revoke_should_panic.store(true, Ordering::SeqCst);
+    let mut events = mgr.subscribe_events();
+
+    let err = mgr
+        .revoke_slot(&key, ScopeLevel::Global, "db")
+        .await
+        .expect_err("a panicking revoke hook must surface a typed error, not unwind the fan-out");
+    assert!(
+        err.to_string().contains("panicked"),
+        "revoke_slot must surface the isolated-panic error, got: {err}"
+    );
+
+    let mut saw_revoke_failed = false;
+    while let Some(evt) = events.try_recv() {
+        match evt {
+            ResourceEvent::SlotRevokeFailed { slot, error, .. } => {
+                saw_revoke_failed = true;
+                assert_eq!(slot, "db");
+                assert!(
+                    error.contains("panicked"),
+                    "event error must report the isolated panic, got: {error}"
+                );
+            },
+            ResourceEvent::SlotRefreshFailed { .. } => {
+                panic!("a revoke-hook panic must NOT emit SlotRefreshFailed");
+            },
+            _ => {},
+        }
+    }
+    assert!(
+        saw_revoke_failed,
+        "an isolated revoke-hook panic must emit ResourceEvent::SlotRevokeFailed"
+    );
+}
+
+/// Foolproofing: a careless `on_credential_refresh` that **panics** must be
+/// caught by the framework — `refresh_slot` returns a typed error (the fan-out
+/// is not crashed) and the failure surfaces as `SlotRefreshFailed`.
+#[tokio::test]
+async fn refresh_hook_panic_is_isolated_and_emits_refresh_failed() {
+    use nebula_core::scope::Scope;
+    use nebula_resource::{AcquireOptions, events::ResourceEvent};
+    use tokio_util::sync::CancellationToken;
+
+    let (mgr, key, ledger) = registered().await;
+
+    // Warm the resident runtime so the refresh hook has a live `&Runtime`.
+    {
+        let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
+        let _g = mgr
+            .acquire_resident::<counting::CountingResource>(&ctx, &AcquireOptions::default())
+            .await
+            .expect("acquire must succeed");
+    }
+
+    ledger.refresh_should_panic.store(true, Ordering::SeqCst);
+    let mut events = mgr.subscribe_events();
+
+    let err = mgr
+        .refresh_slot(&key, ScopeLevel::Global, "db")
+        .await
+        .expect_err("a panicking refresh hook must surface a typed error, not unwind the fan-out");
+    assert!(
+        err.to_string().contains("panicked"),
+        "refresh_slot must surface the isolated-panic error, got: {err}"
+    );
+
+    let mut saw_refresh_failed = false;
+    while let Some(evt) = events.try_recv() {
+        if let ResourceEvent::SlotRefreshFailed { slot, error, .. } = evt {
+            saw_refresh_failed = true;
+            assert_eq!(slot, "db");
+            assert!(
+                error.contains("panicked"),
+                "event error must report the isolated panic, got: {error}"
+            );
+        }
+    }
+    assert!(
+        saw_refresh_failed,
+        "an isolated refresh-hook panic must emit ResourceEvent::SlotRefreshFailed"
     );
 }
 
@@ -1129,12 +1244,11 @@ mod u9_gate {
     use nebula_core::{ResourceKey, ScopeLevel, resource_key, scope::Scope};
     use nebula_credential::CredentialGuard;
     use nebula_resource::{
-        AcquireOptions, Manager, RegistrationSpec, ResidentConfig, Resource, ResourceConfig,
-        ResourceContext, SlotCell, SlotIdentity,
+        AcquireOptions, Manager, Provider, RegistrationSpec, Resident, ResidentConfig,
+        ResourceConfig, ResourceContext, SlotCell, SlotIdentity,
         error::Error,
-        resource::ResourceMetadata,
-        runtime::{TopologyRuntime, resident::ResidentRuntime},
-        topology::resident::Resident,
+        resource::{HasCredentialSlots, ResourceMetadata},
+        topology::resident::ResidentProvider,
     };
     use tokio_util::sync::CancellationToken;
     use zeroize::Zeroize;
@@ -1148,22 +1262,8 @@ mod u9_gate {
         }
     }
 
-    #[derive(Debug)]
-    struct GateErr(String);
-
-    impl std::fmt::Display for GateErr {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.write_str(&self.0)
-        }
-    }
-
-    impl std::error::Error for GateErr {}
-
-    impl From<GateErr> for Error {
-        fn from(e: GateErr) -> Self {
-            Error::transient(e.0)
-        }
-    }
+    // Custom error boilerplate removed — Resource lifecycle methods now return
+    // `crate::Error` directly (HasCredentialSlots redesign).
 
     #[derive(Clone)]
     struct GateConfig;
@@ -1173,6 +1273,11 @@ mod u9_gate {
     impl ResourceConfig for GateConfig {
         fn validate(&self) -> Result<(), Error> {
             Ok(())
+        }
+
+        fn fingerprint(&self) -> u64 {
+            // Unit struct: all instances identical — constant 0 is correct.
+            0
         }
     }
 
@@ -1189,11 +1294,11 @@ mod u9_gate {
         refresh_calls: Arc<AtomicUsize>,
     }
 
-    impl Resource for GateResource {
+    #[async_trait::async_trait]
+    impl Provider for GateResource {
         type Config = GateConfig;
-        type Runtime = GateRuntime;
-        type Lease = GateRuntime;
-        type Error = GateErr;
+        type Instance = GateRuntime;
+        type Topology = Resident<Self>;
 
         fn key() -> ResourceKey {
             resource_key!("u9-gate-resident")
@@ -1203,13 +1308,17 @@ mod u9_gate {
             &self,
             _config: &GateConfig,
             _ctx: &ResourceContext,
-        ) -> Result<GateRuntime, GateErr> {
+        ) -> Result<GateRuntime, Error> {
             // Bind to whatever the slot holds now (realistic resident).
             let _ = self.db.load();
             Ok(GateRuntime)
         }
 
-        async fn destroy(&self, _runtime: GateRuntime) -> Result<(), GateErr> {
+        async fn destroy(
+            &self,
+            _runtime: GateRuntime,
+            _cx: nebula_resource::TeardownCx,
+        ) -> Result<(), Error> {
             Ok(())
         }
 
@@ -1217,14 +1326,9 @@ mod u9_gate {
             &self,
             _slot: &str,
             _runtime: &GateRuntime,
-        ) -> Result<(), GateErr> {
+        ) -> Result<(), Error> {
             self.refresh_calls.fetch_add(1, Ordering::SeqCst);
             Ok(())
-        }
-
-        // The create-vs-rotate reconcile counter (derive emits exactly this).
-        fn credential_slot_epoch(&self) -> u64 {
-            self.db.generation()
         }
 
         fn metadata() -> ResourceMetadata {
@@ -1232,7 +1336,15 @@ mod u9_gate {
         }
     }
 
-    impl Resident for GateResource {
+    impl HasCredentialSlots for GateResource {
+        // The create-vs-rotate reconcile counter (derive emits exactly this).
+        fn credential_slot_epoch(&self) -> u64 {
+            self.db.generation()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ResidentProvider for GateResource {
         fn is_alive_sync(&self, _runtime: &GateRuntime) -> bool {
             true
         }
@@ -1266,10 +1378,7 @@ mod u9_gate {
             config: GateConfig,
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Resident(ResidentRuntime::<GateResource>::new(
-                ResidentConfig::default(),
-            )),
-            acquire: Manager::erased_acquire_resident_for::<GateResource>(),
+            topology: Resident::<GateResource>::new(ResidentConfig::default()),
             recovery_gate: None,
         })
         .expect("resident registration must succeed");
@@ -1354,34 +1463,15 @@ mod u9_gate {
 mod reload_deferral {
     use nebula_core::{ResourceKey, ScopeLevel, resource_key};
     use nebula_resource::{
-        BoundedConfig, BoundedRuntime, Manager, PoolConfig, RegistrationSpec, ReloadOutcome,
-        ResidentConfig, Resource, ResourceConfig, ResourceContext, SlotIdentity,
+        Manager, PoolConfig, Provider, RegistrationSpec, ReloadOutcome, ResidentConfig,
+        ResourceConfig, ResourceContext, SlotIdentity,
         error::Error,
-        resource::ResourceMetadata,
-        runtime::{TopologyRuntime, pool::PoolRuntime, resident::ResidentRuntime},
-        topology::{
-            bounded::{Bounded, BoundedRelease, Capped, Exclusive as ExclusiveCap, Unbounded},
-            pooled::Pooled,
-            resident::Resident,
-        },
+        resource::{HasCredentialSlots, ResourceMetadata},
+        topology::{Pooled, Resident, pooled::PoolProvider, resident::ResidentProvider},
     };
 
-    #[derive(Debug)]
-    struct RErr(String);
-
-    impl std::fmt::Display for RErr {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.write_str(&self.0)
-        }
-    }
-
-    impl std::error::Error for RErr {}
-
-    impl From<RErr> for Error {
-        fn from(e: RErr) -> Self {
-            Error::transient(e.0)
-        }
-    }
+    // Custom error boilerplate removed — Resource lifecycle methods now return
+    // `crate::Error` directly (HasCredentialSlots redesign).
 
     /// A config whose `fingerprint()` is its `version` field, so a reload
     /// with a different version is actually detected as a change (the `0`
@@ -1403,15 +1493,15 @@ mod reload_deferral {
     }
 
     macro_rules! reload_fixture {
-        ($name:ident, $key:literal) => {
+        ($name:ident, $key:literal, $topo:ty) => {
             #[derive(Clone)]
             struct $name;
 
-            impl Resource for $name {
+            #[async_trait::async_trait]
+            impl Provider for $name {
                 type Config = VersionedConfig;
-                type Runtime = u32;
-                type Lease = u32;
-                type Error = RErr;
+                type Instance = u32;
+                type Topology = $topo;
 
                 fn key() -> ResourceKey {
                     resource_key!($key)
@@ -1421,11 +1511,15 @@ mod reload_deferral {
                     &self,
                     _config: &VersionedConfig,
                     _ctx: &ResourceContext,
-                ) -> Result<u32, RErr> {
+                ) -> Result<u32, Error> {
                     Ok(1)
                 }
 
-                async fn destroy(&self, _runtime: u32) -> Result<(), RErr> {
+                async fn destroy(
+                    &self,
+                    _runtime: u32,
+                    _cx: nebula_resource::TeardownCx,
+                ) -> Result<(), Error> {
                     Ok(())
                 }
 
@@ -1433,58 +1527,24 @@ mod reload_deferral {
                     ResourceMetadata::from_key(&Self::key())
                 }
             }
+
+            impl HasCredentialSlots for $name {
+                fn credential_slot_epoch(&self) -> u64 {
+                    0
+                }
+            }
         };
     }
 
-    reload_fixture!(PoolReload, "reload-pool");
-    reload_fixture!(ResidentReload, "reload-resident");
-    reload_fixture!(ServiceReload, "reload-service");
-    reload_fixture!(ExclusiveReload, "reload-exclusive");
-    reload_fixture!(TransportReload, "reload-transport");
+    reload_fixture!(PoolReload, "reload-pool", Pooled<Self>);
+    reload_fixture!(ResidentReload, "reload-resident", Resident<Self>);
 
-    impl Pooled for PoolReload {}
-    impl Resident for ResidentReload {
+    #[async_trait::async_trait]
+    impl PoolProvider for PoolReload {}
+    #[async_trait::async_trait]
+    impl ResidentProvider for ResidentReload {
         fn is_alive_sync(&self, _r: &u32) -> bool {
             true
-        }
-    }
-    // The three folded topologies are now `Bounded` caps. Reload behavior
-    // (`reload_config`) does not inspect the cap, so the cap choice here
-    // only needs to compile; it mirrors the original topology
-    // (Service-Cloned → Unbounded, Exclusive → Exclusive cap, Transport →
-    // Capped). `Unbounded` uses the blanket no-op `BoundedRelease`; the
-    // release-bearing caps supply a trivial `release_one`.
-    impl Bounded for ServiceReload {
-        type Cap = Unbounded;
-        async fn acquire_one(&self, _runtime: &u32, _ctx: &ResourceContext) -> Result<u32, RErr> {
-            Ok(1)
-        }
-    }
-    impl Bounded for ExclusiveReload {
-        type Cap = ExclusiveCap;
-        async fn acquire_one(&self, runtime: &u32, _ctx: &ResourceContext) -> Result<u32, RErr> {
-            Ok(*runtime)
-        }
-    }
-    impl BoundedRelease for ExclusiveReload {
-        async fn release_one(
-            &self,
-            _runtime: &u32,
-            _lease: u32,
-            _healthy: bool,
-        ) -> Result<(), RErr> {
-            Ok(())
-        }
-    }
-    impl Bounded for TransportReload {
-        type Cap = Capped<8>;
-        async fn acquire_one(&self, _t: &u32, _ctx: &ResourceContext) -> Result<u32, RErr> {
-            Ok(1)
-        }
-    }
-    impl BoundedRelease for TransportReload {
-        async fn release_one(&self, _t: &u32, _l: u32, _h: bool) -> Result<(), RErr> {
-            Ok(())
         }
     }
 
@@ -1492,167 +1552,105 @@ mod reload_deferral {
         VersionedConfig { version }
     }
 
-    /// Fingerprint unchanged ⇒ `NoChange`, regardless of topology.
+    /// Fingerprint unchanged ⇒ `NoChange` for both Pool and Resident.
+    /// Pins the early-return path so any regression that skips the
+    /// fingerprint check and returns `SwappedImmediately` on a no-op
+    /// reload is caught immediately.
     #[tokio::test]
     async fn reload_with_unchanged_fingerprint_is_nochange() {
         let mgr = Manager::new();
+
         mgr.register(RegistrationSpec {
             resource: ResidentReload,
             config: v(1),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Resident(ResidentRuntime::<ResidentReload>::new(
-                ResidentConfig::default(),
-            )),
-            acquire: Manager::erased_acquire_resident_for::<ResidentReload>(),
+            topology: Resident::<ResidentReload>::new(ResidentConfig::default()),
             recovery_gate: None,
         })
-        .expect("register");
-        let outcome = mgr
-            .reload_config::<ResidentReload>(v(1), &ScopeLevel::Global)
-            .expect("reload must not error");
+        .expect("resident registration must succeed");
         assert_eq!(
-            outcome,
+            mgr.reload_config::<ResidentReload>(v(1), &ScopeLevel::Global)
+                .expect("resident reload must not error"),
             ReloadOutcome::NoChange,
-            "an unchanged fingerprint must early-return NoChange"
+            "an unchanged fingerprint must early-return NoChange for Resident"
         );
-    }
-
-    /// Former-Service (now a `Bounded` cap), fingerprint changed.
-    ///
-    /// **Fold-induced outcome change, auditable here — NOT silent.** The
-    /// pre-fold `reload_config` returned `PendingDrain` *only* for the
-    /// `TopologyRuntime::Service` variant (it keys on the enum variant, not
-    /// any cap/token notion). Service is no longer a distinct topology — it
-    /// is the `Unbounded`/`Capped` cap typestate of `Bounded` — so a
-    /// former-Service resource is now a `TopologyRuntime::Bounded` row and
-    /// `reload_config`'s `_ => SwappedImmediately` arm applies. The
-    /// **observable runtime behavior is unchanged**: `reload_config` never
-    /// drained or rebuilt the live Service runtime either — the
-    /// `PendingDrain`-without-drain reload no-op is the explicitly
-    /// *deferred* latent bug (plan Deferred-to-Follow-Up,
-    /// `reload_config`/`PendingDrain`, MED-HIGH). Only the returned
-    /// `ReloadOutcome` *variant* changed (`PendingDrain` → `Swapped\
-    /// Immediately`); the config fingerprint is still bumped, the
-    /// generation still advances, and the runtime is still NOT rebuilt.
-    /// This test pins the post-fold value so the change is recorded, not
-    /// papered over (see the U11 report / U13 deferred-bug ledger).
-    #[tokio::test]
-    async fn reload_former_service_changed_is_swapped_immediately() {
-        let mgr = Manager::new();
-        let resource = ServiceReload;
-        let bounded =
-            BoundedRuntime::<ServiceReload>::new(&resource, 1u32, BoundedConfig::default());
-        mgr.register(RegistrationSpec {
-            resource,
-            config: v(1),
-            scope: ScopeLevel::Global,
-            slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Bounded(bounded),
-            acquire: Manager::erased_acquire_bounded_for::<ServiceReload>(),
-            recovery_gate: None,
-        })
-        .expect("register");
-        let outcome = mgr
-            .reload_config::<ServiceReload>(v(2), &ScopeLevel::Global)
-            .expect("reload must not error");
-        assert_eq!(
-            outcome,
-            ReloadOutcome::SwappedImmediately,
-            "a former-Service resource is now a Bounded row; reload_config's \
-             non-Service arm yields SwappedImmediately (the underlying \
-             reload remains the deferred no-op), got {outcome:?}"
-        );
-    }
-
-    /// Pool / Resident / former-Exclusive / former-Transport (all
-    /// `SwappedImmediately`), fingerprint changed. Post-fold no variant
-    /// yields `PendingDrain` (the former-Service `PendingDrain` arm is
-    /// `reload_former_service_changed_is_swapped_immediately` above).
-    #[tokio::test]
-    async fn reload_non_service_changed_is_swapped_immediately() {
-        let mgr = Manager::new();
 
         mgr.register(RegistrationSpec {
             resource: PoolReload,
             config: v(1),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Pool(PoolRuntime::<PoolReload>::new(
-                PoolConfig::default(),
-                v(1).fingerprint(),
-            )),
-            acquire: Manager::erased_acquire_pooled_for::<PoolReload>(),
+            topology: Pooled::<PoolReload>::new(PoolConfig::default(), v(1).fingerprint()),
             recovery_gate: None,
         })
-        .expect("register pool");
+        .expect("pool registration must succeed");
         assert_eq!(
-            mgr.reload_config::<PoolReload>(v(2), &ScopeLevel::Global)
-                .expect("pool reload"),
-            ReloadOutcome::SwappedImmediately,
-            "Pool reload (changed) must be SwappedImmediately"
+            mgr.reload_config::<PoolReload>(v(1), &ScopeLevel::Global)
+                .expect("pool reload must not error"),
+            ReloadOutcome::NoChange,
+            "an unchanged fingerprint must early-return NoChange for Pool"
         );
+    }
 
+    /// Pool topology with a changed fingerprint ⇒ `SwappedImmediately`.
+    /// Also pins that the outcome is NOT `NoChange` — a regression that
+    /// misapplies the early-return for a version bump would return
+    /// `NoChange` and silently skip the swap.
+    #[tokio::test]
+    async fn reload_pool_changed_fingerprint_is_swapped_immediately() {
+        let mgr = Manager::new();
+        mgr.register(RegistrationSpec {
+            resource: PoolReload,
+            config: v(1),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: Pooled::<PoolReload>::new(PoolConfig::default(), v(1).fingerprint()),
+            recovery_gate: None,
+        })
+        .expect("pool registration must succeed");
+        let outcome = mgr
+            .reload_config::<PoolReload>(v(2), &ScopeLevel::Global)
+            .expect("pool reload must not error");
+        assert_eq!(
+            outcome,
+            ReloadOutcome::SwappedImmediately,
+            "Pool reload with a changed fingerprint must return SwappedImmediately"
+        );
+        assert_ne!(
+            outcome,
+            ReloadOutcome::NoChange,
+            "a version bump must NOT early-return NoChange for Pool"
+        );
+    }
+
+    /// Resident topology with a changed fingerprint ⇒ `SwappedImmediately`.
+    /// Both topology arms are pinned independently so a regression in either
+    /// arm is caught without shared state between tests.
+    #[tokio::test]
+    async fn reload_resident_changed_fingerprint_is_swapped_immediately() {
+        let mgr = Manager::new();
         mgr.register(RegistrationSpec {
             resource: ResidentReload,
             config: v(1),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Resident(ResidentRuntime::<ResidentReload>::new(
-                ResidentConfig::default(),
-            )),
-            acquire: Manager::erased_acquire_resident_for::<ResidentReload>(),
+            topology: Resident::<ResidentReload>::new(ResidentConfig::default()),
             recovery_gate: None,
         })
-        .expect("register resident");
+        .expect("resident registration must succeed");
+        let outcome = mgr
+            .reload_config::<ResidentReload>(v(2), &ScopeLevel::Global)
+            .expect("resident reload must not error");
         assert_eq!(
-            mgr.reload_config::<ResidentReload>(v(2), &ScopeLevel::Global)
-                .expect("resident reload"),
+            outcome,
             ReloadOutcome::SwappedImmediately,
-            "Resident reload (changed) must be SwappedImmediately"
+            "Resident reload with a changed fingerprint must return SwappedImmediately"
         );
-
-        let excl = ExclusiveReload;
-        let excl_rt = BoundedRuntime::<ExclusiveReload>::new(&excl, 1u32, BoundedConfig::default());
-        mgr.register(RegistrationSpec {
-            resource: excl,
-            config: v(1),
-            scope: ScopeLevel::Global,
-            slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Bounded(excl_rt),
-            acquire: Manager::erased_acquire_bounded_for::<ExclusiveReload>(),
-            recovery_gate: None,
-        })
-        .expect("register exclusive");
-        assert_eq!(
-            mgr.reload_config::<ExclusiveReload>(v(2), &ScopeLevel::Global)
-                .expect("exclusive reload"),
-            ReloadOutcome::SwappedImmediately,
-            "former-Exclusive (Bounded) reload (changed) must be \
-             SwappedImmediately (unchanged by the fold — Exclusive never \
-             yielded PendingDrain)"
-        );
-
-        let tport = TransportReload;
-        let tport_rt =
-            BoundedRuntime::<TransportReload>::new(&tport, 1u32, BoundedConfig::default());
-        mgr.register(RegistrationSpec {
-            resource: tport,
-            config: v(1),
-            scope: ScopeLevel::Global,
-            slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Bounded(tport_rt),
-            acquire: Manager::erased_acquire_bounded_for::<TransportReload>(),
-            recovery_gate: None,
-        })
-        .expect("register transport");
-        assert_eq!(
-            mgr.reload_config::<TransportReload>(v(2), &ScopeLevel::Global)
-                .expect("transport reload"),
-            ReloadOutcome::SwappedImmediately,
-            "former-Transport (Bounded) reload (changed) must be \
-             SwappedImmediately (unchanged by the fold — Transport never \
-             yielded PendingDrain)"
+        assert_ne!(
+            outcome,
+            ReloadOutcome::NoChange,
+            "a version bump must NOT early-return NoChange for Resident"
         );
     }
 }

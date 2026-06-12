@@ -1,30 +1,40 @@
-//! Field-level credential slot detection for `#[derive(Resource)]` (slot model).
+//! Field-level credential slot detection for `#[derive(Resource)]`.
 //!
 //! Walks the struct fields and identifies `#[credential(...)]` attributes.
-//! Each slot field is a [`SlotCell`] cell holding the resolved guard — the
+//! Each slot field is a `SlotCell` cell holding the resolved guard — the
 //! framework swaps a rotated guard in through `&self` without `&mut` on the
 //! resource, so the cell wrapper is mandatory.
 //!
-//! The only currently-accepted shape is `SlotCell<CredentialGuard<C>>`
-//! (required + eager). `Option<…>`- and `Lazy<…>`-wrapped slots are
-//! reserved for future optional/lazy binding but are currently rejected
-//! at the derive site with a compile error, because the emitted accessor
-//! only fits the plain cell shape (slot model).
+//! ## Accepted field type shapes
 //!
-//! Detection is by path-tail name (last `PathSegment::ident`) so the
-//! macro accepts both bare `SlotCell<...>` / `CredentialGuard<...>` and
-//! fully-qualified `nebula_resource::SlotCell<...>` /
-//! `nebula_credential::CredentialGuard<...>`.
+//! Detection is by path-tail name (last `PathSegment::ident`) so both bare and
+//! fully-qualified paths work:
 //!
-//! [`SlotCell`]: nebula_resource::SlotCell
+//! | Accepted shape | Matches |
+//! |---|---|
+//! | `SlotCell<CredentialGuard<C>>` | bare or `nebula_resource::SlotCell<nebula_credential::CredentialGuard<C>>` |
+//! | `CredentialSlot<C>` | bare or `nebula_resource::CredentialSlot<C>` (alias for the above) |
 //!
-//! Resources do not declare resource-typed slots — they ARE resources.
-//! `#[resource]` field attributes are rejected with a clear error.
+//! All other types on a `#[credential]`-annotated field are rejected at
+//! expansion time with a compile error naming both accepted shapes.
+//!
+//! ## Slot-key validation (expansion-time)
+//!
+//! The `key = "..."` literal is validated against the same rules as
+//! `CredentialKey::new` (via [`is_valid_credential_key`]):
+//!
+//! - Non-empty
+//! - Max 64 bytes (ASCII)
+//! - Allowed bytes: `[0-9A-Za-z_\-.]`
+//! - Last byte must be alphanumeric (not `_`, `-`, `.`)
+//! - No consecutive identical separators (`__`, `--`, `..`)
+//!
+//! An invalid literal produces a compile error at the literal span.
 
 use nebula_macro_support::attrs;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
-use syn::{Field, Fields, GenericArgument, Ident, PathArguments, Result, Type};
+use syn::{Field, Fields, GenericArgument, Ident, LitStr, PathArguments, Result, Type};
 
 /// One parsed credential slot field.
 #[derive(Debug, Clone)]
@@ -34,12 +44,7 @@ pub(crate) struct ParsedCredentialSlot {
     /// User-supplied `key = "..."` override, or `None` to default to field name.
     pub key_override: Option<String>,
     /// Optional `purpose = "..."` description (catalog/UI).
-    #[allow(dead_code)]
     pub purpose: Option<String>,
-    /// Whether the field is wrapped in `Option<...>`.
-    pub optional: bool,
-    /// Whether the field is wrapped in `Lazy<...>`.
-    pub lazy: bool,
     /// The inner concrete credential type `C` underneath the wrappers.
     pub inner_type: Type,
 }
@@ -53,25 +58,81 @@ impl ParsedCredentialSlot {
     }
 }
 
-/// Walk the struct fields looking for `#[credential]` attrs.
+// ── Expansion-time CredentialKey validation ────────────────────────────────
+
+/// Max key length that mirrors `CredentialDomain::MAX_LENGTH` (default 64).
+const MAX_CREDENTIAL_KEY_LEN: usize = 64;
+
+/// Returns `true` iff `s` passes exactly the same rules as
+/// `CredentialKey::new` for the default `CredentialDomain` (which uses
+/// `is_valid_key_default` from `domain-key`).
+///
+/// Rules (from `domain-key` validation source):
+/// 1. Non-empty.
+/// 2. Length ≤ `MAX_CREDENTIAL_KEY_LEN` (64).
+/// 3. Every byte is ASCII alphanumeric, `_`, `-`, or `.`.
+/// 4. Last byte must be ASCII alphanumeric (not a separator).
+/// 5. No consecutive identical separators: `__`, `--`, `..`.
+///
+/// Note: uppercase ASCII is allowed by the domain (the key_type macro does
+/// NOT force lowercase — normalization is opt-in per domain). The `credential_key!`
+/// macro in nebula-core also accepts uppercase.
+pub(crate) fn is_valid_credential_key(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    let len = bytes.len();
+
+    if len == 0 || len > MAX_CREDENTIAL_KEY_LEN {
+        return false;
+    }
+
+    let mut i = 0;
+    while i < len {
+        let b = bytes[i];
+        // Allowed: ASCII alphanumeric, underscore, hyphen, dot.
+        if !matches!(b, b'0'..=b'9' | b'A'..=b'Z' | b'a'..=b'z' | b'_' | b'-' | b'.') {
+            return false;
+        }
+        // Reject consecutive identical separators.
+        if i > 0 && matches!(b, b'_' | b'-' | b'.') && bytes[i - 1] == b {
+            return false;
+        }
+        i += 1;
+    }
+
+    // Last byte must be alphanumeric.
+    matches!(bytes[len - 1], b'0'..=b'9' | b'A'..=b'Z' | b'a'..=b'z')
+}
+
+// ── Main parse entry points ────────────────────────────────────────────────
+
+/// Walk the struct fields looking for `#[credential]` attrs — variant used by
+/// `#[derive(Resource)]`.
 ///
 /// Returns the parsed slot list. Returns an error on:
 /// - `#[resource]` attribute on a field (resources don't declare resource slots)
 /// - Slot attributes on field types that don't follow the recognised shape
+/// - `key = "..."` literal that fails CredentialKey validation
 /// - Duplicate slot keys
-pub(crate) fn parse_credential_slot_fields(fields: &Fields) -> Result<Vec<ParsedCredentialSlot>> {
+pub(crate) fn parse_credential_slot_fields_slots(
+    fields: &Fields,
+) -> Result<Vec<ParsedCredentialSlot>> {
     let named = match fields {
         Fields::Named(named) => &named.named,
-        Fields::Unnamed(_) => {
-            return Err(syn::Error::new_spanned(
-                fields,
-                "#[derive(Resource)] does not support tuple structs \
-                 — use a named-field struct or a unit struct",
-            ));
-        },
-        Fields::Unit => {
+        Fields::Unnamed(unnamed) => {
+            // Tuple structs are allowed as long as no field carries `#[credential]`.
+            // If one does, point at that field for a clear error.
+            for field in &unnamed.unnamed {
+                if attrs::parse_attr_optional(&field.attrs, "credential")?.is_some() {
+                    return Err(syn::Error::new_spanned(
+                        field,
+                        "#[derive(Resource)] does not support `#[credential]` on \
+                         tuple-struct fields — use a named-field struct",
+                    ));
+                }
+            }
             return Ok(Vec::new());
         },
+        Fields::Unit => return Ok(Vec::new()),
     };
 
     let mut out: Vec<ParsedCredentialSlot> = Vec::new();
@@ -85,8 +146,7 @@ pub(crate) fn parse_credential_slot_fields(fields: &Fields) -> Result<Vec<Parsed
             ));
         }
 
-        let credential_args = attrs::parse_attr_optional(&field.attrs, "credential")?;
-        if let Some(args) = credential_args {
+        if let Some(args) = attrs::parse_attr_optional(&field.attrs, "credential")? {
             let parsed = parse_one_slot(field, args)?;
             out.push(parsed);
         }
@@ -117,81 +177,111 @@ fn parse_one_slot(field: &Field, args: attrs::AttrArgs) -> Result<ParsedCredenti
     let field_ident = field
         .ident
         .clone()
-        .expect("named field must have an ident; checked by parse_credential_slot_fields");
+        .expect("named field must have an ident; checked by parse_credential_slot_fields_slots");
 
-    let key_override = args.get_string("key");
+    let key_override = match args.get_string("key") {
+        None => None,
+        Some(k) => {
+            // Validate the key literal at expansion time against CredentialKey rules.
+            if !is_valid_credential_key(&k) {
+                // Find the LitStr for a precise span.
+                if let Some(lit_str) = find_key_litstr(field) {
+                    return Err(syn::Error::new_spanned(
+                        lit_str,
+                        format!(
+                            "invalid credential slot key `{k}` — must be non-empty, \
+                             ≤64 bytes, contain only [A-Za-z0-9_.-], not end with a \
+                             separator, and have no consecutive identical separators"
+                        ),
+                    ));
+                }
+                return Err(syn::Error::new_spanned(
+                    &field_ident,
+                    format!(
+                        "invalid credential slot key `{k}` — must be non-empty, \
+                         ≤64 bytes, contain only [A-Za-z0-9_.-], not end with a \
+                         separator, and have no consecutive identical separators"
+                    ),
+                ));
+            }
+            Some(k)
+        },
+    };
+
     let purpose = args.get_string("purpose");
 
-    let (optional, lazy, inner_type) = decode_field_type(&field.ty)?;
+    let inner_type = decode_field_type_slots(&field.ty)?;
 
     Ok(ParsedCredentialSlot {
         field_ident,
         key_override,
         purpose,
-        optional,
-        lazy,
         inner_type,
     })
 }
 
-/// Decode a `#[credential]` field type into `(optional, lazy, inner C)` per
-/// the module-level shape table.
-///
-/// Layering, outermost first: an optional `Option<…>` (optional slot), the
-/// mandatory `SlotCell<…>` cell, an optional `Lazy<…>` (lazy slot), then the
-/// required `CredentialGuard<C>` carrying the inner concrete credential `C`.
-fn decode_field_type(ty: &Type) -> Result<(bool, bool, Type)> {
-    let (optional, after_option) = if let Some(inner) = strip_path_tail(ty, "Option") {
-        (true, inner)
-    } else {
-        (false, ty.clone())
-    };
-
-    let Some(after_cell) = strip_path_tail(&after_option, "SlotCell") else {
-        return Err(field_shape_error(ty));
-    };
-
-    let (lazy, after_lazy) = if let Some(inner) = strip_path_tail(&after_cell, "Lazy") {
-        (true, inner)
-    } else {
-        (false, after_cell)
-    };
-
-    let Some(inner) = strip_path_tail(&after_lazy, "CredentialGuard") else {
-        return Err(field_shape_error(ty));
-    };
-
-    // The generated accessor emits a single fixed body that only fits the
-    // plain `SlotCell<CredentialGuard<C>>` shape; reject wrapper shapes at the
-    // derive site until the accessor is generalized.
-    if optional || lazy {
-        return Err(syn::Error::new_spanned(
-            ty,
-            format!(
-                "`#[credential]` slot must currently be exactly \
-                 `SlotCell<CredentialGuard<C>>` — `Option<…>`- and `Lazy<…>`-wrapped \
-                 slots are not yet supported by the generated accessor; got: {}",
-                quote!(#ty),
-            ),
-        ));
+/// Try to extract the `LitStr` from `#[credential(key = "...")]` for precise error spans.
+fn find_key_litstr(field: &Field) -> Option<LitStr> {
+    use syn::{Lit, Meta};
+    for attr in &field.attrs {
+        if !attr.path().is_ident("credential") {
+            continue;
+        }
+        let Meta::List(list) = &attr.meta else {
+            continue;
+        };
+        // Parse as nested metas to find `key = "..."`.
+        let mut found: Option<LitStr> = None;
+        let _ = attr.parse_nested_meta(|meta| {
+            if meta.path.is_ident("key") {
+                let value = meta.value()?;
+                let lit: Lit = value.parse()?;
+                if let Lit::Str(ls) = lit {
+                    found = Some(ls);
+                }
+            }
+            Ok(())
+        });
+        if found.is_some() {
+            return found;
+        }
+        // Fallback: the tokens span covers the list.
+        let _ = list; // suppress unused warning
     }
-
-    Ok((optional, lazy, inner))
+    None
 }
 
-/// Diagnostic for a `#[credential]` field that does not match a recognised
-/// slot-cell shape.
-fn field_shape_error(ty: &Type) -> syn::Error {
-    syn::Error::new_spanned(
+/// Decode a `#[credential]` field type for the `Resource` derive.
+///
+/// Accepted shapes (path-tail detection — bare or fully qualified):
+/// - `SlotCell<CredentialGuard<C>>`
+/// - `CredentialSlot<C>` (alias for the above)
+///
+/// Returns the inner credential type `C`.
+fn decode_field_type_slots(ty: &Type) -> Result<Type> {
+    // Shape 1: CredentialSlot<C>
+    if let Some(inner) = strip_path_tail(ty, "CredentialSlot") {
+        return Ok(inner);
+    }
+
+    // Shape 2: SlotCell<CredentialGuard<C>>
+    if let Some(after_cell) = strip_path_tail(ty, "SlotCell")
+        && let Some(inner) = strip_path_tail(&after_cell, "CredentialGuard")
+    {
+        return Ok(inner);
+    }
+
+    Err(syn::Error::new_spanned(
         ty,
         format!(
             "field with `#[credential]` must have type `SlotCell<CredentialGuard<C>>` \
-             (optionally wrapped in `Option<...>`, and/or with `Lazy<...>` between \
-             the cell and the guard) — got: {}",
-            quote!(#ty),
+             or `CredentialSlot<C>` — got: {ty}",
+            ty = quote!(#ty),
         ),
-    )
+    ))
 }
+
+// ── Shared path-tail stripper ──────────────────────────────────────────────
 
 /// Match `Wrapper<Inner>` by path-tail (last segment ident == `wrapper_name`).
 fn strip_path_tail(ty: &Type, wrapper_name: &str) -> Option<Type> {
@@ -212,15 +302,27 @@ fn strip_path_tail(ty: &Type, wrapper_name: &str) -> Option<Type> {
     Some(inner.clone())
 }
 
-/// Generate the `Dependencies` registration calls for credential slot fields.
-pub(crate) fn emit_slot_field_registrations(slots: &[ParsedCredentialSlot]) -> TokenStream2 {
+// ── Code emitters ──────────────────────────────────────────────────────────
+
+/// Generate the `Dependencies` registration calls for credential slot fields,
+/// wiring `purpose` when present.
+pub(crate) fn emit_slot_field_registrations_with_purpose(
+    slots: &[ParsedCredentialSlot],
+) -> TokenStream2 {
     let calls: Vec<TokenStream2> = slots
         .iter()
         .map(|slot| {
             let slot_key = slot.slot_key();
             let inner_ty = &slot.inner_type;
-            let required = !slot.optional;
-            let lazy = slot.lazy;
+            // `required = true`: slot-less structs get no calls, all
+            // named slots are required (optional slots not yet supported).
+            let required = true;
+            let lazy = false;
+            let purpose_tokens = if let Some(p) = &slot.purpose {
+                quote! { ::core::option::Option::Some(#p) }
+            } else {
+                quote! { ::core::option::Option::None }
+            };
             quote! {
                 .slot_field(::nebula_core::SlotField {
                     slot_key: #slot_key,
@@ -228,13 +330,17 @@ pub(crate) fn emit_slot_field_registrations(slots: &[ParsedCredentialSlot]) -> T
                     kind: ::nebula_core::SlotKind::Credential {
                         type_id: ::std::any::TypeId::of::<#inner_ty>(),
                         type_name: ::std::any::type_name::<#inner_ty>(),
+                        // The key literal was validated at expansion time —
+                        // `is_valid_credential_key` guarantees this `.expect` is unreachable.
                         key: ::nebula_core::CredentialKey::new(
                             <#inner_ty as ::nebula_credential::Credential>::KEY,
                         )
-                        .expect("credential KEY must be a valid CredentialKey"),
+                        .expect("Credential::KEY must satisfy CredentialKey rules; \
+                                 fix the KEY constant on this Credential impl"),
                     },
                     required: #required,
                     lazy: #lazy,
+                    purpose: #purpose_tokens,
                 })
             }
         })
@@ -243,34 +349,21 @@ pub(crate) fn emit_slot_field_registrations(slots: &[ParsedCredentialSlot]) -> T
     quote! { #(#calls)* }
 }
 
-/// Emit the body of `Resource::credential_slot_epoch` — an
-/// **order-sensitive positional fold** over every declared
-/// `#[credential]` `SlotCell` field's generation (per-resource revoke deferral
+/// Emit the body of `HasCredentialSlots::credential_slot_epoch` — an
+/// **order-sensitive positional fold** over every declared `#[credential]`
+/// `SlotCell` field's generation (per-resource revoke deferral
 /// create-vs-rotate reconcile).
 ///
-/// Derive-generated so a newly-added credential slot is automatically
-/// folded into the epoch — an author cannot forget to include it (the
-/// structural alternative to a "remember to update the epoch" comment).
-/// With no slots the fold is empty and the epoch is `0` ("never bound"),
-/// matching the trait default.
+/// With no slots the fold is empty and the epoch is `0` ("never bound").
 ///
-/// **Why a positional fold, not `max`.** The epoch's load-bearing
-/// contract (#680) is "the value changes whenever *any* slot's
-/// generation changes" — the resident create-vs-rotate reconcile
-/// compares the epoch a runtime was built against with the live epoch
-/// and only re-delivers the hook when they differ. `max` violates that:
-/// a runtime built at `(slot_a=5, slot_b=10)` then rotated `slot_a→6`
-/// still folds to `max=10`, so the reconcile would miss the stale
-/// runtime entirely and silently report a rotation success while the
-/// runtime keeps serving the pre-rotation credential. A position-weighted
-/// fold `acc = acc * K + gen` (fixed odd `K`) changes on **every** slot
+/// **Why a positional fold, not `max`.** `max` violates the contract: a
+/// runtime built at `(slot_a=5, slot_b=10)` then rotated `slot_a→6` still
+/// folds to `max=10`, so the reconcile would miss the stale runtime and
+/// silently report a rotation success while the runtime keeps serving the
+/// pre-rotation credential. A position-weighted fold
+/// `acc = acc * K + gen` (fixed odd `K`) changes on **every** slot
 /// transition regardless of which slot moved or whether another slot's
-/// generation happens to be larger. `wrapping_mul`/`wrapping_add` keep it
-/// total (it is an opaque change-token, never compared by magnitude — the
-/// reconcile only does `built != live`), and the per-slot
-/// [`SlotCell::generation`](crate::SlotCell::generation) is itself
-/// strictly monotone, so no real rotation sequence aliases back to a
-/// prior epoch in practice.
+/// generation happens to be larger.
 pub(crate) fn emit_credential_slot_epoch_body(slots: &[ParsedCredentialSlot]) -> TokenStream2 {
     if slots.is_empty() {
         return quote! { 0 };
@@ -282,14 +375,10 @@ pub(crate) fn emit_credential_slot_epoch_body(slots: &[ParsedCredentialSlot]) ->
             quote! { self.#field.generation() }
         })
         .collect();
-    // Position-weighted fold so EVERY slot transition changes the epoch
-    // (not just the max-bearing one): `acc = acc * K + gen`. `K` is a
-    // fixed odd constant (the 64-bit FNV-1a prime) for good dispersion;
-    // wrapping arithmetic keeps the fold total — the epoch is an opaque
-    // change-token compared only for equality by the create-vs-rotate
-    // reconcile, never by magnitude. A single slot folds to
-    // `0 * K + gen == gen` (unchanged from the prior single-slot
-    // behaviour). Empty slot list returned `0` above ("never bound").
+    // Position-weighted fold: `acc = acc * K + gen`. `K` is the 64-bit
+    // FNV-1a prime for good dispersion; wrapping arithmetic keeps it total.
+    // A single slot folds to `0 * K + gen == gen`. The epoch is an opaque
+    // change-token compared only for equality by the reconcile, never by magnitude.
     quote! {
         {
             const __NEBULA_SLOT_EPOCH_K: u64 = 0x0000_0100_0000_01b3;
@@ -303,15 +392,14 @@ pub(crate) fn emit_credential_slot_epoch_body(slots: &[ParsedCredentialSlot]) ->
 }
 
 /// Per slot, emit a read accessor over the author-declared
-/// `SlotCell<CredentialGuard<C>>` field.
+/// `SlotCell<CredentialGuard<C>>` (or `CredentialSlot<C>`) field.
 ///
-/// A pure derive macro cannot add or rewrite struct fields, and
-/// `ManagedResource` hands out `Arc<R>` (no `&mut R`). So the slot cell is
-/// declared by the author; the framework populates and rotates it through
-/// `&self` (`SlotCell::store`), and this accessor is the read side —
-/// `self.<field>.load()` returns the current `Arc<CredentialGuard<C>>`, or
-/// `None` until the framework binds it. No fields are added (slot model).
+/// Returns an empty `TokenStream2` when `slots` is empty — the caller skips
+/// emitting an empty `impl` block.
 pub(crate) fn emit_slot_accessors(slots: &[ParsedCredentialSlot]) -> TokenStream2 {
+    if slots.is_empty() {
+        return quote! {};
+    }
     let accessors: Vec<TokenStream2> = slots
         .iter()
         .map(|slot| {
@@ -319,7 +407,7 @@ pub(crate) fn emit_slot_accessors(slots: &[ParsedCredentialSlot]) -> TokenStream
             let acc_ident = format_ident!("{}_slot", field);
             let inner = &slot.inner_type;
             quote! {
-                #[doc = "Resolved credential for this slot, or `None` until the framework binds it."]
+                /// Resolved credential for this slot, or `None` until the framework binds it.
                 pub fn #acc_ident(&self) -> ::std::option::Option<
                     ::std::sync::Arc<::nebula_credential::CredentialGuard<#inner>>
                 > {
@@ -330,4 +418,67 @@ pub(crate) fn emit_slot_accessors(slots: &[ParsedCredentialSlot]) -> TokenStream
         .collect();
 
     quote! { #(#accessors)* }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::is_valid_credential_key;
+
+    /// The local validator must accept/reject exactly what `CredentialKey::new`
+    /// does over a representative corpus.
+    #[test]
+    fn validator_matches_credential_key_new() {
+        use nebula_core::CredentialKey;
+
+        let cases: &[(&str, bool)] = &[
+            // Valid
+            ("my_api_key", true),
+            ("db_auth", true),
+            ("slot.a", true),
+            ("slot-b", true),
+            ("abc123", true),
+            ("a", true),
+            ("A", true),
+            ("FooBar", true),
+            ("epochfold.fake", true),
+            ("_foo", true),
+            ("foo_bar_baz", true),
+            ("s1.s2-s3_s4", true),
+            // Invalid: empty
+            ("", false),
+            // Invalid: trailing separator
+            ("foo_", false),
+            ("foo-", false),
+            ("foo.", false),
+            // Invalid: consecutive separators
+            ("a__b", false),
+            ("a--b", false),
+            ("a..b", false),
+            // Invalid: spaces
+            ("has space", false),
+            ("has\ttab", false),
+            // Invalid: unicode
+            ("héllo", false),
+            // Invalid: special chars
+            ("a@b", false),
+            ("a!b", false),
+            // Leading digit is allowed
+            ("1slot", true),
+        ];
+
+        for (key, expected) in cases {
+            let runtime_result = CredentialKey::new(key).is_ok();
+            let macro_result = is_valid_credential_key(key);
+            assert_eq!(
+                macro_result, *expected,
+                "is_valid_credential_key({key:?}) = {macro_result}, expected {expected}"
+            );
+            assert_eq!(
+                runtime_result, *expected,
+                "CredentialKey::new({key:?}).is_ok() = {runtime_result}, expected {expected}"
+            );
+        }
+    }
 }

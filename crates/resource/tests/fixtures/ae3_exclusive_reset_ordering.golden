@@ -1,6 +1,0 @@
-[
-  {"step": "first_acquired", "detail": ""},
-  {"step": "reset_started", "detail": ""},
-  {"step": "second_blocked_while_reset_pending", "detail": "0"},
-  {"step": "second_acquired_after_reset", "detail": "1"}
-]

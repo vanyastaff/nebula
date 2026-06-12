@@ -22,7 +22,7 @@
 use std::{marker::PhantomData, sync::Arc};
 
 use nebula_core::context::Context;
-use nebula_resource::{Error, Resource, ResourceContext};
+use nebula_resource::{Error, Provider, ResourceContext};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
@@ -34,7 +34,7 @@ use crate::daemon::{Daemon, DaemonConfig as Config, RestartPolicy};
 /// automatically restarting according to the configured [`RestartPolicy`].
 ///
 /// See the module docs for the cancellation model.
-pub struct DaemonRuntime<R: Resource> {
+pub struct DaemonRuntime<R: Provider> {
     config: Config,
     /// Parent cancel token shared with the enclosing `Manager`. Cancelling
     /// this cascades to every per-run child token, so shutdown of the
@@ -55,7 +55,7 @@ struct DaemonRun {
     handle: tokio::task::JoinHandle<()>,
 }
 
-impl<R: Resource> DaemonRuntime<R> {
+impl<R: Provider> DaemonRuntime<R> {
     /// Creates a new daemon runtime with the given configuration and
     /// *parent* cancellation token.
     ///
@@ -101,7 +101,7 @@ impl<R: Resource> DaemonRuntime<R> {
 impl<R> DaemonRuntime<R>
 where
     R: Daemon + Clone + Send + Sync + 'static,
-    R::Runtime: Send + Sync + 'static,
+    R::Instance: Send + Sync + 'static,
 {
     /// Starts the daemon background task.
     ///
@@ -129,7 +129,7 @@ where
     pub async fn start(
         &self,
         resource: R,
-        runtime: Arc<R::Runtime>,
+        runtime: Arc<R::Instance>,
         ctx: &ResourceContext,
     ) -> Result<(), Error> {
         let mut guard = self.inner.lock().await;
@@ -194,13 +194,13 @@ where
 /// `cancel` via `biased` selects so shutdown wins deterministically (#323).
 async fn daemon_loop<R>(
     resource: R,
-    runtime: Arc<R::Runtime>,
+    runtime: Arc<R::Instance>,
     config: Config,
     cancel: CancellationToken,
     scope: nebula_core::scope::Scope,
 ) where
     R: Daemon + Clone + Send + Sync + 'static,
-    R::Runtime: Send + Sync + 'static,
+    R::Instance: Send + Sync + 'static,
 {
     let mut restarts = 0u32;
     let ctx = ResourceContext::minimal(scope, cancel.clone());
@@ -267,7 +267,7 @@ mod tests {
     use nebula_resource::{
         context::ResourceContext,
         error::Error as ResourceError,
-        resource::{Resource, ResourceConfig, ResourceMetadata},
+        resource::{Provider, ResourceConfig, ResourceMetadata},
     };
 
     use super::*;
@@ -299,11 +299,11 @@ mod tests {
         attempts: Arc<AtomicU32>,
     }
 
-    impl Resource for FlakyDaemon {
+    #[async_trait::async_trait]
+    impl Provider for FlakyDaemon {
         type Config = EmptyCfg;
-        type Runtime = ();
-        type Lease = ();
-        type Error = TestError;
+        type Instance = ();
+        type Topology = nebula_resource::NoTopology;
 
         fn key() -> ResourceKey {
             ResourceKey::new("daemon-flaky").unwrap()
@@ -313,7 +313,7 @@ mod tests {
             &self,
             _config: &Self::Config,
             _ctx: &ResourceContext,
-        ) -> Result<(), TestError> {
+        ) -> Result<(), ResourceError> {
             Ok(())
         }
 
@@ -325,23 +325,23 @@ mod tests {
     impl Daemon for FlakyDaemon {
         async fn run(
             &self,
-            _runtime: &Self::Runtime,
+            _runtime: &Self::Instance,
             _ctx: &ResourceContext,
             _cancel: CancellationToken,
-        ) -> Result<(), TestError> {
+        ) -> Result<(), ResourceError> {
             self.attempts.fetch_add(1, Ordering::SeqCst);
-            Err(TestError("intentional"))
+            Err(TestError("intentional").into())
         }
     }
 
     #[derive(Clone)]
     struct OneShotDaemon;
 
-    impl Resource for OneShotDaemon {
+    #[async_trait::async_trait]
+    impl Provider for OneShotDaemon {
         type Config = EmptyCfg;
-        type Runtime = ();
-        type Lease = ();
-        type Error = TestError;
+        type Instance = ();
+        type Topology = nebula_resource::NoTopology;
 
         fn key() -> ResourceKey {
             ResourceKey::new("daemon-oneshot").unwrap()
@@ -351,7 +351,7 @@ mod tests {
             &self,
             _config: &Self::Config,
             _ctx: &ResourceContext,
-        ) -> Result<(), TestError> {
+        ) -> Result<(), ResourceError> {
             Ok(())
         }
 
@@ -363,10 +363,10 @@ mod tests {
     impl Daemon for OneShotDaemon {
         async fn run(
             &self,
-            _runtime: &Self::Runtime,
+            _runtime: &Self::Instance,
             _ctx: &ResourceContext,
             _cancel: CancellationToken,
-        ) -> Result<(), TestError> {
+        ) -> Result<(), ResourceError> {
             Ok(())
         }
     }

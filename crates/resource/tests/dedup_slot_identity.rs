@@ -24,32 +24,15 @@ use std::sync::{
 };
 
 use nebula_core::{OrgId, ResourceKey, ScopeLevel, resource_key, scope::Scope};
+use nebula_resource::Resident;
 use nebula_resource::{
-    AcquireOptions, Manager, RegisterOptions, RegistrationSpec, ResidentConfig, Resource,
+    AcquireOptions, Manager, Provider, RegisterOptions, RegistrationSpec, ResidentConfig,
     ResourceConfig, ResourceContext, SlotIdentity,
     error::Error,
-    resource::ResourceMetadata,
-    runtime::{TopologyRuntime, resident::ResidentRuntime},
-    topology::resident::Resident,
+    resource::{HasCredentialSlots, ResourceMetadata},
+    topology::resident::ResidentProvider,
 };
 use tokio_util::sync::CancellationToken;
-
-#[derive(Debug)]
-struct CountingError(String);
-
-impl std::fmt::Display for CountingError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for CountingError {}
-
-impl From<CountingError> for Error {
-    fn from(e: CountingError) -> Self {
-        Error::transient(e.0)
-    }
-}
 
 /// Config whose `fingerprint()` is left at the `0` default on purpose: the
 /// dedup separation must come from the resolved slot identity, never from the
@@ -63,7 +46,11 @@ impl ResourceConfig for CountingConfig {
     fn validate(&self) -> Result<(), Error> {
         Ok(())
     }
-    // fingerprint() intentionally NOT overridden — stays 0.
+
+    fn fingerprint(&self) -> u64 {
+        // Unit struct: all instances identical — constant 0 is correct.
+        0
+    }
 }
 
 /// Each `create` mints a fresh, unique runtime id from a shared counter, so a
@@ -87,11 +74,11 @@ impl CountingResource {
     }
 }
 
-impl Resource for CountingResource {
+#[async_trait::async_trait]
+impl Provider for CountingResource {
     type Config = CountingConfig;
-    type Runtime = CountingRuntime;
-    type Lease = CountingRuntime;
-    type Error = CountingError;
+    type Instance = CountingRuntime;
+    type Topology = Resident<Self>;
 
     fn key() -> ResourceKey {
         resource_key!("dedup-slot-ident")
@@ -101,12 +88,16 @@ impl Resource for CountingResource {
         &self,
         _config: &CountingConfig,
         _ctx: &ResourceContext,
-    ) -> Result<CountingRuntime, CountingError> {
+    ) -> Result<CountingRuntime, Error> {
         let id = self.create_counter.fetch_add(1, Ordering::SeqCst);
         Ok(CountingRuntime { id })
     }
 
-    async fn destroy(&self, _runtime: CountingRuntime) -> Result<(), CountingError> {
+    async fn destroy(
+        &self,
+        _runtime: CountingRuntime,
+        _cx: nebula_resource::TeardownCx,
+    ) -> Result<(), Error> {
         Ok(())
     }
 
@@ -115,7 +106,14 @@ impl Resource for CountingResource {
     }
 }
 
-impl Resident for CountingResource {
+impl HasCredentialSlots for CountingResource {
+    fn credential_slot_epoch(&self) -> u64 {
+        0
+    }
+}
+
+#[async_trait::async_trait]
+impl ResidentProvider for CountingResource {
     fn is_alive_sync(&self, _runtime: &CountingRuntime) -> bool {
         true
     }
@@ -146,10 +144,7 @@ fn register_counting(
         config: CountingConfig,
         scope: opts.scope,
         slot_identity,
-        topology: TopologyRuntime::Resident(ResidentRuntime::<CountingResource>::new(
-            ResidentConfig::default(),
-        )),
-        acquire: Manager::erased_acquire_resident_for::<CountingResource>(),
+        topology: Resident::<CountingResource>::new(ResidentConfig::default()),
         recovery_gate: opts.recovery_gate,
     })
 }
@@ -437,11 +432,11 @@ fn non_empty_bindings_are_never_the_unbound_identity() {
 #[derive(Clone)]
 struct SiblingResidentResource;
 
-impl Resource for SiblingResidentResource {
+#[async_trait::async_trait]
+impl Provider for SiblingResidentResource {
     type Config = CountingConfig;
-    type Runtime = CountingRuntime;
-    type Lease = CountingRuntime;
-    type Error = CountingError;
+    type Instance = CountingRuntime;
+    type Topology = Resident<Self>;
 
     fn key() -> ResourceKey {
         // SAME string as `CountingResource::key()` on purpose.
@@ -452,13 +447,17 @@ impl Resource for SiblingResidentResource {
         &self,
         _config: &CountingConfig,
         _ctx: &ResourceContext,
-    ) -> Result<CountingRuntime, CountingError> {
+    ) -> Result<CountingRuntime, Error> {
         // A distinguishable runtime id space; never observed on the
         // success path of the test below (the sibling row must be skipped).
         Ok(CountingRuntime { id: 9_999 })
     }
 
-    async fn destroy(&self, _runtime: CountingRuntime) -> Result<(), CountingError> {
+    async fn destroy(
+        &self,
+        _runtime: CountingRuntime,
+        _cx: nebula_resource::TeardownCx,
+    ) -> Result<(), Error> {
         Ok(())
     }
 
@@ -467,7 +466,14 @@ impl Resource for SiblingResidentResource {
     }
 }
 
-impl Resident for SiblingResidentResource {
+impl HasCredentialSlots for SiblingResidentResource {
+    fn credential_slot_epoch(&self) -> u64 {
+        0
+    }
+}
+
+#[async_trait::async_trait]
+impl ResidentProvider for SiblingResidentResource {
     fn is_alive_sync(&self, _runtime: &CountingRuntime) -> bool {
         true
     }
@@ -506,10 +512,7 @@ async fn agnostic_typed_acquire_skips_sibling_type_and_falls_through_to_global()
             config: CountingConfig,
             scope: ScopeLevel::Organization(org),
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Resident(ResidentRuntime::<SiblingResidentResource>::new(
-                ResidentConfig::default(),
-            )),
-            acquire: Manager::erased_acquire_resident_for::<SiblingResidentResource>(),
+            topology: Resident::<SiblingResidentResource>::new(ResidentConfig::default()),
             recovery_gate: None,
         })
         .expect("register sibling type at org scope must succeed");
@@ -583,10 +586,7 @@ async fn typed_lookup_skips_sibling_type_and_falls_through_to_global() {
             config: CountingConfig,
             scope: ScopeLevel::Organization(org),
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Resident(ResidentRuntime::<SiblingResidentResource>::new(
-                ResidentConfig::default(),
-            )),
-            acquire: Manager::erased_acquire_resident_for::<SiblingResidentResource>(),
+            topology: Resident::<SiblingResidentResource>::new(ResidentConfig::default()),
             recovery_gate: None,
         })
         .expect("register sibling type at org scope must succeed");

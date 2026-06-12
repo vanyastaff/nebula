@@ -33,13 +33,11 @@ use nebula_core::{OrgId, ResourceKey, ScopeLevel, resource_key, scope::Scope};
 use nebula_credential::{CredentialEvent, CredentialGuard, CredentialId, LeaseEvent};
 use nebula_engine::credential::rotation::{ResourceFanoutDriver, ResourceFanoutIndex};
 use nebula_eventbus::EventBus;
+use nebula_resource::Resident;
 use nebula_resource::{
-    AcquireOptions, Manager, RegistrationSpec, ResidentConfig, Resource, ResourceConfig,
-    ResourceContext, SlotCell, SlotIdentity,
-    error::Error as ResourceError,
-    resource::ResourceMetadata,
-    runtime::{TopologyRuntime, resident::ResidentRuntime},
-    topology::resident::Resident,
+    AcquireOptions, Manager, Provider, RegistrationSpec, ResidentConfig, ResourceConfig,
+    ResourceContext, SlotCell, SlotIdentity, error::Error as ResourceError,
+    resource::ResourceMetadata, topology::resident::ResidentProvider,
 };
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::fmt::MakeWriter;
@@ -125,6 +123,11 @@ impl ResourceConfig for Cfg {
     fn validate(&self) -> Result<(), ResourceError> {
         Ok(())
     }
+
+    fn fingerprint(&self) -> u64 {
+        // Unit struct: all instances identical — constant 0 is correct.
+        0
+    }
 }
 
 #[derive(Clone)]
@@ -142,23 +145,27 @@ struct SecretRes {
     hook_entered: Arc<AtomicUsize>,
 }
 
-impl Resource for SecretRes {
+#[async_trait::async_trait]
+impl Provider for SecretRes {
     type Config = Cfg;
-    type Runtime = SecretRuntime;
-    type Lease = SecretRuntime;
-    type Error = HookError;
+    type Instance = SecretRuntime;
+    type Topology = Resident<Self>;
 
     fn key() -> ResourceKey {
         resource_key!("wired-redaction-res")
     }
 
-    async fn create(&self, _c: &Cfg, _x: &ResourceContext) -> Result<SecretRuntime, HookError> {
+    async fn create(&self, _c: &Cfg, _x: &ResourceContext) -> Result<SecretRuntime, ResourceError> {
         Ok(SecretRuntime {
             secret: SECRET.to_owned(),
         })
     }
 
-    async fn on_credential_refresh(&self, _s: &str, rt: &SecretRuntime) -> Result<(), HookError> {
+    async fn on_credential_refresh(
+        &self,
+        _s: &str,
+        rt: &SecretRuntime,
+    ) -> Result<(), ResourceError> {
         self.hook_entered.fetch_add(1, Ordering::SeqCst);
         // Genuinely handle the secret-bearing runtime on the rotation
         // path so redaction is not vacuously true.
@@ -166,7 +173,11 @@ impl Resource for SecretRes {
         Ok(())
     }
 
-    async fn on_credential_revoke(&self, _s: &str, rt: &SecretRuntime) -> Result<(), HookError> {
+    async fn on_credential_revoke(
+        &self,
+        _s: &str,
+        rt: &SecretRuntime,
+    ) -> Result<(), ResourceError> {
         self.hook_entered.fetch_add(1, Ordering::SeqCst);
         let _ = rt.secret.len();
         Ok(())
@@ -177,7 +188,14 @@ impl Resource for SecretRes {
     }
 }
 
-impl Resident for SecretRes {
+impl nebula_resource::HasCredentialSlots for SecretRes {
+    fn credential_slot_epoch(&self) -> u64 {
+        0
+    }
+}
+
+#[async_trait::async_trait]
+impl ResidentProvider for SecretRes {
     fn is_alive_sync(&self, _r: &SecretRuntime) -> bool {
         true
     }
@@ -230,10 +248,7 @@ async fn wired_rotation_fanout_observability_is_redaction_clean() {
         config: Cfg,
         scope: scope.clone(),
         slot_identity: slot_identity.clone(),
-        topology: TopologyRuntime::Resident(ResidentRuntime::<SecretRes>::new(
-            ResidentConfig::default(),
-        )),
-        acquire: Manager::erased_acquire_resident_for::<SecretRes>(),
+        topology: Resident::<SecretRes>::new(ResidentConfig::default()),
         recovery_gate: None,
     })
     .expect("register resolved-credential row");

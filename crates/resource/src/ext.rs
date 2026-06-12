@@ -64,7 +64,7 @@ use std::future::Future;
 use nebula_core::context::HasResources;
 
 use crate::{
-    Resource, ResourceGuard,
+    Provider, ResourceGuard,
     error::{Error, ErrorKind},
 };
 
@@ -105,13 +105,13 @@ mod sealed {
 /// ```
 pub trait HasResourcesExt: HasResources + sealed::Sealed {
     /// Acquire a typed resource guard. Returns error if not found or acquisition fails.
-    fn resource<R: Resource>(&self) -> impl Future<Output = Result<ResourceGuard<R>, Error>> + Send
+    fn resource<R: Provider>(&self) -> impl Future<Output = Result<ResourceGuard<R>, Error>> + Send
     where
         Self: Sized;
 
     /// Try to acquire a typed resource guard. Returns `Ok(None)` if the resource
     /// is not registered, `Err` if registered but acquisition fails.
-    fn try_resource<R: Resource>(
+    fn try_resource<R: Provider>(
         &self,
     ) -> impl Future<Output = Result<Option<ResourceGuard<R>>, Error>> + Send
     where
@@ -119,7 +119,7 @@ pub trait HasResourcesExt: HasResources + sealed::Sealed {
 }
 
 impl<C: HasResources + ?Sized> HasResourcesExt for C {
-    async fn resource<R: Resource>(&self) -> Result<ResourceGuard<R>, Error>
+    async fn resource<R: Provider>(&self) -> Result<ResourceGuard<R>, Error>
     where
         Self: Sized,
     {
@@ -143,7 +143,7 @@ impl<C: HasResources + ?Sized> HasResourcesExt for C {
             })
     }
 
-    async fn try_resource<R: Resource>(&self) -> Result<Option<ResourceGuard<R>>, Error>
+    async fn try_resource<R: Provider>(&self) -> Result<Option<ResourceGuard<R>>, Error>
     where
         Self: Sized,
     {

@@ -3591,6 +3591,7 @@ name = "nebula-examples"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "futures",
  "nebula-api",
  "nebula-core",
@@ -3784,6 +3785,7 @@ name = "nebula-resource"
 version = "0.1.0"
 dependencies = [
  "arc-swap",
+ "async-trait",
  "codspeed-criterion-compat",
  "dashmap",
  "futures",
@@ -3815,6 +3817,7 @@ dependencies = [
 name = "nebula-resource-macros"
 version = "0.1.0"
 dependencies = [
+ "nebula-core",
  "nebula-macro-support",
  "proc-macro2",
  "quote",

@@ -45,12 +45,12 @@ use nebula_engine::{
 };
 use nebula_execution::context::ExecutionBudget;
 use nebula_metrics::MetricsRegistry;
+use nebula_resource::Resident;
 use nebula_resource::{
     Manager, RegistrationSpec, ResidentConfig, ResourceContext, SlotIdentity,
     error::Error as ResourceError,
-    resource::{Resource, ResourceConfig, ResourceMetadata},
-    runtime::{TopologyRuntime, resident::ResidentRuntime},
-    topology::resident::Resident,
+    resource::{Provider, ResourceConfig, ResourceMetadata},
+    topology::resident::ResidentProvider,
 };
 use nebula_workflow::{NodeDefinition, ParamValue, Version, WorkflowConfig, WorkflowDefinition};
 
@@ -156,33 +156,33 @@ impl From<WitnessError> for ResourceError {
     }
 }
 
-impl Resource for WitnessResource {
+#[async_trait::async_trait]
+impl Provider for WitnessResource {
     type Config = WitnessResourceConfig;
-    type Runtime = Arc<WitnessResourceInner>;
-    type Lease = Arc<WitnessResourceInner>;
-    type Error = WitnessError;
+    type Instance = Arc<WitnessResourceInner>;
+    type Topology = Resident<Self>;
 
     fn key() -> ResourceKey {
         resource_key!("phase9-witness-resource")
     }
 
-    fn create(
+    async fn create(
         &self,
         config: &WitnessResourceConfig,
         _ctx: &ResourceContext,
-    ) -> impl Future<Output = Result<Arc<WitnessResourceInner>, WitnessError>> + Send {
-        let counter = Arc::clone(&self.create_counter);
-        let label = config.label.clone();
-        async move {
-            let id = counter.fetch_add(1, Ordering::SeqCst);
-            Ok(Arc::new(WitnessResourceInner {
-                instance_id: id,
-                label,
-            }))
-        }
+    ) -> Result<Arc<WitnessResourceInner>, ResourceError> {
+        let id = self.create_counter.fetch_add(1, Ordering::SeqCst);
+        Ok(Arc::new(WitnessResourceInner {
+            instance_id: id,
+            label: config.label.clone(),
+        }))
     }
 
-    async fn destroy(&self, _runtime: Arc<WitnessResourceInner>) -> Result<(), WitnessError> {
+    async fn destroy(
+        &self,
+        _runtime: Arc<WitnessResourceInner>,
+        _cx: nebula_resource::TeardownCx,
+    ) -> Result<(), ResourceError> {
         Ok(())
     }
 
@@ -191,7 +191,14 @@ impl Resource for WitnessResource {
     }
 }
 
-impl Resident for WitnessResource {
+impl nebula_resource::HasCredentialSlots for WitnessResource {
+    fn credential_slot_epoch(&self) -> u64 {
+        0
+    }
+}
+
+#[async_trait::async_trait]
+impl ResidentProvider for WitnessResource {
     fn is_alive_sync(&self, _runtime: &Arc<WitnessResourceInner>) -> bool {
         true
     }
@@ -348,10 +355,7 @@ async fn pipeline_with_resource_manager_resolves_and_executes() {
             },
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Resident(ResidentRuntime::<WitnessResource>::new(
-                ResidentConfig::default(),
-            )),
-            acquire: Manager::erased_acquire_resident_for::<WitnessResource>(),
+            topology: Resident::<WitnessResource>::new(ResidentConfig::default()),
             recovery_gate: None,
         })
         .expect("register witness resource");

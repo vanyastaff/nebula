@@ -1,7 +1,6 @@
-//! Compile-fail probe: `#[derive(Resource)]` rejects an `Option<…>`-wrapped
-//! `#[credential]` slot. The generated accessor emits a single fixed body that
-//! only fits the plain `SlotCell<CredentialGuard<C>>` shape, so wrapper shapes
-//! must be a compile error with a clear span at the derive site.
+//! Compile-fail probe: `#[derive(Resource)]` rejects a `#[credential]`
+//! field whose type is `Option<SlotCell<CredentialGuard<C>>>`. The slot field
+//! must be exactly `SlotCell<CredentialGuard<C>>` or the alias `CredentialSlot<C>`.
 
 use nebula_credential::{
     AuthPattern, Credential, CredentialContext, CredentialError, CredentialGuard,
@@ -12,7 +11,6 @@ use nebula_schema::FieldValues;
 use zeroize::Zeroize;
 
 #[derive(Resource)]
-#[resource(key = "demo", topology = "resident", config = DemoCfg)]
 struct Demo {
     #[credential(key = "db")]
     db: Option<SlotCell<CredentialGuard<FakeCred>>>,
@@ -25,24 +23,21 @@ impl nebula_schema::HasSchema for DemoCfg {
         nebula_schema::ValidSchema::empty()
     }
 }
-impl nebula_resource::ResourceConfig for DemoCfg {}
+impl nebula_resource::ResourceConfig for DemoCfg {
+    fn fingerprint(&self) -> u64 {
+        0
+    }
+}
 
-/// Minimal static credential fixture. `Zeroize` is a no-op: `FakeCred` is a
-/// unit type carrying no secret bytes — the bound exists only so the derived
-/// accessor return type can name `CredentialGuard<FakeCred>`.
 struct FakeCred;
-
 impl Zeroize for FakeCred {
     fn zeroize(&mut self) {}
 }
-
 impl Credential for FakeCred {
     type Properties = ();
     type Scheme = SecretToken;
     type State = SecretToken;
-
     const KEY: &'static str = "demo.fake";
-
     fn metadata() -> CredentialMetadata {
         CredentialMetadata::builder()
             .key(nebula_core::credential_key!("demo.fake"))
@@ -53,11 +48,9 @@ impl Credential for FakeCred {
             .build()
             .expect("FakeCred metadata is valid")
     }
-
     fn project(state: &SecretToken) -> SecretToken {
         state.clone()
     }
-
     async fn resolve(
         _values: &FieldValues,
         _ctx: &CredentialContext,

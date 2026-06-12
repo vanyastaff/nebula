@@ -16,13 +16,12 @@ An adapter crate owns three things:
 1. A **config struct** — operational parameters (host, port, timeouts).
    No secrets. Implements `ResourceConfig` (super-bound:
    `HasSchema`, re-exported as `nebula_resource::HasSchema`).
-2. A **resource struct** — implements `Resource` with four associated
-   types (`Config`, `Runtime`, `Lease`, `Error`) plus the lifecycle
-   methods. The factory.
-3. A **topology impl** — [`Pooled`], [`Resident`], or [`Bounded`] (with
-   a sealed `Cap` typestate: `Unbounded` / `Capped<N>` / `Exclusive`).
-   Most database adapters use `Pooled`; HTTP clients use `Resident`;
-   OAuth / gRPC / file-lock patterns use `Bounded` with the matching cap.
+2. A **resource struct** — implements `Resource` with two associated
+   types (`Config`, `Runtime`) plus the lifecycle methods (which return
+   the crate's typed `Error`). The factory.
+3. A **topology impl** — [`Pooled`] or [`Resident`].
+   Most database adapters use `Pooled`; HTTP clients and token-gated
+   SDK clients use `Resident`.
 
 **Credential binding.** If your resource binds to a credential, declare a slot field
 `#[credential(key = "...")] auth: SlotCell<CredentialGuard<C>>` and read the
@@ -225,24 +224,24 @@ pub struct PostgresResource;
 impl Resource for PostgresResource {
     type Config = PostgresConfig;
     type Runtime = PgConnection;
-    type Lease = PgConnection;
-    type Error = PostgresError;
 
     fn key() -> ResourceKey { resource_key!("postgres") }
 
+    // Lifecycle methods return the crate's typed `Error`; the
+    // `From<PostgresError> for Error` above lets `?` lift a domain error in.
     fn create(
         &self,
         config: &PostgresConfig,
         _ctx: &ResourceContext,
-    ) -> impl Future<Output = Result<PgConnection, PostgresError>> + Send {
-        // Replace with: tokio_postgres::connect(&dsn, NoTls).await
+    ) -> impl Future<Output = Result<PgConnection, Error>> + Send {
+        // Replace with: tokio_postgres::connect(&dsn, NoTls).await?  (PostgresError -> Error via `?`)
         let _ = config;
         async { Ok(PgConnection { closed: false }) }
     }
 
-    async fn check(&self, runtime: &PgConnection) -> Result<(), PostgresError> {
+    async fn check(&self, runtime: &PgConnection) -> Result<(), Error> {
         if runtime.closed {
-            return Err(PostgresError::Connect("connection is closed".into()));
+            return Err(PostgresError::Connect("connection is closed".into()).into());
         }
         Ok(())
     }
@@ -284,7 +283,7 @@ fn create(
     &self,
     config: &PostgresConfig,
     _ctx: &ResourceContext,
-) -> impl Future<Output = Result<PgRuntime, PostgresError>> + Send {
+) -> impl Future<Output = Result<PgRuntime, Error>> + Send {
     // Read the resolved guard the engine bound before `create`.
     let guard = self.auth_slot(); // Option<Arc<CredentialGuard<MyDbCredential>>>
     async move {
@@ -298,7 +297,7 @@ fn on_credential_refresh(
     &self,
     slot_name: &str,
     runtime: &PgRuntime,
-) -> impl Future<Output = Result<(), Self::Error>> + Send {
+) -> impl Future<Output = Result<(), Error>> + Send {
     // The engine has already swapped the rotated guard into `self`'s slot
     // cell; rebuild from it and atomically swap, letting RAII drain old
     // handles. Multi-slot resources branch on `slot_name`.
@@ -322,9 +321,6 @@ fn on_credential_refresh(
 |------------------------|-----------------------------------------------------------------------------------------------------------|
 | `Pooled`               | Stateful connections (DBs, gRPC channels). N instances, one-at-a-time checkout.                           |
 | `Resident`             | Stateless or internally-pooled clients (`reqwest::Client`, AWS SDK). `Arc::clone` on acquire.             |
-| `Bounded<Unbounded>`   | Token-gated services (OAuth, fan-out APIs). Long-lived runtime, no per-acquire release.                   |
-| `Bounded<Capped<N>>`   | Multiplexed sessions over one shared connection (SSH, gRPC channel). Tracked release via `BoundedRelease`. |
-| `Bounded<Exclusive>`   | Mutex-style — one acquirer at a time, reset-on-release ordering.                                          |
 
 ### Pooled implementation
 

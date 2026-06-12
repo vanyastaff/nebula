@@ -2,7 +2,7 @@
 
 use std::future::Future;
 
-use crate::{context::ResourceContext, resource::Resource};
+use crate::{context::ResourceContext, resource::Provider};
 
 /// Synchronous broken-check result.
 ///
@@ -38,7 +38,7 @@ pub enum RecycleDecision {
 /// Metrics available during the recycle check.
 ///
 /// These are maintained by the pool manager and passed to
-/// [`Pooled::recycle`] so the implementation can make informed
+/// [`PoolProvider::recycle`] so the implementation can make informed
 /// keep-or-drop decisions.
 #[derive(Debug, Clone)]
 pub struct InstanceMetrics {
@@ -57,56 +57,81 @@ impl InstanceMetrics {
     }
 }
 
-/// Pool topology — N interchangeable stateful instances with
+/// Pool provider hooks — N interchangeable stateful instances with
 /// checkout/recycle/destroy.
 ///
-/// Implementors extend [`Resource`] with pool-aware lifecycle hooks:
+/// Implementors extend [`Provider`] with pool-aware lifecycle hooks:
 /// a sync broken check (for the `Drop` path), an async recycle step,
-/// and an optional per-checkout prepare step.
+/// and an optional per-checkout prepare step. A resource that declares
+/// `type Topology = Pooled<Self>` implements this trait so the framework
+/// [`Pooled`](crate::topology::Pooled) topology can drive its pool policy.
+///
+/// # Safe-default recycling (ADR-0093)
+///
+/// [`recycle`](Self::recycle)'s default is *safe by construction*: a resource
+/// that declares `#[credential]` slots holds per-lease/session state, so the
+/// framework DISCARDS it on release rather than re-pool a dirty instance
+/// (cross-lease state bleed). Stateless (slot-less) resources still recycle.
+/// Override [`recycle`](Self::recycle) to wipe session state and return
+/// [`RecycleDecision::Keep`] to enable pooling of a stateful resource.
 ///
 /// # Acquire bounds
 ///
 /// [`Manager::acquire_pooled`](crate::Manager::acquire_pooled) requires:
 /// - `R: Clone + Send + Sync + 'static`
-/// - `R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static`
-/// - `R::Lease: Into<R::Runtime> + Send + 'static`
-///
-/// If `Runtime` and `Lease` are the same type, the blanket
-/// `impl<T> From<T> for T` satisfies both conversion bounds automatically.
-pub trait Pooled: Resource {
+/// - `R::Instance: Clone + Send + Sync + 'static`
+pub trait PoolProvider: Provider + crate::resource::HasCredentialSlots {
     /// Sync O(1) broken check. Called in the `Drop` path — NO async, NO I/O.
     ///
     /// The default implementation reports all instances as healthy.
-    fn is_broken(&self, _runtime: &Self::Runtime) -> BrokenCheck {
+    fn is_broken(&self, _instance: &Self::Instance) -> BrokenCheck {
         BrokenCheck::Healthy
     }
 
     /// Async recycle check performed when an instance is returned to the pool.
     ///
     /// Implementations can inspect [`InstanceMetrics`] to decide whether to
-    /// keep or drop the instance. The default keeps everything.
+    /// keep or drop the instance.
+    ///
+    /// The default is *safe by construction* (ADR-0093): a resource that
+    /// declares `#[credential]` slots is treated as session-stateful and
+    /// DISCARDED on release ([`RecycleDecision::Drop`]) so a dirty instance is
+    /// never re-pooled; a slot-less resource is kept ([`RecycleDecision::Keep`]).
+    /// Override this hook to wipe per-lease session state and return
+    /// [`RecycleDecision::Keep`] to enable pooling of a stateful resource.
     fn recycle(
         &self,
-        _runtime: &Self::Runtime,
+        _instance: &Self::Instance,
         _metrics: &InstanceMetrics,
-    ) -> impl Future<Output = Result<RecycleDecision, Self::Error>> + Send {
-        async { Ok(RecycleDecision::Keep) }
+    ) -> impl Future<Output = Result<RecycleDecision, crate::Error>> + Send {
+        // Safe by default: a resource that declares `#[credential]` slots holds
+        // per-lease/session state, so the framework DISCARDS it on release rather
+        // than re-pool a dirty instance (cross-lease bleed). Override this hook to
+        // wipe session state and return `Keep` to enable pooling. See ADR-0093.
+        let keep = !Self::declares_credential_slots();
+        async move {
+            Ok(if keep {
+                RecycleDecision::Keep
+            } else {
+                RecycleDecision::Drop
+            })
+        }
     }
 
     /// Prepares an instance for a specific execution context.
     ///
-    /// Called after checkout, before the caller receives the lease.
+    /// Called after checkout, before the caller receives the instance.
     /// Use this for operations like `SET search_path` or `USE database`.
     ///
     /// # Errors
     ///
-    /// Returns `Self::Error` if preparation fails. The pool manager will
+    /// Returns `crate::Error` if preparation fails. The pool manager will
     /// destroy the instance and try another one.
     fn prepare(
         &self,
-        _runtime: &Self::Runtime,
+        _instance: &Self::Instance,
         _ctx: &ResourceContext,
-    ) -> impl Future<Output = Result<(), Self::Error>> + Send {
+    ) -> impl Future<Output = Result<(), crate::Error>> + Send {
         async { Ok(()) }
     }
 }

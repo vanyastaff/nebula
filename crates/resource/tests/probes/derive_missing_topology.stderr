@@ -1,5 +1,0 @@
-error: missing required attribute `topology = "pool|resident|bounded"`
- --> tests/probes/derive_missing_topology.rs:7:8
-  |
-7 | struct MissingTopology;
-  |        ^^^^^^^^^^^^^^^

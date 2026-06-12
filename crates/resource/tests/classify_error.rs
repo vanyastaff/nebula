@@ -142,3 +142,49 @@ fn duration_milliseconds() {
     let err: Error = DurationError::HalfSecond.into();
     assert_eq!(err.retry_after(), Some(Duration::from_millis(500)));
 }
+
+/// Runtime `retry_after` read from a variant field — both a tuple index
+/// (`.0`) and a named field. Regression guard: the emitted `From` must read
+/// the `Duration` field through a borrow and only move the error into
+/// `with_source` afterwards, or it fails to compile (E0505). No prior test
+/// exercised these forms, so the broken emission compiled-but-was-dead.
+#[derive(Debug, thiserror::Error, ClassifyError)]
+enum RuntimeRetryError {
+    #[error("throttled, retry in {0:?}")]
+    #[classify(exhausted, retry_after = .0)]
+    Throttled(Duration),
+
+    #[error("quota exceeded, wait {wait:?}")]
+    #[classify(exhausted, retry_after = wait)]
+    QuotaExceeded { wait: Duration },
+}
+
+#[test]
+fn runtime_retry_after_tuple_field() {
+    let err: Error = RuntimeRetryError::Throttled(Duration::from_secs(7)).into();
+    assert_eq!(
+        *err.kind(),
+        ErrorKind::Exhausted {
+            retry_after: Some(Duration::from_secs(7))
+        }
+    );
+    assert_eq!(err.retry_after(), Some(Duration::from_secs(7)));
+    // The original error is preserved as the source chain.
+    assert!(std::error::Error::source(&err).is_some());
+}
+
+#[test]
+fn runtime_retry_after_named_field() {
+    let err: Error = RuntimeRetryError::QuotaExceeded {
+        wait: Duration::from_millis(250),
+    }
+    .into();
+    assert_eq!(
+        *err.kind(),
+        ErrorKind::Exhausted {
+            retry_after: Some(Duration::from_millis(250))
+        }
+    );
+    assert_eq!(err.retry_after(), Some(Duration::from_millis(250)));
+    assert!(std::error::Error::source(&err).is_some());
+}

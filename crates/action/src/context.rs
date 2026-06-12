@@ -747,7 +747,7 @@ pub trait ActionContextExt: HasResources + HasCredentials {
         >,
     >
     where
-        R: nebula_resource::Resource + 'a,
+        R: nebula_resource::resource::Provider + 'a,
         Self: Sync,
     {
         Box::pin(async move {

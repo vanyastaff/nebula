@@ -31,40 +31,25 @@
 //! marks a shared flag. The scenarios drive the precise interleaving that
 //! exposed the defect and assert the fenced outcome.
 
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+use std::{
+    future::Future,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+    },
+    time::Duration,
 };
-use std::time::Duration;
 
 use nebula_core::{ResourceKey, ScopeLevel, resource_key, scope::Scope};
 use nebula_resource::{
-    AcquireOptions, Manager, PoolConfig, RegistrationSpec, Resource, ResourceConfig,
+    AcquireOptions, Manager, PoolConfig, Pooled, Provider, RegistrationSpec, ResourceConfig,
     ResourceContext, SlotIdentity,
     error::{Error, ErrorKind},
-    resource::ResourceMetadata,
-    runtime::{TopologyRuntime, pool::PoolRuntime},
-    topology::pooled::{Pooled, RecycleDecision, config::WarmupStrategy},
+    resource::{HasCredentialSlots, ResourceMetadata},
+    topology::pooled::{PoolProvider, RecycleDecision, config::WarmupStrategy},
 };
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
-
-#[derive(Debug)]
-struct PoolErr(String);
-
-impl std::fmt::Display for PoolErr {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for PoolErr {}
-
-impl From<PoolErr> for Error {
-    fn from(e: PoolErr) -> Self {
-        Error::transient(e.0)
-    }
-}
 
 #[derive(Clone)]
 struct PoolCfg;
@@ -74,6 +59,11 @@ nebula_resource::impl_empty_has_schema!(PoolCfg);
 impl ResourceConfig for PoolCfg {
     fn validate(&self) -> Result<(), Error> {
         Ok(())
+    }
+
+    fn fingerprint(&self) -> u64 {
+        // Unit struct: all instances identical — constant 0 is correct.
+        0
     }
 }
 
@@ -130,17 +120,17 @@ impl PoolResource {
     }
 }
 
-impl Resource for PoolResource {
+#[async_trait::async_trait]
+impl Provider for PoolResource {
     type Config = PoolCfg;
-    type Runtime = PoolRt;
-    type Lease = PoolRt;
-    type Error = PoolErr;
+    type Instance = PoolRt;
+    type Topology = Pooled<Self>;
 
     fn key() -> ResourceKey {
         resource_key!("r16-pool")
     }
 
-    async fn create(&self, _config: &PoolCfg, _ctx: &ResourceContext) -> Result<PoolRt, PoolErr> {
+    async fn create(&self, _config: &PoolCfg, _ctx: &ResourceContext) -> Result<PoolRt, Error> {
         let seq = self.create_seq.fetch_add(1, Ordering::SeqCst);
         if self.gate.park_in_create.swap(false, Ordering::SeqCst) {
             self.gate.create_entered.notify_one();
@@ -152,12 +142,16 @@ impl Resource for PoolResource {
         })
     }
 
-    async fn destroy(&self, _runtime: PoolRt) -> Result<(), PoolErr> {
+    async fn destroy(
+        &self,
+        _runtime: PoolRt,
+        _cx: nebula_resource::TeardownCx,
+    ) -> Result<(), Error> {
         self.destroy_calls.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
 
-    async fn on_credential_revoke(&self, _slot: &str, runtime: &PoolRt) -> Result<(), PoolErr> {
+    async fn on_credential_revoke(&self, _slot: &str, runtime: &PoolRt) -> Result<(), Error> {
         // Model "stop serving the revoked credential": mark the shared flag.
         runtime.revoked.store(true, Ordering::SeqCst);
         self.revoke_calls.fetch_add(1, Ordering::SeqCst);
@@ -169,17 +163,26 @@ impl Resource for PoolResource {
     }
 }
 
-impl Pooled for PoolResource {
-    async fn recycle(
+impl HasCredentialSlots for PoolResource {
+    fn credential_slot_epoch(&self) -> u64 {
+        0
+    }
+}
+
+impl PoolProvider for PoolResource {
+    fn recycle(
         &self,
-        _runtime: &PoolRt,
+        _instance: &PoolRt,
         _metrics: &nebula_resource::InstanceMetrics,
-    ) -> Result<RecycleDecision, PoolErr> {
-        if self.gate.park_in_recycle.load(Ordering::SeqCst) {
-            self.gate.recycle_entered.notify_one();
-            self.gate.hold_recycle.notified().await;
+    ) -> impl Future<Output = Result<RecycleDecision, Error>> + Send {
+        let gate = self.gate.clone();
+        async move {
+            if gate.park_in_recycle.load(Ordering::SeqCst) {
+                gate.recycle_entered.notify_one();
+                gate.hold_recycle.notified().await;
+            }
+            Ok(RecycleDecision::Keep)
         }
-        Ok(RecycleDecision::Keep)
     }
 }
 
@@ -231,11 +234,7 @@ async fn revoked_credential_not_reserved_via_idle_recycle() {
         config: PoolCfg,
         scope: ScopeLevel::Global,
         slot_identity: SlotIdentity::Unbound,
-        topology: TopologyRuntime::Pool(PoolRuntime::<PoolResource>::new(
-            pool_config(),
-            PoolCfg.fingerprint(),
-        )),
-        acquire: Manager::erased_acquire_pooled_for::<PoolResource>(),
+        topology: Pooled::<PoolResource>::new(pool_config(), PoolCfg.fingerprint()),
         recovery_gate: None,
     })
     .expect("pooled registration must succeed");
@@ -320,11 +319,7 @@ async fn in_flight_create_completing_after_revoke_is_destroyed() {
         config: PoolCfg,
         scope: ScopeLevel::Global,
         slot_identity: SlotIdentity::Unbound,
-        topology: TopologyRuntime::Pool(PoolRuntime::<PoolResource>::new(
-            pool_config(),
-            PoolCfg.fingerprint(),
-        )),
-        acquire: Manager::erased_acquire_pooled_for::<PoolResource>(),
+        topology: Pooled::<PoolResource>::new(pool_config(), PoolCfg.fingerprint()),
         recovery_gate: None,
     })
     .expect("pooled registration must succeed");
@@ -405,11 +400,7 @@ async fn revoked_pre_existing_idle_instance_not_reserved() {
         config: PoolCfg,
         scope: ScopeLevel::Global,
         slot_identity: SlotIdentity::Unbound,
-        topology: TopologyRuntime::Pool(PoolRuntime::<PoolResource>::new(
-            pool_config(),
-            PoolCfg.fingerprint(),
-        )),
-        acquire: Manager::erased_acquire_pooled_for::<PoolResource>(),
+        topology: Pooled::<PoolResource>::new(pool_config(), PoolCfg.fingerprint()),
         recovery_gate: None,
     })
     .expect("pooled registration must succeed");
@@ -516,11 +507,7 @@ async fn warmup_after_revoke_does_not_admit_revoked_instance() {
         config: PoolCfg,
         scope: ScopeLevel::Global,
         slot_identity: SlotIdentity::Unbound,
-        topology: TopologyRuntime::Pool(PoolRuntime::<PoolResource>::new(
-            cfg,
-            PoolCfg.fingerprint(),
-        )),
-        acquire: Manager::erased_acquire_pooled_for::<PoolResource>(),
+        topology: Pooled::<PoolResource>::new(cfg, PoolCfg.fingerprint()),
         recovery_gate: None,
     })
     .expect("pooled registration must succeed");

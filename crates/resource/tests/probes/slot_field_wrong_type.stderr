@@ -1,0 +1,5 @@
+error: field with `#[credential]` must have type `SlotCell<CredentialGuard<C>>` or `CredentialSlot<C>` — got: String
+  --> tests/probes/slot_field_wrong_type.rs:10:11
+   |
+10 |     auth: String,
+   |           ^^^^^^

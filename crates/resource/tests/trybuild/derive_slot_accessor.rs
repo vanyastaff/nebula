@@ -1,7 +1,7 @@
-//! Compile-pass probe: `#[derive(Resource)]` accepts a `#[credential]` field
-//! of shape `SlotCell<CredentialGuard<C>>` and emits an inherent read
+//! Compile-pass probe: `#[derive(Resource)]` accepts a named `#[credential]`
+//! field of shape `SlotCell<CredentialGuard<C>>` and emits an inherent read
 //! accessor `<field>_slot(&self) -> Option<Arc<CredentialGuard<C>>>` that
-//! delegates to `SlotCell::load` (slot model, finalized shape).
+//! delegates to `SlotCell::load` (slot model, two-derive pattern).
 
 use std::sync::Arc;
 
@@ -14,24 +14,11 @@ use nebula_schema::FieldValues;
 use zeroize::Zeroize;
 
 #[derive(Resource)]
-#[resource(key = "demo", topology = "resident", config = DemoCfg)]
 struct Demo {
     #[credential(key = "db")]
     db: SlotCell<CredentialGuard<FakeCred>>,
 }
 
-#[derive(Clone, Default)]
-struct DemoCfg;
-impl nebula_schema::HasSchema for DemoCfg {
-    fn schema() -> nebula_schema::ValidSchema {
-        nebula_schema::ValidSchema::empty()
-    }
-}
-impl nebula_resource::ResourceConfig for DemoCfg {}
-
-/// Minimal static credential fixture. `Zeroize` is a no-op: `FakeCred` is a
-/// unit type carrying no secret bytes — the bound exists only so the derived
-/// accessor return type can name `CredentialGuard<FakeCred>`.
 struct FakeCred;
 
 impl Zeroize for FakeCred {

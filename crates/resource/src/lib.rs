@@ -5,17 +5,17 @@
 //!
 //! The engine is the owner of the resource lifecycle: acquire, health-check,
 //! hot-reload via `ReloadOutcome`, and scope-bounded release. Action code
-//! receives a `ResourceGuard` that derefs to the lease type and releases on
-//! drop. Three topology traits cover the integration space: `Pooled`,
-//! `Resident`, and the parameterised `Bounded` (with sealed `Cap` typestate
-//! `Unbounded` / `Capped<N>` / `Exclusive`).
+//! receives a `ResourceGuard` that derefs to `R::Instance` and releases on
+//! drop. Three built-in topologies cover the integration space: `Pooled`,
+//! `Resident`.
 //!
 //! ## Key types
 //!
 //! | Type | Purpose |
 //! |------|---------|
-//! | `Resource` | Core trait — 4 associated types + lifecycle + slot-rotation hooks |
-//! | `ResourceGuard` | RAII lease guard with Owned/Guarded/Shared modes |
+//! | `Provider` | Lifecycle trait — `Config`/`Instance` + lifecycle + slot-rotation hooks |
+//! | `Resource` | Derive macro — emits slot plumbing (`HasCredentialSlots`, accessors) |
+//! | `ResourceGuard` | RAII instance guard with Owned/Guarded modes |
 //! | `Manager` | Central registry with acquire dispatch and shutdown |
 //! | `ReleaseQueue` | Background worker pool for async cleanup (best-effort on crash) |
 //! | `DrainTimeoutPolicy` | Drain operation timeout policy |
@@ -46,6 +46,7 @@ pub mod error;
 pub mod events;
 pub mod ext;
 pub mod guard;
+pub(crate) mod hook_guard;
 pub mod manager;
 pub mod metrics;
 pub mod options;
@@ -76,7 +77,7 @@ pub use events::ResourceEvent;
 pub use ext::HasResourcesExt;
 pub use guard::ResourceGuard;
 pub use manager::{
-    DrainTimeoutPolicy, ErasedAcquireFn, Manager, ManagerConfig, RegisterOptions, RegistrationSpec,
+    DrainTimeoutPolicy, Manager, ManagerConfig, RegisterOptions, RegistrationSpec,
     ResourceHealthSnapshot, RevokeTail, ShutdownConfig, ShutdownError, ShutdownReport, TaintedSlot,
 };
 pub use metrics::{OutcomeCountersSnapshot, ResourceOpsMetrics, ResourceOpsSnapshot};
@@ -96,7 +97,18 @@ pub use nebula_credential::{Credential, CredentialContext, CredentialId};
 ///
 /// See [`nebula_resource_macros::ClassifyError`] for full documentation.
 pub use nebula_resource_macros::ClassifyError;
+/// Derive macro that emits slot plumbing for a resource struct.
+///
+/// Generates `impl DeclaresDependencies`, slot accessor methods, and
+/// `impl HasCredentialSlots`. Used together with a hand-written `impl Provider`.
+///
+/// See [`nebula_resource_macros::Resource`] for full documentation.
 pub use nebula_resource_macros::Resource;
+/// Derive macro that generates `impl ResourceConfig` with a structural fingerprint
+/// and an optional default empty `impl HasSchema`.
+///
+/// See [`nebula_resource_macros::ResourceConfig`] for full documentation.
+pub use nebula_resource_macros::ResourceConfig;
 // Schema surface — re-exported so adapter crates don't need a direct
 // nebula-schema dep just to satisfy `ResourceConfig`'s `HasSchema`
 // super-bound. `Schema` covers both the type and the derive macro
@@ -106,31 +118,32 @@ pub use nebula_resource_macros::Resource;
 pub use nebula_schema::{HasSchema, Schema, ValidSchema, impl_empty_has_schema};
 pub use options::AcquireOptions;
 pub use recovery::{GateState, RecoveryGate, RecoveryGateConfig, RecoveryTicket, RecoveryWaiter};
-pub use registry::{AnyManagedResource, LookupOutcome, Registry};
+pub use registry::{LookupOutcome, ManagedHandle, Registry};
 pub use release_queue::ReleaseQueue;
 pub use reload::ReloadOutcome;
 pub use resource::{
-    AnyResource, MetadataCompatibilityError, Resource, ResourceConfig, ResourceMetadata,
+    CheckCost, HasCredentialSlots, MetadataCompatibilityError, Provider, ResourceConfig,
+    ResourceDescriptor, ResourceMetadata, TeardownCx, TeardownReason,
 };
 pub use resource_ref::ResourceRef;
-pub use slot::SlotCell;
-// Runtime types — needed for `Manager::register()`.
-pub use runtime::TopologyRuntime;
+pub use slot::{CredentialSlot, SlotCell};
+// Runtime types — the framework topologies needed for `Manager::register()`.
+pub use runtime::managed::ManagedResource;
 pub use runtime::{
-    bounded::BoundedRuntime,
-    managed::ManagedResource,
-    pool::{PoolRuntime, PoolStats},
-    resident::ResidentRuntime,
+    bounded::Bounded,
+    pool::{PoolStats, Pooled},
+    resident::Resident,
 };
 pub use state::{ResourcePhase, ResourceStatus};
 // Topology configurations — used at registration time.
 pub use topology::{
-    bounded::{
-        Bounded, BoundedRelease, CapMarker, Capped, Exclusive as ExclusiveCap, Unbounded,
-        config::Config as BoundedConfig,
+    AdmissionPhase, AdmissionStatus, CheckedOut, Checkout, InstanceStore, Load,
+    MaintenanceSchedule, NoTopology, ReturnOutcome, Ticket, Topology, Unavailable,
+    bounded::{BoundedMode, BoundedProvider},
+    pooled::{
+        BrokenCheck, InstanceMetrics, PoolProvider, RecycleDecision, config::Config as PoolConfig,
     },
-    pooled::{BrokenCheck, InstanceMetrics, Pooled, RecycleDecision, config::Config as PoolConfig},
-    resident::{Resident, config::Config as ResidentConfig},
+    resident::{ResidentProvider, config::Config as ResidentConfig},
 };
 pub use topology_tag::TopologyTag;
 // Credential-rotation fan-out — gated on the `rotation` feature so the

@@ -21,12 +21,12 @@ use std::{collections::HashMap, sync::Arc};
 
 use nebula_core::{DeclaresDependencies, Dependencies, ResourceKey, ScopeLevel, resource_key};
 use nebula_expression::ExpressionEngine;
+use nebula_resource::Resident;
 use nebula_resource::{
     Manager, ResidentConfig, ResourceContext,
     error::Error,
-    resource::{Resource, ResourceConfig, ResourceMetadata},
-    runtime::{TopologyRuntime, resident::ResidentRuntime},
-    topology::resident::Resident,
+    resource::{HasCredentialSlots, Provider, ResourceConfig, ResourceMetadata},
+    topology::resident::ResidentProvider,
 };
 use nebula_schema::{Field, HasSchema, Schema, ValidSchema, field_key};
 use serde::Deserialize;
@@ -71,43 +71,41 @@ impl ResourceConfig for DbConfig {
             Ok(())
         }
     }
-}
 
-#[derive(Debug, Clone)]
-struct DbError(String);
-
-impl std::fmt::Display for DbError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
+    fn fingerprint(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        self.host.hash(&mut h);
+        self.port.hash(&mut h);
+        h.finish()
     }
 }
 
-impl std::error::Error for DbError {}
-
-impl From<DbError> for Error {
-    fn from(e: DbError) -> Self {
-        Error::transient(e.0)
-    }
-}
+// Custom error boilerplate removed — Resource lifecycle methods now return
+// `crate::Error` directly (HasCredentialSlots redesign).
 
 #[derive(Clone)]
 struct Db;
 
-impl Resource for Db {
+#[async_trait::async_trait]
+impl Provider for Db {
     type Config = DbConfig;
-    type Runtime = Arc<()>;
-    type Lease = Arc<()>;
-    type Error = DbError;
+    type Instance = Arc<()>;
+    type Topology = Resident<Self>;
 
     fn key() -> ResourceKey {
         resource_key!("secret-config-guard-db")
     }
 
-    async fn create(&self, _config: &DbConfig, _ctx: &ResourceContext) -> Result<Arc<()>, DbError> {
+    async fn create(&self, _config: &DbConfig, _ctx: &ResourceContext) -> Result<Arc<()>, Error> {
         Ok(Arc::new(()))
     }
 
-    async fn destroy(&self, _runtime: Arc<()>) -> Result<(), DbError> {
+    async fn destroy(
+        &self,
+        _runtime: Arc<()>,
+        _cx: nebula_resource::TeardownCx,
+    ) -> Result<(), Error> {
         Ok(())
     }
 
@@ -116,7 +114,14 @@ impl Resource for Db {
     }
 }
 
-impl Resident for Db {
+impl HasCredentialSlots for Db {
+    fn credential_slot_epoch(&self) -> u64 {
+        0
+    }
+}
+
+#[async_trait::async_trait]
+impl ResidentProvider for Db {
     fn is_alive_sync(&self, _runtime: &Arc<()>) -> bool {
         true
     }
@@ -131,8 +136,8 @@ impl DeclaresDependencies for Db {
     }
 }
 
-fn topology() -> TopologyRuntime<Db> {
-    TopologyRuntime::Resident(ResidentRuntime::<Db>::new(ResidentConfig::default()))
+fn topology() -> Resident<Db> {
+    Resident::<Db>::new(ResidentConfig::default())
 }
 
 // ── Negative: secret-shaped field is rejected (the security assertion) ──────
@@ -161,7 +166,6 @@ async fn register_from_value_rejects_inline_secret_field() {
             Db,
             ScopeLevel::Global,
             topology(),
-            Manager::erased_acquire_resident_for::<Db>(),
             None,
         )
         .await
@@ -214,7 +218,6 @@ async fn register_from_value_accepts_clean_config_same_resource() {
             Db,
             ScopeLevel::Global,
             topology(),
-            Manager::erased_acquire_resident_for::<Db>(),
             None,
         )
         .await
