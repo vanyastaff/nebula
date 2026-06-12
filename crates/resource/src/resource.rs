@@ -280,8 +280,12 @@ impl ResourceMetadataBuilder {
 ///   ↓
 /// destroy()  → final cleanup (consumes Instance)
 /// ```
+// `Sized` is required so `type Topology: Topology<Self>` can name `Self` as the
+// topology's `R` (which carries an implicit `Sized` bound). `Provider` is never
+// object-safe regardless — `fn key() -> ResourceKey` has no receiver — so no
+// `dyn Provider` usage is foreclosed by this.
 #[async_trait]
-pub trait Provider: Send + Sync + 'static {
+pub trait Provider: Send + Sync + Sized + 'static {
     /// Operational configuration type (no secrets).
     type Config: ResourceConfig;
     /// The live resource handle.
@@ -295,7 +299,12 @@ pub trait Provider: Send + Sync + 'static {
     /// [`Topology`](crate::topology::Topology) implementation. Stable Rust has
     /// no per-resource associated-type defaults, so every `impl Provider` must
     /// spell this — `type Topology = Pooled<Self>;`, etc.
-    type Topology: crate::topology::Topology;
+    ///
+    /// The topology is keyed to the resource (`Topology<Self>`): every topology
+    /// needs the R-aware slot lifecycle hooks (`create_slot` produces
+    /// `R::Instance`), so the trait carries `R` rather than splitting an
+    /// R-agnostic open trait from an R-aware bridge.
+    type Topology: crate::topology::Topology<Self>;
 
     /// Returns the unique key identifying this resource type.
     fn key() -> ResourceKey;
@@ -453,18 +462,12 @@ pub trait Provider: Send + Sync + 'static {
     /// Returns the schema for this resource's configuration.
     ///
     /// Default: derives from `Config` via [`HasSchema`](nebula_schema::HasSchema).
-    fn schema() -> nebula_schema::ValidSchema
-    where
-        Self: Sized,
-    {
+    fn schema() -> nebula_schema::ValidSchema {
         <Self::Config as nebula_schema::HasSchema>::schema()
     }
 
     /// Returns metadata for UI and diagnostics.
-    fn metadata() -> ResourceMetadata
-    where
-        Self: Sized,
-    {
+    fn metadata() -> ResourceMetadata {
         ResourceMetadata::new(
             Self::key(),
             Self::key().to_string(),

@@ -1,18 +1,25 @@
-//! The proof the standalone `custom_topology.rs` never gave: a **custom**
-//! `impl Topology` registered through `Manager::register()`, acquired and
-//! released end-to-end, and shown to receive the framework revoke fence.
+//! The safety-by-construction proof the convergence lacked: a **custom**
+//! `impl Topology<R>` registered through `Manager::register()`, acquired and
+//! released end-to-end, with the credential-revoke fence owned by the
+//! **framework** — the author writes **zero** store / checkout / destroy /
+//! fence code.
 //!
 //! `FfmpegPool` is an author-supplied topology that is neither the built-in
-//! `Pooled` nor `Resident`. It manages a small `InstanceStore`-backed idle
-//! queue of transcoder handles itself, gated by a semaphore. The test:
+//! `Pooled` nor `Resident`. It supplies only the slot-centric `Topology<Ffmpeg>`
+//! hooks (`try_reserve`, `create_slot`, `slot_instance`, `into_instance`,
+//! `pools`, `store_capacity`). It holds **no** `InstanceStore` and contains
+//! **no** `store.checkout` / `resource.destroy` / stale-handling / epoch-compare
+//! code — the framework owns the idle store and the fence.
 //!
-//! 1. registers a resource whose `type Topology = FfmpegPool` through the
-//!    normal `Manager::register` funnel (not a standalone topology call);
-//! 2. acquires a lease, drops it, and re-acquires to prove the released slot
-//!    is recycled (round-trip through the framework pipeline);
-//! 3. bumps the revoke epoch (as `Manager::revoke_slot` does in phase 1) and
-//!    proves an in-flight slot returned after the bump is **evicted, not
-//!    recycled** — the uniform fence reaches a custom topology too.
+//! The test proves:
+//! 1. a custom topology registers + acquires through the erased
+//!    `Manager::acquire_any` path, reporting `TopologyTag::Custom`;
+//! 2. a slot that went idle **before** a credential revoke is evicted
+//!    (destroyed) on the next acquire — and the **framework**, not the author,
+//!    does the eviction. Bumping the revoke epoch through the erased
+//!    `ManagedHandle::bump_revoke_epoch` (exactly as `Manager::revoke_slot`
+//!    does in phase 1) and re-acquiring shows the stale slot is never served
+//!    and a fresh one is created in its place — with no author fence code.
 
 use std::sync::{
     Arc,
@@ -21,14 +28,10 @@ use std::sync::{
 
 use nebula_core::{ResourceKey, ScopeLevel, resource_key, scope::Scope};
 use nebula_resource::{
-    AcquireOptions, Manager, RegistrationSpec, ResourceContext, SlotIdentity, TopologyDispatch,
+    AcquireOptions, Manager, RegistrationSpec, ResourceContext, SlotIdentity,
     error::Error,
-    guard::ResourceGuard,
-    release_queue::ReleaseQueue,
     resource::{HasCredentialSlots, Provider, ResourceConfig, ResourceMetadata},
-    topology::{
-        AdmissionPhase, InstanceStore, Lease, ReturnOutcome, Ticket, Topology, Unavailable,
-    },
+    topology::{InstanceStore, Ticket, Topology, Unavailable},
 };
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
@@ -45,12 +48,14 @@ impl ResourceConfig for FfmpegCfg {
 }
 
 /// A transcoder "handle" carrying a unique id. `destroy` counts teardowns so
-/// the test can observe that an evicted handle is actually torn down.
+/// the test can observe that the framework actually tears a stale handle down.
+/// The id is the slot identity — carried through the framework store, not read
+/// directly in assertions (the destroy/create counters are the observables).
 #[derive(Clone)]
 struct Transcoder(
     #[allow(
         dead_code,
-        reason = "id is the slot identity; carried, not read in asserts"
+        reason = "slot identity carried by the handle, not asserted on directly"
     )]
     u64,
 );
@@ -107,30 +112,37 @@ impl HasCredentialSlots for Ffmpeg {
 
 // ─── The custom topology ───────────────────────────────────────────────────
 
-/// A bespoke permit-gated pool over a framework-owned `InstanceStore<u64>` of
-/// transcoder ids. Implements the open [`Topology`] contract (so it satisfies
-/// `Provider::Topology`) and the crate-internal [`TopologyDispatch`] bridge (so
-/// the `Manager` can drive it). It owns its own store so the revoke fence is
-/// exercised on a non-built-in topology.
+/// A bespoke permit-gated pool over a framework-owned idle store of transcoder
+/// slots. It supplies ONLY the slot-centric [`Topology<Ffmpeg>`] hooks — it owns
+/// no store, runs no checkout, destroys nothing, and never compares a revoke
+/// epoch. The framework owns the idle store, the fenced checkout, the
+/// stale-slot destroy, and the cancel-safe guard-wrap.
+///
+/// **Structural proof (asserted by `ffmpeg_pool_holds_no_store_or_fence`):**
+/// this struct has exactly two fields — a `Semaphore` and a capacity — and NO
+/// `InstanceStore`, no `Provider` handle, and no revoke-epoch counter. There is
+/// no place for an author to even write fence code.
 struct FfmpegPool {
-    store: InstanceStore<u64>,
     sem: Arc<Semaphore>,
+    cap: usize,
 }
 
 impl FfmpegPool {
     fn new(cap: usize) -> Self {
         Self {
-            store: InstanceStore::new(Some(cap)),
             sem: Arc::new(Semaphore::new(cap)),
+            cap,
         }
     }
 }
 
 #[async_trait::async_trait]
-impl Topology for FfmpegPool {
-    type Slot = ();
+impl Topology<Ffmpeg> for FfmpegPool {
+    // The slot IS the leasable transcoder. The framework stores it, fences it,
+    // and hands it back on checkout — the author never touches the store.
+    type Slot = Transcoder;
 
-    fn try_reserve(&self, _store: &InstanceStore<()>) -> Result<Ticket<()>, Unavailable> {
+    fn try_reserve(&self, _store: &InstanceStore<Transcoder>) -> Result<Ticket, Unavailable> {
         self.sem
             .clone()
             .try_acquire_owned()
@@ -138,72 +150,33 @@ impl Topology for FfmpegPool {
             .map_err(|_| Unavailable::Saturated { retry_after: None })
     }
 
-    async fn acquire(
-        &self,
-        ticket: Ticket<()>,
-        _store: &InstanceStore<()>,
-    ) -> Result<Lease<()>, Error> {
-        let (_, permit) = ticket.take_slot();
-        Ok(Lease::new((), 0, permit))
-    }
-
-    fn phase(&self, _store: &InstanceStore<()>) -> AdmissionPhase {
-        if self.sem.available_permits() == 0 {
-            AdmissionPhase::Saturated
-        } else {
-            AdmissionPhase::Ready
-        }
-    }
-}
-
-#[async_trait::async_trait]
-impl TopologyDispatch<Ffmpeg> for FfmpegPool {
-    async fn acquire_guard(
+    async fn create_slot(
         &self,
         resource: &Ffmpeg,
         config: &FfmpegCfg,
         ctx: &ResourceContext,
-        _release_queue: &Arc<ReleaseQueue>,
-        _generation: u64,
-        _options: &AcquireOptions,
-        _metrics: Option<nebula_resource::ResourceOpsMetrics>,
-    ) -> Result<ResourceGuard<Ffmpeg>, Error> {
-        // Acquire the concurrency gate.
-        let _permit = self
-            .sem
-            .clone()
-            .acquire_owned()
-            .await
-            .map_err(|_| Error::permanent("ffmpeg pool semaphore closed"))?;
-
-        // Fenced checkout: the store discards (and we destroy) any slot whose
-        // checkout epoch is behind the live revoke counter — the same uniform
-        // fence the built-in pool gets.
-        let checkout = self.store.checkout().await;
-        for stale in checkout.stale {
-            // A stale idle slot was authenticated under a since-revoked
-            // credential; tear it down rather than serve it.
-            let _ = resource.destroy(Transcoder(stale)).await;
-        }
-
-        let transcoder = match checkout.fresh {
-            Some(fresh) => {
-                let (id, _epoch) = fresh.into_parts();
-                Transcoder(id)
-            },
-            None => resource.create(config, ctx).await?,
-        };
-
-        // Hand back an owned guard tagged Custom.
-        Ok(ResourceGuard::owned(
-            transcoder,
-            Ffmpeg::key(),
-            nebula_resource::TopologyTag::Custom,
-        ))
+    ) -> Result<Transcoder, Error> {
+        // Make one fresh transcoder. The framework decides WHEN to call this
+        // (on an idle-miss / warmup); the author only knows HOW to build one.
+        resource.create(config, ctx).await
     }
 
-    fn bump_revoke_epoch(&self) {
-        self.store.bump_revoke_epoch();
+    fn slot_instance<'s>(&self, slot: &'s Transcoder) -> &'s Transcoder {
+        slot
+    }
+
+    fn into_instance(&self, slot: Transcoder) -> Transcoder {
+        slot
+    }
+
+    fn pools(&self) -> bool {
+        // Released transcoders return to the framework idle store, where the
+        // revoke fence reaches them.
+        true
+    }
+
+    fn store_capacity(&self) -> Option<usize> {
+        Some(self.cap)
     }
 }
 
@@ -227,8 +200,9 @@ fn register(manager: &Manager, ffmpeg: Ffmpeg) {
         .expect("a custom topology must register through Manager::register");
 }
 
-/// C8: a custom `impl Topology` registers through `Manager::register()`,
-/// acquires + releases end-to-end through the erased acquire path.
+/// C8 (1): a custom `impl Topology<R>` registers through `Manager::register()`,
+/// acquires + releases end-to-end through the erased acquire path, reporting the
+/// `Custom` tag.
 #[tokio::test]
 async fn custom_topology_registers_and_acquires_through_manager() {
     let manager = Arc::new(Manager::new());
@@ -239,9 +213,9 @@ async fn custom_topology_registers_and_acquires_through_manager() {
     let ctx = ctx();
     let key = Ffmpeg::key();
 
-    // Acquire through the erased Manager path (the same path the engine
-    // resource accessor uses) — proves the custom topology is reachable
-    // through the registry/dispatch, not just standalone.
+    // Acquire through the erased Manager path (the same path the engine resource
+    // accessor uses) — proves the custom topology is reachable through the
+    // registry/dispatch, not just standalone.
     let boxed = Manager::acquire_any(
         Arc::clone(&manager),
         &key,
@@ -252,7 +226,7 @@ async fn custom_topology_registers_and_acquires_through_manager() {
     .await
     .expect("custom-topology acquire must succeed through Manager::acquire_any");
     let guard = boxed
-        .downcast::<ResourceGuard<Ffmpeg>>()
+        .downcast::<nebula_resource::guard::ResourceGuard<Ffmpeg>>()
         .expect("downcast to the typed guard");
     assert_eq!(
         guard.topology_tag(),
@@ -268,54 +242,116 @@ async fn custom_topology_registers_and_acquires_through_manager() {
     );
 }
 
-/// C8 fence proof: a slot returned to a custom topology's store **after** the
-/// revoke epoch bumped is evicted (destroyed), never recycled — the uniform
-/// fence reaches custom topologies too.
+/// C8 (2) — the safety-by-construction proof: a slot idle **before** a revoke is
+/// evicted (destroyed) by the **FRAMEWORK** on the next acquire. The author
+/// wrote zero fence code; bumping the revoke epoch through the erased
+/// `ManagedHandle::bump_revoke_epoch` (exactly as `Manager::revoke_slot` phase 1
+/// does) makes the framework store fence the stale slot on the next checkout.
 #[tokio::test]
-async fn custom_topology_store_is_revoke_fenced() {
-    // Drive the store directly (the topology owns it) to pin the fence at the
-    // store level the Manager bumps via `bump_revoke_epoch`.
-    let pool = FfmpegPool::new(2);
-    let resource = Ffmpeg::new();
-    let destroy_count = Arc::clone(&resource.destroy_count);
+async fn custom_topology_store_is_revoke_fenced_by_framework() {
+    let manager = Arc::new(Manager::new());
+    let ffmpeg = Ffmpeg::new();
+    let create_count = Arc::clone(&ffmpeg.create_count);
+    let destroy_count = Arc::clone(&ffmpeg.destroy_count);
+    register(&manager, ffmpeg);
 
-    // A slot goes idle at epoch 0.
-    let epoch = pool.store.stamp_epoch();
-    assert_eq!(
-        pool.store.return_slot(7u64, epoch).await,
-        ReturnOutcome::Recycled,
-        "a clean slot is recycled before any revoke"
-    );
+    let ctx = ctx();
+    let key = Ffmpeg::key();
 
-    // A credential revoke lands (Manager phase-1 synchronous bump).
-    TopologyDispatch::<Ffmpeg>::bump_revoke_epoch(&pool);
+    // 1. Acquire + release so a clean transcoder sits idle in the FRAMEWORK
+    //    store (the author's topology never sees the store).
+    let g = Manager::acquire_any(
+        Arc::clone(&manager),
+        &key,
+        &ctx,
+        &AcquireOptions::default(),
+        &SlotIdentity::Unbound,
+    )
+    .await
+    .expect("first acquire")
+    .downcast::<nebula_resource::guard::ResourceGuard<Ffmpeg>>()
+    .expect("downcast");
+    drop(g);
+    // Wait for the release worker to recycle the slot into the framework store.
+    let recycled = poll_until(std::time::Duration::from_secs(2), || {
+        create_count.load(Ordering::SeqCst) == 1
+    })
+    .await;
+    assert!(recycled, "the first acquire created exactly one transcoder");
 
-    // The slot that was idle since epoch 0 must now be evicted on checkout.
-    let checkout = pool.store.checkout().await;
+    // 2. Revoke: bump the revoke epoch through the erased handle — exactly the
+    //    synchronous phase-1 step `Manager::revoke_slot` performs. The author
+    //    topology is NOT involved; the framework store now holds a stale slot.
+    let handle = manager
+        .get_any(&key, &ScopeLevel::Global)
+        .expect("the registered row is reachable through the erased handle");
+    handle.bump_revoke_epoch();
+
+    // 3. Next acquire: the FRAMEWORK loop checks out, sees the stale slot,
+    //    destroys it (`destroy(into_instance(stale))`), and creates a fresh one.
+    //    The author wrote no checkout, no destroy, no epoch compare.
+    let g2 = Manager::acquire_any(
+        Arc::clone(&manager),
+        &key,
+        &ctx,
+        &AcquireOptions::default(),
+        &SlotIdentity::Unbound,
+    )
+    .await
+    .expect("acquire after revoke")
+    .downcast::<nebula_resource::guard::ResourceGuard<Ffmpeg>>()
+    .expect("downcast");
+
+    // The framework destroyed the since-revoked idle slot on checkout...
+    let destroyed = poll_until(std::time::Duration::from_secs(2), || {
+        destroy_count.load(Ordering::SeqCst) >= 1
+    })
+    .await;
     assert!(
-        checkout.fresh.is_none(),
-        "a slot idle since before the revoke must never be handed out"
+        destroyed,
+        "the FRAMEWORK must have destroyed the since-revoked idle slot on \
+         checkout — the custom topology has no fence/destroy code at all"
     );
+    // ...and created a fresh transcoder to serve this acquire.
     assert_eq!(
-        checkout.stale,
-        vec![7u64],
-        "the since-revoked slot is collected for destruction"
+        create_count.load(Ordering::SeqCst),
+        2,
+        "a fresh transcoder was created after the stale one was fenced by the \
+         framework (the stale slot was never re-served)"
     );
-    // Destroy the collected stale slot, as the acquire pipeline would.
-    for stale in checkout.stale {
-        resource.destroy(Transcoder(stale)).await.expect("destroy");
-    }
-    assert_eq!(
-        destroy_count.load(Ordering::SeqCst),
-        1,
-        "the revoke-fenced slot was torn down, not recycled"
-    );
+    drop(g2);
+}
 
-    // A slot returned *after* the bump (current epoch) recycles normally.
-    let fresh_epoch = pool.store.stamp_epoch();
+/// Polls `cond` until it returns `true` or the deadline elapses; returns the
+/// final value. Deterministic replacement for a fixed sleep on release/recycle.
+async fn poll_until(deadline: std::time::Duration, mut cond: impl FnMut() -> bool) -> bool {
+    let start = std::time::Instant::now();
+    loop {
+        if cond() {
+            return true;
+        }
+        if start.elapsed() >= deadline {
+            return cond();
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+}
+
+/// The structural proof that backs acceptance item #2: `FfmpegPool` holds no
+/// `InstanceStore`, no `Provider` handle, and no revoke-epoch counter — only a
+/// semaphore and a capacity. There is no place for an author to write fence /
+/// store / destroy code, so the fence is framework-owned by construction.
+#[test]
+fn ffmpeg_pool_holds_no_store_or_fence() {
+    // `FfmpegPool` is `{ sem: Arc<Semaphore>, cap: usize }`. If a future edit
+    // added an `InstanceStore` / `Provider` / epoch field, this size assertion
+    // is a tripwire prompting a re-review of whether the author re-introduced
+    // fence code. (Two words: the `Arc` pointer + the `usize` cap.)
     assert_eq!(
-        pool.store.return_slot(9u64, fresh_epoch).await,
-        ReturnOutcome::Recycled,
-        "a slot checked out after the revoke is unaffected by the fence"
+        size_of::<FfmpegPool>(),
+        size_of::<Arc<Semaphore>>() + size_of::<usize>(),
+        "FfmpegPool must hold ONLY a semaphore + capacity — no InstanceStore, \
+         no Provider handle, no revoke-epoch counter; the framework owns the \
+         store and the fence"
     );
 }

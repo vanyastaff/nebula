@@ -14,8 +14,8 @@ use crate::{
     options::AcquireOptions,
     registry::ManagedHandle,
     resource::{HasCredentialSlots, Provider},
-    runtime::managed::{ManagedResource, TopologyDispatch},
-    topology::{PoolProvider, ResidentProvider},
+    runtime::managed::ManagedResource,
+    topology::{PoolProvider, ResidentProvider, Topology},
 };
 
 impl Manager {
@@ -311,15 +311,15 @@ impl Manager {
     /// Single generic topology dispatch into the shared
     /// [`run_acquire`](Self::run_acquire) pipeline.
     ///
-    /// The former per-topology `pooled_pipeline` / `resident_pipeline` (each a
-    /// one-arm `TopologyKind` match) collapse into this one monomorphic path:
-    /// the resource's [`Provider::Topology`](crate::resource::Provider::Topology)
-    /// is reached through the [`TopologyDispatch`] bridge, which produces the
-    /// typed [`ResourceGuard<R>`](crate::guard::ResourceGuard) directly. There
-    /// is no runtime variant to mismatch — the topology is pinned to `R` by
-    /// the associated type — so the old `unexpected_topology` classifier is
-    /// gone. `config`/`generation` are recomputed inside the dispatch closure
-    /// so they are re-read on every resilience retry.
+    /// The dispatch closure runs the **framework acquire loop**
+    /// ([`ManagedResource::run_acquire_loop`]): the framework owns the fenced
+    /// checkout, stale-slot destroy, cancel-safe guard-wrap, and on-release
+    /// return-or-destroy; the resource's
+    /// [`Provider::Topology`](crate::resource::Provider::Topology) supplies only
+    /// thin R-aware hooks. There is no runtime variant to mismatch — the
+    /// topology is pinned to `R` by the associated type. The loop re-reads
+    /// `config`/`generation` itself, so they are fresh on every resilience
+    /// retry.
     pub(crate) async fn run_acquire_dispatch<R>(
         &self,
         managed: Arc<ManagedResource<R>>,
@@ -328,24 +328,14 @@ impl Manager {
     ) -> Result<crate::guard::ResourceGuard<R>, Error>
     where
         R: Provider + HasCredentialSlots,
-        R::Topology: TopologyDispatch<R>,
+        R::Instance: Clone,
+        R::Topology: Topology<R>,
     {
         self.run_acquire(Arc::clone(&managed), || {
-            let generation = managed.generation();
-            let config = managed.config();
             let managed = Arc::clone(&managed);
             async move {
                 managed
-                    .topology
-                    .acquire_guard(
-                        &managed.resource,
-                        &config,
-                        ctx,
-                        &managed.release_queue,
-                        generation,
-                        options,
-                        self.metrics.clone(),
-                    )
+                    .run_acquire_loop(ctx, options, self.metrics.clone())
                     .await
             }
         })
@@ -547,7 +537,7 @@ impl Manager {
         R::Instance: Clone + Send + Sync + 'static,
     {
         let managed = self.lookup::<R>(scope).ok()?;
-        Some(managed.topology.stats().await)
+        Some(managed.topology.stats(&managed.store).await)
     }
 
     /// Pre-warms a registered Pool resource.
@@ -606,10 +596,11 @@ impl Manager {
         let _in_flight =
             InFlightCounter::new(self.drain_tracker.clone(), managed.in_flight_tracker());
         self.reject_if_tainted_or_shutting_down_post_count::<R>(&managed)?;
-        let count = managed
-            .topology
-            .warmup(&managed.resource, &config, ctx)
-            .await;
+        // The framework-owned warmup creates `warmup_target` slots via the
+        // topology's `create_slot` and deposits them (fenced) into the
+        // framework store. `config` is read inside `warmup` itself.
+        let _ = config;
+        let count = managed.warmup(ctx).await;
         Ok(count)
     }
 }

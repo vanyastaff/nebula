@@ -669,34 +669,42 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
     use super::*;
-    use crate::topology::{
-        AdmissionPhase, Lease, Ticket, Topology, Unavailable, store::InstanceStore,
-    };
+    use crate::topology::{Ticket, Topology, Unavailable, store::InstanceStore};
 
-    /// Minimal fixture topology for guard-only tests: it satisfies the
-    /// `Provider::Topology` bound for resources whose `Instance` is **not**
-    /// `Clone` (e.g. a `Drop`-probe), so the guard tests can construct
-    /// `ResourceGuard<R>` directly without going through registration/acquire.
+    /// Minimal fixture topology for guard-only tests: a blanket `Topology<R>`
+    /// that satisfies the `Provider::Topology: Topology<Self>` bound for any
+    /// resource (including those whose `Instance` is **not** `Clone`, e.g. a
+    /// `Drop`-probe). The guard tests construct `ResourceGuard<R>` directly
+    /// without going through registration/acquire, so the slot lifecycle hooks
+    /// are never exercised — `create_slot` therefore just errors.
     struct FixtureTopology;
 
     #[async_trait::async_trait]
-    impl Topology for FixtureTopology {
-        type Slot = ();
+    impl<R: Provider> Topology<R> for FixtureTopology {
+        type Slot = R::Instance;
 
-        fn try_reserve(&self, _s: &InstanceStore<()>) -> Result<Ticket<()>, Unavailable> {
+        fn try_reserve(&self, _s: &InstanceStore<R::Instance>) -> Result<Ticket, Unavailable> {
             Ok(Ticket::infallible())
         }
 
-        async fn acquire(
+        async fn create_slot(
             &self,
-            _ticket: Ticket<()>,
-            _s: &InstanceStore<()>,
-        ) -> Result<Lease<()>, crate::Error> {
-            Ok(Lease::new((), 0, None))
+            _resource: &R,
+            _config: &R::Config,
+            _ctx: &crate::context::ResourceContext,
+        ) -> Result<R::Instance, crate::Error> {
+            Err(crate::Error::permanent(
+                "FixtureTopology: guard tests construct ResourceGuard directly; \
+                 create_slot is never driven",
+            ))
         }
 
-        fn phase(&self, _s: &InstanceStore<()>) -> AdmissionPhase {
-            AdmissionPhase::Ready
+        fn slot_instance<'s>(&self, slot: &'s R::Instance) -> &'s R::Instance {
+            slot
+        }
+
+        fn into_instance(&self, slot: R::Instance) -> R::Instance {
+            slot
         }
     }
 

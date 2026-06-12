@@ -228,6 +228,24 @@ These types are L4 implementation detail — rename/refactor without canon revis
 
 Long-running workers (`Daemon`) and pull-based event subscriptions (`EventSource`) live in `nebula_engine::daemon`; this crate retains pool/SDK-client topologies only (canon §3.5).
 
+#### Custom topologies (the open `Topology<R>` trait)
+
+`Pooled` / `Resident` are not special — they are two `impl Topology<R>`s. An
+author can supply a bespoke topology (a permit pool, an FFmpeg transcoder pool,
+a sticky-session pool) by implementing the **slot-centric** `Topology<R>` trait
+and pinning `type Topology = MyPool` on the resource. The contract is
+**framework-driven and safe-by-construction**: the framework owns the acquire
+loop — the fenced `InstanceStore::checkout`, the stale-slot destroy, the
+cancel-safe guard wrap, and the on-release return-or-destroy. The topology
+supplies only thin R-aware hooks (`create_slot`, `slot_instance`,
+`into_instance`, `accept`, `prepare`, `on_release`, `pools`, `store_capacity`,
+`dispatch_credential_hook`, …). A custom topology therefore writes **zero**
+store / checkout / destroy / revoke-fence code — the credential-revoke fence is
+framework-owned for every topology, built-in and custom alike. A non-pooling
+topology that carries credential slots (a shared/multiplexed singleton) must
+override `dispatch_credential_hook` for revoke teardown; the registrar emits a
+loud warning when it does not.
+
 ### Shared resource pattern
 
 When multiple workflows acquire the same `Resource` impl at the same scope,

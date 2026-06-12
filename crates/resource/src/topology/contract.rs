@@ -1,20 +1,28 @@
-//! Open [`Topology`] trait — the lease/concurrency/policy contract.
+//! Open [`Topology`] trait — the slot-centric, framework-driven lease contract.
 //!
-//! A [`Topology`] describes how [`Instance`](crate::resource::Provider::Instance)s
-//! are *leased* to callers: the concurrency gate ([`try_reserve`] → [`Ticket`]),
-//! the acquire→guard→release mechanics ([`acquire`] / [`on_release`]), and a
-//! read-only availability surface ([`phase`] / [`load`]).
+//! A [`Topology<R>`] describes how [`Instance`](crate::resource::Provider::Instance)s
+//! are *leased* to callers, but it does **not** own the acquire loop. The
+//! framework owns the loop: it runs `try_reserve` (the sync concurrency gate),
+//! the fenced [`InstanceStore::checkout`](crate::topology::store::InstanceStore::checkout),
+//! the stale-slot destroy, the create-or-accept decision, the cancel-safe
+//! guard-wrap, and the on-release return-or-destroy. The topology supplies only
+//! thin, R-aware policy hooks (`create_slot` / `slot_instance` / `into_instance`
+//! / `accept` / `prepare` / `on_release` / …) that it **cannot** use to skip the
+//! credential-revoke fence.
 //!
-//! The structural rule that makes the open trait safe: a `Topology` is handed a
-//! lifetime-bound `&InstanceStore<Self::Slot>` it cannot retain past a call.
-//! It therefore cannot build a cross-scope instance cache that bypasses the
-//! per-tenant [`SlotIdentity`] fence.
+//! This is the inversion the open trait exists for: a custom topology author
+//! writes zero `store.checkout()` / `resource.destroy()` / stale-loop /
+//! epoch-compare code. The fence is framework-owned for **every** topology —
+//! built-in and custom alike — by construction, not by author discipline.
 //!
-//! [`try_reserve`]: Topology::try_reserve
-//! [`acquire`]: Topology::acquire
-//! [`on_release`]: Topology::on_release
-//! [`phase`]: Topology::phase
-//! [`load`]: Topology::load
+//! # Storage safety
+//!
+//! Every store-bearing method receives a lifetime-bound
+//! `&InstanceStore<Self::Slot>` it cannot retain past the call. It therefore
+//! cannot build a cross-scope instance cache that bypasses the per-tenant
+//! [`SlotIdentity`] fence. Cross-tenant runtime bleed is prevented by API shape,
+//! not author discipline.
+//!
 //! [`SlotIdentity`]: crate::dedup::SlotIdentity
 //! [`InstanceStore`]: crate::topology::store::InstanceStore
 
@@ -24,7 +32,9 @@ use async_trait::async_trait;
 use tokio::sync::OwnedSemaphorePermit;
 
 use crate::{
+    context::ResourceContext,
     error::{Error, ErrorKind},
+    resource::Provider,
     topology::store::InstanceStore,
     topology_tag::TopologyTag,
 };
@@ -169,11 +179,14 @@ impl Unavailable {
 
 // ─── Ticket ───────────────────────────────────────────────────────────────────
 
-/// A held reservation returned by [`Topology::try_reserve`].
+/// A held concurrency reservation returned by [`Topology::try_reserve`].
 ///
-/// A `Ticket` IS the reservation: holding it guarantees a slot will be
-/// available when `acquire` is called. Dropping a `Ticket` without calling
-/// `acquire` releases the reservation.
+/// A `Ticket` IS the reservation: holding it guarantees a concurrency slot is
+/// available for the acquire the framework is about to run. Dropping a `Ticket`
+/// without leasing releases the reservation (returns the permit). The framework
+/// holds the ticket's permit (if any) in the resulting
+/// [`ResourceGuard`](crate::guard::ResourceGuard) for the whole lease, so the
+/// permit is returned to the topology's semaphore when the guard drops.
 ///
 /// Variants:
 /// - **Permit-bearing**: carries an [`OwnedSemaphorePermit`] from a
@@ -181,243 +194,330 @@ impl Unavailable {
 ///   one permit to the pool.
 /// - **Infallible**: zero-cost (no capacity constraint, e.g. Resident).
 ///   Dropping it is a no-op.
-/// - **Slot-bearing**: carries a pre-checked-out slot from [`InstanceStore`].
-///   Dropping without calling `acquire` returns the slot.
-pub struct Ticket<S> {
-    kind: TicketKind<S>,
+pub struct Ticket {
+    permit: Option<OwnedSemaphorePermit>,
 }
 
-enum TicketKind<S> {
-    /// Semaphore permit; dropping it returns capacity.
-    Permit(OwnedSemaphorePermit),
-    /// Semaphore permit + pre-checked-out slot; acquire consumes both.
-    PermitWithSlot {
-        permit: OwnedSemaphorePermit,
-        slot: S,
-        checkout_epoch: u64,
-    },
-    /// Zero-cost ticket (Resident / unbounded topologies).
-    Infallible,
-    /// Pre-checked-out slot from `InstanceStore` without a semaphore permit.
-    Slot { slot: S, checkout_epoch: u64 },
-}
-
-impl<S> Ticket<S> {
+impl Ticket {
     /// Creates a permit-bearing ticket (capacity-gated topologies).
     pub fn permit(permit: OwnedSemaphorePermit) -> Self {
         Self {
-            kind: TicketKind::Permit(permit),
-        }
-    }
-
-    /// Creates a permit + pre-checked-out slot ticket.
-    pub fn permit_with_slot(permit: OwnedSemaphorePermit, slot: S, checkout_epoch: u64) -> Self {
-        Self {
-            kind: TicketKind::PermitWithSlot {
-                permit,
-                slot,
-                checkout_epoch,
-            },
+            permit: Some(permit),
         }
     }
 
     /// Creates a zero-cost ticket (Resident / unbounded).
     pub fn infallible() -> Self {
-        Self {
-            kind: TicketKind::Infallible,
-        }
+        Self { permit: None }
     }
 
-    /// Creates a slot-bearing ticket without a semaphore permit.
-    pub fn slot(slot: S, checkout_epoch: u64) -> Self {
-        Self {
-            kind: TicketKind::Slot {
-                slot,
-                checkout_epoch,
-            },
-        }
-    }
-
-    /// Consumes the ticket, returning any pre-checked-out slot and permit.
+    /// Consumes the ticket, returning the held capacity permit (if any).
     ///
-    /// Authors call this inside [`Topology::acquire`] to extract the held
-    /// capacity token (if any) and any pre-checked-out slot the
-    /// [`try_reserve`](Topology::try_reserve) path embedded in the ticket.
-    ///
-    /// Returns `(None, None)` for infallible (zero-cost) tickets.
-    pub fn take_slot(self) -> (Option<(S, u64)>, Option<OwnedSemaphorePermit>) {
-        match self.kind {
-            TicketKind::Permit(p) => (None, Some(p)),
-            TicketKind::PermitWithSlot {
-                permit,
-                slot,
-                checkout_epoch,
-            } => (Some((slot, checkout_epoch)), Some(permit)),
-            TicketKind::Infallible => (None, None),
-            TicketKind::Slot {
-                slot,
-                checkout_epoch,
-            } => (Some((slot, checkout_epoch)), None),
-        }
+    /// The framework calls this to move the permit into the
+    /// [`ResourceGuard`](crate::guard::ResourceGuard) so it is held for the
+    /// whole lease and returned on guard drop.
+    pub fn into_permit(self) -> Option<OwnedSemaphorePermit> {
+        self.permit
     }
 }
 
-// ─── Lease ────────────────────────────────────────────────────────────────────
+// ─── MaintenanceSchedule ──────────────────────────────────────────────────────
 
-/// A leased slot produced by [`Topology::acquire`].
+/// Background-maintenance cadence + TTLs for a topology that runs a reaper.
 ///
-/// The `Manager` wraps a `Lease` in a `ResourceGuard` that `Deref`s to
-/// `R::Instance`. On guard drop the framework runs `on_release(slot)`, then
-/// either returns the slot to `InstanceStore` (under the revoke-epoch fence)
-/// or evicts and destroys it.
-pub struct Lease<S> {
-    /// The leased slot.
-    pub slot: S,
-    /// The epoch at which this slot was checked out (used during release).
-    pub checkout_epoch: u64,
-    /// Permit held for the duration of the lease; dropped on release.
-    pub permit: Option<OwnedSemaphorePermit>,
-}
-
-impl<S> Lease<S> {
-    /// Creates a lease directly.
-    pub fn new(slot: S, checkout_epoch: u64, permit: Option<OwnedSemaphorePermit>) -> Self {
-        Self {
-            slot,
-            checkout_epoch,
-            permit,
-        }
-    }
-
-    /// Creates a lease from a [`Ticket`] that already carried the slot,
-    /// or from `default_slot`/`default_epoch` for a freshly-created instance.
-    pub fn from_ticket(ticket: Ticket<S>, default_slot: S, default_epoch: u64) -> Self {
-        let (slot_and_epoch, permit) = ticket.take_slot();
-        let (slot, checkout_epoch) = slot_and_epoch.unwrap_or((default_slot, default_epoch));
-        Self {
-            slot,
-            checkout_epoch,
-            permit,
-        }
-    }
+/// Returned by [`Topology::maintenance_schedule`]: the framework spawns a
+/// maintenance reaper task only when a topology returns `Some` here and at
+/// least one TTL is configured. The reaper runs the framework store's
+/// [`evict_stale`](crate::topology::store::InstanceStore::evict_stale) (revoke
+/// fence) plus the per-slot [`Topology::idle_evictable`] predicate
+/// (fingerprint / max-lifetime / idle-timeout), destroying evicted slots via
+/// [`Topology::into_instance`] → [`Provider::destroy`].
+#[derive(Debug, Clone, Copy)]
+pub struct MaintenanceSchedule {
+    /// Idle-timeout TTL, if configured.
+    pub idle_timeout: Option<Duration>,
+    /// Max-lifetime TTL, if configured.
+    pub max_lifetime: Option<Duration>,
+    /// Interval between maintenance sweeps.
+    pub maintenance_interval: Duration,
 }
 
 // ─── Topology trait ───────────────────────────────────────────────────────────
 
-/// Author-facing lease policy for a resource's instances.
+/// Author-facing, framework-driven lease policy for a resource's instances.
 ///
-/// A `Topology` describes *how* already-built, already-authorized instances
-/// are leased to callers under concurrency. The framework controls everything
-/// else: credential resolution, revoke-epoch fence, rotation fan-out, drain,
-/// metrics, spans.
+/// A `Topology<R>` describes *how* already-built, already-authorized instances
+/// are leased to callers under concurrency — but the **framework owns the
+/// acquire loop and the credential-revoke fence**. The topology supplies thin
+/// R-aware hooks the framework calls *inside* its own loop; it cannot reach the
+/// store's fence, retain the store, or skip stale-slot destruction.
+///
+/// # Slot-centric
+///
+/// [`Slot`](Topology::Slot) is the leasable unit the framework stores in its
+/// [`InstanceStore<Self::Slot>`]. The guard holds the same `Slot` for the whole
+/// lease, so per-slot metadata (`created_at` for max-lifetime, `fingerprint`,
+/// `checkout_count`) survives the checkout → lease → return round-trip:
+///
+/// - **Pooled**: `Slot = PoolSlot<R>` (instance + metrics + fingerprint).
+/// - **Resident**: `Slot = R::Instance` (the cloned shared handle); `pools() ==
+///   false`, so a released clone is dropped, never pooled.
+/// - **Permit-only**: a thin id/handle slot, or `()`-shaped.
+///
+/// # The framework acquire loop (what the topology does NOT write)
+///
+/// ```text
+/// let ticket = topology.try_reserve(&store)?;           // sync gate
+/// loop {
+///     let checkout = store.checkout().await;            // FRAMEWORK fences on pop
+///     for stale in checkout.stale {                     // FRAMEWORK destroys stale
+///         resource.destroy(topology.into_instance(stale)).await;
+///     }
+///     match checkout.fresh {
+///         Some(co) => { let (mut slot, epoch) = co.into_parts();
+///                       if topology.accept(&mut slot, …).await { break (slot, epoch); }
+///                       resource.destroy(topology.into_instance(slot)).await; }
+///         None => break (topology.create_slot(…).await?, store.stamp_epoch()),
+///     }
+/// }
+/// // CreateGuard-wrap (cancel-safety) → topology.prepare(&mut slot, …).await? → build guard
+/// // Guard Deref = topology.slot_instance(&slot).
+/// // On drop: topology.on_release(&mut slot)?; if pools() && kept
+/// //          store.return_slot(slot, epoch) else destroy(into_instance(slot)).
+/// ```
+///
+/// A topology that finds itself writing `store.checkout()`, `resource.destroy`,
+/// a stale-slot loop, or a revoke epoch-compare is doing the framework's job —
+/// that logic belongs in the framework loop, not in a `Topology` hook.
 ///
 /// # Storage safety
 ///
-/// Every method receives a `&InstanceStore<Self::Slot>` reference. The
-/// lifetime of that borrow does not exceed the call. A `Topology`
-/// implementation therefore **cannot** retain the store, copy an `Arc` of it,
-/// or build a static/host-keyed cache that bypasses the per-tenant
-/// `SlotIdentity` fence. Cross-tenant runtime bleed is prevented by API shape,
-/// not by author discipline.
+/// Every store-bearing method receives a `&InstanceStore<Self::Slot>` whose
+/// borrow does not exceed the call, so the topology cannot retain the store or
+/// build a cross-scope cache that bypasses the per-tenant `SlotIdentity` fence.
 ///
 /// # Async dispatch
 ///
-/// `#[async_trait]` is used for `acquire` and `on_release` because topologies
-/// are reached **monomorphically** inside `ManagedResource<R>` — the one
-/// `Box<dyn Future>` per call is negligible next to the I/O the methods do.
-/// Sync methods (`try_reserve`, `phase`, `load`) stay plain sync.
-///
-/// # Example — minimal permit-only topology
-///
-/// ```rust,no_run
-/// use std::sync::Arc;
-/// use tokio::sync::Semaphore;
-/// use nebula_resource::topology::{
-///     Topology, Ticket, Lease, Unavailable, AdmissionPhase,
-///     store::InstanceStore,
-/// };
-/// use nebula_resource::error::Error;
-///
-/// pub struct FfmpegPool { sem: Arc<Semaphore>, cap: usize }
-///
-/// #[async_trait::async_trait]
-/// impl Topology for FfmpegPool {
-///     type Slot = ();
-///
-///     fn try_reserve(&self, _s: &InstanceStore<()>) -> Result<Ticket<()>, Unavailable> {
-///         self.sem.clone().try_acquire_owned()
-///             .map(Ticket::permit)
-///             .map_err(|_| Unavailable::Saturated { retry_after: None })
-///     }
-///     async fn acquire(&self, ticket: Ticket<()>, _s: &InstanceStore<()>) -> Result<Lease<()>, Error> {
-///         Ok(Lease::from_ticket(ticket, (), 0))
-///     }
-///     fn phase(&self, _s: &InstanceStore<()>) -> AdmissionPhase {
-///         if self.sem.available_permits() == 0 { AdmissionPhase::Saturated } else { AdmissionPhase::Ready }
-///     }
-/// }
-/// ```
+/// `#[async_trait]` is used because topologies are reached **monomorphically**
+/// inside `ManagedResource<R>` — the one `Box<dyn Future>` per call is
+/// negligible next to the I/O the hooks do. Sync hooks (`try_reserve`,
+/// `slot_instance`, `into_instance`, `phase`, `load`, `pools`, …) stay plain
+/// sync.
 #[async_trait]
-pub trait Topology: Send + Sync + 'static {
-    /// The leasable unit the framework stores.
+pub trait Topology<R: Provider>: Send + Sync + 'static {
+    /// The leasable unit the framework stores and the guard holds.
     ///
-    /// - Pooled: one connection handle.
-    /// - Resident: the shared handle.
-    /// - Permit-only: `()` (no stored instance; a semaphore permit IS the lease).
+    /// - Pooled: `PoolSlot<R>` (one connection handle + metrics).
+    /// - Resident: `R::Instance` (the cloned shared handle).
+    /// - Permit-only: a thin id/handle, or `()`-shaped.
     type Slot: Send + Sync + 'static;
 
     // ── concurrency gate ────────────────────────────────────────────────────
 
-    /// Non-blocking. Returns a permit-bearing [`Ticket`] or a typed
-    /// [`Unavailable`].
+    /// Non-blocking concurrency gate. Returns a permit-bearing [`Ticket`] or a
+    /// typed [`Unavailable`].
     ///
-    /// The `Ticket` IS the reservation — holding it guarantees a slot is
-    /// available when `acquire` is called; dropping it releases the
-    /// reservation. This resolves the check-then-acquire TOCTOU: success
-    /// hands back a held capacity token, not a readiness boolean.
-    ///
-    /// Implementations may call [`InstanceStore::checkout`] to pop an idle
-    /// slot and embed it in the ticket via [`Ticket::permit_with_slot`].
-    fn try_reserve(
-        &self,
-        store: &InstanceStore<Self::Slot>,
-    ) -> Result<Ticket<Self::Slot>, Unavailable>;
+    /// The `Ticket` IS the reservation — holding it guarantees a concurrency
+    /// slot is available for the acquire the framework runs next; the framework
+    /// moves the ticket's permit into the resulting guard so it is held for the
+    /// whole lease. This resolves the check-then-acquire TOCTOU: success hands
+    /// back a held capacity token, not a readiness boolean.
+    fn try_reserve(&self, store: &InstanceStore<Self::Slot>) -> Result<Ticket, Unavailable>;
 
-    /// Async, fallible. Consumes a [`Ticket`] and produces the leased slot.
-    ///
-    /// May do I/O (channel-open, post-checkout `SET search_path`, etc.).
-    /// On error the framework propagates the error to the caller; the
-    /// ticket's permit (if any) is dropped, releasing capacity.
-    ///
-    /// The framework wraps the returned [`Lease`] in a `ResourceGuard` whose
-    /// release schedules `on_release`.
-    async fn acquire(
-        &self,
-        ticket: Ticket<Self::Slot>,
-        store: &InstanceStore<Self::Slot>,
-    ) -> Result<Lease<Self::Slot>, Error>;
+    // ── slot lifecycle (framework-driven) ───────────────────────────────────
 
-    /// Async, fallible, ordered-before-reissue.
+    /// Make one fresh, credential-resolved leasable slot.
     ///
-    /// Reset the slot to a clean baseline (rollback txn, reset PRAGMAs,
-    /// UNSUBSCRIBE, cancel transients).
+    /// Pooled builds `PoolSlot { instance: <R::create>, metrics: now,
+    /// fingerprint }`; Resident clones the shared master handle into
+    /// `Slot = R::Instance`; a permit pool stores an id/handle. Credentials are
+    /// resolved into the resource's slot cells before this runs. The framework
+    /// drives it on an idle-miss (during acquire) and during warmup.
     ///
-    /// - `Ok(())` → the framework runs the revoke-epoch fence on the store,
-    ///   then recycles the slot.
-    /// - `Err(_)` → the framework evicts the slot (destroy, do not return).
+    /// # Errors
     ///
-    /// The default implementation is a no-op (suitable for permit-only or
-    /// stateless topologies).
-    async fn on_release(&self, _slot: &mut Self::Slot) -> Result<(), Error> {
+    /// Returns the create/clone error; the framework fails the acquire and
+    /// drops the held permit, releasing capacity.
+    async fn create_slot(
+        &self,
+        resource: &R,
+        config: &R::Config,
+        ctx: &ResourceContext,
+    ) -> Result<Self::Slot, Error>;
+
+    /// Project a held slot to its leasable instance — the guard's `Deref`
+    /// target. Pooled: `&slot.instance`; Resident: the slot itself.
+    fn slot_instance<'s>(&self, slot: &'s Self::Slot) -> &'s R::Instance;
+
+    /// Consume a slot back into its instance for [`Provider::destroy`]
+    /// (stale-fenced / accept-rejected / maintenance-evicted / non-pooled
+    /// slots). Pooled: `slot.instance`; Resident: identity.
+    // guard-justified: `&self` borrows the framework-owned topology while the
+    // `slot` argument is consumed — `into_*` names the slot→instance
+    // conversion, not a `self`-consuming builder, so wrong_self_convention is a
+    // false match here.
+    #[allow(
+        clippy::wrong_self_convention,
+        reason = "topology is borrowed, the slot argument is consumed; the conversion is slot→instance"
+    )]
+    fn into_instance(&self, slot: Self::Slot) -> R::Instance;
+
+    /// Validate a checked-out idle slot **in place** before it is leased
+    /// (Pooled: stale-fingerprint / max-lifetime / `is_broken` /
+    /// `test_on_checkout`).
+    ///
+    /// `false` ⇒ the framework destroys the slot
+    /// ([`into_instance`](Topology::into_instance) → [`Provider::destroy`]) and
+    /// loops to the next idle slot, then `create_slot`. Default `true` (no
+    /// post-checkout policy).
+    async fn accept(&self, _slot: &mut Self::Slot, _resource: &R, _ctx: &ResourceContext) -> bool {
+        true
+    }
+
+    /// Per-acquire session-init on the slot about to be leased (Pooled
+    /// `PoolProvider::prepare`, `SET search_path`, …).
+    ///
+    /// # Errors
+    ///
+    /// `Err` ⇒ the framework destroys the slot and fails the acquire.
+    async fn prepare(
+        &self,
+        _slot: &mut Self::Slot,
+        _resource: &R,
+        _ctx: &ResourceContext,
+    ) -> Result<(), Error> {
         Ok(())
     }
+
+    /// Reset / recycle a released slot before the framework returns it (rollback
+    /// txn, reset PRAGMAs, UNSUBSCRIBE, `PoolProvider::recycle`). Runs on the
+    /// release path, **before** the framework's revoke-epoch fence.
+    ///
+    /// - `Ok(true)` → the framework keeps the slot: if [`pools`](Topology::pools)
+    ///   it runs the store's revoke-epoch fence and recycles, else it destroys.
+    /// - `Ok(false)` → the framework destroys the slot (do not recycle).
+    /// - `Err(_)` → the framework destroys the slot.
+    ///
+    /// The `resource` handle is supplied so a pooling topology can run the
+    /// `PoolProvider::recycle` / `is_broken` policy here. The framework already
+    /// destroys a *tainted* lease before calling this, so taint is not a case
+    /// the hook handles.
+    ///
+    /// Default `Ok(true)` (no reset; recycle if the topology pools).
+    async fn on_release(&self, _slot: &mut Self::Slot, _resource: &R) -> Result<bool, Error> {
+        Ok(true)
+    }
+
+    /// Whether a released, kept slot returns to the framework idle store.
+    ///
+    /// Pooled: `true`; Resident / pure-permit: `false` (a released slot is
+    /// dropped via `into_instance` → destroy, never pooled). Default `false`.
+    fn pools(&self) -> bool {
+        false
+    }
+
+    /// Whether this **non-pooling** topology tears down its own
+    /// credential-bound instances on revoke (instead of relying on the
+    /// framework store's revoke-epoch fence, which only reaches *pooled* idle
+    /// slots).
+    ///
+    /// A shared/multiplexed instance (a gRPC channel, a WebSocket, the
+    /// `Resident` cell) is held continuously and never enters the idle store,
+    /// so the store fence cannot evict it; its revoke teardown must run through
+    /// [`dispatch_credential_hook`](Topology::dispatch_credential_hook). A
+    /// topology that holds credential-bound state on `pools() == false` MUST
+    /// override both this (to `true`) and the hook, or a revoked credential
+    /// keeps serving. The framework asserts this at registration.
+    ///
+    /// Ignored when [`pools`](Topology::pools) is `true` (the store fence
+    /// covers pooled slots). Default `false` — a non-pooling topology opts in
+    /// only when it genuinely handles its own revoke.
+    fn handles_own_revoke(&self) -> bool {
+        false
+    }
+
+    /// The idle capacity cap the framework applies to this topology's store.
+    ///
+    /// `Some(n)` caps the framework idle queue at `n` slots (Pooled: `max_size`
+    /// — an idle slot beyond the concurrency cap can never be leased, so it is
+    /// pure waste); `None` is unbounded (Resident / permit-only topologies whose
+    /// store stays empty). Read once at registration to build
+    /// `ManagedResource::store`. Default `None`.
+    fn store_capacity(&self) -> Option<usize> {
+        None
+    }
+
+    // ── warmup / maintenance (framework-driven over the store) ──────────────
+
+    /// Idle count the framework pre-warms by calling
+    /// [`create_slot`](Topology::create_slot) + depositing into the store
+    /// (fenced) at registration. `0` = no warmup. Default `0`.
+    fn warmup_target(&self, _config: &R::Config) -> usize {
+        0
+    }
+
+    /// Predicate for the framework maintenance reaper: should this idle slot be
+    /// evicted now (Pooled: stale-fingerprint / max-lifetime / idle-timeout)?
+    ///
+    /// The framework already evicts revoke-stale slots via the store's
+    /// [`evict_stale`](crate::topology::store::InstanceStore::evict_stale); this
+    /// predicate covers only the non-revoke arms. Default `false`.
+    fn idle_evictable(&self, _slot: &Self::Slot) -> bool {
+        false
+    }
+
+    /// `Some(schedule)` if the framework should spawn a maintenance reaper for
+    /// this topology, `None` = none. Default `None`.
+    fn maintenance_schedule(&self) -> Option<MaintenanceSchedule> {
+        None
+    }
+
+    // ── credential rotation / revoke fence ──────────────────────────────────
+
+    /// Per-slot credential rotation hook, framework-driven over the live store.
+    ///
+    /// The framework passes the borrowed `&InstanceStore<Self::Slot>` so a
+    /// pooling topology can walk its idle slots under the store lock (the same
+    /// lock `checkout` / `return_slot` take, so no checkout can interleave
+    /// mid-rotation). The borrow does not exceed the call; the topology cannot
+    /// retain it.
+    ///
+    /// `refresh = true` selects `Provider::on_credential_refresh`, `false`
+    /// `Provider::on_credential_revoke`. Default no-op: a topology with no
+    /// pooled instances has nothing to rotate over the store.
+    ///
+    /// A multiplexed / shared topology (`pools() == false` holding a
+    /// credential-bearing singleton — a gRPC channel, a WebSocket) that is
+    /// **not** in the framework store cannot be reached by the store's
+    /// revoke-epoch fence, so its revoke teardown MUST run here. The default
+    /// no-op leaks streams on revoke for such a topology; the framework emits a
+    /// register-time warning when `pools() == false` and the resource declares
+    /// ≥1 credential slot.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first hook error; the framework surfaces it to the rotation
+    /// dispatch caller.
+    async fn dispatch_credential_hook(
+        &self,
+        _resource: &R,
+        _store: &InstanceStore<Self::Slot>,
+        _slot: &str,
+        _refresh: bool,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+
+    /// Update the config fingerprint so stale idle slots evict on the next
+    /// sweep / acquire. Default no-op (topologies that track no fingerprint).
+    fn set_fingerprint(&self, _fingerprint: u64) {}
 
     // ── availability surface ────────────────────────────────────────────────
 
     /// Returns the current admission phase.
     ///
     /// Advisory only — do not gate admission on this value. The authoritative
-    /// gate is `try_reserve`.
+    /// gate is [`try_reserve`](Topology::try_reserve).
     fn phase(&self, _store: &InstanceStore<Self::Slot>) -> AdmissionPhase {
         AdmissionPhase::Ready
     }
@@ -449,26 +549,36 @@ pub trait Topology: Send + Sync + 'static {
 /// they are owned by a different runtime. Such a resource still has to name a
 /// [`Provider::Topology`](crate::resource::Provider::Topology); `NoTopology`
 /// is the marker that says "this resource is not leased here". Its
-/// [`try_reserve`](Topology::try_reserve) always grants an infallible ticket
-/// and its `acquire` returns a zero-cost lease, but the type carries **no**
-/// `TopologyDispatch` bridge, so a `NoTopology` resource cannot be registered
-/// through `Manager::register` — by construction, not by convention.
+/// [`try_reserve`](Topology::try_reserve) always grants an infallible ticket and
+/// its `create_slot` always errors, so a `NoTopology` resource is never actually
+/// acquired through the lease pipeline — by construction, not by convention.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NoTopology;
 
 #[async_trait]
-impl Topology for NoTopology {
-    type Slot = ();
+impl<R: Provider> Topology<R> for NoTopology {
+    type Slot = R::Instance;
 
-    fn try_reserve(&self, _store: &InstanceStore<()>) -> Result<Ticket<()>, Unavailable> {
+    fn try_reserve(&self, _store: &InstanceStore<R::Instance>) -> Result<Ticket, Unavailable> {
         Ok(Ticket::infallible())
     }
 
-    async fn acquire(
+    async fn create_slot(
         &self,
-        _ticket: Ticket<()>,
-        _store: &InstanceStore<()>,
-    ) -> Result<Lease<()>, Error> {
-        Ok(Lease::new((), 0, None))
+        _resource: &R,
+        _config: &R::Config,
+        _ctx: &ResourceContext,
+    ) -> Result<R::Instance, Error> {
+        Err(Error::permanent(
+            "NoTopology: this resource is not leased through the resource Manager",
+        ))
+    }
+
+    fn slot_instance<'s>(&self, slot: &'s R::Instance) -> &'s R::Instance {
+        slot
+    }
+
+    fn into_instance(&self, slot: R::Instance) -> R::Instance {
+        slot
     }
 }

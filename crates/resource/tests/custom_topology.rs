@@ -1,79 +1,78 @@
-//! Round-trip test for a custom `impl Topology`.
+//! Standalone shape test for a custom `impl Topology<R>` under the inverted,
+//! slot-centric contract.
 //!
 //! Verifies that an author-defined topology:
-//! - compiles and satisfies the `Topology` trait contract,
-//! - correctly routes `try_reserve` → `acquire` → `on_release`,
-//! - receives the revoke-epoch fence for free via `InstanceStore`.
+//! - compiles and satisfies the `Topology<R>` trait contract with only the thin
+//!   slot-centric hooks (`try_reserve` / `create_slot` / `slot_instance` /
+//!   `into_instance` / `pools` / `store_capacity`);
+//! - drives `try_reserve` admission (Saturated when the semaphore is exhausted);
+//! - produces slots via `create_slot` that project + consume cleanly;
+//! - gets the revoke-epoch fence **for free** via the framework-owned
+//!   `InstanceStore` (the topology writes no fence code).
+//!
+//! The end-to-end Manager-driven safety proof lives in
+//! `custom_topology_manager.rs`; this file pins the standalone hook shape.
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use nebula_core::{ResourceKey, resource_key};
+use nebula_resource::error::Error;
+use nebula_resource::resource::{HasCredentialSlots, Provider, ResourceConfig, ResourceMetadata};
+use nebula_resource::topology::{
+    AdmissionPhase, InstanceStore, ReturnOutcome, Ticket, Topology, Unavailable,
+};
+use nebula_resource::{ResourceContext, TopologyTag};
 use tokio::sync::Semaphore;
 
-use nebula_resource::error::Error;
-use nebula_resource::topology::{
-    AdmissionPhase, InstanceStore, Lease, Load, ReturnOutcome, Ticket, Topology, Unavailable,
-};
+// ─── A minimal resource to parameterize the custom topology ──────────────────
 
-// ─── Custom topology ─────────────────────────────────────────────────────────
-
-/// A minimal permit-only topology: a fixed concurrency cap backed by a
-/// `tokio::Semaphore`. Slot = `()` — the permit IS the lease; no stored
-/// instance.
-struct PermitPool {
-    sem: Arc<Semaphore>,
-    cap: usize,
-}
-
-impl PermitPool {
-    fn new(cap: usize) -> Self {
-        Self {
-            sem: Arc::new(Semaphore::new(cap)),
-            cap,
-        }
+#[derive(Clone, Default)]
+struct PermitCfg;
+nebula_resource::impl_empty_has_schema!(PermitCfg);
+impl ResourceConfig for PermitCfg {
+    fn fingerprint(&self) -> u64 {
+        0
     }
 }
+
+#[derive(Clone)]
+struct PermitRes;
 
 #[async_trait]
-impl Topology for PermitPool {
-    type Slot = ();
+impl Provider for PermitRes {
+    type Config = PermitCfg;
+    type Instance = u32;
+    type Topology = SlotPool;
 
-    fn try_reserve(&self, _store: &InstanceStore<()>) -> Result<Ticket<()>, Unavailable> {
-        self.sem
-            .clone()
-            .try_acquire_owned()
-            .map(Ticket::permit)
-            .map_err(|_| Unavailable::Saturated { retry_after: None })
+    fn key() -> ResourceKey {
+        resource_key!("custom.standalone.permit")
     }
 
-    async fn acquire(
-        &self,
-        ticket: Ticket<()>,
-        _store: &InstanceStore<()>,
-    ) -> Result<Lease<()>, Error> {
-        let (_, permit) = ticket.take_slot();
-        Ok(Lease::new((), 0, permit))
+    async fn create(&self, _config: &PermitCfg, _ctx: &ResourceContext) -> Result<u32, Error> {
+        Ok(42)
     }
 
-    fn phase(&self, _store: &InstanceStore<()>) -> AdmissionPhase {
-        if self.sem.available_permits() == 0 {
-            AdmissionPhase::Saturated
-        } else {
-            AdmissionPhase::Ready
-        }
+    async fn destroy(&self, _runtime: u32) -> Result<(), Error> {
+        Ok(())
     }
 
-    fn load(&self, _store: &InstanceStore<()>) -> Option<Load> {
-        let available = self.sem.available_permits();
-        Some(Load::permits(self.cap - available, self.cap))
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::from_key(&Self::key())
     }
 }
 
-// ─── A slot-storing custom topology ─────────────────────────────────────────
+impl HasCredentialSlots for PermitRes {
+    fn credential_slot_epoch(&self) -> u64 {
+        0
+    }
+}
 
-/// A topology that stores `u32` slots in an `InstanceStore` and checks out
-/// idle slots on `try_reserve`, demonstrating that the revoke-epoch fence runs
-/// automatically on every `return_slot` path.
+// ─── A slot-storing custom topology over the framework store ─────────────────
+
+/// A bespoke pool whose `Slot = u32`. It supplies only the slot-centric hooks;
+/// the framework owns the idle store, the checkout, and the revoke fence. The
+/// topology holds only a semaphore + capacity — no `InstanceStore`.
 struct SlotPool {
     sem: Arc<Semaphore>,
     cap: usize,
@@ -89,48 +88,40 @@ impl SlotPool {
 }
 
 #[async_trait]
-impl Topology for SlotPool {
+impl Topology<PermitRes> for SlotPool {
     type Slot = u32;
 
-    fn try_reserve(&self, store: &InstanceStore<u32>) -> Result<Ticket<u32>, Unavailable> {
-        // Try idle first, then semaphore.
-        // NOTE: `checkout` is async; this sync method cannot await it, so we
-        // fall through to a permit-only ticket and let `acquire` handle
-        // checkout.  This is intentional: `try_reserve` is sync; idle checkout
-        // is an async operation deferred to `acquire`.
+    fn try_reserve(&self, _store: &InstanceStore<u32>) -> Result<Ticket, Unavailable> {
         self.sem
             .clone()
             .try_acquire_owned()
-            .map(|p| {
-                // We can't await here, but we expose the store's epoch so the
-                // caller can stamp fresh slots.
-                let _ = store.current_revoke_epoch(); // advisory read
-                Ticket::permit(p)
-            })
+            .map(Ticket::permit)
             .map_err(|_| Unavailable::Saturated { retry_after: None })
     }
 
-    async fn acquire(
+    async fn create_slot(
         &self,
-        ticket: Ticket<u32>,
-        store: &InstanceStore<u32>,
-    ) -> Result<Lease<u32>, Error> {
-        // Try to pop a fresh idle slot. The fence discards any stale-epoch
-        // slot on checkout (returned in `stale`); a real framework pipeline
-        // would destroy those, but this permit-only test topology drops them.
-        let checkout = store.checkout().await;
-        if let Some(checked_out) = checkout.fresh {
-            let (slot, checkout_epoch) = checked_out.into_parts();
-            return Ok(Lease::new(slot, checkout_epoch, None));
-        }
-        // No idle slot — create a new one stamped with the current epoch.
-        let epoch = store.stamp_epoch();
-        let (_, permit) = ticket.take_slot();
-        Ok(Lease::new(42u32, epoch, permit))
+        resource: &PermitRes,
+        config: &PermitCfg,
+        ctx: &ResourceContext,
+    ) -> Result<u32, Error> {
+        resource.create(config, ctx).await
     }
 
-    async fn on_release(&self, _slot: &mut u32) -> Result<(), Error> {
-        Ok(())
+    fn slot_instance<'s>(&self, slot: &'s u32) -> &'s u32 {
+        slot
+    }
+
+    fn into_instance(&self, slot: u32) -> u32 {
+        slot
+    }
+
+    fn pools(&self) -> bool {
+        true
+    }
+
+    fn store_capacity(&self) -> Option<usize> {
+        Some(self.cap)
     }
 
     fn phase(&self, _store: &InstanceStore<u32>) -> AdmissionPhase {
@@ -141,124 +132,114 @@ impl Topology for SlotPool {
         }
     }
 
-    fn load(&self, _store: &InstanceStore<u32>) -> Option<Load> {
-        let available = self.sem.available_permits();
-        Some(Load::permits(self.cap - available, self.cap))
+    fn tag(&self) -> TopologyTag {
+        TopologyTag::Custom
     }
+}
+
+fn test_ctx() -> ResourceContext {
+    use nebula_core::scope::Scope;
+    use tokio_util::sync::CancellationToken;
+    ResourceContext::minimal(Scope::default(), CancellationToken::new())
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
-/// A permit-only custom topology compiles, reserves, acquires, and releases.
+/// `try_reserve` grants tickets up to capacity, then reports Saturated; `phase`
+/// tracks it. Dropping a ticket frees capacity again.
 #[tokio::test]
-async fn permit_only_topology_round_trip() {
-    let store: InstanceStore<()> = InstanceStore::new(None);
-    let topo = PermitPool::new(2);
-
-    // Phase is Ready when permits available.
-    assert_eq!(topo.phase(&store), AdmissionPhase::Ready);
-
-    // Reserve + acquire two leases.
-    let ticket1 = topo.try_reserve(&store).expect("first ticket");
-    let ticket2 = topo.try_reserve(&store).expect("second ticket");
-
-    // Saturated after two acquires.
-    let third = topo.try_reserve(&store);
-    assert!(
-        matches!(third, Err(Unavailable::Saturated { retry_after: None })),
-        "pool of 2 is saturated after 2 reservations"
-    );
-    assert_eq!(topo.phase(&store), AdmissionPhase::Saturated);
-
-    let lease1 = topo.acquire(ticket1, &store).await.expect("acquire 1");
-    let lease2 = topo.acquire(ticket2, &store).await.expect("acquire 2");
-
-    // Load reflects 2/2 used.
-    let load = topo.load(&store).expect("load present");
-    assert!(
-        (load.saturation - 1.0_f32).abs() < f32::EPSILON,
-        "saturation must be 1.0 when fully occupied"
-    );
-
-    // Drop permits → capacity freed.
-    drop(lease1.permit);
-    drop(lease2.permit);
+async fn try_reserve_admission_and_phase() {
+    let store: InstanceStore<u32> = InstanceStore::new(Some(2));
+    let topo = SlotPool::new(2);
 
     assert_eq!(
-        topo.phase(&store),
+        Topology::<PermitRes>::phase(&topo, &store),
+        AdmissionPhase::Ready
+    );
+    let t1 = Topology::<PermitRes>::try_reserve(&topo, &store).expect("first ticket");
+    let t2 = Topology::<PermitRes>::try_reserve(&topo, &store).expect("second ticket");
+    assert!(
+        matches!(
+            Topology::<PermitRes>::try_reserve(&topo, &store),
+            Err(Unavailable::Saturated { .. })
+        ),
+        "a pool of 2 is saturated after 2 tickets"
+    );
+    assert_eq!(
+        Topology::<PermitRes>::phase(&topo, &store),
+        AdmissionPhase::Saturated
+    );
+
+    drop(t1);
+    drop(t2);
+    assert_eq!(
+        Topology::<PermitRes>::phase(&topo, &store),
         AdmissionPhase::Ready,
-        "phase returns to Ready after permits released"
+        "phase returns to Ready after the permits are released"
     );
 }
 
-/// Slot-storing custom topology: the revoke-epoch fence runs on `return_slot`
-/// and evicts a slot whose checkout epoch is behind the live counter.
+/// `create_slot` builds a slot; `slot_instance` / `into_instance` project and
+/// consume it cleanly.
 #[tokio::test]
-async fn slot_topology_revoke_fence_via_instance_store() {
+async fn create_slot_and_projections() {
+    let topo = SlotPool::new(2);
+    let resource = PermitRes;
+    let slot = topo
+        .create_slot(&resource, &PermitCfg, &test_ctx())
+        .await
+        .expect("create_slot");
+    assert_eq!(*topo.slot_instance(&slot), 42);
+    assert_eq!(topo.into_instance(slot), 42);
+    assert!(Topology::<PermitRes>::pools(&topo));
+    assert_eq!(Topology::<PermitRes>::store_capacity(&topo), Some(2));
+}
+
+/// The revoke-epoch fence runs on the **framework** `InstanceStore`, not in the
+/// topology: a slot returned at the pre-bump epoch is evicted on return after a
+/// bump. The custom topology writes no fence code — it gets this for free.
+#[tokio::test]
+async fn slot_revoke_fence_via_framework_store() {
     let store: InstanceStore<u32> = InstanceStore::new(Some(4));
-    let topo = SlotPool::new(4);
 
-    // Acquire a slot — stamped with epoch 0.
-    let ticket = topo.try_reserve(&store).expect("ticket");
-    let lease = topo.acquire(ticket, &store).await.expect("lease");
-    assert_eq!(lease.slot, 42u32);
-    let checkout_epoch = lease.checkout_epoch;
+    // A slot goes idle at epoch 0.
+    let epoch = store.stamp_epoch();
+    assert_eq!(
+        store.return_slot(7u32, epoch).await,
+        ReturnOutcome::Recycled
+    );
 
-    // Simulate credential revoke: advance epoch.
+    // Credential revoke: advance the epoch.
     store.bump_revoke_epoch();
 
-    // Return the slot — checkout_epoch (0) < live epoch (1) → must evict.
-    let outcome = store.return_slot(lease.slot, checkout_epoch).await;
+    // Return another slot stamped at epoch 0 — the framework fence evicts it.
+    let outcome = store.return_slot(9u32, epoch).await;
     assert!(
         outcome.is_evict(),
-        "slot checked out before revoke must be evicted by the uniform fence"
+        "a slot checked out before a revoke must be evicted by the framework \
+         store fence — the custom topology writes no fence code"
     );
+
+    // The first (already-idle, pre-revoke) slot is evicted on checkout.
+    let checkout = store.checkout().await;
     assert!(
-        store.is_empty().await,
-        "evicted slot must not appear in idle queue"
+        checkout.fresh.is_none(),
+        "a slot idle since before the revoke must never be handed out as fresh"
     );
-}
-
-/// Slot-storing custom topology: a slot returned at the current epoch is recycled.
-#[tokio::test]
-async fn slot_topology_clean_return_is_recycled() {
-    let store: InstanceStore<u32> = InstanceStore::new(Some(4));
-    let topo = SlotPool::new(4);
-
-    let ticket = topo.try_reserve(&store).expect("ticket");
-    let lease = topo.acquire(ticket, &store).await.expect("lease");
-
-    // Return without a revoke — same epoch.
-    let outcome = store.return_slot(lease.slot, lease.checkout_epoch).await;
     assert_eq!(
-        outcome,
-        ReturnOutcome::Recycled,
-        "slot returned at current epoch must be recycled"
+        checkout.stale,
+        vec![7u32],
+        "the framework collects the since-revoked idle slot for destruction"
     );
-    assert_eq!(store.len().await, 1, "idle queue holds the recycled slot");
 }
 
-/// `on_release` default (no-op) is inherited and doesn't error.
-#[tokio::test]
-async fn custom_topology_on_release_default_ok() {
-    let store: InstanceStore<()> = InstanceStore::new(None);
-    let topo = PermitPool::new(1);
-
-    let ticket = topo.try_reserve(&store).expect("ticket");
-    let mut lease = topo.acquire(ticket, &store).await.expect("lease");
-    // on_release default should succeed without any slot cleanup.
-    topo.on_release(&mut lease.slot)
-        .await
-        .expect("on_release ok");
-}
-
-/// `Unavailable` variants implement `PartialEq` via `#[derive]`; verify
-/// `Saturated` equality used in tests above works as expected.
+/// `Unavailable::Saturated` `PartialEq` sanity (used by the assertions above).
 #[test]
 fn unavailable_saturated_equality() {
-    let a = Unavailable::Saturated { retry_after: None };
-    let b = Unavailable::Saturated { retry_after: None };
-    assert_eq!(a, b);
+    assert_eq!(
+        Unavailable::Saturated { retry_after: None },
+        Unavailable::Saturated { retry_after: None }
+    );
     assert_ne!(
         Unavailable::Saturated { retry_after: None },
         Unavailable::Warming

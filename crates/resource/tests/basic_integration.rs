@@ -227,18 +227,43 @@ async fn poll_until(deadline: std::time::Duration, mut cond: impl FnMut() -> boo
     cond()
 }
 
-/// Waits until a pool's idle count equals `expected` (bounded), failing the
-/// test with the observed count if it never does. The deterministic
-/// replacement for `drop(handle); sleep(50ms); assert_eq!(idle_count, n)`.
-async fn wait_idle_count<R>(pool: &Pooled<R>, expected: usize)
+/// Reads the current idle count of a registered pool through the Manager's
+/// public `pool_stats`. The framework owns the idle store now, so idle
+/// observation goes through the Manager, not a (removed) inherent pool method.
+async fn idle_count<R>(mgr: &Manager) -> usize
 where
-    R: PoolProvider + Clone + Send + Sync + 'static,
+    R: PoolProvider
+        + Provider<Topology = Pooled<R>>
+        + HasCredentialSlots
+        + Clone
+        + Send
+        + Sync
+        + 'static,
+    R::Instance: Clone + Send + Sync + 'static,
+{
+    mgr.pool_stats::<R>(&ScopeLevel::Global)
+        .await
+        .map_or(0, |s| s.idle)
+}
+
+/// Waits until a registered pool's idle count equals `expected` (bounded),
+/// failing the test with the observed count if it never does. The deterministic
+/// replacement for `drop(handle); sleep(50ms); assert_eq!(idle, n)`.
+async fn wait_idle_count<R>(mgr: &Manager, expected: usize)
+where
+    R: PoolProvider
+        + Provider<Topology = Pooled<R>>
+        + HasCredentialSlots
+        + Clone
+        + Send
+        + Sync
+        + 'static,
     R::Instance: Clone + Send + Sync + 'static,
 {
     let deadline = std::time::Duration::from_secs(2);
     let start = std::time::Instant::now();
     loop {
-        let idle = pool.idle_count().await;
+        let idle = idle_count::<R>(mgr).await;
         if idle == expected {
             return;
         }
@@ -248,6 +273,53 @@ where
         );
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
     }
+}
+
+/// Registers a pool resource at `Global` through the Manager funnel for the
+/// acquire-path integration tests (the framework owns the acquire loop, so the
+/// tests drive `Manager::acquire_pooled` rather than a removed inherent method).
+fn register_pool<R>(mgr: &Manager, resource: R, config: R::Config, pool: Pooled<R>)
+where
+    R: PoolProvider
+        + Provider<Topology = Pooled<R>>
+        + HasCredentialSlots
+        + Clone
+        + Send
+        + Sync
+        + 'static,
+    R::Instance: Clone + Send + Sync + 'static,
+{
+    mgr.register(RegistrationSpec {
+        resource,
+        config,
+        scope: ScopeLevel::Global,
+        slot_identity: SlotIdentity::Unbound,
+        topology: pool,
+        recovery_gate: None,
+    })
+    .expect("pool registration must succeed");
+}
+
+/// Registers a resident resource at `Global` through the Manager funnel.
+fn register_resident<R>(mgr: &Manager, resource: R, config: R::Config, rt: Resident<R>)
+where
+    R: ResidentProvider
+        + Provider<Topology = Resident<R>>
+        + HasCredentialSlots
+        + Send
+        + Sync
+        + 'static,
+    R::Instance: Clone + Send + Sync + 'static,
+{
+    mgr.register(RegistrationSpec {
+        resource,
+        config,
+        scope: ScopeLevel::Global,
+        slot_identity: SlotIdentity::Unbound,
+        topology: rt,
+        recovery_gate: None,
+    })
+    .expect("resident registration must succeed");
 }
 
 /// Waits until `counter` reaches at least `expected` (bounded). Used as the
@@ -282,21 +354,13 @@ async fn pool_acquire_use_release_reacquire() {
         ..Default::default()
     };
     let pool = Pooled::<PoolTestResource>::new(config, 1);
-    let (rq, rq_handle) = ReleaseQueue::new(1);
-    let rq = Arc::new(rq);
+    let mgr = Manager::new();
+    register_pool(&mgr, resource.clone(), test_config(), pool);
     let ctx = test_ctx();
 
     // First acquire creates a new instance.
-    let handle = pool
-        .acquire(
-            &resource,
-            &test_config(),
-            &ctx,
-            &rq,
-            0,
-            &AcquireOptions::default(),
-            None,
-        )
+    let handle = mgr
+        .acquire_pooled::<PoolTestResource>(&ctx, &AcquireOptions::default())
         .await
         .expect("first acquire should succeed");
 
@@ -310,22 +374,14 @@ async fn pool_acquire_use_release_reacquire() {
     drop(handle);
     // Deterministic settle: wait for the release worker to recycle the
     // instance back into idle instead of guessing a wall-clock delay.
-    wait_idle_count(&pool, 1).await;
+    wait_idle_count::<PoolTestResource>(&mgr, 1).await;
 
     // Pool should have one idle instance now.
-    assert_eq!(pool.idle_count().await, 1);
+    assert_eq!(idle_count::<PoolTestResource>(&mgr).await, 1);
 
     // Second acquire reuses the idle instance (no new creation).
-    let handle2 = pool
-        .acquire(
-            &resource,
-            &test_config(),
-            &ctx,
-            &rq,
-            0,
-            &AcquireOptions::default(),
-            None,
-        )
+    let handle2 = mgr
+        .acquire_pooled::<PoolTestResource>(&ctx, &AcquireOptions::default())
         .await
         .expect("second acquire should succeed");
 
@@ -335,10 +391,6 @@ async fn pool_acquire_use_release_reacquire() {
         "should reuse, not create"
     );
     drop(handle2);
-    // `ReleaseQueue::shutdown` drains buffered release tasks, so no
-    // wall-clock settle is needed before tearing the queue down.
-    drop(rq);
-    ReleaseQueue::shutdown(rq_handle).await;
 }
 
 #[tokio::test]
@@ -349,41 +401,25 @@ async fn pool_broken_instance_gets_replaced() {
         ..Default::default()
     };
     let pool = Pooled::<PoolTestResource>::new(config, 1);
-    let (rq, rq_handle) = ReleaseQueue::new(1);
-    let rq = Arc::new(rq);
+    let mgr = Manager::new();
+    register_pool(&mgr, resource.clone(), test_config(), pool);
     let ctx = test_ctx();
 
     // Acquire and release to populate idle queue.
-    let handle = pool
-        .acquire(
-            &resource,
-            &test_config(),
-            &ctx,
-            &rq,
-            0,
-            &AcquireOptions::default(),
-            None,
-        )
+    let handle = mgr
+        .acquire_pooled::<PoolTestResource>(&ctx, &AcquireOptions::default())
         .await
         .unwrap();
     drop(handle);
-    wait_idle_count(&pool, 1).await;
-    assert_eq!(pool.idle_count().await, 1);
+    wait_idle_count::<PoolTestResource>(&mgr, 1).await;
+    assert_eq!(idle_count::<PoolTestResource>(&mgr).await, 1);
 
     // Mark as broken.
     resource.break_flag.store(true, Ordering::Relaxed);
 
     // Next acquire should destroy the broken instance and create new.
-    let handle2 = pool
-        .acquire(
-            &resource,
-            &test_config(),
-            &ctx,
-            &rq,
-            0,
-            &AcquireOptions::default(),
-            None,
-        )
+    let handle2 = mgr
+        .acquire_pooled::<PoolTestResource>(&ctx, &AcquireOptions::default())
         .await
         .expect("should create a fresh instance");
 
@@ -409,13 +445,10 @@ async fn pool_broken_instance_gets_replaced() {
         "released broken instance must be destroyed, not recycled"
     );
     assert_eq!(
-        pool.idle_count().await,
+        idle_count::<PoolTestResource>(&mgr).await,
         0,
         "destroyed instance must not return to the pool"
     );
-
-    drop(rq);
-    ReleaseQueue::shutdown(rq_handle).await;
 }
 
 // ---------------------------------------------------------------------------
@@ -426,19 +459,21 @@ async fn pool_broken_instance_gets_replaced() {
 async fn resident_acquire_creates_then_clones() {
     let resource = ResidentTestResource::new();
     let rt = Resident::<ResidentTestResource>::new(ResidentConfig::default());
+    let mgr = Manager::new();
+    register_resident(&mgr, resource.clone(), test_config(), rt);
     let ctx = test_ctx();
 
     // First acquire creates.
-    let h1 = rt
-        .acquire(&resource, &test_config(), &ctx, &AcquireOptions::default())
+    let h1 = mgr
+        .acquire_resident::<ResidentTestResource>(&ctx, &AcquireOptions::default())
         .await
         .expect("first acquire");
     assert_eq!(resource.create_counter.load(Ordering::Relaxed), 1);
     assert_eq!(h1.topology_tag(), TopologyTag::Resident);
 
     // Second acquire clones (no new creation).
-    let h2 = rt
-        .acquire(&resource, &test_config(), &ctx, &AcquireOptions::default())
+    let h2 = mgr
+        .acquire_resident::<ResidentTestResource>(&ctx, &AcquireOptions::default())
         .await
         .expect("second acquire");
     assert_eq!(
@@ -459,10 +494,12 @@ async fn resident_recreates_when_not_alive() {
         ..Default::default()
     };
     let rt = Resident::<ResidentTestResource>::new(config);
+    let mgr = Manager::new();
+    register_resident(&mgr, resource.clone(), test_config(), rt);
     let ctx = test_ctx();
 
-    let _h1 = rt
-        .acquire(&resource, &test_config(), &ctx, &AcquireOptions::default())
+    let _h1 = mgr
+        .acquire_resident::<ResidentTestResource>(&ctx, &AcquireOptions::default())
         .await
         .unwrap();
     assert_eq!(resource.create_counter.load(Ordering::Relaxed), 1);
@@ -471,8 +508,8 @@ async fn resident_recreates_when_not_alive() {
     resource.alive.store(false, Ordering::Relaxed);
 
     // Next acquire should recreate.
-    let _h2 = rt
-        .acquire(&resource, &test_config(), &ctx, &AcquireOptions::default())
+    let _h2 = mgr
+        .acquire_resident::<ResidentTestResource>(&ctx, &AcquireOptions::default())
         .await
         .unwrap();
     assert_eq!(
@@ -1103,20 +1140,12 @@ async fn tainted_handle_not_recycled() {
         ..Default::default()
     };
     let pool = Pooled::<PoolTestResource>::new(config, 1);
-    let (rq, rq_handle) = ReleaseQueue::new(1);
-    let rq = Arc::new(rq);
+    let mgr = Manager::new();
+    register_pool(&mgr, resource.clone(), test_config(), pool);
     let ctx = test_ctx();
 
-    let mut handle = pool
-        .acquire(
-            &resource,
-            &test_config(),
-            &ctx,
-            &rq,
-            0,
-            &AcquireOptions::default(),
-            None,
-        )
+    let mut handle = mgr
+        .acquire_pooled::<PoolTestResource>(&ctx, &AcquireOptions::default())
         .await
         .unwrap();
 
@@ -1128,10 +1157,7 @@ async fn tainted_handle_not_recycled() {
     wait_count_at_least(&resource.destroy_counter, 1).await;
 
     // Tainted handle should NOT be recycled.
-    assert_eq!(pool.idle_count().await, 0);
-
-    drop(rq);
-    ReleaseQueue::shutdown(rq_handle).await;
+    assert_eq!(idle_count::<PoolTestResource>(&mgr).await, 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -1345,23 +1371,15 @@ async fn pool_concurrent_acquire_respects_max_size() {
         ..Default::default()
     };
     let pool = Pooled::<PoolTestResource>::new(config, 1);
-    let (rq, rq_handle) = ReleaseQueue::new(1);
-    let rq = Arc::new(rq);
+    let mgr = Manager::new();
+    register_pool(&mgr, resource.clone(), test_config(), pool);
     let ctx = test_ctx();
 
     // Acquire max_size handles concurrently — all should succeed.
     let mut handles = Vec::new();
     for _ in 0..max_size {
-        let handle = pool
-            .acquire(
-                &resource,
-                &test_config(),
-                &ctx,
-                &rq,
-                0,
-                &AcquireOptions::default(),
-                None,
-            )
+        let handle = mgr
+            .acquire_pooled::<PoolTestResource>(&ctx, &AcquireOptions::default())
             .await
             .expect("acquire within max_size should succeed");
         handles.push(handle);
@@ -1374,9 +1392,7 @@ async fn pool_concurrent_acquire_respects_max_size() {
     // One more acquire should time out (pool full, short timeout via deadline).
     let opts = AcquireOptions::default()
         .with_deadline(std::time::Instant::now() + std::time::Duration::from_millis(100));
-    let result = pool
-        .acquire(&resource, &test_config(), &ctx, &rq, 0, &opts, None)
-        .await;
+    let result = mgr.acquire_pooled::<PoolTestResource>(&ctx, &opts).await;
     let err = match result {
         Err(e) => e,
         Ok(_) => panic!("expected backpressure error when pool is full"),
@@ -1384,10 +1400,6 @@ async fn pool_concurrent_acquire_respects_max_size() {
     assert_eq!(*err.kind(), ErrorKind::Backpressure);
 
     drop(handles);
-    // `ReleaseQueue::shutdown` drains buffered release tasks; no wall-clock
-    // settle is needed before teardown.
-    drop(rq);
-    ReleaseQueue::shutdown(rq_handle).await;
 }
 
 #[tokio::test]
@@ -1399,30 +1411,20 @@ async fn pool_backpressure_when_full() {
         ..Default::default()
     };
     let pool = Pooled::<PoolTestResource>::new(config, 1);
-    let (rq, rq_handle) = ReleaseQueue::new(1);
-    let rq = Arc::new(rq);
+    let mgr = Manager::new();
+    register_pool(&mgr, resource.clone(), test_config(), pool);
     let ctx = test_ctx();
 
     // Acquire the single slot.
-    let _held = pool
-        .acquire(
-            &resource,
-            &test_config(),
-            &ctx,
-            &rq,
-            0,
-            &AcquireOptions::default(),
-            None,
-        )
+    let _held = mgr
+        .acquire_pooled::<PoolTestResource>(&ctx, &AcquireOptions::default())
         .await
         .expect("first acquire should succeed");
 
     // Short deadline — should get backpressure quickly.
     let opts = AcquireOptions::default()
         .with_deadline(std::time::Instant::now() + std::time::Duration::from_millis(50));
-    let result = pool
-        .acquire(&resource, &test_config(), &ctx, &rq, 0, &opts, None)
-        .await;
+    let result = mgr.acquire_pooled::<PoolTestResource>(&ctx, &opts).await;
 
     let err = match result {
         Err(e) => e,
@@ -1431,10 +1433,6 @@ async fn pool_backpressure_when_full() {
     assert_eq!(*err.kind(), ErrorKind::Backpressure);
 
     drop(_held);
-    // `ReleaseQueue::shutdown` drains buffered release tasks; no wall-clock
-    // settle is needed before teardown.
-    drop(rq);
-    ReleaseQueue::shutdown(rq_handle).await;
 }
 
 // ---------------------------------------------------------------------------
@@ -1696,21 +1694,13 @@ async fn pool_acquire_with_deadline() {
         ..Default::default()
     };
     let pool = Pooled::<PoolTestResource>::new(config, 1);
-    let (rq, rq_handle) = ReleaseQueue::new(1);
-    let rq = Arc::new(rq);
+    let mgr = Manager::new();
+    register_pool(&mgr, resource.clone(), test_config(), pool);
     let ctx = test_ctx();
 
     // Acquire the single slot.
-    let _held = pool
-        .acquire(
-            &resource,
-            &test_config(),
-            &ctx,
-            &rq,
-            0,
-            &AcquireOptions::default(),
-            None,
-        )
+    let _held = mgr
+        .acquire_pooled::<PoolTestResource>(&ctx, &AcquireOptions::default())
         .await
         .expect("first acquire should succeed");
 
@@ -1718,9 +1708,7 @@ async fn pool_acquire_with_deadline() {
     let opts = AcquireOptions::default()
         .with_deadline(std::time::Instant::now() + std::time::Duration::from_millis(100));
     let start = std::time::Instant::now();
-    let result = pool
-        .acquire(&resource, &test_config(), &ctx, &rq, 0, &opts, None)
-        .await;
+    let result = mgr.acquire_pooled::<PoolTestResource>(&ctx, &opts).await;
 
     let elapsed = start.elapsed();
     let err = match result {
@@ -1735,10 +1723,6 @@ async fn pool_acquire_with_deadline() {
     );
 
     drop(_held);
-    // `ReleaseQueue::shutdown` drains buffered release tasks; no wall-clock
-    // settle is needed before teardown.
-    drop(rq);
-    ReleaseQueue::shutdown(rq_handle).await;
 }
 
 // ---------------------------------------------------------------------------
@@ -1753,20 +1737,12 @@ async fn pool_detach_removes_from_pool() {
         ..Default::default()
     };
     let pool = Pooled::<PoolTestResource>::new(config, 1);
-    let (rq, rq_handle) = ReleaseQueue::new(1);
-    let rq = Arc::new(rq);
+    let mgr = Manager::new();
+    register_pool(&mgr, resource.clone(), test_config(), pool);
     let ctx = test_ctx();
 
-    let handle = pool
-        .acquire(
-            &resource,
-            &test_config(),
-            &ctx,
-            &rq,
-            0,
-            &AcquireOptions::default(),
-            None,
-        )
+    let handle = mgr
+        .acquire_pooled::<PoolTestResource>(&ctx, &AcquireOptions::default())
         .await
         .expect("acquire should succeed");
 
@@ -1774,19 +1750,20 @@ async fn pool_detach_removes_from_pool() {
     let lease = handle.detach();
     assert!(lease.is_some(), "guarded handle detach should return Some");
 
-    // `detach` disarms the release callback synchronously, so nothing can
-    // ever be submitted to the queue. Draining the release worker is the
-    // deterministic proof: after `shutdown` has run every buffered release
-    // task to completion, a (erroneously) enqueued return-to-pool would
-    // already have executed — so `idle_count == 0` afterward means "never",
-    // not merely "not yet" (a bare scheduler yield could only show the
-    // latter).
-    drop(rq);
-    ReleaseQueue::shutdown(rq_handle).await;
+    // `detach` disarms the release callback synchronously, so the slot can
+    // never return to the framework store. Polling the idle count down to the
+    // settle deadline is the deterministic proof: an (erroneously) enqueued
+    // return-to-pool would surface as a non-zero idle count within the window.
+    for _ in 0..40 {
+        if idle_count::<PoolTestResource>(&mgr).await != 0 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
 
     // Pool must NOT have gotten the instance back.
     assert_eq!(
-        pool.idle_count().await,
+        idle_count::<PoolTestResource>(&mgr).await,
         0,
         "detached handle should not return to pool"
     );
@@ -1806,19 +1783,11 @@ async fn pool_permit_not_leaked_after_release() {
         ..Default::default()
     };
     let pool = Pooled::<PoolTestResource>::new(config, 1);
-    let (rq, rq_handle) = ReleaseQueue::new(1);
-    let rq = Arc::new(rq);
+    let mgr = Manager::new();
+    register_pool(&mgr, resource.clone(), test_config(), pool);
     let ctx = test_ctx();
-    let handle = pool
-        .acquire(
-            &resource,
-            &test_config(),
-            &ctx,
-            &rq,
-            0,
-            &AcquireOptions::default(),
-            None,
-        )
+    let handle = mgr
+        .acquire_pooled::<PoolTestResource>(&ctx, &AcquireOptions::default())
         .await
         .expect("first acquire should succeed");
     drop(handle);
@@ -1827,23 +1796,11 @@ async fn pool_permit_not_leaked_after_release() {
     tokio::time::sleep(std::time::Duration::from_millis(10)).await;
 
     // Second acquire must succeed — permit was returned.
-    let handle2 = pool
-        .acquire(
-            &resource,
-            &test_config(),
-            &ctx,
-            &rq,
-            0,
-            &AcquireOptions::default(),
-            None,
-        )
+    let handle2 = mgr
+        .acquire_pooled::<PoolTestResource>(&ctx, &AcquireOptions::default())
         .await
         .expect("second acquire must not block — permit should be available");
     drop(handle2);
-    // `ReleaseQueue::shutdown` drains buffered release tasks; no wall-clock
-    // settle is needed before teardown.
-    drop(rq);
-    ReleaseQueue::shutdown(rq_handle).await;
 }
 
 // ---------------------------------------------------------------------------
@@ -2792,43 +2749,35 @@ async fn pool_stale_fingerprint_evicts_idle_entry() {
         ..Default::default()
     };
     let pool = Pooled::<PoolTestResource>::new(config, 1);
-    let (rq, rq_handle) = ReleaseQueue::new(1);
-    let rq = Arc::new(rq);
+    let mgr = Manager::new();
+    register_pool(&mgr, resource.clone(), test_config(), pool);
     let ctx = test_ctx();
 
     // Acquire + release to populate idle.
-    let handle = pool
-        .acquire(
-            &resource,
-            &test_config(),
-            &ctx,
-            &rq,
-            0,
-            &AcquireOptions::default(),
-            None,
-        )
+    let handle = mgr
+        .acquire_pooled::<PoolTestResource>(&ctx, &AcquireOptions::default())
         .await
         .expect("first acquire should succeed");
     assert_eq!(resource.create_counter.load(Ordering::Relaxed), 1);
 
     drop(handle);
-    wait_idle_count(&pool, 1).await;
-    assert_eq!(pool.idle_count().await, 1);
+    wait_idle_count::<PoolTestResource>(&mgr, 1).await;
+    assert_eq!(idle_count::<PoolTestResource>(&mgr).await, 1);
 
-    // Change fingerprint — makes the idle entry stale.
-    pool.set_fingerprint(999);
+    // Change the config fingerprint via reload — makes the idle entry stale.
+    // `reload_config` bumps the pool fingerprint through the framework, so the
+    // idle slot is rejected by `accept` on the next acquire.
+    mgr.reload_config::<PoolTestResource>(
+        TestConfig {
+            name: "stale-evict-v2".into(),
+        },
+        &ScopeLevel::Global,
+    )
+    .expect("reload bumps fingerprint");
 
     // Next acquire should destroy stale entry and create fresh.
-    let handle2 = pool
-        .acquire(
-            &resource,
-            &test_config(),
-            &ctx,
-            &rq,
-            0,
-            &AcquireOptions::default(),
-            None,
-        )
+    let handle2 = mgr
+        .acquire_pooled::<PoolTestResource>(&ctx, &AcquireOptions::default())
         .await
         .expect("second acquire should succeed after fingerprint change");
 
@@ -2839,10 +2788,6 @@ async fn pool_stale_fingerprint_evicts_idle_entry() {
     );
 
     drop(handle2);
-    // `ReleaseQueue::shutdown` drains buffered release tasks; no wall-clock
-    // settle is needed before teardown.
-    drop(rq);
-    ReleaseQueue::shutdown(rq_handle).await;
 }
 
 // ---------------------------------------------------------------------------
@@ -2858,44 +2803,28 @@ async fn pool_max_lifetime_evicts_expired_entry() {
         ..Default::default()
     };
     let pool = Pooled::<PoolTestResource>::new(config, 1);
-    let (rq, rq_handle) = ReleaseQueue::new(1);
-    let rq = Arc::new(rq);
+    let mgr = Manager::new();
+    register_pool(&mgr, resource.clone(), test_config(), pool);
     let ctx = test_ctx();
 
     // Acquire + release to populate idle.
-    let handle = pool
-        .acquire(
-            &resource,
-            &test_config(),
-            &ctx,
-            &rq,
-            0,
-            &AcquireOptions::default(),
-            None,
-        )
+    let handle = mgr
+        .acquire_pooled::<PoolTestResource>(&ctx, &AcquireOptions::default())
         .await
         .expect("first acquire should succeed");
     assert_eq!(resource.create_counter.load(Ordering::Relaxed), 1);
 
     drop(handle);
-    wait_idle_count(&pool, 1).await;
-    assert_eq!(pool.idle_count().await, 1);
+    wait_idle_count::<PoolTestResource>(&mgr, 1).await;
+    assert_eq!(idle_count::<PoolTestResource>(&mgr).await, 1);
 
     // Sleep past max_lifetime — a deliberate clock advance (the entry must
     // actually age beyond its lifetime), not a release-settle guess.
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
     // Next acquire should destroy expired entry and create fresh.
-    let handle2 = pool
-        .acquire(
-            &resource,
-            &test_config(),
-            &ctx,
-            &rq,
-            0,
-            &AcquireOptions::default(),
-            None,
-        )
+    let handle2 = mgr
+        .acquire_pooled::<PoolTestResource>(&ctx, &AcquireOptions::default())
         .await
         .expect("second acquire should succeed after max_lifetime expiry");
 
@@ -2906,10 +2835,6 @@ async fn pool_max_lifetime_evicts_expired_entry() {
     );
 
     drop(handle2);
-    // `ReleaseQueue::shutdown` drains buffered release tasks; no wall-clock
-    // settle is needed before teardown.
-    drop(rq);
-    ReleaseQueue::shutdown(rq_handle).await;
 }
 
 // ---------------------------------------------------------------------------
@@ -2988,22 +2913,14 @@ async fn pool_recycle_drop_destroys_entry() {
         ..Default::default()
     };
     let pool = Pooled::<DropOnRecycleResource>::new(config, 1);
-    let (rq, rq_handle) = ReleaseQueue::new(1);
-    let rq = Arc::new(rq);
+    let mgr = Manager::new();
+    register_pool(&mgr, resource.clone(), test_config(), pool);
     let ctx = test_ctx();
 
     // Acquire + release. Entry should NOT return to idle because recycle
     // returns Drop.
-    let handle = pool
-        .acquire(
-            &resource,
-            &test_config(),
-            &ctx,
-            &rq,
-            0,
-            &AcquireOptions::default(),
-            None,
-        )
+    let handle = mgr
+        .acquire_pooled::<DropOnRecycleResource>(&ctx, &AcquireOptions::default())
         .await
         .expect("acquire should succeed");
 
@@ -3019,13 +2936,10 @@ async fn pool_recycle_drop_destroys_entry() {
     );
 
     assert_eq!(
-        pool.idle_count().await,
+        idle_count::<DropOnRecycleResource>(&mgr).await,
         0,
         "recycle=Drop should not return entry to idle"
     );
-
-    drop(rq);
-    ReleaseQueue::shutdown(rq_handle).await;
 }
 
 // ---------------------------------------------------------------------------
@@ -3836,50 +3750,35 @@ async fn release_pooled_guard_recycles_and_returns_ok() {
         ..Default::default()
     };
     let pool = Pooled::<PoolTestResource>::new(config, 1);
-    let (rq, rq_handle) = ReleaseQueue::new(1);
-    let rq = Arc::new(rq);
+    let mgr = Manager::new();
+    register_pool(&mgr, resource.clone(), test_config(), pool);
     let ctx = test_ctx();
 
-    let handle = pool
-        .acquire(
-            &resource,
-            &test_config(),
-            &ctx,
-            &rq,
-            0,
-            &AcquireOptions::default(),
-            None,
-        )
+    let handle = mgr
+        .acquire_pooled::<PoolTestResource>(&ctx, &AcquireOptions::default())
         .await
         .expect("first acquire should succeed");
     assert_eq!(resource.create_counter.load(Ordering::Relaxed), 1);
 
-    // Explicit awaited release: runs the recycle inline and returns its
-    // outcome. No `ReleaseQueue` worker is involved on this path.
+    // Explicit awaited release: runs the recycle on the detached teardown task
+    // and awaits its completion, so the slot is back in idle when it returns.
     handle
         .release()
         .await
         .expect("release of a healthy pooled guard recycles and returns Ok");
 
-    // The instance is already back in idle by the time `release()` returned
-    // (the recycle was awaited inline, not queued) — no settle needed.
+    // The instance is back in idle by the time `release()` returned (the
+    // teardown task ran the recycle to completion before `release().await`
+    // resolved) — no settle needed.
     assert_eq!(
-        pool.idle_count().await,
+        idle_count::<PoolTestResource>(&mgr).await,
         1,
         "an awaited release must have recycled the instance back to idle"
     );
 
     // Reacquire reuses the recycled instance: no new creation.
-    let handle2 = pool
-        .acquire(
-            &resource,
-            &test_config(),
-            &ctx,
-            &rq,
-            0,
-            &AcquireOptions::default(),
-            None,
-        )
+    let handle2 = mgr
+        .acquire_pooled::<PoolTestResource>(&ctx, &AcquireOptions::default())
         .await
         .expect("second acquire should succeed");
     assert_eq!(
@@ -3889,8 +3788,6 @@ async fn release_pooled_guard_recycles_and_returns_ok() {
     );
 
     drop(handle2);
-    drop(rq);
-    ReleaseQueue::shutdown(rq_handle).await;
 }
 
 /// `release()` on an Owned (resident) guard returns `Ok(())` — there is no

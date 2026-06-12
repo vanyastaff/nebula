@@ -993,24 +993,14 @@ mod shutdown_post_count_race_tests {
         assert!(manager.register(spec).is_ok(), "register succeeds");
     }
 
-    /// Runs the resident acquire pipeline through the topology bridge — the
-    /// same monomorphic dispatch `run_acquire_dispatch` performs.
+    /// Runs the resident acquire through the framework loop — the same
+    /// monomorphic dispatch `run_acquire_dispatch` performs.
     async fn race_resident_acquire(
         managed: &Arc<ManagedResource<ShutdownRaceResident>>,
         ctx: &ResourceContext,
     ) -> Result<crate::guard::ResourceGuard<ShutdownRaceResident>, Error> {
-        use crate::runtime::managed::TopologyDispatch as _;
         managed
-            .topology
-            .acquire_guard(
-                &managed.resource,
-                &managed.config(),
-                ctx,
-                &managed.release_queue,
-                managed.generation(),
-                &AcquireOptions::default(),
-                None,
-            )
+            .run_acquire_loop(ctx, &AcquireOptions::default(), None)
             .await
     }
 

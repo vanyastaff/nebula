@@ -197,7 +197,8 @@ impl<R: Provider> sealed::Sealed for ManagedResource<R> {}
 impl<R> ManagedHandle for ManagedResource<R>
 where
     R: Provider + crate::resource::HasCredentialSlots + Send + Sync + 'static,
-    R::Topology: crate::runtime::managed::TopologyDispatch<R>,
+    R::Instance: Clone,
+    R::Topology: crate::topology::Topology<R>,
 {
     fn resource_key(&self) -> ResourceKey {
         R::key()
@@ -265,11 +266,11 @@ where
         ctx: ResourceContext,
         opts: AcquireOptions,
     ) -> Result<Box<dyn Any + Send + Sync>, Error> {
-        // Single monomorphic acquire path: run the framework pipeline through
-        // the topology bridge, producing a typed `ResourceGuard<R>`, then box
-        // it for the erased caller. `Manager::run_acquire` owns the
-        // resilience-gate + drain bookkeeping + post-taint re-check; the
-        // dispatch closure runs the topology's inherent acquire.
+        // Single monomorphic acquire path: run the framework acquire loop
+        // (`ManagedResource::run_acquire_loop`), producing a typed
+        // `ResourceGuard<R>`, then box it for the erased caller.
+        // `Manager::run_acquire` owns the resilience-gate + drain bookkeeping +
+        // post-taint re-check; the dispatch closure runs the framework loop.
         let guard = mgr
             .clone()
             .run_acquire_dispatch::<R>(self, &ctx, &opts)

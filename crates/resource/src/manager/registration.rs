@@ -10,12 +10,8 @@ use tracing::Instrument as _;
 
 use super::{Manager, RegistrationSpec, resolve_json_templates};
 use crate::{
-    error::Error,
-    events::ResourceEvent,
-    recovery::gate::RecoveryGate,
-    reload::ReloadOutcome,
-    resource::Provider,
-    runtime::managed::{ManagedResource, TopologyDispatch},
+    error::Error, events::ResourceEvent, recovery::gate::RecoveryGate, reload::ReloadOutcome,
+    resource::Provider, runtime::managed::ManagedResource, topology::Topology,
 };
 
 impl Manager {
@@ -57,7 +53,8 @@ impl Manager {
     pub fn register<R>(&self, spec: RegistrationSpec<R>) -> Result<(), Error>
     where
         R: Provider + crate::resource::HasCredentialSlots,
-        R::Topology: TopologyDispatch<R>,
+        R::Instance: Clone,
+        R::Topology: Topology<R>,
     {
         use crate::resource::ResourceConfig as _;
 
@@ -96,13 +93,18 @@ impl Manager {
             gate.set_event_sink(Arc::clone(&self.event_bus), key.clone());
         }
 
+        // The framework-owned idle store the acquire loop fences. Its capacity
+        // is the topology's (`Pooled`: `max_size`; non-pooling topologies:
+        // `None`, store stays empty). Read before moving `topology` in.
+        let store_capacity = <R::Topology as Topology<R>>::store_capacity(&topology);
+
         let managed = Arc::new(ManagedResource {
             resource,
             config: arc_swap::ArcSwap::from_pointee(config),
             topology,
-            // Empty store handed to the open-contract admission methods; the
-            // built-in topologies ignore it (they manage their own storage).
-            store: crate::topology::store::InstanceStore::new(None),
+            // Framework-owned idle store the acquire loop runs checkout / return
+            // / evict against — the real idle queue, not a throwaway sentinel.
+            store: crate::topology::store::InstanceStore::new(store_capacity),
             release_queue: Arc::clone(&self.release_queue),
             generation: AtomicU64::new(0),
             status: arc_swap::ArcSwap::from_pointee(crate::state::ResourceStatus::new()),
@@ -146,7 +148,7 @@ impl Manager {
     /// unless this reaper runs — so without it `idle_timeout` is dead config.
     ///
     /// Spawned **only** for topologies whose
-    /// [`TopologyDispatch::maintenance_schedule`](crate::runtime::managed::TopologyDispatch::maintenance_schedule)
+    /// [`Topology::maintenance_schedule`](crate::topology::Topology::maintenance_schedule)
     /// returns `Some` (the built-in [`Pooled`](crate::topology::Pooled)) and
     /// **only** when a TTL (`idle_timeout` or `max_lifetime`) is configured,
     /// so pools that never expire instances pay zero background cost (bb8's
@@ -174,12 +176,13 @@ impl Manager {
     fn spawn_pool_maintenance<R>(&self, managed: &Arc<ManagedResource<R>>)
     where
         R: Provider + crate::resource::HasCredentialSlots,
-        R::Topology: TopologyDispatch<R>,
+        R::Instance: Clone,
+        R::Topology: Topology<R>,
     {
         // Only topologies that run a maintenance reaper return a schedule; a
         // topology with no idle eviction returns `None` and pays zero
         // background cost.
-        let Some(schedule) = managed.topology.maintenance_schedule() else {
+        let Some(schedule) = managed.maintenance_schedule() else {
             return;
         };
         if schedule.idle_timeout.is_none() && schedule.max_lifetime.is_none() {
@@ -219,11 +222,7 @@ impl Manager {
                     break;
                 };
                 let span = tracing::debug_span!("pool_maintenance", %key);
-                let evicted = managed
-                    .topology
-                    .run_maintenance(&managed.resource)
-                    .instrument(span)
-                    .await;
+                let evicted = managed.run_maintenance().instrument(span).await;
                 if evicted > 0 {
                     let _ = bus.emit(ResourceEvent::MaintenanceEvicted {
                         key: key.clone(),
@@ -402,7 +401,8 @@ impl Manager {
     where
         R: Provider + crate::resource::HasCredentialSlots + nebula_core::DeclaresDependencies,
         R::Config: serde::de::DeserializeOwned,
-        R::Topology: TopologyDispatch<R>,
+        R::Instance: Clone,
+        R::Topology: Topology<R>,
     {
         // 0. Validate that every binding matches a declared credential slot.
         //    Hard error on unknown slot — refuses to register a resource
@@ -449,6 +449,45 @@ impl Manager {
                 .iter()
                 .map(|(slot, cred)| (slot.as_str(), cred.as_str())),
         );
+
+        // 4b. Shared-topology revoke footgun guard (observability / DoD). A
+        //     non-pooling topology (`pools() == false`) holding a
+        //     credential-bearing singleton — a gRPC channel, a WebSocket — is
+        //     NOT in the framework store, so the revoke-epoch fence cannot evict
+        //     it; its revoke teardown runs through
+        //     `Topology::dispatch_credential_hook`, which DEFAULTS to a no-op.
+        //     For such a topology the default no-op leaks streams on revoke, so
+        //     the author MUST override the hook. The built-in `Resident`
+        //     overrides it; this fires only for under-built custom topologies
+        //     that pair a credential slot with a non-pooling topology. Make it
+        //     loud — it is the one place a careful author still matters.
+        if !slot_bindings.is_empty()
+            && !Topology::<R>::pools(&topology)
+            && !Topology::<R>::handles_own_revoke(&topology)
+        {
+            tracing::warn!(
+                target: "nebula_resource::register_resolved",
+                resource = %R::key(),
+                slot_count = slot_bindings.len(),
+                "registering a credential-bearing resource on a non-pooling \
+                 topology: the framework store revoke-fence cannot reach a \
+                 shared/multiplexed instance — the topology MUST override \
+                 `dispatch_credential_hook` to tear down on revoke, or a \
+                 revoked credential will keep serving live streams"
+            );
+            // guard-justified: a debug-build trip for the shared-topology revoke
+            // footgun — a non-pooling topology with credential slots that never
+            // overrides `dispatch_credential_hook` leaks on revoke; the invariant
+            // is enforced loudly in dev, the `tracing::warn` above carries it in
+            // release. Built-in `Resident` overrides the hook, so this never
+            // fires for first-party topologies.
+            debug_assert!(
+                false,
+                "non-pooling topology with {} credential slot(s) must override \
+                 Topology::dispatch_credential_hook (a no-op leaks on revoke)",
+                slot_bindings.len(),
+            );
+        }
 
         // 5. Dispatch into the single typed register funnel via a
         //    `RegistrationSpec`. ResourceConfig::validate() runs inside
@@ -509,7 +548,8 @@ impl Manager {
     ) -> Result<ReloadOutcome, Error>
     where
         R: Provider + crate::resource::HasCredentialSlots,
-        R::Topology: TopologyDispatch<R>,
+        R::Instance: Clone,
+        R::Topology: Topology<R>,
     {
         use crate::resource::ResourceConfig as _;
 
@@ -534,7 +574,7 @@ impl Manager {
         // Update the topology fingerprint so stale idle instances are evicted
         // on the next acquire / sweep (a no-op for topologies that track no
         // config fingerprint).
-        managed.topology.set_fingerprint(new_fp);
+        managed.set_fingerprint(new_fp);
 
         // Bump generation — readers snapshot this to detect changes.
         managed

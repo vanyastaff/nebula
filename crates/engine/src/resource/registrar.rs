@@ -72,7 +72,8 @@
 use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc};
 
 use nebula_resource::{
-    Manager, ScopeLevel, SlotIdentity, TopologyDispatch, recovery::RecoveryGate, resource::Provider,
+    Manager, ScopeLevel, SlotIdentity, recovery::RecoveryGate, resource::Provider,
+    topology::Topology,
 };
 
 /// Boxed, `Send` future returned across the erased registrar boundary.
@@ -360,7 +361,8 @@ impl<R, FRes, FTopo> ResourceActivator for KindActivator<R, FRes, FTopo>
 where
     R: Provider + nebula_resource::HasCredentialSlots + nebula_core::DeclaresDependencies,
     R::Config: serde::de::DeserializeOwned,
-    R::Topology: TopologyDispatch<R>,
+    R::Instance: Clone,
+    R::Topology: Topology<R>,
     FRes: Fn() -> R + Send + Sync,
     FTopo: Fn() -> R::Topology + Send + Sync,
 {
