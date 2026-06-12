@@ -128,6 +128,7 @@ impl Manager {
             recovery_gate,
             tainted: std::sync::atomic::AtomicBool::new(false),
             in_flight: Arc::new((AtomicU64::new(0), Notify::new())),
+            maintenance_sweeps: AtomicU64::new(0),
         });
 
         let type_id = std::any::TypeId::of::<ManagedResource<R>>();

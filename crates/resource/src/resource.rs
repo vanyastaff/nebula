@@ -284,6 +284,42 @@ impl TeardownCx {
     }
 }
 
+/// Relative cost of a [`Provider::check`] probe — the framework maintenance
+/// reaper uses it to space background health probes so an expensive check is
+/// not run every sweep over a pool of idle instances.
+///
+/// Returned by [`Provider::check_cost`] (default [`Cheap`](Self::Cheap)).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum CheckCost {
+    /// In-process / O(1) check (a liveness flag, a cached handle state).
+    /// Probed every maintenance sweep.
+    Cheap,
+    /// A check with moderate cost (a local syscall, a cheap handshake).
+    /// Probed less often than [`Cheap`](Self::Cheap).
+    Moderate,
+    /// A network round-trip / `SELECT 1` / remote ping. Probed rarely so idle
+    /// instances are not hammered with probe traffic.
+    Expensive,
+}
+
+impl CheckCost {
+    /// How many maintenance sweeps elapse between background probes at this
+    /// cost: `Cheap` every sweep, `Moderate` every 4th, `Expensive` every 16th.
+    ///
+    /// The reaper probes idle slots on sweep `n` iff
+    /// `n.is_multiple_of(self.probe_every_n_sweeps())`, so the probe frequency
+    /// falls as the cost rises.
+    #[must_use]
+    pub fn probe_every_n_sweeps(self) -> u64 {
+        match self {
+            Self::Cheap => 1,
+            Self::Moderate => 4,
+            Self::Expensive => 16,
+        }
+    }
+}
+
 /// Provider trait — 2 associated types + lifecycle methods (slot model).
 ///
 /// Uses `#[async_trait]` for object-safe async dispatch through
@@ -461,6 +497,20 @@ pub trait Provider: Send + Sync + Sized + 'static {
     /// that no retry will fix.
     async fn check(&self, _instance: &Self::Instance) -> Result<(), crate::Error> {
         Ok(())
+    }
+
+    /// Relative cost of a [`check`](Self::check) probe, used by the framework
+    /// maintenance reaper to space background health probes.
+    ///
+    /// A [`Cheap`](CheckCost::Cheap) check (an in-process liveness flag, a
+    /// cached handle state) is probed every maintenance sweep; an
+    /// [`Expensive`](CheckCost::Expensive) one (a network round-trip, a
+    /// `SELECT 1`) is probed far less often, so a pool of idle connections is
+    /// not hammered with probe traffic. Advisory only — `check` is still run on
+    /// demand wherever correctness requires it (post-checkout validation,
+    /// recovery). Default [`Cheap`](CheckCost::Cheap).
+    fn check_cost(&self) -> CheckCost {
+        CheckCost::Cheap
     }
 
     /// Gracefully winds down an instance (e.g., drain connections).

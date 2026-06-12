@@ -152,6 +152,15 @@ pub struct ManagedResource<R: Provider> {
     /// revoke-vs-acquire TOCTOU. Two-phase-revoke / drain invariant: see the
     /// [`manager`](crate::manager) module documentation.
     pub(crate) in_flight: Arc<(AtomicU64, Notify)>,
+    /// Count of background maintenance sweeps run so far.
+    ///
+    /// Drives the cost-aware health-probe cadence: the reaper probes idle slots
+    /// via [`Provider::check`] only on sweeps where
+    /// `sweeps % R::check_cost().probe_every_n_sweeps() == 0`, so an
+    /// [`Expensive`](crate::CheckCost::Expensive) check runs far less often than
+    /// a [`Cheap`](crate::CheckCost::Cheap) one. Bumped once per
+    /// [`run_maintenance`](Self::run_maintenance).
+    pub(crate) maintenance_sweeps: AtomicU64,
 }
 
 impl<R: Provider> ManagedResource<R> {
@@ -559,18 +568,23 @@ where
 
     /// Runs one background maintenance sweep over the framework store.
     ///
-    /// Two arms, both under the idle lock (atomic against checkout/return):
+    /// Three arms, all under the idle lock (atomic against checkout/return):
     /// - the **revoke** arm — [`InstanceStore::evict_stale`] evicts slots whose
     ///   checkout epoch is behind the live counter (framework-owned fence);
     /// - the **non-revoke** arm — [`InstanceStore::retain`] over the topology's
     ///   [`idle_evictable`](Topology::idle_evictable) predicate
-    ///   (fingerprint / max-lifetime / idle-timeout).
+    ///   (fingerprint / max-lifetime / idle-timeout);
+    /// - the **health-probe** arm — [`probe_idle_slots`](Self::probe_idle_slots)
+    ///   runs [`Provider::check`] over idle slots, but **only on sweeps where
+    ///   the resource's [`CheckCost`](crate::CheckCost) cadence is due**, so an
+    ///   expensive check is not run every sweep.
     ///
-    /// Each evicted slot is destroyed via `destroy(into_instance(slot))`.
+    /// Each evicted/failed slot is destroyed via `destroy(into_instance(slot))`.
     /// Returns the number evicted.
     ///
     /// Complexity: O(n) over the idle queue (average and worst case), bounded
-    /// by the store's configured idle capacity.
+    /// by the store's configured idle capacity; the probe arm adds at most one
+    /// `check` per idle slot on a due sweep.
     pub(crate) async fn run_maintenance(&self) -> usize {
         let mut to_destroy = self.store.evict_stale().await;
         let nonrevoke = self
@@ -578,6 +592,19 @@ where
             .retain(|slot, _epoch| self.topology.idle_evictable(slot))
             .await;
         to_destroy.extend(nonrevoke);
+
+        // Cost-aware health probe: only run `check` over idle slots on sweeps
+        // where the resource's check cost says it is due (Cheap every sweep,
+        // Expensive every 16th), so a network-round-trip check is not run on
+        // every sweep over a pool of idle connections.
+        let sweep = self.maintenance_sweeps.fetch_add(1, Ordering::Relaxed) + 1;
+        let cadence = self.resource.check_cost().probe_every_n_sweeps();
+        let mut probe_evicted = 0;
+        if cadence != 0 && sweep.is_multiple_of(cadence) {
+            let failed = self.probe_idle_slots().await;
+            probe_evicted = failed.len();
+            to_destroy.extend(failed);
+        }
 
         let evicted = to_destroy.len();
         for slot in to_destroy {
@@ -589,9 +616,44 @@ where
             .await;
         }
         if evicted > 0 {
-            tracing::debug!(evicted, "resource maintenance: evicted idle/expired slots");
+            tracing::debug!(
+                evicted,
+                probe_evicted,
+                "resource maintenance: evicted idle/expired/unhealthy slots"
+            );
         }
         evicted
+    }
+
+    /// Health-probes every idle slot via [`Provider::check`], removing and
+    /// returning the slots that fail so the caller destroys them.
+    ///
+    /// Holds the idle lock across the probe awaits (head-of-line-blocking
+    /// against checkout/return for the probe's duration — the same discipline
+    /// the credential-rotation dispatch uses). The cost-aware cadence in
+    /// [`run_maintenance`](Self::run_maintenance) is what bounds how often this
+    /// runs, so an expensive `check` does not block the pool every sweep. A slot
+    /// that passes is returned to the queue with its checkout epoch intact, so
+    /// the revoke fence is unaffected.
+    ///
+    /// Complexity: O(n) checks over the idle queue (average and worst case),
+    /// bounded by the store's configured idle capacity.
+    async fn probe_idle_slots(&self) -> Vec<SlotOf<R>> {
+        let mut idle = self.store.lock_idle().await;
+        let mut kept = std::collections::VecDeque::with_capacity(idle.len());
+        let mut failed = Vec::new();
+        while let Some(entry) = idle.pop_front() {
+            match self
+                .resource
+                .check(self.topology.slot_instance(&entry.slot))
+                .await
+            {
+                Ok(()) => kept.push_back(entry),
+                Err(_) => failed.push(entry.slot),
+            }
+        }
+        *idle = kept;
+        failed
     }
 }
 
@@ -881,6 +943,9 @@ mod tests {
         park_create: Arc<AtomicBool>,
         create_entered: Arc<Notify>,
         release_create: Arc<Notify>,
+        checks: Arc<AtomicU64>,
+        check_cost: crate::CheckCost,
+        check_fails: Arc<AtomicBool>,
     }
 
     impl Mock {
@@ -891,7 +956,15 @@ mod tests {
                 park_create: Arc::new(AtomicBool::new(false)),
                 create_entered: Arc::new(Notify::new()),
                 release_create: Arc::new(Notify::new()),
+                checks: Arc::new(AtomicU64::new(0)),
+                check_cost: crate::CheckCost::Cheap,
+                check_fails: Arc::new(AtomicBool::new(false)),
             }
+        }
+
+        fn with_check_cost(mut self, cost: crate::CheckCost) -> Self {
+            self.check_cost = cost;
+            self
         }
     }
 
@@ -912,6 +985,19 @@ mod tests {
                 self.release_create.notified().await;
             }
             Ok(id)
+        }
+
+        async fn check(&self, _instance: &u64) -> Result<(), Error> {
+            self.checks.fetch_add(1, Ordering::SeqCst);
+            if self.check_fails.load(Ordering::SeqCst) {
+                Err(Error::transient("mock health check failed"))
+            } else {
+                Ok(())
+            }
+        }
+
+        fn check_cost(&self) -> crate::CheckCost {
+            self.check_cost
         }
 
         async fn destroy(&self, _runtime: u64, _cx: TeardownCx) -> Result<(), Error> {
@@ -955,6 +1041,7 @@ mod tests {
             recovery_gate: None,
             tainted: AtomicBool::new(false),
             in_flight: Arc::new((AtomicU64::new(0), Notify::new())),
+            maintenance_sweeps: AtomicU64::new(0),
         })
     }
 
@@ -1123,6 +1210,88 @@ mod tests {
         Ok(())
     }
 
+    /// A11: the background health probe fires at a cadence set by
+    /// [`CheckCost`](crate::CheckCost) — a `Cheap` check is probed every sweep, an
+    /// `Expensive` one once per 16 sweeps, so an expensive probe does not hammer
+    /// an idle pool.
+    #[tokio::test]
+    async fn health_probe_cadence_scales_with_check_cost() -> Result<(), Error> {
+        async fn one_idle(
+            cost: crate::CheckCost,
+        ) -> Result<(Arc<AtomicU64>, Arc<ManagedResource<Mock>>), Error> {
+            let resource = Mock::new().with_check_cost(cost);
+            let checks = Arc::clone(&resource.checks);
+            let mr = managed(
+                resource,
+                PoolConfig {
+                    max_size: 2,
+                    ..Default::default()
+                },
+            );
+            let g = mr
+                .run_acquire_loop(&test_ctx(), &AcquireOptions::default(), None)
+                .await?;
+            g.release().await?;
+            assert_eq!(mr.store.len().await, 1, "one slot recycled into the store");
+            Ok((checks, mr))
+        }
+
+        let (cheap_checks, cheap) = one_idle(crate::CheckCost::Cheap).await?;
+        let (expensive_checks, expensive) = one_idle(crate::CheckCost::Expensive).await?;
+
+        for _ in 0..16 {
+            cheap.run_maintenance().await;
+            expensive.run_maintenance().await;
+        }
+
+        assert_eq!(
+            cheap_checks.load(Ordering::SeqCst),
+            16,
+            "a Cheap check is probed on every one of the 16 sweeps"
+        );
+        assert_eq!(
+            expensive_checks.load(Ordering::SeqCst),
+            1,
+            "an Expensive check is probed once in 16 sweeps (every 16th)"
+        );
+        Ok(())
+    }
+
+    /// A11: a probe whose `check` fails evicts and destroys the unhealthy idle
+    /// slot, so the next acquire rebuilds a fresh one.
+    #[tokio::test]
+    async fn health_probe_evicts_unhealthy_idle_slot() -> Result<(), Error> {
+        let resource = Mock::new();
+        let destroyed = Arc::clone(&resource.destroyed);
+        let check_fails = Arc::clone(&resource.check_fails);
+        let mr = managed(
+            resource,
+            PoolConfig {
+                max_size: 2,
+                ..Default::default()
+            },
+        );
+
+        let g = mr
+            .run_acquire_loop(&test_ctx(), &AcquireOptions::default(), None)
+            .await?;
+        g.release().await?;
+        assert_eq!(mr.store.len().await, 1);
+
+        // The slot's health check now fails — the probe must evict + destroy it.
+        check_fails.store(true, Ordering::SeqCst);
+        let evicted = mr.run_maintenance().await;
+
+        assert_eq!(evicted, 1, "the failing probe evicted the unhealthy slot");
+        assert_eq!(mr.store.len().await, 0, "the unhealthy slot left the store");
+        assert_eq!(
+            destroyed.load(Ordering::SeqCst),
+            1,
+            "the probed-out slot was destroyed"
+        );
+        Ok(())
+    }
+
     /// Cancel-safety: a [`SlotCreateGuard`] dropped before `defuse` schedules an
     /// async `destroy` via the release queue.
     #[tokio::test]
@@ -1144,6 +1313,7 @@ mod tests {
                 recovery_gate: None,
                 tainted: AtomicBool::new(false),
                 in_flight: Arc::new((AtomicU64::new(0), Notify::new())),
+                maintenance_sweeps: AtomicU64::new(0),
             })
         };
 

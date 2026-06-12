@@ -120,8 +120,8 @@ pub use registry::{LookupOutcome, ManagedHandle, Registry};
 pub use release_queue::ReleaseQueue;
 pub use reload::ReloadOutcome;
 pub use resource::{
-    HasCredentialSlots, MetadataCompatibilityError, Provider, ResourceConfig, ResourceDescriptor,
-    ResourceMetadata, TeardownCx, TeardownReason,
+    CheckCost, HasCredentialSlots, MetadataCompatibilityError, Provider, ResourceConfig,
+    ResourceDescriptor, ResourceMetadata, TeardownCx, TeardownReason,
 };
 pub use resource_ref::ResourceRef;
 pub use slot::{CredentialSlot, SlotCell};
