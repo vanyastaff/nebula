@@ -39,5 +39,6 @@
 - Library code uses typed `thiserror`/`NebulaError`; no panicking unwrap/expect/panic in lib code (`#![forbid(unsafe_code)]`).
 
 ## See also
-- `README.md` — full design (v4 / Phase 5 trait shape, П1 §15.4–15.8, migration recipe)
+- `docs/DESIGN.md` — **spec-first subsystem redesign** (ADR-0092 completion, cross-crate Action/Resource/schema); approve before runtime refactor
+- `README.md` — current shipped design (v4 / Phase 5 trait shape, §15.4–15.8, migration recipe)
 - Canon §3.5 / §12.5 / §13.2; `docs/adr/0081-m6-resource-credential-integration.md`; ADR-0088 (crypto split), ADR-0051 (external providers), ADR-0033 (Plane B, in `HISTORICAL.md`)
