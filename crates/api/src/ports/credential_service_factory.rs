@@ -1,7 +1,8 @@
 //! Composition-root factory for the production [`CredentialService`] facade.
 //!
 //! Built here in `nebula-api` — which already depends on
-//! `nebula-credential-runtime`, `nebula-storage` (with the
+//! `nebula-credential` (the `CredentialService` facade + the api-layer
+//! credential builder), `nebula-storage` (with the
 //! `credential-in-memory` adapter), `nebula-engine`, and `tokio-util` — so
 //! `apps/server` constructs a real service through a single typed call and
 //! stays free of any credential dependency, mirroring
@@ -12,8 +13,8 @@
 //! (`Audit(Cache(Encryption(backend)))`), the engine resolver, and the lease
 //! lifecycle. Production ([`try_default_credential_service`]) uses a **durable
 //! SQLite backend** (`SqliteCredentialStore`, encrypted-at-rest, persisted
-//! across restart) selected by `NEBULA_CRED_DB`; the in-memory backend
-//! ([`with_key_provider`]) is for tests and throwaway dev only. The
+//! across restart) selected by `NEBULA_CRED_DB`; the ephemeral in-memory
+//! backend (`with_memory_store`) is for tests and throwaway dev only. The
 //! pending-state store is always ephemeral in-memory (OAuth handshake state,
 //! TTL ≤ 10 min). Postgres is available via `SqliteCredentialStore`'s sibling
 //! `PgCredentialStore` once a composition wires a `PgPool`.
@@ -23,15 +24,17 @@ use std::sync::Arc;
 use nebula_credential::{
     ApiKeyCredential, BasicAuthCredential, CredentialStore, ErasedPendingStore, OAuth2Credential,
 };
-use nebula_credential_runtime::{
-    CredentialService, CredentialServiceBuilder, CredentialServiceError, DispatchError,
-    DispatchOps, NoopObserver, register_interactive_ops, register_refreshable_ops,
-    register_revocable_ops, register_runtime_ops, register_testable_ops,
+use nebula_credential::{
+    CredentialService, CredentialServiceError, DispatchError, DispatchOps, NoopObserver,
+    register_interactive_ops, register_refreshable_ops, register_revocable_ops,
+    register_runtime_ops, register_testable_ops,
 };
 use nebula_engine::credential::LeaseLifecycleConfig;
+
+use super::credential_builder::CredentialServiceBuilder;
 use nebula_storage::credential::{
-    AuditEvent, AuditSink, CacheConfig, EnvKeyProvider, InMemoryPendingStore, InMemoryStore,
-    KeyProvider, SqliteCredentialStore,
+    AuditEvent, AuditSink, CacheConfig, EnvKeyProvider, InMemoryPendingStore, KeyProvider,
+    SqliteCredentialStore,
 };
 
 /// Audit sink that records every credential operation to the tracing log
@@ -174,33 +177,40 @@ fn resolve_key_provider() -> Result<Arc<dyn KeyProvider>, CredentialServiceFacto
     }
 }
 
-/// Build a [`CredentialService`] over the **non-durable in-memory store** with
-/// a caller-supplied encryption key provider.
+/// Build a [`CredentialService`] over a **unique in-memory SQLite database**
+/// (`SqliteCredentialStore::connect_memory`) with a caller-supplied key
+/// provider — the test / throwaway-dev fixture.
 ///
-/// For tests and throwaway dev only — credential state does not survive a
-/// process restart. Production composes the durable SQLite backend via
+/// The backend is the same durable adapter production uses, bound to an
+/// ephemeral in-memory database that evaporates when the store is dropped, so
+/// tests exercise the real CAS + encryption path without touching disk.
+/// Production composes a file-backed SQLite store via
 /// [`try_default_credential_service`]. Delegates to [`with_store`].
+///
+/// Test-only (`test-util` feature / `cfg(test)`); never compiled into a release
+/// build (ADR-0023).
 ///
 /// # Errors
 ///
-/// Returns [`CredentialServiceFactoryError`] if registry registration,
-/// dispatch-ops registration, or the final service build fails.
-pub fn with_key_provider(
+/// Returns [`CredentialServiceFactoryError`] if the in-memory store cannot be
+/// opened/migrated, or if registry registration, dispatch-ops registration, or
+/// the final service build fails.
+#[cfg(any(test, feature = "test-util"))]
+pub async fn with_memory_store(
     key_provider: Arc<dyn KeyProvider>,
 ) -> Result<Arc<CredentialService>, CredentialServiceFactoryError> {
-    tracing::warn!(
-        "credential: composing over the non-durable in-memory store — use \
-         try_default_credential_service for the durable SQLite backend"
-    );
-    with_store(InMemoryStore::new(), key_provider)
+    let store = SqliteCredentialStore::connect_memory()
+        .await
+        .map_err(|e| CredentialServiceFactoryError::Store(e.to_string()))?;
+    with_store(store, key_provider)
 }
 
 /// Compose a [`CredentialService`] over an arbitrary `raw_store` backend with a
 /// caller-supplied [`KeyProvider`].
 ///
-/// The durable path ([`try_default_credential_service`]) passes a
-/// `SqliteCredentialStore`; the in-memory path ([`with_key_provider`]) passes
-/// an `InMemoryStore`. The pending-state store is **always** the ephemeral
+/// The durable path ([`try_default_credential_service`]) passes a file-backed
+/// `SqliteCredentialStore`; the test path (`with_memory_store`) passes an
+/// ephemeral in-memory one. The pending-state store is **always** the ephemeral
 /// in-memory `InMemoryPendingStore` (OAuth / device-code handshake state,
 /// TTL ≤ 10 min; durable multi-replica pending is a 1.1 concern, ADR-0084).
 /// Registers the first-party type set (shared with the schema port via

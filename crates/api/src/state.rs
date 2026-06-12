@@ -7,8 +7,8 @@ use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
 use nebula_core::{OrgId, OrgRole, WorkspaceId, WorkspaceRole, id::ExecutionId, scope::Principal};
+use nebula_credential::CredentialService;
 use nebula_credential::PendingToken;
-use nebula_credential_runtime::CredentialService;
 use nebula_engine::ActionRegistry;
 use nebula_metrics::MetricsRegistry;
 use nebula_plugin::PluginRegistry;

@@ -9,9 +9,9 @@
 
 use std::sync::Arc;
 
-use nebula_api::ports::credential_service_factory::{with_key_provider, with_store};
+use nebula_api::ports::credential_service_factory::{with_memory_store, with_store};
 use nebula_credential::CredentialDisplay;
-use nebula_credential_runtime::TenantScope;
+use nebula_credential::TenantScope;
 use nebula_storage::credential::{EnvKeyProvider, SqliteCredentialStore};
 use serde_json::json;
 
@@ -25,7 +25,9 @@ async fn factory_builds_service_and_create_round_trips() {
     // `build()` runs the capability⊆ops gate; success proves the registry's
     // advertised caps match the registered ops (OAuth2's four + none for the
     // static types).
-    let svc = with_key_provider(key).expect("service composes (advertised caps match ops)");
+    let svc = with_memory_store(key)
+        .await
+        .expect("service composes (advertised caps match ops)");
 
     // A non-interactive create round-trips through the wired ops + display.
     let scope = TenantScope::new("org", "ws");

@@ -1,28 +1,22 @@
 //! Shared conformance suite for [`CredentialStore`] implementations.
 //!
-//! Every test in `run_conformance` runs against both [`InMemoryStore`] and
-//! [`SqliteCredentialStore`] to guarantee behavioural parity. The SQLite
-//! store is backed by a named in-memory database
+//! Every test in `run_conformance` runs against each durable backend
+//! (`SqliteCredentialStore`, and Postgres when `DATABASE_URL` is set) to
+//! guarantee behavioural parity. The SQLite store is backed by a named
+//! in-memory database
 //! (`sqlite:file:<unique>?mode=memory&cache=shared`) with `max_connections = 2`
 //! so the pool exercises real SQL-layer concurrency without touching disk.
 //!
 //! Migration 0030 is applied inline before the store is constructed, matching
 //! the pattern used by `tests/refresh_claim_sqlite_integration.rs`.
 
-#![cfg(all(
-    feature = "test-util",
-    any(
-        feature = "sqlite",
-        feature = "postgres",
-        feature = "credential-in-memory"
-    )
-))]
+#![cfg(any(feature = "sqlite", feature = "postgres"))]
 
-use nebula_credential::store::test_helpers::make_credential;
+mod common;
+
+use common::make_credential;
 use nebula_credential::{CredentialStore, PutMode, StoreError};
 
-#[cfg(feature = "credential-in-memory")]
-use nebula_storage::credential::InMemoryStore;
 #[cfg(feature = "postgres")]
 use nebula_storage::credential::PgCredentialStore;
 #[cfg(feature = "sqlite")]
@@ -66,9 +60,9 @@ async fn sqlite_pool() -> sqlx::SqlitePool {
 
 /// Run the full conformance suite against any [`CredentialStore`] impl.
 ///
-/// All assertions must hold identically for `InMemoryStore` and
-/// `SqliteCredentialStore`. Adding a new case here automatically covers
-/// both backends.
+/// All assertions must hold identically for every backend
+/// (`SqliteCredentialStore`, `PgCredentialStore`). Adding a new case here
+/// automatically covers all of them.
 async fn run_conformance<S: CredentialStore>(store: S) {
     // ── 1. CRUD roundtrip ────────────────────────────────────────────────────
     let cred = make_credential("c1", b"hello");
@@ -222,12 +216,10 @@ async fn run_conformance<S: CredentialStore>(store: S) {
     );
 
     // ── 13. name uniqueness per owner ────────────────────────────────────────
-    // Two credentials with the same owner_id + name must not coexist.
-    // The SQLite backend enforces this via the partial unique index; the
-    // in-memory backend does not enforce the uniqueness rule at the store
-    // level (it's a contract on the caller), so we only assert the SQLite
-    // path fails with a recognisable error for the SQLite store.
-    // For InMemoryStore we verify the first insert succeeds (shared data shape).
+    // Two credentials with the same owner_id + name must not coexist. Every
+    // durable backend enforces this at the store level (SQLite via the partial
+    // unique index, Postgres via its mirror), so the second insert MUST be
+    // rejected — asserted strictly below for every backend.
     let owner_id = "owner-xyz";
     let mut named_a = make_credential("named-a", b"data-a");
     named_a.name = Some("My Credential".into());
@@ -243,12 +235,18 @@ async fn run_conformance<S: CredentialStore>(store: S) {
         "owner_id".into(),
         serde_json::Value::String(owner_id.into()),
     );
-    // The result is backend-dependent: SQLite rejects with AlreadyExists /
-    // Backend (unique index violation); InMemoryStore allows it (uniqueness
-    // is policy, not enforced by the map). We record the actual outcome but
-    // do not fail the test — the important assertion is that named_a was
-    // stored successfully and can be retrieved.
-    let _ = store.put(named_b, PutMode::CreateOnly).await;
+    // The duplicate (owner_id, name) must be rejected by the unique index. The
+    // exact variant differs per driver (SQLite/Postgres surface the unique
+    // violation as AlreadyExists or Backend depending on which constraint the
+    // discriminator matches), so accept either — what matters is that it fails.
+    let dup = store.put(named_b, PutMode::CreateOnly).await;
+    assert!(
+        matches!(
+            dup,
+            Err(StoreError::AlreadyExists { .. } | StoreError::Backend(_))
+        ),
+        "duplicate (owner_id, name) must be rejected by the unique index: {dup:?}"
+    );
     let fetched_named = store.get("named-a").await.unwrap();
     assert_eq!(
         fetched_named.name.as_deref(),
@@ -258,12 +256,6 @@ async fn run_conformance<S: CredentialStore>(store: S) {
 }
 
 // ── test entry points ─────────────────────────────────────────────────────────
-
-#[cfg(feature = "credential-in-memory")]
-#[tokio::test]
-async fn conformance_in_memory() {
-    run_conformance(InMemoryStore::new()).await;
-}
 
 #[cfg(feature = "sqlite")]
 #[tokio::test]

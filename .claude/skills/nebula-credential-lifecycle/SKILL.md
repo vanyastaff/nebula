@@ -26,7 +26,6 @@ and `deny.toml`.
 | `nebula-credential` (`crates/credential/`) | Core / shared-infra | The typed **contract**: `Credential` trait, capability sub-traits, `AuthScheme`/scheme types, `CredentialState`, `CredentialGuard`/`SchemeGuard`, `CredentialRegistry`, `lifecycle.rs` policy data, `ExternalProvider` chain (`src/provider/`), secret primitives. **No** runtime orchestration. |
 | `nebula-credential-runtime` (`crates/credential-runtime/`) | Exec | The `CredentialService` **facade**: resolve/refresh/rotate/revoke entry points (`src/service.rs`, `src/ops.rs`), validate→encrypt→store pipeline, bind-population seam (`src/binding.rs`, `ValidatedCredentialBinding`). |
 | `nebula-credential-builtin` (`crates/credential-builtin/`) | Business | First-party concrete credential types; `register_builtins`. |
-| `nebula-credential-vault` (`crates/credential-vault/`) | Business | Concrete `LeasedProvider` backend (HashiCorp Vault, ADR-0051 Phase C). |
 | `nebula-crypto` (`crates/crypto/`) | Cross-cutting | AES-256-GCM + Argon2id + `EncryptedData`/`CryptoError`. Crypto was **extracted out** of the credential crate (ADR-0088 D7). |
 | `nebula-engine` (`crates/engine/src/credential/`) | Exec | The refresh/rotation **mechanism**: `resolver.rs`, `rotation/resource_fanout.rs`, `lease/scheduler.rs`. |
 
@@ -125,10 +124,11 @@ Procedure: identify which of these your change belongs in **before** editing. A
 2. Chain fallback is error-discriminated: **only `ProviderError::NotFound` falls
    through** to the next provider; any other error short-circuits.
 3. Wire a new backend through a **composition root** via `Arc<dyn ExternalProvider>`
-   — never a direct upward dep from an Exec/API crate. Then add the crate to the
-   appropriate `deny.toml` `[bans].deny` wrapper allowlist **with a reason**
-   string (the `wrappers = [...]` list inside the relevant `{ crate = … }` entry;
-   `nebula-credential-vault` starts with an empty consumer allowlist by design).
+   — never a direct upward dep from an Exec/API crate. A first-party provider
+   lives in its own crate-per-vendor (e.g. `nebula-credential-<vendor>`); add that
+   crate to the appropriate `deny.toml` `[bans].deny` wrapper allowlist **with a
+   reason** string (the `wrappers = [...]` list inside the relevant
+   `{ crate = … }` entry), starting from an empty consumer allowlist by design.
 
 ### OAuth
 

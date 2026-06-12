@@ -1,5 +1,5 @@
-//! Credential persistence — `InMemoryStore`, `KeyProvider`, and composable
-//! layers.
+//! Credential persistence — durable stores (`SqliteCredentialStore`,
+//! `PgCredentialStore`), `KeyProvider`, and composable layers.
 //!
 //! Two distinct layer families live here:
 //!
@@ -24,9 +24,6 @@ pub mod layer;
 pub mod provider_cache;
 
 #[cfg(any(test, feature = "credential-in-memory"))]
-pub mod memory;
-
-#[cfg(any(test, feature = "credential-in-memory"))]
 pub mod pending;
 
 #[cfg(feature = "rotation")]
@@ -43,15 +40,11 @@ pub mod postgres;
 
 #[cfg(feature = "rotation")]
 pub use backup::RotationBackup;
-#[cfg(any(test, feature = "test-util"))]
-pub use key_provider::StaticKeyProvider;
 pub use key_provider::{EnvKeyProvider, FileKeyProvider, KeyProvider, ProviderError};
 pub use layer::{
     AuditEvent, AuditLayer, AuditOperation, AuditResult, AuditSink, CacheConfig, CacheLayer,
     CacheStats, EncryptionLayer,
 };
-#[cfg(any(test, feature = "credential-in-memory"))]
-pub use memory::InMemoryStore;
 #[cfg(any(test, feature = "credential-in-memory"))]
 pub use pending::InMemoryPendingStore;
 #[cfg(feature = "postgres")]
@@ -67,3 +60,27 @@ pub use refresh_claim::{
 };
 #[cfg(feature = "sqlite")]
 pub use sqlite::SqliteCredentialStore;
+
+/// Crate-local test helpers for constructing [`nebula_credential::StoredCredential`] instances.
+/// Gated on `sqlite` because all callers are `#[cfg(all(test, feature = "sqlite"))]` test modules.
+#[cfg(all(test, feature = "sqlite"))]
+pub(crate) mod test_support {
+    use nebula_credential::StoredCredential;
+
+    pub(crate) fn make_credential(id: &str, data: &[u8]) -> StoredCredential {
+        StoredCredential {
+            id: id.into(),
+            name: None,
+            credential_key: "test_credential".into(),
+            data: data.to_vec(),
+            state_kind: "test".into(),
+            state_version: 1,
+            version: 0,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            expires_at: None,
+            reauth_required: false,
+            metadata: Default::default(),
+        }
+    }
+}

@@ -79,26 +79,15 @@ deny = [
     # Dev-only: `crates/api/tests/knife.rs` wires the API + Engine composition
     # for the §13 knife integration test (ADR-0008 follow-up A2).
     "nebula-api",
-    # nebula-credential-runtime is the Exec-tier owner of the credential
-    # management bounded context; its build() composes the engine-owned
-    # resolver + lease lifecycle internally. The edge is acyclic — engine
-    # does NOT depend back on runtime (see docs/adr/0081-m6-resource-credential-integration.md).
-    "nebula-credential-runtime",
+    # nebula-credential's `service/` facade composition root (the api-layer
+    # credential builder) wires the engine-owned resolver + lease lifecycle;
+    # the api crate consuming engine is already listed above (ADR-0092).
   ], reason = "Engine is exec-layer orchestration; business/core crates must not depend on it" },
   { crate = "nebula-storage", wrappers = [
     "nebula-engine",
     "nebula-api",
     # apps/server composition root wires in-memory repos directly (default_state).
     "nebula-server",
-    # Dev-only: `crates/credential-vault/tests/cache_integration.rs`
-    # exercises `ProviderCacheLayer` over `VaultProvider` to prove the
-    # cache/lease wiring from ADR-0051 Phase A composes with the Vault
-    # backend introduced in Phase C. Same pattern as the engine dev-dep
-    # carved out above for the §13 knife integration test.
-    "nebula-credential-vault",
-    # nebula-credential-runtime composes the storage-owned layered
-    # CredentialStore stack (Audit/Cache/Encryption) inside build().
-    "nebula-credential-runtime",
     # examples/ member hosts the api_simple_server startup demo which
     # wires in-memory repos directly (same pattern as nebula-server).
     "nebula-examples",
@@ -108,18 +97,17 @@ deny = [
   # repository traits, port-local DTO rows, the plain-data `Scope` value
   # type, `StorageError`, and the `TransitionBatch` unit-of-work. Being a
   # Core-tier contract it is broadly importable: the adapter
-  # (`nebula-storage`), the loom probe, the tenancy decorator, the
-  # exec/api consumers, and the credential-vault dev-dep may depend on it
-  # downward. It has no sqlx and no upward deps.
+  # (`nebula-storage`), the loom probe, the tenancy decorator, and the
+  # exec/api consumers may depend on it downward. It has no sqlx and no
+  # upward deps.
   { crate = "nebula-storage-port", wrappers = [
     "nebula-storage",
     "nebula-storage-loom-probe",
     "nebula-tenancy",
     "nebula-engine",
     "nebula-api",
-    "nebula-credential-runtime",
-    "nebula-credential-vault",
-  ], reason = "Storage port is a Core-tier contract; the adapter, tenancy decorator, exec/api consumers (incl. the credential-runtime facade, which derives the canonical Scope::credential_owner_id), and the credential-vault dev-dep may depend on it" },
+    "nebula-credential",
+  ], reason = "Storage port is a Core-tier contract; the adapter, tenancy decorator, exec/api consumers, and nebula-credential (which hosts the refresh coordinator and depends on RefreshClaimStore, ADR-0092) may depend on it" },
 
   # nebula-tenancy is the Business-tier multi-tenancy security boundary: it
   # owns the policy (resolve `Scope` from a `Principal`, inject it, enforce
@@ -163,21 +151,13 @@ deny = [
   # nebula-credential is the credential contract crate. It is shared infra
   # (not a single-tier Business crate): the Exec tier (engine/storage) and
   # the API tier consume it directly alongside the Business tier
-  # (action/plugin/resource) and the first-party backends
-  # (credential-builtin/-vault). The AGENTS.md layer map reflects this as a
+  # (action/plugin/resource). The AGENTS.md layer map reflects this as a
   # shared-infra note rather than a Business row. The allowlist locks the
   # current consumer set so a future PR cannot introduce an unreviewed
   # upward dependency from core/*.
   { crate = "nebula-credential", wrappers = [
     "nebula-action",
     "nebula-api",
-    "nebula-credential-builtin",
-    # nebula-credential-runtime is the Exec-tier owner of the credential
-    # management bounded context; it consumes the contract crate directly
-    # (CredentialService facade + type registry + ops dispatch). See
-    # docs/adr/0081-m6-resource-credential-integration.md.
-    "nebula-credential-runtime",
-    "nebula-credential-vault",
     "nebula-engine",
     "nebula-plugin",
     "nebula-resource",
@@ -209,46 +189,6 @@ deny = [
     # exercise the same evaluator the runtime uses.
     "nebula-action",
   ], reason = "ADR-0043 §9 / Phase 9: register_from_value bridges resource config to expression engine for {{ }} template resolution; schema uses it for parse validation; engine resolver evaluates node parameters; examples consume both" },
-
-  # nebula-credential-builtin is a Business-tier crate that ships first-party
-  # concrete credential types. Plugin authors depend on the contract crate
-  # (`nebula-credential`), NOT on this one — see crate README and
-  # `docs/INTEGRATION_MODEL.md` §2.4.
-  # The wrappers allowlist is widened when a composition-root crate wires
-  # the concrete types in via `register_builtins`. nebula-credential-runtime
-  # is exactly that root (Exec-tier owner of the credential management
-  # bounded context, docs/adr/0081-m6-resource-credential-integration.md). Upward deps from other Exec/API tier
-  # crates (nebula-engine, -storage, -api, -resource, -action, -sandbox,
-  # -plugin, -sdk) remain forbidden by the wrapper allowlists on each of
-  # those crates, which deliberately omit nebula-credential-builtin.
-  { crate = "nebula-credential-builtin", wrappers = [
-    "nebula-credential-builtin",
-    # The credential-runtime composition root calls
-    # `nebula_credential_builtin::register_builtins` to populate the
-    # CredentialRegistry/CredentialDispatch (docs/adr/0081-m6-resource-credential-integration.md).
-    "nebula-credential-runtime",
-  ], reason = "Built-in credential types are first-party; the credential-runtime composition root wires them via register_builtins (ADR-0066, consolidated into ADR-0081)" },
-
-  # nebula-credential-vault is the first concrete LeasedProvider impl per
-  # ADR-0051 Phase C — Business-tier backend wrapping the HashiCorp Vault
-  # HTTP API (KV v2 + dynamic secrets). Plugin authors depend on the
-  # contract crate (`nebula-credential`); composition roots wire this
-  # backend in via `Arc<dyn ExternalProvider>` so it stays decoupled from
-  # any specific Exec/API consumer. The wrapper allowlist starts empty
-  # and is widened as composition roots adopt the provider.
-  { crate = "nebula-credential-vault", wrappers = [
-    "nebula-credential-vault",
-  ], reason = "Vault is a first-party LeasedProvider backend (ADR-0051 Phase C); consumers wire it through their composition root, not via direct deps from upper tiers" },
-  # nebula-credential-runtime is the Exec-tier owner of the credential
-  # management bounded context (CredentialService facade + type registry +
-  # state-source resolution + observability). Narrowly supersedes the
-  # facade-ownership slice of ADR-0030 (see docs/adr/0081-m6-resource-credential-integration.md). The facade
-  # lands here; only the API and CLI composition roots may depend on it.
-  { crate = "nebula-credential-runtime", wrappers = [
-    "nebula-credential-runtime",
-    "nebula-api",
-    "nebula-cli",
-  ], reason = "Credential management runtime is Exec-tier; only the API and CLI composition roots may depend on it (ADR-0066, consolidated into ADR-0081)" },
 ]
 skip = [
   "bitflags",

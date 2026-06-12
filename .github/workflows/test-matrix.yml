@@ -177,16 +177,18 @@ jobs:
       #   `refresh_coordinator_chaos::three_replicas_zero_double_idp_calls` and
       #   makes that ~6s + watchdog test run on every PR (it has its own
       #   `nightly-chaos.yml` job).
-      # - `nebula-storage`: `EncryptionLayer` + `KeyProvider` unit tests (incl. OAuth at-rest) need `test-util`.
+      # - `nebula-storage`: `EncryptionLayer` + `KeyProvider` unit tests (incl. OAuth at-rest)
+      #   run via the `#[cfg(test)]` `StaticKeyProvider`; the nebula `test-util` feature was
+      #   removed in ADR-0092 (the test-only key provider is now compiled only under `cfg(test)`).
       # Note: `nebula-api`'s `credential-oauth` feature was deleted 2026-04-24 —
       # OAuth ceremony now ships unconditionally per ADR-0031 §6.
       - name: Run tests for ${{ matrix.package }}
         run: |
           set -euo pipefail
           if [[ "${{ matrix.package }}" == "nebula-engine" ]]; then
-            cargo nextest run -p nebula-engine --features "rotation,test-util" --profile ci --no-tests=pass
+            cargo nextest run -p nebula-engine --features "rotation" --profile ci --no-tests=pass
           elif [[ "${{ matrix.package }}" == "nebula-storage" ]]; then
-            cargo nextest run -p nebula-storage --features "test-util,credential-in-memory" --profile ci --no-tests=pass
+            cargo nextest run -p nebula-storage --features "credential-in-memory" --profile ci --no-tests=pass
           else
             cargo nextest run -p "${{ matrix.package }}" --profile ci --no-tests=pass
           fi

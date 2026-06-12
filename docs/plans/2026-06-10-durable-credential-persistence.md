@@ -138,6 +138,15 @@ instead of a generic 404. Durable multi-replica pending is deferred to 1.1
 
 ## `InMemoryStore` — keep as a permanent `test-util` fixture (do NOT delete)
 
+> **Superseded (2026-06-10):** a follow-up cleanup deleted the `InMemoryStore`
+> type outright and moved every test onto a unique in-memory
+> `SqliteCredentialStore` (`connect_memory()`), including the moat tests below —
+> the SQLite shared-cache backend handles the thundering-herd coalescing race
+> correctly (the single-flight lives in the resolver, not the store). The
+> reasoning in this section was the conservative call at lock time; eliminating
+> the second in-memory CAS reimplementation removed a whole drift-risk class and
+> won out. `InMemoryPendingStore` (pending-state) is unaffected and stays.
+
 The 4 engine moat tests (`credential_thundering_herd_tests`,
 `refresh_coordinator_*`, `credential_resolve_snapshot_tests`,
 `credential_resolver_refresh_coalesced`) **hard-reference the concrete

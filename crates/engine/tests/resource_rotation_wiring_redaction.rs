@@ -322,7 +322,7 @@ async fn wired_rotation_fanout_observability_is_redaction_clean() {
     // Capture-is-real guard: the driver's own completion event target
     // must be present, so an empty-capture false-clean is impossible.
     assert!(
-        logs.contains("nebula_engine::credential::rotation"),
+        logs.contains("nebula_resource::credential_fanout"),
         "expected the wired driver's rotation log target in the capture — \
          capture-is-real guard, got:\n{logs}"
     );

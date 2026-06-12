@@ -2,15 +2,14 @@
 //!
 //! Also hosts [`AuthStyle`] — the RFC 6749 §2.3.1 client-authentication
 //! parameter — which belongs here (scheme contract layer) rather than in
-//! `credentials::oauth2_config` (credential implementation) so it survives
-//! the future `nebula-credential-builtin` carve-out (M12.3).
+//! `credentials::oauth2_config` (credential implementation).
 
 use serde::{Deserialize, Serialize};
 
 /// How client credentials are sent in the OAuth2 token request (RFC 6749 §2.3.1).
 ///
-/// This type lives in the scheme layer (`scheme::oauth2`) so it survives the
-/// future `credentials::*` carve-out into `nebula-credential-builtin` (M12.3).
+/// This type lives in the scheme layer (`scheme::oauth2`), the contract layer
+/// rather than the credential implementation (`credentials::oauth2_config`).
 /// Prefer importing via `nebula_credential::AuthStyle` or
 /// `nebula_credential::scheme::oauth2::AuthStyle`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]

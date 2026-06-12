@@ -6,6 +6,13 @@ set -uo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; . "$DIR/_lib.sh"
 read_input
 [ "$(jqg '.stop_hook_active')" = "true" ] && allow   # loop guard (deadlock-safe)
+# Subagents (Task/builder) carry `.agent_id` (Claude Code hook input contract);
+# the D10 touched-crate gate is a MAIN-THREAD discipline. A subagent cannot run
+# the bare-gate recording dance, so applying C to it deadlocks the agent (it is
+# re-prompted, re-blocked, and hangs ~50 min). Defer: the main thread re-runs C
+# on its own Stop over the same git ground truth. (Matches intent-gate's
+# `.agent_id` subagent check.)
+[ -n "$(jqg '.agent_id')" ] && allow
 have_jq || allow
 sid="$(jqg '.session_id')"; cwd="$(jqg '.cwd')"; [ -n "$cwd" ] || cwd="$PWD"
 st="$(load_state "$(turn_state_path "$sid" "$cwd")")"

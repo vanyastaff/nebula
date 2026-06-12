@@ -13,7 +13,7 @@
 
 use std::time::Duration;
 
-use nebula_engine::credential::refresh::RefreshCoordConfig;
+use nebula_engine::credential::RefreshCoordConfig;
 use proptest::prelude::*;
 
 #[test]

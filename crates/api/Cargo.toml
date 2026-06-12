@@ -40,11 +40,6 @@ nebula-credential = { path = "../credential" }
 # amendments).
 nebula-schema = { path = "../schema", features = ["schemars"] }
 nebula-eventbus = { path = "../eventbus" }
-# Task 17: CredentialService facade replaces CredentialScopeLayer for credential
-# CRUD — the service owns the encryption+audit+cache stack; the api layer
-# holds it via `credential_store_handle()` (an `Arc<dyn DynCredentialStore>`).
-# Exec-tier dep; allowlisted in the deny.toml [bans].deny `wrappers` list for nebula-api.
-nebula-credential-runtime = { path = "../credential-runtime" }
 
 opentelemetry = { workspace = true }
 opentelemetry-otlp = { workspace = true }
@@ -132,6 +127,11 @@ utoipa-swagger-ui = { workspace = true }
 
 [dev-dependencies]
 nebula-api = { path = ".", features = ["test-util"] }
+# Dev-only: api tests build a `CredentialService` over a unique in-memory SQLite
+# database via `SqliteCredentialStore::connect_memory`; `test-util` exposes that
+# constructor. `sqlite`/`credential-in-memory` already come from the normal dep;
+# `test-util` stays out of the release build (ADR-0023).
+nebula-storage = { path = "../storage" }
 # `testing` feature adds EnvGuard for the config env-precedence unit tests.
 nebula-env = { workspace = true, features = ["testing"] }
 # Spec validation in tests — typed 3.1 parser (ADR-0047). Round-trip via

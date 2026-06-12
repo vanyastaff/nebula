@@ -220,31 +220,3 @@ pub trait CredentialStore: Send + Sync {
     /// Returns [`StoreError::Backend`] on underlying storage failures.
     fn exists(&self, id: &str) -> impl Future<Output = Result<bool, StoreError>> + Send;
 }
-
-/// Shared test helper for constructing [`StoredCredential`] instances.
-///
-/// Exposed publicly under `#[cfg(any(test, feature = "test-util"))]` so
-/// sibling crates (e.g. `nebula-storage::credential::memory` tests) can
-/// construct minimal instances without duplicating the builder.
-#[cfg(any(test, feature = "test-util"))]
-pub mod test_helpers {
-    use super::StoredCredential;
-
-    /// Build a minimal [`StoredCredential`] for testing.
-    pub fn make_credential(id: &str, data: &[u8]) -> StoredCredential {
-        StoredCredential {
-            id: id.into(),
-            name: None,
-            credential_key: "test_credential".into(),
-            data: data.to_vec(),
-            state_kind: "test".into(),
-            state_version: 1,
-            version: 0,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            expires_at: None,
-            reauth_required: false,
-            metadata: Default::default(),
-        }
-    }
-}

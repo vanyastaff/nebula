@@ -372,6 +372,125 @@ pub fn encrypt_with_key_id(
     Ok(EncryptedData::new(key_id, nonce_bytes, ct.to_vec(), tag))
 }
 
+// ============================================================================
+// Cipher / Kdf ports (ADR-0092)
+// ============================================================================
+
+/// Authenticated-encryption primitive over [`EncryptionKey`] / [`EncryptedData`].
+///
+/// Inverts the concrete AES-256-GCM algorithm so a consumer (the credential
+/// `EncryptionLayer`) can be generic over the cipher — the default
+/// [`AesGcmCipher`], or a future ChaCha20-Poly1305 / HSM-backed impl — and so
+/// tests can inject a fake. **SEC-11 is preserved by construction:** there is no
+/// no-AAD encrypt method on this trait; every encryption binds AAD.
+pub trait Cipher: Send + Sync {
+    /// Encrypt with AAD, recording `key_id` for rotation key selection.
+    ///
+    /// Delegates to the free function [`encrypt_with_key_id`]; rejects an empty
+    /// `key_id` with [`CryptoError::InvalidKeyId`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CryptoError::EncryptionFailed`] on cipher failure or
+    /// [`CryptoError::InvalidKeyId`] for an empty `key_id`.
+    fn encrypt_with_key_id(
+        &self,
+        key: &EncryptionKey,
+        key_id: &str,
+        plaintext: &[u8],
+        aad: &[u8],
+    ) -> Result<EncryptedData, CryptoError>;
+
+    /// Encrypt with AAD but no recorded key id (non-rotation path).
+    ///
+    /// Delegates to the free function [`encrypt_with_aad`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CryptoError::EncryptionFailed`] on cipher failure.
+    fn encrypt_with_aad(
+        &self,
+        key: &EncryptionKey,
+        plaintext: &[u8],
+        aad: &[u8],
+    ) -> Result<EncryptedData, CryptoError>;
+
+    /// Decrypt, verifying AAD and the algorithm version.
+    ///
+    /// Delegates to the free function [`decrypt_with_aad`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CryptoError::DecryptionFailed`] on AAD mismatch or corruption,
+    /// or [`CryptoError::UnsupportedVersion`] for an unknown envelope version.
+    fn decrypt_with_aad(
+        &self,
+        key: &EncryptionKey,
+        encrypted: &EncryptedData,
+        aad: &[u8],
+    ) -> Result<Zeroizing<Vec<u8>>, CryptoError>;
+}
+
+/// Password-based key-derivation primitive.
+///
+/// Inverts the concrete Argon2id KDF; the default is [`Argon2Kdf`].
+pub trait Kdf: Send + Sync {
+    /// Derive a 256-bit [`EncryptionKey`] from a password and 16-byte salt.
+    ///
+    /// Delegates to [`EncryptionKey::derive_from_password`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CryptoError::KeyDerivation`] if derivation fails.
+    fn derive(&self, password: &str, salt: &[u8; 16]) -> Result<EncryptionKey, CryptoError>;
+}
+
+/// Default [`Cipher`] — AES-256-GCM, delegating to the crate free functions.
+///
+/// Zero-config: a unit struct that carries no key material.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct AesGcmCipher;
+
+impl Cipher for AesGcmCipher {
+    fn encrypt_with_key_id(
+        &self,
+        key: &EncryptionKey,
+        key_id: &str,
+        plaintext: &[u8],
+        aad: &[u8],
+    ) -> Result<EncryptedData, CryptoError> {
+        encrypt_with_key_id(key, key_id, plaintext, aad)
+    }
+
+    fn encrypt_with_aad(
+        &self,
+        key: &EncryptionKey,
+        plaintext: &[u8],
+        aad: &[u8],
+    ) -> Result<EncryptedData, CryptoError> {
+        encrypt_with_aad(key, plaintext, aad)
+    }
+
+    fn decrypt_with_aad(
+        &self,
+        key: &EncryptionKey,
+        encrypted: &EncryptedData,
+        aad: &[u8],
+    ) -> Result<Zeroizing<Vec<u8>>, CryptoError> {
+        decrypt_with_aad(key, encrypted, aad)
+    }
+}
+
+/// Default [`Kdf`] — Argon2id, delegating to [`EncryptionKey::derive_from_password`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Argon2Kdf;
+
+impl Kdf for Argon2Kdf {
+    fn derive(&self, password: &str, salt: &[u8; 16]) -> Result<EncryptionKey, CryptoError> {
+        EncryptionKey::derive_from_password(password, salt)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -494,5 +613,28 @@ mod tests {
         let encrypted = encrypt_no_aad(&key, plaintext).unwrap();
         let result = decrypt_with_aad(&key, &encrypted, b"cred-1");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn aes_gcm_cipher_trait_round_trips_via_key_id() {
+        let cipher = AesGcmCipher;
+        let key = EncryptionKey::from_bytes([0x11; 32]);
+        let aad = b"credential-id-7";
+
+        let enc = cipher
+            .encrypt_with_key_id(&key, "rot-1", b"secret", aad)
+            .unwrap();
+        assert_eq!(enc.key_id, "rot-1");
+        let dec = cipher.decrypt_with_aad(&key, &enc, aad).unwrap();
+        assert_eq!(dec.as_slice(), b"secret");
+    }
+
+    #[test]
+    fn argon2_kdf_trait_matches_inherent_derivation() {
+        let kdf = Argon2Kdf;
+        let salt = [7u8; 16];
+        let via_trait = kdf.derive("hunter2", &salt).unwrap();
+        let via_inherent = EncryptionKey::derive_from_password("hunter2", &salt).unwrap();
+        assert_eq!(via_trait.as_bytes(), via_inherent.as_bytes());
     }
 }

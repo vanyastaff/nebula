@@ -16,8 +16,8 @@ use serde::{Deserialize, Serialize};
 
 /// OAuth2 client authentication style (RFC 6749 §2.3.1).
 ///
-/// Moved to [`crate::scheme::oauth2::AuthStyle`] to survive the future
-/// `credentials::*` carve-out into `nebula-credential-builtin` (M12.3).
+/// Moved to [`crate::scheme::oauth2::AuthStyle`] — the scheme contract layer,
+/// not the credential implementation.
 /// This re-export is deprecated; migrate to
 /// `nebula_credential::AuthStyle` or `nebula_credential::scheme::oauth2::AuthStyle`.
 #[deprecated(
