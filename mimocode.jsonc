@@ -1,0 +1,43 @@
+{
+  "$schema": "https://mimo.xiaomi.com//config.json",
+  "mcp": {
+    "filesystem": {
+      "type": "local",
+      "command": ["npx", "-y", "@modelcontextprotocol/server-filesystem", "."],
+      "enabled": true,
+    },
+    "serena": {
+      "type": "local",
+      "command": ["serena", "start-mcp-server", "--context", "codex", "--project", "."],
+      "enabled": true,
+    },
+    "memory": {
+      "type": "local",
+      "command": ["npx", "-y", "@modelcontextprotocol/server-memory"],
+      "enabled": true,
+      "environment": {
+        "MEMORY_FILE_PATH": ".mimocode/memory.jsonl",
+      },
+    },
+    "cratesio": {
+      "type": "local",
+      "command": ["cratesio-mcp"],
+      "enabled": true,
+    },
+    "rust-docs": {
+      "type": "local",
+      "command": ["rust-docs-mcp"],
+      "enabled": true,
+    },
+    "rust-mcp-server": {
+      "type": "local",
+      "command": ["rust-mcp-server", "--workspace", "."],
+      "enabled": true,
+    },
+    "rust-analyzer-mcp": {
+      "type": "local",
+      "command": ["rust-analyzer-mcp"],
+      "enabled": true,
+    },
+  },
+}

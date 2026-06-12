@@ -53,6 +53,10 @@ You need to...
 | **Serena rename_symbol** | Renaming across the codebase | Renaming a local variable in one function (use edit) |
 | **Serena symbol_overview** | Getting file structure/outline | You need to read the full file (use read) |
 | **Serena replace_symbol_body** | Replacing a function/struct body | Editing a few lines inside a function (use edit) |
+| **rust-analyzer-mcp** | Hover info, diagnostics, code actions, completion | Symbol search (use Serena) |
+| **rust-mcp-server** | cargo check/clippy/deny/machete/hack/fmt/test | Symbol-level code navigation (use Serena) |
+| **rust-docs** | Crate documentation, source code, dependency trees | Local crate code (use Serena) |
+| **cratesio** | Searching crates.io for packages | Local workspace queries |
 | **Memory MCP** | Storing cross-session knowledge | One-shot tasks that don't need persistence |
 | **grep** | Searching for string patterns, log messages | Finding symbol definitions (use Serena) |
 | **read** | Reading a known file | Exploring unknown code structure (use Serena) |
@@ -61,9 +65,34 @@ You need to...
 
 ---
 
+## Preferred CLI Tools
+
+Use these instead of standard Unix equivalents — they're installed and better.
+
+| Task | Use | Instead of |
+|------|-----|-----------|
+| Search code/text | `rg` (ripgrep) | `grep` |
+| Find files | `fd` | `find` |
+| View file with highlighting | `bat` | `cat` |
+| List directory | `eza --icons` | `ls` |
+| Disk usage | `dust` | `du` |
+| Process list | `procs` | `ps` |
+| Find & replace in files | `sd` | `sed` |
+| JSON query | `jq` | — |
+| YAML/TOML query | `yq` | — |
+| Git diff viewer | `delta` | `diff` |
+| Markdown preview | `glow` | — |
+| Quick docs lookup | `tldr` | `man` |
+| Sort Cargo.toml deps | `cargo-sort` | manual |
+| Smart directory jump | `zoxide` | `cd` |
+
+**Install new cargo tools with `cargo binstall`** (pre-built binaries) instead of `cargo install` (compiles from source).
+
+---
+
 ## Tech Stack
 
-- **Language:** Rust 1.95+ (edition 2024, resolver 3)
+- **Language:** Rust 1.96+ (edition 2024, resolver 3)
 - **Async:** Tokio
 - **Errors:** `thiserror` (libs) / `anyhow` (bins)
 - **Storage:** PostgreSQL, SQLite (`crates/storage/migrations/`)
@@ -278,8 +307,9 @@ Slash commands: `.claude/commands/` (project-specific, load on demand).
 |------|---------|
 | `Cargo.toml` | Workspace members, pinned deps, `[workspace.lints]` |
 | `deny.toml` | Layer wrappers, licenses, advisories — CI gate |
-| `clippy.toml` | Lint thresholds (msrv 1.95) |
+| `clippy.toml` | Lint thresholds (msrv 1.96) |
 | `rustfmt.toml` | rustfmt config (stable-only, pinned toolchain) |
 | `Taskfile.yml` | `task dev:check` = full pre-PR gate |
+| `.mcp.json` | MCP server config (Serena, rust-analyzer, cratesio, etc.) |
 | `scripts/worktree.sh` | Branch lifecycle helper |
 | `.github/workflows/ci.yml` | CI required jobs |
