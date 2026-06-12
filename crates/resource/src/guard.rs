@@ -16,7 +16,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use futures::FutureExt as _;
 use nebula_core::ResourceKey;
 use nebula_eventbus::EventBus;
 use tokio::sync::{Notify, OwnedSemaphorePermit};
@@ -456,10 +455,15 @@ fn settle(
 /// taken out would drop the teardown (leaking the pooled runtime) and skip the
 /// drain settle (wedging `graceful_shutdown` / `revoke_slot`).
 ///
-/// The teardown is wrapped in `catch_unwind` so a panicking resource teardown
-/// still settles the drain (the panic is surfaced as a typed error), mirroring
-/// `Drop`'s `catch_unwind`. The semaphore permit is moved in and dropped only
-/// after the teardown resolves (#384).
+/// The teardown runs through the shared [`hook_guard::guard_author_hook`]
+/// chokepoint — bounded by [`DEFAULT_AUTHOR_HOOK_CEILING`] and panic-isolated —
+/// so a careless author teardown that hangs or panics still settles the drain
+/// (the fault is surfaced as a typed error), mirroring the queued `Drop` path.
+/// The semaphore permit is moved in and dropped only after the teardown
+/// resolves (#384).
+///
+/// [`hook_guard::guard_author_hook`]: crate::hook_guard::guard_author_hook
+/// [`DEFAULT_AUTHOR_HOOK_CEILING`]: crate::hook_guard::DEFAULT_AUTHOR_HOOK_CEILING
 #[expect(
     clippy::too_many_arguments,
     reason = "teardown + permit + the six `settle` inputs; bundling into a one-use struct adds more ceremony than it removes for this internal helper"
@@ -475,11 +479,24 @@ async fn spawn_teardown_and_settle(
     tainted: bool,
 ) -> Result<(), crate::Error> {
     let task = tokio::spawn(async move {
-        let outcome = match std::panic::AssertUnwindSafe(teardown).catch_unwind().await {
+        // Bound + isolate the author teardown (`on_release` / `Provider::destroy`)
+        // through the same chokepoint the queued `Drop` path uses: a careless
+        // hook that hangs or panics must fail closed with the drain still
+        // settled, never wedge or crash the caller that awaited `release()`.
+        let outcome = match crate::hook_guard::guard_author_hook(
+            crate::hook_guard::DEFAULT_AUTHOR_HOOK_CEILING,
+            teardown,
+        )
+        .await
+        {
             Ok(res) => res,
-            Err(_panic) => Err(crate::Error::transient(
-                "resource teardown panicked during release()",
+            Err(crate::hook_guard::HookFault::Panicked) => Err(crate::Error::transient(
+                "resource teardown panicked during release() (isolated, caller not crashed)",
             )),
+            Err(crate::hook_guard::HookFault::TimedOut) => Err(crate::Error::transient(format!(
+                "resource teardown did not complete within {:?} during release()",
+                crate::hook_guard::DEFAULT_AUTHOR_HOOK_CEILING
+            ))),
         };
         // #384: the permit outlives the teardown (a bounded `Exclusive` reset
         // must complete before the slot frees), then drops here.

@@ -2737,6 +2737,177 @@ async fn release_teardown_survives_caller_cancellation() {
     .expect("graceful_shutdown must succeed");
 }
 
+// budget-justified: hang/panic destroy fixtures + release() author-hook-bound regression tests
+/// A pooled resource whose `destroy` never completes, modelling a careless
+/// author `Provider::destroy` that hangs forever. `release().await` must not
+/// wedge on it — the shared `hook_guard` ceiling bounds the teardown.
+#[derive(Clone)]
+struct HangingDestroyPoolResource {
+    create_counter: Arc<AtomicU64>,
+}
+
+impl HangingDestroyPoolResource {
+    fn new() -> Self {
+        Self {
+            create_counter: Arc::new(AtomicU64::new(0)),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for HangingDestroyPoolResource {
+    type Config = TestConfig;
+    type Instance = ();
+    type Topology = Pooled<Self>;
+
+    fn key() -> ResourceKey {
+        resource_key!("hanging-destroy-pool")
+    }
+
+    async fn create(&self, _config: &TestConfig, _ctx: &ResourceContext) -> Result<(), Error> {
+        self.create_counter.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    async fn destroy(&self, _runtime: ()) -> Result<(), Error> {
+        // Hangs forever: the only thing that may unwedge `release()` is the
+        // shared author-hook ceiling, not this future ever resolving.
+        std::future::pending::<()>().await;
+        Ok(())
+    }
+
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::from_key(&Self::key())
+    }
+}
+
+impl HasCredentialSlots for HangingDestroyPoolResource {
+    fn credential_slot_epoch(&self) -> u64 {
+        0
+    }
+}
+
+#[async_trait::async_trait]
+impl PoolProvider for HangingDestroyPoolResource {}
+
+/// A pooled resource whose `destroy` panics, modelling a careless author
+/// `Provider::destroy` that unwinds. `release().await` must surface a typed
+/// error (panic isolated) rather than crash the caller.
+#[derive(Clone)]
+struct PanickingDestroyPoolResource {
+    create_counter: Arc<AtomicU64>,
+}
+
+impl PanickingDestroyPoolResource {
+    fn new() -> Self {
+        Self {
+            create_counter: Arc::new(AtomicU64::new(0)),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for PanickingDestroyPoolResource {
+    type Config = TestConfig;
+    type Instance = ();
+    type Topology = Pooled<Self>;
+
+    fn key() -> ResourceKey {
+        resource_key!("panicking-destroy-pool")
+    }
+
+    async fn create(&self, _config: &TestConfig, _ctx: &ResourceContext) -> Result<(), Error> {
+        self.create_counter.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    async fn destroy(&self, _runtime: ()) -> Result<(), Error> {
+        panic!("author Provider::destroy panics on purpose");
+    }
+
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::from_key(&Self::key())
+    }
+}
+
+impl HasCredentialSlots for PanickingDestroyPoolResource {
+    fn credential_slot_epoch(&self) -> u64 {
+        0
+    }
+}
+
+#[async_trait::async_trait]
+impl PoolProvider for PanickingDestroyPoolResource {}
+
+#[tokio::test(start_paused = true)]
+async fn release_bounds_a_hanging_author_teardown() {
+    // A careless author `Provider::destroy` that hangs forever must NOT wedge
+    // a caller that awaited `release()`: the teardown runs through the shared
+    // `hook_guard` chokepoint, so the author-hook ceiling fires and `release()`
+    // returns a typed `TimedOut` error. `start_paused` advances virtual time
+    // to the 30s ceiling instantly + deterministically — no wall-clock wait.
+    let manager = Manager::new();
+    let resource = HangingDestroyPoolResource::new();
+    let pool_config = nebula_resource::topology::pooled::config::Config {
+        min_size: 0,
+        max_size: 4,
+        idle_timeout: None,
+        max_lifetime: None,
+        ..Default::default()
+    };
+    let pool_rt = Pooled::<HangingDestroyPoolResource>::new(pool_config, 1);
+    register_pool(&manager, resource.clone(), test_config(), pool_rt);
+
+    let ctx = test_ctx();
+    let mut handle: ResourceGuard<HangingDestroyPoolResource> = manager
+        .acquire_pooled(&ctx, &AcquireOptions::default())
+        .await
+        .expect("acquire should succeed");
+    // Taint so release() forces the (hanging) destroy path, not a recycle.
+    handle.taint();
+
+    let outcome = handle.release().await;
+    let err = outcome.expect_err("a hanging author teardown must make release() return Err");
+    assert!(
+        err.to_string().contains("did not complete within"),
+        "release() must surface the bounded-teardown TimedOut message, got: {err}"
+    );
+}
+
+#[tokio::test]
+async fn release_isolates_a_panicking_author_teardown() {
+    // A careless author `Provider::destroy` that panics must NOT crash the
+    // caller that awaited `release()`: the teardown runs through the shared
+    // `hook_guard` chokepoint, which catches the unwind and surfaces a typed
+    // error. Reaching the assertion at all proves the process was not aborted.
+    let manager = Manager::new();
+    let resource = PanickingDestroyPoolResource::new();
+    let pool_config = nebula_resource::topology::pooled::config::Config {
+        min_size: 0,
+        max_size: 4,
+        idle_timeout: None,
+        max_lifetime: None,
+        ..Default::default()
+    };
+    let pool_rt = Pooled::<PanickingDestroyPoolResource>::new(pool_config, 1);
+    register_pool(&manager, resource.clone(), test_config(), pool_rt);
+
+    let ctx = test_ctx();
+    let mut handle: ResourceGuard<PanickingDestroyPoolResource> = manager
+        .acquire_pooled(&ctx, &AcquireOptions::default())
+        .await
+        .expect("acquire should succeed");
+    // Taint so release() forces the (panicking) destroy path, not a recycle.
+    handle.taint();
+
+    let outcome = handle.release().await;
+    let err = outcome.expect_err("a panicking author teardown must make release() return Err");
+    assert!(
+        err.to_string().contains("panicked"),
+        "release() must surface the isolated-panic message, got: {err}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // 2. Pool stale fingerprint evicts idle entry
 // ---------------------------------------------------------------------------
