@@ -101,11 +101,12 @@ pub struct ReleaseQueue {
     cancel: CancellationToken,
     /// Tracks how many tasks have gone to the fallback channel.
     fallback_count: AtomicUsize,
-    /// Tracks how many tasks were dropped due to full queues
-    /// (rescue timeout or shutdown).
+    /// Tracks how many tasks were dropped due to full queues (rescue
+    /// timeout or shutdown) **or** abandoned on the worker path when a
+    /// release teardown timed out or panicked.
     ///
-    /// Shared with rescue tasks via `Arc` so they can record terminal
-    /// drops from outside the queue.
+    /// Shared with rescue tasks and workers via `Arc` so they can record
+    /// terminal drops from outside the queue.
     dropped_count: Arc<AtomicUsize>,
     /// Tracks how many tasks were sent down the rescue path
     /// (double-`Full` saturation). A non-zero value means the queue is
@@ -145,14 +146,24 @@ impl ReleaseQueue {
         let mut senders = Vec::with_capacity(worker_count);
         let mut workers = Vec::with_capacity(worker_count);
 
+        let dropped_count = Arc::new(AtomicUsize::new(0));
+
         for _ in 0..worker_count {
             let (tx, rx) = mpsc::channel::<TaskFactory>(CHANNEL_BUFFER);
             senders.push(tx);
-            workers.push(tokio::spawn(Self::worker_loop(rx, cancel.clone())));
+            workers.push(tokio::spawn(Self::worker_loop(
+                rx,
+                cancel.clone(),
+                Arc::clone(&dropped_count),
+            )));
         }
 
         let (fallback_tx, fallback_rx) = mpsc::channel::<TaskFactory>(FALLBACK_BUFFER);
-        let fallback_worker = tokio::spawn(Self::worker_loop(fallback_rx, cancel.clone()));
+        let fallback_worker = tokio::spawn(Self::worker_loop(
+            fallback_rx,
+            cancel.clone(),
+            Arc::clone(&dropped_count),
+        ));
 
         let queue = Self {
             senders,
@@ -160,7 +171,7 @@ impl ReleaseQueue {
             next: AtomicUsize::new(0),
             cancel,
             fallback_count: AtomicUsize::new(0),
-            dropped_count: Arc::new(AtomicUsize::new(0)),
+            dropped_count,
             rescued_count: Arc::new(AtomicUsize::new(0)),
         };
         let handle = ReleaseQueueHandle {
@@ -282,9 +293,10 @@ impl ReleaseQueue {
         self.fallback_count.load(Ordering::Relaxed)
     }
 
-    /// Returns the number of tasks that were truly dropped (after rescue
-    /// failure or shutdown). A non-zero value means resources may have
-    /// leaked and warrants operator attention.
+    /// Returns the number of tasks that were truly dropped — after rescue
+    /// failure, shutdown, or a worker-path teardown that timed out or
+    /// panicked. A non-zero value means resources may have leaked and
+    /// warrants operator attention.
     pub fn dropped_count(&self) -> usize {
         self.dropped_count.load(Ordering::Relaxed)
     }
@@ -324,13 +336,17 @@ impl ReleaseQueue {
     /// Uses `select!` with `biased` to prefer processing messages over
     /// checking cancellation — ensuring buffered tasks are drained before
     /// the worker exits.
-    async fn worker_loop(mut rx: mpsc::Receiver<TaskFactory>, cancel: CancellationToken) {
+    async fn worker_loop(
+        mut rx: mpsc::Receiver<TaskFactory>,
+        cancel: CancellationToken,
+        dropped_count: Arc<AtomicUsize>,
+    ) {
         loop {
             tokio::select! {
                 biased;
                 msg = rx.recv() => {
                     match msg {
-                        Some(factory) => Self::execute_task(factory).await,
+                        Some(factory) => Self::execute_task(factory, &dropped_count).await,
                         None => break, // channel closed
                     }
                 }
@@ -338,7 +354,7 @@ impl ReleaseQueue {
                     // Drain remaining buffered tasks, then exit.
                     rx.close();
                     while let Some(factory) = rx.recv().await {
-                        Self::execute_task(factory).await;
+                        Self::execute_task(factory, &dropped_count).await;
                     }
                     break;
                 }
@@ -346,7 +362,7 @@ impl ReleaseQueue {
         }
     }
 
-    async fn execute_task(factory: TaskFactory) {
+    async fn execute_task(factory: TaskFactory, dropped_count: &Arc<AtomicUsize>) {
         // Foolproofing: a release task runs a third-party topology's
         // `on_release` / `Provider::destroy`. The shared author-hook guard
         // bounds it (timeout) AND isolates a panic so one careless or hostile
@@ -358,12 +374,19 @@ impl ReleaseQueue {
                 tracing::error!(
                     "release task panicked — isolated; the release worker keeps draining"
                 );
+                // A teardown that unwound never returned its resource — count it
+                // as a true drop so `dropped_count` keeps its leak invariant
+                // honest instead of staying silently zero.
+                record_drop(dropped_count, "worker_panic");
             },
             Err(crate::hook_guard::HookFault::TimedOut) => {
                 tracing::warn!(
                     "release task timed out after {}s, skipping",
                     TASK_EXECUTION_TIMEOUT.as_secs()
                 );
+                // A teardown abandoned on timeout may have leaked its resource —
+                // count it as a true drop so the leak invariant stays honest.
+                record_drop(dropped_count, "worker_timeout");
             },
         }
     }
@@ -378,7 +401,7 @@ fn record_drop(counter: &Arc<AtomicUsize>, reason: &'static str) {
         tracing::error!(
             dropped_tasks = n,
             reason = reason,
-            "release queue rescue failed — resource may leak"
+            "release task dropped — resource may leak"
         );
     }
 }
@@ -618,5 +641,72 @@ mod tests {
             !completed.load(Ordering::Relaxed),
             "slow task should have been aborted by the execution timeout"
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn worker_timeout_increments_dropped_count() {
+        // A worker-path teardown that exceeds TASK_EXECUTION_TIMEOUT must be
+        // counted as a true drop — otherwise a leaked resource stays invisible
+        // while `dropped_count()` falsely reports a clean zero.
+        let (queue, handle) = ReleaseQueue::new(1);
+
+        queue.submit(|| {
+            Box::pin(async {
+                // Never completes — the guard must abort it on timeout.
+                std::future::pending::<()>().await;
+            })
+        });
+
+        // Advance the paused clock past the execution timeout so the guard
+        // fires and the worker records the drop. Same time-control technique
+        // as `slow_task_is_aborted_after_execution_timeout`.
+        tokio::time::sleep(Duration::from_secs(35)).await;
+
+        // Yield once more so the worker that woke from the timeout finishes
+        // recording the drop before we observe it.
+        tokio::task::yield_now().await;
+
+        assert_eq!(
+            queue.dropped_count(),
+            1,
+            "a worker-path teardown timeout must count as exactly one drop"
+        );
+
+        queue.close();
+        ReleaseQueue::shutdown(handle).await;
+    }
+
+    #[tokio::test]
+    async fn worker_panic_increments_dropped_count() {
+        // A teardown that unwinds is caught by the hook guard so the worker
+        // keeps draining — but the resource it was releasing never came back,
+        // so the panic must be counted as a true drop.
+        let (queue, handle) = ReleaseQueue::new(1);
+
+        queue.submit(|| {
+            Box::pin(async {
+                panic!("release teardown blew up");
+            })
+        });
+
+        // Wait for the worker to process the panicking task and record the
+        // drop. The counter is the deterministic signal — poll it rather than
+        // sleeping a fixed wall-clock duration.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while queue.dropped_count() == 0 {
+            if std::time::Instant::now() > deadline {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+
+        assert_eq!(
+            queue.dropped_count(),
+            1,
+            "a worker-path teardown panic must count as exactly one drop"
+        );
+
+        queue.close();
+        ReleaseQueue::shutdown(handle).await;
     }
 }
