@@ -377,6 +377,11 @@ impl ReleaseQueue {
         // bounds it (timeout) AND isolates a panic so one careless or hostile
         // hook can neither stall nor kill this worker — the queue keeps draining
         // every other slot.
+        //
+        // SAFETY (unwind): `factory()` builds a self-contained teardown future
+        // that owns its slot; the worker holds no alias to it, so a caught panic
+        // drops the owned slot and the worker loops to the next queued task — no
+        // shared queue state is torn.
         match crate::hook_guard::guard_author_hook(TASK_EXECUTION_TIMEOUT, factory()).await {
             Ok(()) => {},
             Err(crate::hook_guard::HookFault::Panicked) => {

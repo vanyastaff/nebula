@@ -485,6 +485,11 @@ async fn spawn_teardown_and_settle(
         // through the same chokepoint the queued `Drop` path uses: a careless
         // hook that hangs or panics must fail closed with the drain still
         // settled, never wedge or crash the caller that awaited `release()`.
+        //
+        // SAFETY (unwind): `teardown` owns the slot/instance outright (moved in
+        // when the future was built); the guard holds no alias to it, so a
+        // caught panic just drops the owned instance — no partial or torn guard
+        // state survives, and the drain `settle` below still runs.
         let outcome = match crate::hook_guard::guard_author_hook(
             crate::hook_guard::MAX_TEARDOWN_CEILING,
             teardown,

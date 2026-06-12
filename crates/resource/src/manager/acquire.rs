@@ -344,6 +344,11 @@ impl Manager {
             let managed = Arc::clone(&managed);
             let metrics = self.metrics.clone();
             async move {
+                // SAFETY (unwind): any instance in flight inside the acquire
+                // loop is held by a `SlotCreateGuard` whose `Drop` destroys it,
+                // and the revoke-epoch/taint reads happen before the guarded
+                // await — so a caught panic unwinds through the `SlotCreateGuard`
+                // (tearing the half-built slot down) and leaves no torn state.
                 match guard_author_hook(
                     hook_timeout,
                     managed.run_acquire_loop(ctx, options, metrics),
@@ -633,6 +638,10 @@ impl Manager {
         // acquire pipeline uses: a careless `Provider::create` that hangs or
         // panics during warmup must fail closed, not wedge or crash the caller.
         let _ = config;
+        // SAFETY (unwind): a slot being built inside `warmup` is held by its
+        // `SlotCreateGuard` (destroyed on unwind) and a slot already warmed is
+        // deposited into the fenced store before the next is built — so a caught
+        // panic tears down only the in-flight slot and leaves no torn state.
         let count = match guard_author_hook(DEFAULT_AUTHOR_HOOK_CEILING, managed.warmup(ctx)).await
         {
             Ok(n) => n,

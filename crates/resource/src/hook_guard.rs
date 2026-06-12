@@ -81,7 +81,9 @@ impl HookFault {
 /// current site holds its consistency synchronously before the guarded await —
 /// taint / revoke-epoch bump happen first, and an in-flight slot is destroyed
 /// by its `SlotCreateGuard` on drop — so a caught unwind leaves no partial
-/// state.
+/// state. **Each call site carries a `// SAFETY (unwind):` comment** stating its
+/// specific no-torn-state argument; a new site must add one (the `AssertUnwindSafe`
+/// is sound only because that invariant holds, so spell out why it does there).
 pub(crate) async fn guard_author_hook<T>(
     timeout: Duration,
     fut: impl Future<Output = T>,

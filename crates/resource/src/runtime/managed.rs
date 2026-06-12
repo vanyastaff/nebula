@@ -639,17 +639,38 @@ where
     /// Complexity: O(n) checks over the idle queue (average and worst case),
     /// bounded by the store's configured idle capacity.
     async fn probe_idle_slots(&self) -> Vec<SlotOf<R>> {
+        let key = R::key();
         let mut idle = self.store.lock_idle().await;
         let mut kept = std::collections::VecDeque::with_capacity(idle.len());
         let mut failed = Vec::new();
         while let Some(entry) = idle.pop_front() {
-            match self
-                .resource
-                .check(self.topology.slot_instance(&entry.slot))
-                .await
+            // Route the author's `check` through the bound+isolate chokepoint
+            // like every other author hook: a probe that hangs is cut at the
+            // ceiling (bounding the idle-lock hold) and a panicking probe is
+            // caught, never wedging or crashing the reaper. Either fault marks
+            // the slot unhealthy → evict.
+            //
+            // SAFETY (unwind): the only state alive across the guarded await is
+            // `entry` (owned, already popped off the queue); a caught panic
+            // leaves it intact and it is moved to `failed` for destruction, so
+            // no partial/torn state survives.
+            match crate::hook_guard::guard_author_hook(
+                crate::hook_guard::DEFAULT_AUTHOR_HOOK_CEILING,
+                self.resource
+                    .check(self.topology.slot_instance(&entry.slot)),
+            )
+            .await
             {
-                Ok(()) => kept.push_back(entry),
-                Err(_) => failed.push(entry.slot),
+                // Healthy — keep the slot idle.
+                Ok(Ok(())) => kept.push_back(entry),
+                // The check ran and reported the instance unhealthy — evict.
+                Ok(Err(_)) => failed.push(entry.slot),
+                // The check hung past the ceiling or panicked — bounded/caught
+                // by the framework; treat as unhealthy and evict.
+                Err(fault) => {
+                    fault.observe(&key, "probe");
+                    failed.push(entry.slot);
+                },
             }
         }
         *idle = kept;
@@ -691,8 +712,18 @@ where
         self.topology.load(&self.store)
     }
 
-    /// Sync capacity gate from the topology (the ticket is dropped — this is a
-    /// yes/no gate with a typed reason).
+    /// Sync capacity gate from the topology — an **advisory** yes/no pre-check
+    /// with a typed reason, NOT a held reservation.
+    ///
+    /// The [`Ticket`] (and any semaphore permit it carries) is dropped
+    /// immediately, so the permit is released the moment this returns. This is a
+    /// deliberate pre-flight probe (e.g. for `Manager::admission_status`): under
+    /// contention the permit it momentarily held can be taken by another
+    /// acquirer before the real acquire runs, so a gate `Ok` does not guarantee
+    /// the subsequent acquire admits — the authoritative reservation is the
+    /// `try_reserve` inside [`run_acquire_loop`](Self::run_acquire_loop), whose
+    /// `Ticket` IS held for the lease. A gate `Err(Saturated)` likewise releases
+    /// its permit; it reports the rejection, it does not hold it.
     pub(crate) fn try_reserve_gate(&self) -> Result<(), Unavailable> {
         self.topology.try_reserve(&self.store).map(|_ticket| ())
     }
@@ -946,6 +977,7 @@ mod tests {
         checks: Arc<AtomicU64>,
         check_cost: crate::CheckCost,
         check_fails: Arc<AtomicBool>,
+        check_panics: Arc<AtomicBool>,
     }
 
     impl Mock {
@@ -959,6 +991,7 @@ mod tests {
                 checks: Arc::new(AtomicU64::new(0)),
                 check_cost: crate::CheckCost::Cheap,
                 check_fails: Arc::new(AtomicBool::new(false)),
+                check_panics: Arc::new(AtomicBool::new(false)),
             }
         }
 
@@ -989,6 +1022,10 @@ mod tests {
 
         async fn check(&self, _instance: &u64) -> Result<(), Error> {
             self.checks.fetch_add(1, Ordering::SeqCst);
+            assert!(
+                !self.check_panics.load(Ordering::SeqCst),
+                "mock health check panics (probe-isolation test)"
+            );
             if self.check_fails.load(Ordering::SeqCst) {
                 Err(Error::transient("mock health check failed"))
             } else {
@@ -1288,6 +1325,46 @@ mod tests {
             destroyed.load(Ordering::SeqCst),
             1,
             "the probed-out slot was destroyed"
+        );
+        Ok(())
+    }
+
+    /// A11 foolproofing: a probe whose `check` PANICS is caught by the framework
+    /// (routed through `guard_author_hook`) — the reaper is not crashed, and the
+    /// slot is treated as unhealthy and evicted/destroyed.
+    #[tokio::test]
+    async fn health_probe_isolates_panicking_check() -> Result<(), Error> {
+        let resource = Mock::new();
+        let destroyed = Arc::clone(&resource.destroyed);
+        let check_panics = Arc::clone(&resource.check_panics);
+        let mr = managed(
+            resource,
+            PoolConfig {
+                max_size: 2,
+                ..Default::default()
+            },
+        );
+
+        let g = mr
+            .run_acquire_loop(&test_ctx(), &AcquireOptions::default(), None)
+            .await?;
+        g.release().await?;
+        assert_eq!(mr.store.len().await, 1);
+
+        // The probe's `check` now panics — the chokepoint must catch it (not
+        // crash the reaper) and evict the slot.
+        check_panics.store(true, Ordering::SeqCst);
+        let evicted = mr.run_maintenance().await;
+
+        assert_eq!(
+            evicted, 1,
+            "a panicking probe is isolated and the slot evicted"
+        );
+        assert_eq!(mr.store.len().await, 0);
+        assert_eq!(
+            destroyed.load(Ordering::SeqCst),
+            1,
+            "the panicked-on slot was destroyed"
         );
         Ok(())
     }

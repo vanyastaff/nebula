@@ -116,6 +116,12 @@ impl Manager {
         // wedge or crash the rotation fan-out. No caller threads a refresh
         // budget here, so the framework ceiling is the backstop — which is what
         // makes the `timed_out` outcome reachable for refresh at all.
+        //
+        // SAFETY (unwind): the dispatch only mutates the author's own borrowed
+        // instances under the store lock; a caught panic drops that lock guard
+        // (releasing the lock) and leaves the store's structure/epoch intact —
+        // at worst one instance is left un-refreshed (re-refreshed or evicted on
+        // a later sweep), never a torn store.
         let guarded = guard_author_hook(
             DEFAULT_AUTHOR_HOOK_CEILING,
             managed.dispatch_on_refresh(slot),
@@ -411,6 +417,11 @@ impl Manager {
         //    the row left tainted. A timed-out drain (above) has *already*
         //    consumed the metric outcome, so a hook that then also faults does
         //    not double-record.
+        //
+        // SAFETY (unwind): the row was tainted synchronously before this await,
+        // so a caught panic leaves it tainted (fail-closed — no further leases);
+        // the dispatch mutates only borrowed instances under the store lock, so
+        // the unwind drops the lock guard and leaves the store intact.
         let hook_outcome =
             guard_author_hook(drain_timeout, managed.dispatch_on_revoke(&slot)).await;
         tracing::Span::current().record("duration_ms", tainted_at.elapsed().as_millis() as u64);
