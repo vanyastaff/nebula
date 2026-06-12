@@ -61,14 +61,7 @@ pre-push:
       # parity. Moved here from pre-commit (spec D3 / §7 F) so commits stay
       # changed-crate scoped; pre-push must mirror CI required jobs
       # (feedback_lefthook_mirrors_ci.md).
-      # Skip if no .rs files changed in the push range to save time.
-      run: |
-        changed_rs=$(git diff --name-only @{push}..HEAD -- '*.rs' 2>/dev/null | head -1)
-        if [ -z "$changed_rs" ]; then
-          echo "No .rs files in push range — skipping clippy"
-          exit 0
-        fi
-        cargo clippy --workspace --all-targets -- -D warnings
+      run: cargo clippy --workspace --all-targets -- -D warnings
     crate-diff-gate:
       # Runs `cargo nextest run` for changed crates plus, when
       # `DATABASE_URL` is set, the `--features postgres` storage
