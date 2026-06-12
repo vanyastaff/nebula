@@ -318,3 +318,25 @@ The canon edit is a separate change tracked against this ADR.
 - The reset attestation for the Tier-3 `debug_assert` is a "hook was invoked"
   flag, not a content check — the framework cannot verify what "reset" means
   for a given resource.
+
+### Reconciliation with the shipped surface (2026-06-12)
+
+Implementation found the codebase already carries the hooks this ADR named
+freshly. The mapping, to avoid parallel methods:
+
+- The ADR's **`reset`** IS the existing `PoolProvider::recycle(&self, &Instance,
+  &InstanceMetrics) -> Result<RecycleDecision{Keep|Drop}, Error>`. `Keep`/`Drop`
+  are `Recycle`/`Discard`; the `Err` arm is the third state. Its default is
+  `Keep` (the leaky footgun). Do **not** add a separate `reset` method.
+- The ADR's **A4 post-checkout init** IS the existing `PoolProvider::prepare`.
+- **`destroy`** already exists on the provider; the breaking sweep adds
+  `TeardownCx`.
+
+Consequence for phasing: the full **Tier-1 safe-default** (make `recycle`'s
+default `Drop` for a credentialed resource) requires `recycle`'s default body to
+read the credential signal, which needs `PoolProvider: HasCredentialSlots` as a
+**supertrait** — a breaking change, so it lands in the breaking sweep, not the
+non-breaking slice. The non-breaking slice instead shipped (commit `704972f4`)
+the type-level `HasCredentialSlots::declares_credential_slots()` signal
+(derive-emitted) plus the **Tier-3** registration footgun-guard that warns when
+a credentialed Pooled resource is on the default `Keep` `recycle`.
