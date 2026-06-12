@@ -211,20 +211,44 @@ per-site discipline.
   by a missing `reset` → warn.
 - `ResourceEvent` evict/poison variants.
 
-### 4. The honest gap — sync-blocking authors
+### 4. The honest gap — sync-blocking authors (mitigated, not closed)
 
-A `std::thread::sleep` / blocking syscall inside `reset`/`destroy` is **not**
-caught by `timeout_at`: the future never yields, so the executor never polls the
-timeout, and the worker thread is pinned. This gap exists in the current
-foolproofing too. The contract's stance:
+A `std::thread::sleep` / blocking syscall / CPU loop inside `reset`/`destroy` is
+**not cancellable**. This is a fundamental Rust/OS limit, not a framework
+shortcoming: there is no safe in-process equivalent of `pthread_cancel`
+(interrupting a thread mid-syscall would leak locks / be UB), tokio's
+cooperative budget is blind to blocking code, and a `spawn_blocking` task
+**cannot be aborted** once started — `abort()` is silently ignored and the OS
+thread runs to completion (tokio docs). True preemption requires a process
+(SIGKILL) or a WASM (wasmtime epoch) boundary — both ruled out by canon §12.6 /
+ADR-0091, and a WASM epoch cannot interrupt a blocking *host* call anyway
+(wasmtime #9188), which is exactly what a Rust teardown hook is.
 
-- The `ReleaseQueue` is multi-worker, so the blast radius is one worker, not the
-  whole queue.
-- A dev-mode block detector (`debug_assert` via tokio block-in-place detection).
-- Hard documentation that teardown must not block the runtime.
-- A **`spawn_blocking` isolation mode** offered as opt-in config for untrusted
-  community plugins (not the default — `spawn_blocking` per teardown is too
-  costly to impose universally).
+The gap is therefore **mitigated, not closed** — degraded from "wedges an engine
+worker forever" to "leaks at most one bounded thread; engine control-flow never
+stalls; detected and circuit-broken":
+
+- **Isolate on a dedicated bounded blocking runtime.** Untrusted teardown runs
+  via `spawn_blocking` on a **separate** `tokio` runtime with a small
+  `max_blocking_threads`, NOT the global pool (whose queue has no backpressure
+  and whose 512 threads the engine shares). A blocking author can neither starve
+  the engine's async workers nor exhaust its blocking pool.
+- **Bound the wait, not the work.** `timeout_at(cx.deadline)` on the
+  `JoinHandle` (or `Runtime::shutdown_timeout`) returns control after the
+  budget; the leaked thread finishes on its own time. Abandonment-with-timeout,
+  never cancellation.
+- **Detect.** The single `guard_author_hook` chokepoint times each teardown;
+  `--cfg tokio_unstable` `RuntimeMetrics` (poll-time histogram,
+  `num_blocking_threads`) and a per-dispatch monitor surface a long blocker —
+  engine-side instrumentation, because untrusted code never self-instruments.
+- **Circuit-break.** A resource whose teardown repeatedly exceeds its budget is
+  marked misbehaving and its teardown is skipped (logged as an error) on future
+  invocations; the dedicated pool's saturation back-pressures submission.
+
+The precise cost of the canon's no-process / no-WASM stance, stated honestly: a
+hung teardown hook can leak a bounded blocking thread until its syscall returns;
+it can never be force-stopped. The mechanisms above ensure that leak is
+contained, observable, and self-limiting — never an engine stall.
 
 ## Consequences
 
