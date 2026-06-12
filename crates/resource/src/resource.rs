@@ -487,6 +487,13 @@ pub trait Provider: Send + Sync + Sized + 'static {
     ///
     /// The default implementation always succeeds.
     ///
+    /// The framework also calls this from its background maintenance probe
+    /// (spaced by [`check_cost`](Self::check_cost)) while holding the topology's
+    /// idle lock, so a `check` impl MUST NOT re-enter the resource manager for
+    /// the same resource (acquire / return through a captured `Manager` handle)
+    /// — that would deadlock on the non-reentrant idle lock. Read instance state
+    /// only.
+    ///
     /// # Errors
     ///
     /// Returns `crate::Error` classified as

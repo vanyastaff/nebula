@@ -595,33 +595,44 @@ impl<R: Provider> Drop for ResourceGuard<R> {
                 tainted,
                 ..
             }) => {
-                // Take the permit out BEFORE the callback runs. It will be
-                // dropped at the end of this scope — after catch_unwind —
-                // ensuring the semaphore slot is returned even if building +
-                // submitting the release future panics.
-                let _permit_guard = permit.take();
+                // Take the permit out BEFORE the callback runs. For the QUEUED
+                // teardown it is moved into the release task and dropped only
+                // once the teardown future has resolved (#384 on the `Drop`
+                // path, mirroring `spawn_teardown_and_settle`): a bounded
+                // `Exclusive` (cap-1, single reused instance) must NOT free its
+                // permit while its `reset` is still pending on the queue, or a
+                // second acquirer would mint a second live instance during the
+                // reset window. If there is nothing to wait for (no callback,
+                // no queue, or a build-panic) it drops at the end of this scope,
+                // so the slot is still returned even when submitting panics.
+                let permit_guard = permit.take();
 
                 if let (Some(runtime), Some(callback)) = (value.take(), on_release.take()) {
                     let tainted = *tainted;
                     let release_queue = self.release_queue.take();
                     // catch_unwind prevents a double-panic abort if BUILDING
                     // the release future (the callback) or submitting it
-                    // panics. Unwind-safe: `runtime` is *moved* into the
-                    // closure and `self` retains no alias to it (the permit
-                    // was already taken out above), so an unwind cannot leave
-                    // shared guard state in a torn condition. The callback
+                    // panics. Unwind-safe: `runtime` and `permit_guard` are
+                    // *moved* into the closure and `self` retains no alias to
+                    // them (both were taken out above), so an unwind cannot
+                    // leave shared guard state in a torn condition. The callback
                     // only *builds* the teardown future; `Drop` submits it to
                     // the queue discarding its `Result`, keeping the queued
                     // path best-effort / error-swallowing exactly as before.
-                    if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    if std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
                         let fut = callback(runtime, tainted);
                         if let Some(rq) = release_queue {
                             rq.submit(move || {
                                 Box::pin(async move {
                                     let _ = fut.await;
+                                    // Permit held across the teardown, freed only
+                                    // now that reset/destroy has resolved.
+                                    drop(permit_guard);
                                 })
                             });
                         }
+                        // No queue: `permit_guard` drops at the end of this
+                        // closure — nothing to wait for.
                     }))
                     .is_err()
                     {
@@ -631,7 +642,8 @@ impl<R: Provider> Drop for ResourceGuard<R> {
                         );
                     }
                 }
-                // _permit_guard drops here, returning the slot to the semaphore.
+                // If the `if let` did not match (detached / no callback),
+                // `permit_guard` drops here, returning the slot to the semaphore.
             },
         }
 

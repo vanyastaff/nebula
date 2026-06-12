@@ -51,6 +51,11 @@ struct Seats {
     destroy_count: Arc<AtomicU64>,
     reset_count: Arc<AtomicU64>,
     reset_ok: Arc<AtomicBool>,
+    /// When set, `reset` parks on `reset_gate` after counting — lets a test
+    /// hold a reset mid-flight and observe that the Exclusive permit is NOT
+    /// freed while the reset is still running.
+    reset_block: Arc<AtomicBool>,
+    reset_gate: Arc<tokio::sync::Notify>,
 }
 
 impl Seats {
@@ -60,6 +65,8 @@ impl Seats {
             destroy_count: Arc::new(AtomicU64::new(0)),
             reset_count: Arc::new(AtomicU64::new(0)),
             reset_ok: Arc::new(AtomicBool::new(true)),
+            reset_block: Arc::new(AtomicBool::new(false)),
+            reset_gate: Arc::new(tokio::sync::Notify::new()),
         }
     }
 }
@@ -103,6 +110,9 @@ impl HasCredentialSlots for Seats {
 impl BoundedProvider for Seats {
     async fn reset(&self, _instance: &mut Seat) -> Result<(), Error> {
         self.reset_count.fetch_add(1, Ordering::SeqCst);
+        if self.reset_block.load(Ordering::SeqCst) {
+            self.reset_gate.notified().await;
+        }
         if self.reset_ok.load(Ordering::SeqCst) {
             Ok(())
         } else {
@@ -184,12 +194,24 @@ async fn capped_gates_concurrency_through_manager() {
         "a third concurrent lease exceeds Capped(2) and must be rejected"
     );
 
-    // Release one; the permit frees synchronously on guard drop and the next
-    // lease admits.
+    // Release one. The Drop path holds the permit across the queued teardown
+    // (true cap — no transient over-allocation), so the permit frees once g1's
+    // teardown completes and the next lease admits after a brief wait.
     drop(g1);
-    let g3 = acquire(&manager, &key, &ctx)
-        .await
-        .expect("a freed permit re-admits");
+    let mut g3 = None;
+    for _ in 0..400 {
+        match acquire(&manager, &key, &ctx).await {
+            Ok(g) => {
+                g3 = Some(g);
+                break;
+            },
+            Err(_) => tokio::time::sleep(std::time::Duration::from_millis(5)).await,
+        }
+    }
+    assert!(
+        g3.is_some(),
+        "a freed permit re-admits once the prior lease has torn down"
+    );
     drop((g2, g3));
 }
 
@@ -287,4 +309,68 @@ async fn unbounded_never_rejects_through_manager() {
     }
     assert_eq!(guards.len(), 8);
     assert_eq!(guards[0].topology_tag(), TopologyTag::Bounded);
+}
+
+/// Regression: on the default `Drop` release path (not `release().await`), an
+/// Exclusive lease's permit must stay held until its `reset` completes — else a
+/// second acquirer could mint a second live instance during the reset window,
+/// breaking the serial guarantee. Park a reset mid-flight, prove a concurrent
+/// acquire is rejected (permit held), then reuses the one instance once reset
+/// ends. Without the fix the permit freed synchronously at drop and the
+/// concurrent acquire would create a second instance (create_count == 2).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn exclusive_permit_held_until_reset_completes_on_drop() -> Result<(), Error> {
+    let manager = Arc::new(Manager::new());
+    let seats = Seats::new();
+    seats.reset_block.store(true, Ordering::SeqCst);
+    let create_count = Arc::clone(&seats.create_count);
+    let reset_count = Arc::clone(&seats.reset_count);
+    let reset_gate = Arc::clone(&seats.reset_gate);
+    register(&manager, seats, Bounded::exclusive());
+    let key = Seats::key();
+    let ctx = ctx();
+
+    let a = acquire(&manager, &key, &ctx).await?;
+    drop(a); // Drop path — queues the (blocking) reset; the permit must stay held.
+
+    // Wait for the queued reset to start running (it then parks on the gate).
+    let reset_started = poll_until(std::time::Duration::from_secs(2), || {
+        reset_count.load(Ordering::SeqCst) >= 1
+    })
+    .await;
+    assert!(
+        reset_started,
+        "the queued Exclusive reset must run on the Drop path"
+    );
+
+    // The reset is mid-flight and still holds the permit → a concurrent acquire
+    // is rejected. With the bug the permit freed at drop and this acquire would
+    // succeed, minting a SECOND live Exclusive instance.
+    assert!(
+        acquire(&manager, &key, &ctx).await.is_err(),
+        "a second Exclusive lease must be rejected while the reset still holds the permit"
+    );
+
+    // Let the reset finish → permit freed + the one instance returned to the store.
+    reset_gate.notify_one();
+    let mut reused = None;
+    for _ in 0..400 {
+        match acquire(&manager, &key, &ctx).await {
+            Ok(g) => {
+                reused = Some(g);
+                break;
+            },
+            Err(_) => tokio::time::sleep(std::time::Duration::from_millis(5)).await,
+        }
+    }
+    assert!(
+        reused.is_some(),
+        "the lease re-admits once the reset releases the permit"
+    );
+    assert_eq!(
+        create_count.load(Ordering::SeqCst),
+        1,
+        "the one Exclusive instance was reused — never a second live instance"
+    );
+    Ok(())
 }

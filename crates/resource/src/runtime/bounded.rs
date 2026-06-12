@@ -59,6 +59,12 @@ pub struct Bounded<R: Provider> {
     /// alongside the semaphore so [`load`](Topology::load) can report saturation
     /// and [`set_cap`](Self::set_cap) can diff against it.
     cap: AtomicUsize,
+    /// Serializes [`set_cap`](Self::set_cap): the resize is a compound
+    /// read-modify-write over both the semaphore (`add_permits` /
+    /// `forget_permits`) and `cap`, so two concurrent `&self` calls would
+    /// otherwise lose an update and leave `cap` inconsistent with the real
+    /// permit count. Uncontended in the common case (resize is a rare admin op).
+    resize_lock: std::sync::Mutex<()>,
     _marker: PhantomData<fn() -> R>,
 }
 
@@ -89,6 +95,7 @@ impl<R: Provider> Bounded<R> {
             mode: BoundedMode::Capped(n),
             sem: Some(Arc::new(Semaphore::new(n))),
             cap: AtomicUsize::new(n),
+            resize_lock: std::sync::Mutex::new(()),
             _marker: PhantomData,
         })
     }
@@ -101,6 +108,7 @@ impl<R: Provider> Bounded<R> {
             mode: BoundedMode::Exclusive,
             sem: Some(Arc::new(Semaphore::new(1))),
             cap: AtomicUsize::new(1),
+            resize_lock: std::sync::Mutex::new(()),
             _marker: PhantomData,
         }
     }
@@ -113,6 +121,7 @@ impl<R: Provider> Bounded<R> {
             mode: BoundedMode::Unbounded,
             sem: None,
             cap: AtomicUsize::new(0),
+            resize_lock: std::sync::Mutex::new(()),
             _marker: PhantomData,
         }
     }
@@ -151,6 +160,13 @@ impl<R: Provider> Bounded<R> {
                 "Bounded::set_cap requires a cap of at least 1",
             ));
         }
+        // Serialize the compound semaphore+cap read-modify-write so two
+        // concurrent resizes cannot lose an update. Recover from a poisoned
+        // lock — the guarded `()` carries no state a prior panic could corrupt.
+        let _resize = self
+            .resize_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let cur = self.cap.load(Ordering::Acquire);
         match n.cmp(&cur) {
             std::cmp::Ordering::Greater => {
