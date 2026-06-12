@@ -309,7 +309,7 @@ Seam: `crates/storage/src/execution_repo.rs` — `ExecutionRepo::transition`. Te
 
 ### 11.4 Resource lifecycle
 
-**[L2]** Resources are first-class because **acquisition** and **scope-bounded release** are **engine-owned**. The async release path is **best-effort on crash** — orphaned resources rely on the next process to drain (mechanism types: see `crates/resource/README.md`). Operators must be told this; authors must not assume “release ran” without an explicit checkpoint.
+**[L2]** Resources are first-class because **acquisition** and **scope-bounded release** are **engine-owned**. Teardown has **two contracts** (ADR-0093). **Normal release** (`recycle` / `destroy`) is **awaited, deadline-bounded, and fallible**: the framework composes a per-resource teardown deadline (`Provider::teardown_budget`, capped short on credential revoke), abandons a hook that exceeds it with a typed error, and **discards rather than re-pools** a credentialed instance unless the author’s `recycle` wipes per-lease session state. **Crash release** stays **best-effort** — if the host process dies, orphaned resources rely on the next process to drain (mechanism types: see `crates/resource/README.md`). Operators must be told this; authors must not assume “release ran” without an explicit checkpoint.
 
 Seam: `crates/resource/src/release_queue.rs` — `ReleaseQueue`. Test coverage: see `docs/MATURITY.md`.
 
