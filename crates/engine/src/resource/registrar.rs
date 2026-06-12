@@ -3,7 +3,7 @@
 //! [`nebula_resource::Manager::register_resolved`] is a *typed* entry
 //! point (`register_resolved::<R>`): it monomorphizes on the concrete
 //! resource type so it can deserialize `R::Config`, schema-validate it,
-//! and build a `TopologyRuntime<R>`. A stored resource row only carries a
+//! and build a `R::Topology`. A stored resource row only carries a
 //! `kind` string and opaque JSON, so the engine needs an erased
 //! indirection: a per-kind object-safe registrar that already knows its
 //! concrete `R` and dispatches into the typed manager call.
@@ -38,7 +38,7 @@
 //!     slot_bindings: HashMap<String, nebula_core::CredentialKey>,
 //!     resource:      R,
 //!     scope:         ScopeLevel,
-//!     topology:      TopologyRuntime<R>,
+//!     topology:      R::Topology,
 //!     recovery_gate: Option<Arc<RecoveryGate>>,
 //! ) -> Result<SlotIdentity, nebula_resource::Error>
 //! where R: Provider + DeclaresDependencies, R::Config: DeserializeOwned
@@ -50,13 +50,13 @@
 //! independent recompute, no dual-derive divergence).
 //!
 //! Of those, only `config_json` is carried by the stored resource row.
-//! `resource: R` and `topology: TopologyRuntime<R>` are **`R`-typed** and
+//! `resource: R` and `topology: R::Topology` are **`R`-typed** and
 //! cannot be constructed generically at the erased boundary — the
 //! resource crate emits no `FromConfig`/constructor and no topology
 //! factory from the `#[derive(Resource)]` macro. They must therefore be
 //! closed over per concrete `R` when the registrar is built (that is what
 //! [`KindActivator`] does: it holds a `resource`-producing
-//! factory, a `TopologyRuntime<R>`-producing factory, and an erased
+//! factory, a `R::Topology`-producing factory, and an erased
 //! `acquire`-hook factory). The acquire hook is **identity-independent**
 //! (the single-walk acquire resolution pins the row by the caller's
 //! runtime slot identity), so it is no longer parameterised by the
@@ -194,7 +194,7 @@ pub struct ResourceRegistrationOutcome {
 /// threads into a typed registration.
 ///
 /// Everything here is independent of the concrete resource type `R`; the
-/// per-`R` pieces (`resource: R`, `TopologyRuntime<R>`) are supplied by
+/// per-`R` pieces (`resource: R`, `R::Topology`) are supplied by
 /// the activator itself (see [`KindActivator`]). Borrowed for
 /// the duration of the call so the registry can be invoked without
 /// cloning the expression engine.
@@ -291,7 +291,7 @@ pub trait ResourceActivator: Send + Sync {
     /// Runs the schema pass + closed-set guard + `R::Config` deserialize
     /// (the validation core shared with the live `register` path via
     /// [`Manager::validate_config_value`]), but performs **no** `Manager`
-    /// mutation, constructs **no** `resource: R` / `TopologyRuntime<R>`,
+    /// mutation, constructs **no** `resource: R` / `R::Topology`,
     /// and does **no** `{{ … }}` template resolution. This is the seam a
     /// config-CRUD writer uses to reject a bad resource config *before*
     /// persistence — config validation is strictly separate from
@@ -314,14 +314,14 @@ pub trait ResourceActivator: Send + Sync {
 /// Per-`R` [`ResourceActivator`] that closes over the pieces the erased
 /// boundary cannot synthesize generically: a factory that produces the
 /// `resource: R` value (with its credential slots already resolved by the
-/// engine), and a factory that produces the `TopologyRuntime<R>` declared
+/// engine), and a factory that produces the `R::Topology` declared
 /// for this kind.
 ///
 /// Both are factories rather than stored values because an activator may
 /// be invoked more than once (re-activation, multiple scopes). The
-/// topology factory builds a `TopologyRuntime<R>` via
-/// [`TopologyRuntime::resident`] or [`TopologyRuntime::pooled`] — the
-/// acquire dispatch is baked into the runtime at construction, not stored
+/// topology factory builds an `R::Topology` via
+/// `Resident::new(...)` or `Pooled::new(...)` — the
+/// acquire dispatch is baked into the topology at construction, not stored
 /// separately.
 pub struct KindActivator<R, FRes, FTopo>
 where
@@ -345,10 +345,10 @@ where
     ///
     /// - `resource_factory` — yields the `R` value with credential slots
     ///   already resolved by the engine per registration scope.
-    /// - `topology_factory` — yields the `TopologyRuntime<R>` for this
-    ///   kind. Use [`TopologyRuntime::resident`] for resident topologies
-    ///   or [`TopologyRuntime::pooled`] for pooled ones; the acquire
-    ///   dispatch is baked into the runtime at construction.
+    /// - `topology_factory` — yields the `R::Topology` for this
+    ///   kind. Use `Resident::new(...)` for resident topologies
+    ///   or `Pooled::new(...)` for pooled ones; the acquire
+    ///   dispatch is baked into the topology at construction.
     pub fn new(resource_factory: FRes, topology_factory: FTopo) -> Self {
         Self {
             resource_factory,
