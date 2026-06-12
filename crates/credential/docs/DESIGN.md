@@ -736,10 +736,15 @@ drift fixed.
 
 ## 19. Resolved decisions (review 2026-06-12)
 
-1. **PKCE kernel** → `nebula_credential::secrets::pkce` (pure crypto, zero
-   HTTP). `nebula-api` re-exports it; Plane A callers in
-   `api/transport/oauth/flow.rs` switch to the re-export — one kernel for
-   both planes.
+1. **PKCE kernel** → `nebula_credential::secrets::pkce` (zero HTTP).
+   Scope: challenge/verifier minting only — random verifier + S256
+   challenge over hashing primitives. This does **not** move the crypto
+   boundary: encryption-at-rest primitives (AES-256-GCM, `EncryptedData`)
+   stay in `nebula-crypto`, and `secrets::pkce` builds on `nebula-crypto` /
+   standard hashing rather than re-implementing primitives (consistent with
+   the existing PKCE helpers in `src/secrets/`). `nebula-api` re-exports
+   it; Plane A callers in `api/transport/oauth/flow.rs` switch to the
+   re-export — one kernel for both planes.
 2. **OAuth2 KEY strategy** → **per-provider KEYS** (`github_oauth`,
    `slack_oauth`, …): pairs of (shared protocol code,
    `OAuth2ProviderConfig` data) registered per provider.
