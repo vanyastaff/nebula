@@ -7,7 +7,9 @@
 //! 1. `#[derive(Resource)]` (this macro) — emits the slot plumbing:
 //!    - `impl DeclaresDependencies` enumerating `#[credential]` slot fields.
 //!    - An inherent `pub fn <field>_slot(&self) -> Option<Arc<...>>` accessor per slot.
-//!    - `impl HasCredentialSlots` with the order-sensitive positional fold.
+//!    - `impl HasCredentialSlots` with the order-sensitive positional fold
+//!      and a `declares_credential_slots()` that is `true` iff the struct
+//!      has at least one `#[credential]` field.
 //!
 //! 2. Hand-written `impl Provider` — the implementor supplies `key()`, the two
 //!    associated types (`Config`, `Instance`), and the lifecycle methods
@@ -31,7 +33,8 @@
 //!
 //! Deriving on a struct with no `#[credential]` fields is legal. The macro
 //! emits empty `DeclaresDependencies` and `HasCredentialSlots { fn
-//! credential_slot_epoch → 0 }` implementations. No accessors are emitted.
+//! credential_slot_epoch → 0, fn declares_credential_slots → false }`
+//! implementations. No accessors are emitted.
 //!
 //! ## Rejected forms
 //!
@@ -92,11 +95,19 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
     let slot_registrations = field_slots::emit_slot_field_registrations_with_purpose(&slots);
     let slot_accessors = field_slots::emit_slot_accessors(&slots);
     let credential_slot_epoch_body = field_slots::emit_credential_slot_epoch_body(&slots);
+    // Type-level signal: `true` iff the struct declared at least one
+    // `#[credential]` field. Emitted explicitly (rather than relying on the
+    // trait default) so the slot-less case reads `false` at the impl site.
+    let declares_credential_slots = !slots.is_empty();
 
     let has_credential_slots_impl = quote! {
         impl #impl_generics ::nebula_resource::HasCredentialSlots for #struct_name #ty_generics #where_clause {
             fn credential_slot_epoch(&self) -> u64 {
                 #credential_slot_epoch_body
+            }
+
+            fn declares_credential_slots() -> bool {
+                #declares_credential_slots
             }
         }
     };

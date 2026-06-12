@@ -12,6 +12,7 @@ use super::{Manager, RegistrationSpec, resolve_json_templates};
 use crate::{
     error::Error, events::ResourceEvent, recovery::gate::RecoveryGate, reload::ReloadOutcome,
     resource::Provider, runtime::managed::ManagedResource, topology::Topology,
+    topology_tag::TopologyTag,
 };
 
 impl Manager {
@@ -97,6 +98,22 @@ impl Manager {
         // is the topology's (`Pooled`: `max_size`; non-pooling topologies:
         // `None`, store stays empty). Read before moving `topology` in.
         let store_capacity = <R::Topology as Topology<R>>::store_capacity(&topology);
+
+        // Tier-3 foolproofing (ADR-0093): a credentialed *Pooled* resource whose
+        // `PoolProvider::recycle` is left at its `Keep` default re-pools a
+        // session-stateful instance without wiping per-lease state — so a `SET`,
+        // `PRAGMA`, or open transaction set under one lease can bleed into the
+        // next lease that checks the same instance back out. This is a
+        // dev-time nudge, not a correctness gate: a resource MAY legitimately
+        // keep state, so it only warns. Keyed on the *type-level* slot signal
+        // (`declares_credential_slots`) rather than the runtime epoch, which is
+        // `0` for both slot-less and declared-but-unbound resources.
+        if Topology::<R>::tag(&topology) == TopologyTag::Pool && R::declares_credential_slots() {
+            tracing::warn!(
+                resource.key = %R::key(),
+                "credentialed pooled resource: `recycle` returns Keep by default — a session-stateful instance re-pooled without wiping per-lease state (SET/PRAGMA/txn) can bleed across leases. Override `PoolProvider::recycle` to reset state (or return Drop). See ADR-0093."
+            );
+        }
 
         let managed = Arc::new(ManagedResource {
             resource,

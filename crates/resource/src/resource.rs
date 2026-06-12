@@ -502,6 +502,19 @@ pub trait HasCredentialSlots {
     /// Order-sensitive positional fold over every credential slot's generation.
     /// `0` = no slot ever bound (also the only value for slot-less resources).
     fn credential_slot_epoch(&self) -> u64;
+
+    /// Whether this resource TYPE declares any `#[credential]` slot field.
+    ///
+    /// Distinct from [`credential_slot_epoch`](Self::credential_slot_epoch),
+    /// which is `0` both for a slot-less resource and for a declared-but-unbound
+    /// slot and so cannot answer this at the type level. The derive emits `true`
+    /// when the struct has at least one `#[credential]` field; hand-written
+    /// impls default to `false`. The framework uses it to nudge credentialed
+    /// Pooled resources toward a session-state-wiping `recycle` (see ADR-0093
+    /// foolproofing Tier-3).
+    fn declares_credential_slots() -> bool {
+        false
+    }
 }
 
 #[cfg(test)]

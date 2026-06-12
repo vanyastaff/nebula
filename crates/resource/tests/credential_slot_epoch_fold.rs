@@ -343,3 +343,110 @@ async fn resident_reconcile_fires_when_non_max_slot_rotates() {
          as stale; a `max` epoch would have skipped it with a false success)"
     );
 }
+
+// ── Part 3: type-level `declares_credential_slots` signal (ADR-0093) ──
+//
+// The derive emits `true` when the struct has >=1 `#[credential]` field and
+// `false` when it has none; a hand-written `impl HasCredentialSlots` keeps the
+// trait default of `false`. This is the type-level signal the registration
+// Tier-3 nudge keys off (the epoch is `0` for both slot-less and
+// declared-but-unbound resources, so it cannot answer this).
+
+/// A derived resource with **no** `#[credential]` field — the slot-less case.
+#[derive(Resource)]
+struct NoSlotDerived;
+
+#[async_trait::async_trait]
+impl Provider for NoSlotDerived {
+    type Config = TwoSlotCfg;
+    type Instance = ();
+    type Topology = Resident<Self>;
+
+    fn key() -> ResourceKey {
+        nebula_resource::resource_key!("epochfold-noslot")
+    }
+
+    async fn create(&self, _config: &TwoSlotCfg, _ctx: &ResourceContext) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+impl ResidentProvider for NoSlotDerived {}
+
+#[test]
+fn declares_credential_slots_reflects_credential_fields() {
+    // Derived WITH `#[credential]` fields → true.
+    assert!(
+        TwoSlotDerived::declares_credential_slots(),
+        "a derived resource with #[credential] fields must declare credential slots"
+    );
+    // Derived WITHOUT any `#[credential]` field → false (slot-less case).
+    assert!(
+        !NoSlotDerived::declares_credential_slots(),
+        "a derived slot-less resource must not declare credential slots"
+    );
+    // Hand-written `impl HasCredentialSlots` (no derive) → trait default false.
+    assert!(
+        !TwoSlotResident::declares_credential_slots(),
+        "a hand-written HasCredentialSlots impl defaults to false"
+    );
+}
+
+// ── Part 4: a credentialed Pooled resource registers (Tier-3 nudge fires) ──
+
+#[derive(Clone)]
+struct PooledCredResource {
+    slot: Arc<SlotCell<CredentialGuard<FakeCred>>>,
+}
+
+#[async_trait::async_trait]
+impl Provider for PooledCredResource {
+    type Config = RaceCfg;
+    type Instance = ();
+    type Topology = nebula_resource::Pooled<Self>;
+
+    fn key() -> ResourceKey {
+        resource_key!("epochfold-pooled-cred")
+    }
+
+    async fn create(&self, _config: &RaceCfg, _ctx: &ResourceContext) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+impl HasCredentialSlots for PooledCredResource {
+    fn credential_slot_epoch(&self) -> u64 {
+        self.slot.generation()
+    }
+
+    // Hand-mirrors what the derive emits for a one-credential-slot struct.
+    // This is the combination the Tier-3 nudge targets: Pooled + credentialed.
+    fn declares_credential_slots() -> bool {
+        true
+    }
+}
+
+impl nebula_resource::topology::pooled::PoolProvider for PooledCredResource {}
+
+/// Registering a credentialed Pooled resource must still succeed — the Tier-3
+/// nudge is a `tracing::warn`, not an error. (Asserting the log itself needs a
+/// subscriber; here we only prove registration is non-breaking.)
+#[tokio::test]
+async fn credentialed_pooled_resource_registers() {
+    let mgr = Manager::new();
+    let pool_config = nebula_resource::topology::pooled::config::Config {
+        max_size: 2,
+        ..Default::default()
+    };
+    mgr.register(RegistrationSpec {
+        resource: PooledCredResource {
+            slot: Arc::new(SlotCell::empty()),
+        },
+        config: RaceCfg,
+        scope: ScopeLevel::Global,
+        slot_identity: SlotIdentity::Unbound,
+        topology: nebula_resource::Pooled::<PooledCredResource>::new(pool_config, 0),
+        recovery_gate: None,
+    })
+    .expect("credentialed pooled registration must succeed (nudge only warns)");
+}
