@@ -1,63 +1,50 @@
 {
-  "$schema": "https://unpkg.com/@aliou/pi-guardrails/schema.json",
+  "$schema": "https://unpkg.com/@aliou/pi-guardrails@0.13.2/schema.json",
   "_comment": "Nebula: guardrails отвечает за file-policies (env/target/worktrees/audit). bash-команды и external_directory отданы pi-permission-system чтобы не было двойных prompt'ов. См. CLAUDE.md § AI Context Files и § Pi Hook Strategy.",
   "enabled": true,
   "applyBuiltinDefaults": true,
   "features": {
     "pathAccess": false,
     "permissionGate": false,
-    "policies": true,
-    "protectEnvFiles": true
-  },
-  "envFiles": {
-    "blockMessage": "Nebula: чтение .env заблокировано (содержит API_JWT_SECRET / API_KEYS / DATABASE_URL). Используй .env.example как шаблон.",
-    "onlyBlockIfExists": false,
-    "allowedPatterns": [
-      { "pattern": ".env.example" },
-      { "pattern": "**/.env.example" }
-    ]
+    "policies": true
   },
   "policies": {
     "rules": [
       {
-        "id": "nebula.secrets.env",
-        "name": "Nebula secrets (.env)",
-        "description": "Защищает все варианты .env кроме .env.example. Read+Write блокируются.",
-        "patterns": [
-          { "pattern": ".env" },
-          { "pattern": ".env.*" },
-          { "pattern": "**/.env" },
-          { "pattern": "**/.env.*" }
-        ],
+        "id": "secret-files",
+        "description": "Files containing secrets (migrated from envFiles)",
+        "protection": "noAccess",
         "allowedPatterns": [
-          { "pattern": ".env.example" },
-          { "pattern": "**/.env.example" }
+          {
+            "pattern": ".env.example",
+            "regex": true
+          },
+          {
+            "pattern": "**/.env.example",
+            "regex": true
+          }
         ],
-        "protection": "noAccess",
-        "blockMessage": "Nebula: {file} — секретный файл. Чтение/запись запрещены."
-      },
-      {
-        "id": "nebula.audit-snapshots",
-        "name": "Audit snapshots",
-        "description": "Снимки .pi-audit-* read-only (исторические данные, не редактировать).",
+        "onlyIfExists": false,
+        "blockMessage": "Nebula: чтение .env заблокировано (содержит API_JWT_SECRET / API_KEYS / DATABASE_URL). Используй .env.example как шаблон.",
         "patterns": [
-          { "pattern": ".pi-audit-*/**" }
-        ],
-        "protection": "readOnly",
-        "blockMessage": "Nebula: {file} — снимок аудита (read-only). Не редактируй исторические снимки."
-      },
-      {
-        "id": "user.secrets.ssh-cargo",
-        "name": "User secrets (~/.ssh, ~/.cargo/credentials)",
-        "description": "Глобальные секреты юзера — ни читать, ни писать (вторая линия защиты к pi-permission-system path-deny).",
-        "patterns": [
-          { "pattern": "**/.ssh/**" },
-          { "pattern": "**/.cargo/credentials*" },
-          { "pattern": "**/.cargo/credentials.toml" }
-        ],
-        "protection": "noAccess",
-        "blockMessage": "User secrets: {file} запрещён."
+          {
+            "pattern": ".env"
+          },
+          {
+            "pattern": ".env.local"
+          },
+          {
+            "pattern": ".env.production"
+          },
+          {
+            "pattern": ".env.prod"
+          },
+          {
+            "pattern": ".dev.vars"
+          }
+        ]
       }
     ]
-  }
+  },
+  "version": "0.9.0-20260327"
 }

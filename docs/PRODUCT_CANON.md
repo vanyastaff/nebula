@@ -359,7 +359,7 @@ Seams: `crates/storage/src/execution_repo.rs` — `ExecutionRepo::save_stateful_
 
 ### 12.1 Layering and dependencies
 
-- **[L2]** Follow `CLAUDE.md` dependency direction. **No upward dependencies** between layers.
+- **[L2]** Follow `AGENTS.md` dependency direction. **No upward dependencies** between layers.
 - **[L2]** `crates/api` does not embed SQL drivers or storage schema knowledge beyond declared ports; **storage and orchestration details live in their crates**.
 
 ### 12.2 Execution: single semantic core, durable control plane
@@ -476,7 +476,7 @@ Tied seams: ADR-0028 cross-crate invariants (rotation/refresh boundaries between
 
 | Document | Role |
 |---|---|
-| `CLAUDE.md` | Commands, formatting, session read-order, decision gate, trap catalog. |
+| `AGENTS.md` | Commands, formatting, session read-order, decision gate, trap catalog. |
 | `docs/PRODUCT_CANON.md` (this file) | Normative core — pillars (§4), golden path (§10), contracts (§11), invariants (§12), knife (§13), anti-patterns (§14), decision filter (§16), DoD (§17). Layer-tagged. |
 | `docs/INTEGRATION_MODEL.md` | Integration model mechanics — Resource / Credential / Action / Schema / Plugin contract, wiring rules, plugin packaging, status of aspirational surfaces. |
 | `docs/COMPETITIVE.md` | Peer analysis and our bets against n8n / Temporal / Windmill / Make / Zapier. Explicitly persuasive. |
@@ -538,7 +538,7 @@ Additional DoD items (unchanged from prior canon):
 - A new public behavioral contract requires §11-level honesty; docs must not mislabel implementation state.
 - A new outbox / queue / worker lands with its consumer (or explicit §12.7 exemption) in the same PR.
 - A removed backend, endpoint, or capability is not still advertised in `README.md` or `docs/`.
-- Local path stays documented in `CLAUDE.md` or `README` where applicable.
+- Local path stays documented in `AGENTS.md` or `README` where applicable.
 
 ---
 

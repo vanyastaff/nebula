@@ -4,7 +4,7 @@
 > **pointer map**, not a spec — it tells you *where* the truth lives, not what
 > it says. Read the linked canon; do not trust a summary over the source.
 >
-> **Reading order:** [`CLAUDE.md`](CLAUDE.md) (rules + layer map) →
+> **Reading order:** [`AGENTS.md`](AGENTS.md) (rules + layer map) →
 > [`README.md`](README.md) (product) → [`STRATEGY.md`](STRATEGY.md) (direction)
 > → [`docs/README.md`](docs/README.md) (the doc map — read it before opening
 > anything else under `docs/`).
@@ -64,7 +64,7 @@ Six layers, each depends **only on layers below it**. Cross-cutting crates are
 importable at any level. Boundaries are **mechanically enforced** by
 `cargo deny check` against the `wrappers` allowlists in `deny.toml` `[bans].deny`
 — a missing edge fails CI before review. Cross-crate signalling goes through `nebula-eventbus`, never
-direct sibling imports. Full map + nuances → [`CLAUDE.md`](CLAUDE.md)
+direct sibling imports. Full map + nuances → [`AGENTS.md`](AGENTS.md)
 "Layered Dependency Map".
 
 | Layer | Crates |
@@ -93,15 +93,15 @@ Three placements that are *not* a simple single-tier reading:
   `sandbox`.
 
 **Per-crate quick-maps:** the convention is that every `crates/<x>/` carries a
-`CLAUDE.md` agent quick-map (purpose, layer, commands, key files, crate rules)
+`AGENTS.md` agent quick-map (purpose, layer, commands, key files, crate rules)
 alongside the human-facing `README.md` — see the "AI Context Files" table in
-[`CLAUDE.md`](CLAUDE.md). When editing a crate, open its `CLAUDE.md` /
+[`AGENTS.md`](AGENTS.md). When editing a crate, open its `AGENTS.md` /
 `README.md` first.
 
 ## 4. Where to start, by task type
 
 Pick the crate by intent. One-liners are condensed; the crate's own
-`README.md` (and `CLAUDE.md` quick-map) is authoritative.
+`README.md` (and `AGENTS.md` quick-map) is authoritative.
 
 | I want to… | Start in (crate) | Layer | What it owns |
 |------------|------------------|-------|--------------|
@@ -144,7 +144,7 @@ Pick the crate by intent. One-liners are condensed; the crate's own
 
 ## 5. Build / test / PR workflow
 
-Daily commands go through **`task`** (see [`CLAUDE.md`](CLAUDE.md) "Common
+Daily commands go through **`task`** (see [`AGENTS.md`](AGENTS.md) "Common
 Commands"; `task --list` for the full catalog). Don't call raw `cargo` for
 fmt/lint.
 

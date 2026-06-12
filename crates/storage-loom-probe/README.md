@@ -46,7 +46,7 @@ itself.
 
 ## Layer
 
-The crate sits in the **Exec** layer per CLAUDE.md § "Layered
+The crate sits in the **Exec** layer per AGENTS.md § "Layered
 Dependency Map". Not consumed by any production crate; runs only under
 `RUSTFLAGS="--cfg loom"` in dev / CI.
 

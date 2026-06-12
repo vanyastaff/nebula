@@ -185,4 +185,4 @@ ROADMAP "Out of scope for 1.0" entry — M2.2 closes Layer 1 only.
   / `nebula-resource` as extension points; the move is a candidate refactor when the gaps above
   are fixed.
 - **14 intra-workspace dependencies** — intentional for a composition root, but every new dep
-  must be justified against the layer rules in `CLAUDE.md`.
+  must be justified against the layer rules in `AGENTS.md`.

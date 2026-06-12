@@ -20,7 +20,7 @@ levels, auth scheme enums, context contracts, and lifecycle signals.
 ## Role
 
 **Shared Vocabulary** — the vocabulary layer at the bottom of every other crate in the workspace
-(cross-cutting infrastructure per `CLAUDE.md` layer direction). Pattern: *Layered Architecture with
+(cross-cutting infrastructure per `AGENTS.md` layer direction). Pattern: *Layered Architecture with
 cross-cutting infrastructure* (Fundamentals of SW Architecture). This crate sits below Core in the
 stack; nothing here depends upward. Changing any of these identifiers or keys cascades across the
 workspace — extend `nebula-core` deliberately (canon §3.10).

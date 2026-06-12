@@ -130,33 +130,38 @@ tasks:
   # ── Test ──────────────────────────────────────────────────────────────────
 
   test:
-    desc: Run all workspace tests
+    desc: Run all workspace tests (nextest + doctests)
     cmds:
-      - cargo test {{.CARGO_FLAGS}}
+      - cargo nextest run {{.CARGO_FLAGS}}
+      - cargo test {{.CARGO_FLAGS}} --doc
 
   test:verbose:
     desc: Run all workspace tests with stdout output
     cmds:
-      - cargo test {{.CARGO_FLAGS}} -- --nocapture
+      - cargo nextest run {{.CARGO_FLAGS}} --status-level=all
+      - cargo test {{.CARGO_FLAGS}} --doc
 
   test:features:
     desc: Run all workspace tests with all feature flags
     cmds:
-      - cargo test {{.CARGO_FLAGS}} --all-features
+      - cargo nextest run {{.CARGO_FLAGS}} --all-features
+      - cargo test {{.CARGO_FLAGS}} --doc --all-features
 
   test:crate:
     desc: "Run tests for a single crate (usage: task test:crate CRATE=nebula-action)"
     requires:
       vars: [CRATE]
     cmds:
-      - cargo test -p {{.CRATE}}
+      - cargo nextest run -p {{.CRATE}}
+      - cargo test -p {{.CRATE}} --doc
 
   test:crate:features:
     desc: "Run tests for a single crate with all features (usage: task test:crate:features CRATE=nebula-action)"
     requires:
       vars: [CRATE]
     cmds:
-      - cargo test -p {{.CRATE}} --all-features
+      - cargo nextest run -p {{.CRATE}} --all-features
+      - cargo test -p {{.CRATE}} --doc --all-features
 
   hooks:test:
     desc: Run guard-hook test harness (bash)

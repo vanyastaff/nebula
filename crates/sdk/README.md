@@ -100,7 +100,7 @@ See `docs/MATURITY.md` row for `nebula-sdk`.
 
 - API stability: `partial` — `prelude`, `WorkflowBuilder`, `ActionBuilder` are in active use;
   the `testing` module and `TestRuntime` are usable but the harness coverage is still growing.
-- `anyhow` is re-exported for convenience despite `CLAUDE.md` preferring `thiserror` in
+- `anyhow` is re-exported for convenience despite `AGENTS.md` preferring `thiserror` in
   library crates — this is a deliberate ergonomics choice for integration authors (scripts and
   one-off nodes) but new first-party integrations should prefer typed errors.
 - `simple_action!` macro covers the common case but more complex action shapes (stateful,

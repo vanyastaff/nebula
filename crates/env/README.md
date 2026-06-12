@@ -40,5 +40,5 @@ duplicated across crate test modules.
 
 ## Layer
 
-See `CLAUDE.md` → *Layered Dependency Map* (Cross-cutting row) and
+See `AGENTS.md` → *Layered Dependency Map* (Cross-cutting row) and
 ADR-0086 for the placement rationale and the workspace env conventions.

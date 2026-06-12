@@ -3,7 +3,7 @@
 ## Project Context
 Modular type-safe Rust workflow engine. Edition 2024, MSRV 1.96, alpha stage.
 Layered architecture (one-way deps, no upward) — canonical map and exact
-allowlist live in [`CLAUDE.md`](../CLAUDE.md) § "Layered Dependency Map";
+allowlist live in [`AGENTS.md`](../AGENTS.md) § "Layered Dependency Map";
 mechanically enforced by `cargo deny check` against the `wrappers` fields
 on the `[bans].deny` entries in `deny.toml`.
 Universal data type: serde_json::Value.
@@ -11,8 +11,8 @@ Error handling: thiserror in libs, anyhow in binaries.
 
 ## Agent Git Workflow
 
-Use [`CLAUDE.md`](../CLAUDE.md) as the canonical source of truth for repository
-rules (`AGENTS.md` is only a thin pointer to it). For local persistent task
+Use [`AGENTS.md`](../AGENTS.md) as the canonical source of truth for repository
+rules (`CLAUDE.md` is only a thin pointer to it). For local persistent task
 branches, create worktrees with:
 
 ```sh
@@ -40,7 +40,7 @@ the same branch naming and Conventional Commit rules.
 ### Critical (always comment)
 
 1. **Layer violations** — `crates/core/*` importing from `crates/engine/*` etc.
-   The exact layer hierarchy is in `CLAUDE.md` § "Layered Dependency Map";
+   The exact layer hierarchy is in `AGENTS.md` § "Layered Dependency Map";
    `cargo deny check` against the `wrappers` allowlists on the `[bans].deny`
    entries in `deny.toml` is the authoritative gate. If a `Cargo.toml` edge
    crosses a layer boundary without an entry carrying a `reason`, CI fails

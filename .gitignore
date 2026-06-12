@@ -182,7 +182,9 @@ docker-compose.override.yml
 lefthook-local.yml
 
 .agent/
-.agents/
+.agents/*
+!.agents/skills/
+!.agents/skills/**
 .cursor/*
 !.cursor/
 !.cursor/rules/
@@ -225,6 +227,9 @@ targets/
 # Serena local state (mirrors .claudeignore policy)
 .serena/
 
+# MCP Memory server storage + local mimocode state
+.mimocode/
+
 # Compound Engineering machine-local preferences
 .compound-engineering/*.local.yaml
 
@@ -252,8 +257,9 @@ crates/*/fuzz/Cargo.lock
 !.pi/wiki/**
 !.pi/extensions/
 .pi/extensions/**
-!.pi/extensions/**/
-!.pi/extensions/**/*.json
+!.pi/extensions/guardrails.json
+!.pi/extensions/pi-permission-system/
+!.pi/extensions/pi-permission-system/config.json
 
 # Local audit drops (point-in-time snapshots, not durable docs)
 .pi-audit-*/

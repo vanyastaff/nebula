@@ -7,6 +7,23 @@
         "@modelcontextprotocol/server-filesystem",
         "."
       ]
+    },
+    "serena": {
+      "command": "serena",
+      "args": [
+        "start-mcp-server",
+        "--context",
+        "claude-code",
+        "--project",
+        "."
+      ]
+    },
+    "memory": {
+      "command": "cmd",
+      "args": ["/c", "npx", "-y", "@modelcontextprotocol/server-memory"],
+      "env": {
+        "MEMORY_FILE_PATH": ".mimocode/memory.jsonl"
+      }
     }
   }
 }
