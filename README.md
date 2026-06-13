@@ -37,9 +37,9 @@ Most automation platforms are runtime-interpreted, dynamically typed, and treat 
 ```
 API / Public    api (HTTP + webhook module) · sdk (integration author façade)
 Exec            engine · storage · storage-loom-probe
-Business        credential · credential-builtin · credential-runtime · resource · action · plugin · tenancy
+Business        credential · resource · action · plugin · tenancy
 Core            core · validator · expression · workflow · execution · schema · metadata · storage-port
-Cross-cutting   log · eventbus · metrics · resilience · error
+Cross-cutting   crypto · env · log · eventbus · metrics · resilience · error
 ```
 
 Plugins are **in-process** (ADR-0091): a human implements the `Plugin` trait in `nebula-plugin` and registers actions / credentials / resources into the registry; the engine dispatches them in-process. The out-of-process Plugin-Proto tier (`plugin-sdk` + `sandbox`) was retired — process/WASM isolation is a non-goal for now (canon §12.6).
@@ -73,10 +73,8 @@ Source of truth: workspace members in `Cargo.toml`.
 |                   | `workflow`      | `WorkflowDefinition`, DAG structure, activation-time validator                       |
 |                   | `execution`     | Execution state machine + transitions                                                |
 |                   | `storage-port`  | Object-safe storage seam: row-model traits every storage consumer depends on (ADR-0072) |
-| **Business**      | `credential`         | Encrypted storage (AES-256-GCM + AAD), key rotation, 12 universal auth schemes       |
-|                   | `credential-builtin` | First-party scaffold credential types (built on the `credential` contract)           |
-|                   | `credential-runtime` | `CredentialService<B,PS>` facade and slot-binding resolver (ADR-0066)                |
-|                   | `resource`           | External service lifecycle, typed credential refs                                    |
+| **Business**      | `credential`         | Credential subsystem (one crate, ADR-0092): contract + runtime (resolver/refresh/lease/rotation-state) + `CredentialService` facade + builtin types; 12 universal auth schemes |
+|                   | `resource`           | External service lifecycle, typed credential refs, per-slot rotation fan-out         |
 |                   | `action`             | Action trait family (Stateless / Stateful / Trigger / Resource / Control)            |
 |                   | `plugin`             | In-process plugin trait + registry                                                   |
 |                   | `tenancy`            | Scope-enforcing decorator wrapping `storage-port` so a tenant scope is substituted on every call (ADR-0072) |
@@ -86,6 +84,8 @@ Source of truth: workspace members in `Cargo.toml`.
 | **API / Public**  | `api`                | REST server, webhook transport, middleware                                           |
 |                   | `sdk`                | **Integration author façade** — re-exports + `WorkflowBuilder` + `TestRuntime`       |
 | **Cross-cutting** | `error`              | `NebulaError<E>`, `Classify` trait, derive macro                                     |
+|                   | `crypto`             | AES-256-GCM + Argon2id + `Cipher`/`Kdf` ports + `EncryptedData`/`key_id` envelope (extracted from credential per ADR-0088/0092) |
+|                   | `env`                | Cross-cutting typed environment reader (ADR-0086)                                    |
 |                   | `resilience`         | Retry, circuit breaker, rate limiter, hedge, bulkhead                                |
 |                   | `log`                | Structured logging infrastructure                                                    |
 |                   | `eventbus`           | In-memory typed pub/sub for cross-crate signals                                      |

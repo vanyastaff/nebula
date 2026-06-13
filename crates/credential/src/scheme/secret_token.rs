@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::AuthScheme; // derive macro
-use crate::{SecretString, identity_state};
+use crate::{SecretString, SecretTokenFamily, identity_state};
 
 /// An opaque secret string used as an authentication token.
 ///
@@ -22,7 +22,7 @@ use crate::{SecretString, identity_state};
 /// let token = SecretToken::new(SecretString::new("sk-abc123"));
 /// ```
 #[derive(Clone, Serialize, Deserialize, Zeroize, ZeroizeOnDrop, AuthScheme)]
-#[auth_scheme(pattern = SecretToken, sensitive)]
+#[auth_scheme(pattern = SecretToken, family = SecretTokenFamily, sensitive)]
 pub struct SecretToken {
     #[serde(with = "crate::serde_secret")]
     token: SecretString,

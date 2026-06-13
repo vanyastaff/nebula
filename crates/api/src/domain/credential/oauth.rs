@@ -450,7 +450,7 @@ async fn persist_oauth_state(
         .get(credential_id)
         .await
         .map_err(|e| map_oauth_store_err(e, credential_id))?;
-    let stored = StoredCredential {
+    let mut stored = StoredCredential {
         id: credential_id.to_owned(),
         name: existing.name,
         credential_key: OAuth2Credential::KEY.to_owned(),
@@ -466,6 +466,10 @@ async fn persist_oauth_state(
         reauth_required: false,
         metadata: existing.metadata,
     };
+    // The exchange contacted the provider and minted fresh tokens → record the
+    // validation time so the mandatory re-validation floor measures from this
+    // real validation, not from a later display-only edit.
+    stored.stamp_validated(now);
 
     store
         .put(

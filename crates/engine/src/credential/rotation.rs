@@ -18,8 +18,8 @@ pub use nebula_credential::runtime::rotation::{BackupId, RotationId};
 // Re-export contract types from nebula-credential.
 pub use nebula_credential::rotation::{
     CredentialRotationEvent, FailureHandler, FailureKind, RotatableCredential, RotationError,
-    RotationResult, SuccessCriteria, TestContext, TestMethod, TestResult, TestableCredential,
-    ValidationTest,
+    RotationResult, RotationTestResult, SuccessCriteria, TestContext, TestMethod,
+    TestableCredential, ValidationTest,
     error::RotationErrorLog,
     events::{
         LogEntryType, NotificationEvent, NotificationSender, TransactionLog, TransactionLogEntry,

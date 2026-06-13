@@ -31,7 +31,9 @@
 //! - `CredentialStore` — persistence trait. Concrete impls + composable layers (`EncryptionLayer`,
 //!   `CacheLayer`, `AuditLayer`) live in `nebula_storage::credential` per storage credential layers; the multi-tenant
 //!   scope layer was re-homed to `nebula_tenancy::CredentialScopeLayer` (spec §8).
-//! - Engine-owned runtime resolution lives in `nebula-engine::credential`.
+//! - Runtime resolution (resolver / refresh-coordinator / lease / rotation-state)
+//!   lives in this crate's `runtime` module (relocated from `nebula-engine` per
+//!   ADR-0092); the engine keeps only the accessor bridges + a test coordinator.
 //! - `SecretString`, `CredentialGuard` — zeroizing secret wrappers.
 //! - AES-256-GCM primitives (`EncryptedData`, `EncryptionKey`, `encrypt_with_aad`,
 //!   `encrypt_with_key_id`, `decrypt`, `decrypt_with_aad`) moved to `nebula-crypto`
@@ -64,8 +66,7 @@ pub mod credentials;
 /// Typed credential extension trait for capability contexts.
 pub mod ext;
 /// Credential lifecycle as data — `CredentialPolicy` / `RefreshStrategy` /
-/// `RevokeStrategy` / `CredentialCategory` (ADR-0088 D2: capabilities are data,
-/// not sub-traits).
+/// `RevokeStrategy` (ADR-0088 D2: capabilities are data, not sub-traits).
 pub mod lifecycle;
 /// Credential operation metrics — counter names and label helpers.
 pub mod metrics;
@@ -83,8 +84,9 @@ pub mod secrets;
 
 /// Credential accessor stub — NoopCredentialAccessor + default_credential_accessor.
 ///
-/// The engine-runtime allowlist-enforcing accessor lives in
-/// `nebula_engine::credential::ScopedCredentialAccessor`.
+/// The allowlist-enforcing scoped accessor (`ScopedCredentialAccessor`) lives in
+/// this crate's `runtime` module (relocated from `nebula-engine` per ADR-0092);
+/// `nebula-engine` re-exports it for backward-compatible import paths.
 mod accessor;
 /// Audit trait and value types — [`AuditSink`], [`AuditEvent`],
 /// [`AuditOperation`], [`AuditResult`]. The audit decorator (`AuditLayer`)
@@ -198,15 +200,19 @@ pub use provider::{
     ExternalProvider, ExternalProviderChain, ExternalReference, LeaseEvent, LeaseExpiryReason,
     LeaseHandle, LeasedProvider, ProviderError, ProviderFuture, ProviderKind, ProviderResolution,
 };
-// Refresh coordination — moved to nebula-engine::credential::refresh (engine credential orchestration §3 amendment)
-// Re-exports removed: RefreshAttempt, RefreshCoordinator now live in nebula-engine.
+// Refresh coordination (`RefreshCoordinator`, `RefreshAttempt`, …) lives in the
+// `runtime::refresh` module of this crate (relocated from `nebula-engine` per
+// ADR-0092); reach it via `nebula_credential::runtime::*` rather than a flat
+// crate-root re-export.
 // Auth schemes — open trait + 11-variant classification + 9 built-in scheme types.
 // Pruned 2026-04-24: FederatedAssertion (Plane A), OtpSeed + ChallengeSecret
 // (integration-internal, не projected auth material).
 pub use scheme::{
-    AuthPattern, AuthScheme, AuthStyle, Certificate, ConnectionUri, IdentityPassword,
-    InstanceBinding, KeyPair, OAuth2Token, PublicScheme, SecretToken, SensitiveScheme, SharedKey,
-    SigningKey,
+    AuthPattern, AuthScheme, AuthStyle, Certificate, CertificateFamily, ConnectionUri,
+    ConnectionUriFamily, EgressShape, ExternalScheme, IdentityPassword, IdentityPasswordFamily,
+    InstanceBinding, InstanceBindingFamily, KeyPair, KeyPairFamily, OAuth2Family, OAuth2Token,
+    PublicScheme, SchemeFamily, SecretToken, SecretTokenFamily, SensitiveScheme, SharedKey,
+    SharedKeyFamily, SigningKey, SigningKeyFamily,
 };
 // credential secrecy secret-handling primitives — crypto, guard, zeroizing wrappers,
 // scheme-guard refresh surface (§15.7). The refresh-notification hook
@@ -223,8 +229,8 @@ pub use secrets::{
 };
 // Lifecycle policy types (ADR-0088 D2): capabilities as data, not sub-traits.
 pub use lifecycle::{
-    CredentialCategory, CredentialLifecycle, CredentialPolicy, LeaseRef, RefreshStrategy,
-    RevokeStrategy,
+    CredentialLifecycle, CredentialPolicy, Decision, LeaseRef, RefreshStrategy,
+    RefreshStrategyKind, RevokeStrategy, SchemeId,
 };
 // Store trait + DTOs (canonical impls live in `nebula_storage::credential` per storage credential layers)
 pub use store::{CredentialStore, PutMode, ScopeResolver, StoreError, StoredCredential};
@@ -281,8 +287,8 @@ pub mod prelude {
         AuthPattern, AuthScheme, Credential, CredentialContext, CredentialContextBuilder,
         CredentialError, CredentialGuard, CredentialHandle, CredentialId, CredentialKey,
         CredentialMetadata, CredentialPolicy, CredentialRecord, CredentialRegistry,
-        CredentialService, CredentialState, Dynamic, HasCredentialsExt, Interactive, PublicScheme,
-        Refreshable, Revocable, SecretString, SensitiveScheme, Testable, credential,
-        credential_key, schema_of,
+        CredentialService, CredentialState, Dynamic, ExternalScheme, HasCredentialsExt,
+        Interactive, PublicScheme, Refreshable, Revocable, SecretString, SensitiveScheme, Testable,
+        credential, credential_key, schema_of,
     };
 }

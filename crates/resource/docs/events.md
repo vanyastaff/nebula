@@ -33,8 +33,9 @@ need to handle a lag error explicitly.
 
 Fourteen `#[non_exhaustive]` variants; new variants may be added in minor
 releases without a major bump. Every variant carries a `ResourceKey` — this
-crate reports strictly per-resource (the engine owns cross-resource rotation
-aggregation, so there is no aggregate `CredentialRefreshed` /
+crate reports strictly per-resource (the per-slot rotation fan-out lives **in
+this crate**, co-located with `Manager` and relocated from `nebula-engine` per
+ADR-0092; it reports per-resource, so there is no aggregate `CredentialRefreshed` /
 `CredentialRevoked` event and no `CredentialId` in any payload).
 
 ### Generic lifecycle variants (10)
@@ -54,11 +55,12 @@ aggregation, so there is no aggregate `CredentialRefreshed` /
 
 ### Slot-rotation variants (4)
 
-Emitted per `(resource, slot)` by the engine-owned rotation fan-out through
-the `Manager::{refresh_slot, revoke_slot}` port, after the
-engine has swapped the rotated guard into the slot and invoked the
-resource's `on_credential_refresh` / `on_credential_revoke` hook. The
-`error` string is already redacted — it never carries credential material.
+Emitted per `(resource, slot)` by the resource-layer rotation fan-out
+(`credential_fanout`, relocated from `nebula-engine` to this crate per ADR-0092)
+through the `Manager::{refresh_slot, revoke_slot}` port, after the rotated guard
+has been swapped into the slot and the resource's `on_credential_refresh` /
+`on_credential_revoke` hook invoked. The `error` string is already redacted — it
+never carries credential material.
 
 | Variant | Emitted when | Key fields |
 |---------|-------------|------------|

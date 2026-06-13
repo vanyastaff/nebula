@@ -129,8 +129,6 @@ pub fn derive_credential(input: TokenStream) -> TokenStream {
 /// # Arguments
 ///
 /// - `key = "…"` — stable credential type key (required).
-/// - `category = <CredentialCategory variant>` — structural lifecycle kind
-///   (required; drives the synthesized policy `category`).
 /// - `name = "…"` — required only when no `fn metadata` is supplied.
 /// - `description = "…"`, `icon = "…"`, `doc_url = "…"` — optional metadata.
 ///
@@ -139,7 +137,7 @@ pub fn derive_credential(input: TokenStream) -> TokenStream {
 /// ```ignore
 /// use nebula_credential::credential;
 ///
-/// #[credential(key = "api_key", category = StaticSecret, name = "API Key", icon = "key")]
+/// #[credential(key = "api_key", name = "API Key", icon = "key")]
 /// impl ApiKeyCredential {
 ///     type Properties = ApiKeyProperties;
 ///     type Scheme = SecretToken;

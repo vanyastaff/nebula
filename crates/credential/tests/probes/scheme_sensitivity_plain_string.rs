@@ -6,7 +6,7 @@
 use nebula_credential::AuthScheme;
 
 #[derive(AuthScheme)]
-#[auth_scheme(pattern = SecretToken, sensitive)]
+#[auth_scheme(pattern = SecretToken, family = SecretTokenFamily, sensitive)]
 struct BadScheme {
     pub token: String, // plain String for sensitive-tagged field — REJECT
 }

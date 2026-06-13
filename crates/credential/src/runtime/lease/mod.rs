@@ -66,7 +66,7 @@ use nebula_eventbus::EventBus;
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
-pub use policy::RenewalPolicy;
+pub use policy::{RenewalPolicy, StalenessCeiling, StalenessCeilingError};
 pub use registry::LeaseToken;
 pub use scheduler::LeaseLifecycleConfig;
 

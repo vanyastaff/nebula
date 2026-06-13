@@ -13,15 +13,19 @@
 //! 3. Filtered iterator excludes entries that miss at least one required flag — load-bearing for
 //!    operator-UI / discovery code that picks "which credentials can refresh + revoke".
 
+use nebula_core::auth::{
+    AuthPattern, AuthScheme, EgressShape, RefreshStrategyKind, SchemeFamily, SensitiveScheme,
+};
 use nebula_credential::{
     Capabilities, Credential, CredentialContext, CredentialMetadata, CredentialRegistry,
-    Refreshable, Revocable, SecretString,
+    CredentialState, Refreshable, Revocable, SecretString,
     contract::plugin_capability_report,
     error::CredentialError,
     resolve::{RefreshOutcome, ResolveResult},
     scheme::SecretToken,
 };
 use nebula_schema::FieldValues;
+use serde::{Deserialize, Serialize};
 
 // ── Static probe credential — zero capabilities ────────────────────
 
@@ -40,7 +44,7 @@ impl Credential for StaticProbe {
             .name("StaticProbe")
             .description("zero-capability probe credential")
             .schema(nebula_credential::schema_of::<Self::Properties>())
-            .pattern(nebula_credential::AuthPattern::SecretToken)
+            .pattern(AuthPattern::SecretToken)
             .build()
             .expect("StaticProbe metadata is valid")
     }
@@ -75,14 +79,50 @@ impl plugin_capability_report::IsDynamic for StaticProbe {
     const VALUE: bool = false;
 }
 
+// ── Active-refresh probe scheme + family ────────────────────────────
+//
+// A `Refreshable` credential is sound only on a scheme whose family declares an
+// active wire-intrinsic refresh class (F3 containment law, enforced at
+// registration). `SecretToken`'s family is `Static`-only, so the refreshable
+// probe carries its own minimal scheme whose family permits `RefreshToken`.
+
+pub struct ProbeRefreshFamily;
+
+impl SchemeFamily for ProbeRefreshFamily {
+    const EGRESS: &'static [EgressShape] = &[EgressShape::InlineSecret];
+    fn refresh_classes() -> &'static [RefreshStrategyKind] {
+        &[RefreshStrategyKind::RefreshToken]
+    }
+    fn pattern() -> AuthPattern {
+        AuthPattern::OAuth2
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize, zeroize::Zeroize, zeroize::ZeroizeOnDrop)]
+pub struct ProbeToken(String);
+
+impl AuthScheme for ProbeToken {
+    type Family = ProbeRefreshFamily;
+    fn pattern() -> AuthPattern {
+        AuthPattern::OAuth2
+    }
+}
+
+impl SensitiveScheme for ProbeToken {}
+
+impl CredentialState for ProbeToken {
+    const KIND: &'static str = "probe.refreshable.token";
+    const VERSION: u32 = 1;
+}
+
 // ── Refreshable + Revocable probe credential ────────────────────────
 
 pub struct RefreshableProbe;
 
 impl Credential for RefreshableProbe {
     type Properties = ();
-    type Scheme = SecretToken;
-    type State = SecretToken;
+    type Scheme = ProbeToken;
+    type State = ProbeToken;
 
     const KEY: &'static str = "probe.refreshable";
 
@@ -92,28 +132,28 @@ impl Credential for RefreshableProbe {
             .name("RefreshableProbe")
             .description("refreshable + revocable probe credential")
             .schema(nebula_credential::schema_of::<Self::Properties>())
-            .pattern(nebula_credential::AuthPattern::SecretToken)
+            .pattern(AuthPattern::OAuth2)
             .build()
             .expect("RefreshableProbe metadata is valid")
     }
 
-    fn project(state: &SecretToken) -> SecretToken {
+    fn project(state: &ProbeToken) -> ProbeToken {
         state.clone()
     }
 
     async fn resolve(
         _values: &FieldValues,
         _ctx: &CredentialContext,
-    ) -> Result<ResolveResult<SecretToken, ()>, CredentialError> {
-        Ok(ResolveResult::Complete(SecretToken::new(
-            SecretString::new("refreshable-probe"),
+    ) -> Result<ResolveResult<ProbeToken, ()>, CredentialError> {
+        Ok(ResolveResult::Complete(ProbeToken(
+            "refreshable-probe".to_owned(),
         )))
     }
 }
 
 impl Refreshable for RefreshableProbe {
     async fn refresh(
-        _state: &mut SecretToken,
+        _state: &mut ProbeToken,
         _ctx: &CredentialContext,
     ) -> Result<RefreshOutcome, CredentialError> {
         Ok(RefreshOutcome::Refreshed)
@@ -122,7 +162,7 @@ impl Refreshable for RefreshableProbe {
 
 impl Revocable for RefreshableProbe {
     async fn revoke(
-        _state: &mut SecretToken,
+        _state: &mut ProbeToken,
         _ctx: &CredentialContext,
     ) -> Result<(), CredentialError> {
         Ok(())

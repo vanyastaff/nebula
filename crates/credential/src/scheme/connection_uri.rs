@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
-use crate::{AuthScheme, SecretString};
+use crate::{AuthScheme, ConnectionUriFamily, SecretString};
 
 /// Database / message-broker connection URI, structured.
 ///
@@ -40,7 +40,7 @@ use crate::{AuthScheme, SecretString};
 /// let _full = uri.as_url();
 /// ```
 #[derive(Clone, Serialize, Deserialize, Zeroize, ZeroizeOnDrop, AuthScheme)]
-#[auth_scheme(pattern = ConnectionUri, sensitive)]
+#[auth_scheme(pattern = ConnectionUri, family = ConnectionUriFamily, sensitive)]
 pub struct ConnectionUri {
     #[zeroize(skip)]
     scheme: String,

@@ -30,9 +30,6 @@
 //! # Container arguments (`#[credential(...)]`)
 //!
 //! - `key = "..."` — stable credential type key (required; becomes `Credential::KEY`).
-//! - `category = <CredentialCategory variant>` — the structural lifecycle kind
-//!   (required; e.g. `StaticSecret`, `RefreshPair`, `Leased`). Drives the
-//!   synthesized [`CredentialPolicy::category`].
 //! - `name = "..."` — human-readable name (required only when no `metadata`
 //!   method is supplied — used to synthesize one).
 //! - `description = "..."` — catalog description (optional; defaults to `name`).
@@ -64,22 +61,6 @@ use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 use syn::{Attribute, ImplItem, ItemImpl, Visibility, parse::Parser};
-
-/// The `CredentialCategory` variants accepted by `category = ...`. Validated
-/// in-macro so a typo surfaces here with the full list rather than as an
-/// opaque "no variant" error inside generated code.
-const CATEGORIES: &[&str] = &[
-    "StaticSecret",
-    "SignedRequest",
-    "BearerWithExp",
-    "RefreshPair",
-    "FederatedExchange",
-    "InteractiveRedirect",
-    "KeyPair",
-    "Leased",
-    "Session",
-    "ConnectionString",
-];
 
 /// Entry point for `#[nebula_credential::credential(...)]`.
 pub(crate) fn expand(args: TokenStream, input: TokenStream) -> TokenStream {
@@ -135,7 +116,6 @@ fn expand_inner(args: TokenStream2, input: TokenStream) -> syn::Result<TokenStre
         attrs::parse_attr(&attr, "credential")?.unwrap_or(attrs::AttrArgs { items: Vec::new() });
 
     let key = attr_args.require_string("key", &item.self_ty)?;
-    let category = require_category(&attr_args, &item.self_ty)?;
     let name = attr_args.get_string("name");
     let description = attr_args.get_string("description");
     let icon = attr_args.get_string("icon");
@@ -414,7 +394,6 @@ fn expand_inner(args: TokenStream2, input: TokenStream) -> syn::Result<TokenStre
             }
         }
     } else {
-        let category_ident = &category;
         let refresh_strategy = if is_refreshable {
             quote! { ::nebula_credential::RefreshStrategy::RefreshToken }
         } else if is_dynamic {
@@ -432,13 +411,18 @@ fn expand_inner(args: TokenStream2, input: TokenStream) -> syn::Result<TokenStre
             impl #impl_generics ::nebula_credential::CredentialLifecycle
                 for #self_ty #where_clause
             {
-                fn policy(_state: &Self::State) -> ::nebula_credential::CredentialPolicy
+                fn policy(state: &Self::State) -> ::nebula_credential::CredentialPolicy
                 where
                     Self: Sized,
                 {
+                    // The synthesized policy reads the live state for its expiry
+                    // (it must not be state-blind, or a refreshable credential
+                    // routes on a constant `None` and never enters the refresh
+                    // window). `lease` stays `None`: a leased credential is
+                    // required to hand-write `fn policy` (see the `release`
+                    // guard above), so the synthesized arm never owns a lease.
                     ::nebula_credential::CredentialPolicy {
-                        category: ::nebula_credential::CredentialCategory::#category_ident,
-                        expires_at: ::core::option::Option::None,
+                        expires_at: ::nebula_credential::CredentialState::expires_at(state),
                         lease: ::core::option::Option::None,
                         refresh: #refresh_strategy,
                         revoke: #revoke_strategy,
@@ -458,31 +442,6 @@ fn expand_inner(args: TokenStream2, input: TokenStream) -> syn::Result<TokenStre
         #capability_impls
         #lifecycle_impl
     })
-}
-
-/// Pull `category = <Ident>` out of the args, validating the variant name.
-fn require_category(
-    attr_args: &attrs::AttrArgs,
-    span: &impl quote::ToTokens,
-) -> syn::Result<syn::Ident> {
-    let ident = attr_args.get_ident("category").cloned().ok_or_else(|| {
-        diag::error_spanned(
-            span,
-            "#[credential] requires `category = <CredentialCategory variant>` \
-             (e.g. `StaticSecret`, `RefreshPair`, `Leased`)",
-        )
-    })?;
-    let name = ident.to_string();
-    if !CATEGORIES.contains(&name.as_str()) {
-        return Err(diag::error_spanned(
-            &ident,
-            format!(
-                "unknown credential category `{name}` — expected one of: {}",
-                CATEGORIES.join(", ")
-            ),
-        ));
-    }
-    Ok(ident)
 }
 
 /// Classify each `impl` item by name into the recognized buckets, rejecting

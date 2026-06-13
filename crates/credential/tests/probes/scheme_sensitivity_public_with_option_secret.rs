@@ -8,7 +8,7 @@
 use nebula_credential::{AuthScheme, SecretString};
 
 #[derive(AuthScheme)]
-#[auth_scheme(pattern = Custom, public)]
+#[auth_scheme(pattern = Custom, family = SecretTokenFamily, public)]
 struct BadOptionalSecret {
     pub maybe: Option<SecretString>, // Option<SecretString> on public — REJECT
 }

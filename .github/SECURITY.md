@@ -55,8 +55,8 @@ Nebula's main trust boundaries:
   process/WASM isolation boundary today — untrusted third-party native code is
   out of scope (canon §12.6). Trust is established at build/dependency time, not
   at runtime.
-- **Credential boundary** — `nebula-credential` and
-  `nebula-credential-runtime` own credential material. Other crates receive
+- **Credential boundary** — `nebula-credential` owns credential material
+  (contract + lifecycle runtime, consolidated per ADR-0092). Other crates receive
   `CredentialGuard<C>` (which is `!Clone` and zeroizes on drop via a manual
   `Drop` impl) and read through it, never around it.
 - **API boundary** — `nebula-api` is the external HTTP surface.

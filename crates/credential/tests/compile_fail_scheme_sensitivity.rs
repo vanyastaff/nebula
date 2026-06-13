@@ -8,6 +8,8 @@
 //!     (wrapper-recursion in `classify_type`)
 //! (e) `#[auth_scheme(sensitive)]` with snake_case secret-named plain `String`
 //!     (`api_key: String`, `client_secret: String`, etc. — word-segment lint)
+//! (f) `#[auth_scheme(external)]` with `SecretString` field — external schemes
+//!     hold only a handle, never secret bytes in-process (zeroize-bypass guard)
 
 #[test]
 fn compile_fail_scheme_sensitivity() {
@@ -17,4 +19,5 @@ fn compile_fail_scheme_sensitivity() {
     t.compile_fail("tests/probes/scheme_sensitivity_no_zeroize.rs");
     t.compile_fail("tests/probes/scheme_sensitivity_public_with_option_secret.rs");
     t.compile_fail("tests/probes/scheme_sensitivity_plain_apikey_string.rs");
+    t.compile_fail("tests/probes/scheme_sensitivity_external_with_secret.rs");
 }

@@ -18,6 +18,7 @@
 //! }
 //!
 //! impl AuthScheme for MyToken {
+//!     type Family = nebula_credential::SecretTokenFamily;
 //!     fn pattern() -> AuthPattern {
 //!         AuthPattern::SecretToken
 //!     }
@@ -135,6 +136,7 @@ impl CredentialSnapshot {
     ///     token: String,
     /// }
     /// impl AuthScheme for Bearer {
+    ///     type Family = nebula_credential::SecretTokenFamily;
     ///     fn pattern() -> AuthPattern {
     ///         AuthPattern::SecretToken
     ///     }

@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
-use crate::{AuthScheme, SecretString, identity_state};
+use crate::{AuthScheme, IdentityPasswordFamily, SecretString, identity_state};
 
 /// Identity (username, email, or account) paired with a password.
 ///
@@ -22,7 +22,7 @@ use crate::{AuthScheme, SecretString, identity_state};
 /// let cred = IdentityPassword::new("alice@example.com", SecretString::new("hunter2"));
 /// ```
 #[derive(Clone, Serialize, Deserialize, Zeroize, ZeroizeOnDrop, AuthScheme)]
-#[auth_scheme(pattern = IdentityPassword, sensitive)]
+#[auth_scheme(pattern = IdentityPassword, family = IdentityPasswordFamily, sensitive)]
 pub struct IdentityPassword {
     #[zeroize(skip)]
     identity: String,

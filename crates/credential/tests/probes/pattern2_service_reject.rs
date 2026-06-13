@@ -36,6 +36,7 @@ struct BasicScheme {
 }
 
 impl AuthScheme for BasicScheme {
+    type Family = nebula_credential::IdentityPasswordFamily;
     fn pattern() -> AuthPattern {
         AuthPattern::IdentityPassword
     }

@@ -22,7 +22,7 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
-use super::policy::RenewalPolicy;
+use super::policy::{RenewalPolicy, StalenessCeiling};
 use super::registry::{LeaseEntry, LeaseToken};
 
 /// Configuration for the lease lifecycle.
@@ -39,6 +39,12 @@ pub struct LeaseLifecycleConfig {
     /// treated as `ProviderError::Unavailable` — the standard backoff
     /// schedule applies.
     pub provider_call_timeout: Duration,
+    /// Hard ceiling on the renewal interval. A provider that reports an
+    /// enormous (or `Duration::MAX`) TTL is still renewed no later than this,
+    /// so a leased secret can never silently stop re-validating. The ceiling
+    /// itself is constructor-validated ([`StalenessCeiling`]), so it cannot be
+    /// set to an unbounded value.
+    pub max_staleness: StalenessCeiling,
 }
 
 impl Default for LeaseLifecycleConfig {
@@ -46,6 +52,7 @@ impl Default for LeaseLifecycleConfig {
         Self {
             policy: RenewalPolicy::default(),
             provider_call_timeout: Duration::from_secs(30),
+            max_staleness: StalenessCeiling::default(),
         }
     }
 }
@@ -174,7 +181,7 @@ impl Scheduler {
                 // the lease is already past its renewal point, fire
                 // immediately (the heap pop loop tolerates `next_renew_at
                 // <= now`).
-                let renew_after_from_issue = policy.renew_after(lease.ttl);
+                let renew_after_from_issue = self.renewal_interval(policy.renew_after(lease.ttl));
                 let aged = chrono::Utc::now().signed_duration_since(lease.issued_at);
                 let aged_std = aged.to_std().unwrap_or(Duration::ZERO);
                 let remaining = renew_after_from_issue.saturating_sub(aged_std);
@@ -239,6 +246,16 @@ impl Scheduler {
         let t = LeaseToken(self.next_id);
         self.next_id = self.next_id.wrapping_add(1);
         t
+    }
+
+    /// Clamp a base renewal interval (from [`RenewalPolicy::renew_after`]) to
+    /// the configured [`StalenessCeiling`], so a provider reporting an enormous
+    /// or `Duration::MAX` TTL is still renewed no later than the ceiling — a
+    /// leased secret can never silently stop re-validating.
+    ///
+    /// Complexity: O(1).
+    fn renewal_interval(&self, base: Duration) -> Duration {
+        base.min(self.inputs.config.max_staleness.get())
     }
 
     /// Fired when the timer for the heap head elapses. Process every
@@ -344,7 +361,7 @@ impl Scheduler {
         // return zero to indicate "non-renewable"). Distinct from
         // `NotFoundUpstream` (the lease is gone) — the renew succeeded
         // but the grant is exhausted.
-        let renew_after = self.inputs.config.policy.renew_after(new_ttl);
+        let renew_after = self.renewal_interval(self.inputs.config.policy.renew_after(new_ttl));
         if renew_after.is_zero() {
             self.drop_lease(
                 token,

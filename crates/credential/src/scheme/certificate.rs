@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
-use crate::{AuthScheme, SecretString};
+use crate::{AuthScheme, CertificateFamily, SecretString};
 
 /// X.509 client certificate with private key for mutual TLS authentication.
 ///
@@ -26,7 +26,7 @@ use crate::{AuthScheme, SecretString};
 /// );
 /// ```
 #[derive(Clone, Serialize, Deserialize, Zeroize, ZeroizeOnDrop, AuthScheme)]
-#[auth_scheme(pattern = Certificate, sensitive)]
+#[auth_scheme(pattern = Certificate, family = CertificateFamily, sensitive)]
 pub struct Certificate {
     #[zeroize(skip)]
     cert_chain: String,

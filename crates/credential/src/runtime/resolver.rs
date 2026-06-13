@@ -17,10 +17,22 @@ use crate::runtime::refresh::transport::RefreshTransport;
 use crate::runtime::refresh::{RefreshCoordinator, RefreshError};
 use crate::{
     Credential, CredentialContext, CredentialEvent, CredentialHandle, CredentialId,
-    CredentialState, Refreshable, SchemeFactory, SchemeGuard, SecretFreeMessage,
+    CredentialLifecycle, CredentialState, Decision, Refreshable, SchemeFactory, SchemeGuard,
+    SecretFreeMessage,
     resolve::{ReauthReason, RefreshOutcome},
-    store::{CredentialStore, PutMode, StoreError, StoredCredential},
+    store::{
+        CredentialStore, LAST_VALIDATED_AT_METADATA_KEY, OWNER_ID_METADATA_KEY, OwnerScopedKey,
+        PutMode, StoreError, StoredCredential,
+    },
 };
+
+/// Framework-imposed mandatory re-validation floor for a refreshable credential
+/// that carries neither an inline expiry nor a lease — the backstop that keeps
+/// even a signal-less refreshable credential from being served indefinitely
+/// without re-contacting its provider. Owner ruling: there is no "valid forever".
+/// (Per-credential override is a later configuration concern; this is the default.)
+const DEFAULT_REVALIDATION_FLOOR: std::time::Duration = std::time::Duration::from_hours(24);
+use nebula_core::auth::{AuthScheme, SchemeFamily};
 use nebula_eventbus::EventBus;
 use parking_lot::Mutex;
 
@@ -129,7 +141,7 @@ impl<S: CredentialStore> CredentialResolver<S> {
     ) -> SchemeFactory<C>
     where
         S: CredentialStore + 'static,
-        C: Refreshable,
+        C: Refreshable + CredentialLifecycle,
         C::Scheme: zeroize::Zeroize + Clone + Send + Sync + 'static,
     {
         let resolver = self.clone();
@@ -182,6 +194,58 @@ impl<S: CredentialStore> CredentialResolver<S> {
         Ok(self.materialize_handle::<C>(credential_id, scheme))
     }
 
+    /// Resolve a credential for an action slot through its owner-scoped key.
+    ///
+    /// The [`OwnerScopedKey`] is obtainable only from a
+    /// `ValidatedCredentialBinding` (whose constructor is gated by
+    /// `CredentialService::validate_credential_binding`). This method
+    /// **re-verifies** the loaded row's stamped `owner_id` against the key before
+    /// projecting the scheme, so a credential id belonging to another tenant
+    /// resolves to [`StoreError::NotFound`] (existence-hiding). The confused
+    /// deputy is closed at the load — binding provenance is backed by a load-time
+    /// owner check, not trusted on its own.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ResolveError::Store`] with [`StoreError::NotFound`] when the id
+    /// is absent **or** the stored row's owner does not match the key; other
+    /// [`ResolveError`] variants on kind-mismatch or deserialization failure.
+    pub async fn resolve_scoped<C>(
+        &self,
+        key: &OwnerScopedKey,
+    ) -> Result<CredentialHandle<C::Scheme>, ResolveError>
+    where
+        C: Credential,
+    {
+        // Load the raw row, then verify owner BEFORE any type/kind signal: a
+        // kind-mismatch error on a foreign id would be an existence/type oracle
+        // (a cross-tenant probe could distinguish "absent" from "exists but wrong
+        // type"). `verify_owner` maps a foreign owner to `NotFound`
+        // (existence-hiding), so the kind check below only ever runs on a row the
+        // caller is entitled to — never use `load_and_verify` here (it kind-checks
+        // first).
+        let stored = self
+            .store
+            .get(key.credential_id())
+            .await
+            .map_err(ResolveError::Store)?;
+        verify_owner(key, &stored)?;
+        reject_tombstoned(key.credential_id(), &stored)?;
+
+        let expected_kind = <C::State as CredentialState>::KIND;
+        if stored.state_kind != expected_kind {
+            return Err(ResolveError::KindMismatch {
+                credential_id: key.credential_id().to_owned(),
+                expected: expected_kind.to_string(),
+                actual: stored.state_kind,
+            });
+        }
+
+        let state: C::State = self.deserialize::<C>(key.credential_id(), &stored)?;
+        let scheme = C::project(&state);
+        Ok(self.materialize_handle::<C>(key.credential_id(), scheme))
+    }
+
     /// Resolve a credential and refresh it when it enters the early-refresh window.
     ///
     /// Per Tech Spec — bound on [`Refreshable`] so a non-refreshable
@@ -201,32 +265,49 @@ impl<S: CredentialStore> CredentialResolver<S> {
         ctx: &CredentialContext,
     ) -> Result<CredentialHandle<C::Scheme>, ResolveError>
     where
-        C: Refreshable,
+        C: Refreshable + CredentialLifecycle,
     {
         let stored = self.load_and_verify::<C>(credential_id).await?;
         let state: C::State = self.deserialize::<C>(credential_id, &stored)?;
 
-        let needs_refresh = state.expires_at().is_some_and(|exp| {
-            let now = chrono::Utc::now();
-            let policy = <C as Refreshable>::REFRESH_POLICY;
-            let jitter = if policy.jitter > std::time::Duration::ZERO {
-                let bound_ms = policy.jitter.as_millis();
-                if bound_ms == 0 {
-                    std::time::Duration::ZERO
-                } else {
-                    let upper = u64::try_from(bound_ms).unwrap_or(u64::MAX);
-                    std::time::Duration::from_millis(rand::random_range(0..upper))
-                }
-            } else {
-                std::time::Duration::ZERO
-            };
-            let early_with_jitter = policy.early_refresh + jitter;
-            let early =
-                chrono::Duration::from_std(early_with_jitter).unwrap_or(chrono::Duration::zero());
-            exp - now <= early
-        });
+        // Route on the credential's own state-derived policy, not an ad-hoc
+        // inline expiry test: `decide_refresh` is the single, pure, tested
+        // decision. It distinguishes "expiring but nothing to renew" (serve and
+        // let it ride) from "expiring and renewable" (refresh), and applies the
+        // mandatory re-validation floor for a signal-less credential. Jitter is
+        // deliberately not applied on this hot path — proactive jittered refresh
+        // is a scheduler-seam concern, not a per-resolve one.
+        let policy = C::policy(&state);
 
-        if !needs_refresh {
+        // F3 containment law, state-level (complete): the live policy's refresh
+        // kind must be one the scheme family sanctions. Registration enforces the
+        // capability-level half at boot (a `Refreshable` credential on a
+        // `Static`-only family is rejected); this catches a hand-written or plugin
+        // policy that returns a refresh outside its family's declared classes.
+        // `debug_assert` — proven for built-ins by tests + at registration, so this
+        // is a dev/test net with zero release hot-path cost. `Lease` is exempt
+        // (orthogonal lifecycle wrapper — see `SchemeFamily::refresh_classes`).
+        debug_assert!(
+            <C::Scheme as AuthScheme>::Family::permits_refresh(policy.refresh.kind()),
+            "credential '{credential_id}': policy refresh {:?} is not permitted by its \
+             scheme family {:?} (refresh_classes = {:?}) — F3 containment law; the \
+             credential's policy() drifted from its AuthScheme::Family declaration",
+            policy.refresh.kind(),
+            <C::Scheme as AuthScheme>::Family::pattern(),
+            <C::Scheme as AuthScheme>::Family::refresh_classes(),
+        );
+
+        let decision = policy.decide_refresh(
+            // Measure the re-validation floor from the last real provider
+            // validation, NOT `updated_at` (a display-only rename/tag bumps
+            // `updated_at` without revalidating — it must not postpone the floor).
+            stored.last_validated_or_created(),
+            chrono::Utc::now(),
+            <C as Refreshable>::REFRESH_POLICY.early_refresh,
+            DEFAULT_REVALIDATION_FLOOR,
+        );
+
+        if decision == Decision::Usable {
             let scheme = C::project(&state);
             return Ok(self.materialize_handle::<C>(credential_id, scheme));
         }
@@ -280,7 +361,7 @@ impl<S: CredentialStore> CredentialResolver<S> {
         ctx: &CredentialContext,
     ) -> Result<CredentialHandle<C::Scheme>, ResolveError>
     where
-        C: Refreshable,
+        C: Refreshable + CredentialLifecycle,
     {
         // The `refresh_coalesced` user closure must yield `Result<_,
         // RefreshError>`; we wrap the inner `ResolveError` in `Ok(Err(_))`
@@ -348,17 +429,20 @@ impl<S: CredentialStore> CredentialResolver<S> {
                         return true;
                     },
                 };
-                state.expires_at().is_some_and(|exp| {
-                    let now = chrono::Utc::now();
-                    let policy = <C as Refreshable>::REFRESH_POLICY;
-                    // Use `early_refresh` without jitter for the recheck —
-                    // jitter belongs on the initial `needs_refresh` decision
-                    // (de-correlate replicas at startup), not on the
-                    // post-backoff coalesce gate.
-                    let early = chrono::Duration::from_std(policy.early_refresh)
-                        .unwrap_or(chrono::Duration::zero());
-                    exp - now <= early
-                })
+                // Mirror the parent `resolve_with_refresh` routing: re-run the
+                // SAME `decide_refresh` (not an ad-hoc inline-expiry test) so a
+                // leased credential with no inline `expires_at`, or a static one
+                // past its re-validation floor, is still seen as needing work
+                // after the backoff — otherwise the contender would surface
+                // `CoalescedByOtherReplica` and the parent serves it stale. Jitter
+                // is deliberately omitted here (it belongs on the initial decision
+                // to de-correlate replicas at startup, not on the coalesce gate).
+                C::policy(&state).decide_refresh(
+                    stored.last_validated_or_created(),
+                    chrono::Utc::now(),
+                    <C as Refreshable>::REFRESH_POLICY.early_refresh,
+                    DEFAULT_REVALIDATION_FLOOR,
+                ) != Decision::Usable
             }
         };
 
@@ -620,17 +704,29 @@ impl<S: CredentialStore> CredentialResolver<S> {
                             reason: format!("failed to serialize refreshed state: {e}"),
                         })?;
 
+                // Refresh contacted the provider successfully → stamp the
+                // validation time so the mandatory re-validation floor measures
+                // from this real validation, not from a later display edit. The
+                // map is overridden explicitly because `..stored.clone()` would
+                // otherwise carry the pre-refresh metadata.
+                let now = chrono::Utc::now();
+                let mut validated_metadata = stored.metadata.clone();
+                validated_metadata.insert(
+                    LAST_VALIDATED_AT_METADATA_KEY.to_owned(),
+                    serde_json::Value::String(now.to_rfc3339()),
+                );
                 let mut current_version = stored.version;
                 for _attempt in 0..3 {
                     let updated = StoredCredential {
                         data: data.clone(),
-                        updated_at: chrono::Utc::now(),
+                        updated_at: now,
                         expires_at: state.expires_at(),
                         // Clear the reauth flag on success — idempotent when
                         // already false, recovers from a stale `true` left
                         // over by a previous ReauthRequired outcome that the
                         // application has since re-authorized (sub-spec / I1).
                         reauth_required: false,
+                        metadata: validated_metadata.clone(),
                         ..stored.clone()
                     };
                     match self
@@ -841,4 +937,128 @@ pub enum ResolveError {
         /// Why re-authentication is required.
         reason: ReauthReason,
     },
+}
+
+/// Fail-closed owner gate for the scoped resolution path: the loaded row's
+/// stamped `owner_id` must equal the key's owner. A mismatch maps to
+/// [`StoreError::NotFound`] (existence-hiding, matching the management facade) so
+/// a cross-tenant probe cannot tell "absent" from "owned by another tenant". An
+/// unstamped row (no `owner_id` metadata) is treated as foreign and rejected.
+///
+/// Complexity: O(1).
+fn verify_owner(key: &OwnerScopedKey, stored: &StoredCredential) -> Result<(), ResolveError> {
+    let stored_owner = stored
+        .metadata
+        .get(OWNER_ID_METADATA_KEY)
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    if stored_owner != key.owner_id() {
+        return Err(ResolveError::Store(StoreError::NotFound {
+            id: key.credential_id().to_owned(),
+        }));
+    }
+    Ok(())
+}
+
+/// Fail-closed tombstone gate for the scoped resolution path.
+///
+/// Defence in depth for the resolve-during-revoke race:
+/// `CredentialService::validate_credential_binding` already rejects a tombstoned
+/// id when the binding is minted, but a binding validated immediately before a
+/// concurrent `revoke` could still reach `resolve_scoped`. A revoked row is
+/// mapped to [`StoreError::NotFound`] (same existence-hiding shape as
+/// [`verify_owner`]) so a revoked secret is never projected to a guard.
+///
+/// Complexity: O(1).
+fn reject_tombstoned(credential_id: &str, stored: &StoredCredential) -> Result<(), ResolveError> {
+    if stored.is_tombstoned() {
+        return Err(ResolveError::Store(StoreError::NotFound {
+            id: credential_id.to_owned(),
+        }));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn stored_with_owner(owner: Option<&str>) -> StoredCredential {
+        let mut metadata = serde_json::Map::new();
+        if let Some(o) = owner {
+            metadata.insert(
+                OWNER_ID_METADATA_KEY.to_owned(),
+                serde_json::Value::String(o.to_owned()),
+            );
+        }
+        StoredCredential {
+            id: "cred_x".to_owned(),
+            name: None,
+            credential_key: "github_oauth".to_owned(),
+            data: Vec::new(),
+            state_kind: "oauth2_state".to_owned(),
+            state_version: 1,
+            version: 1,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            expires_at: None,
+            reauth_required: false,
+            metadata,
+        }
+    }
+
+    #[test]
+    fn verify_owner_accepts_matching_owner() {
+        let key = OwnerScopedKey::new("alice".to_owned(), "cred_x".to_owned());
+        assert!(verify_owner(&key, &stored_with_owner(Some("alice"))).is_ok());
+    }
+
+    #[test]
+    fn cross_tenant_load_is_not_found() {
+        // Confused-deputy regression: a key for owner "bob" must not read a row
+        // stamped "alice"; the load fails closed as NotFound (existence-hiding),
+        // so a foreign tenant cannot even distinguish existence.
+        let key = OwnerScopedKey::new("bob".to_owned(), "cred_x".to_owned());
+        let err = verify_owner(&key, &stored_with_owner(Some("alice"))).unwrap_err();
+        assert!(matches!(
+            err,
+            ResolveError::Store(StoreError::NotFound { .. })
+        ));
+    }
+
+    #[test]
+    fn unstamped_row_is_treated_as_foreign() {
+        let key = OwnerScopedKey::new("alice".to_owned(), "cred_x".to_owned());
+        let err = verify_owner(&key, &stored_with_owner(None)).unwrap_err();
+        assert!(matches!(
+            err,
+            ResolveError::Store(StoreError::NotFound { .. })
+        ));
+    }
+
+    fn tombstoned(owner: Option<&str>) -> StoredCredential {
+        let mut stored = stored_with_owner(owner);
+        stored.metadata.insert(
+            crate::store::REVOKED_AT_METADATA_KEY.to_owned(),
+            serde_json::Value::String("2026-06-13T10:00:00Z".to_owned()),
+        );
+        stored
+    }
+
+    #[test]
+    fn tombstoned_row_is_rejected_as_not_found() {
+        // Resolve-during-revoke race: a row revoked after its binding was
+        // validated must not project a guard — it fails closed as NotFound,
+        // never exposing the revoked secret.
+        let err = reject_tombstoned("cred_x", &tombstoned(Some("alice"))).unwrap_err();
+        assert!(matches!(
+            err,
+            ResolveError::Store(StoreError::NotFound { .. })
+        ));
+    }
+
+    #[test]
+    fn live_row_passes_tombstone_check() {
+        assert!(reject_tombstoned("cred_x", &stored_with_owner(Some("alice"))).is_ok());
+    }
 }

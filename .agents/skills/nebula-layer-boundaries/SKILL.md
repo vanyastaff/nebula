@@ -19,16 +19,17 @@ From `AGENTS.md` "Layered Dependency Map". Each layer may depend only on layers
 |-------|--------|
 | API / Public | `api`, `sdk` |
 | Exec | `engine`, `storage`, `storage-loom-probe` |
-| Business | `credential-builtin`, `resource`, `action`, `plugin`, `tenancy` |
-| Plugin-Proto | `plugin-sdk`, `sandbox` |
+| Business | `resource`, `action`, `plugin`, `tenancy` |
 | Core | `core`, `validator`, `expression`, `workflow`, `execution`, `schema`, `metadata`, `storage-port` |
-| Cross-cutting | `log`, `eventbus`, `metrics`, `resilience`, `error`, `env` |
+| Core / shared-infra | `credential` (consumed across Business/Exec/API, see exceptions below) |
+| Cross-cutting | `crypto`, `log`, `eventbus`, `metrics`, `resilience`, `error`, `env` |
 
-- **Plugin-Proto** is a leaf tier between Core and Business. `plugin-sdk` /
-  `sandbox` depend only on Core (+ tokio/serde); `plugin` (Business) and
-  `engine` (Exec) depend on them *downward*. The `SandboxRunner` runner
-  abstraction lives in `engine`; discovery + the `SandboxError`→`ActionError`
-  seam live in `plugin`.
+- **Plugin-Proto tier is RETIRED (ADR-0091).** The out-of-process path
+  (`plugin-sdk` + `sandbox` + WASM) was abandoned for an in-process registry;
+  those crates no longer exist. `nebula-plugin` (Business) is the in-process
+  registry where actions / credentials / resources are registered in Rust;
+  action dispatch is a direct in-process handler call. Ignore any older mention
+  of `SandboxRunner` / `plugin-sdk` / `sandbox`.
 - Each `+macros` companion (`action/macros`, `credential/macros`,
   `error/macros`, `plugin/macros`, `resource/macros`, `schema/macros`,
   `validator/macros`, `sdk/macros-support`) sits at the **same layer as its
@@ -50,19 +51,20 @@ Four crates are deliberately consumed across multiple tiers. They are not
 allowlist in `deny.toml` that **locks the exact consumer set** so a future PR
 cannot quietly add an upward edge.
 
-- **`nebula-credential`** (credential *contract*) — `deny.toml` lines ~186-213.
-  Consumed by Business (`action`, `plugin`, `resource`, `tenancy`), Exec
-  (`engine`, `storage`, `credential-runtime`), API (`api`), and the first-party
-  backends (`credential-builtin`).
-  Plugin authors depend on this contract crate, **not** on
-  `nebula-credential-builtin` (whose wrappers list is intentionally narrow:
-  itself + `credential-runtime`).
+- **`nebula-credential`** (the whole credential subsystem in one crate, ADR-0092)
+  — `deny.toml` `{ crate = "nebula-credential", wrappers = [...] }` (verify the
+  current block). Consumed by Business (`action`, `plugin`, `resource`,
+  `tenancy`), Exec (`engine`, `storage`), and API (`api`), plus `sdk`. The crates
+  `nebula-credential-runtime` / `-builtin` / `-testutil` / `-vault` are **deleted**
+  (ADR-0092) — there is no separate contract/runtime/builtin split anymore; plugin
+  authors depend on this one crate.
 - **`nebula-storage-port`** (Core storage seam, ADR-0072 §2.2) — `deny.toml`
   lines ~125-133. Object-safe repository traits, port-local DTO rows, the
   plain-data `Scope { workspace_id, org_id }`, `StorageError`,
   `TransitionBatch`. **No sqlx, no upward deps.** Broadly importable: the
-  adapter (`storage`), loom probe, tenancy decorator, `engine`/`api`,
-  `credential-runtime`.
+  adapter (`storage`), loom probe, tenancy decorator, `engine`/`api`, and
+  `nebula-credential` (which hosts the refresh coordinator and depends on
+  `RefreshClaimStore`, ADR-0092).
   Distinguish from **`nebula-storage`** (Exec) — the sole adapter impl
   (InMemory + SQLite + Postgres, sqlx, migrations); its wrappers list is the
   composition seam (`engine`, `api`, `server`, + dev-deps). The legacy
@@ -71,9 +73,8 @@ cannot quietly add an upward edge.
   lines ~170-176. Consumers locked to `action`, `engine`, `examples`,
   `plugin`, `sdk` — no upward deps from API or core/*.
 - **`nebula-expression`** (Core evaluator, ADR-0043 §9) — `deny.toml`
-  lines ~222-231. Consumers locked to `schema`, `resource`, `engine`,
-  `examples`, + an `action` dev-dep. (`nebula-credential-runtime` is similarly
-  Exec-tier shared infra with its own allowlist; see lines ~283-287.)
+  Consumers locked to `schema`, `resource`, `engine`, `examples`, + an `action`
+  dev-dep.
 
 ## Reading & editing a `{ crate, wrappers = [...] }` entry
 
@@ -89,7 +90,7 @@ To legally add a new consumer:
    `nebula-storage-port` entry — NOT to a `nebula-storage` entry).
 2. Add an inline `#` comment on the new line explaining **why** the edge is
    legal and which direction it points (every existing entry does this — see
-   the `credential-runtime` / knife / conformance dev-dep comments). Never widen
+   the credential / knife / conformance dev-dep comments). Never widen
    silently.
 3. **Dev-dep carve-outs are normal and expected** — integration tests and
    conformance matrices legitimately reach across boundaries (e.g.

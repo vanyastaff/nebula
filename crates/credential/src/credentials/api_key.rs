@@ -64,10 +64,9 @@ pub struct ApiKeyCredential;
 // `#[credential]` reads which methods are present — here only `project` +
 // `resolve`, with no capability methods — and emits the `Credential` impl, the
 // five all-`false` capability-report consts, and a `CredentialLifecycle` whose
-// policy is `StaticSecret` with no refresh and no provider-side revoke
-// (matching the absent capability sub-traits). The `category = StaticSecret`
-// arg supplies the structural lifecycle kind.
-#[nebula_credential::credential(key = "api_key", category = StaticSecret)]
+// synthesized policy is static (no refresh, no provider-side revoke), matching
+// the absent capability sub-traits.
+#[nebula_credential::credential(key = "api_key")]
 impl ApiKeyCredential {
     type Properties = ApiKeyProperties;
     type Scheme = SecretToken;
@@ -122,7 +121,6 @@ mod tests {
     fn lifecycle_policy_is_static() {
         let token = SecretToken::new(SecretString::new("x"));
         let p = ApiKeyCredential::policy(&token);
-        assert_eq!(p.category, crate::CredentialCategory::StaticSecret);
         assert!(!p.is_expiring());
         assert!(!p.is_auto_renewable());
         assert_eq!(p.refresh, crate::RefreshStrategy::Static);
