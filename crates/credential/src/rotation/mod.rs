@@ -47,8 +47,8 @@ pub mod state;
 // Re-exports — contract types only
 pub use error::{
     FailureHandler, FailureKind, RotatableCredential, RotationError, RotationErrorLog,
-    RotationResult, SuccessCriteria, TestContext, TestMethod, TestResult, TestableCredential,
-    ValidationTest,
+    RotationResult, RotationTestResult, SuccessCriteria, TestContext, TestMethod,
+    TestableCredential, ValidationTest,
 };
 pub use events::{
     CredentialRotationEvent, LogEntryType, NotificationEvent, NotificationSender, TransactionLog,
