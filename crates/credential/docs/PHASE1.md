@@ -169,3 +169,17 @@ jitter is applied once at the scheduler seam, never here — §24 invariant):
   universe; no realistic 2026 request forces a break. Folded into DESIGN §17 ("VALIDATED against the
   full 2026 protocol universe"). Slices/blast-radius in row 5 updated (now core+credential+resource+
   macros, bigger). Next: **5a** with the validated shapes.
+- 2026-06-13: **increment 5a landed (`945da568`).** Additive core mechanics contract in
+  `nebula-core::auth`: `EgressShape` (sealed 11-variant `#[non_exhaustive]`) + `SchemeFamily`
+  (open trait: `const EGRESS: &[EgressShape]`, `refresh_classes()`, `pattern()`). `RefreshStrategy`
+  **relocated** credential→core (pure data; re-exported from `lifecycle` for source-compat); the
+  cross-crate `#[non_exhaustive]` forced a fail-safe wildcard in `is_auto_renewable`. Threaded
+  `EgressShape`/`SchemeFamily` through the credential scheme re-export chain (scheme/auth.rs →
+  scheme/mod.rs → lib.rs); fixed a stale scheme/mod.rs doc claiming AuthScheme was moved out of core
+  (it is re-exported FROM core — `scheme/auth.rs:3`). `AuthScheme` itself UNTOUCHED (no `type Family`
+  yet — that is 5b, atomic with impl migration, since default associated types are unstable). **Whole
+  workspace compiles (35 crates); 273 credential lib tests; clippy `--all-features` + rustdoc `-D
+  warnings` clean on core+credential.** Next: **5a-2** (expand `RefreshStrategy`: `ReAcquire{from,
+  interactive}`+`ReMintLocal`+`Watched` — loses `Copy`, needs a core `SchemeId`; + `LeaseRef.renew_until`
+  + decide_refresh/is_auto_renewable arms) and **5b** (`AuthScheme::type Family`/`type Sensitivity` +
+  macro emits them + migrate ~10 builtin + test impls atomically + per-builtin family marker types).
