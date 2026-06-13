@@ -22,6 +22,12 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+/// `RefreshStrategy` relocated to `nebula-core::auth` (a pure data enum, so it
+/// can back [`crate::SchemeFamily::refresh_classes`] without an inverted
+/// dependency). Re-exported here so existing `nebula_credential::RefreshStrategy`
+/// paths keep resolving.
+pub use nebula_core::auth::RefreshStrategy;
+
 /// The ~10 structural categories of credential, classified by **lifecycle
 /// shape** rather than by wire scheme (there are ~35 wire schemes but only a
 /// handful of distinct lifecycle shapes — ADR-0088 D1).
@@ -62,27 +68,6 @@ pub enum CredentialCategory {
     Session,
     /// Connection string / DSN — database, message queue.
     ConnectionString,
-}
-
-/// How a credential's material is renewed as it nears or reaches expiry.
-///
-/// Data, not a trait. The engine reads this from the credential's policy and
-/// drives the matching path.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
-#[non_exhaustive]
-pub enum RefreshStrategy {
-    /// Valid until explicitly revoked; never auto-renewed (API key, PAT).
-    #[default]
-    Static,
-    /// Renew without user interaction via the protocol's `refresh` — OAuth2
-    /// refresh-token grant, Vault lease renew.
-    RefreshToken,
-    /// An external lease the engine's lease scheduler renews at a fraction of
-    /// its TTL — Vault dynamic secret, Kubernetes projected token.
-    Lease,
-    /// Full re-acquisition round-trip; no incremental refresh — AWS STS
-    /// AssumeRole, SAML/OIDC re-auth, OAuth2 without a refresh token.
-    ReAcquire,
 }
 
 /// How a credential can be revoked. The field has **no uniform revoke
@@ -217,6 +202,12 @@ impl CredentialPolicy {
                 None => false,
             },
             RefreshStrategy::Static | RefreshStrategy::ReAcquire => false,
+            // `RefreshStrategy` is `#[non_exhaustive]` (it lives in `nebula-core`).
+            // A strategy this version does not recognise is treated as NOT
+            // auto-renewable — fail safe (never claim a credential renews itself
+            // when the engine cannot prove it). A new renewable strategy must add
+            // an explicit arm above, not rely on this default.
+            _ => false,
         }
     }
 

@@ -3,11 +3,11 @@
 //! 9 built-in types cover common integration auth patterns. Plugins add
 //! protocol-specific types via the open [`AuthScheme`] trait.
 //!
-//! The [`AuthScheme`] trait and its companion classification [`AuthPattern`]
-//! live in this submodule — they are the bridge between the credential system
-//! and the resource system. Historically these two types lived in
-//! `nebula-core`; they were moved here in phase P4 of the credential cleanup
-//! so `nebula-core` holds only cross-cutting vocabulary.
+//! The [`AuthScheme`] trait, its companion classification [`AuthPattern`], and
+//! the F3 mechanics axis ([`SchemeFamily`] / [`EgressShape`]) are canonically
+//! defined in `nebula_core::auth` — the cross-cutting bridge vocabulary between
+//! the credential and resource systems — and re-exported through this submodule
+//! for discoverability.
 //!
 //! **Pruned 2026-04-24** (zero consumers, Plane-A territory):
 //! `FederatedAssertion` (SAML/JWT — `nebula-auth` Plane A concern per auth plane separation),
@@ -27,7 +27,7 @@ mod secret_token;
 mod shared_key;
 mod signing_key;
 
-pub use auth::{AuthPattern, AuthScheme, PublicScheme, SensitiveScheme};
+pub use auth::{AuthPattern, AuthScheme, EgressShape, PublicScheme, SchemeFamily, SensitiveScheme};
 pub use certificate::Certificate;
 pub use connection_uri::ConnectionUri;
 pub use identity_password::IdentityPassword;
