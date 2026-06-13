@@ -770,6 +770,47 @@ not by hand-written per-impl tests.
   (a token-bearer protocol declared as `StaticHeader` so it never refreshes) — the one place
   discipline could re-enter, closed at registration. Arch-test: `Scheme` has no `Box<dyn>` /
   catch-all variant.
+
+  **Increment-5 type design (F3 two-axis model) — DRAFT, owner-review before code (spec-first).**
+  Scouting the as-built `nebula-core::auth` shows three concepts already there that the F3 model
+  must *compose with*, not duplicate:
+  - `AuthPattern` — 11-variant `#[non_exhaustive]` enum **with `Custom`**; cosmetic classification
+    for UI / catalog / logging (`AuthScheme::pattern()`).
+  - `AuthScheme: Send + Sync + 'static` — the **open** credential↔resource bridge trait
+    (`Credential::Scheme`, resource `type Auth`); plugins `impl` it freely today.
+  - `SensitiveScheme` / `PublicScheme` — the sensitivity axis (macro-enforced exclusivity; the
+    hand-rolled dual-impl bypass is a known tracked gap, not in F3 scope).
+
+  The two F3 axes map onto this as:
+  1. **Binding axis = the scheme type itself** (already nominal). Bind site becomes
+     `Slot<S: AuthScheme>` (add the bound to `SlotCell` / `CredentialSlot`), so a
+     `CredentialGuard<TwilioScheme>` cannot enter a `Slot<StripeScheme>` — a nominal compile
+     error. This *mostly already holds* through generics; the delta is the explicit `S: AuthScheme`
+     bound, a trybuild compile-fail fixture proving the cross-protocol reject, and a no-`Box<dyn
+     AuthScheme>`-on-the-binding-path arch-test.
+  2. **Mechanics axis = a sealed `SchemeFamily`** owning egress shape + the sound `decide_refresh`
+     class. `AuthScheme` gains `const FAMILY: SchemeFamily`. Open-world stays open (plugins still
+     `impl AuthScheme` + define a marker type) but is **bounded**: `SchemeFamily` is sealed with no
+     `Custom` / `Box<dyn>` escape, so a plugin must declare a real family. A **registration-time
+     check** rejects an unsound pairing (a token-bearer scheme declared `StaticHeader`, or a
+     `RefreshToken` `RefreshStrategy` on a non-refreshable family).
+
+  **KEY OPEN FORK (owner) — `SchemeFamily` vs the existing `AuthPattern`** (they overlap on ~10 of
+  11 variants):
+  - **(A) Two enums** — `AuthPattern` stays cosmetic (keeps `Custom` for plugin UI), `SchemeFamily`
+    is the sealed mechanics enum (no `Custom`); a scheme declares both. Cost: near-duplicate enums.
+    Benefit: cosmetic UI flexibility decoupled from sound mechanics; least ripple.
+  - **(B) Fold** — drop `AuthPattern::Custom` and make `AuthPattern` itself the sealed family.
+    Breaking for any plugin-UI `Custom` consumer; simplest single model.
+  - **(C) Family subsumes pattern** — derive `pattern()` from `FAMILY`; one source of truth, loses
+    the free-form `Custom` UI label.
+
+  Recommend **(A)** for 1.0 (least ripple, keeps the cosmetic/mechanics split honest); revisit a
+  fold post-1.0. Slices once the fork is decided (each whole-workspace-green): **5a** `SchemeFamily`
+  sealed enum + `AuthScheme::FAMILY` + migrate in-workspace impls + derive-macro `FAMILY`
+  generation; **5b** `Slot<S: AuthScheme>` bound + trybuild cross-protocol-reject + no-`Box<dyn>`
+  arch-test; **5c** registration-time family-soundness check (family ↔ `RefreshStrategy`/category);
+  **5d** plugin-marker open-world example + doc.
 - **Q9/Q10 — close the latent wrong-source defect structurally.** `ensure_local_source` is
   currently gated at the facade call-sites but **absent from `resolve_for_slot`** (it resolves
   a raw id) — a latent wrong-source defect *on the moat path*. Fix it by construction: move the
