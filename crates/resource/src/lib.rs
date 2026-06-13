@@ -176,6 +176,10 @@ pub use credential_fanout::{Bind, ResourceFanoutDriver, ResourceFanoutIndex, Rot
 /// impl HasCredentialSlots for MyResource {
 ///     fn credential_slot_epoch(&self) -> u64 { 0 }
 /// }
+///
+/// // A `Pooled` topology requires `PoolProvider`; every method is defaulted,
+/// // so a pool-backed resource with default recycle/prepare needs only this.
+/// impl PoolProvider for MyResource {}
 /// ```
 pub mod prelude {
     pub use crate::{
