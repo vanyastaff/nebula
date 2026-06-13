@@ -208,6 +208,19 @@ impl CredentialPolicy {
     ) -> Decision {
         let auto_renewable = self.is_auto_renewable();
 
+        // Hard renewal horizon (lease `renew_until`, e.g. Kerberos TGT / a
+        // rotating refresh-token's absolute expiry): once crossed, the material
+        // can no longer be *renewed* — only re-acquired. This is independent of
+        // whether the inline `expires_at` or the lease drives the expiry signal,
+        // so it is computed once and gates every `Refresh` decision below (a
+        // would-be refresh past the horizon becomes `Reacquire`). It does not by
+        // itself force re-acquisition of still-valid material.
+        let past_horizon = self
+            .lease
+            .as_ref()
+            .and_then(|lease| lease.renew_until)
+            .is_some_and(|horizon| now >= horizon);
+
         // 0. Externally-rotated material (`Watched`): the engine re-reads on
         //    change and never initiates renewal, so the resolver serves what it
         //    holds rather than scheduling a refresh.
@@ -218,7 +231,7 @@ impl CredentialPolicy {
         // 1. Inline expiry: past it, or inside the proactive early-refresh window.
         if let Some(exp) = self.expires_at {
             if exp <= now {
-                return if auto_renewable {
+                return if auto_renewable && !past_horizon {
                     Decision::Refresh
                 } else {
                     Decision::Reacquire
@@ -229,7 +242,7 @@ impl CredentialPolicy {
                 // means "no proactive window", not a panic.
                 chrono::Duration::zero()
             });
-            if exp - now <= early && auto_renewable {
+            if exp - now <= early && auto_renewable && !past_horizon {
                 return Decision::Refresh;
             }
             // Within the window but nothing to renew (static/re-acquire): let it
@@ -242,10 +255,7 @@ impl CredentialPolicy {
         // 2. Server-tracked lease with no inline expiry: a renewable lease is
         //    renewed by the lease scheduler; a one-shot lease — or one past its
         //    hard renewal horizon (`renew_until`) — must re-acquire instead.
-        if self.expires_at.is_none()
-            && let Some(lease) = &self.lease
-        {
-            let past_horizon = lease.renew_until.is_some_and(|horizon| now >= horizon);
+        if self.expires_at.is_none() && self.lease.is_some() {
             return if auto_renewable && !past_horizon {
                 Decision::Refresh
             } else {
@@ -500,6 +510,56 @@ mod tests {
         assert_eq!(
             p.decide_refresh(now, now, FIVE_MIN, HOUR),
             Decision::Reacquire
+        );
+    }
+
+    #[test]
+    fn past_renew_until_horizon_reacquires_even_with_inline_expiry() {
+        // A policy carrying BOTH an inline `expires_at` AND a lease whose hard
+        // `renew_until` horizon has passed must re-acquire — the horizon wins
+        // over the otherwise-auto-renewable expiry path. Regression: the horizon
+        // was previously only checked in the lease-only (`expires_at: None`)
+        // branch, so an expired-but-renewable inline-expiry policy refreshed past
+        // its hard boundary.
+        let now = Utc::now();
+        let p = CredentialPolicy {
+            expires_at: Some(now - chrono::Duration::seconds(1)),
+            lease: Some(LeaseRef {
+                lease_id: "vault/lease/horizon".to_owned(),
+                lease_duration: HOUR,
+                renewable: true,
+                renew_until: Some(now - chrono::Duration::seconds(1)),
+            }),
+            refresh: RefreshStrategy::Lease,
+            revoke: RevokeStrategy::HandleBased,
+        };
+        // Auto-renewable (renewable lease) + expired, but past the hard horizon.
+        assert!(p.is_auto_renewable());
+        assert_eq!(
+            p.decide_refresh(now, now, FIVE_MIN, HOUR),
+            Decision::Reacquire
+        );
+    }
+
+    #[test]
+    fn within_renew_until_horizon_still_refreshes() {
+        // Same shape but the horizon is in the future → the renewable lease may
+        // still refresh (horizon does not prematurely force re-acquisition).
+        let now = Utc::now();
+        let p = CredentialPolicy {
+            expires_at: Some(now - chrono::Duration::seconds(1)),
+            lease: Some(LeaseRef {
+                lease_id: "vault/lease/horizon".to_owned(),
+                lease_duration: HOUR,
+                renewable: true,
+                renew_until: Some(now + chrono::Duration::hours(24)),
+            }),
+            refresh: RefreshStrategy::Lease,
+            revoke: RevokeStrategy::HandleBased,
+        };
+        assert_eq!(
+            p.decide_refresh(now, now, FIVE_MIN, HOUR),
+            Decision::Refresh
         );
     }
 }

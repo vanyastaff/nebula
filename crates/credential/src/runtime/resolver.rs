@@ -217,9 +217,30 @@ impl<S: CredentialStore> CredentialResolver<S> {
     where
         C: Credential,
     {
-        let stored = self.load_and_verify::<C>(key.credential_id()).await?;
+        // Load the raw row, then verify owner BEFORE any type/kind signal: a
+        // kind-mismatch error on a foreign id would be an existence/type oracle
+        // (a cross-tenant probe could distinguish "absent" from "exists but wrong
+        // type"). `verify_owner` maps a foreign owner to `NotFound`
+        // (existence-hiding), so the kind check below only ever runs on a row the
+        // caller is entitled to — never use `load_and_verify` here (it kind-checks
+        // first).
+        let stored = self
+            .store
+            .get(key.credential_id())
+            .await
+            .map_err(ResolveError::Store)?;
         verify_owner(key, &stored)?;
         reject_tombstoned(key.credential_id(), &stored)?;
+
+        let expected_kind = <C::State as CredentialState>::KIND;
+        if stored.state_kind != expected_kind {
+            return Err(ResolveError::KindMismatch {
+                credential_id: key.credential_id().to_owned(),
+                expected: expected_kind.to_string(),
+                actual: stored.state_kind,
+            });
+        }
+
         let state: C::State = self.deserialize::<C>(key.credential_id(), &stored)?;
         let scheme = C::project(&state);
         Ok(self.materialize_handle::<C>(key.credential_id(), scheme))
@@ -337,7 +358,7 @@ impl<S: CredentialStore> CredentialResolver<S> {
         ctx: &CredentialContext,
     ) -> Result<CredentialHandle<C::Scheme>, ResolveError>
     where
-        C: Refreshable,
+        C: Refreshable + CredentialLifecycle,
     {
         // The `refresh_coalesced` user closure must yield `Result<_,
         // RefreshError>`; we wrap the inner `ResolveError` in `Ok(Err(_))`
@@ -405,17 +426,20 @@ impl<S: CredentialStore> CredentialResolver<S> {
                         return true;
                     },
                 };
-                state.expires_at().is_some_and(|exp| {
-                    let now = chrono::Utc::now();
-                    let policy = <C as Refreshable>::REFRESH_POLICY;
-                    // Use `early_refresh` without jitter for the recheck —
-                    // jitter belongs on the initial `needs_refresh` decision
-                    // (de-correlate replicas at startup), not on the
-                    // post-backoff coalesce gate.
-                    let early = chrono::Duration::from_std(policy.early_refresh)
-                        .unwrap_or(chrono::Duration::zero());
-                    exp - now <= early
-                })
+                // Mirror the parent `resolve_with_refresh` routing: re-run the
+                // SAME `decide_refresh` (not an ad-hoc inline-expiry test) so a
+                // leased credential with no inline `expires_at`, or a static one
+                // past its re-validation floor, is still seen as needing work
+                // after the backoff — otherwise the contender would surface
+                // `CoalescedByOtherReplica` and the parent serves it stale. Jitter
+                // is deliberately omitted here (it belongs on the initial decision
+                // to de-correlate replicas at startup, not on the coalesce gate).
+                C::policy(&state).decide_refresh(
+                    stored.updated_at,
+                    chrono::Utc::now(),
+                    <C as Refreshable>::REFRESH_POLICY.early_refresh,
+                    DEFAULT_REVALIDATION_FLOOR,
+                ) != Decision::Usable
             }
         };
 
