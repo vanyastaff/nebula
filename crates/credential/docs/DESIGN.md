@@ -695,9 +695,9 @@ Nebula merge debt = violating single runtime helper + incomplete protocol/config
 - `DispatchOps` internal only; auto-wire on `register::<C>()`.
 - Policy before `Refreshable::refresh`.
 
-**DoD:** one call graph; OAuth2 ReAcquire vs RefreshToken tests; **`policy(&State)`
-has ≥1 production consumer and the `C::KEY != OAuth2Credential::KEY` hardcode is
-deleted** (arch-test greps for any hardcoded `*Credential::KEY` compare in `runtime/`);
+**DoD:** one call graph; OAuth2 ReAcquire vs RefreshToken tests; **`policy(&State)` has
+≥1 production consumer** — the resolver routes the serve/refresh decision through
+`decide_refresh`, not an ad-hoc inline `expires_at` test (**done, increment 1b**);
 **`RefreshStrategy::Lease` with `expires_at: None` enters the refresh window** (Wall-1 /
 Finding 2 regression); **confused-deputy closed** — no raw `store.get(&str)`, binding
 carries `OwnerScopedKey` (cross-tenant read test); **contender blocks on claim
@@ -783,8 +783,16 @@ not by hand-written per-impl tests.
 
 - `OAuth2Protocol` + provider registry data; shrink monolith.
 - Plugin static credential registration test.
+- **OAuth2 refreshes through its own grant-discriminant-driven `Refreshable::refresh`**
+  (transport reachable from the trait, Q2), so the resolver no longer special-cases the
+  refresh mechanism by key. This is what makes deleting the `C::KEY != OAuth2Credential::KEY`
+  compare (`resolver.rs` `try_oauth2_refresh`) safe — it cannot land in Phase 1 because that
+  compare is currently the only working OAuth2 refresh path (`OAuth2Credential::refresh` is
+  HTTP-disabled per ADR-0031).
 
-**DoD:** oauth2 core < 500 LOC; e2e OAuth green.
+**DoD:** oauth2 core < 500 LOC; e2e OAuth green; **no hardcoded `*Credential::KEY` compare
+in `runtime/`** (arch-test) — the routing decision is already key-free after Phase 1, this
+gate confirms the refresh mechanism is too.
 
 ### Phase 4 — Cleanup
 

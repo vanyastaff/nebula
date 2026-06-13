@@ -17,10 +17,18 @@ use crate::runtime::refresh::transport::RefreshTransport;
 use crate::runtime::refresh::{RefreshCoordinator, RefreshError};
 use crate::{
     Credential, CredentialContext, CredentialEvent, CredentialHandle, CredentialId,
-    CredentialState, Refreshable, SchemeFactory, SchemeGuard, SecretFreeMessage,
+    CredentialLifecycle, CredentialState, Decision, Refreshable, SchemeFactory, SchemeGuard,
+    SecretFreeMessage,
     resolve::{ReauthReason, RefreshOutcome},
     store::{CredentialStore, PutMode, StoreError, StoredCredential},
 };
+
+/// Framework-imposed mandatory re-validation floor for a refreshable credential
+/// that carries neither an inline expiry nor a lease — the backstop that keeps
+/// even a signal-less refreshable credential from being served indefinitely
+/// without re-contacting its provider. Owner ruling: there is no "valid forever".
+/// (Per-credential override is a later configuration concern; this is the default.)
+const DEFAULT_REVALIDATION_FLOOR: std::time::Duration = std::time::Duration::from_hours(24);
 use nebula_eventbus::EventBus;
 use parking_lot::Mutex;
 
@@ -129,7 +137,7 @@ impl<S: CredentialStore> CredentialResolver<S> {
     ) -> SchemeFactory<C>
     where
         S: CredentialStore + 'static,
-        C: Refreshable,
+        C: Refreshable + CredentialLifecycle,
         C::Scheme: zeroize::Zeroize + Clone + Send + Sync + 'static,
     {
         let resolver = self.clone();
@@ -201,32 +209,26 @@ impl<S: CredentialStore> CredentialResolver<S> {
         ctx: &CredentialContext,
     ) -> Result<CredentialHandle<C::Scheme>, ResolveError>
     where
-        C: Refreshable,
+        C: Refreshable + CredentialLifecycle,
     {
         let stored = self.load_and_verify::<C>(credential_id).await?;
         let state: C::State = self.deserialize::<C>(credential_id, &stored)?;
 
-        let needs_refresh = state.expires_at().is_some_and(|exp| {
-            let now = chrono::Utc::now();
-            let policy = <C as Refreshable>::REFRESH_POLICY;
-            let jitter = if policy.jitter > std::time::Duration::ZERO {
-                let bound_ms = policy.jitter.as_millis();
-                if bound_ms == 0 {
-                    std::time::Duration::ZERO
-                } else {
-                    let upper = u64::try_from(bound_ms).unwrap_or(u64::MAX);
-                    std::time::Duration::from_millis(rand::random_range(0..upper))
-                }
-            } else {
-                std::time::Duration::ZERO
-            };
-            let early_with_jitter = policy.early_refresh + jitter;
-            let early =
-                chrono::Duration::from_std(early_with_jitter).unwrap_or(chrono::Duration::zero());
-            exp - now <= early
-        });
+        // Route on the credential's own state-derived policy, not an ad-hoc
+        // inline expiry test: `decide_refresh` is the single, pure, tested
+        // decision. It distinguishes "expiring but nothing to renew" (serve and
+        // let it ride) from "expiring and renewable" (refresh), and applies the
+        // mandatory re-validation floor for a signal-less credential. Jitter is
+        // deliberately not applied on this hot path — proactive jittered refresh
+        // is a scheduler-seam concern, not a per-resolve one.
+        let decision = C::policy(&state).decide_refresh(
+            stored.updated_at,
+            chrono::Utc::now(),
+            <C as Refreshable>::REFRESH_POLICY.early_refresh,
+            DEFAULT_REVALIDATION_FLOOR,
+        );
 
-        if !needs_refresh {
+        if decision == Decision::Usable {
             let scheme = C::project(&state);
             return Ok(self.materialize_handle::<C>(credential_id, scheme));
         }

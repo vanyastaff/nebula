@@ -228,7 +228,7 @@ pub use secrets::{
 };
 // Lifecycle policy types (ADR-0088 D2): capabilities as data, not sub-traits.
 pub use lifecycle::{
-    CredentialCategory, CredentialLifecycle, CredentialPolicy, LeaseRef, RefreshStrategy,
+    CredentialCategory, CredentialLifecycle, CredentialPolicy, Decision, LeaseRef, RefreshStrategy,
     RevokeStrategy,
 };
 // Store trait + DTOs (canonical impls live in `nebula_storage::credential` per storage credential layers)

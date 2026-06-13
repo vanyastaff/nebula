@@ -43,8 +43,8 @@ use crate::runtime::{CredentialResolver, LeaseLifecycle};
 use crate::store::{PutMode, StoreError, StoredCredential};
 use crate::{
     AuthPattern, Credential, CredentialContext, CredentialDisplay, CredentialGuard, CredentialId,
-    CredentialRegistry, DynCredentialStore, ErasedCredentialStore, ErasedPendingStore,
-    PendingToken, Refreshable, SchemeFactory,
+    CredentialLifecycle, CredentialRegistry, DynCredentialStore, ErasedCredentialStore,
+    ErasedPendingStore, PendingToken, Refreshable, SchemeFactory,
 };
 
 use super::error::CredentialServiceError;
@@ -1263,7 +1263,7 @@ impl CredentialService {
     /// boundaries (which is forbidden — see SEC-05).
     pub fn scheme_factory<C>(&self, credential_id: &str, ctx: CredentialContext) -> SchemeFactory<C>
     where
-        C: Refreshable,
+        C: Refreshable + CredentialLifecycle,
         C::Scheme: Zeroize + Clone + Send + Sync + 'static,
     {
         self.resolver.scheme_factory(credential_id, ctx)

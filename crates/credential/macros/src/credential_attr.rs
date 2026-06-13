@@ -432,13 +432,19 @@ fn expand_inner(args: TokenStream2, input: TokenStream) -> syn::Result<TokenStre
             impl #impl_generics ::nebula_credential::CredentialLifecycle
                 for #self_ty #where_clause
             {
-                fn policy(_state: &Self::State) -> ::nebula_credential::CredentialPolicy
+                fn policy(state: &Self::State) -> ::nebula_credential::CredentialPolicy
                 where
                     Self: Sized,
                 {
+                    // The synthesized policy reads the live state for its expiry
+                    // (it must not be state-blind, or a refreshable credential
+                    // routes on a constant `None` and never enters the refresh
+                    // window). `lease` stays `None`: a leased credential is
+                    // required to hand-write `fn policy` (see the `release`
+                    // guard above), so the synthesized arm never owns a lease.
                     ::nebula_credential::CredentialPolicy {
                         category: ::nebula_credential::CredentialCategory::#category_ident,
-                        expires_at: ::core::option::Option::None,
+                        expires_at: ::nebula_credential::CredentialState::expires_at(state),
                         lease: ::core::option::Option::None,
                         refresh: #refresh_strategy,
                         revoke: #revoke_strategy,
