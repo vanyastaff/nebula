@@ -1,18 +1,19 @@
 ---
 id: 0088
 title: credential-subsystem-rewrite
-status: proposed
+status: partially-implemented
 date: 2026-06-01
 supersedes: []
 amends:
   - docs/adr/0081-m6-resource-credential-integration.md
-  - docs/adr/0087-bind-population-producer-resource-activation.md
-superseded_by: []
+  # ADR-0087 (bind-population producer) was never a standalone file — it is folded into this ADR as D6 (typed bind-population)
+superseded_by:
+  - docs/adr/0092-credential-subsystem-consolidation.md  # supersedes the D4 crate-split + D7 engine-owned layering of this ADR
 tags: [credential, protocol, scheme, lifecycle, crate-layering, dx, rewrite, m12]
 related:
   - docs/adr/0081-m6-resource-credential-integration.md
   - docs/adr/0084-pre-expiry-credential-refresh-deferred.md
-  - docs/adr/0087-bind-population-producer-resource-activation.md
+  - docs/adr/0092-credential-subsystem-consolidation.md
   - docs/adr/0072-nebula-storage-spec16-port-adapter-tenancy.md
   - docs/COMPETITIVE_ANALYSIS.md
   - docs/PRODUCT_CANON.md
@@ -20,6 +21,25 @@ related:
 ---
 
 # 0088. Credential subsystem rewrite — Protocol model, policy-as-data lifecycle, and crate re-layering
+
+## Implementation status (updated 2026-06-12)
+
+This ADR is **partially implemented**, and its **crate-topology decisions (D4, D7)
+were superseded by [ADR-0092](0092-credential-subsystem-consolidation.md)**. Read
+0092 first for the as-built layering. Per-decision state:
+
+| Decision | State |
+|----------|-------|
+| D1 `#[nebula::credential]` macro + provider-config-as-data | **partial** — `#[credential]` attr + `CredentialPolicy` shipped; OAuth2 still a monolithic type, no shared `OAuth2Protocol` module yet |
+| D2 policy-as-data + compile-gated capability code | **partial** — `CredentialPolicy`/`RefreshStrategy` exist; runtime does not yet route policy-first in all paths |
+| D3 collapse four registries → one | **mostly done** — `StateProjectionRegistry` + `CredentialDispatch` deleted; `CredentialRegistry` + `DispatchOps` remain |
+| D4 non-generic facade **+ merge `credential-runtime` into Core** | **changed** — the non-generic `Arc<dyn>` facade is valid, but the crate **merge** was first declared infeasible (Core→Exec barrier), then **done differently by ADR-0092**: the runtime was relocated *down* into `nebula-credential` and heavy I/O inverted to ports. There is no longer a `nebula-credential-runtime` crate. |
+| D5 consumer binds output scheme | **done** — `CredentialGuard<Scheme>` |
+| D6 typed bind-population (folds ADR-0087) | **seam exists, producer is a frontier gap** (M12.4) |
+| D7 crate/layer allocation (engine orchestrates) | **superseded by ADR-0092** — resolver/refresh/lease/rotation-state moved *into* `nebula-credential`; engine keeps only accessor bridges; fan-out moved to `nebula-resource`; `nebula-crypto` extracted |
+
+The forward design that completes the unfinished D1/D2/D6 work in the 0092 topology
+lives in [`crates/credential/docs/DESIGN.md`](../../crates/credential/docs/DESIGN.md).
 
 ## Status note
 

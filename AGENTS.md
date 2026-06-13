@@ -174,9 +174,9 @@ Each layer depends only on layers below. Upward dependency = CI failure.
 |-------|--------|
 | **API / Public** | `api`, `sdk` |
 | **Exec** | `engine`, `storage`, `storage-loom-probe` |
-| **Business** | `credential-builtin`, `resource`, `action`, `plugin`, `tenancy` |
-| **Core** | `core`, `validator`, `expression`, `workflow`, `execution`, `schema`, `metadata`, `storage-port` |
-| **Cross-cutting** | `log`, `eventbus`, `metrics`, `resilience`, `error`, `env` |
+| **Business** | `resource`, `action`, `plugin`, `tenancy` |
+| **Core / shared-infra** | `core`, `validator`, `expression`, `workflow`, `execution`, `schema`, `metadata`, `storage-port`, `credential` |
+| **Cross-cutting** | `crypto`, `log`, `eventbus`, `metrics`, `resilience`, `error`, `env` |
 
 **Key architectural facts:**
 - Cross-crate communication goes through `nebula-eventbus`, **not** direct imports between siblings.

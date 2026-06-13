@@ -40,8 +40,8 @@
   is the new Core seam — the spec-16 object-safe row-model contract every
   storage consumer depends on (ADR-0072 deleted the legacy `ExecutionRepo` /
   `WorkflowRepo` surface).
-- **Business layer** (`credential`, `credential-builtin`, `resource`,
-  `action`, `plugin`, `tenancy`) — **§M6 + §M11 closed 2026-04-29.** v4
+- **Business layer** (`resource`, `action`, `plugin`, `tenancy`) — **§M6 +
+  §M11 closed 2026-04-29.** v4
   trait shapes shipped: `Action: Sized + type Input/Output + static
   metadata + slot-binding derive + FromWorkflowNode factory + ErasedAction
   dispatch`; `Resource` drops `type Credential` (ADR-0044). **nebula-resource
@@ -94,11 +94,13 @@
   mutation (no `/execute` or `/executions` path bypasses validation).
 - **Shared infra** — `nebula-credential` is consumed by Exec + API +
   Business (the `deny.toml` `[wrappers]` allowlist locks the consumer set).
-  The `nebula-credential-runtime` crate shipped (ADR-0066, #678):
-  `CredentialService<B,PS>` facade, `DispatchOps`, facade-level `owner_id`
-  tenant isolation; `External = ExternalSourceNotWired` (the ADR-0051
-  external-source bridge is unbuilt). Wiring `nebula-api` onto the
-  credential services is the next credential-side increment.
+  The `CredentialService<B,PS>` facade (`DispatchOps`, facade-level `owner_id`
+  tenant isolation; `External = ExternalSourceNotWired` — the ADR-0051
+  external-source bridge is unbuilt) now lives in `nebula-credential`'s
+  `runtime/`, alongside the lifecycle machinery relocated from the engine
+  (ADR-0092; the former `nebula-credential-runtime` crate was folded in —
+  originally shipped under ADR-0066, #678). Wiring `nebula-api` onto the
+  credential facade is the next credential-side increment.
 - **Agent-discipline gate** — ADR-0083 (intent-honesty gate): the
   deterministic structural-budget tier shipped (#705); the semantic LLM
   tier is an unbuilt sequenced follow-up, not a 1.0 blocker.
@@ -474,8 +476,9 @@ Decision point first; coding task only after the ADR lands.
 Closure criteria: the decision is in an accepted ADR (not a PR description);
 the loader behaviour matches the ADR; plugin authors can answer "what
 nebula versions does my plugin support" from `plugin.toml` + plugin-sdk
-README alone; the in-tree first-party plugin (`crates/credential-builtin`,
-future built-ins) migration story is documented.
+README alone; the in-tree first-party built-ins (concrete credential types
+in `nebula-credential`'s `src/credentials/` per ADR-0092, future built-ins)
+migration story is documented.
 
 #### M5.1 ABI-promise ADR
 
@@ -499,7 +502,8 @@ future built-ins) migration story is documented.
 
 #### M5.3 In-tree plugin migration
 
-- [ ] Audit `crates/credential-builtin` (+ other first-party plugins) for
+- [ ] Audit the first-party built-in credential types (`nebula-credential`
+      `src/credentials/`, per ADR-0092) + other first-party plugins for
       ABI assumptions; align with the chosen path; each plugin `Cargo.toml`
       references the engine version per ADR convention.
 
@@ -840,13 +844,14 @@ pass.
 
 > M11 shipped the dependency-redesign primitives, but the business-layer
 > crates consuming them stayed `frontier` (action, resource) / `partial`
-> (plugin), and `nebula-credential-builtin` is still a scaffold. M12 closes
+> (plugin), and the first-party concrete credential types
+> (`nebula-credential` `src/credentials/`) are still a scaffold. M12 closes
 > those gaps so business-layer crates reach `status: stable` for 1.0.
 
 Closure criteria (on top of the global DoD):
 
 - Every business-layer crate flips `status: frontier|partial → stable`
-  (action, credential, credential-builtin, resource, plugin), backed by a
+  (action, credential, resource, plugin), backed by a
   recorded row in [`MATURITY.md`](MATURITY.md).
 - The `frontier`/`partial` markers in per-crate Maturity sections are
   removed because the gaps are closed, not silently relaxed.
@@ -882,8 +887,9 @@ Closure criteria (on top of the global DoD):
       rejection probe (Task 6) — each capability sub-trait enforced by a
       compile-fail probe; `Dynamic` exercised by `AnyCredential` dyn-compat
       probe (Task 21). Subtrait coverage recorded in `MATURITY.md`.
-- [ ] Wire `nebula-api` onto the `nebula-credential-runtime`
-      `CredentialService` facade (ADR-0066 #678) — **PARTIAL (2026-05-20)**:
+- [ ] Wire `nebula-api` onto the `nebula-credential`
+      `CredentialService` facade (ADR-0066 #678; facade now lives in
+      `nebula-credential`'s `runtime/` per ADR-0092) — **PARTIAL (2026-05-20)**:
       `AppState` now holds `CredentialService`; the OAuth domain code still
       consumes `scoped_store` via `CredentialScopeLayer`. Full OAuth path
       migration and `CredentialScopeLayer` deletion from `nebula-tenancy` are
@@ -896,25 +902,30 @@ Closure criteria (on top of the global DoD):
       pattern structurally impossible at the type level.
 - [x] Credential README frontmatter `frontier → stable`; subtrait coverage
       recorded in `MATURITY.md`. **Closed 2026-05-20** (this PR). Both
-      `nebula-credential` and `nebula-credential-runtime` flipped to `stable`.
+      `nebula-credential` and `nebula-credential-runtime` flipped to `stable`
+      (crate later folded into nebula-credential per ADR-0092).
 
-#### M12.3 nebula-credential-builtin — concrete types
+#### M12.3 nebula-credential concrete types (`src/credentials/`)
 
-- [ ] **ADR:** what concrete credential types ship in 1.0? Today the crate
-      is a scaffold (`src/lib.rs` only). Decide a small generic core
+> Per ADR-0092 the separate `nebula-credential-builtin` crate is deleted;
+> first-party concrete credential types now land **in** `nebula-credential`
+> under `src/credentials/`. The work below ships those vendor types — only the
+> target crate changed.
+
+- [ ] **ADR:** what concrete credential types ship in 1.0? The
+      `src/credentials/` set is still a scaffold. Decide a small generic core
       (`GenericOAuth2`, `GenericPat`, `GenericApiKey`, `GenericBasicAuth`,
       `AwsSigV4`) vs the original full vendor list.
 - [ ] Implement the chosen set with the standard pattern
       (`#[plugin_credential(...)]` + sealed capability traits per ADR-0035
       §3 + integration tests + token refresh where applicable).
 - [ ] Each shipped type: integration test, observability triple, doctest in
-      the crate README.
+      the credential crate README.
 - [ ] OAuth provider configs surfaced via operator-facing config schema
       (cross-dep with M3.1 production `AuthBackend`).
-- [ ] Credential-builtin README rewritten (no "scaffold" disclaimer);
-      frontmatter `status: scaffold → stable`. Reword the Out-of-Scope
-      "Telegram / OAuth provider integrations" item (today it implies
-      coverage that does not exist).
+- [ ] `nebula-credential` README section for `src/credentials/` (no "scaffold"
+      disclaimer). Reword the Out-of-Scope "Telegram / OAuth provider
+      integrations" item (today it implies coverage that does not exist).
 
 #### M12.4 nebula-resource — frontier → stable
 
@@ -956,7 +967,7 @@ Closure criteria (on top of the global DoD):
 - [ ] Plugin README frontmatter: `status: partial → stable`; disclaimer
       removed.
 
-**Exit:** action / credential / credential-builtin / resource / plugin all
+**Exit:** action / credential / resource / plugin all
 reach `status: stable`; 1.0 ships a defined credential-types set (not
 "scaffold + planned"); M11.5 bind-population lands; M12.4 either ships or
 formally defers each non-SUPERSEDED resource plan.
@@ -1174,15 +1185,15 @@ Explicit deferrals — must not silently slip into 1.0 scope:
 - ADR-0013 compile-time modes (`build.rs` / `mode-*` features) — accepted
   but unimplemented; not a 1.0 blocker.
 - Vendor-specific credential provider packs beyond the small generic-core
-  set M12.3 ships in `crates/credential-builtin` (vendor packs are 1.1+;
-  the 1.0 surface is the chosen generic types per the M12.3 ADR).
+  set M12.3 ships in `nebula-credential`'s `src/credentials/` (vendor packs
+  are 1.1+; the 1.0 surface is the chosen generic types per the M12.3 ADR).
 - WebSocket endpoint (`crates/api/.../websocket.rs` returns 501) — ship 1.0
   without a realtime API; document as 1.1.
 - Performance regression testing harness (#600 loadgen-rs investigation).
 - ADR-0024 dyn-trait migration (#601).
 - Automated CHANGELOG generation via git-cliff (#599) unless M10.3 picks it.
 - The ADR-0051 external-source bridge (`External = ExternalSourceNotWired`
-  in `nebula-credential-runtime`) — unbuilt; not a 1.0 blocker unless an
+  in `nebula-credential`'s `runtime/`) — unbuilt; not a 1.0 blocker unless an
   external credential source becomes a 1.0 requirement.
 
 > **Note (was deferred, now landed):** the spec-16 storage port / adapter /

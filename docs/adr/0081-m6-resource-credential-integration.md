@@ -13,7 +13,10 @@ supersedes:
   - 0067-engine-owned-rotation-fanout-self-refresh-hook
 amends:
   - 0036-resource-credential-adoption-auth-retirement
-superseded_by: []
+superseded_by:
+  # partial — only the credential-runtime-crate (0066) + engine-owned-rotation-fanout (0067) sections;
+  # the slot-binding / dependency-DX / external-provider decisions remain in force.
+  - docs/adr/0092-credential-subsystem-consolidation.md
 tags: [resource, credential, action, engine, m6, m11, contract]
 related:
   - docs/INTEGRATION_MODEL.md
@@ -66,11 +69,25 @@ error-discriminated provider chain for Vault/cloud/keyring backends.
 
 ### Credential management runtime (absorbs 0066)
 
+> **Superseded by [ADR-0092](0092-credential-subsystem-consolidation.md) (2026-06-10).**
+> The separate `nebula-credential-runtime` (Exec) crate was **deleted**; the
+> management bounded context (registry, validate→encrypt→store pipeline, lifecycle
+> dispatch, store/external resolution) was **consolidated into `nebula-credential`**
+> as its `service/` module. The text below is the historical 0066/0081 decision.
+
 `nebula-credential-runtime` (Exec tier) owns the management bounded context:
 registry, validate→encrypt→store pipeline, lifecycle dispatch, and store/external
 resolution — without folding management into `nebula-engine`.
 
 ### Engine-owned rotation fan-out (absorbs 0067)
+
+> **Superseded by [ADR-0092](0092-credential-subsystem-consolidation.md) (2026-06-10).**
+> The resolver/refresh-coordinator/lease/rotation-**state** machinery moved **out of
+> `nebula-engine` into `nebula-credential::runtime`**, and the per-slot rotation
+> **fan-out** moved into **`nebula-resource`** (co-located with `Manager`). The
+> engine retains only the credential/resource accessor bridges. The `&self`
+> refresh-hook shape and `SlotCell` substrate are unchanged. The text below is the
+> historical 0067/0081 decision ("engine owns").
 
 Engine owns per-slot rotation fan-out, `&self` refresh hooks, `SlotCell`
 substrate, and dispatch from credential/lease events; amends 0044’s hook shape

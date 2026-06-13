@@ -31,7 +31,9 @@
 //! - `CredentialStore` — persistence trait. Concrete impls + composable layers (`EncryptionLayer`,
 //!   `CacheLayer`, `AuditLayer`) live in `nebula_storage::credential` per storage credential layers; the multi-tenant
 //!   scope layer was re-homed to `nebula_tenancy::CredentialScopeLayer` (spec §8).
-//! - Engine-owned runtime resolution lives in `nebula-engine::credential`.
+//! - Runtime resolution (resolver / refresh-coordinator / lease / rotation-state)
+//!   lives in this crate's `runtime` module (relocated from `nebula-engine` per
+//!   ADR-0092); the engine keeps only the accessor bridges + a test coordinator.
 //! - `SecretString`, `CredentialGuard` — zeroizing secret wrappers.
 //! - AES-256-GCM primitives (`EncryptedData`, `EncryptionKey`, `encrypt_with_aad`,
 //!   `encrypt_with_key_id`, `decrypt`, `decrypt_with_aad`) moved to `nebula-crypto`
@@ -83,8 +85,9 @@ pub mod secrets;
 
 /// Credential accessor stub — NoopCredentialAccessor + default_credential_accessor.
 ///
-/// The engine-runtime allowlist-enforcing accessor lives in
-/// `nebula_engine::credential::ScopedCredentialAccessor`.
+/// The allowlist-enforcing scoped accessor (`ScopedCredentialAccessor`) lives in
+/// this crate's `runtime` module (relocated from `nebula-engine` per ADR-0092);
+/// `nebula-engine` re-exports it for backward-compatible import paths.
 mod accessor;
 /// Audit trait and value types — [`AuditSink`], [`AuditEvent`],
 /// [`AuditOperation`], [`AuditResult`]. The audit decorator (`AuditLayer`)
@@ -198,8 +201,10 @@ pub use provider::{
     ExternalProvider, ExternalProviderChain, ExternalReference, LeaseEvent, LeaseExpiryReason,
     LeaseHandle, LeasedProvider, ProviderError, ProviderFuture, ProviderKind, ProviderResolution,
 };
-// Refresh coordination — moved to nebula-engine::credential::refresh (engine credential orchestration §3 amendment)
-// Re-exports removed: RefreshAttempt, RefreshCoordinator now live in nebula-engine.
+// Refresh coordination (`RefreshCoordinator`, `RefreshAttempt`, …) lives in the
+// `runtime::refresh` module of this crate (relocated from `nebula-engine` per
+// ADR-0092); reach it via `nebula_credential::runtime::*` rather than a flat
+// crate-root re-export.
 // Auth schemes — open trait + 11-variant classification + 9 built-in scheme types.
 // Pruned 2026-04-24: FederatedAssertion (Plane A), OtpSeed + ChallengeSecret
 // (integration-internal, не projected auth material).

@@ -23,11 +23,15 @@ and `deny.toml`.
 
 | Crate | Layer | Owns |
 |---|---|---|
-| `nebula-credential` (`crates/credential/`) | Core / shared-infra | The typed **contract**: `Credential` trait, capability sub-traits, `AuthScheme`/scheme types, `CredentialState`, `CredentialGuard`/`SchemeGuard`, `CredentialRegistry`, `lifecycle.rs` policy data, `ExternalProvider` chain (`src/provider/`), secret primitives. **No** runtime orchestration. |
-| `nebula-credential-runtime` (`crates/credential-runtime/`) | Exec | The `CredentialService` **facade**: resolve/refresh/rotate/revoke entry points (`src/service.rs`, `src/ops.rs`), validate→encrypt→store pipeline, bind-population seam (`src/binding.rs`, `ValidatedCredentialBinding`). |
-| `nebula-credential-builtin` (`crates/credential-builtin/`) | Business | First-party concrete credential types; `register_builtins`. |
-| `nebula-crypto` (`crates/crypto/`) | Cross-cutting | AES-256-GCM + Argon2id + `EncryptedData`/`CryptoError`. Crypto was **extracted out** of the credential crate (ADR-0088 D7). |
-| `nebula-engine` (`crates/engine/src/credential/`) | Exec | The refresh/rotation **mechanism**: `resolver.rs`, `rotation/resource_fanout.rs`, `lease/scheduler.rs`. |
+| `nebula-credential` (`crates/credential/`) | Core / shared-infra | **The whole subsystem (one crate, ADR-0092).** Contract: `Credential` trait, capability sub-traits, `AuthScheme`/scheme types, `CredentialState`, `CredentialGuard`/`SchemeGuard`, `CredentialRegistry`, `lifecycle.rs` policy data, `ExternalProvider` chain (`src/provider/`), secret primitives. **Runtime** (`src/runtime/`): `resolver.rs`, `refresh/coordinator.rs`, `lease/scheduler.rs`, executor, dispatchers (relocated from `nebula-engine`). **Management** (`src/service/`): `CredentialService` facade (`facade.rs`, `ops.rs`), validate→encrypt→store pipeline, bind-population seam (`binding.rs`, `ValidatedCredentialBinding`). Builtin types in `src/credentials/`. |
+| `nebula-crypto` (`crates/crypto/`) | Cross-cutting | AES-256-GCM + Argon2id + `Cipher`/`Kdf` ports + `EncryptedData`/`CryptoError`. Crypto was **extracted out** of the credential crate (ADR-0088 D7), injected as `Arc<dyn Cipher>`. |
+| `nebula-engine` (`crates/engine/src/credential/`) | Exec | **Bridge + test only.** Credential/resource accessor bridges + `default_in_memory_coordinator()` (tests). Re-exports `nebula_credential::runtime::*` for back-compat paths. The runtime itself is **not** here anymore (ADR-0092). |
+| `nebula-resource` (`crates/resource/src/credential_fanout/`) | Business | The per-slot rotation **fan-out** (`ResourceFanoutDriver`), relocated from `nebula-engine` (ADR-0092); `SlotCell` + `on_credential_refresh` hooks. |
+| `nebula-storage` (`crates/storage/src/credential/`) | Exec | Durable stores (`SqliteCredentialStore`/`PgCredentialStore`) + `EncryptionLayer`/`CacheLayer`/`AuditLayer` decorators + `RefreshClaimRepo` adapter. |
+
+> The crates `nebula-credential-runtime`, `nebula-credential-builtin`,
+> `nebula-credential-testutil`, `nebula-credential-vault` are **deleted** (ADR-0092);
+> their contents folded into `nebula-credential` / `nebula-storage`.
 
 Procedure: identify which of these your change belongs in **before** editing. A
 "small helper in the wrong crate" is a layer violation caught by `cargo deny`.
@@ -63,14 +67,16 @@ Procedure: identify which of these your change belongs in **before** editing. A
 
 ### The resolve / refresh / rotate / revoke lifecycle
 
-1. The **runtime facade `CredentialService`** (`crates/credential-runtime/src/service.rs`)
+1. The **management facade `CredentialService`** (`crates/credential/src/service/facade.rs`)
    is the single typed entry point. New lifecycle operations go through it.
-2. Do **not** re-home the mechanism: the refresh **coordinator** (L1 in-process
-   coalesce + L2 durable `RefreshClaimRepo` claim) and rotation **fan-out** stay
-   engine-owned — `crates/engine/src/credential/resolver.rs`,
-   `rotation/resource_fanout.rs`, `lease/scheduler.rs`. Resource stays a pure
-   consumer of resolved guards; the resolver must not move into `nebula-resource`
-   (would invert the dependency).
+2. After ADR-0092 the mechanism lives in **`nebula-credential`**, not the engine:
+   the refresh **coordinator** (L1 in-process coalesce + L2 durable
+   `RefreshClaimRepo` claim), resolver, and lease scheduler are at
+   `crates/credential/src/runtime/{resolver.rs,refresh/coordinator.rs,lease/scheduler.rs}`.
+   The per-slot rotation **fan-out** moved to `nebula-resource`
+   (`crates/resource/src/credential_fanout/`). Resource stays a pure consumer of
+   resolved guards; the resolver must not move into `nebula-resource` (would invert
+   the dependency).
 3. **1.0 reality check — refresh is REACTIVE-only** (ADR-0084). Flow: action uses
    credential → resolver observes expiry (stored TTL or provider failure) → L1+L2
    coalesce one provider call → action proceeds. Proactive/pre-expiry refresh
@@ -95,10 +101,11 @@ Procedure: identify which of these your change belongs in **before** editing. A
    the `(org, workspace)` → key map is injective.
 3. Enforcement has two physical points and that is intentional: the API plane
    enforces via `nebula_tenancy::ScopeLayer` (Business); the runtime facade
-   enforces the same invariant in-Exec via its owner checks
-   (`owner_matches`/`load_owned` in `crates/credential-runtime/src/service.rs`).
-   They cannot collapse to one instance because Exec→Business is forbidden by
-   `cargo deny`.
+   enforces the same invariant via the facade owner checks
+   (`owner_matches`/`load_owned` in `crates/credential/src/service/facade.rs`).
+   (Conference Finding 3: this is operation-level discipline today; the target is a
+   type-enforced `OwnerScopedKey` so an unscoped load cannot be expressed — see
+   `crates/credential/docs/CONFERENCE.md`.)
 
 ### Binding credential slots into actions / resources
 
@@ -108,11 +115,12 @@ Procedure: identify which of these your change belongs in **before** editing. A
 2. Slot field type is `CredentialGuard<C::Scheme>` (the projected scheme), not
    `CredentialGuard<C>`. The framework projects `State → Scheme` before populating
    the slot. Resources use `SlotCell<CredentialGuard<…>>` (lock-free ArcSwap) with
-   engine-owned hot-swap + `on_credential_refresh` reactive hooks.
+   resource-layer hot-swap + `on_credential_refresh` reactive hooks (fan-out in
+   `nebula-resource` per ADR-0092).
 3. The **bind-population producer is still a frontier gap** — there is no
    production credential→slot resolver wired end-to-end (M12.4). The seam exists:
    `ValidatedCredentialBinding` + `CredentialService::resolve_for_slot`
-   (`crates/credential-runtime/src/binding.rs`), tenant-fingerprint sealed. Do
+   (`crates/credential/src/service/binding.rs`), tenant-fingerprint sealed. Do
    **not** claim bind-population is green; it is a known gap.
 
 ### External secret backends (Vault / AWS / GCP / Azure)
@@ -163,8 +171,9 @@ Two non-overlapping planes — do not conflate:
 ## Verify
 
 - `cargo check -p nebula-credential` (or the crate you touched)
-- `cargo nextest run -p nebula-credential` (+ `-p nebula-credential-runtime`,
-  `-p nebula-engine` if you touched the facade or mechanism)
+- `cargo nextest run -p nebula-credential` (+ `-p nebula-resource` for fan-out,
+  `-p nebula-engine` if you touched the accessor bridges, `-p nebula-storage` for
+  store impls/decorators)
 - `cargo test -p nebula-credential --doc`
 - The `compile_fail_*.rs` trybuild probes in `crates/credential/tests/` encode the
   load-bearing invariants — read them first when a change feels risky (they may

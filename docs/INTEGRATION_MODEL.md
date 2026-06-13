@@ -97,7 +97,13 @@ Long-lived managed object: connection pool, SDK client, file handle. Engine owns
 
 **Credential** — `[ CredentialMetadata + Schema ]` — **optionally composes a Resource** in metadata/schema (e.g. HTTP client **Resource** for token refresh).
 
-**Who** you are and **how** authentication is maintained. Engine owns rotation, refresh, and the **stored state vs consumer-facing auth material** split — the author binds to a Credential type, never hand-rolls refresh or pending OAuth steps, and never relies on secrets appearing in logs. A set of universal auth schemes (OAuth2, API key, mTLS, and others — full list in `crates/credential/README.md`) plus extensibility via the `AuthScheme` trait in `crates/credential/src/scheme/auth.rs`; the author picks a type and fills the schema. **Concrete shape:** see §3.7 (`nebula-credential`).
+**Who** you are and **how** authentication is maintained. The `nebula-credential`
+crate owns rotation-state, refresh, lease, and the **stored state vs
+consumer-facing auth material** split (its runtime was consolidated there by
+ADR-0092; the engine keeps only the accessor bridges and the per-slot rotation
+fan-out lives in `nebula-resource`) — the author binds to a Credential output
+scheme, never hand-rolls refresh or pending OAuth steps, and never relies on
+secrets appearing in logs. A set of universal auth schemes (OAuth2, API key, mTLS, and others — full list in `crates/credential/README.md`) plus extensibility via the `AuthScheme` trait in `crates/credential/src/scheme/auth.rs`; the author picks a type and fills the schema. **Concrete shape:** see §3.7 (`nebula-credential`).
 
 **Action** — `[ ActionMetadata + Schema ]` — **declares zero or more Resource and/or Credential kinds it needs** (by stable id / type reference in the **integration schema**, not ad hoc runtime lookup).
 

@@ -7,14 +7,13 @@ date: 2026-06-10
 supersedes: []
 amends:
   - docs/adr/0088-credential-subsystem-rewrite.md
-  - docs/adr/0066-credential-management-runtime.md
-  - docs/adr/0081-credential-lifecycle.md
+  - docs/adr/0081-m6-resource-credential-integration.md  # absorbs the former 0066 credential-management-runtime + 0030/0081 D7 engine-owned layering, now superseded here
 superseded_by: []
 tags: [credential, crate-boundaries, layering, ports, dependency-inversion, crypto, boundary-erosion, breaking]
 related:
   - docs/adr/0088-credential-subsystem-rewrite.md  # D4 (generic erasure) finalized; D7 layering superseded
-  - docs/adr/0084-reactive-credential-refresh.md    # the reactive-only bet this rests on
-  - docs/adr/0052-credential-slot-binding.md         # confused-deputy closure preserved
+  - docs/adr/0084-pre-expiry-credential-refresh-deferred.md  # the reactive-only bet this rests on
+  - docs/adr/0081-m6-resource-credential-integration.md      # slot-binding confused-deputy closure preserved (ValidatedCredentialBinding)
   - CLAUDE.md  # Layered Dependency Map (credential subsystem collapses)
 ---
 

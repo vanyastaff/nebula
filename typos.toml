@@ -49,6 +49,8 @@ a8d8c1bf0fcdb7188 = "a8d8c1bf0fcdb7188"
 a486010c5ca2f7ba8 = "a486010c5ca2f7ba8"
 # W3C Trace Context synthetic example (spec §3.2.2.5) — hex string with `ba` substring
 "00f067aa0ba902b7" = "00f067aa0ba902b7"
+# Real crate name (compression dep) — typos splits `flate2` into the word `flate`.
+flate2 = "flate2"
 
 [default.extend-words]
 Hashi = "Hashi"
