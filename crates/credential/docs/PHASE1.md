@@ -17,7 +17,8 @@ Each row is one (or few) green commits. "Blast radius" = crates the change casca
 | **1c** | Macro: synthesized `policy` reads state | `credential_attr.rs` `fn policy(state)` now surfaces `CredentialState::expires_at(state)` instead of a constant `None`, so a refreshable credential routes on real expiry | credential, macros | §17 F2 |
 | **2** | `OwnerScopedKey` — close the confused-deputy on the slot path (**priority #1**) | `OwnerScopedKey` (privately constructed, obtainable only from a `ValidatedCredentialBinding`); `resolve_for_slot` resolves via `resolver.resolve_scoped(&key)`, which **re-verifies the stored row's `owner_id` at load** (cross-tenant id → `NotFound`, existence-hiding). Confused-deputy closed by construction on the exploit path. | credential | §10 rule 9, §17 |
 | **2b** | Store-port sealing (follow-up) | Make `CredentialStore::{get,delete,exists}` themselves take `OwnerScopedKey` so the unscoped `get(&str)` primitive cannot be expressed by *any* caller (not just the slot path). Wide cascade: 5 storage decorators + tenancy `ScopeLayer` + erased wrappers + facade `load_owned` + tests. | credential, storage, tenancy, engine, tests | §17 |
-| **3** | `ensure_local_source` into the resolver tail + tombstone reject | move the source check from the 4 facade sites into `resolve_for_slot`'s tail (`External` → `Unsupported`); binding-validation rejects a tombstoned id with typed `CredentialTombstoned` before a guard exists; **no `references()` port** | credential, engine | §17 Q9/Q10 |
+| **3** | Tombstone reject (Q9) — **landed** | `revoke` writes a tombstone epoch over the row (no delete-then-upsert) so a revoked id cannot be resurrected; `validate_credential_binding` rejects a tombstoned id with the typed `CredentialTombstoned` before a guard exists; `load_owned`/`list` treat it as gone; `resolve_scoped` fails closed on the validate-then-revoke race. **No `references()` port.** | credential | §17 Q9 |
+| **3b** | Facade test harness + remaining Q10 | Build the missing `CredentialService` test harness, then back the deferred end-to-end tests: `validate_credential_binding`-rejects-tombstoned and the `External`-source regression. Plus the *structural* Q10 source-awareness (resolver-tail by construction) replacing the per-call `ensure_local_source` gate landed in increment 2. | credential | §17 Q9/Q10 |
 | **4** | Framework lease handle + constructor-enforced staleness ceiling | resolver returns a lease handle, never a raw `&Secret`; ceiling is a constructor-validated bound (`Duration::MAX` unconstructible on the lease path); arch-test: no `&Secret` reachable except via the handle | credential | §17 F2 |
 | **5** | `Scheme` sealed trait + per-protocol marker + `Slot<S: Scheme>` (F3) | binding axis becomes nominal; Stripe→Twilio bind = compile error; no `Box<dyn>`/catch-all; registration-time family-soundness check | credential, resource, macros | §17 F3 |
 | **6** | OAuth2 grant discriminant (Q2 rider) | `OAuth2State` carries a grant discriminant; `client_credentials` re-acquires non-interactively, `device_code` reauths interactively — not a shared `ReauthRequired` | credential | §17 Q2 |
@@ -89,3 +90,19 @@ jitter is applied once at the scheduler seam, never here — §24 invariant):
   increment-3 work: the *structural* version (source-awareness in the resolver tail rather
   than a per-call gate), the dedicated External-source regression test (needs a facade test
   harness — none exists yet), and the tombstone-reject in binding-validation (Q9).
+- 2026-06-13: **increment 3 (Q9 tombstone reject) landed** (`4ea98488`; rustdoc pre-fix
+  `67c57c3f`). `revoke` CAS-overwrites the row with a `revoked_at` epoch + empty secret bytes
+  instead of deleting it (no resurrection, no delete-then-upsert). `StoredCredential::is_tombstoned`
+  is the fail-closed liveness check (present-but-unparseable epoch still reads tombstoned).
+  `validate_credential_binding` rejects a tombstoned id with the typed
+  `ValidatedCredentialBindingError::CredentialTombstoned` before a binding (and thus a guard)
+  exists — no `references()` port. `load_owned` maps a tombstoned row to `NotFound` (so
+  get/update/test/refresh + a repeat revoke see it as gone) and `list` skips it; `resolve_scoped`
+  fails closed on the validate-then-revoke race. 269 lib tests green (3 store-predicate + 2
+  resolver), clippy clean incl `--all-features`, nebula-api + nebula-engine compile, rustdoc
+  `-D warnings` clean. The same rustdoc run surfaced a **pre-existing** private-intra-doc-link
+  on `CredentialHandle` (from the hot-swap-handles change, which lefthook pre-push does not
+  gate) — fixed in `67c57c3f`. Deferred to **3b**: the facade test harness and the end-to-end
+  tests it unblocks (binding-rejects-tombstoned, External-source), plus the structural Q10
+  source-awareness. Next: **2b** (store-port sealing — wide cascade) or **4** (framework lease
+  handle + staleness ceiling).

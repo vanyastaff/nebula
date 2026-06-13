@@ -773,6 +773,13 @@ not by hand-written per-impl tests.
   port in the credential crate** (that would invert `service→runtime→contract`). Tests:
   `resolve_for_slot` on an `External`-configured service returns `Unsupported`; binding-validation
   against a tombstoned id fails before a guard exists.
+  **Status (2026-06-13): Q9 landed.** `revoke` writes a `revoked_at` tombstone epoch (no delete,
+  no resurrection), `validate_credential_binding` rejects with the typed `CredentialTombstoned`,
+  `load_owned`/`list` treat a tombstoned row as gone, and `resolve_scoped` fails closed on the
+  validate-then-revoke race; no `references()` port was added. The Q10 *per-call*
+  `ensure_local_source` gate on `resolve_for_slot` shipped in increment 2; the *structural*
+  (resolver-tail) form, plus the facade-harness-backed end-to-end tests (binding reject,
+  External source), are tracked as increment 3b.
 
 ### Phase 2 — Management vs runtime
 
