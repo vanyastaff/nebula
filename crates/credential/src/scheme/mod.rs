@@ -28,7 +28,10 @@ mod secret_token;
 mod shared_key;
 mod signing_key;
 
-pub use auth::{AuthPattern, AuthScheme, EgressShape, PublicScheme, SchemeFamily, SensitiveScheme};
+pub use auth::{
+    AuthPattern, AuthScheme, EgressShape, ExternalScheme, PublicScheme, SchemeFamily,
+    SensitiveScheme,
+};
 pub use certificate::Certificate;
 pub use connection_uri::ConnectionUri;
 pub use family::{

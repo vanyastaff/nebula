@@ -11,7 +11,7 @@
 //! Run: `cargo run -p nebula-examples --example credential_plugin_scheme_family`
 
 use nebula_core::auth::{
-    AuthPattern, AuthScheme, EgressShape, PublicScheme, RefreshStrategyKind, SchemeFamily,
+    AuthPattern, AuthScheme, EgressShape, ExternalScheme, RefreshStrategyKind, SchemeFamily,
 };
 
 /// The plugin's mechanics family — RFC 9421 HTTP Message Signatures.
@@ -38,9 +38,10 @@ impl SchemeFamily for Rfc9421Signature {
     }
 }
 
-/// The plugin's scheme: a public reference to a signing key. The private key
-/// lives in an external signer (HSM / KMS), so this struct holds no secret —
-/// it is a [`PublicScheme`].
+/// The plugin's scheme: an opaque reference to a signing key. The private key
+/// lives in an external signer (HSM / KMS), so this struct holds no secret bytes
+/// in-process — but the handle is a signing capability, not harmless public
+/// data, so it is an [`ExternalScheme`], not a `PublicScheme`.
 struct HttpSignatureKey {
     key_id: String,
 }
@@ -53,7 +54,7 @@ impl AuthScheme for HttpSignatureKey {
     }
 }
 
-impl PublicScheme for HttpSignatureKey {}
+impl ExternalScheme for HttpSignatureKey {}
 
 fn main() {
     // The framework reads the plugin's mechanics through the trait — no `match`

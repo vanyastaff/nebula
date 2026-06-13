@@ -209,10 +209,10 @@ pub use provider::{
 // (integration-internal, не projected auth material).
 pub use scheme::{
     AuthPattern, AuthScheme, AuthStyle, Certificate, CertificateFamily, ConnectionUri,
-    ConnectionUriFamily, EgressShape, IdentityPassword, IdentityPasswordFamily, InstanceBinding,
-    InstanceBindingFamily, KeyPair, KeyPairFamily, OAuth2Family, OAuth2Token, PublicScheme,
-    SchemeFamily, SecretToken, SecretTokenFamily, SensitiveScheme, SharedKey, SharedKeyFamily,
-    SigningKey, SigningKeyFamily,
+    ConnectionUriFamily, EgressShape, ExternalScheme, IdentityPassword, IdentityPasswordFamily,
+    InstanceBinding, InstanceBindingFamily, KeyPair, KeyPairFamily, OAuth2Family, OAuth2Token,
+    PublicScheme, SchemeFamily, SecretToken, SecretTokenFamily, SensitiveScheme, SharedKey,
+    SharedKeyFamily, SigningKey, SigningKeyFamily,
 };
 // credential secrecy secret-handling primitives — crypto, guard, zeroizing wrappers,
 // scheme-guard refresh surface (§15.7). The refresh-notification hook
@@ -287,8 +287,8 @@ pub mod prelude {
         AuthPattern, AuthScheme, Credential, CredentialContext, CredentialContextBuilder,
         CredentialError, CredentialGuard, CredentialHandle, CredentialId, CredentialKey,
         CredentialMetadata, CredentialPolicy, CredentialRecord, CredentialRegistry,
-        CredentialService, CredentialState, Dynamic, HasCredentialsExt, Interactive, PublicScheme,
-        Refreshable, Revocable, SecretString, SensitiveScheme, Testable, credential,
-        credential_key, schema_of,
+        CredentialService, CredentialState, Dynamic, ExternalScheme, HasCredentialsExt,
+        Interactive, PublicScheme, Refreshable, Revocable, SecretString, SensitiveScheme, Testable,
+        credential, credential_key, schema_of,
     };
 }

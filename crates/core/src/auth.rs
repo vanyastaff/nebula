@@ -10,20 +10,25 @@
 //! `AuthPattern` groups auth schemes into universal categories for UI,
 //! logging, and tooling.
 //!
-//! # Sensitivity dichotomy (§15.5)
+//! # Sensitivity classification (§15.5)
 //!
 //! `AuthScheme` is the base trait — it carries no security guarantees by
 //! itself. Implementing types declare sensitivity by also implementing
-//! one of:
+//! exactly one of:
 //!
-//! - `SensitiveScheme: AuthScheme + ZeroizeOnDrop` — schemes that hold secret material (tokens,
-//!   passwords, keys, certificate private keys).
-//! - `PublicScheme: AuthScheme` — schemes that hold no secret material (provider/role/region
-//!   identifiers, public capability descriptors).
+//! - `SensitiveScheme: AuthScheme + ZeroizeOnDrop` — holds secret bytes in-process (tokens,
+//!   passwords, keys, certificate private keys). The `ZeroizeOnDrop` supertrait forces the bytes
+//!   to be wiped on drop.
+//! - `PublicScheme: AuthScheme` — holds no secret material at all (provider/role/region
+//!   identifiers, public capability descriptors); safe to log and serialize.
+//! - `ExternalScheme: AuthScheme` — holds only an opaque handle to material in an external signer
+//!   (HSM / KMS / FIDO); no secret bytes in-process (so no `ZeroizeOnDrop`), but the handle is a
+//!   signing capability, so it is not harmless-public either.
 //!
 //! A scheme MUST implement exactly one of these. The `#[derive(AuthScheme)]`
-//! macro accepts `#[auth_scheme(sensitive)]` or `#[auth_scheme(public)]`
-//! to declare the sensitivity and audit fields at expansion time.
+//! macro accepts `#[auth_scheme(sensitive)]`, `#[auth_scheme(public)]`, or
+//! `#[auth_scheme(external)]` to declare the sensitivity and audit fields at
+//! expansion time.
 
 use serde::{Deserialize, Serialize};
 use zeroize::ZeroizeOnDrop;
@@ -144,6 +149,23 @@ pub trait SensitiveScheme: AuthScheme + ZeroizeOnDrop {}
 /// Examples: `InstanceBinding` (provider + role + region; cloud IMDS lookup
 /// happens at runtime, no stored secret).
 pub trait PublicScheme: AuthScheme {}
+
+/// Schemes whose privileged material lives in an **external signer** — an HSM,
+/// a cloud KMS, or a hardware FIDO token. The scheme holds only an opaque
+/// *handle* (a key id, ARN, or PKCS#11 object reference); the secret bytes
+/// never enter this process, so there is nothing to [`ZeroizeOnDrop`] — which is
+/// why this is **not** [`SensitiveScheme`] (no `ZeroizeOnDrop` supertrait).
+///
+/// It is equally **not** [`PublicScheme`]: the handle is a *capability*. Anyone
+/// who can present it to the signer can obtain signatures (a signing oracle), so
+/// an external handle must not be treated as harmless, loggable public data. A
+/// scheme that holds an actual `SecretString`/`SecretBytes` in memory is
+/// [`SensitiveScheme`], not external — the `#[auth_scheme(external)]` derive
+/// rejects such fields so this trait cannot become a zeroize-bypass channel.
+///
+/// Examples: an RFC 9421 HTTP-message-signing key whose private half lives in a
+/// KMS; a FIDO/WebAuthn assertion key; a PKCS#11-resident signing key.
+pub trait ExternalScheme: AuthScheme {}
 
 /// The mechanics family of the no-auth scheme: nothing crosses the wire, nothing
 /// is renewed. The `Family` of `()`.

@@ -9,8 +9,14 @@
 //!   declared type.
 //! - `#[auth_scheme(public)]` — schemes holding no secret material. Audit rejects any
 //!   `SecretString` / `SecretBytes` / nested `SensitiveScheme` field.
+//! - `#[auth_scheme(external)]` — schemes whose privileged material lives in an external signer
+//!   (HSM / KMS / FIDO); the struct holds only an opaque handle, no in-process secret bytes. No
+//!   `ZeroizeOnDrop` obligation (nothing to wipe), but the handle is a capability — not harmless
+//!   public data. Audit rejects any `SecretString` / `SecretBytes` field: a struct that holds
+//!   secret bytes in-process is `sensitive`, not `external` (this is the structural invariant that
+//!   keeps `external` from being a zeroize-bypass smuggling channel).
 //!
-//! Mutually exclusive: declaring both fails at parse time.
+//! Exactly one of `sensitive` / `public` / `external` — declaring more than one fails at parse time.
 
 use nebula_macro_support::{attrs, diag};
 use proc_macro::TokenStream;
@@ -22,6 +28,7 @@ use syn::{Data, DeriveInput, Fields, Type, parse_macro_input, spanned::Spanned};
 enum Sensitivity {
     Sensitive,
     Public,
+    External,
 }
 
 /// Entry point for `#[derive(AuthScheme)]`.
@@ -61,27 +68,29 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
         )
     })?;
 
-    // Required: exactly one of `sensitive` or `public`
+    // Required: exactly one of `sensitive` / `public` / `external`
     let sensitive_flag = attr_args.has_flag("sensitive");
     let public_flag = attr_args.has_flag("public");
+    let external_flag = attr_args.has_flag("external");
 
-    let sensitivity = match (sensitive_flag, public_flag) {
-        (true, true) => {
+    let sensitivity = match (sensitive_flag, public_flag, external_flag) {
+        (true, false, false) => Sensitivity::Sensitive,
+        (false, true, false) => Sensitivity::Public,
+        (false, false, true) => Sensitivity::External,
+        (false, false, false) => {
             return Err(diag::error_spanned(
                 struct_name,
-                "#[auth_scheme(...)] cannot declare both `sensitive` and `public` — they are \
-                 mutually exclusive (per Tech Spec §15.5)",
+                "#[auth_scheme(...)] must declare exactly one of `sensitive`, `public`, or \
+                 `external` (per Tech Spec §15.5 sensitivity classification)",
             ));
         },
-        (false, false) => {
+        _ => {
             return Err(diag::error_spanned(
                 struct_name,
-                "#[auth_scheme(...)] must declare exactly one of `sensitive` or `public` (per \
-                 Tech Spec §15.5 dichotomy)",
+                "#[auth_scheme(...)] cannot declare more than one of `sensitive` / `public` / \
+                 `external` — they are mutually exclusive (per Tech Spec §15.5)",
             ));
         },
-        (true, false) => Sensitivity::Sensitive,
-        (false, true) => Sensitivity::Public,
     };
 
     // Walk fields and audit per sensitivity
@@ -98,6 +107,10 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
         },
         Sensitivity::Public => quote! {
             impl #impl_generics ::nebula_core::auth::PublicScheme
+                for #struct_name #ty_generics #where_clause {}
+        },
+        Sensitivity::External => quote! {
+            impl #impl_generics ::nebula_core::auth::ExternalScheme
                 for #struct_name #ty_generics #where_clause {}
         },
     };
@@ -209,6 +222,25 @@ fn audit_fields(input: &DeriveInput, sensitivity: Sensitivity) -> syn::Result<()
                         format!(
                             "field `{field_name}` on #[auth_scheme(public)] struct cannot be {} \
                              — declare #[auth_scheme(sensitive)] instead (per Tech Spec §15.5)",
+                            type_class.display(),
+                        ),
+                    ));
+                }
+            },
+            Sensitivity::External => {
+                // External material lives in an HSM/KMS/FIDO signer; the struct
+                // holds only an opaque handle. A `SecretString`/`SecretBytes`
+                // field means secret bytes ARE held in-process — that is
+                // `sensitive`, not `external`. Rejecting it is the structural
+                // invariant that stops `external` being a zeroize-bypass channel.
+                if matches!(type_class, TypeClass::SecretString | TypeClass::SecretBytes) {
+                    return Err(syn::Error::new(
+                        field.span(),
+                        format!(
+                            "field `{field_name}` on #[auth_scheme(external)] struct cannot be {} \
+                             — external schemes hold only a handle to an out-of-process signer, no \
+                             secret bytes in memory; declare #[auth_scheme(sensitive)] if it holds \
+                             a secret (per Tech Spec §15.5)",
                             type_class.display(),
                         ),
                     ));

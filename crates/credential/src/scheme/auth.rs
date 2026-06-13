@@ -4,5 +4,6 @@
 //! backward compatibility and discoverability.
 
 pub use nebula_core::auth::{
-    AuthPattern, AuthScheme, EgressShape, PublicScheme, SchemeFamily, SensitiveScheme,
+    AuthPattern, AuthScheme, EgressShape, ExternalScheme, PublicScheme, SchemeFamily,
+    SensitiveScheme,
 };
