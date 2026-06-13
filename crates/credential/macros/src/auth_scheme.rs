@@ -165,11 +165,10 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
 ///
 /// Authors of nested-sensitive types should `#[derive(zeroize::ZeroizeOnDrop)]`
 /// on the wrapping struct **and** declare it `#[auth_scheme(sensitive)]`
-/// (or build it manually as `SensitiveScheme`). See the
-/// `arch-publicscheme-nested-sensitive-audit` row in
-/// `docs/tracking/credential-concerns-register.md` for the long-term
-/// refinement plan (compile-time `where Self::FieldsX: PublicScheme`
-/// reflection is not currently feasible at the macro level).
+/// (or build it manually as `SensitiveScheme`). Compile-time
+/// `where Self::FieldsX: PublicScheme` reflection is not feasible at the macro
+/// level; the credential subsystem `DESIGN.md` §17 (sensitivity item) records
+/// this audit-gap and why the per-type sealed-tag alternative was rejected.
 fn audit_fields(input: &DeriveInput, sensitivity: Sensitivity) -> syn::Result<()> {
     let Data::Struct(data) = &input.data else {
         return Err(syn::Error::new(

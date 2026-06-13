@@ -124,11 +124,12 @@ pub trait AuthScheme: Send + Sync + 'static {
 /// Defense-in-depth: the `ZeroizeOnDrop` bound catches a
 /// `SensitiveScheme` impl on a struct that doesn't zeroize (the
 /// canonical safety invariant), so even with two impls the sensitive
-/// bound carries the safety guarantee. See
-/// `arch-publicscheme-nested-sensitive-audit` in
-/// `docs/tracking/credential-concerns-register.md` for the long-term
-/// refinement plan (sealed `Sensitivity` associated tag, or signed
-/// manifests that surface dual impls at registry time).
+/// bound carries the safety guarantee. The exclusivity hole is left as-is
+/// deliberately: these traits are used as generic bounds nowhere, so a dual
+/// impl is inert. A sealed `type Sensitivity` associated-tag was evaluated to
+/// close it structurally and **rejected** — sensitivity is a per-field property
+/// and the real zeroize gate is the guard's `Zeroize` bound, not this marker
+/// (see the credential subsystem `DESIGN.md` §17, sensitivity item).
 pub trait SensitiveScheme: AuthScheme + ZeroizeOnDrop {}
 
 /// Schemes that hold no secret material.
