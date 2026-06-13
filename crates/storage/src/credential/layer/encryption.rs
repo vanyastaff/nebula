@@ -333,7 +333,15 @@ mod tests {
             token_url: "https://example.invalid/token".to_owned(),
             auth_style: AuthStyle::Header,
         };
-        let data = serde_json::to_vec(&state).expect("serialize OAuth2 state");
+        // Mirror the production seal path: `OAuth2State`'s secret fields emit
+        // cleartext only inside the `expose_for_serialization` storage scope.
+        // Serializing through it feeds REAL plaintext into the encryption layer,
+        // so the "not plaintext in the inner row" assertion below stays
+        // meaningful instead of trivially passing on a redacted blob.
+        let data = nebula_credential::serde_secret::expose_for_serialization(|| {
+            serde_json::to_vec(&state)
+        })
+        .expect("serialize OAuth2 state");
         let cred = make_credential("enc-oauth2-state", &data);
         store.put(cred, PutMode::CreateOnly).await.unwrap();
 

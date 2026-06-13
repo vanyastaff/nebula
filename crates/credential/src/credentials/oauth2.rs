@@ -1468,7 +1468,25 @@ mod tests {
     #[test]
     fn oauth2_state_serde_round_trip() {
         let state = make_state();
-        let json = serde_json::to_string(&state).unwrap();
+
+        // Default sink (logs, responses): every secret field redacts.
+        let redacted = serde_json::to_string(&state).unwrap();
+        assert!(
+            !redacted.contains("tok_abc"),
+            "access_token leaked to default serde sink"
+        );
+        assert!(
+            !redacted.contains("ref_xyz"),
+            "refresh_token leaked to default serde sink"
+        );
+        assert!(
+            !redacted.contains("csecret"),
+            "client_secret leaked to default serde sink"
+        );
+
+        // Storage scope preserves them for encrypted-at-rest persistence.
+        let json = crate::serde_secret::expose_for_serialization(|| serde_json::to_string(&state))
+            .unwrap();
         let restored: OAuth2State = serde_json::from_str(&json).unwrap();
         assert_eq!(restored.access_token.expose_secret(), "tok_abc");
         assert_eq!(

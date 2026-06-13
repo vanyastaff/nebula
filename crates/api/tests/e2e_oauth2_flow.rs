@@ -276,7 +276,13 @@ async fn e2e_oauth2_flow_persists_exchanged_credential_state() {
     // Force state into early-refresh window to exercise engine refresh path.
     persisted_state.expires_at = Some(chrono::Utc::now() - chrono::Duration::seconds(30));
     let mut stale_record = stored.clone();
-    stale_record.data = serde_json::to_vec(&persisted_state).expect("serialize stale oauth state");
+    // Mirror the production persist path: cleartext only inside the storage
+    // scope, so the engine refresh path below reads back real tokens (the
+    // default sink would persist `[REDACTED]`).
+    stale_record.data = nebula_credential::serde_secret::expose_for_serialization(|| {
+        serde_json::to_vec(&persisted_state)
+    })
+    .expect("serialize stale oauth state");
     stale_record.expires_at = persisted_state.expires_at();
     let stale_put = oauth_store_handle(&state)
         .put(stale_record, PutMode::Overwrite)
