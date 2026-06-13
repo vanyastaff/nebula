@@ -43,3 +43,8 @@ jitter is applied once at the scheduler seam, never here — §24 invariant):
 ## Progress log (fact only)
 
 - 2026-06-12: baseline `cargo check -p nebula-credential --all-targets` green (35s).
+- 2026-06-12: **increment 1a landed** (`7ae102f7`). `Decision` enum + pure
+  `CredentialPolicy::decide_refresh` in `lifecycle.rs`; 7 unit tests green; crate clippy
+  clean. Additive — no consumer yet. Next: **1b** — migrate `runtime/resolver.rs`
+  (`resolve_with_refresh`, `:209/:236/:351`) onto `decide_refresh` and delete the
+  `C::KEY != OAuth2Credential::KEY` branch at `:536`.
