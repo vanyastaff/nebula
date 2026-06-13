@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
-use crate::{AuthScheme, SecretString, identity_state};
+use crate::{AuthScheme, SecretString, SigningKeyFamily, identity_state};
 
 /// A signing key used to authenticate requests via HMAC or similar algorithms.
 ///
@@ -22,7 +22,7 @@ use crate::{AuthScheme, SecretString, identity_state};
 /// let key = SigningKey::new(SecretString::new("whsec_abc123"), "hmac-sha256");
 /// ```
 #[derive(Clone, Serialize, Deserialize, Zeroize, ZeroizeOnDrop, AuthScheme)]
-#[auth_scheme(pattern = RequestSigning, sensitive)]
+#[auth_scheme(pattern = RequestSigning, family = SigningKeyFamily, sensitive)]
 pub struct SigningKey {
     #[serde(with = "crate::serde_secret")]
     key: SecretString,

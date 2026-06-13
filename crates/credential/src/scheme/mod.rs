@@ -18,6 +18,7 @@ mod auth;
 mod certificate;
 mod coercion;
 mod connection_uri;
+mod family;
 mod identity_password;
 mod instance_binding;
 mod key_pair;
@@ -30,6 +31,10 @@ mod signing_key;
 pub use auth::{AuthPattern, AuthScheme, EgressShape, PublicScheme, SchemeFamily, SensitiveScheme};
 pub use certificate::Certificate;
 pub use connection_uri::ConnectionUri;
+pub use family::{
+    CertificateFamily, ConnectionUriFamily, IdentityPasswordFamily, InstanceBindingFamily,
+    KeyPairFamily, OAuth2Family, SecretTokenFamily, SharedKeyFamily, SigningKeyFamily,
+};
 pub use identity_password::IdentityPassword;
 pub use instance_binding::InstanceBinding;
 pub use key_pair::KeyPair;

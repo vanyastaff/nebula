@@ -11,6 +11,7 @@ struct ManualScheme {
 }
 
 impl AuthScheme for ManualScheme {
+    type Family = nebula_credential::SecretTokenFamily;
     fn pattern() -> nebula_credential::AuthPattern {
         nebula_credential::AuthPattern::SecretToken
     }

@@ -7,7 +7,7 @@
 use nebula_credential::AuthScheme;
 
 #[derive(AuthScheme)]
-#[auth_scheme(pattern = ApiKey, sensitive)]
+#[auth_scheme(pattern = ApiKey, family = SecretTokenFamily, sensitive)]
 struct BadSnakeCase {
     pub api_key: String, // snake_case secret-named plain String — REJECT
 }

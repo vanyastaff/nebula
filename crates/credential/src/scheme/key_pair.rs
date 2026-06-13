@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
-use crate::{AuthScheme, SecretString};
+use crate::{AuthScheme, KeyPairFamily, SecretString};
 
 /// Asymmetric key pair with optional passphrase and algorithm hint.
 ///
@@ -26,7 +26,7 @@ use crate::{AuthScheme, SecretString};
 /// .with_algorithm("ed25519");
 /// ```
 #[derive(Clone, Serialize, Deserialize, Zeroize, ZeroizeOnDrop, AuthScheme)]
-#[auth_scheme(pattern = KeyPair, sensitive)]
+#[auth_scheme(pattern = KeyPair, family = KeyPairFamily, sensitive)]
 pub struct KeyPair {
     #[zeroize(skip)]
     public_key: String,

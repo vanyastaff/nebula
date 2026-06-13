@@ -81,6 +81,12 @@ pub enum AuthPattern {
 /// reduction here closes security-lead N2 by removing the implicit "every
 /// scheme can be serialized into telemetry" assumption.
 pub trait AuthScheme: Send + Sync + 'static {
+    /// The mechanics [`SchemeFamily`] this scheme belongs to — the open axis of
+    /// the F3 model. A novel protocol is a new family *type* with zero framework
+    /// `match`; the family declares the wire-egress shape(s) and the legitimate
+    /// renewal strategies, checked against the credential's policy at registration.
+    type Family: SchemeFamily;
+
     /// Classification for UI, logging, and tooling.
     fn pattern() -> AuthPattern;
 }
@@ -136,8 +142,24 @@ pub trait SensitiveScheme: AuthScheme + ZeroizeOnDrop {}
 /// happens at runtime, no stored secret).
 pub trait PublicScheme: AuthScheme {}
 
+/// The mechanics family of the no-auth scheme: nothing crosses the wire, nothing
+/// is renewed. The `Family` of `()`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NoAuthFamily;
+
+impl SchemeFamily for NoAuthFamily {
+    const EGRESS: &'static [EgressShape] = &[EgressShape::None];
+    fn refresh_classes() -> &'static [RefreshStrategy] {
+        &[RefreshStrategy::Static]
+    }
+    fn pattern() -> AuthPattern {
+        AuthPattern::NoAuth
+    }
+}
+
 /// No authentication required.
 impl AuthScheme for () {
+    type Family = NoAuthFamily;
     fn pattern() -> AuthPattern {
         AuthPattern::NoAuth
     }
@@ -307,6 +329,7 @@ mod tests {
     }
 
     impl AuthScheme for TestToken {
+        type Family = NoAuthFamily;
         fn pattern() -> AuthPattern {
             AuthPattern::SecretToken
         }

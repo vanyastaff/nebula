@@ -48,6 +48,19 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
         )
     })?;
 
+    // Required: `family = FamilyType` — the F3 mechanics family (a type that
+    // implements `SchemeFamily`, in scope at the derive site). Drives the open
+    // mechanics axis: egress shape(s) + legitimate refresh strategies. Distinct
+    // from `pattern` (cosmetic), so it is declared explicitly rather than derived
+    // from the pattern — a shared display pattern may sit over distinct mechanics.
+    let family_ident = attr_args.get_ident("family").ok_or_else(|| {
+        diag::error_spanned(
+            struct_name,
+            "#[derive(AuthScheme)] requires `#[auth_scheme(family = FamilyType)]` (the F3 \
+             mechanics family implementing `SchemeFamily`)",
+        )
+    })?;
+
     // Required: exactly one of `sensitive` or `public`
     let sensitive_flag = attr_args.has_flag("sensitive");
     let public_flag = attr_args.has_flag("public");
@@ -93,6 +106,7 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
         impl #impl_generics ::nebula_core::auth::AuthScheme
             for #struct_name #ty_generics #where_clause
         {
+            type Family = #family_ident;
             fn pattern() -> ::nebula_core::auth::AuthPattern {
                 #pattern_path
             }

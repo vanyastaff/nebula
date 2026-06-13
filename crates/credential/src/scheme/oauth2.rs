@@ -24,7 +24,7 @@ pub enum AuthStyle {
 }
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
-use crate::{AuthPattern, AuthScheme, SecretString, scheme::SensitiveScheme};
+use crate::{AuthPattern, AuthScheme, OAuth2Family, SecretString, scheme::SensitiveScheme};
 
 /// OAuth2 bearer token with metadata.
 ///
@@ -111,6 +111,7 @@ impl OAuth2Token {
 }
 
 impl AuthScheme for OAuth2Token {
+    type Family = OAuth2Family;
     fn pattern() -> AuthPattern {
         AuthPattern::OAuth2
     }

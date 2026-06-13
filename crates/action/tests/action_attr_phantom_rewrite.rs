@@ -60,6 +60,7 @@ pub struct LocalBearerScheme {
 }
 
 impl AuthScheme for LocalBearerScheme {
+    type Family = nebula_credential::SecretTokenFamily;
     fn pattern() -> AuthPattern {
         AuthPattern::SecretToken
     }
