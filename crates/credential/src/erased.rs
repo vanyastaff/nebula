@@ -256,8 +256,11 @@ impl<T: DynPendingStateStore + ?Sized> PendingStateStore for T {
         session_id: &str,
         pending: P,
     ) -> Result<PendingToken, PendingStoreError> {
-        let data =
-            serde_json::to_vec(&pending).map_err(|e| PendingStoreError::Backend(Box::new(e)))?;
+        // Pending interactive state (PKCE verifier, partial OAuth2 secrets) is
+        // persisted to the (encrypted-at-rest) pending store; serialize it in
+        // cleartext only here. Outside this scope its secret fields redact.
+        let data = crate::serde_secret::expose_for_serialization(|| serde_json::to_vec(&pending))
+            .map_err(|e| PendingStoreError::Backend(Box::new(e)))?;
         let expires_in = pending.expires_in();
         self.put_serialized(credential_kind, owner_id, session_id, data, expires_in)
             .await

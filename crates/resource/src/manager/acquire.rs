@@ -126,7 +126,7 @@ impl Manager {
         .with_resource_key(R::key())
     }
 
-    /// Acquires through the registry row's [`ManagedHandle::acquire`] method,
+    /// Acquires through the registry row's `ManagedHandle::acquire` method,
     /// keyed by the **collision-free structural** resolved-credential identity
     /// (key + scope + slot identity).
     ///

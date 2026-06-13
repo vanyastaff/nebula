@@ -427,7 +427,14 @@ async fn persist_oauth_state(
     credential_id: &str,
     oauth_state: OAuth2State,
 ) -> ApiResult<()> {
-    let data = serde_json::to_vec(&oauth_state).map_err(|e| {
+    // Cleartext serialization for the encrypted-at-rest credential store;
+    // `OAuth2State`'s secret fields emit cleartext only inside this scope.
+    // Outside it the same serialize redacts, which would silently persist
+    // `[REDACTED]` in place of the tokens.
+    let data = nebula_credential::serde_secret::expose_for_serialization(|| {
+        serde_json::to_vec(&oauth_state)
+    })
+    .map_err(|e| {
         ApiError::Internal(format!(
             "failed to serialize oauth state for persistence: {e}"
         ))
