@@ -66,8 +66,7 @@ pub mod credentials;
 /// Typed credential extension trait for capability contexts.
 pub mod ext;
 /// Credential lifecycle as data — `CredentialPolicy` / `RefreshStrategy` /
-/// `RevokeStrategy` / `CredentialCategory` (ADR-0088 D2: capabilities are data,
-/// not sub-traits).
+/// `RevokeStrategy` (ADR-0088 D2: capabilities are data, not sub-traits).
 pub mod lifecycle;
 /// Credential operation metrics — counter names and label helpers.
 pub mod metrics;
@@ -230,7 +229,7 @@ pub use secrets::{
 };
 // Lifecycle policy types (ADR-0088 D2): capabilities as data, not sub-traits.
 pub use lifecycle::{
-    CredentialCategory, CredentialLifecycle, CredentialPolicy, Decision, LeaseRef, RefreshStrategy,
+    CredentialLifecycle, CredentialPolicy, Decision, LeaseRef, RefreshStrategy,
     RefreshStrategyKind, RevokeStrategy, SchemeId,
 };
 // Store trait + DTOs (canonical impls live in `nebula_storage::credential` per storage credential layers)

@@ -47,10 +47,9 @@ pub struct BasicAuthCredential;
 
 // ADR-0088 D1: one `impl` block declares the whole credential. `#[credential]`
 // sees only `project` + `resolve` (no capability methods) and emits the
-// `Credential` impl, five all-`false` capability-report consts, and a
-// `StaticSecret` `CredentialLifecycle` policy — matching the absent capability
-// sub-traits.
-#[nebula_credential::credential(key = "basic_auth", category = StaticSecret)]
+// `Credential` impl, five all-`false` capability-report consts, and a static
+// `CredentialLifecycle` policy — matching the absent capability sub-traits.
+#[nebula_credential::credential(key = "basic_auth")]
 impl BasicAuthCredential {
     type Properties = BasicAuthProperties;
     type Scheme = IdentityPassword;
@@ -113,7 +112,6 @@ mod tests {
     fn lifecycle_policy_is_static() {
         let auth = IdentityPassword::new("u", SecretString::new("p"));
         let p = BasicAuthCredential::policy(&auth);
-        assert_eq!(p.category, crate::CredentialCategory::StaticSecret);
         assert!(!p.is_expiring());
         assert!(!p.is_auto_renewable());
     }

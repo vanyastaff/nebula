@@ -28,48 +28,6 @@ use serde::{Deserialize, Serialize};
 /// paths keep resolving.
 pub use nebula_core::auth::{RefreshStrategy, RefreshStrategyKind, SchemeId};
 
-/// The ~10 structural categories of credential, classified by **lifecycle
-/// shape** rather than by wire scheme (there are ~35 wire schemes but only a
-/// handful of distinct lifecycle shapes — ADR-0088 D1).
-///
-/// A single credential may legitimately inhabit more than one category (e.g. a
-/// GCP service-account key can self-sign a bearer JWT *or* be exchanged), so a
-/// protocol picks the category that drives its lifecycle.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[non_exhaustive]
-pub enum CredentialCategory {
-    /// Static secret valid until revoked — API key, HTTP Basic, PAT.
-    StaticSecret,
-    /// Request signed with a secret that never leaves the signer — AWS SigV4, HMAC.
-    SignedRequest,
-    /// Bearer token carrying its own expiry, no refresh pair — short-lived JWT.
-    BearerWithExp,
-    /// OAuth2 authorization-code / refresh-grant shape — an access token,
-    /// usually paired with a refresh token.
-    ///
-    /// This is the structural **kind**, fixed for the credential type. A given
-    /// instance may lack a refresh token (the provider issued none): it stays
-    /// `RefreshPair`, but its [`RefreshStrategy`] is computed from live state and
-    /// degrades to [`RefreshStrategy::ReAcquire`]. Category = the type; strategy =
-    /// the state-derived behaviour.
-    RefreshPair,
-    /// Input credential exchanged for a scoped, shorter-lived output —
-    /// AWS STS AssumeRole, GCP workload-identity-federation, RFC 8693 token exchange.
-    FederatedExchange,
-    /// Requires a human redirect / consent to (re)acquire — OAuth2 auth-code,
-    /// device-code flow.
-    InteractiveRedirect,
-    /// X.509 or SSH key material — mTLS client cert, SSH key.
-    KeyPair,
-    /// Short-lived leased secret that must be renewed or it expires — Vault
-    /// dynamic secret, Kubernetes projected service-account token.
-    Leased,
-    /// Server-side session — SAML / OIDC session, session cookie.
-    Session,
-    /// Connection string / DSN — database, message queue.
-    ConnectionString,
-}
-
 /// How a credential can be revoked. The field has **no uniform revoke
 /// endpoint**: Vault revokes by lease handle (RFC 7009 for OAuth2), whereas AWS
 /// STS revokes by an issue-time-keyed deny policy — the bytes stay syntactically
@@ -153,8 +111,6 @@ pub enum Decision {
 /// itself persisted (hence no `Serialize`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CredentialPolicy {
-    /// The structural category this credential belongs to.
-    pub category: CredentialCategory,
     /// Inline absolute expiry, if the material carries one.
     pub expires_at: Option<DateTime<Utc>>,
     /// External renewable lease, if the material is leased.
@@ -171,7 +127,6 @@ impl CredentialPolicy {
     #[must_use]
     pub const fn static_secret() -> Self {
         Self {
-            category: CredentialCategory::StaticSecret,
             expires_at: None,
             lease: None,
             refresh: RefreshStrategy::Static,
@@ -340,7 +295,6 @@ mod tests {
         let p = CredentialPolicy::static_secret();
         assert!(!p.is_expiring());
         assert!(!p.is_auto_renewable());
-        assert_eq!(p.category, CredentialCategory::StaticSecret);
         assert_eq!(p.refresh, RefreshStrategy::Static);
         assert_eq!(p.revoke, RevokeStrategy::None);
     }
@@ -349,7 +303,6 @@ mod tests {
     fn refresh_pair_is_auto_renewable_and_expiring() {
         let now = Utc::now();
         let p = CredentialPolicy {
-            category: CredentialCategory::RefreshPair,
             expires_at: Some(now + chrono::Duration::minutes(60)),
             lease: None,
             refresh: RefreshStrategy::RefreshToken,
@@ -365,7 +318,6 @@ mod tests {
     fn lease_is_expiring_but_inline_expiry_decides_is_expired() {
         let now = Utc::now();
         let p = CredentialPolicy {
-            category: CredentialCategory::Leased,
             expires_at: None,
             lease: Some(LeaseRef {
                 lease_id: "vault/lease/abc".to_owned(),
@@ -385,7 +337,6 @@ mod tests {
     #[test]
     fn one_shot_lease_is_not_auto_renewable() {
         let p = CredentialPolicy {
-            category: CredentialCategory::Leased,
             expires_at: None,
             lease: Some(LeaseRef {
                 lease_id: "vault/lease/one-shot".to_owned(),
@@ -404,7 +355,6 @@ mod tests {
     #[test]
     fn reacquire_is_not_auto_renewable() {
         let p = CredentialPolicy {
-            category: CredentialCategory::FederatedExchange,
             expires_at: None,
             lease: None,
             refresh: RefreshStrategy::ReAcquire {
@@ -417,21 +367,22 @@ mod tests {
     }
 
     #[test]
-    fn category_and_strategies_round_trip_json() {
-        for cat in [
-            CredentialCategory::StaticSecret,
-            CredentialCategory::Leased,
-            CredentialCategory::InteractiveRedirect,
+    fn strategies_round_trip_json() {
+        for r in [
+            RefreshStrategy::Static,
+            RefreshStrategy::RefreshToken,
+            RefreshStrategy::Lease,
+            RefreshStrategy::ReAcquire {
+                from: Some(SchemeId::new("oauth2")),
+                interactive: true,
+            },
+            RefreshStrategy::ReMintLocal,
+            RefreshStrategy::Watched,
         ] {
-            let json = serde_json::to_string(&cat).expect("serialize");
-            let back: CredentialCategory = serde_json::from_str(&json).expect("deserialize");
-            assert_eq!(cat, back);
+            let back: RefreshStrategy =
+                serde_json::from_str(&serde_json::to_string(&r).expect("ser")).expect("de");
+            assert_eq!(r, back);
         }
-        let r = RefreshStrategy::RefreshToken;
-        assert_eq!(
-            r,
-            serde_json::from_str(&serde_json::to_string(&r).expect("ser")).expect("de")
-        );
     }
 
     const HOUR: Duration = Duration::from_hours(1);
@@ -466,7 +417,6 @@ mod tests {
     fn refresh_pair_past_expiry_refreshes() {
         let now = Utc::now();
         let p = CredentialPolicy {
-            category: CredentialCategory::RefreshPair,
             expires_at: Some(now - chrono::Duration::minutes(1)),
             lease: None,
             refresh: RefreshStrategy::RefreshToken,
@@ -482,7 +432,6 @@ mod tests {
     fn refresh_pair_in_early_window_refreshes() {
         let now = Utc::now();
         let p = CredentialPolicy {
-            category: CredentialCategory::RefreshPair,
             expires_at: Some(now + chrono::Duration::minutes(2)), // inside 5-min buffer
             lease: None,
             refresh: RefreshStrategy::RefreshToken,
@@ -500,7 +449,6 @@ mod tests {
         // treated as fresh forever — it enters the renew path.
         let now = Utc::now();
         let p = CredentialPolicy {
-            category: CredentialCategory::Leased,
             expires_at: None,
             lease: Some(LeaseRef {
                 lease_id: "vault/lease/abc".to_owned(),
@@ -521,7 +469,6 @@ mod tests {
     fn leased_one_shot_reacquires() {
         let now = Utc::now();
         let p = CredentialPolicy {
-            category: CredentialCategory::Leased,
             expires_at: None,
             lease: Some(LeaseRef {
                 lease_id: "vault/lease/one-shot".to_owned(),
@@ -542,7 +489,6 @@ mod tests {
     fn reacquire_past_expiry_reacquires() {
         let now = Utc::now();
         let p = CredentialPolicy {
-            category: CredentialCategory::FederatedExchange,
             expires_at: Some(now - chrono::Duration::seconds(1)),
             lease: None,
             refresh: RefreshStrategy::ReAcquire {
