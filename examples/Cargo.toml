@@ -69,5 +69,9 @@ path = "examples/resource_resident_http.rs"
 name = "resource_pooled_http_prelude"
 path = "examples/resource_pooled_http_prelude.rs"
 
+[[example]]
+name = "credential_plugin_scheme_family"
+path = "examples/credential_plugin_scheme_family.rs"
+
 [lints]
 workspace = true
