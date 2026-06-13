@@ -528,11 +528,19 @@ where
                     })?;
                 match response {
                     ResolveResponse::Complete(state) => {
-                        let data = Zeroizing::new(serde_json::to_vec(&state).map_err(|e| {
-                            CredentialServiceError::Internal(format!(
-                                "state serialization failed: {e}"
-                            ))
-                        })?);
+                        // Cleartext serialization for the encrypted-at-rest
+                        // store; the bytes never leave this `Zeroizing` buffer
+                        // un-encrypted. Outside this scope secrets redact.
+                        let data = Zeroizing::new(
+                            crate::serde_secret::expose_for_serialization(|| {
+                                serde_json::to_vec(&state)
+                            })
+                            .map_err(|e| {
+                                CredentialServiceError::Internal(format!(
+                                    "state serialization failed: {e}"
+                                ))
+                            })?,
+                        );
                         Ok(ResolvedState {
                             data,
                             state_kind: <C::State as CredentialState>::KIND.to_owned(),
@@ -631,9 +639,14 @@ where
 {
     match response {
         ResolveResponse::Complete(state) => {
-            let data = Zeroizing::new(serde_json::to_vec(&state).map_err(|e| {
-                CredentialServiceError::Internal(format!("state serialization failed: {e}"))
-            })?);
+            // Cleartext serialization for the encrypted-at-rest store; bytes
+            // stay in this `Zeroizing` buffer until the store encrypts them.
+            let data = Zeroizing::new(
+                crate::serde_secret::expose_for_serialization(|| serde_json::to_vec(&state))
+                    .map_err(|e| {
+                        CredentialServiceError::Internal(format!("state serialization failed: {e}"))
+                    })?,
+            );
             Ok(AcquireOutcome::Complete(ResolvedState {
                 data,
                 state_kind: <C::State as CredentialState>::KIND.to_owned(),
@@ -757,11 +770,17 @@ where
                     // refreshed credential carrying a stale (possibly
                     // already-elapsed) expiry.
                     let expires_at = state.expires_at();
-                    let data = Zeroizing::new(serde_json::to_vec(&state).map_err(|e| {
-                        CredentialServiceError::Internal(format!(
-                            "refreshed state serialization failed: {e}"
-                        ))
-                    })?);
+                    // Cleartext serialization for the encrypted-at-rest store.
+                    let data = Zeroizing::new(
+                        crate::serde_secret::expose_for_serialization(|| {
+                            serde_json::to_vec(&state)
+                        })
+                        .map_err(|e| {
+                            CredentialServiceError::Internal(format!(
+                                "refreshed state serialization failed: {e}"
+                            ))
+                        })?,
+                    );
                     Ok(RefreshOutcomeKind::Rewrote { data, expires_at })
                 },
                 // Another replica already refreshed while this caller

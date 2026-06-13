@@ -621,16 +621,23 @@ impl<S: CredentialStore> CredentialResolver<S> {
                 return Ok(None);
             }
 
+            // Cleartext serialization for an internal full-fidelity round-trip
+            // (`state` → `OAuth2State`); the intermediate `Value` is transient.
+            // Outside this scope the same serialize redacts to `[REDACTED]`,
+            // which `OAuth2State`'s secret fields would then ingest verbatim —
+            // hence the explicit scope.
+            let state_value =
+                crate::serde_secret::expose_for_serialization(|| serde_json::to_value(&*state))
+                    .map_err(|e| {
+                        CredentialError::Provider(Box::new(ProviderErrorContext::new(
+                            ProviderErrorKind::Schema,
+                            SecretFreeMessage::new(format!(
+                                "oauth2 refresh state serialization failed: {e}"
+                            )),
+                        )))
+                    })?;
             let mut oauth_state: OAuth2State =
-                serde_json::from_value(serde_json::to_value(&*state).map_err(|e| {
-                    CredentialError::Provider(Box::new(ProviderErrorContext::new(
-                        ProviderErrorKind::Schema,
-                        SecretFreeMessage::new(format!(
-                            "oauth2 refresh state serialization failed: {e}"
-                        )),
-                    )))
-                })?)
-                .map_err(|e| {
+                serde_json::from_value(state_value).map_err(|e| {
                     CredentialError::Provider(Box::new(ProviderErrorContext::new(
                         ProviderErrorKind::Schema,
                         SecretFreeMessage::new(format!("oauth2 refresh state decode failed: {e}")),
@@ -646,15 +653,19 @@ impl<S: CredentialStore> CredentialResolver<S> {
                     )))
                 })?;
 
-            *state = serde_json::from_value(serde_json::to_value(oauth_state).map_err(|e| {
-                CredentialError::Provider(Box::new(ProviderErrorContext::new(
-                    ProviderErrorKind::Schema,
-                    SecretFreeMessage::new(format!(
-                        "oauth2 refresh state serialization failed: {e}"
-                    )),
-                )))
-            })?)
-            .map_err(|e| {
+            // Cleartext serialization for the same internal round-trip on the
+            // way back (`OAuth2State` → `state`).
+            let refreshed_value =
+                crate::serde_secret::expose_for_serialization(|| serde_json::to_value(oauth_state))
+                    .map_err(|e| {
+                        CredentialError::Provider(Box::new(ProviderErrorContext::new(
+                            ProviderErrorKind::Schema,
+                            SecretFreeMessage::new(format!(
+                                "oauth2 refresh state serialization failed: {e}"
+                            )),
+                        )))
+                    })?;
+            *state = serde_json::from_value(refreshed_value).map_err(|e| {
                 CredentialError::Provider(Box::new(ProviderErrorContext::new(
                     ProviderErrorKind::Schema,
                     SecretFreeMessage::new(format!("oauth2 refresh state encode failed: {e}")),
@@ -685,10 +696,13 @@ impl<S: CredentialStore> CredentialResolver<S> {
 
         match outcome {
             RefreshOutcome::Refreshed => {
-                let data = serde_json::to_vec(&state).map_err(|e| ResolveError::Refresh {
-                    credential_id: credential_id.to_string(),
-                    reason: format!("failed to serialize refreshed state: {e}"),
-                })?;
+                // Cleartext serialization for the encrypted-at-rest store.
+                let data =
+                    crate::serde_secret::expose_for_serialization(|| serde_json::to_vec(&state))
+                        .map_err(|e| ResolveError::Refresh {
+                            credential_id: credential_id.to_string(),
+                            reason: format!("failed to serialize refreshed state: {e}"),
+                        })?;
 
                 // Refresh contacted the provider successfully → stamp the
                 // validation time so the mandatory re-validation floor measures

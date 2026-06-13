@@ -1,7 +1,12 @@
-//! Roundtrip serde tests for all AuthScheme types.
+//! Roundtrip serde tests for all `AuthScheme` types.
 //!
 //! Verifies that `SecretString` fields serialize their actual value (not
-//! `[REDACTED]`) and deserialize back correctly.
+//! `[REDACTED]`) and deserialize back correctly **when serialized through the
+//! encrypted-at-rest storage scope** (`serde_secret::expose_for_serialization`).
+//!
+//! Outside that scope a secret field redacts; that default-sink contract is
+//! pinned separately in `serde_redaction.rs`. These tests exercise the storage
+//! round-trip, so every `to_string` here goes through [`to_storage_json`].
 
 use nebula_credential::{
     SecretString,
@@ -9,12 +14,20 @@ use nebula_credential::{
         Certificate, ConnectionUri, IdentityPassword, InstanceBinding, KeyPair, OAuth2Token,
         SecretToken, SharedKey, SigningKey,
     },
+    serde_secret,
 };
+
+/// Serialize a scheme the way the encrypted-at-rest store does — inside the
+/// `expose_for_serialization` scope, where `serde_secret` fields emit cleartext.
+fn to_storage_json<T: serde::Serialize>(value: &T) -> String {
+    serde_secret::expose_for_serialization(|| serde_json::to_string(value))
+        .expect("scheme must serialize inside the storage scope")
+}
 
 #[test]
 fn secret_token_serde_roundtrip() {
     let token = SecretToken::new(SecretString::new("my-secret-key"));
-    let json = serde_json::to_string(&token).unwrap();
+    let json = to_storage_json(&token);
     assert!(
         !json.contains("REDACTED"),
         "json must not contain REDACTED: {json}"
@@ -27,7 +40,7 @@ fn secret_token_serde_roundtrip() {
 #[test]
 fn identity_password_serde_roundtrip() {
     let auth = IdentityPassword::new("admin", SecretString::new("p@ssw0rd"));
-    let json = serde_json::to_string(&auth).unwrap();
+    let json = to_storage_json(&auth);
     assert!(
         !json.contains("REDACTED"),
         "json must not contain REDACTED: {json}"
@@ -41,7 +54,7 @@ fn identity_password_serde_roundtrip() {
 #[test]
 fn oauth2_token_serde_roundtrip() {
     let token = OAuth2Token::new(SecretString::new("access-tok-xyz"));
-    let json = serde_json::to_string(&token).unwrap();
+    let json = to_storage_json(&token);
     assert!(
         !json.contains("REDACTED"),
         "json must not contain REDACTED: {json}"
@@ -54,7 +67,7 @@ fn oauth2_token_serde_roundtrip() {
 #[test]
 fn certificate_serde_roundtrip() {
     let cert = Certificate::new("TEST_CERT_CHAIN", SecretString::new("TEST_PRIVATE_KEY"));
-    let json = serde_json::to_string(&cert).unwrap();
+    let json = to_storage_json(&cert);
     assert!(
         !json.contains("REDACTED"),
         "json must not contain REDACTED: {json}"
@@ -69,7 +82,7 @@ fn certificate_serde_roundtrip() {
 #[test]
 fn key_pair_serde_roundtrip() {
     let kp = KeyPair::new("ssh-rsa AAAA...", SecretString::new("-----BEGIN RSA-----"));
-    let json = serde_json::to_string(&kp).unwrap();
+    let json = to_storage_json(&kp);
     assert!(
         !json.contains("REDACTED"),
         "json must not contain REDACTED: {json}"
@@ -117,7 +130,7 @@ fn key_pair_deserializes_without_passphrase_field() {
 #[test]
 fn signing_key_serde_roundtrip() {
     let sk = SigningKey::new(SecretString::new("signing-key"), "hmac-sha256");
-    let json = serde_json::to_string(&sk).unwrap();
+    let json = to_storage_json(&sk);
     assert!(
         !json.contains("REDACTED"),
         "json must not contain REDACTED: {json}"
@@ -131,7 +144,7 @@ fn signing_key_serde_roundtrip() {
 #[test]
 fn shared_key_serde_roundtrip() {
     let sk = SharedKey::new(SecretString::new("preshared-secret"));
-    let json = serde_json::to_string(&sk).unwrap();
+    let json = to_storage_json(&sk);
     assert!(
         !json.contains("REDACTED"),
         "json must not contain REDACTED: {json}"
@@ -153,7 +166,7 @@ fn connection_uri_serde_roundtrip() {
         "user".into(),
         SecretString::new("pass"),
     );
-    let json = serde_json::to_string(&cu).unwrap();
+    let json = to_storage_json(&cu);
     // Non-secret fields serialize as plaintext.
     assert!(json.contains("postgres"));
     assert!(json.contains("localhost"));
@@ -172,7 +185,9 @@ fn connection_uri_serde_roundtrip() {
 #[test]
 fn instance_binding_serde_roundtrip() {
     let ib = InstanceBinding::new("aws", "arn:aws:iam::123456789012:role/MyRole");
-    let json = serde_json::to_string(&ib).unwrap();
+    // InstanceBinding carries no secret fields, so the storage scope is a
+    // no-op here; routed through it anyway for uniformity with the suite.
+    let json = to_storage_json(&ib);
     assert!(json.contains("aws"));
     assert!(json.contains("arn:aws:iam"));
     let recovered: InstanceBinding = serde_json::from_str(&json).unwrap();

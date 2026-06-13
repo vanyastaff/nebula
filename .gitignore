@@ -263,3 +263,8 @@ crates/*/fuzz/Cargo.lock
 
 # Local audit drops (point-in-time snapshots, not durable docs)
 .pi-audit-*/
+
+# Agent research drops — collected articles / studies / analyses staged for
+# graphify ingestion (`graphify .` on raw/). Local-only, not durable docs.
+raw/
+graphify-out/

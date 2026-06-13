@@ -177,8 +177,8 @@ pub use credential_fanout::{Bind, ResourceFanoutDriver, ResourceFanoutIndex, Rot
 ///     fn credential_slot_epoch(&self) -> u64 { 0 }
 /// }
 ///
-/// // A `Pooled` topology requires `PoolProvider`; every method is defaulted,
-/// // so a pool-backed resource with default recycle/prepare needs only this.
+/// // `Pooled<Self>` requires `PoolProvider`; every method has a default,
+/// // so an empty impl opts the resource into pool topology.
 /// impl PoolProvider for MyResource {}
 /// ```
 pub mod prelude {
