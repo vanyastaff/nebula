@@ -888,13 +888,22 @@ not by hand-written per-impl tests.
      re-validation floor is a local re-mint, not a provider probe) and **★`Watched`** (external
      source rotates the material — kubelet projected-token rewrite, SPIFFE Workload-API push; the
      engine re-reads on change, never initiates; `decide_refresh` returns `Usable`, never `Refresh`).
-  3. **Sensitivity → a sealed type-enforced tag with a THIRD state.** Binary
-     `SensitiveScheme`/`PublicScheme` cannot represent a sign-only credential holding **no
-     zeroizable bytes** (TPM/HSM/FIDO2/ssh-agent): `Sensitive` makes `ZeroizeOnDrop` a no-op,
-     `Public` falsely says "safe to log". Replace with `AuthScheme::type Sensitivity:
-     SealedSensitivity` over sealed `Sensitive` / `Public` / **★`External`** (a handle to an
-     external signing oracle — no bytes to zero, not loggable; pairs with `DelegatedSignature`).
-     This also closes the macro-only hand-roll exclusivity hole (`auth.rs:97-117`) by construction.
+  3. **Sensitivity → a THIRD state `ExternalScheme` (as-built 2026-06-13; supersedes the proposed
+     `type Sensitivity` reseal).** The gap is real: binary `SensitiveScheme`/`PublicScheme` cannot
+     represent a sign-only credential holding **no zeroizable bytes** (TPM/HSM/FIDO2/ssh-agent) —
+     `Sensitive` makes `ZeroizeOnDrop` a no-op, `Public` falsely says "safe to log". The fix is the
+     additive sub-trait **★`ExternalScheme: AuthScheme`** (no `ZeroizeOnDrop` supertrait — no bytes
+     to zero; not `Public` — the handle is a signing capability; pairs with `DelegatedSignature`),
+     declared via `#[auth_scheme(external)]`, whose audit rejects any `SecretString`/`SecretBytes`
+     field so it cannot be a zeroize-bypass channel. **The `AuthScheme::type Sensitivity:
+     SealedSensitivity` sealed-associated-type reseal was evaluated and REJECTED** (adversarial panel,
+     verified vs source): sensitivity is a **per-field** property (`Certificate` is `sensitive` yet
+     holds a public `#[zeroize(skip)] cert_chain` beside its `SecretString` key — §17 item also at the
+     "KEEP `SensitiveScheme`/`PublicScheme`" note above), the real zeroize gate is the guard's
+     `where C::Scheme: Zeroize` bound (`facade.rs`) not the marker trait, and a sealed per-type enum
+     makes the next state (leased / attested / delegated) a *breaking* add — the opposite of the goal.
+     An additive sub-trait keeps a future 4th state non-breaking. The macro-only hand-roll exclusivity
+     "hole" (`auth.rs`) is left as-is: the traits are bound nowhere, so a dual impl is inert.
   4. *(additive struct field, do now)* **`LeaseRef.renew_until: Option<DateTime<Utc>>`** — two-tier
      renewal (Kerberos TGT `renew_until`, rotating refresh-token absolute expiry): renewable up to a
      hard horizon, then `ReAcquire`-only. `RevokeStrategy::SingleUse` (Vault response-wrapping) is

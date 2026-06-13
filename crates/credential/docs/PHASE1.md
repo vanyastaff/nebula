@@ -277,3 +277,28 @@ jitter is applied once at the scheduler seam, never here — §24 invariant):
   Pre-existing unrelated flake observed (NOT caused by 5d, reproduces on clean HEAD): trybuild
   `capability_subtrait_testable_no_method.stderr` mismatches under `--all-features` (`TestResult` vs
   `nebula_credential::TestResult` rustc path-rendering); default-feature trybuild is green.
+- 2026-06-13: **increment 5g landed (`58cc6938`) — F3 sensitivity third state, via `ExternalScheme`
+  sub-trait, NOT the planned `type Sensitivity` reseal.** Owner picked the minimal-additive path
+  after an adversarial design panel (api-design / security / harsh-critic) — verified against source —
+  found the sealed-associated-type reseal was the **wrong mechanism**: (1) sensitivity is a
+  per-FIELD property (`Certificate` is `sensitive` yet carries a public `#[zeroize(skip)] cert_chain`
+  beside its `SecretString` private key — a per-type 3-enum can't model it); (2) the real zeroize gate
+  is the guard's `where C::Scheme: Zeroize` bound (`facade.rs:1257`), not the marker trait, which is
+  bound nowhere; (3) a sealed per-type enum makes the next state (leased / attested-TPM / delegated)
+  a **breaking** add — the opposite of the un-breakable goal. Shipped instead: `ExternalScheme:
+  AuthScheme {}` in core (no `ZeroizeOnDrop` supertrait — out-of-process signer holds no in-process
+  bytes; but the handle is a signing capability, so not harmless-`Public`). `#[auth_scheme(external)]`
+  derive arm with three-way exclusivity; **security invariant** (panel-driven) — the audit rejects any
+  `SecretString`/`SecretBytes` field so `external` can't be a zeroize-bypass smuggling channel (a
+  byte-holding struct is `sensitive`); a plain handle (`key_id: String`) is accepted. Plugin example
+  `HttpSignatureKey` corrected `PublicScheme`→`ExternalScheme` (it was mis-tagged — its key lives in an
+  HSM/KMS). Re-exported through scheme module + crate root + prelude. Tests: positive derive (compiles,
+  impls `ExternalScheme`, needs no `ZeroizeOnDrop`) + compile-fail probe (`external` + `SecretString`
+  rejected, `.stderr` captured). Whole workspace green (35 crates); credential suite green (default
+  features incl. trybuild); clippy `--all-features` + rustdoc `-D warnings` clean; lefthook green;
+  example runs. **DESIGN.md §17 "type Sensitivity" addendum superseded** (its own §L805 "KEEP the
+  sub-traits" analysis was right). **F3 (typed Scheme spine) is COMPLETE: 5a · 5a-2 · 5b · 5c · 5d ·
+  5e · 5f · 5g all landed.** Sensitivity stays per-field; a future 4th state is an additive sub-trait,
+  never a break. Independent follow-up worth a task: no test asserts a `Sensitive` scheme's `Serialize`
+  can't leak plaintext to a non-storage sink (`serde_secret::serialize` exposes plaintext, gated only
+  by call-site) — hardening, orthogonal to F3.
