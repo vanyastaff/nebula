@@ -19,7 +19,8 @@ Each row is one (or few) green commits. "Blast radius" = crates the change casca
 | **2b** | Store-port sealing (follow-up) | Make `CredentialStore::{get,delete,exists}` themselves take `OwnerScopedKey` so the unscoped `get(&str)` primitive cannot be expressed by *any* caller (not just the slot path). Wide cascade: 5 storage decorators + tenancy `ScopeLayer` + erased wrappers + facade `load_owned` + tests. | credential, storage, tenancy, engine, tests | §17 |
 | **3** | Tombstone reject (Q9) — **landed** | `revoke` writes a tombstone epoch over the row (no delete-then-upsert) so a revoked id cannot be resurrected; `validate_credential_binding` rejects a tombstoned id with the typed `CredentialTombstoned` before a guard exists; `load_owned`/`list` treat it as gone; `resolve_scoped` fails closed on the validate-then-revoke race. **No `references()` port.** | credential | §17 Q9 |
 | **3b** | Facade E2E harness + remaining Q10 | Back the deferred end-to-end tests: `validate_credential_binding`-rejects-tombstoned and the `External`-source regression. **Home = api integration tests** (`crates/api/tests`), not in-credential unit tests: `from_secure_parts` needs the engine resolver + lease lifecycle + storage layer stack, which `nebula-credential` cannot depend on (a dev-dep would be a `credential→storage` cycle). **Blocker found:** the tombstone E2E needs a credential that is **non-interactive *and* Revocable**, which no first-party builtin is (`api_key`/`basic_auth` aren't Revocable; `oauth2` is interactive, so it can't be created without the OAuth handshake). So 3b also adds a custom-registry factory variant (`with_parts`/`with_registry`) + a non-interactive Revocable test credential + its revoke ops. Plus the *structural* Q10 source-awareness (resolver-tail by construction) replacing the per-call `ensure_local_source` gate landed in increment 2. | credential, api | §17 Q9/Q10 |
-| **4** | Framework lease handle + constructor-enforced staleness ceiling | resolver returns a lease handle, never a raw `&Secret`; ceiling is a constructor-validated bound (`Duration::MAX` unconstructible on the lease path); arch-test: no `&Secret` reachable except via the handle | credential | §17 F2 |
+| **4** | Constructor-enforced lease staleness ceiling (F2) — **landed** | `StalenessCeiling` newtype whose constructor rejects zero / above-`HARD_CAP`, so `Duration::MAX` is unconstructible on the lease path; the scheduler clamps every renewal interval to it (an unbounded provider TTL still re-validates by the ceiling). "No raw `&Secret` reachable except via the guard" was **already** enforced by the `CredentialGuard` / `SchemeGuard` compile-fail tests (`compile_fail_*_guard_clone`/`_retention`/`_sensitivity`) — no new work. | credential | §17 F2 |
+| **4b** | Herd-breaking renewal jitter (W2) | Apply structurally-non-zero jitter at the scheduler renewal seam so N replicas computing the same state-derived deadline don't renew in lockstep. **Not a drop-in:** it makes `renewal_interval` non-deterministic, which breaks the existing precise-timing lease tests (`tokio::time::pause` + `advance(69s/71s)`); and F2 forbids an author-`ZERO`-able jitter knob, so the rotation subsystem's `enable_jitter` bool is the wrong pattern — needs a determinism-injection seam (test RNG/clock) that keeps jitter always-on in prod. | credential | §17 F2 / W2 |
 | **5** | `Scheme` sealed trait + per-protocol marker + `Slot<S: Scheme>` (F3) | binding axis becomes nominal; Stripe→Twilio bind = compile error; no `Box<dyn>`/catch-all; registration-time family-soundness check | credential, resource, macros | §17 F3 |
 | **6** | OAuth2 grant discriminant (Q2 rider) | `OAuth2State` carries a grant discriminant; `client_credentials` re-acquires non-interactively, `device_code` reauths interactively — not a shared `ReauthRequired` | credential | §17 Q2 |
 | **7** | Observability + scale DoD | read/material-access fail-closed audit; provider-returned-string redaction (§10 rules 18/19); generic store/transport/`ExternalProvider` contract-suite; contender blocks on claim watch/notify (`claims_exhausted == 0`, 7s IdP + 30 contenders) | credential | §17 DoD |
@@ -106,3 +107,19 @@ jitter is applied once at the scheduler seam, never here — §24 invariant):
   tests it unblocks (binding-rejects-tombstoned, External-source), plus the structural Q10
   source-awareness. Next: **2b** (store-port sealing — wide cascade) or **4** (framework lease
   handle + staleness ceiling).
+- 2026-06-13: **increment 4 (constructor-enforced lease staleness ceiling, F2) landed**
+  (`da9fb14b`). `StalenessCeiling` newtype in `runtime/lease/policy.rs`: `new` rejects zero and
+  any bound above `HARD_CAP` (7 days), so `Duration::MAX` is unconstructible; `Default` is 24h
+  (matches the resolver's static re-validation floor). `LeaseLifecycleConfig` carries it; the
+  scheduler clamps every renewal interval (track + renew-success) to it through one
+  `renewal_interval` helper, so a provider reporting an unbounded TTL still re-validates by the
+  ceiling. Re-exported from `runtime::` and `runtime::lease`. 273 lib tests green (4 ceiling),
+  clippy `--all-features` clean, nebula-api + nebula-engine compile, rustdoc `-D warnings` clean.
+  The F2 "resolver returns a lease handle, never a raw `&Secret`" item needed **no new work** —
+  it is already enforced by the existing `CredentialGuard`/`SchemeGuard` compile-fail tests
+  (`compile_fail_*_guard_clone` / `_retention` / `_sensitivity`). Deferred to **4b**: the W2
+  herd-breaking renewal jitter — it makes `renewal_interval` non-deterministic (breaks the
+  precise-timing lease tests that `tokio::time::advance` to 69s/71s boundaries) and F2 forbids
+  an author-`ZERO`-able jitter knob, so it needs a determinism-injection seam, not the rotation
+  subsystem's `enable_jitter` bool. Next: **4b** (jitter), **2b** (store-port seal), or **5**
+  (`Scheme` markers / `Slot<S>`).

@@ -736,6 +736,15 @@ not by hand-written per-impl tests.
   credential whose state has no honest freshness signal. The floor is not author-opt-out-able;
   its default cadence is a tuning param. Test: a static credential past its re-validation floor
   does **not** return `Usable`.
+  **Status (2026-06-13): F2 ceiling + no-`&Secret` landed (increment 4).** The staleness ceiling
+  is a constructor-validated `StalenessCeiling` (rejects zero / above a 7-day `HARD_CAP`, so
+  `Duration::MAX` is unconstructible); the lease scheduler clamps every renewal interval to it.
+  The mandatory static re-validation floor shipped in increment 1a (`decide_refresh`). "Resolver
+  returns a lease handle, never a raw `&Secret`" was already enforced by the existing
+  `CredentialGuard`/`SchemeGuard` compile-fail tests. **Deferred to increment 4b:** the
+  structurally-non-zero scheduler-seam jitter (W2) — it changes renewal timing (breaks the
+  precise-timing lease tests) and must not be author-`ZERO`-able, so it needs a
+  determinism-injection seam rather than an `enable_jitter` flag.
 - **Q8 — the decision function is total.** Replace the `policy()` / `C::KEY != OAuth2Credential::KEY`
   routing with a **total** `decide_refresh(state, now) -> { Fresh, RefreshNow }`; the leased
   case (`expires_at: None` but refreshable) returns `RefreshNow`, not `Fresh` (the proven-bug
