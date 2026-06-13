@@ -1201,6 +1201,14 @@ impl CredentialService {
         C: Credential,
         C::Scheme: Zeroize + Clone,
     {
+        // 0. Source gate: a service configured with an `External` state source
+        //    has no local-decrypt resolution path wired, so resolving a slot
+        //    against it must fail with `ExternalSourceNotWired` rather than read
+        //    local bytes. This guard is present on every other secret-resolving
+        //    entry point; resolve_for_slot — the moat path — must not be the one
+        //    that skips it.
+        self.ensure_local_source()?;
+
         // 1. Defence-in-depth fingerprint check: even though
         //    `validate_credential_binding` enforced the scope at
         //    construction, re-verify here so mismatched bindings fail

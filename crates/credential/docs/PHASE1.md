@@ -82,3 +82,10 @@ jitter is applied once at the scheduler seam, never here — §24 invariant):
   rotation), clippy clean incl `--all-features`, nebula-api + nebula-engine compile. Next:
   **increment 2b** (store-port sealing — wide cascade) or **increment 3** (ensure_local_source
   into resolver tail + tombstone reject, Q9/Q10).
+- 2026-06-13: **Q10 latent defect closed** — `resolve_for_slot` now calls
+  `ensure_local_source()` (it was the one secret-resolving entry point missing the gate the
+  planёрka flagged); an `External`-source service fails with `ExternalSourceNotWired` instead
+  of reading local bytes. Guard mirrors the 3 sibling gates (create/update/delete). Remaining
+  increment-3 work: the *structural* version (source-awareness in the resolver tail rather
+  than a per-call gate), the dedicated External-source regression test (needs a facade test
+  harness — none exists yet), and the tombstone-reject in binding-validation (Q9).
