@@ -183,3 +183,19 @@ jitter is applied once at the scheduler seam, never here — §24 invariant):
   interactive}`+`ReMintLocal`+`Watched` — loses `Copy`, needs a core `SchemeId`; + `LeaseRef.renew_until`
   + decide_refresh/is_auto_renewable arms) and **5b** (`AuthScheme::type Family`/`type Sensitivity` +
   macro emits them + migrate ~10 builtin + test impls atomically + per-builtin family marker types).
+- 2026-06-13: **increment 5b landed (`3abfb4c2`).** `AuthScheme` gains `type Family: SchemeFamily`
+  (no default → atomic migration of every impl). `#[derive(AuthScheme)]` gains a required
+  `family = X` attr emitting `type Family = X` (explicit, NOT derived from `pattern`). 9 builtin
+  family markers in `scheme/family.rs` (declarative macro) with the canonical `EGRESS` slice +
+  refresh classes from the validated 2026 table; `NoAuthFamily` for `()` in core. Migrated: 8
+  derived builtins, hand-rolled `OAuth2Token`, core `()`+`TestToken`, the action phantom-rewrite
+  test scheme, and the credential sensitivity/pattern trybuild fixtures (audit fixtures gained
+  `family =` so they hit the intended field-audit error, not the new missing-family one; 2
+  compile-fail `.stderr` regenerated — pure line shifts, verified). Whole workspace compiles (35
+  crates); credential suite green (273 lib + doctests + all trybuild); clippy `--all-features` +
+  rustdoc `-D warnings` clean. **`type Sensitivity` deferred** (separate concern from the Family
+  axis; folds in later with the `External` third state). Next: **5c** (`Slot<S: AuthScheme>` bound +
+  trybuild Stripe→Twilio compile-fail + no-`Box<dyn>` arch-test + fix the stale `type Auth` doc),
+  **5a-2** (`RefreshStrategy` expansion: `ReAcquire{from,interactive}`+`ReMintLocal`+`Watched`, loses
+  `Copy` → core `SchemeId`; `LeaseRef.renew_until`), **5d** (registration containment check), **5e**
+  (delete `CredentialCategory`, subtractive/owner-visible), **5f** (plugin example).
