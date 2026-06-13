@@ -1,8 +1,11 @@
 //! Authentication scheme contract types and pattern classification.
 //!
 //! `AuthScheme` is the bridge between the credential system and the
-//! resource system. Resources declare what auth material they need
-//! (`type Auth: AuthScheme`), and credentials produce it via `project()`.
+//! resource system. A credential declares the scheme it yields via its
+//! `Credential::Scheme: AuthScheme` associated type and produces it via
+//! `project()`; a resource consumes that scheme as a typed
+//! `CredentialGuard<Scheme>` bound into a slot, so a cross-protocol bind is a
+//! nominal compile error.
 //!
 //! `AuthPattern` groups auth schemes into universal categories for UI,
 //! logging, and tooling.
