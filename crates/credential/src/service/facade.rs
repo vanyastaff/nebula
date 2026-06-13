@@ -60,6 +60,11 @@ use super::state_source::StateSource;
 // resolver's load-time owner check can never disagree on the key.
 use crate::store::OWNER_ID_METADATA_KEY as OWNER_ID_KEY;
 
+// Reserved metadata key holding the last time the material was validated against
+// its provider. `create` / re-resolve stamp it; the re-validation floor measures
+// from it, NOT `updated_at` (which a display-only edit bumps). Aliased from the
+// single source of truth in `store`.
+use crate::store::LAST_VALIDATED_AT_METADATA_KEY;
 // Reserved metadata key holding the revoke tombstone epoch. `revoke` stamps it
 // (zeroizing the secret) instead of deleting the row; read paths treat a
 // stamped row as gone and `validate_credential_binding` rejects it with a typed
@@ -369,6 +374,13 @@ impl CredentialService {
         Self::set_display(&mut metadata, &display);
 
         let now = chrono::Utc::now();
+        // Creation resolved the credential against its provider → stamp the
+        // validation time so the mandatory re-validation floor measures from a
+        // real validation, not from a later display edit.
+        metadata.insert(
+            LAST_VALIDATED_AT_METADATA_KEY.to_owned(),
+            Value::String(now.to_rfc3339()),
+        );
         let stored = StoredCredential {
             id: id.to_string(),
             name: None,
@@ -530,19 +542,29 @@ impl CredentialService {
 
         let now = chrono::Utc::now();
         let stored = match resolved {
-            Some(resolved) => StoredCredential {
-                id: existing.id.clone(),
-                name: existing.name.clone(),
-                credential_key: existing.credential_key.clone(),
-                data: resolved.data.to_vec(),
-                state_kind: resolved.state_kind,
-                state_version: resolved.state_version,
-                version: existing.version,
-                created_at: existing.created_at,
-                updated_at: now,
-                expires_at: resolved.expires_at,
-                reauth_required: false,
-                metadata,
+            // Props supplied ⇒ re-resolved against the provider ⇒ stamp the
+            // validation time. A display-only edit (the `None` arm) preserves the
+            // existing stamp and bumps only `updated_at`, so it cannot postpone
+            // the re-validation floor.
+            Some(resolved) => {
+                metadata.insert(
+                    LAST_VALIDATED_AT_METADATA_KEY.to_owned(),
+                    Value::String(now.to_rfc3339()),
+                );
+                StoredCredential {
+                    id: existing.id.clone(),
+                    name: existing.name.clone(),
+                    credential_key: existing.credential_key.clone(),
+                    data: resolved.data.to_vec(),
+                    state_kind: resolved.state_kind,
+                    state_version: resolved.state_version,
+                    version: existing.version,
+                    created_at: existing.created_at,
+                    updated_at: now,
+                    expires_at: resolved.expires_at,
+                    reauth_required: false,
+                    metadata,
+                }
             },
             None => StoredCredential {
                 updated_at: now,

@@ -21,8 +21,8 @@ use crate::{
     SecretFreeMessage,
     resolve::{ReauthReason, RefreshOutcome},
     store::{
-        CredentialStore, OWNER_ID_METADATA_KEY, OwnerScopedKey, PutMode, StoreError,
-        StoredCredential,
+        CredentialStore, LAST_VALIDATED_AT_METADATA_KEY, OWNER_ID_METADATA_KEY, OwnerScopedKey,
+        PutMode, StoreError, StoredCredential,
     },
 };
 
@@ -298,7 +298,10 @@ impl<S: CredentialStore> CredentialResolver<S> {
         );
 
         let decision = policy.decide_refresh(
-            stored.updated_at,
+            // Measure the re-validation floor from the last real provider
+            // validation, NOT `updated_at` (a display-only rename/tag bumps
+            // `updated_at` without revalidating — it must not postpone the floor).
+            stored.last_validated_or_created(),
             chrono::Utc::now(),
             <C as Refreshable>::REFRESH_POLICY.early_refresh,
             DEFAULT_REVALIDATION_FLOOR,
@@ -435,7 +438,7 @@ impl<S: CredentialStore> CredentialResolver<S> {
                 // is deliberately omitted here (it belongs on the initial decision
                 // to de-correlate replicas at startup, not on the coalesce gate).
                 C::policy(&state).decide_refresh(
-                    stored.updated_at,
+                    stored.last_validated_or_created(),
                     chrono::Utc::now(),
                     <C as Refreshable>::REFRESH_POLICY.early_refresh,
                     DEFAULT_REVALIDATION_FLOOR,
@@ -687,17 +690,29 @@ impl<S: CredentialStore> CredentialResolver<S> {
                     reason: format!("failed to serialize refreshed state: {e}"),
                 })?;
 
+                // Refresh contacted the provider successfully → stamp the
+                // validation time so the mandatory re-validation floor measures
+                // from this real validation, not from a later display edit. The
+                // map is overridden explicitly because `..stored.clone()` would
+                // otherwise carry the pre-refresh metadata.
+                let now = chrono::Utc::now();
+                let mut validated_metadata = stored.metadata.clone();
+                validated_metadata.insert(
+                    LAST_VALIDATED_AT_METADATA_KEY.to_owned(),
+                    serde_json::Value::String(now.to_rfc3339()),
+                );
                 let mut current_version = stored.version;
                 for _attempt in 0..3 {
                     let updated = StoredCredential {
                         data: data.clone(),
-                        updated_at: chrono::Utc::now(),
+                        updated_at: now,
                         expires_at: state.expires_at(),
                         // Clear the reauth flag on success — idempotent when
                         // already false, recovers from a stale `true` left
                         // over by a previous ReauthRequired outcome that the
                         // application has since re-authorized (sub-spec / I1).
                         reauth_required: false,
+                        metadata: validated_metadata.clone(),
                         ..stored.clone()
                     };
                     match self

@@ -78,6 +78,17 @@ pub(crate) const OWNER_ID_METADATA_KEY: &str = "owner_id";
 /// the value parses as a timestamp (see [`StoredCredential::is_tombstoned`]).
 pub(crate) const REVOKED_AT_METADATA_KEY: &str = "revoked_at";
 
+/// Reserved `StoredCredential.metadata` key holding the last time the material
+/// was actually validated against its provider — set on a provider-contacting
+/// write (create, refresh-success, re-resolve), an RFC 3339 timestamp. This is
+/// distinct from `updated_at`, which a *display-only* edit (rename / tag /
+/// description) bumps without re-contacting the provider. The mandatory
+/// re-validation floor ([`CredentialPolicy::decide_refresh`](crate::CredentialPolicy::decide_refresh))
+/// must measure from this, not `updated_at`, or a cosmetic edit would
+/// indefinitely postpone the floor. Absent on legacy rows — readers fall back to
+/// `created_at` (a real validation time; fail-safe toward re-validating).
+pub(crate) const LAST_VALIDATED_AT_METADATA_KEY: &str = "last_validated_at";
+
 /// An owner-scoped credential lookup key: a credential id paired with the
 /// `owner_id` that a prior tenant-scope check proved owns it.
 ///
@@ -192,6 +203,43 @@ impl StoredCredential {
             .and_then(Value::as_str)
             .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
             .map(|dt| dt.with_timezone(&chrono::Utc))
+    }
+
+    /// When the material was last validated against its provider — set on a
+    /// provider-contacting write (create / refresh-success / re-resolve) via
+    /// [`LAST_VALIDATED_AT_METADATA_KEY`]. Distinct from `updated_at`, which a
+    /// display-only edit bumps. `None` on legacy rows that predate the stamp (or
+    /// when the value is unparseable); the re-validation floor falls back to
+    /// `created_at` in that case (a real validation time, fail-safe toward
+    /// re-validating). Use [`Self::last_validated_or_created`] for that fallback.
+    #[must_use]
+    pub fn last_validated_at(&self) -> Option<chrono::DateTime<chrono::Utc>> {
+        self.metadata
+            .get(LAST_VALIDATED_AT_METADATA_KEY)
+            .and_then(Value::as_str)
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+            .map(|dt| dt.with_timezone(&chrono::Utc))
+    }
+
+    /// The last-validated time, falling back to `created_at` when no validation
+    /// stamp is present (legacy row). This is the timestamp the mandatory
+    /// re-validation floor measures from — never `updated_at`, which a
+    /// display-only edit (rename / tag) bumps without re-contacting the provider.
+    #[must_use]
+    pub fn last_validated_or_created(&self) -> chrono::DateTime<chrono::Utc> {
+        self.last_validated_at().unwrap_or(self.created_at)
+    }
+
+    /// Record that the material was just validated against its provider, at
+    /// `at`. Call on a provider-contacting write (create / refresh-success /
+    /// OAuth token exchange / re-resolve) so the mandatory re-validation floor
+    /// measures from here. Do **not** call on a display-only edit (rename / tag)
+    /// — that is exactly the bump this stamp exists to distinguish from.
+    pub fn stamp_validated(&mut self, at: chrono::DateTime<chrono::Utc>) {
+        self.metadata.insert(
+            LAST_VALIDATED_AT_METADATA_KEY.to_owned(),
+            Value::String(at.to_rfc3339()),
+        );
     }
 }
 
@@ -359,5 +407,38 @@ mod tests {
         let row = row_with(meta);
         assert!(row.is_tombstoned());
         assert!(row.revoked_at().is_none());
+    }
+
+    #[test]
+    fn last_validated_falls_back_to_created_when_absent() {
+        // Legacy row with no validation stamp → the floor measures from
+        // `created_at`, never `updated_at`.
+        let row = row_with(serde_json::Map::new());
+        assert!(row.last_validated_at().is_none());
+        assert_eq!(row.last_validated_or_created(), row.created_at);
+    }
+
+    #[test]
+    fn display_edit_does_not_postpone_the_validation_time() {
+        // The floor regression: a display-only edit bumps `updated_at` to now but
+        // must NOT move the validation time. With a stamp far in the past and a
+        // fresh `updated_at`, `last_validated_or_created` returns the OLD stamp,
+        // so the mandatory re-validation floor still fires.
+        let validated = chrono::Utc::now() - chrono::Duration::days(30);
+        let mut meta = serde_json::Map::new();
+        meta.insert(
+            LAST_VALIDATED_AT_METADATA_KEY.to_owned(),
+            Value::String(validated.to_rfc3339()),
+        );
+        let mut row = row_with(meta);
+        row.updated_at = chrono::Utc::now(); // simulate a rename/tag edit
+
+        let resolved = row.last_validated_or_created();
+        assert!(
+            resolved < row.updated_at,
+            "validation time must not follow a display-only updated_at bump"
+        );
+        // Round-trips to the stamped instant (within sub-second rfc3339 precision).
+        assert!((resolved - validated).num_seconds().abs() <= 1);
     }
 }
