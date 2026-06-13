@@ -131,6 +131,7 @@ impl LeasedThing {
                 lease_id: "vault/lease/test".to_owned(),
                 lease_duration: Duration::from_hours(1),
                 renewable: true,
+                renew_until: None,
             }),
             refresh: RefreshStrategy::Lease,
             revoke: RevokeStrategy::HandleBased,

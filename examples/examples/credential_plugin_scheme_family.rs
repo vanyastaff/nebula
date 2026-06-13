@@ -11,7 +11,7 @@
 //! Run: `cargo run -p nebula-examples --example credential_plugin_scheme_family`
 
 use nebula_core::auth::{
-    AuthPattern, AuthScheme, EgressShape, PublicScheme, RefreshStrategy, SchemeFamily,
+    AuthPattern, AuthScheme, EgressShape, PublicScheme, RefreshStrategyKind, SchemeFamily,
 };
 
 /// The plugin's mechanics family — RFC 9421 HTTP Message Signatures.
@@ -26,9 +26,9 @@ impl SchemeFamily for Rfc9421Signature {
     // RFC 9421 negotiates which message components are covered, then signs them.
     const EGRESS: &'static [EgressShape] = &[EgressShape::NegotiatedSignature];
 
-    fn refresh_classes() -> &'static [RefreshStrategy] {
+    fn refresh_classes() -> &'static [RefreshStrategyKind] {
         // A long-lived signing key; nothing to refresh.
-        &[RefreshStrategy::Static]
+        &[RefreshStrategyKind::Static]
     }
 
     fn pattern() -> AuthPattern {
@@ -77,6 +77,6 @@ fn main() {
     // The mechanics the framework would drive (redaction / transport / audit)
     // are exactly what the plugin declared.
     assert_eq!(egress, &[EgressShape::NegotiatedSignature]);
-    assert_eq!(refresh, &[RefreshStrategy::Static]);
+    assert_eq!(refresh, &[RefreshStrategyKind::Static]);
     assert_eq!(pattern, AuthPattern::Custom);
 }

@@ -627,7 +627,12 @@ impl OAuth2Credential {
             refresh: if state.refresh_token.is_some() {
                 RefreshStrategy::RefreshToken
             } else {
-                RefreshStrategy::ReAcquire
+                // No refresh token: re-acquisition is a human-gated OAuth2
+                // re-authorization, not a federated exchange of another credential.
+                RefreshStrategy::ReAcquire {
+                    from: None,
+                    interactive: true,
+                }
             },
             revoke: RevokeStrategy::HandleBased,
         }
@@ -876,7 +881,13 @@ mod tests {
         let mut without = make_state();
         without.refresh_token = None;
         let p2 = OAuth2Credential::policy(&without);
-        assert_eq!(p2.refresh, RefreshStrategy::ReAcquire);
+        assert_eq!(
+            p2.refresh,
+            RefreshStrategy::ReAcquire {
+                from: None,
+                interactive: true
+            }
+        );
         assert!(!p2.is_auto_renewable());
     }
 

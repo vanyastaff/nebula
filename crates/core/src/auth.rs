@@ -152,8 +152,8 @@ pub struct NoAuthFamily;
 
 impl SchemeFamily for NoAuthFamily {
     const EGRESS: &'static [EgressShape] = &[EgressShape::None];
-    fn refresh_classes() -> &'static [RefreshStrategy] {
-        &[RefreshStrategy::Static]
+    fn refresh_classes() -> &'static [RefreshStrategyKind] {
+        &[RefreshStrategyKind::Static]
     }
     fn pattern() -> AuthPattern {
         AuthPattern::NoAuth
@@ -255,12 +255,34 @@ pub trait SchemeFamily: 'static {
 
     /// The renewal strategies this family's material may legitimately use. The
     /// registration soundness check rejects a credential whose computed
-    /// [`RefreshStrategy`] is not in this set.
-    fn refresh_classes() -> &'static [RefreshStrategy];
+    /// [`RefreshStrategy::kind`] is not in this set. A *kind* (not a full
+    /// [`RefreshStrategy`]) because the `ReAcquire` payload is per-credential,
+    /// not part of the family's soundness contract.
+    fn refresh_classes() -> &'static [RefreshStrategyKind];
 
     /// Cosmetic classification for UI / catalog / logging. A family with shared
     /// mechanics but a distinct display identity overrides this.
     fn pattern() -> AuthPattern;
+}
+
+/// Identifier of another scheme that a re-acquisition consumes — the input
+/// credential of a federated exchange (AWS STS chained AssumeRole, GCP
+/// workload-identity-federation, RFC 8693 token exchange, impersonation).
+/// Opaque; a scheme `KEY` string in practice.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct SchemeId(String);
+
+impl SchemeId {
+    /// Wrap a scheme identifier.
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+
+    /// The identifier string.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
 /// How a credential's material is renewed as it nears or reaches expiry.
@@ -270,7 +292,9 @@ pub trait SchemeFamily: 'static {
 /// `nebula-core` (a pure data enum with no upward dependencies) so
 /// [`SchemeFamily::refresh_classes`] can name it without an inverted dependency
 /// edge. Re-exported from `nebula_credential` for source compatibility.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+///
+/// Not `Copy`: [`Self::ReAcquire`] carries an optional [`SchemeId`].
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[non_exhaustive]
 pub enum RefreshStrategy {
     /// Valid until explicitly revoked; never auto-renewed (API key, PAT).
@@ -282,9 +306,70 @@ pub enum RefreshStrategy {
     /// An external lease the engine's lease scheduler renews at a fraction of
     /// its TTL — Vault dynamic secret, Kubernetes projected token.
     Lease,
-    /// Full re-acquisition round-trip; no incremental refresh — AWS STS
-    /// AssumeRole, SAML/OIDC re-auth, OAuth2 without a refresh token.
+    /// Full re-acquisition round-trip; no incremental refresh.
+    ///
+    /// `from = Some(_)` when re-acquisition **consumes another credential** (a
+    /// federated exchange — STS chained AssumeRole, GCP WIF, RFC 8693,
+    /// impersonation); `None` for a standalone re-acquire (STS from static keys,
+    /// SAML/OIDC re-auth, OAuth2 without a refresh token). `interactive`
+    /// distinguishes a silent replay (client-credentials) from a human-gated
+    /// re-auth (device-code, authorization-code).
+    ReAcquire {
+        /// The credential this re-acquisition consumes, if federated.
+        from: Option<SchemeId>,
+        /// Whether re-acquisition requires human interaction.
+        interactive: bool,
+    },
+    /// Renewal is a pure **local** key→token derivation — never a network call
+    /// (self-signed JWT / RFC 7523, GCP self-signed-JWT-access, a fresh SigV4
+    /// from a static key). The resolver routes this to a local mint path,
+    /// skipping the refresh transport, coalescer, and circuit-breaker; the
+    /// re-validation floor is a local re-mint, not a provider probe.
+    ReMintLocal,
+    /// Material is rotated by an **external** source (kubelet projected-token
+    /// file rewrite, SPIFFE Workload API push); the engine re-reads on change
+    /// and never initiates renewal, so `decide_refresh` returns `Usable`.
+    Watched,
+}
+
+/// The payload-free discriminant of a [`RefreshStrategy`] — the *kind* of
+/// renewal a credential uses.
+///
+/// `Copy`, so it composes into the `&'static` allow-sets a [`SchemeFamily`]
+/// declares via [`refresh_classes`](SchemeFamily::refresh_classes): a family's
+/// soundness contract is over *which mechanisms* are legitimate, not over a
+/// specific `ReAcquire` payload (the `SchemeId` / interactivity is
+/// per-credential). Registration checks `policy.refresh.kind()` for membership.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[non_exhaustive]
+pub enum RefreshStrategyKind {
+    /// [`RefreshStrategy::Static`].
+    Static,
+    /// [`RefreshStrategy::RefreshToken`].
+    RefreshToken,
+    /// [`RefreshStrategy::Lease`].
+    Lease,
+    /// [`RefreshStrategy::ReAcquire`].
     ReAcquire,
+    /// [`RefreshStrategy::ReMintLocal`].
+    ReMintLocal,
+    /// [`RefreshStrategy::Watched`].
+    Watched,
+}
+
+impl RefreshStrategy {
+    /// This strategy's payload-free [`RefreshStrategyKind`].
+    #[must_use]
+    pub fn kind(&self) -> RefreshStrategyKind {
+        match self {
+            Self::Static => RefreshStrategyKind::Static,
+            Self::RefreshToken => RefreshStrategyKind::RefreshToken,
+            Self::Lease => RefreshStrategyKind::Lease,
+            Self::ReAcquire { .. } => RefreshStrategyKind::ReAcquire,
+            Self::ReMintLocal => RefreshStrategyKind::ReMintLocal,
+            Self::Watched => RefreshStrategyKind::Watched,
+        }
+    }
 }
 
 #[cfg(test)]

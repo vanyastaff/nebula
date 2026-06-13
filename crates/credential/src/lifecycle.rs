@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 /// can back [`crate::SchemeFamily::refresh_classes`] without an inverted
 /// dependency). Re-exported here so existing `nebula_credential::RefreshStrategy`
 /// paths keep resolving.
-pub use nebula_core::auth::RefreshStrategy;
+pub use nebula_core::auth::{RefreshStrategy, RefreshStrategyKind, SchemeId};
 
 /// The ~10 structural categories of credential, classified by **lifecycle
 /// shape** rather than by wire scheme (there are ~35 wire schemes but only a
@@ -99,6 +99,12 @@ pub struct LeaseRef {
     pub lease_duration: Duration,
     /// Whether the lease can be renewed (some leases are one-shot).
     pub renewable: bool,
+    /// Hard renewal horizon: past this instant even a renewable lease must
+    /// re-acquire, not renew (Kerberos TGT `renew_until`, a rotating
+    /// refresh-token's absolute expiry). `None` = no horizon (renew indefinitely
+    /// while `renewable`). [`CredentialPolicy::decide_refresh`] returns
+    /// [`Decision::Reacquire`] once `now >= renew_until`.
+    pub renew_until: Option<DateTime<Utc>>,
 }
 
 /// The single routing decision the resolver acts on for a credential at a
@@ -195,13 +201,23 @@ impl CredentialPolicy {
     /// not renew.
     #[must_use]
     pub const fn is_auto_renewable(&self) -> bool {
-        match self.refresh {
+        // Matched by reference: `RefreshStrategy` is no longer `Copy` (its
+        // `ReAcquire` arm carries a `SchemeId`).
+        match &self.refresh {
             RefreshStrategy::RefreshToken => true,
             RefreshStrategy::Lease => match &self.lease {
                 Some(lease) => lease.renewable,
                 None => false,
             },
-            RefreshStrategy::Static | RefreshStrategy::ReAcquire => false,
+            // A pure local key→token mint needs no human and no network — the
+            // engine can always do it.
+            RefreshStrategy::ReMintLocal => true,
+            // Re-acquire is not a renewal (interactivity is handled at the
+            // re-acquire seam, not here); `Watched` is rotated by an external
+            // source the engine never drives.
+            RefreshStrategy::Static
+            | RefreshStrategy::ReAcquire { .. }
+            | RefreshStrategy::Watched => false,
             // `RefreshStrategy` is `#[non_exhaustive]` (it lives in `nebula-core`).
             // A strategy this version does not recognise is treated as NOT
             // auto-renewable — fail safe (never claim a credential renews itself
@@ -237,6 +253,13 @@ impl CredentialPolicy {
     ) -> Decision {
         let auto_renewable = self.is_auto_renewable();
 
+        // 0. Externally-rotated material (`Watched`): the engine re-reads on
+        //    change and never initiates renewal, so the resolver serves what it
+        //    holds rather than scheduling a refresh.
+        if matches!(self.refresh, RefreshStrategy::Watched) {
+            return Decision::Usable;
+        }
+
         // 1. Inline expiry: past it, or inside the proactive early-refresh window.
         if let Some(exp) = self.expires_at {
             if exp <= now {
@@ -262,9 +285,13 @@ impl CredentialPolicy {
         }
 
         // 2. Server-tracked lease with no inline expiry: a renewable lease is
-        //    renewed by the lease scheduler; a one-shot lease must re-acquire.
-        if self.expires_at.is_none() && self.lease.is_some() {
-            return if auto_renewable {
+        //    renewed by the lease scheduler; a one-shot lease — or one past its
+        //    hard renewal horizon (`renew_until`) — must re-acquire instead.
+        if self.expires_at.is_none()
+            && let Some(lease) = &self.lease
+        {
+            let past_horizon = lease.renew_until.is_some_and(|horizon| now >= horizon);
+            return if auto_renewable && !past_horizon {
                 Decision::Refresh
             } else {
                 Decision::Reacquire
@@ -344,6 +371,7 @@ mod tests {
                 lease_id: "vault/lease/abc".to_owned(),
                 lease_duration: Duration::from_hours(1),
                 renewable: true,
+                renew_until: None,
             }),
             refresh: RefreshStrategy::Lease,
             revoke: RevokeStrategy::HandleBased,
@@ -363,6 +391,7 @@ mod tests {
                 lease_id: "vault/lease/one-shot".to_owned(),
                 lease_duration: Duration::from_hours(1),
                 renewable: false,
+                renew_until: None,
             }),
             refresh: RefreshStrategy::Lease,
             revoke: RevokeStrategy::HandleBased,
@@ -378,7 +407,10 @@ mod tests {
             category: CredentialCategory::FederatedExchange,
             expires_at: None,
             lease: None,
-            refresh: RefreshStrategy::ReAcquire,
+            refresh: RefreshStrategy::ReAcquire {
+                from: None,
+                interactive: false,
+            },
             revoke: RevokeStrategy::IssueTimePolicy,
         };
         assert!(!p.is_auto_renewable());
@@ -474,6 +506,7 @@ mod tests {
                 lease_id: "vault/lease/abc".to_owned(),
                 lease_duration: HOUR,
                 renewable: true,
+                renew_until: None,
             }),
             refresh: RefreshStrategy::Lease,
             revoke: RevokeStrategy::HandleBased,
@@ -494,6 +527,7 @@ mod tests {
                 lease_id: "vault/lease/one-shot".to_owned(),
                 lease_duration: HOUR,
                 renewable: false,
+                renew_until: None,
             }),
             refresh: RefreshStrategy::Lease,
             revoke: RevokeStrategy::HandleBased,
@@ -511,7 +545,10 @@ mod tests {
             category: CredentialCategory::FederatedExchange,
             expires_at: Some(now - chrono::Duration::seconds(1)),
             lease: None,
-            refresh: RefreshStrategy::ReAcquire,
+            refresh: RefreshStrategy::ReAcquire {
+                from: None,
+                interactive: false,
+            },
             revoke: RevokeStrategy::IssueTimePolicy,
         };
         assert_eq!(

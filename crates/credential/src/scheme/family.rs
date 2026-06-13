@@ -11,7 +11,7 @@
 //! The `EGRESS` slice and `refresh_classes` set on each family are the
 //! canonical, contract-frozen mechanics of the corresponding built-in.
 
-use nebula_core::auth::{AuthPattern, EgressShape, RefreshStrategy, SchemeFamily};
+use nebula_core::auth::{AuthPattern, EgressShape, RefreshStrategyKind, SchemeFamily};
 
 /// Macro: define a zero-sized built-in family marker + its `SchemeFamily` impl.
 macro_rules! builtin_family {
@@ -27,8 +27,8 @@ macro_rules! builtin_family {
 
         impl SchemeFamily for $name {
             const EGRESS: &'static [EgressShape] = &[$(EgressShape::$egress),+];
-            fn refresh_classes() -> &'static [RefreshStrategy] {
-                &[$(RefreshStrategy::$refresh),+]
+            fn refresh_classes() -> &'static [RefreshStrategyKind] {
+                &[$(RefreshStrategyKind::$refresh),+]
             }
             fn pattern() -> AuthPattern {
                 AuthPattern::$pattern
