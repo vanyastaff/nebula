@@ -218,6 +218,7 @@ impl<S: CredentialStore> CredentialResolver<S> {
     {
         let stored = self.load_and_verify::<C>(key.credential_id()).await?;
         verify_owner(key, &stored)?;
+        reject_tombstoned(key.credential_id(), &stored)?;
         let state: C::State = self.deserialize::<C>(key.credential_id(), &stored)?;
         let scheme = C::project(&state);
         Ok(self.materialize_handle::<C>(key.credential_id(), scheme))
@@ -885,6 +886,25 @@ fn verify_owner(key: &OwnerScopedKey, stored: &StoredCredential) -> Result<(), R
     Ok(())
 }
 
+/// Fail-closed tombstone gate for the scoped resolution path.
+///
+/// Defence in depth for the resolve-during-revoke race:
+/// `CredentialService::validate_credential_binding` already rejects a tombstoned
+/// id when the binding is minted, but a binding validated immediately before a
+/// concurrent `revoke` could still reach `resolve_scoped`. A revoked row is
+/// mapped to [`StoreError::NotFound`] (same existence-hiding shape as
+/// [`verify_owner`]) so a revoked secret is never projected to a guard.
+///
+/// Complexity: O(1).
+fn reject_tombstoned(credential_id: &str, stored: &StoredCredential) -> Result<(), ResolveError> {
+    if stored.is_tombstoned() {
+        return Err(ResolveError::Store(StoreError::NotFound {
+            id: credential_id.to_owned(),
+        }));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -940,5 +960,31 @@ mod tests {
             err,
             ResolveError::Store(StoreError::NotFound { .. })
         ));
+    }
+
+    fn tombstoned(owner: Option<&str>) -> StoredCredential {
+        let mut stored = stored_with_owner(owner);
+        stored.metadata.insert(
+            crate::store::REVOKED_AT_METADATA_KEY.to_owned(),
+            serde_json::Value::String("2026-06-13T10:00:00Z".to_owned()),
+        );
+        stored
+    }
+
+    #[test]
+    fn tombstoned_row_is_rejected_as_not_found() {
+        // Resolve-during-revoke race: a row revoked after its binding was
+        // validated must not project a guard — it fails closed as NotFound,
+        // never exposing the revoked secret.
+        let err = reject_tombstoned("cred_x", &tombstoned(Some("alice"))).unwrap_err();
+        assert!(matches!(
+            err,
+            ResolveError::Store(StoreError::NotFound { .. })
+        ));
+    }
+
+    #[test]
+    fn live_row_passes_tombstone_check() {
+        assert!(reject_tombstoned("cred_x", &stored_with_owner(Some("alice"))).is_ok());
     }
 }

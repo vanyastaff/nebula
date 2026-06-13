@@ -60,6 +60,12 @@ use super::state_source::StateSource;
 // resolver's load-time owner check can never disagree on the key.
 use crate::store::OWNER_ID_METADATA_KEY as OWNER_ID_KEY;
 
+// Reserved metadata key holding the revoke tombstone epoch. `revoke` stamps it
+// (zeroizing the secret) instead of deleting the row; read paths treat a
+// stamped row as gone and `validate_credential_binding` rejects it with a typed
+// `CredentialTombstoned`. Aliased from the single source of truth in `store`.
+use crate::store::REVOKED_AT_METADATA_KEY;
+
 /// Metadata key holding the facade-owned [`CredentialDisplay`] sub-object
 /// (a sibling to [`OWNER_ID_KEY`]). Single-writer: only the facade reads or
 /// writes it, so the multi-writer shape conflict that affected the api's old
@@ -441,7 +447,9 @@ impl CredentialService {
         for id in ids {
             match self.scan_store.get(&id).await {
                 Ok(stored) => {
-                    if Self::owner_matches(&stored, scope) {
+                    // Skip foreign rows (owner filter) and revoked rows: a
+                    // tombstone is a retired credential, not a listable one.
+                    if Self::owner_matches(&stored, scope) && !stored.is_tombstoned() {
                         visible.push(Self::head_from(&stored));
                     }
                 },
@@ -819,28 +827,38 @@ impl CredentialService {
         matches!(e, CredentialServiceError::TransientProvider(_))
     }
 
-    /// Revoke the credential at the provider, release any leases, and
-    /// delete the stored row.
+    /// Revoke the credential at the provider, release any leases, and write a
+    /// revoke **tombstone** over the stored row (it is not deleted).
     ///
     /// Owner-checked first. The provider-side revoke runs the type's
     /// `Revocable::revoke`; lease release is best-effort (a failure is
-    /// logged, not propagated — the credential is still revoked); the
-    /// stored row is then deleted per the revoke contract. On success
-    /// [`CredentialObserver::on_revoke`] fires.
+    /// logged, not propagated — the credential is still revoked); the stored
+    /// row is then CAS-overwritten with a tombstone epoch and empty secret
+    /// bytes. On success [`CredentialObserver::on_revoke`] fires.
+    ///
+    /// The row is tombstoned rather than deleted so the id cannot be
+    /// resurrected and a slot binding still pointing at it resolves to a typed
+    /// [`CredentialTombstoned`](super::binding::ValidatedCredentialBindingError::CredentialTombstoned)
+    /// rather than a bare `NotFound`. Every management read
+    /// ([`get`](Self::get)/[`list`](Self::list)/[`update`](Self::update)/
+    /// [`refresh`](Self::refresh)) then treats the row as gone, so a second
+    /// revoke of the same id returns
+    /// [`NotFound`](CredentialServiceError::NotFound) (idempotent from the
+    /// caller's view).
     ///
     /// `Revocable::revoke` receives `&mut state` and may mutate it. That
-    /// mutation is intentionally **not** re-persisted: revocation deletes
-    /// the row (a revoked credential is gone), so there is no surviving
-    /// row to write the mutated state back to. This is by design — unlike
-    /// [`refresh`](Self::refresh), which keeps the row and CAS-persists
-    /// its mutated state.
+    /// mutation is intentionally **not** re-persisted: the tombstone drops the
+    /// secret bytes, so there is no live state to write back — unlike
+    /// [`refresh`](Self::refresh), which keeps the row and CAS-persists its
+    /// mutated state.
     ///
     /// # Errors
     ///
-    /// - [`CredentialServiceError::NotFound`] — absent or cross-tenant id.
+    /// - [`CredentialServiceError::NotFound`] — absent, cross-tenant, or already-revoked id.
     /// - [`CredentialServiceError::CapabilityUnsupported`] — type is not `Revocable`.
     /// - [`CredentialServiceError::Provider`] — the provider revoke failed.
-    /// - [`CredentialServiceError::Store`] — deleting the row failed.
+    /// - [`CredentialServiceError::VersionConflict`] — a concurrent write raced the revoke.
+    /// - [`CredentialServiceError::Store`] — persisting the tombstone failed.
     pub async fn revoke(
         &self,
         scope: &TenantScope,
@@ -875,9 +893,31 @@ impl CredentialService {
             );
         }
 
-        // Delete the stored row per the revoke contract — a revoked
-        // credential is gone, not a stale row.
-        self.store.delete(id).await.map_err(Self::map_store_err)?;
+        // Write a tombstone instead of deleting the row. A revoked credential
+        // must not be resurrectable under the same id, and a workflow slot
+        // binding that still points at it must surface a typed
+        // `CredentialTombstoned` (via `validate_credential_binding`) rather than
+        // a bare `NotFound`. The secret bytes are dropped — a revoked secret has
+        // no reason to persist at rest. CAS on the version loaded above so a
+        // rotation/update racing this revoke conflicts instead of silently
+        // clobbering (or resurrecting) the row.
+        let now = chrono::Utc::now();
+        let expected_version = stored.version;
+        let mut metadata = stored.metadata;
+        metadata.insert(
+            REVOKED_AT_METADATA_KEY.to_owned(),
+            Value::String(now.to_rfc3339()),
+        );
+        let tombstoned = StoredCredential {
+            data: Vec::new(),
+            updated_at: now,
+            metadata,
+            ..stored
+        };
+        self.store
+            .put(tombstoned, PutMode::CompareAndSwap { expected_version })
+            .await
+            .map_err(Self::map_store_err)?;
 
         self.observer.on_revoke(&credential_id);
         tracing::info!(credential.id = %id, "credential revoked");
@@ -1149,6 +1189,21 @@ impl CredentialService {
             );
         }
 
+        // Reject a revoked credential here — before any binding (and thus any
+        // guard) is produced — with a typed `CredentialTombstoned` rather than
+        // a bare `NotFound`, so the caller learns the slot stopped resolving
+        // because the credential was revoked. The check is owner-gated above,
+        // so it never reveals another tenant's revoke status. No reverse
+        // `references()` index is consulted: the tombstone travels with the row.
+        if stored.is_tombstoned() {
+            return Err(
+                super::binding::ValidatedCredentialBindingError::CredentialTombstoned {
+                    id: id.to_owned(),
+                    revoked_at: stored.revoked_at(),
+                },
+            );
+        }
+
         Ok(super::binding::ValidatedCredentialBinding::new(
             id.to_owned(),
             super::binding::TenantFingerprint::from_scope(scope),
@@ -1318,6 +1373,15 @@ impl CredentialService {
         if !Self::owner_matches(&stored, scope) {
             // Deliberately the same error as a missing credential — a
             // caller cannot probe other tenants' ids.
+            return Err(CredentialServiceError::NotFound { id: id.to_owned() });
+        }
+        if stored.is_tombstoned() {
+            // A revoked credential reads back as gone to every management path
+            // (get / update / test / refresh) and to a repeat revoke, so the
+            // surviving row is a non-resurrectable tombstone, not a live
+            // credential. The slot-binding path surfaces the typed "revoked"
+            // signal separately in `validate_credential_binding`; management
+            // ops see `NotFound` so a revoked id behaves as absent.
             return Err(CredentialServiceError::NotFound { id: id.to_owned() });
         }
         Ok(stored)

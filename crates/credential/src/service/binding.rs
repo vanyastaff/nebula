@@ -115,6 +115,26 @@ pub enum ValidatedCredentialBindingError {
         actual: String,
     },
 
+    /// The credential exists and is owned by the caller but has been revoked
+    /// (carries a tombstone epoch).
+    ///
+    /// Distinct from [`NotFound`] on purpose: a binding pointing at a revoked
+    /// credential is a *clear* error ("this credential was revoked"), not a
+    /// generic miss — so a workflow author sees why the slot stopped resolving
+    /// rather than chasing a phantom "not found". The check happens here at
+    /// bind-validation time, with no reverse `references()` index in the
+    /// credential crate (that would invert the service→runtime→contract layering).
+    ///
+    /// [`NotFound`]: Self::NotFound
+    #[error("credential `{id}` was revoked")]
+    CredentialTombstoned {
+        /// The revoked credential id.
+        id: String,
+        /// When the credential was revoked, when the tombstone epoch is
+        /// well-formed (`None` for a tombstone whose stamp did not parse).
+        revoked_at: Option<chrono::DateTime<chrono::Utc>>,
+    },
+
     /// An underlying store or service error occurred during validation.
     #[error("credential binding validator i/o: {0}")]
     Io(#[from] super::error::CredentialServiceError),

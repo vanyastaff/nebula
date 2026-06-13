@@ -67,6 +67,17 @@ pub trait ScopeResolver: Send + Sync {
 /// hazard for a security-critical comparison.
 pub(crate) const OWNER_ID_METADATA_KEY: &str = "owner_id";
 
+/// Reserved `StoredCredential.metadata` key holding the revoke tombstone epoch
+/// (an RFC 3339 timestamp). Its **presence** marks the credential terminally
+/// retired: `revoke` stamps it (and zeroizes the secret bytes) instead of
+/// deleting the row, so a workflow `slot_binding` that still points at the id
+/// gets a clear typed rejection rather than a bare `NotFound`, and the id stays
+/// occupied so a revoked credential cannot be resurrected under the same id.
+///
+/// Read fail-closed: a row carrying this key is tombstoned regardless of whether
+/// the value parses as a timestamp (see [`StoredCredential::is_tombstoned`]).
+pub(crate) const REVOKED_AT_METADATA_KEY: &str = "revoked_at";
+
 /// An owner-scoped credential lookup key: a credential id paired with the
 /// `owner_id` that a prior tenant-scope check proved owns it.
 ///
@@ -156,6 +167,32 @@ pub struct StoredCredential {
     pub reauth_required: bool,
     /// Arbitrary metadata.
     pub metadata: serde_json::Map<String, Value>,
+}
+
+impl StoredCredential {
+    /// Whether this credential has been revoked (carries a tombstone epoch).
+    ///
+    /// Fail-closed: a row is tombstoned iff the `revoked_at` tombstone-epoch
+    /// metadata key is present, irrespective of whether its value parses as a
+    /// timestamp — a malformed epoch must never read back as "still live".
+    #[must_use]
+    pub fn is_tombstoned(&self) -> bool {
+        self.metadata.contains_key(REVOKED_AT_METADATA_KEY)
+    }
+
+    /// The revoke tombstone epoch, when present and well-formed.
+    ///
+    /// Returns `None` both for a live credential and for a tombstoned row whose
+    /// stamp is unparseable; use [`is_tombstoned`](Self::is_tombstoned) for the
+    /// authoritative liveness check and this only for observability/reporting.
+    #[must_use]
+    pub fn revoked_at(&self) -> Option<chrono::DateTime<chrono::Utc>> {
+        self.metadata
+            .get(REVOKED_AT_METADATA_KEY)
+            .and_then(Value::as_str)
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+            .map(|dt| dt.with_timezone(&chrono::Utc))
+    }
 }
 
 /// Error from store operations.
@@ -267,4 +304,60 @@ pub trait CredentialStore: Send + Sync {
     ///
     /// Returns [`StoreError::Backend`] on underlying storage failures.
     fn exists(&self, id: &str) -> impl Future<Output = Result<bool, StoreError>> + Send;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row_with(metadata: serde_json::Map<String, Value>) -> StoredCredential {
+        StoredCredential {
+            id: "cred_x".to_owned(),
+            name: None,
+            credential_key: "github_oauth".to_owned(),
+            data: vec![1, 2, 3],
+            state_kind: "oauth2_state".to_owned(),
+            state_version: 1,
+            version: 1,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            expires_at: None,
+            reauth_required: false,
+            metadata,
+        }
+    }
+
+    #[test]
+    fn live_row_is_not_tombstoned() {
+        let row = row_with(serde_json::Map::new());
+        assert!(!row.is_tombstoned());
+        assert!(row.revoked_at().is_none());
+    }
+
+    #[test]
+    fn well_formed_epoch_parses() {
+        let mut meta = serde_json::Map::new();
+        meta.insert(
+            REVOKED_AT_METADATA_KEY.to_owned(),
+            Value::String("2026-06-13T10:00:00Z".to_owned()),
+        );
+        let row = row_with(meta);
+        assert!(row.is_tombstoned());
+        assert!(row.revoked_at().is_some());
+    }
+
+    #[test]
+    fn malformed_epoch_still_reads_as_tombstoned() {
+        // Fail-closed: a present-but-unparseable stamp must not read back as
+        // live. `is_tombstoned` is the authoritative liveness check; the
+        // unparseable epoch only costs the timestamp for reporting.
+        let mut meta = serde_json::Map::new();
+        meta.insert(
+            REVOKED_AT_METADATA_KEY.to_owned(),
+            Value::String("not-a-timestamp".to_owned()),
+        );
+        let row = row_with(meta);
+        assert!(row.is_tombstoned());
+        assert!(row.revoked_at().is_none());
+    }
 }
