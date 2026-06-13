@@ -216,3 +216,20 @@ jitter is applied once at the scheduler seam, never here — §24 invariant):
   (delete `CredentialCategory` — verified credential-only + zero behavioural readers; atomic
   subtractive), then **`type Sensitivity`** (sealed tag + `External` 3rd state). Commit chain on
   `gallant-tesla-b62506` (NOT pushed): …3abfb4c2(5b)→dc30f242→44839a08(5c)→e3573978(5f).
+- 2026-06-13: **increment 5a-2 landed (`8cae5dec`).** Breaking-before-freeze refresh contract in
+  `nebula-core::auth`. `RefreshStrategy` drops `Copy` and gains payload-bearing variants:
+  `ReAcquire { from: Option<SchemeId>, interactive: bool }` (federated-exchange dependency +
+  silent-vs-redirect), `ReMintLocal`, `Watched`. `SchemeId` newtype names the depended-on scheme.
+  `RefreshStrategyKind` is the `Copy` discriminant mirror so a family declares the sound *kinds*
+  as a const set (`SchemeFamily::refresh_classes() -> &'static [RefreshStrategyKind]`) while an
+  instance carries the payload; `RefreshStrategy::kind()` projects. `LeaseRef.renew_until:
+  Option<DateTime<Utc>>` is the two-tier renewal horizon (Kerberos TGT / rotating-RT): renew until
+  it, then re-acquire — `decide_refresh` honours it and treats `Watched` as always-`Usable`.
+  `is_auto_renewable` matches by-ref over the now-non-`Copy` enum. Built-in families, the OAuth2
+  policy + tests, and the plugin example carry the new shapes. Whole workspace green (35 crates
+  check/all-targets); credential suite green (18 unit-bin + doctests + both trybuild compile-fail
+  probes); clippy `--all-features` + rustdoc `-D warnings` clean on core+credential; lefthook
+  pre-commit (typos/fmt/clippy/convco) green. Remaining F3: **5d** (registration containment check
+  `policy.refresh.kind() ∈ Family::refresh_classes()` — needs a state-sample seam), **5e** (delete
+  `CredentialCategory` — atomic subtractive, owner-visible), then **`type Sensitivity`** (sealed
+  tag + `External` 3rd state).
