@@ -771,46 +771,70 @@ not by hand-written per-impl tests.
   discipline could re-enter, closed at registration. Arch-test: `Scheme` has no `Box<dyn>` /
   catch-all variant.
 
-  **Increment-5 type design (F3 two-axis model) — DRAFT, owner-review before code (spec-first).**
-  Scouting the as-built `nebula-core::auth` shows three concepts already there that the F3 model
-  must *compose with*, not duplicate:
-  - `AuthPattern` — 11-variant `#[non_exhaustive]` enum **with `Custom`**; cosmetic classification
-    for UI / catalog / logging (`AuthScheme::pattern()`).
-  - `AuthScheme: Send + Sync + 'static` — the **open** credential↔resource bridge trait
-    (`Credential::Scheme`, resource `type Auth`); plugins `impl` it freely today.
-  - `SensitiveScheme` / `PublicScheme` — the sensitivity axis (macro-enforced exclusivity; the
-    hand-rolled dual-impl bypass is a known tracked gap, not in F3 scope).
+  **Increment-5 type design (F3) — DECIDED: Option F (adversarial planёrka 2026-06-13, owner
+  directive "design for the un-breakable contract, not least-ripple").** The mechanics axis is an
+  **open trait sealed at the *obligation*, not a sealed enum.** A sealed `SchemeFamily` enum (the
+  A/B/C framing) forces a breaking framework release every time a plugin needs a mechanism the 1.0
+  variant set didn't ship — the owning crate must still enumerate every arm to keep dispatch total.
+  RFC 9421 HTTP Message Signatures (published, entering agent-auth adoption in the 1.0→2.0 window)
+  fits no 1.0 variant — the disqualifier. The codebase already chose the right pattern one file away
+  (`lifecycle.rs` ADR-0088 D2: "capabilities are data, not trait bounds"; `decide_refresh` reads
+  orthogonal fields, never a master "kind" enum).
 
-  The two F3 axes map onto this as:
-  1. **Binding axis = the scheme type itself** (already nominal). Bind site becomes
-     `Slot<S: AuthScheme>` (add the bound to `SlotCell` / `CredentialSlot`), so a
-     `CredentialGuard<TwilioScheme>` cannot enter a `Slot<StripeScheme>` — a nominal compile
-     error. This *mostly already holds* through generics; the delta is the explicit `S: AuthScheme`
-     bound, a trybuild compile-fail fixture proving the cross-protocol reject, and a no-`Box<dyn
-     AuthScheme>`-on-the-binding-path arch-test.
-  2. **Mechanics axis = a sealed `SchemeFamily`** owning egress shape + the sound `decide_refresh`
-     class. `AuthScheme` gains `const FAMILY: SchemeFamily`. Open-world stays open (plugins still
-     `impl AuthScheme` + define a marker type) but is **bounded**: `SchemeFamily` is sealed with no
-     `Custom` / `Box<dyn>` escape, so a plugin must declare a real family. A **registration-time
-     check** rejects an unsound pairing (a token-bearer scheme declared `StaticHeader`, or a
-     `RefreshToken` `RefreshStrategy` on a non-refreshable family).
+  **Model (in `nebula-core::auth`, all sdk-re-exported):**
+  - `AuthPattern` — **UNCHANGED**, keeps `Custom`. The cosmetic/identity/wire axis (persisted,
+    serde'd, semver-major-gated). No code branches on a variant for behaviour.
+  - `EgressShape` — a small `#[non_exhaustive]` enum: the **only** closed set, the irreducible
+    framework-owned wire-primitive residue (`None`, `HeaderSecret`, `ConnectionString`,
+    `SignedRequest`, `NegotiatedSignature` [RFC 9421], `CertPresentation`, `ProofOfPossession`,
+    `InstanceIdentity`). New primitives are additive (`#[non_exhaustive]`).
+  - `trait SchemeFamily: 'static { const EGRESS: EgressShape; fn refresh_classes() ->
+    &'static [RefreshStrategy]; fn pattern() -> AuthPattern; }` — **open**, no `Sealed` super-bound;
+    any plugin impls it for its own zero-sized marker type. Soundness is the required obligation
+    methods, checked at registration — not enum membership.
+  - `trait AuthScheme { type Family: SchemeFamily; fn pattern() -> AuthPattern { Self::Family::pattern() } }`
+    — gains one associated **type** (the family-as-type is what makes a novel mechanism zero
+    framework edits; a protocol may have several families, e.g. SPIFFE = `SvidMtls` +
+    `JwtSvid`, defeating the 1:1 scalar-family straitjacket).
+  - `RefreshStrategy` **relocates** to `nebula-core::auth` (pure data, zero upward deps),
+    re-exported from `nebula-credential::lifecycle` for source-compat — so `refresh_classes()` can
+    live in core without an inverted dependency edge.
+  - `CredentialCategory` — **DELETED** (zero behavioural readers; `decide_refresh` never reads it;
+    only the macro writes it + the struct field + test asserts). Keeping it beside the new mechanics
+    contract is the "two frozen overlapping taxonomies that must agree forever" trap.
+  - `SensitiveScheme`/`PublicScheme` — KEEP as the orthogonal sensitivity axis (a `KeyPair` is
+    sensitive on its private half, public on its identity half — folding causes variant doubling).
 
-  **KEY OPEN FORK (owner) — `SchemeFamily` vs the existing `AuthPattern`** (they overlap on ~10 of
-  11 variants):
-  - **(A) Two enums** — `AuthPattern` stays cosmetic (keeps `Custom` for plugin UI), `SchemeFamily`
-    is the sealed mechanics enum (no `Custom`); a scheme declares both. Cost: near-duplicate enums.
-    Benefit: cosmetic UI flexibility decoupled from sound mechanics; least ripple.
-  - **(B) Fold** — drop `AuthPattern::Custom` and make `AuthPattern` itself the sealed family.
-    Breaking for any plugin-UI `Custom` consumer; simplest single model.
-  - **(C) Family subsumes pattern** — derive `pattern()` from `FAMILY`; one source of truth, loses
-    the free-form `Custom` UI label.
+  **Survives the war-game with zero framework enum edit / zero release** (SPIFFE dual-shape,
+  WebAuthn per-request assertion, DPoP/mTLS-bound, STS/WIF federation, RFC 9421): each is a new
+  family *type* answering `EGRESS`/`refresh_classes()`/`pattern()`; the framework never `match`es
+  the family. The only change that forces a framework edit is a genuinely novel *egress primitive*
+  → an additive `EgressShape` variant (legitimately framework-owned; `#[non_exhaustive]`).
 
-  Recommend **(A)** for 1.0 (least ripple, keeps the cosmetic/mechanics split honest); revisit a
-  fold post-1.0. Slices once the fork is decided (each whole-workspace-green): **5a** `SchemeFamily`
-  sealed enum + `AuthScheme::FAMILY` + migrate in-workspace impls + derive-macro `FAMILY`
-  generation; **5b** `Slot<S: AuthScheme>` bound + trybuild cross-protocol-reject + no-`Box<dyn>`
-  arch-test; **5c** registration-time family-soundness check (family ↔ `RefreshStrategy`/category);
-  **5d** plugin-marker open-world example + doc.
+  **Registration-time soundness = a containment law, not a hand-kept table:** the live
+  `CredentialPolicy::refresh` (from `policy(state)`) **must be ∈ `S::Family::refresh_classes()`**,
+  else reject with typed `RegistrationError::UnsoundFamily` (+ trace span + the no-`Box<dyn>` /
+  no-family-`match` arch-test). Closes the "token-bearer declared StaticHeader so it never
+  refreshes" gap structurally (the family's own declaration is the law).
+
+  **Overridden dissent:** Option A ("two enums") is the market-ish shape and the only
+  destructively-non-breaking-today option — but it misreads its own precedent (oauth2-rs uses an
+  **open `TokenType` trait** for mechanics + an escape-hatch `Extension(String)` on the cosmetic
+  enum = exactly Option F; it specifically did *not* seal mechanics), and its mechanics axis is
+  still a closed enum that forces a release on RFC 9421/DPoP/WebAuthn. "Least ripple" is the one
+  axis the owner directed us to ignore. A's correct residue (the cosmetic/mechanics *separation*)
+  is preserved; only its *sealed-enum mechanics* is rejected.
+
+  **Green slices (whole-workspace per commit; additive until the final subtractive 5e):**
+  **5a** core mechanics contract (add `EgressShape` + open `SchemeFamily` + `AuthScheme::Family` +
+  default `pattern()`; relocate `RefreshStrategy` to core + re-export; transitional default `Family`
+  so the 10 prod impls + `()` stay green). **5b** derive-macro emits `type Family` + marker from the
+  existing attr surface; migrate all impls; drop the transitional default. **5c** `Slot<S: AuthScheme>`
+  bound + trybuild Stripe→Twilio compile-fail + no-`Box<dyn>` arch-test; fix the stale `type Auth`
+  doc (`auth.rs:5`, this file L780). **5d** registration containment-law check + `RegistrationError::UnsoundFamily`.
+  **5e** *(subtractive, last, owner-visible before it lands)* demote + delete `CredentialCategory`.
+  **5f** plugin open-world example (root `examples/`, a plugin defining an RFC 9421 family with zero
+  core edits) + this section's prose finalised.
 - **Q9/Q10 — close the latent wrong-source defect structurally.** `ensure_local_source` is
   currently gated at the facade call-sites but **absent from `resolve_for_slot`** (it resolves
   a raw id) — a latent wrong-source defect *on the moat path*. Fix it by construction: move the
