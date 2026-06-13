@@ -15,7 +15,8 @@ Each row is one (or few) green commits. "Blast radius" = crates the change casca
 | **1a** | `Decision` + `decide_refresh` foundation | Add a total, **pure**, time-free `Decision { Usable, Refresh, Reacquire, Revalidate, Dead }` + `CredentialPolicy::decide_refresh(last_validated, now, floor, early_refresh)`; mandatory re-validation floor (owner ruling — even static past `floor` → `Revalidate`). Additive only. | credential | §17 F2/Q8, §19.1 |
 | **1b** | Route the resolver decision through `decide_refresh` | resolver consults `C::policy(&state).decide_refresh(...)` for the early-refresh/serve decision instead of the ad-hoc inline `state.expires_at()` + jitter test; `decide_refresh` is now a production consumer (closes "policy has zero consumers"); hot-path jitter dropped (scheduler-seam concern). **Reclassified:** deleting the `C::KEY != OAuth2Credential::KEY` compare (`resolver.rs:536`) is **NOT a Phase-1 item** — see note below. | credential | §17 Q8, Finding 1 |
 | **1c** | Macro: synthesized `policy` reads state | `credential_attr.rs` `fn policy(state)` now surfaces `CredentialState::expires_at(state)` instead of a constant `None`, so a refreshable credential routes on real expiry | credential, macros | §17 F2 |
-| **2** | `OwnerScopedKey` — close the confused-deputy (**priority #1**) | `CredentialStore::{get,delete,exists}` take a privately-constructed `OwnerScopedKey` (length-prefixed owner+id); no unscoped `get(&str)`; resolver receives a **validated binding**, not a raw id | credential, storage, tenancy, engine, tests | §10 rule 9, §17 |
+| **2** | `OwnerScopedKey` — close the confused-deputy on the slot path (**priority #1**) | `OwnerScopedKey` (privately constructed, obtainable only from a `ValidatedCredentialBinding`); `resolve_for_slot` resolves via `resolver.resolve_scoped(&key)`, which **re-verifies the stored row's `owner_id` at load** (cross-tenant id → `NotFound`, existence-hiding). Confused-deputy closed by construction on the exploit path. | credential | §10 rule 9, §17 |
+| **2b** | Store-port sealing (follow-up) | Make `CredentialStore::{get,delete,exists}` themselves take `OwnerScopedKey` so the unscoped `get(&str)` primitive cannot be expressed by *any* caller (not just the slot path). Wide cascade: 5 storage decorators + tenancy `ScopeLayer` + erased wrappers + facade `load_owned` + tests. | credential, storage, tenancy, engine, tests | §17 |
 | **3** | `ensure_local_source` into the resolver tail + tombstone reject | move the source check from the 4 facade sites into `resolve_for_slot`'s tail (`External` → `Unsupported`); binding-validation rejects a tombstoned id with typed `CredentialTombstoned` before a guard exists; **no `references()` port** | credential, engine | §17 Q9/Q10 |
 | **4** | Framework lease handle + constructor-enforced staleness ceiling | resolver returns a lease handle, never a raw `&Secret`; ceiling is a constructor-validated bound (`Duration::MAX` unconstructible on the lease path); arch-test: no `&Secret` reachable except via the handle | credential | §17 F2 |
 | **5** | `Scheme` sealed trait + per-protocol marker + `Slot<S: Scheme>` (F3) | binding axis becomes nominal; Stripe→Twilio bind = compile error; no `Box<dyn>`/catch-all; registration-time family-soundness check | credential, resource, macros | §17 F3 |
@@ -71,5 +72,13 @@ jitter is applied once at the scheduler seam, never here — §24 invariant):
   routes the serve/refresh decision through `C::policy(&state).decide_refresh(...)` —
   `decide_refresh` is now a production consumer. Hot-path jitter dropped. 261 tests green
   (316 with rotation), clippy clean (incl. `--all-features`), `nebula-api` tests compile.
-  `C::KEY` compare reclassified to Phase 3 (see note above). Next: **increment 2** —
-  `OwnerScopedKey` / confused-deputy (`CredentialStore::get(&str)` at `store.rs:176`).
+  `C::KEY` compare reclassified to Phase 3 (see note above).
+- 2026-06-13: **increment 2 landed.** `OwnerScopedKey` (privately constructed, store.rs) +
+  `ValidatedCredentialBinding::owner_scoped_key()` + resolver `resolve_scoped` with a
+  fail-closed `verify_owner` load-time gate; `resolve_for_slot` routes through it. The
+  `owner_id` metadata key is now a single shared const (`store::OWNER_ID_METADATA_KEY`,
+  facade aliases it). Confused-deputy closed by construction on the slot path. 3 regression
+  tests (matching / cross-tenant→NotFound / unstamped→foreign). 264 lib tests green (319 w/
+  rotation), clippy clean incl `--all-features`, nebula-api + nebula-engine compile. Next:
+  **increment 2b** (store-port sealing — wide cascade) or **increment 3** (ensure_local_source
+  into resolver tail + tombstone reject, Q9/Q10).

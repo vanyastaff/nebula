@@ -60,6 +60,54 @@ pub trait ScopeResolver: Send + Sync {
     fn current_owner(&self) -> Option<&str>;
 }
 
+/// Reserved `StoredCredential.metadata` key under which the owning tenant's
+/// `owner_id` is stamped. Single source of truth for both the management facade
+/// (which stamps it on write and gates reads) and the runtime resolver (which
+/// re-verifies it at load on the slot path) — two literals would be a drift
+/// hazard for a security-critical comparison.
+pub(crate) const OWNER_ID_METADATA_KEY: &str = "owner_id";
+
+/// An owner-scoped credential lookup key: a credential id paired with the
+/// `owner_id` that a prior tenant-scope check proved owns it.
+///
+/// The constructor is crate-private and the only in-crate caller is
+/// [`ValidatedCredentialBinding::owner_scoped_key`](crate::service::binding::ValidatedCredentialBinding),
+/// whose own constructor is reachable only through
+/// `CredentialService::validate_credential_binding` (the owner gate). A caller
+/// therefore cannot *express* an unscoped (cross-tenant) load on the slot
+/// resolution path: the resolver re-checks the loaded row's stamped `owner_id`
+/// against this key and fails closed (existence-hiding `NotFound`) on a
+/// mismatch, so binding provenance is backed by a load-time owner check rather
+/// than trusted on its own.
+#[derive(Debug, Clone)]
+pub struct OwnerScopedKey {
+    owner_id: String,
+    credential_id: String,
+}
+
+impl OwnerScopedKey {
+    /// Crate-private constructor — obtainable only from a
+    /// `ValidatedCredentialBinding`.
+    pub(crate) fn new(owner_id: String, credential_id: String) -> Self {
+        Self {
+            owner_id,
+            credential_id,
+        }
+    }
+
+    /// The owning tenant's `owner_id`.
+    #[must_use]
+    pub fn owner_id(&self) -> &str {
+        &self.owner_id
+    }
+
+    /// The credential's string identifier.
+    #[must_use]
+    pub fn credential_id(&self) -> &str {
+        &self.credential_id
+    }
+}
+
 /// A stored credential with metadata.
 #[derive(Debug, Clone)]
 pub struct StoredCredential {

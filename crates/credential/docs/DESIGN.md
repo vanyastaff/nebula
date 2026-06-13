@@ -699,8 +699,10 @@ Nebula merge debt = violating single runtime helper + incomplete protocol/config
 ≥1 production consumer** — the resolver routes the serve/refresh decision through
 `decide_refresh`, not an ad-hoc inline `expires_at` test (**done, increment 1b**);
 **`RefreshStrategy::Lease` with `expires_at: None` enters the refresh window** (Wall-1 /
-Finding 2 regression); **confused-deputy closed** — no raw `store.get(&str)`, binding
-carries `OwnerScopedKey` (cross-tenant read test); **contender blocks on claim
+Finding 2 regression); **confused-deputy closed on the slot path** (**done, increment 2**) —
+the binding carries an `OwnerScopedKey` and `resolve_for_slot` re-verifies the stored row's
+owner at load (cross-tenant id → `NotFound`; regression test); sealing the store port itself
+so no caller can express `get(&str)` is the increment-2b follow-up; **contender blocks on claim
 watch/notify**, `claims_exhausted == 0` under a 7s synthetic IdP + 30 contenders;
 **the resolve / material-access path emits a fail-closed audit event** (owner,
 credential_id, scheme, slot, caller) — read auditing, not refresh-only (§23 SOC 2 gap);

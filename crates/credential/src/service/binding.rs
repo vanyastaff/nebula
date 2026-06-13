@@ -49,6 +49,21 @@ impl ValidatedCredentialBinding {
         &self.credential_id
     }
 
+    /// The owner-scoped lookup key for this binding — the credential id paired
+    /// with the `owner_id` the scope check proved owns it (the fingerprint is
+    /// the `owner_id`).
+    ///
+    /// The runtime resolver consumes this to re-verify the stored row's owner
+    /// at load, so a validated binding is backed by a load-time owner check
+    /// rather than authorizing an unscoped load on its provenance alone.
+    #[must_use]
+    pub fn owner_scoped_key(&self) -> crate::store::OwnerScopedKey {
+        crate::store::OwnerScopedKey::new(
+            self.tenant_fingerprint.0.clone(),
+            self.credential_id.clone(),
+        )
+    }
+
     /// Crate-private access to the scope fingerprint. Consumed by the
     /// engine execution path that re-validates the binding before
     /// dispatching secrets (`resolve_for_slot`).

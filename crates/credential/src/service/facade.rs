@@ -54,9 +54,11 @@ use super::ops::DispatchOps;
 use super::scope::TenantScope;
 use super::state_source::StateSource;
 
-/// Metadata key the facade stamps with the owning tenant. Read on every
-/// `get`/`list`/`update`/`delete` to enforce tenant isolation.
-const OWNER_ID_KEY: &str = "owner_id";
+// Metadata key the facade stamps with the owning tenant, read on every
+// get/list/update/delete to enforce tenant isolation. Aliased from the single
+// source of truth in `store` so the facade write-stamp and the runtime
+// resolver's load-time owner check can never disagree on the key.
+use crate::store::OWNER_ID_METADATA_KEY as OWNER_ID_KEY;
 
 /// Metadata key holding the facade-owned [`CredentialDisplay`] sub-object
 /// (a sibling to [`OWNER_ID_KEY`]). Single-writer: only the facade reads or
@@ -1215,28 +1217,29 @@ impl CredentialService {
         //    (EncryptionLayer → CacheLayer → AuditLayer) composed at
         //    `build()`, so the EncryptionLayer is not bypassed.
         let credential_id = binding.credential_id();
+        // Resolve through the binding's owner-scoped key: the resolver re-checks
+        // the stored row's owner at load, so a cross-tenant id fails closed
+        // (`NotFound`) by construction rather than relying on the fingerprint
+        // check above alone.
+        let key = binding.owner_scoped_key();
         let scheme = cancel
             .run_until_cancelled(async {
-                let handle = self
-                    .resolver
-                    .resolve::<C>(credential_id)
-                    .await
-                    .map_err(|e| {
-                        // Preserve the documented `NotFound` contract for
-                        // resolver lookup misses. The resolver wraps store
-                        // errors in `ResolveError::Store(StoreError::NotFound)`
-                        // — surface that as `CredentialServiceError::NotFound`
-                        // so callers can branch on it. Other resolver errors
-                        // collapse to `Internal` with the underlying message.
-                        use crate::runtime::ResolveError;
-                        use crate::store::StoreError;
-                        match e {
-                            ResolveError::Store(StoreError::NotFound { id }) => {
-                                CredentialServiceError::NotFound { id }
-                            },
-                            other => CredentialServiceError::Internal(other.to_string()),
-                        }
-                    })?;
+                let handle = self.resolver.resolve_scoped::<C>(&key).await.map_err(|e| {
+                    // Preserve the documented `NotFound` contract for
+                    // resolver lookup misses. The resolver wraps store
+                    // errors in `ResolveError::Store(StoreError::NotFound)`
+                    // — surface that as `CredentialServiceError::NotFound`
+                    // so callers can branch on it. Other resolver errors
+                    // collapse to `Internal` with the underlying message.
+                    use crate::runtime::ResolveError;
+                    use crate::store::StoreError;
+                    match e {
+                        ResolveError::Store(StoreError::NotFound { id }) => {
+                            CredentialServiceError::NotFound { id }
+                        },
+                        other => CredentialServiceError::Internal(other.to_string()),
+                    }
+                })?;
 
                 // Extract the owned scheme from the snapshot `Arc`. The
                 // resolver caches live handles, so `try_unwrap` succeeds when

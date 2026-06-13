@@ -20,7 +20,10 @@ use crate::{
     CredentialLifecycle, CredentialState, Decision, Refreshable, SchemeFactory, SchemeGuard,
     SecretFreeMessage,
     resolve::{ReauthReason, RefreshOutcome},
-    store::{CredentialStore, PutMode, StoreError, StoredCredential},
+    store::{
+        CredentialStore, OWNER_ID_METADATA_KEY, OwnerScopedKey, PutMode, StoreError,
+        StoredCredential,
+    },
 };
 
 /// Framework-imposed mandatory re-validation floor for a refreshable credential
@@ -188,6 +191,36 @@ impl<S: CredentialStore> CredentialResolver<S> {
         let state: C::State = self.deserialize::<C>(credential_id, &stored)?;
         let scheme = C::project(&state);
         Ok(self.materialize_handle::<C>(credential_id, scheme))
+    }
+
+    /// Resolve a credential for an action slot through its owner-scoped key.
+    ///
+    /// The [`OwnerScopedKey`] is obtainable only from a
+    /// `ValidatedCredentialBinding` (whose constructor is gated by
+    /// `CredentialService::validate_credential_binding`). This method
+    /// **re-verifies** the loaded row's stamped `owner_id` against the key before
+    /// projecting the scheme, so a credential id belonging to another tenant
+    /// resolves to [`StoreError::NotFound`] (existence-hiding). The confused
+    /// deputy is closed at the load — binding provenance is backed by a load-time
+    /// owner check, not trusted on its own.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ResolveError::Store`] with [`StoreError::NotFound`] when the id
+    /// is absent **or** the stored row's owner does not match the key; other
+    /// [`ResolveError`] variants on kind-mismatch or deserialization failure.
+    pub async fn resolve_scoped<C>(
+        &self,
+        key: &OwnerScopedKey,
+    ) -> Result<CredentialHandle<C::Scheme>, ResolveError>
+    where
+        C: Credential,
+    {
+        let stored = self.load_and_verify::<C>(key.credential_id()).await?;
+        verify_owner(key, &stored)?;
+        let state: C::State = self.deserialize::<C>(key.credential_id(), &stored)?;
+        let scheme = C::project(&state);
+        Ok(self.materialize_handle::<C>(key.credential_id(), scheme))
     }
 
     /// Resolve a credential and refresh it when it enters the early-refresh window.
@@ -829,4 +862,83 @@ pub enum ResolveError {
         /// Why re-authentication is required.
         reason: ReauthReason,
     },
+}
+
+/// Fail-closed owner gate for the scoped resolution path: the loaded row's
+/// stamped `owner_id` must equal the key's owner. A mismatch maps to
+/// [`StoreError::NotFound`] (existence-hiding, matching the management facade) so
+/// a cross-tenant probe cannot tell "absent" from "owned by another tenant". An
+/// unstamped row (no `owner_id` metadata) is treated as foreign and rejected.
+///
+/// Complexity: O(1).
+fn verify_owner(key: &OwnerScopedKey, stored: &StoredCredential) -> Result<(), ResolveError> {
+    let stored_owner = stored
+        .metadata
+        .get(OWNER_ID_METADATA_KEY)
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    if stored_owner != key.owner_id() {
+        return Err(ResolveError::Store(StoreError::NotFound {
+            id: key.credential_id().to_owned(),
+        }));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn stored_with_owner(owner: Option<&str>) -> StoredCredential {
+        let mut metadata = serde_json::Map::new();
+        if let Some(o) = owner {
+            metadata.insert(
+                OWNER_ID_METADATA_KEY.to_owned(),
+                serde_json::Value::String(o.to_owned()),
+            );
+        }
+        StoredCredential {
+            id: "cred_x".to_owned(),
+            name: None,
+            credential_key: "github_oauth".to_owned(),
+            data: Vec::new(),
+            state_kind: "oauth2_state".to_owned(),
+            state_version: 1,
+            version: 1,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            expires_at: None,
+            reauth_required: false,
+            metadata,
+        }
+    }
+
+    #[test]
+    fn verify_owner_accepts_matching_owner() {
+        let key = OwnerScopedKey::new("alice".to_owned(), "cred_x".to_owned());
+        assert!(verify_owner(&key, &stored_with_owner(Some("alice"))).is_ok());
+    }
+
+    #[test]
+    fn cross_tenant_load_is_not_found() {
+        // Confused-deputy regression: a key for owner "bob" must not read a row
+        // stamped "alice"; the load fails closed as NotFound (existence-hiding),
+        // so a foreign tenant cannot even distinguish existence.
+        let key = OwnerScopedKey::new("bob".to_owned(), "cred_x".to_owned());
+        let err = verify_owner(&key, &stored_with_owner(Some("alice"))).unwrap_err();
+        assert!(matches!(
+            err,
+            ResolveError::Store(StoreError::NotFound { .. })
+        ));
+    }
+
+    #[test]
+    fn unstamped_row_is_treated_as_foreign() {
+        let key = OwnerScopedKey::new("alice".to_owned(), "cred_x".to_owned());
+        let err = verify_owner(&key, &stored_with_owner(None)).unwrap_err();
+        assert!(matches!(
+            err,
+            ResolveError::Store(StoreError::NotFound { .. })
+        ));
+    }
 }
