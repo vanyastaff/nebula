@@ -32,6 +32,7 @@ use crate::{
 /// without re-contacting its provider. Owner ruling: there is no "valid forever".
 /// (Per-credential override is a later configuration concern; this is the default.)
 const DEFAULT_REVALIDATION_FLOOR: std::time::Duration = std::time::Duration::from_hours(24);
+use nebula_core::auth::{AuthScheme, SchemeFamily};
 use nebula_eventbus::EventBus;
 use parking_lot::Mutex;
 
@@ -255,7 +256,27 @@ impl<S: CredentialStore> CredentialResolver<S> {
         // mandatory re-validation floor for a signal-less credential. Jitter is
         // deliberately not applied on this hot path — proactive jittered refresh
         // is a scheduler-seam concern, not a per-resolve one.
-        let decision = C::policy(&state).decide_refresh(
+        let policy = C::policy(&state);
+
+        // F3 containment law, state-level (complete): the live policy's refresh
+        // kind must be one the scheme family sanctions. Registration enforces the
+        // capability-level half at boot (a `Refreshable` credential on a
+        // `Static`-only family is rejected); this catches a hand-written or plugin
+        // policy that returns a refresh outside its family's declared classes.
+        // `debug_assert` — proven for built-ins by tests + at registration, so this
+        // is a dev/test net with zero release hot-path cost. `Lease` is exempt
+        // (orthogonal lifecycle wrapper — see `SchemeFamily::refresh_classes`).
+        debug_assert!(
+            <C::Scheme as AuthScheme>::Family::permits_refresh(policy.refresh.kind()),
+            "credential '{credential_id}': policy refresh {:?} is not permitted by its \
+             scheme family {:?} (refresh_classes = {:?}) — F3 containment law; the \
+             credential's policy() drifted from its AuthScheme::Family declaration",
+            policy.refresh.kind(),
+            <C::Scheme as AuthScheme>::Family::pattern(),
+            <C::Scheme as AuthScheme>::Family::refresh_classes(),
+        );
+
+        let decision = policy.decide_refresh(
             stored.updated_at,
             chrono::Utc::now(),
             <C as Refreshable>::REFRESH_POLICY.early_refresh,

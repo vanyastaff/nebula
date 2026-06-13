@@ -253,12 +253,50 @@ pub trait SchemeFamily: 'static {
     /// (RFC 8705 = `[CertPresentation, InlineSecret]`).
     const EGRESS: &'static [EgressShape];
 
-    /// The renewal strategies this family's material may legitimately use. The
-    /// registration soundness check rejects a credential whose computed
-    /// [`RefreshStrategy::kind`] is not in this set. A *kind* (not a full
-    /// [`RefreshStrategy`]) because the `ReAcquire` payload is per-credential,
-    /// not part of the family's soundness contract.
+    /// The **wire-intrinsic** renewal strategies this family's material may
+    /// legitimately use — the renewals inherent to the scheme's own mechanics.
+    /// A *kind* (not a full [`RefreshStrategy`]) because the `ReAcquire` payload
+    /// is per-credential, not part of the family's soundness contract.
+    ///
+    /// [`RefreshStrategyKind::Lease`] is deliberately **never** a member of any
+    /// family's set: leasing (Vault dynamic secret, Kubernetes projected token)
+    /// is an *orthogonal* lifecycle wrapper around a secret of any wire shape —
+    /// the same [`InlineSecret`](EgressShape::InlineSecret) token is `Static`
+    /// when issued as a PAT and `Lease` when issued by Vault. Lease soundness is
+    /// governed by the `Dynamic` capability and the lease staleness ceiling, not
+    /// by this set; the containment law ([`permits_refresh`](Self::permits_refresh))
+    /// therefore exempts it. `Static` means "no wire-intrinsic refresh".
     fn refresh_classes() -> &'static [RefreshStrategyKind];
+
+    /// Whether `kind` is a refresh this family sanctions — the containment law
+    /// the resolver enforces against the live policy.
+    ///
+    /// [`RefreshStrategyKind::Lease`] is always permitted (orthogonal lifecycle
+    /// wrapper — see [`refresh_classes`](Self::refresh_classes)); every other
+    /// kind must be declared in [`refresh_classes`](Self::refresh_classes). A
+    /// family cannot override this — the exemption rule is framework policy.
+    fn permits_refresh(kind: RefreshStrategyKind) -> bool {
+        matches!(kind, RefreshStrategyKind::Lease) || Self::refresh_classes().contains(&kind)
+    }
+
+    /// Whether this family declares any **engine-drivable** wire-intrinsic
+    /// refresh — a `RefreshToken`, `ReAcquire`, or `ReMintLocal` class. This is
+    /// the registration-time soundness predicate: a credential that implements
+    /// `Refreshable` (its `fn refresh` renews non-interactively or re-acquires)
+    /// is unsound on a family that offers no such mechanism — e.g. an opaque
+    /// secret-token family whose only class is `Static`. `Lease` and `Watched`
+    /// are excluded: neither is engine-driven through `Refreshable::refresh`
+    /// (lease renewal is the `Dynamic` path; `Watched` is externally rotated).
+    fn supports_active_refresh() -> bool {
+        Self::refresh_classes().iter().any(|k| {
+            matches!(
+                k,
+                RefreshStrategyKind::RefreshToken
+                    | RefreshStrategyKind::ReAcquire
+                    | RefreshStrategyKind::ReMintLocal
+            )
+        })
+    }
 
     /// Cosmetic classification for UI / catalog / logging. A family with shared
     /// mechanics but a distinct display identity overrides this.
@@ -434,5 +472,58 @@ mod tests {
     #[test]
     fn unit_scheme_pattern_is_no_auth() {
         assert_eq!(<() as AuthScheme>::pattern(), AuthPattern::NoAuth);
+    }
+
+    /// A family with an engine-drivable refresh class, for the containment-law
+    /// tests (NoAuthFamily is `Static`-only).
+    struct ActiveFamily;
+    impl SchemeFamily for ActiveFamily {
+        const EGRESS: &'static [EgressShape] = &[EgressShape::InlineSecret];
+        fn refresh_classes() -> &'static [RefreshStrategyKind] {
+            &[
+                RefreshStrategyKind::RefreshToken,
+                RefreshStrategyKind::ReAcquire,
+            ]
+        }
+        fn pattern() -> AuthPattern {
+            AuthPattern::OAuth2
+        }
+    }
+
+    #[test]
+    fn permits_refresh_exempts_lease_on_any_family() {
+        // `Lease` is orthogonal — permitted even though no family lists it.
+        assert!(NoAuthFamily::permits_refresh(RefreshStrategyKind::Lease));
+        assert!(ActiveFamily::permits_refresh(RefreshStrategyKind::Lease));
+    }
+
+    #[test]
+    fn permits_refresh_gates_non_lease_kinds_by_membership() {
+        // Static-only family: only `Static` (and the exempt `Lease`) pass.
+        assert!(NoAuthFamily::permits_refresh(RefreshStrategyKind::Static));
+        assert!(!NoAuthFamily::permits_refresh(
+            RefreshStrategyKind::RefreshToken
+        ));
+        assert!(!NoAuthFamily::permits_refresh(
+            RefreshStrategyKind::ReAcquire
+        ));
+        // Active family: declared kinds pass, undeclared `ReMintLocal` does not.
+        assert!(ActiveFamily::permits_refresh(
+            RefreshStrategyKind::RefreshToken
+        ));
+        assert!(ActiveFamily::permits_refresh(
+            RefreshStrategyKind::ReAcquire
+        ));
+        assert!(!ActiveFamily::permits_refresh(
+            RefreshStrategyKind::ReMintLocal
+        ));
+    }
+
+    #[test]
+    fn supports_active_refresh_distinguishes_static_from_active_families() {
+        // `Static`-only (and `Lease`/`Watched`-only) families are not actively
+        // refreshable; a family with RefreshToken/ReAcquire/ReMintLocal is.
+        assert!(!NoAuthFamily::supports_active_refresh());
+        assert!(ActiveFamily::supports_active_refresh());
     }
 }

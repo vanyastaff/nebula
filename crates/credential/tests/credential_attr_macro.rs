@@ -19,8 +19,9 @@
 use std::time::Duration;
 
 use nebula_credential::{
-    Capabilities, Credential, CredentialContext, CredentialLifecycle, CredentialPolicy, LeaseRef,
-    PendingState, RefreshStrategy, RevokeStrategy, SecretString, compute_capabilities,
+    Capabilities, Credential, CredentialContext, CredentialLifecycle, CredentialPolicy,
+    CredentialRegistry, LeaseRef, PendingState, RefreshStrategy, RegisterError, RevokeStrategy,
+    SecretString, compute_capabilities,
     error::CredentialError,
     resolve::{RefreshOutcome, ResolveResult, TestResult, UserInput},
     scheme::SecretToken,
@@ -252,4 +253,36 @@ fn continue_resolve_with_pending_infers_interactive() {
     let p = InteractiveThing::policy(&token());
     assert_eq!(p.refresh, RefreshStrategy::Static);
     assert_eq!(p.revoke, RevokeStrategy::None);
+}
+
+// ── F3 containment law: registration rejects a Refreshable credential whose ──
+// scheme family declares no active refresh class.
+
+#[test]
+fn register_rejects_refreshable_on_static_only_family() {
+    // `RefreshOnly` implements `Refreshable` (it has `fn refresh`) but its
+    // `type Scheme = SecretToken`, whose family (`SecretTokenFamily`) declares
+    // `refresh_classes = [Static]`. The F3 containment law must reject it at
+    // registration rather than ship a credential whose refresh is unsound.
+    let mut registry = CredentialRegistry::new();
+    let err = registry
+        .register(RefreshOnly, "test_crate")
+        .expect_err("Refreshable on a Static-only family must be rejected");
+    match err {
+        RegisterError::UnsoundFamily { key, .. } => {
+            assert_eq!(key, "test_refresh_only");
+        },
+        other => panic!("expected UnsoundFamily, got {other:?}"),
+    }
+}
+
+#[test]
+fn register_accepts_non_refreshable_on_static_family() {
+    // `RevTest` is Revocable + Testable but NOT Refreshable, so the containment
+    // gate does not apply — a Static-family credential that never refreshes is
+    // sound and registers cleanly.
+    let mut registry = CredentialRegistry::new();
+    registry
+        .register(RevTest, "test_crate")
+        .expect("non-Refreshable credential on a Static family is sound");
 }
