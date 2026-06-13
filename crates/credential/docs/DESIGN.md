@@ -835,6 +835,81 @@ not by hand-written per-impl tests.
   **5e** *(subtractive, last, owner-visible before it lands)* demote + delete `CredentialCategory`.
   **5f** plugin open-world example (root `examples/`, a plugin defining an RFC 9421 family with zero
   core edits) + this section's prose finalised.
+
+  **VALIDATED against the full 2026 protocol universe (coverage planёrka 2026-06-13, 13 agents,
+  8 transport domains, ~150 mechanisms).** Owner directive: study every protocol/client/library
+  (not just HTTP) so no future developer request forces a contract break. Verdict + corrections
+  (every change is a pre-implementation doc edit — the cheapest moment):
+
+  **Meta-ruling — `EgressShape` SEALED, `SchemeFamily` OPEN (the asymmetry is correct).** Families
+  are open-world (every mechanism = a marker type, zero framework `match`). Egress is a *closed
+  physical reality*: ~150 mechanisms reduced to **11 wire-primitives** and the long tail (QUIC-auth,
+  GNAP, agent-to-agent) folded onto existing ones. Egress MUST stay a sealed `#[non_exhaustive]`
+  enum because the framework **`match`es `EGRESS`** for redaction / SSRF-hardened transport / audit
+  — an open egress const lets a plugin declare a shape the redactor has never seen = **secret-leak-
+  by-open-world**. A new egress primitive *requires* new framework handling, so the additive
+  `#[non_exhaustive]` cost (variant + handler shipped atomically) is correct, not a defect. The
+  "RFC 9421 forced a release" logic opens the *family* axis, **not** egress (RFC 9421 is a
+  `NegotiatedSignature` family on the existing primitive).
+
+  **Final `EgressShape` = 11 variants** (from the draft 8: +4 add, −1 delete, +2 rename, +3 widen):
+  `None` (widened: mTLS-no-secret, object-cap, inbound-verify webhook secret) · `InlineSecret`
+  *(renamed from `HeaderSecret`* — transport-agnostic: HTTP header, SASL OAUTHBEARER, gRPC metadata,
+  SOAP `wsse`, OPC-UA token, SturdyRef) · `ConnectionHandshakeSecret` *(renamed from
+  `ConnectionString`* — static DB password OR ephemeral token-as-password: RDS-IAM, Azure-Entra,
+  Mongo-OIDC) · `SignedRequest` (widened: symmetric HMAC/SigV4 **and** asymmetric SigV4a/
+  private_key_jwt; any transport — carrier is a sub-field) · `NegotiatedSignature` (RFC 9421
+  *specifically*; must NOT absorb SASL) · `CertPresentation` (widened: X.509/mTLS + SSH-cert + raw
+  public key RFC 7250 + SPIFFE SVID) · `ProofOfPossession` (DPoP RFC 9449, mTLS-bound RFC 8705,
+  SAML HoK) · **★`ChallengeResponse`** (key derives a per-exchange proof in a handshake, secret
+  never sent — SCRAM, CRAM-MD5, MySQL native, NTLM, Kerberos/GSSAPI/SPNEGO, SNMPv3-auth, RADIUS,
+  NATS-nkey, ALTS; demanded by **5 domains**; `AuthPattern` once had `ChallengeResponse`, *pruned*)
+  · **★`KeyAgreement`** (PSK/keypair keys a session/body — WireGuard, Noise, TLS/DTLS-PSK,
+  IKEv2-PSK, LoRaWAN, SNMPv3-priv, TACACS+; the behavioural peer `AuthPattern::SharedSecret` lacks)
+  · **★`DelegatedSignature`** (external signer holds the key, framework holds only a handle —
+  ssh-agent, TPM, HSM/PKCS#11, FIDO2/WebAuthn, cloud KMS, Secure Enclave, Ledger) ·
+  **★`DetachedSignature`** (signs caller-supplied bytes the caller broadcasts — blockchain tx,
+  SAML XML-DSig). **DELETE `InstanceIdentity`** (it named an *acquisition* method, not a wire shape;
+  AWS-IMDS→`SignedRequest`, Azure/GCP-MI→`InlineSecret`; ambient re-fetch lives on the renewal axis).
+
+  **Four changes that are BREAKING after freeze — must land in 5a/5b, not later:**
+  1. **`SchemeFamily::EGRESS: &'static [EgressShape]`** (slice, not scalar) — sender-constrained /
+     bound credentials present two shapes at once (RFC 8705 = `[CertPresentation, InlineSecret]`,
+     DPoP, NATS creds, hardware-wallet tx). **Discriminator:** *cryptographically bound* multi-shape
+     = ONE family with an `EGRESS` slice; *independent* multi-shape = N families (SPIFFE
+     `SvidMtls`+`JwtSvid`, gRPC channel+call) — this confirms one-scheme-one-family AND handles
+     conjunction.
+  2. **`RefreshStrategy::ReAcquire { from: Option<SchemeId>, interactive: bool }`** (payload) —
+     federated/exchanged re-acquisition consumes another credential (STS chained AssumeRole, WIF,
+     RFC 8693, impersonation, Vault→cloud) and distinguishes silent replay (client-credentials)
+     from human-gated re-auth (device-code) — closes the Q2 grant rider. Plus **★`ReMintLocal`**
+     (pure local key→token mint: self-signed JWT/RFC 7523, GCP self-signed-JWT, fresh SigV4 — routes
+     to a local mint path, SKIPS the SSRF transport / coalescer / circuit-breaker; its
+     re-validation floor is a local re-mint, not a provider probe) and **★`Watched`** (external
+     source rotates the material — kubelet projected-token rewrite, SPIFFE Workload-API push; the
+     engine re-reads on change, never initiates; `decide_refresh` returns `Usable`, never `Refresh`).
+  3. **Sensitivity → a sealed type-enforced tag with a THIRD state.** Binary
+     `SensitiveScheme`/`PublicScheme` cannot represent a sign-only credential holding **no
+     zeroizable bytes** (TPM/HSM/FIDO2/ssh-agent): `Sensitive` makes `ZeroizeOnDrop` a no-op,
+     `Public` falsely says "safe to log". Replace with `AuthScheme::type Sensitivity:
+     SealedSensitivity` over sealed `Sensitive` / `Public` / **★`External`** (a handle to an
+     external signing oracle — no bytes to zero, not loggable; pairs with `DelegatedSignature`).
+     This also closes the macro-only hand-roll exclusivity hole (`auth.rs:97-117`) by construction.
+  4. *(additive struct field, do now)* **`LeaseRef.renew_until: Option<DateTime<Utc>>`** — two-tier
+     renewal (Kerberos TGT `renew_until`, rotating refresh-token absolute expiry): renewable up to a
+     hard horizon, then `ReAcquire`-only. `RevokeStrategy::SingleUse` (Vault response-wrapping) is
+     additive / low-priority.
+
+  Hard-mechanism expression table (SASL/SCRAM, Kerberos, HSM/FIDO sign-only, DTLS-PSK, SPIFFE
+  dual-SVID, exchange-HMAC multi-field, SIWE 2-leg, Kafka OAUTHBEARER) is in the planёrka output
+  (task `wq69nrns5`); each resolves as a new `SchemeFamily` marker over the fixed set with **zero**
+  further framework `match`. Strongest evidence the draft was incomplete is **internal**:
+  `AuthPattern` already carries `SharedSecret` and once carried `ChallengeResponse` (pruned), while
+  the behavioural `EgressShape` axis shipped neither — the two taxonomies already disagreed on two
+  whole classes. **Verdict: with the 11-variant set + the four pre-freeze changes, no realistic
+  2026 developer request forces a breaking contract change.** Slices 5a/5b carry the four breaking
+  shapes; the additive `EgressShape` variants + `LeaseRef.renew_until` + `Watched`/`ReMintLocal` ride
+  the same commits (cheaper now, non-breaking if deferred).
 - **Q9/Q10 — close the latent wrong-source defect structurally.** `ensure_local_source` is
   currently gated at the facade call-sites but **absent from `resolve_for_slot`** (it resolves
   a raw id) — a latent wrong-source defect *on the moat path*. Fix it by construction: move the
