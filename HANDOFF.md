@@ -50,9 +50,10 @@ The 1.0 plan is a **capability/dependency checklist** (not a calendar) in
   `nebula-credential` (flipped 2026-05-20; lifecycle runtime folded in per
   ADR-0092).
 - **Frontier / partial:** `engine` (~85%), `action`, `nebula-resource`
-  (blocked on the **bind-population** gap — see §7), `plugin` (partial),
-  `sandbox` (capability gate not yet enforced — M4). Concrete first-party
-  credential types (`nebula-credential::credentials`) are still TBD in M12.3.
+  (blocked on the **bind-population** gap — see §7), `plugin` (partial). The
+  out-of-process `sandbox` crate was retired (ADR-0091 — process/WASM isolation
+  is a non-goal; plugins are in-process). Concrete first-party credential types
+  (`nebula-credential::credentials`) are still TBD in M12.3.
 
 The ROADMAP "Status snapshot" section is the freshest narrative; trust
 `#PR` / `file:line` evidence over prose. Note: squash-merge often misses

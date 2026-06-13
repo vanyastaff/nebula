@@ -32,10 +32,10 @@
 | Dependencies (spec 23) | `Dependencies`, `SlotField`, `SlotKind`, `DeclaresDependencies`, `CredentialRequirement`, `ResourceRequirement`, `CredentialLike`, `ResourceLike`, `DependencyError` | `src/dependencies.rs:9-226` |
 | Guards | `Guard`, `TypedGuard`, `debug_redacted`, `debug_typed` | `src/guard.rs:9-40` |
 | Observability | `TraceId(u128)`, `SpanId(u64)`, `W3cTraceContext`, `parse_traceparent`, `W3cTraceContextError` | `src/obs.rs:11-172` |
-| RBAC / tenancy | `OrgRole`, `WorkspaceRole`, `effective_workspace_role` (`src/role.rs:9-40`); `Permission` (`src/permission.rs:8`); `TenantContext`, `PermissionDenied`, `ResolvedIds` (`src/tenancy.rs:15,94,115`) |
+| RBAC / tenancy | `OrgRole`, `WorkspaceRole`, `effective_workspace_role`, `Permission`, `TenantContext`, `PermissionDenied`, `ResolvedIds` | `src/role.rs:9-40`, `src/permission.rs:8`, `src/tenancy.rs:15,94,115` |
 | Slug | `Slug`, `SlugKind`, `SlugError`, `is_reserved`, `is_prefixed_ulid` | `src/slug.rs:8-265` |
-| Lifecycle / sync | `LayerLifecycle`, `ShutdownOutcome` (`src/lifecycle.rs:8,46`); `Lazy<X>` async-lazy (`src/sync.rs:52`) |
-| Error | `CoreError`, `CoreResult` (`src/error.rs:10,148`); `PluginKeyParseError` alias (`src/lib.rs:102`) |
+| Lifecycle / sync | `LayerLifecycle`, `ShutdownOutcome`, `Lazy<X>` (async-lazy) | `src/lifecycle.rs:8,46`, `src/sync.rs:52` |
+| Error | `CoreError`, `CoreResult`, `PluginKeyParseError` (alias) | `src/error.rs:10,148`, `src/lib.rs:102` |
 | Prelude | `prelude` (IDs + keys + scope + макросы) | `src/lib.rs:105-130` |
 
 ## 3. Зависимости и зависимые

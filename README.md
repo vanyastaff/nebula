@@ -39,7 +39,7 @@ API / Public    api (HTTP + webhook module) · sdk (integration author façade)
 Exec            engine · storage · storage-loom-probe
 Business        credential · resource · action · plugin · tenancy
 Core            core · validator · expression · workflow · execution · schema · metadata · storage-port
-Cross-cutting   crypto · log · eventbus · metrics · resilience · error
+Cross-cutting   crypto · env · log · eventbus · metrics · resilience · error
 ```
 
 Plugins are **in-process** (ADR-0091): a human implements the `Plugin` trait in `nebula-plugin` and registers actions / credentials / resources into the registry; the engine dispatches them in-process. The out-of-process Plugin-Proto tier (`plugin-sdk` + `sandbox`) was retired — process/WASM isolation is a non-goal for now (canon §12.6).

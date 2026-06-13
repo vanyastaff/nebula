@@ -3,7 +3,7 @@
 Raw transcripts behind [`../CONFERENCE.md`](../CONFERENCE.md) and the
 [`../DESIGN.md`](../DESIGN.md) §21–§24 corrections. Captured 2026-06-12.
 
-Each "seat" is one subagent: six industry architects grounded in their real
+Each "seat" is one subagent: ten industry architects grounded in their real
 codebase via DeepWiki (Temporal, n8n, Apache Airflow, Dagster, Prefect, Windmill,
 Kestra, Restate, HashiCorp Vault, AWS SDK for Rust) plus adversarial critics
 grounded in `crates/credential/src`.
