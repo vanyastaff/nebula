@@ -206,11 +206,11 @@ impl StoredCredential {
     }
 
     /// When the material was last validated against its provider — set on a
-    /// provider-contacting write (create / refresh-success / re-resolve) via
-    /// [`LAST_VALIDATED_AT_METADATA_KEY`]. Distinct from `updated_at`, which a
-    /// display-only edit bumps. `None` on legacy rows that predate the stamp (or
-    /// when the value is unparseable); the re-validation floor falls back to
-    /// `created_at` in that case (a real validation time, fail-safe toward
+    /// provider-contacting write (create / refresh-success / re-resolve) via the
+    /// crate-private `last_validated_at` metadata key. Distinct from `updated_at`,
+    /// which a display-only edit bumps. `None` on legacy rows that predate the
+    /// stamp (or when the value is unparseable); the re-validation floor falls
+    /// back to `created_at` in that case (a real validation time, fail-safe toward
     /// re-validating). Use [`Self::last_validated_or_created`] for that fallback.
     #[must_use]
     pub fn last_validated_at(&self) -> Option<chrono::DateTime<chrono::Utc>> {
