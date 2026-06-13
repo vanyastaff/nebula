@@ -1073,7 +1073,7 @@ D1/D6 carry named risks.** Adopted into the target model (Phase-1 DoD unless not
 4. `RefreshTransport` seam typed so it cannot carry `OAuth2State`; connect-layer DNS-rebind resolver = MUST (§10 rule 8).
 5. revoke tombstone epoch consulted by refresh-CAS; circuit-breaker serves stale only on transient failures; plugin egress policy (§10 rules 10–12).
 6. code-per-protocol-**per-grant**, config-per-provider; client-credentials a first-class family; `OAuth2ProviderConfig`/`provider()` are still **zero-implementation** today — DESIGN is spec, not present tense (§11).
-7. `durable-timer` port defined in 1.0; L1 coalescer gets `buffer_time` + `jitter` + `load_timeout`; cache partition keyed `owner × scheme × provider-fingerprint` (AWS) (§17 Phase 1).
+7. **No `durable-timer` port in 1.0** (superseded by Q8 = *Decide C-minus*: ship the state-derived `decide_refresh` seam + an `on_access` trigger, not a `RefreshAt(Instant)` arm or `DurableTimer` port — the 1.1 trigger is a sharded sweeper, not a per-credential timer). L1 coalescer gets `buffer_time` + `jitter` + `load_timeout`; cache partition keyed `owner × scheme × provider-fingerprint` (AWS) (§17 Phase 1).
 8. observable `refresh_error` / `last_refresh_at` in `State`, projected to catalog (Windmill); typed error + trace span on validate-fail (Temporal) — observability is DoD.
 9. `RefreshClaimRepo` secondary index credential→owner for mass-revoke + recovery-on-startup of pending claims (Vault).
 10. Doc fixes already applied: §2 non-goals confirms Encryption/Cache/Audit decorators stay in `nebula-storage` (ADR-0092 step-3 revert — do not draw them as credential Ports); §15 n8n table split (Helper vs OauthService); §7 unified authoring marked not-yet-built.
