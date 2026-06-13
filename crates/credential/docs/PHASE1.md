@@ -233,3 +233,21 @@ jitter is applied once at the scheduler seam, never here — §24 invariant):
   `policy.refresh.kind() ∈ Family::refresh_classes()` — needs a state-sample seam), **5e** (delete
   `CredentialCategory` — atomic subtractive, owner-visible), then **`type Sensitivity`** (sealed
   tag + `External` 3rd state).
+- 2026-06-13: **increment 5e landed (`60ffc4f7`) — done before 5d (independent; 5e was unblocked,
+  5d needs a state-sample-seam design).** Deleted `CredentialCategory`: the structural taxonomy
+  that sat beside the lifecycle policy with **zero behavioural readers** (`decide_refresh` /
+  `is_auto_renewable` route on `refresh`+`lease`, never `category`; only the macro wrote it). The
+  enum + `CredentialPolicy.category` field are gone; `#[credential]` drops the required `category =`
+  arg (removed `CATEGORIES` allow-list + `require_category` + synthesized-policy emission + the
+  attr/doc in api_key/basic_auth/oauth2 + 4 macro-test fixtures + 3 trybuild probes). Tests: dropped
+  `p.category` asserts; refocused the policy round-trip test onto `RefreshStrategy` (the surviving
+  serialized axis). Regenerated 3 trybuild `.stderr` whose captured context was oauth2's attribute
+  line — git-diff-verified pure context shift (underlying E0277 unchanged). **Destructive-step note:**
+  treated as non-gated — `CredentialCategory` is internal (no public crate but `nebula-sdk`
+  re-exports; project_single_public_crate_sdk) and the change is git-reversible on an unpushed branch,
+  so it is not the irreversible/outward class that needs an explicit confirm. Whole workspace green
+  (35 crates check/all-targets); credential suite green (273 lib + doctests + all trybuild); clippy
+  `--all-features` + rustdoc `-D warnings` clean; lefthook pre-commit green. DESIGN.md §17 already
+  recorded `CredentialCategory` as DELETED — spec was forward-consistent, no edit needed. Remaining
+  F3: **5d** (registration containment check — the only open additive slice; needs the state-sample
+  seam) and **`type Sensitivity`** (sealed tag + `External` 3rd state).
