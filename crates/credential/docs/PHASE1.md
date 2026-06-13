@@ -199,3 +199,20 @@ jitter is applied once at the scheduler seam, never here — §24 invariant):
   **5a-2** (`RefreshStrategy` expansion: `ReAcquire{from,interactive}`+`ReMintLocal`+`Watched`, loses
   `Copy` → core `SchemeId`; `LeaseRef.renew_until`), **5d** (registration containment check), **5e**
   (delete `CredentialCategory`, subtractive/owner-visible), **5f** (plugin example).
+- 2026-06-13: **increments 5c + 5f landed (`44839a08`, `e3573978`).** 5c: trybuild compile-fail
+  `slot_cross_protocol` locks the moat's cross-protocol guarantee (a Stripe-typed slot sink rejects
+  a Twilio guard → E0308); fixed the stale `nebula-core::auth` module doc that named a nonexistent
+  resource `type Auth`. **Findings:** the explicit `Slot<S: AuthScheme>` bound is moot — a bound on
+  the `CredentialSlot` type alias trips `type_alias_bounds` (not enforced + warns under `-D
+  warnings`) and the guarantee already holds via `CredentialGuard<S>` nominal typing; `Box<dyn
+  AuthScheme>` is unrepresentable by construction (no-self `pattern()` + assoc type ⇒ not
+  object-safe). 5f: runnable example (`examples/credential_plugin_scheme_family`) — a third-party
+  crate defines an RFC 9421 `SchemeFamily` + `AuthScheme` using ONLY `nebula-core`, zero framework
+  edits; runs + asserts the declared mechanics (proves the open-world thesis end-to-end). Both
+  clippy `--all-features` + rustdoc `-D warnings` clean. **Remaining Phase-1/F3:** **5a-2**
+  (`RefreshStrategy` expansion — breaking-before-freeze: `ReAcquire{from,interactive}`/`ReMintLocal`/
+  `Watched` + core `SchemeId` + `LeaseRef.renew_until`; loses `Copy`), **5d** (registration
+  containment check `policy.refresh ∈ Family::refresh_classes()` — needs a state-sample seam), **5e**
+  (delete `CredentialCategory` — verified credential-only + zero behavioural readers; atomic
+  subtractive), then **`type Sensitivity`** (sealed tag + `External` 3rd state). Commit chain on
+  `gallant-tesla-b62506` (NOT pushed): …3abfb4c2(5b)→dc30f242→44839a08(5c)→e3573978(5f).
