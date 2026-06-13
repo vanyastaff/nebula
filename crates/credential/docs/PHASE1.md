@@ -251,3 +251,29 @@ jitter is applied once at the scheduler seam, never here — §24 invariant):
   recorded `CredentialCategory` as DELETED — spec was forward-consistent, no edit needed. Remaining
   F3: **5d** (registration containment check — the only open additive slice; needs the state-sample
   seam) and **`type Sensitivity`** (sealed tag + `External` 3rd state).
+- 2026-06-13: **increment 5d landed (`3239ff5f`) — the F3 containment law is now enforced, not
+  decorative.** `SchemeFamily::refresh_classes()` declared the sound refresh kinds but nothing
+  checked the credential's actual refresh against them. **State-sample-seam resolved:** the full
+  ∀-state law can't be proven at registration (`CredentialState` has no secret-free constructor —
+  scouted), so the law splits across two complementary seams. **Contract clarification baked into
+  core:** `refresh_classes` is the *wire-intrinsic* set; `Lease` is **never** a family member —
+  leasing is an orthogonal lifecycle wrapper (same `InlineSecret` token is `Static` as a PAT,
+  `Lease` from Vault) governed by the `Dynamic` capability + staleness ceiling (increment 4). Two
+  provided `SchemeFamily` methods carry the law so plugins inherit it: `permits_refresh(kind)`
+  (`Lease`-exempt membership — the complete runtime law) + `supports_active_refresh()` (registration
+  predicate). **Enforcement:** (1) registration boot-time/release-on hard reject —
+  `CredentialRegistry::register` rejects a `Refreshable` credential on a no-active-refresh family
+  with typed `RegisterError::UnsoundFamily` + trace span; (2) resolver `debug_assert` at the policy
+  seam (`resolve_with_refresh`) checks the live `policy(state).refresh.kind()` is permitted — catches
+  hand-written/plugin drift, zero release cost. Tests: 3 core unit (Lease exemption / membership
+  gating / active-vs-static), registration reject + accept. Fixed `registry_capabilities_iter`'s
+  refreshable probe (its old `Refreshable`-on-`SecretToken` shape is exactly what the law forbids →
+  gave it a sound active-refresh scheme). Whole workspace green (35 crates); credential suite green;
+  clippy `--all-features` + rustdoc `-D warnings` clean; lefthook green. **Note:** the
+  `RegisterError::UnsoundFamily` mechanism + the `permits_refresh`/`supports_active_refresh` provided
+  methods are additive (`#[non_exhaustive]` enum; trait provided methods), so the enforcement can be
+  strengthened later (debug_assert → hard error) without a break — not a frozen contract fork. **F3
+  remaining: only `type Sensitivity`** (sealed tag + `External` 3rd state for HSM/FIDO sign-only).
+  Pre-existing unrelated flake observed (NOT caused by 5d, reproduces on clean HEAD): trybuild
+  `capability_subtrait_testable_no_method.stderr` mismatches under `--all-features` (`TestResult` vs
+  `nebula_credential::TestResult` rustc path-rendering); default-feature trybuild is green.
