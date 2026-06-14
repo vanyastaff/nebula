@@ -819,7 +819,7 @@ impl CredentialService {
             // already-elapsed) expiry against fresh credential bytes.
             expires_at: refreshed_expires_at,
             reauth_required: false,
-            metadata: stored.metadata.clone(),
+            metadata,
         };
         // Re-persist under compare-and-swap on the version observed at
         // load. A concurrent refresh/update that landed in between wins
