@@ -51,6 +51,14 @@ pub struct CredentialResolver<S: CredentialStore> {
     /// refresh can [`CredentialHandle::replace`] in place instead of minting
     /// disconnected handles on every resolve/refresh cycle.
     handle_cache: Arc<HandleCache>,
+    /// When `true`, the service is configured with an external
+    /// [`StateSource`](crate::service) whose resolution bridge is not yet wired,
+    /// so **every** resolution path refuses to read local bytes (fail-closed at
+    /// the resolver tail — see [`gate_external_source`](Self::gate_external_source)).
+    /// This closes the source gate on the direct-resolver paths
+    /// (`scheme_factory` → `resolve_with_refresh`) that bypass the facade's
+    /// per-call check, by construction rather than by discipline.
+    external_source_unwired: bool,
 }
 
 impl<S: CredentialStore> Clone for CredentialResolver<S> {
@@ -61,6 +69,7 @@ impl<S: CredentialStore> Clone for CredentialResolver<S> {
             transport: Arc::clone(&self.transport),
             event_bus: self.event_bus.clone(),
             handle_cache: Arc::clone(&self.handle_cache),
+            external_source_unwired: self.external_source_unwired,
         }
     }
 }
@@ -84,7 +93,26 @@ impl<S: CredentialStore> CredentialResolver<S> {
             transport,
             event_bus: None,
             handle_cache: Arc::new(Mutex::new(HashMap::new())),
+            external_source_unwired: false,
         }
+    }
+
+    /// Fail-closed the resolver against an external, not-yet-wired state source.
+    ///
+    /// Set by the composition root when the service is built with
+    /// [`StateSource::External`](crate::service). Once gated, **every** resolution
+    /// entry point ([`resolve`](Self::resolve) / [`resolve_scoped`](Self::resolve_scoped)
+    /// / [`resolve_with_refresh`](Self::resolve_with_refresh), and therefore
+    /// [`scheme_factory`](Self::scheme_factory)) returns
+    /// [`ResolveError::ExternalSourceNotWired`] instead of reading local bytes —
+    /// so the direct-resolver paths that bypass the facade's per-call source
+    /// check cannot silently resolve from the wrong place. The external provider
+    /// resolution bridge (ADR-0051) is not yet built; until it lands, gated is a
+    /// hard error, never a local-store fallback.
+    #[must_use = "builder methods must be chained or built"]
+    pub fn gate_external_source(mut self, unwired: bool) -> Self {
+        self.external_source_unwired = unwired;
+        self
     }
 
     fn handle_cache_key<C: Credential>(credential_id: &str) -> (String, TypeId) {
@@ -188,6 +216,7 @@ impl<S: CredentialStore> CredentialResolver<S> {
     where
         C: Credential,
     {
+        self.ensure_source_wired()?;
         let stored = self.load_and_verify::<C>(credential_id).await?;
         let state: C::State = self.deserialize::<C>(credential_id, &stored)?;
         let scheme = C::project(&state);
@@ -217,6 +246,7 @@ impl<S: CredentialStore> CredentialResolver<S> {
     where
         C: Credential,
     {
+        self.ensure_source_wired()?;
         // Load the raw row, then verify owner BEFORE any type/kind signal: a
         // kind-mismatch error on a foreign id would be an existence/type oracle
         // (a cross-tenant probe could distinguish "absent" from "exists but wrong
@@ -267,6 +297,7 @@ impl<S: CredentialStore> CredentialResolver<S> {
     where
         C: Refreshable + CredentialLifecycle,
     {
+        self.ensure_source_wired()?;
         let stored = self.load_and_verify::<C>(credential_id).await?;
         let state: C::State = self.deserialize::<C>(credential_id, &stored)?;
 
@@ -562,6 +593,17 @@ impl<S: CredentialStore> CredentialResolver<S> {
         if let Some(bus) = &self.event_bus {
             let _ = bus.emit(CredentialEvent::Refreshed { credential_id });
         }
+    }
+
+    /// Fail-closed at the resolution tail when the configured state source is
+    /// external and its resolution bridge is unwired. Called by every resolution
+    /// entry point so the gate is structural, not per-call discipline (see
+    /// [`gate_external_source`](Self::gate_external_source)).
+    fn ensure_source_wired(&self) -> Result<(), ResolveError> {
+        if self.external_source_unwired {
+            return Err(ResolveError::ExternalSourceNotWired);
+        }
+        Ok(())
     }
 
     async fn load_and_verify<C>(
@@ -966,6 +1008,13 @@ pub enum ResolveError {
         /// Why re-authentication is required.
         reason: ReauthReason,
     },
+    /// The service is configured with an external [`StateSource`](crate::service)
+    /// whose resolution bridge (ADR-0051) is not yet wired, so the resolver
+    /// refuses to read local bytes. Fail-closed: never a silent local-store
+    /// fallback. The facade maps this to
+    /// `CredentialServiceError::ExternalSourceNotWired`.
+    #[error("external state source is not wired; cannot resolve credential material")]
+    ExternalSourceNotWired,
 }
 
 /// Fail-closed owner gate for the scoped resolution path: the loaded row's
@@ -1540,6 +1589,26 @@ mod refresh_revoke_race {
 
         assert!(
             matches!(err, ResolveError::Store(StoreError::NotFound { .. })),
+            "got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn gated_resolver_refuses_resolution_at_the_tail() {
+        // Q10 structural: a resolver gated for an external (unwired) source
+        // refuses to read local bytes on EVERY resolution path — even though
+        // the store holds a live row — so the direct-resolver paths
+        // (`scheme_factory` → `resolve_with_refresh`) that bypass the facade's
+        // per-call check are fail-closed by construction.
+        let store = Arc::new(ScriptedStore::new(live_row(), false));
+        let resolver = resolver_with(Arc::clone(&store)).gate_external_source(true);
+
+        let err = resolver
+            .resolve::<TestCred>(TEST_ID)
+            .await
+            .expect_err("a gated resolver must refuse to resolve from the local store");
+        assert!(
+            matches!(err, ResolveError::ExternalSourceNotWired),
             "got {err:?}"
         );
     }
