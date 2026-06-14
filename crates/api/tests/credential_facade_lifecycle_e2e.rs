@@ -211,9 +211,8 @@ impl ExternalProvider for StubExternalProvider {
         }))
     }
 
-    // The `ExternalProvider` trait fixes the `-> &str` signature; returning a
-    // `&'static` literal here is what the stub needs, so the lint's suggested
-    // `-> &'static str` cannot apply.
+    // guard-justified: the `ExternalProvider` trait fixes the `-> &str` return,
+    // so the lint's suggested `-> &'static str` cannot apply to this impl.
     #[allow(clippy::unnecessary_literal_bound)]
     fn provider_name(&self) -> &str {
         "stub-vault"
