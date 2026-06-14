@@ -322,3 +322,22 @@ jitter is applied once at the scheduler seam, never here — §24 invariant):
   injecting `StateSource::External` + a stub provider) **and the structural Q10 source-awareness**
   (move the per-call `ensure_local_source` gate into the resolver tail by construction) — both
   separable from the harness; tracked as 3b-2 / 3c.
+- 2026-06-14: **3b remainder (External-source regression + structural Q10) landed.** Q10: the
+  source gate is now enforced at the **resolver tail** by construction, not only by the facade's
+  per-call `ensure_local_source`. `CredentialResolver` gained an `external_source_unwired` flag +
+  `gate_external_source` setter; `resolve` / `resolve_scoped` / `resolve_with_refresh` (and so
+  `scheme_factory`) call `ensure_source_wired` first and return the new
+  `ResolveError::ExternalSourceNotWired`. `from_secure_parts` derives the gate from the configured
+  `StateSource` at the **single** construction point, so a service built on an external (unwired)
+  source CANNOT hold a resolver that still reads local bytes — this closes the source-gate bypass
+  on the direct-resolver path (`scheme_factory` → `resolve_with_refresh`), the **same bypass class
+  as the FIX-1 owner/tombstone gap**. `resolve_for_slot` dropped its per-call `ensure_local_source`
+  (now resolver-enforced) and maps the resolver error to the facade
+  `ExternalSourceNotWired { provider }`; the create/resolve/continue_resolve facade gates stay
+  (local-creation paths, not resolver-routed). Factory: `compose_credential_service` takes an
+  optional `ExternalProvider`; new test-util `with_memory_store_external`. Tests: resolver-gate unit
+  (`gated_resolver_refuses_resolution_at_the_tail` — a gated resolver refuses even with a live row)
+  + api E2E `external_source_rejects_create` (create on an external service → `ExternalSourceNotWired`).
+  381 credential lib green + 4 facade E2E; workspace clippy `--all-targets` + credential/api
+  `--all-features` + rustdoc `-D warnings` + fmt clean. **Increment 3b COMPLETE.** Next: **2b**
+  (store-port `OwnerScopedKey` seal) → **7** (read-audit + provider-string redaction).

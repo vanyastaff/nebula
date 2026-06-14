@@ -21,11 +21,16 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use nebula_api::ports::credential_service_factory::with_memory_store_parts;
+use nebula_api::ports::credential_service_factory::{
+    with_memory_store_external, with_memory_store_parts,
+};
 use nebula_core::auth::{
     AuthPattern, AuthScheme, EgressShape, RefreshStrategyKind, SchemeFamily, SensitiveScheme,
 };
 use nebula_credential::error::CredentialError;
+use nebula_credential::provider::{
+    ExternalProvider, ExternalReference, ProviderError, ProviderFuture,
+};
 use nebula_credential::resolve::{RefreshOutcome, ResolveResult};
 use nebula_credential::{
     CredentialContext, CredentialDisplay, CredentialMetadata, CredentialRegistry,
@@ -159,9 +164,11 @@ impl TestLifecycleCred {
 
 // ── Harness ────────────────────────────────────────────────────────────
 
-async fn build_service() -> Arc<CredentialService> {
-    let key = Arc::new(EnvKeyProvider::from_base64(TEST_KEY_B64).expect("valid 32-byte AES key"));
+fn test_key() -> Arc<EnvKeyProvider> {
+    Arc::new(EnvKeyProvider::from_base64(TEST_KEY_B64).expect("valid 32-byte AES key"))
+}
 
+fn test_registry_and_ops() -> (CredentialRegistry, DispatchOps<ErasedPendingStore>) {
     let mut registry = CredentialRegistry::new();
     registry
         .register(TestLifecycleCred, "nebula-api-test")
@@ -173,10 +180,44 @@ async fn build_service() -> Arc<CredentialService> {
         .expect("refreshable ops");
     register_revocable_ops::<TestLifecycleCred, ErasedPendingStore>(&mut ops)
         .expect("revocable ops");
+    (registry, ops)
+}
 
-    with_memory_store_parts(key, registry, ops)
+async fn build_service() -> Arc<CredentialService> {
+    let (registry, ops) = test_registry_and_ops();
+    with_memory_store_parts(test_key(), registry, ops)
         .await
         .expect("service composes (advertised caps match ops)")
+}
+
+/// A service whose state source is an external provider with no resolution
+/// bridge wired — every resolution path must fail closed.
+async fn build_external_service() -> Arc<CredentialService> {
+    let (registry, ops) = test_registry_and_ops();
+    with_memory_store_external(test_key(), registry, ops, Arc::new(StubExternalProvider))
+        .await
+        .expect("service composes over an external (unwired) source")
+}
+
+/// Stub external provider: its `resolve` is never reached because the source
+/// gate fails closed first (the ADR-0051 resolution bridge is unbuilt).
+#[derive(Debug)]
+struct StubExternalProvider;
+
+impl ExternalProvider for StubExternalProvider {
+    fn resolve<'a>(&'a self, _reference: &'a ExternalReference) -> ProviderFuture<'a> {
+        ProviderFuture::ready(Err(ProviderError::Unavailable {
+            reason: "stub external provider — resolution bridge not wired".to_owned(),
+        }))
+    }
+
+    // The `ExternalProvider` trait fixes the `-> &str` signature; returning a
+    // `&'static` literal here is what the stub needs, so the lint's suggested
+    // `-> &'static str` cannot apply.
+    #[allow(clippy::unnecessary_literal_bound)]
+    fn provider_name(&self) -> &str {
+        "stub-vault"
+    }
 }
 
 /// Read the persisted `last_validated_at` straight off the layered store (the
@@ -276,5 +317,28 @@ async fn validate_credential_binding_rejects_tombstoned() {
             ValidatedCredentialBindingError::CredentialTombstoned { .. }
         ),
         "expected CredentialTombstoned, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn external_source_rejects_create() {
+    // Wrong-source guard: the external resolution bridge (ADR-0051) is not
+    // wired, so a service built with an external source must reject secret
+    // resolution rather than fall back to reading local bytes. `create`
+    // resolves props → state, so it fails closed with ExternalSourceNotWired.
+    let svc = build_external_service().await;
+
+    let err = svc
+        .create(
+            &scope(),
+            "test_lifecycle",
+            json!({ "token": "v1" }),
+            CredentialDisplay::default(),
+        )
+        .await
+        .expect_err("create against an unwired external source must fail closed");
+    assert!(
+        matches!(err, CredentialServiceError::ExternalSourceNotWired { .. }),
+        "expected ExternalSourceNotWired, got {err:?}"
     );
 }

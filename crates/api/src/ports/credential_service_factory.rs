@@ -21,6 +21,7 @@
 
 use std::sync::Arc;
 
+use nebula_credential::provider::ExternalProvider;
 use nebula_credential::{
     ApiKeyCredential, BasicAuthCredential, CredentialStore, ErasedPendingStore, OAuth2Credential,
 };
@@ -241,7 +242,7 @@ pub fn with_store<S: CredentialStore + 'static>(
     register_revocable_ops::<OAuth2Credential, ErasedPendingStore>(&mut ops)?;
     register_testable_ops::<OAuth2Credential, ErasedPendingStore>(&mut ops)?;
 
-    compose_credential_service(raw_store, key_provider, registry, ops)
+    compose_credential_service(raw_store, key_provider, registry, ops, None)
 }
 
 /// Compose a [`CredentialService`] over `raw_store` with a **caller-supplied
@@ -262,6 +263,7 @@ fn compose_credential_service<S: CredentialStore + 'static>(
     key_provider: Arc<dyn KeyProvider>,
     registry: CredentialRegistry,
     ops: DispatchOps<ErasedPendingStore>,
+    external_provider: Option<Arc<dyn ExternalProvider>>,
 ) -> Result<Arc<CredentialService>, CredentialServiceFactoryError> {
     tracing::warn!(
         "credential: audit sink is log-only (target=nebula.credential.audit); \
@@ -279,7 +281,7 @@ fn compose_credential_service<S: CredentialStore + 'static>(
     // so the factory mints the token internally.
     let shutdown = tokio_util::sync::CancellationToken::new();
 
-    let service = CredentialServiceBuilder::new(
+    let mut builder = CredentialServiceBuilder::new(
         raw_store,
         key_provider,
         audit_sink,
@@ -290,8 +292,14 @@ fn compose_credential_service<S: CredentialStore + 'static>(
         observer,
         lease_config,
         shutdown,
-    )
-    .build()?;
+    );
+    if let Some(provider) = external_provider {
+        // External (unwired) source: the built service rejects resolution with
+        // `ExternalSourceNotWired` (the resolution bridge, ADR-0051, is not yet
+        // built) — `from_secure_parts` gates the resolver from this source.
+        builder = builder.external_providers(provider);
+    }
+    let service = builder.build()?;
 
     tracing::info!("credential: CredentialService composed (encrypted-at-rest)");
     Ok(Arc::new(service))
@@ -321,5 +329,29 @@ pub async fn with_memory_store_parts(
     let store = SqliteCredentialStore::connect_memory()
         .await
         .map_err(|e| CredentialServiceFactoryError::Store(e.to_string()))?;
-    compose_credential_service(store, key_provider, registry, ops)
+    compose_credential_service(store, key_provider, registry, ops, None)
+}
+
+/// Build a [`CredentialService`] over an in-memory store but with an **external
+/// [`StateSource`]** backed by `provider`, whose resolution bridge (ADR-0051) is
+/// not yet wired — every resolution path then fails closed with
+/// `ExternalSourceNotWired`. The test fixture for the wrong-source guard.
+///
+/// Test-only (`test-util` feature / `cfg(test)`).
+///
+/// # Errors
+///
+/// Returns [`CredentialServiceFactoryError`] if the in-memory store cannot be
+/// opened/migrated or the final service build fails.
+#[cfg(any(test, feature = "test-util"))]
+pub async fn with_memory_store_external(
+    key_provider: Arc<dyn KeyProvider>,
+    registry: CredentialRegistry,
+    ops: DispatchOps<ErasedPendingStore>,
+    provider: Arc<dyn ExternalProvider>,
+) -> Result<Arc<CredentialService>, CredentialServiceFactoryError> {
+    let store = SqliteCredentialStore::connect_memory()
+        .await
+        .map_err(|e| CredentialServiceFactoryError::Store(e.to_string()))?;
+    compose_credential_service(store, key_provider, registry, ops, Some(provider))
 }

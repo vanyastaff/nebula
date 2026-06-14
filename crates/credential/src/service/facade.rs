@@ -222,6 +222,13 @@ impl CredentialService {
         observer: Arc<dyn CredentialObserver>,
         source: StateSource,
     ) -> Self {
+        // Tie the resolver's source gate to the configured source at the single
+        // construction point: a service built with an external (unwired) source
+        // CANNOT hold a resolver that still reads local bytes. This makes the
+        // direct-resolver paths (`scheme_factory` → `resolve_with_refresh`, which
+        // bypass the facade's per-call source check) fail-closed by construction,
+        // so the gate cannot drift from the source a future code path forgets.
+        let resolver = resolver.gate_external_source(matches!(source, StateSource::External(_)));
         Self {
             store,
             scan_store,
@@ -1289,13 +1296,14 @@ impl CredentialService {
         C: Credential,
         C::Scheme: Zeroize + Clone,
     {
-        // 0. Source gate: a service configured with an `External` state source
-        //    has no local-decrypt resolution path wired, so resolving a slot
-        //    against it must fail with `ExternalSourceNotWired` rather than read
-        //    local bytes. This guard is present on every other secret-resolving
-        //    entry point; resolve_for_slot — the moat path — must not be the one
-        //    that skips it.
-        self.ensure_local_source()?;
+        // Source gate is enforced at the resolver tail (`resolve_scoped` →
+        // `ensure_source_wired`), set from the configured `StateSource` at
+        // `from_secure_parts`. A service with an external (unwired) source
+        // therefore fails closed by construction here — and on the
+        // `scheme_factory` direct path that never reaches this method — instead
+        // of relying on a per-call check this moat path could forget. The
+        // mapping below turns the resolver's `ExternalSourceNotWired` into the
+        // facade error.
 
         // 1. Defence-in-depth fingerprint check: even though
         //    `validate_credential_binding` enforced the scope at
@@ -1332,6 +1340,18 @@ impl CredentialService {
                     match e {
                         ResolveError::Store(StoreError::NotFound { id }) => {
                             CredentialServiceError::NotFound { id }
+                        },
+                        // The resolver tail fail-closed on an external, unwired
+                        // source. Surface the typed facade error with the
+                        // configured provider's name (only `External` reaches
+                        // this arm — the gate is derived from the source).
+                        ResolveError::ExternalSourceNotWired => {
+                            CredentialServiceError::ExternalSourceNotWired {
+                                provider: match &self.source {
+                                    StateSource::External(p) => p.provider_name().to_owned(),
+                                    StateSource::LocalEncrypted => "unknown".to_owned(),
+                                },
+                            }
                         },
                         other => CredentialServiceError::Internal(other.to_string()),
                     }
