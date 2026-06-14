@@ -73,13 +73,13 @@ Delete items that do not apply, or delete this section for pure bug fixes and me
 
 - [ ] Reviewed `docs/PRODUCT_CANON.md` — no silent semantic drift, no new undocumented lifecycle
 - [ ] Layer direction preserved (core → business → exec → api; no upward deps)
-- [ ] If an L2 invariant changed: ADR added under `docs/adr/` with seam test in this PR
+- [ ] If an L2 invariant changed: seam test in this PR (the ADR is recorded by maintainers in the private design vault, not in this repo)
 - [ ] `docs/MATURITY.md` row updated if crate maturity changed
 - [ ] Crate `README.md` / `lib.rs //!` updated if public surface changed
 - [ ] `docs/INTEGRATION_MODEL.md` updated if Resource / Credential / Action / Plugin / Schema surface changed
 - [ ] `docs/STYLE.md` updated if a new idiom or antipattern surfaced
 - [ ] `docs/GLOSSARY.md` updated if a new term was introduced
-- [ ] Plan or spec that motivated this change archived or updated (link: <!-- path or URL -->)
+- [ ] Plan or spec that motivated this change is recorded (design records live in the maintainers' private design vault, not in this repo; link any public issue/PR: <!-- path or URL -->)
 
 ## Safety / security impact
 

@@ -1,7 +1,8 @@
 # `Json<serde_json::Value>` callsite audit (M3.2 Task 3.0)
 
 > Input contract for T3 (typed DTO scope) and T4 (per-handler `#[utoipa::path]`
-> annotations). See [ADR-0082](../../../../docs/adr/0082-api-webhooks-idempotency.md)
+> annotations). See ADR-0082 (design records are maintained in the maintainers'
+> private design vault, not in this public repository)
 > for the cross-layer schema strategy and stub endpoint policy (absorbs ADR-0047).
 >
 > Run on: 2026-05-06 against worktree `feat/api-openapi-spec` at HEAD.

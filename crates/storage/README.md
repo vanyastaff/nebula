@@ -66,7 +66,7 @@ Credential coordination — durable refresh claim (П2 / ADR-0041):
   reclaim sweep can detect mid-refresh crashes; `record_sentinel_event` +
   `count_sentinel_events_in_window` back the engine's N=3-in-1h `ReauthRequired`
   escalation per sub-spec
-  credential refresh coordination design (archived; see [`docs/ARCHIVE.md`](../../docs/ARCHIVE.md))
+  credential refresh coordination design (design records are maintained in the maintainers' private design vault, not in this public repository)
   §3.4-§3.6.
 - `RefreshClaim`, `ClaimAttempt`, `ClaimToken`, `RepoError`, `HeartbeatError`,
   `ReclaimedClaim`, `SentinelState`, `ReplicaId` — DTO surface re-exported at

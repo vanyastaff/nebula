@@ -72,16 +72,16 @@ Planned trait directions (authoring, not marketing):
   - **Tools** — one or more **`AgentTool`** nodes and/or **`ResourceTool`** bundles (e.g. Email, Calendar, Research); may include nested mini-graphs (vector store + embeddings) wired as supply edges, not a monolithic mega-node.
   - **Sub-agents** (optional) — another workflow or `AgentAction` invoked as a tool-shaped attachment.
 
-  At **activation**, the engine validates slot kinds, schemas, and credentials—invalid combinations fail before run. At **runtime**, tool calls, model turns, and memory reads append to the **same execution journal** as the parent run. Visually: hub on the main flow + satellites below/ beside (see `docs/adr/0065-visual-rendering-modes.md` for hidden vs canvas-bound supply edges).
+  At **activation**, the engine validates slot kinds, schemas, and credentials—invalid combinations fail before run. At **runtime**, tool calls, model turns, and memory reads append to the **same execution journal** as the parent run. Visually: hub on the main flow + satellites below/ beside (see ADR-0065 for hidden vs canvas-bound supply edges).
 
-- **`AgentTool`** — one typed tool the hub (or any agent loop) can invoke (`StatelessAction` + tool description projection; see `docs/adr/0057-ai-agent-sdk.md`).
+- **`AgentTool`** — one typed tool the hub (or any agent loop) can invoke (`StatelessAction` + tool description projection; see ADR-0057).
 - **`ResourceTool`** — many tools exported from one `Resource` (connection owns lifecycle; tools are typed methods, not if/else inside one node).
 
 External AI tools (including MCP, when phased in) map onto the same tool registry the agent hub uses—one execution model underneath.
 
 ## Integration author SDK (`nebula-sdk`)
 
-**One import for integrators.** `nebula-sdk` is the canonical façade (see `docs/adr/0055-nebula-sdk-facade.md`): plugin authors depend on a single crate; internal workspace crates stay implementation details. Authors may always drop to pure traits in underlying crates when they need full control.
+**One import for integrators.** `nebula-sdk` is the canonical façade (see ADR-0055): plugin authors depend on a single crate; internal workspace crates stay implementation details. Authors may always drop to pure traits in underlying crates when they need full control.
 
 | Crate | Author-facing role |
 |-------|-------------------|
@@ -108,7 +108,7 @@ Integration types are not flat—each declares **what it needs** before it can r
 
 - **Auth before client:** `SlackResource` / `PostgresResource` declare `#[credential]` slots; the framework resolves credentials **before** `Resource::create`.
 - **Compose infrastructure:** `HttpResource`, `LoggerResource`, `MetricResource` are reusable resources other resources or actions attach to—shared topology when config matches (same HTTP pool, same logger sink).
-- **Actions consume the stack:** an action binds only the **leaf** resources/credentials it needs; supply edges on the canvas show the chain (see `docs/adr/0065-visual-rendering-modes.md`).
+- **Actions consume the stack:** an action binds only the **leaf** resources/credentials it needs; supply edges on the canvas show the chain (see ADR-0065).
 
 Integrators declare deps via slot fields (`#[credential]`, `#[resource]`) and `Dependencies` / `DeclaresDependencies`—the graph is typed, not stringly wiring in workflow JSON.
 
@@ -226,10 +226,6 @@ Product-user copilot flows and flashy demos come **after** this substrate is tru
 
 ## Related artifacts
 
-- Requirements: `docs/brainstorms/2026-05-17-strategy-llm-standard-bar-requirements.md`
 - Normative product rules: `docs/PRODUCT_CANON.md`
-- 1.0 execution roadmap (capability/dependency milestones, non-normative): `docs/ROADMAP.md`
 - Integration mechanics: `docs/INTEGRATION_MODEL.md`
-- Doc consolidation gate (must pass before flagship implementation): `docs/plans/2026-05-18-001-refactor-docs-stack-contract-consolidation-plan.md`
-- Flagship integrator platform (blocked on doc gate): `docs/plans/2026-05-17-001-feat-integrator-flagship-platform-plan.md`
-- Agent direction (proposed): `docs/adr/0057-ai-agent-sdk.md`
+- Design records (requirements, roadmap, plans, ADRs such as the agent-direction ADR-0057) are maintained in the maintainers' private design vault and are not tracked in this public repository.

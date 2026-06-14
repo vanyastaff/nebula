@@ -3,7 +3,7 @@ name: Nebula integration model
 description: Authoritative integration-model mechanics — Resource / Credential / Action / Schema / Plugin contract, plugin packaging, cross-plugin dependency rules. Canon §3.5 states invariants; this document carries the mechanics.
 status: accepted
 last-reviewed: 2026-05-18
-related: [docs/PRODUCT_CANON.md, docs/adr/README.md, docs/adr/HISTORICAL.md]
+related: [docs/PRODUCT_CANON.md]
 ---
 
 # Nebula integration model
@@ -35,7 +35,7 @@ The **schema subsystem** (`nebula-schema` crate) is the **fifth concept** — cr
 
 ### Configuration pipeline (diagram)
 
-End-to-end view: all value sources funnel through **one** schema validation step into the **`ValidValues` proof token**; **`resolve`** (in `nebula-schema`) consumes an `ExpressionContext` from runtime and yields **`ResolvedValues`**; workflow execution persists snapshots and hands secret material to credential/storage via an explicit boundary (the workflow is **not** “the encryption implementation”). The same figure and notes appear in **ADR-0034** (indexed in [`docs/adr/HISTORICAL.md`](adr/HISTORICAL.md)), which remains the **decision record** for `SecretValue`, `SecretWire`, and loader redaction. When the pipeline changes, update this document and capture the change in a new/superseding ADR rather than substantively editing accepted ADR-0034.
+End-to-end view: all value sources funnel through **one** schema validation step into the **`ValidValues` proof token**; **`resolve`** (in `nebula-schema`) consumes an `ExpressionContext` from runtime and yields **`ResolvedValues`**; workflow execution persists snapshots and hands secret material to credential/storage via an explicit boundary (the workflow is **not** “the encryption implementation”). The same figure and notes appear in **ADR-0034**, which remains the **decision record** for `SecretValue`, `SecretWire`, and loader redaction. When the pipeline changes, update this document and capture the change in a new/superseding ADR rather than substantively editing accepted ADR-0034.
 
 ```mermaid
 flowchart TB
@@ -79,9 +79,9 @@ flowchart TB
   WF -.->|"handoff: SecretWire → credential/storage"| ENC
 ```
 
-**Dashed edges:** `ENC -.-> LOAD` is **data flow** (decrypt / materialize into loader input). `WF -.-> ENC` is a **trust boundary handoff** (runtime initiates persistence; encryption-at-rest stays in credential/storage — see [ADR-0028](adr/HISTORICAL.md) / [ADR-0029](adr/HISTORICAL.md) (historical)).
+**Dashed edges:** `ENC -.-> LOAD` is **data flow** (decrypt / materialize into loader input). `WF -.-> ENC` is a **trust boundary handoff** (runtime initiates persistence; encryption-at-rest stays in credential/storage — see ADR-0028 / ADR-0029 (historical)).
 
-**Security note — plaintext lifetime:** Before `resolve`, secret-shaped fields live as ordinary `String` inside `FieldValues`. **`ValidValues::resolve`** promotes them to `FieldValue::SecretLiteral(SecretValue)` and re-validates. After promotion, `SecretValue` redacts in `Debug` / `Display` / default `Serialize`; intentional plaintext exit points are **audited** (`expose()` with `#[track_caller]`, `SecretWire` for stores). Snapshots written through default serialization paths should treat secrets as **redacted on the wire**; **`LOAD` trust** depends on storage integrity and the decrypt path (credential/storage plane — see [ADR-0029](adr/HISTORICAL.md) (historical)).
+**Security note — plaintext lifetime:** Before `resolve`, secret-shaped fields live as ordinary `String` inside `FieldValues`. **`ValidValues::resolve`** promotes them to `FieldValue::SecretLiteral(SecretValue)` and re-validates. After promotion, `SecretValue` redacts in `Debug` / `Display` / default `Serialize`; intentional plaintext exit points are **audited** (`expose()` with `#[track_caller]`, `SecretWire` for stores). Snapshots written through default serialization paths should treat secrets as **redacted on the wire**; **`LOAD` trust** depends on storage integrity and the decrypt path (credential/storage plane — see ADR-0029 (historical)).
 
 **Where `S` lives:** today the **shape** of `ValidSchema` comes from **author-time Rust** in integration/plugin crates (and registry wiring), not from the snapshot store. Persisted artifacts are **config values and history** (`SNAP`), not the Rust type graph. If product ever versions **schema definitions as data**, the diagram can gain an optional `SNAP -.-> S` edge; until then, keeping `S` only under **author** avoids visual clutter.
 
@@ -131,9 +131,9 @@ Long-lived managed object: connection pool, SDK client, file handle. Engine owns
 
 **What / why:** unified **Credential** contract — stored state vs projected auth material, refresh/resolve/test paths — so secrets and rotation stay **out of Action code** and logs.
 
-**Plane B (integration credentials):** workflow-facing secrets for **external** systems (API keys, OAuth to third parties, certificates, …) live in this model. They are **not** the same as authenticating **to Nebula** (browser/API session, future SSO/LDAP to the control plane — see **ADR-0033** ([`adr/HISTORICAL.md`](adr/HISTORICAL.md)) and a future Plane A / `nebula-auth` crate).
+**Plane B (integration credentials):** workflow-facing secrets for **external** systems (API keys, OAuth to third parties, certificates, …) live in this model. They are **not** the same as authenticating **to Nebula** (browser/API session, future SSO/LDAP to the control plane — see **ADR-0033** and a future Plane A / `nebula-auth` crate).
 
-**Where to read:** `crates/credential/README.md`, `crates/credential/src/lib.rs`, **ADR-0033** — Integration credentials (Plane B) ([`adr/HISTORICAL.md`](adr/HISTORICAL.md)).
+**Where to read:** `crates/credential/README.md`, `crates/credential/src/lib.rs`, **ADR-0033** — Integration credentials (Plane B).
 
 ### Industry reference — n8n credential taxonomy vs Nebula axes
 
@@ -161,7 +161,7 @@ The table below is an **external, illustrative** bucketing (by auth *shape* / tr
 | JWT | JWT auth | 1 |
 | Service-account JWT | e.g. RS256 bearer to Google APIs | 1 |
 
-**How this maps to Nebula (Plane B):** n8n’s buckets mix **transport** (DB, queue, mail), **protocol family** (OAuth2 vs API key), and **acquisition UX** (custom wizards) in one flat namespace. Nebula keeps those concerns **orthogonal** — see **ADR-0033** ([`adr/HISTORICAL.md`](adr/HISTORICAL.md)): **acquisition** (how the secret first entered the system), **`AuthScheme` / `AuthPattern`** (what material actions receive), and **persistence** (encrypted stored state vs projected auth). High counts for **API key** and **OAuth2** align with treating them as major **auth families**, not as hundreds of unrelated one-off schemes. **Database**, **queue**, and **SSH**-shaped credentials often pair **connection topology** (Resource or schema fields) with **auth material** (Credential); collapsing both into a single “credential type” is the same ad hoc pattern Nebula avoids.
+**How this maps to Nebula (Plane B):** n8n’s buckets mix **transport** (DB, queue, mail), **protocol family** (OAuth2 vs API key), and **acquisition UX** (custom wizards) in one flat namespace. Nebula keeps those concerns **orthogonal** — see **ADR-0033**: **acquisition** (how the secret first entered the system), **`AuthScheme` / `AuthPattern`** (what material actions receive), and **persistence** (encrypted stored state vs projected auth). High counts for **API key** and **OAuth2** align with treating them as major **auth families**, not as hundreds of unrelated one-off schemes. **Database**, **queue**, and **SSH**-shaped credentials often pair **connection topology** (Resource or schema fields) with **auth material** (Credential); collapsing both into a single “credential type” is the same ad hoc pattern Nebula avoids.
 
 ## `nebula-action`
 
@@ -348,27 +348,27 @@ about that gap.
 
 ## Accepted decisions index (ADR 0042+)
 
-Pointers only — full text stays in each ADR file. Superseded historical ADRs:
-`docs/adr/HISTORICAL.md`.
+Pointers only. Design records (ADRs, roadmap, specs, research) are maintained in
+the maintainers' private design vault and are not tracked in this public
+repository.
 
 | ADR | Topic | Where it shows up here |
 |-----|-------|-------------------------|
-| [0080](adr/0080-schema-validation-platform.md) | Schema & validation platform (**contract** — absorbs ADR-0052, 0058–0064) | § Schema / validator |
-| [0081](adr/0081-m6-resource-credential-integration.md) | M6 resource & credential integration (**contract** — absorbs ADR-0042–0045, 0051, 0066–0067) | § Resource / credential |
-| [0082](adr/0082-api-webhooks-idempotency.md) | API edge contracts (**contract** — absorbs ADR-0047–0049) | API / webhooks |
-| [0046](adr/0046-metrics-telemetry-boundary.md) | Metrics + telemetry merge | → `docs/OBSERVABILITY.md` |
-| [0050](adr/0050-m3-5-w3c-trace-context-propagation.md) | W3C trace context | → `docs/OBSERVABILITY.md` |
-| [0053](adr/0053-two-struct-dx-consolidation.md) | Two-struct DX | §3.8 |
-| [0054](adr/0054-typed-capability-system.md) | Typed capabilities | § Credential caps |
-| [0055](adr/0055-nebula-sdk-facade.md) | `nebula-sdk` façade | § Plugin / SDK |
-| [0056](adr/0056-type-safe-dag.md) | Type-safe DAG | Workflow (pointer) |
-| [0057](adr/0057-ai-agent-sdk.md) | AI agent SDK (**proposed**) | Deferred — see `STRATEGY.md` |
-| [0065](adr/0065-visual-rendering-modes.md) | Visual rendering modes | Canvas supply edges |
-| [0068](adr/0068-layered-retry.md) | Layered retry (resilience vs node policy) | § Action retry — see `nebula-resilience` |
-| [0069](adr/0069-action-surface-hybrid.md) | Action surface hybrid | §3.8 `nebula-action` |
-| [0072](adr/0072-nebula-storage-spec16-port-adapter-tenancy.md) | Spec-16 storage port / adapter / tenancy | Storage plane (pointer) |
+| 0080 | Schema & validation platform (**contract** — absorbs ADR-0052, 0058–0064) | § Schema / validator |
+| 0081 | M6 resource & credential integration (**contract** — absorbs ADR-0042–0045, 0051, 0066–0067) | § Resource / credential |
+| 0082 | API edge contracts (**contract** — absorbs ADR-0047–0049) | API / webhooks |
+| 0046 | Metrics + telemetry merge | → `docs/OBSERVABILITY.md` |
+| 0050 | W3C trace context | → `docs/OBSERVABILITY.md` |
+| 0053 | Two-struct DX | §3.8 |
+| 0054 | Typed capabilities | § Credential caps |
+| 0055 | `nebula-sdk` façade | § Plugin / SDK |
+| 0056 | Type-safe DAG | Workflow (pointer) |
+| 0057 | AI agent SDK (**proposed**) | Deferred — see `STRATEGY.md` |
+| 0065 | Visual rendering modes | Canvas supply edges |
+| 0068 | Layered retry (resilience vs node policy) | § Action retry — see `nebula-resilience` |
+| 0069 | Action surface hybrid | §3.8 `nebula-action` |
+| 0072 | Spec-16 storage port / adapter / tenancy | Storage plane (pointer) |
 
 Absorbed feature-era ADRs (0042–0067 stubs) are enumerated in each contract
-ADR's supersession table and `docs/adr/README.md`; their full text is
-git-history-only (`git show <rev>:docs/adr/<file>`). Pre-0042 historical ADRs:
-`docs/adr/HISTORICAL.md`.
+ADR's supersession table; the full ADR text lives in the maintainers' private
+design vault, not in this public repository.

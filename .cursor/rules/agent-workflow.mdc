@@ -9,7 +9,8 @@ layout, architecture, Git workflow, and coding rules. (`CLAUDE.md` is only a
 thin pointer to it.)
 
 For product/architecture markdown, read [`docs/README.md`](../../docs/README.md)
-first. Do not search `docs/superpowers` (removed — see [`docs/ARCHIVE.md`](../../docs/ARCHIVE.md)).
+first. Design records (ADRs, roadmap, specs, research) are maintained in the
+maintainers' private design vault and are not tracked in this public repository.
 
 For persistent task branches, create worktrees through the repository wrapper:
 

@@ -85,9 +85,9 @@ stacks.
 
 Flag `nebula-telemetry` references **only in active code or configuration**
 (`crates/**/*.rs`, `apps/**/*.rs`, `**/*.toml`, build scripts) — those are
-drift that would not compile. Historical references in `docs/adr/0046-*`,
+drift that would not compile. Historical references in
 `docs/MATURITY.md` journal entries, `docs/INTEGRATION_MODEL.md` migration
-notes, `crates/**/README.md`, and the `docs/plans/` archive are
+notes, and `crates/**/README.md` are
 **intentional** and must NOT be flagged.
 
 ### Errors

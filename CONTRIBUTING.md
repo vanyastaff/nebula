@@ -124,8 +124,11 @@ Use the templates in `.github/ISSUE_TEMPLATE/`:
 
 ## Architecture Change Policy
 
-Major architectural changes ship as ADRs in `docs/adr/`. An ADR is
-required if the change:
+Major architectural changes require an ADR. Design records (ADRs, roadmap,
+specs, research) are maintained in the maintainers' private design vault and
+are not tracked in this public repository. External contributors propose such a
+change via a detailed issue or PR description; maintainers record the resulting
+ADR in the private vault. An ADR is required if the change:
 
 - Adds a new public crate, or removes one.
 - Changes a trait's associated types or method signatures (after a

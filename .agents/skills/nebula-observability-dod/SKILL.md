@@ -166,8 +166,8 @@ Keep ADR/spec citations in the crate README or this skill, not in hot-path code.
 
 - `docs/OBSERVABILITY.md` — SLIs/SLOs, error budgets, journal event schema, cardinality rules, analysis loop.
 - `AGENTS.md` (root, "Agent Rules") — observability is Definition of Done.
-- `docs/adr/0046-metrics-telemetry-boundary.md` — single `nebula-metrics` crate (telemetry merged in).
-- `docs/adr/0050-m3-5-w3c-trace-context-propagation.md` — W3C trace-context across HTTP → queue → engine.
+- ADR-0046 — single `nebula-metrics` crate (telemetry merged in).
+- ADR-0050 — W3C trace-context across HTTP → queue → engine.
 - `crates/metrics/README.md` + `crates/metrics/AGENTS.md` — naming, cardinality, OTLP seam (`src/otlp.rs`).
 - `crates/log/README.md` + `crates/log/AGENTS.md` — single subscriber pipeline, secret-redaction boundary.
 - `crates/execution/src/journal.rs` — `JournalEntry` closed-enum WAL.

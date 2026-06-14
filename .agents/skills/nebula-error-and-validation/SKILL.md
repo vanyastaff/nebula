@@ -111,8 +111,7 @@ Validation is unified on a single structured type:
   schema↔validator crossing is `validate_rules_with_ctx` + `resolve_field_policies`
   (`crates/schema/AGENTS.md`).
 - **No `Rule::evaluate` shim.** `Rule::evaluate` / `RuleContext` were removed,
-  not shimmed (ADR-0080 §"Condition evaluation seam (absorbs 0052)",
-  `docs/adr/0080-schema-validation-platform.md`).
+  not shimmed (ADR-0080 §"Condition evaluation seam (absorbs 0052)").
 - Rule-failure codes surface validator-native verbatim (`min_length`, `min`,
   `invalid_format`) — **no namespace remap** at the schema boundary
   (`crates/schema/AGENTS.md`).
@@ -122,7 +121,7 @@ Validation is unified on a single structured type:
 
 ## 6. Pick the right retry layer (ADR-0068)
 
-`docs/adr/0068-layered-retry.md` — two disjoint layers, chosen by *who can
+ADR-0068 — two disjoint layers, chosen by *who can
 recover*:
 
 - **Layer 1 — action-internal recovery → `nebula-resilience::retry_with`**

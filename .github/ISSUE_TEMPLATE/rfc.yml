@@ -10,7 +10,8 @@ body:
 
         Before submitting, review:
         - [`docs/PRODUCT_CANON.md §0.2`](https://github.com/vanyastaff/nebula/blob/main/docs/PRODUCT_CANON.md) — canon revision triggers
-        - [`docs/adr/`](https://github.com/vanyastaff/nebula/tree/main/docs/adr) — prior decisions this might interact with
+
+        Design records (ADRs, roadmap, specs, research) are maintained in the maintainers' private design vault and are not tracked in this public repository. Propose your change here; maintainers will record the resulting ADR in the private vault.
 
   - type: textarea
     id: motivation
@@ -103,7 +104,7 @@ body:
       label: Related Issues, ADRs, or Canon Sections
       description: Link to anything that provides relevant prior context.
       placeholder: |
-        ADR: docs/adr/0081-m6-resource-credential-integration.md (or docs/adr/HISTORICAL.md for pre-0042 decisions)
+        ADR: ADR-0081 (resource & credential integration) — by id; ADR text lives in the maintainers' private design vault, not this repo
         Related: #234 (original `ExecutionContext` PR), #456 (Core-layer test pain)
 
   - type: checkboxes
@@ -113,7 +114,7 @@ body:
       options:
         - label: I have read PRODUCT_CANON.md §0.2 (canon revision triggers) before filing.
           required: true
-        - label: I have checked docs/adr/ for prior decisions that apply.
+        - label: I have searched existing issues/PRs for prior decisions that apply.
           required: true
         - label: This RFC proposes a design, not a bug fix or routine feature (use the other templates for those).
           required: true

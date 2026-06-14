@@ -5,8 +5,7 @@ description: Use when changing storage, repository traits, CAS / leases / outbox
 
 # nebula-storage-port-adapter
 
-Storage in Nebula is a **three-crate split** under ADR-0072
-(`docs/adr/0072-nebula-storage-spec16-port-adapter-tenancy.md`). The legacy
+Storage in Nebula is a **three-crate split** under ADR-0072. The legacy
 `ExecutionRepo` / `WorkflowRepo` / `Pg*Repo` dual layer and the
 never-implemented `repos::{execution,workflow,execution_node,journal}`
 placeholders were **deleted** — everything runs on the port. Do not resurrect

@@ -3,7 +3,7 @@
 > **Agents: do not use this file.** Read [`STRATEGY.md`](../STRATEGY.md) for product
 > direction and [`docs/PRODUCT_CANON.md`](./PRODUCT_CANON.md) for binding invariants
 > and **North Star** (§9). Mechanics: [`docs/INTEGRATION_MODEL.md`](./INTEGRATION_MODEL.md).
-> Decisions: [`docs/adr/README.md`](./adr/README.md).
+> Decisions: design records (ADRs) are maintained in the maintainers' private design vault, not in this public repository.
 
 Status: **Draft / non-normative** · Last updated: 2026-05-18
 
@@ -40,4 +40,4 @@ treating this file as a second spec. Recover from git history before 2026-05-18 
 | North Star & invariants | `docs/PRODUCT_CANON.md` |
 | Direction & 2026 bar | `STRATEGY.md` |
 | Integration mechanics | `docs/INTEGRATION_MODEL.md` |
-| Accepted decisions | `docs/adr/README.md` (0042+) |
+| Accepted decisions (ADRs) | Maintainers' private design vault — not in this repo |

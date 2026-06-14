@@ -10,12 +10,11 @@ credential type, the resolve/refresh/rotate/revoke lifecycle, owner-id / tenant
 isolation, external secret backends (Vault), OAuth identity from operator
 secrets, or binding credential slots into actions and resources.
 
-Before changing code, read the relevant source first. Authority docs:
-`docs/adr/0081-m6-resource-credential-integration.md` (binding/runtime/rotation
-contract), `docs/adr/0084-pre-expiry-credential-refresh-deferred.md`
-(reactive-only 1.0), `docs/adr/0085-oauth-identity-providers-from-secrets.md`
-(Plane A vs Plane B), `docs/adr/0088-credential-subsystem-rewrite.md`
-(**proposed** — do not implement unless told), `crates/credential/README.md`,
+Before changing code, read the relevant source first. The governing decisions —
+ADR-0081 (binding/runtime/rotation contract), ADR-0084 (reactive-only 1.0),
+ADR-0085 (Plane A vs Plane B), and ADR-0088 (**proposed** — do not implement
+unless told) — are maintained by id in the maintainers' private design vault,
+not in this repository. In-repo authority docs: `crates/credential/README.md`,
 `crates/credential/AGENTS.md`, `docs/INTEGRATION_MODEL.md` (§`nebula-credential`),
 and `deny.toml`.
 

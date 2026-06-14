@@ -264,7 +264,24 @@ crates/*/fuzz/Cargo.lock
 # Local audit drops (point-in-time snapshots, not durable docs)
 .pi-audit-*/
 
-# Agent research drops — collected articles / studies / analyses staged for
-# graphify ingestion (`graphify .` on raw/). Local-only, not durable docs.
+# Agent research drops — collected articles / studies / analyses. Local-only,
+# not durable docs. New drops go to the Obsidian vault raw/ (C:\Users\vanya\memory\raw\);
+# this legacy in-repo raw/ stays ignored.
 raw/
-graphify-out/
+
+# project memory: junction -> Obsidian vault (C:\Users\vanya\memory\projects\nebula)
+.memory/
+
+# fastembed/ONNX model cache (obsidian-mcp semantic search side-effect — not a repo artifact)
+.fastembed_cache/
+
+# Design/planning artifacts live in the private Obsidian vault
+# (C:\Users\vanya\memory\projects\nebula\{decisions,planning,specs,research}), NOT the public repo.
+# Keep the public repo clean: ADRs, roadmap, plans, brainstorms, specs, research stay out.
+docs/adr/
+docs/plans/
+docs/brainstorms/
+docs/superpowers/
+docs/ROADMAP.md
+docs/ARCHIVE.md
+openspec/
