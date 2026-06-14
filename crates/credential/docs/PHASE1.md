@@ -302,3 +302,23 @@ jitter is applied once at the scheduler seam, never here — §24 invariant):
   never a break. Independent follow-up worth a task: no test asserts a `Sensitive` scheme's `Serialize`
   can't leak plaintext to a non-storage sink (`serde_secret::serialize` exposes plaintext, gated only
   by call-site) — hardening, orthogonal to F3.
+- 2026-06-14: **increment 3b (facade E2E harness + lifecycle regressions) — harness + 3 regressions
+  landed.** Home = `crates/api/tests` (api depends on credential + storage, so it hosts the harness
+  `nebula-credential` cannot without a `credential→storage` dev-dep cycle). Factory variant
+  `credential_service_factory::with_memory_store_parts(key, registry, ops)` (test-util-gated) composes
+  the real `Audit(Cache(Encryption(SQLite)))` stack over a **caller-supplied registry + ops**;
+  `with_store` now funnels through the extracted `compose_credential_service` so the secure-stack
+  composition lives in one place. New `credential_facade_lifecycle_e2e.rs` registers a local
+  `TestLifecycleCred` (non-interactive **and** Refreshable **and** Revocable — no first-party builtin
+  is: `api_key`/`basic_auth` aren't Revocable, `oauth2` is interactive) on an active `SchemeFamily`
+  (so it passes the 5d containment law). Three regressions: (1) `refresh_advances_last_validated_at` —
+  the FIX-2 wiring bug (PR #797 `7111cb32`) that shipped dead because **no test exercised the facade
+  refresh path**; the discriminator is a 10 ms gap then `t1 > t0` (a discarded stamp leaves it at
+  creation time); (2) `revoke_then_refresh_and_get_are_not_found` — a revoked credential is
+  unresolvable through the service (no resurrection); (3) `validate_credential_binding_rejects_tombstoned`
+  — Q9 end-to-end (typed `CredentialTombstoned`). 493 api tests green (incl. the existing factory
+  round-trips after the refactor); workspace clippy `--all-targets` + api `--all-features` + rustdoc
+  `-D warnings` + fmt clean. **Remaining 3b: the External-source regression** (needs a factory variant
+  injecting `StateSource::External` + a stub provider) **and the structural Q10 source-awareness**
+  (move the per-call `ensure_local_source` gate into the resolver tail by construction) — both
+  separable from the harness; tracked as 3b-2 / 3c.
