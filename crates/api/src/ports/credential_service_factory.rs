@@ -25,8 +25,8 @@ use nebula_credential::{
     ApiKeyCredential, BasicAuthCredential, CredentialStore, ErasedPendingStore, OAuth2Credential,
 };
 use nebula_credential::{
-    CredentialService, CredentialServiceError, DispatchError, DispatchOps, NoopObserver,
-    register_interactive_ops, register_refreshable_ops, register_revocable_ops,
+    CredentialRegistry, CredentialService, CredentialServiceError, DispatchError, DispatchOps,
+    NoopObserver, register_interactive_ops, register_refreshable_ops, register_revocable_ops,
     register_runtime_ops, register_testable_ops,
 };
 use nebula_engine::credential::LeaseLifecycleConfig;
@@ -241,6 +241,28 @@ pub fn with_store<S: CredentialStore + 'static>(
     register_revocable_ops::<OAuth2Credential, ErasedPendingStore>(&mut ops)?;
     register_testable_ops::<OAuth2Credential, ErasedPendingStore>(&mut ops)?;
 
+    compose_credential_service(raw_store, key_provider, registry, ops)
+}
+
+/// Compose a [`CredentialService`] over `raw_store` with a **caller-supplied
+/// registry + dispatch ops**, wrapping the shared secure stack (audit / cache /
+/// encryption / in-memory pending / lease lifecycle). The registry's advertised
+/// capabilities MUST match the ops table or [`CredentialServiceBuilder::build`]
+/// returns [`CredentialServiceError::CapabilityWithoutOps`].
+///
+/// Both [`with_store`] (first-party set) and the test factory variants funnel
+/// through here so the secure-stack composition lives in exactly one place.
+///
+/// # Errors
+///
+/// Returns [`CredentialServiceFactoryError::Build`] if the builder rejects the
+/// composed parts (capability/ops mismatch).
+fn compose_credential_service<S: CredentialStore + 'static>(
+    raw_store: S,
+    key_provider: Arc<dyn KeyProvider>,
+    registry: CredentialRegistry,
+    ops: DispatchOps<ErasedPendingStore>,
+) -> Result<Arc<CredentialService>, CredentialServiceFactoryError> {
     tracing::warn!(
         "credential: audit sink is log-only (target=nebula.credential.audit); \
          the audit trail is NOT durably persisted to a backend yet."
@@ -273,4 +295,31 @@ pub fn with_store<S: CredentialStore + 'static>(
 
     tracing::info!("credential: CredentialService composed (encrypted-at-rest)");
     Ok(Arc::new(service))
+}
+
+/// Build a [`CredentialService`] over a unique in-memory SQLite database with a
+/// **caller-supplied registry + dispatch ops** — the test fixture for exercising
+/// the facade against credential types the first-party set lacks (e.g. a
+/// non-interactive *and* Revocable type, which no builtin is: `api_key` /
+/// `basic_auth` aren't Revocable and `oauth2` is interactive, so neither can be
+/// created-then-revoked without an OAuth handshake).
+///
+/// Test-only (`test-util` feature / `cfg(test)`); never compiled into a release
+/// build (ADR-0023). Mirrors [`with_memory_store`] but takes the registry/ops
+/// the caller composed instead of the first-party set.
+///
+/// # Errors
+///
+/// Returns [`CredentialServiceFactoryError`] if the in-memory store cannot be
+/// opened/migrated or the final service build fails (capability/ops mismatch).
+#[cfg(any(test, feature = "test-util"))]
+pub async fn with_memory_store_parts(
+    key_provider: Arc<dyn KeyProvider>,
+    registry: CredentialRegistry,
+    ops: DispatchOps<ErasedPendingStore>,
+) -> Result<Arc<CredentialService>, CredentialServiceFactoryError> {
+    let store = SqliteCredentialStore::connect_memory()
+        .await
+        .map_err(|e| CredentialServiceFactoryError::Store(e.to_string()))?;
+    compose_credential_service(store, key_provider, registry, ops)
 }
