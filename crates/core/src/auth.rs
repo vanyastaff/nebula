@@ -281,25 +281,35 @@ pub trait SchemeFamily: 'static {
     /// A *kind* (not a full [`RefreshStrategy`]) because the `ReAcquire` payload
     /// is per-credential, not part of the family's soundness contract.
     ///
-    /// [`RefreshStrategyKind::Lease`] is deliberately **never** a member of any
-    /// family's set: leasing (Vault dynamic secret, Kubernetes projected token)
-    /// is an *orthogonal* lifecycle wrapper around a secret of any wire shape —
-    /// the same [`InlineSecret`](EgressShape::InlineSecret) token is `Static`
-    /// when issued as a PAT and `Lease` when issued by Vault. Lease soundness is
-    /// governed by the `Dynamic` capability and the lease staleness ceiling, not
-    /// by this set; the containment law ([`permits_refresh`](Self::permits_refresh))
-    /// therefore exempts it. `Static` means "no wire-intrinsic refresh".
+    /// [`RefreshStrategyKind::Lease`] and [`RefreshStrategyKind::Watched`] are
+    /// deliberately **never** members of any family's set: both are *orthogonal*
+    /// lifecycle wrappers around a secret of any wire shape. Leasing (Vault
+    /// dynamic secret, Kubernetes projected token) makes the same
+    /// [`InlineSecret`](EgressShape::InlineSecret) token `Static` when issued as
+    /// a PAT and `Lease` when issued by Vault; its soundness is governed by the
+    /// `Dynamic` capability and the lease staleness ceiling. `Watched` material
+    /// is rotated externally and observed, never engine-driven. The containment
+    /// law ([`permits_refresh`](Self::permits_refresh)) therefore exempts both.
+    /// `Static` means "no wire-intrinsic refresh".
     fn refresh_classes() -> &'static [RefreshStrategyKind];
 
     /// Whether `kind` is a refresh this family sanctions — the containment law
     /// the resolver enforces against the live policy.
     ///
-    /// [`RefreshStrategyKind::Lease`] is always permitted (orthogonal lifecycle
-    /// wrapper — see [`refresh_classes`](Self::refresh_classes)); every other
-    /// kind must be declared in [`refresh_classes`](Self::refresh_classes). A
-    /// family cannot override this — the exemption rule is framework policy.
+    /// [`RefreshStrategyKind::Lease`] and [`RefreshStrategyKind::Watched`] are
+    /// always permitted: both are *orthogonal* to the wire-intrinsic set (see
+    /// [`refresh_classes`](Self::refresh_classes)) — leasing is governed by the
+    /// `Dynamic` capability and `Watched` is externally rotated, so neither is a
+    /// class any family declares. Every other kind must be declared in
+    /// [`refresh_classes`](Self::refresh_classes). A family cannot override this
+    /// — the exemption rule is framework policy, mirrored by
+    /// [`supports_active_refresh`](Self::supports_active_refresh) which excludes
+    /// the same two kinds from the engine-drivable predicate.
     fn permits_refresh(kind: RefreshStrategyKind) -> bool {
-        matches!(kind, RefreshStrategyKind::Lease) || Self::refresh_classes().contains(&kind)
+        matches!(
+            kind,
+            RefreshStrategyKind::Lease | RefreshStrategyKind::Watched
+        ) || Self::refresh_classes().contains(&kind)
     }
 
     /// Whether this family declares any **engine-drivable** wire-intrinsic
@@ -514,10 +524,19 @@ mod tests {
     }
 
     #[test]
-    fn permits_refresh_exempts_lease_on_any_family() {
-        // `Lease` is orthogonal — permitted even though no family lists it.
-        assert!(NoAuthFamily::permits_refresh(RefreshStrategyKind::Lease));
-        assert!(ActiveFamily::permits_refresh(RefreshStrategyKind::Lease));
+    fn permits_refresh_exempts_orthogonal_kinds_on_any_family() {
+        // `Lease` and `Watched` are orthogonal lifecycle wrappers — permitted on
+        // every family even though no family declares them in `refresh_classes`.
+        for kind in [RefreshStrategyKind::Lease, RefreshStrategyKind::Watched] {
+            assert!(
+                NoAuthFamily::permits_refresh(kind),
+                "{kind:?} must be exempt on a Static-only family"
+            );
+            assert!(
+                ActiveFamily::permits_refresh(kind),
+                "{kind:?} must be exempt on an active family"
+            );
+        }
     }
 
     #[test]
