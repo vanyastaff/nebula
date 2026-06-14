@@ -285,8 +285,9 @@ impl<S: CredentialStore> CredentialResolver<S> {
         // `Static`-only family is rejected); this catches a hand-written or plugin
         // policy that returns a refresh outside its family's declared classes.
         // `debug_assert` — proven for built-ins by tests + at registration, so this
-        // is a dev/test net with zero release hot-path cost. `Lease` is exempt
-        // (orthogonal lifecycle wrapper — see `SchemeFamily::refresh_classes`).
+        // is a dev/test net with zero release hot-path cost. `Lease` and `Watched`
+        // are exempt (orthogonal lifecycle wrappers — see
+        // `SchemeFamily::refresh_classes`).
         debug_assert!(
             <C::Scheme as AuthScheme>::Family::permits_refresh(policy.refresh.kind()),
             "credential '{credential_id}': policy refresh {:?} is not permitted by its \
@@ -576,6 +577,15 @@ impl<S: CredentialStore> CredentialResolver<S> {
             .await
             .map_err(ResolveError::Store)?;
 
+        // Fail-closed on EVERY load path, not just the scoped one: a revoked
+        // (tombstoned) row must never project to a handle. Checked before the
+        // kind comparison so a tombstoned row of the wrong type maps to
+        // existence-hiding `NotFound` instead of leaking a `KindMismatch`
+        // oracle. This closes the tombstone half of the resurrection class for
+        // `resolve` / `resolve_with_refresh` / `scheme_factory`; the owner half
+        // stays on `resolve_scoped` (it requires an `OwnerScopedKey`).
+        reject_tombstoned(credential_id, &stored)?;
+
         let expected_kind = <C::State as CredentialState>::KIND;
         if stored.state_kind != expected_kind {
             return Err(ResolveError::KindMismatch {
@@ -707,16 +717,26 @@ impl<S: CredentialStore> CredentialResolver<S> {
                 // Refresh contacted the provider successfully → stamp the
                 // validation time so the mandatory re-validation floor measures
                 // from this real validation, not from a later display edit. The
-                // map is overridden explicitly because `..stored.clone()` would
-                // otherwise carry the pre-refresh metadata.
+                // metadata map is rebuilt from the CURRENT row on each attempt
+                // (never the stale pre-refresh snapshot): a `revoke` racing this
+                // write bumps the version and stamps `revoked_at`, and rebuilding
+                // from `..stored.clone()` would overwrite the whole metadata
+                // column on the next CAS — erasing `revoked_at` and RESURRECTING
+                // a revoked credential. On conflict we re-read and abort
+                // fail-closed when the row is now tombstoned.
+                //
+                // Bounded at 3 attempts; perform_refresh runs inside the L2
+                // refresh claim, so a concurrent version bump is a revoke /
+                // display-edit / reauth-flag write, never another refresh.
                 let now = chrono::Utc::now();
-                let mut validated_metadata = stored.metadata.clone();
-                validated_metadata.insert(
-                    LAST_VALIDATED_AT_METADATA_KEY.to_owned(),
-                    serde_json::Value::String(now.to_rfc3339()),
-                );
-                let mut current_version = stored.version;
+                let mut current = stored;
                 for _attempt in 0..3 {
+                    let mut validated_metadata = current.metadata.clone();
+                    validated_metadata.insert(
+                        LAST_VALIDATED_AT_METADATA_KEY.to_owned(),
+                        serde_json::Value::String(now.to_rfc3339()),
+                    );
+                    let expected_version = current.version;
                     let updated = StoredCredential {
                         data: data.clone(),
                         updated_at: now,
@@ -726,17 +746,12 @@ impl<S: CredentialStore> CredentialResolver<S> {
                         // over by a previous ReauthRequired outcome that the
                         // application has since re-authorized (sub-spec / I1).
                         reauth_required: false,
-                        metadata: validated_metadata.clone(),
-                        ..stored.clone()
+                        metadata: validated_metadata,
+                        ..current.clone()
                     };
                     match self
                         .store
-                        .put(
-                            updated,
-                            PutMode::CompareAndSwap {
-                                expected_version: current_version,
-                            },
-                        )
+                        .put(updated, PutMode::CompareAndSwap { expected_version })
                         .await
                     {
                         Ok(_) => {
@@ -755,11 +770,18 @@ impl<S: CredentialStore> CredentialResolver<S> {
                         Err(StoreError::VersionConflict { actual, .. }) => {
                             tracing::warn!(
                                 credential_id,
-                                expected = current_version,
+                                expected = expected_version,
                                 actual,
-                                "CAS conflict on refresh write, retrying with same token"
+                                "CAS conflict on refresh write; re-reading row before retry"
                             );
-                            current_version = actual;
+                            let refetched = self
+                                .store
+                                .get(credential_id)
+                                .await
+                                .map_err(ResolveError::Store)?;
+                            // Fail-closed: never resurrect a revoked credential.
+                            reject_tombstoned(credential_id, &refetched)?;
+                            current = refetched;
                             continue;
                         },
                         Err(e) => return Err(ResolveError::Store(e)),
@@ -767,8 +789,8 @@ impl<S: CredentialStore> CredentialResolver<S> {
                 }
                 Err(ResolveError::Store(StoreError::VersionConflict {
                     id: credential_id.to_string(),
-                    expected: current_version,
-                    actual: current_version,
+                    expected: current.version,
+                    actual: current.version,
                 }))
             },
             RefreshOutcome::ReauthRequired(reason) => {
@@ -794,22 +816,18 @@ impl<S: CredentialStore> CredentialResolver<S> {
                     OtherStoreError,
                 }
 
-                let mut current_version = stored.version;
+                let mut current = stored;
                 let mut persist_outcome: Option<PersistOutcome> = None;
                 for _attempt in 0..3 {
+                    let expected_version = current.version;
                     let updated = StoredCredential {
                         updated_at: chrono::Utc::now(),
                         reauth_required: true,
-                        ..stored.clone()
+                        ..current.clone()
                     };
                     match self
                         .store
-                        .put(
-                            updated,
-                            PutMode::CompareAndSwap {
-                                expected_version: current_version,
-                            },
-                        )
+                        .put(updated, PutMode::CompareAndSwap { expected_version })
                         .await
                     {
                         Ok(_) => {
@@ -819,11 +837,22 @@ impl<S: CredentialStore> CredentialResolver<S> {
                         Err(StoreError::VersionConflict { actual, .. }) => {
                             tracing::warn!(
                                 credential_id,
-                                expected = current_version,
+                                expected = expected_version,
                                 actual,
-                                "CAS conflict while persisting reauth_required=true; retrying"
+                                "CAS conflict while persisting reauth_required=true; \
+                                 re-reading row before retry"
                             );
-                            current_version = actual;
+                            let refetched = self
+                                .store
+                                .get(credential_id)
+                                .await
+                                .map_err(ResolveError::Store)?;
+                            // Fail-closed: if a revoke landed while we waited on
+                            // the IdP, surface `NotFound` rather than writing the
+                            // reauth flag onto a tombstoned row (the CAS would
+                            // clobber `revoked_at` and resurrect it).
+                            reject_tombstoned(credential_id, &refetched)?;
+                            current = refetched;
                             continue;
                         },
                         Err(e) => {
@@ -1060,5 +1089,458 @@ mod tests {
     #[test]
     fn live_row_passes_tombstone_check() {
         assert!(reject_tombstoned("cred_x", &stored_with_owner(Some("alice"))).is_ok());
+    }
+}
+
+/// FIX-1 regressions: a resolve/refresh must never project or resurrect a
+/// revoked credential.
+///
+/// Hand-rolled test doubles of the crate's *own* ports (`CredentialStore`,
+/// `RefreshClaimStore`, `RefreshTransport`) — no `nebula-storage` edge, so no
+/// dependency cycle. The `ScriptedStore` simulates a `revoke` landing between
+/// the resolver's load and the refresh write-back by tombstoning + version-
+/// bumping the row on the first CAS `put`, which is exactly the race the
+/// resurrection bug exploited.
+#[cfg(test)]
+mod refresh_revoke_race {
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::time::Duration;
+
+    use chrono::{DateTime, Utc};
+    use nebula_core::auth::{AuthPattern, EgressShape, RefreshStrategyKind};
+    use nebula_schema::FieldValues;
+    use nebula_storage_port::store::{
+        ClaimAttempt, ClaimToken, HeartbeatError, ReclaimedClaim, RefreshClaimError,
+        RefreshClaimStore, ReplicaId,
+    };
+    use serde::{Deserialize, Serialize};
+    use zeroize::{Zeroize, ZeroizeOnDrop};
+
+    use super::*;
+    use crate::resolve::{RefreshPolicy, ResolveResult};
+    use crate::runtime::refresh::RefreshCoordConfig;
+    use crate::runtime::refresh::transport::{
+        RefreshTransport, RefreshTransportError, TokenPostRequest, TokenPostResponse,
+    };
+    use crate::store::REVOKED_AT_METADATA_KEY;
+    use crate::{CredentialMetadata, CredentialPolicy, RefreshStrategy, RevokeStrategy};
+
+    // ── Test doubles of the crate's own ports ──────────────────────────
+
+    /// No-op L2 claim repo: the legacy l1-only refresh path (non-parseable id)
+    /// never acquires an L2 claim, so every method is unreachable. It exists
+    /// solely to satisfy `RefreshCoordinator::new_with`.
+    struct StubClaimRepo;
+
+    #[async_trait::async_trait]
+    impl RefreshClaimStore for StubClaimRepo {
+        async fn try_claim(
+            &self,
+            _credential_id: &CredentialId,
+            _holder: &ReplicaId,
+            _ttl: Duration,
+        ) -> Result<ClaimAttempt, RefreshClaimError> {
+            unreachable!("l1-only refresh path never acquires an L2 claim")
+        }
+        async fn heartbeat(
+            &self,
+            _token: &ClaimToken,
+            _ttl: Duration,
+        ) -> Result<(), HeartbeatError> {
+            unreachable!("l1-only refresh path never heartbeats an L2 claim")
+        }
+        async fn release(&self, _token: ClaimToken) -> Result<(), RefreshClaimError> {
+            unreachable!("l1-only refresh path never releases an L2 claim")
+        }
+        async fn mark_sentinel(&self, _token: &ClaimToken) -> Result<(), RefreshClaimError> {
+            unreachable!("l1-only refresh path never marks a sentinel")
+        }
+        async fn reclaim_stuck(&self) -> Result<Vec<ReclaimedClaim>, RefreshClaimError> {
+            unreachable!("l1-only refresh path never sweeps claims")
+        }
+        async fn record_sentinel_event(
+            &self,
+            _credential_id: &CredentialId,
+            _crashed_holder: &ReplicaId,
+            _generation: u64,
+        ) -> Result<(), RefreshClaimError> {
+            unreachable!("l1-only refresh path never records a sentinel event")
+        }
+        async fn count_sentinel_events_in_window(
+            &self,
+            _credential_id: &CredentialId,
+            _window_start: DateTime<Utc>,
+        ) -> Result<u32, RefreshClaimError> {
+            unreachable!("l1-only refresh path never counts sentinel events")
+        }
+    }
+
+    /// No-op transport: with the `rotation` feature off, `perform_refresh`
+    /// drives `Refreshable::refresh` directly and never performs a token POST.
+    struct StubTransport;
+
+    impl RefreshTransport for StubTransport {
+        fn post_token<'a>(
+            &'a self,
+            _request: TokenPostRequest,
+        ) -> Pin<
+            Box<dyn Future<Output = Result<TokenPostResponse, RefreshTransportError>> + Send + 'a>,
+        > {
+            Box::pin(async {
+                unreachable!("default-feature refresh performs no OAuth2 token POST")
+            })
+        }
+    }
+
+    /// In-memory single-row store. When `revoke_on_first_put` is set, the first
+    /// CAS `put` tombstones + version-bumps the row and rejects the write —
+    /// modelling a `revoke` that raced the refresh between load and write-back.
+    struct ScriptedStore {
+        row: Mutex<StoredCredential>,
+        revoke_on_first_put: bool,
+        puts: Mutex<u32>,
+    }
+
+    impl ScriptedStore {
+        fn new(row: StoredCredential, revoke_on_first_put: bool) -> Self {
+            Self {
+                row: Mutex::new(row),
+                revoke_on_first_put,
+                puts: Mutex::new(0),
+            }
+        }
+
+        fn snapshot(&self) -> StoredCredential {
+            self.row.lock().clone()
+        }
+
+        fn put_count(&self) -> u32 {
+            *self.puts.lock()
+        }
+
+        // Synchronous core so the trait futures hold no lock across an `.await`.
+        fn put_sync(
+            &self,
+            credential: StoredCredential,
+            mode: PutMode,
+        ) -> Result<StoredCredential, StoreError> {
+            let mut row = self.row.lock();
+            let id = row.id.clone();
+            let first = {
+                let mut puts = self.puts.lock();
+                *puts += 1;
+                *puts == 1
+            };
+
+            let expected = match mode {
+                PutMode::CompareAndSwap { expected_version } => Some(expected_version),
+                PutMode::CreateOnly | PutMode::Overwrite => None,
+            };
+
+            if self.revoke_on_first_put && first {
+                // A `revoke` lands between the resolver's load and this CAS:
+                // bump the version and tombstone the row, then reject the write.
+                row.version += 1;
+                row.metadata.insert(
+                    REVOKED_AT_METADATA_KEY.to_owned(),
+                    serde_json::Value::String("2026-06-13T00:00:00Z".to_owned()),
+                );
+                return Err(StoreError::VersionConflict {
+                    id,
+                    expected: expected.unwrap_or(0),
+                    actual: row.version,
+                });
+            }
+
+            if let Some(expected_version) = expected
+                && expected_version != row.version
+            {
+                return Err(StoreError::VersionConflict {
+                    id,
+                    expected: expected_version,
+                    actual: row.version,
+                });
+            }
+
+            let mut committed = credential;
+            committed.version = row.version + 1;
+            *row = committed.clone();
+            Ok(committed)
+        }
+    }
+
+    impl CredentialStore for ScriptedStore {
+        // No `.await` in any method body, so the (`!Send`) `parking_lot` guard
+        // never crosses an await point — the returned futures stay `Send`.
+        async fn get(&self, _id: &str) -> Result<StoredCredential, StoreError> {
+            Ok(self.row.lock().clone())
+        }
+
+        async fn put(
+            &self,
+            credential: StoredCredential,
+            mode: PutMode,
+        ) -> Result<StoredCredential, StoreError> {
+            self.put_sync(credential, mode)
+        }
+
+        async fn delete(&self, _id: &str) -> Result<(), StoreError> {
+            unreachable!("delete is not exercised by the resolver refresh regressions")
+        }
+
+        async fn list(&self, _state_kind: Option<&str>) -> Result<Vec<String>, StoreError> {
+            Ok(Vec::new())
+        }
+
+        async fn exists(&self, _id: &str) -> Result<bool, StoreError> {
+            Ok(true)
+        }
+    }
+
+    // ── A faithful refreshable credential ──────────────────────────────
+
+    /// Active family declaring an engine-drivable `RefreshToken` class, so the
+    /// F3 containment `debug_assert` in `resolve_with_refresh` passes honestly
+    /// (rather than via the `Lease` exemption back door).
+    struct TestActiveFamily;
+
+    impl SchemeFamily for TestActiveFamily {
+        const EGRESS: &'static [EgressShape] = &[EgressShape::InlineSecret];
+        fn refresh_classes() -> &'static [RefreshStrategyKind] {
+            &[RefreshStrategyKind::RefreshToken]
+        }
+        fn pattern() -> AuthPattern {
+            AuthPattern::OAuth2
+        }
+    }
+
+    #[derive(Debug)]
+    struct TestScheme;
+
+    impl AuthScheme for TestScheme {
+        type Family = TestActiveFamily;
+        fn pattern() -> AuthPattern {
+            AuthPattern::OAuth2
+        }
+    }
+
+    #[derive(Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
+    struct TestState {
+        token: String,
+    }
+
+    impl CredentialState for TestState {
+        const KIND: &'static str = "test_refreshable_state";
+        const VERSION: u32 = 1;
+    }
+
+    struct TestCred;
+
+    impl Credential for TestCred {
+        type Properties = ();
+        type Scheme = TestScheme;
+        type State = TestState;
+
+        const KEY: &'static str = "test.refreshable";
+
+        fn metadata() -> CredentialMetadata {
+            CredentialMetadata::builder()
+                .key(nebula_core::credential_key!("test.refreshable"))
+                .name("TestCred")
+                .description("refreshable test credential for resolver regressions")
+                .schema(crate::schema_of::<Self::Properties>())
+                .pattern(AuthPattern::OAuth2)
+                .build()
+                .expect("TestCred metadata is valid")
+        }
+
+        fn project(_state: &TestState) -> TestScheme {
+            TestScheme
+        }
+
+        async fn resolve(
+            _values: &FieldValues,
+            _ctx: &CredentialContext,
+        ) -> Result<ResolveResult<TestState, ()>, CredentialError> {
+            Ok(ResolveResult::Complete(TestState {
+                token: "live".to_owned(),
+            }))
+        }
+    }
+
+    impl Refreshable for TestCred {
+        const REFRESH_POLICY: RefreshPolicy = RefreshPolicy::DEFAULT;
+
+        async fn refresh(
+            state: &mut TestState,
+            _ctx: &CredentialContext,
+        ) -> Result<RefreshOutcome, CredentialError> {
+            state.token = "refreshed".to_owned();
+            Ok(RefreshOutcome::Refreshed)
+        }
+    }
+
+    impl CredentialLifecycle for TestCred {
+        fn policy(_state: &TestState) -> CredentialPolicy {
+            CredentialPolicy {
+                // Already expired → `decide_refresh` routes to `Refresh` (the
+                // family declares `RefreshToken`, so it is auto-renewable).
+                expires_at: Some(Utc::now() - chrono::Duration::minutes(5)),
+                lease: None,
+                refresh: RefreshStrategy::RefreshToken,
+                revoke: RevokeStrategy::HandleBased,
+            }
+        }
+    }
+
+    // ── Fixtures ───────────────────────────────────────────────────────
+
+    // Non-parseable id (not `cred_<ULID>`) → the resolver takes the l1-only
+    // refresh path, which needs no L2 claim repo.
+    const TEST_ID: &str = "test-cred";
+
+    fn test_state_bytes() -> Vec<u8> {
+        serde_json::to_vec(&TestState {
+            token: "live".to_owned(),
+        })
+        .expect("serialize test state")
+    }
+
+    fn live_row() -> StoredCredential {
+        StoredCredential {
+            id: TEST_ID.to_owned(),
+            name: None,
+            credential_key: TestCred::KEY.to_owned(),
+            data: test_state_bytes(),
+            state_kind: TestState::KIND.to_owned(),
+            state_version: TestState::VERSION,
+            version: 1,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            expires_at: None,
+            reauth_required: false,
+            metadata: serde_json::Map::new(),
+        }
+    }
+
+    fn tombstoned_row() -> StoredCredential {
+        let mut row = live_row();
+        row.metadata.insert(
+            REVOKED_AT_METADATA_KEY.to_owned(),
+            serde_json::Value::String("2026-06-13T00:00:00Z".to_owned()),
+        );
+        row
+    }
+
+    fn resolver_with(store: Arc<ScriptedStore>) -> CredentialResolver<ScriptedStore> {
+        let coord = RefreshCoordinator::new_with(
+            Arc::new(StubClaimRepo),
+            ReplicaId::new("test-replica"),
+            RefreshCoordConfig::default(),
+        )
+        .expect("default coordinator config is valid");
+        CredentialResolver::with_dependencies(store, Arc::new(coord), Arc::new(StubTransport))
+    }
+
+    // ── Regressions ────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn refresh_racing_revoke_does_not_resurrect() {
+        let store = Arc::new(ScriptedStore::new(
+            live_row(),
+            /* revoke_on_first_put */ true,
+        ));
+        let resolver = resolver_with(Arc::clone(&store));
+        let ctx = CredentialContext::for_test("test-owner");
+
+        let err = resolver
+            .resolve_with_refresh::<TestCred>(TEST_ID, &ctx)
+            .await
+            .expect_err("a refresh racing a revoke must fail closed, never resurrect");
+
+        assert!(
+            matches!(err, ResolveError::Store(StoreError::NotFound { .. })),
+            "expected existence-hiding NotFound, got {err:?}"
+        );
+
+        let final_row = store.snapshot();
+        assert!(
+            final_row.is_tombstoned(),
+            "the revoke tombstone must survive — a resurrection bug would erase revoked_at"
+        );
+        assert_eq!(
+            store.put_count(),
+            1,
+            "must not issue a second CAS write after observing the revoke"
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_without_race_succeeds_and_stamps_validation() {
+        let store = Arc::new(ScriptedStore::new(
+            live_row(),
+            /* revoke_on_first_put */ false,
+        ));
+        let resolver = resolver_with(Arc::clone(&store));
+        let ctx = CredentialContext::for_test("test-owner");
+
+        resolver
+            .resolve_with_refresh::<TestCred>(TEST_ID, &ctx)
+            .await
+            .expect("an uncontended refresh must succeed");
+
+        let final_row = store.snapshot();
+        assert!(
+            !final_row.is_tombstoned(),
+            "an uncontended refresh must not tombstone"
+        );
+        assert!(
+            final_row.last_validated_at().is_some(),
+            "a provider-contacting refresh must stamp the re-validation anchor"
+        );
+        assert_eq!(
+            store.put_count(),
+            1,
+            "exactly one CAS write on the happy path"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_with_refresh_rejects_pretombstoned_row() {
+        let store = Arc::new(ScriptedStore::new(tombstoned_row(), false));
+        let resolver = resolver_with(Arc::clone(&store));
+        let ctx = CredentialContext::for_test("test-owner");
+
+        let err = resolver
+            .resolve_with_refresh::<TestCred>(TEST_ID, &ctx)
+            .await
+            .expect_err("a row revoked before resolve must not refresh");
+
+        assert!(
+            matches!(err, ResolveError::Store(StoreError::NotFound { .. })),
+            "got {err:?}"
+        );
+        assert_eq!(
+            store.put_count(),
+            0,
+            "a tombstoned row must be rejected at load, before any write"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_rejects_tombstoned_row() {
+        let store = Arc::new(ScriptedStore::new(tombstoned_row(), false));
+        let resolver = resolver_with(Arc::clone(&store));
+
+        let err = resolver
+            .resolve::<TestCred>(TEST_ID)
+            .await
+            .expect_err("a tombstoned row must not resolve to a handle");
+
+        assert!(
+            matches!(err, ResolveError::Store(StoreError::NotFound { .. })),
+            "got {err:?}"
+        );
     }
 }

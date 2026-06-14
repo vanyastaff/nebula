@@ -791,6 +791,17 @@ impl CredentialService {
         let now = chrono::Utc::now();
         let state_kind = stored.state_kind.clone();
         let state_version = stored.state_version;
+        // Refresh contacted the provider successfully → advance the
+        // re-validation anchor so the mandatory floor measures from this real
+        // validation, mirroring the resolver refresh path. `refresh_inner` is a
+        // provider-contacting write and was the lone such writer that omitted
+        // the stamp; a display-only edit goes through `update` without a
+        // re-resolve and must NOT bump it.
+        let mut metadata = stored.metadata.clone();
+        metadata.insert(
+            LAST_VALIDATED_AT_METADATA_KEY.to_owned(),
+            Value::String(now.to_rfc3339()),
+        );
         let stored_next = StoredCredential {
             id: stored.id.clone(),
             name: stored.name.clone(),
