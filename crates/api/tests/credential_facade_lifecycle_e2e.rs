@@ -337,8 +337,16 @@ async fn external_source_rejects_create() {
         )
         .await
         .expect_err("create against an unwired external source must fail closed");
-    assert!(
-        matches!(err, CredentialServiceError::ExternalSourceNotWired { .. }),
-        "expected ExternalSourceNotWired, got {err:?}"
-    );
+    // Assert the provider value, not just the variant: a provider-mapping
+    // regression (wrong/empty name) must fail this test, locking the
+    // source → error contract.
+    match err {
+        CredentialServiceError::ExternalSourceNotWired { provider } => {
+            assert_eq!(
+                provider, "stub-vault",
+                "the error must carry the configured provider's name"
+            );
+        },
+        other => panic!("expected ExternalSourceNotWired, got {other:?}"),
+    }
 }
