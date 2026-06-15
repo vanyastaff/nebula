@@ -280,8 +280,8 @@ impl std::fmt::Display for RotationErrorLog {
 pub trait TestableCredential: Send + Sync {
     /// Test the credential by performing an actual operation.
     ///
-    /// Returns `TestResult` with success/failure details.
-    fn test(&self) -> impl Future<Output = RotationResult<TestResult>> + Send;
+    /// Returns `RotationTestResult` with success/failure details.
+    fn test(&self) -> impl Future<Output = RotationResult<RotationTestResult>> + Send;
 
     /// Get test timeout (default: 30 seconds).
     fn test_timeout(&self) -> Duration {
@@ -370,9 +370,12 @@ impl TestContext {
     ///
     /// # Returns
     ///
-    /// * `Ok(TestResult)` - Test completed within timeout
+    /// * `Ok(RotationTestResult)` - Test completed within timeout
     /// * `Err(RotationError::Timeout)` - Test exceeded timeout
-    pub async fn test<T: TestableCredential>(&self, credential: &T) -> RotationResult<TestResult> {
+    pub async fn test<T: TestableCredential>(
+        &self,
+        credential: &T,
+    ) -> RotationResult<RotationTestResult> {
         let timeout_duration = self.timeout;
 
         tracing::debug!(
@@ -401,7 +404,7 @@ impl TestContext {
 
 /// Result of credential testing
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TestResult {
+pub struct RotationTestResult {
     /// Whether validation passed
     pub passed: bool,
 
@@ -415,7 +418,7 @@ pub struct TestResult {
     pub duration: Duration,
 }
 
-impl TestResult {
+impl RotationTestResult {
     /// Create successful test result
     pub fn success(
         message: impl Into<String>,
@@ -679,18 +682,18 @@ mod tests {
     }
 
     impl TestableCredential for MockCredential {
-        async fn test(&self) -> RotationResult<TestResult> {
+        async fn test(&self) -> RotationResult<RotationTestResult> {
             let start = std::time::Instant::now();
             let duration = start.elapsed();
 
             if self.should_pass {
-                Ok(TestResult::success(
+                Ok(RotationTestResult::success(
                     "Mock test passed",
                     "mock_test",
                     duration,
                 ))
             } else {
-                Ok(TestResult::failure(
+                Ok(RotationTestResult::failure(
                     "Mock test failed",
                     "mock_test",
                     duration,

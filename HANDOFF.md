@@ -48,11 +48,13 @@ design vault and is not tracked in this public repository):
 - **Stable:** all Cross-cutting (`error`, `log`, `eventbus`, `metrics`,
   `resilience`, `env`), all Core (`core`, `validator`, `expression`,
   `workflow`, `execution`, `schema`, `metadata`, `storage-port`), `storage`,
-  `nebula-credential` + `nebula-credential-runtime` (flipped 2026-05-20).
+  `nebula-credential` (flipped 2026-05-20; lifecycle runtime folded in per
+  ADR-0092).
 - **Frontier / partial:** `engine` (~85%), `action`, `nebula-resource`
-  (blocked on the **bind-population** gap — see §7), `plugin` (partial),
-  `credential-builtin` (scaffold → concrete types TBD in M12.3), `sandbox`
-  (capability gate not yet enforced — M4).
+  (blocked on the **bind-population** gap — see §7), `plugin` (partial). The
+  out-of-process `sandbox` crate was retired (ADR-0091 — process/WASM isolation
+  is a non-goal; plugins are in-process). Concrete first-party credential types
+  (`nebula-credential::credentials`) are still TBD in M12.3.
 
 The ROADMAP "Status snapshot" section is the freshest narrative; trust
 `#PR` / `file:line` evidence over prose. Note: squash-merge often misses
@@ -72,10 +74,10 @@ direct sibling imports. Full map + nuances → [`AGENTS.md`](AGENTS.md)
 |-------|--------|
 | API / Public | `api`, `sdk` |
 | Exec | `engine`, `storage`, `storage-loom-probe` |
-| Business | `credential-builtin`, `resource`, `action`, `plugin`, `tenancy` |
+| Business | `resource`, `action`, `plugin`, `tenancy` |
 | Plugin-Proto | `plugin-sdk`, `sandbox` |
-| Core | `core`, `validator`, `expression`, `workflow`, `execution`, `schema`, `metadata`, `storage-port` |
-| Cross-cutting | `log`, `eventbus`, `metrics`, `resilience`, `error`, `env` |
+| Core / shared-infra | `core`, `validator`, `expression`, `workflow`, `execution`, `schema`, `metadata`, `storage-port`, `credential` |
+| Cross-cutting | `crypto`, `log`, `eventbus`, `metrics`, `resilience`, `error`, `env` |
 
 Three placements that are *not* a simple single-tier reading:
 
@@ -107,8 +109,8 @@ Pick the crate by intent. One-liners are condensed; the crate's own
 | I want to… | Start in (crate) | Layer | What it owns |
 |------------|------------------|-------|--------------|
 | **Touch credentials** (contract / secret primitives) | `nebula-credential` | Shared-infra | Typed Credential Contract: stored-State vs projected auth-Scheme split + secret primitives. |
-| Add a concrete credential type | `nebula-credential-builtin` | Business | First-party impls (`bearer_token`, `shared_key`, `signing_key`) + `register_builtins()` + `sealed_caps`. |
-| Wire the credential **lifecycle** (resolve/refresh/rotate/revoke/bind) | `nebula-credential-runtime` | Exec | `CredentialService<B,PS>` facade — the owner-isolated lifecycle behind one typed entry point. |
+| Add a concrete credential type | `nebula-credential` (`src/credentials/`) | Shared-infra | First-party impls (`bearer_token`, `shared_key`, `signing_key`) + `register_builtins()` + `sealed_caps` (ADR-0092: folded in from the former credential-builtin crate). |
+| Wire the credential **lifecycle** (resolve/refresh/rotate/revoke/bind) | `nebula-credential` (`runtime/`) | Shared-infra | `CredentialService<B,PS>` facade — the owner-isolated lifecycle behind one typed entry point (ADR-0092: relocated from engine + the former credential-runtime crate). |
 | Crypto primitives (AEAD / KDF) | `nebula-crypto` | Cross-cutting | AES-256-GCM (mandatory AAD) + Argon2id, `EncryptedData` envelope, `CryptoError`. |
 | **Storage / persistence** — define a port | `nebula-storage-port` | Core | Object-safe repo traits, port-local DTO rows, `Scope`, `StorageError`, `TransitionBatch`. No backend code. |
 | Storage — implement a backend (PG/SQLite/mem) | `nebula-storage` | Exec | Sole spec-16 adapter: execution CAS, journal, control-queue outbox, idempotency, leases, refresh claims. |
@@ -195,8 +197,9 @@ than grepping blind:
 - **The moat: active credential lifecycle.** Per [`STRATEGY.md`](STRATEGY.md)
   + the competitive analysis, Nebula's empty-niche bet is OAuth-refresh +
   rotation + per-tenant isolation **as an engine primitive**. The contract +
-  facade exist (`nebula-credential`, `nebula-credential-runtime`,
-  ADR-0066/0088); for 1.0 the path is **reactive-only** (pre-expiry/proactive
+  facade + lifecycle runtime all live in `nebula-credential` (the runtime was
+  relocated from the engine and folded in per ADR-0092; see ADR-0066/0088);
+  for 1.0 the path is **reactive-only** (pre-expiry/proactive
   refresh deferred to 1.1 per ADR-0084).
 - **The bind-population gap (the live frontier).** `nebula-resource` stays
   `frontier` because there is **no production credential→slot bind-population

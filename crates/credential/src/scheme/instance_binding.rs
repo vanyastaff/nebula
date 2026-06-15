@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::AuthScheme;
+use crate::{AuthScheme, InstanceBindingFamily};
 
 /// Instance-level identity binding for cloud/infrastructure authentication.
 ///
@@ -28,7 +28,7 @@ use crate::AuthScheme;
 ///     .with_region("us-east-1");
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize, AuthScheme)]
-#[auth_scheme(pattern = InstanceIdentity, public)]
+#[auth_scheme(pattern = InstanceIdentity, family = InstanceBindingFamily, public)]
 pub struct InstanceBinding {
     provider: String,
     role_or_account: String,

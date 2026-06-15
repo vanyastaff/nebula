@@ -6,7 +6,7 @@
 use nebula_credential::{AuthScheme, SecretString};
 
 #[derive(AuthScheme)]
-#[auth_scheme(pattern = Custom, public)]
+#[auth_scheme(pattern = Custom, family = SecretTokenFamily, public)]
 struct BadPublicScheme {
     pub secret: SecretString, // SecretString on public-tagged scheme — REJECT
 }

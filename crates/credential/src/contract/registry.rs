@@ -34,6 +34,7 @@
 use std::sync::Arc;
 
 use ahash::AHashMap;
+use nebula_core::auth::{AuthPattern, AuthScheme, RefreshStrategyKind, SchemeFamily};
 
 use super::{
     any::AnyCredential,
@@ -72,6 +73,32 @@ pub enum RegisterError {
         /// `CARGO_CRATE_NAME` of the crate whose second registration
         /// was rejected.
         new_crate: &'static str,
+    },
+
+    /// The credential declares a capability its scheme family cannot honour —
+    /// the F3 containment law, checked fail-closed at registration rather than
+    /// deferred to first refresh. Specifically: the credential implements
+    /// `Refreshable` (an engine-driven `fn refresh`) but its
+    /// [`AuthScheme::Family`] declares no active wire-intrinsic refresh class —
+    /// its [`SchemeFamily::refresh_classes`] is `Static`-only (e.g. an opaque
+    /// secret-token family). Either the credential
+    /// should not be `Refreshable`, or the family is mis-declared. (`Lease` is
+    /// orthogonal and never a family class, so a leased credential is not the
+    /// subject of this check — see `SchemeFamily::refresh_classes`.)
+    #[error(
+        "unsound credential family for key '{key}': credential is Refreshable but \
+         scheme family ({family_pattern:?}) declares no active refresh class \
+         (refresh_classes = {family_classes:?}) — fix the family's refresh_classes \
+         or drop the Refreshable impl"
+    )]
+    UnsoundFamily {
+        /// The `Credential::KEY` whose registration was rejected.
+        key: &'static str,
+        /// The offending family's cosmetic pattern, for operator identification.
+        family_pattern: AuthPattern,
+        /// The family's declared wire-intrinsic refresh classes (the empty-of-
+        /// active-refresh set that triggered the rejection).
+        family_classes: &'static [RefreshStrategyKind],
     },
 }
 
@@ -148,6 +175,35 @@ impl CredentialRegistry {
         }
 
         let capabilities = compute_capabilities::<C>();
+
+        // F3 containment law (fail-closed at boot, not at first refresh): a
+        // `Refreshable` credential's `fn refresh` renews non-interactively or
+        // re-acquires, so its scheme family must declare at least one active
+        // wire-intrinsic refresh class. A `Static`-only family (e.g. an opaque
+        // secret token) cannot honour that — reject rather than ship a
+        // credential whose refresh path is structurally unsound. `Lease` is
+        // orthogonal (governed by the `Dynamic` capability), so this gate does
+        // not constrain leased credentials.
+        if capabilities.contains(Capabilities::REFRESHABLE)
+            && !<C::Scheme as AuthScheme>::Family::supports_active_refresh()
+        {
+            let family_classes = <C::Scheme as AuthScheme>::Family::refresh_classes();
+            let family_pattern = <C::Scheme as AuthScheme>::Family::pattern();
+            tracing::error!(
+                credential.key = key,
+                registering_crate,
+                ?family_pattern,
+                ?family_classes,
+                "unsound credential family rejected: Refreshable credential on a \
+                 family with no active refresh class (F3 containment law)"
+            );
+            return Err(RegisterError::UnsoundFamily {
+                key,
+                family_pattern,
+                family_classes,
+            });
+        }
+
         let arc_key: Arc<str> = key.into();
         self.entries.insert(
             arc_key,

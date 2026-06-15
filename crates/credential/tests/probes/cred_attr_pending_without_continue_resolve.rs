@@ -14,7 +14,7 @@ use nebula_schema::FieldValues;
 
 struct Bad;
 
-#[nebula_credential::credential(key = "bad", category = InteractiveRedirect, name = "Bad")]
+#[nebula_credential::credential(key = "bad", name = "Bad")]
 impl Bad {
     type Properties = FieldValues;
     type Scheme = SecretToken;

@@ -427,7 +427,14 @@ async fn persist_oauth_state(
     credential_id: &str,
     oauth_state: OAuth2State,
 ) -> ApiResult<()> {
-    let data = serde_json::to_vec(&oauth_state).map_err(|e| {
+    // Cleartext serialization for the encrypted-at-rest credential store;
+    // `OAuth2State`'s secret fields emit cleartext only inside this scope.
+    // Outside it the same serialize redacts, which would silently persist
+    // `[REDACTED]` in place of the tokens.
+    let data = nebula_credential::serde_secret::expose_for_serialization(|| {
+        serde_json::to_vec(&oauth_state)
+    })
+    .map_err(|e| {
         ApiError::Internal(format!(
             "failed to serialize oauth state for persistence: {e}"
         ))
@@ -443,7 +450,7 @@ async fn persist_oauth_state(
         .get(credential_id)
         .await
         .map_err(|e| map_oauth_store_err(e, credential_id))?;
-    let stored = StoredCredential {
+    let mut stored = StoredCredential {
         id: credential_id.to_owned(),
         name: existing.name,
         credential_key: OAuth2Credential::KEY.to_owned(),
@@ -459,6 +466,10 @@ async fn persist_oauth_state(
         reauth_required: false,
         metadata: existing.metadata,
     };
+    // The exchange contacted the provider and minted fresh tokens → record the
+    // validation time so the mandatory re-validation floor measures from this
+    // real validation, not from a later display-only edit.
+    stored.stamp_validated(now);
 
     store
         .put(

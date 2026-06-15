@@ -1,26 +1,34 @@
 //! Authentication scheme contract types and pattern classification.
 //!
 //! `AuthScheme` is the bridge between the credential system and the
-//! resource system. Resources declare what auth material they need
-//! (`type Auth: AuthScheme`), and credentials produce it via `project()`.
+//! resource system. A credential declares the scheme it yields via its
+//! `Credential::Scheme: AuthScheme` associated type and produces it via
+//! `project()`; a resource consumes that scheme as a typed
+//! `CredentialGuard<Scheme>` bound into a slot, so a cross-protocol bind is a
+//! nominal compile error.
 //!
 //! `AuthPattern` groups auth schemes into universal categories for UI,
 //! logging, and tooling.
 //!
-//! # Sensitivity dichotomy (§15.5)
+//! # Sensitivity classification (§15.5)
 //!
 //! `AuthScheme` is the base trait — it carries no security guarantees by
 //! itself. Implementing types declare sensitivity by also implementing
-//! one of:
+//! exactly one of:
 //!
-//! - `SensitiveScheme: AuthScheme + ZeroizeOnDrop` — schemes that hold secret material (tokens,
-//!   passwords, keys, certificate private keys).
-//! - `PublicScheme: AuthScheme` — schemes that hold no secret material (provider/role/region
-//!   identifiers, public capability descriptors).
+//! - `SensitiveScheme: AuthScheme + ZeroizeOnDrop` — holds secret bytes in-process (tokens,
+//!   passwords, keys, certificate private keys). The `ZeroizeOnDrop` supertrait forces the bytes
+//!   to be wiped on drop.
+//! - `PublicScheme: AuthScheme` — holds no secret material at all (provider/role/region
+//!   identifiers, public capability descriptors); safe to log and serialize.
+//! - `ExternalScheme: AuthScheme` — holds only an opaque handle to material in an external signer
+//!   (HSM / KMS / FIDO); no secret bytes in-process (so no `ZeroizeOnDrop`), but the handle is a
+//!   signing capability, so it is not harmless-public either.
 //!
 //! A scheme MUST implement exactly one of these. The `#[derive(AuthScheme)]`
-//! macro accepts `#[auth_scheme(sensitive)]` or `#[auth_scheme(public)]`
-//! to declare the sensitivity and audit fields at expansion time.
+//! macro accepts `#[auth_scheme(sensitive)]`, `#[auth_scheme(public)]`, or
+//! `#[auth_scheme(external)]` to declare the sensitivity and audit fields at
+//! expansion time.
 
 use serde::{Deserialize, Serialize};
 use zeroize::ZeroizeOnDrop;
@@ -81,6 +89,12 @@ pub enum AuthPattern {
 /// reduction here closes security-lead N2 by removing the implicit "every
 /// scheme can be serialized into telemetry" assumption.
 pub trait AuthScheme: Send + Sync + 'static {
+    /// The mechanics [`SchemeFamily`] this scheme belongs to — the open axis of
+    /// the F3 model. A novel protocol is a new family *type* with zero framework
+    /// `match`; the family declares the wire-egress shape(s) and the legitimate
+    /// renewal strategies, checked against the credential's policy at registration.
+    type Family: SchemeFamily;
+
     /// Classification for UI, logging, and tooling.
     fn pattern() -> AuthPattern;
 }
@@ -110,11 +124,12 @@ pub trait AuthScheme: Send + Sync + 'static {
 /// Defense-in-depth: the `ZeroizeOnDrop` bound catches a
 /// `SensitiveScheme` impl on a struct that doesn't zeroize (the
 /// canonical safety invariant), so even with two impls the sensitive
-/// bound carries the safety guarantee. See
-/// `arch-publicscheme-nested-sensitive-audit` in
-/// `docs/tracking/credential-concerns-register.md` for the long-term
-/// refinement plan (sealed `Sensitivity` associated tag, or signed
-/// manifests that surface dual impls at registry time).
+/// bound carries the safety guarantee. The exclusivity hole is left as-is
+/// deliberately: these traits are used as generic bounds nowhere, so a dual
+/// impl is inert. A sealed `type Sensitivity` associated-tag was evaluated to
+/// close it structurally and **rejected** — sensitivity is a per-field property
+/// and the real zeroize gate is the guard's `Zeroize` bound, not this marker
+/// (see the credential subsystem `DESIGN.md` §17, sensitivity item).
 pub trait SensitiveScheme: AuthScheme + ZeroizeOnDrop {}
 
 /// Schemes that hold no secret material.
@@ -136,8 +151,41 @@ pub trait SensitiveScheme: AuthScheme + ZeroizeOnDrop {}
 /// happens at runtime, no stored secret).
 pub trait PublicScheme: AuthScheme {}
 
+/// Schemes whose privileged material lives in an **external signer** — an HSM,
+/// a cloud KMS, or a hardware FIDO token. The scheme holds only an opaque
+/// *handle* (a key id, ARN, or PKCS#11 object reference); the secret bytes
+/// never enter this process, so there is nothing to [`ZeroizeOnDrop`] — which is
+/// why this is **not** [`SensitiveScheme`] (no `ZeroizeOnDrop` supertrait).
+///
+/// It is equally **not** [`PublicScheme`]: the handle is a *capability*. Anyone
+/// who can present it to the signer can obtain signatures (a signing oracle), so
+/// an external handle must not be treated as harmless, loggable public data. A
+/// scheme that holds an actual `SecretString`/`SecretBytes` in memory is
+/// [`SensitiveScheme`], not external — the `#[auth_scheme(external)]` derive
+/// rejects such fields so this trait cannot become a zeroize-bypass channel.
+///
+/// Examples: an RFC 9421 HTTP-message-signing key whose private half lives in a
+/// KMS; a FIDO/WebAuthn assertion key; a PKCS#11-resident signing key.
+pub trait ExternalScheme: AuthScheme {}
+
+/// The mechanics family of the no-auth scheme: nothing crosses the wire, nothing
+/// is renewed. The `Family` of `()`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NoAuthFamily;
+
+impl SchemeFamily for NoAuthFamily {
+    const EGRESS: &'static [EgressShape] = &[EgressShape::None];
+    fn refresh_classes() -> &'static [RefreshStrategyKind] {
+        &[RefreshStrategyKind::Static]
+    }
+    fn pattern() -> AuthPattern {
+        AuthPattern::NoAuth
+    }
+}
+
 /// No authentication required.
 impl AuthScheme for () {
+    type Family = NoAuthFamily;
     fn pattern() -> AuthPattern {
         AuthPattern::NoAuth
     }
@@ -145,6 +193,255 @@ impl AuthScheme for () {
 
 /// `()` carries no secret material — it is `PublicScheme` by definition.
 impl PublicScheme for () {}
+
+// ── Mechanics axis (F3) ───────────────────────────────────────────────────────
+
+/// How a credential's secret material relates to the wire — the **one closed
+/// set** in the scheme model.
+///
+/// Validated complete for the 2026 protocol universe across eight transport
+/// domains (~150 mechanisms reduced to these primitives): there is no further
+/// physical way for a secret to relate to a wire. Deliberately a sealed
+/// `#[non_exhaustive]` enum, **not** an open trait: the framework must `match`
+/// the egress shape to drive redaction, the SSRF-hardened refresh transport,
+/// audit, and observability, so an open egress would let a plugin declare a
+/// shape those consumers have never seen — a secret-leak-by-open-world. Adding a
+/// variant is therefore a deliberate framework edit shipped *atomically* with
+/// its redaction/transport handler. (The open-world axis is [`SchemeFamily`],
+/// not this.)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[non_exhaustive]
+pub enum EgressShape {
+    /// Nothing secret crosses the wire — true mTLS-only-no-secret, object-capability
+    /// bearing, or an inbound-verification secret used to *verify* (not send).
+    None,
+    /// Secret bytes carried inline in a request/auth field — transport-agnostic:
+    /// HTTP `Authorization` header, SASL OAUTHBEARER blob, gRPC metadata, SOAP
+    /// `<wsse:Security>`, OPC-UA identity token, Cap'n Proto SturdyRef.
+    InlineSecret,
+    /// Secret presented at connection establishment — a static DB password or an
+    /// ephemeral token-as-password (RDS-IAM, Azure-Entra, MongoDB-OIDC, Redis-Entra).
+    ConnectionHandshakeSecret,
+    /// A signature/MAC over the *outbound request*; the secret never leaves the
+    /// signer — symmetric (HMAC, AWS SigV4) or asymmetric (SigV4a,
+    /// `private_key_jwt`), over any transport. The carrier (header/query/body) is
+    /// a sub-field, not a variant.
+    SignedRequest,
+    /// RFC 9421 HTTP Message Signatures — specifically. Narrow by design; does not
+    /// absorb SASL/GSSAPI handshake proofs (those are [`Self::ChallengeResponse`]).
+    NegotiatedSignature,
+    /// Present a structured identity certificate in a handshake — X.509/mTLS, an
+    /// SSH certificate, a raw public key (RFC 7250), or a SPIFFE SVID.
+    CertPresentation,
+    /// Sender-constrained / bound token: a bearer token *plus* a binding proof, as
+    /// one credential — DPoP (RFC 9449), mTLS-bound tokens (RFC 8705), SAML
+    /// Holder-of-Key. Two simultaneous shapes are expressed by a multi-element
+    /// [`SchemeFamily::EGRESS`].
+    ProofOfPossession,
+    /// The secret is a key used to derive a per-exchange proof inside a (possibly
+    /// multi-round) connection/SASL handshake; the secret itself is never sent —
+    /// SCRAM, CRAM-MD5, MySQL native/caching_sha2, NTLM, Kerberos/GSSAPI/SPNEGO,
+    /// SNMPv3-auth, RADIUS, NATS nkey, ALTS.
+    ChallengeResponse,
+    /// A symmetric pre-shared key or static keypair keys / authenticates /
+    /// protects a transport session or message body; never transmitted —
+    /// WireGuard, Noise, TLS-PSK / DTLS-PSK, IKEv2-PSK, LoRaWAN, SNMPv3-privacy.
+    KeyAgreement,
+    /// An external signer produces the wire credential and the framework holds no
+    /// secret bytes, only a handle — ssh-agent, TPM, HSM/PKCS#11, FIDO2/WebAuthn,
+    /// cloud KMS, Secure Enclave, Ledger/Trezor. Pairs with a `External`-sensitivity
+    /// scheme.
+    DelegatedSignature,
+    /// The credential signs *caller-supplied* bytes the caller then broadcasts;
+    /// neither the secret nor the signature crosses a framework-owned wire — raw
+    /// ECDSA/ed25519 transaction signing, HD-wallet keys, SAML IdP/SP XML-DSig.
+    DetachedSignature,
+}
+
+/// The **mechanics** of an auth scheme — the open axis of the F3 model.
+///
+/// Unlike [`EgressShape`] (a sealed primitive set), `SchemeFamily` is an **open
+/// trait**: any downstream or plugin crate implements it for its own zero-sized
+/// marker type, so a novel protocol is a new family type with **zero** framework
+/// `match` and zero framework release. Soundness comes from the required
+/// obligation methods, checked once at registration (a token-bearer family that
+/// declares a never-refresh strategy is rejected) — not from membership in a
+/// closed enum. A protocol may have several families when its shapes are
+/// independent (SPIFFE = an X.509-SVID family and a JWT-SVID family); a
+/// cryptographically *bound* multi-shape credential (DPoP, RFC 8705) is one
+/// family whose [`EGRESS`](Self::EGRESS) lists both shapes.
+pub trait SchemeFamily: 'static {
+    /// The wire-egress shape(s) this family presents. A slice, because
+    /// sender-constrained and bound credentials present more than one at once
+    /// (RFC 8705 = `[CertPresentation, InlineSecret]`).
+    const EGRESS: &'static [EgressShape];
+
+    /// The **wire-intrinsic** renewal strategies this family's material may
+    /// legitimately use — the renewals inherent to the scheme's own mechanics.
+    /// A *kind* (not a full [`RefreshStrategy`]) because the `ReAcquire` payload
+    /// is per-credential, not part of the family's soundness contract.
+    ///
+    /// [`RefreshStrategyKind::Lease`] and [`RefreshStrategyKind::Watched`] are
+    /// deliberately **never** members of any family's set: both are *orthogonal*
+    /// lifecycle wrappers around a secret of any wire shape. Leasing (Vault
+    /// dynamic secret, Kubernetes projected token) makes the same
+    /// [`InlineSecret`](EgressShape::InlineSecret) token `Static` when issued as
+    /// a PAT and `Lease` when issued by Vault; its soundness is governed by the
+    /// `Dynamic` capability and the lease staleness ceiling. `Watched` material
+    /// is rotated externally and observed, never engine-driven. The containment
+    /// law ([`permits_refresh`](Self::permits_refresh)) therefore exempts both.
+    /// `Static` means "no wire-intrinsic refresh".
+    fn refresh_classes() -> &'static [RefreshStrategyKind];
+
+    /// Whether `kind` is a refresh this family sanctions — the containment law
+    /// the resolver enforces against the live policy.
+    ///
+    /// [`RefreshStrategyKind::Lease`] and [`RefreshStrategyKind::Watched`] are
+    /// always permitted: both are *orthogonal* to the wire-intrinsic set (see
+    /// [`refresh_classes`](Self::refresh_classes)) — leasing is governed by the
+    /// `Dynamic` capability and `Watched` is externally rotated, so neither is a
+    /// class any family declares. Every other kind must be declared in
+    /// [`refresh_classes`](Self::refresh_classes). A family cannot override this
+    /// — the exemption rule is framework policy, mirrored by
+    /// [`supports_active_refresh`](Self::supports_active_refresh) which excludes
+    /// the same two kinds from the engine-drivable predicate.
+    fn permits_refresh(kind: RefreshStrategyKind) -> bool {
+        matches!(
+            kind,
+            RefreshStrategyKind::Lease | RefreshStrategyKind::Watched
+        ) || Self::refresh_classes().contains(&kind)
+    }
+
+    /// Whether this family declares any **engine-drivable** wire-intrinsic
+    /// refresh — a `RefreshToken`, `ReAcquire`, or `ReMintLocal` class. This is
+    /// the registration-time soundness predicate: a credential that implements
+    /// `Refreshable` (its `fn refresh` renews non-interactively or re-acquires)
+    /// is unsound on a family that offers no such mechanism — e.g. an opaque
+    /// secret-token family whose only class is `Static`. `Lease` and `Watched`
+    /// are excluded: neither is engine-driven through `Refreshable::refresh`
+    /// (lease renewal is the `Dynamic` path; `Watched` is externally rotated).
+    fn supports_active_refresh() -> bool {
+        Self::refresh_classes().iter().any(|k| {
+            matches!(
+                k,
+                RefreshStrategyKind::RefreshToken
+                    | RefreshStrategyKind::ReAcquire
+                    | RefreshStrategyKind::ReMintLocal
+            )
+        })
+    }
+
+    /// Cosmetic classification for UI / catalog / logging. A family with shared
+    /// mechanics but a distinct display identity overrides this.
+    fn pattern() -> AuthPattern;
+}
+
+/// Identifier of another scheme that a re-acquisition consumes — the input
+/// credential of a federated exchange (AWS STS chained AssumeRole, GCP
+/// workload-identity-federation, RFC 8693 token exchange, impersonation).
+/// Opaque; a scheme `KEY` string in practice.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct SchemeId(String);
+
+impl SchemeId {
+    /// Wrap a scheme identifier.
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+
+    /// The identifier string.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// How a credential's material is renewed as it nears or reaches expiry.
+///
+/// **Data, not a trait** (ADR-0088 D2). The engine reads this from the
+/// credential's policy and drives the matching path; it lives here in
+/// `nebula-core` (a pure data enum with no upward dependencies) so
+/// [`SchemeFamily::refresh_classes`] can name it without an inverted dependency
+/// edge. Re-exported from `nebula_credential` for source compatibility.
+///
+/// Not `Copy`: [`Self::ReAcquire`] carries an optional [`SchemeId`].
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[non_exhaustive]
+pub enum RefreshStrategy {
+    /// Valid until explicitly revoked; never auto-renewed (API key, PAT).
+    #[default]
+    Static,
+    /// Renew without user interaction via the protocol's `refresh` — OAuth2
+    /// refresh-token grant, Vault lease renew.
+    RefreshToken,
+    /// An external lease the engine's lease scheduler renews at a fraction of
+    /// its TTL — Vault dynamic secret, Kubernetes projected token.
+    Lease,
+    /// Full re-acquisition round-trip; no incremental refresh.
+    ///
+    /// `from = Some(_)` when re-acquisition **consumes another credential** (a
+    /// federated exchange — STS chained AssumeRole, GCP WIF, RFC 8693,
+    /// impersonation); `None` for a standalone re-acquire (STS from static keys,
+    /// SAML/OIDC re-auth, OAuth2 without a refresh token). `interactive`
+    /// distinguishes a silent replay (client-credentials) from a human-gated
+    /// re-auth (device-code, authorization-code).
+    ReAcquire {
+        /// The credential this re-acquisition consumes, if federated.
+        from: Option<SchemeId>,
+        /// Whether re-acquisition requires human interaction.
+        interactive: bool,
+    },
+    /// Renewal is a pure **local** key→token derivation — never a network call
+    /// (self-signed JWT / RFC 7523, GCP self-signed-JWT-access, a fresh SigV4
+    /// from a static key). The resolver routes this to a local mint path,
+    /// skipping the refresh transport, coalescer, and circuit-breaker; the
+    /// re-validation floor is a local re-mint, not a provider probe.
+    ReMintLocal,
+    /// Material is rotated by an **external** source (kubelet projected-token
+    /// file rewrite, SPIFFE Workload API push); the engine re-reads on change
+    /// and never initiates renewal, so `decide_refresh` returns `Usable`.
+    Watched,
+}
+
+/// The payload-free discriminant of a [`RefreshStrategy`] — the *kind* of
+/// renewal a credential uses.
+///
+/// `Copy`, so it composes into the `&'static` allow-sets a [`SchemeFamily`]
+/// declares via [`refresh_classes`](SchemeFamily::refresh_classes): a family's
+/// soundness contract is over *which mechanisms* are legitimate, not over a
+/// specific `ReAcquire` payload (the `SchemeId` / interactivity is
+/// per-credential). Registration checks `policy.refresh.kind()` for membership.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[non_exhaustive]
+pub enum RefreshStrategyKind {
+    /// [`RefreshStrategy::Static`].
+    Static,
+    /// [`RefreshStrategy::RefreshToken`].
+    RefreshToken,
+    /// [`RefreshStrategy::Lease`].
+    Lease,
+    /// [`RefreshStrategy::ReAcquire`].
+    ReAcquire,
+    /// [`RefreshStrategy::ReMintLocal`].
+    ReMintLocal,
+    /// [`RefreshStrategy::Watched`].
+    Watched,
+}
+
+impl RefreshStrategy {
+    /// This strategy's payload-free [`RefreshStrategyKind`].
+    #[must_use]
+    pub fn kind(&self) -> RefreshStrategyKind {
+        match self {
+            Self::Static => RefreshStrategyKind::Static,
+            Self::RefreshToken => RefreshStrategyKind::RefreshToken,
+            Self::Lease => RefreshStrategyKind::Lease,
+            Self::ReAcquire { .. } => RefreshStrategyKind::ReAcquire,
+            Self::ReMintLocal => RefreshStrategyKind::ReMintLocal,
+            Self::Watched => RefreshStrategyKind::Watched,
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -191,6 +488,7 @@ mod tests {
     }
 
     impl AuthScheme for TestToken {
+        type Family = NoAuthFamily;
         fn pattern() -> AuthPattern {
             AuthPattern::SecretToken
         }
@@ -207,5 +505,67 @@ mod tests {
     #[test]
     fn unit_scheme_pattern_is_no_auth() {
         assert_eq!(<() as AuthScheme>::pattern(), AuthPattern::NoAuth);
+    }
+
+    /// A family with an engine-drivable refresh class, for the containment-law
+    /// tests (NoAuthFamily is `Static`-only).
+    struct ActiveFamily;
+    impl SchemeFamily for ActiveFamily {
+        const EGRESS: &'static [EgressShape] = &[EgressShape::InlineSecret];
+        fn refresh_classes() -> &'static [RefreshStrategyKind] {
+            &[
+                RefreshStrategyKind::RefreshToken,
+                RefreshStrategyKind::ReAcquire,
+            ]
+        }
+        fn pattern() -> AuthPattern {
+            AuthPattern::OAuth2
+        }
+    }
+
+    #[test]
+    fn permits_refresh_exempts_orthogonal_kinds_on_any_family() {
+        // `Lease` and `Watched` are orthogonal lifecycle wrappers — permitted on
+        // every family even though no family declares them in `refresh_classes`.
+        for kind in [RefreshStrategyKind::Lease, RefreshStrategyKind::Watched] {
+            assert!(
+                NoAuthFamily::permits_refresh(kind),
+                "{kind:?} must be exempt on a Static-only family"
+            );
+            assert!(
+                ActiveFamily::permits_refresh(kind),
+                "{kind:?} must be exempt on an active family"
+            );
+        }
+    }
+
+    #[test]
+    fn permits_refresh_gates_non_lease_kinds_by_membership() {
+        // Static-only family: only `Static` (and the exempt `Lease`) pass.
+        assert!(NoAuthFamily::permits_refresh(RefreshStrategyKind::Static));
+        assert!(!NoAuthFamily::permits_refresh(
+            RefreshStrategyKind::RefreshToken
+        ));
+        assert!(!NoAuthFamily::permits_refresh(
+            RefreshStrategyKind::ReAcquire
+        ));
+        // Active family: declared kinds pass, undeclared `ReMintLocal` does not.
+        assert!(ActiveFamily::permits_refresh(
+            RefreshStrategyKind::RefreshToken
+        ));
+        assert!(ActiveFamily::permits_refresh(
+            RefreshStrategyKind::ReAcquire
+        ));
+        assert!(!ActiveFamily::permits_refresh(
+            RefreshStrategyKind::ReMintLocal
+        ));
+    }
+
+    #[test]
+    fn supports_active_refresh_distinguishes_static_from_active_families() {
+        // `Static`-only (and `Lease`/`Watched`-only) families are not actively
+        // refreshable; a family with RefreshToken/ReAcquire/ReMintLocal is.
+        assert!(!NoAuthFamily::supports_active_refresh());
+        assert!(ActiveFamily::supports_active_refresh());
     }
 }

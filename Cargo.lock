@@ -3423,6 +3423,7 @@ version = "0.1.0"
 dependencies = [
  "ahash",
  "arc-swap",
+ "async-trait",
  "base64",
  "bitflags",
  "chrono",

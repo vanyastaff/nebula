@@ -19,9 +19,9 @@
 use std::time::Duration;
 
 use nebula_credential::{
-    Capabilities, Credential, CredentialCategory, CredentialContext, CredentialLifecycle,
-    CredentialPolicy, LeaseRef, PendingState, RefreshStrategy, RevokeStrategy, SecretString,
-    compute_capabilities,
+    Capabilities, Credential, CredentialContext, CredentialLifecycle, CredentialPolicy,
+    CredentialRegistry, LeaseRef, PendingState, RefreshStrategy, RegisterError, RevokeStrategy,
+    SecretString, compute_capabilities,
     error::CredentialError,
     resolve::{RefreshOutcome, ResolveResult, TestResult, UserInput},
     scheme::SecretToken,
@@ -40,7 +40,6 @@ struct RefreshOnly;
 
 #[nebula_credential::credential(
     key = "test_refresh_only",
-    category = RefreshPair,
     name = "Refresh Only",
     description = "fixture",
     icon = "sync"
@@ -77,7 +76,6 @@ fn refresh_only_infers_refreshable_and_synthesizes_refresh_token_policy() {
         "only `fn refresh` is present, so only REFRESHABLE should be reported"
     );
     let p = RefreshOnly::policy(&token());
-    assert_eq!(p.category, CredentialCategory::RefreshPair);
     assert_eq!(p.refresh, RefreshStrategy::RefreshToken);
     assert_eq!(p.revoke, RevokeStrategy::None);
     assert!(p.is_auto_renewable());
@@ -99,7 +97,7 @@ fn refresh_only_synthesizes_metadata_from_args() {
 
 struct LeasedThing;
 
-#[nebula_credential::credential(key = "test_leased", category = Leased, name = "Leased Thing")]
+#[nebula_credential::credential(key = "test_leased", name = "Leased Thing")]
 impl LeasedThing {
     type Properties = FieldValues;
     type Scheme = SecretToken;
@@ -125,12 +123,12 @@ impl LeasedThing {
 
     fn policy(_state: &SecretToken) -> CredentialPolicy {
         CredentialPolicy {
-            category: CredentialCategory::Leased,
             expires_at: None,
             lease: Some(LeaseRef {
                 lease_id: "vault/lease/test".to_owned(),
                 lease_duration: Duration::from_hours(1),
                 renewable: true,
+                renew_until: None,
             }),
             refresh: RefreshStrategy::Lease,
             revoke: RevokeStrategy::HandleBased,
@@ -146,7 +144,6 @@ fn release_infers_dynamic_with_handwritten_lease_policy() {
         "only `fn release` is present, so only DYNAMIC should be reported"
     );
     let p = LeasedThing::policy(&token());
-    assert_eq!(p.category, CredentialCategory::Leased);
     assert_eq!(p.refresh, RefreshStrategy::Lease);
     assert_eq!(p.revoke, RevokeStrategy::HandleBased);
     assert!(p.is_expiring(), "a renewable lease is expiring");
@@ -157,7 +154,7 @@ fn release_infers_dynamic_with_handwritten_lease_policy() {
 
 struct RevTest;
 
-#[nebula_credential::credential(key = "test_revtest", category = StaticSecret, name = "Rev Test")]
+#[nebula_credential::credential(key = "test_revtest", name = "Rev Test")]
 impl RevTest {
     type Properties = FieldValues;
     type Scheme = SecretToken;
@@ -197,7 +194,6 @@ fn revoke_and_test_infer_both_flags_and_synthesize_handle_based_revoke() {
         "`fn revoke` + `fn test` present, neither refresh nor release"
     );
     let p = RevTest::policy(&token());
-    assert_eq!(p.category, CredentialCategory::StaticSecret);
     assert_eq!(p.refresh, RefreshStrategy::Static);
     assert_eq!(p.revoke, RevokeStrategy::HandleBased);
     assert!(!p.is_auto_renewable());
@@ -220,11 +216,7 @@ impl PendingState for MyPending {
 
 struct InteractiveThing;
 
-#[nebula_credential::credential(
-    key = "test_interactive",
-    category = InteractiveRedirect,
-    name = "Interactive Thing"
-)]
+#[nebula_credential::credential(key = "test_interactive", name = "Interactive Thing")]
 impl InteractiveThing {
     type Properties = FieldValues;
     type Scheme = SecretToken;
@@ -259,7 +251,38 @@ fn continue_resolve_with_pending_infers_interactive() {
         "`fn continue_resolve` + `type Pending` present, no other capability methods"
     );
     let p = InteractiveThing::policy(&token());
-    assert_eq!(p.category, CredentialCategory::InteractiveRedirect);
     assert_eq!(p.refresh, RefreshStrategy::Static);
     assert_eq!(p.revoke, RevokeStrategy::None);
+}
+
+// ── F3 containment law: registration rejects a Refreshable credential whose ──
+// scheme family declares no active refresh class.
+
+#[test]
+fn register_rejects_refreshable_on_static_only_family() {
+    // `RefreshOnly` implements `Refreshable` (it has `fn refresh`) but its
+    // `type Scheme = SecretToken`, whose family (`SecretTokenFamily`) declares
+    // `refresh_classes = [Static]`. The F3 containment law must reject it at
+    // registration rather than ship a credential whose refresh is unsound.
+    let mut registry = CredentialRegistry::new();
+    let err = registry
+        .register(RefreshOnly, "test_crate")
+        .expect_err("Refreshable on a Static-only family must be rejected");
+    match err {
+        RegisterError::UnsoundFamily { key, .. } => {
+            assert_eq!(key, "test_refresh_only");
+        },
+        other => panic!("expected UnsoundFamily, got {other:?}"),
+    }
+}
+
+#[test]
+fn register_accepts_non_refreshable_on_static_family() {
+    // `RevTest` is Revocable + Testable but NOT Refreshable, so the containment
+    // gate does not apply — a Static-family credential that never refreshes is
+    // sound and registers cleanly.
+    let mut registry = CredentialRegistry::new();
+    registry
+        .register(RevTest, "test_crate")
+        .expect("non-Refreshable credential on a Static family is sound");
 }

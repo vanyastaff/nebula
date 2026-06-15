@@ -49,6 +49,21 @@ impl ValidatedCredentialBinding {
         &self.credential_id
     }
 
+    /// The owner-scoped lookup key for this binding — the credential id paired
+    /// with the `owner_id` the scope check proved owns it (the fingerprint is
+    /// the `owner_id`).
+    ///
+    /// The runtime resolver consumes this to re-verify the stored row's owner
+    /// at load, so a validated binding is backed by a load-time owner check
+    /// rather than authorizing an unscoped load on its provenance alone.
+    #[must_use]
+    pub fn owner_scoped_key(&self) -> crate::store::OwnerScopedKey {
+        crate::store::OwnerScopedKey::new(
+            self.tenant_fingerprint.0.clone(),
+            self.credential_id.clone(),
+        )
+    }
+
     /// Crate-private access to the scope fingerprint. Consumed by the
     /// engine execution path that re-validates the binding before
     /// dispatching secrets (`resolve_for_slot`).
@@ -98,6 +113,26 @@ pub enum ValidatedCredentialBindingError {
         requested: String,
         /// Tenant actually stored in the credential row.
         actual: String,
+    },
+
+    /// The credential exists and is owned by the caller but has been revoked
+    /// (carries a tombstone epoch).
+    ///
+    /// Distinct from [`NotFound`] on purpose: a binding pointing at a revoked
+    /// credential is a *clear* error ("this credential was revoked"), not a
+    /// generic miss — so a workflow author sees why the slot stopped resolving
+    /// rather than chasing a phantom "not found". The check happens here at
+    /// bind-validation time, with no reverse `references()` index in the
+    /// credential crate (that would invert the service→runtime→contract layering).
+    ///
+    /// [`NotFound`]: Self::NotFound
+    #[error("credential `{id}` was revoked")]
+    CredentialTombstoned {
+        /// The revoked credential id.
+        id: String,
+        /// When the credential was revoked, when the tombstone epoch is
+        /// well-formed (`None` for a tombstone whose stamp did not parse).
+        revoked_at: Option<chrono::DateTime<chrono::Utc>>,
     },
 
     /// An underlying store or service error occurred during validation.

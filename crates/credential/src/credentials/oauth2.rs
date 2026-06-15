@@ -42,8 +42,8 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use super::oauth2_config;
 use crate::{
-    CredentialCategory, CredentialContext, CredentialPolicy, CredentialState, PendingState,
-    RefreshStrategy, RevokeStrategy, SecretString,
+    CredentialContext, CredentialPolicy, CredentialState, PendingState, RefreshStrategy,
+    RevokeStrategy, SecretString,
     error::{CredentialError, ProviderErrorContext, ProviderErrorKind, SecretFreeMessage},
     metadata::CredentialMetadata,
     resolve::{InteractionRequest, RefreshOutcome, ResolveResult, TestResult, UserInput},
@@ -409,7 +409,7 @@ pub struct OAuth2Properties {
 // else `ReAcquire`) — the macro's synthesized policy cannot read live state.
 // The `initiate_authorization_code` kickoff helper stays in its own inherent
 // `impl` block below; it is not part of the credential contract.
-#[nebula_credential::credential(key = "oauth2", category = RefreshPair)]
+#[nebula_credential::credential(key = "oauth2")]
 impl OAuth2Credential {
     type Properties = OAuth2Properties;
     type Scheme = OAuth2Token;
@@ -618,16 +618,20 @@ impl OAuth2Credential {
     // returns `ReauthRequired`). Revoke is handle-based (RFC 7009); expiry is
     // the access token's inline `expires_at`. The hand-written `policy` is kept
     // (not macro-synthesized) precisely because the refresh strategy depends on
-    // live state, which the macro's category-derived default cannot read.
+    // live state, which the macro's synthesized default cannot read.
     fn policy(state: &OAuth2State) -> CredentialPolicy {
         CredentialPolicy {
-            category: CredentialCategory::RefreshPair,
             expires_at: state.expires_at,
             lease: None,
             refresh: if state.refresh_token.is_some() {
                 RefreshStrategy::RefreshToken
             } else {
-                RefreshStrategy::ReAcquire
+                // No refresh token: re-acquisition is a human-gated OAuth2
+                // re-authorization, not a federated exchange of another credential.
+                RefreshStrategy::ReAcquire {
+                    from: None,
+                    interactive: true,
+                }
             },
             revoke: RevokeStrategy::HandleBased,
         }
@@ -865,7 +869,6 @@ mod tests {
         // With a refresh token the engine can renew non-interactively.
         let with_token = make_state();
         let p = OAuth2Credential::policy(&with_token);
-        assert_eq!(p.category, CredentialCategory::RefreshPair);
         assert_eq!(p.refresh, RefreshStrategy::RefreshToken);
         assert_eq!(p.revoke, RevokeStrategy::HandleBased);
         assert!(p.is_auto_renewable());
@@ -876,7 +879,13 @@ mod tests {
         let mut without = make_state();
         without.refresh_token = None;
         let p2 = OAuth2Credential::policy(&without);
-        assert_eq!(p2.refresh, RefreshStrategy::ReAcquire);
+        assert_eq!(
+            p2.refresh,
+            RefreshStrategy::ReAcquire {
+                from: None,
+                interactive: true
+            }
+        );
         assert!(!p2.is_auto_renewable());
     }
 
@@ -1468,7 +1477,25 @@ mod tests {
     #[test]
     fn oauth2_state_serde_round_trip() {
         let state = make_state();
-        let json = serde_json::to_string(&state).unwrap();
+
+        // Default sink (logs, responses): every secret field redacts.
+        let redacted = serde_json::to_string(&state).unwrap();
+        assert!(
+            !redacted.contains("tok_abc"),
+            "access_token leaked to default serde sink"
+        );
+        assert!(
+            !redacted.contains("ref_xyz"),
+            "refresh_token leaked to default serde sink"
+        );
+        assert!(
+            !redacted.contains("csecret"),
+            "client_secret leaked to default serde sink"
+        );
+
+        // Storage scope preserves them for encrypted-at-rest persistence.
+        let json = crate::serde_secret::expose_for_serialization(|| serde_json::to_string(&state))
+            .unwrap();
         let restored: OAuth2State = serde_json::from_str(&json).unwrap();
         assert_eq!(restored.access_token.expose_secret(), "tok_abc");
         assert_eq!(

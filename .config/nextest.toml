@@ -1,11 +1,29 @@
 # nextest configuration
 # https://nexte.st/docs/configuration/
 
+# Serialize the trybuild UI binaries. Every `*compile_fail*` binary (plus the
+# action seam probe and the validator `ui` binary) drives trybuild, which
+# compiles its fixtures in ONE shared scratch project
+# (`target/tests/trybuild/<crate>`). Run two such binaries concurrently and they
+# overwrite each other's fixtures mid-compile — a probe that must fail then sees
+# another binary's valid sources and reports "expected to fail, but it
+# succeeded" (and contends on the cargo build-dir lock). Pinning them to a
+# single-thread group makes the gate deterministic; they still pass serially.
+[test-groups]
+trybuild = { max-threads = 1 }
+
 [profile.default]
 # Use up to all available CPUs
 test-threads = "num-cpus"
 # Run all tests even if some fail (report full picture)
 fail-fast = false
+
+# Assign the trybuild binaries to the serialized group for EVERY profile
+# (default / ci / agent inherit default-profile overrides). Filter mirrors the
+# agent slow-timeout override below.
+[[profile.default.overrides]]
+filter = 'binary(/compile_fail/) | binary(=seam_action_schema_method_removed) | (package(=nebula-validator) & binary(=ui))'
+test-group = 'trybuild'
 
 [profile.ci]
 # Retry flaky tests up to 2 times

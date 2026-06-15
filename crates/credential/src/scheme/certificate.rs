@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
-use crate::{AuthScheme, SecretString};
+use crate::{AuthScheme, CertificateFamily, SecretString};
 
 /// X.509 client certificate with private key for mutual TLS authentication.
 ///
@@ -26,7 +26,7 @@ use crate::{AuthScheme, SecretString};
 /// );
 /// ```
 #[derive(Clone, Serialize, Deserialize, Zeroize, ZeroizeOnDrop, AuthScheme)]
-#[auth_scheme(pattern = Certificate, sensitive)]
+#[auth_scheme(pattern = Certificate, family = CertificateFamily, sensitive)]
 pub struct Certificate {
     #[zeroize(skip)]
     cert_chain: String,
@@ -119,16 +119,19 @@ mod tests {
 
     #[test]
     fn serde_roundtrip_preserves_secrets() {
-        // Certificate uses `#[serde(with = "serde_secret")]` which preserves
-        // the actual value (unlike the default SecretString Serialize that
-        // writes "[REDACTED]"). This test verifies that contract.
+        // Certificate routes its secret fields through `serde_secret`, which
+        // emits cleartext ONLY inside the `expose_for_serialization` storage
+        // scope (the default sink redacts to "[REDACTED]"). This pins the
+        // storage round-trip: sealed serialization preserves the secrets.
         let original = Certificate::new(
             "-----BEGIN CERTIFICATE-----\nMIIB...",
             SecretString::new("-----BEGIN PRIVATE KEY-----\nMIIE..."),
         )
         .with_passphrase(SecretString::new("hunter2"));
 
-        let json = serde_json::to_string(&original).expect("Certificate must serialize");
+        let json =
+            crate::serde_secret::expose_for_serialization(|| serde_json::to_string(&original))
+                .expect("Certificate must serialize");
         let decoded: Certificate =
             serde_json::from_str(&json).expect("Certificate must deserialize");
 

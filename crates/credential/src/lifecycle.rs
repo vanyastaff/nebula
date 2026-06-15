@@ -22,68 +22,11 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-/// The ~10 structural categories of credential, classified by **lifecycle
-/// shape** rather than by wire scheme (there are ~35 wire schemes but only a
-/// handful of distinct lifecycle shapes — ADR-0088 D1).
-///
-/// A single credential may legitimately inhabit more than one category (e.g. a
-/// GCP service-account key can self-sign a bearer JWT *or* be exchanged), so a
-/// protocol picks the category that drives its lifecycle.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[non_exhaustive]
-pub enum CredentialCategory {
-    /// Static secret valid until revoked — API key, HTTP Basic, PAT.
-    StaticSecret,
-    /// Request signed with a secret that never leaves the signer — AWS SigV4, HMAC.
-    SignedRequest,
-    /// Bearer token carrying its own expiry, no refresh pair — short-lived JWT.
-    BearerWithExp,
-    /// OAuth2 authorization-code / refresh-grant shape — an access token,
-    /// usually paired with a refresh token.
-    ///
-    /// This is the structural **kind**, fixed for the credential type. A given
-    /// instance may lack a refresh token (the provider issued none): it stays
-    /// `RefreshPair`, but its [`RefreshStrategy`] is computed from live state and
-    /// degrades to [`RefreshStrategy::ReAcquire`]. Category = the type; strategy =
-    /// the state-derived behaviour.
-    RefreshPair,
-    /// Input credential exchanged for a scoped, shorter-lived output —
-    /// AWS STS AssumeRole, GCP workload-identity-federation, RFC 8693 token exchange.
-    FederatedExchange,
-    /// Requires a human redirect / consent to (re)acquire — OAuth2 auth-code,
-    /// device-code flow.
-    InteractiveRedirect,
-    /// X.509 or SSH key material — mTLS client cert, SSH key.
-    KeyPair,
-    /// Short-lived leased secret that must be renewed or it expires — Vault
-    /// dynamic secret, Kubernetes projected service-account token.
-    Leased,
-    /// Server-side session — SAML / OIDC session, session cookie.
-    Session,
-    /// Connection string / DSN — database, message queue.
-    ConnectionString,
-}
-
-/// How a credential's material is renewed as it nears or reaches expiry.
-///
-/// Data, not a trait. The engine reads this from the credential's policy and
-/// drives the matching path.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
-#[non_exhaustive]
-pub enum RefreshStrategy {
-    /// Valid until explicitly revoked; never auto-renewed (API key, PAT).
-    #[default]
-    Static,
-    /// Renew without user interaction via the protocol's `refresh` — OAuth2
-    /// refresh-token grant, Vault lease renew.
-    RefreshToken,
-    /// An external lease the engine's lease scheduler renews at a fraction of
-    /// its TTL — Vault dynamic secret, Kubernetes projected token.
-    Lease,
-    /// Full re-acquisition round-trip; no incremental refresh — AWS STS
-    /// AssumeRole, SAML/OIDC re-auth, OAuth2 without a refresh token.
-    ReAcquire,
-}
+/// `RefreshStrategy` relocated to `nebula-core::auth` (a pure data enum, so it
+/// can back [`crate::SchemeFamily::refresh_classes`] without an inverted
+/// dependency). Re-exported here so existing `nebula_credential::RefreshStrategy`
+/// paths keep resolving.
+pub use nebula_core::auth::{RefreshStrategy, RefreshStrategyKind, SchemeId};
 
 /// How a credential can be revoked. The field has **no uniform revoke
 /// endpoint**: Vault revokes by lease handle (RFC 7009 for OAuth2), whereas AWS
@@ -114,6 +57,46 @@ pub struct LeaseRef {
     pub lease_duration: Duration,
     /// Whether the lease can be renewed (some leases are one-shot).
     pub renewable: bool,
+    /// Hard renewal horizon: past this instant even a renewable lease must
+    /// re-acquire, not renew (Kerberos TGT `renew_until`, a rotating
+    /// refresh-token's absolute expiry). `None` = no horizon (renew indefinitely
+    /// while `renewable`). [`CredentialPolicy::decide_refresh`] returns
+    /// [`Decision::Reacquire`] once `now >= renew_until`.
+    pub renew_until: Option<DateTime<Utc>>,
+}
+
+/// The single routing decision the resolver acts on for a credential at a
+/// point in time — computed by [`CredentialPolicy::decide_refresh`].
+///
+/// **Total, pure, and time-free.** It carries no deadline: a deadline field
+/// would have the identical type for a real value and `MAX`, so it could not
+/// make the never-revalidated class unrepresentable.
+/// Liveness is decided here, once, against an injected clock — the credential
+/// author never returns a "valid forever" verdict.
+///
+/// Owner ruling (2026-06-12): **there is no exempt static category.** A
+/// credential with no honest freshness signal (a plain API key — no expiry, no
+/// refresh) still has a framework-imposed mandatory re-validation floor, so past
+/// the floor it returns [`Decision::Revalidate`] rather than [`Decision::Usable`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum Decision {
+    /// Material is fresh and within its re-validation floor — serve as-is.
+    Usable,
+    /// Renew without user interaction — a `RefreshToken` grant or a renewable
+    /// `Lease`.
+    Refresh,
+    /// Re-acquire from scratch — `ReAcquire`, an expired non-renewable lease, or
+    /// an interactive redirect; there is no incremental renew path.
+    Reacquire,
+    /// Re-validate a static credential past its mandatory floor. There is no
+    /// refresh/re-acquire material — only a liveness probe (`Testable`). Owner
+    /// ruling: no static credential is exempt from periodic re-validation.
+    Revalidate,
+    /// Terminally unusable — a revoked tombstone or a provider `invalid_grant`.
+    /// Never served. Set by the caller from the durable revoke/reauth signal,
+    /// not by [`CredentialPolicy::decide_refresh`] (which cannot see it).
+    Dead,
 }
 
 /// The lifecycle policy a credential declares — **capabilities as data**.
@@ -128,8 +111,6 @@ pub struct LeaseRef {
 /// itself persisted (hence no `Serialize`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CredentialPolicy {
-    /// The structural category this credential belongs to.
-    pub category: CredentialCategory,
     /// Inline absolute expiry, if the material carries one.
     pub expires_at: Option<DateTime<Utc>>,
     /// External renewable lease, if the material is leased.
@@ -146,7 +127,6 @@ impl CredentialPolicy {
     #[must_use]
     pub const fn static_secret() -> Self {
         Self {
-            category: CredentialCategory::StaticSecret,
             expires_at: None,
             lease: None,
             refresh: RefreshStrategy::Static,
@@ -176,14 +156,126 @@ impl CredentialPolicy {
     /// not renew.
     #[must_use]
     pub const fn is_auto_renewable(&self) -> bool {
-        match self.refresh {
+        // Matched by reference: `RefreshStrategy` is no longer `Copy` (its
+        // `ReAcquire` arm carries a `SchemeId`).
+        match &self.refresh {
             RefreshStrategy::RefreshToken => true,
             RefreshStrategy::Lease => match &self.lease {
                 Some(lease) => lease.renewable,
                 None => false,
             },
-            RefreshStrategy::Static | RefreshStrategy::ReAcquire => false,
+            // A pure local key→token mint needs no human and no network — the
+            // engine can always do it.
+            RefreshStrategy::ReMintLocal => true,
+            // Re-acquire is not a renewal (interactivity is handled at the
+            // re-acquire seam, not here); `Watched` is rotated by an external
+            // source the engine never drives.
+            RefreshStrategy::Static
+            | RefreshStrategy::ReAcquire { .. }
+            | RefreshStrategy::Watched => false,
+            // `RefreshStrategy` is `#[non_exhaustive]` (it lives in `nebula-core`).
+            // A strategy this version does not recognise is treated as NOT
+            // auto-renewable — fail safe (never claim a credential renews itself
+            // when the engine cannot prove it). A new renewable strategy must add
+            // an explicit arm above, not rely on this default.
+            _ => false,
         }
+    }
+
+    /// The single, total, **pure** routing decision for this credential at
+    /// `now` — what the resolver must do before serving the material.
+    ///
+    /// Inputs only: no clock read and no `rand`. `now` is injected; jitter is
+    /// applied **once at the scheduler seam**, never here, so the function stays
+    /// pure and cacheable (DESIGN §24 scale invariant). `early_refresh` is the
+    /// proactive buffer before inline expiry; `floor` is the framework-imposed
+    /// mandatory re-validation interval that applies even to credentials with no
+    /// honest freshness signal (owner ruling 2026-06-12 — there is no exempt
+    /// "valid forever" static category).
+    ///
+    /// [`Decision::Dead`] is never returned here: a revoked tombstone / terminal
+    /// `invalid_grant` is a durable signal the caller holds, not something this
+    /// pure function can observe.
+    ///
+    /// Complexity: O(1) (a fixed set of comparisons).
+    #[must_use]
+    pub fn decide_refresh(
+        &self,
+        last_validated: DateTime<Utc>,
+        now: DateTime<Utc>,
+        early_refresh: Duration,
+        floor: Duration,
+    ) -> Decision {
+        let auto_renewable = self.is_auto_renewable();
+
+        // Hard renewal horizon (lease `renew_until`, e.g. Kerberos TGT / a
+        // rotating refresh-token's absolute expiry): once crossed, the material
+        // can no longer be *renewed* — only re-acquired. This is independent of
+        // whether the inline `expires_at` or the lease drives the expiry signal,
+        // so it is computed once and gates every `Refresh` decision below (a
+        // would-be refresh past the horizon becomes `Reacquire`). It does not by
+        // itself force re-acquisition of still-valid material.
+        let past_horizon = self
+            .lease
+            .as_ref()
+            .and_then(|lease| lease.renew_until)
+            .is_some_and(|horizon| now >= horizon);
+
+        // 0. Externally-rotated material (`Watched`): the engine re-reads on
+        //    change and never initiates renewal, so the resolver serves what it
+        //    holds rather than scheduling a refresh.
+        if matches!(self.refresh, RefreshStrategy::Watched) {
+            return Decision::Usable;
+        }
+
+        // 1. Inline expiry: past it, or inside the proactive early-refresh window.
+        if let Some(exp) = self.expires_at {
+            if exp <= now {
+                return if auto_renewable && !past_horizon {
+                    Decision::Refresh
+                } else {
+                    Decision::Reacquire
+                };
+            }
+            let early = chrono::Duration::from_std(early_refresh).unwrap_or_else(|_| {
+                // early_refresh is a small config buffer; an out-of-range value
+                // means "no proactive window", not a panic.
+                chrono::Duration::zero()
+            });
+            if exp - now <= early && auto_renewable && !past_horizon {
+                return Decision::Refresh;
+            }
+            // Within the window but nothing to renew (static/re-acquire): let it
+            // ride until expiry rather than churn a re-acquire early.
+            if exp - now <= early {
+                return Decision::Usable;
+            }
+        }
+
+        // 2. Server-tracked lease with no inline expiry: a renewable lease is
+        //    renewed by the lease scheduler; a one-shot lease — or one past its
+        //    hard renewal horizon (`renew_until`) — must re-acquire instead.
+        if self.expires_at.is_none() && self.lease.is_some() {
+            return if auto_renewable && !past_horizon {
+                Decision::Refresh
+            } else {
+                Decision::Reacquire
+            };
+        }
+
+        // 3. Mandatory re-validation floor — applies to every credential,
+        //    including a static secret whose state carries no expiry/lease
+        //    (owner ruling: no "valid forever").
+        let floor = chrono::Duration::from_std(floor).unwrap_or_else(|_| chrono::Duration::zero());
+        if floor > chrono::Duration::zero() && now - last_validated >= floor {
+            return if auto_renewable {
+                Decision::Refresh
+            } else {
+                Decision::Revalidate
+            };
+        }
+
+        Decision::Usable
     }
 }
 
@@ -213,7 +305,6 @@ mod tests {
         let p = CredentialPolicy::static_secret();
         assert!(!p.is_expiring());
         assert!(!p.is_auto_renewable());
-        assert_eq!(p.category, CredentialCategory::StaticSecret);
         assert_eq!(p.refresh, RefreshStrategy::Static);
         assert_eq!(p.revoke, RevokeStrategy::None);
     }
@@ -222,7 +313,6 @@ mod tests {
     fn refresh_pair_is_auto_renewable_and_expiring() {
         let now = Utc::now();
         let p = CredentialPolicy {
-            category: CredentialCategory::RefreshPair,
             expires_at: Some(now + chrono::Duration::minutes(60)),
             lease: None,
             refresh: RefreshStrategy::RefreshToken,
@@ -238,12 +328,12 @@ mod tests {
     fn lease_is_expiring_but_inline_expiry_decides_is_expired() {
         let now = Utc::now();
         let p = CredentialPolicy {
-            category: CredentialCategory::Leased,
             expires_at: None,
             lease: Some(LeaseRef {
                 lease_id: "vault/lease/abc".to_owned(),
                 lease_duration: Duration::from_hours(1),
                 renewable: true,
+                renew_until: None,
             }),
             refresh: RefreshStrategy::Lease,
             revoke: RevokeStrategy::HandleBased,
@@ -257,12 +347,12 @@ mod tests {
     #[test]
     fn one_shot_lease_is_not_auto_renewable() {
         let p = CredentialPolicy {
-            category: CredentialCategory::Leased,
             expires_at: None,
             lease: Some(LeaseRef {
                 lease_id: "vault/lease/one-shot".to_owned(),
                 lease_duration: Duration::from_hours(1),
                 renewable: false,
+                renew_until: None,
             }),
             refresh: RefreshStrategy::Lease,
             revoke: RevokeStrategy::HandleBased,
@@ -275,30 +365,201 @@ mod tests {
     #[test]
     fn reacquire_is_not_auto_renewable() {
         let p = CredentialPolicy {
-            category: CredentialCategory::FederatedExchange,
             expires_at: None,
             lease: None,
-            refresh: RefreshStrategy::ReAcquire,
+            refresh: RefreshStrategy::ReAcquire {
+                from: None,
+                interactive: false,
+            },
             revoke: RevokeStrategy::IssueTimePolicy,
         };
         assert!(!p.is_auto_renewable());
     }
 
     #[test]
-    fn category_and_strategies_round_trip_json() {
-        for cat in [
-            CredentialCategory::StaticSecret,
-            CredentialCategory::Leased,
-            CredentialCategory::InteractiveRedirect,
+    fn strategies_round_trip_json() {
+        for r in [
+            RefreshStrategy::Static,
+            RefreshStrategy::RefreshToken,
+            RefreshStrategy::Lease,
+            RefreshStrategy::ReAcquire {
+                from: Some(SchemeId::new("oauth2")),
+                interactive: true,
+            },
+            RefreshStrategy::ReMintLocal,
+            RefreshStrategy::Watched,
         ] {
-            let json = serde_json::to_string(&cat).expect("serialize");
-            let back: CredentialCategory = serde_json::from_str(&json).expect("deserialize");
-            assert_eq!(cat, back);
+            let back: RefreshStrategy =
+                serde_json::from_str(&serde_json::to_string(&r).expect("ser")).expect("de");
+            assert_eq!(r, back);
         }
-        let r = RefreshStrategy::RefreshToken;
+    }
+
+    const HOUR: Duration = Duration::from_hours(1);
+    const FIVE_MIN: Duration = Duration::from_mins(5);
+
+    #[test]
+    fn static_within_floor_is_usable() {
+        let now = Utc::now();
+        let p = CredentialPolicy::static_secret();
+        // Validated 30 min ago, floor 1h → still fresh.
+        let last = now - chrono::Duration::minutes(30);
         assert_eq!(
-            r,
-            serde_json::from_str(&serde_json::to_string(&r).expect("ser")).expect("de")
+            p.decide_refresh(last, now, FIVE_MIN, HOUR),
+            Decision::Usable
+        );
+    }
+
+    #[test]
+    fn static_past_floor_revalidates_not_usable() {
+        // Owner ruling 2026-06-12: no "valid forever". A static API key past its
+        // mandatory floor must be re-validated, never silently served forever.
+        let now = Utc::now();
+        let p = CredentialPolicy::static_secret();
+        let last = now - chrono::Duration::hours(2); // floor 1h elapsed
+        assert_eq!(
+            p.decide_refresh(last, now, FIVE_MIN, HOUR),
+            Decision::Revalidate
+        );
+    }
+
+    #[test]
+    fn refresh_pair_past_expiry_refreshes() {
+        let now = Utc::now();
+        let p = CredentialPolicy {
+            expires_at: Some(now - chrono::Duration::minutes(1)),
+            lease: None,
+            refresh: RefreshStrategy::RefreshToken,
+            revoke: RevokeStrategy::HandleBased,
+        };
+        assert_eq!(
+            p.decide_refresh(now, now, FIVE_MIN, HOUR),
+            Decision::Refresh
+        );
+    }
+
+    #[test]
+    fn refresh_pair_in_early_window_refreshes() {
+        let now = Utc::now();
+        let p = CredentialPolicy {
+            expires_at: Some(now + chrono::Duration::minutes(2)), // inside 5-min buffer
+            lease: None,
+            refresh: RefreshStrategy::RefreshToken,
+            revoke: RevokeStrategy::HandleBased,
+        };
+        assert_eq!(
+            p.decide_refresh(now, now, FIVE_MIN, HOUR),
+            Decision::Refresh
+        );
+    }
+
+    #[test]
+    fn leased_renewable_no_inline_expiry_refreshes() {
+        // A leased secret (expires_at: None) must NOT be
+        // treated as fresh forever — it enters the renew path.
+        let now = Utc::now();
+        let p = CredentialPolicy {
+            expires_at: None,
+            lease: Some(LeaseRef {
+                lease_id: "vault/lease/abc".to_owned(),
+                lease_duration: HOUR,
+                renewable: true,
+                renew_until: None,
+            }),
+            refresh: RefreshStrategy::Lease,
+            revoke: RevokeStrategy::HandleBased,
+        };
+        assert_eq!(
+            p.decide_refresh(now, now, FIVE_MIN, HOUR),
+            Decision::Refresh
+        );
+    }
+
+    #[test]
+    fn leased_one_shot_reacquires() {
+        let now = Utc::now();
+        let p = CredentialPolicy {
+            expires_at: None,
+            lease: Some(LeaseRef {
+                lease_id: "vault/lease/one-shot".to_owned(),
+                lease_duration: HOUR,
+                renewable: false,
+                renew_until: None,
+            }),
+            refresh: RefreshStrategy::Lease,
+            revoke: RevokeStrategy::HandleBased,
+        };
+        assert_eq!(
+            p.decide_refresh(now, now, FIVE_MIN, HOUR),
+            Decision::Reacquire
+        );
+    }
+
+    #[test]
+    fn reacquire_past_expiry_reacquires() {
+        let now = Utc::now();
+        let p = CredentialPolicy {
+            expires_at: Some(now - chrono::Duration::seconds(1)),
+            lease: None,
+            refresh: RefreshStrategy::ReAcquire {
+                from: None,
+                interactive: false,
+            },
+            revoke: RevokeStrategy::IssueTimePolicy,
+        };
+        assert_eq!(
+            p.decide_refresh(now, now, FIVE_MIN, HOUR),
+            Decision::Reacquire
+        );
+    }
+
+    #[test]
+    fn past_renew_until_horizon_reacquires_even_with_inline_expiry() {
+        // A policy carrying BOTH an inline `expires_at` AND a lease whose hard
+        // `renew_until` horizon has passed must re-acquire — the horizon wins
+        // over the otherwise-auto-renewable expiry path. Regression: the horizon
+        // was previously only checked in the lease-only (`expires_at: None`)
+        // branch, so an expired-but-renewable inline-expiry policy refreshed past
+        // its hard boundary.
+        let now = Utc::now();
+        let p = CredentialPolicy {
+            expires_at: Some(now - chrono::Duration::seconds(1)),
+            lease: Some(LeaseRef {
+                lease_id: "vault/lease/horizon".to_owned(),
+                lease_duration: HOUR,
+                renewable: true,
+                renew_until: Some(now - chrono::Duration::seconds(1)),
+            }),
+            refresh: RefreshStrategy::Lease,
+            revoke: RevokeStrategy::HandleBased,
+        };
+        // Auto-renewable (renewable lease) + expired, but past the hard horizon.
+        assert!(p.is_auto_renewable());
+        assert_eq!(
+            p.decide_refresh(now, now, FIVE_MIN, HOUR),
+            Decision::Reacquire
+        );
+    }
+
+    #[test]
+    fn within_renew_until_horizon_still_refreshes() {
+        // Same shape but the horizon is in the future → the renewable lease may
+        // still refresh (horizon does not prematurely force re-acquisition).
+        let now = Utc::now();
+        let p = CredentialPolicy {
+            expires_at: Some(now - chrono::Duration::seconds(1)),
+            lease: Some(LeaseRef {
+                lease_id: "vault/lease/horizon".to_owned(),
+                lease_duration: HOUR,
+                renewable: true,
+                renew_until: Some(now + chrono::Duration::hours(24)),
+            }),
+            refresh: RefreshStrategy::Lease,
+            revoke: RevokeStrategy::HandleBased,
+        };
+        assert_eq!(
+            p.decide_refresh(now, now, FIVE_MIN, HOUR),
+            Decision::Refresh
         );
     }
 }
