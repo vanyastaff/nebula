@@ -18,7 +18,6 @@
 /lefthook.yml                   @vanyastaff
 /Taskfile.yml                   @vanyastaff
 /typos.toml                     @vanyastaff
-/_typos.toml                    @vanyastaff
 
 # ── CI / GitHub config ────────────────────────────────────────────────────────
 /.github/                       @vanyastaff
@@ -48,8 +47,6 @@
 # ── Exec layer ────────────────────────────────────────────────────────────────
 /crates/engine/                 @vanyastaff
 /crates/storage/                @vanyastaff
-/crates/sandbox/                @vanyastaff
-/crates/plugin-sdk/             @vanyastaff
 
 # ── API / Public layer ────────────────────────────────────────────────────────
 /crates/api/                    @vanyastaff
