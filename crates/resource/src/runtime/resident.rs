@@ -35,7 +35,7 @@ use crate::{
     context::ResourceContext,
     error::Error,
     resource::{HasCredentialSlots, Provider, TeardownReason},
-    runtime::managed::destroy_within,
+    runtime::teardown::destroy_within,
     topology::{Ticket, Topology, Unavailable, resident::config::Config, store::InstanceStore},
     topology_tag::TopologyTag,
 };

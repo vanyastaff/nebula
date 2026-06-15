@@ -350,6 +350,7 @@ pub(crate) mod shutdown;
 pub use options::{
     DrainTimeoutPolicy, ManagerConfig, RegisterOptions, RegistrationSpec, ShutdownConfig,
 };
+pub use rotation::{RevokeTail, TaintedSlot};
 pub use shutdown::{ShutdownError, ShutdownReport};
 
 /// Snapshot of a resource's health and operational state.
@@ -365,101 +366,6 @@ pub struct ResourceHealthSnapshot {
     pub metrics: Option<ResourceOpsSnapshot>,
     /// Config generation counter.
     pub generation: u64,
-}
-
-/// A resource registry row whose credential slot has been **synchronously
-/// tainted** by [`Manager::taint_slot`](Manager::taint_slot) /
-/// [`Manager::taint_slot_for_identity`](Manager::taint_slot_for_identity) —
-/// phase 1 of the
-/// two-phase revoke (see the [`manager`](crate::manager) module docs for the
-/// canonical invariant and why the taint is synchronous-before-the-tail).
-///
-/// Holding one is proof the taint already ran to completion: new acquires on
-/// this row's credential are already rejected. It is consumed by
-/// [`Manager::drain_and_revoke`](Manager::drain_and_revoke) to run the
-/// cancellation-safe drain + revoke-hook tail.
-///
-/// Opaque by design: the only valid use is to pass it to
-/// [`drain_and_revoke`](Manager::drain_and_revoke). It is **not** `Clone` —
-/// one taint maps to exactly one drain/revoke tail.
-#[must_use = "a TaintedSlot only completes the revoke when passed to Manager::drain_and_revoke"]
-pub struct TaintedSlot {
-    /// Structural key of the tainted resource registry row (span/event
-    /// label only — no credential material).
-    key: ResourceKey,
-    /// The credential slot on that row that was revoked.
-    slot: String,
-    /// The resolved row whose taint flag was already set synchronously.
-    managed: Arc<dyn crate::registry::ManagedHandle>,
-    /// When the synchronous taint was applied — the drain/revoke duration
-    /// metric spans from here so it covers the whole revoke, not just the
-    /// awaited tail.
-    tainted_at: Instant,
-}
-
-impl std::fmt::Debug for TaintedSlot {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // Deliberately omits `managed` (not `Debug`, and an internal
-        // erased handle); only the credential-free routing labels.
-        f.debug_struct("TaintedSlot")
-            .field("key", &self.key)
-            .field("slot", &self.slot)
-            .finish_non_exhaustive()
-    }
-}
-
-/// Outcome of the cancellation-safe revoke tail
-/// ([`Manager::drain_and_revoke`]).
-///
-/// The tail has exactly one owner of the per-resource time budget (the
-/// `drain_timeout` argument): the drain wait is bounded by it
-/// (best-effort — a timed-out drain still proceeds to the hook), and the
-/// revoke hook is *separately* bounded by it. There is **no** caller-side
-/// `tokio::time::timeout` wrapping the whole tail; the three terminal states
-/// are reported here rather than inferred from a dropped outer future. See
-/// the [`manager`](crate::manager) module docs for why an outer timeout
-/// wrapper would be unsafe (it could drop the future before the hook ran):
-///
-/// - [`Done`](Self::Done) — the revoke hook completed `Ok`.
-/// - [`HookFailed`](Self::HookFailed) — the hook returned `Err` (carried
-///   verbatim).
-/// - [`HookTimedOut`](Self::HookTimedOut) — the hook itself did not
-///   complete within the budget. The row stays tainted (the taint ran in
-///   the synchronous phase-1); only a *hung hook* is bounded, never the
-///   taint, and never at the cost of skipping a hook after a slow drain.
-#[derive(Debug)]
-#[must_use = "the revoke tail outcome must be recorded (it is not a silent success)"]
-pub enum RevokeTail {
-    /// Drain + revoke hook completed; the hook returned `Ok`. (A
-    /// best-effort drain timeout that still reached a successful hook is
-    /// still `Done` — the drain timeout is non-fatal.)
-    Done,
-    /// The revoke hook returned an error. The row stays tainted; the
-    /// inner error is preserved for the caller's outcome accounting.
-    HookFailed(Error),
-    /// The revoke hook did not complete within the per-resource budget
-    /// (a wedged `on_credential_revoke`). The row stays tainted; this is
-    /// the only thing the budget bounds.
-    HookTimedOut,
-}
-
-impl RevokeTail {
-    /// Adapts the tail outcome to `Result<(), Error>` for the back-compat
-    /// convenience callers ([`Manager::revoke_slot`] /
-    /// [`Manager::revoke_slot_for_identity`]) that run taint+tail
-    /// back-to-back and
-    /// only need pass/fail. A hook timeout becomes a retryable transient
-    /// error (the row is tainted; a later retry is meaningful), distinct
-    /// from a hook failure which carries the hook's own error.
-    fn into_result(self) -> Result<(), Error> {
-        match self {
-            RevokeTail::Done => Ok(()),
-            RevokeTail::HookFailed(e) => Err(e),
-            RevokeTail::HookTimedOut => Err(Error::transient(
-                "revoke hook timed out — row stays tainted, no new leases",
-            )),
-        }
-    }
 }
 
 /// Central registry and lifecycle manager for all resources.
