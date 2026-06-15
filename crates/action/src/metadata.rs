@@ -16,6 +16,13 @@ pub enum IsolationLevel {
     None,
     /// Capability-gated in-process. In-process capability checks against
     /// declared deps.
+    ///
+    /// The `isolated` alias preserves backward-compatibility: metadata
+    /// persisted by an older version with `"isolation_level":"isolated"`
+    /// (the retired out-of-process variant, ADR-0091) deserializes here —
+    /// the old `Isolated` path already routed through the same in-process
+    /// runner as `CapabilityGated`, so the semantics are unchanged.
+    #[serde(alias = "isolated")]
     CapabilityGated,
 }
 
@@ -615,6 +622,21 @@ mod tests {
         let meta = ActionMetadata::new(action_key!("test"), "Test", "desc")
             .with_isolation_level(IsolationLevel::CapabilityGated);
         assert_eq!(meta.isolation_level, IsolationLevel::CapabilityGated);
+    }
+
+    #[test]
+    fn legacy_isolated_value_deserializes_as_capability_gated() {
+        // Backward-compat (ADR-0091): metadata persisted before the retired
+        // `Isolated` variant was removed must still load — the wire value
+        // `"isolated"` maps onto `CapabilityGated`, not a hard parse error.
+        let level: IsolationLevel =
+            serde_json::from_str("\"isolated\"").expect("legacy value loads");
+        assert_eq!(level, IsolationLevel::CapabilityGated);
+        // New serialization uses the current name.
+        assert_eq!(
+            serde_json::to_string(&IsolationLevel::CapabilityGated).unwrap(),
+            "\"capability_gated\""
+        );
     }
 
     #[test]
