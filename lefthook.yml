@@ -6,8 +6,10 @@
 # do run, scan repo/workspace-wide (typos whole tree, taplo all TOML,
 # cargo-deny the workspace) — fast enough to keep on pre-commit.
 # Pre-push = full-workspace `clippy -D warnings` (CI clippy-job parity) plus
-# the crate-diff nextest gate for the pending push range. Doctests / MSRV
-# remain CI-owned; CI required jobs stay the authoritative final gate.
+# the crate-diff gate for the pending push range (nextest + `cargo check` +
+# `RUSTDOCFLAGS=-D warnings cargo doc` for the changed crates, mirroring the
+# CI Documentation required job). Doctests / MSRV remain CI-owned; CI
+# required jobs stay the authoritative final gate.
 
 skip_output:
   - meta
@@ -63,7 +65,9 @@ pre-push:
       # (feedback_lefthook_mirrors_ci.md).
       run: cargo clippy --workspace --all-targets -- -D warnings
     crate-diff-gate:
-      # Runs `cargo nextest run` for changed crates plus, when
+      # Runs `cargo nextest run` + `cargo check` + `RUSTDOCFLAGS=-D warnings
+      # cargo doc --no-deps` (CI Documentation required-job parity,
+      # reference_rustdoc_verification_gap.md) for changed crates plus, when
       # `DATABASE_URL` is set, the `--features postgres` storage
       # integration tests (`pg_idempotency`, `execution_lease_pg_integration`,
       # `refresh_claim_pg_integration`). Skips with a single WARN line
@@ -71,6 +75,7 @@ pre-push:
       # `feedback_lefthook_mirrors_ci.md`).
       run: bash scripts/pre-push-crate-diff.sh
 
-# Doctests / docs / MSRV remain CI-owned checks.
+# Doctests / MSRV remain CI-owned checks (rustdoc -D warnings is now
+# mirrored per changed crate by crate-diff-gate, above).
 # `cargo udeps` is NOT in pre-push — requires nightly and is slow; kept in
 # the weekly CI workflow instead.

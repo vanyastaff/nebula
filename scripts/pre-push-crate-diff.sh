@@ -50,6 +50,15 @@ echo "lefthook: checking changed crates: ${existing_crates[*]}"
 cargo nextest run "${pkg_args[@]}" --profile agent
 cargo check "${pkg_args[@]}" --all-features --all-targets --quiet
 
+# CI "Documentation" required-job parity, scoped to changed crates.
+# The authoritative gate is the workspace-wide
+# `RUSTDOCFLAGS=-D warnings cargo doc --no-deps`, but it was CI-only, so a
+# private-intra-doc-link or broken `[link]` in a touched crate slipped past
+# pre-push (reference_rustdoc_verification_gap.md). Mirror CI exactly here
+# (default features, `--no-deps`) for the changed crates.
+echo "lefthook: rustdoc -D warnings for changed crates: ${existing_crates[*]}"
+RUSTDOCFLAGS="-D warnings" cargo doc "${pkg_args[@]}" --no-deps --quiet
+
 # Keep no-default-features checks for crates that support this gate.
 for crate in resilience log expression; do
   if printf '%s\n' "${existing_crates[@]}" | rg -x "$crate" >/dev/null; then
