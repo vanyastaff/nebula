@@ -8,10 +8,10 @@ related: [docs/PRODUCT_CANON.md]
 
 # Nebula integration model
 
-> **Doc stack:** Invariants live in `docs/PRODUCT_CANON.md`. **Decisions** live in
-> `docs/adr/` (accepted ADRs are immutable). This file carries **mechanics** only.
-> Agents: read `docs/README.md` first; open one ADR when cited — do not bulk-read
-> `docs/adr/0*`.
+> **Doc stack:** Invariants live in `docs/PRODUCT_CANON.md`. **Decisions** live as
+> ADRs in the maintainers' private design vault (accepted ADRs are immutable; not in
+> this repo). This file carries **mechanics** only. Agents: read `docs/README.md` first;
+> `ADR-NNNN` ids are stable textual references.
 
 ---
 
@@ -113,7 +113,7 @@ secrets appearing in logs. A set of universal auth schemes (OAuth2, API key, mTL
 
 **Plugin** — `[ registry: Actions + Resources + Credentials ]` → **+ localization + additional features**
 
-**Distribution and registration unit.** A Plugin is not only a bundle — it is the **registry** that wires Actions, Resources, and Credentials together under a **versioned** identity, with localization and metadata for the UI. Types **defined in other plugins** are available only when the dependent crate **depends on the provider plugin crate** in **`Cargo.toml`** and the engine respects that **acyclic** graph at load/activation — same closure idea as **Cargo**, not an open global namespace. **Plugin is the unit of registration, not the unit of size:** a "full" integration crate and a **micro-plugin** (one or two registry entries) are **the same kind of thing** — same `plugin.toml` contract, same registration story; see §7.1. Deployment strategies: **native** in-process (maximum performance), **process-isolated** via IPC (third-party sandboxing), **FFI** via stabby (cross-language, stable ABI). Third-party plugins are **first-class by design**; document any gap vs native until the model is complete.
+**Distribution and registration unit.** A Plugin is not only a bundle — it is the **registry** that wires Actions, Resources, and Credentials together under a **versioned** identity, with localization and metadata for the UI. Types **defined in other plugins** are available only when the dependent crate **depends on the provider plugin crate** in **`Cargo.toml`** and the engine respects that **acyclic** graph at load/activation — same closure idea as **Cargo**, not an open global namespace. **Plugin is the unit of registration, not the unit of size:** a "full" integration crate and a **micro-plugin** (one or two registry entries) are **the same kind of thing** — same `plugin.toml` contract, same registration story; see §7.1. Deployment is **native** in-process — plugins are trusted code linked into the host (ADR-0091); process isolation, IPC sandboxing, and WASM are non-goals (canon §12.6). A binary-stable cross-version ABI (**FFI** via stabby) is tracked separately as an additive concern, not an isolation tier. Third-party plugins are **first-class by design**; document any gap vs native until the model is complete.
 
 ### Why the uniform pattern matters
 
@@ -247,7 +247,7 @@ id = "nebula-plugin-slack"   # if [package].name is e.g. "slack-plugin"
 
 ### Signing: why `plugin.toml`, not `Cargo.toml`
 
-> **Status: planned.** The `[signing]` block fields and canonical serialization are tooling-defined and not frozen. Verification logic is on the isolation roadmap (see canon §12.6). Do not rely on signing as an active trust boundary until this status changes.
+> **Status: planned.** The `[signing]` block fields and canonical serialization are tooling-defined and not frozen. Verification logic is planned (see canon §12.6). Do not rely on signing as an active trust boundary until this status changes.
 
 **`Cargo.toml` mutates** whenever dependencies are added, bumped, or re-resolved (`cargo update`, new crates). Signing it would mean **signatures churn constantly** or cover irrelevant churn — a poor trust anchor.
 
@@ -329,16 +329,16 @@ nebula-resource-slack/        # micro-plugin
 
 ### Rust-native vs FFI ABI
 
-Rust-native plugins follow Cargo-first dependency and build semantics. The compiled artefact is **not** implicitly ABI-stable across SDK or engine upgrades — recompile against the matching SDK version and rely on the `nebula.sdk` semver constraint in `plugin.toml` to fail-fast on incompatibility. A binary-stable cross-version ABI is an explicit FFI concern and tracked separately on the isolation roadmap (canon §12.6); options under consideration include `stabby`-style stable Rust ABI surfaces. There is no implicit promise of `.so` / `.dll` compatibility today.
+Rust-native plugins follow Cargo-first dependency and build semantics. The compiled artefact is **not** implicitly ABI-stable across SDK or engine upgrades — recompile against the matching SDK version and rely on the `nebula.sdk` semver constraint in `plugin.toml` to fail-fast on incompatibility. A binary-stable cross-version ABI is an explicit FFI concern and tracked separately as an additive ABI concern (canon §12.6); options under consideration include `stabby`-style stable Rust ABI surfaces. There is no implicit promise of `.so` / `.dll` compatibility today.
 
 ### Tooling notes
 
 > **Status — planned, not enforced today.** Canon §11.6 truth: `cargo-nebula`
-> does not yet exist, and `crates/sandbox/README.md` lines 64-65 mark
-> `PluginCapabilities` enforcement from `plugin.toml` through discovery as a
-> **false capability** — the allowlist is defined but the discovery path
-> hardcodes `PluginCapabilities::none()` until that TODO is closed. The
-> behaviours below are the *target* once the discovery wiring lands.
+> does not yet exist, and `PluginCapabilities` enforcement from `plugin.toml`
+> through discovery is a **false capability** today — the allowlist is defined
+> but the discovery path hardcodes `PluginCapabilities::none()` until that
+> wiring lands. The behaviours below are the *target* once the discovery
+> wiring lands.
 
 `cargo-nebula` and the CLI are **expected to** validate `plugin.toml` markers
 early — before invoking `cargo build` — rejecting missing SDK constraints,
@@ -346,8 +346,8 @@ malformed identifiers, and unresolved cross-plugin types with diagnostics that
 name the plugin id, the package name, and the missing provider dependency.
 Activation **must eventually** reject any plugin whose declared cross-plugin
 type references a Cargo dependency outside the resolved closure, rather than
-silently falling back to global lookup. Until the sandbox discovery roadmap
-item is closed, neither check is wired and the validation surface is honest
+silently falling back to global lookup. Until the capability-discovery wiring
+is closed, neither check is wired and the validation surface is honest
 about that gap.
 
 ---
@@ -369,7 +369,7 @@ repository.
 | 0054 | Typed capabilities | § Credential caps |
 | 0055 | `nebula-sdk` façade | § Plugin / SDK |
 | 0056 | Type-safe DAG | Workflow (pointer) |
-| 0057 | AI agent SDK (**proposed**) | Deferred — see `STRATEGY.md` |
+| 0057 | AI agent SDK (**proposed**) | Deferred — product strategy maintained in the maintainers' private design vault |
 | 0065 | Visual rendering modes | Canvas supply edges |
 | 0068 | Layered retry (resilience vs node policy) | § Action retry — see `nebula-resilience` |
 | 0069 | Action surface hybrid | §3.8 `nebula-action` |

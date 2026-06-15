@@ -29,4 +29,4 @@
 
 ## See also
 - `README.md` — full design · `docs/` (architecture, api-reference, combinators, extending, migration)
-- `docs/adr/0080-schema-validation-platform.md` (ADR-0052 consolidated) — schema↔validator condition-eval seam
+- ADR-0080 (ADR-0052 consolidated) — schema↔validator condition-eval seam

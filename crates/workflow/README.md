@@ -65,8 +65,8 @@ cannot activate a workflow without explicitly handling the result.
   activation with structured RFC 9457 errors, not silently deferred to runtime dispatch
   failures. Test: `crates/workflow/src/validate.rs` tests, builder tests.
 - **JSON round-trip** — `WorkflowDefinition` must survive a `serde_json` round-trip
-  without information loss. Workflow definition schema compatibility is a public surface
-  (see `docs/UPGRADE_COMPAT.md`). Seam: `crates/workflow/src/definition.rs`.
+  without information loss. Workflow definition schema compatibility is a public surface.
+  Seam: `crates/workflow/src/definition.rs`.
 
 ## Non-goals
 
@@ -95,7 +95,6 @@ See `docs/MATURITY.md` row for `nebula-workflow`.
 
 - Canon: `docs/PRODUCT_CANON.md` §10 (golden path — activation runs `validate_workflow`),
   §12.2 (validation as shift-left contract).
-- Upgrade compat: `docs/UPGRADE_COMPAT.md` — workflow schema is a public compatibility surface.
 - Siblings: `nebula-execution` (consumes `DependencyGraph` via `ExecutionPlan`),
   `nebula-engine` (orchestrates; calls `validate_workflow` at activation),
   `nebula-expression` (resolves `ParamValue` expressions at runtime).

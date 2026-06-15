@@ -368,7 +368,6 @@ macro_rules! impl_batch_action {
 // compensation DAG) will land as an engine-level feature post-v1.
 // When it does, it will ship its own trait shape that cooperates
 // with the orchestrator, not a re-imagined `TransactionalAction`.
-// See `.claude/decisions.md` for the rationale note.
 
 // ── StatefulHandler trait ───────────────────────────────────────────────────
 

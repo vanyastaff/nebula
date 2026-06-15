@@ -4,7 +4,7 @@
 //! recovery. Feature-gated behind storage's `rotation` feature, which forwards
 //! to `nebula-credential/rotation`.
 //!
-//! Ref: ADR-0029, ADR-0032 (historical — `docs/adr/HISTORICAL.md`)
+//! Ref: ADR-0029, ADR-0032 (historical — the maintainers' private design vault)
 
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use nebula_credential::{

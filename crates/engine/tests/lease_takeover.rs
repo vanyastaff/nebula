@@ -53,7 +53,7 @@ use nebula_action::{
 use nebula_core::{ActionKey, Dependencies, action_key, id::WorkflowId, node_key};
 use nebula_engine::{
     ActionExecutor, ActionRegistry, ActionRuntime, ControlConsumer, ControlDispatch,
-    DataPassingPolicy, EngineControlDispatch, ExecutionEvent, InProcessSandbox, WorkflowEngine,
+    DataPassingPolicy, EngineControlDispatch, ExecutionEvent, InProcessRunner, WorkflowEngine,
 };
 use nebula_execution::{ExecutionStatus, context::ExecutionBudget};
 use nebula_metrics::MetricsRegistry;
@@ -274,11 +274,11 @@ fn make_engine(registry: Arc<ActionRegistry>) -> WorkflowEngine {
     let metrics = MetricsRegistry::new();
     let executor: ActionExecutor =
         Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
-    let sandbox = Arc::new(InProcessSandbox::new(executor));
+    let runner = Arc::new(InProcessRunner::new(executor));
     let runtime = Arc::new(
         ActionRuntime::try_new(
             registry,
-            sandbox,
+            runner,
             DataPassingPolicy::default(),
             metrics.clone(),
         )

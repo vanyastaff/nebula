@@ -62,4 +62,4 @@ data. `task db:migrate` applies pending migrations non-destructively.
 This directory and `../sqlite/` must define logically identical tables.
 Types differ by dialect; table/column names and constraints must match.
 
-See `docs/plans/2026-04-15-arch-specs/16-storage-schema.md` for the authoritative spec.
+See the maintainers' private design vault for the authoritative spec.

@@ -97,7 +97,6 @@ See `docs/MATURITY.md` row for `nebula-expression`.
 ## Related
 
 - Canon: `docs/PRODUCT_CANON.md` §3.5 (expression context used by resolution step).
-- Glossary: `docs/GLOSSARY.md` §5 (`ResolvedValues` — produced after expression resolution).
 - Siblings: `nebula-schema` (calls expression context via `ValidValues::resolve`),
   `nebula-validator` (rule engine), `nebula-core` (base types).
 

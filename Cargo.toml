@@ -166,7 +166,7 @@ tempfile = "3.27.0"
 proptest = "1.11"
 criterion = { package = "codspeed-criterion-compat", version = "4" }
 
-# Test helpers — crates opt in via [dev-dependencies] (see `docs/TESTING.md`)
+# Test helpers — crates opt in via [dev-dependencies]
 assert_cmd = "2.0.17"
 assert_fs = "1.1.2"
 insta = { version = "1.47.2", features = ["json", "redactions"] }
@@ -333,7 +333,7 @@ rc_mutex = "warn"
 arc_with_non_send_sync = "warn"
 # `dbg!` must not ship in non-test code (tests exempt via clippy.toml).
 dbg_macro = "warn"
-# docs/IDIOM_REVIEW_CHECKLIST.md — pattern-matching recall (Rust Reference + Clippy)
+# Pattern-matching recall (Rust Reference + Clippy)
 match_like_matches_macro = "warn"
 redundant_pattern_matching = "warn"
 single_match_else = "warn"

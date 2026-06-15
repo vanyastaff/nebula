@@ -42,7 +42,7 @@ sha2 = { workspace = true }
 zeroize = { version = "1.8.2", features = ["zeroize_derive"] }
 moka = { workspace = true, features = ["future"] }
 
-# Optional backends (см. docs/nebula-architecture-final.md). The
+# Optional backends (storage design in the maintainers' private design vault). The
 # `postgres` and `sqlite` features each turn on this dep, and each
 # forwards only its own driver feature to sqlx (`sqlx/postgres` or
 # `sqlx/sqlite`). Storage-level: enabling `postgres` alone activates

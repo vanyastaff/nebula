@@ -5,7 +5,7 @@
 | **Status** | `frontier` (ADR-0052/0080) — программный API стабилен, `Rule` wire-format недавно сменился |
 | **Layer** | Core cross-cutting — rules-engine, к которому `nebula-schema` делегирует исполнение правил |
 | **Redesign role** | **Не затронут напрямую** redesign'ом credential/resource (нет deps на эти крейты и нет обратных). Косвенный участник: единственный эмиттер `required`-ошибок (ADR-0052 P2) на write-path credential (P4) через `nebula-schema` |
-| **Related** | [ADR-0052], [ADR-0080](../../../docs/adr/0080-schema-validation-platform.md), PRODUCT_CANON §3.5 / §4.5, [refactor/error-unify-validation] (несмёрженная ветка унификации ошибок) |
+| **Related** | [ADR-0052], ADR-0080, PRODUCT_CANON §3.5 / §4.5, [refactor/error-unify-validation] (несмёрженная ветка унификации ошибок) |
 
 ---
 

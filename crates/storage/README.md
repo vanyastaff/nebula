@@ -180,12 +180,9 @@ migration — it destroys all local dev data.
 ## Related
 
 - Canon: `docs/PRODUCT_CANON.md` §11.1, §11.3, §11.5, §12.2, §12.3.
-- Engine guarantees: `docs/ENGINE_GUARANTEES.md`.
-- ADR: `docs/adr/0072-nebula-storage-spec16-port-adapter-tenancy.md`
+- ADR-0072 (storage spec-16 port / adapter / tenancy), kept in the maintainers' private design vault
   (port / adapter / tenancy decision, supersession, the three
   correctness bugs, the migration-gap history).
-- Glossary: `docs/GLOSSARY.md` §2 (`execution_journal`,
-  `execution_control_queue`, `IdempotencyKey`, Transactional Outbox, OCC).
 - Siblings: `nebula-storage-port` (the port contract), `nebula-tenancy`
   (scope-enforcing decorators), `nebula-execution` (state types),
   `nebula-engine` (transitions via the port `ExecutionStore` +

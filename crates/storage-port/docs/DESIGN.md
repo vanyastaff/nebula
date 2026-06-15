@@ -5,7 +5,7 @@
 | **Status** | Stable — pure contract crate (Core tier), no backend code |
 | **Layer** | Core (contract); зависит только от `nebula-core` + serde/async-trait. Адаптеры в `nebula-storage`, scope-политика в `nebula-tenancy` |
 | **Redesign role** | **Косвенно затронут, но существенно.** Не переписывается; владеет двумя швами, на которые опирается post-0092 модель: `Scope::credential_owner_id` (каноническая деривация owner_id, ADR-0088 D7) и `RefreshClaimStore` (persistence-шов refresh-CAS, ADR-0041). DTO/трейты не трогаются. |
-| **Related** | [ADR-0072](../../../docs/adr/0072-nebula-storage-spec16-port-adapter-tenancy.md), [ADR-0088](../../../docs/adr/0088-credential-subsystem-rewrite.md) D7, [ADR-0041](../../../docs/adr/HISTORICAL.md) (durable refresh-claim store), [ADR-0092](../../../docs/adr/0092-credential-subsystem-consolidation.md), PRODUCT_CANON §12.2 |
+| **Related** | ADR-0072, ADR-0088 D7, ADR-0041 (durable refresh-claim store), ADR-0092, PRODUCT_CANON §12.2 |
 
 ---
 

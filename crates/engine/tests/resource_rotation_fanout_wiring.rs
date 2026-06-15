@@ -29,7 +29,7 @@ use std::time::Duration;
 use nebula_core::{OrgId, ResourceKey, ScopeLevel, resource_key, scope::Scope};
 use nebula_credential::{CredentialEvent, CredentialId, LeaseEvent};
 use nebula_engine::{
-    ActionExecutor, ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessSandbox,
+    ActionExecutor, ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner,
     WorkflowEngine,
     credential::rotation::{ResourceFanoutDriver, ResourceFanoutIndex},
 };
@@ -593,12 +593,12 @@ fn noop_engine_with_manager(manager: Arc<Manager>) -> WorkflowEngine {
     let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
         Box::pin(async move { Ok(nebula_action::result::ActionResult::success(input)) })
     });
-    let sandbox = Arc::new(InProcessSandbox::new(executor));
+    let runner = Arc::new(InProcessRunner::new(executor));
     let metrics = MetricsRegistry::new();
     let runtime = Arc::new(
         ActionRuntime::try_new(
             registry,
-            sandbox,
+            runner,
             DataPassingPolicy::default(),
             metrics.clone(),
         )

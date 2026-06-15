@@ -25,8 +25,8 @@ automatically.
 ## Role
 
 **Stability Patterns Pipeline** — the canonical in-process fault-tolerance layer for outbound calls
-inside actions. Pattern: *Circuit Breaker + Timeout + Retry-with-Backoff* composition (Release It!;
-`docs/GLOSSARY.md` Architectural Patterns). Per canon §11.2 this crate is the **only retry surface**
+inside actions. Pattern: *Circuit Breaker + Timeout + Retry-with-Backoff* composition (Release It!).
+Per canon §11.2 this crate is the **only retry surface**
 in the workflow stack: the engine does not re-execute nodes, so retry semantics for transient
 failures must compose inside the action.
 
@@ -85,7 +85,6 @@ See `docs/MATURITY.md` row for `nebula-resilience`.
 ## Related
 
 - Canon: `docs/PRODUCT_CANON.md` §4.2 (Safety pillar / ErrorClassifier), §4.3 (Keep-alive), §6 (architecture ↔ pillars table), §11.2 (engine non-retry; this crate is the retry surface).
-- Glossary: `docs/GLOSSARY.md` Architectural Patterns (*Circuit Breaker + Timeout + Retry-with-Backoff*, Release It!).
 - Siblings: `nebula-error` (provides `Classify` / `RetryHint`), `nebula-action` (primary consumer).
 
 ## Appendix: Crate-local guides

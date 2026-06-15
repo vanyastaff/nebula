@@ -2207,7 +2207,7 @@ async fn activate_invalid_returns_422() {
 ///
 /// Before this fix only (1) happened — the engine never saw the cancel signal.
 ///
-/// Audit ref: 2026-04-16-workspace-health-audit.md §2.2
+/// Audit ref: workspace-health audit §2.2 (archived).
 /// Knife ref: PRODUCT_CANON.md integration seam step 5
 #[tokio::test]
 async fn cancel_enqueues_durable_control_signal() {

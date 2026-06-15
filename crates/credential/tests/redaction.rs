@@ -3,7 +3,7 @@
 //! Covers the "no secrets in logs" half of the credential secrecy invariant from
 //! `docs/PRODUCT_CANON.md`. The error-string and metrics-label halves
 //! of that invariant are enforced at their own boundaries (typed error
-//! taxonomy in `docs/STYLE.md §4`, metrics-label review in code review)
+//! taxonomy, metrics-label review in code review)
 //! and are **not** inspected here.
 //!
 //! The helper installs a `tracing-subscriber` that captures every

@@ -40,4 +40,4 @@
 
 ## See also
 - `README.md` — full design (v4 surface, migration recipe, contract/canon invariants)
-- `docs/adr/0081-m6-resource-credential-integration.md` (consolidates ADR-0042/0043/0044/0045); `docs/INTEGRATION_MODEL.md` §`nebula-action` (CheckpointPolicy status); `docs/PRODUCT_CANON.md` §3.5/§11.3/§13.4/§13.5
+- ADR-0081 (consolidates ADR-0042/0043/0044/0045); `docs/INTEGRATION_MODEL.md` §`nebula-action` (CheckpointPolicy status); `docs/PRODUCT_CANON.md` §3.5/§11.3/§13.4/§13.5

@@ -18,8 +18,8 @@
 //!   identifier automatically on in-place key rotation.
 //! - `current_key()` returns `Arc<EncryptionKey>` — a stable handle over the zeroize-on-drop key
 //!   newtype. Providers do not expose raw key bytes.
-//! - `Debug` / `Display` on providers and on `ProviderError` must not reveal key material (see
-//!   [`STYLE.md §6`](../../../../docs/STYLE.md#6-secret-handling)).
+//! - `Debug` / `Display` on providers and on `ProviderError` must not reveal key material
+//!   (secret handling).
 //! - Intermediate plaintext (env-var strings, file bytes) is wrapped in `Zeroizing<_>` so scope
 //!   exit scrubs it.
 
@@ -54,8 +54,7 @@ fn key_fingerprint(bytes: &[u8; 32]) -> String {
 
 /// Source of the current encryption key for [`EncryptionLayer`](super::layer::EncryptionLayer).
 ///
-/// Implementations must preserve every rule from
-/// [`docs/STYLE.md §6 — Secret handling`](../../../../docs/STYLE.md#6-secret-handling):
+/// Implementations must preserve every secret-handling rule:
 /// zeroized intermediate plaintext, redacted `Debug`, typed errors without
 /// embedded secret material.
 pub trait KeyProvider: Send + Sync + 'static {
@@ -87,8 +86,8 @@ pub trait KeyProvider: Send + Sync + 'static {
 /// Typed errors returned by [`KeyProvider`] implementations.
 ///
 /// `#[non_exhaustive]` so future KMS / Vault backends can add variants without
-/// breaking downstream consumers. No variant carries raw key bytes per
-/// `docs/STYLE.md §6`.
+/// breaking downstream consumers. No variant carries raw key bytes
+/// (secret handling).
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum ProviderError {

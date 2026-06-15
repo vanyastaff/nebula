@@ -5,7 +5,7 @@
 | **Status** | Partial — самый нагруженный, load-bearing крейт (`engine.rs` ~9.8k строк, признан в AGENTS.md «largest, load-bearing») |
 | **Layer** | Composition root / оркестратор исполнения workflow (L2 control-plane) |
 | **Redesign role** | **Затронут с обеих сторон.** Credential: после ADR-0092 runtime (resolver/refresh/lease/rotation-state) уехал в `nebula-credential`, в engine остались accessor-мосты + `default_in_memory_coordinator` + shim-переэкспорты. Resource: engine — место будущего bind-population (M12.4); `rotation.rs` ре-экспортирует fan-out из `nebula-resource`. |
-| **Related** | [ADR-0092](../../../docs/adr/0092-credential-subsystem-consolidation.md), [ADR-0088](../../../docs/adr/0088-credential-subsystem-rewrite.md), [ADR-0008](../../../docs/adr/HISTORICAL.md) (control plane), [ADR-0016](../../../docs/adr/HISTORICAL.md) (cancellation), [ADR-0068](../../../docs/adr/0068-layered-retry.md) (layered retry), [ADR-0050](../../../docs/adr/0050-m3-5-w3c-trace-context-propagation.md), PRODUCT_CANON §10/§11.1/§11.2/§12.2/§12.5 |
+| **Related** | ADR-0092, ADR-0088, ADR-0008 (control plane), ADR-0016 (cancellation), ADR-0068 (layered retry), ADR-0050, PRODUCT_CANON §10/§11.1/§11.2/§12.2/§12.5 |
 
 ---
 
@@ -24,7 +24,7 @@ plugin-registry — и рискует разойтись с canon §12.2 control
   (`engine.rs:125`, поток `run_frontier`);
 - durable-консьюмером `execution_control_queue` (canon §12.2): polling + claim/ack + W3C
   trace-parent restore (ADR-0050);
-- in-process диспатчем экшенов (`ActionRuntime` / `InProcessSandbox`) — бывший крейт
+- in-process диспатчем экшенов (`ActionRuntime` / `InProcessRunner`) — бывший крейт
   `nebula-runtime` поглощён как `src/runtime/`.
 
 **ЯВНО НЕ делает** (Non-goals из README):
@@ -49,7 +49,7 @@ plugin-registry — и рискует разойтись с canon §12.2 control
 | `credential::*` — почти целиком re-export из `nebula_credential::runtime` (ADR-0092): `CredentialResolver`, `RefreshCoordinator`, `LeaseLifecycle`, `execute_resolve` / `execute_continue`; своё — только `default_in_memory_coordinator()` | `credential/mod.rs:19-30 / 43` |
 | `credential::rotation` (feature `rotation`) — чистый re-export shim (state-machine из credential, fan-out `ResourceFanoutDriver` из resource) | `rotation.rs:9-34` |
 | `resource::{ResourceActivator, ResourceActivatorRegistry, KindActivator, RegisterRequest, RegistrarError, ResourceRegistrationOutcome}` (seam «stored row (kind+JSON) → типизированная регистрация в `nebula_resource::Manager`»; unrecognized kind = typed error) | `resource/registrar.rs:103-418` |
-| `runtime::{ActionRuntime, ActionRegistry, SandboxRunner, InProcessSandbox, TaskQueue, MemoryQueue, BlobStorage, DataPassingPolicy, BoundedStreamBuffer, StatefulCheckpoint(-Sink)}` | `runtime/runtime.rs:61-116`, `registry.rs:53`, `sandbox_runner.rs:25-89`, `queue.rs:22-132` |
+| `runtime::{ActionRuntime, ActionRegistry, ActionRunner, InProcessRunner, TaskQueue, MemoryQueue, BlobStorage, DataPassingPolicy, BoundedStreamBuffer, StatefulCheckpoint(-Sink)}` | `runtime/runtime.rs:61-116`, `registry.rs:53`, `runner.rs:25-89`, `queue.rs:22-132` |
 | `scoped_resources::{BranchId, ScopedResourceMap, DashScopedResourceMap, LayeredResourceAccessor, ScopedResourceGuard, run_cleanup(_with_timeout)}` (per-branch хранение, scoped→global precedence, RAII LIFO-cleanup с таймаутом) | `scoped_resources.rs:116-698` |
 | `daemon::{Daemon, DaemonRegistry, DaemonRuntime, EventSource, EventSourceRuntime/Adapter, RestartPolicy, DaemonError}` | `daemon/mod.rs:37-52`, `registry.rs:38-273`, `runtime.rs:37`, `event_source.rs:32-164` |
 | `store_seam::{ExecutionStores, WorkflowStores, engine_scope, node_output_record…}` (мост к spec-16 storage-port) | `store_seam.rs:44-126` |
@@ -68,7 +68,7 @@ plugin-registry — и рискует разойтись с canon §12.2 control
 - **Фичи:** `rotation` (пробрасывается в credential/storage/resource), `chaos-full` (nightly
   chaos-CI), `test-util` (не в prod, ADR-0023).
 - **Зависимые:** **только `nebula-api`** (`crates/api/Cargo.toml:29`; комментарий :143 — api
-  получает sandbox-типы через engine). `sdk` / `server` на engine **не** зависят.
+  получает runner-типы через engine). `sdk` / `server` на engine **не** зависят.
 
 ## 4. Внутренняя архитектура
 
@@ -83,7 +83,7 @@ plugin-registry — и рискует разойтись с canon §12.2 control
 - `daemon/` — реестр и runtime долгоживущих фоновых провайдеров + EventSource-адаптеры.
 - `resource/` — registrar: kind-string → typed activation в `Manager`.
 - `runtime/` — поглощённый `nebula-runtime`: ActionRuntime-диспатч, ActionRegistry,
-  InProcessSandbox, очередь, blob, data-policy, backpressure.
+  InProcessRunner, очередь, blob, data-policy, backpressure.
 - `resolver.rs` (`pub(crate)`) — `ParamResolver`: Literal / Expression / Template / Reference → JSON.
 - `scoped_resources.rs` — M6.1/M6.2 per-branch ресурсы; `store_seam.rs` — фабрики записей/Scope для
   storage-port.

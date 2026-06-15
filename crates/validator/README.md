@@ -27,8 +27,6 @@ rule evaluation to when schema fields declare constraints. Pattern inspiration: 
 states unrepresentable* (Domain Modeling Made Functional) — `Validated<T>` is a proof-token
 that a value passed validation; the type cannot be constructed without calling `validate`.
 
-Related DMMF / typestate discussion: `docs/GLOSSARY.md` §9, `docs/STYLE.md`.
-
 ## Public API
 
 - `Validate<T>` (`foundation::Validate`) — core trait every validator implements.
@@ -86,9 +84,8 @@ See `docs/MATURITY.md` row for `nebula-validator`.
 ## Related
 
 - Canon: `docs/PRODUCT_CANON.md` §3.5, §4.5.
-- Glossary: `docs/GLOSSARY.md` §5 (`Rule`, `ValidValues`, `ResolvedValues`).
 - Siblings: `nebula-schema` (consumes `Rule`), `nebula-error` (error taxonomy).
-- ADR: `docs/adr/0080-schema-validation-platform.md` — condition evaluation seam (ADR-0052, consolidated into the schema/validation contract).
+- ADR-0080 — condition evaluation seam (ADR-0052, consolidated into the schema/validation contract).
 
 ## Appendix
 

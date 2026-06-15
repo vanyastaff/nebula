@@ -10,7 +10,7 @@
 //! Action authors never write `ActionRuntimeContext` in their code — they
 //! write `fn execute(ctx: &(impl ActionContext + ?Sized))` and receive any
 //! type the runtime chooses to supply (engine runtime, test harness,
-//! sandbox wrapper,...).
+//! runner context wrapper,...).
 
 use std::{any::Any, fmt, future::Future, pin::Pin, sync::Arc};
 

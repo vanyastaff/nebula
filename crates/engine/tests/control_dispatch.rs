@@ -24,7 +24,7 @@ use nebula_action::{
 use nebula_core::{ActionKey, Dependencies, action_key, id::ExecutionId, node_key};
 use nebula_engine::{
     ActionExecutor, ActionRegistry, ActionRuntime, ControlDispatch, ControlDispatchError,
-    DataPassingPolicy, EngineControlDispatch, InProcessSandbox, WorkflowEngine,
+    DataPassingPolicy, EngineControlDispatch, InProcessRunner, WorkflowEngine,
 };
 use nebula_execution::{ExecutionState, ExecutionStatus};
 use nebula_metrics::MetricsRegistry;
@@ -220,12 +220,12 @@ impl Harness {
         let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
             Box::pin(async move { Ok(ActionResult::success(input)) })
         });
-        let sandbox = Arc::new(InProcessSandbox::new(executor));
+        let runner = Arc::new(InProcessRunner::new(executor));
         let metrics = MetricsRegistry::new();
         let runtime = Arc::new(
             ActionRuntime::try_new(
                 registry,
-                sandbox,
+                runner,
                 DataPassingPolicy::default(),
                 metrics.clone(),
             )

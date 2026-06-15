@@ -17,7 +17,7 @@
 //! ## Role
 //!
 //! **Stability Patterns Pipeline** (Release It! — Circuit Breaker + Timeout + Retry-with-Backoff
-//! composition; `docs/GLOSSARY.md` Architectural Patterns). Cross-cutting infrastructure;
+//! composition). Cross-cutting infrastructure;
 //! no upward dependencies.
 //!
 //! ## Public API (summary)

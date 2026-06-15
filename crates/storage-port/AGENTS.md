@@ -23,4 +23,4 @@
 - Library code uses typed `thiserror`/`StorageError`; no panicking unwrap/expect/panic in lib code.
 
 ## See also
-- `README.md` — full design · `docs/adr/0072-nebula-storage-spec16-port-adapter-tenancy.md` (port/adapter/tenancy contract) · ADR-0041 (RefreshClaimStore shape)
+- `README.md` — full design · ADR-0072 (port/adapter/tenancy contract) · ADR-0041 (RefreshClaimStore shape)

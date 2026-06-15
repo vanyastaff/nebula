@@ -25,4 +25,4 @@
 - Library code uses typed `thiserror`/`NebulaError`; no panicking unwrap/expect/panic in lib code.
 
 ## See also
-- `README.md` — full design · canon §3.5/§7.1/§13.1 · ADR-0018, ADR-0027 (`docs/adr/HISTORICAL.md`) · `docs/INTEGRATION_MODEL.md` §7.
+- `README.md` — full design · canon §3.5/§7.1/§13.1 · ADR-0018, ADR-0027 (in the ADR history) · `docs/INTEGRATION_MODEL.md` §7.

@@ -5,7 +5,7 @@
 | **Status** | Partial — single port-adapter крейт; Postgres compile-verified, `DATABASE_URL`-gated runtime |
 | **Layer** | Adapter (реализует `nebula-storage-port`; над ним `nebula-tenancy`-декораторы, `engine` / `api`) |
 | **Redesign role** | **Затронут напрямую** — здесь живёт вся credential-персистенция (durable stores, `EncryptionLayer`/`AuditLayer`/`CacheLayer`, `KeyProvider`, refresh-claim CAS-repo); пост-0092 граница storage↔credential пересматривается |
-| **Related** | [ADR-0072](../../../docs/adr/0072-nebula-storage-spec16-port-adapter-tenancy.md) (port/adapter/tenancy), [ADR-0041](../../../docs/adr/HISTORICAL.md) (durable refresh-claim store), [ADR-0088](../../../docs/adr/0088-credential-subsystem-rewrite.md)/[ADR-0092](../../../docs/adr/0092-credential-subsystem-consolidation.md) (credential rewrite/consolidation), PRODUCT_CANON §11.1/§11.3/§11.5/§12.2/§12.3 |
+| **Related** | ADR-0072 (port/adapter/tenancy), ADR-0041 (durable refresh-claim store), ADR-0088/ADR-0092 (credential rewrite/consolidation), PRODUCT_CANON §11.1/§11.3/§11.5/§12.2/§12.3 |
 
 ---
 

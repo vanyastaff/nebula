@@ -24,7 +24,7 @@
 //! [`CredentialStore`](nebula_credential::CredentialStore) — hence the
 //! disambiguating `Provider` prefix in the type name.
 //!
-//! See `docs/adr/0081-m6-resource-credential-integration.md` (ADR-0051, consolidated)
+//! See ADR-0081 (ADR-0051, consolidated)
 //! for the design that motivated this layer.
 
 use std::{

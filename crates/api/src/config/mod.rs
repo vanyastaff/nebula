@@ -48,9 +48,8 @@ use crate::middleware::idempotency::{
 /// [`ApiConfig::max_body_size`], which operators can override via
 /// the `API_MAX_BODY_SIZE` env var.
 ///
-/// The 1 MiB figure is a guard rail from the 2026-04-19 audit
-/// (`docs/audit/2026-04-19-codebase-quality-audit.md` §"Guard rails"
-/// #2) and a pre-condition of REST limits
+/// The 1 MiB figure is a guard rail from the 2026-04-19 codebase-quality
+/// audit (§"Guard rails" #2) and a pre-condition of REST limits
 /// ( §3 #3) for any
 /// composition-root binary.
 ///

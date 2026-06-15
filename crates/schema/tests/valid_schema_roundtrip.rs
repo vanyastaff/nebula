@@ -1,6 +1,6 @@
 //! Round-trip test for `ValidSchema` serialization.
 //!
-//! Guards the wire-protocol contract used by `nebula-plugin-sdk` / `nebula-sandbox`:
+//! Guards the wire-protocol contract used by `nebula-plugin-sdk`:
 //! schemas declared by plugin authors must survive a JSON round-trip without
 //! losing field shape.
 

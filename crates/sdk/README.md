@@ -109,6 +109,5 @@ See `docs/MATURITY.md` row for `nebula-sdk`.
 ## Related
 
 - Canon: `docs/PRODUCT_CANON.md` §3.5, §4.4, §7, `docs/INTEGRATION_MODEL.md`.
-- Glossary: `docs/GLOSSARY.md` §1 (integration model), §3 (action model).
 - Siblings: `nebula-action`, `nebula-credential`, `nebula-resource`, `nebula-schema`,
   `nebula-workflow`, `nebula-plugin`, `nebula-validator`.

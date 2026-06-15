@@ -21,7 +21,7 @@
 //! `CredentialRef<C>` carries the resolved credential id and a `PhantomData<C>`
 //! marker. `.resolve(ctx)` delegates to the existing `HasCredentials::resolve_any`
 //! path (the dyn-erased accessor) and downcasts via the credential snapshot
-//! pipeline. Phase 6 of `m6-resource-finalization-integration-audit.md` adds
+//! pipeline. Phase 6 of the M6 resource-finalization integration work adds
 //! engine-side typed helpers (`ctx.resolve_credential_by_id::<C>(id)`); this
 //! type's `.resolve` will switch over without API change.
 //!

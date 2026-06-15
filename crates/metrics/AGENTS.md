@@ -27,4 +27,4 @@
 - Library code uses typed `thiserror`/`NebulaError`; no panicking unwrap/expect/panic in lib code.
 
 ## See also
-- `README.md` — full design · ADR-0046 (`docs/adr/0046-metrics-telemetry-boundary.md`) · `docs/OBSERVABILITY.md`, `docs/PRODUCT_CANON.md` §4.6
+- `README.md` — full design · ADR-0046 · `docs/OBSERVABILITY.md`, `docs/PRODUCT_CANON.md` §4.6

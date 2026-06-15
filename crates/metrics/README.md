@@ -89,8 +89,8 @@ level inside one crate.
 
 ## Related
 
-- ADR: `docs/adr/0046-metrics-telemetry-boundary.md` — the merge decision.
-- Audit: `docs/audits/metrics-telemetry-merge.md` — evidence base for the merge.
+- ADR-0046 (metrics ↔ telemetry boundary) — the merge decision. Recorded in the maintainers' private design vault.
+- Audit evidence base for the merge — in the maintainers' private design vault.
 - Canon: `docs/PRODUCT_CANON.md` §4.6 (Observability), `docs/OBSERVABILITY.md`.
 - Siblings: `nebula-eventbus` (independent pub/sub, observed via the four
   `nebula_eventbus_*` gauges), `nebula-api` (hosts `/metrics` HTTP endpoint).

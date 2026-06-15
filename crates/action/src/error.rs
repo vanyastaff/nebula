@@ -213,8 +213,8 @@ pub enum ActionError {
     },
 
     /// Action requested a capability it was not granted.
-    #[error("sandbox violation: capability `{capability}` denied for action `{action_id}`")]
-    SandboxViolation {
+    #[error("capability violation: capability `{capability}` denied for action `{action_id}`")]
+    CapabilityViolation {
         /// The capability that was denied.
         capability: String,
         /// The action that requested the capability.
@@ -271,7 +271,7 @@ impl nebula_error::Classify for ActionError {
             Self::Retryable { .. } => nebula_error::ErrorCategory::External,
             Self::Fatal { .. } => nebula_error::ErrorCategory::Internal,
             Self::Validation { .. } => nebula_error::ErrorCategory::Validation,
-            Self::SandboxViolation { .. } => nebula_error::ErrorCategory::Authorization,
+            Self::CapabilityViolation { .. } => nebula_error::ErrorCategory::Authorization,
             Self::Cancelled => nebula_error::ErrorCategory::Cancelled,
             Self::DataLimitExceeded { .. } => nebula_error::ErrorCategory::Exhausted,
             // Credential store trouble is an external dependency issue,
@@ -286,7 +286,7 @@ impl nebula_error::Classify for ActionError {
             Self::Retryable { .. } => "ACTION:RETRYABLE",
             Self::Fatal { .. } => "ACTION:FATAL",
             Self::Validation { .. } => "ACTION:VALIDATION",
-            Self::SandboxViolation { .. } => "ACTION:SANDBOX_VIOLATION",
+            Self::CapabilityViolation { .. } => "ACTION:CAPABILITY_VIOLATION",
             Self::Cancelled => "ACTION:CANCELLED",
             Self::DataLimitExceeded { .. } => "ACTION:DATA_LIMIT",
             Self::CredentialRefreshFailed { .. } => "ACTION:CREDENTIAL_REFRESH_FAILED",
@@ -308,7 +308,7 @@ impl From<nebula_credential::CredentialAccessError> for ActionError {
             nebula_credential::CredentialAccessError::AccessDenied {
                 capability,
                 action_id,
-            } => ActionError::SandboxViolation {
+            } => ActionError::CapabilityViolation {
                 capability,
                 action_id,
             },
@@ -323,7 +323,7 @@ impl From<nebula_core::CoreError> for ActionError {
             nebula_core::CoreError::CredentialAccessDenied {
                 capability,
                 action_id,
-            } => ActionError::SandboxViolation {
+            } => ActionError::CapabilityViolation {
                 capability,
                 action_id,
             },
@@ -543,7 +543,7 @@ impl ActionError {
             self,
             Self::Fatal { .. }
                 | Self::Validation { .. }
-                | Self::SandboxViolation { .. }
+                | Self::CapabilityViolation { .. }
                 | Self::DataLimitExceeded { .. }
         )
     }
@@ -700,8 +700,8 @@ mod tests {
     }
 
     #[test]
-    fn sandbox_violation_is_fatal() {
-        let err = ActionError::SandboxViolation {
+    fn capability_violation_is_fatal() {
+        let err = ActionError::CapabilityViolation {
             capability: "Network".into(),
             action_id: "custom.action".into(),
         };

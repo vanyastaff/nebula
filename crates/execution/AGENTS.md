@@ -28,4 +28,4 @@
 
 ## See also
 - `README.md` — full design, durability matrix, lease-enforcement notes.
-- Canon `docs/PRODUCT_CANON.md` §11.1/§11.2/§11.3/§11.5/§12.2 · `docs/ENGINE_GUARANTEES.md` · `docs/GLOSSARY.md` §2.
+- Canon `docs/PRODUCT_CANON.md` §11.1/§11.2/§11.3/§11.5/§12.2.

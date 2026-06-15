@@ -105,4 +105,3 @@ assert_eq!(md.name(), "My Entity");
 
 - `docs/PRODUCT_CANON.md §3.5` — integration model (one pattern, five concepts).
 - `docs/MATURITY.md` — crate-state dashboard row.
-- `docs/STYLE.md` — idioms, naming, error taxonomy.

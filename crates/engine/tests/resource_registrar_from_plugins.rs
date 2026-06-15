@@ -48,7 +48,7 @@ use nebula_action::{
 };
 use nebula_core::{Dependencies, ResourceKey, action_key, node_key, resource_key};
 use nebula_engine::{
-    ActionExecutor, ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessSandbox,
+    ActionExecutor, ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner,
     KindActivator, Plugin, PluginManifest, PluginRegistry, ResolvedPlugin,
     ResourceActivatorRegistry, WorkflowEngine,
 };
@@ -268,12 +268,12 @@ fn build_engine(registrars: ResourceActivatorRegistry) -> WorkflowEngine {
     );
     let executor: ActionExecutor =
         Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
-    let sandbox = Arc::new(InProcessSandbox::new(executor));
+    let runner = Arc::new(InProcessRunner::new(executor));
     let metrics = MetricsRegistry::new();
     let runtime = Arc::new(
         ActionRuntime::try_new(
             registry,
-            sandbox,
+            runner,
             DataPassingPolicy::default(),
             metrics.clone(),
         )

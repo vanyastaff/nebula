@@ -39,4 +39,4 @@
 
 ## See also
 - `README.md` — full durability matrix + backend status table.
-- `docs/adr/0072-nebula-storage-spec16-port-adapter-tenancy.md` (port/adapter/tenancy); ADR-0041 (refresh claim); `docs/PRODUCT_CANON.md` §11.1/§11.3/§11.5/§12.2/§12.3.
+- ADR-0072 (port/adapter/tenancy); ADR-0041 (refresh claim); `docs/PRODUCT_CANON.md` §11.1/§11.3/§11.5/§12.2/§12.3.

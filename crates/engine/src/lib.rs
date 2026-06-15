@@ -111,9 +111,9 @@ pub use resource_status::{
 };
 pub use result::ExecutionResult;
 pub use runtime::{
-    ActionExecutor, ActionRegistry, ActionRuntime, BlobRef, BlobStorage, BoundedStreamBuffer,
-    DataPassingPolicy, InProcessSandbox, LargeDataStrategy, MemoryQueue, PushOutcome, QueueError,
-    RuntimeError, SandboxRunner, SandboxedContext, StatefulCheckpoint, StatefulCheckpointSink,
+    ActionExecutor, ActionRegistry, ActionRunContext, ActionRunner, ActionRuntime, BlobRef,
+    BlobStorage, BoundedStreamBuffer, DataPassingPolicy, InProcessRunner, LargeDataStrategy,
+    MemoryQueue, PushOutcome, QueueError, RuntimeError, StatefulCheckpoint, StatefulCheckpointSink,
     TaskQueue,
 };
 pub use scoped_resources::{

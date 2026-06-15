@@ -216,9 +216,9 @@ See `docs/MATURITY.md` row for `nebula-credential`.
 ## Related
 
 - Canon: `docs/PRODUCT_CANON.md` §3.5 (integration model — stored-state vs projected auth-material split), §12.5 (secrets + auth invariants), §13.2 (rotation/refresh seam).
-- ADRs: `docs/adr/0081-m6-resource-credential-integration.md` (M6 binding/credential cascade — consolidates ADR-0042/0043/0044; drops `Resource::Credential`, per-slot rotation hook).
+- ADR-0081 (M6 binding/credential cascade — consolidates ADR-0042/0043/0044; drops `Resource::Credential`, per-slot rotation hook).
 - Integration model: `docs/INTEGRATION_MODEL.md` §`nebula-credential`.
-- ADR: ADR-0004 (historical — `docs/adr/HISTORICAL.md`) (Metadata→Record, Description→Metadata).
+- ADR-0004 (historical — the maintainers' private design vault) (Metadata→Record, Description→Metadata).
 - Siblings: `nebula-core` (cross-cutting IDs/scopes), `nebula-crypto` (`Cipher`/`Kdf` injected here), `nebula-schema` (`ValidSchema` consumed by `Credential::Properties` companion structs), `nebula-action` (binds via `#[credential]` slot fields), `nebula-resource` (binds via `#[credential]` slot fields + owns per-slot rotation fan-out), `nebula-engine` (`credential` module = accessor bridges + test coordinator only; runtime relocated here per ADR-0092), `nebula-storage` (`credential` module owns store impls/layers + Encryption/Cache/Audit decorators).
 
 ## Appendix

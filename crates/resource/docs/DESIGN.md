@@ -5,7 +5,7 @@
 | **Status** | `frontier` — redesign frontier; production bind-population still missing |
 | **Layer** | Domain (engine-owned resource lifecycle; depends on credential/schema/eventbus, consumed by action/engine/sdk/plugin) |
 | **Redesign role** | **Touched — фронт текущего credential/resource redesign.** Уже принял ADR-0093 (teardown-контракт + topology bind-inversion) и шаг 5 ADR-0092 (перенос `credential_fanout/` из engine). Открытый хвост — production bind-population (§M12.4). |
-| **Related** | [ADR-0092](../../../docs/adr/0092-credential-subsystem-consolidation.md) step 5, [ADR-0093](../../../docs/adr/0093-resource-teardown-contract-and-foolproofing.md), PRODUCT_CANON L2-§11.4 (release best-effort on crash) / L2-§13.3 (attributable lifecycle) / §3.5 (что есть «Resource») |
+| **Related** | ADR-0092 step 5, ADR-0093, PRODUCT_CANON L2-§11.4 (release best-effort on crash) / L2-§13.3 (attributable lifecycle) / §3.5 (что есть «Resource») |
 
 ---
 

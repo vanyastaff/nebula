@@ -27,4 +27,4 @@
 
 ## See also
 - `README.md` — full design (frontmatter canon-invariant `L2-12.4`)
-- Canon: `docs/PRODUCT_CANON.md` §3.10, §4.2 (ErrorClassifier), §12.4 · `docs/GLOSSARY.md` §6 · `docs/MATURITY.md` row `nebula-error`
+- Canon: `docs/PRODUCT_CANON.md` §3.10, §4.2 (ErrorClassifier), §12.4 · `docs/MATURITY.md` row `nebula-error`

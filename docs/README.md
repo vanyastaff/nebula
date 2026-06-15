@@ -7,7 +7,6 @@
 | Path | Role |
 |------|------|
 | [`AGENTS.md`](../AGENTS.md) | Repo rules, layout, commands, guard hooks |
-| [`STRATEGY.md`](../STRATEGY.md) | Product direction and 2026 standard bar |
 | [`README.md`](../README.md) | Product overview |
 | [`docs/pitfalls.md`](./pitfalls.md) | Traps before touching hot paths |
 | [`docs/MATURITY.md`](./MATURITY.md) | L0–L4 maturity |
@@ -19,16 +18,15 @@
 |------|------|
 | [`docs/PRODUCT_CANON.md`](./PRODUCT_CANON.md) | Binding invariants |
 | [`docs/INTEGRATION_MODEL.md`](./INTEGRATION_MODEL.md) | Integration mechanics (Resource, Credential, Action, Schema, Plugin) |
-| [`docs/VISION.md`](./VISION.md) | Human charter draft — **agents skip** (use STRATEGY + canon) |
+| [`docs/VISION.md`](./VISION.md) | Human charter draft — **agents skip** (use PRODUCT_CANON + INTEGRATION_MODEL) |
 | [`docs/OBSERVABILITY.md`](./OBSERVABILITY.md) | Metrics / tracing boundaries |
 | Design records (ADRs, roadmap, specs, research) | Maintained in the maintainers' private design vault — **not tracked in this public repository** |
 
 **Conflict rule:** `PRODUCT_CANON.md` (invariants) → `INTEGRATION_MODEL.md` (mechanics) →
-**accepted ADR** for a specific decision → `STRATEGY.md` (direction) → crate README.
+**accepted ADR** (by id) for a specific decision → crate README.
 
-**Compound Engineering / Cursor:** There is **no** separate “ADR skill”. `ce-plan` and
-`ce-work` use **your** doc map. When an ADR amends canon, update canon or
-INTEGRATION_MODEL with a **pointer**, not a second spec.
+When an ADR amends canon, update canon or INTEGRATION_MODEL with a **pointer**, not a
+second spec.
 
 ## Design history (not in this repo)
 
@@ -40,7 +38,7 @@ MATURITY, OBSERVABILITY) are the in-repo source of truth; ADRs are referenced by
 
 ## Integration author path
 
-1. `STRATEGY.md` → SDK / plugin layers
+1. `docs/VISION.md` → mission, positioning, SDK / plugin layers
 2. `crates/action`, `credential`, `resource`, `plugin` READMEs
 3. `Schema` = configuration form for Action / Credential / Resource
 4. `PRODUCT_CANON.md` for durability and operational honesty

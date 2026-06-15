@@ -282,7 +282,6 @@ Slash commands: `.claude/commands/` (project-specific, load on demand).
 | Product canon | `docs/PRODUCT_CANON.md` | Binding invariants (durability, credentials) |
 | Integration model | `docs/INTEGRATION_MODEL.md` | How crates connect (Resource, Credential, Action, Schema, Plugin) |
 | Pitfalls | `docs/pitfalls.md` | Before touching hot paths |
-| Onboarding | `HANDOFF.md` | New collaborator orientation |
 | Design records (ADRs, roadmap, specs, research) | maintainers' private design vault | Not tracked in this public repository |
 
 ---

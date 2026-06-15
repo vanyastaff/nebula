@@ -29,4 +29,4 @@
 
 ## See also
 - `README.md` — full design, identifier conventions, prelude usage
-- Canon: `docs/PRODUCT_CANON.md` §3.10 (shared vocabulary), §12.5 (secrets/redaction) · `docs/INTEGRATION_MODEL.md` §1 · `docs/GLOSSARY.md` §1
+- Canon: `docs/PRODUCT_CANON.md` §3.10 (shared vocabulary), §12.5 (secrets/redaction) · `docs/INTEGRATION_MODEL.md` §1

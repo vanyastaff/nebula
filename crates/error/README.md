@@ -22,7 +22,7 @@ individual action implementations.
 ## Role
 
 **Error Taxonomy and Classification Boundary** — the foundation error crate that every library
-crate in the workspace depends on. Pattern: *ErrorClassifier* (canon §4.2, `docs/GLOSSARY.md` §6).
+crate in the workspace depends on. Pattern: *ErrorClassifier* (canon §4.2).
 Every library crate uses `thiserror` + `Classify` + `NebulaError`; only binaries use `anyhow`.
 `nebula-api` maps `NebulaError` to RFC 9457 `problem+json` at the API boundary.
 
@@ -63,5 +63,4 @@ See `docs/MATURITY.md` row for `nebula-error`.
 ## Related
 
 - Canon: `docs/PRODUCT_CANON.md` §3.10 (cross-cutting vocabulary), §4.2 (ErrorClassifier pattern), §12.4 (errors and contracts).
-- Glossary: `docs/GLOSSARY.md` §6 (errors: `NebulaError`, `Classify`, `ErrorClassifier`, `ApiError`).
 - Siblings: `nebula-error-macros` (sibling proc-macro crate), `nebula-resilience` (consumes `RetryHint`), `nebula-api` (maps to RFC 9457).
