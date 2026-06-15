@@ -54,7 +54,7 @@ operational honesty (§4.5) more than explicitly revising it.
 
 **[L1]** Competitive dimension: reliability and clarity of execution as a system, plus DX for integration authors.
 
-**[L1]** **Go-to-market shape:** library-first — `nebula-sdk` is the headline surface; a production composition root (`apps/server`) is downstream of it, constrained to a thin wiring shape over the same library primitives. See [`ADR-0020 (library-first GTM)`](adr/HISTORICAL.md) for the binding decision — full record in git history, indexed in `docs/adr/HISTORICAL.md`.
+**[L1]** **Go-to-market shape:** library-first — `nebula-sdk` is the headline surface; a production composition root (`apps/server`) is downstream of it, constrained to a thin wiring shape over the same library primitives. See ADR-0020 (library-first GTM) for the binding decision — design records are maintained in the maintainers' private design vault, not in this public repository.
 
 For peer analysis, our explicit bets against n8n / Temporal / Windmill / Make / Zapier, and what we borrow from each, see `docs/COMPETITIVE.md`. That document is persuasive; this canon stays normative.
 
@@ -87,7 +87,7 @@ For peer analysis, our explicit bets against n8n / Temporal / Windmill / Make / 
 
 For the full model — structural-contract types, wiring rules, plugin packaging (`Cargo.toml` / `plugin.toml` / `impl Plugin`), plugin signing (status: planned), cross-plugin dependency rules — see `docs/INTEGRATION_MODEL.md`. That document is the authoritative source for integration mechanics; this canon states the invariants.
 
-**[L1]** Resource credential dependencies use **typed slot fields** on resources (ADR-0044, consolidated into the M6 contract), not a singular `Resource::Credential` associated type. See `docs/INTEGRATION_MODEL.md` and `docs/adr/0081-m6-resource-credential-integration.md`.
+**[L1]** Resource credential dependencies use **typed slot fields** on resources (ADR-0044, consolidated into the M6 contract), not a singular `Resource::Credential` associated type. See `docs/INTEGRATION_MODEL.md` and ADR-0081.
 
 Sections 3.6 through 3.9 (per-crate pointers) are consolidated in `docs/INTEGRATION_MODEL.md`.
 
@@ -198,7 +198,7 @@ Major choices should map to a pillar; if a feature maps to none, it is probably 
 
 - **[L1]** **Public integration / plugin SDK surface:** stability matters; breaking changes deserve an RFC-style decision, not drive-by commits.
 - **[L2]** **Workspace internals:** may break when wrong — but **not** silently: canon + migration note + tests (see §17).
-- **[L2]** **Publication scope:** the `publish = true` perimeter (workspace crates with a crates.io contract) is governed by [`ADR-0021`](adr/HISTORICAL.md) (historical); default is `publish = false`, opt-in requires ≥ 3 documented external consumers **or** a dedicated ADR. Internal crates stay invisible to the ecosystem even while the workspace grows.
+- **[L2]** **Publication scope:** the `publish = true` perimeter (workspace crates with a crates.io contract) is governed by ADR-0021 (historical); default is `publish = false`, opt-in requires ≥ 3 documented external consumers **or** a dedicated ADR. Internal crates stay invisible to the ecosystem even while the workspace grows.
 - **[L1]** **Ecosystem quality over node count:** one solid canonical integration per external service beats many half-finished duplicates.
 - **[L1]** **Third-party nodes** are first-class in intent: same capabilities as first-party where the plugin model allows; **document** what is shipped vs planned.
 

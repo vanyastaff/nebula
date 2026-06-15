@@ -21,7 +21,7 @@ crate composes them instead of redeclaring the same prefix with
 incompatible field names. Plugins are described separately as container
 descriptors: they may reuse the small supporting types from this crate,
 but they do not compose `BaseMetadata<K>` and do not carry a canonical
-input schema (see [ADR-0018](../../docs/adr/HISTORICAL.md)).
+input schema (see ADR-0018).
 
 ## Role
 
@@ -98,7 +98,7 @@ assert_eq!(md.name(), "My Entity");
 - `nebula-plugin::PluginManifest` — **does not** compose `BaseMetadata`
   by design (plugin is a container, not a schematized leaf). Reuses
   `Icon` / `MaturityLevel` / `DeprecationNotice` from this crate; see
-  [ADR-0018](../../docs/adr/HISTORICAL.md) for the
+  ADR-0018 for the
   bundle-descriptor rationale.
 
 ## Canon

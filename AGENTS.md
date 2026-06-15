@@ -31,16 +31,16 @@ You need to...
 
 ### What to Read by Task
 
-| Task | Read First | Then |
-|------|-----------|------|
-| Fix a bug in a crate | `crates/<crate>/AGENTS.md` | `crates/<crate>/README.md`, relevant ADR |
-| Add a new feature | `docs/ROADMAP.md` (is it planned?) | `crates/<crate>/AGENTS.md`, `docs/INTEGRATION_MODEL.md` |
-| Understand error handling | `.agents/skills/nebula-error-and-validation/SKILL.md` | `crates/error/AGENTS.md` |
-| Understand storage | `.agents/skills/nebula-storage-port-adapter/SKILL.md` | `crates/storage/AGENTS.md` |
-| Understand credentials | `.agents/skills/nebula-credential-lifecycle/SKILL.md` | `crates/credential/AGENTS.md` |
-| Add a cross-crate dep | `.agents/skills/nebula-layer-boundaries/SKILL.md` | `deny.toml` wrappers |
-| Understand observability | `.agents/skills/nebula-observability-dod/SKILL.md` | `crates/metrics/AGENTS.md` |
-| Create a PR | `.agents/skills/nebula-worktree-pr-workflow/SKILL.md` | This file §Git Workflow |
+| Task | Read |
+|------|------|
+| Fix a bug in a crate | `crates/<crate>/AGENTS.md`, `crates/<crate>/README.md`, relevant ADR |
+| Add a new feature | `docs/INTEGRATION_MODEL.md` (how it connects) + `crates/<crate>/AGENTS.md` (roadmap/ADRs live in the maintainers' private design vault, not this repo) |
+| Understand error handling | `crates/error/AGENTS.md` |
+| Understand storage | `crates/storage/AGENTS.md` |
+| Understand credentials | `crates/credential/AGENTS.md` |
+| Add a cross-crate dep | `deny.toml` wrappers |
+| Understand observability | `crates/metrics/AGENTS.md` |
+| Create a PR | This file §Git Workflow |
 
 ---
 
@@ -154,9 +154,7 @@ nebula/
 ├── clippy.toml         # lint thresholds (msrv 1.95)
 ├── crates/             # workspace members
 ├── scripts/            # worktree.sh + lefthook helpers
-├── .agents/skills/     # Agent skills
 ├── .claude/            # Claude Code: guard hooks, slash commands
-├── .cursor/rules/      # Cursor rules (defer to AGENTS.md)
 └── .github/            # CI workflows, CODEOWNERS, templates
 ```
 
@@ -234,7 +232,7 @@ All persistent branches go through `scripts/worktree.sh` (or `task wt:*` wrapper
 When you hit a build/test error:
 
 1. **Layer violation (cargo-deny)** → check `deny.toml` `[bans].deny` wrappers. The crate you're importing from is in a higher layer. Use `nebula-eventbus` for cross-crate communication, or move the code down a layer.
-2. **`unwrap()` in lib code** → replace with `?` operator + typed `thiserror` variant. See `.agents/skills/nebula-error-and-validation/SKILL.md`.
+2. **`unwrap()` in lib code** → replace with `?` operator + typed `thiserror` variant.
 3. **Missing trait bound** → check if the type needs `Send + Sync` (all async paths require it).
 4. **Clippy warning** → run `task clippy` to see workspace-wide. Fix the warning, don't suppress it.
 5. **Test failure after refactor** → check if you weakened a test assertion. The `edit-guard.sh` hook blocks this.
@@ -267,18 +265,7 @@ Rules enforced by **lefthook** (pre-commit + pre-push) and **CI**. Not by Claude
 
 ---
 
-## Skills
-
-Skills live in `.agents/skills/`, discoverable on demand:
-
-| Skill | When to Load |
-|-------|-------------|
-| `nebula-layer-boundaries` | Adding a cross-crate dependency |
-| `nebula-credential-lifecycle` | Working with credentials, OAuth, secret rotation |
-| `nebula-storage-port-adapter` | Changing storage, repository traits, CAS/leases |
-| `nebula-error-and-validation` | Adding error types, handling validation |
-| `nebula-observability-dod` | Adding metrics, tracing, logging |
-| `nebula-worktree-pr-workflow` | Creating branches, commits, PRs |
+## Slash Commands
 
 Slash commands: `.claude/commands/` (project-specific, load on demand).
 
@@ -294,10 +281,9 @@ Slash commands: `.claude/commands/` (project-specific, load on demand).
 | Product overview | `README.md` | Understanding what Nebula is |
 | Product canon | `docs/PRODUCT_CANON.md` | Binding invariants (durability, credentials) |
 | Integration model | `docs/INTEGRATION_MODEL.md` | How crates connect (Resource, Credential, Action, Schema, Plugin) |
-| 1.0 roadmap | `docs/ROADMAP.md` | Checking if a feature is planned |
 | Pitfalls | `docs/pitfalls.md` | Before touching hot paths |
-| ADRs | `docs/adr/` | Understanding architectural decisions |
 | Onboarding | `HANDOFF.md` | New collaborator orientation |
+| Design records (ADRs, roadmap, specs, research) | maintainers' private design vault | Not tracked in this public repository |
 
 ---
 
@@ -313,26 +299,3 @@ Slash commands: `.claude/commands/` (project-specific, load on demand).
 | `.mcp.json` | MCP server config (Serena, rust-analyzer, cratesio, etc.) |
 | `scripts/worktree.sh` | Branch lifecycle helper |
 | `.github/workflows/ci.yml` | CI required jobs |
-
-## graphify
-
-This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
-
-When the user types `/graphify`, invoke the `skill` tool with `skill: "graphify"` before doing anything else.
-
-Rules:
-- For codebase questions, first run `graphify query "<question>"` when graphify-out/graph.json exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.
-- Dirty graphify-out/ files are expected after hooks or incremental updates; dirty graph files are not a reason to skip graphify. Only skip graphify if the task is about stale or incorrect graph output, or the user explicitly says not to use it.
-- If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
-- Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
-- After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).
-
-### Research artifacts → `raw/`
-
-When an agent gathers external knowledge — articles, studies, research findings, deepwiki/web dumps, or a standalone analysis it produced — **save it as a file under `raw/` in the project root**. The owner ingests `raw/` into graphify manually (`graphify .`) on their own schedule.
-
-- `raw/` is git-ignored (local-only, point-in-time, not durable docs). Do **not** commit it.
-- One artifact per file. Markdown preferred (graphify ingests it cleanly); keep the original format if conversion would lose signal.
-- Name by source so provenance is obvious: `deepwiki_<repo>/…`, `github_com_<owner>_<repo>.md`, `web_<domain>_<slug>.md`, or `analysis_<topic>.md`. Multi-page sources get a subfolder.
-- Lead each file with a short header: source URL/identifier, what it is, date collected.
-- This is for *gathered/derived* knowledge, not durable project docs — real docs still go to `docs/`.

@@ -4,8 +4,8 @@ Cross-cutting cryptographic primitives for Nebula: **AES-256-GCM** authenticated
 encryption (with mandatory AAD) and **Argon2id** key derivation, plus the
 `EncryptedData` envelope and `CryptoError` taxonomy.
 
-Extracted from `nebula-credential` per
-[ADR-0088](../../docs/adr/0088-credential-subsystem-rewrite.md) so that:
+Extracted from `nebula-credential` per ADR-0088 (design records are maintained
+in the maintainers' private design vault, not in this public repository) so that:
 
 - the credential contract crate no longer compiles `aes-gcm` / `argon2`, and
 - `nebula-storage`'s `EncryptionLayer` consumes the primitives directly rather

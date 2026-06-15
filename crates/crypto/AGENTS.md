@@ -21,4 +21,4 @@
 - Library code uses typed `thiserror`/`NebulaError`; no panicking unwrap/expect/panic in lib code.
 
 ## See also
-- `README.md` — full design · [ADR-0088](../../docs/adr/0088-credential-subsystem-rewrite.md) (extracted from `nebula-credential`)
+- `README.md` — full design · ADR-0088 (extracted from `nebula-credential`; design records are maintained in the maintainers' private design vault, not in this public repository)

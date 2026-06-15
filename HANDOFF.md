@@ -27,8 +27,9 @@ first-class engine concerns rather than bolt-ons.
 **Active alpha.** Cross-cutting + Core layers are **stable**; Exec (`engine`,
 `storage`) and the API layer are being wired toward production. Not 1.0 yet.
 
-The 1.0 plan is a **capability/dependency checklist** (not a calendar) in
-[`docs/ROADMAP.md`](docs/ROADMAP.md), milestones M0–M14:
+The 1.0 plan is a **capability/dependency checklist** (not a calendar),
+milestones M0–M14 (the roadmap is maintained in the maintainers' private
+design vault and is not tracked in this public repository):
 
 - **DONE:** M0 (engine durability debts), M1 (engine correctness), M2 (retry
   semantics + leases), M6/M11 (resource + action/credential/resource v4
@@ -186,9 +187,6 @@ than grepping blind:
   (`/plugin install <rust-lsp>@claude-plugins-official`) or wire the **serena**
   MCP for symbol-level find/edit (find-symbol, find-referencing-symbols,
   rename) — far cheaper than re-reading whole files.
-- **Pi:** `.pi/lsp.json` already maps `rust-analyzer` for `.rs` (clippy on
-  `check`, all features, `target/` excluded) and `taplo` for `.toml`; the
-  `lsp_diagnostics` / `lsp_fix` tools use it.
 - `.claude/settings.json` now **denies `Read` of `target/**`** (and the sibling
   worktree pool `.worktrees/**` / `.claude/worktrees/**`) so build artifacts and
   stale duplicate crate trees don't pollute context — rely on the LSP / Grep
@@ -214,12 +212,11 @@ than grepping blind:
   macro, 4-registries→1 collapse, canonical `owner_id` derivation — see recent
   `git log`). Check the latest commits before assuming registry/owner-id
   shapes.
-- Decisions live in [`docs/adr/`](docs/adr/) (live = 0046+ standalone +
-  contract ADRs 0080–0082; index for 0001–0041 in
-  [`docs/adr/HISTORICAL.md`](docs/adr/HISTORICAL.md)). **Conflict order:**
-  PRODUCT_CANON → INTEGRATION_MODEL → accepted ADR → STRATEGY → crate README
-  (per [`docs/README.md`](docs/README.md)). Plans under `docs/plans/` are
-  **non-normative**.
+- Design records (ADRs, roadmap, specs, research) are maintained in the
+  maintainers' private design vault and are not tracked in this public
+  repository. **Conflict order:** PRODUCT_CANON → INTEGRATION_MODEL →
+  accepted ADR → STRATEGY → crate README (per
+  [`docs/README.md`](docs/README.md)).
 
 ## 8. Gotchas
 

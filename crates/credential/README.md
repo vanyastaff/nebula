@@ -17,7 +17,7 @@ In most workflow engines, credentials are blobs of JSON passed directly into nod
 
 **Credential subsystem (one crate, three bounded contexts).** (1) *TypeSystem* — the `Credential` contract, capability sub-traits, schemes, and `CredentialRegistry`. Each `Credential` type declares three associated types: `Scheme` (the auth protocol the consumer receives), `State` (what is persisted), and `Properties` (the typed setup-form fields, replaces the pre-Phase-5 `Input`). (2) *Runtime* (`runtime/`) — `CredentialResolver`, `RefreshCoordinator`, lease, executor, dispatchers, rotation-state machines (relocated from `nebula-engine` per ADR-0092). (3) *Management* (`service/`) — the `CredentialService` facade for tenant CRUD and `resolve_for_slot` bind-population. Heavy I/O (HTTP token exchange, durable stores, crypto) is **injected via ports** — see Layering below; the crate links no `reqwest` and no `sqlx`. Action code receives only the projected material.
 
-**Integration credentials (Plane B):** this crate models **workflow integration** secrets (calls to Slack, cloud APIs, databases, …), not operator login to Nebula. The canonical boundary and rules for adding new auth mechanisms are documented in [`ADR-0033 (integration credentials, Plane B)`](../../docs/adr/HISTORICAL.md).
+**Integration credentials (Plane B):** this crate models **workflow integration** secrets (calls to Slack, cloud APIs, databases, …), not operator login to Nebula. The canonical boundary and rules for adding new auth mechanisms are documented in ADR-0033 (integration credentials, Plane B). Design records (ADRs, roadmap, specs, research) are maintained in the maintainers' private design vault and are not tracked in this public repository.
 
 Pattern: *Typed credential lifecycle* (Release It! ch "Stability Patterns" — secrets must not leak; rotations must not strand in-flight executions). Implementation follows the canonical separation between domain representation (`CredentialRecord`) and persisted state (`StoredCredential` + `EncryptionLayer` in `nebula-storage`). (The dead parallel `CredentialRow` SQL row-model flagged by ADR-0088 is slated for deletion — do not build against it.)
 
@@ -30,9 +30,8 @@ this crate's facade) plus `default_in_memory_coordinator()` for tests. The
 per-slot rotation **fan-out** (dispatch to live resources) moved to
 `nebula-resource`. Crypto (AES-256-GCM / Argon2id) lives in **`nebula-crypto`**,
 injected as `Arc<dyn Cipher>` / `Arc<dyn Kdf>`. Durable stores + Encryption /
-Cache / Audit decorators stay in `nebula-storage`. See
-[`ADR-0092`](../../docs/adr/0092-credential-subsystem-consolidation.md) and Plane B
-mechanics in [`ADR-0033`](../../docs/adr/HISTORICAL.md).
+Cache / Audit decorators stay in `nebula-storage`. See ADR-0092 and Plane B
+mechanics in ADR-0033.
 
 **ADR-0032** keeps the `CredentialStore` **trait** in this crate (the store *port*
 lives in `nebula-storage-port`). All concrete SQLite / Postgres stores live in
@@ -203,7 +202,7 @@ The credential П1 phase landed the validated CP5/CP6 trait shape per Tech Spec 
 - **Fatal duplicate-KEY registration (§15.6).** `CredentialRegistry::register<C>(instance, registering_crate)` returns `Result<(), RegisterError>` — duplicates are fatal in **both** debug and release builds. The previous "panic in debug, warn + overwrite in release" pattern is removed. Operators resolve via plugin uninstall, version pin, or namespace fix at startup rather than discovering silent credential takeover at runtime. Closes N7 (interim until signed-manifest infra lands).
 - **`SchemeGuard` + `SchemeFactory` refresh hook (§15.7).** Long-lived resources receive `SchemeGuard<'a, C>` (`!Clone`, drop-zeroizes via `SensitiveScheme: ZeroizeOnDrop`, lifetime-pinned by `PhantomData<&'a ()>`) instead of `&Scheme`. `SchemeFactory<C>` is the re-acquisition mechanism for connection pools / daemons that need fresh material per request. The refresh-notification hook itself lives on `nebula_resource::Resource::on_credential_refresh` per ADR-0044 (which supersedes ADR-0036 — slot-binding lands the per-slot rotation hook with `&mut self` + slot_name).
 - **Capability-from-type (§15.8).** `CredentialMetadata::capabilities_enabled` is removed. Capability sets come from `compute_capabilities::<C>()` over the `plugin_capability_report::Is*` constants (set by sub-trait membership) at registration; plugins cannot self-attest false capabilities. `CredentialRegistry::iter_compatible(required: Capabilities) -> impl Iterator<Item = (&str, Capabilities)>` is the discovery surface for slot pickers. Closes N6.
-- **ADR-0035 phantom-shim canonical form.** `dyn ServiceCapability` requires a per-capability `mod sealed_caps` + `dyn ServiceCapabilityPhantom` rewrite — see [ADR-0035](../../docs/adr/HISTORICAL.md) (amendments 2026-04-24-B + -C + 2026-04-26 rename). The `#[capability]` proc-macro and `#[action_phantom]` rewriter make this one-line for plugin authors.
+- **ADR-0035 phantom-shim canonical form.** `dyn ServiceCapability` requires a per-capability `mod sealed_caps` + `dyn ServiceCapabilityPhantom` rewrite — see ADR-0035 (amendments 2026-04-24-B + -C + 2026-04-26 rename). The `#[capability]` proc-macro and `#[action_phantom]` rewriter make this one-line for plugin authors.
 
 Plugin authors: see [`src/credentials/`](src/credentials/) for canonical capability sub-trait impls and the `mod sealed_caps` convention (the first-party builtin types were folded into this crate when `nebula-credential-builtin` was deleted per ADR-0092). The landing-gate compile-fail probes in `tests/compile_fail_*.rs` document every invariant — read those first when a credential change feels load-bearing.
 

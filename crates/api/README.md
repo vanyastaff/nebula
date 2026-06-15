@@ -166,7 +166,8 @@ by design (three static reason labels, no per-trigger dimension).
 
 ## OAuth identity providers (Plane A)
 
-Per [ADR-0085](../../docs/adr/0085-oauth-identity-providers-from-secrets.md):
+Per ADR-0085 (design records are maintained in the maintainers' private
+design vault, not in this public repository):
 operator IdP-client credentials are configured via environment
 variables (NOT a database table, NOT the credential store). Declaring
 a provider is opt-in; an undeclared provider returns
