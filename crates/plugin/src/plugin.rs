@@ -53,7 +53,13 @@ pub trait Plugin: Send + Sync + Debug + 'static {
     ///
     /// Called once at registration time by [`crate::ResolvedPlugin::from`].
     /// Returns an empty list by default.
-    fn resources(&self) -> Vec<Arc<dyn nebula_resource::ResourceDescriptor>> {
+    ///
+    /// Each entry is the B+ merged [`nebula_resource::ResourceFactory`]
+    /// (ADR-0095 D2): it carries both the introspection arm (`key`,
+    /// `metadata`, `validate`) and the construction arm (`register`).
+    /// `#[derive(Resource)]` emits a `<Name>Factory` type that satisfies
+    /// this contract.
+    fn resources(&self) -> Vec<Arc<dyn nebula_resource::ResourceFactory>> {
         vec![]
     }
 
@@ -111,7 +117,10 @@ mod tests {
         let plugin = StubPlugin(manifest);
         assert!(plugin.actions().is_empty());
         assert!(plugin.credentials().is_empty());
-        assert!(plugin.resources().is_empty());
+        assert!(
+            plugin.resources().is_empty(),
+            "default resources() must return an empty Vec<Arc<dyn ResourceFactory>>"
+        );
         assert!(plugin.on_load().is_ok());
         assert!(plugin.on_unload().is_ok());
     }

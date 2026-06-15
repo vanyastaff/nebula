@@ -131,31 +131,23 @@ pub struct WorkflowEngine {
     workflow_execution_duration_seconds: Histogram,
     /// Node registry for node-level metadata and versioning.
     plugin_registry: PluginRegistry,
-    /// Closed `kind → typed registrar` allowlist for stored-resource-row
+    /// Closed `kind → typed factory` allowlist for stored-resource-row
     /// activation.
     ///
     /// A persisted resource row carries only a `kind` string plus opaque
     /// JSON; turning it into a typed `Manager::register_resolved::<R>`
-    /// call needs a per-concrete-`R` registrar that already knows its
-    /// resource and `R::Topology` (see [`ResourceActivatorRegistry`]
-    /// / [`crate::KindActivator`]). The map is **closed**: a kind
-    /// is registrable only if a registrar was explicitly inserted; an
-    /// unknown kind is a wiring fault caught at activation, never a silent
-    /// no-op.
+    /// call requires an erased [`ResourceFactory`](crate::ResourceFactory)
+    /// that already knows its concrete `R` and `R::Topology`
+    /// (see [`KindActivator`](crate::KindActivator)). The map is
+    /// **closed**: a kind is registrable only if a factory was explicitly
+    /// inserted; an unknown kind is a wiring fault caught at activation,
+    /// never a silent no-op.
     ///
-    /// Held in engine state next to [`plugin_registry`] because the two
-    /// are siblings: `impl Plugin` is the runtime source of truth for
-    /// *what* a plugin contributes, and this allowlist is *how* a declared
-    /// resource's `kind` reaches a typed registration. It is **not**
-    /// auto-derivable from `Plugin::resources()`: that yields
-    /// `dyn AnyResource` (metadata-only — no constructor, no
-    /// `R::Topology`), and `#[derive(Resource)]` emits no per-`R`
-    /// value/topology factory. The composition root pairs each declared
-    /// resource `kind` with the concrete-`R` constructors it holds and
-    /// threads the assembled registry in via
-    /// [`with_resource_registrars`](Self::with_resource_registrars) —
-    /// mirroring caller-supplied typed Action registration, not a
-    /// plugin-registry auto-pull.
+    /// Post ADR-0095 D2, `Plugin::resources()` returns
+    /// `Vec<Arc<dyn ResourceFactory>>` — each factory carries both
+    /// introspection (`key`, `metadata`, `validate`) and construction
+    /// (`register`). The composition root can populate this allowlist
+    /// directly from `plugin.resources()` without a separate wiring step.
     ///
     /// Defaults empty (fail-closed: every kind rejected) for engines wired
     /// without resource activation.

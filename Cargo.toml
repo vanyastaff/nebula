@@ -179,6 +179,9 @@ wiremock = "0.6"
 # Semantic versioning
 semver = { version = "1", features = ["serde"] }
 
+# RAII guard — bind-before-register + rollback-on-failure pattern
+scopeguard = "1"
+
 # Compact inline string (≤24 bytes heap-free; used in error ABI + future ID types)
 compact_str = { version = "0.9", features = ["serde"] }
 

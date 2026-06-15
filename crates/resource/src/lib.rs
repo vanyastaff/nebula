@@ -45,6 +45,7 @@ pub mod dedup;
 pub mod error;
 pub mod events;
 pub mod ext;
+pub mod factory;
 pub mod guard;
 pub(crate) mod hook_guard;
 pub mod manager;
@@ -115,6 +116,10 @@ pub use nebula_resource_macros::ResourceConfig;
 // (separate namespaces sharing the name); `impl_empty_has_schema!` uses
 // `$crate::*` paths, so its expansion does not require adapters to keep
 // `nebula-schema` in extern_prelude either.
+pub use factory::{
+    BoxFut, KindActivator, RegisterRequest, RegistrarError, ResourceActivatorRegistry,
+    ResourceFactory, ResourceRegistrationOutcome,
+};
 pub use nebula_schema::{HasSchema, Schema, ValidSchema, impl_empty_has_schema};
 pub use options::AcquireOptions;
 pub use recovery::{GateState, RecoveryGate, RecoveryGateConfig, RecoveryTicket, RecoveryWaiter};
@@ -123,7 +128,7 @@ pub use release_queue::ReleaseQueue;
 pub use reload::ReloadOutcome;
 pub use resource::{
     CheckCost, HasCredentialSlots, MetadataCompatibilityError, Provider, ResourceConfig,
-    ResourceDescriptor, ResourceMetadata, TeardownCx, TeardownReason,
+    ResourceMetadata, TeardownCx, TeardownReason,
 };
 pub use resource_ref::ResourceRef;
 pub use slot::{CredentialSlot, SlotCell};

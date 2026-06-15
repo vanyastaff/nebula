@@ -112,7 +112,7 @@ impl PluginRegistry {
     /// Flat iterator over every resource across every registered plugin.
     pub fn all_resources(
         &self,
-    ) -> impl Iterator<Item = (&PluginKey, &Arc<dyn nebula_resource::ResourceDescriptor>)> {
+    ) -> impl Iterator<Item = (&PluginKey, &Arc<dyn nebula_resource::ResourceFactory>)> {
         self.plugins
             .iter()
             .flat_map(|(pk, rp)| rp.resources().map(move |(_k, r)| (pk, r)))
@@ -146,7 +146,7 @@ impl PluginRegistry {
     pub fn resolve_resource(
         &self,
         full: &nebula_core::ResourceKey,
-    ) -> Option<Arc<dyn nebula_resource::ResourceDescriptor>> {
+    ) -> Option<Arc<dyn nebula_resource::ResourceFactory>> {
         self.plugins
             .values()
             .find_map(|rp| rp.resource(full).cloned())

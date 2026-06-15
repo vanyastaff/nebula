@@ -1,38 +1,27 @@
-//! Engine holds the `kind → typed registrar` allowlist in its state and
-//! exposes it through an accessor, populated from the typed registrars a
+//! Engine holds the `kind → typed factory` allowlist in its state and
+//! exposes it through an accessor, populated from the typed factories a
 //! composition root builds for the resources an `impl Plugin` declares.
 //!
-//! ## What this pins (and the seam it cannot pin)
+//! ## What this pins
 //!
 //! `impl Plugin` is the runtime source of truth for *what* registers
 //! (`actions()` / `resources()` / `credentials()` — INTEGRATION_MODEL,
-//! "Plugin packaging" §). But `Plugin::resources()` yields
-//! `Vec<Arc<dyn nebula_resource::AnyResource>>`, and `AnyResource` carries
-//! **only** `key()` + `metadata()` — no associated types, no constructor,
-//! no `TopologyRuntime<R>` factory. `#[derive(Resource)]` emits only
-//! slot plumbing (`DeclaresDependencies`, slot accessors,
-//! `HasCredentialSlots`) — it emits
-//! no per-`R` value factory and no topology-runtime factory. The typed
-//! `Manager::register_resolved::<R>` consumes a `resource: R` and a
-//! `TopologyRuntime<R>` *by value*, monomorphized; neither is recoverable
-//! from a `dyn AnyResource`.
+//! "Plugin packaging" §). `Plugin::resources()` yields
+//! `Vec<Arc<dyn nebula_resource::ResourceFactory>>` — the B+ merged
+//! contribution contract (ADR-0095 D2). `ResourceFactory` carries both
+//! the introspection arm (`key`, `metadata`, `validate`) and the
+//! construction arm (`register`).
 //!
-//! So the `kind → typed registrar` allowlist cannot be filled by reflecting
-//! over `Plugin::resources()`. The wireable producer is the **explicit
-//! typed-registration path**: the composition root pairs each declared
-//! resource `kind` with the concrete-`R` resource/topology constructors it
-//! holds (exactly the shape [`nebula_engine::KindActivator`] takes)
-//! and threads the assembled [`nebula_engine::ResourceActivatorRegistry`]
-//! into the engine — mirroring how Actions are registered by the caller
-//! (typed registration), not auto-pulled from the plugin registry.
+//! The `kind → typed factory` allowlist is populated by reflecting over
+//! `Plugin::resources()` and inserting each factory by its `key()`. The
+//! composition root may also build factories manually via
+//! [`nebula_engine::KindActivator`] and insert them directly into a
+//! [`nebula_engine::ResourceActivatorRegistry`].
 //!
 //! This test pins the honest, wired behavior: a plugin declares a resource
-//! of kind `demo`; the composition root builds the typed registrar for it
-//! and hands the registry to the engine; the engine holds it and the
-//! accessor resolves the wired kind (and rejects an undeclared one). It
-//! does **not** assert plugin-`resources()`-driven auto-population, because
-//! the derive/plugin surface emits no per-`R` factory to drive it (the
-//! precise missing hook is documented in the test body).
+//! of kind `demo.widget` via `ResourceFactory`; the composition root builds
+//! the typed registry and hands it to the engine; the engine holds it and
+//! the accessor resolves the wired kind (and rejects an undeclared one).
 
 use std::{
     collections::HashMap,
@@ -161,21 +150,6 @@ impl resident::ResidentProvider for DemoResource {
     }
 }
 
-/// `AnyResource` is the type-erased shape `Plugin::resources()` returns —
-/// metadata-only. This impl is the erased view (key + metadata) the plugin
-/// registry holds; it deliberately exposes **no**
-/// constructor and no topology factory, which is exactly why the engine
-/// cannot auto-build a typed registrar from `Plugin::resources()` alone.
-impl nebula_resource::ResourceDescriptor for DemoResource {
-    fn key(&self) -> ResourceKey {
-        <Self as Provider>::key()
-    }
-
-    fn metadata(&self) -> ResourceMetadata {
-        <Self as Provider>::metadata()
-    }
-}
-
 // ── A plugin that declares the resource (canon: impl Plugin is the
 //    runtime source of truth for what registers) ─────────────────────────────
 
@@ -187,8 +161,16 @@ impl Plugin for DemoPlugin {
         &self.0
     }
 
-    fn resources(&self) -> Vec<Arc<dyn nebula_resource::ResourceDescriptor>> {
-        vec![Arc::new(DemoResource::new())]
+    /// Returns the B+ merged `ResourceFactory` for `demo.widget` (ADR-0095 D2).
+    ///
+    /// The factory carries both the introspection arm (`key`, `metadata`,
+    /// `validate`) and the construction arm (`register`), supplied here via
+    /// a `KindActivator` with a resident topology.
+    fn resources(&self) -> Vec<Arc<dyn nebula_resource::ResourceFactory>> {
+        vec![Arc::new(KindActivator::<DemoResource, _, _>::new(
+            DemoResource::new,
+            || Resident::<DemoResource>::new(resident::config::Config::default()),
+        ))]
     }
 }
 

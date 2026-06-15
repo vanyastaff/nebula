@@ -7,7 +7,10 @@ use nebula_core::{ActionKey, CredentialKey, ResourceKey};
 use nebula_credential::{AnyCredential, AuthPattern, CredentialMetadata};
 use nebula_metadata::PluginManifest;
 use nebula_plugin::{ComponentKind, Plugin, PluginError, ResolvedPlugin};
-use nebula_resource::{ResourceDescriptor, ResourceMetadata};
+use nebula_resource::{
+    ResourceFactory, ResourceMetadata, SlotIdentity,
+    factory::{BoxFut, RegisterRequest},
+};
 use nebula_schema::ValidSchema;
 use nebula_workflow::NodeDefinition;
 
@@ -102,7 +105,12 @@ impl AnyCredential for StubCredential {
     }
 }
 
-// ── Stub ResourceDescriptor ─────────────────────────────────────────────────────────
+// ── Stub ResourceFactory ─────────────────────────────────────────────────────
+//
+// Implements the B+ merged `ResourceFactory` contract (ADR-0095 D2).
+// The introspection arm (`key`, `metadata`, `validate`) is the only part
+// exercised by the namespace/dedup tests; `register` is a stub that always
+// returns `SlotIdentity::Unbound` because these tests never call it.
 
 struct StubResource {
     key: ResourceKey,
@@ -124,13 +132,26 @@ impl std::fmt::Debug for StubResource {
     }
 }
 
-impl ResourceDescriptor for StubResource {
+impl ResourceFactory for StubResource {
     fn key(&self) -> ResourceKey {
         self.key.clone()
     }
 
     fn metadata(&self) -> ResourceMetadata {
         ResourceMetadata::from_key(&self.key)
+    }
+
+    fn validate(&self, _config_json: serde_json::Value) -> Result<(), nebula_resource::Error> {
+        Ok(())
+    }
+
+    fn register<'a>(
+        &'a self,
+        _manager: &'a nebula_resource::Manager,
+        _request: RegisterRequest<'a>,
+    ) -> BoxFut<'a, Result<SlotIdentity, nebula_resource::Error>> {
+        // Test stub: register is never invoked by the namespace/dedup tests.
+        Box::pin(async { Ok(SlotIdentity::Unbound) })
     }
 }
 
@@ -140,7 +161,7 @@ struct StubPlugin {
     manifest: PluginManifest,
     actions: Vec<Arc<dyn ActionFactory>>,
     credentials: Vec<Arc<dyn AnyCredential>>,
-    resources: Vec<Arc<dyn ResourceDescriptor>>,
+    resources: Vec<Arc<dyn ResourceFactory>>,
 }
 
 impl std::fmt::Debug for StubPlugin {
@@ -191,7 +212,7 @@ impl Plugin for StubPlugin {
         self.credentials.clone()
     }
 
-    fn resources(&self) -> Vec<Arc<dyn ResourceDescriptor>> {
+    fn resources(&self) -> Vec<Arc<dyn ResourceFactory>> {
         self.resources.clone()
     }
 }
