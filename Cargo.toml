@@ -148,7 +148,7 @@ utoipa-axum = "0.2"
 utoipa-swagger-ui = { version = "9", features = ["axum"] }
 # Spec validation in tests — typed 3.1 parser; round-tripping the served JSON
 # is hermetic (no meta-schema fixture to maintain).
-oas3 = "0.16"
+oas3 = "0.21"
 
 # JSON Web Tokens
 jsonwebtoken = { version = "10", features = ["rust_crypto"] }
