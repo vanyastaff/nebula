@@ -1,16 +1,16 @@
-//! Sandbox runner abstraction — the engine-side dispatch boundary between
-//! the action dispatcher and the isolation transport.
+//! Action runner abstraction — the engine-side dispatch boundary between
+//! the action dispatcher and the in-process execution transport.
 //!
 //! The dispatcher owns the runner trait: it decides, per `IsolationLevel`,
-//! how an action is executed. Today the sole runner is [`InProcessSandbox`];
-//! isolation is a future additive concern that does not require a second
-//! runner implementation.
+//! how an action is executed. Today the sole runner is [`InProcessRunner`],
+//! which runs actions in the same process with a cooperative cancellation
+//! check.
 //!
 //! ## Key types
 //!
-//! - [`SandboxRunner`] — execute an action within an isolation boundary.
-//! - [`InProcessSandbox`] — the sole runner; trusted in-process dispatch.
-//! - [`SandboxedContext`] — cooperative cancellation check for the runner.
+//! - [`ActionRunner`] — execute an action through the in-process dispatch boundary.
+//! - [`InProcessRunner`] — the sole runner; trusted in-process dispatch.
+//! - [`ActionRunContext`] — cooperative cancellation check for the runner.
 //! - [`ActionExecutor`] — registry-lookup-and-invoke callback.
 
 use std::sync::Arc;
@@ -19,15 +19,15 @@ use async_trait::async_trait;
 use nebula_action::{ActionContext, ActionError, ActionMetadata, result::ActionResult};
 use tokio_util::sync::CancellationToken;
 
-/// Sandboxed execution context wrapping an [`ActionContext`].
+/// Action run context wrapping an [`ActionContext`].
 ///
 /// Provides a cooperative cancellation check before action execution.
-pub struct SandboxedContext {
+pub struct ActionRunContext {
     cancellation: CancellationToken,
 }
 
-impl SandboxedContext {
-    /// Build sandbox metadata from an action context.
+impl ActionRunContext {
+    /// Build run-context metadata from an action context.
     pub fn new(context: &dyn ActionContext) -> Self {
         Self {
             cancellation: context.cancellation().clone(),
@@ -50,19 +50,20 @@ impl SandboxedContext {
     }
 }
 
-/// Trait for executing actions within an isolation boundary.
+/// Trait for executing actions through the in-process dispatch boundary.
 ///
-/// [`InProcessSandbox`] is the sole implementation today. The trait exists
-/// as the dispatch boundary so additional isolation strategies can be added
+/// [`InProcessRunner`] is the sole implementation today. The trait exists
+/// as the dispatch boundary so additional execution strategies can be added
 /// additively without touching call sites.
 ///
-/// WASM is an explicit non-goal — see `docs/PRODUCT_CANON.md`.
+/// WASM and out-of-process isolation are explicit non-goals — see
+/// `docs/PRODUCT_CANON.md` (ADR-0091).
 #[async_trait]
-pub trait SandboxRunner: Send + Sync {
-    /// Execute an action within the sandbox.
+pub trait ActionRunner: Send + Sync {
+    /// Execute an action through the runner.
     async fn execute(
         &self,
-        context: SandboxedContext,
+        context: ActionRunContext,
         metadata: &ActionMetadata,
         input: serde_json::Value,
     ) -> Result<ActionResult<serde_json::Value>, ActionError>;
@@ -75,33 +76,33 @@ pub type ActionExecutorFuture = std::pin::Pin<
 
 /// Callback type for executing an action (registry lookup + invoke).
 pub type ActionExecutor = Arc<
-    dyn Fn(SandboxedContext, &ActionMetadata, serde_json::Value) -> ActionExecutorFuture
+    dyn Fn(ActionRunContext, &ActionMetadata, serde_json::Value) -> ActionExecutorFuture
         + Send
         + Sync,
 >;
 
-/// In-process sandbox: runs actions in the same process (cooperative
+/// In-process runner: runs actions in the same process (cooperative
 /// cancellation check only — no isolation).
 ///
-/// The sole [`SandboxRunner`] implementation. Suitable for all registered
-/// actions today; additional isolation strategies can be introduced
-/// additively as new implementations of [`SandboxRunner`].
-pub struct InProcessSandbox {
+/// The sole [`ActionRunner`] implementation. Suitable for all registered
+/// actions today; additional execution strategies can be introduced
+/// additively as new implementations of [`ActionRunner`].
+pub struct InProcessRunner {
     executor: ActionExecutor,
 }
 
-impl InProcessSandbox {
-    /// Create a new in-process sandbox with the given action executor.
+impl InProcessRunner {
+    /// Create a new in-process runner with the given action executor.
     pub fn new(executor: ActionExecutor) -> Self {
         Self { executor }
     }
 }
 
 #[async_trait]
-impl SandboxRunner for InProcessSandbox {
+impl ActionRunner for InProcessRunner {
     async fn execute(
         &self,
-        context: SandboxedContext,
+        context: ActionRunContext,
         metadata: &ActionMetadata,
         input: serde_json::Value,
     ) -> Result<ActionResult<serde_json::Value>, ActionError> {

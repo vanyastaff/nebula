@@ -5,7 +5,7 @@
 | **Status** | Stable — observability foundation (leaf/core) |
 | **Layer** | Cross-cutting (depends only on `nebula-error` + `nebula-eventbus`) |
 | **Redesign role** | **Not touched structurally** — passive *name registry* for the post-0092 credential/resource model. Hot-swap/rotation работы пишут существующие `NEBULA_*` метрики; примитивы и экспортёры redesign не меняет. |
-| **Related** | [ADR-0046](../../../docs/adr/0046-metrics-telemetry-boundary.md) (поглощение `nebula-telemetry`), [ADR-0092](../../../docs/adr/0092-credential-subsystem-consolidation.md) (как consumer имён) |
+| **Related** | ADR-0046 (поглощение `nebula-telemetry`), ADR-0092 (как consumer имён) |
 
 ---
 

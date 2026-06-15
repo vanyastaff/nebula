@@ -1,6 +1,6 @@
 //! End-to-end integration tests for the workflow engine.
 //!
-//! These tests exercise the full stack: workflow → engine → runtime → sandbox → handler.
+//! These tests exercise the full stack: workflow → engine → runtime → runner → handler.
 
 use std::{
     collections::HashMap,
@@ -17,7 +17,7 @@ use nebula_action::{
 };
 use nebula_core::{ActionKey, Dependencies, NodeKey, action_key, id::WorkflowId, node_key};
 use nebula_engine::{
-    ActionExecutor, ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessSandbox,
+    ActionExecutor, ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner,
     WorkflowEngine,
 };
 use nebula_execution::{ExecutionStatus, context::ExecutionBudget};
@@ -225,13 +225,13 @@ fn make_workflow(nodes: Vec<NodeDefinition>, connections: Vec<Connection>) -> Wo
 fn make_engine(registry: Arc<ActionRegistry>) -> (WorkflowEngine, MetricsRegistry) {
     let executor: ActionExecutor =
         Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
-    let sandbox = Arc::new(InProcessSandbox::new(executor));
+    let runner = Arc::new(InProcessRunner::new(executor));
     let metrics = MetricsRegistry::new();
 
     let runtime = Arc::new(
         ActionRuntime::try_new(
             registry,
-            sandbox,
+            runner,
             DataPassingPolicy::default(),
             metrics.clone(),
         )
@@ -252,12 +252,12 @@ async fn engine_and_runtime_share_metrics_registry() {
 
     let executor: ActionExecutor =
         Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
-    let sandbox = Arc::new(InProcessSandbox::new(executor));
+    let runner = Arc::new(InProcessRunner::new(executor));
 
     let runtime = Arc::new(
         ActionRuntime::try_new(
             registry,
-            sandbox,
+            runner,
             DataPassingPolicy::default(),
             metrics.clone(),
         )

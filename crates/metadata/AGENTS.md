@@ -26,4 +26,4 @@
 
 ## See also
 - `README.md` — full design, composition example, consumer list
-- `docs/adr/HISTORICAL.md` (ADR-0018) — plugin bundle-descriptor carve-out · `docs/PRODUCT_CANON.md §3.5` — integration model
+- the ADR history (maintainers' private design vault) (ADR-0018) — plugin bundle-descriptor carve-out · `docs/PRODUCT_CANON.md §3.5` — integration model

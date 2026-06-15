@@ -9,11 +9,11 @@
 //! - Scope conflicts: same resource key registered at two levels → closest wins.
 //! - Cleanup timeout: Provider::destroy that blocks > budget triggers
 //!   `ScopedResourceCleanupTimeout` event.
-//! - Use-case coverage from `crates/resource/plans/10-scoped-resources.md`:
+//! - Use-case coverage from the scoped-resources plan (archived):
 //!   * Temporary test database (cleanup uses global pool to drop the schema after scoped
 //!     tear-down).
 //!   * Per-tenant pool (each branch gets a different scoped resource by branch).
-//!   * Ephemeral sandbox (registers and tears down per-branch with no cross-talk).
+//!   * Ephemeral scope (registers and tears down per-branch with no cross-talk).
 //!
 //! These tests exercise the **storage + lifecycle** layer in isolation.
 //! Engine-driver wiring (calling `ResourceAction::configure`/`cleanup` per
@@ -587,7 +587,7 @@ async fn use_case_per_tenant_pool_isolation() {
     assert_eq!(*arc.downcast_ref::<u64>().unwrap(), 0xb1);
 }
 
-// ── Task 7.5 / Use cases — Ephemeral sandbox ──────────────────────────────
+// ── Task 7.5 / Use cases — Ephemeral scope ──────────────────────────────
 
 #[tokio::test]
 async fn use_case_ephemeral_sandbox_no_cross_branch_visibility() {

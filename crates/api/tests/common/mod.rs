@@ -832,7 +832,7 @@ pub(crate) async fn create_state_with_failing_queue() -> (AppState, InMemoryExec
 // both source the wiring here so they differ ONLY in the final HTTP call
 // (DELETE-cancel vs POST-terminate) and the command/terminal assertion.
 // The wiring (action key `"slow"`, the `ActionExecutor` closure,
-// `InProcessSandbox`, `ActionRuntime`, `EngineControlDispatch`,
+// `InProcessRunner`, `ActionRuntime`, `EngineControlDispatch`,
 // `ControlConsumer` with a 10ms poll interval and the `b"knife-a3"`
 // processor id) is byte-behaviorally identical to the original inline
 // knife step-5 wiring — the move is mechanical, not a behavior change.
@@ -844,7 +844,7 @@ pub(crate) mod engine_seam {
     use nebula_core::action_key;
     use nebula_engine::{
         ActionExecutor, ActionRegistry, ActionRuntime, ControlConsumer, DataPassingPolicy,
-        EngineControlDispatch, InProcessSandbox, WorkflowEngine,
+        EngineControlDispatch, InProcessRunner, WorkflowEngine,
     };
     use nebula_tenancy::{
         ScopedControlQueue, ScopedExecutionJournalReader, ScopedExecutionStore,
@@ -992,7 +992,7 @@ pub(crate) mod engine_seam {
     ///
     /// Byte-behaviorally identical to the original inline knife step-5
     /// wiring: same action key (`"slow"`), same `ActionExecutor` closure,
-    /// `InProcessSandbox`, `ActionRuntime`, 10ms poll interval, and the
+    /// `InProcessRunner`, `ActionRuntime`, 10ms poll interval, and the
     /// `b"knife-a3"` processor id.
     pub(crate) fn spawn_engine_consumer(state: &AppState) -> EngineSeam {
         let slow_started = Arc::new(tokio::sync::Notify::new());
@@ -1011,12 +1011,12 @@ pub(crate) mod engine_seam {
         let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
             Box::pin(async move { Ok(nebula_action::result::ActionResult::success(input)) })
         });
-        let sandbox = Arc::new(InProcessSandbox::new(executor));
+        let runner = Arc::new(InProcessRunner::new(executor));
         let metrics = nebula_metrics::MetricsRegistry::new();
         let runtime = Arc::new(
             ActionRuntime::try_new(
                 registry,
-                sandbox,
+                runner,
                 DataPassingPolicy::default(),
                 metrics.clone(),
             )

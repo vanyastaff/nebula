@@ -5,7 +5,7 @@
 | **Status** | Stable — leaf cross-cutting primitive |
 | **Layer** | Cross-cutting (leaf; depends only on `nebula-error`) |
 | **Redesign role** | **Direct artifact of the credential rewrite** — extracted from `nebula-credential` (ADR-0088); the `Cipher` / `Kdf` ports (ADR-0092) are the inversion seam that lets the credential `EncryptionLayer` become generic over the cipher. |
-| **Related** | [ADR-0088](../../../docs/adr/0088-credential-subsystem-rewrite.md) D7, [ADR-0092](../../../docs/adr/0092-credential-subsystem-consolidation.md), PRODUCT_CANON §12.5 |
+| **Related** | ADR-0088 D7, ADR-0092, PRODUCT_CANON §12.5 |
 
 ---
 

@@ -5,7 +5,7 @@
 | **Status** | Frontier (AGENTS-метка устарела; контент-стабильный Core-крейт после ADR-0090) |
 | **Layer** | Core / cross-cutting (нет восходящих зависимостей; листовой набор типов) |
 | **Redesign role** | **Не мишень редизайна, общая база.** ADR-0090 закрепил: `nebula-metadata` ОСТАЁТСЯ отдельным Core-крейтом (не сливать в `nebula-core`); симметричный by-value `metadata()` API по Action/Credential/Resource уже сделан (PR #784). Поверхность крейта не меняется ни в credential-rewrite (ADR-0088/0092), ни в resource-teardown (ADR-0093). |
-| **Related** | [ADR-0018](../../../docs/adr/HISTORICAL.md) (plugin = контейнер-дескриптор), [ADR-0090](../../../docs/adr/0090-metadata-crate-placement-and-symmetric-api.md) (отдельный Core-крейт + by-value API), PRODUCT_CANON §3.5 (one pattern, five concepts), canon-инвариант L2-3.5 |
+| **Related** | ADR-0018 (plugin = контейнер-дескриптор), ADR-0090 (отдельный Core-крейт + by-value API), PRODUCT_CANON §3.5 (one pattern, five concepts), canon-инвариант L2-3.5 |
 
 ---
 

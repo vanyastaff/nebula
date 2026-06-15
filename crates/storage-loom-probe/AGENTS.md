@@ -27,4 +27,4 @@
 ## See also
 - `README.md` — full design, per-probe table, why-standalone rationale
 - `crates/storage/`, `crates/storage-port/` — the production adapter + Core seam these probes mirror (ADR-0072)
-- ADR-0041 (`docs/adr/HISTORICAL.md`) — original refresh-claim design
+- ADR-0041 (the ADR history (maintainers' private design vault)) — original refresh-claim design

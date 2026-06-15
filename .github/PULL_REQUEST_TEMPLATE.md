@@ -77,8 +77,6 @@ Delete items that do not apply, or delete this section for pure bug fixes and me
 - [ ] `docs/MATURITY.md` row updated if crate maturity changed
 - [ ] Crate `README.md` / `lib.rs //!` updated if public surface changed
 - [ ] `docs/INTEGRATION_MODEL.md` updated if Resource / Credential / Action / Plugin / Schema surface changed
-- [ ] `docs/STYLE.md` updated if a new idiom or antipattern surfaced
-- [ ] `docs/GLOSSARY.md` updated if a new term was introduced
 - [ ] Plan or spec that motivated this change is recorded (design records live in the maintainers' private design vault, not in this repo; link any public issue/PR: <!-- path or URL -->)
 
 ## Safety / security impact

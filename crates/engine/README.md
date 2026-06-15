@@ -127,8 +127,6 @@ See `docs/MATURITY.md` row for `nebula-engine`.
 ## Related
 
 - Canon: `docs/PRODUCT_CANON.md` §10, §11.1, §12.2, §13.
-- Engine guarantees: `docs/ENGINE_GUARANTEES.md`.
-- Glossary: `docs/GLOSSARY.md` §2 (execution authority).
 - Siblings: `nebula-execution` (state types), `nebula-storage` (repo), `nebula-runtime`
   (dispatcher), `nebula-workflow` (DAG → `ExecutionPlan`), `nebula-resilience`
   (in-action retry), `nebula-plugin` (registry).

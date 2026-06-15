@@ -20,7 +20,7 @@ Nebula is judged by **what operators and integration authors can trust**, not by
 Canon rules are tagged by **revision cost**:
 
 - **[L1 Principle]** — strategic product intent. Changing means Nebula is a different product. Requires product-level rethink.
-- **[L2 Invariant]** — testable contract with a named code seam. Material semantic change requires an ADR (`docs/adr/`) and an updated seam test in the same PR. Wording polish does not.
+- **[L2 Invariant]** — testable contract with a named code seam. Material semantic change requires an ADR (in the maintainers' private design vault) and an updated seam test in the same PR. Wording polish does not.
 - **[L3 Convention]** — default style answer. Changing requires a PR with rationale and, if it touches behavior, a test.
 - **[L4 Implementation detail]** — not a canon rule. Lives in the owning crate's README. If you find an L4 rule in this file, open a revision per §0.2 and move it.
 
@@ -56,7 +56,7 @@ operational honesty (§4.5) more than explicitly revising it.
 
 **[L1]** **Go-to-market shape:** library-first — `nebula-sdk` is the headline surface; a production composition root (`apps/server`) is downstream of it, constrained to a thin wiring shape over the same library primitives. See ADR-0020 (library-first GTM) for the binding decision — design records are maintained in the maintainers' private design vault, not in this public repository.
 
-For peer analysis, our explicit bets against n8n / Temporal / Windmill / Make / Zapier, and what we borrow from each, see `docs/COMPETITIVE.md`. That document is persuasive; this canon stays normative.
+For peer analysis, this canon weighs our explicit bets against n8n / Temporal / Windmill / Make / Zapier, and what we borrow from each. This canon stays normative.
 
 ---
 
@@ -144,7 +144,7 @@ Directional goals; binding engineering rules live in §12–§14. The **integrat
 - **JSON at edges is fine; JSON instead of validated boundaries is not.** Schemas and compatibility rules at workflow / action boundaries win over unstructured blobs.
 - **In-process channels decouple components but are not a durable backbone.** Anything requiring reliable delivery — including cancel and dispatch signals — must share the persistence transaction with the owning state transition, or live in an explicit durable outbox with documented at-least-once semantics (see §12.2). A channel whose consumer logs and discards is not a contract.
 
-See also `docs/STYLE.md` §5 (type design bets) for the Rust patterns that make this invariant easy to uphold: sealed traits, typestate, `#[non_exhaustive]`, `#[unstable]` feature gates.
+The Rust patterns that make this invariant easy to uphold: sealed traits, typestate, `#[non_exhaustive]`, `#[unstable]` feature gates.
 
 ### 4.6 Observability
 
@@ -164,7 +164,7 @@ See also `docs/STYLE.md` §5 (type design bets) for the Rust patterns that make 
 | Engine + storage + API + runtime as **composable crates** with one-way layers                                       | A single “god binary” that hides all structure                        |
 | **Local-first:** core flows runnable with **SQLite** (file or `sqlite::memory:`), no mandatory Docker/Redis for dev | Default path that requires Redis/Kafka “just to start”                |
 | **Rust-first** integration model (FFI/plugin evolution is additive, not a second-class hack)                        | A low-code platform where the primary author is non-developer glue    |
-| Honest docs: in-process sandbox = **capability / correctness**, not attacker-grade isolation                        | Claims of full untrusted-code isolation without an OS-hardened child-process boundary or a microVM-grade backend (see §12.6 — WASM is **not** on the isolation roadmap) |
+| Honest docs: in-process execution = **capability / correctness aid**, not attacker-grade isolation | Claims of untrusted-code isolation the engine does not provide — process isolation, OS-hardened child process, microVM, and WASM are all non-goals (§12.6) |
 | **Self-hosted identity** first; cloud-style deployment is “Nebula on infra,” not a different product                | Hosted-service-first product with different core guarantees           |
 | Breaking **wrong** internal APIs when the cost of shims exceeds clarity                                             | Compatibility shims that preserve bad shapes “for now”                |
 
@@ -392,11 +392,10 @@ Seams: `crates/storage/src/execution_repo.rs` — `ExecutionRepo::save_stateful_
 - **[L2]** Credential operations emit metrics through `CredentialMetrics` for dashboarding: resolve, refresh, rotation, dynamic lease, tamper detection.
 - **[L2]** `ExternalProvider` boundary: secrets resolved from external managers (Vault / AWS SM / GCP SM / Azure KV) are never persisted locally unless explicitly configured.
 
-### 12.6 Isolation honesty
+### 12.6 Plugin trust model — in-process, no isolation
 
-- **[L1]** In-process sandbox / capability checks: **correctness and least privilege for accidental misuse**, not a security boundary against malicious native code. Keep `crates/sandbox` doc comments aligned with this canon and `docs/` threat models.
-- **[L1]** **Plugin IPC today:** sequential dispatch over a **JSON envelope** to a child process — that **is** the trust model; do not describe it as **sandboxed execution of untrusted native code**.
-- **[L1]** **WASM / WASI is an explicit non-goal for plugin isolation.** The Rust plugin ecosystem integration authors actually need — `redis`, `sqlx` with native drivers, `rdkafka`, `tonic` with native TLS, any `*-sys` crate — does **not** compile to `wasm32-wasip2`, and where parts compile, the feature surface forces authors into host-polyfill folklore that violates the §3.5 promise ("Write Stripe logic; do not write credential rotation, connection management, or retry folklore"). Offering WASM as "the future sandbox" would be a §4.5 false capability and a §4.4 DX regression at the same time. **The real isolation roadmap is:** `ProcessSandbox` (already shipping) → full `PluginCapabilities` enforcement wired from `plugin.toml` through discovery (the discovery-wiring TODO lives in `crates/sandbox/README.md`) → `plugin.toml` signing verification in tooling (canon §7.1) → per-platform OS hardening in `os_sandbox` (seccomp-bpf / landlock on Linux, `sandbox_init` on macOS, `AppContainer` / job objects on Windows) → parallelism within `ProcessSandbox` for throughput (§4.1). Revisit WASM only if the Rust WASM ecosystem crosses a specific, documented capability threshold — not as aspiration, and never as docs drift in crate-level `lib.rs` or README.
+- **[L1]** **Plugins and actions run in-process as trusted code** linked into the host (ADR-0091). There is no process, memory, or capability boundary between a plugin and the engine. `PluginCapabilities` / capability checks are **correctness and least-privilege aids against accidental misuse**, not a security boundary against malicious native code. Keep `lib.rs` / README doc comments and `docs/` threat models aligned with this — never describe in-process dispatch as sandboxed execution of untrusted code.
+- **[L1]** **Process isolation, out-of-process plugin execution, and WASM / WASI are abandoned non-goals** (ADR-0091) — not a roadmap, not a deferred phase, not a guarantee any author may assume. The native crates integration authors actually need (`sqlx`, `rdkafka`, `tonic` with native TLS, any `*-sys` crate) do not fit a WASM target, and an out-of-process / child-process "sandbox" narrative would be a §4.5 false capability. Do not reintroduce isolation language the engine does not provide.
 
 ### 12.7 No god files, no orphan modules
 
@@ -479,16 +478,9 @@ Tied seams: ADR-0028 cross-crate invariants (rotation/refresh boundaries between
 | `AGENTS.md` | Commands, formatting, session read-order, decision gate, trap catalog. |
 | `docs/PRODUCT_CANON.md` (this file) | Normative core — pillars (§4), golden path (§10), contracts (§11), invariants (§12), knife (§13), anti-patterns (§14), decision filter (§16), DoD (§17). Layer-tagged. |
 | `docs/INTEGRATION_MODEL.md` | Integration model mechanics — Resource / Credential / Action / Schema / Plugin contract, wiring rules, plugin packaging, status of aspirational surfaces. |
-| `docs/COMPETITIVE.md` | Peer analysis and our bets against n8n / Temporal / Windmill / Make / Zapier. Explicitly persuasive. |
 | `docs/OBSERVABILITY.md` | SLI / SLO / error budgets, structured event schema, operator core-analysis loop. |
-| `docs/STYLE.md` | Idioms / antipatterns / naming / error taxonomy / type-design bets. |
-| `docs/GLOSSARY.md` | Terms and architectural patterns (Outbox, WAL, Idempotent Receiver, Bulkhead, Circuit Breaker, OCC). |
 | `docs/MATURITY.md` | Per-crate state dashboard (API stability, test coverage, doc completeness, engine integration, SLI-ready). |
-| `docs/TESTING.md` | Test *tooling* — nextest profiles, insta / wiremock / mockall / assert_cmd / rstest, security notes for snapshots near credentials. |
-| `docs/dev-setup.md` | Local dev environment setup. |
-| `docs/ENGINE_GUARANTEES.md` | Operator-facing guarantees narrative (satellite of §11). |
-| `docs/UPGRADE_COMPAT.md` | Engine upgrade and workflow compatibility rules (satellite of §7.2). |
-| `docs/adr/` | Architecture Decision Records — `NNNN-kebab-title.md`, no central index. |
+| ADRs (private vault) | Architecture Decision Records — `NNNN-kebab-title.md`. Maintained in the maintainers' private design vault, not in this repo; `ADR-NNNN` ids remain stable textual references. |
 | `README.md` | Operator-facing summary. Must not contradict §5 / §11.5 / §12.3. |
 | `crates/*/README.md` + `lib.rs //!` | Per-crate: Role (named pattern), Contract (invariants + seam tests), Public API, Non-goals, Maturity. |
 | `crates/storage/migrations/{sqlite,postgres}/README.md` | Schema parity between dialects. |
@@ -527,7 +519,7 @@ If the answer implies a **false capability**, the change is not ready — hide, 
 Incomplete if:
 
 - **[L1]** violated without an explicit canon revision + product-level rationale in the PR description.
-- **[L2]** violated without an ADR in `docs/adr/` + a seam test update in the same PR.
+- **[L2]** violated without an ADR (in the maintainers' private design vault) + a seam test update in the same PR.
 - **[L3]** violated without a PR rationale (one paragraph in the PR body) and, if behavior changed, a test.
 - **[L4]** “violation” is not a violation — it is a move of detail into the owning crate's README. If you think an L4 rule is in canon, open an ADR per §0.2 and move it.
 

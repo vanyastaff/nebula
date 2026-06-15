@@ -6,8 +6,8 @@
 //! regressing the fail-closed audit invariant back to the old
 //! `sink.log(event)` fire-and-forget shape.
 //!
-//! Ref: ADR-0028, ADR-0032 (historical — `docs/adr/HISTORICAL.md`)
-//! Ref: `docs/ARCHIVE.md` §P6.7
+//! Ref: ADR-0028, ADR-0032 (historical — the maintainers' private design vault)
+//! Ref: the maintainers' private design vault §P6.7
 
 // The layers + the durable SQLite store are feature-gated in storage. Gate on
 // `sqlite` so this file is only compiled when that backend is available.

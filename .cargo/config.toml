@@ -15,8 +15,6 @@
 #   [target.aarch64-apple-darwin]
 #   rustflags = ["-C", "link-arg=-fuse-ld=lld"]
 #
-# (See docs/dev-setup.md for install instructions.)
-#
 # We can't put these here because GitHub Linux runners don't have mold
 # pre-installed and the build fails with `invalid linker name`.
 

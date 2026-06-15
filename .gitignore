@@ -182,17 +182,11 @@ docker-compose.override.yml
 lefthook-local.yml
 
 .agent/
-.agents/*
-!.agents/skills/
-!.agents/skills/**
-.cursor/*
-!.cursor/
-!.cursor/rules/
-!.cursor/rules/*.mdc
+.agents/
+.cursor/
 .codex/
 .junie/
 .qoder/
-!.qoder/repowiki/
 .specify/
 .cursorrules
 .aider*
@@ -227,56 +221,26 @@ targets/
 # Serena local state (mirrors .claudeignore policy)
 .serena/
 
-# MCP Memory server storage + local mimocode state
-.mimocode/
-
-# Compound Engineering machine-local preferences
-.compound-engineering/*.local.yaml
-
 # Fuzz crate lockfiles — not redistributed and trip dep-review's
 # license check on libfuzzer-sys (`(MIT OR Apache-2.0) AND NCSA`).
 crates/*/fuzz/Cargo.lock
-
-# ============================================================================
-# AI HARNESS RUNTIME STATE — symmetric with .codex/ above. Per-user, not
-# shared. `.atl/` holds the gentle-pi skill-registry cache; `.pi/` holds
-# per-project Pi settings / session state. Project-shared Pi configs
-# (conventions, codebase-wiki, etc.) are exempted below so contributors
-# pick up the same tooling on clone.
-# ============================================================================
-
-.atl/
-.pi/*
-
-# Committed project-shared Pi configs
-!.pi/settings.json
-!.pi/conventions.json
-!.pi/codebase-wiki.json
-!.pi/lsp.json
-!.pi/wiki/
-!.pi/wiki/**
-!.pi/extensions/
-.pi/extensions/**
-!.pi/extensions/guardrails.json
-!.pi/extensions/pi-permission-system/
-!.pi/extensions/pi-permission-system/config.json
 
 # Local audit drops (point-in-time snapshots, not durable docs)
 .pi-audit-*/
 
 # Agent research drops — collected articles / studies / analyses. Local-only,
-# not durable docs. New drops go to the Obsidian vault raw/ (C:\Users\vanya\memory\raw\);
-# this legacy in-repo raw/ stays ignored.
+# not durable docs. New drops go to the maintainers' private Obsidian vault
+# ($OBSIDIAN_VAULT_PATH, default ~/memory); this legacy in-repo raw/ stays ignored.
 raw/
 
-# project memory: junction -> Obsidian vault (C:\Users\vanya\memory\projects\nebula)
+# project memory: junction -> the private Obsidian vault ($OBSIDIAN_VAULT_PATH)
 .memory/
 
 # fastembed/ONNX model cache (obsidian-mcp semantic search side-effect — not a repo artifact)
 .fastembed_cache/
 
-# Design/planning artifacts live in the private Obsidian vault
-# (C:\Users\vanya\memory\projects\nebula\{decisions,planning,specs,research}), NOT the public repo.
+# Design/planning artifacts live in the maintainers' private Obsidian vault
+# ($OBSIDIAN_VAULT_PATH/projects/nebula/{decisions,planning,specs,research}), NOT the public repo.
 # Keep the public repo clean: ADRs, roadmap, plans, brainstorms, specs, research stay out.
 docs/adr/
 docs/plans/
@@ -296,6 +260,7 @@ openspec/
 .doctorrc.yml
 .mimocode/
 mimocode.jsonc
+.compound-engineering/
 .codex/
 .atl/
 .agents/

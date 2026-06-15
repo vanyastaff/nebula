@@ -36,5 +36,5 @@ adapter and the tenancy decorator together.
 
 ## Contract pointer
 
-The architectural contract this crate satisfies is recorded in
-`docs/adr/0072-nebula-storage-spec16-port-adapter-tenancy.md`.
+The architectural contract this crate satisfies is recorded in ADR-0072
+(storage spec-16 port / adapter / tenancy), kept in the maintainers' private design vault.

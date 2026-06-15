@@ -5,7 +5,7 @@
 | **Status** | `frontier` — Variant A trait shape shipped (M6 / §M11, 2026-04-29) |
 | **Layer** | Contract / authoring (Ports & Adapters) — author programs to traits, engine wires adapters |
 | **Redesign role** | **Затронут как downstream-потребитель, НЕ как площадка редизайна.** Прямой потребитель credential/resource: `#[credential]`/`#[resource]` слоты, `CredentialGuard<Scheme>`, `FromWorkflowNode` = consumer-сторона bind-population (M12.4). |
-| **Related** | [ADR-0081](../../../docs/adr/0081-m6-resource-credential-integration.md) (M6 binding cascade ⊇ ADR-0042/0043/0044/0045), ADR-0091 (in-process, WASM non-goal), ADR-0092 (credential consolidation), PRODUCT_CANON §3.5/§11.3/§13.4/§13.5 |
+| **Related** | ADR-0081 (M6 binding cascade ⊇ ADR-0042/0043/0044/0045), ADR-0091 (in-process, WASM non-goal), ADR-0092 (credential consolidation), PRODUCT_CANON §3.5/§11.3/§13.4/§13.5 |
 
 ---
 
@@ -34,7 +34,7 @@
   срабатывает ПОСЛЕ финального исхода), in-call retry — в `nebula-resilience`. Два слоя компонуются на разных границах.
 - Не схемная система — `parameters` держит `ValidSchema` из `nebula-schema`; схема `Input`/`Output`
   читается через `nebula_schema::schema_of::<A::Input>()` (нет метода `schema()` на трейте, ADR-0052 P3).
-- Не WASM / не process-изоляция — non-goal (ADR-0091, canon §12.6); единственный драйвер = `InProcessSandbox`.
+- Не WASM / не process-изоляция — non-goal (ADR-0091, canon §12.6); единственный драйвер = `InProcessRunner`.
 
 ## 2. Публичная поверхность
 
@@ -120,7 +120,7 @@ Dev: `nebula-credential-macros`, `nebula-expression`, `trybuild`, `insta`, `rste
    отдельным трейтом «outside the execution graph». Кандидат на удаление/перенос (этот DESIGN.md — замена).
 3. **Legacy path-space.** `lib.rs:60` / `handler.rs` — handler-трейты живут в доменных файлах, но
    ре-экспортируются через `handler::*` «for backwards compatibility». Четыре прод-пути сознательно остаются
-   на legacy handler-поверхности (webhook routing, sandbox discovery, SDK runtime, EventSource adapter).
+   на legacy handler-поверхности (webhook routing, plugin discovery, SDK runtime, EventSource adapter).
 4. **`CheckpointPolicy` planned-not-wired.** `lib.rs:23-25` — заявлен в доках/canon как планируемое поле
    `ActionMetadata`, но поля НЕТ в типе. Осознанно зафиксировано как `planned`, не баг — не документировать
    как текущую возможность.

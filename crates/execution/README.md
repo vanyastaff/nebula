@@ -111,9 +111,6 @@ See `docs/MATURITY.md` row for `nebula-execution`.
 ## Related
 
 - Canon: `docs/PRODUCT_CANON.md` §11.1, §11.2, §11.3, §11.5, §12.2.
-- Glossary: `docs/GLOSSARY.md` §2 (execution authority: `ExecutionRepo`, `executions`,
-  `execution_journal`, `execution_control_queue`, `IdempotencyKey`, `Cancel`, `Cancelled`).
-- Engine guarantees: `docs/ENGINE_GUARANTEES.md`.
 - Siblings: `nebula-storage` (persists via `ExecutionRepo`), `nebula-engine` (drives),
   `nebula-workflow` (DAG → `ExecutionPlan`), `nebula-resilience` (in-action retry).
 

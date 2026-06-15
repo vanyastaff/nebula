@@ -47,7 +47,7 @@ Actions, Resources, and Credentials need a versioned distribution unit — one t
 
 ## Non-goals
 
-- Not process/WASM isolation — out-of-process plugin execution was retired (ADR-0091, canon §12.6). Plugins run in-process; isolation is a future additive concern, not a 1.0 capability.
+- Not process/WASM isolation — out-of-process plugin execution was retired (ADR-0091, canon §12.6). Plugins run in-process as trusted code; process / OS / WASM isolation is a non-goal, not a deferred 1.0 capability.
 - Not responsible for `plugin.toml` parsing or signature verification — those belong to pre-compile tooling (`cargo-nebula`); see canon §7.1.
 - Not a runtime runtime catalog with persistence — this is an in-memory registry; persistence lives in `nebula-storage`.
 
@@ -62,6 +62,6 @@ See `docs/MATURITY.md` row for `nebula-plugin`.
 ## Related
 
 - Canon: `docs/PRODUCT_CANON.md` §1 (plugin as integration surface), §3.5 (Plugin = distribution + registration unit, returns runnable trait objects), §7.1 (packaging: `Cargo.toml` + `plugin.toml` + `impl Plugin`; unit of registration not size), §13.1 (plugin load → registry contract).
-- ADRs: ADR-0018 (rename rationale), ADR-0027 (`ResolvedPlugin`, namespace invariant, registry accessors) — historical, indexed in `docs/adr/HISTORICAL.md`.
+- ADRs: ADR-0018 (rename rationale), ADR-0027 (`ResolvedPlugin`, namespace invariant, registry accessors) — historical, indexed in the maintainers' private design vault.
 - Integration model: `docs/INTEGRATION_MODEL.md` §7 — full plugin packaging mechanics, three-sources-of-truth rule, cross-plugin dependency rule, signing rationale, discovery / load lifecycle, ABI policy, tooling notes.
 - Siblings: `nebula-metadata` (canonical `PluginManifest`), `nebula-core` (`PluginKey` identity type), `nebula-action` (`Action` trait), `nebula-resource` (`AnyResource` trait), `nebula-credential` (`AnyCredential` trait).

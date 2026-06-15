@@ -1,7 +1,7 @@
 //! Regression guard for the in-memory size of key public types.
 //!
 //! The asserted numbers are the baseline measured on 2026-04-11 after
-//! the domain-group refactor (`.claude/crates/action.md`). They exist
+//! the domain-group refactor. They exist
 //! so any future change that silently inflates these hot types has to
 //! either (a) explain itself in the PR, or (b) update the constants
 //! below with the new baseline.

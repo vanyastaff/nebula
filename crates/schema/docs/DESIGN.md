@@ -5,7 +5,7 @@
 | **Status** | Frontier — ядро (lint → validate → resolve) стабильно; периферия (UI-hints, JSON Schema export Phase 4) в pragmatic-baseline |
 | **Layer** | Core — типизированная конфигурационная поверхность для всех интеграционных концептов |
 | **Redesign role** | **Не перестраивается** (потребитель-инфраструктура). Затронут косвенно: предоставляет схему-валидацию write-path кредов (ADR-0052 P4), `schema_of` как единственный путь схем Action/Credential (ADR-0052 P3), secret-типы на стыке credential-rewrite |
-| **Related** | [ADR-0080](../../../docs/adr/0080-schema-validation-platform.md) (schema & validation platform, absorbs 0052/0058-0064), PRODUCT_CANON L1-3.5 / L1-4.5, [README](../README.md), siblings: nebula-validator, nebula-expression |
+| **Related** | ADR-0080 (schema & validation platform, absorbs 0052/0058-0064), PRODUCT_CANON L1-3.5 / L1-4.5, [README](../README.md), siblings: nebula-validator, nebula-expression |
 
 ---
 

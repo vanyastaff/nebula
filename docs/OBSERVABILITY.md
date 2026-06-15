@@ -90,13 +90,13 @@ This loop is the operational half of PRODUCT_CANON §2 success sentence: *you ca
 
 Standard labels: `credential_key` (e.g. `"github_token"`), `outcome` (`"success"` / `"failure"`), `dynamic` (`"true"` / `"false"`), `reason` (refresh failure reason).
 
-> **SEC-01/02 metric emission status (2026-04-27).** Per credential security hardening (archived sub-spec; see `docs/ARCHIVE.md`) §6, the metric *names* are reserved here as part of the doc-sync stage (`docs/PRODUCT_CANON.md` §3.5 and §4.5 operational honesty: a new error path must register its observability surface alongside the code that emits it). Emission wiring is deferred to the metric-bus integration cascade — the security-hardening fix surfaces the rejection paths via typed `TokenHttpError` (bounded reader) and the `[*_redacted]` placeholder (sanitizer). When the credential-metrics emitter is wired through `parse_token_response`, both counters get bumped at the existing `Err(...)` returns; no new error semantics are introduced in this stage.
+> **SEC-01/02 metric emission status (2026-04-27).** Per credential security hardening (archived sub-spec; see the maintainers' private design vault) §6, the metric *names* are reserved here as part of the doc-sync stage (`docs/PRODUCT_CANON.md` §3.5 and §4.5 operational honesty: a new error path must register its observability surface alongside the code that emits it). Emission wiring is deferred to the metric-bus integration cascade — the security-hardening fix surfaces the rejection paths via typed `TokenHttpError` (bounded reader) and the `[*_redacted]` placeholder (sanitizer). When the credential-metrics emitter is wired through `parse_token_response`, both counters get bumped at the existing `Err(...)` returns; no new error semantics are introduced in this stage.
 
 **Analysis loop integration:** when investigating credential-related failures, include credential metrics alongside `execution_journal` events. A spike in `refresh_failed_total` or `tamper_detection_total` is an early signal before execution failures surface.
 
 ## 7. Credential refresh coordinator (two-tier L1+L2)
 
-The two-tier refresh coordinator (design archived; see `docs/ARCHIVE.md` — refresh coordination sub-spec) coordinates rotation across replicas via an in-process L1 coalescer plus a durable L2 claim repo. Three observability surfaces let operators audit cross-replica behavior without reading Rust source:
+The two-tier refresh coordinator (design archived; see the maintainers' private design vault — refresh coordination sub-spec) coordinates rotation across replicas via an in-process L1 coalescer plus a durable L2 claim repo. Three observability surfaces let operators audit cross-replica behavior without reading Rust source:
 
 ### 7.1 Metrics
 

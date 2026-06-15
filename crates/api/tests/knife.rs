@@ -2,8 +2,7 @@
 //!
 //! This file covers integration seam steps 1–6 as specified in
 //! `docs/PRODUCT_CANON.md integration seam` and the workspace health audit
-//! (`docs/ARCHIVE.md (removed execution specs) §8
-//! Sprint A1 item #3`).
+//! (archived in the maintainers' private design vault — Sprint A1 item #3).
 //!
 //! Each step is asserted through the real axum `Router` via oneshot
 //! requests. The workflow / execution / control-queue surface is the
@@ -67,7 +66,7 @@ use common::port_scope as knife_scope;
 /// the `Start` (step 3) and `Cancel` (step 5) rows, both still
 /// `Pending`.
 ///
-/// Audit ref: 2026-04-16-workspace-health-audit.md §8 Sprint A1 item #3
+/// Audit ref: workspace-health audit §8, Sprint A1 item #3 (archived).
 #[tokio::test]
 async fn knife_scenario_end_to_end_via_port() {
     use nebula_storage_port::dto::ControlCommand as PortControlCommand;
@@ -427,7 +426,7 @@ async fn knife_step3_engine_dispatches_start_end_to_end() {
     use nebula_core::action_key;
     use nebula_engine::{
         ActionExecutor, ActionRegistry, ActionRuntime, ControlConsumer, DataPassingPolicy,
-        EngineControlDispatch, ExecutionStores, InProcessSandbox, WorkflowEngine, WorkflowStores,
+        EngineControlDispatch, ExecutionStores, InProcessRunner, WorkflowEngine, WorkflowStores,
     };
     use nebula_execution::ExecutionStatus;
     use nebula_workflow::{
@@ -516,12 +515,12 @@ async fn knife_step3_engine_dispatches_start_end_to_end() {
     let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
         Box::pin(async move { Ok(nebula_action::result::ActionResult::success(input)) })
     });
-    let sandbox = Arc::new(InProcessSandbox::new(executor));
+    let runner = Arc::new(InProcessRunner::new(executor));
     let metrics = nebula_metrics::MetricsRegistry::new();
     let runtime = Arc::new(
         ActionRuntime::try_new(
             registry,
-            sandbox,
+            runner,
             DataPassingPolicy::default(),
             metrics.clone(),
         )
@@ -709,7 +708,7 @@ async fn knife_step5_engine_cancels_running_execution_end_to_end() {
     //
     // Byte-behaviorally identical to the original inline knife step-5
     // wiring: same action key (`"slow"`), `ActionExecutor` closure,
-    // `InProcessSandbox`, `ActionRuntime`, 10ms poll interval, and the
+    // `InProcessRunner`, `ActionRuntime`, 10ms poll interval, and the
     // `b"knife-a3"` processor id — see `common::engine_seam`.
     let seam = engine_seam::spawn_engine_consumer(&state);
 

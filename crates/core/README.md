@@ -68,7 +68,6 @@ See `docs/MATURITY.md` row for `nebula-core`.
 
 - Canon: `docs/PRODUCT_CANON.md` §3.10 (shared vocabulary), §12.5 (secrets / redaction).
 - Integration model: `docs/INTEGRATION_MODEL.md` §1 (identifier usage across concepts).
-- Glossary: `docs/GLOSSARY.md` §1 (identifiers and keys).
 - Siblings: `nebula-error` (error taxonomy used by this crate), `nebula-schema` (configuration schema).
 
 ## Appendix: Identifier Conventions

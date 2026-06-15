@@ -428,7 +428,7 @@ pub enum CredentialAccessError {
     #[error("credential type mismatch: {0}")]
     TypeMismatch(String),
 
-    /// Access to undeclared credential type (sandbox violation).
+    /// Access to undeclared credential type (capability violation).
     #[error("credential access denied: {capability} for action `{action_id}`")]
     AccessDenied {
         /// The capability that was denied.

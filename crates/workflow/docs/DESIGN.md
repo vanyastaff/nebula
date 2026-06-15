@@ -5,7 +5,7 @@
 | **Status** | Stable — Core-layer authoring + validation primitive |
 | **Layer** | Core (depends only on `nebula-core` + `nebula-error`; no upward deps) |
 | **Redesign role** | **Touched, but only as data carrier** — `NodeDefinition.slot_bindings` is the author-side hybrid binding surface that the post-0092 bind-population path consumes. No runtime, resolver, or facade lives here; the redesign flows *through* this crate, it is not *built* in it. |
-| **Related** | [PRODUCT_CANON](../../../docs/PRODUCT_CANON.md) §10 / §12.2, [ADR-0092](../../../docs/adr/0092-credential-subsystem-consolidation.md), ADR-0052 (ValidatedCredentialBinding cascade, lives above this crate), `nebula-execution` / `nebula-engine` consumers |
+| **Related** | [PRODUCT_CANON](../../../docs/PRODUCT_CANON.md) §10 / §12.2, ADR-0092, ADR-0052 (ValidatedCredentialBinding cascade, lives above this crate), `nebula-execution` / `nebula-engine` consumers |
 
 ---
 

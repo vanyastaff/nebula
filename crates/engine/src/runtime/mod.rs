@@ -7,7 +7,7 @@
 //!
 //! ## Key types
 //!
-//! - [`ActionRuntime`] — executes a resolved action through the sandbox with data limits.
+//! - [`ActionRuntime`] — executes a resolved action through the runner with data limits.
 //! - [`ActionRegistry`] — registers and looks up action handlers by key.
 //! - [`DataPassingPolicy`], [`LargeDataStrategy`] — output size enforcement.
 //! - [`MemoryQueue`], [`TaskQueue`] — in-memory task queueing (not durable; durable control signals
@@ -22,20 +22,20 @@
 //!
 //! - action dispatch by trait.
 //! - retry surface: dispatch only; engine-level re-execution is `planned`.
-//! - isolation honesty: isolation is by sandbox delegation.
+//! - isolation honesty: actions run in-process; out-of-process isolation is retired (ADR-0091).
 
 pub mod blob;
 pub mod data_policy;
 pub mod error;
 pub mod queue;
 pub mod registry;
+pub mod runner;
 // guard-justified: module_inception is intentional — runtime/runtime.rs carries ActionRuntime; kept stable for external callers
 #[allow(
     clippy::module_inception,
     reason = "runtime/runtime.rs carries ActionRuntime; kept stable for external callers"
 )]
 pub mod runtime;
-pub mod sandbox_runner;
 pub mod stream_backpressure;
 
 pub use blob::{BlobRef, BlobStorage};
@@ -43,6 +43,6 @@ pub use data_policy::{DataPassingPolicy, LargeDataStrategy};
 pub use error::RuntimeError;
 pub use queue::{MemoryQueue, QueueError, TaskQueue};
 pub use registry::ActionRegistry;
+pub use runner::{ActionExecutor, ActionRunContext, ActionRunner, InProcessRunner};
 pub use runtime::{ActionRuntime, StatefulCheckpoint, StatefulCheckpointSink};
-pub use sandbox_runner::{ActionExecutor, InProcessSandbox, SandboxRunner, SandboxedContext};
 pub use stream_backpressure::{BoundedStreamBuffer, PushOutcome};

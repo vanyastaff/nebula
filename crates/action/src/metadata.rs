@@ -14,13 +14,9 @@ pub enum IsolationLevel {
     /// No isolation. Action runs directly in engine process.
     #[default]
     None,
-    /// Capability-gated in-process. SandboxedContext checks declared deps.
+    /// Capability-gated in-process. In-process capability checks against
+    /// declared deps.
     CapabilityGated,
-    /// Full isolation — separate process with OS-level hardening
-    /// (seccomp/landlock/AppContainer/macOS sandbox) or a microVM.
-    /// See `nebula-sandbox`. WASM is an explicit non-goal
-    /// (`docs/PRODUCT_CANON.md` §12.6).
-    Isolated,
 }
 
 /// Broad category of an action — how it behaves in the workflow graph.
@@ -122,8 +118,7 @@ pub struct ActionMetadata {
     /// can carry it through serialization round-trips, but the engine
     /// scheduler does not currently read it: setting `Some(n)` does
     /// **not** bound in-flight executions today. Enforcement lands in
-    /// the engine cluster-mode cascade
-    /// (`docs/tracking/cascade-queue.md` slot 2). Until then, treat
+    /// the engine cluster-mode cascade. Until then, treat
     /// this as a stable storage shape, not a runtime guarantee.
     ///
     /// Future contract (when enforced): `None` — engine-global throttle
@@ -292,7 +287,7 @@ impl ActionMetadata {
         self
     }
 
-    /// Set the isolation level for sandbox routing.
+    /// Set the isolation level for dispatch routing.
     #[must_use = "builder methods must be chained or built"]
     pub fn with_isolation_level(mut self, level: IsolationLevel) -> Self {
         self.isolation_level = level;
@@ -399,7 +394,7 @@ mod tests {
         // depend on this contract.
         let original = ActionMetadata::new(action_key!("http.request"), "HTTP", "desc")
             .with_version(2, 1)
-            .with_isolation_level(IsolationLevel::Isolated);
+            .with_isolation_level(IsolationLevel::CapabilityGated);
 
         let json = serde_json::to_string(&original).expect("serialization succeeds");
         let decoded: ActionMetadata =
@@ -618,8 +613,8 @@ mod tests {
     #[test]
     fn with_isolation_level_builder() {
         let meta = ActionMetadata::new(action_key!("test"), "Test", "desc")
-            .with_isolation_level(IsolationLevel::Isolated);
-        assert_eq!(meta.isolation_level, IsolationLevel::Isolated);
+            .with_isolation_level(IsolationLevel::CapabilityGated);
+        assert_eq!(meta.isolation_level, IsolationLevel::CapabilityGated);
     }
 
     #[test]

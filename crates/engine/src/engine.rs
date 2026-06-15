@@ -4479,11 +4479,11 @@ enum RetryDecision {
 ///    [`ActionError`] is fatal ([`ActionError::is_fatal`]), finalize
 ///    immediately, *before* any policy/budget check. Retry is otherwise a
 ///    pure attempts/budget/backoff policy that never consulted error
-///    fatality at all — so a `Fatal` action error (or a sandbox
+///    fatality at all — so a `Fatal` action error (or a runner
 ///    after-send close, which maps to fatal) used to be re-dispatched
 ///    under policy. This early-return makes "bytes reached the plugin ⇒
 ///    never re-dispatch" structural for *all* actions and closes that
-///    pre-existing, sandbox-independent gap.
+///    pre-existing, dispatch-independent gap.
 /// 1. **Global budget cap** — `ExecutionState::has_exhausted_retry_budget` consults
 ///    `ExecutionBudget.max_total_retries`. A `Some(0)` cap disables retry entirely; a `None` cap
 ///    leaves the per-node policy as the only gate.
@@ -5265,7 +5265,7 @@ mod tests {
 
     use super::*;
     use crate::runtime::{
-        ActionExecutor, DataPassingPolicy, InProcessSandbox, registry::ActionRegistry,
+        ActionExecutor, DataPassingPolicy, InProcessRunner, registry::ActionRegistry,
     };
 
     // ── Variant A test fixtures ───────────────────────────────────────────
@@ -5410,13 +5410,13 @@ mod tests {
         let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
             Box::pin(async move { Ok(ActionResult::success(input)) })
         });
-        let sandbox = Arc::new(InProcessSandbox::new(executor));
+        let runner = Arc::new(InProcessRunner::new(executor));
         let metrics = MetricsRegistry::new();
 
         let runtime = Arc::new(
             ActionRuntime::try_new(
                 registry,
-                sandbox,
+                runner,
                 DataPassingPolicy::default(),
                 metrics.clone(),
             )
@@ -8153,7 +8153,7 @@ mod tests {
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| ActionError::fatal("missing credential_id"))?;
             // `credential_by_id` forwards `CredentialAccessError::AccessDenied`
-            // as `ActionError::SandboxViolation` via the From impl in
+            // as `ActionError::CapabilityViolation` via the From impl in
             // `nebula_action::error`. We want the typed error to bubble up so
             // the engine records a NodeFailed — not to swallow it.
             let _snapshot = ctx.credential_by_id(id).await?;
@@ -8223,12 +8223,12 @@ mod tests {
             .get(&node_key!("probe"))
             .expect("failed node must carry an error message");
         // `CredentialAccessError::AccessDenied` is mapped to
-        // `ActionError::SandboxViolation { capability, action_id }` (see
+        // `ActionError::CapabilityViolation { capability, action_id }` (see
         // `nebula_action::error::From<CredentialAccessError>`), whose Display
-        // is `"sandbox violation: capability `{capability}` denied for ..."`.
+        // is `"capability violation: capability `{capability}` denied for ..."`.
         assert!(
-            err.contains("sandbox violation") && err.contains("denied"),
-            "error must surface sandbox-violation denial, got: {err}"
+            err.contains("capability violation") && err.contains("denied"),
+            "error must surface capability-violation denial, got: {err}"
         );
         assert!(
             err.contains("credential:api_key"),
@@ -8298,8 +8298,8 @@ mod tests {
             .get(&node_key!("probe"))
             .expect("failed node must carry an error message");
         assert!(
-            err.contains("sandbox violation") && err.contains("denied"),
-            "error must surface sandbox-violation denial, got: {err}"
+            err.contains("capability violation") && err.contains("denied"),
+            "error must surface capability-violation denial, got: {err}"
         );
         assert!(
             err.contains("credential:cred_b"),

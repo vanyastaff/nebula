@@ -11,7 +11,7 @@
 //!
 //! ## Trait constraint usage
 //!
-//! Phase 3 of `m6-resource-finalization-integration-audit.md` adds the
+//! Phase 3 of the M6 resource-finalization integration work adds the
 //! constraint:
 //!
 //! ```ignore

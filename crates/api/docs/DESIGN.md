@@ -5,7 +5,7 @@
 | **Status** | Frontier — HTTP entry point / API Gateway (pure library, no `main`) |
 | **Layer** | Transport boundary (top of the stack; delegates down to engine/storage/credential ports) |
 | **Redesign role** | **Credential — touched hard** (production consumer of the `CredentialService` facade, ADR-0088 D7); **Resource — touched at the edge** (legacy `ResourceRepo` seam survives until bind-population / topology land). Not the owner of any credential/resource logic — it is the inbound shell. |
-| **Related** | [ADR-0082](../../../docs/adr/0082-api-webhooks-idempotency.md) (API edge — OpenAPI/webhooks/idempotency, absorbs 0047), [ADR-0085](../../../docs/adr/0085-oauth-identity-providers-from-secrets.md) (Plane-A OAuth), [ADR-0088](../../../docs/adr/0088-credential-subsystem-rewrite.md) D7 (facade wiring), [ADR-0092](../../../docs/adr/0092-credential-subsystem-consolidation.md), PRODUCT_CANON §4.5 / §12.2 / §12.3 / §12.4 / §13 |
+| **Related** | ADR-0082 (API edge — OpenAPI/webhooks/idempotency, absorbs 0047), ADR-0085 (Plane-A OAuth), ADR-0088 D7 (facade wiring), ADR-0092, PRODUCT_CANON §4.5 / §12.2 / §12.3 / §12.4 / §13 |
 
 ---
 
@@ -97,8 +97,8 @@ api — это вершина стека.
 - `middleware/` — auth (JWT+API-key→`AuthContext`), tenancy, rbac, csrf,
   idempotency (key/layer/memory/store), internal_auth, rate_limit, request_id,
   security_headers, trace_w3c.
-- `openapi/` — `OpenApiDoc` (ADR-0047, drift = ошибка компиляции) + `audit.md`
-  (таблица статусов хендлеров).
+- `openapi/` — `OpenApiDoc` (ADR-0047, drift = ошибка компиляции). Инвентарь
+  статусов хендлеров (501-заглушки) заархивирован в приватном design-vault.
 - `ports/` — API-owned порты: `credential_builder/schema/schema_registry/
   service_factory`, `email`, `reqwest_transport`.
 - `transport/` — `credential` (service-layer через фасад), `oauth`
@@ -119,7 +119,7 @@ port-трейт из `AppState` → нижний крейт. Ошибки сво
   control-queue в той же логической операции, что и переход состояния — не голый
   DB-flip; второй несверяемый in-memory канал запрещён.
 - **[§4.5 operational honesty] by-construction.** Заглушки возвращают честный
-  501/503, а не фейк-успех; `openapi/audit.md` + тесты
+  501/503, а не фейк-успех; тесты
   (`openapi_canon_compliance.rs`) держат это в обе стороны — молча отгруженный
   endpoint не пройдёт ревью.
 - **OpenAPI drift = ошибка компиляции** (ADR-0047): монтирование только через
@@ -151,7 +151,7 @@ port-трейт из `AppState` → нижний крейт. Ошибки сво
    потребителей в `domain/auth/handler.rs:493`. Два представления одного факта.
 3. **Deprecated alias.** `transport/oauth/flow.rs:198-203` — `#[deprecated]`
    алиас на `validate_oauth_outbound_url` (sunset-долг).
-4. **Честные 501-заглушки остаются** (`openapi/audit.md:57,100`): `list_my_orgs`
+4. **Честные 501-заглушки остаются**: `list_my_orgs`
    (нет principal→orgs enumeration в `MembershipStore`/storage),
    `restart_execution` (семантика за engine-командой), org-record и
    service-account endpoints (нет store / нет `Principal::ServiceAccount` пути).

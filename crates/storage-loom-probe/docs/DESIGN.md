@@ -5,7 +5,7 @@
 | **Status** | Stable — standalone loom-model probe crate (`publish = false`) |
 | **Layer** | Exec (sibling probe; not consumed by any production crate) |
 | **Redesign role** | **Not touched** by the post-0092 credential/resource crate-topology rework — remains a sibling probe outside the merge. Only contract: if a credential full-rewrite changes the storage CAS *shape*, the mirror here must be rewritten in lockstep (AGENTS.md:21). |
-| **Related** | ADR-0041 (historical refresh-claim, `docs/adr/HISTORICAL.md`), ADR-0072 (live `storage-port`/`storage`/`tenancy`), AGENTS.md:21 |
+| **Related** | ADR-0041 (historical refresh-claim, the maintainers' private design vault), ADR-0072 (live `storage-port`/`storage`/`tenancy`), AGENTS.md:21 |
 
 ---
 

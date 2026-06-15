@@ -1,6 +1,6 @@
 //! Action runtime -- the main execution orchestrator.
 //!
-//! Resolves actions from the registry, executes them through the sandbox,
+//! Resolves actions from the registry, executes them through the runner,
 //! enforces data limits, and records metrics.
 
 use std::{sync::Arc, time::Instant};
@@ -27,7 +27,7 @@ use super::{
     data_policy::{DataPassingPolicy, LargeDataStrategy},
     error::RuntimeError,
     registry::ActionRegistry,
-    sandbox_runner::{SandboxRunner, SandboxedContext},
+    runner::{ActionRunContext, ActionRunner},
 };
 
 /// Compute a digest of the erased stateful state for stuck-state detection.
@@ -105,20 +105,19 @@ pub trait StatefulCheckpointSink: Send + Sync {
 
 /// The action runtime orchestrates execution of actions.
 ///
-/// It sits between the engine (which schedules work) and the sandbox
-/// (which provides isolation). The runtime:
+/// It sits between the engine (which schedules work) and the runner
+/// (which performs in-process dispatch). The runtime:
 ///
 /// 1. Looks up the action handler from the registry
 /// 2. Resolves the isolation level
-/// 3. Executes through the sandbox (if capability-gated/isolated) or directly (if trusted)
+/// 3. Executes through the runner (if capability-gated) or directly (if trusted)
 /// 4. Enforces data passing policies on the output
 /// 5. Emits telemetry events
 pub struct ActionRuntime {
     registry: Arc<ActionRegistry>,
-    // Used for non-None isolation in execute_stateless (Phase 0).
-    // Stateful isolation dispatch remains fail-closed until the broker
-    // protocol lands in Phase 1 — see execute_stateful.
-    sandbox: Arc<dyn SandboxRunner>,
+    // Used for capability-gated isolation in execute_stateless. Stateful
+    // capability-gated dispatch is fail-closed — see execute_stateful.
+    runner: Arc<dyn ActionRunner>,
     data_policy: DataPassingPolicy,
     metrics: MetricsRegistry,
     /// Pre-bound at construction so hot paths never propagate registry errors.
@@ -141,7 +140,7 @@ impl ActionRuntime {
     /// primitive kind).
     pub fn try_new(
         registry: Arc<ActionRegistry>,
-        sandbox: Arc<dyn SandboxRunner>,
+        runner: Arc<dyn ActionRunner>,
         data_policy: DataPassingPolicy,
         metrics: MetricsRegistry,
     ) -> Result<Self, MetricsError> {
@@ -150,7 +149,7 @@ impl ActionRuntime {
         let action_executions_total = metrics.counter(NEBULA_ACTION_EXECUTIONS_TOTAL)?;
         Ok(Self {
             registry,
-            sandbox,
+            runner,
             data_policy,
             metrics,
             action_failures_total,
@@ -603,9 +602,8 @@ impl ActionRuntime {
     /// Stateless dispatch via `Box<dyn ErasedStateless>`.
     ///
     /// Mirrors [`Self::execute_stateless`] for the factory path. Honours
-    /// the same isolation contract (`None` runs in-process; sandboxed
-    /// dispatch routes through [`SandboxRunner`] using the same
-    /// `metadata`).
+    /// the same isolation contract (`None` runs in-process; capability-gated
+    /// dispatch routes through [`ActionRunner`] using the same `metadata`).
     async fn execute_erased_stateless(
         &self,
         metadata: &ActionMetadata,
@@ -615,9 +613,9 @@ impl ActionRuntime {
     ) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
         match metadata.isolation_level {
             IsolationLevel::None => Ok(erased.dispatch(input, context).await?),
-            IsolationLevel::CapabilityGated | IsolationLevel::Isolated => {
-                let sandboxed = SandboxedContext::new(context);
-                Ok(self.sandbox.execute(sandboxed, metadata, input).await?)
+            IsolationLevel::CapabilityGated => {
+                let run_ctx = ActionRunContext::new(context);
+                Ok(self.runner.execute(run_ctx, metadata, input).await?)
             },
             // IsolationLevel is `#[non_exhaustive]`. Any future variant must
             // fail-closed until we explicitly wire dispatch for it.
@@ -645,8 +643,7 @@ impl ActionRuntime {
     ) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
         if !matches!(metadata.isolation_level, IsolationLevel::None) {
             return Err(ActionError::fatal(
-                "sandboxed stateful execution is not yet supported — \
-                 broker iteration protocol lands in sandbox slice 1d",
+                "capability-gated stateful execution is not yet supported",
             )
             .into());
         }
@@ -754,8 +751,8 @@ impl ActionRuntime {
     /// Control dispatch via `Box<dyn ErasedControl>`.
     ///
     /// Control nodes (If / Switch / Router / Filter / NoOp / Stop / Fail)
-    /// dispatch as one-shot evaluators and never run sandboxed — they
-    /// produce flow-control [`ActionResult`] variants but no I/O. The
+    /// dispatch as one-shot evaluators and never run through the runner —
+    /// they produce flow-control [`ActionResult`] variants but no I/O. The
     /// erased surface is intentionally identical to stateless from the
     /// runtime's POV.
     async fn execute_erased_control(
@@ -769,7 +766,7 @@ impl ActionRuntime {
             return Err(RuntimeError::Internal(format!(
                 "control action '{}' must run with IsolationLevel::None — \
                  control nodes are flow-control desugared to stateless and \
-                 never sandboxed",
+                 never run through the runner",
                 metadata.base.key.as_str()
             )));
         }
@@ -821,11 +818,10 @@ impl ActionRuntime {
     /// Dispatch depends on the action's [`IsolationLevel`]:
     ///
     /// - `None` — handler invoked directly in-process.
-    /// - `CapabilityGated` / `Isolated` — routed through [`SandboxRunner`], which today is the sole
-    ///   in-process [`InProcessSandbox`] (its `ActionExecutor` closure, wired at engine construction,
-    ///   invokes the registered handler for the action key). Out-of-process execution was retired
-    ///   (ADR-0091); these isolation levels are retained as declared data and currently dispatch
-    ///   in-process. Re-introducing real isolation later is additive.
+    /// - `CapabilityGated` — routed through [`ActionRunner`], which today is the sole in-process
+    ///   [`InProcessRunner`] (its `ActionExecutor` closure, wired at engine construction, invokes the
+    ///   registered handler for the action key). Out-of-process execution was retired (ADR-0091); the
+    ///   capability-gated level performs in-process capability checks against declared deps.
     async fn execute_stateless(
         &self,
         metadata: &ActionMetadata,
@@ -835,9 +831,9 @@ impl ActionRuntime {
     ) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
         match metadata.isolation_level {
             IsolationLevel::None => Ok(handler.execute(input, context).await?),
-            IsolationLevel::CapabilityGated | IsolationLevel::Isolated => {
-                let sandboxed = SandboxedContext::new(context);
-                Ok(self.sandbox.execute(sandboxed, metadata, input).await?)
+            IsolationLevel::CapabilityGated => {
+                let run_ctx = ActionRunContext::new(context);
+                Ok(self.runner.execute(run_ctx, metadata, input).await?)
             },
             // IsolationLevel is `#[non_exhaustive]`. Any future variant must
             // fail-closed until we explicitly wire dispatch for it.
@@ -885,14 +881,12 @@ impl ActionRuntime {
         checkpoint: Option<Arc<dyn StatefulCheckpointSink>>,
     ) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
         if !matches!(metadata.isolation_level, IsolationLevel::None) {
-            // Stateful sandbox dispatch requires a long-lived broker loop to
-            // persist state across iterations. The current `SandboxRunner`
-            // trait is a single-shot execute call with no iteration semantics.
-            // Unblocks when sandbox slice 1d ships the supervisor + broker —
-            // see docs/plans/2026-04-13-sandbox-phase1-broker.md.
+            // Stateful capability-gated dispatch would require a long-lived
+            // loop to persist state across iterations. The current
+            // `ActionRunner` trait is a single-shot execute call with no
+            // iteration semantics, so it is fail-closed here.
             return Err(ActionError::fatal(
-                "sandboxed stateful execution is not yet supported — \
-                 broker iteration protocol lands in sandbox slice 1d",
+                "capability-gated stateful execution is not yet supported",
             )
             .into());
         }
@@ -1364,7 +1358,7 @@ mod tests {
         node_key,
     };
 
-    use crate::runtime::sandbox_runner::{ActionExecutor, InProcessSandbox};
+    use crate::runtime::runner::{ActionExecutor, InProcessRunner};
 
     use super::*;
 
@@ -1443,10 +1437,10 @@ mod tests {
         let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
             Box::pin(async move { Ok(ActionResult::success(input)) })
         });
-        let sandbox = Arc::new(InProcessSandbox::new(executor));
+        let runner = Arc::new(InProcessRunner::new(executor));
         let metrics = MetricsRegistry::new();
 
-        ActionRuntime::try_new(registry, sandbox, DataPassingPolicy::default(), metrics).unwrap()
+        ActionRuntime::try_new(registry, runner, DataPassingPolicy::default(), metrics).unwrap()
     }
 
     /// Build a runtime with a metrics registry we hand back to the caller,
@@ -1458,11 +1452,11 @@ mod tests {
         let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
             Box::pin(async move { Ok(ActionResult::success(input)) })
         });
-        let sandbox = Arc::new(InProcessSandbox::new(executor));
+        let runner = Arc::new(InProcessRunner::new(executor));
         let metrics = MetricsRegistry::new();
         let rt = ActionRuntime::try_new(
             registry,
-            sandbox,
+            runner,
             DataPassingPolicy::default(),
             metrics.clone(),
         )
@@ -1481,11 +1475,11 @@ mod tests {
         let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
             Box::pin(async move { Ok(ActionResult::success(input)) })
         });
-        let sandbox = Arc::new(InProcessSandbox::new(executor));
+        let runner = Arc::new(InProcessRunner::new(executor));
         let metrics = MetricsRegistry::new();
         let rt = ActionRuntime::try_new(
             registry,
-            sandbox,
+            runner,
             DataPassingPolicy {
                 max_node_output_bytes: 1024,
                 max_total_execution_bytes: 10,
@@ -1585,12 +1579,12 @@ mod tests {
         let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
             Box::pin(async move { Ok(ActionResult::success(input)) })
         });
-        let sandbox = Arc::new(InProcessSandbox::new(executor));
+        let runner = Arc::new(InProcessRunner::new(executor));
         let metrics = MetricsRegistry::new();
 
         let rt = ActionRuntime::try_new(
             registry,
-            sandbox,
+            runner,
             DataPassingPolicy {
                 max_node_output_bytes: 5, // very small
                 ..Default::default()
@@ -1618,12 +1612,12 @@ mod tests {
         let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
             Box::pin(async move { Ok(ActionResult::success(input)) })
         });
-        let sandbox = Arc::new(InProcessSandbox::new(executor));
+        let runner = Arc::new(InProcessRunner::new(executor));
         let metrics = MetricsRegistry::new();
 
         let rt = ActionRuntime::try_new(
             registry,
-            sandbox,
+            runner,
             DataPassingPolicy::default(),
             metrics.clone(),
         )
@@ -1664,18 +1658,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn execute_uses_sandbox_for_capability_gated() {
+    async fn execute_uses_runner_for_capability_gated() {
         use std::sync::atomic::{AtomicBool, Ordering};
 
-        // Track whether sandbox was invoked.
-        let sandbox_called = Arc::new(AtomicBool::new(false));
-        let sandbox_called_clone = sandbox_called.clone();
+        // Track whether the runner was invoked.
+        let runner_called = Arc::new(AtomicBool::new(false));
+        let runner_called_clone = runner_called.clone();
 
         let executor: ActionExecutor = Arc::new(move |_ctx, _meta, input| {
-            sandbox_called_clone.store(true, Ordering::SeqCst);
+            runner_called_clone.store(true, Ordering::SeqCst);
             Box::pin(async move { Ok(ActionResult::success(input)) })
         });
-        let sandbox = Arc::new(InProcessSandbox::new(executor));
+        let runner = Arc::new(InProcessRunner::new(executor));
 
         let registry = Arc::new(ActionRegistry::new());
         registry.legacy_register_stateless_with_metadata(
@@ -1685,7 +1679,7 @@ mod tests {
         );
 
         let metrics = MetricsRegistry::new();
-        let rt = ActionRuntime::try_new(registry, sandbox, DataPassingPolicy::default(), metrics)
+        let rt = ActionRuntime::try_new(registry, runner, DataPassingPolicy::default(), metrics)
             .unwrap();
 
         let result = rt
@@ -1697,8 +1691,8 @@ mod tests {
             .await;
         assert!(result.is_ok());
         assert!(
-            sandbox_called.load(Ordering::SeqCst),
-            "sandbox should have been called for CapabilityGated action"
+            runner_called.load(Ordering::SeqCst),
+            "runner should have been called for CapabilityGated action"
         );
     }
 
@@ -1713,12 +1707,12 @@ mod tests {
         let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
             Box::pin(async move { Ok(ActionResult::success(input)) })
         });
-        let sandbox = Arc::new(InProcessSandbox::new(executor));
+        let runner = Arc::new(InProcessRunner::new(executor));
         let metrics = MetricsRegistry::new();
 
         let rt = ActionRuntime::try_new(
             registry,
-            sandbox,
+            runner,
             DataPassingPolicy {
                 max_node_output_bytes: 5,
                 large_data_strategy: LargeDataStrategy::SpillToBlob,
@@ -1776,12 +1770,12 @@ mod tests {
         let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
             Box::pin(async move { Ok(ActionResult::success(input)) })
         });
-        let sandbox = Arc::new(InProcessSandbox::new(executor));
+        let runner = Arc::new(InProcessRunner::new(executor));
         let metrics = MetricsRegistry::new();
 
         let rt = ActionRuntime::try_new(
             registry,
-            sandbox,
+            runner,
             DataPassingPolicy {
                 max_node_output_bytes: 5,
                 large_data_strategy: LargeDataStrategy::SpillToBlob,
@@ -1877,11 +1871,11 @@ mod tests {
         let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
             Box::pin(async move { Ok(ActionResult::success(input)) })
         });
-        let sandbox = Arc::new(InProcessSandbox::new(executor));
+        let runner = Arc::new(InProcessRunner::new(executor));
         let metrics = MetricsRegistry::new();
         let rt = ActionRuntime::try_new(
             registry,
-            sandbox,
+            runner,
             DataPassingPolicy {
                 max_node_output_bytes: 16,
                 large_data_strategy: LargeDataStrategy::Reject,
@@ -1953,11 +1947,11 @@ mod tests {
         let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
             Box::pin(async move { Ok(ActionResult::success(input)) })
         });
-        let sandbox = Arc::new(InProcessSandbox::new(executor));
+        let runner = Arc::new(InProcessRunner::new(executor));
         let metrics = MetricsRegistry::new();
         let rt = ActionRuntime::try_new(
             registry,
-            sandbox,
+            runner,
             DataPassingPolicy {
                 max_node_output_bytes: 16,
                 large_data_strategy: LargeDataStrategy::Reject,
@@ -2022,11 +2016,11 @@ mod tests {
         let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
             Box::pin(async move { Ok(ActionResult::success(input)) })
         });
-        let sandbox = Arc::new(InProcessSandbox::new(executor));
+        let runner = Arc::new(InProcessRunner::new(executor));
         let metrics = MetricsRegistry::new();
         let rt = ActionRuntime::try_new(
             registry,
-            sandbox,
+            runner,
             DataPassingPolicy {
                 max_node_output_bytes: 16,
                 large_data_strategy: LargeDataStrategy::Reject,
@@ -2090,11 +2084,11 @@ mod tests {
         let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
             Box::pin(async move { Ok(ActionResult::success(input)) })
         });
-        let sandbox = Arc::new(InProcessSandbox::new(executor));
+        let runner = Arc::new(InProcessRunner::new(executor));
         let metrics = MetricsRegistry::new();
         let rt = ActionRuntime::try_new(
             registry,
-            sandbox,
+            runner,
             DataPassingPolicy {
                 max_node_output_bytes: 16,
                 large_data_strategy: LargeDataStrategy::Reject,
@@ -2155,11 +2149,11 @@ mod tests {
         let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
             Box::pin(async move { Ok(ActionResult::success(input)) })
         });
-        let sandbox = Arc::new(InProcessSandbox::new(executor));
+        let runner = Arc::new(InProcessRunner::new(executor));
         let metrics = MetricsRegistry::new();
         let rt = ActionRuntime::try_new(
             registry,
-            sandbox,
+            runner,
             DataPassingPolicy {
                 max_node_output_bytes: 32,
                 large_data_strategy: LargeDataStrategy::Reject,

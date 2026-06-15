@@ -2,11 +2,11 @@
 
 | Field | Value |
 |-------|-------|
-| **Status** | Draft — review before implementation. **Reviewed by the design conference 2026-06-12 (see [CONFERENCE.md](CONFERENCE.md)); corrections folded into §9–§11, §15, §19 and §21.** |
+| **Status** | Draft — review before implementation. **Reviewed by the design conference 2026-06-12 (record kept in the maintainers' private design vault); corrections folded into §9–§11, §15, §19 and §21.** |
 | **Scope** | Primary: `nebula-credential` runtime/management rewrite (ADR-0092 completion). Cross-crate: `nebula-action`, `nebula-resource`, `nebula-schema`, `nebula-metadata`, `nebula-api`, `nebula-engine` contracts touched for one coherent picture. |
 | **Supersedes** | Ad-hoc merge layout from #791; incomplete ADR-0088 migration steps 2–3–6–8 |
-| **Conference** | [CONFERENCE.md](CONFERENCE.md) — 6 industry seats (Temporal, n8n, Airflow, Windmill, Vault, AWS SDK) + 4 adversarial critics. Findings drive §21. |
-| **Related** | [ADR-0088](../../../docs/adr/0088-credential-subsystem-rewrite.md), [ADR-0092](../../../docs/adr/0092-credential-subsystem-consolidation.md), [ADR-0081](../../../docs/adr/0081-m6-resource-credential-integration.md), [ADR-0084](../../../docs/adr/0084-pre-expiry-credential-refresh-deferred.md), [ADR-0085](../../../docs/adr/0085-oauth-identity-providers-from-secrets.md), [ADR-0056](../../../docs/adr/0056-type-safe-dag.md), [INTEGRATION_MODEL](../../../docs/INTEGRATION_MODEL.md), [PRODUCT_CANON](../../../docs/PRODUCT_CANON.md) §3.5 / §15 |
+| **Conference** | Design conference 2026-06-12 (record in the maintainers' private design vault) — 6 industry seats (Temporal, n8n, Airflow, Windmill, Vault, AWS SDK) + 4 adversarial critics. Findings drive §21. |
+| **Related** | ADR-0088, ADR-0092, ADR-0081, ADR-0084, ADR-0085, ADR-0056, [INTEGRATION_MODEL](../../../docs/INTEGRATION_MODEL.md), [PRODUCT_CANON](../../../docs/PRODUCT_CANON.md) §3.5 / §15 |
 
 ---
 
@@ -32,16 +32,16 @@ This design specifies:
 ### In scope (1.0)
 
 - Finish ADR-0088 migration in ADR-0092 topology (single crate).
-- Reactive refresh only ([ADR-0084](../../../docs/adr/0084-pre-expiry-credential-refresh-deferred.md)).
-- Plane B credential lifecycle ([ADR-0033](../../../docs/adr/HISTORICAL.md) mechanics; storage [ADR-0029](../../../docs/adr/HISTORICAL.md)).
-- Resource ↔ credential binding ([ADR-0081](../../../docs/adr/0081-m6-resource-credential-integration.md)).
+- Reactive refresh only (ADR-0084).
+- Plane B credential lifecycle (ADR-0033 mechanics; storage ADR-0029).
+- Resource ↔ credential binding (ADR-0081).
 - Unified DX plan for Action / Resource / Credential macros (Phase 5 — after runtime green).
 
 ### Explicit non-goals
 
 | Area | Out of scope |
 |------|----------------|
-| **Plane A** | Operator OAuth / Nebula session ([ADR-0085](../../../docs/adr/0085-oauth-identity-providers-from-secrets.md)) — `api/domain/auth` only |
+| **Plane A** | Operator OAuth / Nebula session (ADR-0085) — `api/domain/auth` only |
 | **Storage implementation** | Decorators, CAS, encryption layers stay in `nebula-storage` |
 | **Resource fan-out** | Rotation fan-out, `on_credential_refresh` — `nebula-resource` + engine |
 | **Proactive refresh scheduler** | 1.1 — not 1.0 |
@@ -421,7 +421,7 @@ Action receives **Scheme**, never raw State.
   if the strategy allows (OAuth2 without `refresh_token` → `ReAcquire`, not blind
   `refresh()`).
 
-> **Current code does NOT do this — the conference proved it (CONFERENCE.md
+> **Current code does NOT do this — the conference proved it (conference
 > Finding 1).** The macro-synthesized `policy()` ignores its `&State` argument
 > (`macros/src/credential_attr.rs:435-447`), and the resolver routes on
 > `state.expires_at()` + a hardcoded `C::KEY != OAuth2Credential::KEY` branch
@@ -656,7 +656,7 @@ n8n stays sane via **TYPE (recipe) / INSTANCE (encrypted blob) / RUNTIME (Creden
 | `CredentialsService` CRUD | `CredentialManagement` |
 | SSO vs `oauth2-credential` routes | Plane A vs Plane B (same lesson) |
 
-> **Conference correction (n8n seat, CONFERENCE.md Finding 4):** n8n does **not**
+> **Conference correction (n8n seat, conference Finding 4):** n8n does **not**
 > put refresh mechanics inside `CredentialsHelper` — it delegates to `OauthService`
 > + `@n8n/client-oauth2`. Mapping `CredentialsHelper → CredentialRuntime` 1:1 is
 > misleading; the refresh-HTTP role is the `RefreshTransport` seam (D5), which is why
@@ -995,7 +995,7 @@ Credential Phases 1–4 **do not block** Phase 5; Phase 5 must not block runtime
 ### 19.1 Planёрка decisions (2026-06-12 — decision round)
 
 A second meeting (proponent → adversary → chair, full synthesis in
-[CONFERENCE.md](CONFERENCE.md) "Planёрка") forced the six coupled open decisions.
+the conference record "Planёрка") forced the six coupled open decisions.
 Several adversaries **read the as-built source** and found the branch has already
 moved past assumed bugs (e.g. `OAuth2Credential::refresh` returns a typed
 `ReauthRequired`, not a hard error; `policy` is hand-written and state-reading for
@@ -1062,7 +1062,7 @@ fold into §17 Phase-1 DoD below.
 
 ## 21. Conference adoptions (2026-06-12)
 
-Full synthesis in [CONFERENCE.md](CONFERENCE.md). Ten seats (Temporal, n8n, Airflow,
+Full synthesis in the conference record (maintainers' private design vault). Ten seats (Temporal, n8n, Airflow,
 Windmill, Vault, AWS SDK + 4 adversarial critics) graded D1–D8. **D4/D5/D7 validated
 by every industry seat; D2/D3 found unimplemented and self-contradictory in code;
 D1/D6 carry named risks.** Adopted into the target model (Phase-1 DoD unless noted):
@@ -1085,7 +1085,7 @@ Strategic forks (all three now decided by the planёrka — §19.1): **F1** sing
 "valid forever" — even a static API key carries a mandatory re-validation floor); **F3**
 sealed family enum + per-protocol marker type (no `Box<dyn>` escape hatch); **Kestra**
 owner ruled retroactive inheritance required → 1.0 flat + read-key seam kept, 1.1
-read-time inherited resolution via authority-vouched `InheritedScopeKey`. See §19.1 + CONFERENCE.md.
+read-time inherited resolution via authority-vouched `InheritedScopeKey`. See §19.1 + the conference record.
 
 ### F1 enforcement — keeping the boundary without a crate firewall
 

@@ -40,4 +40,4 @@
 
 ## See also
 - `README.md` — full design · crate-local guides in `docs/` (`composition.md`, `observability.md`, `gate.md`, `api-reference.md`, `architecture.md`)
-- Canon `docs/PRODUCT_CANON.md` §4.2/§4.3/§11.2 · `docs/GLOSSARY.md` (Circuit Breaker + Timeout + Retry-with-Backoff)
+- Canon `docs/PRODUCT_CANON.md` §4.2/§4.3/§11.2 (Circuit Breaker + Timeout + Retry-with-Backoff)

@@ -101,8 +101,8 @@ pub type ScopedLookup = Box<dyn Any + Send + Sync>;
 ///
 /// Phase 7 carries the branch id as a thin newtype around [`NodeKey`] —
 /// every node in the DAG is its own potential branch frame. The frontier
-/// runner does not yet drive `push`/`pop` per-node (see `PHASE7_BLOCKED.md`
-/// for the open architecture decision); the API surface is in place so
+/// runner does not yet drive `push`/`pop` per-node (the open architecture
+/// decision is tracked in the maintainers' private design vault); the API surface is in place so
 /// consumers can wire branch lifecycle when scope semantics are formalized.
 ///
 /// # Why a newtype rather than a raw `NodeKey`

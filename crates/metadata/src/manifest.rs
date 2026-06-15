@@ -5,7 +5,7 @@
 //! shared small types from this crate ([`Icon`], [`MaturityLevel`],
 //! [`DeprecationNotice`]) but deliberately does **not** compose
 //! `BaseMetadata<K>`: a plugin is a container, not a schematized leaf.
-//! See ADR-0018 (historical — `docs/adr/HISTORICAL.md`).
+//! See ADR-0018 (historical — the maintainers' private design vault).
 //!
 //! This module lives in `nebula-metadata` (moved here from `nebula-plugin`
 //! in slice B of the plugin load-path stabilization) so that

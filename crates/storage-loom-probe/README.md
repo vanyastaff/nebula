@@ -102,6 +102,6 @@ is cheap and does not require the loom dep at all.
   pattern motivates the first probe.
 - `crates/execution/` — owns the execution-lease lifecycle whose
   handoff motivates the second probe.
-- ADR-0041 (historical, `docs/adr/HISTORICAL.md`) — original
+- ADR-0041 (historical, the maintainers' private design vault) — original
   refresh-claim design.
 - ADR-0072 — live `storage-port` / `storage` / `tenancy` redesign.

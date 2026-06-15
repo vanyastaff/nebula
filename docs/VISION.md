@@ -1,9 +1,9 @@
 # Nebula — Vision charter (human draft)
 
-> **Agents: do not use this file.** Read [`STRATEGY.md`](../STRATEGY.md) for product
-> direction and [`docs/PRODUCT_CANON.md`](./PRODUCT_CANON.md) for binding invariants
-> and **North Star** (§9). Mechanics: [`docs/INTEGRATION_MODEL.md`](./INTEGRATION_MODEL.md).
-> Decisions: design records (ADRs) are maintained in the maintainers' private design vault, not in this public repository.
+> **Agents: do not use this file.** Read [`docs/PRODUCT_CANON.md`](./PRODUCT_CANON.md) for
+> binding invariants and **North Star** (§9), and [`docs/INTEGRATION_MODEL.md`](./INTEGRATION_MODEL.md)
+> for mechanics. Full product direction/strategy and design records (ADRs, roadmap, specs)
+> are maintained in the maintainers' private design vault, not in this public repository.
 
 Status: **Draft / non-normative** · Last updated: 2026-05-18
 
@@ -38,6 +38,6 @@ treating this file as a second spec. Recover from git history before 2026-05-18 
 | Need | Read |
 |------|------|
 | North Star & invariants | `docs/PRODUCT_CANON.md` |
-| Direction & 2026 bar | `STRATEGY.md` |
+| Direction & 2026 bar | Maintainers' private design vault — not in this repo |
 | Integration mechanics | `docs/INTEGRATION_MODEL.md` |
 | Accepted decisions (ADRs) | Maintainers' private design vault — not in this repo |

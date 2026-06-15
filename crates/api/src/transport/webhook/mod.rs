@@ -1,6 +1,6 @@
 //! HTTP transport layer for `nebula-action` webhook triggers.
 //!
-//! See `docs/plans/2026-04-13-webhook-subsystem-spec.md` section 4.4
+//! See the maintainers' private design vault section 4.4
 //! for the full design.
 //!
 //! ## Module layout

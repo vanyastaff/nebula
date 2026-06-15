@@ -396,7 +396,7 @@ mod tests {
     /// `build_lettre_message` (the envelope-construction helper) maps
     /// `Mailbox::FromStr` rejection on `msg.to` to `InvalidAddress`
     /// before the transport is ever consulted, so this is a
-    /// rejected-before-transit contract. CodeRabbit follow-up on PR
+    /// rejected-before-transit contract. Review follow-up on PR
     /// #754 — the path existed but was untested; this lock-down test
     /// prevents a future refactor from silently collapsing the variant
     /// into the catch-all `Transport` arm.

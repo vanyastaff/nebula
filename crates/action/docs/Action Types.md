@@ -1,11 +1,3 @@
----
-title: Action Types
-tags: [nebula, nebula-action, crate, actions, trait-system]
-status: production-ready
-created: 2025-08-17
-updated: 2025-11-09
----
-
 # Action Types
 
 ## Overview
