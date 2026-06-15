@@ -7,8 +7,8 @@
 //!
 //! The framework reaches the topology monomorphically through the resource's
 //! associated [`Topology`] type. The acquire loop, fenced checkout, cancel-safe
-//! guard-wrap, and on-release return-or-destroy live in
-//! [`acquire_loop`](super::acquire_loop). This module holds only the
+//! guard-wrap, and on-release return-or-destroy live in the sibling
+//! `acquire_loop` module. This module holds only the
 //! admission-surface + status/phase/taint/drain impl blocks.
 
 use std::{
