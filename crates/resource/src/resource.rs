@@ -35,19 +35,9 @@ use nebula_core::ResourceKey;
 
 use crate::context::ResourceContext;
 
-/// Trait-object-safe marker for resource type registration and discovery.
-///
-/// Unlike [`Provider`], this trait carries no associated types and can be
-/// used as `dyn ResourceDescriptor`. Implementors typically also implement
-/// [`Provider`], but this decoupling allows the engine to store heterogeneous
-/// resource descriptors without generics.
-pub trait ResourceDescriptor: Send + Sync + 'static {
-    /// Returns the resource key.
-    fn key(&self) -> ResourceKey;
-
-    /// Returns resource metadata for UI and diagnostics.
-    fn metadata(&self) -> ResourceMetadata;
-}
+// `ResourceDescriptor` was retired in ADR-0095 D2 — replaced by the B+ merged
+// `ResourceFactory` in `crate::factory`, which carries both introspection
+// (key + metadata + validate) and construction (register). No shim, no alias.
 
 /// Operational configuration for a resource. Contains NO secrets.
 ///

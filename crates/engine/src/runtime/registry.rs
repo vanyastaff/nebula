@@ -226,12 +226,17 @@ impl ActionRegistry {
 
     /// Register a resource action — wraps in `ResourceActionAdapter` automatically.
     ///
+    /// Named `register_resource_action` to disambiguate from the engine-level
+    /// `WorkflowEngine::register_resource` (which registers a `nebula_resource::Provider`
+    /// into the `ResourceActivatorRegistry`). Direct rename per ADR-0095 D5 —
+    /// no deprecated alias.
+    ///
     /// See [`register_stateless`](Self::register_stateless) for usage.
     ///
     /// # Errors
     ///
     /// Does not return errors. Same-version handlers are replaced silently.
-    pub fn register_resource<A>(&self, action: A)
+    pub fn register_resource_action<A>(&self, action: A)
     where
         A: Action + ResourceAction + Send + Sync + 'static,
     {

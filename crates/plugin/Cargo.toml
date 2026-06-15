@@ -30,6 +30,7 @@ toml = "1"
 
 [dev-dependencies]
 nebula-schema = { path = "../schema" }
+serde_json = { workspace = true }
 # The resolved-plugin test mocks an `ActionFactory`, whose `create` takes a
 # `NodeDefinition`; the prod crate reaches it transitively through
 # `nebula-action`, the test names it directly.

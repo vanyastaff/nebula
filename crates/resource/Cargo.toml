@@ -13,10 +13,11 @@ documentation.workspace = true
 
 [features]
 default = []
-# Gates the credential-rotation fan-out module (`credential_fanout`).
-# Enable this when building with credential rotation support; it adds no
-# new heavy dependencies (all deps are already in the default feature set).
-rotation = []
+# Gates the credential-rotation fan-out module (`credential_fanout`) and the
+# `register_and_bind` method on `ResourceActivatorRegistry` (which stages
+# rotation fan-out reverse-index binds before the Manager row is published).
+# `scopeguard` is required only for the RAII rollback in `register_and_bind`.
+rotation = ["scopeguard"]
 
 [dependencies]
 # Nebula ecosystem
@@ -45,6 +46,7 @@ dashmap = { workspace = true }
 smallvec = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+scopeguard = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "test-util"] }

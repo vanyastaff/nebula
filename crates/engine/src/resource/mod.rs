@@ -1,17 +1,15 @@
 //! Engine-side resource registration wiring.
 //!
-//! This module owns the seam that turns a *stored* resource row (a
-//! `kind` string plus an opaque JSON config) into a typed registration
-//! against [`nebula_resource::Manager`]. The engine never reflects on
-//! the `kind` string nor constructs resource types dynamically: every
-//! registrable kind must have been explicitly inserted into the
-//! [`ResourceActivatorRegistry`] ahead of time. An unrecognized kind is
-//! a caller/wiring misconfiguration surfaced as a typed error at
-//! activation time, never a silent no-op.
+//! `ResourceFactory`, `KindActivator`, `RegisterRequest`, `RegistrarError`,
+//! `ResourceActivatorRegistry`, and `ResourceRegistrationOutcome` now live in
+//! `nebula_resource::factory` (ADR-0095 D2 — moved down into nebula-resource).
+//! The engine re-exports them here so engine-internal code reaches them through
+//! the existing `crate::resource::*` path without any import changes.
+//!
+//! The old engine-owned `ResourceActivator` trait name is retired — callers
+//! use [`ResourceFactory`].
 
-pub mod registrar;
-
-pub use registrar::{
-    KindActivator, RegisterRequest, RegistrarError, ResourceActivator, ResourceActivatorRegistry,
+pub use nebula_resource::{
+    KindActivator, RegisterRequest, RegistrarError, ResourceActivatorRegistry, ResourceFactory,
     ResourceRegistrationOutcome,
 };

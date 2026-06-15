@@ -15,7 +15,7 @@ use nebula_action::ActionFactory;
 use nebula_core::{ActionKey, CredentialKey, PluginKey, ResourceKey};
 use nebula_credential::AnyCredential;
 use nebula_metadata::PluginManifest;
-use nebula_resource::ResourceDescriptor;
+use nebula_resource::ResourceFactory;
 use semver::Version;
 
 use crate::{ComponentKind, PluginError, plugin::Plugin};
@@ -30,7 +30,7 @@ pub struct ResolvedPlugin {
     plugin: Arc<dyn Plugin>,
     actions: HashMap<ActionKey, Arc<dyn ActionFactory>>,
     credentials: HashMap<CredentialKey, Arc<dyn AnyCredential>>,
-    resources: HashMap<ResourceKey, Arc<dyn ResourceDescriptor>>,
+    resources: HashMap<ResourceKey, Arc<dyn ResourceFactory>>,
 }
 
 impl std::fmt::Debug for ResolvedPlugin {
@@ -101,7 +101,7 @@ impl ResolvedPlugin {
     }
 
     /// Look up a resource by key.
-    pub fn resource(&self, key: &ResourceKey) -> Option<&Arc<dyn ResourceDescriptor>> {
+    pub fn resource(&self, key: &ResourceKey) -> Option<&Arc<dyn ResourceFactory>> {
         self.resources.get(key)
     }
 
@@ -116,7 +116,7 @@ impl ResolvedPlugin {
     }
 
     /// Iterate all registered resources.
-    pub fn resources(&self) -> impl Iterator<Item = (&ResourceKey, &Arc<dyn ResourceDescriptor>)> {
+    pub fn resources(&self) -> impl Iterator<Item = (&ResourceKey, &Arc<dyn ResourceFactory>)> {
         self.resources.iter()
     }
 
@@ -181,11 +181,11 @@ impl ResolvedPlugin {
     fn build_resource_index(
         plugin_key: &PluginKey,
         prefix: &str,
-        raw: Vec<Arc<dyn ResourceDescriptor>>,
-    ) -> Result<HashMap<ResourceKey, Arc<dyn ResourceDescriptor>>, PluginError> {
+        raw: Vec<Arc<dyn ResourceFactory>>,
+    ) -> Result<HashMap<ResourceKey, Arc<dyn ResourceFactory>>, PluginError> {
         let mut out = HashMap::with_capacity(raw.len());
-        for res in raw {
-            let key = res.key();
+        for factory in raw {
+            let key = factory.key();
             if !key.as_str().starts_with(prefix) {
                 return Err(PluginError::NamespaceMismatch {
                     plugin: plugin_key.clone(),
@@ -200,7 +200,7 @@ impl ResolvedPlugin {
                     kind: ComponentKind::Resource,
                 });
             }
-            out.insert(key, res);
+            out.insert(key, factory);
         }
         Ok(out)
     }

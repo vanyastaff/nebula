@@ -96,6 +96,7 @@ use syn::{Data, DeriveInput, Fields, Ident, parse_macro_input};
 mod config;
 mod field_slots;
 mod slots;
+mod topology_attr;
 
 /// Derive macro that emits slot plumbing for a resource struct (slot model).
 ///
@@ -134,7 +135,7 @@ mod slots;
 /// - Tuple structs with a `#[credential]` field: compile error.
 /// - Wrong field type: compile error naming both accepted shapes.
 /// - `#[resource(...)]` container attribute: compile error (removed).
-#[proc_macro_derive(Resource, attributes(credential))]
+#[proc_macro_derive(Resource, attributes(credential, topology))]
 pub fn derive_resource(input: TokenStream) -> TokenStream {
     slots::derive(input)
 }
