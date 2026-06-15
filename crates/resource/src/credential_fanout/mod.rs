@@ -16,6 +16,7 @@
 
 pub mod driver;
 pub mod index;
+mod orchestrator;
 
 pub use driver::ResourceFanoutDriver;
 pub use index::{Bind, ResourceFanoutIndex, RotationOutcome};

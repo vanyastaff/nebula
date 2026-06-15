@@ -16,7 +16,9 @@
 //! `impl ManagedHandle for ManagedResource<R>` in [`crate::registry`] calls
 //! `self.topology.{try_reserve, acquire, phase, load, tag}` directly.
 
+pub(crate) mod acquire_loop;
 pub mod bounded;
 pub mod managed;
 pub mod pool;
 pub mod resident;
+pub(crate) mod teardown;
