@@ -104,7 +104,6 @@ id_ed25519
 
 # AI tool runtime dirs — mirrors .gitignore.
 .codex/
-.compound-engineering/*.local.yaml
 
 # Other AI tool noise
 .junie/

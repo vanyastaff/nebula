@@ -18,13 +18,6 @@
         "."
       ]
     },
-    "memory": {
-      "command": "cmd",
-      "args": ["/c", "npx", "-y", "@modelcontextprotocol/server-memory"],
-      "env": {
-        "MEMORY_FILE_PATH": ".mimocode/memory.jsonl"
-      }
-    },
     "cratesio": {
       "command": "cratesio-mcp"
     },
