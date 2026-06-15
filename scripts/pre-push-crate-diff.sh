@@ -15,6 +15,11 @@ else
   echo "lefthook: no upstream ref found; running fallback smoke gate"
   cargo nextest run -p nebula-core -p nebula-engine -p nebula-execution --profile agent
   cargo check --workspace --all-features --all-targets --quiet
+  # CI "Documentation" required-job parity, also on the fallback path
+  # (reference_rustdoc_verification_gap.md): mirror the workspace-wide
+  # `RUSTDOCFLAGS=-D warnings cargo doc --no-deps` so the no-upstream scenario
+  # this branch handles is not a rustdoc blind spot.
+  RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace --quiet
   exit 0
 fi
 
