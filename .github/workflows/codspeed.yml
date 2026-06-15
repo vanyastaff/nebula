@@ -73,7 +73,7 @@ jobs:
       shards: ${{ steps.plan.outputs.shards }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       # Per-shard filters mirror the `paths-ignore` hygiene applied to
       # `push: branches: [main]` above — markdown / docs changes must
@@ -205,7 +205,7 @@ jobs:
         include: ${{ fromJson(needs.changes.outputs.shards) }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
@@ -213,14 +213,14 @@ jobs:
           toolchain: stable
 
       - name: Cache Cargo artifacts
-        uses: Swatinem/rust-cache@8cbdedb5103daa674dcf46d3590fe06a76645684 # v2.9.1
+        uses: Swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0 # v2.9.1
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: true
           shared-key: codspeed-${{ matrix.shard }}
 
       - name: Install cargo-codspeed
-        uses: taiki-e/install-action@481c34c1cf3a84c68b5e46f4eccfc82af798415a # v2.75.23
+        uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912 # v2.81.10
         with:
           tool: cargo-codspeed
 
@@ -228,7 +228,7 @@ jobs:
         run: cargo codspeed build ${{ matrix.packages }}
 
       - name: Run the benchmarks
-        uses: CodSpeedHQ/action@db35df748deb45fdef0960669f57d627c1956c30 # v4
+        uses: CodSpeedHQ/action@c145068895e045cc725ee76fcd2307624b65c3af # v4
         with:
           mode: simulation
           run: cargo codspeed run ${{ matrix.packages }}
