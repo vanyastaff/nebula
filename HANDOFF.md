@@ -185,9 +185,6 @@ than grepping blind:
   (`/plugin install <rust-lsp>@claude-plugins-official`) or wire the **serena**
   MCP for symbol-level find/edit (find-symbol, find-referencing-symbols,
   rename) — far cheaper than re-reading whole files.
-- **Pi:** `.pi/lsp.json` already maps `rust-analyzer` for `.rs` (clippy on
-  `check`, all features, `target/` excluded) and `taplo` for `.toml`; the
-  `lsp_diagnostics` / `lsp_fix` tools use it.
 - `.claude/settings.json` now **denies `Read` of `target/**`** (and the sibling
   worktree pool `.worktrees/**` / `.claude/worktrees/**`) so build artifacts and
   stale duplicate crate trees don't pollute context — rely on the LSP / Grep

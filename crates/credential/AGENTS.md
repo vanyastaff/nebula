@@ -8,7 +8,7 @@
 
 | Task | Steps |
 |------|-------|
-| Add a new credential scheme | 1. Define scheme in `src/scheme/` implementing `AuthScheme` 2. Register in `CredentialRegistry` 3. See `.agents/skills/nebula-credential-lifecycle/SKILL.md` |
+| Add a new credential scheme | 1. Define scheme in `src/scheme/` implementing `AuthScheme` 2. Register in `CredentialRegistry` |
 | Add a new capability | Add sub-trait in `src/contract/` — capabilities are sub-trait membership, never const flags. Duplicate-KEY `register` is fatal. |
 | Add external secret provider | Extend `ExternalProvider` chain in `src/provider/` (ADR-0051). Error-discriminated fallback: only `NotFound` falls through. |
 | Understand crypto | Crypto lives in `nebula-crypto` (ADR-0088). Import AES-256-GCM from there. AAD-free `encrypt` is deliberately unexposed (SEC-11). |

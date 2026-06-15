@@ -69,7 +69,7 @@ deploy/.env
 *.json.gz
 *.parquet
 
-# Security sensitive (just in case) — mirrors .gitignore / .cursorignore
+# Security sensitive (just in case) — mirrors .gitignore
 secrets/
 credentials/
 *.key
@@ -102,17 +102,8 @@ id_ed25519
 .auto-claude-security.json
 .claude_settings.json
 
-# AI tool runtime dirs — mirrors .gitignore (committed project configs
-# under .pi/ are exempted so Claude indexes the shared tooling config).
+# AI tool runtime dirs — mirrors .gitignore.
 .codex/
-.atl/
-.pi/*
-!.pi/settings.json
-!.pi/conventions.json
-!.pi/codebase-wiki.json
-!.pi/wiki/
-!.pi/wiki/**
-.pi-audit-*/
 .compound-engineering/*.local.yaml
 
 # Other AI tool noise

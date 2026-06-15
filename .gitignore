@@ -285,3 +285,23 @@ docs/superpowers/
 docs/ROADMAP.md
 docs/ARCHIVE.md
 openspec/
+
+# Other AI-agent tooling — this repo standardizes on Claude Code / rust-studio.
+# Keep configs/state for other assistants out of the repo.
+.cursor/
+.cursorignore
+.cursorrules
+.coderabbit.yaml
+.pi/
+.doctorrc.yml
+.mimocode/
+mimocode.jsonc
+.codex/
+.atl/
+.agents/
+.windsurf/
+.aider*
+.continue/
+.roo/
+.clinerules
+.github/copilot-instructions.md
