@@ -14,10 +14,49 @@
 //! side.
 
 use nebula_core::PluginKey;
-use semver::Version;
+use semver::{Version, VersionReq};
 use serde::{Deserialize, Serialize};
 
 use crate::{DeprecationNotice, Icon, MaturityLevel};
+
+/// A declared dependency of one plugin on another.
+///
+/// A plugin may require that another plugin is loaded before it: `key` names the
+/// dependency and `req` constrains which versions satisfy the requirement.
+///
+/// When the registry resolves load order via `PluginRegistry::resolve_load_order`,
+/// it validates that every declared dependency is registered and that its version
+/// matches `req`.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PluginDependency {
+    /// The key of the required plugin.
+    key: PluginKey,
+    /// Semver version requirement that the registered plugin must satisfy.
+    req: VersionReq,
+}
+
+impl PluginDependency {
+    /// Construct a new dependency declaration.
+    #[must_use]
+    pub fn new(key: PluginKey, req: VersionReq) -> Self {
+        Self { key, req }
+    }
+
+    /// The key of the required plugin.
+    #[must_use]
+    #[inline]
+    pub fn key(&self) -> &PluginKey {
+        &self.key
+    }
+
+    /// The semver requirement the registered plugin must satisfy.
+    #[must_use]
+    #[inline]
+    pub fn req(&self) -> &VersionReq {
+        &self.req
+    }
+}
 
 /// Errors from [`PluginManifest::builder().build()`](PluginManifestBuilder::build).
 #[derive(Debug, thiserror::Error, nebula_error::Classify, PartialEq, Eq)]
@@ -112,6 +151,9 @@ pub struct PluginManifest {
     maturity: MaturityLevel,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     deprecation: Option<DeprecationNotice>,
+    /// Other plugins this plugin depends on.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    dependencies: Vec<PluginDependency>,
 }
 
 impl PluginManifest {
@@ -133,6 +175,7 @@ impl PluginManifest {
             nebula_version: None,
             maturity: MaturityLevel::default(),
             deprecation: None,
+            dependencies: Vec::new(),
         }
     }
 
@@ -225,6 +268,16 @@ impl PluginManifest {
     pub fn deprecation(&self) -> Option<&DeprecationNotice> {
         self.deprecation.as_ref()
     }
+
+    /// Declared plugin dependencies.
+    ///
+    /// Returns a slice of [`PluginDependency`] entries, each naming another
+    /// plugin key and the semver requirement it must satisfy. Empty for
+    /// plugins with no declared dependencies.
+    #[inline]
+    pub fn dependencies(&self) -> &[PluginDependency] {
+        &self.dependencies
+    }
 }
 
 /// Builder for [`PluginManifest`].
@@ -244,6 +297,7 @@ pub struct PluginManifestBuilder {
     nebula_version: Option<String>,
     maturity: MaturityLevel,
     deprecation: Option<DeprecationNotice>,
+    dependencies: Vec<PluginDependency>,
 }
 
 impl PluginManifestBuilder {
@@ -351,6 +405,20 @@ impl PluginManifestBuilder {
         self
     }
 
+    /// Declare that this plugin depends on another plugin.
+    ///
+    /// May be called multiple times to add multiple dependencies.
+    pub fn dependency(mut self, dep: PluginDependency) -> Self {
+        self.dependencies.push(dep);
+        self
+    }
+
+    /// Set all dependency declarations at once, replacing any previously added.
+    pub fn dependencies(mut self, deps: Vec<PluginDependency>) -> Self {
+        self.dependencies = deps;
+        self
+    }
+
     /// Validate and build the manifest.
     ///
     /// The raw key is normalized before validation: spaces become underscores and
@@ -391,6 +459,7 @@ impl PluginManifestBuilder {
             nebula_version: self.nebula_version,
             maturity,
             deprecation: self.deprecation,
+            dependencies: self.dependencies,
         })
     }
 }
@@ -398,6 +467,56 @@ impl PluginManifestBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn dep(key: &str, req: &str) -> PluginDependency {
+        PluginDependency::new(key.parse().unwrap(), req.parse().unwrap())
+    }
+
+    #[test]
+    fn dependency_accessors() {
+        let d = dep("auth", "^1.0.0");
+        assert_eq!(d.key().as_str(), "auth");
+        // semver normalizes "^1.0.0" → "^1" in Display; compare as parsed VersionReq
+        assert_eq!(d.req(), &"^1.0.0".parse::<VersionReq>().unwrap());
+    }
+
+    #[test]
+    fn dependencies_omitted_when_empty() {
+        let manifest = PluginManifest::builder("slack", "Slack").build().unwrap();
+        let json = serde_json::to_string(&manifest).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert!(
+            !value.as_object().unwrap().contains_key("dependencies"),
+            "\"dependencies\" key must be absent for a manifest with no deps"
+        );
+    }
+
+    #[test]
+    fn dependencies_round_trip() {
+        let manifest = PluginManifest::builder("slack", "Slack")
+            .dependency(dep("auth", "^1.0.0"))
+            .dependency(dep("http_client", ">=2.0.0, <3.0.0"))
+            .build()
+            .unwrap();
+
+        assert_eq!(manifest.dependencies().len(), 2);
+        let json = serde_json::to_string(&manifest).unwrap();
+        let back: PluginManifest = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.dependencies().len(), 2);
+        assert_eq!(back.dependencies()[0].key().as_str(), "auth");
+        assert_eq!(back.dependencies()[1].key().as_str(), "http_client");
+    }
+
+    #[test]
+    fn builder_dependencies_setter_replaces() {
+        let manifest = PluginManifest::builder("x", "X")
+            .dependency(dep("old", "^1"))
+            .dependencies(vec![dep("new", "^2")])
+            .build()
+            .unwrap();
+        assert_eq!(manifest.dependencies().len(), 1);
+        assert_eq!(manifest.dependencies()[0].key().as_str(), "new");
+    }
 
     #[test]
     fn builder_minimal() {

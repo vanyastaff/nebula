@@ -27,6 +27,7 @@ semver = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 toml = "1"
+tracing = { workspace = true }
 
 [dev-dependencies]
 nebula-schema = { path = "../schema" }
@@ -37,6 +38,7 @@ serde_json = { workspace = true }
 nebula-workflow = { path = "../workflow" }
 insta = { workspace = true }
 pretty_assertions = { workspace = true }
+proptest = { workspace = true }
 rstest = { workspace = true }
 tempfile = { workspace = true }
 

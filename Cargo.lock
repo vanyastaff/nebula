@@ -3743,6 +3743,7 @@ dependencies = [
  "nebula-schema",
  "nebula-workflow",
  "pretty_assertions",
+ "proptest",
  "rstest",
  "semver",
  "serde",
@@ -3750,6 +3751,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "toml",
+ "tracing",
 ]
 
 [[package]]
