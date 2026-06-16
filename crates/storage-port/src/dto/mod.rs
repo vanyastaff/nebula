@@ -9,8 +9,10 @@ mod control;
 mod execution;
 mod idempotency;
 mod identity;
+mod job_dispatch;
 mod journal;
 mod node_result;
+mod trigger_dedup;
 mod webhook;
 mod workflow;
 
@@ -21,7 +23,9 @@ pub use identity::{
     AuditLogRow, BlobRow, MembershipRow, OrgRow, PrincipalKind, QuotaRow, ResourceRow, ScopeKind,
     TriggerRow, UserRow, WorkspaceRow,
 };
+pub use job_dispatch::{CapabilityTag, DispatchOutcome, JobDispatchMsg};
 pub use journal::JournalEntry;
 pub use node_result::{MAX_SUPPORTED_RESULT_SCHEMA_VERSION, NodeResultRecord};
+pub use trigger_dedup::TriggerDedupRow;
 pub use webhook::WebhookActivationRecord;
 pub use workflow::{WorkflowRecord, WorkflowVersionRecord};

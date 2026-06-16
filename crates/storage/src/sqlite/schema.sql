@@ -285,3 +285,42 @@ CREATE TABLE IF NOT EXISTS port_blobs (
     expires_at   TEXT,
     PRIMARY KEY (workspace_id, id)
 );
+
+-- Capability-routed job-dispatch queue.  `id` is the raw 16-byte ULID
+-- (BLOB).  `capability_tags` is a JSON array; the routing predicate is
+-- `EXISTS (SELECT 1 FROM json_each(capability_tags) WHERE value = ?)`.
+-- `processed_at_ms` is epoch-millis (INTEGER) for parity with
+-- `port_control_queue` and the reclaim arithmetic.
+CREATE TABLE IF NOT EXISTS port_job_dispatch_queue (
+    id                  BLOB PRIMARY KEY,       -- 16-byte ULID
+    execution_id        TEXT NOT NULL,
+    workspace_id        TEXT NOT NULL,
+    org_id              TEXT NOT NULL,
+    command             TEXT NOT NULL,
+    status              TEXT NOT NULL DEFAULT 'Pending',
+    payload             TEXT NOT NULL DEFAULT '{}',  -- opaque JSON
+    event_id            TEXT,
+    target_flavor_sha   TEXT NOT NULL DEFAULT '',
+    required_plugin_key TEXT NOT NULL,
+    capability_tags     TEXT NOT NULL DEFAULT '[]',  -- JSON array
+    w3c_traceparent     TEXT,
+    reclaim_count       INTEGER NOT NULL DEFAULT 0,
+    processed_by        BLOB,
+    processed_at_ms     INTEGER,
+    error_message       TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_port_job_dispatch_queue_status_key
+    ON port_job_dispatch_queue (status, required_plugin_key);
+
+-- Trigger-dedup inbox.  `UNIQUE(trigger_id, event_id)` is the CAS for
+-- first-writer-wins fan-out dedup.
+CREATE TABLE IF NOT EXISTS port_trigger_dedup_inbox (
+    trigger_id   TEXT NOT NULL,
+    event_id     TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    org_id       TEXT NOT NULL,
+    execution_id TEXT NOT NULL,
+    created_at   TEXT NOT NULL,
+    PRIMARY KEY (trigger_id, event_id)
+);
