@@ -5,39 +5,62 @@
 //! attached to each enqueued [`JobDispatchMsg`].  The engine's orchestrator
 //! pull-loop claims only rows whose `required_plugin_key` is in the worker's
 //! advertised capability set, so the resolver is the single place that maps a
-//! `(workflow_id, trigger_id)` pair onto a dispatch route.
+//! `(validated_workflow, trigger_id)` pair onto a dispatch route.
 //!
-//! ## Slice scope
+//! ## D1 implementation
 //!
-//! This slice ships [`StaticRoutingResolver`] — a single hardcoded mapping
-//! used in the integration test harness.  Dynamic flavour-SHA derivation and
-//! per-workflow plugin-key lookup are D1 work (follow-up ADR-0095 deliverable).
+//! This module ships [`DefinitionRoutingResolver`] — a registry-free resolver
+//! that reads `plugin_key` directly from the [`ValidatedWorkflow`]'s inner
+//! definition.  No external lookup is required: the definition is
+//! self-describing.  Taking [`ValidatedWorkflow`] rather than a raw
+//! `WorkflowDefinition` closes the duplicate-trigger-id hole
+//! by construction: validation rejects duplicate `trigger_binding` ids before
+//! the resolver is ever reached, so `.find()` always picks a unique match.
 //!
 //! [`DurableExecutionEmitter`]: super::durable_emitter::DurableExecutionEmitter
 //! [`JobDispatchMsg`]: nebula_storage_port::dto::JobDispatchMsg
 
-use nebula_core::{NodeKey, id::WorkflowId};
+use std::collections::BTreeSet;
+
+use nebula_core::NodeKey;
 use nebula_storage_port::dto::CapabilityTag;
+use nebula_workflow::ValidatedWorkflow;
 
 // ── types ─────────────────────────────────────────────────────────────────────
 
-/// A resolved dispatch route for one `(workflow_id, trigger_id)` pair.
+/// A resolved dispatch route for one `(validated_workflow, fired_trigger_id)`
+/// pair.
 ///
 /// Returned by [`RoutingResolver::resolve`].  The `required_plugin_key` is
 /// written into the `JobDispatchMsg::required_plugin_key` field; the
-/// orchestrator claims only rows whose key is in the worker's advertised
-/// capability set.
+/// orchestrator claims rows whose `required_plugin_key` is a member of the
+/// worker's advertised capability set.
+///
+/// `capability_tags` carries the full set of plugin keys the workflow needs
+/// (trigger + enabled nodes).  **Note:** the current orchestrator claim
+/// predicate tests only `required_plugin_key ∈ advertised_tags`
+/// (`storage-port` `job_dispatch.rs`) — it does NOT yet apply the superset
+/// check `job.capability_tags ⊆ advertised_tags`.  `capability_tags` is a
+/// forward seam for that future multi-plugin routing unit; until then it is
+/// written into the `JobDispatchMsg` for observability and future use.
+///
 /// `target_flavor_sha` is a version-pin guard written into the message but
-/// never used for routing.
+/// not yet used for routing.
+#[must_use = "a DispatchRoute must be written into the JobDispatchMsg; dropping it yields an un-claimable job"]
 #[derive(Debug, Clone)]
 pub struct DispatchRoute {
     /// The advertised `PluginKey` string this job requires a worker to support.
     pub required_plugin_key: String,
-    /// Full set of capability tags accepted by this job (superset of
-    /// `required_plugin_key`).
+    /// Full set of plugin-key capability tags the workflow needs (trigger
+    /// binding + enabled nodes, deduplicated and sorted).
+    ///
+    /// Populated now for observability and future multi-plugin routing.
+    /// The current claim predicate only checks `required_plugin_key`; the
+    /// superset predicate (`job.capability_tags ⊆ advertised_tags`) is a
+    /// later deliverable.
     pub capability_tags: Vec<CapabilityTag>,
     /// SHA of the plugin flavor this message targets (version-pin guard; not
-    /// used for routing).
+    /// yet used for routing).
     pub target_flavor_sha: String,
 }
 
@@ -45,40 +68,49 @@ pub struct DispatchRoute {
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum RoutingError {
-    /// No route could be determined for the given `(workflow_id, trigger_id)`.
-    #[error("no route found for workflow `{workflow_id}` trigger `{trigger_id}`")]
-    NotFound {
-        /// The workflow id that could not be routed.
+    /// The fired trigger id is not present in the workflow's `trigger_bindings`.
+    ///
+    /// Fail-closed: a trigger absent from the validated definition can never
+    /// produce a valid dispatch route, so the job is rejected rather than
+    /// routing to an arbitrary worker.
+    #[error("trigger `{trigger_id}` not found in trigger_bindings of workflow `{workflow_id}`")]
+    TriggerNotOnWorkflow {
+        /// The workflow whose definition was inspected.
         workflow_id: String,
-        /// The trigger node key that could not be routed.
+        /// The trigger node key that was not present.
         trigger_id: String,
     },
 }
 
 // ── trait ─────────────────────────────────────────────────────────────────────
 
-/// Port for mapping `(workflow_id, trigger_id)` → [`DispatchRoute`].
+/// Port for mapping `(validated_workflow, fired_trigger_id)` → [`DispatchRoute`].
+///
+/// Taking [`ValidatedWorkflow`] rather than a raw `WorkflowDefinition` makes
+/// "must validate before dispatch" a compile-time obligation: callers cannot
+/// reach this seam with an unvalidated definition.
 ///
 /// The [`DurableExecutionEmitter`] holds an `Arc<dyn RoutingResolver>` so the
-/// routing strategy can be swapped without touching the emitter.  In the slice
-/// harness a [`StaticRoutingResolver`] with a single hardcoded route is used;
-/// the production implementation (D1) reads the plugin registry.
+/// routing strategy can be swapped without touching the emitter.  The
+/// production implementation, [`DefinitionRoutingResolver`], reads `plugin_key`
+/// directly from the definition — no registry needed.
 ///
 /// [`DurableExecutionEmitter`]: super::durable_emitter::DurableExecutionEmitter
 pub trait RoutingResolver: Send + Sync + std::fmt::Debug {
-    /// Resolve the dispatch route for a trigger.
+    /// Resolve the dispatch route for a fired trigger.
     ///
     /// # Errors
     ///
-    /// Returns [`RoutingError::NotFound`] when no route can be determined.
+    /// Returns [`RoutingError::TriggerNotOnWorkflow`] when `fired_trigger_id`
+    /// is not present in `workflow.definition().trigger_bindings`.
     fn resolve(
         &self,
-        workflow_id: &WorkflowId,
-        trigger_id: &NodeKey,
+        workflow: &ValidatedWorkflow,
+        fired_trigger_id: &NodeKey,
     ) -> Result<DispatchRoute, RoutingError>;
 }
 
-// ── StaticRoutingResolver ─────────────────────────────────────────────────────
+// ── DefinitionRoutingResolver ─────────────────────────────────────────────────
 
 /// Pinned flavor SHA used by the slice harness.
 ///
@@ -86,94 +118,285 @@ pub trait RoutingResolver: Send + Sync + std::fmt::Debug {
 /// would defeat version-pin guards in integration tests).
 pub const SLICE_FLAVOR_SHA: &str = "slice-flavor-0000000000000000000000000000000000000001";
 
-/// A single-mapping routing resolver for the trigger-dispatch slice.
+/// Registry-free routing resolver that reads plugin routing data directly from
+/// the validated workflow definition.
 ///
-/// Returns one [`DispatchRoute`] for every `(workflow_id, trigger_id)` pair —
-/// the caller supplies the `required_plugin_key` at construction time.  Used
-/// by the integration test harness; production wiring is D1.
+/// No external registry is required: the definition carries an explicit
+/// `plugin_key` on every [`TriggerBinding`] and enabled [`NodeDefinition`].
 ///
-/// # Invariant
+/// ## Route derivation
 ///
-/// `required_plugin_key` must be non-empty — an empty key matches no worker's
-/// advertised capability set, so every dispatch would be permanently
-/// un-claimable. Enforced by a `debug_assert!` in [`StaticRoutingResolver::new`]
-/// (fast-fail on obvious misuse) **and** a fail-closed runtime check in
-/// [`RoutingResolver::resolve`] so the invariant also holds in release builds.
+/// 1. Locate the [`TriggerBinding`] whose `id` matches `fired_trigger_id` —
+///    fail closed ([`RoutingError::TriggerNotOnWorkflow`]) if absent.
+///    Because [`ValidatedWorkflow`] rejects duplicate trigger-binding ids, the
+///    `.find()` result is always unique.
+/// 2. The binding's `plugin_key` becomes `required_plugin_key`.
+/// 3. `capability_tags` is the deduplicated, sorted union of `plugin_key`
+///    values from every trigger binding **and** every **enabled** node.
+///    Disabled nodes are excluded — they are skipped at execution time and
+///    their plugin is not required on the target worker.
+///    The required key is always a member.
+///
+/// [`TriggerBinding`]: nebula_workflow::TriggerBinding
+/// [`NodeDefinition`]: nebula_workflow::NodeDefinition
 #[derive(Debug, Clone)]
-pub struct StaticRoutingResolver {
-    required_plugin_key: String,
+pub struct DefinitionRoutingResolver {
+    flavor_sha: String,
 }
 
-impl StaticRoutingResolver {
-    /// Build a resolver that always returns a route with the given plugin key.
+impl DefinitionRoutingResolver {
+    /// Build a resolver pinned to the given flavor SHA.
     ///
     /// # Panics
     ///
-    /// Panics in debug builds when `required_plugin_key` is empty (broken
-    /// invariant: an empty routing key would never match a worker's capability
-    /// set, making every dispatch permanently un-claimable).
+    /// Panics in debug builds when `flavor_sha` is empty (an empty SHA would
+    /// make the version-pin guard trivially match any job, defeating its
+    /// purpose).
     #[must_use]
-    pub fn new(required_plugin_key: impl Into<String>) -> Self {
-        let key = required_plugin_key.into();
-        debug_assert!(!key.is_empty(), "required_plugin_key must not be empty");
-        Self {
-            required_plugin_key: key,
-        }
+    pub fn new(flavor_sha: impl Into<String>) -> Self {
+        let sha = flavor_sha.into();
+        debug_assert!(!sha.is_empty(), "flavor_sha must not be empty");
+        Self { flavor_sha: sha }
     }
 }
 
-impl RoutingResolver for StaticRoutingResolver {
+impl Default for DefinitionRoutingResolver {
+    /// Returns a resolver pinned to [`SLICE_FLAVOR_SHA`].
+    fn default() -> Self {
+        Self::new(SLICE_FLAVOR_SHA)
+    }
+}
+
+impl RoutingResolver for DefinitionRoutingResolver {
+    #[tracing::instrument(
+        level = "debug",
+        skip(self, workflow),
+        fields(
+            fired_trigger_id = %fired_trigger_id,
+            workflow_id      = %workflow.definition().id,
+        )
+    )]
     fn resolve(
         &self,
-        workflow_id: &WorkflowId,
-        trigger_id: &NodeKey,
+        workflow: &ValidatedWorkflow,
+        fired_trigger_id: &NodeKey,
     ) -> Result<DispatchRoute, RoutingError> {
-        // Fail closed in release too: an empty routing key matches no worker's
-        // advertised capability set, so the job would be permanently
-        // un-claimable. `new`'s debug_assert catches obvious misuse early; this
-        // guard upholds the invariant in release builds as well.
-        if self.required_plugin_key.is_empty() {
-            return Err(RoutingError::NotFound {
-                workflow_id: workflow_id.to_string(),
-                trigger_id: trigger_id.to_string(),
-            });
+        let def = workflow.definition();
+
+        // Step 1 — locate the trigger binding (fail closed if absent).
+        // ValidatedWorkflow guarantees no duplicate trigger-binding ids, so
+        // this find always returns the unique match.
+        let binding = def
+            .trigger_bindings
+            .iter()
+            .find(|b| b.id == *fired_trigger_id)
+            .ok_or_else(|| RoutingError::TriggerNotOnWorkflow {
+                workflow_id: def.id.to_string(),
+                trigger_id: fired_trigger_id.to_string(),
+            })?;
+
+        // Step 2 — the binding's plugin_key is the required routing key.
+        let required_plugin_key = binding.plugin_key.as_str().to_owned();
+        tracing::debug!(
+            required_plugin_key = %required_plugin_key,
+            "resolved required plugin key"
+        );
+
+        // Step 3 — capability_tags: deduplicated, sorted union of plugin_key
+        // values from all trigger bindings and all ENABLED nodes.
+        // Disabled nodes are skipped at execution time; their plugin is not
+        // needed on the target worker.
+        let mut keys: BTreeSet<&str> = BTreeSet::new();
+        for tb in &def.trigger_bindings {
+            keys.insert(tb.plugin_key.as_str());
         }
+        for node in &def.nodes {
+            if node.enabled {
+                keys.insert(node.plugin_key.as_str());
+            }
+        }
+        // The required key is always present: we just resolved it from the
+        // trigger bindings, which are unconditionally added above.
+        let capability_tags: Vec<CapabilityTag> =
+            keys.into_iter().map(CapabilityTag::from).collect();
+        tracing::debug!(
+            capability_tag_count = capability_tags.len(),
+            "resolved capability tags"
+        );
+
         Ok(DispatchRoute {
-            required_plugin_key: self.required_plugin_key.clone(),
-            capability_tags: vec![CapabilityTag::from(self.required_plugin_key.as_str())],
-            target_flavor_sha: SLICE_FLAVOR_SHA.to_owned(),
+            required_plugin_key,
+            capability_tags,
+            target_flavor_sha: self.flavor_sha.clone(),
         })
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
+    use nebula_core::{WorkflowId, node_key};
+    use nebula_workflow::{
+        CURRENT_SCHEMA_VERSION, Connection, NodeDefinition, TriggerBinding, ValidatedWorkflow,
+        Version, WorkflowConfig, WorkflowDefinition,
+    };
+
     use super::*;
 
-    #[test]
-    fn resolve_returns_route_for_nonempty_key() {
-        let resolver = StaticRoutingResolver::new("plugin.demo");
-        let route = resolver
-            .resolve(&WorkflowId::new(), &NodeKey::new("trigger").unwrap())
-            .expect("non-empty key resolves to a route");
-        assert_eq!(route.required_plugin_key, "plugin.demo");
-        assert_eq!(
-            route.capability_tags,
-            vec![CapabilityTag::from("plugin.demo")]
-        );
-        assert_eq!(route.target_flavor_sha, SLICE_FLAVOR_SHA);
+    /// Build a minimal validated workflow.
+    ///
+    /// `trigger_plugin` is the plugin for the single trigger binding with
+    /// `id == trigger_id`.  `nodes` is a slice of `(plugin_key, enabled)` pairs.
+    fn make_validated(
+        trigger_id: &str,
+        trigger_plugin: &str,
+        nodes: &[(&str, bool)],
+    ) -> ValidatedWorkflow {
+        let now = chrono::Utc::now();
+        let trigger_key = NodeKey::new(trigger_id).unwrap();
+        let trigger = TriggerBinding::new(trigger_key, trigger_plugin, "test.action").unwrap();
+        let node_defs: Vec<NodeDefinition> = nodes
+            .iter()
+            .enumerate()
+            .map(|(i, &(pk, enabled))| {
+                let mut n = NodeDefinition::new(
+                    NodeKey::new(format!("node{i}")).unwrap(),
+                    "Node",
+                    pk,
+                    "test.action",
+                )
+                .unwrap();
+                if !enabled {
+                    n = n.disabled();
+                }
+                n
+            })
+            .collect();
+        let def = WorkflowDefinition {
+            id: WorkflowId::new(),
+            name: "test-routing".into(),
+            description: None,
+            version: Version::new(0, 1, 0),
+            nodes: node_defs,
+            connections: Vec::<Connection>::new(),
+            variables: HashMap::new(),
+            config: WorkflowConfig::default(),
+            trigger_bindings: vec![trigger],
+            tags: Vec::new(),
+            created_at: now,
+            updated_at: now,
+            owner_id: None,
+            ui_metadata: None,
+            schema_version: CURRENT_SCHEMA_VERSION,
+        };
+        ValidatedWorkflow::validate(def).expect("test definition must be valid")
     }
 
     #[test]
-    fn resolve_fails_closed_on_empty_key() {
-        // Build directly to bypass `new`'s debug_assert and exercise the
-        // release-path runtime guard in `resolve`.
-        let resolver = StaticRoutingResolver {
-            required_plugin_key: String::new(),
-        };
+    fn fail_closed_when_trigger_not_in_bindings() {
+        // Verifies the fail-closed path: a fired trigger id absent from
+        // trigger_bindings must return TriggerNotOnWorkflow.
+        let workflow = make_validated("real.trigger", "p.trig", &[("p.a", true)]);
+        let resolver = DefinitionRoutingResolver::default();
+        let absent = node_key!("absent.trigger");
         let err = resolver
-            .resolve(&WorkflowId::new(), &NodeKey::new("trigger").unwrap())
-            .expect_err("empty routing key must fail closed");
-        assert!(matches!(err, RoutingError::NotFound { .. }));
+            .resolve(&workflow, &absent)
+            .expect_err("trigger absent from bindings must fail closed");
+        assert!(
+            matches!(err, RoutingError::TriggerNotOnWorkflow { .. }),
+            "expected TriggerNotOnWorkflow, got {err:?}"
+        );
+        let RoutingError::TriggerNotOnWorkflow {
+            trigger_id,
+            workflow_id: _,
+        } = err;
+        assert_eq!(trigger_id, "absent.trigger");
+    }
+
+    #[test]
+    fn resolves_required_key_and_sorted_capability_set() {
+        // trigger plugin = "p.trig", node plugins = [("p.a", true), ("p.b", true)]
+        // expected capability_tags = sorted { "p.a", "p.b", "p.trig" }
+        let workflow = make_validated("test.trigger", "p.trig", &[("p.a", true), ("p.b", true)]);
+        let resolver = DefinitionRoutingResolver::new(SLICE_FLAVOR_SHA);
+        let fired = node_key!("test.trigger");
+        let route = resolver
+            .resolve(&workflow, &fired)
+            .expect("trigger present in bindings must resolve");
+
+        assert_eq!(route.required_plugin_key, "p.trig");
+        assert_eq!(route.target_flavor_sha, SLICE_FLAVOR_SHA);
+
+        let tags: Vec<&str> = route
+            .capability_tags
+            .iter()
+            .map(CapabilityTag::as_str)
+            .collect();
+        // Sorted BTreeSet order: p.a < p.b < p.trig
+        assert_eq!(tags, vec!["p.a", "p.b", "p.trig"]);
+
+        // Required key is a member of the capability set.
+        assert!(
+            route
+                .capability_tags
+                .iter()
+                .any(|t| t.as_str() == route.required_plugin_key),
+            "required_plugin_key must be in capability_tags"
+        );
+    }
+
+    #[test]
+    fn disabled_node_plugin_excluded_from_capability_tags() {
+        // "p.disabled" belongs to a disabled node — it must NOT appear in tags.
+        // "p.enabled" belongs to an enabled node — it MUST appear.
+        // "p.trig" is the trigger binding — it MUST appear.
+        let workflow = make_validated(
+            "test.trigger",
+            "p.trig",
+            &[("p.enabled", true), ("p.disabled", false)],
+        );
+        let resolver = DefinitionRoutingResolver::default();
+        let route = resolver
+            .resolve(&workflow, &node_key!("test.trigger"))
+            .unwrap();
+
+        let tags: Vec<&str> = route
+            .capability_tags
+            .iter()
+            .map(CapabilityTag::as_str)
+            .collect();
+        assert!(
+            tags.contains(&"p.trig"),
+            "trigger plugin must be in capability_tags; got {tags:?}"
+        );
+        assert!(
+            tags.contains(&"p.enabled"),
+            "enabled node plugin must be in capability_tags; got {tags:?}"
+        );
+        assert!(
+            !tags.contains(&"p.disabled"),
+            "disabled node plugin must NOT be in capability_tags; got {tags:?}"
+        );
+    }
+
+    #[test]
+    fn capability_tags_deduplicated_when_trigger_and_node_share_plugin() {
+        // trigger plugin = "p.shared", node plugin = "p.shared" — only one tag.
+        let workflow = make_validated("test.trigger", "p.shared", &[("p.shared", true)]);
+        let resolver = DefinitionRoutingResolver::default();
+        let fired = node_key!("test.trigger");
+        let route = resolver.resolve(&workflow, &fired).unwrap();
+
+        assert_eq!(route.capability_tags.len(), 1);
+        assert_eq!(route.capability_tags[0].as_str(), "p.shared");
+    }
+
+    #[test]
+    fn default_uses_slice_flavor_sha() {
+        let workflow = make_validated("t", "some.plugin", &[("some.plugin", true)]);
+        let resolver = DefinitionRoutingResolver::default();
+        let route = resolver.resolve(&workflow, &node_key!("t")).unwrap();
+        assert_eq!(route.target_flavor_sha, SLICE_FLAVOR_SHA);
     }
 }

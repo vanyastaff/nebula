@@ -6,19 +6,21 @@
 //! `DurableExecutionEmitter` implements [`nebula_action::ExecutionEmitter`] and
 //! wires the trigger-to-execution fan-out path end-to-end:
 //!
-//! 1. Mint a new [`ExecutionId`] candidate and build the initial
+//! 1. Resolve routing from the [`ValidatedWorkflow`] (fail-fast before minting
+//!    an id): `required_plugin_key` + `capability_tags` + flavor SHA.
+//! 2. Mint a new [`ExecutionId`] candidate and build the initial
 //!    [`ExecutionState`].
-//! 2. Build a [`JobDispatchMsg`] (Start command, routing key, etc.), a
+//! 3. Build a [`JobDispatchMsg`] (Start command, routing key, etc.), a
 //!    [`NewExecution`] carrying the serialised initial state, and — when
 //!    `event_id` is `Some` — a [`TriggerDedupRow`] guard keyed by
 //!    `(scope, trigger_id, event_id)`.
-//! 3. Call [`TriggerDedupInbox::claim_and_materialize_start`] — one atomic
+//! 4. Call [`TriggerDedupInbox::claim_and_materialize_start`] — one atomic
 //!    critical section that either:
 //!    - **`Dispatched`**: inserts the dedup guard + the `Created` execution row
 //!      + enqueues the Start job; returns the effective execution id.
 //!    - **`Duplicate`**: returns the *original winner's* execution id without
 //!      touching any row.
-//! 4. Parse the returned `outcome.execution_id` back to [`ExecutionId`] and
+//! 5. Parse the returned `outcome.execution_id` back to [`ExecutionId`] and
 //!    return it to the caller.
 //!
 //! ## Atomicity guarantee
@@ -53,30 +55,36 @@ use std::sync::Arc;
 
 use nebula_action::{ActionError, ExecutionEmitter, IdempotencyKey};
 use nebula_core::NodeKey;
-use nebula_core::id::{ExecutionId, WorkflowId};
+use nebula_core::id::ExecutionId;
 use nebula_execution::ExecutionState;
 use nebula_storage_port::{
     Scope, StorageError,
     dto::{ControlCommand, DispatchKind, JobDispatchMsg, NewExecution, TriggerDedupRow},
     store::TriggerDedupInbox,
 };
+use nebula_workflow::ValidatedWorkflow;
 
 use crate::daemon::routing::RoutingResolver;
 
 /// Trigger fan-out through the durable dedup inbox.
 ///
 /// Holds everything needed to enqueue one trigger-originated Start job:
+/// - [`ValidatedWorkflow`] — the validated workflow being triggered.  Passed
+///   to [`RoutingResolver`] so routing is derived from the definition without a
+///   registry lookup.  Using a validation witness ensures this seam can never
+///   be reached with an unvalidated definition.
 /// - [`TriggerDedupInbox`] — atomic dedup + execution-row materialise + job
 ///   enqueue, all in one transaction.
-/// - [`RoutingResolver`] — derive `required_plugin_key` + `target_flavor_sha`.
-/// - Identity fields captured at construction: `workflow_id`, `trigger_id`,
-///   `scope` — same values on every `emit` call from this trigger context.
+/// - [`RoutingResolver`] — derive `required_plugin_key` + `target_flavor_sha`
+///   from the validated definition.
+/// - Identity fields captured at construction: `trigger_id`, `scope` — same
+///   values on every `emit` call from this trigger context.
 #[derive(Clone)]
 pub struct DurableExecutionEmitter {
+    workflow: Arc<ValidatedWorkflow>,
     dedup: Arc<dyn TriggerDedupInbox>,
     resolver: Arc<dyn RoutingResolver>,
     // Cached at construction from `TriggerRuntimeContext`.
-    workflow_id: WorkflowId,
     trigger_id: NodeKey,
     scope: Scope,
 }
@@ -84,7 +92,7 @@ pub struct DurableExecutionEmitter {
 impl std::fmt::Debug for DurableExecutionEmitter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DurableExecutionEmitter")
-            .field("workflow_id", &self.workflow_id)
+            .field("workflow_id", &self.workflow.definition().id)
             .field("trigger_id", &self.trigger_id)
             .field("scope", &self.scope)
             .finish_non_exhaustive()
@@ -102,14 +110,14 @@ impl DurableExecutionEmitter {
     pub fn new(
         dedup: Arc<dyn TriggerDedupInbox>,
         resolver: Arc<dyn RoutingResolver>,
-        workflow_id: WorkflowId,
+        workflow: Arc<ValidatedWorkflow>,
         trigger_id: NodeKey,
         scope: Scope,
     ) -> Self {
         Self {
+            workflow,
             dedup,
             resolver,
-            workflow_id,
             trigger_id,
             scope,
         }
@@ -126,7 +134,7 @@ impl DurableExecutionEmitter {
         skip(self, input),
         fields(
             trigger_id  = %self.trigger_id,
-            workflow_id = %self.workflow_id,
+            workflow_id = %self.workflow.definition().id,
             event_id    = event_id.as_ref().map(IdempotencyKey::as_str),
         )
     )]
@@ -135,10 +143,12 @@ impl DurableExecutionEmitter {
         input: serde_json::Value,
         event_id: Option<IdempotencyKey>,
     ) -> Result<ExecutionId, ActionError> {
-        // --- step 1: resolve routing (fail-fast before minting an id) --------
+        let workflow_id = self.workflow.definition().id;
+
+        // --- step 1: resolve routing from validated definition (fail-fast) ----
         let route = self
             .resolver
-            .resolve(&self.workflow_id, &self.trigger_id)
+            .resolve(&self.workflow, &self.trigger_id)
             .map_err(ActionError::fatal_from)?;
 
         // --- step 2: mint the candidate id + serialise the initial state -----
@@ -148,7 +158,7 @@ impl DurableExecutionEmitter {
         // On `Duplicate` the store returns the *winner's* id — which may differ.
         let candidate_id = ExecutionId::new();
 
-        let mut exec_state = ExecutionState::new(candidate_id, self.workflow_id, &[]);
+        let mut exec_state = ExecutionState::new(candidate_id, workflow_id, &[]);
         exec_state.set_workflow_input(input.clone());
         let state_json = serde_json::to_value(&exec_state)
             .map_err(|e| ActionError::fatal(format!("serialize execution state: {e}")))?;
@@ -172,7 +182,7 @@ impl DurableExecutionEmitter {
             0,              // reclaim_count: 0 on first enqueue
         );
 
-        let workflow_id_str = self.workflow_id.to_string();
+        let workflow_id_str = workflow_id.to_string();
         let new_execution = NewExecution::new(&workflow_id_str, &state_json);
 
         // --- step 3: build the dedup guard row (only when event_id present) --
@@ -207,7 +217,7 @@ impl DurableExecutionEmitter {
             effective_execution_id = %outcome.execution_id,
             candidate_id = %candidate_id,
             trigger_id   = %self.trigger_id,
-            workflow_id  = %self.workflow_id,
+            workflow_id  = %workflow_id,
             event_id     = event_id.as_ref().map(IdempotencyKey::as_str),
             "durable_emitter: claim_and_materialize_start"
         );
@@ -217,7 +227,7 @@ impl DurableExecutionEmitter {
                 tracing::info!(
                     execution_id = %outcome.execution_id,
                     trigger_id   = %self.trigger_id,
-                    workflow_id  = %self.workflow_id,
+                    workflow_id  = %workflow_id,
                     event_id     = event_id.as_ref().map(IdempotencyKey::as_str),
                     "durable_emitter: dispatched"
                 );
@@ -227,7 +237,7 @@ impl DurableExecutionEmitter {
                     winner_execution_id = %outcome.execution_id,
                     candidate_id = %candidate_id,
                     trigger_id   = %self.trigger_id,
-                    workflow_id  = %self.workflow_id,
+                    workflow_id  = %workflow_id,
                     event_id     = event_id.as_ref().map(IdempotencyKey::as_str),
                     "durable_emitter: duplicate — returning winner id"
                 );
