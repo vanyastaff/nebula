@@ -104,6 +104,6 @@ pub use event_source::{EventSource, EventSourceAdapter, EventSourceConfig, Event
 pub use execution_sink::EngineExecutionSink;
 pub use registry::{AnyDaemonHandle, DaemonError, DaemonRegistry};
 pub use routing::{
-    DispatchRoute, RoutingError, RoutingResolver, SLICE_FLAVOR_SHA, StaticRoutingResolver,
+    DefinitionRoutingResolver, DispatchRoute, RoutingError, RoutingResolver, SLICE_FLAVOR_SHA,
 };
 pub use runtime::DaemonRuntime;

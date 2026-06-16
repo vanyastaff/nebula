@@ -12,7 +12,7 @@
 //!
 //! **C-series (DurableExecutionEmitter unit tests)**
 //! - `emitter_dispatched_creates_row_and_enqueues_start` — emit with Some(event_id) → Dispatched,
-//!   Created row exists, Start row in queue.
+//!   Created row exists, Start row in queue with exact routing fields.
 //! - `emitter_duplicate_event_id_no_second_row` — emit same event_id twice → id unchanged,
 //!   no second Created row, no second Start row.
 //!
@@ -54,7 +54,8 @@ use nebula_storage_port::{
     store::{ExecutionStore, JobDispatchQueue, TriggerDedupInbox, WorkflowVersionStore},
 };
 use nebula_workflow::{
-    CURRENT_SCHEMA_VERSION, Connection, NodeDefinition, Version, WorkflowConfig, WorkflowDefinition,
+    CURRENT_SCHEMA_VERSION, Connection, NodeDefinition, TriggerBinding, ValidatedWorkflow, Version,
+    WorkflowConfig, WorkflowDefinition,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -176,11 +177,20 @@ async fn make_engine(stores: &TestStores) -> (Arc<WorkflowEngine>, Arc<AtomicU32
     (engine, count)
 }
 
-/// Save a single-node echo workflow, return its id.
-async fn save_echo_workflow(stores: &TestStores) -> nebula_core::WorkflowId {
+/// Build, validate, persist, and return the echo workflow.
+///
+/// The workflow carries:
+/// - one node `"step"` with `plugin_key = TEST_PLUGIN_KEY`
+/// - one trigger binding `id = node_key!("test.trigger")` with
+///   `plugin_key = TEST_PLUGIN_KEY`
+///
+/// Both emitter tests and the acceptance test fire `node_key!("test.trigger")`,
+/// so the resolver will find this binding and produce `required_plugin_key ==
+/// TEST_PLUGIN_KEY`.
+async fn save_echo_workflow(stores: &TestStores) -> Arc<ValidatedWorkflow> {
     let workflow_id = nebula_core::WorkflowId::new();
     let now = chrono::Utc::now();
-    let wf = WorkflowDefinition {
+    let def = WorkflowDefinition {
         id: workflow_id,
         name: "dispatch-slice-echo".into(),
         description: None,
@@ -189,7 +199,7 @@ async fn save_echo_workflow(stores: &TestStores) -> nebula_core::WorkflowId {
             NodeDefinition::new(
                 node_key!("step"),
                 "Step",
-                "core",
+                TEST_PLUGIN_KEY,
                 "test.echo.dispatch_slice",
             )
             .unwrap(),
@@ -197,7 +207,14 @@ async fn save_echo_workflow(stores: &TestStores) -> nebula_core::WorkflowId {
         connections: Vec::<Connection>::new(),
         variables: HashMap::new(),
         config: WorkflowConfig::default(),
-        trigger_bindings: Vec::new(),
+        trigger_bindings: vec![
+            TriggerBinding::new(
+                node_key!("test.trigger"),
+                TEST_PLUGIN_KEY,
+                "test.trigger.action",
+            )
+            .unwrap(),
+        ],
         tags: Vec::new(),
         created_at: now,
         updated_at: now,
@@ -205,21 +222,24 @@ async fn save_echo_workflow(stores: &TestStores) -> nebula_core::WorkflowId {
         ui_metadata: None,
         schema_version: CURRENT_SCHEMA_VERSION,
     };
+    let validated =
+        ValidatedWorkflow::validate(def).expect("echo workflow definition must pass validation");
     stores
         .versions
         .create(
             &scope(),
             WorkflowVersionRecord {
-                workflow_id: wf.id.to_string(),
+                workflow_id: validated.definition().id.to_string(),
                 number: 0,
                 published: true,
                 pinned: false,
-                definition: serde_json::to_value(&wf).expect("serialize workflow"),
+                definition: serde_json::to_value(validated.definition())
+                    .expect("serialize workflow"),
             },
         )
         .await
         .expect("save workflow version");
-    workflow_id
+    Arc::new(validated)
 }
 
 /// Persist a pristine `Created` execution row, mirroring the API handler.
@@ -258,7 +278,7 @@ async fn read_status(stores: &TestStores, execution_id: ExecutionId) -> Option<E
     })
 }
 
-/// Helper: `[1u8; 16]` processor id.
+/// Helper: `[b; 16]` processor id.
 fn proc16(b: u8) -> [u8; 16] {
     [b; 16]
 }
@@ -267,15 +287,14 @@ fn proc16(b: u8) -> [u8; 16] {
 
 /// `EngineExecutionSink::dispatch` on a `Created` row drives `resume_execution`
 /// and the execution reaches `Completed`.
-///
-/// This is the RED→GREEN behavior test for the sink (Checkpoint B).
 #[tokio::test(start_paused = true)]
 async fn sink_dispatch_drives_resume_execution() {
     let stores = TestStores::new();
     let (engine, echo_count) = make_engine(&stores).await;
-    let workflow_id = save_echo_workflow(&stores).await;
+    let workflow = save_echo_workflow(&stores).await;
+    let workflow_id = workflow.definition().id;
 
-    // Seed a Created row (the emitter will do this in prod; we seed it directly
+    // Seed a Created row (the emitter does this in prod; we seed it directly
     // for the isolated sink unit test).
     let execution_id = ExecutionId::new();
     persist_created(
@@ -307,8 +326,8 @@ async fn sink_dispatch_drives_resume_execution() {
         "EngineExecutionSink::dispatch must succeed on a Created row: {result:?}"
     );
 
-    // Assert the execution actually ran — status must be Completed (not just
-    // Created, which would mean resume_execution was never driven).
+    // Status must be Completed — not just Created, which would mean
+    // resume_execution was never driven.
     let status = read_status(&stores, execution_id)
         .await
         .expect("execution row must exist after dispatch");
@@ -330,7 +349,8 @@ async fn sink_dispatch_drives_resume_execution() {
 async fn sink_dispatch_redelivery_is_idempotent() {
     let stores = TestStores::new();
     let (engine, echo_count) = make_engine(&stores).await;
-    let workflow_id = save_echo_workflow(&stores).await;
+    let workflow = save_echo_workflow(&stores).await;
+    let workflow_id = workflow.definition().id;
 
     let execution_id = ExecutionId::new();
     persist_created(&stores, workflow_id, execution_id, serde_json::json!({})).await;
@@ -371,20 +391,16 @@ async fn sink_dispatch_redelivery_is_idempotent() {
 }
 
 // ── C-series: DurableExecutionEmitter unit tests ─────────────────────────────
-//
-// These tests are written against `DurableExecutionEmitter` which is declared
-// in `nebula_engine::daemon::durable_emitter`.  They become GREEN at
-// Checkpoint C when that module is added.
 
 use nebula_engine::daemon::durable_emitter::DurableExecutionEmitter;
-use nebula_engine::daemon::routing::StaticRoutingResolver;
+use nebula_engine::daemon::routing::{DefinitionRoutingResolver, SLICE_FLAVOR_SHA};
 
 const TEST_PLUGIN_KEY: &str = "test.dispatch.plugin";
 
 /// Build InMemory dedup + queue + emitter sharing one execution-store core.
 async fn make_emitter(
     stores: &TestStores,
-    workflow_id: nebula_core::WorkflowId,
+    workflow: Arc<ValidatedWorkflow>,
 ) -> (
     DurableExecutionEmitter,
     Arc<InMemoryTriggerDedupInbox>,
@@ -392,11 +408,11 @@ async fn make_emitter(
 ) {
     let dedup = Arc::new(InMemoryTriggerDedupInbox::new(&stores.execution));
     let queue = Arc::new(InMemoryJobDispatchQueue::new(&stores.execution));
-    let resolver = Arc::new(StaticRoutingResolver::new(TEST_PLUGIN_KEY));
+    let resolver = Arc::new(DefinitionRoutingResolver::new(SLICE_FLAVOR_SHA));
     let emitter = DurableExecutionEmitter::new(
         Arc::clone(&dedup) as Arc<dyn TriggerDedupInbox>,
         resolver,
-        workflow_id,
+        workflow,
         node_key!("test.trigger"),
         scope(),
     );
@@ -406,12 +422,13 @@ async fn make_emitter(
 /// `DurableExecutionEmitter::emit` with `Some(event_id)` produces:
 ///  - `DispatchKind::Dispatched` (returned as Ok(execution_id))
 ///  - A `Created` execution row in the store
-///  - Exactly one Start row in the job-dispatch queue
+///  - Exactly one Start row in the job-dispatch queue with the correct routing
+///    fields (`required_plugin_key` and exact `capability_tags`)
 #[tokio::test(start_paused = true)]
 async fn emitter_dispatched_creates_row_and_enqueues_start() {
     let stores = TestStores::new();
-    let workflow_id = save_echo_workflow(&stores).await;
-    let (emitter, _dedup, queue) = make_emitter(&stores, workflow_id).await;
+    let workflow = save_echo_workflow(&stores).await;
+    let (emitter, _dedup, queue) = make_emitter(&stores, Arc::clone(&workflow)).await;
 
     let event_id = IdempotencyKey::new("evt-001");
     let execution_id = emitter
@@ -432,7 +449,7 @@ async fn emitter_dispatched_creates_row_and_enqueues_start() {
         "row must be in Created state immediately after emit; got {status:?}"
     );
 
-    // Exactly one Start job in the queue.
+    // Exactly one Start job in the queue, claimable by the test plugin key.
     let jobs = queue
         .claim_pending(&proc16(1), 10, &[CapabilityTag::from(TEST_PLUGIN_KEY)])
         .await
@@ -452,6 +469,23 @@ async fn emitter_dispatched_creates_row_and_enqueues_start() {
         matches!(jobs[0].command, ControlCommand::Start),
         "job command must be Start"
     );
+
+    // The route written into the job must match the exact expected values.
+    // The echo workflow has one trigger binding (TEST_PLUGIN_KEY) and one
+    // enabled node (TEST_PLUGIN_KEY), so capability_tags = [TEST_PLUGIN_KEY]
+    // (deduplicated).
+    assert_eq!(
+        jobs[0].required_plugin_key, TEST_PLUGIN_KEY,
+        "required_plugin_key on enqueued job must equal TEST_PLUGIN_KEY"
+    );
+    let expected_tags = vec![CapabilityTag::from(TEST_PLUGIN_KEY)];
+    assert_eq!(
+        jobs[0].capability_tags, expected_tags,
+        "capability_tags on enqueued job must equal exactly {{TEST_PLUGIN_KEY}}; \
+         trigger and node share the same plugin key so dedup yields one entry. \
+         got: {:?}",
+        jobs[0].capability_tags
+    );
 }
 
 /// A second `emit` with the same `event_id` returns the WINNER's id (same as
@@ -461,8 +495,8 @@ async fn emitter_dispatched_creates_row_and_enqueues_start() {
 #[tokio::test(start_paused = true)]
 async fn emitter_duplicate_event_id_no_second_row() {
     let stores = TestStores::new();
-    let workflow_id = save_echo_workflow(&stores).await;
-    let (emitter, _dedup, queue) = make_emitter(&stores, workflow_id).await;
+    let workflow = save_echo_workflow(&stores).await;
+    let (emitter, _dedup, queue) = make_emitter(&stores, Arc::clone(&workflow)).await;
 
     let event_id = IdempotencyKey::new("evt-dup");
 
@@ -518,18 +552,18 @@ async fn emitter_duplicate_event_id_no_second_row() {
 async fn trigger_dispatch_end_to_end_real_engine_resume() {
     let stores = TestStores::new();
     let (engine, echo_count) = make_engine(&stores).await;
-    let workflow_id = save_echo_workflow(&stores).await;
+    let workflow = save_echo_workflow(&stores).await;
 
     // Wire: dedup + queue share the execution store's core so all three writes
     // (dedup guard + execution row + Start job) are atomic under one lock.
     let dedup = Arc::new(InMemoryTriggerDedupInbox::new(&stores.execution));
     let queue = Arc::new(InMemoryJobDispatchQueue::new(&stores.execution));
 
-    let resolver = Arc::new(StaticRoutingResolver::new(TEST_PLUGIN_KEY));
+    let resolver = Arc::new(DefinitionRoutingResolver::new(SLICE_FLAVOR_SHA));
     let emitter = DurableExecutionEmitter::new(
         Arc::clone(&dedup) as Arc<dyn TriggerDedupInbox>,
         resolver,
-        workflow_id,
+        Arc::clone(&workflow),
         node_key!("test.trigger"),
         scope(),
     );
