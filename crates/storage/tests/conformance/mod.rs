@@ -1639,10 +1639,9 @@ fn make_job(id: u8, required_plugin_key: &str, tags: &[&str]) -> JobDispatchMsg 
     )
 }
 
-/// `claim_pending` only delivers rows whose `required_plugin_key` is a
-/// member of the advertised set; rows requiring an unadvertised key are not
-/// delivered.
-pub async fn assert_job_dispatch_routes_by_tag(backend: &dyn Backend) {
+/// `claim_pending` only delivers rows whose required plugin is in the worker's
+/// `available_plugins`; a row requiring an unavailable plugin is not delivered.
+pub async fn assert_job_dispatch_routes_by_plugin(backend: &dyn Backend) {
     let q = backend.job_dispatch_queue().await;
 
     let job_a = make_job(0x10, "plugin.alpha", &["plugin.alpha"]);
@@ -1963,7 +1962,7 @@ pub async fn assert_dedup_compose_is_atomic(backend: &dyn Backend) {
 /// 4. Advertised `["plugin.alpha", "plugin.beta", "plugin.gamma"]` → claimed
 ///    (strict superset); claimed job identity verified.
 /// 5. Empty advertised set → claims nothing (parity across all backends).
-pub async fn assert_job_dispatch_routes_by_tag_superset(backend: &dyn Backend) {
+pub async fn assert_job_dispatch_routes_by_plugin_superset(backend: &dyn Backend) {
     let q = backend.job_dispatch_queue().await;
 
     // Job requires alpha AND beta (required_plugins covers both; invariant upheld).

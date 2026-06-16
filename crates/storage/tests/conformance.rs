@@ -26,7 +26,7 @@ use harness::{
     assert_dispatch_without_dedup_key, assert_get_published_is_highest_numbered,
     assert_idempotency_first_writer_wins, assert_idempotency_store_cross_scope_isolated,
     assert_idempotency_store_first_writer, assert_job_dispatch_fencing,
-    assert_job_dispatch_routes_by_tag, assert_job_dispatch_routes_by_tag_superset,
+    assert_job_dispatch_routes_by_plugin, assert_job_dispatch_routes_by_plugin_superset,
     assert_journal_visibility_and_scope, assert_live_lease_blocks_acquire,
     assert_save_with_published_version_is_atomic, assert_stale_fencing_is_fenced_out,
     assert_trigger_dedup_first_writer, assert_trigger_dedup_is_scoped,
@@ -121,8 +121,8 @@ matrix!(
     assert_get_published_is_highest_numbered
 );
 matrix!(
-    job_dispatch_routes_by_tag,
-    assert_job_dispatch_routes_by_tag
+    job_dispatch_routes_by_plugin,
+    assert_job_dispatch_routes_by_plugin
 );
 matrix!(job_dispatch_fencing, assert_job_dispatch_fencing);
 matrix!(
@@ -135,8 +135,8 @@ matrix!(
 );
 matrix!(dedup_compose_is_atomic, assert_dedup_compose_is_atomic);
 matrix!(
-    job_dispatch_routes_by_tag_superset,
-    assert_job_dispatch_routes_by_tag_superset
+    job_dispatch_routes_by_plugin_superset,
+    assert_job_dispatch_routes_by_plugin_superset
 );
 matrix!(trigger_dedup_is_scoped, assert_trigger_dedup_is_scoped);
 matrix!(
