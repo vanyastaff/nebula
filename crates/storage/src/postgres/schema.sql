@@ -287,11 +287,14 @@ CREATE TABLE IF NOT EXISTS port_blobs (
 
 -- Capability-routed job-dispatch queue.  `id` is the raw 16-byte ULID
 -- (BYTEA).  `capability_tags` is a JSONB array; the routing predicate is
--- `required_plugin_key = ANY($advertised_tags)`.
+-- `capability_tags <@ $advertised_jsonb` (JSONB "is contained by": the job's
+-- tags must be a subset of the worker's advertised set).
+-- `required_plugin_key = ANY($advertised_tags)` is kept as a sound index
+-- pre-filter (DTO invariant: capability_tags ⊇ {required_plugin_key}).
 -- `processed_at_ms` is epoch-millis (BIGINT) for parity with the
 -- `port_control_queue` reclaim arithmetic.
--- The GIN index on `capability_tags` accelerates membership queries on
--- Postgres (SQLite uses json_each; this index is Postgres-only).
+-- The GIN index on `capability_tags` accelerates the `<@` superset check
+-- on Postgres (SQLite uses json_each + NOT EXISTS; this index is Postgres-only).
 CREATE TABLE IF NOT EXISTS port_job_dispatch_queue (
     id                  BYTEA PRIMARY KEY,
     execution_id        TEXT NOT NULL,

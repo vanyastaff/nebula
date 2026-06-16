@@ -67,18 +67,30 @@ impl JobDispatchQueue for InMemoryJobDispatchQueue {
         batch_size: u32,
         advertised_tags: &[CapabilityTag],
     ) -> Result<Vec<JobDispatchMsg>, StorageError> {
+        // Parity with SQLite + Postgres: an empty advertised set claims nothing.
+        if advertised_tags.is_empty() {
+            return Ok(Vec::new());
+        }
         let mut st = self.inner.lock();
         let now = Instant::now();
 
         // Stable order so a bounded batch is deterministic across calls.
+        //
+        // Superset predicate: the worker may claim a job only when its
+        // advertised tags cover every tag in `capability_tags`.  The check is
+        // inside the parking_lot Mutex so the predicate + status flip are
+        // atomic (no TOCTOU window).  Empty `capability_tags` ⇒ `all()` is
+        // vacuously true ⇒ claimable by any non-empty advertised set (subset
+        // of anything).
         let mut ids: Vec<[u8; 16]> = st
             .jobs
             .iter()
             .filter(|(_, q)| {
                 q.status == "Pending"
-                    && advertised_tags
+                    && q.msg
+                        .capability_tags
                         .iter()
-                        .any(|t| t.as_str() == q.msg.required_plugin_key)
+                        .all(|ct| advertised_tags.iter().any(|at| at.as_str() == ct.as_str()))
             })
             .map(|(id, _)| *id)
             .collect();

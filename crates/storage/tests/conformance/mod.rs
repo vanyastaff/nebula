@@ -1940,51 +1940,128 @@ pub async fn assert_dedup_compose_is_atomic(backend: &dyn Backend) {
     );
 }
 
-/// Routing is keyed on `required_plugin_key`, NOT on membership in the
-/// `capability_tags` superset.
+/// `claim_pending` enforces a superset predicate: a worker may claim a job
+/// only when its advertised tags cover EVERY tag in the job's `capability_tags`.
 ///
-/// A job with `required_plugin_key = "plugin.alpha"` and
-/// `capability_tags = ["plugin.alpha", "plugin.beta"]` must NOT be claimed
-/// by a worker that advertises only `["plugin.beta"]`.  This assertion
-/// exists to lock cross-backend equivalence between Postgres
-/// (`required_plugin_key = ANY($tags)`) and SQLite
-/// (`required_plugin_key = ?` per advertised tag).
+/// Contract (job has `required_plugin_key = "plugin.alpha"` and
+/// `capability_tags = ["plugin.alpha", "plugin.beta"]`):
+///
+/// 1. Advertised `["plugin.alpha"]` only → NOT claimed (missing beta).
+/// 2. Advertised `["plugin.beta"]` only → NOT claimed (missing alpha; the
+///    `required_plugin_key` pre-filter also rejects it independently).
+/// 3. Advertised `["plugin.alpha", "plugin.beta"]` → claimed (exact superset).
+/// 4. Advertised `["plugin.alpha", "plugin.beta", "plugin.gamma"]` → claimed
+///    (strict superset); claimed job identity verified.
+/// 5. Empty advertised set → claims nothing (parity across all backends).
 pub async fn assert_job_dispatch_routes_by_tag_superset(backend: &dyn Backend) {
     let q = backend.job_dispatch_queue().await;
 
-    // Job requires alpha but lists both alpha and beta in capability_tags.
+    // Job requires alpha AND beta (capability_tags covers both; invariant upheld).
     let job = make_job(0x60, "plugin.alpha", &["plugin.alpha", "plugin.beta"]);
     q.enqueue(&job).await.expect("enqueue superset job");
 
     let proc = [0xAAu8; 16];
 
-    // A worker advertising only beta must NOT claim this job.
-    let claimed_by_beta = q
+    // 1. Alpha-only worker: pre-filter passes (required_plugin_key = alpha) but
+    //    superset check fails — beta is required and not advertised.
+    let claimed_by_alpha_only = q
+        .claim_pending(&proc, 16, &[CapabilityTag::from("plugin.alpha")])
+        .await
+        .expect("claim alpha-only");
+    assert!(
+        claimed_by_alpha_only.is_empty(),
+        "[{}] alpha-only worker must not claim a job that also requires beta \
+         (superset predicate: all capability_tags must be covered)",
+        backend.name()
+    );
+
+    // 2. Beta-only worker: pre-filter rejects (required_plugin_key = alpha not
+    //    in advertised) and the superset check would also fail independently.
+    let claimed_by_beta_only = q
         .claim_pending(&proc, 16, &[CapabilityTag::from("plugin.beta")])
         .await
         .expect("claim beta-only");
     assert!(
-        claimed_by_beta.is_empty(),
+        claimed_by_beta_only.is_empty(),
         "[{}] beta-only worker must not claim an alpha-required job \
-         (routing is on required_plugin_key, not capability_tags superset)",
+         (pre-filter on required_plugin_key rejects it)",
         backend.name()
     );
 
-    // A worker advertising alpha must claim it.
-    let claimed_by_alpha = q
-        .claim_pending(&proc, 16, &[CapabilityTag::from("plugin.alpha")])
+    // 3. Exact-superset worker: advertises both alpha and beta — must claim.
+    let claimed_by_both = q
+        .claim_pending(
+            &proc,
+            16,
+            &[
+                CapabilityTag::from("plugin.alpha"),
+                CapabilityTag::from("plugin.beta"),
+            ],
+        )
         .await
-        .expect("claim alpha");
+        .expect("claim alpha+beta");
     assert_eq!(
-        claimed_by_alpha.len(),
+        claimed_by_both.len(),
         1,
-        "[{}] alpha worker must claim the alpha-required job",
+        "[{}] worker advertising [alpha, beta] must claim the job (exact superset)",
         backend.name()
     );
     assert_eq!(
-        claimed_by_alpha[0].required_plugin_key,
+        claimed_by_both[0].required_plugin_key,
         "plugin.alpha",
         "[{}] claimed job must be the alpha-required one",
+        backend.name()
+    );
+
+    // 4. Strict-superset worker (re-enqueue to get a fresh Pending row).
+    let job2 = make_job(0x61, "plugin.alpha", &["plugin.alpha", "plugin.beta"]);
+    q.enqueue(&job2).await.expect("enqueue superset job 2");
+    let claimed_by_superset = q
+        .claim_pending(
+            &proc,
+            16,
+            &[
+                CapabilityTag::from("plugin.alpha"),
+                CapabilityTag::from("plugin.beta"),
+                CapabilityTag::from("plugin.gamma"),
+            ],
+        )
+        .await
+        .expect("claim strict superset");
+    assert_eq!(
+        claimed_by_superset.len(),
+        1,
+        "[{}] worker advertising [alpha, beta, gamma] must claim a job requiring [alpha, beta]",
+        backend.name()
+    );
+    assert_eq!(
+        claimed_by_superset[0].id,
+        job2.id,
+        "[{}] claimed job must be the strict-superset job (id match)",
+        backend.name()
+    );
+    assert_eq!(
+        claimed_by_superset[0].required_plugin_key,
+        "plugin.alpha",
+        "[{}] claimed job must be the alpha-required one",
+        backend.name()
+    );
+
+    // 5. Empty advertised set → claims nothing — parity with SQLite + Postgres
+    //    which both short-circuit on empty advertised_tags.  Re-enqueue a
+    //    conforming job (capability_tags ⊇ {required_plugin_key}) to confirm
+    //    it stays Pending.
+    let job3 = make_job(0x62, "plugin.alpha", &["plugin.alpha", "plugin.beta"]);
+    q.enqueue(&job3)
+        .await
+        .expect("enqueue job for empty-advertised check");
+    let claimed_empty_adv = q
+        .claim_pending(&proc, 16, &[])
+        .await
+        .expect("claim with empty advertised");
+    assert!(
+        claimed_empty_adv.is_empty(),
+        "[{}] empty advertised set must claim nothing (parity with SQL backends)",
         backend.name()
     );
 }

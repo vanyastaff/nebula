@@ -2,11 +2,16 @@
 //!
 //! Single-consumer status flip (no `FOR UPDATE SKIP LOCKED` equivalent —
 //! spec §5 SQLite boundary, documented not hidden).  Ids are the raw 16-byte
-//! ULID (`BLOB`).  `capability_tags` is a JSON array stored for informational
-//! purposes; the **routing predicate** filters on `required_plugin_key` directly
-//! (`WHERE required_plugin_key = ?` per advertised tag, equivalent to Postgres
-//! `required_plugin_key = ANY($tags)`).  `capability_tags` is never used for
-//! routing — only `required_plugin_key` is the dispatch selector.
+//! ULID (`BLOB`).  `capability_tags` is a JSON array; the **routing predicate**
+//! is `capability_tags ⊆ advertised_tags`: a worker claims a job only when its
+//! advertised set covers every tag in the job's `capability_tags`.
+//!
+//! Implementation: `required_plugin_key IN (<advertised>)` is an index-friendly
+//! pre-filter (sound because `capability_tags ⊇ {required_plugin_key}` by DTO
+//! invariant), then the exact superset test is applied in the same SELECT via
+//! `NOT EXISTS (SELECT 1 FROM json_each(capability_tags) je WHERE je.value NOT
+//! IN (<advertised>))`.  Both clauses bind the same advertised list, eliminating
+//! any TOCTOU window between pre-filter and claim.
 
 use std::time::Duration;
 
@@ -138,29 +143,49 @@ impl JobDispatchQueue for SqliteJobDispatchQueue {
             return Ok(Vec::new());
         }
         let mut tx = self.pool.begin().await.map_err(conn_err)?;
-        // Routing: claim rows whose `required_plugin_key` is a member of the
-        // advertised set.  This mirrors Postgres `required_plugin_key = ANY($3)`
-        // exactly — the `capability_tags` JSON array is NOT the routing key.
-        // SQLite has no array-bind, so we build one SELECT per advertised tag
-        // and union them.  Each branch checks `required_plugin_key = ?` directly.
-        let union_selects: String = advertised_tags
+
+        // Superset predicate: a job is claimable when `capability_tags ⊆
+        // advertised_tags`.  SQLite has no array bind, so we interpolate a
+        // parameter-placeholder list and bind the advertised tags twice —
+        // once for the index-friendly `required_plugin_key IN (…)` pre-filter
+        // and once for the exact `NOT EXISTS` superset check.
+        //
+        // The pre-filter and superset check are in the same SELECT statement,
+        // so no row is fetched that fails the superset test.  A concurrent
+        // actor that flips a selected row to 'Processing' first is caught by
+        // the per-row `UPDATE … AND status = 'Pending'` guard below
+        // (rows_affected = 0 → row skipped); the whole exchange is inside one
+        // transaction (single-consumer SQLite boundary, spec §5).
+        //
+        // `NOT EXISTS` reads: "no element in json_each(capability_tags) is
+        // absent from the advertised set", i.e. every required tag is covered.
+        // An empty `capability_tags` JSON array yields no rows from json_each
+        // ⇒ NOT EXISTS is vacuously true ⇒ claimable by anyone (consistent
+        // with the InMemory backend).
+        let placeholders = advertised_tags
             .iter()
-            .map(|_| {
-                "SELECT id FROM port_job_dispatch_queue \
-                 WHERE status = 'Pending' AND required_plugin_key = ?"
-                    .to_owned()
-            })
+            .map(|_| "?")
             .collect::<Vec<_>>()
-            .join(" UNION ");
+            .join(", ");
         let select_sql = format!(
             "SELECT id, execution_id, workspace_id, org_id, command, \
                     payload, event_id, target_flavor_sha, required_plugin_key, \
                     capability_tags, w3c_traceparent, reclaim_count \
              FROM port_job_dispatch_queue \
-             WHERE id IN ({union_selects}) \
+             WHERE status = 'Pending' \
+               AND required_plugin_key IN ({placeholders}) \
+               AND NOT EXISTS ( \
+                   SELECT 1 FROM json_each(capability_tags) je \
+                   WHERE je.value NOT IN ({placeholders}) \
+               ) \
              ORDER BY id LIMIT ?"
         );
         let mut q = sqlx::query(sqlx::AssertSqlSafe(select_sql));
+        // Bind advertised tags for the IN pre-filter.
+        for tag in advertised_tags {
+            q = q.bind(tag.as_str());
+        }
+        // Bind advertised tags again for the NOT IN superset check.
         for tag in advertised_tags {
             q = q.bind(tag.as_str());
         }
@@ -172,7 +197,8 @@ impl JobDispatchQueue for SqliteJobDispatchQueue {
         for row in &rows {
             let id_bytes: Vec<u8> = row.try_get("id").map_err(conn_err)?;
             // Conditional claim — AND status = 'Pending' guard prevents
-            // double-claim if a concurrent actor flipped the row.
+            // double-claim if a concurrent actor flipped the row between the
+            // SELECT above and this UPDATE (single-consumer SQLite boundary).
             let won = sqlx::query(
                 "UPDATE port_job_dispatch_queue \
                  SET status = 'Processing', processed_by = ?, \

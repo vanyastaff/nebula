@@ -3,8 +3,17 @@
 //!
 //! `claim_pending` uses `FOR UPDATE SKIP LOCKED` so multiple consumers can
 //! drain the queue concurrently without double-dispatch.  The routing
-//! predicate is `required_plugin_key = ANY($tags)`.  Ids are raw 16-byte
-//! ULID (`BYTEA`).  `capability_tags` is a `JSONB` array.
+//! predicate is `capability_tags ⊆ advertised_tags`: the worker's advertised
+//! tag set must be a superset of every tag the job requires.
+//!
+//! Implementation: `required_plugin_key = ANY($pre_filter)` is an
+//! index-friendly pre-filter (sound because `capability_tags ⊇
+//! {required_plugin_key}` by DTO invariant), then `capability_tags <@
+//! $advertised_jsonb` applies the exact JSONB "is contained by" superset check
+//! (GIN-assisted) in the same statement.  `advertised_tags` is bound twice —
+//! once as `text[]` for `= ANY` and once as `JSONB` for `<@`.
+//!
+//! Ids are raw 16-byte ULID (`BYTEA`).  `capability_tags` is a `JSONB` array.
 
 use std::time::Duration;
 
@@ -150,6 +159,12 @@ impl JobDispatchQueue for PgJobDispatchQueue {
         // `port_control_queue`, so reclaim cutoff arithmetic is identical on both dialects.
         let now_ms = Utc::now().timestamp_millis();
         let tags_strs: Vec<&str> = advertised_tags.iter().map(CapabilityTag::as_str).collect();
+        // `capability_tags <@ $advertised_jsonb`: JSONB "is contained by" operator
+        // (GIN-assisted).  A job's `capability_tags` must be a subset of the
+        // advertised JSONB array.  Built via `tags_to_json` — the same helper
+        // `enqueue` uses — so `$3` (text[]) and `$4` (jsonb) are always derived
+        // from the same source and can never diverge.
+        let advertised_jsonb = tags_to_json(advertised_tags);
         let rows = sqlx::query(
             "UPDATE port_job_dispatch_queue \
              SET status = 'Processing', processed_by = $1, processed_at_ms = $2 \
@@ -157,8 +172,9 @@ impl JobDispatchQueue for PgJobDispatchQueue {
                  SELECT id FROM port_job_dispatch_queue \
                  WHERE status = 'Pending' \
                    AND required_plugin_key = ANY($3) \
+                   AND capability_tags <@ $4 \
                  ORDER BY id \
-                 LIMIT $4 \
+                 LIMIT $5 \
                  FOR UPDATE SKIP LOCKED \
              ) \
              RETURNING id, execution_id, workspace_id, org_id, command, \
@@ -168,6 +184,7 @@ impl JobDispatchQueue for PgJobDispatchQueue {
         .bind(processor.as_slice())
         .bind(now_ms)
         .bind(&tags_strs)
+        .bind(&advertised_jsonb)
         .bind(i64::from(batch_size))
         .fetch_all(&self.pool)
         .await

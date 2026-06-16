@@ -12,7 +12,12 @@ use crate::store::ReclaimOutcome;
 
 /// Durable capability-routed job-dispatch queue.
 ///
-/// The routing predicate is `required_plugin_key ∈ advertised_tags`.
+/// The routing predicate is `capability_tags ⊆ advertised_tags`: a worker may
+/// claim a job only if its advertised tags are a superset of every tag the job
+/// requires.  The DTO invariant guarantees `capability_tags ⊇ {required_plugin_key}`,
+/// so the superset predicate strictly subsumes the old single-key rule —
+/// `required_plugin_key ∈ advertised_tags` is kept as a sound index pre-filter.
+///
 /// Postgres uses `FOR UPDATE SKIP LOCKED` on `claim_pending`; SQLite uses a
 /// single-consumer status flip.  Both are object-safe and Send+Sync.
 #[async_trait::async_trait]
@@ -20,11 +25,24 @@ pub trait JobDispatchQueue: Send + Sync + std::fmt::Debug {
     /// Durably enqueue a job-dispatch message.
     async fn enqueue(&self, msg: &JobDispatchMsg) -> Result<(), StorageError>;
 
-    /// Atomically claim up to `batch_size` pending jobs whose
-    /// `required_plugin_key` is a member of `advertised_tags`.
+    /// Claim up to `batch_size` pending jobs whose `capability_tags ⊆
+    /// advertised_tags` (the worker's advertised set must be a superset of
+    /// every tag the job requires).
     ///
-    /// Postgres uses `FOR UPDATE SKIP LOCKED`; SQLite uses a single-consumer
-    /// status flip with an explicit `AND status = 'Pending'` guard.
+    /// `required_plugin_key ∈ advertised_tags` is retained as an index-friendly
+    /// pre-filter (sound by the DTO invariant); the exact superset check is
+    /// applied inside the same statement, eliminating any TOCTOU window.
+    ///
+    /// Claim mechanics per backend:
+    /// - **InMemory**: predicate + status flip inside one `parking_lot` Mutex
+    ///   critical section — single atomic step.
+    /// - **Postgres**: candidate subquery with `FOR UPDATE SKIP LOCKED` feeds a
+    ///   single `UPDATE … RETURNING` — the lock prevents concurrent double-claim.
+    /// - **SQLite**: transactional `SELECT` (superset filter) + per-row
+    ///   `UPDATE … AND status = 'Pending'` guard inside one transaction; a
+    ///   concurrent actor that flips the row first causes `rows_affected = 0`
+    ///   and the row is skipped — no double-dispatch (single-consumer boundary,
+    ///   spec §5).
     async fn claim_pending(
         &self,
         processor: &[u8; 16],

@@ -1,9 +1,12 @@
 //! Job-dispatch message DTO and routing types.
 //!
 //! `JobDispatchMsg` is the durable unit of work enqueued by the emitter and
-//! pulled by the orchestrator.  The routing key is `required_plugin_key`
-//! matched against a worker's `capability_tags`; `target_flavor_sha` is a
-//! separate version-pin guard and is never used for routing.
+//! pulled by the orchestrator.  The routing predicate is
+//! `capability_tags ⊆ advertised_tags`: a worker may claim a job only when
+//! its advertised set is a superset of the job's `capability_tags`.
+//! `required_plugin_key` is kept as an index-friendly pre-filter (sound
+//! because the DTO invariant guarantees `capability_tags ⊇ {required_plugin_key}`).
+//! `target_flavor_sha` is a version-pin guard and is never used for routing.
 use crate::Scope;
 use crate::dto::ControlCommand;
 use serde::{Deserialize, Serialize};
@@ -11,8 +14,9 @@ use serde::{Deserialize, Serialize};
 /// Opaque capability routing tag (advertised PluginKey strings).
 ///
 /// A worker advertises the set of `CapabilityTag`s it supports; the
-/// orchestrator claims only rows whose `required_plugin_key` is a member of
-/// that set.  The tag is the canonical `PluginKey` string form.
+/// orchestrator claims only jobs whose `capability_tags` are fully covered
+/// by the advertised set (superset predicate: `job.capability_tags ⊆
+/// worker.advertised`).  The tag is the canonical `PluginKey` string form.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct CapabilityTag(pub String);
 
@@ -124,9 +128,13 @@ pub struct JobDispatchMsg {
 impl JobDispatchMsg {
     /// Construct a job-dispatch message.
     ///
-    /// `capability_tags` must include `required_plugin_key`; callers are
-    /// responsible for that invariant (no enforcement here to keep the
-    /// constructor cheap).
+    /// **Invariant:** `capability_tags` must contain `required_plugin_key`.
+    /// The storage backends rely on this to use `required_plugin_key` as a
+    /// sound index pre-filter for the superset routing predicate
+    /// (`capability_tags ⊆ advertised_tags`).  The `DefinitionRoutingResolver`
+    /// always inserts the plugin key into `capability_tags`, so real producers
+    /// satisfy this invariant by construction; a `debug_assert` catches
+    /// violations in test.
     // guard-justified: constructor over all DTO fields; a builder adds no safety
     // for an internal #[non_exhaustive] record whose fields are all independent.
     #[allow(clippy::too_many_arguments)]
@@ -143,6 +151,16 @@ impl JobDispatchMsg {
         w3c_traceparent: Option<impl Into<String>>,
         reclaim_count: u32,
     ) -> Self {
+        let required_plugin_key = required_plugin_key.into();
+        debug_assert!(
+            capability_tags
+                .iter()
+                .any(|t| t.as_str() == required_plugin_key),
+            "capability_tags must contain required_plugin_key \
+             (invariant required by the superset routing pre-filter): \
+             required_plugin_key = {required_plugin_key:?}, \
+             capability_tags = {capability_tags:?}"
+        );
         Self {
             id,
             execution_id: execution_id.into(),
@@ -151,7 +169,7 @@ impl JobDispatchMsg {
             payload,
             event_id: event_id.map(Into::into),
             target_flavor_sha: target_flavor_sha.into(),
-            required_plugin_key: required_plugin_key.into(),
+            required_plugin_key,
             capability_tags,
             w3c_traceparent: w3c_traceparent.map(Into::into),
             reclaim_count,
