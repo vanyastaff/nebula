@@ -346,9 +346,11 @@ impl Orchestrator {
     }
 
     async fn handle_entry(&self, msg: JobDispatchMsg) {
-        // The queue routing predicate is enforced at claim time
-        // (`required_plugin_key ∈ available_plugins`). This assert documents
-        // the port invariant in debug builds only — it is not a release guard.
+        // The queue routing predicate (`required_plugins ⊆ available_plugins`)
+        // is enforced at claim time. This assert checks the implied single-key
+        // condition (`required_plugin_key ∈ available_plugins`, since
+        // `required_plugin_key ∈ required_plugins` by the DTO invariant) in
+        // debug builds only — it is not a release guard.
         debug_assert!(
             self.available_plugins.contains(&msg.required_plugin_key),
             "claim routing invariant violated: required_plugin_key {:?} not in available_plugins {:?}",
