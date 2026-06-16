@@ -41,7 +41,7 @@ pub use crate::{
     },
     stateless::{StatelessAction, StatelessActionAdapter},
     testing::{
-        SpyEmitter, SpyLogger, SpyScheduler, StatefulTestHarness, TestContextBuilder,
+        SpyEmission, SpyEmitter, SpyLogger, SpyScheduler, StatefulTestHarness, TestContextBuilder,
         TriggerTestHarness,
     },
     trigger::{

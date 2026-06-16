@@ -155,7 +155,7 @@ pub use stateful::{
 };
 pub use stateless::{StatelessAction, StatelessActionAdapter, StatelessHandler};
 pub use testing::{
-    SpyEmitter, SpyLogger, SpyScheduler, StatefulTestHarness, TestActionContext,
+    SpyEmission, SpyEmitter, SpyLogger, SpyScheduler, StatefulTestHarness, TestActionContext,
     TestContextBuilder, TestTriggerContext, TriggerTestHarness,
 };
 pub use trigger::{

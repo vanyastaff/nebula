@@ -33,9 +33,16 @@ pub trait TriggerScheduler: Send + Sync {
 /// Object-safe execution emission capability injected into trigger contexts.
 pub trait ExecutionEmitter: Send + Sync {
     /// Start a new execution for this trigger's workflow with the given input.
+    ///
+    /// `event_id` is the source-natural idempotency key for the triggering
+    /// event. `Some` enables trigger-dedup exactly-once fan-out; `None` emits
+    /// unconditionally (no dedup guard row written).  When `Some`, a second
+    /// call with the same `event_id` returns the same [`ExecutionId`] without
+    /// creating a second execution row — the duplicate is silently folded.
     fn emit(
         &self,
         input: serde_json::Value,
+        event_id: Option<crate::IdempotencyKey>,
     ) -> Pin<Box<dyn Future<Output = Result<ExecutionId, ActionError>> + Send + '_>>;
 }
 
@@ -188,6 +195,7 @@ impl ExecutionEmitter for NoopExecutionEmitter {
     fn emit(
         &self,
         _input: serde_json::Value,
+        _event_id: Option<crate::IdempotencyKey>,
     ) -> Pin<Box<dyn Future<Output = Result<ExecutionId, ActionError>> + Send + '_>> {
         Box::pin(async {
             Err(ActionError::fatal(

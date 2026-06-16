@@ -38,6 +38,7 @@ nebula-resilience = { path = "../resilience" }
 nebula-storage-port = { path = "../storage-port" }
 nebula-storage = { path = "../storage", features = ["credential-in-memory"] }
 nebula-metrics = { path = "../metrics" }
+nebula-orchestrator = { path = "../orchestrator" }
 
 opentelemetry = { workspace = true }
 tracing-opentelemetry = { workspace = true }
@@ -55,6 +56,7 @@ serde_json = { workspace = true, features = ["raw_value"] }
 chrono = { workspace = true }
 rand = { workspace = true }
 uuid = { workspace = true, features = ["v4", "serde"] }
+ulid = { workspace = true }
 humantime-serde = "1.1"
 lru = { workspace = true }
 parking_lot = { workspace = true }

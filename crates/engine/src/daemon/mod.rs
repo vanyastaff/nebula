@@ -22,8 +22,11 @@
 //! - [`registry`] — `DaemonRegistry` engine-side dispatcher
 //! - [`event_source`] — `EventSource` trait + `EventSourceAdapter<E>` (TriggerAction adapter)
 
+pub mod durable_emitter;
 pub mod event_source;
+pub mod execution_sink;
 pub mod registry;
+pub mod routing;
 pub mod runtime;
 
 use std::{future::Future, time::Duration};
@@ -96,6 +99,11 @@ pub mod config {
 }
 
 pub use config::Config as DaemonConfig;
+pub use durable_emitter::DurableExecutionEmitter;
 pub use event_source::{EventSource, EventSourceAdapter, EventSourceConfig, EventSourceRuntime};
+pub use execution_sink::EngineExecutionSink;
 pub use registry::{AnyDaemonHandle, DaemonError, DaemonRegistry};
+pub use routing::{
+    DispatchRoute, RoutingError, RoutingResolver, SLICE_FLAVOR_SHA, StaticRoutingResolver,
+};
 pub use runtime::DaemonRuntime;

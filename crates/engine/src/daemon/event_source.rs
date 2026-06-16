@@ -242,7 +242,16 @@ where
                     match recv {
                         Ok(event) => {
                             let payload = (self.event_to_payload)(&event);
-                            match ctx.emitter().emit(payload).await {
+                            // CANCEL SAFETY: (a) a drop before `claim_and_enqueue_start`
+                            // commits is a clean no-op (no row, no job).
+                            // (b) a drop AFTER `claim_and_enqueue_start` commits but
+                            // BEFORE the `Created`-row write leaves a queued Start
+                            // with no Created row → orchestrator dispatch finds no row
+                            // → `resume_execution` Rejected → `mark_failed`
+                            // (at-most-once degrade, NEVER double-spawn — a redelivery
+                            // re-dedups). EventSourceAdapter passes `event_id = None`
+                            // (unconditional dispatch; no dedup row written).
+                            match ctx.emitter().emit(payload, None).await {
                                 Ok(_) => ctx.health().record_success(1),
                                 Err(e) => {
                                     tracing::warn!(error = %e, "event_source: emit failed");
@@ -564,7 +573,7 @@ mod tests {
         // Verify the spy emitter actually received the payloads —
         // the source-side counter alone would pass even if every
         // emit() returned Err(_) and dropped the payload.
-        let payloads = emitter.emitted();
+        let payloads = emitter.inputs();
         assert!(
             payloads.len() >= 3,
             "expected >=3 payloads on the spy emitter, got {}",

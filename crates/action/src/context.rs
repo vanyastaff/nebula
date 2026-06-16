@@ -515,11 +515,16 @@ impl TriggerRuntimeContext {
     }
 
     /// Emit a new execution request for the trigger's workflow.
+    ///
+    /// `event_id` is the source-natural idempotency key for the triggering
+    /// event.  `Some` enables trigger-dedup exactly-once fan-out; `None`
+    /// emits unconditionally.
     pub async fn emit_execution(
         &self,
         input: serde_json::Value,
+        event_id: Option<crate::IdempotencyKey>,
     ) -> Result<ExecutionId, ActionError> {
-        self.emitter.emit(input).await
+        self.emitter.emit(input, event_id).await
     }
 
     /// Trigger (node) identity.

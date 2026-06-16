@@ -1651,7 +1651,7 @@ mod tests {
                 .is_err()
         );
         assert!(
-            ctx.emit_execution(serde_json::json!({"tick": true}))
+            ctx.emit_execution(serde_json::json!({"tick": true}), None)
                 .await
                 .is_err()
         );

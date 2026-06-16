@@ -347,8 +347,17 @@ impl ResourceAccessor for TestResourceAccessor {
     }
 }
 
+/// One observation recorded by [`SpyEmitter`].
+#[derive(Debug, Clone)]
+pub struct SpyEmission {
+    /// The serialized workflow input payload.
+    pub input: serde_json::Value,
+    /// The source-natural idempotency key, if provided.
+    pub event_id: Option<crate::IdempotencyKey>,
+}
+
 pub struct SpyEmitter {
-    emitted: parking_lot::Mutex<Vec<serde_json::Value>>,
+    emitted: parking_lot::Mutex<Vec<SpyEmission>>,
 }
 
 impl SpyEmitter {
@@ -358,9 +367,19 @@ impl SpyEmitter {
             emitted: parking_lot::Mutex::new(Vec::new()),
         }
     }
+    /// All recorded emissions in order.
     #[must_use]
-    pub fn emitted(&self) -> Vec<serde_json::Value> {
+    pub fn emitted(&self) -> Vec<SpyEmission> {
         self.emitted.lock().clone()
+    }
+    /// All recorded input payloads (convenience; strips the event_id).
+    #[must_use]
+    pub fn inputs(&self) -> Vec<serde_json::Value> {
+        self.emitted
+            .lock()
+            .iter()
+            .map(|e| e.input.clone())
+            .collect()
     }
     #[must_use]
     pub fn count(&self) -> usize {
@@ -386,9 +405,10 @@ impl ExecutionEmitter for SpyEmitter {
     fn emit(
         &self,
         input: serde_json::Value,
+        event_id: Option<crate::IdempotencyKey>,
     ) -> Pin<Box<dyn Future<Output = Result<nebula_core::ExecutionId, ActionError>> + Send + '_>>
     {
-        self.emitted.lock().push(input);
+        self.emitted.lock().push(SpyEmission { input, event_id });
         Box::pin(async { Ok(nebula_core::ExecutionId::new()) })
     }
 }
@@ -522,9 +542,10 @@ where
         self.action.stop(&self.ctx).await.map_err(Into::into)
     }
 
+    /// All emitted input payloads (convenience wrapper over [`SpyEmitter::inputs`]).
     #[must_use]
     pub fn emitted(&self) -> Vec<serde_json::Value> {
-        self.emitter.emitted()
+        self.emitter.inputs()
     }
 
     #[must_use]
