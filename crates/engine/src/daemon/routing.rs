@@ -94,7 +94,11 @@ pub const SLICE_FLAVOR_SHA: &str = "slice-flavor-0000000000000000000000000000000
 ///
 /// # Invariant
 ///
-/// `required_plugin_key` must be non-empty.  Enforced via `debug_assert!`.
+/// `required_plugin_key` must be non-empty — an empty key matches no worker's
+/// advertised capability set, so every dispatch would be permanently
+/// un-claimable. Enforced by a `debug_assert!` in [`StaticRoutingResolver::new`]
+/// (fast-fail on obvious misuse) **and** a fail-closed runtime check in
+/// [`RoutingResolver::resolve`] so the invariant also holds in release builds.
 #[derive(Debug, Clone)]
 pub struct StaticRoutingResolver {
     required_plugin_key: String,
@@ -121,13 +125,55 @@ impl StaticRoutingResolver {
 impl RoutingResolver for StaticRoutingResolver {
     fn resolve(
         &self,
-        _workflow_id: &WorkflowId,
-        _trigger_id: &NodeKey,
+        workflow_id: &WorkflowId,
+        trigger_id: &NodeKey,
     ) -> Result<DispatchRoute, RoutingError> {
+        // Fail closed in release too: an empty routing key matches no worker's
+        // advertised capability set, so the job would be permanently
+        // un-claimable. `new`'s debug_assert catches obvious misuse early; this
+        // guard upholds the invariant in release builds as well.
+        if self.required_plugin_key.is_empty() {
+            return Err(RoutingError::NotFound {
+                workflow_id: workflow_id.to_string(),
+                trigger_id: trigger_id.to_string(),
+            });
+        }
         Ok(DispatchRoute {
             required_plugin_key: self.required_plugin_key.clone(),
             capability_tags: vec![CapabilityTag::from(self.required_plugin_key.as_str())],
             target_flavor_sha: SLICE_FLAVOR_SHA.to_owned(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_returns_route_for_nonempty_key() {
+        let resolver = StaticRoutingResolver::new("plugin.demo");
+        let route = resolver
+            .resolve(&WorkflowId::new(), &NodeKey::new("trigger").unwrap())
+            .expect("non-empty key resolves to a route");
+        assert_eq!(route.required_plugin_key, "plugin.demo");
+        assert_eq!(
+            route.capability_tags,
+            vec![CapabilityTag::from("plugin.demo")]
+        );
+        assert_eq!(route.target_flavor_sha, SLICE_FLAVOR_SHA);
+    }
+
+    #[test]
+    fn resolve_fails_closed_on_empty_key() {
+        // Build directly to bypass `new`'s debug_assert and exercise the
+        // release-path runtime guard in `resolve`.
+        let resolver = StaticRoutingResolver {
+            required_plugin_key: String::new(),
+        };
+        let err = resolver
+            .resolve(&WorkflowId::new(), &NodeKey::new("trigger").unwrap())
+            .expect_err("empty routing key must fail closed");
+        assert!(matches!(err, RoutingError::NotFound { .. }));
     }
 }

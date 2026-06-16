@@ -18,15 +18,29 @@
 //! 5. **On `Duplicate`**: return the candidate `ExecutionId` without creating
 //!    any row (no orphan).
 //!
-//! ## Ordering invariant (R2)
+//! ## Ordering (claim before create) and its known limitation
 //!
-//! The `claim_and_enqueue_start` call happens **before** `ExecutionStore::create`.
-//! Reversing the order would orphan a `Created` row on `Duplicate`:
+//! `claim_and_enqueue_start` runs **before** `ExecutionStore::create`, so a
+//! `Duplicate` never orphans a `Created` row:
 //!
 //! ```text
-//! WRONG: create_row → claim_and_enqueue (Duplicate) → Created row leaked
-//! RIGHT: claim_and_enqueue → Dispatched → create_row
+//! create_row → claim_and_enqueue (Duplicate) → Created row leaked  (avoided)
+//! claim_and_enqueue → Dispatched → create_row                      (used)
 //! ```
+//!
+//! The trade-off: the `Created` row is a **second write outside** the
+//! dedup+Start transaction. Under a concurrently-polling orchestrator a
+//! `Dispatched` Start job can be claimed in the window before the row exists;
+//! the sink then reads no row, returns `Rejected`, and the orchestrator marks
+//! the job failed — losing a legitimate first-delivery execution (never a
+//! double-spawn; a redelivery re-dedups). This slice is **harness-scoped** (no
+//! production daemon installs this emitter; the integration test emits before
+//! the orchestrator polls), so the race is latent. The correct fix folds the
+//! `Created`-row insert **into** the dedup+Start transaction — a
+//! `TriggerDedupInbox::claim_and_enqueue_start` contract change that would also
+//! let a `Duplicate` return the original winner's `ExecutionId`. That belongs
+//! with the durable-wiring unit that makes the emitter live, before any
+//! concurrent orchestrator runs against it.
 //!
 //! ## Wiring honesty
 //!
