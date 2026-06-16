@@ -74,6 +74,14 @@ deny = [
   ], reason = "API is top layer; lower-level crates must not depend on it directly" },
 
   # ---- Layer enforcement: Exec ----
+  # NOTE: nebula-worker (ADR-0095 D1) is the TOP exec-layer composition root and
+  # SHOULD be ban-guarded so no business/core crate may depend on it. But it has
+  # ZERO dependents today (library-only, no binary yet), and cargo-deny flags the
+  # workspace-root instance of a banned crate that has no wrapper edge to satisfy
+  # — so a `{ crate = "nebula-worker", wrappers = [] }` entry FAILS the bans check.
+  # Add that entry together with its first consumer (the per-flavor worker binary,
+  # U-D1.F) in the consumer's wrappers list. Until then worker has no inbound edges
+  # (verify: `cargo tree -i -p nebula-worker`), so the boundary is not violable.
   { crate = "nebula-engine", wrappers = [
     "nebula-cli",
     # Dev-only: `crates/api/tests/knife.rs` wires the API + Engine composition
