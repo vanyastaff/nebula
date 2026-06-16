@@ -4,7 +4,10 @@ use std::{collections::HashMap, sync::Arc};
 
 use nebula_core::PluginKey;
 
-use crate::{PluginError, ResolvedPlugin};
+use crate::{
+    PluginError, ResolvedPlugin,
+    dependency::{self, PluginDependencyError},
+};
 
 /// In-memory registry mapping [`PluginKey`] to [`Arc<ResolvedPlugin>`].
 ///
@@ -150,6 +153,24 @@ impl PluginRegistry {
         self.plugins
             .values()
             .find_map(|rp| rp.resource(full).cloned())
+    }
+
+    /// Compute a topological load order for all registered plugins.
+    ///
+    /// Returns a `Vec<PluginKey>` in which every dependency appears before
+    /// its dependent. Plugins with no dependencies are included in ascending
+    /// key order.
+    ///
+    /// # Errors
+    ///
+    /// - [`PluginDependencyError::MissingDependency`] — a declared dependency
+    ///   key is absent from the registry.
+    /// - [`PluginDependencyError::VersionMismatch`] — the registered version
+    ///   does not satisfy the declared requirement.
+    /// - [`PluginDependencyError::Cycle`] — the dependency graph is cyclic.
+    #[tracing::instrument(skip(self), fields(plugin_count = self.plugins.len()))]
+    pub fn resolve_load_order(&self) -> Result<Vec<PluginKey>, PluginDependencyError> {
+        dependency::resolve(self)
     }
 }
 

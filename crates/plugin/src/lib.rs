@@ -31,6 +31,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+mod dependency;
 mod error;
 mod manifest;
 mod plugin;
@@ -40,10 +41,12 @@ mod resolved_plugin;
 
 // ── Public re-exports ─────────────────────────────────────────────────────────
 
+pub use dependency::PluginDependencyError;
 pub use error::{ComponentKind, PluginError};
 pub use manifest::{ManifestError, PluginManifest, PluginManifestBuilder};
 // Re-export PluginKey from core for convenience.
 pub use nebula_core::PluginKey;
+pub use nebula_metadata::PluginDependency;
 pub use nebula_plugin_macros::Plugin;
 pub use plugin::Plugin;
 pub use registry::PluginRegistry;
