@@ -21,16 +21,16 @@ use harness::{
     Backend, InMemoryBackend, PostgresBackend, ScopedBackend, SqliteBackend, assert_atomic_triple,
     assert_cas_conflict, assert_control_queue_outbox_and_fencing, assert_create_get_roundtrip,
     assert_cross_scope_commit_is_rejected, assert_cross_scope_get_is_none,
-    assert_dedup_compose_is_atomic, assert_dedup_compose_rolls_back_on_id_collision,
-    assert_dedup_duplicate_returns_winner_id, assert_dispatch_without_dedup_key,
-    assert_get_published_is_highest_numbered, assert_idempotency_first_writer_wins,
-    assert_idempotency_store_cross_scope_isolated, assert_idempotency_store_first_writer,
-    assert_job_dispatch_fencing, assert_job_dispatch_routes_by_tag,
-    assert_job_dispatch_routes_by_tag_superset, assert_journal_visibility_and_scope,
-    assert_live_lease_blocks_acquire, assert_save_with_published_version_is_atomic,
-    assert_stale_fencing_is_fenced_out, assert_trigger_dedup_first_writer,
-    assert_trigger_dedup_is_scoped, assert_webhook_activation_and_scope,
-    assert_workflow_store_contract, skip_reason,
+    assert_dedup_compose_is_atomic, assert_dedup_compose_rejects_duplicate_job_id,
+    assert_dedup_compose_rolls_back_on_id_collision, assert_dedup_duplicate_returns_winner_id,
+    assert_dispatch_without_dedup_key, assert_get_published_is_highest_numbered,
+    assert_idempotency_first_writer_wins, assert_idempotency_store_cross_scope_isolated,
+    assert_idempotency_store_first_writer, assert_job_dispatch_fencing,
+    assert_job_dispatch_routes_by_tag, assert_job_dispatch_routes_by_tag_superset,
+    assert_journal_visibility_and_scope, assert_live_lease_blocks_acquire,
+    assert_save_with_published_version_is_atomic, assert_stale_fencing_is_fenced_out,
+    assert_trigger_dedup_first_writer, assert_trigger_dedup_is_scoped,
+    assert_webhook_activation_and_scope, assert_workflow_store_contract, skip_reason,
 };
 use rstest::rstest;
 use std::future::Future;
@@ -142,6 +142,10 @@ matrix!(trigger_dedup_is_scoped, assert_trigger_dedup_is_scoped);
 matrix!(
     dedup_compose_rolls_back_on_id_collision,
     assert_dedup_compose_rolls_back_on_id_collision
+);
+matrix!(
+    dedup_compose_rejects_duplicate_job_id,
+    assert_dedup_compose_rejects_duplicate_job_id
 );
 matrix!(
     dedup_duplicate_returns_winner_id,

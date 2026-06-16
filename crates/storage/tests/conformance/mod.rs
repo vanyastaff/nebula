@@ -2169,6 +2169,78 @@ pub async fn assert_dedup_compose_rolls_back_on_id_collision(backend: &dyn Backe
     );
 }
 
+/// `claim_and_materialize_start` must fail closed on a colliding job-dispatch
+/// id (`start.id`) and leave all state intact.  The SQL backends hit the
+/// job-dispatch primary key and roll the transaction back; the in-memory
+/// backend must reject the collision too — never silently overwrite the queued
+/// job while reporting `Dispatched`.  (Regression guard for the codex P2
+/// backend-divergence on PR #814.)
+///
+/// The second compose reuses the SAME job id but a DIFFERENT execution id and a
+/// DIFFERENT `(trigger, event)`, so it is not a dedup duplicate — the only
+/// collision is on the job-dispatch primary key.
+pub async fn assert_dedup_compose_rejects_duplicate_job_id(backend: &dyn Backend) {
+    let inbox = backend.trigger_dedup_inbox().await;
+    let q = backend.job_dispatch_queue().await;
+    let s = scope_a();
+
+    // 1. First compose succeeds: enqueues job id 0xB0 (execution id "exe_176").
+    let row1 = TriggerDedupRow::new("trg_j1", "evt_j1", s.clone(), "2026-01-01T00:00:00Z");
+    let job1 = make_job(0xB0, "plugin.jid", &["plugin.jid"]);
+    let (wf1, init1) = make_new_execution();
+    let exec1 = NewExecution::new(&wf1, &init1);
+    let _ = inbox
+        .claim_and_materialize_start(Some(&row1), &job1, &exec1)
+        .await
+        .expect("first compose dispatches");
+
+    // 2. Second compose reuses the SAME job id (0xB0), different execution id.
+    let row2 = TriggerDedupRow::new("trg_j2", "evt_j2", s.clone(), "2026-01-01T00:00:00Z");
+    let mut job2 = make_job(0xB0, "plugin.jid", &["plugin.jid"]);
+    job2.execution_id = "exe_jid_other".to_owned();
+    let (wf2, init2) = make_new_execution();
+    let exec2 = NewExecution::new(&wf2, &init2);
+    let result = inbox
+        .claim_and_materialize_start(Some(&row2), &job2, &exec2)
+        .await;
+    assert!(
+        result.is_err(),
+        "[{}] compose with a colliding job-dispatch id must fail closed, got {result:?}",
+        backend.name()
+    );
+
+    // 3. The original job must be intact (NOT overwritten by job2): exactly one
+    //    queued job, still carrying the first execution id.
+    let proc = [0xB1u8; 16];
+    let claimed = q
+        .claim_pending(&proc, 16, &[CapabilityTag::from("plugin.jid")])
+        .await
+        .expect("claim after failed compose");
+    assert_eq!(
+        claimed.len(),
+        1,
+        "[{}] exactly the original job must remain queued",
+        backend.name()
+    );
+    assert_eq!(
+        claimed[0].execution_id,
+        "exe_176",
+        "[{}] the original job must NOT be overwritten by the colliding compose",
+        backend.name()
+    );
+
+    // 4. The second dedup row must NOT have been inserted (all-or-nothing).
+    let dedup2 = inbox
+        .exists(&s, "trg_j2", "evt_j2")
+        .await
+        .expect("exists after failed compose");
+    assert!(
+        !dedup2,
+        "[{}] the colliding compose must not insert its dedup row",
+        backend.name()
+    );
+}
+
 /// `claim_and_materialize_start` returns the winner's `execution_id` on
 /// `Duplicate`, NOT a freshly-minted candidate.  This is the P2 contract
 /// upgrade over the old `claim_and_enqueue_start` which returned a

@@ -255,6 +255,19 @@ impl TriggerDedupInbox for InMemoryTriggerDedupInbox {
             return Ok(DispatchOutcome::new(winner_id, DispatchKind::Duplicate));
         }
 
+        // Step 1b: reject a colliding job-dispatch id BEFORE materializing
+        // anything. The SQL backends hit the job-dispatch primary key and roll
+        // the whole transaction back, so the in-memory backend must fail closed
+        // here too — otherwise the unconditional `st.jobs.insert` below would
+        // silently overwrite the already-queued job and still report
+        // `Dispatched`, diverging from SQL and losing the original job.
+        if st.jobs.contains_key(&start.id) {
+            return Err(StorageError::Duplicate {
+                entity: "job_dispatch",
+                detail: format!("job-dispatch id {:?} already queued", start.id),
+            });
+        }
+
         // Step 2: insert the execution row — fail-closed before touching dedup.
         // An id collision returns Err; neither dedup nor job maps are modified.
         insert_created_row(
