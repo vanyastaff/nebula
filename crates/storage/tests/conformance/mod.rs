@@ -1810,6 +1810,12 @@ pub async fn assert_dispatch_without_dedup_key(backend: &dyn Backend) {
         "[{}] None row must always be Dispatched",
         backend.name()
     );
+    assert_eq!(
+        out.execution_id,
+        job.execution_id,
+        "[{}] None-row Dispatched must carry the candidate execution id",
+        backend.name()
+    );
 
     let proc = [8u8; 16];
     let claimed = q
@@ -1835,6 +1841,12 @@ pub async fn assert_dispatch_without_dedup_key(backend: &dyn Backend) {
         out2.kind,
         DispatchKind::Dispatched,
         "[{}] second None-row dispatch must also be Dispatched (no dedup)",
+        backend.name()
+    );
+    assert_eq!(
+        out2.execution_id,
+        job2.execution_id,
+        "[{}] second None-row dispatch must carry its candidate execution id",
         backend.name()
     );
 }

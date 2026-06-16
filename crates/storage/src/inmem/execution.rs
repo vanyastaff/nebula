@@ -117,9 +117,10 @@ fn normalized_ttl(ttl: Duration) -> Duration {
 ///
 /// Called by both `ExecutionStore::create` and the dedup compose so the row
 /// shape is defined exactly once.  Returns `Err(Duplicate)` when `id` is
-/// already present — the compose uses this as its all-or-nothing precondition
-/// check (the dedup insert already committed its slot; an id collision here
-/// rolls back the compose by propagating the error).
+/// already present.  The dedup compose calls this **before** writing the dedup
+/// guard or the Start job (all under one lock), so an `Err` here leaves
+/// `st.dedup` and `st.jobs` untouched — the compose is all-or-nothing by write
+/// ordering, with no rollback needed.
 pub(super) fn insert_created_row(
     st: &mut State,
     scope: &Scope,
