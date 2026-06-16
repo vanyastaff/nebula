@@ -14,6 +14,11 @@
 //! Rows claimed but not yet marked remain in `Processing` and are recovered
 //! by the next runner's reclaim sweep.
 //!
+//! Worst-case shutdown observability latency is bounded by
+//! `max(one reclaim_stuck() sweep, batch_size × one sink.dispatch() latency)`,
+//! because `tick()` / `sweep_reclaim()` run in `select!` arm bodies and
+//! shutdown is only observed on the next loop iteration.
+//!
 //! [`CancellationToken`]: tokio_util::sync::CancellationToken
 //! [`MetricsRegistry`]: nebula_metrics::MetricsRegistry
 //! [`JobDispatchQueue::claim_pending`]: nebula_storage_port::store::JobDispatchQueue::claim_pending

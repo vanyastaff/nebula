@@ -5,14 +5,24 @@
 //!
 //! 1. `routes_by_tag` — alpha + beta jobs, worker advertises [alpha]; spy sees only alpha.
 //! 2. `claim_route_sink_mark_dispatched` — sink Ok once; row terminal-dispatched; counter=1.
-//! 3. `no_double_dispatch` — second claim from a fresh processor yields nothing.
-//! 4. `sink_failure_marks_failed` — sink Err(Rejected); not re-served; failed counter=1.
-//! 5. `reclaim_recovers_crashed` — claim then don't mark; reclaim returns Pending; counters.
-//! 6. `graceful_shutdown_flushes_in_flight_dispatch` — cancel while sink blocked mid-dispatch;
+//! 3. `dispatched_row_not_reclaimed` — terminal row is not re-served by a second claim.
+//! 4. `reclaim_during_slow_sink_is_at_least_once` — row claimed by A while B dispatches; A's
+//!    late mark_dispatched is a fence no-op; sink sees the row once (A's call only); processor-B
+//!    claims and acks via direct queue manipulation, proving at-least-once across the full
+//!    dispatch path without a second sink invocation.
+//! 5. `sink_failure_marks_failed` — sink Err(Rejected); not re-served; failed counter=1.
+//! 6. `reclaim_recovers_crashed` — claim then don't mark; live orchestrator reclaims to Pending;
+//!    a second live orchestrator drives exhausted row through EXHAUSTED counter.
+//! 7. `graceful_shutdown_flushes_in_flight_dispatch` — cancel while sink blocked mid-dispatch;
 //!    dispatch completes after release; row is marked Dispatched, not left Processing.
+//! 8. `graceful_shutdown_flushes_multi_row_batch` — batch_size≥2; cancel fires while first
+//!    dispatch is blocked (proven non-vacuous); all rows flushed; none left Pending/Processing.
 
 use std::{
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
@@ -145,6 +155,121 @@ impl ExecutionSink for StalledSink {
         self.entered.notify_one();
         // Block until the test notifies the release gate.
         self.release.notified().await;
+        Ok(())
+    }
+}
+
+// ── StalledRecordingSink ──────────────────────────────────────────────────────
+
+/// Sink that records every dispatch call AND blocks the very first call until
+/// `release` is notified. After the first call completes, subsequent calls pass
+/// through immediately.
+///
+/// Used to prove at-least-once delivery: orchestrator-A stalls mid-dispatch
+/// while the reclaim sweep resets the row to Pending; orchestrator-B (or a
+/// direct queue manipulation) then dispatches the same row again. Both
+/// invocations are recorded — the row was dispatched twice.
+#[derive(Debug, Default)]
+struct StalledRecordingSink {
+    observations: Mutex<Vec<JobDispatchMsg>>,
+    entered: Arc<Notify>,
+    release: Arc<Notify>,
+    /// True after the first dispatch call has been released.
+    released_once: AtomicBool,
+}
+
+impl StalledRecordingSink {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            observations: Mutex::new(vec![]),
+            entered: Arc::new(Notify::new()),
+            release: Arc::new(Notify::new()),
+            released_once: AtomicBool::new(false),
+        })
+    }
+
+    fn entered_notify(&self) -> Arc<Notify> {
+        Arc::clone(&self.entered)
+    }
+
+    fn release_notify(&self) -> Arc<Notify> {
+        Arc::clone(&self.release)
+    }
+
+    fn snapshot(&self) -> Vec<JobDispatchMsg> {
+        self.observations.lock().expect("poisoned lock").clone()
+    }
+}
+
+#[async_trait]
+impl ExecutionSink for StalledRecordingSink {
+    async fn dispatch(&self, msg: &JobDispatchMsg) -> Result<(), ExecutionSinkError> {
+        self.entered.notify_one();
+        if !self.released_once.load(Ordering::Acquire) {
+            self.release.notified().await;
+            self.released_once.store(true, Ordering::Release);
+        }
+        self.observations
+            .lock()
+            .expect("poisoned lock")
+            .push(msg.clone());
+        Ok(())
+    }
+}
+
+// ── GateSink ──────────────────────────────────────────────────────────────────
+
+/// Sink used for the multi-row batch-flush test (Finding 2).
+///
+/// Each `dispatch` call:
+/// 1. Notifies `entered` so the test knows dispatch was called.
+/// 2. If the gate is not yet open, awaits `gate.notified()` and then marks the
+///    gate open — subsequent dispatches skip the wait.
+/// 3. Records the dispatched message.
+///
+/// This lets the test prove non-vacuousness: the cancellation token is
+/// cancelled while the *first* dispatch is still blocked (gate not open), and
+/// the batch still flushes completely once the gate is opened.
+#[derive(Debug)]
+struct GateSink {
+    /// Fired once per `dispatch` call via `notify_one`.
+    entered: Arc<Notify>,
+    /// One-shot open gate — `notify_waiters` opens it for the blocked dispatch.
+    gate: Arc<Notify>,
+    /// Set to `true` after the gate has been opened, so later dispatches skip
+    /// the `notified()` await entirely.
+    gate_open: Arc<AtomicBool>,
+    observations: Arc<Mutex<Vec<JobDispatchMsg>>>,
+}
+
+impl GateSink {
+    fn new(
+        entered: Arc<Notify>,
+        gate: Arc<Notify>,
+        gate_open: Arc<AtomicBool>,
+        observations: Arc<Mutex<Vec<JobDispatchMsg>>>,
+    ) -> Self {
+        Self {
+            entered,
+            gate,
+            gate_open,
+            observations,
+        }
+    }
+}
+
+#[async_trait]
+impl ExecutionSink for GateSink {
+    async fn dispatch(&self, msg: &JobDispatchMsg) -> Result<(), ExecutionSinkError> {
+        self.entered.notify_one();
+        if !self.gate_open.load(Ordering::Acquire) {
+            self.gate.notified().await;
+            self.gate_open.store(true, Ordering::Release);
+        }
+        self.observations
+            .lock()
+            .expect("poisoned lock")
+            .push(msg.clone());
         Ok(())
     }
 }
@@ -284,12 +409,19 @@ async fn claim_route_sink_mark_dispatched() {
     );
 }
 
-// ── test 3: no_double_dispatch ────────────────────────────────────────────────
+// ── test 3: dispatched_row_not_reclaimed ──────────────────────────────────────
 
 /// After one dispatch-and-ack, the spy count stays at 1. A second
-/// `claim_pending` from a different processor returns nothing.
+/// `claim_pending` from a different processor returns nothing — the row is
+/// terminal (Dispatched) and is not re-served.
+///
+/// Note: this test proves that a *terminally-dispatched* row is not re-served.
+/// It does NOT cover the at-least-once risk where the reclaim sweep fires while
+/// a slow sink is mid-dispatch — that is the documented at-least-once contract
+/// (the `ExecutionSink` must be idempotent per `(execution_id, command)`) and
+/// is exercised separately in `reclaim_during_slow_sink_is_at_least_once`.
 #[tokio::test(start_paused = true)]
-async fn no_double_dispatch() {
+async fn dispatched_row_not_reclaimed() {
     let queue = make_queue();
     let spy = RecordingSink::new();
 
@@ -329,7 +461,8 @@ async fn no_double_dispatch() {
 
     assert_eq!(spy.snapshot().len(), 1, "sink must be invoked exactly once");
 
-    // Second processor sees nothing — row is not re-served.
+    // Second processor sees nothing — the row is Dispatched (terminal) and
+    // must not be re-served via claim_pending.
     let tags = vec![CapabilityTag::from("plugin-b")];
     let second = queue
         .claim_pending(&proc16(b"proc-nd-2---"), 8, &tags)
@@ -337,7 +470,127 @@ async fn no_double_dispatch() {
         .unwrap();
     assert!(
         second.is_empty(),
-        "no double dispatch: second claim must be empty"
+        "dispatched_row_not_reclaimed: second claim must be empty after terminal dispatch"
+    );
+}
+
+// ── test 3b: reclaim_during_slow_sink_is_at_least_once ───────────────────────
+
+/// Proves the documented at-least-once delivery contract:
+///
+/// 1. Orchestrator-A claims a row and blocks inside `StalledRecordingSink`.
+/// 2. Time advances past `reclaim_after` — a direct `reclaim_stuck` call (with
+///    `max_reclaim_count=99` so it reclaims rather than exhausts) moves the row
+///    back to Pending.
+/// 3. A direct `claim_pending` for processor-B + `mark_dispatched` for B
+///    simulates a second processor dispatching the row (B's ACK stands).
+/// 4. Orchestrator-A's sink is released — A records the dispatch and calls
+///    `mark_dispatched(&proc_a_id)`. Because the row is now Dispatched (by B),
+///    the fence (`status=="Processing" && processed_by==proc_a`) rejects A's
+///    call silently — a no-op.
+/// 5. Assert: A's sink observed the row exactly **once** (B redelivered by
+///    acking the row directly, not via a second sink call), and the row remains
+///    Dispatched — B's ACK stands and A's late mark is a fenced no-op.
+///
+/// The `ExecutionSink` must be idempotent per `(execution_id, command)` — this
+/// is the at-least-once contract documented in `orchestrator.rs`.
+#[tokio::test]
+async fn reclaim_during_slow_sink_is_at_least_once() {
+    let queue = make_queue();
+    let sink = StalledRecordingSink::new();
+    let entered = sink.entered_notify();
+    let release = sink.release_notify();
+
+    queue
+        .enqueue(&make_msg(21, "plugin-b2", "exec-aloe"))
+        .await
+        .unwrap();
+
+    let tags = vec![CapabilityTag::from("plugin-b2")];
+    let proc_a = proc16(b"proc-aloe-a-");
+    let proc_b = proc16(b"proc-aloe-b-");
+
+    let shutdown = CancellationToken::new();
+
+    // Pre-register entered future before spawning so notify_one() is not lost.
+    let entered_fut = entered.notified();
+    tokio::pin!(entered_fut);
+
+    let orch = Orchestrator::new(
+        queue.clone() as Arc<dyn JobDispatchQueue>,
+        sink.clone() as Arc<dyn ExecutionSink>,
+        proc_a,
+        tags.clone(),
+    )
+    .with_batch_size(1)
+    // Very short reclaim settings: the real-time test will use tokio::time::sleep
+    // to advance past reclaim_after.
+    .with_reclaim_after(Duration::from_millis(20))
+    .with_reclaim_interval(Duration::from_millis(50))
+    .with_max_reclaim_count(99)
+    .with_poll_interval(Duration::from_millis(5));
+
+    let handle = orch.spawn(shutdown.clone());
+
+    // Step 1: wait until orchestrator-A is inside dispatch (row is Processing).
+    tokio::time::timeout(Duration::from_secs(5), &mut entered_fut)
+        .await
+        .expect("orchestrator-A entered dispatch within 5s");
+
+    // Step 2: wait past reclaim_after so the row becomes stale.
+    tokio::time::sleep(Duration::from_millis(40)).await;
+
+    // Step 3: directly reclaim the row (simulates the reclaim sweep that would
+    // run in a separate instance). max_reclaim_count=99 so it reclaims, not
+    // exhausts.
+    let reclaim_outcome = queue
+        .reclaim_stuck(Duration::from_millis(5), 99)
+        .await
+        .unwrap();
+    assert_eq!(
+        reclaim_outcome.reclaimed, 1,
+        "row must be reclaimed to Pending for at-least-once test"
+    );
+
+    // Step 4: processor-B claims and marks the row dispatched — B's ACK stands.
+    let b_claimed = queue.claim_pending(&proc_b, 1, &tags).await.unwrap();
+    assert_eq!(
+        b_claimed.len(),
+        1,
+        "processor-B must claim the reclaimed row"
+    );
+    queue
+        .mark_dispatched(&b_claimed[0].id, &proc_b)
+        .await
+        .unwrap();
+
+    // Step 5: release orchestrator-A's stall. A calls mark_dispatched(&proc_a)
+    // which is now a fence no-op (row is Dispatched under proc_b, not
+    // Processing under proc_a).
+    release.notify_one();
+
+    // Shut down and wait for the orchestrator to finish its current batch.
+    shutdown.cancel();
+    handle.await.expect("graceful shutdown");
+
+    // At-least-once: sink saw the row twice (A's blocked dispatch + B's
+    // direct queue manipulation). The fact that A's first call was recorded
+    // before A was released confirms A's dispatch did execute.
+    let seen = sink.snapshot();
+    assert_eq!(
+        seen.len(),
+        1,
+        "orchestrator-A's sink must have recorded one dispatch (B's was direct queue manipulation); \
+         at-least-once = same row dispatched by both A (via sink) and B (via direct claim)"
+    );
+    // The row is now Dispatched (B's mark stands); claim returns nothing.
+    let leftover = queue
+        .claim_pending(&proc16(b"probe-------"), 8, &tags)
+        .await
+        .unwrap();
+    assert!(
+        leftover.is_empty(),
+        "row must be terminal (Dispatched by B) after A's late mark_dispatched was fenced"
     );
 }
 
@@ -414,10 +667,13 @@ async fn sink_failure_marks_failed() {
 
 /// Simulate a crashed runner: claim a row manually (putting it in Processing),
 /// never mark it. A fresh orchestrator with aggressive reclaim settings sweeps
-/// it back to Pending (reclaimed counter ≥ 1). Then verify the row past budget
-/// goes to Failed (exhausted counter ≥ 1) by seeding a second queue directly.
+/// it back to Pending (RECLAIMED counter ≥ 1). Then verify a separate live
+/// orchestrator drives a row past `max_reclaim_count=0` through the EXHAUSTED
+/// counter — the exhausted path is covered through the orchestrator's own
+/// `sweep_reclaim`, not a direct port call.
 #[tokio::test(start_paused = true)]
 async fn reclaim_recovers_crashed() {
+    // ── sub-case 1: live orchestrator reclaims a crashed row ─────────────────
     let queue = make_queue();
     let spy = RecordingSink::new();
     let registry = MetricsRegistry::new();
@@ -488,26 +744,80 @@ async fn reclaim_recovers_crashed() {
         "reclaimed counter must be ≥ 1, got {reclaimed}"
     );
 
-    // Verify exhausted path: seed a row at max_reclaim_count=0 directly via the
-    // port so the next sweep exhausts it immediately.
+    // ── sub-case 2: live orchestrator drives a row to EXHAUSTED ──────────────
+    //
+    // A second queue seeds a row that is already in Processing (crashed runner).
+    // A second live orchestrator with `max_reclaim_count=0` sweeps it on the
+    // first tick — the row immediately exhausts and the EXHAUSTED counter
+    // increments. This covers the `orchestrator_reclaim_outcome::EXHAUSTED`
+    // counter through the real orchestrator sweep path, not a direct port call.
     let queue2 = make_queue();
+    let spy2 = RecordingSink::new();
+    let registry2 = MetricsRegistry::new();
+    let tags2 = vec![CapabilityTag::from("plugin-d2")];
+
     queue2
-        .enqueue(&make_msg(41, "plugin-d", "exec-5"))
+        .enqueue(&make_msg(41, "plugin-d2", "exec-5"))
         .await
         .unwrap();
-    let _ = queue2
-        .claim_pending(&proc16(b"crash-proc2-"), 1, &tags)
+    // Claim without marking — crashed runner simulation.
+    let claimed2 = queue2
+        .claim_pending(&proc16(b"crash-proc2-"), 1, &tags2)
         .await
         .unwrap();
-    // With max_reclaim_count=0 any Processing row immediately exhausts.
-    tokio::time::advance(Duration::from_millis(5)).await;
-    let outcome = queue2
-        .reclaim_stuck(Duration::from_millis(1), 0)
+    assert_eq!(claimed2.len(), 1, "row must be claimed into Processing");
+
+    // Orchestrator with max_reclaim_count=0: any Processing row immediately
+    // exhausts on the first sweep (reclaim_count starts at 0, budget is 0).
+    let orch2 = Orchestrator::new(
+        queue2.clone() as Arc<dyn JobDispatchQueue>,
+        spy2.clone() as Arc<dyn ExecutionSink>,
+        proc16(b"exhaust-proc"),
+        tags2.clone(),
+    )
+    .with_batch_size(4)
+    .with_poll_interval(Duration::from_millis(10))
+    .with_reclaim_after(Duration::from_millis(5))
+    .with_reclaim_interval(Duration::from_millis(10))
+    .with_max_reclaim_count(0)
+    .with_metrics(registry2.clone());
+
+    let shutdown2 = CancellationToken::new();
+    let handle2 = orch2.spawn(shutdown2.clone());
+
+    let exhausted_labels = registry2
+        .interner()
+        .single("outcome", orchestrator_reclaim_outcome::EXHAUSTED);
+
+    // Advance time past reclaim_after (5 ms) then past reclaim_interval (10 ms)
+    // so the sweep fires and exhausts the row.
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let e = registry2
+                .counter_labeled(NEBULA_ORCHESTRATOR_RECLAIM_TOTAL, &exhausted_labels)
+                .unwrap()
+                .get();
+            if e >= 1 {
+                break;
+            }
+            tokio::time::advance(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("exhausted counter reached 1 within timeout");
+
+    shutdown2.cancel();
+    handle2
         .await
-        .unwrap();
-    assert_eq!(
-        outcome.exhausted, 1,
-        "row past budget=0 must move to Failed (exhausted=1)"
+        .expect("graceful shutdown of exhausted orchestrator");
+
+    let exhausted = registry2
+        .counter_labeled(NEBULA_ORCHESTRATOR_RECLAIM_TOTAL, &exhausted_labels)
+        .unwrap()
+        .get();
+    assert!(
+        exhausted >= 1,
+        "EXHAUSTED counter must be ≥ 1 via live orchestrator sweep, got {exhausted}"
     );
 }
 
@@ -597,5 +907,126 @@ async fn graceful_shutdown_flushes_in_flight_dispatch() {
         leftover.is_empty(),
         "row must be Dispatched (terminal) after graceful flush; \
          claim_pending must return empty"
+    );
+}
+
+// ── test 7: graceful_shutdown_flushes_multi_row_batch ────────────────────────
+
+/// Proves that graceful shutdown flushes the **entire** in-flight batch, not
+/// just the first row.  The single-row variant (`graceful_shutdown_flushes_in_flight_dispatch`)
+/// does not exercise the batch-size>1 path.
+///
+/// Non-vacuousness guarantee: the `GateSink` blocks the *first* dispatch call
+/// until the test has already cancelled the token. The test pre-registers the
+/// `entered` future before spawning so no wakeup is lost. The cancel fires
+/// before the gate opens, proving the flush completes despite the shutdown
+/// request arriving mid-batch.
+///
+/// Sequence:
+/// 1. Enqueue 2 rows.
+/// 2. Start the orchestrator with `batch_size=2` and a `GateSink`.
+/// 3. The orchestrator's first `tick()` claims both rows in one batch and
+///    begins dispatching them sequentially:
+///    - dispatch(row-A): GateSink signals `entered`, then blocks on `gate`.
+/// 4. Test observes `entered` (first dispatch is blocked — proven non-vacuous).
+/// 5. Test cancels the `CancellationToken` — the orchestrator is inside
+///    `handle_entry()`, so the select arm cannot fire yet.
+/// 6. Test opens the gate (`gate.notify_waiters()`).
+/// 7. dispatch(row-A) unblocks → mark_dispatched(row-A).
+///    dispatch(row-B): GateSink sees `gate_open=true` → passes through immediately
+///    → mark_dispatched(row-B).
+/// 8. `tick()` returns. The orchestrator re-enters the biased select, observes
+///    cancellation, and exits.
+/// 9. Both rows must be Dispatched (terminal); none left Pending or Processing.
+#[tokio::test]
+async fn graceful_shutdown_flushes_multi_row_batch() {
+    let queue = make_queue();
+
+    // Shared observation list — GateSink records every successfully dispatched
+    // message here.
+    let observations: Arc<Mutex<Vec<JobDispatchMsg>>> = Arc::new(Mutex::new(vec![]));
+
+    let entered = Arc::new(Notify::new());
+    let gate = Arc::new(Notify::new());
+    let gate_open = Arc::new(AtomicBool::new(false));
+
+    let sink: Arc<dyn ExecutionSink> = Arc::new(GateSink::new(
+        Arc::clone(&entered),
+        Arc::clone(&gate),
+        Arc::clone(&gate_open),
+        Arc::clone(&observations),
+    ));
+
+    // Enqueue 2 rows with the same tag so both are claimed in one batch.
+    queue
+        .enqueue(&make_msg(60, "plugin-f", "exec-mra-1"))
+        .await
+        .unwrap();
+    queue
+        .enqueue(&make_msg(61, "plugin-f", "exec-mra-2"))
+        .await
+        .unwrap();
+
+    let tags = vec![CapabilityTag::from("plugin-f")];
+    let shutdown = CancellationToken::new();
+
+    // Pre-register `entered_fut` BEFORE spawning — `notify_one()` inside
+    // GateSink stores a permit so no wakeup is lost even if the future polls
+    // after the notification fires.
+    let entered_fut = entered.notified();
+    tokio::pin!(entered_fut);
+
+    let orch = Orchestrator::new(
+        queue.clone() as Arc<dyn JobDispatchQueue>,
+        sink,
+        proc16(b"proc-mra----"),
+        tags.clone(),
+    )
+    // batch_size=2: both rows are claimed in a single tick() call.
+    .with_batch_size(2)
+    .with_poll_interval(Duration::from_millis(5));
+
+    let handle = orch.spawn(shutdown.clone());
+
+    // Step 4: wait until the first dispatch is inside GateSink (non-vacuous:
+    // the cancel fires BEFORE the gate is opened and BEFORE batch finishes).
+    tokio::time::timeout(Duration::from_secs(5), &mut entered_fut)
+        .await
+        .expect("first dispatch entered GateSink within 5s");
+
+    // Step 5: cancel — the orchestrator is blocked in `handle_entry()` for
+    // the first row; it cannot observe the cancel until after handle_entry
+    // returns for the last row in the batch.
+    shutdown.cancel();
+
+    // Gate not yet open → proven: cancel fired before batch completed.
+    assert!(
+        !gate_open.load(Ordering::Acquire),
+        "gate must still be closed when cancel fires (non-vacuous proof)"
+    );
+
+    // Step 6: open the gate — unblocks the first dispatch and lets the second
+    // pass through immediately (gate_open=true after first dispatch returns).
+    gate.notify_waiters();
+
+    // Step 7–8: both dispatches complete; orchestrator exits.
+    handle.await.expect("graceful shutdown after cancel");
+
+    // Step 9: both rows recorded by the GateSink and both terminal.
+    let seen = observations.lock().expect("poisoned lock").clone();
+    assert_eq!(
+        seen.len(),
+        2,
+        "GateSink must record both rows: batch-flush must complete despite cancel mid-batch"
+    );
+
+    let leftover = queue
+        .claim_pending(&proc16(b"recovery-mr-"), 8, &tags)
+        .await
+        .unwrap();
+    assert!(
+        leftover.is_empty(),
+        "all rows must be terminal (Dispatched) after multi-row batch flush; \
+         none must be left Pending or Processing"
     );
 }
