@@ -12,7 +12,7 @@ use crate::definition::RetryConfig;
 ///
 /// `#[non_exhaustive]` allows adding new optional fields in future versions
 /// without a semver break. Use [`NodeDefinition::new`] to construct instances;
-/// use [`NodeDefinition::with_*`] builder methods to set optional fields.
+/// use the `with_*` builder methods to set optional fields.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct NodeDefinition {

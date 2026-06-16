@@ -79,7 +79,7 @@ impl WorkflowDefinition {
 ///
 /// `#[non_exhaustive]` allows adding new optional fields in future versions
 /// without a semver break. Use [`TriggerBinding::new`] to construct instances;
-/// use [`TriggerBinding::with_*`] builder methods to set optional fields.
+/// use the `with_*` builder methods to set optional fields.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct TriggerBinding {
@@ -96,9 +96,9 @@ pub struct TriggerBinding {
     /// Optional pinned interface version for the trigger action.
     ///
     /// Uses `semver::Version` (string form, e.g. `"1.2.0"`) to match
-    /// [`NodeDefinition::interface_version`] and the runtime's versioned action
+    /// `NodeDefinition::interface_version` and the runtime's versioned action
     /// lookup — NOT the workflow-definition `crate::Version` used by
-    /// [`WorkflowDefinition::version`], which serializes as a struct.
+    /// `WorkflowDefinition::version`, which serializes as a struct.
     #[serde(default)]
     pub interface_version: Option<semver::Version>,
     /// Opaque, action-specific configuration (cron expression, webhook path,
