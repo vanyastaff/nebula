@@ -129,6 +129,12 @@ struct NodeSnapshot {
 ///   version does not satisfy the declared [`VersionReq`].
 /// - [`PluginDependencyError::Cycle`] — the dependency graph contains a
 ///   directed cycle; the error carries the closed path.
+///
+/// Only the first problem is returned, with a deterministic precedence:
+/// unsatisfiable declared dependencies ([`PluginDependencyError::MissingDependency`]
+/// and [`PluginDependencyError::VersionMismatch`]) are detected while building the
+/// edge graph in ascending dependent-key order — before any
+/// [`PluginDependencyError::Cycle`] is reported.
 pub(crate) fn resolve(reg: &PluginRegistry) -> Result<Vec<PluginKey>, PluginDependencyError> {
     // Snapshot every registered plugin as (key, version, declared deps), sorted
     // by key so the traversal — and thus the output — is deterministic
@@ -533,6 +539,82 @@ mod tests {
                 );
             },
             _ => panic!("expected Cycle, got {err}"),
+        }
+    }
+
+    // ── Error precedence (deterministic; pins the resolution-phase ordering) ─────
+
+    #[test]
+    fn missing_dependency_precedes_cycle() {
+        // The graph contains BOTH a 2-cycle (a <-> b) and a node `x` whose
+        // dependency `ghost` is not registered. Unsatisfiable declared
+        // dependencies are detected while building the edge graph, before any
+        // cycle check runs, so `MissingDependency` is reported — never `Cycle`.
+        let r = reg(vec![
+            with_deps("a", Version::new(1, 0, 0), &[("b", "^1")]),
+            with_deps("b", Version::new(1, 0, 0), &[("a", "^1")]),
+            with_deps("x", Version::new(1, 0, 0), &[("ghost", "^1")]),
+        ]);
+        let err = resolve(&r).unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                PluginDependencyError::MissingDependency { dependency, .. }
+                if dependency.as_str() == "ghost"
+            ),
+            "an unsatisfiable dependency must win over the cycle, got: {err}"
+        );
+    }
+
+    #[test]
+    fn version_mismatch_precedes_cycle() {
+        // The graph contains BOTH a 2-cycle (a <-> b) and a node `x` requiring a
+        // version of `a` that is not satisfied. The mismatch is detected during
+        // edge resolution, before cycle detection, so `VersionMismatch` is
+        // reported — never `Cycle`.
+        let r = reg(vec![
+            with_deps("a", Version::new(1, 0, 0), &[("b", "^1")]),
+            with_deps("b", Version::new(1, 0, 0), &[("a", "^1")]),
+            with_deps("x", Version::new(1, 0, 0), &[("a", "^2")]),
+        ]);
+        let err = resolve(&r).unwrap_err();
+        match &err {
+            PluginDependencyError::VersionMismatch(detail) => {
+                assert_eq!(detail.dependent.as_str(), "x");
+                assert_eq!(detail.dependency.as_str(), "a");
+            },
+            _ => panic!("a version mismatch must win over the cycle, got: {err}"),
+        }
+    }
+
+    #[test]
+    fn first_error_is_deterministic_by_dependent_key() {
+        // Two independent unsatisfiable dependencies: `m` requires a missing
+        // `ghost`, and `z` requires `a` at an unsatisfiable version. The edge
+        // graph is built in ascending dependent-key order, so the lower-keyed
+        // dependent (`m`) is always reported first — regardless of registration
+        // order, and regardless of which error kind each carries.
+        let plugins = || {
+            vec![
+                versioned("a", Version::new(1, 0, 0)),
+                with_deps("m", Version::new(1, 0, 0), &[("ghost", "^1")]),
+                with_deps("z", Version::new(1, 0, 0), &[("a", "^2")]),
+            ]
+        };
+        let forward = resolve(&reg(plugins())).unwrap_err();
+        let mut reversed = plugins();
+        reversed.reverse();
+        let backward = resolve(&reg(reversed)).unwrap_err();
+
+        for err in [&forward, &backward] {
+            assert!(
+                matches!(
+                    err,
+                    PluginDependencyError::MissingDependency { dependent, .. }
+                    if dependent.as_str() == "m"
+                ),
+                "lowest-keyed dependent 'm' must be reported first, got: {err}"
+            );
         }
     }
 
