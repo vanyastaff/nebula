@@ -287,8 +287,10 @@ CREATE TABLE IF NOT EXISTS port_blobs (
 );
 
 -- Capability-routed job-dispatch queue.  `id` is the raw 16-byte ULID
--- (BLOB).  `capability_tags` is a JSON array; the routing predicate is
--- `EXISTS (SELECT 1 FROM json_each(capability_tags) WHERE value = ?)`.
+-- (BLOB).  `required_plugins` is a JSON array of PluginKey strings; the
+-- routing predicate is `required_plugins ⊆ available_plugins` (superset
+-- check via NOT EXISTS + json_each).  `required_plugin_key` is the
+-- denormalised primary/pre-filter key (index target).
 -- `processed_at_ms` is epoch-millis (INTEGER) for parity with
 -- `port_control_queue` and the reclaim arithmetic.
 CREATE TABLE IF NOT EXISTS port_job_dispatch_queue (
@@ -302,7 +304,7 @@ CREATE TABLE IF NOT EXISTS port_job_dispatch_queue (
     event_id            TEXT,
     target_flavor_sha   TEXT NOT NULL DEFAULT '',
     required_plugin_key TEXT NOT NULL,
-    capability_tags     TEXT NOT NULL DEFAULT '[]',  -- JSON array
+    required_plugins    TEXT NOT NULL DEFAULT '[]',  -- JSON array of PluginKey strings
     w3c_traceparent     TEXT,
     reclaim_count       INTEGER NOT NULL DEFAULT 0,
     processed_by        BLOB,

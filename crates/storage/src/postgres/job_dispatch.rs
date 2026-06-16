@@ -3,15 +3,15 @@
 //!
 //! `claim_pending` uses `FOR UPDATE SKIP LOCKED` so multiple consumers can
 //! drain the queue concurrently without double-dispatch.  The routing
-//! predicate is `capability_tags ⊆ advertised_tags`: the worker's advertised
-//! tag set must be a superset of every tag the job requires.
+//! predicate is `required_plugins ⊆ available_plugins`: the worker's
+//! available plugin set must be a superset of every plugin the job requires.
 //!
 //! Implementation: `required_plugin_key = ANY($pre_filter)` is an
-//! index-friendly pre-filter (sound because `capability_tags ⊇
-//! {required_plugin_key}` by DTO invariant), then `capability_tags <@
-//! $advertised_jsonb` applies the exact JSONB "is contained by" superset check
-//! in the same statement.  `advertised_tags` is bound twice — once as `text[]`
-//! for `= ANY` and once as `JSONB` for `<@`.
+//! index-friendly pre-filter (sound because `required_plugins ⊇
+//! {required_plugin_key}` by DTO invariant), then `required_plugins <@
+//! $available_jsonb` applies the exact JSONB "is contained by" superset check
+//! in the same statement.  `available_plugins` is bound twice — once as
+//! `text[]` for `= ANY` and once as `JSONB` for `<@`.
 //!
 //! PERF: `<@` is NOT GIN-accelerated — `jsonb_ops` indexes `@>` / existence,
 //! not `<@` — so it runs as a filter over the rows the `(status,
@@ -19,13 +19,14 @@
 //! representation (text[] + `array_ops`, or a tag-membership table) is the
 //! tracked pre-production follow-up.  See `schema.sql` PERF NOTE.
 //!
-//! Ids are raw 16-byte ULID (`BYTEA`).  `capability_tags` is a `JSONB` array.
+//! Ids are raw 16-byte ULID (`BYTEA`).  `required_plugins` is a `JSONB` array.
 
 use std::time::Duration;
 
 use chrono::Utc;
+use nebula_core::PluginKey;
 use nebula_storage_port::dto::{
-    CapabilityTag, DispatchKind, DispatchOutcome, JobDispatchMsg, NewExecution, TriggerDedupRow,
+    DispatchKind, DispatchOutcome, JobDispatchMsg, NewExecution, TriggerDedupRow,
 };
 use nebula_storage_port::store::{JobDispatchQueue, ReclaimOutcome, TriggerDedupInbox};
 use nebula_storage_port::{Scope, StorageError};
@@ -58,30 +59,40 @@ fn decode_command(s: &str) -> Result<nebula_storage_port::dto::ControlCommand, S
     }
 }
 
-fn tags_to_json(tags: &[CapabilityTag]) -> serde_json::Value {
-    let strs: Vec<&str> = tags.iter().map(CapabilityTag::as_str).collect();
+fn plugins_to_jsonb(plugins: &[PluginKey]) -> serde_json::Value {
     serde_json::Value::Array(
-        strs.into_iter()
-            .map(|s| serde_json::Value::String(s.to_owned()))
+        plugins
+            .iter()
+            .map(|k| serde_json::Value::String(k.as_str().to_owned()))
             .collect(),
     )
 }
 
 fn row_to_msg(row: &sqlx::postgres::PgRow) -> Result<JobDispatchMsg, StorageError> {
     let id_bytes: Vec<u8> = row.try_get("id").map_err(conn_err)?;
-    let tags_val: serde_json::Value = row.try_get("capability_tags").map_err(conn_err)?;
-    let tags: Vec<CapabilityTag> = tags_val
+    let plugins_val: serde_json::Value = row.try_get("required_plugins").map_err(conn_err)?;
+    let required_plugins: Vec<PluginKey> = plugins_val
         .as_array()
-        .ok_or_else(|| StorageError::Serialization("capability_tags not a JSON array".to_owned()))?
+        .ok_or_else(|| StorageError::Serialization("required_plugins not a JSON array".to_owned()))?
         .iter()
         .map(|v| {
             v.as_str()
                 .ok_or_else(|| {
-                    StorageError::Serialization("capability_tag element is not a string".to_owned())
+                    StorageError::Serialization(
+                        "required_plugins element is not a string".to_owned(),
+                    )
                 })
-                .map(|s| CapabilityTag(s.to_owned()))
+                .and_then(|s| {
+                    s.parse::<PluginKey>()
+                        .map_err(|e| StorageError::Serialization(e.to_string()))
+                })
         })
         .collect::<Result<_, _>>()?;
+    let required_plugin_key: PluginKey = row
+        .try_get::<String, _>("required_plugin_key")
+        .map_err(conn_err)?
+        .parse::<PluginKey>()
+        .map_err(|e| StorageError::Serialization(e.to_string()))?;
     Ok(JobDispatchMsg::new(
         decode_id(&id_bytes)?,
         row.try_get::<String, _>("execution_id").map_err(conn_err)?,
@@ -95,9 +106,8 @@ fn row_to_msg(row: &sqlx::postgres::PgRow) -> Result<JobDispatchMsg, StorageErro
             .map_err(conn_err)?,
         row.try_get::<String, _>("target_flavor_sha")
             .map_err(conn_err)?,
-        row.try_get::<String, _>("required_plugin_key")
-            .map_err(conn_err)?,
-        tags,
+        required_plugin_key,
+        required_plugins,
         row.try_get::<Option<String>, _>("w3c_traceparent")
             .map_err(conn_err)?,
         row.try_get::<i32, _>("reclaim_count").map_err(conn_err)? as u32,
@@ -124,12 +134,12 @@ impl PgJobDispatchQueue {
 impl JobDispatchQueue for PgJobDispatchQueue {
     #[tracing::instrument(level = "debug", skip(self, msg), fields(id = ?msg.id, command = msg.command.as_str()))]
     async fn enqueue(&self, msg: &JobDispatchMsg) -> Result<(), StorageError> {
-        let tags = tags_to_json(&msg.capability_tags);
+        let plugins = plugins_to_jsonb(&msg.required_plugins);
         sqlx::query(
             "INSERT INTO port_job_dispatch_queue \
              (id, execution_id, workspace_id, org_id, command, status, \
               payload, event_id, target_flavor_sha, required_plugin_key, \
-              capability_tags, w3c_traceparent, reclaim_count) \
+              required_plugins, w3c_traceparent, reclaim_count) \
              VALUES ($1, $2, $3, $4, $5, 'Pending', $6, $7, $8, $9, $10, $11, $12)",
         )
         .bind(msg.id.as_slice())
@@ -140,8 +150,8 @@ impl JobDispatchQueue for PgJobDispatchQueue {
         .bind(&msg.payload)
         .bind(msg.event_id.as_deref())
         .bind(&msg.target_flavor_sha)
-        .bind(&msg.required_plugin_key)
-        .bind(&tags)
+        .bind(msg.required_plugin_key.as_str())
+        .bind(&plugins)
         .bind(msg.w3c_traceparent.as_deref())
         .bind(i32::try_from(msg.reclaim_count).unwrap_or(i32::MAX))
         .execute(&self.pool)
@@ -151,27 +161,27 @@ impl JobDispatchQueue for PgJobDispatchQueue {
         Ok(())
     }
 
-    #[tracing::instrument(level = "debug", skip(self, advertised_tags), fields(batch_size))]
+    #[tracing::instrument(level = "debug", skip(self, available_plugins), fields(batch_size))]
     async fn claim_pending(
         &self,
         processor: &[u8; 16],
         batch_size: u32,
-        advertised_tags: &[CapabilityTag],
+        available_plugins: &[PluginKey],
     ) -> Result<Vec<JobDispatchMsg>, StorageError> {
-        if advertised_tags.is_empty() {
+        if available_plugins.is_empty() {
             return Ok(Vec::new());
         }
         // `processed_at_ms` is epoch-millis (BIGINT) — same representation as
         // `port_control_queue`, so reclaim cutoff arithmetic is identical on both dialects.
         let now_ms = Utc::now().timestamp_millis();
-        let tags_strs: Vec<&str> = advertised_tags.iter().map(CapabilityTag::as_str).collect();
-        // `capability_tags <@ $advertised_jsonb`: JSONB "is contained by" operator
+        let plugin_strs: Vec<&str> = available_plugins.iter().map(PluginKey::as_str).collect();
+        // `required_plugins <@ $available_jsonb`: JSONB "is contained by" operator
         // (NOT GIN-accelerated — see the module PERF note; runs as a filter over
-        // the pre-filtered rows).  A job's `capability_tags` must be a subset of
-        // the advertised JSONB array.  Built via `tags_to_json` — the same helper
-        // `enqueue` uses — so `$3` (text[]) and `$4` (jsonb) are always derived
-        // from the same source and can never diverge.
-        let advertised_jsonb = tags_to_json(advertised_tags);
+        // the pre-filtered rows).  A job's `required_plugins` must be a subset of
+        // the available JSONB array.  Built via `plugins_to_jsonb` — the same
+        // helper `enqueue` uses — so `$3` (text[]) and `$4` (jsonb) are always
+        // derived from the same source and can never diverge.
+        let available_jsonb = plugins_to_jsonb(available_plugins);
         let rows = sqlx::query(
             "UPDATE port_job_dispatch_queue \
              SET status = 'Processing', processed_by = $1, processed_at_ms = $2 \
@@ -179,19 +189,19 @@ impl JobDispatchQueue for PgJobDispatchQueue {
                  SELECT id FROM port_job_dispatch_queue \
                  WHERE status = 'Pending' \
                    AND required_plugin_key = ANY($3) \
-                   AND capability_tags <@ $4 \
+                   AND required_plugins <@ $4 \
                  ORDER BY id \
                  LIMIT $5 \
                  FOR UPDATE SKIP LOCKED \
              ) \
              RETURNING id, execution_id, workspace_id, org_id, command, \
                        payload, event_id, target_flavor_sha, required_plugin_key, \
-                       capability_tags, w3c_traceparent, reclaim_count",
+                       required_plugins, w3c_traceparent, reclaim_count",
         )
         .bind(processor.as_slice())
         .bind(now_ms)
-        .bind(&tags_strs)
-        .bind(&advertised_jsonb)
+        .bind(&plugin_strs)
+        .bind(&available_jsonb)
         .bind(i64::from(batch_size))
         .fetch_all(&self.pool)
         .await
@@ -332,7 +342,7 @@ impl TriggerDedupInbox for PgTriggerDedupInbox {
         start: &JobDispatchMsg,
         execution: &NewExecution<'_>,
     ) -> Result<DispatchOutcome, StorageError> {
-        let tags = tags_to_json(&start.capability_tags);
+        let plugins = plugins_to_jsonb(&start.required_plugins);
 
         // All three writes live inside one transaction — atomicity by
         // construction.  An error from any write propagates via `?` and rolls
@@ -413,7 +423,7 @@ impl TriggerDedupInbox for PgTriggerDedupInbox {
             "INSERT INTO port_job_dispatch_queue \
              (id, execution_id, workspace_id, org_id, command, status, \
               payload, event_id, target_flavor_sha, required_plugin_key, \
-              capability_tags, w3c_traceparent, reclaim_count) \
+              required_plugins, w3c_traceparent, reclaim_count) \
              VALUES ($1, $2, $3, $4, $5, 'Pending', $6, $7, $8, $9, $10, $11, $12)",
         )
         .bind(start.id.as_slice())
@@ -424,8 +434,8 @@ impl TriggerDedupInbox for PgTriggerDedupInbox {
         .bind(&start.payload)
         .bind(start.event_id.as_deref())
         .bind(&start.target_flavor_sha)
-        .bind(&start.required_plugin_key)
-        .bind(&tags)
+        .bind(start.required_plugin_key.as_str())
+        .bind(&plugins)
         .bind(start.w3c_traceparent.as_deref())
         .bind(i32::try_from(start.reclaim_count).unwrap_or(i32::MAX))
         .execute(&mut *tx)

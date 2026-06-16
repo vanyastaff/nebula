@@ -1,22 +1,28 @@
 //! Capability-routed job-dispatch queue port.
 //!
-//! The orchestrator pulls jobs by advertising the set of `CapabilityTag`s its
+//! The orchestrator pulls jobs by advertising the set of [`PluginKey`]s its
 //! workers support; the queue delivers only rows whose `required_plugin_key`
 //! is a member of that set.  The claim/fence/reclaim shape mirrors
 //! `ControlQueue` — `ReclaimOutcome` is reused from that module.
+//!
+//! [`PluginKey`]: nebula_core::PluginKey
 use std::time::Duration;
 
-use crate::dto::{CapabilityTag, JobDispatchMsg};
+use nebula_core::PluginKey;
+
+use crate::dto::JobDispatchMsg;
 use crate::error::StorageError;
 use crate::store::ReclaimOutcome;
 
 /// Durable capability-routed job-dispatch queue.
 ///
-/// The routing predicate is `capability_tags ⊆ advertised_tags`: a worker may
-/// claim a job only if its advertised tags are a superset of every tag the job
-/// requires.  The DTO invariant guarantees `capability_tags ⊇ {required_plugin_key}`,
-/// so the superset predicate strictly subsumes the old single-key rule —
-/// `required_plugin_key ∈ advertised_tags` is kept as a sound index pre-filter.
+/// The routing predicate is `required_plugins ⊆ available_plugins`: a worker
+/// may claim a job only if its advertised plugin set is a superset of every
+/// plugin the job requires.  The DTO invariant guarantees
+/// `required_plugins ⊇ {required_plugin_key}`, so the superset predicate
+/// strictly subsumes the single-key pre-filter —
+/// `required_plugin_key ∈ available_plugins` is kept as a sound index
+/// pre-filter.
 ///
 /// Postgres uses `FOR UPDATE SKIP LOCKED` on `claim_pending`; SQLite uses a
 /// single-consumer status flip.  Both are object-safe and Send+Sync.
@@ -25,13 +31,14 @@ pub trait JobDispatchQueue: Send + Sync + std::fmt::Debug {
     /// Durably enqueue a job-dispatch message.
     async fn enqueue(&self, msg: &JobDispatchMsg) -> Result<(), StorageError>;
 
-    /// Claim up to `batch_size` pending jobs whose `capability_tags ⊆
-    /// advertised_tags` (the worker's advertised set must be a superset of
-    /// every tag the job requires).
+    /// Claim up to `batch_size` pending jobs whose `required_plugins ⊆
+    /// available_plugins` (the worker's advertised plugin set must be a
+    /// superset of every plugin the job requires).
     ///
-    /// `required_plugin_key ∈ advertised_tags` is retained as an index-friendly
-    /// pre-filter (sound by the DTO invariant); the exact superset check is
-    /// applied inside the same statement, eliminating any TOCTOU window.
+    /// `required_plugin_key ∈ available_plugins` is retained as an
+    /// index-friendly pre-filter (sound by the DTO invariant); the exact
+    /// superset check is applied inside the same statement, eliminating any
+    /// TOCTOU window.
     ///
     /// Claim mechanics per backend:
     /// - **InMemory**: predicate + status flip inside one `parking_lot` Mutex
@@ -47,7 +54,7 @@ pub trait JobDispatchQueue: Send + Sync + std::fmt::Debug {
         &self,
         processor: &[u8; 16],
         batch_size: u32,
-        advertised_tags: &[CapabilityTag],
+        available_plugins: &[PluginKey],
     ) -> Result<Vec<JobDispatchMsg>, StorageError>;
 
     /// Mark a claimed job dispatched (terminal success).  Only the runner

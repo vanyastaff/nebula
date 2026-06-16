@@ -21,10 +21,10 @@
 
 use std::sync::Arc;
 
+use nebula_core::PluginKey;
 use nebula_storage_port::dto::{
-    CachedRecord, CapabilityTag, ControlCommand, ControlMsg, DispatchKind, JobDispatchMsg,
-    JournalEntry, NewExecution, TriggerDedupRow, WebhookActivationRecord, WorkflowRecord,
-    WorkflowVersionRecord,
+    CachedRecord, ControlCommand, ControlMsg, DispatchKind, JobDispatchMsg, JournalEntry,
+    NewExecution, TriggerDedupRow, WebhookActivationRecord, WorkflowRecord, WorkflowVersionRecord,
 };
 use nebula_storage_port::store::{
     ControlQueue, ExecutionJournalReader, ExecutionStore, IdempotencyGuard, IdempotencyStore,
@@ -1614,6 +1614,16 @@ fn make_new_execution() -> (String, serde_json::Value) {
 }
 
 fn make_job(id: u8, required_plugin_key: &str, tags: &[&str]) -> JobDispatchMsg {
+    let key: PluginKey = required_plugin_key
+        .parse()
+        .expect("conformance test plugin key must be valid");
+    let required_plugins: Vec<PluginKey> = tags
+        .iter()
+        .map(|s| {
+            s.parse::<PluginKey>()
+                .expect("conformance test tag must be valid")
+        })
+        .collect();
     JobDispatchMsg::new(
         [id; 16],
         format!("exe_{id}"),
@@ -1622,8 +1632,8 @@ fn make_job(id: u8, required_plugin_key: &str, tags: &[&str]) -> JobDispatchMsg 
         serde_json::json!({}),
         None::<&str>,
         "sha256:abc",
-        required_plugin_key,
-        tags.iter().map(|s| CapabilityTag::from(*s)).collect(),
+        key,
+        required_plugins,
         None::<&str>,
         0,
     )
@@ -1643,7 +1653,7 @@ pub async fn assert_job_dispatch_routes_by_tag(backend: &dyn Backend) {
     let proc = [9u8; 16];
     // Advertise only alpha — must NOT receive beta.
     let claimed = q
-        .claim_pending(&proc, 16, &[CapabilityTag::from("plugin.alpha")])
+        .claim_pending(&proc, 16, &["plugin.alpha".parse::<PluginKey>().unwrap()])
         .await
         .expect("claim");
     assert_eq!(
@@ -1653,7 +1663,7 @@ pub async fn assert_job_dispatch_routes_by_tag(backend: &dyn Backend) {
         backend.name()
     );
     assert_eq!(
-        claimed[0].required_plugin_key,
+        claimed[0].required_plugin_key.as_str(),
         "plugin.alpha",
         "[{}] claimed row must be alpha",
         backend.name()
@@ -1661,14 +1671,14 @@ pub async fn assert_job_dispatch_routes_by_tag(backend: &dyn Backend) {
 
     // Advertise only beta — beta row is still Pending (alpha took none).
     let claimed_b = q
-        .claim_pending(&proc, 16, &[CapabilityTag::from("plugin.beta")])
+        .claim_pending(&proc, 16, &["plugin.beta".parse::<PluginKey>().unwrap()])
         .await
         .expect("claim beta");
     assert_eq!(claimed_b.len(), 1, "[{}] beta row claimed", backend.name());
 
     // Advertise an unrelated tag — nothing claimed.
     let nothing = q
-        .claim_pending(&proc, 16, &[CapabilityTag::from("plugin.gamma")])
+        .claim_pending(&proc, 16, &["plugin.gamma".parse::<PluginKey>().unwrap()])
         .await
         .expect("claim gamma");
     assert!(
@@ -1688,7 +1698,7 @@ pub async fn assert_job_dispatch_fencing(backend: &dyn Backend) {
     let runner_a = [1u8; 16];
     let runner_b = [2u8; 16];
     let claimed = q
-        .claim_pending(&runner_a, 16, &[CapabilityTag::from("plugin.x")])
+        .claim_pending(&runner_a, 16, &["plugin.x".parse::<PluginKey>().unwrap()])
         .await
         .expect("claim");
     assert_eq!(claimed.len(), 1, "[{}] claimed one row", backend.name());
@@ -1704,7 +1714,7 @@ pub async fn assert_job_dispatch_fencing(backend: &dyn Backend) {
         .expect("mark_dispatched (claimant)");
     // After mark_dispatched, a fresh claim should find no pending rows.
     let after = q
-        .claim_pending(&runner_a, 16, &[CapabilityTag::from("plugin.x")])
+        .claim_pending(&runner_a, 16, &["plugin.x".parse::<PluginKey>().unwrap()])
         .await
         .expect("claim after dispatch");
     assert!(
@@ -1769,7 +1779,7 @@ pub async fn assert_trigger_dedup_first_writer(backend: &dyn Backend) {
     // Only one job row must have been enqueued.
     let proc = [7u8; 16];
     let claimed = q
-        .claim_pending(&proc, 16, &[CapabilityTag::from("plugin.y")])
+        .claim_pending(&proc, 16, &["plugin.y".parse::<PluginKey>().unwrap()])
         .await
         .expect("claim");
     assert_eq!(
@@ -1819,7 +1829,7 @@ pub async fn assert_dispatch_without_dedup_key(backend: &dyn Backend) {
 
     let proc = [8u8; 16];
     let claimed = q
-        .claim_pending(&proc, 16, &[CapabilityTag::from("plugin.z")])
+        .claim_pending(&proc, 16, &["plugin.z".parse::<PluginKey>().unwrap()])
         .await
         .expect("claim");
     assert_eq!(
@@ -1922,7 +1932,7 @@ pub async fn assert_dedup_compose_is_atomic(backend: &dyn Backend) {
     //    to enqueue the Start job would still pass the two checks above.
     let proc = [0xA0u8; 16];
     let claimed = q
-        .claim_pending(&proc, 16, &[CapabilityTag::from("plugin.q")])
+        .claim_pending(&proc, 16, &["plugin.q".parse::<PluginKey>().unwrap()])
         .await
         .expect("claim_pending after compose");
     assert_eq!(
@@ -1941,10 +1951,10 @@ pub async fn assert_dedup_compose_is_atomic(backend: &dyn Backend) {
 }
 
 /// `claim_pending` enforces a superset predicate: a worker may claim a job
-/// only when its advertised tags cover EVERY tag in the job's `capability_tags`.
+/// only when its `available_plugins` cover EVERY plugin in the job's `required_plugins`.
 ///
 /// Contract (job has `required_plugin_key = "plugin.alpha"` and
-/// `capability_tags = ["plugin.alpha", "plugin.beta"]`):
+/// `required_plugins = ["plugin.alpha", "plugin.beta"]`):
 ///
 /// 1. Advertised `["plugin.alpha"]` only → NOT claimed (missing beta).
 /// 2. Advertised `["plugin.beta"]` only → NOT claimed (missing alpha; the
@@ -1956,7 +1966,7 @@ pub async fn assert_dedup_compose_is_atomic(backend: &dyn Backend) {
 pub async fn assert_job_dispatch_routes_by_tag_superset(backend: &dyn Backend) {
     let q = backend.job_dispatch_queue().await;
 
-    // Job requires alpha AND beta (capability_tags covers both; invariant upheld).
+    // Job requires alpha AND beta (required_plugins covers both; invariant upheld).
     let job = make_job(0x60, "plugin.alpha", &["plugin.alpha", "plugin.beta"]);
     q.enqueue(&job).await.expect("enqueue superset job");
 
@@ -1965,20 +1975,20 @@ pub async fn assert_job_dispatch_routes_by_tag_superset(backend: &dyn Backend) {
     // 1. Alpha-only worker: pre-filter passes (required_plugin_key = alpha) but
     //    superset check fails — beta is required and not advertised.
     let claimed_by_alpha_only = q
-        .claim_pending(&proc, 16, &[CapabilityTag::from("plugin.alpha")])
+        .claim_pending(&proc, 16, &["plugin.alpha".parse::<PluginKey>().unwrap()])
         .await
         .expect("claim alpha-only");
     assert!(
         claimed_by_alpha_only.is_empty(),
         "[{}] alpha-only worker must not claim a job that also requires beta \
-         (superset predicate: all capability_tags must be covered)",
+         (superset predicate: all required_plugins must be covered)",
         backend.name()
     );
 
     // 2. Beta-only worker: pre-filter rejects (required_plugin_key = alpha not
     //    in advertised) and the superset check would also fail independently.
     let claimed_by_beta_only = q
-        .claim_pending(&proc, 16, &[CapabilityTag::from("plugin.beta")])
+        .claim_pending(&proc, 16, &["plugin.beta".parse::<PluginKey>().unwrap()])
         .await
         .expect("claim beta-only");
     assert!(
@@ -1994,8 +2004,8 @@ pub async fn assert_job_dispatch_routes_by_tag_superset(backend: &dyn Backend) {
             &proc,
             16,
             &[
-                CapabilityTag::from("plugin.alpha"),
-                CapabilityTag::from("plugin.beta"),
+                "plugin.alpha".parse::<PluginKey>().unwrap(),
+                "plugin.beta".parse::<PluginKey>().unwrap(),
             ],
         )
         .await
@@ -2007,7 +2017,7 @@ pub async fn assert_job_dispatch_routes_by_tag_superset(backend: &dyn Backend) {
         backend.name()
     );
     assert_eq!(
-        claimed_by_both[0].required_plugin_key,
+        claimed_by_both[0].required_plugin_key.as_str(),
         "plugin.alpha",
         "[{}] claimed job must be the alpha-required one",
         backend.name()
@@ -2021,9 +2031,9 @@ pub async fn assert_job_dispatch_routes_by_tag_superset(backend: &dyn Backend) {
             &proc,
             16,
             &[
-                CapabilityTag::from("plugin.alpha"),
-                CapabilityTag::from("plugin.beta"),
-                CapabilityTag::from("plugin.gamma"),
+                "plugin.alpha".parse::<PluginKey>().unwrap(),
+                "plugin.beta".parse::<PluginKey>().unwrap(),
+                "plugin.gamma".parse::<PluginKey>().unwrap(),
             ],
         )
         .await
@@ -2041,15 +2051,15 @@ pub async fn assert_job_dispatch_routes_by_tag_superset(backend: &dyn Backend) {
         backend.name()
     );
     assert_eq!(
-        claimed_by_superset[0].required_plugin_key,
+        claimed_by_superset[0].required_plugin_key.as_str(),
         "plugin.alpha",
         "[{}] claimed job must be the alpha-required one",
         backend.name()
     );
 
     // 5. Empty advertised set → claims nothing — parity with SQLite + Postgres
-    //    which both short-circuit on empty advertised_tags.  Re-enqueue a
-    //    conforming job (capability_tags ⊇ {required_plugin_key}) to confirm
+    //    which both short-circuit on empty available_plugins.  Re-enqueue a
+    //    conforming job (required_plugins ⊇ {required_plugin_key}) to confirm
     //    it stays Pending.
     let job3 = make_job(0x62, "plugin.alpha", &["plugin.alpha", "plugin.beta"]);
     q.enqueue(&job3)
@@ -2236,7 +2246,7 @@ pub async fn assert_dedup_compose_rolls_back_on_id_collision(backend: &dyn Backe
     // No Start job must have been enqueued (rollback).
     let proc = [0x9Au8; 16];
     let enqueued = q
-        .claim_pending(&proc, 16, &[CapabilityTag::from("plugin.rb")])
+        .claim_pending(&proc, 16, &["plugin.rb".parse::<PluginKey>().unwrap()])
         .await
         .expect("claim_pending after failed compose");
     assert!(
@@ -2290,7 +2300,7 @@ pub async fn assert_dedup_compose_rejects_duplicate_job_id(backend: &dyn Backend
     //    queued job, still carrying the first execution id.
     let proc = [0xB1u8; 16];
     let claimed = q
-        .claim_pending(&proc, 16, &[CapabilityTag::from("plugin.jid")])
+        .claim_pending(&proc, 16, &["plugin.jid".parse::<PluginKey>().unwrap()])
         .await
         .expect("claim after failed compose");
     assert_eq!(

@@ -25,6 +25,7 @@
 
 use std::{sync::Arc, time::Duration};
 
+use nebula_core::PluginKey;
 use nebula_metrics::{
     MetricsRegistry,
     naming::{
@@ -32,7 +33,7 @@ use nebula_metrics::{
         orchestrator_dispatch_outcome, orchestrator_reclaim_outcome,
     },
 };
-use nebula_storage_port::dto::{CapabilityTag, JobDispatchMsg};
+use nebula_storage_port::dto::JobDispatchMsg;
 use nebula_storage_port::store::{JobDispatchQueue, ReclaimOutcome};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -72,10 +73,9 @@ pub const DEFAULT_MAX_RECLAIM_COUNT: u32 = 3;
 
 /// Capability-routed job-dispatch pull loop (ADR-0095).
 ///
-/// Claims [`JobDispatchQueue`] rows whose `required_plugin_key` is in
-/// `advertised_tags`, hands each to an [`ExecutionSink`], and fences the row
-/// dispatched or failed. A periodic sweep reclaims rows stuck in `Processing`
-/// after a crashed runner.
+/// Claims [`JobDispatchQueue`] rows whose `required_plugins ⊆ available_plugins`,
+/// hands each to an [`ExecutionSink`], and fences the row dispatched or failed.
+/// A periodic sweep reclaims rows stuck in `Processing` after a crashed runner.
 ///
 /// Construct with [`Orchestrator::new`] and optional builder methods, then
 /// call [`Orchestrator::run`] (or [`Orchestrator::spawn`]).
@@ -90,7 +90,7 @@ pub struct Orchestrator {
     /// truncate/pad of an arbitrary-length id, which would let two distinct
     /// workers collapse to the same token and ack each other's rows.
     processor_id: [u8; 16],
-    advertised_tags: Vec<CapabilityTag>,
+    available_plugins: Vec<PluginKey>,
     batch_size: u32,
     poll_interval: Duration,
     reclaim_after: Duration,
@@ -115,13 +115,13 @@ impl Orchestrator {
         queue: Arc<dyn JobDispatchQueue>,
         sink: Arc<dyn ExecutionSink>,
         processor_id: [u8; 16],
-        advertised_tags: Vec<CapabilityTag>,
+        available_plugins: Vec<PluginKey>,
     ) -> Self {
         Self {
             queue,
             sink,
             processor_id,
-            advertised_tags,
+            available_plugins,
             batch_size: DEFAULT_BATCH_SIZE,
             poll_interval: DEFAULT_POLL_INTERVAL,
             reclaim_after: DEFAULT_RECLAIM_AFTER,
@@ -203,7 +203,7 @@ impl Orchestrator {
             reclaim_after_ms = self.reclaim_after.as_millis() as u64,
             reclaim_interval_ms = self.reclaim_interval.as_millis() as u64,
             max_reclaim_count = self.max_reclaim_count,
-            advertised_tags = ?self.advertised_tags.iter().map(CapabilityTag::as_str).collect::<Vec<_>>(),
+            available_plugins = ?self.available_plugins.iter().map(PluginKey::as_str).collect::<Vec<_>>(),
             "orchestrator started (ADR-0095)"
         );
 
@@ -313,7 +313,7 @@ impl Orchestrator {
     async fn tick(&self, consecutive_errors: &mut u32) -> Option<Duration> {
         let claimed: Result<Vec<JobDispatchMsg>, String> = self
             .queue
-            .claim_pending(&self.processor_id, self.batch_size, &self.advertised_tags)
+            .claim_pending(&self.processor_id, self.batch_size, &self.available_plugins)
             .await
             .map_err(|e| e.to_string());
 
@@ -347,15 +347,13 @@ impl Orchestrator {
 
     async fn handle_entry(&self, msg: JobDispatchMsg) {
         // The queue routing predicate is enforced at claim time
-        // (`required_plugin_key ∈ advertised_tags`). This assert documents the
-        // port invariant in debug builds only — it is not a release guard.
+        // (`required_plugin_key ∈ available_plugins`). This assert documents
+        // the port invariant in debug builds only — it is not a release guard.
         debug_assert!(
-            self.advertised_tags
-                .iter()
-                .any(|t| t.as_str() == msg.required_plugin_key),
-            "claim routing invariant violated: required_plugin_key {:?} not in advertised_tags {:?}",
+            self.available_plugins.contains(&msg.required_plugin_key),
+            "claim routing invariant violated: required_plugin_key {:?} not in available_plugins {:?}",
             msg.required_plugin_key,
-            self.advertised_tags
+            self.available_plugins
         );
 
         let row_id = msg.id;

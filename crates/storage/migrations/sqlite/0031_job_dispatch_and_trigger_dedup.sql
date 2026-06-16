@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS port_job_dispatch_queue (
     event_id            TEXT,
     target_flavor_sha   TEXT NOT NULL DEFAULT '',
     required_plugin_key TEXT NOT NULL,
-    capability_tags     TEXT NOT NULL DEFAULT '[]',  -- JSON array
+    required_plugins    TEXT NOT NULL DEFAULT '[]',  -- JSON array of PluginKey strings
     w3c_traceparent     TEXT,
     reclaim_count       INTEGER NOT NULL DEFAULT 0,
     processed_by        BLOB,

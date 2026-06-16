@@ -8,13 +8,13 @@
 
 use std::time::Duration;
 
-use tokio::time::Instant;
-
+use nebula_core::PluginKey;
 use nebula_storage_port::dto::{
-    CapabilityTag, DispatchKind, DispatchOutcome, JobDispatchMsg, NewExecution, TriggerDedupRow,
+    DispatchKind, DispatchOutcome, JobDispatchMsg, NewExecution, TriggerDedupRow,
 };
 use nebula_storage_port::store::{JobDispatchQueue, ReclaimOutcome, TriggerDedupInbox};
 use nebula_storage_port::{Scope, StorageError};
+use tokio::time::Instant;
 
 use super::execution::{QueuedJob, SharedState, insert_created_row};
 
@@ -60,15 +60,15 @@ impl JobDispatchQueue for InMemoryJobDispatchQueue {
         Ok(())
     }
 
-    #[tracing::instrument(level = "debug", skip(self, advertised_tags), fields(batch_size))]
+    #[tracing::instrument(level = "debug", skip(self, available_plugins), fields(batch_size))]
     async fn claim_pending(
         &self,
         processor: &[u8; 16],
         batch_size: u32,
-        advertised_tags: &[CapabilityTag],
+        available_plugins: &[PluginKey],
     ) -> Result<Vec<JobDispatchMsg>, StorageError> {
         // Parity with SQLite + Postgres: an empty advertised set claims nothing.
-        if advertised_tags.is_empty() {
+        if available_plugins.is_empty() {
             return Ok(Vec::new());
         }
         let mut st = self.inner.lock();
@@ -77,20 +77,19 @@ impl JobDispatchQueue for InMemoryJobDispatchQueue {
         // Stable order so a bounded batch is deterministic across calls.
         //
         // Superset predicate: the worker may claim a job only when its
-        // advertised tags cover every tag in `capability_tags`.  The check is
-        // inside the parking_lot Mutex so the predicate + status flip are
-        // atomic (no TOCTOU window).  Empty `capability_tags` ⇒ `all()` is
-        // vacuously true ⇒ claimable by any non-empty advertised set (subset
-        // of anything).
+        // available plugins cover every plugin in `required_plugins`.  The
+        // check is inside the parking_lot Mutex so the predicate + status flip
+        // are atomic (no TOCTOU window).  Empty `required_plugins` ⇒ `all()`
+        // is vacuously true ⇒ claimable by any non-empty available set.
         let mut ids: Vec<[u8; 16]> = st
             .jobs
             .iter()
             .filter(|(_, q)| {
                 q.status == "Pending"
                     && q.msg
-                        .capability_tags
+                        .required_plugins
                         .iter()
-                        .all(|ct| advertised_tags.iter().any(|at| at.as_str() == ct.as_str()))
+                        .all(|rp| available_plugins.contains(rp))
             })
             .map(|(id, _)| *id)
             .collect();

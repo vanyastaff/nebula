@@ -7,7 +7,7 @@
 //! wires the trigger-to-execution fan-out path end-to-end:
 //!
 //! 1. Resolve routing from the [`ValidatedWorkflow`] (fail-fast before minting
-//!    an id): `required_plugin_key` + `capability_tags` + flavor SHA.
+//!    an id): `required_plugin_key` + `required_plugins` + flavor SHA.
 //! 2. Mint a new [`ExecutionId`] candidate and build the initial
 //!    [`ExecutionState`].
 //! 3. Build a [`JobDispatchMsg`] (Start command, routing key, etc.), a
@@ -75,8 +75,8 @@ use crate::daemon::routing::RoutingResolver;
 ///   be reached with an unvalidated definition.
 /// - [`TriggerDedupInbox`] — atomic dedup + execution-row materialise + job
 ///   enqueue, all in one transaction.
-/// - [`RoutingResolver`] — derive `required_plugin_key` + `target_flavor_sha`
-///   from the validated definition.
+/// - [`RoutingResolver`] — derive `required_plugin_key` + `required_plugins`
+///   + `target_flavor_sha` from the validated definition.
 /// - Identity fields captured at construction: `trigger_id`, `scope` — same
 ///   values on every `emit` call from this trigger context.
 #[derive(Clone)]
@@ -177,7 +177,7 @@ impl DurableExecutionEmitter {
             event_id.as_ref().map(IdempotencyKey::as_str),
             route.target_flavor_sha.clone(),
             route.required_plugin_key.clone(),
-            route.capability_tags.clone(),
+            route.required_plugins.clone(),
             None::<String>, // w3c_traceparent: future D1
             0,              // reclaim_count: 0 on first enqueue
         );

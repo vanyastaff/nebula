@@ -27,6 +27,7 @@ use std::{
 };
 
 use async_trait::async_trait;
+use nebula_core::PluginKey;
 use nebula_metrics::{
     MetricsRegistry,
     naming::{
@@ -38,7 +39,7 @@ use nebula_orchestrator::{ExecutionSink, ExecutionSinkError, Orchestrator};
 use nebula_storage::inmem::{InMemoryExecutionStore, InMemoryJobDispatchQueue};
 use nebula_storage_port::{
     Scope,
-    dto::{CapabilityTag, ControlCommand, JobDispatchMsg},
+    dto::{ControlCommand, JobDispatchMsg},
     store::JobDispatchQueue,
 };
 use tokio::sync::Notify;
@@ -67,7 +68,13 @@ fn scope() -> Scope {
 }
 
 /// Build a minimal [`JobDispatchMsg`] stamped with `row_id`.
+///
+/// `required_plugin_key` must be a valid `PluginKey` string (lowercase
+/// alphanumeric, hyphens, dots; no trailing hyphen).
 fn make_msg(row_id: u8, required_plugin_key: &str, execution_id: &str) -> JobDispatchMsg {
+    let key: PluginKey = required_plugin_key
+        .parse()
+        .expect("test plugin key must be valid");
     JobDispatchMsg::new(
         [row_id; 16],
         execution_id,
@@ -76,8 +83,8 @@ fn make_msg(row_id: u8, required_plugin_key: &str, execution_id: &str) -> JobDis
         serde_json::json!({}),
         None::<String>,
         "sha-abc",
-        required_plugin_key,
-        vec![CapabilityTag::from(required_plugin_key)],
+        key.clone(),
+        vec![key],
         None::<String>,
         0,
     )
@@ -299,7 +306,7 @@ async fn routes_by_tag() {
         queue.clone() as Arc<dyn JobDispatchQueue>,
         spy.clone() as Arc<dyn ExecutionSink>,
         proc16(b"proc-alpha"),
-        vec![CapabilityTag::from("alpha")],
+        vec!["alpha".parse::<PluginKey>().unwrap()],
     )
     .with_batch_size(8)
     .with_poll_interval(Duration::from_millis(10));
@@ -324,12 +331,13 @@ async fn routes_by_tag() {
     let seen = spy.snapshot();
     assert_eq!(seen.len(), 1, "spy must see exactly one job");
     assert_eq!(
-        seen[0].required_plugin_key, "alpha",
+        seen[0].required_plugin_key.as_str(),
+        "alpha",
         "dispatched job must be the alpha job"
     );
 
     // Beta job must still be Pending — claimable by a beta-capable worker.
-    let beta_tags = vec![CapabilityTag::from("beta")];
+    let beta_tags = vec!["beta".parse::<PluginKey>().unwrap()];
     let leftover = queue
         .claim_pending(&proc16(b"beta-worker-"), 8, &beta_tags)
         .await
@@ -339,7 +347,7 @@ async fn routes_by_tag() {
         1,
         "beta job must still be Pending after alpha-only orchestrator ran"
     );
-    assert_eq!(leftover[0].required_plugin_key, "beta");
+    assert_eq!(leftover[0].required_plugin_key.as_str(), "beta");
 }
 
 // ── test 2: claim_route_sink_mark_dispatched ──────────────────────────────────
@@ -362,7 +370,7 @@ async fn claim_route_sink_mark_dispatched() {
         queue.clone() as Arc<dyn JobDispatchQueue>,
         spy.clone() as Arc<dyn ExecutionSink>,
         proc16(b"proc-1"),
-        vec![CapabilityTag::from("plugin-a")],
+        vec!["plugin-a".parse::<PluginKey>().unwrap()],
     )
     .with_batch_size(4)
     .with_poll_interval(Duration::from_millis(10))
@@ -399,7 +407,7 @@ async fn claim_route_sink_mark_dispatched() {
     assert_eq!(dispatched, 1, "dispatched counter must be 1");
 
     // Row is terminal — a fresh processor finds nothing Pending.
-    let tags = vec![CapabilityTag::from("plugin-a")];
+    let tags = vec!["plugin-a".parse::<PluginKey>().unwrap()];
     let leftover = queue
         .claim_pending(&proc16(b"fresh-proc--"), 8, &tags)
         .await
@@ -436,7 +444,7 @@ async fn dispatched_row_not_reclaimed() {
         queue.clone() as Arc<dyn JobDispatchQueue>,
         spy.clone() as Arc<dyn ExecutionSink>,
         proc16(b"proc-nd"),
-        vec![CapabilityTag::from("plugin-b")],
+        vec!["plugin-b".parse::<PluginKey>().unwrap()],
     )
     .with_batch_size(4)
     .with_poll_interval(Duration::from_millis(10));
@@ -464,7 +472,7 @@ async fn dispatched_row_not_reclaimed() {
 
     // Second processor sees nothing — the row is Dispatched (terminal) and
     // must not be re-served via claim_pending.
-    let tags = vec![CapabilityTag::from("plugin-b")];
+    let tags = vec!["plugin-b".parse::<PluginKey>().unwrap()];
     let second = queue
         .claim_pending(&proc16(b"proc-nd-2---"), 8, &tags)
         .await
@@ -507,7 +515,7 @@ async fn reclaim_during_slow_sink_is_at_least_once() {
         .await
         .unwrap();
 
-    let tags = vec![CapabilityTag::from("plugin-b2")];
+    let tags = vec!["plugin-b2".parse::<PluginKey>().unwrap()];
     let proc_a = proc16(b"proc-aloe-a-");
     let proc_b = proc16(b"proc-aloe-b-");
 
@@ -616,7 +624,7 @@ async fn sink_failure_marks_failed() {
         queue.clone() as Arc<dyn JobDispatchQueue>,
         spy.clone() as Arc<dyn ExecutionSink>,
         proc16(b"proc-fail---"),
-        vec![CapabilityTag::from("plugin-c")],
+        vec!["plugin-c".parse::<PluginKey>().unwrap()],
     )
     .with_batch_size(4)
     .with_poll_interval(Duration::from_millis(10))
@@ -653,7 +661,7 @@ async fn sink_failure_marks_failed() {
     assert_eq!(failed, 1, "failed counter must be 1");
 
     // Failed row must not be re-served by a subsequent claim.
-    let tags = vec![CapabilityTag::from("plugin-c")];
+    let tags = vec!["plugin-c".parse::<PluginKey>().unwrap()];
     let leftover = queue
         .claim_pending(&proc16(b"other-proc--"), 8, &tags)
         .await
@@ -685,7 +693,7 @@ async fn reclaim_recovers_crashed() {
         .unwrap();
 
     // Claim the row without marking it — simulates a crashed runner.
-    let tags = vec![CapabilityTag::from("plugin-d")];
+    let tags = vec!["plugin-d".parse::<PluginKey>().unwrap()];
     let claimed = queue
         .claim_pending(&proc16(b"crashed-proc"), 1, &tags)
         .await
@@ -755,7 +763,7 @@ async fn reclaim_recovers_crashed() {
     let queue2 = make_queue();
     let spy2 = RecordingSink::new();
     let registry2 = MetricsRegistry::new();
-    let tags2 = vec![CapabilityTag::from("plugin-d2")];
+    let tags2 = vec!["plugin-d2".parse::<PluginKey>().unwrap()];
 
     queue2
         .enqueue(&make_msg(41, "plugin-d2", "exec-5"))
@@ -860,7 +868,7 @@ async fn graceful_shutdown_flushes_in_flight_dispatch() {
         .await
         .unwrap();
 
-    let tags = vec![CapabilityTag::from("plugin-e")];
+    let tags = vec!["plugin-e".parse::<PluginKey>().unwrap()];
     let shutdown = CancellationToken::new();
 
     // Pre-register the `Notified` future BEFORE spawning the orchestrator so
@@ -968,7 +976,7 @@ async fn graceful_shutdown_flushes_multi_row_batch() {
         .await
         .unwrap();
 
-    let tags = vec![CapabilityTag::from("plugin-f")];
+    let tags = vec!["plugin-f".parse::<PluginKey>().unwrap()];
     let shutdown = CancellationToken::new();
 
     // Pre-register `entered_fut` BEFORE spawning — `notify_one()` inside

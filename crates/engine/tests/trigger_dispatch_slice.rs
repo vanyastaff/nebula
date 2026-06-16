@@ -36,7 +36,7 @@ use nebula_action::{
     ActionError, ActionMetadata, ExecutionEmitter, IdempotencyKey, action::Action,
     result::ActionResult, stateless::StatelessAction,
 };
-use nebula_core::{Dependencies, action_key, id::ExecutionId, node_key};
+use nebula_core::{Dependencies, PluginKey, action_key, id::ExecutionId, node_key};
 use nebula_engine::{
     ActionExecutor, ActionRegistry, ActionRuntime, DataPassingPolicy, EngineExecutionSink,
     InProcessRunner, WorkflowEngine,
@@ -50,7 +50,7 @@ use nebula_storage::{
 };
 use nebula_storage_port::{
     Scope,
-    dto::{CapabilityTag, ControlCommand, JobDispatchMsg, WorkflowVersionRecord},
+    dto::{ControlCommand, JobDispatchMsg, WorkflowVersionRecord},
     store::{ExecutionStore, JobDispatchQueue, TriggerDedupInbox, WorkflowVersionStore},
 };
 use nebula_workflow::{
@@ -306,6 +306,7 @@ async fn sink_dispatch_drives_resume_execution() {
     .await;
 
     let sink = EngineExecutionSink::new(Arc::clone(&engine), stores.execution.clone());
+    let test_plugin_key: PluginKey = "test.plugin".parse().unwrap();
     let msg = JobDispatchMsg::new(
         [42u8; 16],
         execution_id.to_string(),
@@ -314,8 +315,8 @@ async fn sink_dispatch_drives_resume_execution() {
         serde_json::json!({}),
         None::<String>,
         "sha-abc",
-        "test.plugin",
-        vec![CapabilityTag::from("test.plugin")],
+        test_plugin_key.clone(),
+        vec![test_plugin_key],
         None::<String>,
         0,
     );
@@ -356,6 +357,7 @@ async fn sink_dispatch_redelivery_is_idempotent() {
     persist_created(&stores, workflow_id, execution_id, serde_json::json!({})).await;
 
     let sink = EngineExecutionSink::new(Arc::clone(&engine), stores.execution.clone());
+    let test_plugin_key: PluginKey = "test.plugin".parse().unwrap();
     let msg = JobDispatchMsg::new(
         [7u8; 16],
         execution_id.to_string(),
@@ -364,8 +366,8 @@ async fn sink_dispatch_redelivery_is_idempotent() {
         serde_json::json!({}),
         None::<String>,
         "sha-abc",
-        "test.plugin",
-        vec![CapabilityTag::from("test.plugin")],
+        test_plugin_key.clone(),
+        vec![test_plugin_key],
         None::<String>,
         0,
     );
@@ -423,7 +425,7 @@ async fn make_emitter(
 ///  - `DispatchKind::Dispatched` (returned as Ok(execution_id))
 ///  - A `Created` execution row in the store
 ///  - Exactly one Start row in the job-dispatch queue with the correct routing
-///    fields (`required_plugin_key` and exact `capability_tags`)
+///    fields (`required_plugin_key` and exact `required_plugins`)
 #[tokio::test(start_paused = true)]
 async fn emitter_dispatched_creates_row_and_enqueues_start() {
     let stores = TestStores::new();
@@ -450,8 +452,9 @@ async fn emitter_dispatched_creates_row_and_enqueues_start() {
     );
 
     // Exactly one Start job in the queue, claimable by the test plugin key.
+    let plugin_key: PluginKey = TEST_PLUGIN_KEY.parse().unwrap();
     let jobs = queue
-        .claim_pending(&proc16(1), 10, &[CapabilityTag::from(TEST_PLUGIN_KEY)])
+        .claim_pending(&proc16(1), 10, &[plugin_key])
         .await
         .expect("claim_pending must succeed");
     assert_eq!(
@@ -472,19 +475,21 @@ async fn emitter_dispatched_creates_row_and_enqueues_start() {
 
     // The route written into the job must match the exact expected values.
     // The echo workflow has one trigger binding (TEST_PLUGIN_KEY) and one
-    // enabled node (TEST_PLUGIN_KEY), so capability_tags = [TEST_PLUGIN_KEY]
+    // enabled node (TEST_PLUGIN_KEY), so required_plugins = [TEST_PLUGIN_KEY]
     // (deduplicated).
     assert_eq!(
-        jobs[0].required_plugin_key, TEST_PLUGIN_KEY,
+        jobs[0].required_plugin_key.as_str(),
+        TEST_PLUGIN_KEY,
         "required_plugin_key on enqueued job must equal TEST_PLUGIN_KEY"
     );
-    let expected_tags = vec![CapabilityTag::from(TEST_PLUGIN_KEY)];
+    let expected_key: PluginKey = TEST_PLUGIN_KEY.parse().unwrap();
+    let expected_plugins = vec![expected_key];
     assert_eq!(
-        jobs[0].capability_tags, expected_tags,
-        "capability_tags on enqueued job must equal exactly {{TEST_PLUGIN_KEY}}; \
+        jobs[0].required_plugins, expected_plugins,
+        "required_plugins on enqueued job must equal exactly {{TEST_PLUGIN_KEY}}; \
          trigger and node share the same plugin key so dedup yields one entry. \
          got: {:?}",
-        jobs[0].capability_tags
+        jobs[0].required_plugins
     );
 }
 
@@ -518,8 +523,9 @@ async fn emitter_duplicate_event_id_no_second_row() {
     );
 
     // Only one Start job must be in the queue (the duplicate write is a no-op).
+    let plugin_key2: PluginKey = TEST_PLUGIN_KEY.parse().unwrap();
     let jobs = queue
-        .claim_pending(&proc16(2), 10, &[CapabilityTag::from(TEST_PLUGIN_KEY)])
+        .claim_pending(&proc16(2), 10, &[plugin_key2])
         .await
         .expect("claim_pending must succeed");
     assert_eq!(
@@ -591,11 +597,12 @@ async fn trigger_dispatch_end_to_end_real_engine_resume() {
         stores.execution.clone() as Arc<dyn ExecutionStore>,
     ));
     let cancel = CancellationToken::new();
+    let orch_plugin_key: PluginKey = TEST_PLUGIN_KEY.parse().unwrap();
     let orch = Orchestrator::new(
         Arc::clone(&queue) as Arc<dyn JobDispatchQueue>,
         sink as Arc<dyn ExecutionSink>,
         proc16(0xAA),
-        vec![CapabilityTag::from(TEST_PLUGIN_KEY)],
+        vec![orch_plugin_key],
     );
 
     let cancel_clone = cancel.clone();
