@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 
 use crate::{
-    definition::{CURRENT_SCHEMA_VERSION, RetryConfig, TriggerDefinition, WorkflowDefinition},
+    definition::{CURRENT_SCHEMA_VERSION, RetryConfig, WorkflowDefinition},
     error::WorkflowError,
     graph::DependencyGraph,
     node::ParamValue,
@@ -134,20 +134,15 @@ pub fn validate_workflow(definition: &WorkflowDefinition) -> Vec<WorkflowError> 
         });
     }
 
-    // 7. Check trigger configuration
-    if let Some(trigger) = &definition.trigger {
-        match trigger {
-            TriggerDefinition::Cron { expression } if expression.is_empty() => {
-                errors.push(WorkflowError::InvalidTrigger {
-                    reason: "cron expression must not be empty".into(),
-                });
-            },
-            TriggerDefinition::Webhook { path, .. } if !path.starts_with('/') => {
-                errors.push(WorkflowError::InvalidTrigger {
-                    reason: format!("webhook path must start with '/', got: {path:?}"),
-                });
-            },
-            _ => {},
+    // 7. Check trigger bindings for duplicate ids within the workflow.
+    // Transport-specific config (cron expression format, webhook path) is the
+    // responsibility of the trigger action at load time, not this crate.
+    let mut seen_trigger_ids = HashSet::new();
+    for binding in &definition.trigger_bindings {
+        if !seen_trigger_ids.insert(binding.id.clone()) {
+            errors.push(WorkflowError::InvalidTrigger {
+                reason: format!("duplicate trigger binding id: {}", binding.id),
+            });
         }
     }
 
@@ -244,7 +239,7 @@ mod tests {
     use crate::{
         Version,
         connection::Connection,
-        definition::{RetryConfig, WorkflowConfig, WorkflowDefinition},
+        definition::{CURRENT_SCHEMA_VERSION, RetryConfig, WorkflowConfig, WorkflowDefinition},
         node::{NodeDefinition, ParamValue},
     };
 
@@ -263,18 +258,18 @@ mod tests {
             connections,
             variables: HashMap::new(),
             config: WorkflowConfig::default(),
-            trigger: None,
+            trigger_bindings: Vec::new(),
             tags: Vec::new(),
             created_at: now,
             updated_at: now,
             owner_id: None,
             ui_metadata: None,
-            schema_version: 1,
+            schema_version: CURRENT_SCHEMA_VERSION,
         }
     }
 
     fn node(id: NodeKey) -> NodeDefinition {
-        NodeDefinition::new(id, "n", "n").unwrap()
+        NodeDefinition::new(id, "n", "core", "n").unwrap()
     }
 
     #[test]
@@ -390,68 +385,42 @@ mod tests {
     }
 
     #[test]
-    fn trigger_validation_rejects_invalid_webhook_path() {
+    fn trigger_validation_rejects_duplicate_binding_id() {
+        use crate::definition::TriggerBinding;
         let a = node_key!("a");
-        let mut def = make_definition("webhook-test", vec![node(a)], vec![]);
-        def.trigger = Some(TriggerDefinition::Webhook {
-            method: "POST".into(),
-            path: "no-leading-slash".into(),
-        });
+        let mut def = make_definition("dup-trigger", vec![node(a)], vec![]);
+        def.trigger_bindings = vec![
+            TriggerBinding::new(node_key!("t1"), "scheduler", "cron.schedule").unwrap(),
+            TriggerBinding::new(node_key!("t1"), "scheduler", "cron.schedule").unwrap(), // duplicate id
+        ];
         let errors = validate_workflow(&def);
         assert!(
             errors
                 .iter()
                 .any(|e| matches!(e, WorkflowError::InvalidTrigger { .. })),
-            "expected InvalidTrigger, got: {errors:?}"
+            "expected InvalidTrigger for duplicate binding id, got: {errors:?}"
         );
     }
 
     #[test]
-    fn trigger_validation_rejects_empty_cron_expression() {
+    fn trigger_validation_accepts_distinct_bindings() {
+        use crate::definition::TriggerBinding;
         let a = node_key!("a");
-        let mut def = make_definition("cron-test", vec![node(a)], vec![]);
-        def.trigger = Some(TriggerDefinition::Cron {
-            expression: String::new(),
-        });
-        let errors = validate_workflow(&def);
-        assert!(
-            errors
-                .iter()
-                .any(|e| matches!(e, WorkflowError::InvalidTrigger { .. })),
-            "expected InvalidTrigger, got: {errors:?}"
-        );
-    }
-
-    #[test]
-    fn trigger_validation_accepts_valid_webhook() {
-        let a = node_key!("a");
-        let mut def = make_definition("webhook-ok", vec![node(a)], vec![]);
-        def.trigger = Some(TriggerDefinition::Webhook {
-            method: "POST".into(),
-            path: "/hooks/incoming".into(),
-        });
+        let mut def = make_definition("distinct-triggers", vec![node(a)], vec![]);
+        def.trigger_bindings = vec![
+            TriggerBinding::new(node_key!("every-hour"), "scheduler", "cron.schedule")
+                .unwrap()
+                .with_config(serde_json::json!({"expression": "0 * * * *"})),
+            TriggerBinding::new(node_key!("on-push"), "http", "http.webhook")
+                .unwrap()
+                .with_config(serde_json::json!({"path": "/hooks/push"})),
+        ];
         let errors = validate_workflow(&def);
         assert!(
             !errors
                 .iter()
                 .any(|e| matches!(e, WorkflowError::InvalidTrigger { .. })),
-            "expected no InvalidTrigger, got: {errors:?}"
-        );
-    }
-
-    #[test]
-    fn trigger_validation_accepts_valid_cron() {
-        let a = node_key!("a");
-        let mut def = make_definition("cron-ok", vec![node(a)], vec![]);
-        def.trigger = Some(TriggerDefinition::Cron {
-            expression: "0 */5 * * *".into(),
-        });
-        let errors = validate_workflow(&def);
-        assert!(
-            !errors
-                .iter()
-                .any(|e| matches!(e, WorkflowError::InvalidTrigger { .. })),
-            "expected no InvalidTrigger, got: {errors:?}"
+            "expected no InvalidTrigger for distinct binding ids, got: {errors:?}"
         );
     }
 

@@ -5252,7 +5252,8 @@ mod tests {
     use nebula_storage_port::StorageError;
     use nebula_storage_port::store::{ExecutionStore, NodeResultStore, WorkflowVersionStore};
     use nebula_workflow::{
-        Connection, ErrorStrategy, NodeDefinition, Version, WorkflowConfig, WorkflowDefinition,
+        CURRENT_SCHEMA_VERSION, Connection, ErrorStrategy, NodeDefinition, Version, WorkflowConfig,
+        WorkflowDefinition,
     };
 
     use super::*;
@@ -5363,13 +5364,13 @@ mod tests {
             connections,
             variables: HashMap::new(),
             config: WorkflowConfig::default(),
-            trigger: None,
+            trigger_bindings: Vec::new(),
             tags: Vec::new(),
             created_at: now,
             updated_at: now,
             owner_id: None,
             ui_metadata: None,
-            schema_version: 1,
+            schema_version: CURRENT_SCHEMA_VERSION,
         }
     }
 
@@ -5388,13 +5389,13 @@ mod tests {
             connections,
             variables: HashMap::new(),
             config,
-            trigger: None,
+            trigger_bindings: Vec::new(),
             tags: Vec::new(),
             created_at: now,
             updated_at: now,
             owner_id: None,
             ui_metadata: None,
-            schema_version: 1,
+            schema_version: CURRENT_SCHEMA_VERSION,
         }
     }
 
@@ -5645,7 +5646,7 @@ mod tests {
 
         let n = node_key!("n");
         let wf = make_workflow(
-            vec![NodeDefinition::new(n.clone(), "echo", "echo").unwrap()],
+            vec![NodeDefinition::new(n.clone(), "echo", "core", "echo").unwrap()],
             vec![],
         );
 
@@ -5672,8 +5673,8 @@ mod tests {
         let n2 = node_key!("n2");
         let wf = make_workflow(
             vec![
-                NodeDefinition::new(n1.clone(), "A", "echo").unwrap(),
-                NodeDefinition::new(n2.clone(), "B", "echo").unwrap(),
+                NodeDefinition::new(n1.clone(), "A", "core", "echo").unwrap(),
+                NodeDefinition::new(n2.clone(), "B", "core", "echo").unwrap(),
             ],
             vec![Connection::new(n1.clone(), n2.clone())],
         );
@@ -5705,10 +5706,10 @@ mod tests {
         let d = node_key!("d");
         let wf = make_workflow(
             vec![
-                NodeDefinition::new(a.clone(), "A", "echo").unwrap(),
-                NodeDefinition::new(b.clone(), "B", "echo").unwrap(),
-                NodeDefinition::new(c.clone(), "C", "echo").unwrap(),
-                NodeDefinition::new(d.clone(), "D", "echo").unwrap(),
+                NodeDefinition::new(a.clone(), "A", "core", "echo").unwrap(),
+                NodeDefinition::new(b.clone(), "B", "core", "echo").unwrap(),
+                NodeDefinition::new(c.clone(), "C", "core", "echo").unwrap(),
+                NodeDefinition::new(d.clone(), "D", "core", "echo").unwrap(),
             ],
             vec![
                 Connection::new(a.clone(), b.clone()),
@@ -5752,9 +5753,9 @@ mod tests {
         let n3 = node_key!("n3");
         let wf = make_workflow(
             vec![
-                NodeDefinition::new(n1.clone(), "A", "echo").unwrap(),
-                NodeDefinition::new(n2.clone(), "B", "fail").unwrap(),
-                NodeDefinition::new(n3.clone(), "C", "echo").unwrap(),
+                NodeDefinition::new(n1.clone(), "A", "core", "echo").unwrap(),
+                NodeDefinition::new(n2.clone(), "B", "core", "fail").unwrap(),
+                NodeDefinition::new(n3.clone(), "C", "core", "echo").unwrap(),
             ],
             vec![
                 Connection::new(n1.clone(), n2.clone()),
@@ -5780,7 +5781,7 @@ mod tests {
 
         let n = node_key!("n");
         let wf = make_workflow(
-            vec![NodeDefinition::new(n, "A", "unknown").unwrap()],
+            vec![NodeDefinition::new(n, "A", "core", "unknown").unwrap()],
             vec![],
         );
 
@@ -5818,7 +5819,7 @@ mod tests {
 
         let n = node_key!("n");
         let wf = make_workflow(
-            vec![NodeDefinition::new(n, "echo", "echo").unwrap()],
+            vec![NodeDefinition::new(n, "echo", "core", "echo").unwrap()],
             vec![],
         );
 
@@ -5855,7 +5856,7 @@ mod tests {
 
         let n = node_key!("n");
         let wf = make_workflow(
-            vec![NodeDefinition::new(n, "fail", "fail").unwrap()],
+            vec![NodeDefinition::new(n, "fail", "core", "fail").unwrap()],
             vec![],
         );
 
@@ -5987,10 +5988,10 @@ mod tests {
         let d = node_key!("d");
         let wf = make_workflow(
             vec![
-                NodeDefinition::new(a.clone(), "A", "branch").unwrap(),
-                NodeDefinition::new(b.clone(), "B", "echo").unwrap(),
-                NodeDefinition::new(c.clone(), "C", "echo").unwrap(),
-                NodeDefinition::new(d.clone(), "D", "echo").unwrap(),
+                NodeDefinition::new(a.clone(), "A", "core", "branch").unwrap(),
+                NodeDefinition::new(b.clone(), "B", "core", "echo").unwrap(),
+                NodeDefinition::new(c.clone(), "C", "core", "echo").unwrap(),
+                NodeDefinition::new(d.clone(), "D", "core", "echo").unwrap(),
             ],
             vec![
                 Connection::new(a.clone(), b.clone()).with_from_port("true"),
@@ -6036,9 +6037,9 @@ mod tests {
         let c = node_key!("c");
         let wf = make_workflow(
             vec![
-                NodeDefinition::new(a.clone(), "A", "echo").unwrap(),
-                NodeDefinition::new(b.clone(), "B", "skip").unwrap(),
-                NodeDefinition::new(c.clone(), "C", "echo").unwrap(),
+                NodeDefinition::new(a.clone(), "A", "core", "echo").unwrap(),
+                NodeDefinition::new(b.clone(), "B", "core", "skip").unwrap(),
+                NodeDefinition::new(c.clone(), "C", "core", "echo").unwrap(),
             ],
             vec![
                 Connection::new(a.clone(), b.clone()),
@@ -6081,9 +6082,9 @@ mod tests {
         let c = node_key!("c");
         let wf = make_workflow(
             vec![
-                NodeDefinition::new(a.clone(), "A", "echo").unwrap(),
-                NodeDefinition::new(b.clone(), "B", "fail").unwrap(),
-                NodeDefinition::new(c.clone(), "C", "echo").unwrap(),
+                NodeDefinition::new(a.clone(), "A", "core", "echo").unwrap(),
+                NodeDefinition::new(b.clone(), "B", "core", "fail").unwrap(),
+                NodeDefinition::new(c.clone(), "C", "core", "echo").unwrap(),
             ],
             vec![
                 Connection::new(a.clone(), b.clone()),
@@ -6127,9 +6128,9 @@ mod tests {
         let c = node_key!("c");
         let wf = make_workflow(
             vec![
-                NodeDefinition::new(a.clone(), "A", "echo").unwrap(),
-                NodeDefinition::new(b.clone(), "B", "fail").unwrap(),
-                NodeDefinition::new(c.clone(), "C", "echo").unwrap(),
+                NodeDefinition::new(a.clone(), "A", "core", "echo").unwrap(),
+                NodeDefinition::new(b.clone(), "B", "core", "fail").unwrap(),
+                NodeDefinition::new(c.clone(), "C", "core", "echo").unwrap(),
             ],
             vec![
                 Connection::new(a.clone(), b.clone()),
@@ -6163,8 +6164,8 @@ mod tests {
         let b = node_key!("b");
         let wf = make_workflow(
             vec![
-                NodeDefinition::new(a.clone(), "A", "echo").unwrap(),
-                NodeDefinition::new(b.clone(), "B", "echo").unwrap(),
+                NodeDefinition::new(a.clone(), "A", "core", "echo").unwrap(),
+                NodeDefinition::new(b.clone(), "B", "core", "echo").unwrap(),
             ],
             vec![Connection::new(a.clone(), b.clone())],
         );
@@ -6198,10 +6199,10 @@ mod tests {
         let d = node_key!("d");
         let wf = make_workflow(
             vec![
-                NodeDefinition::new(a.clone(), "A", "echo").unwrap(),
-                NodeDefinition::new(b.clone(), "B", "echo").unwrap(),
-                NodeDefinition::new(c.clone(), "C", "echo").unwrap(),
-                NodeDefinition::new(d.clone(), "D", "echo").unwrap(),
+                NodeDefinition::new(a.clone(), "A", "core", "echo").unwrap(),
+                NodeDefinition::new(b.clone(), "B", "core", "echo").unwrap(),
+                NodeDefinition::new(c.clone(), "C", "core", "echo").unwrap(),
+                NodeDefinition::new(d.clone(), "D", "core", "echo").unwrap(),
             ],
             vec![
                 Connection::new(a.clone(), b.clone()), // Always
@@ -6242,7 +6243,7 @@ mod tests {
 
         let n = node_key!("n");
         let wf = make_workflow(
-            vec![NodeDefinition::new(n.clone(), "echo", "echo").unwrap()],
+            vec![NodeDefinition::new(n.clone(), "echo", "core", "echo").unwrap()],
             vec![],
         );
 
@@ -6285,7 +6286,7 @@ mod tests {
 
         let n = node_key!("n");
         let wf = make_workflow(
-            vec![NodeDefinition::new(n, "fail", "fail").unwrap()],
+            vec![NodeDefinition::new(n, "fail", "core", "fail").unwrap()],
             vec![],
         );
 
@@ -6319,8 +6320,8 @@ mod tests {
         let n2 = node_key!("n2");
         let wf = make_workflow(
             vec![
-                NodeDefinition::new(n1.clone(), "A", "echo").unwrap(),
-                NodeDefinition::new(n2.clone(), "B", "echo").unwrap(),
+                NodeDefinition::new(n1.clone(), "A", "core", "echo").unwrap(),
+                NodeDefinition::new(n2.clone(), "B", "core", "echo").unwrap(),
             ],
             vec![Connection::new(n1.clone(), n2.clone())],
         );
@@ -6370,8 +6371,8 @@ mod tests {
         let b = node_key!("b");
         let wf = make_workflow(
             vec![
-                NodeDefinition::new(a.clone(), "Slow", "slow").unwrap(),
-                NodeDefinition::new(b.clone(), "B", "echo").unwrap(),
+                NodeDefinition::new(a.clone(), "Slow", "core", "slow").unwrap(),
+                NodeDefinition::new(b.clone(), "B", "core", "echo").unwrap(),
             ],
             vec![Connection::new(a, b)],
         );
@@ -6403,8 +6404,8 @@ mod tests {
         let b = node_key!("b");
         let wf = make_workflow(
             vec![
-                NodeDefinition::new(a.clone(), "A", "echo").unwrap(),
-                NodeDefinition::new(b.clone(), "B", "echo").unwrap(),
+                NodeDefinition::new(a.clone(), "A", "core", "echo").unwrap(),
+                NodeDefinition::new(b.clone(), "B", "core", "echo").unwrap(),
             ],
             vec![Connection::new(a, b)],
         );
@@ -6452,10 +6453,10 @@ mod tests {
 
         let wf = make_workflow_with_config(
             vec![
-                NodeDefinition::new(entry.clone(), "Entry", "echo").unwrap(),
-                NodeDefinition::new(fail_node.clone(), "Fail", "fail").unwrap(),
-                NodeDefinition::new(b.clone(), "B", "echo").unwrap(),
-                NodeDefinition::new(c.clone(), "C", "echo").unwrap(),
+                NodeDefinition::new(entry.clone(), "Entry", "core", "echo").unwrap(),
+                NodeDefinition::new(fail_node.clone(), "Fail", "core", "fail").unwrap(),
+                NodeDefinition::new(b.clone(), "B", "core", "echo").unwrap(),
+                NodeDefinition::new(c.clone(), "C", "core", "echo").unwrap(),
             ],
             vec![
                 Connection::new(entry.clone(), fail_node.clone()),
@@ -6506,8 +6507,8 @@ mod tests {
 
         let wf = make_workflow_with_config(
             vec![
-                NodeDefinition::new(a.clone(), "A", "fail").unwrap(),
-                NodeDefinition::new(b.clone(), "B", "echo").unwrap(),
+                NodeDefinition::new(a.clone(), "A", "core", "fail").unwrap(),
+                NodeDefinition::new(b.clone(), "B", "core", "echo").unwrap(),
             ],
             vec![Connection::new(a.clone(), b.clone())],
             config,
@@ -6568,7 +6569,7 @@ mod tests {
         let stores = TestStores::new();
         let n = node_key!("n");
         let wf = make_workflow(
-            vec![NodeDefinition::new(n, "echo", "echo").unwrap()],
+            vec![NodeDefinition::new(n, "echo", "core", "echo").unwrap()],
             vec![],
         );
         stores.save_workflow(&wf).await;
@@ -6595,7 +6596,7 @@ mod tests {
         let (engine, _) = make_engine(registry);
         let n = node_key!("n");
         let wf = make_workflow(
-            vec![NodeDefinition::new(n, "echo", "echo").unwrap()],
+            vec![NodeDefinition::new(n, "echo", "core", "echo").unwrap()],
             vec![],
         );
         stores.save_workflow(&wf).await;
@@ -6638,9 +6639,9 @@ mod tests {
         let n3 = node_key!("n3");
         let wf = make_workflow(
             vec![
-                NodeDefinition::new(n1.clone(), "A", "echo").unwrap(),
-                NodeDefinition::new(n2.clone(), "B", "echo").unwrap(),
-                NodeDefinition::new(n3.clone(), "C", "echo").unwrap(),
+                NodeDefinition::new(n1.clone(), "A", "core", "echo").unwrap(),
+                NodeDefinition::new(n2.clone(), "B", "core", "echo").unwrap(),
+                NodeDefinition::new(n3.clone(), "C", "core", "echo").unwrap(),
             ],
             vec![
                 Connection::new(n1.clone(), n2.clone()),
@@ -6744,7 +6745,7 @@ mod tests {
         let b = node_key!("b");
         let wf = make_workflow_with_config(
             vec![
-                NodeDefinition::new(b.clone(), "B", "echo")
+                NodeDefinition::new(b.clone(), "B", "core", "echo")
                     .unwrap()
                     .with_parameter("bad", ParamValue::template("Hello {{ unclosed")),
             ],
@@ -7016,8 +7017,8 @@ mod tests {
         let b = node_key!("b");
         let wf = make_workflow_with_config(
             vec![
-                NodeDefinition::new(a.clone(), "A", "fail").unwrap(),
-                NodeDefinition::new(b.clone(), "B", "echo").unwrap(),
+                NodeDefinition::new(a.clone(), "A", "core", "fail").unwrap(),
+                NodeDefinition::new(b.clone(), "B", "core", "echo").unwrap(),
             ],
             vec![Connection::new(a.clone(), b.clone()).with_from_port("error")],
             WorkflowConfig {
@@ -7106,7 +7107,7 @@ mod tests {
 
         let a = node_key!("a");
         let wf = make_workflow_with_config(
-            vec![NodeDefinition::new(a.clone(), "A", "fail").unwrap()],
+            vec![NodeDefinition::new(a.clone(), "A", "core", "fail").unwrap()],
             vec![],
             WorkflowConfig {
                 error_strategy: ErrorStrategy::IgnoreErrors,
@@ -7182,10 +7183,10 @@ mod tests {
         let b = node_key!("b");
         let wf = make_workflow_with_config(
             vec![
-                NodeDefinition::new(a.clone(), "A", "echo")
+                NodeDefinition::new(a.clone(), "A", "core", "echo")
                     .unwrap()
                     .with_parameter("bad", ParamValue::template("Hello {{ unclosed")),
-                NodeDefinition::new(b.clone(), "B", "echo").unwrap(),
+                NodeDefinition::new(b.clone(), "B", "core", "echo").unwrap(),
             ],
             vec![Connection::new(a.clone(), b.clone()).with_from_port("error")],
             WorkflowConfig {
@@ -7259,8 +7260,8 @@ mod tests {
         let b = node_key!("b");
         let wf = make_workflow_with_config(
             vec![
-                NodeDefinition::new(a.clone(), "A", "fail").unwrap(),
-                NodeDefinition::new(b.clone(), "B", "echo").unwrap(),
+                NodeDefinition::new(a.clone(), "A", "core", "fail").unwrap(),
+                NodeDefinition::new(b.clone(), "B", "core", "echo").unwrap(),
             ],
             vec![Connection::new(a.clone(), b.clone()).with_from_port("error")],
             WorkflowConfig {
@@ -7363,7 +7364,7 @@ mod tests {
 
         let n = node_key!("n");
         let wf = make_workflow(
-            vec![NodeDefinition::new(n.clone(), "count_node", "counting").unwrap()],
+            vec![NodeDefinition::new(n.clone(), "count_node", "core", "counting").unwrap()],
             vec![],
         );
 
@@ -7509,10 +7510,10 @@ mod tests {
 
         let wf = make_workflow(
             vec![
-                NodeDefinition::new(n1.clone(), "pinned_v1", "versioned")
+                NodeDefinition::new(n1.clone(), "pinned_v1", "core", "versioned")
                     .unwrap()
                     .with_interface_version(v1),
-                NodeDefinition::new(n2.clone(), "pinned_v2", "versioned")
+                NodeDefinition::new(n2.clone(), "pinned_v2", "core", "versioned")
                     .unwrap()
                     .with_interface_version(v2),
             ],
@@ -7573,8 +7574,8 @@ mod tests {
         let n2 = node_key!("n2");
         let wf = make_workflow(
             vec![
-                NodeDefinition::new(n1.clone(), "A", "echo").unwrap(),
-                NodeDefinition::new(n2.clone(), "B", "echo").unwrap(),
+                NodeDefinition::new(n1.clone(), "A", "core", "echo").unwrap(),
+                NodeDefinition::new(n2.clone(), "B", "core", "echo").unwrap(),
             ],
             vec![Connection::new(n1, n2)],
         );
@@ -7619,8 +7620,8 @@ mod tests {
         // one via a named source port. Both activate on success.
         let wf = make_workflow(
             vec![
-                NodeDefinition::new(a.clone(), "A", "echo").unwrap(),
-                NodeDefinition::new(b.clone(), "B", "echo").unwrap(),
+                NodeDefinition::new(a.clone(), "A", "core", "echo").unwrap(),
+                NodeDefinition::new(b.clone(), "B", "core", "echo").unwrap(),
             ],
             vec![
                 Connection::new(a.clone(), b.clone()),
@@ -8058,7 +8059,7 @@ mod tests {
 
         let n1 = node_key!("n1");
         let wf = make_workflow(
-            vec![NodeDefinition::new(n1.clone(), "A", "never").unwrap()],
+            vec![NodeDefinition::new(n1.clone(), "A", "core", "never").unwrap()],
             vec![],
         );
 
@@ -8165,7 +8166,7 @@ mod tests {
     /// Build a workflow with a single `CredProbeHandler` node that probes `cred_id`.
     fn probe_workflow(action: &str, cred_id: &str) -> WorkflowDefinition {
         let n1 = node_key!("probe");
-        let node = NodeDefinition::new(n1, "probe", action)
+        let node = NodeDefinition::new(n1, "probe", "core", action)
             .unwrap()
             .with_parameter(
                 "credential_id",
@@ -8389,7 +8390,7 @@ mod tests {
                 output_path: String::new(),
             },
         );
-        let mut node = NodeDefinition::new(n1.clone(), "A", "echo").unwrap();
+        let mut node = NodeDefinition::new(n1.clone(), "A", "core", "echo").unwrap();
         node.parameters = params;
 
         let wf = make_workflow(vec![node], vec![]);
@@ -8449,7 +8450,7 @@ mod tests {
 
         let n1 = node_key!("n1");
         let wf = make_workflow(
-            vec![NodeDefinition::new(n1.clone(), "A", "echo").unwrap()],
+            vec![NodeDefinition::new(n1.clone(), "A", "core", "echo").unwrap()],
             vec![],
         );
         stores.save_workflow(&wf).await;
@@ -8505,7 +8506,7 @@ mod tests {
         let stores = TestStores::new();
         let n1 = node_key!("n1");
         let wf = make_workflow(
-            vec![NodeDefinition::new(n1.clone(), "A", "echo").unwrap()],
+            vec![NodeDefinition::new(n1.clone(), "A", "core", "echo").unwrap()],
             vec![],
         );
         stores.save_workflow(&wf).await;
@@ -8579,7 +8580,7 @@ mod tests {
         let stores = TestStores::new();
         let n1 = node_key!("n1");
         let wf = make_workflow(
-            vec![NodeDefinition::new(n1.clone(), "A", "echo").unwrap()],
+            vec![NodeDefinition::new(n1.clone(), "A", "core", "echo").unwrap()],
             vec![],
         );
         stores.save_workflow(&wf).await;
@@ -8688,7 +8689,7 @@ mod tests {
 
         let n1 = node_key!("n1");
         let wf = make_workflow(
-            vec![NodeDefinition::new(n1.clone(), "Boom", "boom").unwrap()],
+            vec![NodeDefinition::new(n1.clone(), "Boom", "core", "boom").unwrap()],
             vec![],
         );
 
@@ -8760,9 +8761,9 @@ mod tests {
         let c = node_key!("c");
         let wf = make_workflow(
             vec![
-                NodeDefinition::new(a.clone(), "A", "branch").unwrap(),
-                NodeDefinition::new(b.clone(), "B", "echo").unwrap(),
-                NodeDefinition::new(c.clone(), "C", "echo").unwrap(),
+                NodeDefinition::new(a.clone(), "A", "core", "branch").unwrap(),
+                NodeDefinition::new(b.clone(), "B", "core", "echo").unwrap(),
+                NodeDefinition::new(c.clone(), "C", "core", "echo").unwrap(),
             ],
             vec![
                 Connection::new(a.clone(), b.clone()).with_from_port("true"),
@@ -8985,7 +8986,7 @@ mod tests {
 
         let a = node_key!("a");
         let wf = make_workflow(
-            vec![NodeDefinition::new(a.clone(), "A", "echo").unwrap()],
+            vec![NodeDefinition::new(a.clone(), "A", "core", "echo").unwrap()],
             vec![],
         );
         let stores = TestStores::new();
@@ -9068,7 +9069,7 @@ mod tests {
 
         let a = node_key!("a");
         let wf = make_workflow(
-            vec![NodeDefinition::new(a.clone(), "A", "echo").unwrap()],
+            vec![NodeDefinition::new(a.clone(), "A", "core", "echo").unwrap()],
             vec![],
         );
         let stores = TestStores::new();
@@ -9405,7 +9406,7 @@ mod tests {
         let stores = TestStores::new();
         let n = node_key!("n");
         let wf = make_workflow(
-            vec![NodeDefinition::new(n.clone(), "Slow", "slow").unwrap()],
+            vec![NodeDefinition::new(n.clone(), "Slow", "core", "slow").unwrap()],
             vec![],
         );
         stores.save_workflow(&wf).await;
@@ -9503,7 +9504,7 @@ mod tests {
         let stores = TestStores::new();
         let n = node_key!("n");
         let wf = make_workflow(
-            vec![NodeDefinition::new(n.clone(), "Slow", "slow").unwrap()],
+            vec![NodeDefinition::new(n.clone(), "Slow", "core", "slow").unwrap()],
             vec![],
         );
         stores.save_workflow(&wf).await;
@@ -9603,7 +9604,7 @@ mod tests {
         let (engine, _) = make_engine(registry);
         let n = node_key!("n");
         let wf = make_workflow(
-            vec![NodeDefinition::new(n.clone(), "echo", "echo").unwrap()],
+            vec![NodeDefinition::new(n.clone(), "echo", "core", "echo").unwrap()],
             vec![],
         );
         stores.save_workflow(&wf).await;
@@ -9645,7 +9646,7 @@ mod tests {
         let (engine, _) = make_engine(registry);
         let n = node_key!("n");
         let wf = make_workflow(
-            vec![NodeDefinition::new(n.clone(), "echo", "echo").unwrap()],
+            vec![NodeDefinition::new(n.clone(), "echo", "core", "echo").unwrap()],
             vec![],
         );
         stores.save_workflow(&wf).await;
@@ -9744,7 +9745,10 @@ mod tests {
 
         let n = node_key!("n");
         let wf = make_workflow(
-            vec![NodeDefinition::new(n.clone(), "factory_echo", "test.factory.echo").unwrap()],
+            vec![
+                NodeDefinition::new(n.clone(), "factory_echo", "core", "test.factory.echo")
+                    .unwrap(),
+            ],
             vec![],
         );
 
@@ -9797,7 +9801,10 @@ mod tests {
 
         let n = node_key!("n");
         let wf = make_workflow(
-            vec![NodeDefinition::new(n.clone(), "factory_first", "test.factory.echo").unwrap()],
+            vec![
+                NodeDefinition::new(n.clone(), "factory_first", "core", "test.factory.echo")
+                    .unwrap(),
+            ],
             vec![],
         );
 

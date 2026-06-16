@@ -52,7 +52,9 @@ use nebula_resource::{
     resource::{Provider, ResourceConfig, ResourceMetadata},
     topology::resident::ResidentProvider,
 };
-use nebula_workflow::{NodeDefinition, ParamValue, Version, WorkflowConfig, WorkflowDefinition};
+use nebula_workflow::{
+    CURRENT_SCHEMA_VERSION, NodeDefinition, ParamValue, Version, WorkflowConfig, WorkflowDefinition,
+};
 
 // ── Action handler ─────────────────────────────────────────────────────────
 
@@ -217,13 +219,13 @@ fn make_workflow(nodes: Vec<NodeDefinition>) -> WorkflowDefinition {
         connections: vec![],
         variables: HashMap::new(),
         config: WorkflowConfig::default(),
-        trigger: None,
+        trigger_bindings: Vec::new(),
         tags: Vec::new(),
         created_at: now,
         updated_at: now,
         owner_id: None,
         ui_metadata: None,
-        schema_version: 1,
+        schema_version: CURRENT_SCHEMA_VERSION,
     }
 }
 
@@ -269,7 +271,8 @@ async fn pipeline_resolves_expressions_before_handler_runs() {
     //     the handler sees it
     //   - `count`    : literal integer
     let node = node_key!("e2e_node");
-    let mut node_def = NodeDefinition::new(node.clone(), "Witness", "phase9.witness").unwrap();
+    let mut node_def =
+        NodeDefinition::new(node.clone(), "Witness", "core", "phase9.witness").unwrap();
     node_def.parameters.insert(
         "name".into(),
         ParamValue::literal(serde_json::json!("alice")),
@@ -387,7 +390,8 @@ async fn pipeline_with_resource_manager_resolves_and_executes() {
         .with_resource_manager(manager.clone());
 
     let node = node_key!("e2e_node_with_manager");
-    let mut node_def = NodeDefinition::new(node.clone(), "Witness", "phase9.witness").unwrap();
+    let mut node_def =
+        NodeDefinition::new(node.clone(), "Witness", "core", "phase9.witness").unwrap();
     node_def.parameters.insert(
         "greeting".into(),
         ParamValue::template("hello, {{ \"world\" }}!"),
@@ -452,7 +456,8 @@ async fn pipeline_unresolvable_expression_fails_node_before_handler() {
     let engine = WorkflowEngine::new(runtime, metrics).unwrap();
 
     let node = node_key!("bad_node");
-    let mut node_def = NodeDefinition::new(node.clone(), "Witness", "phase9.witness").unwrap();
+    let mut node_def =
+        NodeDefinition::new(node.clone(), "Witness", "core", "phase9.witness").unwrap();
     // A function that doesn't exist — runtime resolution failure.
     node_def.parameters.insert(
         "value".into(),

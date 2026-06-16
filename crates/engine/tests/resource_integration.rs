@@ -34,7 +34,9 @@ use nebula_resource::{
     resource::{Provider, ResourceConfig, ResourceMetadata},
     topology::resident::ResidentProvider,
 };
-use nebula_workflow::{NodeDefinition, Version, WorkflowConfig, WorkflowDefinition};
+use nebula_workflow::{
+    CURRENT_SCHEMA_VERSION, NodeDefinition, Version, WorkflowConfig, WorkflowDefinition,
+};
 
 // ---------------------------------------------------------------------------
 // Action handler that acquires a resource (Variant A)
@@ -142,13 +144,13 @@ fn make_workflow(nodes: Vec<NodeDefinition>) -> WorkflowDefinition {
         connections: vec![],
         variables: HashMap::new(),
         config: WorkflowConfig::default(),
-        trigger: None,
+        trigger_bindings: Vec::new(),
         tags: Vec::new(),
         created_at: now,
         updated_at: now,
         owner_id: None,
         ui_metadata: None,
-        schema_version: 1,
+        schema_version: CURRENT_SCHEMA_VERSION,
     }
 }
 
@@ -199,7 +201,7 @@ async fn action_acquires_resource_through_engine() {
     // 4. Build and execute a single-node workflow
     let node = node_key!("test");
     let wf = make_workflow(vec![
-        NodeDefinition::new(node.clone(), "A", "resource-consumer").unwrap(),
+        NodeDefinition::new(node.clone(), "A", "core", "resource-consumer").unwrap(),
     ]);
 
     let result = engine
@@ -252,7 +254,7 @@ async fn full_resource_lifecycle_with_shutdown() {
     // 4. Execute a single-node workflow
     let node = node_key!("test");
     let wf = make_workflow(vec![
-        NodeDefinition::new(node.clone(), "A", "resource-consumer").unwrap(),
+        NodeDefinition::new(node.clone(), "A", "core", "resource-consumer").unwrap(),
     ]);
 
     let result = engine
@@ -433,7 +435,7 @@ async fn engine_acquires_org_scoped_resource_through_accessor() {
 
     let node = node_key!("probe");
     let wf = make_workflow(vec![
-        NodeDefinition::new(node.clone(), "A", "engine-integration-acquire").unwrap(),
+        NodeDefinition::new(node.clone(), "A", "core", "engine-integration-acquire").unwrap(),
     ]);
 
     let result = engine
@@ -484,7 +486,7 @@ async fn action_resource_fails_without_manager() {
 
     let node = node_key!("test");
     let wf = make_workflow(vec![
-        NodeDefinition::new(node, "A", "resource-probe").unwrap(),
+        NodeDefinition::new(node, "A", "core", "resource-probe").unwrap(),
     ]);
 
     let result = engine

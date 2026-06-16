@@ -60,7 +60,9 @@ use nebula_metrics::MetricsRegistry;
 use nebula_storage::{InMemoryControlQueue, InMemoryExecutionStore, InMemoryWorkflowVersionStore};
 use nebula_storage_port::dto::{ControlCommand, ControlMsg, WorkflowVersionRecord};
 use nebula_storage_port::store::{ControlQueue, ExecutionStore, WorkflowVersionStore};
-use nebula_workflow::{Connection, NodeDefinition, Version, WorkflowConfig, WorkflowDefinition};
+use nebula_workflow::{
+    CURRENT_SCHEMA_VERSION, Connection, NodeDefinition, Version, WorkflowConfig, WorkflowDefinition,
+};
 use tokio_util::sync::CancellationToken;
 
 /// Widen a short test label into the fixed 16-byte `ControlConsumer`
@@ -260,13 +262,13 @@ fn make_workflow(nodes: Vec<NodeDefinition>, connections: Vec<Connection>) -> Wo
         connections,
         variables: HashMap::new(),
         config: WorkflowConfig::default(),
-        trigger: None,
+        trigger_bindings: Vec::new(),
         tags: Vec::new(),
         created_at: now,
         updated_at: now,
         owner_id: None,
         ui_metadata: None,
-        schema_version: 1,
+        schema_version: CURRENT_SCHEMA_VERSION,
     }
 }
 
@@ -378,8 +380,8 @@ async fn engine_b_takes_over_after_engine_a_runner_dies() {
     let y = node_key!("y");
     let wf = make_workflow(
         vec![
-            NodeDefinition::new(x.clone(), "X", "echo").unwrap(),
-            NodeDefinition::new(y.clone(), "Y", "park").unwrap(),
+            NodeDefinition::new(x.clone(), "X", "core", "echo").unwrap(),
+            NodeDefinition::new(y.clone(), "Y", "core", "park").unwrap(),
         ],
         vec![Connection::new(x.clone(), y.clone())],
     );
@@ -590,8 +592,8 @@ async fn engine_b_cancels_execution_after_runner_a_death_via_reclaim_redeliver()
     let y = node_key!("y");
     let wf = make_workflow(
         vec![
-            NodeDefinition::new(x.clone(), "X", "echo").unwrap(),
-            NodeDefinition::new(y.clone(), "Y", "park").unwrap(),
+            NodeDefinition::new(x.clone(), "X", "core", "echo").unwrap(),
+            NodeDefinition::new(y.clone(), "Y", "core", "park").unwrap(),
         ],
         vec![Connection::new(x.clone(), y.clone())],
     );
@@ -834,8 +836,8 @@ async fn replay_does_not_contend_for_held_lease() {
     let y_a = node_key!("y");
     let wf_a = make_workflow(
         vec![
-            NodeDefinition::new(x_a.clone(), "X", "echo").unwrap(),
-            NodeDefinition::new(y_a.clone(), "Y", "park").unwrap(),
+            NodeDefinition::new(x_a.clone(), "X", "core", "echo").unwrap(),
+            NodeDefinition::new(y_a.clone(), "Y", "core", "park").unwrap(),
         ],
         vec![Connection::new(x_a.clone(), y_a.clone())],
     );
@@ -844,7 +846,7 @@ async fn replay_does_not_contend_for_held_lease() {
     // completes without needing engine_a's "park" handler.
     let x_b = node_key!("rx");
     let wf_b = make_workflow(
-        vec![NodeDefinition::new(x_b.clone(), "RX", "echo").unwrap()],
+        vec![NodeDefinition::new(x_b.clone(), "RX", "core", "echo").unwrap()],
         vec![],
     );
 

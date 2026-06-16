@@ -3,12 +3,14 @@
 use std::{collections::HashMap, time::Duration};
 
 use chrono::Utc;
-use nebula_core::{NodeKey, WorkflowId};
+use nebula_core::{ActionKey, NodeKey, PluginKey, WorkflowId};
 
 use crate::{
     Version,
     connection::Connection,
-    definition::{CURRENT_SCHEMA_VERSION, UiMetadata, WorkflowConfig, WorkflowDefinition},
+    definition::{
+        CURRENT_SCHEMA_VERSION, TriggerBinding, UiMetadata, WorkflowConfig, WorkflowDefinition,
+    },
     error::WorkflowError,
     graph::DependencyGraph,
     node::NodeDefinition,
@@ -25,6 +27,7 @@ pub struct WorkflowBuilder {
     connections: Vec<Connection>,
     variables: HashMap<String, serde_json::Value>,
     config: WorkflowConfig,
+    trigger_bindings: Vec<TriggerBinding>,
     tags: Vec<String>,
     owner_id: Option<String>,
     ui_metadata: Option<UiMetadata>,
@@ -43,6 +46,7 @@ impl WorkflowBuilder {
             connections: Vec::new(),
             variables: HashMap::new(),
             config: WorkflowConfig::default(),
+            trigger_bindings: Vec::new(),
             tags: Vec::new(),
             owner_id: None,
             ui_metadata: None,
@@ -74,6 +78,31 @@ impl WorkflowBuilder {
     #[must_use]
     pub fn add_node(mut self, node: NodeDefinition) -> Self {
         self.nodes.push(node);
+        self
+    }
+
+    /// Add a trigger binding to the workflow.
+    ///
+    /// The `id` identifies this binding within the workflow (used for dedup
+    /// scoping and diagnostics). The `plugin_key` names the plugin that provides
+    /// the trigger action; `action_key` references the specific trigger action
+    /// within that plugin. `config` is opaque and validated by the trigger action
+    /// at load time, not here.
+    #[must_use]
+    pub fn add_trigger(
+        mut self,
+        id: NodeKey,
+        plugin_key: PluginKey,
+        action_key: ActionKey,
+        config: serde_json::Value,
+    ) -> Self {
+        self.trigger_bindings.push(TriggerBinding {
+            id,
+            plugin_key,
+            action_key,
+            interface_version: None,
+            config,
+        });
         self
     }
 
@@ -204,7 +233,7 @@ impl WorkflowBuilder {
             connections: self.connections,
             variables: self.variables,
             config: self.config,
-            trigger: None,
+            trigger_bindings: self.trigger_bindings,
             tags: self.tags,
             created_at: now,
             updated_at: now,
@@ -228,7 +257,7 @@ mod tests {
     use super::*;
 
     fn node(id: NodeKey) -> NodeDefinition {
-        NodeDefinition::new(id, "n", "n").unwrap()
+        NodeDefinition::new(id, "n", "core", "n").unwrap()
     }
 
     #[test]
@@ -374,5 +403,34 @@ mod tests {
             .build()
             .unwrap();
         assert_eq!(def.owner_id.as_deref(), Some("user_123"));
+    }
+
+    #[test]
+    fn add_trigger_lands_binding_in_definition() {
+        use nebula_core::{ActionKey, PluginKey};
+        let a = node_key!("a");
+        let trigger_id = node_key!("every-hour");
+        let plugin_key: PluginKey = "scheduler".parse().unwrap();
+        let action_key: ActionKey = "cron.schedule".parse().unwrap();
+        let config = serde_json::json!({"expression": "0 * * * *"});
+
+        let def = WorkflowBuilder::new("with-trigger")
+            .add_node(node(a))
+            .add_trigger(
+                trigger_id.clone(),
+                plugin_key.clone(),
+                action_key.clone(),
+                config.clone(),
+            )
+            .build()
+            .unwrap();
+
+        assert_eq!(def.trigger_bindings.len(), 1);
+        let binding = &def.trigger_bindings[0];
+        assert_eq!(binding.id, trigger_id);
+        assert_eq!(binding.plugin_key, plugin_key);
+        assert_eq!(binding.action_key, action_key);
+        assert_eq!(binding.config, config);
+        assert!(binding.interface_version.is_none());
     }
 }

@@ -354,7 +354,9 @@ async fn default_engine_has_empty_failclosed_registry() {
 async fn registrars_do_not_regress_dispatch() {
     use nebula_core::id::WorkflowId;
     use nebula_execution::context::ExecutionBudget;
-    use nebula_workflow::{NodeDefinition, Version, WorkflowConfig, WorkflowDefinition};
+    use nebula_workflow::{
+        CURRENT_SCHEMA_VERSION, NodeDefinition, Version, WorkflowConfig, WorkflowDefinition,
+    };
 
     let plugins = demo_plugin_registry();
     let engine = build_engine(demo_registrars(&plugins));
@@ -366,17 +368,17 @@ async fn registrars_do_not_regress_dispatch() {
         name: "registrar-smoke".into(),
         description: None,
         version: Version::new(0, 1, 0),
-        nodes: vec![NodeDefinition::new(node.clone(), "N", "test.noop").expect("node")],
+        nodes: vec![NodeDefinition::new(node.clone(), "N", "core", "test.noop").expect("node")],
         connections: vec![],
         variables: HashMap::new(),
         config: WorkflowConfig::default(),
-        trigger: None,
+        trigger_bindings: Vec::new(),
         tags: Vec::new(),
         created_at: now,
         updated_at: now,
         owner_id: None,
         ui_metadata: None,
-        schema_version: 1,
+        schema_version: CURRENT_SCHEMA_VERSION,
     };
 
     let result = engine

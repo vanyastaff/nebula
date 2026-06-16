@@ -9,15 +9,15 @@
 //!
 //! let workflow = WorkflowBuilder::new("my_workflow")
 //!     .with_description("Processes data")
-//!     .add_node("start", "echo")
-//!     .add_node("process", "http_request")
+//!     .add_node("start", "core", "echo")
+//!     .add_node("process", "http", "http_request")
 //!     .connect("start", "process")
 //!     .build();
 //! ```
 
 use std::collections::{HashMap, HashSet};
 
-use nebula_core::{ActionKey, NodeKey, WorkflowId};
+use nebula_core::{NodeKey, WorkflowId};
 use nebula_workflow::{
     CURRENT_SCHEMA_VERSION, ParamValue, Version, WorkflowConfig, WorkflowDefinition,
     connection::Connection, node::NodeDefinition,
@@ -32,9 +32,9 @@ use nebula_workflow::{
 ///
 /// let workflow = WorkflowBuilder::new("data_pipeline")
 ///     .with_description("ETL pipeline")
-///     .add_node("extract", "550e8400-e29b-41d4-a716-446655440000")
-///     .add_node("transform", "550e8400-e29b-41d4-a716-446655440001")
-///     .add_node("load", "550e8400-e29b-41d4-a716-446655440002")
+///     .add_node("extract", "files", "read_csv")
+///     .add_node("transform", "core", "map")
+///     .add_node("load", "db", "insert")
 ///     .connect("extract", "transform")
 ///     .connect("transform", "load")
 ///     .build()
@@ -54,6 +54,7 @@ pub struct WorkflowBuilder {
 struct NodeConfig {
     id: String,
     name: String,
+    plugin_key: String,
     action_key: String,
     parameters: HashMap<String, ParamValue>,
 }
@@ -100,12 +101,19 @@ impl WorkflowBuilder {
     /// # Arguments
     ///
     /// * `id` - Node identifier within the workflow
-    /// * `action_key` - Plugin/action key (e.g. `"echo"`, `"http_request"`)
-    pub fn add_node(mut self, id: impl Into<String>, action_key: impl Into<String>) -> Self {
+    /// * `plugin_key` - Plugin that provides the action (e.g. `"core"`, `"http"`)
+    /// * `action_key` - Action key within the plugin (e.g. `"echo"`, `"http_request"`)
+    pub fn add_node(
+        mut self,
+        id: impl Into<String>,
+        plugin_key: impl Into<String>,
+        action_key: impl Into<String>,
+    ) -> Self {
         let id_str = id.into();
         self.nodes.push(NodeConfig {
             id: id_str.clone(),
             name: id_str,
+            plugin_key: plugin_key.into(),
             action_key: action_key.into(),
             parameters: HashMap::new(),
         });
@@ -116,6 +124,7 @@ impl WorkflowBuilder {
     pub fn add_node_with_params(
         mut self,
         id: impl Into<String>,
+        plugin_key: impl Into<String>,
         action_key: impl Into<String>,
         parameters: HashMap<String, ParamValue>,
     ) -> Self {
@@ -123,6 +132,7 @@ impl WorkflowBuilder {
         self.nodes.push(NodeConfig {
             id: id_str.clone(),
             name: id_str,
+            plugin_key: plugin_key.into(),
             action_key: action_key.into(),
             parameters,
         });
@@ -207,26 +217,20 @@ impl WorkflowBuilder {
                     crate::Error::workflow(format!("Node id not found in mapping: {}", config.id))
                 })?;
 
-                let action_key: ActionKey = config.action_key.parse().map_err(|e| {
-                    crate::Error::action(format!(
-                        "Invalid action_key for node `{}`: `{}` ({})",
-                        config.id, config.action_key, e
-                    ))
-                })?;
+                let node = NodeDefinition::new(
+                    node_key,
+                    config.name,
+                    &config.plugin_key,
+                    &config.action_key,
+                )
+                .map_err(|e| crate::Error::workflow(e.to_string()))?;
 
-                Ok(NodeDefinition {
-                    id: node_key,
-                    name: config.name,
-                    action_key,
-                    interface_version: None,
-                    parameters: config.parameters,
-                    retry_policy: None,
-                    timeout: None,
-                    description: None,
-                    enabled: true,
-                    rate_limit: None,
-                    slot_bindings: HashMap::new(),
-                })
+                let node = config
+                    .parameters
+                    .into_iter()
+                    .fold(node, |n, (k, v)| n.with_parameter(k, v));
+
+                Ok(node)
             })
             .collect::<crate::Result<Vec<_>>>()?;
 
@@ -262,7 +266,7 @@ impl WorkflowBuilder {
             connections,
             variables: self.variables,
             config: WorkflowConfig::default(),
-            trigger: None,
+            trigger_bindings: Vec::new(),
             tags: Vec::new(),
             created_at: now,
             updated_at: now,
@@ -279,12 +283,10 @@ mod tests {
 
     #[test]
     fn test_workflow_builder_basic() {
-        let action_a = uuid::Uuid::new_v4().to_string();
-        let action_b = uuid::Uuid::new_v4().to_string();
         let workflow = WorkflowBuilder::new("test_workflow")
             .with_description("Test workflow")
-            .add_node("start", action_a)
-            .add_node("end", action_b)
+            .add_node("start", "core", "echo")
+            .add_node("end", "core", "http_request")
             .connect("start", "end")
             .build();
 
@@ -296,9 +298,8 @@ mod tests {
 
     #[test]
     fn test_workflow_builder_invalid_connection() {
-        let action_a = uuid::Uuid::new_v4().to_string();
         let result = WorkflowBuilder::new("test")
-            .add_node("start", action_a)
+            .add_node("start", "core", "echo")
             .connect("start", "nonexistent")
             .build();
 
@@ -306,8 +307,19 @@ mod tests {
     }
 
     #[test]
-    fn test_workflow_builder_invalid_action_id() {
-        let result = WorkflowBuilder::new("test").add_node("start", "").build();
+    fn test_workflow_builder_invalid_action_key() {
+        let result = WorkflowBuilder::new("test")
+            .add_node("start", "core", "")
+            .build();
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_workflow_builder_invalid_plugin_key() {
+        let result = WorkflowBuilder::new("test")
+            .add_node("start", "", "echo")
+            .build();
 
         assert!(result.is_err());
     }

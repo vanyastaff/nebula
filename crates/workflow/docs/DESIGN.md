@@ -40,10 +40,10 @@ storage, engine, validation) парсил бы и переинтерпретир
 
 | Item | Where |
 |------|-------|
-| `WorkflowDefinition`; `is_schema_supported()`; `CURRENT_SCHEMA_VERSION = 1` | `definition.rs:16 / :63 / :12` |
+| `WorkflowDefinition`; `is_schema_supported()`; `CURRENT_SCHEMA_VERSION = 2` | `definition.rs:16 / :64 / :12` |
 | `WorkflowConfig` (timeout, max_parallel_nodes, checkpointing, retry_policy, error_strategy) | `definition.rs:111` |
 | `ErrorStrategy` (`FailFast` \| `ContinueOnError` \| `IgnoreErrors`) | `definition.rs:98` |
-| `TriggerDefinition` (`Manual` \| `Cron` \| `Webhook` \| `Event`) | `definition.rs:72` |
+| `TriggerBinding` (id: `NodeKey`, action_key: `ActionKey`, interface_version, config: `serde_json::Value`) | `definition.rs:72` |
 | `RetryConfig` (`fixed` / `exponential` / `delay_for_attempt`) | `definition.rs:171` |
 | `CheckpointingConfig` / `UiMetadata` / `NodePosition` / `Viewport` / `Annotation` | `definition.rs:147 / :220 / :234` |
 | `NodeDefinition` (id: `NodeKey`, action_key: `ActionKey`, interface_version: `Option<semver::Version>`, parameters, retry_policy, timeout, enabled, rate_limit) | `node.rs:13` |
@@ -100,7 +100,7 @@ storage, engine, validation) парсил бы и переинтерпретир
   рёбра с `from_port == "error"`. Pre-Spec-28 trio `EdgeCondition`/`ResultMatcher`/
   `ErrorMatcher` удалён.
 - **JSON round-trip как public surface.** `WorkflowDefinition` обязан переживать
-  `serde_json` round-trip без потерь; `CURRENT_SCHEMA_VERSION = 1` + `is_schema_supported()`
+  `serde_json` round-trip без потерь; `CURRENT_SCHEMA_VERSION = 2` + `is_schema_supported()`
   — версионный gate (`definition.rs:12/:63`).
 - **Все коды — `category="validation"`.** 15 вариантов `WorkflowError`, единый класс —
   крейт не вводит runtime/io-ошибок (`error.rs:9`).

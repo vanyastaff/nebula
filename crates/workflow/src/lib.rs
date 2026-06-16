@@ -14,6 +14,7 @@
 //!
 //! - [`WorkflowDefinition`] — top-level workflow; carries nodes, connections, config, UI metadata.
 //! - [`NodeDefinition`] and [`ParamValue`] — individual steps and typed parameter values.
+//! - [`TriggerBinding`] — plugin-action reference that starts a workflow (parallel to [`NodeDefinition`]).
 //! - [`Connection`] — directed edges wired port-to-port (spec 28 port-driven routing).
 //! - [`DependencyGraph`] — `petgraph` wrapper; topological sort + per-level batching.
 //! - [`WorkflowBuilder`] — fluent, validated construction API.
@@ -39,7 +40,7 @@ pub use builder::WorkflowBuilder;
 pub use connection::Connection;
 pub use definition::{
     Annotation, CURRENT_SCHEMA_VERSION, CheckpointingConfig, ErrorStrategy, NodePosition,
-    RetryConfig, TriggerDefinition, UiMetadata, Viewport, WorkflowConfig, WorkflowDefinition,
+    RetryConfig, TriggerBinding, UiMetadata, Viewport, WorkflowConfig, WorkflowDefinition,
 };
 pub use error::WorkflowError;
 pub use graph::DependencyGraph;

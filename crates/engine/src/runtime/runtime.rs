@@ -250,7 +250,7 @@ impl ActionRuntime {
             }
         })?;
 
-        let synthetic_node = synthesize_node_definition(action_key, version);
+        let synthetic_node = synthesize_node_definition("core", action_key, version);
 
         self.dispatch_action(
             action_key,
@@ -289,7 +289,7 @@ impl ActionRuntime {
             }
         })?;
 
-        let synthetic_node = synthesize_node_definition(action_key, None);
+        let synthetic_node = synthesize_node_definition("core", action_key, None);
 
         self.dispatch_action(
             action_key,
@@ -1234,6 +1234,7 @@ impl ActionRuntime {
 /// callers parse the key separately and never reach this function with an
 /// invalid key.
 fn synthesize_node_definition(
+    plugin_key: &str,
     action_key: &str,
     interface_version: Option<&semver::Version>,
 ) -> NodeDefinition {
@@ -1241,6 +1242,7 @@ fn synthesize_node_definition(
         nebula_core::NodeKey::new("synthetic_runtime_dispatch")
             .expect("synthetic node key is valid"),
         action_key.to_owned(),
+        plugin_key,
         action_key,
     )
     .unwrap_or_else(|err| {

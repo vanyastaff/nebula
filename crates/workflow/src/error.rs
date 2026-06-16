@@ -62,6 +62,16 @@ pub enum WorkflowError {
         reason: String,
     },
 
+    /// Invalid plugin key format.
+    #[classify(category = "validation", code = "WORKFLOW:INVALID_PLUGIN_KEY")]
+    #[error("invalid plugin key `{key}`: {reason}")]
+    InvalidPluginKey {
+        /// The invalid key string.
+        key: String,
+        /// Why it's invalid.
+        reason: String,
+    },
+
     /// Invalid trigger configuration.
     #[classify(category = "validation", code = "WORKFLOW:INVALID_TRIGGER")]
     #[error("invalid trigger: {reason}")]

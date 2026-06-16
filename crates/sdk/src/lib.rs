@@ -16,7 +16,7 @@
 //!.build();
 //!
 //! let workflow = WorkflowBuilder::new("example_workflow")
-//!.add_node("greet", "example_greet")
+//!.add_node("greet", "core", "example_greet")
 //!.build();
 //!
 //! assert_eq!(metadata.base.name, "Greet");
@@ -156,7 +156,7 @@ macro_rules! params {
 
 /// Macro for defining a workflow.
 ///
-/// Each `node_key: ActionKey` entry is registered via
+/// Each node entry is `node_key: "plugin_key", "action_key"`, registered via
 /// [`WorkflowBuilder::add_node`](crate::workflow::WorkflowBuilder::add_node).
 /// Use `=> next_node` to declare a default downstream connection (compiled
 /// to [`WorkflowBuilder::connect`](crate::workflow::WorkflowBuilder::connect)).
@@ -167,12 +167,12 @@ macro_rules! params {
 /// use nebula_sdk::workflow;
 ///
 /// let wf = workflow! {
-/// name: "my_workflow",
-/// nodes: [
-/// fetch: "http.get" => transform,
-/// transform: "json.map" => store,
-/// store: "db.insert",
-/// ]
+///     name: "my_workflow",
+///     nodes: [
+///         fetch: "http", "get" => transform,
+///         transform: "json", "map" => store,
+///         store: "db", "insert",
+///     ]
 /// };
 /// ```
 #[macro_export]
@@ -180,7 +180,7 @@ macro_rules! workflow {
     (
         name: $name:expr,
         nodes: [
-            $($node_key:ident: $action:ty $(=> $next:ident)?),* $(,)?
+            $($node_key:ident: $plugin:literal, $action:literal $(=> $next:ident)?),* $(,)?
         ]
     ) => {{
         use $crate::workflow::WorkflowBuilder;
@@ -189,7 +189,8 @@ macro_rules! workflow {
         $(
             builder = builder.add_node(
                 stringify!($node_key),
-                stringify!($action)
+                $plugin,
+                $action,
             );
             $(
                 builder = builder.connect(stringify!($node_key), stringify!($next));

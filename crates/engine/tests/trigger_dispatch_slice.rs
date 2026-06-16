@@ -53,7 +53,9 @@ use nebula_storage_port::{
     dto::{CapabilityTag, ControlCommand, JobDispatchMsg, WorkflowVersionRecord},
     store::{ExecutionStore, JobDispatchQueue, TriggerDedupInbox, WorkflowVersionStore},
 };
-use nebula_workflow::{Connection, NodeDefinition, Version, WorkflowConfig, WorkflowDefinition};
+use nebula_workflow::{
+    CURRENT_SCHEMA_VERSION, Connection, NodeDefinition, Version, WorkflowConfig, WorkflowDefinition,
+};
 use tokio_util::sync::CancellationToken;
 
 // ── shared harness ────────────────────────────────────────────────────────────
@@ -184,18 +186,24 @@ async fn save_echo_workflow(stores: &TestStores) -> nebula_core::WorkflowId {
         description: None,
         version: Version::new(0, 1, 0),
         nodes: vec![
-            NodeDefinition::new(node_key!("step"), "Step", "test.echo.dispatch_slice").unwrap(),
+            NodeDefinition::new(
+                node_key!("step"),
+                "Step",
+                "core",
+                "test.echo.dispatch_slice",
+            )
+            .unwrap(),
         ],
         connections: Vec::<Connection>::new(),
         variables: HashMap::new(),
         config: WorkflowConfig::default(),
-        trigger: None,
+        trigger_bindings: Vec::new(),
         tags: Vec::new(),
         created_at: now,
         updated_at: now,
         owner_id: None,
         ui_metadata: None,
-        schema_version: 1,
+        schema_version: CURRENT_SCHEMA_VERSION,
     };
     stores
         .versions
