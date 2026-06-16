@@ -82,6 +82,9 @@ deny = [
     # nebula-credential's `service/` facade composition root (the api-layer
     # credential builder) wires the engine-owned resolver + lease lifecycle;
     # the api crate consuming engine is already listed above (ADR-0092).
+    # nebula-worker is the exec-layer composition root: it wires the engine into
+    # the orchestrator pull-loop (ADR-0095 D1, U-D1.3).
+    "nebula-worker",
   ], reason = "Engine is exec-layer orchestration; business/core crates must not depend on it" },
   { crate = "nebula-storage", wrappers = [
     "nebula-engine",
@@ -94,6 +97,9 @@ deny = [
     # orchestrator dev-depends on the in-memory JobDispatchQueue adapter as its
     # test baseline (the InMemory backend is the no-DATABASE_URL conformance double).
     "nebula-orchestrator",
+    # nebula-worker dev-depends on the InMemory adapter for its integration test
+    # (the no-DATABASE_URL conformance double), same as nebula-orchestrator.
+    "nebula-worker",
   ], reason = "Storage is exec-layer; business and core crates must not depend on it directly" },
 
   # nebula-storage-port is the Core-tier storage contract: object-safe
@@ -112,6 +118,8 @@ deny = [
     "nebula-credential",
     # exec-layer consumer of the JobDispatchQueue port (capability-routed dispatch).
     "nebula-orchestrator",
+    # nebula-worker assembles the orchestrator + engine over the storage ports.
+    "nebula-worker",
   ], reason = "Storage port is a Core-tier contract; the adapter, tenancy decorator, exec/api consumers, and nebula-credential (which hosts the refresh coordinator and depends on RefreshClaimStore, ADR-0092) may depend on it" },
 
   # nebula-tenancy is the Business-tier multi-tenancy security boundary: it

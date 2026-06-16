@@ -1,0 +1,39 @@
+[package]
+name = "nebula-worker"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+description = "Generic worker runtime that wires a WorkflowEngine into an Orchestrator pull-loop (ADR-0095 D1)"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+keywords.workspace = true
+
+[dependencies]
+nebula-engine = { path = "../engine" }
+nebula-orchestrator = { path = "../orchestrator" }
+nebula-storage-port = { path = "../storage-port" }
+nebula-core = { path = "../core" }
+nebula-metrics = { path = "../metrics" }
+
+tokio = { workspace = true, features = ["rt", "sync", "time", "macros"] }
+tokio-util = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+nebula-storage = { path = "../storage" }
+nebula-action = { path = "../action" }
+nebula-workflow = { path = "../workflow" }
+nebula-execution = { path = "../execution" }
+tokio = { workspace = true, features = ["rt", "sync", "time", "macros", "test-util"] }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+
+[lib]
+doctest = false
+
+[lints]
+workspace = true
