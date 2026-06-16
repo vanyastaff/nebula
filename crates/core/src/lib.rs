@@ -120,6 +120,7 @@ pub mod prelude {
     // Domain keys (normalized string keys)
     pub use crate::keys::{
         ActionKey, CredentialKey, NodeKey, ParameterKey, PluginKey, ResourceKey,
+        plugin_key_from_action_key,
     };
     // Scope
     pub use crate::scope::{Principal, Scope, ScopeLevel, ScopeResolver};

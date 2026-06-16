@@ -23,7 +23,7 @@
 //! assert_eq!(cred.as_str(), "my_api_key");
 //! ```
 
-use domain_key::{define_domain, key_type};
+use domain_key::{KeyParseError, define_domain, key_type};
 
 define_domain!(pub ParameterDomain, "parameter");
 key_type!(pub ParameterKey, ParameterDomain);
@@ -42,6 +42,35 @@ key_type!(pub PluginKey, PluginDomain);
 
 define_domain!(pub NodeDomain, "node");
 key_type!(pub NodeKey, NodeDomain);
+
+/// Extract the plugin namespace from a namespaced [`ActionKey`].
+///
+/// Action keys follow the convention `{plugin_key}.{action_name}` enforced at
+/// plugin registration time by `ResolvedPlugin`: every action key registered
+/// under a plugin is required to start with `format!("{}.", plugin_key)`.
+///
+/// This function takes the segment **before the first `.`** as the plugin-key
+/// candidate:
+///
+/// - `"telegram_bot.send_message"` → `Ok(PluginKey("telegram_bot"))`
+/// - `"plugin.group.action"` → `Ok(PluginKey("plugin"))` (first dot only)
+/// - `"echo"` (no dot) → the whole string is used → `Ok(PluginKey("echo"))`
+/// - `".foo"` (empty prefix before first dot) → `Err` (empty plugin key)
+///
+/// The candidate is validated through the same constructor `PluginKey::new` uses,
+/// so all plugin-key invariants (character set, length, structure) are enforced.
+///
+/// # Errors
+///
+/// Returns [`KeyParseError`] when the extracted prefix is not a valid plugin key
+/// (e.g. empty, contains illegal characters, or exceeds the maximum length).
+pub fn plugin_key_from_action_key(action: &ActionKey) -> Result<PluginKey, KeyParseError> {
+    let prefix = match action.as_str().split_once('.') {
+        Some((before, _)) => before,
+        None => action.as_str(),
+    };
+    PluginKey::new(prefix)
+}
 
 /// Constructs a [`ResourceKey`] from a string literal, validated at **compile time**.
 ///
@@ -125,7 +154,7 @@ macro_rules! node_key {
 
 #[cfg(test)]
 mod tests {
-    use crate::{CredentialKey, NodeKey, ResourceKey};
+    use crate::{ActionKey, CredentialKey, NodeKey, ResourceKey};
 
     #[test]
     fn macro_produces_correct_key() {
@@ -160,5 +189,43 @@ mod tests {
                 "{s:?} const=false but new() succeeded"
             );
         }
+    }
+
+    // ---- plugin_key_from_action_key ----------------------------------------
+
+    use crate::plugin_key_from_action_key;
+
+    #[test]
+    fn plugin_key_from_action_key_extracts_plugin_namespace() {
+        // Standard namespaced action: plugin prefix is the segment before the first dot.
+        let action = action_key!("telegram_bot.send_message");
+        let plugin = plugin_key_from_action_key(&action).unwrap();
+        assert_eq!(plugin.as_str(), "telegram_bot");
+    }
+
+    #[test]
+    fn plugin_key_from_action_key_splits_on_first_dot_only() {
+        // Multi-segment key: only the FIRST dot is used as the split point.
+        let action = action_key!("plugin.group.action");
+        let plugin = plugin_key_from_action_key(&action).unwrap();
+        assert_eq!(plugin.as_str(), "plugin");
+    }
+
+    #[test]
+    fn plugin_key_from_action_key_whole_string_when_no_dot() {
+        // No dot present: the entire action key string is the plugin-key candidate.
+        let action = action_key!("echo");
+        let plugin = plugin_key_from_action_key(&action).unwrap();
+        assert_eq!(plugin.as_str(), "echo");
+    }
+
+    #[test]
+    fn plugin_key_from_action_key_empty_prefix_is_err() {
+        // A leading dot produces an empty prefix, which is not a valid plugin key.
+        let action = ActionKey::new(".foo").unwrap();
+        assert!(
+            plugin_key_from_action_key(&action).is_err(),
+            "empty prefix before first dot must be rejected"
+        );
     }
 }
