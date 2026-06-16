@@ -5,7 +5,8 @@
 //! observable through the queue / reader (the conformance suite asserts
 //! this atomic-triple visibility).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -50,6 +51,20 @@ pub(super) struct QueuedMsg {
     pub(super) error_message: Option<String>,
 }
 
+/// One queued job-dispatch row plus its processing bookkeeping.
+///
+/// Lives in `State::jobs` alongside the control queue and execution rows so
+/// `claim_and_materialize_start` writes all three atomically under one lock.
+#[derive(Debug, Clone)]
+pub(super) struct QueuedJob {
+    pub(super) msg: nebula_storage_port::dto::JobDispatchMsg,
+    pub(super) status: String,
+    pub(super) processed_by: Option<[u8; 16]>,
+    pub(super) processed_at: Option<Instant>,
+    pub(super) reclaim_count: u32,
+    pub(super) error_message: Option<String>,
+}
+
 #[derive(Debug, Default)]
 pub(super) struct State {
     pub(super) rows: HashMap<String, Row>,
@@ -57,6 +72,12 @@ pub(super) struct State {
     pub(super) queue: HashMap<[u8; 16], QueuedMsg>,
     /// Per-execution next journal sequence number.
     pub(super) next_seq: HashMap<String, u64>,
+    /// Job-dispatch queue rows keyed by the message's 16-byte id.
+    pub(super) jobs: HashMap<[u8; 16], QueuedJob>,
+    /// Dedup guard set: `(workspace_id, org_id, trigger_id, event_id)` →
+    /// winner execution_id.  The value enables Duplicate read-back without a
+    /// separate store lookup.
+    pub(super) dedup: HashMap<(String, String, String, String), String>,
 }
 
 /// Shared mutable core. One mutex guards the whole store so a `commit`
@@ -92,6 +113,44 @@ fn normalized_ttl(ttl: Duration) -> Duration {
     Duration::from_secs_f64(ttl.as_secs_f64().clamp(1.0, 86_400.0))
 }
 
+/// Insert a `Created` execution row into `st` without taking the lock.
+///
+/// Called by both `ExecutionStore::create` and the dedup compose so the row
+/// shape is defined exactly once.  Returns `Err(Duplicate)` when `id` is
+/// already present.  The dedup compose calls this **before** writing the dedup
+/// guard or the Start job (all under one lock), so an `Err` here leaves
+/// `st.dedup` and `st.jobs` untouched — the compose is all-or-nothing by write
+/// ordering, with no rollback needed.
+pub(super) fn insert_created_row(
+    st: &mut State,
+    scope: &Scope,
+    id: &str,
+    workflow_id: &str,
+    initial_state: &serde_json::Value,
+) -> Result<(), StorageError> {
+    if st.rows.contains_key(id) {
+        return Err(StorageError::Duplicate {
+            entity: "execution",
+            detail: format!("execution {id} already exists"),
+        });
+    }
+    st.rows.insert(
+        id.to_owned(),
+        Row {
+            scope: scope.clone(),
+            workflow_id: workflow_id.to_owned(),
+            version: 0,
+            status: "Created".to_owned(),
+            state: initial_state.clone(),
+            lease_holder: None,
+            lease_expires_at: None,
+            fencing_generation: 0,
+            journal: Vec::new(),
+        },
+    );
+    Ok(())
+}
+
 #[async_trait::async_trait]
 impl ExecutionStore for InMemoryExecutionStore {
     async fn create(
@@ -102,26 +161,7 @@ impl ExecutionStore for InMemoryExecutionStore {
         initial_state: serde_json::Value,
     ) -> Result<(), StorageError> {
         let mut st = self.inner.lock();
-        if st.rows.contains_key(id) {
-            return Err(StorageError::Duplicate {
-                entity: "execution",
-                detail: format!("execution {id} already exists"),
-            });
-        }
-        st.rows.insert(
-            id.to_string(),
-            Row {
-                scope: scope.clone(),
-                workflow_id: workflow_id.to_string(),
-                version: 0,
-                status: "Created".to_string(),
-                state: initial_state,
-                lease_holder: None,
-                lease_expires_at: None,
-                fencing_generation: 0,
-                journal: Vec::new(),
-            },
-        );
+        insert_created_row(&mut st, scope, id, workflow_id, &initial_state)?;
         tracing::debug!(
             target: "nebula_storage::inmem",
             execution_id = id,

@@ -35,7 +35,7 @@ use nebula_metrics::{
     },
 };
 use nebula_orchestrator::{ExecutionSink, ExecutionSinkError, Orchestrator};
-use nebula_storage::inmem::{InMemoryJobDispatchQueue, new_shared_core};
+use nebula_storage::inmem::{InMemoryExecutionStore, InMemoryJobDispatchQueue};
 use nebula_storage_port::{
     Scope,
     dto::{CapabilityTag, ControlCommand, JobDispatchMsg},
@@ -56,9 +56,10 @@ fn proc16(label: &[u8]) -> [u8; 16] {
     id
 }
 
-/// Build a fresh `InMemoryJobDispatchQueue` over its own shared core.
+/// Build a fresh `InMemoryJobDispatchQueue` over its own execution store core.
 fn make_queue() -> Arc<InMemoryJobDispatchQueue> {
-    Arc::new(InMemoryJobDispatchQueue::from_core(new_shared_core()))
+    let store = InMemoryExecutionStore::new();
+    Arc::new(InMemoryJobDispatchQueue::new(&store))
 }
 
 fn scope() -> Scope {

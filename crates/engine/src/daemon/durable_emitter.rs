@@ -6,49 +6,36 @@
 //! `DurableExecutionEmitter` implements [`nebula_action::ExecutionEmitter`] and
 //! wires the trigger-to-execution fan-out path end-to-end:
 //!
-//! 1. Mint a new [`ExecutionId`] (the candidate id).
-//! 2. Build a [`JobDispatchMsg`] (Start command, routing key, etc.) and, when
-//!    `event_id` is `Some`, a [`TriggerDedupRow`] guard keyed by
+//! 1. Mint a new [`ExecutionId`] candidate and build the initial
+//!    [`ExecutionState`].
+//! 2. Build a [`JobDispatchMsg`] (Start command, routing key, etc.), a
+//!    [`NewExecution`] carrying the serialised initial state, and — when
+//!    `event_id` is `Some` — a [`TriggerDedupRow`] guard keyed by
 //!    `(scope, trigger_id, event_id)`.
-//! 3. Call [`TriggerDedupInbox::claim_and_enqueue_start`] — one atomic critical
-//!    section that either inserts the dedup guard + enqueues the Start job
-//!    (`Dispatched`) or finds the guard already present (`Duplicate`).
-//! 4. **On `Dispatched`**: create a `Created` execution row via
-//!    [`ExecutionStore::create`], then return the `ExecutionId`.
-//! 5. **On `Duplicate`**: return the candidate `ExecutionId` without creating
-//!    any row (no orphan).
+//! 3. Call [`TriggerDedupInbox::claim_and_materialize_start`] — one atomic
+//!    critical section that either:
+//!    - **`Dispatched`**: inserts the dedup guard + the `Created` execution row
+//!      + enqueues the Start job; returns the effective execution id.
+//!    - **`Duplicate`**: returns the *original winner's* execution id without
+//!      touching any row.
+//! 4. Parse the returned `outcome.execution_id` back to [`ExecutionId`] and
+//!    return it to the caller.
 //!
-//! ## Ordering (claim before create) and its known limitation
+//! ## Atomicity guarantee
 //!
-//! `claim_and_enqueue_start` runs **before** `ExecutionStore::create`, so a
-//! `Duplicate` never orphans a `Created` row:
-//!
-//! ```text
-//! create_row → claim_and_enqueue (Duplicate) → Created row leaked  (avoided)
-//! claim_and_enqueue → Dispatched → create_row                      (used)
-//! ```
-//!
-//! The trade-off: the `Created` row is a **second write outside** the
-//! dedup+Start transaction. Under a concurrently-polling orchestrator a
-//! `Dispatched` Start job can be claimed in the window before the row exists;
-//! the sink then reads no row, returns `Rejected`, and the orchestrator marks
-//! the job failed — losing a legitimate first-delivery execution (never a
-//! double-spawn; a redelivery re-dedups). This slice is **harness-scoped** (no
-//! production daemon installs this emitter; the integration test emits before
-//! the orchestrator polls), so the race is latent. The correct fix folds the
-//! `Created`-row insert **into** the dedup+Start transaction — a
-//! `TriggerDedupInbox::claim_and_enqueue_start` contract change that would also
-//! let a `Duplicate` return the original winner's `ExecutionId`. That belongs
-//! with the durable-wiring unit that makes the emitter live, before any
-//! concurrent orchestrator runs against it.
+//! The dedup guard, `Created` execution row, and Start job are written in a
+//! single database transaction inside `claim_and_materialize_start`. A
+//! concurrently-polling orchestrator can never see the Start job before the
+//! execution row — the race window that existed when the Created-row was a
+//! second separate write is closed.
 //!
 //! ## Wiring honesty
 //!
 //! No prod trigger daemon installs this emitter today — all non-test
 //! `TriggerRuntimeContext::new` sites use the default `NoopExecutionEmitter`.
 //! Install via `ctx.with_emitter(Arc::new(DurableExecutionEmitter::new(...)))` in
-//! the harness or a future trigger daemon; the integration test is the sole current
-//! caller.
+//! the harness or a future trigger daemon; the integration test is the sole
+//! current caller.
 //!
 //! ## Tracing
 //!
@@ -70,8 +57,8 @@ use nebula_core::id::{ExecutionId, WorkflowId};
 use nebula_execution::ExecutionState;
 use nebula_storage_port::{
     Scope, StorageError,
-    dto::{ControlCommand, DispatchOutcome, JobDispatchMsg, TriggerDedupRow},
-    store::{ExecutionStore, TriggerDedupInbox},
+    dto::{ControlCommand, DispatchKind, JobDispatchMsg, NewExecution, TriggerDedupRow},
+    store::TriggerDedupInbox,
 };
 
 use crate::daemon::routing::RoutingResolver;
@@ -79,15 +66,14 @@ use crate::daemon::routing::RoutingResolver;
 /// Trigger fan-out through the durable dedup inbox.
 ///
 /// Holds everything needed to enqueue one trigger-originated Start job:
-/// - [`TriggerDedupInbox`] — atomic dedup + enqueue.
-/// - [`ExecutionStore`] — create the `Created` row on `Dispatched`.
+/// - [`TriggerDedupInbox`] — atomic dedup + execution-row materialise + job
+///   enqueue, all in one transaction.
 /// - [`RoutingResolver`] — derive `required_plugin_key` + `target_flavor_sha`.
 /// - Identity fields captured at construction: `workflow_id`, `trigger_id`,
 ///   `scope` — same values on every `emit` call from this trigger context.
 #[derive(Clone)]
 pub struct DurableExecutionEmitter {
     dedup: Arc<dyn TriggerDedupInbox>,
-    execution: Arc<dyn ExecutionStore>,
     resolver: Arc<dyn RoutingResolver>,
     // Cached at construction from `TriggerRuntimeContext`.
     workflow_id: WorkflowId,
@@ -108,15 +94,13 @@ impl std::fmt::Debug for DurableExecutionEmitter {
 impl DurableExecutionEmitter {
     /// Construct a durable emitter.
     ///
-    /// `dedup` MUST share the same [`SharedDispatchCore`] as the
-    /// `JobDispatchQueue` passed to the orchestrator, so
-    /// `claim_and_enqueue_start` operates in one critical section.
-    ///
-    /// [`SharedDispatchCore`]: nebula_storage::inmem::SharedDispatchCore
+    /// `dedup` MUST be backed by the same store (or share the same
+    /// `Arc<Mutex<…>>` for the InMemory adapter) as the `JobDispatchQueue`
+    /// passed to the orchestrator, so `claim_and_materialize_start` is atomic
+    /// across all three writes.
     #[must_use]
     pub fn new(
         dedup: Arc<dyn TriggerDedupInbox>,
-        execution: Arc<dyn ExecutionStore>,
         resolver: Arc<dyn RoutingResolver>,
         workflow_id: WorkflowId,
         trigger_id: NodeKey,
@@ -124,7 +108,6 @@ impl DurableExecutionEmitter {
     ) -> Self {
         Self {
             dedup,
-            execution,
             resolver,
             workflow_id,
             trigger_id,
@@ -158,12 +141,17 @@ impl DurableExecutionEmitter {
             .resolve(&self.workflow_id, &self.trigger_id)
             .map_err(ActionError::fatal_from)?;
 
-        // --- step 2: mint the candidate id + build the dispatch msg ----------
+        // --- step 2: mint the candidate id + serialise the initial state -----
         //
-        // `ExecutionId::new()` generates a fresh ULID. Minting here — before
-        // the dedup call — means the returned id is always the candidate, which
-        // on `Duplicate` matches no `Created` row (correct: no orphan).
-        let execution_id = ExecutionId::new();
+        // The candidate id is passed to `claim_and_materialize_start`.
+        // On `Dispatched` the store inserts the execution row with this id.
+        // On `Duplicate` the store returns the *winner's* id — which may differ.
+        let candidate_id = ExecutionId::new();
+
+        let mut exec_state = ExecutionState::new(candidate_id, self.workflow_id, &[]);
+        exec_state.set_workflow_input(input.clone());
+        let state_json = serde_json::to_value(&exec_state)
+            .map_err(|e| ActionError::fatal(format!("serialize execution state: {e}")))?;
 
         // Mint a fresh ULID for the job-dispatch row primary key.
         // The field is documented as "16-byte ULID (raw bytes)"; time-sortable
@@ -172,10 +160,10 @@ impl DurableExecutionEmitter {
 
         let start = JobDispatchMsg::new(
             job_id,
-            execution_id.to_string(),
+            candidate_id.to_string(),
             ControlCommand::Start,
             self.scope.clone(),
-            input.clone(),
+            input,
             event_id.as_ref().map(IdempotencyKey::as_str),
             route.target_flavor_sha.clone(),
             route.required_plugin_key.clone(),
@@ -184,92 +172,80 @@ impl DurableExecutionEmitter {
             0,              // reclaim_count: 0 on first enqueue
         );
 
+        let workflow_id_str = self.workflow_id.to_string();
+        let new_execution = NewExecution::new(&workflow_id_str, &state_json);
+
         // --- step 3: build the dedup guard row (only when event_id present) --
         let dedup_row = event_id.as_ref().map(|eid| {
             TriggerDedupRow::new(
                 self.trigger_id.as_str(),
                 eid.as_str(),
                 self.scope.clone(),
-                execution_id.to_string(),
                 chrono::Utc::now().to_rfc3339(),
             )
         });
 
-        // --- step 4: atomic dedup-insert ∧ Start-enqueue (R2 ordering) ------
+        // --- step 4: atomic dedup ∧ execution-row ∧ Start-enqueue -----------
         //
-        // `claim_and_enqueue_start` either:
-        //   Dispatched — inserted the dedup guard + enqueued the Start job
-        //   Duplicate  — guard already present; no job enqueued; no-op
+        // `claim_and_materialize_start` runs all three writes in one transaction:
+        //   Dispatched — dedup guard + Created execution row + Start job
+        //   Duplicate  — guard already present; returns winner's execution id
         //
-        // `create_row` (ExecutionStore::create) happens AFTER this call.
-        // Reversing the order orphans a Created row on Duplicate.
+        // The returned `outcome.execution_id` is the EFFECTIVE id — on
+        // Dispatched it equals `candidate_id`; on Duplicate it is the original
+        // winner's id.
         let outcome = self
             .dedup
-            .claim_and_enqueue_start(dedup_row.as_ref(), &start)
+            .claim_and_materialize_start(dedup_row.as_ref(), &start, &new_execution)
             .await
             .map_err(|e: StorageError| {
                 ActionError::retryable(format!("dedup inbox storage error: {e}"))
             })?;
 
         tracing::debug!(
-            outcome = ?outcome,
-            execution_id = %execution_id,
+            outcome_kind = ?outcome.kind,
+            effective_execution_id = %outcome.execution_id,
+            candidate_id = %candidate_id,
             trigger_id   = %self.trigger_id,
             workflow_id  = %self.workflow_id,
             event_id     = event_id.as_ref().map(IdempotencyKey::as_str),
-            "durable_emitter: claim_and_enqueue_start"
+            "durable_emitter: claim_and_materialize_start"
         );
 
-        match outcome {
-            // --- step 5a: Dispatched — seed the Created row -----------------
-            DispatchOutcome::Dispatched => {
-                let mut exec_state = ExecutionState::new(execution_id, self.workflow_id, &[]);
-                exec_state.set_workflow_input(input);
-                let state_json = serde_json::to_value(&exec_state)
-                    .map_err(|e| ActionError::fatal(format!("serialize execution state: {e}")))?;
-                self.execution
-                    .create(
-                        &self.scope,
-                        &execution_id.to_string(),
-                        &self.workflow_id.to_string(),
-                        state_json,
-                    )
-                    .await
-                    .map_err(|e: StorageError| {
-                        ActionError::retryable(format!("create execution row: {e}"))
-                    })?;
-
+        match outcome.kind {
+            DispatchKind::Dispatched => {
                 tracing::info!(
-                    execution_id = %execution_id,
+                    execution_id = %outcome.execution_id,
                     trigger_id   = %self.trigger_id,
                     workflow_id  = %self.workflow_id,
                     event_id     = event_id.as_ref().map(IdempotencyKey::as_str),
                     "durable_emitter: dispatched"
                 );
-
-                Ok(execution_id)
             },
-
-            // --- step 5b: Duplicate — return id, create nothing -------------
-            DispatchOutcome::Duplicate => {
+            DispatchKind::Duplicate => {
                 tracing::debug!(
-                    execution_id = %execution_id,
+                    winner_execution_id = %outcome.execution_id,
+                    candidate_id = %candidate_id,
                     trigger_id   = %self.trigger_id,
                     workflow_id  = %self.workflow_id,
                     event_id     = event_id.as_ref().map(IdempotencyKey::as_str),
-                    "durable_emitter: duplicate (no-op)"
+                    "durable_emitter: duplicate — returning winner id"
                 );
-                Ok(execution_id)
             },
-
-            // `DispatchOutcome` is #[non_exhaustive] — a future variant whose
-            // enqueue semantics are unknown MUST be rejected fail-closed.
-            // Seeding a Created row without knowing whether a Start job was
-            // enqueued would risk orphaning or double-dispatch.
-            _ => Err(ActionError::fatal(format!(
-                "unknown DispatchOutcome variant {outcome:?}; refusing to seed an execution row"
-            ))),
+            // `DispatchKind` is #[non_exhaustive] — a future variant whose
+            // semantics are unknown MUST be rejected fail-closed.
+            _ => {
+                return Err(ActionError::fatal(format!(
+                    "unknown DispatchKind variant {:?}; refusing to return an execution id",
+                    outcome.kind
+                )));
+            },
         }
+
+        // Parse the effective id back to the typed wrapper.
+        outcome.execution_id.parse::<ExecutionId>().map_err(|e| {
+            ActionError::fatal(format!("effective execution id is not a valid ULID: {e}"))
+        })
     }
 }
 

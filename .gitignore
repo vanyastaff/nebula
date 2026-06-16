@@ -178,6 +178,7 @@ docker-compose.override.yml
 .claude/summaries/
 .claude/worktrees/
 .claude/agent-memory-local/
+.claude/agent-memory/
 .claude/scheduled_tasks.lock
 lefthook-local.yml
 

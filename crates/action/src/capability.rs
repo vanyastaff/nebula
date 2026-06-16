@@ -36,14 +36,14 @@ pub trait ExecutionEmitter: Send + Sync {
     ///
     /// `event_id` is the source-natural idempotency key for the triggering
     /// event. `Some` enables trigger-dedup exactly-once fan-out; `None` emits
-    /// unconditionally (no dedup guard row written).  When `Some`, a second
-    /// call with the same `event_id` is deduplicated — no additional execution
-    /// is started and no second dispatch row is written. The returned
-    /// [`ExecutionId`] for a duplicate call is implementation-defined (the
-    /// current durable emitter returns a freshly-minted candidate id) and MUST
-    /// NOT be used to infer that an execution row was created. Surfacing the
-    /// original winner's id on a duplicate requires the dedup compose to read it
-    /// back in-transaction — tracked for the durable-wiring unit.
+    /// unconditionally (no dedup guard row written). When `Some`, a second call
+    /// with the same `event_id` is deduplicated — no additional execution is
+    /// started and no second dispatch row is written.
+    ///
+    /// Returns the **effective** [`ExecutionId`]: the winner's id when the call
+    /// is deduplicated (`Duplicate`), or the newly-minted id when the call
+    /// materialises a fresh execution (`Dispatched`). Callers MAY use this id
+    /// to poll status or surface progress — it always points to an existing row.
     fn emit(
         &self,
         input: serde_json::Value,
