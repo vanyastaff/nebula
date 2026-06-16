@@ -10,8 +10,14 @@
 //! index-friendly pre-filter (sound because `capability_tags ⊇
 //! {required_plugin_key}` by DTO invariant), then `capability_tags <@
 //! $advertised_jsonb` applies the exact JSONB "is contained by" superset check
-//! (GIN-assisted) in the same statement.  `advertised_tags` is bound twice —
-//! once as `text[]` for `= ANY` and once as `JSONB` for `<@`.
+//! in the same statement.  `advertised_tags` is bound twice — once as `text[]`
+//! for `= ANY` and once as `JSONB` for `<@`.
+//!
+//! PERF: `<@` is NOT GIN-accelerated — `jsonb_ops` indexes `@>` / existence,
+//! not `<@` — so it runs as a filter over the rows the `(status,
+//! required_plugin_key)` B-tree returns.  Fine pre-fleet; a `<@`-indexable
+//! representation (text[] + `array_ops`, or a tag-membership table) is the
+//! tracked pre-production follow-up.  See `schema.sql` PERF NOTE.
 //!
 //! Ids are raw 16-byte ULID (`BYTEA`).  `capability_tags` is a `JSONB` array.
 
@@ -160,8 +166,9 @@ impl JobDispatchQueue for PgJobDispatchQueue {
         let now_ms = Utc::now().timestamp_millis();
         let tags_strs: Vec<&str> = advertised_tags.iter().map(CapabilityTag::as_str).collect();
         // `capability_tags <@ $advertised_jsonb`: JSONB "is contained by" operator
-        // (GIN-assisted).  A job's `capability_tags` must be a subset of the
-        // advertised JSONB array.  Built via `tags_to_json` — the same helper
+        // (NOT GIN-accelerated — see the module PERF note; runs as a filter over
+        // the pre-filtered rows).  A job's `capability_tags` must be a subset of
+        // the advertised JSONB array.  Built via `tags_to_json` — the same helper
         // `enqueue` uses — so `$3` (text[]) and `$4` (jsonb) are always derived
         // from the same source and can never diverge.
         let advertised_jsonb = tags_to_json(advertised_tags);

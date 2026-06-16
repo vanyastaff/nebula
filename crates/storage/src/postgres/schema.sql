@@ -286,15 +286,20 @@ CREATE TABLE IF NOT EXISTS port_blobs (
 );
 
 -- Capability-routed job-dispatch queue.  `id` is the raw 16-byte ULID
--- (BYTEA).  `capability_tags` is a JSONB array; the routing predicate is
--- `capability_tags <@ $advertised_jsonb` (JSONB "is contained by": the job's
--- tags must be a subset of the worker's advertised set).
--- `required_plugin_key = ANY($advertised_tags)` is kept as a sound index
--- pre-filter (DTO invariant: capability_tags ⊇ {required_plugin_key}).
+-- (BYTEA).  `capability_tags` is a JSONB array.  Claim predicate:
+--   `required_plugin_key = ANY($advertised)`            (B-tree pre-filter below)
+--   AND `capability_tags <@ $advertised_jsonb`          (JSONB subset / superset check)
+-- The pre-filter is sound — `capability_tags ⊇ {required_plugin_key}` (DTO
+-- invariant) — so it never drops a row the subset check would accept.
+-- PERF NOTE: the `<@` subset check is NOT GIN-accelerated.  The built-in
+-- `jsonb_ops` GIN class indexes `@>` / existence / jsonpath, NOT `<@` (only the
+-- `array_ops` class indexes `<@`, and only for native arrays).  So `<@` runs as
+-- a filter over the rows the `(status, required_plugin_key)` B-tree returns —
+-- acceptable pre-fleet.  Before production scale, move `capability_tags` to a
+-- `<@`-indexable representation (text[] + `array_ops`, or a normalized
+-- tag-membership table).  Tracked as an ADR-0095 D1 follow-up.
 -- `processed_at_ms` is epoch-millis (BIGINT) for parity with the
 -- `port_control_queue` reclaim arithmetic.
--- The GIN index on `capability_tags` accelerates the `<@` superset check
--- on Postgres (SQLite uses json_each + NOT EXISTS; this index is Postgres-only).
 CREATE TABLE IF NOT EXISTS port_job_dispatch_queue (
     id                  BYTEA PRIMARY KEY,
     execution_id        TEXT NOT NULL,
@@ -317,6 +322,9 @@ CREATE TABLE IF NOT EXISTS port_job_dispatch_queue (
 CREATE INDEX IF NOT EXISTS idx_port_job_dispatch_queue_status_key
     ON port_job_dispatch_queue (status, required_plugin_key);
 
+-- jsonb_ops GIN: does NOT accelerate the current `<@` subset claim (see the
+-- PERF NOTE above); retained for future `@>` / existence membership queries.
+-- The `<@`-indexable representation is the tracked pre-production follow-up.
 CREATE INDEX IF NOT EXISTS idx_port_job_dispatch_queue_tags
     ON port_job_dispatch_queue USING GIN (capability_tags);
 
