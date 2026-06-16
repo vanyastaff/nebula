@@ -12,6 +12,7 @@ mod control_queue;
 mod execution;
 mod idempotency_store;
 mod identity;
+mod job_dispatch;
 mod journal;
 mod node_result;
 mod workflow;
@@ -23,6 +24,9 @@ pub use identity::{
     InMemoryAuditStore, InMemoryBlobStore, InMemoryMembershipStore, InMemoryOrgStore,
     InMemoryQuotaStore, InMemoryResourceStore, InMemoryTriggerStore, InMemoryUserStore,
     InMemoryWorkspaceStore,
+};
+pub use job_dispatch::{
+    InMemoryJobDispatchQueue, InMemoryTriggerDedupInbox, SharedDispatchCore, new_shared_core,
 };
 pub use journal::InMemoryJournalReader;
 pub use node_result::{InMemoryCheckpointStore, InMemoryNodeResultStore};

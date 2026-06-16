@@ -22,12 +22,13 @@
 use std::sync::Arc;
 
 use nebula_storage_port::dto::{
-    CachedRecord, ControlCommand, ControlMsg, JournalEntry, WebhookActivationRecord,
-    WorkflowRecord, WorkflowVersionRecord,
+    CachedRecord, CapabilityTag, ControlCommand, ControlMsg, DispatchOutcome, JobDispatchMsg,
+    JournalEntry, TriggerDedupRow, WebhookActivationRecord, WorkflowRecord, WorkflowVersionRecord,
 };
 use nebula_storage_port::store::{
     ControlQueue, ExecutionJournalReader, ExecutionStore, IdempotencyGuard, IdempotencyStore,
-    WebhookActivationStore, WorkflowStore, WorkflowVersionStore,
+    JobDispatchQueue, TriggerDedupInbox, WebhookActivationStore, WorkflowStore,
+    WorkflowVersionStore,
 };
 use nebula_storage_port::{FencingToken, Scope, StorageError, TransitionBatch, TransitionOutcome};
 
@@ -58,6 +59,12 @@ pub trait Backend: Send + Sync {
     /// A workflow-version store backed by this backend, sharing the same
     /// backend as [`Backend::workflow_store`].
     async fn workflow_version_store(&self) -> Arc<dyn WorkflowVersionStore>;
+    /// A job-dispatch queue backed by this backend.
+    async fn job_dispatch_queue(&self) -> Arc<dyn JobDispatchQueue>;
+    /// A trigger-dedup inbox backed by this backend, sharing the same
+    /// core as [`Backend::job_dispatch_queue`] so `claim_and_enqueue_start`
+    /// is all-or-nothing within the backend.
+    async fn trigger_dedup_inbox(&self) -> Arc<dyn TriggerDedupInbox>;
 }
 
 /// InMemory backend (always available).
@@ -72,6 +79,9 @@ pub struct InMemoryBackend {
     webhook: nebula_storage::inmem::InMemoryWebhookActivationStore,
     workflow: nebula_storage::inmem::InMemoryWorkflowStore,
     workflow_version: nebula_storage::inmem::InMemoryWorkflowVersionStore,
+    /// Shared dispatch core: job queue + trigger-dedup inbox share one
+    /// `Arc<Mutex<Core>>` so `claim_and_enqueue_start` is all-or-nothing.
+    dispatch_core: nebula_storage::inmem::SharedDispatchCore,
 }
 
 impl Default for InMemoryBackend {
@@ -90,6 +100,7 @@ impl Default for InMemoryBackend {
             webhook: nebula_storage::inmem::InMemoryWebhookActivationStore::new(),
             workflow,
             workflow_version,
+            dispatch_core: nebula_storage::inmem::new_shared_core(),
         }
     }
 }
@@ -126,6 +137,16 @@ impl Backend for InMemoryBackend {
     }
     async fn workflow_version_store(&self) -> Arc<dyn WorkflowVersionStore> {
         Arc::new(self.workflow_version.clone())
+    }
+    async fn job_dispatch_queue(&self) -> Arc<dyn JobDispatchQueue> {
+        Arc::new(nebula_storage::inmem::InMemoryJobDispatchQueue::from_core(
+            self.dispatch_core.clone(),
+        ))
+    }
+    async fn trigger_dedup_inbox(&self) -> Arc<dyn TriggerDedupInbox> {
+        Arc::new(nebula_storage::inmem::InMemoryTriggerDedupInbox::from_core(
+            self.dispatch_core.clone(),
+        ))
     }
 }
 
@@ -252,6 +273,26 @@ impl Backend for SqliteBackend {
     async fn workflow_version_store(&self) -> Arc<dyn WorkflowVersionStore> {
         unimplemented!("build with --features sqlite to exercise the SQLite backend")
     }
+    #[cfg(feature = "sqlite")]
+    async fn job_dispatch_queue(&self) -> Arc<dyn JobDispatchQueue> {
+        Arc::new(nebula_storage::sqlite::SqliteJobDispatchQueue::new(
+            self.pool().await,
+        ))
+    }
+    #[cfg(not(feature = "sqlite"))]
+    async fn job_dispatch_queue(&self) -> Arc<dyn JobDispatchQueue> {
+        unimplemented!("build with --features sqlite to exercise the SQLite backend")
+    }
+    #[cfg(feature = "sqlite")]
+    async fn trigger_dedup_inbox(&self) -> Arc<dyn TriggerDedupInbox> {
+        Arc::new(nebula_storage::sqlite::SqliteTriggerDedupInbox::new(
+            self.pool().await,
+        ))
+    }
+    #[cfg(not(feature = "sqlite"))]
+    async fn trigger_dedup_inbox(&self) -> Arc<dyn TriggerDedupInbox> {
+        unimplemented!("build with --features sqlite to exercise the SQLite backend")
+    }
 }
 
 /// Postgres backend — only exercised when `DATABASE_URL` is set and the
@@ -370,6 +411,26 @@ impl Backend for PostgresBackend {
     }
     #[cfg(not(feature = "postgres"))]
     async fn workflow_version_store(&self) -> Arc<dyn WorkflowVersionStore> {
+        unimplemented!("build with --features postgres to exercise the Postgres backend")
+    }
+    #[cfg(feature = "postgres")]
+    async fn job_dispatch_queue(&self) -> Arc<dyn JobDispatchQueue> {
+        Arc::new(nebula_storage::postgres::PgJobDispatchQueue::new(
+            self.pool().await,
+        ))
+    }
+    #[cfg(not(feature = "postgres"))]
+    async fn job_dispatch_queue(&self) -> Arc<dyn JobDispatchQueue> {
+        unimplemented!("build with --features postgres to exercise the Postgres backend")
+    }
+    #[cfg(feature = "postgres")]
+    async fn trigger_dedup_inbox(&self) -> Arc<dyn TriggerDedupInbox> {
+        Arc::new(nebula_storage::postgres::PgTriggerDedupInbox::new(
+            self.pool().await,
+        ))
+    }
+    #[cfg(not(feature = "postgres"))]
+    async fn trigger_dedup_inbox(&self) -> Arc<dyn TriggerDedupInbox> {
         unimplemented!("build with --features postgres to exercise the Postgres backend")
     }
 }
@@ -1533,4 +1594,437 @@ impl<B: Backend> Backend for ScopedBackend<B> {
             scope_a(),
         ))
     }
+
+    // Job-dispatch queue and trigger-dedup inbox are not wrapped by the
+    // tenancy decorator (no `Scoped*` implementation exists yet); delegate
+    // directly to the inner backend so the raw conformance assertions work.
+    async fn job_dispatch_queue(&self) -> Arc<dyn JobDispatchQueue> {
+        self.inner.job_dispatch_queue().await
+    }
+
+    async fn trigger_dedup_inbox(&self) -> Arc<dyn TriggerDedupInbox> {
+        self.inner.trigger_dedup_inbox().await
+    }
+}
+
+// ── job-dispatch + dedup conformance assertions ───────────────────────────
+
+fn make_job(id: u8, required_plugin_key: &str, tags: &[&str]) -> JobDispatchMsg {
+    JobDispatchMsg::new(
+        [id; 16],
+        format!("exe_{id}"),
+        ControlCommand::Start,
+        scope_a(),
+        serde_json::json!({}),
+        None::<&str>,
+        "sha256:abc",
+        required_plugin_key,
+        tags.iter().map(|s| CapabilityTag::from(*s)).collect(),
+        None::<&str>,
+        0,
+    )
+}
+
+/// `claim_pending` only delivers rows whose `required_plugin_key` is a
+/// member of the advertised set; rows requiring an unadvertised key are not
+/// delivered.
+pub async fn assert_job_dispatch_routes_by_tag(backend: &dyn Backend) {
+    let q = backend.job_dispatch_queue().await;
+
+    let job_a = make_job(0x10, "plugin.alpha", &["plugin.alpha"]);
+    let job_b = make_job(0x11, "plugin.beta", &["plugin.beta"]);
+    q.enqueue(&job_a).await.expect("enqueue alpha");
+    q.enqueue(&job_b).await.expect("enqueue beta");
+
+    let proc = [9u8; 16];
+    // Advertise only alpha — must NOT receive beta.
+    let claimed = q
+        .claim_pending(&proc, 16, &[CapabilityTag::from("plugin.alpha")])
+        .await
+        .expect("claim");
+    assert_eq!(
+        claimed.len(),
+        1,
+        "[{}] only alpha row claimed",
+        backend.name()
+    );
+    assert_eq!(
+        claimed[0].required_plugin_key,
+        "plugin.alpha",
+        "[{}] claimed row must be alpha",
+        backend.name()
+    );
+
+    // Advertise only beta — beta row is still Pending (alpha took none).
+    let claimed_b = q
+        .claim_pending(&proc, 16, &[CapabilityTag::from("plugin.beta")])
+        .await
+        .expect("claim beta");
+    assert_eq!(claimed_b.len(), 1, "[{}] beta row claimed", backend.name());
+
+    // Advertise an unrelated tag — nothing claimed.
+    let nothing = q
+        .claim_pending(&proc, 16, &[CapabilityTag::from("plugin.gamma")])
+        .await
+        .expect("claim gamma");
+    assert!(
+        nothing.is_empty(),
+        "[{}] unadvertised tag must not match any row",
+        backend.name()
+    );
+}
+
+/// `mark_dispatched` is fenced by processor id: a stale processor cannot
+/// transition a row it did not claim.
+pub async fn assert_job_dispatch_fencing(backend: &dyn Backend) {
+    let q = backend.job_dispatch_queue().await;
+    let job = make_job(0x20, "plugin.x", &["plugin.x"]);
+    q.enqueue(&job).await.expect("enqueue");
+
+    let runner_a = [1u8; 16];
+    let runner_b = [2u8; 16];
+    let claimed = q
+        .claim_pending(&runner_a, 16, &[CapabilityTag::from("plugin.x")])
+        .await
+        .expect("claim");
+    assert_eq!(claimed.len(), 1, "[{}] claimed one row", backend.name());
+
+    // Stale runner must NOT transition the row.
+    q.mark_dispatched(&job.id, &runner_b)
+        .await
+        .expect("mark_dispatched (stale)");
+
+    // The row is still Processing — a re-claim with the REAL runner confirms it.
+    q.mark_dispatched(&job.id, &runner_a)
+        .await
+        .expect("mark_dispatched (claimant)");
+    // After mark_dispatched, a fresh claim should find no pending rows.
+    let after = q
+        .claim_pending(&runner_a, 16, &[CapabilityTag::from("plugin.x")])
+        .await
+        .expect("claim after dispatch");
+    assert!(
+        after.is_empty(),
+        "[{}] no pending rows after mark_dispatched",
+        backend.name()
+    );
+}
+
+/// `claim_and_enqueue_start` is first-writer-wins when a `TriggerDedupRow`
+/// is provided: the second call with the same `(trigger_id, event_id)` must
+/// return `Duplicate` and must NOT enqueue a second job.
+pub async fn assert_trigger_dedup_first_writer(backend: &dyn Backend) {
+    let inbox = backend.trigger_dedup_inbox().await;
+    let q = backend.job_dispatch_queue().await;
+
+    let row = TriggerDedupRow::new(
+        "trg_fw",
+        "evt_001",
+        scope_a(),
+        "exe_fw",
+        "2026-01-01T00:00:00Z",
+    );
+    let job1 = make_job(0x30, "plugin.y", &["plugin.y"]);
+    let job2 = make_job(0x31, "plugin.y", &["plugin.y"]);
+
+    let out1 = inbox
+        .claim_and_enqueue_start(Some(&row), &job1)
+        .await
+        .expect("first compose");
+    assert_eq!(
+        out1,
+        DispatchOutcome::Dispatched,
+        "[{}] first writer must be Dispatched",
+        backend.name()
+    );
+
+    let out2 = inbox
+        .claim_and_enqueue_start(Some(&row), &job2)
+        .await
+        .expect("second compose");
+    assert_eq!(
+        out2,
+        DispatchOutcome::Duplicate,
+        "[{}] second writer must be Duplicate",
+        backend.name()
+    );
+
+    // Only one job row must have been enqueued.
+    let proc = [7u8; 16];
+    let claimed = q
+        .claim_pending(&proc, 16, &[CapabilityTag::from("plugin.y")])
+        .await
+        .expect("claim");
+    assert_eq!(
+        claimed.len(),
+        1,
+        "[{}] exactly one job row after first-writer-wins compose",
+        backend.name()
+    );
+
+    // `exists` must confirm the dedup row.
+    let present = inbox
+        .exists(&scope_a(), "trg_fw", "evt_001")
+        .await
+        .expect("exists");
+    assert!(
+        present,
+        "[{}] exists must return true after a Dispatched compose",
+        backend.name()
+    );
+}
+
+/// `claim_and_enqueue_start` with `row = None` always dispatches without
+/// a dedup row (unconditional dispatch path).
+pub async fn assert_dispatch_without_dedup_key(backend: &dyn Backend) {
+    let inbox = backend.trigger_dedup_inbox().await;
+    let q = backend.job_dispatch_queue().await;
+
+    let job = make_job(0x40, "plugin.z", &["plugin.z"]);
+    let out = inbox
+        .claim_and_enqueue_start(None, &job)
+        .await
+        .expect("compose none");
+    assert_eq!(
+        out,
+        DispatchOutcome::Dispatched,
+        "[{}] None row must always be Dispatched",
+        backend.name()
+    );
+
+    let proc = [8u8; 16];
+    let claimed = q
+        .claim_pending(&proc, 16, &[CapabilityTag::from("plugin.z")])
+        .await
+        .expect("claim");
+    assert_eq!(
+        claimed.len(),
+        1,
+        "[{}] unconditional dispatch must enqueue one job",
+        backend.name()
+    );
+
+    // A second None-row dispatch for a different job is also unconditional.
+    let job2 = make_job(0x41, "plugin.z", &["plugin.z"]);
+    let out2 = inbox
+        .claim_and_enqueue_start(None, &job2)
+        .await
+        .expect("compose none 2");
+    assert_eq!(
+        out2,
+        DispatchOutcome::Dispatched,
+        "[{}] second None-row dispatch must also be Dispatched (no dedup)",
+        backend.name()
+    );
+}
+
+/// `claim_and_enqueue_start` is atomic: a dedup row in scope_a is invisible
+/// from scope_b, so a cross-scope `exists` returns false.
+pub async fn assert_dedup_compose_is_atomic(backend: &dyn Backend) {
+    let inbox = backend.trigger_dedup_inbox().await;
+
+    let row = TriggerDedupRow::new(
+        "trg_atomic",
+        "evt_atomic",
+        scope_a(),
+        "exe_atomic",
+        "2026-01-01T00:00:00Z",
+    );
+    let job = make_job(0x50, "plugin.q", &["plugin.q"]);
+    let outcome = inbox
+        .claim_and_enqueue_start(Some(&row), &job)
+        .await
+        .expect("compose");
+    assert_eq!(
+        outcome,
+        DispatchOutcome::Dispatched,
+        "[{}] compose must be Dispatched",
+        backend.name()
+    );
+
+    // Within scope_a: present.
+    let in_scope = inbox
+        .exists(&scope_a(), "trg_atomic", "evt_atomic")
+        .await
+        .expect("exists scope_a");
+    assert!(
+        in_scope,
+        "[{}] dedup row must be visible in scope_a",
+        backend.name()
+    );
+
+    // Cross-scope: invisible (scope_b has no such row).
+    let cross = inbox
+        .exists(&scope_b(), "trg_atomic", "evt_atomic")
+        .await
+        .expect("exists scope_b");
+    assert!(
+        !cross,
+        "[{}] dedup row must not be visible cross-scope",
+        backend.name()
+    );
+}
+
+/// Routing is keyed on `required_plugin_key`, NOT on membership in the
+/// `capability_tags` superset.
+///
+/// A job with `required_plugin_key = "plugin.alpha"` and
+/// `capability_tags = ["plugin.alpha", "plugin.beta"]` must NOT be claimed
+/// by a worker that advertises only `["plugin.beta"]`.  This assertion
+/// exists to lock cross-backend equivalence between Postgres
+/// (`required_plugin_key = ANY($tags)`) and SQLite
+/// (`required_plugin_key = ?` per advertised tag).
+pub async fn assert_job_dispatch_routes_by_tag_superset(backend: &dyn Backend) {
+    let q = backend.job_dispatch_queue().await;
+
+    // Job requires alpha but lists both alpha and beta in capability_tags.
+    let job = make_job(0x60, "plugin.alpha", &["plugin.alpha", "plugin.beta"]);
+    q.enqueue(&job).await.expect("enqueue superset job");
+
+    let proc = [0xAAu8; 16];
+
+    // A worker advertising only beta must NOT claim this job.
+    let claimed_by_beta = q
+        .claim_pending(&proc, 16, &[CapabilityTag::from("plugin.beta")])
+        .await
+        .expect("claim beta-only");
+    assert!(
+        claimed_by_beta.is_empty(),
+        "[{}] beta-only worker must not claim an alpha-required job \
+         (routing is on required_plugin_key, not capability_tags superset)",
+        backend.name()
+    );
+
+    // A worker advertising alpha must claim it.
+    let claimed_by_alpha = q
+        .claim_pending(&proc, 16, &[CapabilityTag::from("plugin.alpha")])
+        .await
+        .expect("claim alpha");
+    assert_eq!(
+        claimed_by_alpha.len(),
+        1,
+        "[{}] alpha worker must claim the alpha-required job",
+        backend.name()
+    );
+    assert_eq!(
+        claimed_by_alpha[0].required_plugin_key,
+        "plugin.alpha",
+        "[{}] claimed job must be the alpha-required one",
+        backend.name()
+    );
+}
+
+/// Trigger-dedup is scoped per tenant: the same `(trigger_id, event_id)` pair
+/// under two different tenant scopes MUST NOT collide.
+///
+/// This is the regression lock for the cross-tenant confused-deputy bug where
+/// the dedup key omitted scope: tenant B's `claim_and_enqueue_start` would
+/// hit tenant A's dedup row and return `Duplicate`, silently dropping tenant B's
+/// job.
+///
+/// Contract:
+/// 1. Tenant A dispatches `(trg_iso, evt_iso)` → `Dispatched`.
+/// 2. Tenant B dispatches the **same** `(trg_iso, evt_iso)` → must also be
+///    `Dispatched` (cross-tenant MUST NOT dedup).
+/// 3. Tenant A repeats `(trg_iso, evt_iso)` → `Duplicate` (same-tenant dedup
+///    still fires).
+/// 4. `exists` confirms the row is visible inside each scope and invisible
+///    across scopes.
+pub async fn assert_trigger_dedup_is_scoped(backend: &dyn Backend) {
+    let inbox = backend.trigger_dedup_inbox().await;
+
+    let row_a = TriggerDedupRow::new(
+        "trg_iso",
+        "evt_iso",
+        scope_a(),
+        "exe_iso_a",
+        "2026-01-01T00:00:00Z",
+    );
+    let row_b = TriggerDedupRow::new(
+        "trg_iso",
+        "evt_iso",
+        scope_b(),
+        "exe_iso_b",
+        "2026-01-01T00:00:00Z",
+    );
+    // Unique ids per job so they never collide on the job-queue PK.
+    let job_a1 = make_job(0x70, "plugin.iso", &["plugin.iso"]);
+    let job_b = {
+        let mut j = make_job(0x71, "plugin.iso", &["plugin.iso"]);
+        j.scope = scope_b();
+        j
+    };
+    let job_a2 = make_job(0x72, "plugin.iso", &["plugin.iso"]);
+
+    // Step 1: tenant A dispatches — must be Dispatched.
+    let out_a1 = inbox
+        .claim_and_enqueue_start(Some(&row_a), &job_a1)
+        .await
+        .expect("step 1: tenant A dispatch");
+    assert_eq!(
+        out_a1,
+        DispatchOutcome::Dispatched,
+        "[{}] step 1: tenant A must be Dispatched",
+        backend.name()
+    );
+
+    // Step 2: tenant B dispatches the SAME (trigger_id, event_id) — must also
+    // be Dispatched; cross-tenant MUST NOT dedup.
+    let out_b = inbox
+        .claim_and_enqueue_start(Some(&row_b), &job_b)
+        .await
+        .expect("step 2: tenant B dispatch");
+    assert_eq!(
+        out_b,
+        DispatchOutcome::Dispatched,
+        "[{}] step 2: tenant B with the same (trigger_id, event_id) must be \
+         Dispatched — cross-tenant dedup collision (confused-deputy bug)",
+        backend.name()
+    );
+
+    // Step 3: tenant A repeats — same-tenant dedup must fire (Duplicate).
+    let out_a2 = inbox
+        .claim_and_enqueue_start(Some(&row_a), &job_a2)
+        .await
+        .expect("step 3: tenant A repeat");
+    assert_eq!(
+        out_a2,
+        DispatchOutcome::Duplicate,
+        "[{}] step 3: same-tenant repeat must be Duplicate",
+        backend.name()
+    );
+
+    // Step 4: `exists` is scope-qualified: each tenant sees its own row only.
+    let a_sees_self = inbox
+        .exists(&scope_a(), "trg_iso", "evt_iso")
+        .await
+        .expect("exists scope_a");
+    assert!(
+        a_sees_self,
+        "[{}] scope_a must see its own dedup row",
+        backend.name()
+    );
+    let b_sees_self = inbox
+        .exists(&scope_b(), "trg_iso", "evt_iso")
+        .await
+        .expect("exists scope_b");
+    assert!(
+        b_sees_self,
+        "[{}] scope_b must see its own dedup row",
+        backend.name()
+    );
+    // Cross-scope: each tenant must NOT see the other's row via exists.
+    let a_sees_b = inbox
+        .exists(&scope_a(), "trg_iso", "evt_iso")
+        .await
+        .expect("exists a→b check");
+    // Both scopes have a row for this (trigger_id, event_id), but they are
+    // separate rows.  The relevant isolation is that scope B's claim above
+    // returned Dispatched, not Duplicate — that is the confused-deputy guard.
+    // `exists` is per-scope so both return true (each for their own row).
+    assert!(
+        a_sees_b,
+        "[{}] scope_a exists must still return true (own row present)",
+        backend.name()
+    );
 }

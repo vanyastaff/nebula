@@ -42,6 +42,8 @@ CREATE TABLE IF NOT EXISTS port_execution_journal (
 
 -- Control-queue outbox. `id` is the raw 16-byte ULID (BYTEA), NOT the
 -- UTF-8 of the ULID string — the legacy string-encoding hack is gone.
+-- `processed_at_ms` is epoch-millis (BIGINT) for parity with the SQLite
+-- dialect and the Rust reclaim arithmetic in `postgres/control_queue.rs`.
 CREATE TABLE IF NOT EXISTS port_control_queue (
     id              BYTEA PRIMARY KEY,
     execution_id    TEXT NOT NULL,
@@ -52,7 +54,7 @@ CREATE TABLE IF NOT EXISTS port_control_queue (
     w3c_traceparent TEXT,
     reclaim_count   INTEGER NOT NULL DEFAULT 0,
     processed_by    BYTEA,
-    processed_at    TIMESTAMPTZ,
+    processed_at_ms BIGINT,
     error_message   TEXT
 );
 
@@ -281,4 +283,49 @@ CREATE TABLE IF NOT EXISTS port_blobs (
     created_at   TEXT NOT NULL,
     expires_at   TEXT,
     PRIMARY KEY (workspace_id, id)
+);
+
+-- Capability-routed job-dispatch queue.  `id` is the raw 16-byte ULID
+-- (BYTEA).  `capability_tags` is a JSONB array; the routing predicate is
+-- `required_plugin_key = ANY($advertised_tags)`.
+-- `processed_at_ms` is epoch-millis (BIGINT) for parity with the
+-- `port_control_queue` reclaim arithmetic.
+-- The GIN index on `capability_tags` accelerates membership queries on
+-- Postgres (SQLite uses json_each; this index is Postgres-only).
+CREATE TABLE IF NOT EXISTS port_job_dispatch_queue (
+    id                  BYTEA PRIMARY KEY,
+    execution_id        TEXT NOT NULL,
+    workspace_id        TEXT NOT NULL,
+    org_id              TEXT NOT NULL,
+    command             TEXT NOT NULL,
+    status              TEXT NOT NULL DEFAULT 'Pending',
+    payload             JSONB NOT NULL DEFAULT '{}',
+    event_id            TEXT,
+    target_flavor_sha   TEXT NOT NULL DEFAULT '',
+    required_plugin_key TEXT NOT NULL,
+    capability_tags     JSONB NOT NULL DEFAULT '[]',
+    w3c_traceparent     TEXT,
+    reclaim_count       INTEGER NOT NULL DEFAULT 0,
+    processed_by        BYTEA,
+    processed_at_ms     BIGINT,
+    error_message       TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_port_job_dispatch_queue_status_key
+    ON port_job_dispatch_queue (status, required_plugin_key);
+
+CREATE INDEX IF NOT EXISTS idx_port_job_dispatch_queue_tags
+    ON port_job_dispatch_queue USING GIN (capability_tags);
+
+-- Trigger-dedup inbox.  `PRIMARY KEY(workspace_id, org_id, trigger_id, event_id)` is
+-- the CAS for first-writer-wins fan-out dedup, scoped per tenant so two tenants
+-- sharing a trigger_id + event_id never collide.
+CREATE TABLE IF NOT EXISTS port_trigger_dedup_inbox (
+    workspace_id TEXT NOT NULL,
+    org_id       TEXT NOT NULL,
+    trigger_id   TEXT NOT NULL,
+    event_id     TEXT NOT NULL,
+    execution_id TEXT NOT NULL,
+    created_at   TEXT NOT NULL,
+    PRIMARY KEY (workspace_id, org_id, trigger_id, event_id)
 );

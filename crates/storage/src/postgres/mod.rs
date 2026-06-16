@@ -15,6 +15,7 @@ mod control_queue;
 mod execution;
 mod idempotency_store;
 mod identity;
+mod job_dispatch;
 mod workflow;
 
 pub use control_queue::{PgControlQueue, PgJournalReader};
@@ -24,6 +25,7 @@ pub use identity::{
     PgAuditStore, PgBlobStore, PgMembershipStore, PgOrgStore, PgQuotaStore, PgResourceStore,
     PgTriggerStore, PgUserStore, PgWorkspaceStore,
 };
+pub use job_dispatch::{PgJobDispatchQueue, PgTriggerDedupInbox};
 pub use workflow::{PgWorkflowStore, PgWorkflowVersionStore};
 
 /// Embedded port-scoped DDL applied by [`init_schema`].

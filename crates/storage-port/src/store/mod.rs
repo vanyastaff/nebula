@@ -11,9 +11,11 @@ mod control_queue;
 mod execution;
 mod idempotency;
 mod identity;
+mod job_dispatch;
 mod journal;
 mod node_result;
 mod refresh_claim;
+mod trigger_dedup;
 mod webhook;
 mod workflow;
 
@@ -25,11 +27,13 @@ pub use identity::{
     AuditStore, BlobStore, MembershipStore, OrgStore, QuotaStore, ResourceStore, TriggerStore,
     UserStore, WorkspaceStore,
 };
+pub use job_dispatch::JobDispatchQueue;
 pub use journal::ExecutionJournalReader;
 pub use node_result::NodeResultStore;
 pub use refresh_claim::{
     ClaimAttempt, ClaimToken, HeartbeatError, ReclaimedClaim, RefreshClaim, RefreshClaimError,
     RefreshClaimStore, ReplicaId, SentinelState,
 };
+pub use trigger_dedup::TriggerDedupInbox;
 pub use webhook::WebhookActivationStore;
 pub use workflow::{WorkflowStore, WorkflowVersionStore};
