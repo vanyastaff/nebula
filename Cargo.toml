@@ -21,6 +21,7 @@ members = [
   "crates/schema/macros",
   "crates/resilience",
   "crates/resource",
+  "crates/orchestrator",
 
   "crates/validator",
   "crates/api",

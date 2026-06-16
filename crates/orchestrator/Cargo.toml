@@ -1,0 +1,38 @@
+[package]
+name = "nebula-orchestrator"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+description = "Capability-routed job-dispatch pull loop for the Nebula orchestration layer (ADR-0095)"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+keywords.workspace = true
+
+[dependencies]
+nebula-storage-port = { path = "../storage-port" }
+nebula-core          = { path = "../core" }
+nebula-metrics       = { path = "../metrics" }
+
+async-trait      = { workspace = true }
+thiserror        = { workspace = true }
+tracing          = { workspace = true }
+tokio            = { workspace = true, features = ["rt", "sync", "time", "macros"] }
+tokio-util       = { workspace = true }
+opentelemetry    = { workspace = true }
+tracing-opentelemetry = { workspace = true }
+
+[dev-dependencies]
+# InMemory adapter — test-only; never a normal dep.
+nebula-storage = { path = "../storage" }
+tokio = { workspace = true, features = ["rt", "sync", "time", "macros", "test-util"] }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+
+[lib]
+doctest = false
+
+[lints]
+workspace = true

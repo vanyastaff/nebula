@@ -91,6 +91,9 @@ deny = [
     # examples/ member hosts the api_simple_server startup demo which
     # wires in-memory repos directly (same pattern as nebula-server).
     "nebula-examples",
+    # orchestrator dev-depends on the in-memory JobDispatchQueue adapter as its
+    # test baseline (the InMemory backend is the no-DATABASE_URL conformance double).
+    "nebula-orchestrator",
   ], reason = "Storage is exec-layer; business and core crates must not depend on it directly" },
 
   # nebula-storage-port is the Core-tier storage contract: object-safe
@@ -107,6 +110,8 @@ deny = [
     "nebula-engine",
     "nebula-api",
     "nebula-credential",
+    # exec-layer consumer of the JobDispatchQueue port (capability-routed dispatch).
+    "nebula-orchestrator",
   ], reason = "Storage port is a Core-tier contract; the adapter, tenancy decorator, exec/api consumers, and nebula-credential (which hosts the refresh coordinator and depends on RefreshClaimStore, ADR-0092) may depend on it" },
 
   # nebula-tenancy is the Business-tier multi-tenancy security boundary: it
