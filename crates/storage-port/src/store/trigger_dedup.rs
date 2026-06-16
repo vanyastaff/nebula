@@ -11,9 +11,12 @@ use crate::error::StorageError;
 
 /// Trigger-dedup inbox: first-writer-wins guard for trigger fan-out.
 ///
-/// The `UNIQUE(trigger_id, event_id)` constraint is the CAS.  A second
-/// delivery of the same event finds the row present and returns
-/// `DispatchOutcome::Duplicate` without enqueuing a second job.
+/// The `PRIMARY KEY(workspace_id, org_id, trigger_id, event_id)` constraint
+/// is the CAS.  A second delivery of the same event **within the same tenant
+/// scope** finds the row present and returns `DispatchOutcome::Duplicate`
+/// without enqueuing a second job.  Two distinct tenants sharing the same
+/// `(trigger_id, event_id)` pair are NOT deduplicated — the scope columns
+/// ensure cross-tenant isolation.
 ///
 /// Both methods are object-safe (concrete params only, no generics).
 #[async_trait::async_trait]

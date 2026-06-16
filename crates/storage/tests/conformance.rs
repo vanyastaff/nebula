@@ -28,7 +28,8 @@ use harness::{
     assert_job_dispatch_routes_by_tag_superset, assert_journal_visibility_and_scope,
     assert_live_lease_blocks_acquire, assert_save_with_published_version_is_atomic,
     assert_stale_fencing_is_fenced_out, assert_trigger_dedup_first_writer,
-    assert_webhook_activation_and_scope, assert_workflow_store_contract, skip_reason,
+    assert_trigger_dedup_is_scoped, assert_webhook_activation_and_scope,
+    assert_workflow_store_contract, skip_reason,
 };
 use rstest::rstest;
 use std::future::Future;
@@ -136,6 +137,7 @@ matrix!(
     job_dispatch_routes_by_tag_superset,
     assert_job_dispatch_routes_by_tag_superset
 );
+matrix!(trigger_dedup_is_scoped, assert_trigger_dedup_is_scoped);
 
 // ── Scoped variant ────────────────────────────────────────────────────────
 // The same contract suite, but every store is wrapped in the

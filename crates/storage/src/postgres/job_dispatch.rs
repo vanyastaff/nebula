@@ -308,18 +308,20 @@ impl TriggerDedupInbox for PgTriggerDedupInbox {
         let mut tx = self.pool.begin().await.map_err(conn_err)?;
 
         if let Some(r) = row {
-            // INSERT … ON CONFLICT(trigger_id, event_id) DO NOTHING is the CAS.
+            // INSERT … ON CONFLICT(workspace_id, org_id, trigger_id, event_id) DO NOTHING
+            // is the CAS.  The scope columns are inside the conflict target so two tenants
+            // sharing the same (trigger_id, event_id) never collide.
             // First writer wins; second writer gets affected == 0.
             let affected = sqlx::query(
                 "INSERT INTO port_trigger_dedup_inbox \
-                 (trigger_id, event_id, workspace_id, org_id, execution_id, created_at) \
+                 (workspace_id, org_id, trigger_id, event_id, execution_id, created_at) \
                  VALUES ($1, $2, $3, $4, $5, $6) \
-                 ON CONFLICT (trigger_id, event_id) DO NOTHING",
+                 ON CONFLICT (workspace_id, org_id, trigger_id, event_id) DO NOTHING",
             )
-            .bind(&r.trigger_id)
-            .bind(&r.event_id)
             .bind(&r.scope.workspace_id)
             .bind(&r.scope.org_id)
+            .bind(&r.trigger_id)
+            .bind(&r.event_id)
             .bind(&r.execution_id)
             .bind(&r.created_at)
             .execute(&mut *tx)

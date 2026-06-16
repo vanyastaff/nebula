@@ -73,9 +73,10 @@ pub struct JobDispatchMsg {
     /// Source-natural dedup key.
     ///
     /// `None` ⇒ dispatch once, no dedup row written.  `Some` ⇒ the
-    /// trigger-dedup inbox guards against duplicate fan-out with
-    /// `UNIQUE(trigger_id, event_id)`.  A fresh ULID is never the right
-    /// value here — it would defeat the dedup invariant.
+    /// trigger-dedup inbox guards against duplicate fan-out with the scoped
+    /// constraint `UNIQUE(workspace_id, org_id, trigger_id, event_id)`.
+    /// A fresh ULID is never the right value here — it would defeat the dedup
+    /// invariant.
     pub event_id: Option<String>,
     /// Version-pin guard (SHA of the plugin flavor).  Not a routing key.
     pub target_flavor_sha: String,
@@ -99,6 +100,8 @@ impl JobDispatchMsg {
     /// `capability_tags` must include `required_plugin_key`; callers are
     /// responsible for that invariant (no enforcement here to keep the
     /// constructor cheap).
+    // guard-justified: constructor over all DTO fields; a builder adds no safety
+    // for an internal #[non_exhaustive] record whose fields are all independent.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         id: [u8; 16],

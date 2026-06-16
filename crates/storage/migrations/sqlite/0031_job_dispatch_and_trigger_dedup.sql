@@ -17,21 +17,22 @@ CREATE TABLE IF NOT EXISTS port_job_dispatch_queue (
     w3c_traceparent     TEXT,
     reclaim_count       INTEGER NOT NULL DEFAULT 0,
     processed_by        BLOB,
-    processed_at_ms     INTEGER,                     -- epoch-ms; NULL = not yet processed
+    processed_at_ms     INTEGER,
     error_message       TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_port_job_dispatch_queue_status_key
     ON port_job_dispatch_queue (status, required_plugin_key);
 
--- Trigger-dedup inbox.  PRIMARY KEY(trigger_id, event_id) is the CAS for
--- first-writer-wins fan-out dedup (INSERT OR IGNORE / affected == 0 → Duplicate).
+-- Trigger-dedup inbox.  `PRIMARY KEY(workspace_id, org_id, trigger_id, event_id)` is
+-- the CAS for first-writer-wins fan-out dedup, scoped per tenant so two tenants
+-- sharing a trigger_id + event_id never collide.
 CREATE TABLE IF NOT EXISTS port_trigger_dedup_inbox (
-    trigger_id   TEXT NOT NULL,
-    event_id     TEXT NOT NULL,
     workspace_id TEXT NOT NULL,
     org_id       TEXT NOT NULL,
+    trigger_id   TEXT NOT NULL,
+    event_id     TEXT NOT NULL,
     execution_id TEXT NOT NULL,
     created_at   TEXT NOT NULL,
-    PRIMARY KEY (trigger_id, event_id)
+    PRIMARY KEY (workspace_id, org_id, trigger_id, event_id)
 );

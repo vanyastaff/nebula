@@ -5,7 +5,7 @@
 //! critical section — mirroring how `InMemoryControlQueue` shares
 //! `InMemoryExecutionStore`'s core.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -29,19 +29,17 @@ struct QueuedJob {
     error_message: Option<String>,
 }
 
-/// One dedup guard row.
-#[derive(Debug, Clone)]
-struct DedupEntry {
-    /// Scope (workspace_id, org_id) stored for the `exists` scope predicate.
-    scope: Scope,
-}
-
 #[derive(Debug, Default)]
 struct Core {
     /// Job-dispatch queue rows keyed by the message's 16-byte id.
     jobs: HashMap<[u8; 16], QueuedJob>,
-    /// Dedup entries keyed by `(trigger_id, event_id)`.
-    dedup: HashMap<(String, String), DedupEntry>,
+    /// Dedup guard set keyed by `(workspace_id, org_id, trigger_id, event_id)`.
+    ///
+    /// The scope columns are part of the key — identical `(trigger_id, event_id)`
+    /// values under different tenants are independent entries, mirroring the
+    /// `PRIMARY KEY (workspace_id, org_id, trigger_id, event_id)` constraint in
+    /// both the SQLite and Postgres schemas.
+    dedup: HashSet<(String, String, String, String)>,
 }
 
 /// Opaque shared dispatch core handle.
@@ -258,8 +256,13 @@ impl TriggerDedupInbox for InMemoryTriggerDedupInbox {
         let mut st = self.lock();
         // One critical section — both writes are inside the same lock.
         if let Some(r) = row {
-            let key = (r.trigger_id.clone(), r.event_id.clone());
-            if st.dedup.contains_key(&key) {
+            let key = (
+                r.scope.workspace_id.clone(),
+                r.scope.org_id.clone(),
+                r.trigger_id.clone(),
+                r.event_id.clone(),
+            );
+            if st.dedup.contains(&key) {
                 tracing::debug!(
                     target: "nebula_storage::inmem",
                     trigger_id = %r.trigger_id,
@@ -268,12 +271,7 @@ impl TriggerDedupInbox for InMemoryTriggerDedupInbox {
                 );
                 return Ok(DispatchOutcome::Duplicate);
             }
-            st.dedup.insert(
-                key,
-                DedupEntry {
-                    scope: r.scope.clone(),
-                },
-            );
+            st.dedup.insert(key);
         }
         st.jobs.insert(
             start.id,
@@ -301,8 +299,13 @@ impl TriggerDedupInbox for InMemoryTriggerDedupInbox {
         event_id: &str,
     ) -> Result<bool, StorageError> {
         let st = self.lock();
-        let key = (trigger_id.to_owned(), event_id.to_owned());
-        let found = st.dedup.get(&key).is_some_and(|e| e.scope == *scope);
+        let key = (
+            scope.workspace_id.clone(),
+            scope.org_id.clone(),
+            trigger_id.to_owned(),
+            event_id.to_owned(),
+        );
+        let found = st.dedup.contains(&key);
         Ok(found)
     }
 

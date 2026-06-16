@@ -317,14 +317,15 @@ CREATE INDEX IF NOT EXISTS idx_port_job_dispatch_queue_status_key
 CREATE INDEX IF NOT EXISTS idx_port_job_dispatch_queue_tags
     ON port_job_dispatch_queue USING GIN (capability_tags);
 
--- Trigger-dedup inbox.  `UNIQUE(trigger_id, event_id)` is the CAS for
--- first-writer-wins fan-out dedup.
+-- Trigger-dedup inbox.  `PRIMARY KEY(workspace_id, org_id, trigger_id, event_id)` is
+-- the CAS for first-writer-wins fan-out dedup, scoped per tenant so two tenants
+-- sharing a trigger_id + event_id never collide.
 CREATE TABLE IF NOT EXISTS port_trigger_dedup_inbox (
-    trigger_id   TEXT NOT NULL,
-    event_id     TEXT NOT NULL,
     workspace_id TEXT NOT NULL,
     org_id       TEXT NOT NULL,
+    trigger_id   TEXT NOT NULL,
+    event_id     TEXT NOT NULL,
     execution_id TEXT NOT NULL,
     created_at   TEXT NOT NULL,
-    PRIMARY KEY (trigger_id, event_id)
+    PRIMARY KEY (workspace_id, org_id, trigger_id, event_id)
 );

@@ -330,16 +330,19 @@ impl TriggerDedupInbox for SqliteTriggerDedupInbox {
         let mut tx = self.pool.begin().await.map_err(conn_err)?;
 
         if let Some(r) = row {
-            // INSERT OR IGNORE: first-writer-wins by UNIQUE(trigger_id, event_id).
+            // INSERT OR IGNORE: first-writer-wins by
+            // PRIMARY KEY(workspace_id, org_id, trigger_id, event_id).
+            // The scope columns are inside the key so two tenants sharing the
+            // same (trigger_id, event_id) never collide.
             let affected = sqlx::query(
                 "INSERT OR IGNORE INTO port_trigger_dedup_inbox \
-                 (trigger_id, event_id, workspace_id, org_id, execution_id, created_at) \
+                 (workspace_id, org_id, trigger_id, event_id, execution_id, created_at) \
                  VALUES (?, ?, ?, ?, ?, ?)",
             )
-            .bind(&r.trigger_id)
-            .bind(&r.event_id)
             .bind(&r.scope.workspace_id)
             .bind(&r.scope.org_id)
+            .bind(&r.trigger_id)
+            .bind(&r.event_id)
             .bind(&r.execution_id)
             .bind(&r.created_at)
             .execute(&mut *tx)

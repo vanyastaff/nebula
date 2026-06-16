@@ -8,9 +8,11 @@ use serde::{Deserialize, Serialize};
 
 /// One trigger-dedup guard row.
 ///
-/// The primary uniqueness constraint is `(trigger_id, event_id)`.  A second
-/// delivery of the same event from the same trigger will find the row already
-/// present and be discarded (`DispatchOutcome::Duplicate`).
+/// The uniqueness constraint is `PRIMARY KEY(workspace_id, org_id, trigger_id,
+/// event_id)` — scoped per tenant, so two tenants sharing the same
+/// `(trigger_id, event_id)` pair are never deduplicated against each other.  A
+/// second delivery of the same event from the same trigger *within one tenant*
+/// finds the row already present and is discarded (`DispatchOutcome::Duplicate`).
 ///
 /// Construct via [`TriggerDedupRow::new`]; struct literal syntax is
 /// unavailable from external crates (`#[non_exhaustive]`).
