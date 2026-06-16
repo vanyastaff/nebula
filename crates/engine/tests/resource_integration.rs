@@ -201,7 +201,7 @@ async fn action_acquires_resource_through_engine() {
     // 4. Build and execute a single-node workflow
     let node = node_key!("test");
     let wf = make_workflow(vec![
-        NodeDefinition::new(node.clone(), "A", "resource-consumer").unwrap(),
+        NodeDefinition::new(node.clone(), "A", "core", "resource-consumer").unwrap(),
     ]);
 
     let result = engine
@@ -254,7 +254,7 @@ async fn full_resource_lifecycle_with_shutdown() {
     // 4. Execute a single-node workflow
     let node = node_key!("test");
     let wf = make_workflow(vec![
-        NodeDefinition::new(node.clone(), "A", "resource-consumer").unwrap(),
+        NodeDefinition::new(node.clone(), "A", "core", "resource-consumer").unwrap(),
     ]);
 
     let result = engine
@@ -435,7 +435,7 @@ async fn engine_acquires_org_scoped_resource_through_accessor() {
 
     let node = node_key!("probe");
     let wf = make_workflow(vec![
-        NodeDefinition::new(node.clone(), "A", "engine-integration-acquire").unwrap(),
+        NodeDefinition::new(node.clone(), "A", "core", "engine-integration-acquire").unwrap(),
     ]);
 
     let result = engine
@@ -486,7 +486,7 @@ async fn action_resource_fails_without_manager() {
 
     let node = node_key!("test");
     let wf = make_workflow(vec![
-        NodeDefinition::new(node, "A", "resource-probe").unwrap(),
+        NodeDefinition::new(node, "A", "core", "resource-probe").unwrap(),
     ]);
 
     let result = engine

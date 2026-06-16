@@ -368,7 +368,7 @@ async fn registrars_do_not_regress_dispatch() {
         name: "registrar-smoke".into(),
         description: None,
         version: Version::new(0, 1, 0),
-        nodes: vec![NodeDefinition::new(node.clone(), "N", "test.noop").expect("node")],
+        nodes: vec![NodeDefinition::new(node.clone(), "N", "core", "test.noop").expect("node")],
         connections: vec![],
         variables: HashMap::new(),
         config: WorkflowConfig::default(),

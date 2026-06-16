@@ -380,8 +380,8 @@ async fn engine_b_takes_over_after_engine_a_runner_dies() {
     let y = node_key!("y");
     let wf = make_workflow(
         vec![
-            NodeDefinition::new(x.clone(), "X", "echo").unwrap(),
-            NodeDefinition::new(y.clone(), "Y", "park").unwrap(),
+            NodeDefinition::new(x.clone(), "X", "core", "echo").unwrap(),
+            NodeDefinition::new(y.clone(), "Y", "core", "park").unwrap(),
         ],
         vec![Connection::new(x.clone(), y.clone())],
     );
@@ -592,8 +592,8 @@ async fn engine_b_cancels_execution_after_runner_a_death_via_reclaim_redeliver()
     let y = node_key!("y");
     let wf = make_workflow(
         vec![
-            NodeDefinition::new(x.clone(), "X", "echo").unwrap(),
-            NodeDefinition::new(y.clone(), "Y", "park").unwrap(),
+            NodeDefinition::new(x.clone(), "X", "core", "echo").unwrap(),
+            NodeDefinition::new(y.clone(), "Y", "core", "park").unwrap(),
         ],
         vec![Connection::new(x.clone(), y.clone())],
     );
@@ -836,8 +836,8 @@ async fn replay_does_not_contend_for_held_lease() {
     let y_a = node_key!("y");
     let wf_a = make_workflow(
         vec![
-            NodeDefinition::new(x_a.clone(), "X", "echo").unwrap(),
-            NodeDefinition::new(y_a.clone(), "Y", "park").unwrap(),
+            NodeDefinition::new(x_a.clone(), "X", "core", "echo").unwrap(),
+            NodeDefinition::new(y_a.clone(), "Y", "core", "park").unwrap(),
         ],
         vec![Connection::new(x_a.clone(), y_a.clone())],
     );
@@ -846,7 +846,7 @@ async fn replay_does_not_contend_for_held_lease() {
     // completes without needing engine_a's "park" handler.
     let x_b = node_key!("rx");
     let wf_b = make_workflow(
-        vec![NodeDefinition::new(x_b.clone(), "RX", "echo").unwrap()],
+        vec![NodeDefinition::new(x_b.clone(), "RX", "core", "echo").unwrap()],
         vec![],
     );
 

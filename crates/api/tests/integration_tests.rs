@@ -895,7 +895,7 @@ async fn test_execute_workflow() {
         "name": "Test Workflow",
         "description": "A test workflow",
         "definition": {
-            "nodes": [{ "id": "step_a", "name": "Step A", "action_key": "echo" }],
+            "nodes": [{ "id": "step_a", "name": "Step A", "plugin_key": "core", "action_key": "echo" }],
             "connections": []
         }
     });
@@ -1247,7 +1247,7 @@ async fn test_execution_start() {
         "name": "Test Workflow",
         "description": "A test workflow",
         "definition": {
-            "nodes": [{ "id": "step_a", "name": "Step A", "action_key": "echo" }],
+            "nodes": [{ "id": "step_a", "name": "Step A", "plugin_key": "core", "action_key": "echo" }],
             "connections": []
         }
     });
@@ -2553,7 +2553,7 @@ async fn test_issue_327_start_execution_persists_canonical_execution_state() {
     let create_request = serde_json::json!({
         "name": "Issue 327 Workflow",
         "description": "Contract test: API-created execution must round-trip through ExecutionState",
-        "definition": { "nodes": [{ "id": "step_a", "name": "Step A", "action_key": "echo" }], "connections": [] }
+        "definition": { "nodes": [{ "id": "step_a", "name": "Step A", "plugin_key": "core", "action_key": "echo" }], "connections": [] }
     });
     let app = app::build_app(state.clone(), &api_config);
     let response = app
@@ -2732,7 +2732,7 @@ async fn test_issue_332_start_execution_enqueues_control_start() {
     let create_request = serde_json::json!({
         "name": "Issue 332 Workflow",
         "description": "API start must emit a Start command on the control queue",
-        "definition": { "nodes": [{ "id": "step_a", "name": "Step A", "action_key": "echo" }], "connections": [] }
+        "definition": { "nodes": [{ "id": "step_a", "name": "Step A", "plugin_key": "core", "action_key": "echo" }], "connections": [] }
     });
     let app = app::build_app(state.clone(), &api_config);
     let response = app
@@ -2838,7 +2838,7 @@ async fn test_issue_332_execute_workflow_enqueues_control_start() {
     let create_request = serde_json::json!({
         "name": "Issue 332 Execute Workflow",
         "description": "POST /workflows/:id/execute must also emit a Start command",
-        "definition": { "nodes": [{ "id": "step_a", "name": "Step A", "action_key": "echo" }], "connections": [] }
+        "definition": { "nodes": [{ "id": "step_a", "name": "Step A", "plugin_key": "core", "action_key": "echo" }], "connections": [] }
     });
     let app = app::build_app(state.clone(), &api_config);
     let response = app

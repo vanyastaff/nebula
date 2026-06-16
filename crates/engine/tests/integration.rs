@@ -269,7 +269,7 @@ async fn engine_and_runtime_share_metrics_registry() {
 
     let n = node_key!("n");
     let wf = make_workflow(
-        vec![NodeDefinition::new(n, "echo", "echo").unwrap()],
+        vec![NodeDefinition::new(n, "echo", "core", "echo").unwrap()],
         vec![],
     );
 
@@ -310,8 +310,8 @@ async fn linear_pipeline_data_flows_through() {
     let b = node_key!("b");
     let wf = make_workflow(
         vec![
-            NodeDefinition::new(a.clone(), "A", "echo").unwrap(),
-            NodeDefinition::new(b.clone(), "B", "double").unwrap(),
+            NodeDefinition::new(a.clone(), "A", "core", "echo").unwrap(),
+            NodeDefinition::new(b.clone(), "B", "core", "double").unwrap(),
         ],
         vec![Connection::new(a.clone(), b.clone())],
     );
@@ -342,9 +342,9 @@ async fn fan_out_parallel_execution() {
     let c = node_key!("c");
     let wf = make_workflow(
         vec![
-            NodeDefinition::new(a.clone(), "A", "echo").unwrap(),
-            NodeDefinition::new(b.clone(), "B", "double").unwrap(),
-            NodeDefinition::new(c.clone(), "C", "add10").unwrap(),
+            NodeDefinition::new(a.clone(), "A", "core", "echo").unwrap(),
+            NodeDefinition::new(b.clone(), "B", "core", "double").unwrap(),
+            NodeDefinition::new(c.clone(), "C", "core", "add10").unwrap(),
         ],
         vec![
             Connection::new(a.clone(), b.clone()),
@@ -380,10 +380,10 @@ async fn diamond_merge_receives_combined_outputs() {
     let d = node_key!("d");
     let wf = make_workflow(
         vec![
-            NodeDefinition::new(a.clone(), "A", "echo").unwrap(),
-            NodeDefinition::new(b.clone(), "B", "double").unwrap(),
-            NodeDefinition::new(c.clone(), "C", "add10").unwrap(),
-            NodeDefinition::new(d.clone(), "D", "echo").unwrap(), // echoes merged input
+            NodeDefinition::new(a.clone(), "A", "core", "echo").unwrap(),
+            NodeDefinition::new(b.clone(), "B", "core", "double").unwrap(),
+            NodeDefinition::new(c.clone(), "C", "core", "add10").unwrap(),
+            NodeDefinition::new(d.clone(), "D", "core", "echo").unwrap(), // echoes merged input
         ],
         vec![
             Connection::new(a.clone(), b.clone()),
@@ -427,9 +427,9 @@ async fn error_propagation_stops_downstream() {
     let c = node_key!("c");
     let wf = make_workflow(
         vec![
-            NodeDefinition::new(a.clone(), "A", "echo").unwrap(),
-            NodeDefinition::new(b.clone(), "B", "fail").unwrap(),
-            NodeDefinition::new(c.clone(), "C", "echo").unwrap(),
+            NodeDefinition::new(a.clone(), "A", "core", "echo").unwrap(),
+            NodeDefinition::new(b.clone(), "B", "core", "fail").unwrap(),
+            NodeDefinition::new(c.clone(), "C", "core", "echo").unwrap(),
         ],
         vec![
             Connection::new(a.clone(), b.clone()),
@@ -478,10 +478,10 @@ async fn cancellation_via_sibling_failure() {
     let downstream = node_key!("downstream");
     let wf = make_workflow(
         vec![
-            NodeDefinition::new(entry.clone(), "Entry", "echo").unwrap(),
-            NodeDefinition::new(slow.clone(), "Slow", "slow").unwrap(),
-            NodeDefinition::new(fail.clone(), "Fail", "fail").unwrap(),
-            NodeDefinition::new(downstream.clone(), "Down", "echo").unwrap(),
+            NodeDefinition::new(entry.clone(), "Entry", "core", "echo").unwrap(),
+            NodeDefinition::new(slow.clone(), "Slow", "core", "slow").unwrap(),
+            NodeDefinition::new(fail.clone(), "Fail", "core", "fail").unwrap(),
+            NodeDefinition::new(downstream.clone(), "Down", "core", "echo").unwrap(),
         ],
         vec![
             Connection::new(entry.clone(), slow.clone()),
@@ -520,8 +520,8 @@ async fn metrics_cover_full_lifecycle() {
     let b = node_key!("b");
     let wf = make_workflow(
         vec![
-            NodeDefinition::new(a.clone(), "A", "echo").unwrap(),
-            NodeDefinition::new(b.clone(), "B", "echo").unwrap(),
+            NodeDefinition::new(a.clone(), "A", "core", "echo").unwrap(),
+            NodeDefinition::new(b.clone(), "B", "core", "echo").unwrap(),
         ],
         vec![Connection::new(a, b)],
     );
@@ -578,6 +578,7 @@ async fn bounded_concurrency_with_multiple_parallel_nodes() {
             NodeDefinition::new(
                 NodeKey::new(format!("node_{i}")).unwrap(),
                 format!("N{i}"),
+                "core",
                 "counter",
             )
             .unwrap()
@@ -607,7 +608,10 @@ async fn zero_concurrency_budget_returns_planning_error() {
     let (engine, _) = make_engine(registry);
 
     let a = node_key!("a");
-    let wf = make_workflow(vec![NodeDefinition::new(a, "A", "echo").unwrap()], vec![]);
+    let wf = make_workflow(
+        vec![NodeDefinition::new(a, "A", "core", "echo").unwrap()],
+        vec![],
+    );
 
     let budget = ExecutionBudget {
         max_concurrent_nodes: 0,
@@ -641,10 +645,10 @@ async fn deep_chain_propagates_outputs() {
     let d = node_key!("d");
     let wf = make_workflow(
         vec![
-            NodeDefinition::new(a.clone(), "A", "echo").unwrap(), // echo(2) = 2
-            NodeDefinition::new(b.clone(), "B", "double").unwrap(), // double(2) = 4
-            NodeDefinition::new(c.clone(), "C", "double").unwrap(), // double(4) = 8
-            NodeDefinition::new(d.clone(), "D", "double").unwrap(), // double(8) = 16
+            NodeDefinition::new(a.clone(), "A", "core", "echo").unwrap(), // echo(2) = 2
+            NodeDefinition::new(b.clone(), "B", "core", "double").unwrap(), // double(2) = 4
+            NodeDefinition::new(c.clone(), "C", "core", "double").unwrap(), // double(4) = 8
+            NodeDefinition::new(d.clone(), "D", "core", "double").unwrap(), // double(8) = 16
         ],
         vec![
             Connection::new(a.clone(), b.clone()),
@@ -675,7 +679,7 @@ async fn metrics_accurate_on_failure() {
 
     let a = node_key!("a");
     let wf = make_workflow(
-        vec![NodeDefinition::new(a, "fail-node", "fail").unwrap()],
+        vec![NodeDefinition::new(a, "fail-node", "core", "fail").unwrap()],
         vec![],
     );
 
@@ -726,11 +730,11 @@ async fn disabled_node_is_skipped_and_successor_executes() {
 
     let wf = make_workflow(
         vec![
-            NodeDefinition::new(a.clone(), "A", "echo").unwrap(),
-            NodeDefinition::new(b.clone(), "B", "echo")
+            NodeDefinition::new(a.clone(), "A", "core", "echo").unwrap(),
+            NodeDefinition::new(b.clone(), "B", "core", "echo")
                 .unwrap()
                 .disabled(),
-            NodeDefinition::new(c.clone(), "C", "echo").unwrap(),
+            NodeDefinition::new(c.clone(), "C", "core", "echo").unwrap(),
         ],
         vec![
             Connection::new(a.clone(), b.clone()),
@@ -799,10 +803,10 @@ async fn skip_propagates_transitively_through_three_hop_chain() {
 
     let wf = make_workflow(
         vec![
-            NodeDefinition::new(a.clone(), "A", "echo").unwrap(),
-            NodeDefinition::new(b.clone(), "B", "skip").unwrap(),
-            NodeDefinition::new(c.clone(), "C", "echo").unwrap(),
-            NodeDefinition::new(d.clone(), "D", "echo").unwrap(),
+            NodeDefinition::new(a.clone(), "A", "core", "echo").unwrap(),
+            NodeDefinition::new(b.clone(), "B", "core", "skip").unwrap(),
+            NodeDefinition::new(c.clone(), "C", "core", "echo").unwrap(),
+            NodeDefinition::new(d.clone(), "D", "core", "echo").unwrap(),
         ],
         vec![
             Connection::new(a.clone(), b.clone()),
@@ -858,10 +862,10 @@ async fn diamond_with_one_skipped_branch_still_completes() {
 
     let wf = make_workflow(
         vec![
-            NodeDefinition::new(a.clone(), "A", "echo").unwrap(),
-            NodeDefinition::new(b.clone(), "B", "skip").unwrap(),
-            NodeDefinition::new(c.clone(), "C", "echo").unwrap(),
-            NodeDefinition::new(d.clone(), "D", "echo").unwrap(),
+            NodeDefinition::new(a.clone(), "A", "core", "echo").unwrap(),
+            NodeDefinition::new(b.clone(), "B", "core", "skip").unwrap(),
+            NodeDefinition::new(c.clone(), "C", "core", "echo").unwrap(),
+            NodeDefinition::new(d.clone(), "D", "core", "echo").unwrap(),
         ],
         vec![
             Connection::new(a.clone(), b.clone()),
@@ -907,9 +911,9 @@ async fn aggregate_with_one_skipped_source_fires() {
 
     let wf = make_workflow(
         vec![
-            NodeDefinition::new(x.clone(), "X", "skip").unwrap(),
-            NodeDefinition::new(y.clone(), "Y", "echo").unwrap(),
-            NodeDefinition::new(z.clone(), "Z", "echo").unwrap(),
+            NodeDefinition::new(x.clone(), "X", "core", "skip").unwrap(),
+            NodeDefinition::new(y.clone(), "Y", "core", "echo").unwrap(),
+            NodeDefinition::new(z.clone(), "Z", "core", "echo").unwrap(),
         ],
         vec![
             Connection::new(x.clone(), z.clone()),
@@ -951,9 +955,9 @@ async fn aggregate_with_all_sources_skipped_propagates_skip() {
 
     let wf = make_workflow(
         vec![
-            NodeDefinition::new(x.clone(), "X", "skip").unwrap(),
-            NodeDefinition::new(y.clone(), "Y", "skip").unwrap(),
-            NodeDefinition::new(z.clone(), "Z", "echo").unwrap(),
+            NodeDefinition::new(x.clone(), "X", "core", "skip").unwrap(),
+            NodeDefinition::new(y.clone(), "Y", "core", "skip").unwrap(),
+            NodeDefinition::new(z.clone(), "Z", "core", "echo").unwrap(),
         ],
         vec![
             Connection::new(x.clone(), z.clone()),
@@ -1009,11 +1013,11 @@ async fn multi_hop_skip_with_sibling_activation_still_runs() {
 
     let wf = make_workflow(
         vec![
-            NodeDefinition::new(a.clone(), "A", "echo").unwrap(),
-            NodeDefinition::new(b.clone(), "B", "skip").unwrap(),
-            NodeDefinition::new(c.clone(), "C", "echo").unwrap(),
-            NodeDefinition::new(d.clone(), "D", "echo").unwrap(),
-            NodeDefinition::new(sib.clone(), "Sib", "echo").unwrap(),
+            NodeDefinition::new(a.clone(), "A", "core", "echo").unwrap(),
+            NodeDefinition::new(b.clone(), "B", "core", "skip").unwrap(),
+            NodeDefinition::new(c.clone(), "C", "core", "echo").unwrap(),
+            NodeDefinition::new(d.clone(), "D", "core", "echo").unwrap(),
+            NodeDefinition::new(sib.clone(), "Sib", "core", "echo").unwrap(),
         ],
         vec![
             Connection::new(a.clone(), b.clone()),
@@ -1068,8 +1072,8 @@ async fn duplicate_edges_from_skipped_source_count_per_edge() {
 
     let wf = make_workflow(
         vec![
-            NodeDefinition::new(x.clone(), "X", "skip").unwrap(),
-            NodeDefinition::new(z.clone(), "Z", "echo").unwrap(),
+            NodeDefinition::new(x.clone(), "X", "core", "skip").unwrap(),
+            NodeDefinition::new(z.clone(), "Z", "core", "echo").unwrap(),
         ],
         vec![
             // Two parallel edges from the same skipped source to the same target.

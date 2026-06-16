@@ -2,19 +2,28 @@
 
 use std::{collections::HashMap, time::Duration};
 
-use nebula_core::{ActionKey, NodeKey, prelude::KeyParseError};
+use nebula_core::{ActionKey, NodeKey, PluginKey, prelude::KeyParseError};
 use semver::Version;
 use serde::{Deserialize, Serialize};
 
 use crate::definition::RetryConfig;
 
 /// A single action step inside a workflow graph.
+///
+/// `#[non_exhaustive]` allows adding new optional fields in future versions
+/// without a semver break. Use [`NodeDefinition::new`] to construct instances;
+/// use [`NodeDefinition::with_*`] builder methods to set optional fields.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct NodeDefinition {
     /// Unique node identifier within this workflow.
     pub id: NodeKey,
     /// Human-readable label.
     pub name: String,
+    /// Which plugin provides this node's action. Stored explicitly (workflow
+    /// action keys are bare, not namespaced, so the plugin is not derivable).
+    /// The dispatch router reads this directly.
+    pub plugin_key: PluginKey,
     /// Which action/plugin this node runs (e.g. `"http_request"`, `"echo"`).
     pub action_key: ActionKey,
     /// Optional pinned interface version for the action.
@@ -84,13 +93,23 @@ impl NodeDefinition {
     ///
     /// # Errors
     ///
-    /// Returns [`InvalidActionKey`](crate::WorkflowError::InvalidActionKey) if `action_key` is not
+    /// Returns [`InvalidPluginKey`](crate::WorkflowError::InvalidPluginKey) if `plugin_key` is
+    /// not a valid [`PluginKey`], or
+    /// [`InvalidActionKey`](crate::WorkflowError::InvalidActionKey) if `action_key` is not
     /// a valid [`ActionKey`] (lowercase alphanumeric, underscores, dots, hyphens).
     pub fn new(
         id: NodeKey,
         name: impl Into<String>,
+        plugin_key: impl AsRef<str>,
         action_key: impl AsRef<str>,
     ) -> Result<Self, crate::WorkflowError> {
+        let plugin_str = plugin_key.as_ref();
+        let parsed_plugin = plugin_str.parse().map_err(|e: KeyParseError| {
+            crate::WorkflowError::InvalidPluginKey {
+                key: plugin_str.to_string(),
+                reason: e.to_string(),
+            }
+        })?;
         let key_str = action_key.as_ref();
         let parsed_key =
             key_str
@@ -102,6 +121,7 @@ impl NodeDefinition {
         Ok(Self {
             id,
             name: name.into(),
+            plugin_key: parsed_plugin,
             action_key: parsed_key,
             interface_version: None,
             parameters: HashMap::new(),
@@ -291,23 +311,33 @@ mod tests {
 
     #[test]
     fn new_rejects_invalid_action_key() {
-        let result = NodeDefinition::new(node_key!("test"), "test", "INVALID KEY!!!");
+        let result = NodeDefinition::new(node_key!("test"), "test", "core", "INVALID KEY!!!");
         assert!(result.is_err());
     }
 
     #[test]
+    fn new_rejects_invalid_plugin_key() {
+        let result = NodeDefinition::new(node_key!("test"), "test", "INVALID PLUGIN!!!", "echo");
+        assert!(matches!(
+            result,
+            Err(crate::WorkflowError::InvalidPluginKey { .. })
+        ));
+    }
+
+    #[test]
     fn new_accepts_valid_action_key() {
-        let result = NodeDefinition::new(node_key!("test"), "test", "http_request");
+        let result = NodeDefinition::new(node_key!("test"), "test", "core", "http_request");
         assert!(result.is_ok());
     }
 
     #[test]
     fn node_definition_new() {
         let id = node_key!("test");
-        let node = NodeDefinition::new(id.clone(), "fetch", "http_request").unwrap();
+        let node = NodeDefinition::new(id.clone(), "fetch", "core", "http_request").unwrap();
 
         assert_eq!(node.id, id);
         assert_eq!(node.name, "fetch");
+        assert_eq!(node.plugin_key.as_str(), "core");
         assert_eq!(node.action_key.as_str(), "http_request");
         assert!(node.interface_version.is_none());
         assert!(node.parameters.is_empty());
@@ -319,7 +349,7 @@ mod tests {
     #[test]
     fn node_definition_builder_methods() {
         let id = node_key!("test");
-        let node = NodeDefinition::new(id, "fetch", "http_request")
+        let node = NodeDefinition::new(id, "fetch", "core", "http_request")
             .unwrap()
             .with_interface_version(Version::new(1, 0, 0))
             .with_parameter(
@@ -415,7 +445,7 @@ mod tests {
     #[test]
     fn node_definition_serde_roundtrip() {
         let id = node_key!("test");
-        let node = NodeDefinition::new(id.clone(), "transform", "echo")
+        let node = NodeDefinition::new(id.clone(), "transform", "core", "echo")
             .unwrap()
             .with_parameter("input", ParamValue::literal(serde_json::json!("data")))
             .with_timeout(Duration::from_secs(30));
@@ -425,6 +455,7 @@ mod tests {
 
         assert_eq!(back.id, id);
         assert_eq!(back.name, "transform");
+        assert_eq!(back.plugin_key.as_str(), "core");
         assert_eq!(back.action_key.as_str(), "echo");
         assert_eq!(back.timeout, Some(Duration::from_secs(30)));
         assert_eq!(back.parameters.len(), 1);
@@ -434,7 +465,7 @@ mod tests {
     fn interface_version_serde_roundtrip_in_node() {
         let id = node_key!("test");
         let iv = Version::new(2, 3, 0);
-        let node = NodeDefinition::new(id, "versioned", "echo")
+        let node = NodeDefinition::new(id, "versioned", "core", "echo")
             .unwrap()
             .with_interface_version(iv);
 

@@ -3,10 +3,11 @@
 use std::{collections::HashMap, time::Duration};
 
 use chrono::{DateTime, Utc};
-use nebula_core::{ActionKey, NodeKey, WorkflowId};
+use nebula_core::{ActionKey, NodeKey, PluginKey, WorkflowId};
 use serde::{Deserialize, Serialize};
 
-use crate::{Version, connection::Connection, node::NodeDefinition};
+use crate::{Version, connection::Connection, error::WorkflowError, node::NodeDefinition};
+use nebula_core::prelude::KeyParseError;
 
 /// Current schema version of the workflow definition format.
 ///
@@ -71,15 +72,24 @@ impl WorkflowDefinition {
 /// A trigger that can start this workflow: a reference to a plugin-provided
 /// trigger action by key, plus its author-supplied configuration.
 ///
-/// Structurally parallel to [`NodeDefinition`] (`action_key` + config), but a
+/// Structurally parallel to [`NodeDefinition`] (`plugin_key` + `action_key` + config), but a
 /// trigger lives outside the execution graph — it is a workflow *starter*, not
 /// a node. The referenced action must resolve to a `TriggerAction` in the
 /// plugin registry at load time; this type carries no transport knowledge.
+///
+/// `#[non_exhaustive]` allows adding new optional fields in future versions
+/// without a semver break. Use [`TriggerBinding::new`] to construct instances;
+/// use [`TriggerBinding::with_*`] builder methods to set optional fields.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct TriggerBinding {
     /// Stable identity of this trigger within the workflow (dedup scope key,
     /// routing diagnostics). Author-defined, like `NodeDefinition::id`.
     pub id: NodeKey,
+    /// Which plugin provides this trigger action. Stored explicitly (workflow
+    /// action keys are bare, not namespaced, so the plugin is not derivable).
+    /// The dispatch router reads this directly.
+    pub plugin_key: PluginKey,
     /// The plugin-provided trigger action this binding instantiates,
     /// e.g. `"cron.schedule"`, `"http.webhook"`.
     pub action_key: ActionKey,
@@ -90,6 +100,60 @@ pub struct TriggerBinding {
     /// event-type filter). Validated by the trigger action, not by `workflow`.
     #[serde(default)]
     pub config: serde_json::Value,
+}
+
+impl TriggerBinding {
+    /// Create a minimal trigger binding.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidPluginKey`](WorkflowError::InvalidPluginKey) if `plugin_key` is not
+    /// a valid [`PluginKey`], or
+    /// [`InvalidActionKey`](WorkflowError::InvalidActionKey) if `action_key` is not
+    /// a valid [`ActionKey`] (lowercase alphanumeric, underscores, dots, hyphens).
+    pub fn new(
+        id: NodeKey,
+        plugin_key: impl AsRef<str>,
+        action_key: impl AsRef<str>,
+    ) -> Result<Self, WorkflowError> {
+        let plugin_str = plugin_key.as_ref();
+        let parsed_plugin =
+            plugin_str
+                .parse()
+                .map_err(|e: KeyParseError| WorkflowError::InvalidPluginKey {
+                    key: plugin_str.to_string(),
+                    reason: e.to_string(),
+                })?;
+        let key_str = action_key.as_ref();
+        let parsed_key =
+            key_str
+                .parse()
+                .map_err(|e: KeyParseError| WorkflowError::InvalidActionKey {
+                    key: key_str.to_string(),
+                    reason: e.to_string(),
+                })?;
+        Ok(Self {
+            id,
+            plugin_key: parsed_plugin,
+            action_key: parsed_key,
+            interface_version: None,
+            config: serde_json::Value::Null,
+        })
+    }
+
+    /// Pin an interface version.
+    #[must_use]
+    pub fn with_interface_version(mut self, version: Version) -> Self {
+        self.interface_version = Some(version);
+        self
+    }
+
+    /// Set the opaque trigger configuration.
+    #[must_use]
+    pub fn with_config(mut self, config: serde_json::Value) -> Self {
+        self.config = config;
+        self
+    }
 }
 
 /// Strategy for handling node failures without explicit error edges.
@@ -382,31 +446,61 @@ mod tests {
     }
 
     #[test]
+    fn trigger_binding_new_rejects_invalid_plugin_key() {
+        let result = TriggerBinding::new(node_key!("t"), "INVALID PLUGIN!!!", "cron.schedule");
+        assert!(matches!(
+            result,
+            Err(WorkflowError::InvalidPluginKey { .. })
+        ));
+    }
+
+    #[test]
+    fn trigger_binding_new_rejects_invalid_action_key() {
+        let result = TriggerBinding::new(node_key!("t"), "scheduler", "INVALID ACTION!!!");
+        assert!(matches!(
+            result,
+            Err(WorkflowError::InvalidActionKey { .. })
+        ));
+    }
+
+    #[test]
+    fn trigger_binding_new_accepts_valid_keys() {
+        let binding = TriggerBinding::new(node_key!("every-5-min"), "scheduler", "cron.schedule")
+            .unwrap()
+            .with_config(serde_json::json!({"expression": "0 */5 * * *"}));
+        assert_eq!(binding.plugin_key.as_str(), "scheduler");
+        assert_eq!(binding.action_key.as_str(), "cron.schedule");
+        assert!(binding.interface_version.is_none());
+        assert_eq!(binding.config["expression"], "0 */5 * * *");
+    }
+
+    #[test]
+    fn trigger_binding_with_interface_version() {
+        let binding = TriggerBinding::new(node_key!("t"), "scheduler", "cron.schedule")
+            .unwrap()
+            .with_interface_version(Version::new(1, 2, 0));
+        assert_eq!(binding.interface_version, Some(Version::new(1, 2, 0)));
+    }
+
+    #[test]
     fn trigger_binding_serde_roundtrip() {
-        use nebula_core::ActionKey;
-        let binding = TriggerBinding {
-            id: node_key!("every-5-min"),
-            action_key: "cron.schedule".parse::<ActionKey>().unwrap(),
-            interface_version: None,
-            config: serde_json::json!({"expression": "0 */5 * * *"}),
-        };
+        let binding = TriggerBinding::new(node_key!("every-5-min"), "scheduler", "cron.schedule")
+            .unwrap()
+            .with_config(serde_json::json!({"expression": "0 */5 * * *"}));
         let json = serde_json::to_string(&binding).unwrap();
         let back: TriggerBinding = serde_json::from_str(&json).unwrap();
         assert_eq!(back.id, binding.id);
+        assert_eq!(back.plugin_key, binding.plugin_key);
         assert_eq!(back.action_key, binding.action_key);
         assert_eq!(back.config, binding.config);
     }
 
     #[test]
     fn workflow_definition_with_trigger_bindings_roundtrips() {
-        use nebula_core::ActionKey;
         let wf_id = WorkflowId::new();
-        let binding = TriggerBinding {
-            id: node_key!("webhook-in"),
-            action_key: "http.webhook".parse::<ActionKey>().unwrap(),
-            interface_version: None,
-            config: serde_json::json!({"path": "/hooks/incoming"}),
-        };
+        let binding = TriggerBinding::new(node_key!("webhook-in"), "http", "http.webhook")
+            .unwrap()
+            .with_config(serde_json::json!({"path": "/hooks/incoming"}));
         let now = Utc::now();
         let def = WorkflowDefinition {
             id: wf_id,

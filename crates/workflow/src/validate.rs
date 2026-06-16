@@ -269,7 +269,7 @@ mod tests {
     }
 
     fn node(id: NodeKey) -> NodeDefinition {
-        NodeDefinition::new(id, "n", "n").unwrap()
+        NodeDefinition::new(id, "n", "core", "n").unwrap()
     }
 
     #[test]
@@ -387,23 +387,11 @@ mod tests {
     #[test]
     fn trigger_validation_rejects_duplicate_binding_id() {
         use crate::definition::TriggerBinding;
-        use nebula_core::ActionKey;
         let a = node_key!("a");
         let mut def = make_definition("dup-trigger", vec![node(a)], vec![]);
-        let action_key: ActionKey = "cron.schedule".parse().unwrap();
         def.trigger_bindings = vec![
-            TriggerBinding {
-                id: node_key!("t1"),
-                action_key: action_key.clone(),
-                interface_version: None,
-                config: serde_json::Value::Null,
-            },
-            TriggerBinding {
-                id: node_key!("t1"), // duplicate id
-                action_key,
-                interface_version: None,
-                config: serde_json::Value::Null,
-            },
+            TriggerBinding::new(node_key!("t1"), "scheduler", "cron.schedule").unwrap(),
+            TriggerBinding::new(node_key!("t1"), "scheduler", "cron.schedule").unwrap(), // duplicate id
         ];
         let errors = validate_workflow(&def);
         assert!(
@@ -417,24 +405,15 @@ mod tests {
     #[test]
     fn trigger_validation_accepts_distinct_bindings() {
         use crate::definition::TriggerBinding;
-        use nebula_core::ActionKey;
         let a = node_key!("a");
         let mut def = make_definition("distinct-triggers", vec![node(a)], vec![]);
-        let cron_key: ActionKey = "cron.schedule".parse().unwrap();
-        let hook_key: ActionKey = "http.webhook".parse().unwrap();
         def.trigger_bindings = vec![
-            TriggerBinding {
-                id: node_key!("every-hour"),
-                action_key: cron_key,
-                interface_version: None,
-                config: serde_json::json!({"expression": "0 * * * *"}),
-            },
-            TriggerBinding {
-                id: node_key!("on-push"),
-                action_key: hook_key,
-                interface_version: None,
-                config: serde_json::json!({"path": "/hooks/push"}),
-            },
+            TriggerBinding::new(node_key!("every-hour"), "scheduler", "cron.schedule")
+                .unwrap()
+                .with_config(serde_json::json!({"expression": "0 * * * *"})),
+            TriggerBinding::new(node_key!("on-push"), "http", "http.webhook")
+                .unwrap()
+                .with_config(serde_json::json!({"path": "/hooks/push"})),
         ];
         let errors = validate_workflow(&def);
         assert!(

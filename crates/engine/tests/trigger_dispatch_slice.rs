@@ -186,7 +186,13 @@ async fn save_echo_workflow(stores: &TestStores) -> nebula_core::WorkflowId {
         description: None,
         version: Version::new(0, 1, 0),
         nodes: vec![
-            NodeDefinition::new(node_key!("step"), "Step", "test.echo.dispatch_slice").unwrap(),
+            NodeDefinition::new(
+                node_key!("step"),
+                "Step",
+                "core",
+                "test.echo.dispatch_slice",
+            )
+            .unwrap(),
         ],
         connections: Vec::<Connection>::new(),
         variables: HashMap::new(),

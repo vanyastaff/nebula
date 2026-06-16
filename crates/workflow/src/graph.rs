@@ -264,7 +264,7 @@ mod tests {
     }
 
     fn node(id: NodeKey) -> NodeDefinition {
-        NodeDefinition::new(id, "n", "n").unwrap()
+        NodeDefinition::new(id, "n", "core", "n").unwrap()
     }
 
     // --- linear graph: A -> B -> C ---

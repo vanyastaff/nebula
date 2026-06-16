@@ -201,7 +201,7 @@ async fn retry_succeeds_on_attempt_2() {
 
     let engine = make_engine(registry);
     let n = node_key!("flake");
-    let mut node = NodeDefinition::new(n.clone(), "flake_node", "flaky").unwrap();
+    let mut node = NodeDefinition::new(n.clone(), "flake_node", "core", "flaky").unwrap();
     node.retry_policy = Some(RetryConfig::fixed(3, 1));
 
     let wf = make_workflow(vec![node], vec![], WorkflowConfig::default());
@@ -234,7 +234,7 @@ async fn retry_exhausts_max_attempts() {
 
     let engine = make_engine(registry);
     let n = node_key!("d");
-    let mut node = NodeDefinition::new(n, "doom_node", "doomed").unwrap();
+    let mut node = NodeDefinition::new(n, "doom_node", "core", "doomed").unwrap();
     node.retry_policy = Some(RetryConfig::fixed(3, 1));
 
     let wf = make_workflow(vec![node], vec![], WorkflowConfig::default());
@@ -273,7 +273,7 @@ async fn cancel_during_retry_wait() {
     let engine = Arc::new(make_engine(registry).with_event_bus(event_bus));
 
     let n = node_key!("c");
-    let mut node = NodeDefinition::new(n, "c_node", "flaky_long").unwrap();
+    let mut node = NodeDefinition::new(n, "c_node", "core", "flaky_long").unwrap();
     // 60s backoff — will not fire during test.
     node.retry_policy = Some(RetryConfig::fixed(5, 60_000));
 
@@ -349,10 +349,11 @@ async fn terminate_during_retry_wait() {
     let engine = make_engine(registry).with_event_bus(event_bus);
     let parked = node_key!("parked");
     let stopper = node_key!("stopper");
-    let mut parked_node = NodeDefinition::new(parked.clone(), "parked_node", "flaky_t").unwrap();
+    let mut parked_node =
+        NodeDefinition::new(parked.clone(), "parked_node", "core", "flaky_t").unwrap();
     // 60s backoff parks the node so terminate has to drain it.
     parked_node.retry_policy = Some(RetryConfig::fixed(5, 60_000));
-    let stopper_node = NodeDefinition::new(stopper, "stopper_node", "term").unwrap();
+    let stopper_node = NodeDefinition::new(stopper, "stopper_node", "core", "term").unwrap();
 
     let wf = make_workflow(
         vec![parked_node, stopper_node],
@@ -411,7 +412,7 @@ async fn execution_budget_max_total_retries_caps_globally() {
 
     let engine = make_engine(registry);
     let n = node_key!("g");
-    let mut node = NodeDefinition::new(n, "g_node", "doomed_g").unwrap();
+    let mut node = NodeDefinition::new(n, "g_node", "core", "doomed_g").unwrap();
     node.retry_policy = Some(RetryConfig::fixed(5, 1));
 
     let wf = make_workflow(vec![node], vec![], WorkflowConfig::default());
@@ -459,7 +460,7 @@ async fn idempotency_key_differentiates_attempts() {
     let engine = make_engine(registry).with_execution_stores(stores);
 
     let n = node_key!("idem");
-    let mut node = NodeDefinition::new(n.clone(), "idem_node", "flaky_idem").unwrap();
+    let mut node = NodeDefinition::new(n.clone(), "idem_node", "core", "flaky_idem").unwrap();
     node.retry_policy = Some(RetryConfig::fixed(3, 1));
 
     let wf = make_workflow(vec![node], vec![], WorkflowConfig::default());
@@ -516,7 +517,7 @@ async fn per_node_retry_policy_overrides_workflow_default() {
 
     let engine = make_engine(registry);
     let n = node_key!("o");
-    let mut node = NodeDefinition::new(n, "o_node", "flaky_o").unwrap();
+    let mut node = NodeDefinition::new(n, "o_node", "core", "flaky_o").unwrap();
     node.retry_policy = Some(RetryConfig::fixed(3, 1)); // 3 attempts
 
     let config = WorkflowConfig {
@@ -553,7 +554,7 @@ async fn workflow_default_applies_when_node_has_none() {
 
     let engine = make_engine(registry);
     let n = node_key!("d");
-    let node = NodeDefinition::new(n, "d_node", "flaky_d").unwrap(); // no policy
+    let node = NodeDefinition::new(n, "d_node", "core", "flaky_d").unwrap(); // no policy
 
     let config = WorkflowConfig {
         retry_policy: Some(RetryConfig::fixed(3, 1)),
@@ -589,7 +590,7 @@ async fn no_retry_policy_means_one_shot_failure() {
 
     let engine = make_engine(registry);
     let n = node_key!("os");
-    let node = NodeDefinition::new(n, "os_node", "oneshot").unwrap();
+    let node = NodeDefinition::new(n, "os_node", "core", "oneshot").unwrap();
 
     let wf = make_workflow(vec![node], vec![], WorkflowConfig::default());
     let result = engine

@@ -3,7 +3,7 @@
 use std::{collections::HashMap, time::Duration};
 
 use chrono::Utc;
-use nebula_core::{ActionKey, NodeKey, WorkflowId};
+use nebula_core::{ActionKey, NodeKey, PluginKey, WorkflowId};
 
 use crate::{
     Version,
@@ -84,18 +84,21 @@ impl WorkflowBuilder {
     /// Add a trigger binding to the workflow.
     ///
     /// The `id` identifies this binding within the workflow (used for dedup
-    /// scoping and diagnostics). The `action_key` references the plugin-provided
-    /// trigger action. `config` is opaque and validated by the trigger action at
-    /// load time, not here.
+    /// scoping and diagnostics). The `plugin_key` names the plugin that provides
+    /// the trigger action; `action_key` references the specific trigger action
+    /// within that plugin. `config` is opaque and validated by the trigger action
+    /// at load time, not here.
     #[must_use]
     pub fn add_trigger(
         mut self,
         id: NodeKey,
+        plugin_key: PluginKey,
         action_key: ActionKey,
         config: serde_json::Value,
     ) -> Self {
         self.trigger_bindings.push(TriggerBinding {
             id,
+            plugin_key,
             action_key,
             interface_version: None,
             config,
@@ -254,7 +257,7 @@ mod tests {
     use super::*;
 
     fn node(id: NodeKey) -> NodeDefinition {
-        NodeDefinition::new(id, "n", "n").unwrap()
+        NodeDefinition::new(id, "n", "core", "n").unwrap()
     }
 
     #[test]
@@ -404,21 +407,28 @@ mod tests {
 
     #[test]
     fn add_trigger_lands_binding_in_definition() {
-        use nebula_core::ActionKey;
+        use nebula_core::{ActionKey, PluginKey};
         let a = node_key!("a");
         let trigger_id = node_key!("every-hour");
+        let plugin_key: PluginKey = "scheduler".parse().unwrap();
         let action_key: ActionKey = "cron.schedule".parse().unwrap();
         let config = serde_json::json!({"expression": "0 * * * *"});
 
         let def = WorkflowBuilder::new("with-trigger")
             .add_node(node(a))
-            .add_trigger(trigger_id.clone(), action_key.clone(), config.clone())
+            .add_trigger(
+                trigger_id.clone(),
+                plugin_key.clone(),
+                action_key.clone(),
+                config.clone(),
+            )
             .build()
             .unwrap();
 
         assert_eq!(def.trigger_bindings.len(), 1);
         let binding = &def.trigger_bindings[0];
         assert_eq!(binding.id, trigger_id);
+        assert_eq!(binding.plugin_key, plugin_key);
         assert_eq!(binding.action_key, action_key);
         assert_eq!(binding.config, config);
         assert!(binding.interface_version.is_none());

@@ -451,7 +451,9 @@ async fn knife_step3_engine_dispatches_start_end_to_end() {
         name: "knife-a2-dispatch".into(),
         description: None,
         version: Version::new(0, 1, 0),
-        nodes: vec![NodeDefinition::new(nebula_core::node_key!("step"), "Step", "echo").unwrap()],
+        nodes: vec![
+            NodeDefinition::new(nebula_core::node_key!("step"), "Step", "core", "echo").unwrap(),
+        ],
         connections: Vec::<Connection>::new(),
         variables: std::collections::HashMap::new(),
         config: WorkflowConfig::default(),
