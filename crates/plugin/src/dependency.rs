@@ -100,12 +100,14 @@ enum Color {
     Black,
 }
 
-/// A pre-computed summary of one plugin's dependencies used during the DFS.
-struct DepEntry {
-    /// The key of the requiring plugin.
-    dep_key: PluginKey,
-    /// The semver requirement declared by the requiring plugin.
-    req: VersionReq,
+/// A registered plugin reduced to the data dependency resolution needs.
+struct NodeSnapshot {
+    /// The plugin's own key.
+    key: PluginKey,
+    /// The plugin's version (checked against dependents' requirements).
+    version: Version,
+    /// `(dependency key, version requirement)` pairs this plugin declares.
+    deps: Vec<(PluginKey, VersionReq)>,
 }
 
 /// Compute a topological load order for all plugins in `reg`.
@@ -115,7 +117,9 @@ struct DepEntry {
 /// mismatch, or cycle).
 ///
 /// Roots are visited in ascending string order of their keys so that the
-/// result is deterministic regardless of `HashMap` iteration order.
+/// result is deterministic regardless of `HashMap` iteration order. Plugins
+/// are indexed up front, so every internal lookup during the traversal is an
+/// in-bounds slice access — the DFS has no fallible internal lookups.
 ///
 /// # Errors
 ///
@@ -126,139 +130,142 @@ struct DepEntry {
 /// - [`PluginDependencyError::Cycle`] — the dependency graph contains a
 ///   directed cycle; the error carries the closed path.
 pub(crate) fn resolve(reg: &PluginRegistry) -> Result<Vec<PluginKey>, PluginDependencyError> {
-    // Sorted root list for determinism (HashMap order is nondeterministic).
-    let mut roots: Vec<PluginKey> = reg.iter().map(|(k, _)| k.clone()).collect();
-    roots.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+    // Snapshot every registered plugin as (key, version, declared deps), sorted
+    // by key so the traversal — and thus the output — is deterministic
+    // regardless of `HashMap` iteration order.
+    let mut entries: Vec<NodeSnapshot> = reg
+        .iter()
+        .map(|(key, rp)| NodeSnapshot {
+            key: key.clone(),
+            version: rp.version().clone(),
+            deps: rp
+                .manifest()
+                .dependencies()
+                .iter()
+                .map(|d| (d.key().clone(), d.req().clone()))
+                .collect(),
+        })
+        .collect();
+    entries.sort_by(|a, b| a.key.as_str().cmp(b.key.as_str()));
 
-    let n = roots.len();
-    let mut color: HashMap<PluginKey, Color> =
-        roots.iter().cloned().map(|k| (k, Color::White)).collect();
+    let n = entries.len();
+    let nodes: Vec<PluginKey> = entries.iter().map(|e| e.key.clone()).collect();
+    let versions: Vec<Version> = entries.iter().map(|e| e.version.clone()).collect();
+    let key_to_index: HashMap<&PluginKey, usize> =
+        nodes.iter().enumerate().map(|(i, key)| (key, i)).collect();
 
-    let mut output: Vec<PluginKey> = Vec::with_capacity(n);
-    // Tracks the current DFS path (grey nodes) for cycle path reconstruction.
-    let mut grey_stack: Vec<PluginKey> = Vec::new();
+    // Resolve each node's declared dependencies to node indices, surfacing the
+    // two caller-facing failures here so the DFS operates on a clean index
+    // graph (every edge is a valid `index -> index`).
+    let mut adjacency: Vec<Vec<usize>> = Vec::with_capacity(n);
+    for (dependent_index, entry) in entries.iter().enumerate() {
+        let mut edges = Vec::with_capacity(entry.deps.len());
+        for (dep_key, req) in &entry.deps {
+            let Some(&dep_index) = key_to_index.get(dep_key) else {
+                return Err(PluginDependencyError::MissingDependency {
+                    dependent: nodes[dependent_index].clone(),
+                    dependency: dep_key.clone(),
+                    required: req.clone(),
+                });
+            };
+            if !req.matches(&versions[dep_index]) {
+                return Err(PluginDependencyError::VersionMismatch(Box::new(
+                    VersionMismatchDetail {
+                        dependent: nodes[dependent_index].clone(),
+                        dependency: dep_key.clone(),
+                        required: req.clone(),
+                        found: versions[dep_index].clone(),
+                    },
+                )));
+            }
+            edges.push(dep_index);
+        }
+        adjacency.push(edges);
+    }
 
-    // Each stack frame: (node_being_processed, its_dep_list, next_dep_index).
-    // Using a Vec<DepEntry> avoids re-fetching the manifest on every iteration.
-    type Frame = (PluginKey, Vec<DepEntry>, usize);
-    let mut call_stack: Vec<Frame> = Vec::new();
+    // Iterative white/grey/black DFS over node indices. `grey_position` maps a
+    // grey node to its slot in `grey_stack` (`NOT_GREY` when not on the path),
+    // so the cycle entry is located without a fallible search.
+    const NOT_GREY: usize = usize::MAX;
+    let mut color = vec![Color::White; n];
+    let mut grey_stack: Vec<usize> = Vec::new();
+    let mut grey_position = vec![NOT_GREY; n];
+    let mut order: Vec<usize> = Vec::with_capacity(n);
 
-    for root in &roots {
-        if color[root] != Color::White {
+    // Each frame: (node, index of the next outgoing edge to visit).
+    let mut call_stack: Vec<(usize, usize)> = Vec::new();
+
+    for start in 0..n {
+        if color[start] != Color::White {
             continue;
         }
-        let deps = collect_deps(reg, root);
-        call_stack.push((root.clone(), deps, 0));
-        *color.get_mut(root).expect("color map was built from roots") = Color::Grey;
-        grey_stack.push(root.clone());
+        color[start] = Color::Grey;
+        grey_position[start] = grey_stack.len();
+        grey_stack.push(start);
+        call_stack.push((start, 0));
 
         // Drive the iterative DFS until the current connected component is done.
-        while let Some(frame) = call_stack.last_mut() {
-            let (node, children, idx) = frame;
-            if *idx < children.len() {
-                let entry = &children[*idx];
-                let child_key = entry.dep_key.clone();
-                let req = entry.req.clone();
-                *idx += 1;
-
-                match reg.get(&child_key) {
-                    None => {
-                        return Err(PluginDependencyError::MissingDependency {
-                            dependent: node.clone(),
-                            dependency: child_key,
-                            required: req,
-                        });
+        while let Some(&(node, cursor)) = call_stack.last() {
+            if let Some(&child) = adjacency[node].get(cursor) {
+                if let Some(frame) = call_stack.last_mut() {
+                    frame.1 += 1;
+                }
+                match color[child] {
+                    Color::Grey => {
+                        // Back-edge: the cycle is the grey path from the entry
+                        // node down to here, closed by repeating the entry node
+                        // (e.g. [a, b, c, a]).
+                        let entry = grey_position[child];
+                        let mut path: Vec<PluginKey> = grey_stack[entry..]
+                            .iter()
+                            .map(|&i| nodes[i].clone())
+                            .collect();
+                        path.push(nodes[child].clone());
+                        return Err(PluginDependencyError::Cycle { path });
                     },
-                    Some(dep_rp) => {
-                        let found = dep_rp.version().clone();
-                        if !req.matches(&found) {
-                            return Err(PluginDependencyError::VersionMismatch(Box::new(
-                                VersionMismatchDetail {
-                                    dependent: node.clone(),
-                                    dependency: child_key,
-                                    required: req,
-                                    found,
-                                },
-                            )));
-                        }
-                        match color[&child_key] {
-                            Color::Grey => {
-                                // Back-edge: cycle detected.
-                                // Slice grey_stack from the first occurrence of the
-                                // cycle entry, then append that node again to close
-                                // the path (e.g. [a, b, c, a]).
-                                let start = grey_stack
-                                    .iter()
-                                    .position(|k| k == &child_key)
-                                    .expect("grey node must be in grey_stack");
-                                let mut path: Vec<PluginKey> = grey_stack[start..].to_vec();
-                                path.push(child_key);
-                                return Err(PluginDependencyError::Cycle { path });
-                            },
-                            Color::Black => {
-                                // Already fully processed — no further work needed.
-                            },
-                            Color::White => {
-                                // Recurse: push the child frame.
-                                let child_deps = collect_deps(reg, &child_key);
-                                *color
-                                    .get_mut(&child_key)
-                                    .expect("color map covers all registered plugins") =
-                                    Color::Grey;
-                                grey_stack.push(child_key.clone());
-                                call_stack.push((child_key, child_deps, 0));
-                            },
-                        }
+                    Color::Black => {
+                        // Already fully processed — no further work needed.
+                    },
+                    Color::White => {
+                        color[child] = Color::Grey;
+                        grey_position[child] = grey_stack.len();
+                        grey_stack.push(child);
+                        call_stack.push((child, 0));
                     },
                 }
             } else {
                 // All outgoing edges processed — finalize this node.
-                let finished = node.clone();
                 call_stack.pop();
-                *color
-                    .get_mut(&finished)
-                    .expect("color map covers all registered plugins") = Color::Black;
+                color[node] = Color::Black;
+                grey_position[node] = NOT_GREY;
                 grey_stack.pop();
-                output.push(finished);
+                order.push(node);
             }
         }
     }
 
-    // Topo-order invariant (debug builds only): for every edge (dep → node),
-    // dep's index in `output` is strictly less than node's index.
+    let result: Vec<PluginKey> = order.iter().map(|&i| nodes[i].clone()).collect();
+
+    // Topo-order invariant (debug builds only): every dependency precedes its
+    // dependent in the output.
     debug_assert!(
-        {
-            let idx: HashMap<&PluginKey, usize> =
-                output.iter().enumerate().map(|(i, k)| (k, i)).collect();
-            output.iter().all(|node| {
-                reg.get(node).is_none_or(|rp| {
-                    rp.manifest().dependencies().iter().all(|d| {
-                        // Missing deps are caught above; skip if absent here.
-                        idx.get(d.key()).is_none_or(|&di| di < idx[node])
-                    })
-                })
-            })
-        },
+        is_topologically_sorted(&adjacency, &order),
         "topological invariant violated: a dependency appears after its dependent in the output"
     );
 
-    Ok(output)
+    Ok(result)
 }
 
-/// Pre-collect the declared dependency entries for `node` from the registry.
-///
-/// Returns an empty `Vec` if `node` is not in the registry (should not happen
-/// during normal resolution, but is safe to handle).
-fn collect_deps(reg: &PluginRegistry, node: &PluginKey) -> Vec<DepEntry> {
-    reg.get(node).map_or_else(Vec::new, |rp| {
-        rp.manifest()
-            .dependencies()
-            .iter()
-            .map(|d| DepEntry {
-                dep_key: d.key().clone(),
-                req: d.req().clone(),
-            })
-            .collect()
+/// Debug-only check that `order` (a permutation of the node indices `0..n`)
+/// places every dependency before its dependent for all edges in `adjacency`.
+fn is_topologically_sorted(adjacency: &[Vec<usize>], order: &[usize]) -> bool {
+    let mut output_position = vec![0usize; order.len()];
+    for (position, &node) in order.iter().enumerate() {
+        output_position[node] = position;
+    }
+    adjacency.iter().enumerate().all(|(node, deps)| {
+        deps.iter()
+            .all(|&dep| output_position[dep] < output_position[node])
     })
 }
 
