@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS port_job_dispatch_queue (
     event_id            TEXT,
     target_flavor_sha   TEXT NOT NULL DEFAULT '',
     required_plugin_key TEXT NOT NULL,
-    capability_tags     JSONB NOT NULL DEFAULT '[]',
+    required_plugins    JSONB NOT NULL DEFAULT '[]',
     w3c_traceparent     TEXT,
     reclaim_count       INTEGER NOT NULL DEFAULT 0,
     processed_by        BYTEA,
@@ -24,8 +24,8 @@ CREATE TABLE IF NOT EXISTS port_job_dispatch_queue (
 CREATE INDEX IF NOT EXISTS idx_port_job_dispatch_queue_status_key
     ON port_job_dispatch_queue (status, required_plugin_key);
 
-CREATE INDEX IF NOT EXISTS idx_port_job_dispatch_queue_tags
-    ON port_job_dispatch_queue USING GIN (capability_tags);
+CREATE INDEX IF NOT EXISTS idx_port_job_dispatch_queue_plugins
+    ON port_job_dispatch_queue USING GIN (required_plugins);
 
 -- Trigger-dedup inbox.  `PRIMARY KEY(workspace_id, org_id, trigger_id, event_id)` is
 -- the CAS for first-writer-wins fan-out dedup, scoped per tenant so two tenants

@@ -1,40 +1,16 @@
 //! Job-dispatch message DTO and routing types.
 //!
 //! `JobDispatchMsg` is the durable unit of work enqueued by the emitter and
-//! pulled by the orchestrator.  The routing key is `required_plugin_key`
-//! matched against a worker's `capability_tags`; `target_flavor_sha` is a
-//! separate version-pin guard and is never used for routing.
+//! pulled by the orchestrator.  The routing predicate is
+//! `required_plugins ⊆ available_plugins`: a worker may claim a job only
+//! when its advertised set is a superset of the job's `required_plugins`.
+//! `required_plugin_key` is kept as an index-friendly pre-filter (sound
+//! because the DTO invariant guarantees `required_plugins ⊇ {required_plugin_key}`).
+//! `target_flavor_sha` is a version-pin guard and is never used for routing.
+use nebula_core::PluginKey;
+
 use crate::Scope;
 use crate::dto::ControlCommand;
-use serde::{Deserialize, Serialize};
-
-/// Opaque capability routing tag (advertised PluginKey strings).
-///
-/// A worker advertises the set of `CapabilityTag`s it supports; the
-/// orchestrator claims only rows whose `required_plugin_key` is a member of
-/// that set.  The tag is the canonical `PluginKey` string form.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct CapabilityTag(pub String);
-
-impl CapabilityTag {
-    /// Borrow the inner tag string.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl From<String> for CapabilityTag {
-    fn from(s: String) -> Self {
-        Self(s)
-    }
-}
-
-impl From<&str> for CapabilityTag {
-    fn from(s: &str) -> Self {
-        Self(s.to_owned())
-    }
-}
 
 /// Whether the compose wrote new rows or found an existing dedup guard.
 ///
@@ -84,7 +60,7 @@ pub enum DispatchKind {
 ///
 /// Construct via [`JobDispatchMsg::new`]; struct literal syntax is
 /// unavailable from external crates (`#[non_exhaustive]`).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct JobDispatchMsg {
     /// 16-byte ULID primary key (raw bytes).
@@ -107,14 +83,16 @@ pub struct JobDispatchMsg {
     pub event_id: Option<String>,
     /// Version-pin guard (SHA of the plugin flavor).  Not a routing key.
     pub target_flavor_sha: String,
-    /// Routing key: the advertised `PluginKey` this job requires.
+    /// The primary required plugin (the trigger's plugin); an element of
+    /// `required_plugins`; used as the index pre-filter.
     ///
     /// The orchestrator claims only rows whose `required_plugin_key` is a
-    /// member of a worker's advertised `capability_tags`.
-    pub required_plugin_key: String,
-    /// Full set of capability tags accepted by this job (superset of
-    /// `required_plugin_key`).  Stored as a JSON array in the backend.
-    pub capability_tags: Vec<CapabilityTag>,
+    /// member of the worker's `available_plugins`.
+    pub required_plugin_key: PluginKey,
+    /// Full set of plugin keys required by this job (trigger + enabled nodes,
+    /// deduplicated and sorted).  Superset of `{required_plugin_key}`.
+    /// Stored as a JSON array of strings in the backend.
+    pub required_plugins: Vec<PluginKey>,
     /// Optional W3C `traceparent` captured at enqueue time.
     pub w3c_traceparent: Option<String>,
     /// Times this row was reclaimed back to `Pending` after a crashed runner.
@@ -124,9 +102,13 @@ pub struct JobDispatchMsg {
 impl JobDispatchMsg {
     /// Construct a job-dispatch message.
     ///
-    /// `capability_tags` must include `required_plugin_key`; callers are
-    /// responsible for that invariant (no enforcement here to keep the
-    /// constructor cheap).
+    /// **Invariant:** `required_plugins` must contain `required_plugin_key`.
+    /// The storage backends rely on this to use `required_plugin_key` as a
+    /// sound index pre-filter for the superset routing predicate
+    /// (`required_plugins ⊆ available_plugins`).  The
+    /// `DefinitionRoutingResolver` always inserts the plugin key into
+    /// `required_plugins`, so real producers satisfy this invariant by
+    /// construction; a `debug_assert` catches violations in test.
     // guard-justified: constructor over all DTO fields; a builder adds no safety
     // for an internal #[non_exhaustive] record whose fields are all independent.
     #[allow(clippy::too_many_arguments)]
@@ -138,11 +120,18 @@ impl JobDispatchMsg {
         payload: serde_json::Value,
         event_id: Option<impl Into<String>>,
         target_flavor_sha: impl Into<String>,
-        required_plugin_key: impl Into<String>,
-        capability_tags: Vec<CapabilityTag>,
+        required_plugin_key: PluginKey,
+        required_plugins: Vec<PluginKey>,
         w3c_traceparent: Option<impl Into<String>>,
         reclaim_count: u32,
     ) -> Self {
+        debug_assert!(
+            required_plugins.contains(&required_plugin_key),
+            "required_plugins must contain required_plugin_key \
+             (invariant required by the superset routing pre-filter): \
+             required_plugin_key = {required_plugin_key:?}, \
+             required_plugins = {required_plugins:?}"
+        );
         Self {
             id,
             execution_id: execution_id.into(),
@@ -151,8 +140,8 @@ impl JobDispatchMsg {
             payload,
             event_id: event_id.map(Into::into),
             target_flavor_sha: target_flavor_sha.into(),
-            required_plugin_key: required_plugin_key.into(),
-            capability_tags,
+            required_plugin_key,
+            required_plugins,
             w3c_traceparent: w3c_traceparent.map(Into::into),
             reclaim_count,
         }

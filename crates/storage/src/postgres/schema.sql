@@ -286,12 +286,21 @@ CREATE TABLE IF NOT EXISTS port_blobs (
 );
 
 -- Capability-routed job-dispatch queue.  `id` is the raw 16-byte ULID
--- (BYTEA).  `capability_tags` is a JSONB array; the routing predicate is
--- `required_plugin_key = ANY($advertised_tags)`.
+-- (BYTEA).  `required_plugins` is a JSONB array of PluginKey strings.
+-- Claim predicate:
+--   `required_plugin_key = ANY($available)`            (B-tree pre-filter below)
+--   AND `required_plugins <@ $available_jsonb`         (JSONB subset / superset check)
+-- The pre-filter is sound — `required_plugins ⊇ {required_plugin_key}` (DTO
+-- invariant) — so it never drops a row the subset check would accept.
+-- PERF NOTE: the `<@` subset check is NOT GIN-accelerated.  The built-in
+-- `jsonb_ops` GIN class indexes `@>` / existence / jsonpath, NOT `<@` (only the
+-- `array_ops` class indexes `<@`, and only for native arrays).  So `<@` runs as
+-- a filter over the rows the `(status, required_plugin_key)` B-tree returns —
+-- acceptable pre-fleet.  Before production scale, move `required_plugins` to a
+-- `<@`-indexable representation (text[] + `array_ops`, or a normalized
+-- plugin-membership table).  Tracked as an ADR-0095 D1 follow-up.
 -- `processed_at_ms` is epoch-millis (BIGINT) for parity with the
 -- `port_control_queue` reclaim arithmetic.
--- The GIN index on `capability_tags` accelerates membership queries on
--- Postgres (SQLite uses json_each; this index is Postgres-only).
 CREATE TABLE IF NOT EXISTS port_job_dispatch_queue (
     id                  BYTEA PRIMARY KEY,
     execution_id        TEXT NOT NULL,
@@ -303,7 +312,7 @@ CREATE TABLE IF NOT EXISTS port_job_dispatch_queue (
     event_id            TEXT,
     target_flavor_sha   TEXT NOT NULL DEFAULT '',
     required_plugin_key TEXT NOT NULL,
-    capability_tags     JSONB NOT NULL DEFAULT '[]',
+    required_plugins    JSONB NOT NULL DEFAULT '[]',
     w3c_traceparent     TEXT,
     reclaim_count       INTEGER NOT NULL DEFAULT 0,
     processed_by        BYTEA,
@@ -314,8 +323,11 @@ CREATE TABLE IF NOT EXISTS port_job_dispatch_queue (
 CREATE INDEX IF NOT EXISTS idx_port_job_dispatch_queue_status_key
     ON port_job_dispatch_queue (status, required_plugin_key);
 
-CREATE INDEX IF NOT EXISTS idx_port_job_dispatch_queue_tags
-    ON port_job_dispatch_queue USING GIN (capability_tags);
+-- jsonb_ops GIN: does NOT accelerate the current `<@` subset claim (see the
+-- PERF NOTE above); retained for future `@>` / existence membership queries.
+-- The `<@`-indexable representation is the tracked pre-production follow-up.
+CREATE INDEX IF NOT EXISTS idx_port_job_dispatch_queue_plugins
+    ON port_job_dispatch_queue USING GIN (required_plugins);
 
 -- Trigger-dedup inbox.  `PRIMARY KEY(workspace_id, org_id, trigger_id, event_id)` is
 -- the CAS for first-writer-wins fan-out dedup, scoped per tenant so two tenants

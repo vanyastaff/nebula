@@ -2,16 +2,22 @@
 //!
 //! Single-consumer status flip (no `FOR UPDATE SKIP LOCKED` equivalent —
 //! spec §5 SQLite boundary, documented not hidden).  Ids are the raw 16-byte
-//! ULID (`BLOB`).  `capability_tags` is a JSON array stored for informational
-//! purposes; the **routing predicate** filters on `required_plugin_key` directly
-//! (`WHERE required_plugin_key = ?` per advertised tag, equivalent to Postgres
-//! `required_plugin_key = ANY($tags)`).  `capability_tags` is never used for
-//! routing — only `required_plugin_key` is the dispatch selector.
+//! ULID (`BLOB`).  `required_plugins` is a JSON array; the **routing predicate**
+//! is `required_plugins ⊆ available_plugins`: a worker claims a job only when
+//! its available plugin set covers every plugin the job requires.
+//!
+//! Implementation: `required_plugin_key IN (<available>)` is an index-friendly
+//! pre-filter (sound because `required_plugins ⊇ {required_plugin_key}` by DTO
+//! invariant), then the exact superset test is applied in the same SELECT via
+//! `NOT EXISTS (SELECT 1 FROM json_each(required_plugins) je WHERE je.value NOT
+//! IN (<available>))`.  Both clauses bind the same available list, eliminating
+//! any TOCTOU window between pre-filter and claim.
 
 use std::time::Duration;
 
+use nebula_core::PluginKey;
 use nebula_storage_port::dto::{
-    CapabilityTag, DispatchKind, DispatchOutcome, JobDispatchMsg, NewExecution, TriggerDedupRow,
+    DispatchKind, DispatchOutcome, JobDispatchMsg, NewExecution, TriggerDedupRow,
 };
 use nebula_storage_port::store::{JobDispatchQueue, ReclaimOutcome, TriggerDedupInbox};
 use nebula_storage_port::{Scope, StorageError};
@@ -44,16 +50,28 @@ fn decode_command(s: &str) -> Result<nebula_storage_port::dto::ControlCommand, S
     }
 }
 
-fn tags_to_json(tags: &[CapabilityTag]) -> String {
-    let strs: Vec<&str> = tags.iter().map(CapabilityTag::as_str).collect();
+fn plugins_to_json(plugins: &[PluginKey]) -> String {
+    let strs: Vec<&str> = plugins.iter().map(PluginKey::as_str).collect();
     serde_json::to_string(&strs).unwrap_or_else(|_| "[]".to_owned())
 }
 
 fn row_to_msg(row: &sqlx::sqlite::SqliteRow) -> Result<JobDispatchMsg, StorageError> {
     let id_bytes: Vec<u8> = row.try_get("id").map_err(conn_err)?;
-    let tags_json: String = row.try_get("capability_tags").map_err(conn_err)?;
-    let tags: Vec<String> =
-        serde_json::from_str(&tags_json).map_err(|e| StorageError::Serialization(e.to_string()))?;
+    let plugins_json: String = row.try_get("required_plugins").map_err(conn_err)?;
+    let plugin_strs: Vec<String> = serde_json::from_str(&plugins_json)
+        .map_err(|e| StorageError::Serialization(e.to_string()))?;
+    let required_plugins: Vec<PluginKey> = plugin_strs
+        .iter()
+        .map(|s| {
+            s.parse::<PluginKey>()
+                .map_err(|e| StorageError::Serialization(e.to_string()))
+        })
+        .collect::<Result<_, _>>()?;
+    let required_plugin_key: PluginKey = row
+        .try_get::<String, _>("required_plugin_key")
+        .map_err(conn_err)?
+        .parse::<PluginKey>()
+        .map_err(|e| StorageError::Serialization(e.to_string()))?;
     let payload_json: String = row.try_get("payload").map_err(conn_err)?;
     Ok(JobDispatchMsg::new(
         decode_id(&id_bytes)?,
@@ -69,9 +87,8 @@ fn row_to_msg(row: &sqlx::sqlite::SqliteRow) -> Result<JobDispatchMsg, StorageEr
             .map_err(conn_err)?,
         row.try_get::<String, _>("target_flavor_sha")
             .map_err(conn_err)?,
-        row.try_get::<String, _>("required_plugin_key")
-            .map_err(conn_err)?,
-        tags.into_iter().map(CapabilityTag).collect(),
+        required_plugin_key,
+        required_plugins,
         row.try_get::<Option<String>, _>("w3c_traceparent")
             .map_err(conn_err)?,
         row.try_get::<i64, _>("reclaim_count").map_err(conn_err)? as u32,
@@ -100,12 +117,12 @@ impl JobDispatchQueue for SqliteJobDispatchQueue {
     async fn enqueue(&self, msg: &JobDispatchMsg) -> Result<(), StorageError> {
         let payload = serde_json::to_string(&msg.payload)
             .map_err(|e| StorageError::Serialization(e.to_string()))?;
-        let tags = tags_to_json(&msg.capability_tags);
+        let plugins = plugins_to_json(&msg.required_plugins);
         sqlx::query(
             "INSERT INTO port_job_dispatch_queue \
              (id, execution_id, workspace_id, org_id, command, status, \
               payload, event_id, target_flavor_sha, required_plugin_key, \
-              capability_tags, w3c_traceparent, reclaim_count) \
+              required_plugins, w3c_traceparent, reclaim_count) \
              VALUES (?, ?, ?, ?, ?, 'Pending', ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(msg.id.as_slice())
@@ -116,8 +133,8 @@ impl JobDispatchQueue for SqliteJobDispatchQueue {
         .bind(&payload)
         .bind(msg.event_id.as_deref())
         .bind(&msg.target_flavor_sha)
-        .bind(&msg.required_plugin_key)
-        .bind(&tags)
+        .bind(msg.required_plugin_key.as_str())
+        .bind(&plugins)
         .bind(msg.w3c_traceparent.as_deref())
         .bind(i64::from(msg.reclaim_count))
         .execute(&self.pool)
@@ -127,52 +144,65 @@ impl JobDispatchQueue for SqliteJobDispatchQueue {
         Ok(())
     }
 
-    #[tracing::instrument(level = "debug", skip(self, advertised_tags), fields(batch_size))]
+    #[tracing::instrument(level = "debug", skip(self, available_plugins), fields(batch_size))]
     async fn claim_pending(
         &self,
         processor: &[u8; 16],
         batch_size: u32,
-        advertised_tags: &[CapabilityTag],
+        available_plugins: &[PluginKey],
     ) -> Result<Vec<JobDispatchMsg>, StorageError> {
-        if advertised_tags.is_empty() {
+        if available_plugins.is_empty() {
             return Ok(Vec::new());
         }
         let mut tx = self.pool.begin().await.map_err(conn_err)?;
-        // Routing: claim rows whose `required_plugin_key` is a member of the
-        // advertised set.  This mirrors Postgres `required_plugin_key = ANY($3)`
-        // exactly — the `capability_tags` JSON array is NOT the routing key.
-        // SQLite has no array-bind, so we build one SELECT per advertised tag
-        // and union them.  Each branch checks `required_plugin_key = ?` directly.
-        let union_selects: String = advertised_tags
-            .iter()
-            .map(|_| {
-                "SELECT id FROM port_job_dispatch_queue \
-                 WHERE status = 'Pending' AND required_plugin_key = ?"
-                    .to_owned()
-            })
-            .collect::<Vec<_>>()
-            .join(" UNION ");
-        let select_sql = format!(
-            "SELECT id, execution_id, workspace_id, org_id, command, \
+
+        // Superset predicate: a job is claimable when `required_plugins ⊆
+        // available_plugins`.  The available set is bound ONCE as a JSON array
+        // and unfolded via `json_each` into a CTE, referenced by both the
+        // index-friendly `required_plugin_key IN (…)` pre-filter and the exact
+        // `NOT EXISTS` superset check — no dynamic placeholder expansion and no
+        // per-plugin bind, so the SQLite bound-variable limit is never a concern.
+        //
+        // The pre-filter and superset check share one SELECT, so no row is
+        // fetched that fails the superset test.  A concurrent actor that flips
+        // a selected row to 'Processing' first is caught by the per-row
+        // `UPDATE … AND status = 'Pending'` guard below (rows_affected = 0 →
+        // row skipped); the whole exchange is inside one transaction
+        // (single-consumer SQLite boundary, spec §5).
+        //
+        // `NOT EXISTS` reads: "no element in json_each(required_plugins) is
+        // absent from the available set", i.e. every required plugin is covered.
+        // An empty `required_plugins` JSON array yields no rows from json_each
+        // ⇒ NOT EXISTS is vacuously true ⇒ claimable by anyone (consistent
+        // with the InMemory backend).
+        let available_json = plugins_to_json(available_plugins);
+        let rows = sqlx::query(
+            "WITH available(plugin) AS (SELECT value FROM json_each(?1)) \
+             SELECT id, execution_id, workspace_id, org_id, command, \
                     payload, event_id, target_flavor_sha, required_plugin_key, \
-                    capability_tags, w3c_traceparent, reclaim_count \
+                    required_plugins, w3c_traceparent, reclaim_count \
              FROM port_job_dispatch_queue \
-             WHERE id IN ({union_selects}) \
-             ORDER BY id LIMIT ?"
-        );
-        let mut q = sqlx::query(sqlx::AssertSqlSafe(select_sql));
-        for tag in advertised_tags {
-            q = q.bind(tag.as_str());
-        }
-        q = q.bind(i64::from(batch_size));
-        let rows = q.fetch_all(&mut *tx).await.map_err(conn_err)?;
+             WHERE status = 'Pending' \
+               AND required_plugin_key IN (SELECT plugin FROM available) \
+               AND NOT EXISTS ( \
+                   SELECT 1 FROM json_each(required_plugins) je \
+                   WHERE je.value NOT IN (SELECT plugin FROM available) \
+               ) \
+             ORDER BY id LIMIT ?2",
+        )
+        .bind(&available_json)
+        .bind(i64::from(batch_size))
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(conn_err)?;
 
         let mut claimed = Vec::with_capacity(rows.len());
         let now_ms = chrono::Utc::now().timestamp_millis();
         for row in &rows {
             let id_bytes: Vec<u8> = row.try_get("id").map_err(conn_err)?;
             // Conditional claim — AND status = 'Pending' guard prevents
-            // double-claim if a concurrent actor flipped the row.
+            // double-claim if a concurrent actor flipped the row between the
+            // SELECT above and this UPDATE (single-consumer SQLite boundary).
             let won = sqlx::query(
                 "UPDATE port_job_dispatch_queue \
                  SET status = 'Processing', processed_by = ?, \
@@ -328,7 +358,7 @@ impl TriggerDedupInbox for SqliteTriggerDedupInbox {
     ) -> Result<DispatchOutcome, StorageError> {
         let payload = serde_json::to_string(&start.payload)
             .map_err(|e| StorageError::Serialization(e.to_string()))?;
-        let tags = tags_to_json(&start.capability_tags);
+        let plugins = plugins_to_json(&start.required_plugins);
 
         // All three writes live inside one transaction — atomicity by
         // construction.  An error from any write propagates via `?` and rolls
@@ -408,7 +438,7 @@ impl TriggerDedupInbox for SqliteTriggerDedupInbox {
             "INSERT INTO port_job_dispatch_queue \
              (id, execution_id, workspace_id, org_id, command, status, \
               payload, event_id, target_flavor_sha, required_plugin_key, \
-              capability_tags, w3c_traceparent, reclaim_count) \
+              required_plugins, w3c_traceparent, reclaim_count) \
              VALUES (?, ?, ?, ?, ?, 'Pending', ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(start.id.as_slice())
@@ -419,8 +449,8 @@ impl TriggerDedupInbox for SqliteTriggerDedupInbox {
         .bind(&payload)
         .bind(start.event_id.as_deref())
         .bind(&start.target_flavor_sha)
-        .bind(&start.required_plugin_key)
-        .bind(&tags)
+        .bind(start.required_plugin_key.as_str())
+        .bind(&plugins)
         .bind(start.w3c_traceparent.as_deref())
         .bind(i64::from(start.reclaim_count))
         .execute(&mut *tx)

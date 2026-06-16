@@ -22,8 +22,7 @@
 
 use std::collections::BTreeSet;
 
-use nebula_core::NodeKey;
-use nebula_storage_port::dto::CapabilityTag;
+use nebula_core::{NodeKey, PluginKey};
 use nebula_workflow::ValidatedWorkflow;
 
 // ── types ─────────────────────────────────────────────────────────────────────
@@ -34,31 +33,25 @@ use nebula_workflow::ValidatedWorkflow;
 /// Returned by [`RoutingResolver::resolve`].  The `required_plugin_key` is
 /// written into the `JobDispatchMsg::required_plugin_key` field; the
 /// orchestrator claims rows whose `required_plugin_key` is a member of the
-/// worker's advertised capability set.
+/// worker's `available_plugins`.
 ///
-/// `capability_tags` carries the full set of plugin keys the workflow needs
-/// (trigger + enabled nodes).  **Note:** the current orchestrator claim
-/// predicate tests only `required_plugin_key ∈ advertised_tags`
-/// (`storage-port` `job_dispatch.rs`) — it does NOT yet apply the superset
-/// check `job.capability_tags ⊆ advertised_tags`.  `capability_tags` is a
-/// forward seam for that future multi-plugin routing unit; until then it is
-/// written into the `JobDispatchMsg` for observability and future use.
+/// `required_plugins` carries the full set of plugin keys the workflow needs
+/// (trigger + enabled nodes, deduplicated and sorted).  The claim predicate
+/// is the superset check `job.required_plugins ⊆ worker.available_plugins`;
+/// `required_plugin_key` is kept as an index-friendly pre-filter (sound
+/// because `required_plugins ⊇ {required_plugin_key}` by construction).
 ///
 /// `target_flavor_sha` is a version-pin guard written into the message but
 /// not yet used for routing.
 #[must_use = "a DispatchRoute must be written into the JobDispatchMsg; dropping it yields an un-claimable job"]
 #[derive(Debug, Clone)]
 pub struct DispatchRoute {
-    /// The advertised `PluginKey` string this job requires a worker to support.
-    pub required_plugin_key: String,
-    /// Full set of plugin-key capability tags the workflow needs (trigger
-    /// binding + enabled nodes, deduplicated and sorted).
-    ///
-    /// Populated now for observability and future multi-plugin routing.
-    /// The current claim predicate only checks `required_plugin_key`; the
-    /// superset predicate (`job.capability_tags ⊆ advertised_tags`) is a
-    /// later deliverable.
-    pub capability_tags: Vec<CapabilityTag>,
+    /// The primary required plugin (the trigger's plugin); an element of
+    /// `required_plugins`; used as the index pre-filter.
+    pub required_plugin_key: PluginKey,
+    /// Full set of plugin keys the workflow needs (trigger binding + enabled
+    /// nodes, deduplicated and sorted).  Superset of `{required_plugin_key}`.
+    pub required_plugins: Vec<PluginKey>,
     /// SHA of the plugin flavor this message targets (version-pin guard; not
     /// yet used for routing).
     pub target_flavor_sha: String,
@@ -131,7 +124,7 @@ pub const SLICE_FLAVOR_SHA: &str = "slice-flavor-0000000000000000000000000000000
 ///    Because [`ValidatedWorkflow`] rejects duplicate trigger-binding ids, the
 ///    `.find()` result is always unique.
 /// 2. The binding's `plugin_key` becomes `required_plugin_key`.
-/// 3. `capability_tags` is the deduplicated, sorted union of `plugin_key`
+/// 3. `required_plugins` is the deduplicated, sorted union of `plugin_key`
 ///    values from every trigger binding **and** every **enabled** node.
 ///    Disabled nodes are excluded — they are skipped at execution time and
 ///    their plugin is not required on the target worker.
@@ -196,37 +189,37 @@ impl RoutingResolver for DefinitionRoutingResolver {
             })?;
 
         // Step 2 — the binding's plugin_key is the required routing key.
-        let required_plugin_key = binding.plugin_key.as_str().to_owned();
+        // `plugin_key` is already a `PluginKey` — no stringification needed.
+        let required_plugin_key = binding.plugin_key.clone();
         tracing::debug!(
             required_plugin_key = %required_plugin_key,
             "resolved required plugin key"
         );
 
-        // Step 3 — capability_tags: deduplicated, sorted union of plugin_key
+        // Step 3 — required_plugins: deduplicated, sorted union of plugin_key
         // values from all trigger bindings and all ENABLED nodes.
         // Disabled nodes are skipped at execution time; their plugin is not
         // needed on the target worker.
-        let mut keys: BTreeSet<&str> = BTreeSet::new();
+        let mut keys: BTreeSet<&PluginKey> = BTreeSet::new();
         for tb in &def.trigger_bindings {
-            keys.insert(tb.plugin_key.as_str());
+            keys.insert(&tb.plugin_key);
         }
         for node in &def.nodes {
             if node.enabled {
-                keys.insert(node.plugin_key.as_str());
+                keys.insert(&node.plugin_key);
             }
         }
         // The required key is always present: we just resolved it from the
         // trigger bindings, which are unconditionally added above.
-        let capability_tags: Vec<CapabilityTag> =
-            keys.into_iter().map(CapabilityTag::from).collect();
+        let required_plugins: Vec<PluginKey> = keys.into_iter().cloned().collect();
         tracing::debug!(
-            capability_tag_count = capability_tags.len(),
-            "resolved capability tags"
+            required_plugin_count = required_plugins.len(),
+            "resolved required plugins"
         );
 
         Ok(DispatchRoute {
             required_plugin_key,
-            capability_tags,
+            required_plugins,
             target_flavor_sha: self.flavor_sha.clone(),
         })
     }
@@ -236,7 +229,7 @@ impl RoutingResolver for DefinitionRoutingResolver {
 mod tests {
     use std::collections::HashMap;
 
-    use nebula_core::{WorkflowId, node_key};
+    use nebula_core::{PluginKey, WorkflowId, node_key, plugin_key};
     use nebula_workflow::{
         CURRENT_SCHEMA_VERSION, Connection, NodeDefinition, TriggerBinding, ValidatedWorkflow,
         Version, WorkflowConfig, WorkflowDefinition,
@@ -315,9 +308,9 @@ mod tests {
     }
 
     #[test]
-    fn resolves_required_key_and_sorted_capability_set() {
+    fn resolves_required_key_and_sorted_required_plugins() {
         // trigger plugin = "p.trig", node plugins = [("p.a", true), ("p.b", true)]
-        // expected capability_tags = sorted { "p.a", "p.b", "p.trig" }
+        // expected required_plugins = sorted { "p.a", "p.b", "p.trig" }
         let workflow = make_validated("test.trigger", "p.trig", &[("p.a", true), ("p.b", true)]);
         let resolver = DefinitionRoutingResolver::new(SLICE_FLAVOR_SHA);
         let fired = node_key!("test.trigger");
@@ -325,30 +318,27 @@ mod tests {
             .resolve(&workflow, &fired)
             .expect("trigger present in bindings must resolve");
 
-        assert_eq!(route.required_plugin_key, "p.trig");
+        assert_eq!(route.required_plugin_key, plugin_key!("p.trig"));
         assert_eq!(route.target_flavor_sha, SLICE_FLAVOR_SHA);
 
-        let tags: Vec<&str> = route
-            .capability_tags
+        let plugins: Vec<&str> = route
+            .required_plugins
             .iter()
-            .map(CapabilityTag::as_str)
+            .map(PluginKey::as_str)
             .collect();
         // Sorted BTreeSet order: p.a < p.b < p.trig
-        assert_eq!(tags, vec!["p.a", "p.b", "p.trig"]);
+        assert_eq!(plugins, vec!["p.a", "p.b", "p.trig"]);
 
-        // Required key is a member of the capability set.
+        // Required key is a member of the required_plugins set.
         assert!(
-            route
-                .capability_tags
-                .iter()
-                .any(|t| t.as_str() == route.required_plugin_key),
-            "required_plugin_key must be in capability_tags"
+            route.required_plugins.contains(&route.required_plugin_key),
+            "required_plugin_key must be in required_plugins"
         );
     }
 
     #[test]
-    fn disabled_node_plugin_excluded_from_capability_tags() {
-        // "p.disabled" belongs to a disabled node — it must NOT appear in tags.
+    fn disabled_node_plugin_excluded_from_required_plugins() {
+        // "p.disabled" belongs to a disabled node — it must NOT appear.
         // "p.enabled" belongs to an enabled node — it MUST appear.
         // "p.trig" is the trigger binding — it MUST appear.
         let workflow = make_validated(
@@ -361,35 +351,36 @@ mod tests {
             .resolve(&workflow, &node_key!("test.trigger"))
             .unwrap();
 
-        let tags: Vec<&str> = route
-            .capability_tags
-            .iter()
-            .map(CapabilityTag::as_str)
-            .collect();
+        let trig = plugin_key!("p.trig");
+        let enabled = plugin_key!("p.enabled");
+        let disabled = "p.disabled".parse::<PluginKey>().unwrap();
         assert!(
-            tags.contains(&"p.trig"),
-            "trigger plugin must be in capability_tags; got {tags:?}"
+            route.required_plugins.contains(&trig),
+            "trigger plugin must be in required_plugins; got {:?}",
+            route.required_plugins
         );
         assert!(
-            tags.contains(&"p.enabled"),
-            "enabled node plugin must be in capability_tags; got {tags:?}"
+            route.required_plugins.contains(&enabled),
+            "enabled node plugin must be in required_plugins; got {:?}",
+            route.required_plugins
         );
         assert!(
-            !tags.contains(&"p.disabled"),
-            "disabled node plugin must NOT be in capability_tags; got {tags:?}"
+            !route.required_plugins.contains(&disabled),
+            "disabled node plugin must NOT be in required_plugins; got {:?}",
+            route.required_plugins
         );
     }
 
     #[test]
-    fn capability_tags_deduplicated_when_trigger_and_node_share_plugin() {
-        // trigger plugin = "p.shared", node plugin = "p.shared" — only one tag.
+    fn required_plugins_deduplicated_when_trigger_and_node_share_plugin() {
+        // trigger plugin = "p.shared", node plugin = "p.shared" — only one entry.
         let workflow = make_validated("test.trigger", "p.shared", &[("p.shared", true)]);
         let resolver = DefinitionRoutingResolver::default();
         let fired = node_key!("test.trigger");
         let route = resolver.resolve(&workflow, &fired).unwrap();
 
-        assert_eq!(route.capability_tags.len(), 1);
-        assert_eq!(route.capability_tags[0].as_str(), "p.shared");
+        assert_eq!(route.required_plugins.len(), 1);
+        assert_eq!(route.required_plugins[0], plugin_key!("p.shared"));
     }
 
     #[test]
