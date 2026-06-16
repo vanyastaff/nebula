@@ -93,9 +93,14 @@ pub struct TriggerBinding {
     /// The plugin-provided trigger action this binding instantiates,
     /// e.g. `"cron.schedule"`, `"http.webhook"`.
     pub action_key: ActionKey,
-    /// Optional pinned interface version (mirrors `NodeDefinition`).
+    /// Optional pinned interface version for the trigger action.
+    ///
+    /// Uses `semver::Version` (string form, e.g. `"1.2.0"`) to match
+    /// [`NodeDefinition::interface_version`] and the runtime's versioned action
+    /// lookup — NOT the workflow-definition `crate::Version` used by
+    /// [`WorkflowDefinition::version`], which serializes as a struct.
     #[serde(default)]
-    pub interface_version: Option<Version>,
+    pub interface_version: Option<semver::Version>,
     /// Opaque, action-specific configuration (cron expression, webhook path,
     /// event-type filter). Validated by the trigger action, not by `workflow`.
     #[serde(default)]
@@ -143,7 +148,7 @@ impl TriggerBinding {
 
     /// Pin an interface version.
     #[must_use]
-    pub fn with_interface_version(mut self, version: Version) -> Self {
+    pub fn with_interface_version(mut self, version: semver::Version) -> Self {
         self.interface_version = Some(version);
         self
     }
@@ -478,8 +483,11 @@ mod tests {
     fn trigger_binding_with_interface_version() {
         let binding = TriggerBinding::new(node_key!("t"), "scheduler", "cron.schedule")
             .unwrap()
-            .with_interface_version(Version::new(1, 2, 0));
-        assert_eq!(binding.interface_version, Some(Version::new(1, 2, 0)));
+            .with_interface_version(semver::Version::new(1, 2, 0));
+        assert_eq!(
+            binding.interface_version,
+            Some(semver::Version::new(1, 2, 0))
+        );
     }
 
     #[test]

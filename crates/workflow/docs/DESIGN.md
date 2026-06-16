@@ -100,7 +100,7 @@ storage, engine, validation) парсил бы и переинтерпретир
   рёбра с `from_port == "error"`. Pre-Spec-28 trio `EdgeCondition`/`ResultMatcher`/
   `ErrorMatcher` удалён.
 - **JSON round-trip как public surface.** `WorkflowDefinition` обязан переживать
-  `serde_json` round-trip без потерь; `CURRENT_SCHEMA_VERSION = 1` + `is_schema_supported()`
+  `serde_json` round-trip без потерь; `CURRENT_SCHEMA_VERSION = 2` + `is_schema_supported()`
   — версионный gate (`definition.rs:12/:63`).
 - **Все коды — `category="validation"`.** 15 вариантов `WorkflowError`, единый класс —
   крейт не вводит runtime/io-ошибок (`error.rs:9`).
