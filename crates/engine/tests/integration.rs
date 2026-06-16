@@ -26,7 +26,9 @@ use nebula_metrics::naming::{
     NEBULA_ACTION_EXECUTIONS_TOTAL, NEBULA_WORKFLOW_EXECUTIONS_COMPLETED_TOTAL,
     NEBULA_WORKFLOW_EXECUTIONS_FAILED_TOTAL, NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL,
 };
-use nebula_workflow::{Connection, NodeDefinition, Version, WorkflowConfig, WorkflowDefinition};
+use nebula_workflow::{
+    CURRENT_SCHEMA_VERSION, Connection, NodeDefinition, Version, WorkflowConfig, WorkflowDefinition,
+};
 
 // ---------------------------------------------------------------------------
 // Test action handlers (Variant A)
@@ -212,13 +214,13 @@ fn make_workflow(nodes: Vec<NodeDefinition>, connections: Vec<Connection>) -> Wo
         connections,
         variables: HashMap::new(),
         config: WorkflowConfig::default(),
-        trigger: None,
+        trigger_bindings: Vec::new(),
         tags: Vec::new(),
         created_at: now,
         updated_at: now,
         owner_id: None,
         ui_metadata: None,
-        schema_version: 1,
+        schema_version: CURRENT_SCHEMA_VERSION,
     }
 }
 

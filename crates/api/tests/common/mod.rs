@@ -851,7 +851,8 @@ pub(crate) mod engine_seam {
         ScopedNodeResultStore, ScopedWorkflowStore, ScopedWorkflowVersionStore,
     };
     use nebula_workflow::{
-        Connection, NodeDefinition, Version, WorkflowConfig, WorkflowDefinition,
+        CURRENT_SCHEMA_VERSION, Connection, NodeDefinition, Version, WorkflowConfig,
+        WorkflowDefinition,
     };
     use tokio::task::JoinHandle;
     use tokio_util::sync::CancellationToken;
@@ -919,13 +920,13 @@ pub(crate) mod engine_seam {
             connections: Vec::<Connection>::new(),
             variables: std::collections::HashMap::new(),
             config: WorkflowConfig::default(),
-            trigger: None,
+            trigger_bindings: Vec::new(),
             tags: Vec::new(),
             created_at: now,
             updated_at: now,
             owner_id: None,
             ui_metadata: None,
-            schema_version: 1,
+            schema_version: CURRENT_SCHEMA_VERSION,
         };
         // Port equivalent of the old `state.workflow_repo.save(id, 0, def)`:
         // a workflow row at version 1 plus a published version record #1

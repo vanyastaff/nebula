@@ -72,7 +72,8 @@ mod tests {
 
     use nebula_core::{WorkflowId, node_key};
     use nebula_workflow::{
-        Connection, NodeDefinition, Version, WorkflowConfig, WorkflowDefinition,
+        CURRENT_SCHEMA_VERSION, Connection, NodeDefinition, Version, WorkflowConfig,
+        WorkflowDefinition,
     };
 
     use super::*;
@@ -91,13 +92,13 @@ mod tests {
             connections,
             variables: HashMap::new(),
             config: WorkflowConfig::default(),
-            trigger: None,
+            trigger_bindings: Vec::new(),
             tags: Vec::new(),
             created_at: now,
             updated_at: now,
             owner_id: None,
             ui_metadata: None,
-            schema_version: 1,
+            schema_version: CURRENT_SCHEMA_VERSION,
         }
     }
 

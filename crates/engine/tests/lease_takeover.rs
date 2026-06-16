@@ -60,7 +60,9 @@ use nebula_metrics::MetricsRegistry;
 use nebula_storage::{InMemoryControlQueue, InMemoryExecutionStore, InMemoryWorkflowVersionStore};
 use nebula_storage_port::dto::{ControlCommand, ControlMsg, WorkflowVersionRecord};
 use nebula_storage_port::store::{ControlQueue, ExecutionStore, WorkflowVersionStore};
-use nebula_workflow::{Connection, NodeDefinition, Version, WorkflowConfig, WorkflowDefinition};
+use nebula_workflow::{
+    CURRENT_SCHEMA_VERSION, Connection, NodeDefinition, Version, WorkflowConfig, WorkflowDefinition,
+};
 use tokio_util::sync::CancellationToken;
 
 /// Widen a short test label into the fixed 16-byte `ControlConsumer`
@@ -260,13 +262,13 @@ fn make_workflow(nodes: Vec<NodeDefinition>, connections: Vec<Connection>) -> Wo
         connections,
         variables: HashMap::new(),
         config: WorkflowConfig::default(),
-        trigger: None,
+        trigger_bindings: Vec::new(),
         tags: Vec::new(),
         created_at: now,
         updated_at: now,
         owner_id: None,
         ui_metadata: None,
-        schema_version: 1,
+        schema_version: CURRENT_SCHEMA_VERSION,
     }
 }
 

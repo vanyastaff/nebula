@@ -234,7 +234,7 @@ mod tests {
     use crate::{
         Version,
         connection::Connection,
-        definition::{WorkflowConfig, WorkflowDefinition},
+        definition::{CURRENT_SCHEMA_VERSION, WorkflowConfig, WorkflowDefinition},
         node::NodeDefinition,
     };
 
@@ -253,13 +253,13 @@ mod tests {
             connections,
             variables: HashMap::new(),
             config: WorkflowConfig::default(),
-            trigger: None,
+            trigger_bindings: Vec::new(),
             tags: Vec::new(),
             created_at: now,
             updated_at: now,
             owner_id: None,
             ui_metadata: None,
-            schema_version: 1,
+            schema_version: CURRENT_SCHEMA_VERSION,
         }
     }
 

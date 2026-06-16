@@ -29,7 +29,10 @@ use nebula_engine::{
 use nebula_execution::{ExecutionStatus, context::ExecutionBudget};
 use nebula_metrics::MetricsRegistry;
 use nebula_storage_port::store::ExecutionStore;
-use nebula_workflow::{NodeDefinition, RetryConfig, Version, WorkflowConfig, WorkflowDefinition};
+use nebula_workflow::{
+    CURRENT_SCHEMA_VERSION, NodeDefinition, RetryConfig, Version, WorkflowConfig,
+    WorkflowDefinition,
+};
 
 // ---------------------------------------------------------------------------
 // Test handlers — Variant A trait shape with placeholder static metadata.
@@ -169,13 +172,13 @@ fn make_workflow(
         connections,
         variables: Default::default(),
         config,
-        trigger: None,
+        trigger_bindings: Vec::new(),
         tags: vec![],
         created_at: now,
         updated_at: now,
         owner_id: None,
         ui_metadata: None,
-        schema_version: 1,
+        schema_version: CURRENT_SCHEMA_VERSION,
     }
 }
 

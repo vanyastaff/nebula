@@ -5252,7 +5252,8 @@ mod tests {
     use nebula_storage_port::StorageError;
     use nebula_storage_port::store::{ExecutionStore, NodeResultStore, WorkflowVersionStore};
     use nebula_workflow::{
-        Connection, ErrorStrategy, NodeDefinition, Version, WorkflowConfig, WorkflowDefinition,
+        CURRENT_SCHEMA_VERSION, Connection, ErrorStrategy, NodeDefinition, Version, WorkflowConfig,
+        WorkflowDefinition,
     };
 
     use super::*;
@@ -5363,13 +5364,13 @@ mod tests {
             connections,
             variables: HashMap::new(),
             config: WorkflowConfig::default(),
-            trigger: None,
+            trigger_bindings: Vec::new(),
             tags: Vec::new(),
             created_at: now,
             updated_at: now,
             owner_id: None,
             ui_metadata: None,
-            schema_version: 1,
+            schema_version: CURRENT_SCHEMA_VERSION,
         }
     }
 
@@ -5388,13 +5389,13 @@ mod tests {
             connections,
             variables: HashMap::new(),
             config,
-            trigger: None,
+            trigger_bindings: Vec::new(),
             tags: Vec::new(),
             created_at: now,
             updated_at: now,
             owner_id: None,
             ui_metadata: None,
-            schema_version: 1,
+            schema_version: CURRENT_SCHEMA_VERSION,
         }
     }
 

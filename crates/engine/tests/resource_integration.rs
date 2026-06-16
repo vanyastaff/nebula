@@ -34,7 +34,9 @@ use nebula_resource::{
     resource::{Provider, ResourceConfig, ResourceMetadata},
     topology::resident::ResidentProvider,
 };
-use nebula_workflow::{NodeDefinition, Version, WorkflowConfig, WorkflowDefinition};
+use nebula_workflow::{
+    CURRENT_SCHEMA_VERSION, NodeDefinition, Version, WorkflowConfig, WorkflowDefinition,
+};
 
 // ---------------------------------------------------------------------------
 // Action handler that acquires a resource (Variant A)
@@ -142,13 +144,13 @@ fn make_workflow(nodes: Vec<NodeDefinition>) -> WorkflowDefinition {
         connections: vec![],
         variables: HashMap::new(),
         config: WorkflowConfig::default(),
-        trigger: None,
+        trigger_bindings: Vec::new(),
         tags: Vec::new(),
         created_at: now,
         updated_at: now,
         owner_id: None,
         ui_metadata: None,
-        schema_version: 1,
+        schema_version: CURRENT_SCHEMA_VERSION,
     }
 }
 
