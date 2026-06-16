@@ -3729,6 +3729,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "nebula-orchestrator"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "nebula-core",
+ "nebula-metrics",
+ "nebula-storage",
+ "nebula-storage-port",
+ "opentelemetry",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-opentelemetry",
+]
+
+[[package]]
 name = "nebula-plugin"
 version = "0.1.0"
 dependencies = [
