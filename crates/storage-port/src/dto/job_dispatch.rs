@@ -36,15 +36,42 @@ impl From<&str> for CapabilityTag {
     }
 }
 
-/// Whether a dispatch attempt produced a new dispatch or was deduplicated.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[must_use = "callers must inspect whether the dispatch landed or was a duplicate"]
+/// Whether the compose wrote new rows or found an existing dedup guard.
+///
+/// Returned by [`crate::store::TriggerDedupInbox::claim_and_materialize_start`].
+/// The `execution_id` is the EFFECTIVE id — the first winner's id on both
+/// `Dispatched` and `Duplicate` outcomes, so callers always get the canonical
+/// id for the event without a separate read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[must_use = "callers must read the effective execution id and the dispatch kind"]
 #[non_exhaustive]
-pub enum DispatchOutcome {
-    /// The job was enqueued (first writer won).
+pub struct DispatchOutcome {
+    /// The effective execution id: the new row's id on `Dispatched`; the
+    /// original winner's id (read back in-transaction) on `Duplicate`.
+    pub execution_id: String,
+    /// Whether this was the first write or a deduplicated repeat.
+    pub kind: DispatchKind,
+}
+
+impl DispatchOutcome {
+    /// Construct a dispatch outcome.
+    pub fn new(execution_id: impl Into<String>, kind: DispatchKind) -> Self {
+        Self {
+            execution_id: execution_id.into(),
+            kind,
+        }
+    }
+}
+
+/// Whether the compose performed new writes or found the event already handled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum DispatchKind {
+    /// All three rows were written atomically (dedup guard + Start job +
+    /// execution row).  First writer wins.
     Dispatched,
-    /// A row with the same `(trigger_id, event_id)` already existed;
-    /// the second write was a no-op.
+    /// A dedup guard for this `(scope, trigger_id, event_id)` was already
+    /// present; no new rows were written.
     Duplicate,
 }
 

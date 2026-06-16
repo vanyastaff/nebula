@@ -15,6 +15,46 @@ use nebula_storage_port::store::{ExecutionStore, IdempotencyGuard};
 use nebula_storage_port::{FencingToken, Scope, StorageError, TransitionBatch, TransitionOutcome};
 use sqlx::{PgPool, Row};
 
+/// Insert a `Created` execution row inside an existing transaction.
+///
+/// Called by both `ExecutionStore::create` (via a single-statement tx) and the
+/// dedup compose so the `port_executions` INSERT shape is defined exactly once.
+/// A unique-violation maps to `StorageError::Duplicate` so both call sites
+/// propagate it uniformly.
+pub(super) async fn insert_created_execution(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    scope: &Scope,
+    id: &str,
+    workflow_id: &str,
+    initial_state: &serde_json::Value,
+) -> Result<(), StorageError> {
+    let now = Utc::now();
+    let res = sqlx::query(
+        "INSERT INTO port_executions \
+         (id, workspace_id, org_id, workflow_id, status, state, version, \
+          fencing_generation, created_at, updated_at) \
+         VALUES ($1, $2, $3, $4, 'Created', $5, 0, 0, $6, $6)",
+    )
+    .bind(id)
+    .bind(&scope.workspace_id)
+    .bind(&scope.org_id)
+    .bind(workflow_id)
+    .bind(initial_state)
+    .bind(now)
+    .execute(&mut **tx)
+    .await;
+    match res {
+        Ok(_) => Ok(()),
+        Err(sqlx::Error::Database(db)) if db.is_unique_violation() => {
+            Err(StorageError::Duplicate {
+                entity: "execution",
+                detail: format!("execution {id} already exists"),
+            })
+        },
+        Err(e) => Err(conn_err(e)),
+    }
+}
+
 /// Postgres-backed execution aggregate. Wrap a pool whose schema was
 /// installed via [`super::init_schema`].
 #[derive(Clone, Debug)]
@@ -63,39 +103,16 @@ impl ExecutionStore for PgExecutionStore {
         workflow_id: &str,
         initial_state: serde_json::Value,
     ) -> Result<(), StorageError> {
-        let now = Utc::now();
-        let res = sqlx::query(
-            "INSERT INTO port_executions \
-             (id, workspace_id, org_id, workflow_id, status, state, version, \
-              fencing_generation, created_at, updated_at) \
-             VALUES ($1, $2, $3, $4, 'Created', $5, 0, 0, $6, $6)",
-        )
-        .bind(id)
-        .bind(&scope.workspace_id)
-        .bind(&scope.org_id)
-        .bind(workflow_id)
-        .bind(&initial_state)
-        .bind(now)
-        .execute(&self.pool)
-        .await;
-        match res {
-            Ok(_) => {
-                tracing::debug!(
-                    target: "nebula_storage::postgres",
-                    execution_id = id,
-                    workflow_id,
-                    "execution created"
-                );
-                Ok(())
-            },
-            Err(sqlx::Error::Database(db)) if db.is_unique_violation() => {
-                Err(StorageError::Duplicate {
-                    entity: "execution",
-                    detail: format!("execution {id} already exists"),
-                })
-            },
-            Err(e) => Err(conn_err(e)),
-        }
+        let mut tx = self.pool.begin().await.map_err(conn_err)?;
+        insert_created_execution(&mut tx, scope, id, workflow_id, &initial_state).await?;
+        tx.commit().await.map_err(conn_err)?;
+        tracing::debug!(
+            target: "nebula_storage::postgres",
+            execution_id = id,
+            workflow_id,
+            "execution created"
+        );
+        Ok(())
     }
 
     async fn get(&self, scope: &Scope, id: &str) -> Result<Option<ExecutionRecord>, StorageError> {

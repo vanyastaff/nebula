@@ -1,81 +1,42 @@
-//! In-memory `JobDispatchQueue` + `TriggerDedupInbox` over a shared core.
+//! In-memory `JobDispatchQueue` + `TriggerDedupInbox` over the shared
+//! execution-store core.
 //!
-//! Both adapters wrap the same [`SharedDispatchCore`] so
-//! `claim_and_enqueue_start` performs the dedup-insert ∧ job-insert in one
-//! critical section — mirroring how `InMemoryControlQueue` shares
-//! `InMemoryExecutionStore`'s core.
+//! Both adapters wrap the same [`SharedState`] as the execution store and
+//! control queue, so `claim_and_materialize_start` writes the dedup guard,
+//! the execution row, and the Start job atomically in one critical section —
+//! mirroring how `InMemoryControlQueue` shares `InMemoryExecutionStore`'s core.
 
-use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
 use std::time::Duration;
 
-use parking_lot::Mutex;
 use tokio::time::Instant;
 
-use nebula_storage_port::dto::{CapabilityTag, DispatchOutcome, JobDispatchMsg, TriggerDedupRow};
+use nebula_storage_port::dto::{
+    CapabilityTag, DispatchKind, DispatchOutcome, JobDispatchMsg, NewExecution, TriggerDedupRow,
+};
 use nebula_storage_port::store::{JobDispatchQueue, ReclaimOutcome, TriggerDedupInbox};
 use nebula_storage_port::{Scope, StorageError};
 
-// ── shared core ─────────────────────────────────────────────────────────────
-
-/// One queued job row plus its processing bookkeeping.
-#[derive(Debug, Clone)]
-struct QueuedJob {
-    msg: JobDispatchMsg,
-    status: String,
-    processed_by: Option<[u8; 16]>,
-    processed_at: Option<Instant>,
-    reclaim_count: u32,
-    error_message: Option<String>,
-}
-
-#[derive(Debug, Default)]
-struct Core {
-    /// Job-dispatch queue rows keyed by the message's 16-byte id.
-    jobs: HashMap<[u8; 16], QueuedJob>,
-    /// Dedup guard set keyed by `(workspace_id, org_id, trigger_id, event_id)`.
-    ///
-    /// The scope columns are part of the key — identical `(trigger_id, event_id)`
-    /// values under different tenants are independent entries, mirroring the
-    /// `PRIMARY KEY (workspace_id, org_id, trigger_id, event_id)` constraint in
-    /// both the SQLite and Postgres schemas.
-    dedup: HashSet<(String, String, String, String)>,
-}
-
-/// Opaque shared dispatch core handle.
-///
-/// Both [`InMemoryJobDispatchQueue`] and [`InMemoryTriggerDedupInbox`] wrap
-/// this handle so `claim_and_enqueue_start` operates in one critical section.
-/// Construct with [`new_shared_core`] and pass the clone to both adapters.
-#[derive(Debug, Clone)]
-pub struct SharedDispatchCore(Arc<Mutex<Core>>);
-
-/// Construct a fresh shared dispatch core.  Pass the same handle to
-/// [`InMemoryJobDispatchQueue::from_core`] and
-/// [`InMemoryTriggerDedupInbox::from_core`].
-#[must_use]
-pub fn new_shared_core() -> SharedDispatchCore {
-    SharedDispatchCore(Arc::new(Mutex::new(Core::default())))
-}
+use super::execution::{QueuedJob, SharedState, insert_created_row};
 
 // ── JobDispatchQueue ─────────────────────────────────────────────────────────
 
 /// In-memory job-dispatch queue handle.
+///
+/// Shares the execution store's core so `claim_and_materialize_start` (on the
+/// dedup inbox side) operates in one critical section with the execution row
+/// and job inserts.
 #[derive(Debug, Clone)]
 pub struct InMemoryJobDispatchQueue {
-    core: SharedDispatchCore,
+    inner: SharedState,
 }
 
 impl InMemoryJobDispatchQueue {
-    /// Build from an existing shared core (share with
-    /// [`InMemoryTriggerDedupInbox`] so `claim_and_enqueue_start` is atomic).
+    /// Build a job-dispatch queue over an execution store's shared core.
     #[must_use]
-    pub fn from_core(core: SharedDispatchCore) -> Self {
-        Self { core }
-    }
-
-    fn lock(&self) -> parking_lot::MutexGuard<'_, Core> {
-        self.core.0.lock()
+    pub fn new(store: &super::InMemoryExecutionStore) -> Self {
+        Self {
+            inner: store.shared(),
+        }
     }
 }
 
@@ -83,7 +44,7 @@ impl InMemoryJobDispatchQueue {
 impl JobDispatchQueue for InMemoryJobDispatchQueue {
     #[tracing::instrument(level = "debug", skip(self, msg), fields(id = ?msg.id, command = msg.command.as_str()))]
     async fn enqueue(&self, msg: &JobDispatchMsg) -> Result<(), StorageError> {
-        let mut st = self.lock();
+        let mut st = self.inner.lock();
         st.jobs.insert(
             msg.id,
             QueuedJob {
@@ -106,7 +67,7 @@ impl JobDispatchQueue for InMemoryJobDispatchQueue {
         batch_size: u32,
         advertised_tags: &[CapabilityTag],
     ) -> Result<Vec<JobDispatchMsg>, StorageError> {
-        let mut st = self.lock();
+        let mut st = self.inner.lock();
         let now = Instant::now();
 
         // Stable order so a bounded batch is deterministic across calls.
@@ -146,7 +107,7 @@ impl JobDispatchQueue for InMemoryJobDispatchQueue {
         id: &[u8; 16],
         processor: &[u8; 16],
     ) -> Result<(), StorageError> {
-        let mut st = self.lock();
+        let mut st = self.inner.lock();
         if let Some(q) = st.jobs.get_mut(id)
             && q.status == "Processing"
             && q.processed_by.as_ref() == Some(processor)
@@ -162,7 +123,7 @@ impl JobDispatchQueue for InMemoryJobDispatchQueue {
         processor: &[u8; 16],
         error: &str,
     ) -> Result<(), StorageError> {
-        let mut st = self.lock();
+        let mut st = self.inner.lock();
         if let Some(q) = st.jobs.get_mut(id)
             && q.status == "Processing"
             && q.processed_by.as_ref() == Some(processor)
@@ -178,7 +139,7 @@ impl JobDispatchQueue for InMemoryJobDispatchQueue {
         reclaim_after: Duration,
         max_reclaim_count: u32,
     ) -> Result<ReclaimOutcome, StorageError> {
-        let mut st = self.lock();
+        let mut st = self.inner.lock();
         let now = Instant::now();
         let mut outcome = ReclaimOutcome::default();
         for q in st.jobs.values_mut() {
@@ -220,59 +181,95 @@ impl JobDispatchQueue for InMemoryJobDispatchQueue {
 
 // ── TriggerDedupInbox ────────────────────────────────────────────────────────
 
-/// In-memory trigger-dedup inbox handle.  Shares `core` with
-/// [`InMemoryJobDispatchQueue`] so `claim_and_enqueue_start` is one
-/// critical section.
+/// In-memory trigger-dedup inbox handle.
+///
+/// Shares the execution store's core with [`InMemoryJobDispatchQueue`] so
+/// `claim_and_materialize_start` writes all three rows atomically under one
+/// lock.
 #[derive(Debug, Clone)]
 pub struct InMemoryTriggerDedupInbox {
-    core: SharedDispatchCore,
+    inner: SharedState,
 }
 
 impl InMemoryTriggerDedupInbox {
-    /// Build from an existing shared core (share with
-    /// [`InMemoryJobDispatchQueue`] so `claim_and_enqueue_start` is atomic).
+    /// Build a trigger-dedup inbox over an execution store's shared core.
     #[must_use]
-    pub fn from_core(core: SharedDispatchCore) -> Self {
-        Self { core }
-    }
-
-    fn lock(&self) -> parking_lot::MutexGuard<'_, Core> {
-        self.core.0.lock()
+    pub fn new(store: &super::InMemoryExecutionStore) -> Self {
+        Self {
+            inner: store.shared(),
+        }
     }
 }
 
 #[async_trait::async_trait]
 impl TriggerDedupInbox for InMemoryTriggerDedupInbox {
-    #[tracing::instrument(level = "debug", skip(self, row, start), fields(
+    #[tracing::instrument(level = "debug", skip(self, row, start, execution), fields(
         trigger_id = row.as_ref().map(|r| r.trigger_id.as_str()),
         event_id   = row.as_ref().map(|r| r.event_id.as_str()),
         job_id     = ?start.id,
+        execution_id = start.execution_id.as_str(),
     ))]
-    async fn claim_and_enqueue_start(
+    async fn claim_and_materialize_start(
         &self,
         row: Option<&TriggerDedupRow>,
         start: &JobDispatchMsg,
+        execution: &NewExecution<'_>,
     ) -> Result<DispatchOutcome, StorageError> {
-        let mut st = self.lock();
-        // One critical section — both writes are inside the same lock.
-        if let Some(r) = row {
-            let key = (
+        let mut st = self.inner.lock();
+
+        // All three writes are inside one critical section (the parking_lot
+        // Mutex guard).
+        //
+        // Write order is important: `insert_created_row` MUST succeed before we
+        // write to `st.dedup`.  The Mutex is not a database transaction — there
+        // is no rollback.  If we inserted the dedup key first and then
+        // `insert_created_row` failed (id collision), the dedup entry would stay
+        // permanently, making the trigger permanently stuck as a "duplicate".
+        //
+        // Correct order:
+        //  1. Duplicate check (read-only)
+        //  2. insert_created_row — return Err immediately on failure; dedup untouched
+        //  3. st.dedup.insert — only reachable on success
+        //  4. st.jobs.insert
+
+        // Step 1: check for an existing dedup winner and return early.
+        let dedup_key = row.as_ref().map(|r| {
+            (
                 r.scope.workspace_id.clone(),
                 r.scope.org_id.clone(),
                 r.trigger_id.clone(),
                 r.event_id.clone(),
+            )
+        });
+        if let (Some(r), Some(key)) = (row, &dedup_key)
+            && let Some(winner_id) = st.dedup.get(key)
+        {
+            let winner_id = winner_id.clone();
+            tracing::debug!(
+                target: "nebula_storage::inmem",
+                trigger_id = %r.trigger_id,
+                event_id   = %r.event_id,
+                winner_execution_id = %winner_id,
+                "trigger_dedup: duplicate — returning winner id"
             );
-            if st.dedup.contains(&key) {
-                tracing::debug!(
-                    target: "nebula_storage::inmem",
-                    trigger_id = %r.trigger_id,
-                    event_id   = %r.event_id,
-                    "trigger_dedup: duplicate"
-                );
-                return Ok(DispatchOutcome::Duplicate);
-            }
-            st.dedup.insert(key);
+            return Ok(DispatchOutcome::new(winner_id, DispatchKind::Duplicate));
         }
+
+        // Step 2: insert the execution row — fail-closed before touching dedup.
+        // An id collision returns Err; neither dedup nor job maps are modified.
+        insert_created_row(
+            &mut st,
+            &start.scope,
+            &start.execution_id,
+            execution.workflow_id,
+            execution.initial_state,
+        )?;
+
+        // Step 3: claim the dedup slot (only reachable on success).
+        if let Some(key) = dedup_key {
+            st.dedup.insert(key, start.execution_id.clone());
+        }
+
         st.jobs.insert(
             start.id,
             QueuedJob {
@@ -287,9 +284,13 @@ impl TriggerDedupInbox for InMemoryTriggerDedupInbox {
         tracing::debug!(
             target: "nebula_storage::inmem",
             job_id = ?start.id,
-            "trigger_dedup: dispatched"
+            execution_id = %start.execution_id,
+            "trigger_dedup: materialized (dedup guard + execution row + Start job)"
         );
-        Ok(DispatchOutcome::Dispatched)
+        Ok(DispatchOutcome::new(
+            start.execution_id.clone(),
+            DispatchKind::Dispatched,
+        ))
     }
 
     async fn exists(
@@ -298,15 +299,14 @@ impl TriggerDedupInbox for InMemoryTriggerDedupInbox {
         trigger_id: &str,
         event_id: &str,
     ) -> Result<bool, StorageError> {
-        let st = self.lock();
+        let st = self.inner.lock();
         let key = (
             scope.workspace_id.clone(),
             scope.org_id.clone(),
             trigger_id.to_owned(),
             event_id.to_owned(),
         );
-        let found = st.dedup.contains(&key);
-        Ok(found)
+        Ok(st.dedup.contains_key(&key))
     }
 
     async fn cleanup(&self, _retention: Duration) -> Result<u64, StorageError> {

@@ -48,6 +48,48 @@ fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
 
+/// Insert a `Created` execution row inside an existing transaction.
+///
+/// Called by both `ExecutionStore::create` (via a single-statement tx) and
+/// the dedup compose so the `port_executions` INSERT shape is defined exactly
+/// once.  A unique-violation maps to `StorageError::Duplicate` so both call
+/// sites propagate it uniformly.
+pub(super) async fn insert_created_execution(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    scope: &Scope,
+    id: &str,
+    workflow_id: &str,
+    initial_state: &serde_json::Value,
+) -> Result<(), StorageError> {
+    let state = serde_json::to_string(initial_state)?;
+    let ts = now_rfc3339();
+    let res = sqlx::query(
+        "INSERT INTO port_executions \
+         (id, workspace_id, org_id, workflow_id, status, state, version, \
+          fencing_generation, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, 'Created', ?, 0, 0, ?, ?)",
+    )
+    .bind(id)
+    .bind(&scope.workspace_id)
+    .bind(&scope.org_id)
+    .bind(workflow_id)
+    .bind(&state)
+    .bind(&ts)
+    .bind(&ts)
+    .execute(&mut **tx)
+    .await;
+    match res {
+        Ok(_) => Ok(()),
+        Err(sqlx::Error::Database(db)) if db.is_unique_violation() => {
+            Err(StorageError::Duplicate {
+                entity: "execution",
+                detail: format!("execution {id} already exists"),
+            })
+        },
+        Err(e) => Err(conn_err(e)),
+    }
+}
+
 #[async_trait::async_trait]
 impl ExecutionStore for SqliteExecutionStore {
     async fn create(
@@ -57,41 +99,16 @@ impl ExecutionStore for SqliteExecutionStore {
         workflow_id: &str,
         initial_state: serde_json::Value,
     ) -> Result<(), StorageError> {
-        let state = serde_json::to_string(&initial_state)?;
-        let ts = now_rfc3339();
-        let res = sqlx::query(
-            "INSERT INTO port_executions \
-             (id, workspace_id, org_id, workflow_id, status, state, version, \
-              fencing_generation, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, 'Created', ?, 0, 0, ?, ?)",
-        )
-        .bind(id)
-        .bind(&scope.workspace_id)
-        .bind(&scope.org_id)
-        .bind(workflow_id)
-        .bind(&state)
-        .bind(&ts)
-        .bind(&ts)
-        .execute(&self.pool)
-        .await;
-        match res {
-            Ok(_) => {
-                tracing::debug!(
-                    target: "nebula_storage::sqlite",
-                    execution_id = id,
-                    workflow_id,
-                    "execution created"
-                );
-                Ok(())
-            },
-            Err(sqlx::Error::Database(db)) if db.is_unique_violation() => {
-                Err(StorageError::Duplicate {
-                    entity: "execution",
-                    detail: format!("execution {id} already exists"),
-                })
-            },
-            Err(e) => Err(conn_err(e)),
-        }
+        let mut tx = self.pool.begin().await.map_err(conn_err)?;
+        insert_created_execution(&mut tx, scope, id, workflow_id, &initial_state).await?;
+        tx.commit().await.map_err(conn_err)?;
+        tracing::debug!(
+            target: "nebula_storage::sqlite",
+            execution_id = id,
+            workflow_id,
+            "execution created"
+        );
+        Ok(())
     }
 
     async fn get(&self, scope: &Scope, id: &str) -> Result<Option<ExecutionRecord>, StorageError> {

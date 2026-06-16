@@ -9,12 +9,14 @@
 use std::time::Duration;
 
 use chrono::Utc;
-use nebula_storage_port::dto::{CapabilityTag, DispatchOutcome, JobDispatchMsg, TriggerDedupRow};
+use nebula_storage_port::dto::{
+    CapabilityTag, DispatchKind, DispatchOutcome, JobDispatchMsg, NewExecution, TriggerDedupRow,
+};
 use nebula_storage_port::store::{JobDispatchQueue, ReclaimOutcome, TriggerDedupInbox};
 use nebula_storage_port::{Scope, StorageError};
 use sqlx::{PgPool, Row};
 
-use super::execution::conn_err;
+use super::execution::{conn_err, insert_created_execution};
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -294,17 +296,23 @@ impl PgTriggerDedupInbox {
 
 #[async_trait::async_trait]
 impl TriggerDedupInbox for PgTriggerDedupInbox {
-    #[tracing::instrument(level = "debug", skip(self, row, start), fields(
-        trigger_id = row.as_ref().map(|r| r.trigger_id.as_str()),
-        event_id   = row.as_ref().map(|r| r.event_id.as_str()),
-        job_id     = ?start.id,
+    #[tracing::instrument(level = "debug", skip(self, row, start, execution), fields(
+        trigger_id   = row.as_ref().map(|r| r.trigger_id.as_str()),
+        event_id     = row.as_ref().map(|r| r.event_id.as_str()),
+        job_id       = ?start.id,
+        execution_id = start.execution_id.as_str(),
     ))]
-    async fn claim_and_enqueue_start(
+    async fn claim_and_materialize_start(
         &self,
         row: Option<&TriggerDedupRow>,
         start: &JobDispatchMsg,
+        execution: &NewExecution<'_>,
     ) -> Result<DispatchOutcome, StorageError> {
         let tags = tags_to_json(&start.capability_tags);
+
+        // All three writes live inside one transaction — atomicity by
+        // construction.  An error from any write propagates via `?` and rolls
+        // back the whole transaction.
         let mut tx = self.pool.begin().await.map_err(conn_err)?;
 
         if let Some(r) = row {
@@ -322,7 +330,10 @@ impl TriggerDedupInbox for PgTriggerDedupInbox {
             .bind(&r.scope.org_id)
             .bind(&r.trigger_id)
             .bind(&r.event_id)
-            .bind(&r.execution_id)
+            // Bind `start.execution_id`, not `r.execution_id` — the dedup guard must
+            // record the id that the Start job uses so the SELECT read-back on the
+            // Duplicate path returns the first writer's effective execution id.
+            .bind(&start.execution_id)
             .bind(&r.created_at)
             .execute(&mut *tx)
             .await
@@ -330,18 +341,50 @@ impl TriggerDedupInbox for PgTriggerDedupInbox {
             .rows_affected();
 
             if affected == 0 {
+                // Duplicate: read the winner's execution_id back in the same
+                // transaction so the caller has the canonical id without a
+                // second connection.
+                let winner_id: String = sqlx::query(
+                    "SELECT execution_id FROM port_trigger_dedup_inbox \
+                     WHERE workspace_id = $1 AND org_id = $2 \
+                       AND trigger_id = $3 AND event_id = $4",
+                )
+                .bind(&r.scope.workspace_id)
+                .bind(&r.scope.org_id)
+                .bind(&r.trigger_id)
+                .bind(&r.event_id)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(conn_err)?
+                .try_get("execution_id")
+                .map_err(conn_err)?;
+
                 tx.commit().await.map_err(conn_err)?;
                 tracing::debug!(
                     target: "nebula_storage::postgres",
                     trigger_id = %r.trigger_id,
                     event_id   = %r.event_id,
-                    "trigger_dedup: duplicate"
+                    winner_execution_id = %winner_id,
+                    "trigger_dedup: duplicate — returning winner id"
                 );
-                return Ok(DispatchOutcome::Duplicate);
+                return Ok(DispatchOutcome::new(winner_id, DispatchKind::Duplicate));
             }
         }
 
-        // Insert the Start job in the same transaction.
+        // Insert the execution row (status='Created', version=0,
+        // fencing_generation=0).  Id + scope come from `start`.
+        // A unique-violation here rolls back the whole transaction — no dedup
+        // row, no job row.
+        insert_created_execution(
+            &mut tx,
+            &start.scope,
+            &start.execution_id,
+            execution.workflow_id,
+            execution.initial_state,
+        )
+        .await?;
+
+        // Insert the Start job (same transaction).
         sqlx::query(
             "INSERT INTO port_job_dispatch_queue \
              (id, execution_id, workspace_id, org_id, command, status, \
@@ -369,9 +412,13 @@ impl TriggerDedupInbox for PgTriggerDedupInbox {
         tracing::debug!(
             target: "nebula_storage::postgres",
             job_id = ?start.id,
-            "trigger_dedup: dispatched"
+            execution_id = %start.execution_id,
+            "trigger_dedup: materialized (dedup guard + execution row + Start job)"
         );
-        Ok(DispatchOutcome::Dispatched)
+        Ok(DispatchOutcome::new(
+            start.execution_id.clone(),
+            DispatchKind::Dispatched,
+        ))
     }
 
     async fn exists(

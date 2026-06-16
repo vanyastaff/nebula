@@ -25,9 +25,7 @@ pub use identity::{
     InMemoryQuotaStore, InMemoryResourceStore, InMemoryTriggerStore, InMemoryUserStore,
     InMemoryWorkspaceStore,
 };
-pub use job_dispatch::{
-    InMemoryJobDispatchQueue, InMemoryTriggerDedupInbox, SharedDispatchCore, new_shared_core,
-};
+pub use job_dispatch::{InMemoryJobDispatchQueue, InMemoryTriggerDedupInbox};
 pub use journal::InMemoryJournalReader;
 pub use node_result::{InMemoryCheckpointStore, InMemoryNodeResultStore};
 pub use workflow::{InMemoryWorkflowStore, InMemoryWorkflowVersionStore};

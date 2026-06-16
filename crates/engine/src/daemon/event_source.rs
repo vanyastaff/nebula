@@ -242,14 +242,13 @@ where
                     match recv {
                         Ok(event) => {
                             let payload = (self.event_to_payload)(&event);
-                            // CANCEL SAFETY: (a) a drop before `claim_and_enqueue_start`
-                            // commits is a clean no-op (no row, no job).
-                            // (b) a drop AFTER `claim_and_enqueue_start` commits but
-                            // BEFORE the `Created`-row write leaves a queued Start
-                            // with no Created row → orchestrator dispatch finds no row
-                            // → `resume_execution` Rejected → `mark_failed`
-                            // (at-most-once degrade, NEVER double-spawn — a redelivery
-                            // re-dedups). EventSourceAdapter passes `event_id = None`
+                            // CANCEL SAFETY: a drop before `claim_and_materialize_start`
+                            // commits is a clean no-op — no dedup row, no execution row,
+                            // no job (all three are atomic in one transaction).  A drop
+                            // AFTER the transaction commits is safe: the Created row, the
+                            // dedup guard, and the Start job all landed atomically, so the
+                            // orchestrator can pick up the job with a valid execution row
+                            // already present.  EventSourceAdapter passes `event_id = None`
                             // (unconditional dispatch; no dedup row written).
                             match ctx.emitter().emit(payload, None).await {
                                 Ok(_) => ctx.health().record_success(1),

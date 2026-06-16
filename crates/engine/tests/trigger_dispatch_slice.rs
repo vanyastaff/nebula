@@ -1,7 +1,7 @@
 //! ADR-0095 D3/D5 — "first real trigger dispatch" vertical slice.
 //!
 //! Tests verify the full path: trigger fires → `DurableExecutionEmitter` →
-//! `TriggerDedupInbox::claim_and_enqueue_start` → `Orchestrator` claims →
+//! `TriggerDedupInbox::claim_and_materialize_start` → `Orchestrator` claims →
 //! `EngineExecutionSink::dispatch` drives `resume_execution` → execution runs.
 //!
 //! ## Test plan
@@ -46,7 +46,7 @@ use nebula_metrics::MetricsRegistry;
 use nebula_orchestrator::{ExecutionSink, Orchestrator};
 use nebula_storage::{
     InMemoryExecutionStore, InMemoryWorkflowVersionStore,
-    inmem::{InMemoryJobDispatchQueue, InMemoryTriggerDedupInbox, new_shared_core},
+    inmem::{InMemoryJobDispatchQueue, InMemoryTriggerDedupInbox},
 };
 use nebula_storage_port::{
     Scope,
@@ -373,8 +373,7 @@ use nebula_engine::daemon::routing::StaticRoutingResolver;
 
 const TEST_PLUGIN_KEY: &str = "test.dispatch.plugin";
 
-/// Build the shared InMemory dedup+queue core and return the emitter alongside
-/// both adapters for inspection.
+/// Build InMemory dedup + queue + emitter sharing one execution-store core.
 async fn make_emitter(
     stores: &TestStores,
     workflow_id: nebula_core::WorkflowId,
@@ -383,13 +382,11 @@ async fn make_emitter(
     Arc<InMemoryTriggerDedupInbox>,
     Arc<InMemoryJobDispatchQueue>,
 ) {
-    let core = new_shared_core();
-    let dedup = Arc::new(InMemoryTriggerDedupInbox::from_core(core.clone()));
-    let queue = Arc::new(InMemoryJobDispatchQueue::from_core(core));
+    let dedup = Arc::new(InMemoryTriggerDedupInbox::new(&stores.execution));
+    let queue = Arc::new(InMemoryJobDispatchQueue::new(&stores.execution));
     let resolver = Arc::new(StaticRoutingResolver::new(TEST_PLUGIN_KEY));
     let emitter = DurableExecutionEmitter::new(
         Arc::clone(&dedup) as Arc<dyn TriggerDedupInbox>,
-        Arc::clone(&stores.execution) as Arc<dyn ExecutionStore>,
         resolver,
         workflow_id,
         node_key!("test.trigger"),
@@ -399,7 +396,7 @@ async fn make_emitter(
 }
 
 /// `DurableExecutionEmitter::emit` with `Some(event_id)` produces:
-///  - `DispatchOutcome::Dispatched` (returned as Ok(execution_id))
+///  - `DispatchKind::Dispatched` (returned as Ok(execution_id))
 ///  - A `Created` execution row in the store
 ///  - Exactly one Start row in the job-dispatch queue
 #[tokio::test(start_paused = true)]
@@ -449,8 +446,10 @@ async fn emitter_dispatched_creates_row_and_enqueues_start() {
     );
 }
 
-/// A second `emit` with the same `event_id` mints a fresh candidate id (ids
-/// DIFFER), writes NO second `Created` row, and enqueues NO second Start job.
+/// A second `emit` with the same `event_id` returns the WINNER's id (same as
+/// `id1`), writes NO second `Created` row, and enqueues NO second Start job.
+/// The dedup-inbox read-back contract: `Duplicate` returns the original
+/// winner's id in-transaction, so callers always hold a valid execution id.
 #[tokio::test(start_paused = true)]
 async fn emitter_duplicate_event_id_no_second_row() {
     let stores = TestStores::new();
@@ -469,13 +468,11 @@ async fn emitter_duplicate_event_id_no_second_row() {
         .await
         .expect("second emit (Duplicate) must succeed");
 
-    // On Duplicate the emitter returns the candidate id minted in the second
-    // call — it cannot retrieve the winner's id from the guard without a
-    // round-trip to the dedup store.  The ids differ; no orphaned Created row
-    // must exist for id2.
-    assert_ne!(
+    // On Duplicate the emitter returns the WINNER's id (id1), read back
+    // from the dedup inbox in-transaction.  Both calls return the same id.
+    assert_eq!(
         id1, id2,
-        "Duplicate emit mints a fresh candidate id — ids must differ"
+        "Duplicate emit must return the original winner's id — both calls must return the same id"
     );
 
     // Only one Start job must be in the queue (the duplicate write is a no-op).
@@ -490,23 +487,16 @@ async fn emitter_duplicate_event_id_no_second_row() {
         jobs.len()
     );
 
-    // The winner's row must exist; the duplicate's candidate id must NOT have a row
-    // (no orphaned Created row on Duplicate).
-    let row1 = stores
+    // The execution row must exist (it was created on the first Dispatched emit).
+    // Both id1 and id2 are the same id so we only need one get.
+    let row = stores
         .execution
         .get(&scope(), &id1.to_string())
         .await
-        .expect("get id1");
-    assert!(row1.is_some(), "winning execution row must exist (id1)");
-
-    let row2 = stores
-        .execution
-        .get(&scope(), &id2.to_string())
-        .await
-        .expect("get id2 (no-op)");
+        .expect("get execution row");
     assert!(
-        row2.is_none(),
-        "Duplicate candidate id must NOT have a Created row — got {row2:?}"
+        row.is_some(),
+        "winner's execution row must exist (id1 == id2 after Duplicate read-back)"
     );
 }
 
@@ -522,15 +512,14 @@ async fn trigger_dispatch_end_to_end_real_engine_resume() {
     let (engine, echo_count) = make_engine(&stores).await;
     let workflow_id = save_echo_workflow(&stores).await;
 
-    // Wire: shared InMemory dedup+queue core.
-    let core = new_shared_core();
-    let dedup = Arc::new(InMemoryTriggerDedupInbox::from_core(core.clone()));
-    let queue = Arc::new(InMemoryJobDispatchQueue::from_core(core));
+    // Wire: dedup + queue share the execution store's core so all three writes
+    // (dedup guard + execution row + Start job) are atomic under one lock.
+    let dedup = Arc::new(InMemoryTriggerDedupInbox::new(&stores.execution));
+    let queue = Arc::new(InMemoryJobDispatchQueue::new(&stores.execution));
 
     let resolver = Arc::new(StaticRoutingResolver::new(TEST_PLUGIN_KEY));
     let emitter = DurableExecutionEmitter::new(
         Arc::clone(&dedup) as Arc<dyn TriggerDedupInbox>,
-        Arc::clone(&stores.execution) as Arc<dyn ExecutionStore>,
         resolver,
         workflow_id,
         node_key!("test.trigger"),
@@ -599,8 +588,8 @@ async fn trigger_dispatch_end_to_end_real_engine_resume() {
     );
 
     // 4. Redelivery of the same event_id must NOT create a second execution.
-    // On Duplicate the emitter returns its own freshly-minted candidate id; the
-    // dedup guard ensures no second row or Start is created.
+    // On Duplicate the emitter returns the WINNER's execution id (same as
+    // execution_id from step 1) — the dedup guard read-back is in-transaction.
     let id2 = emitter
         .emit(
             serde_json::json!({"event": "tick-dup"}),
@@ -608,19 +597,19 @@ async fn trigger_dispatch_end_to_end_real_engine_resume() {
         )
         .await
         .expect("duplicate emit must return Ok");
-    assert_ne!(
+    assert_eq!(
         execution_id, id2,
-        "Duplicate emit mints a fresh candidate id — ids must differ"
+        "Duplicate emit must return the original winner's id — both calls must return the same id"
     );
-    // No row must exist for the duplicate candidate.
-    let dup_row = stores
+    // The winner's row still exists (the Duplicate did not create a second one).
+    let winner_row = stores
         .execution
         .get(&scope(), &id2.to_string())
         .await
-        .expect("get dup candidate row");
+        .expect("get winner row after duplicate emit");
     assert!(
-        dup_row.is_none(),
-        "Duplicate candidate must NOT have a Created row; got {dup_row:?}"
+        winner_row.is_some(),
+        "winner's row must still exist after Duplicate emit; got {winner_row:?}"
     );
 
     // Handler was not invoked a second time.

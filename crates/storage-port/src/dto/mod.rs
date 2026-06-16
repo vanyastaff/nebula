@@ -17,13 +17,13 @@ mod webhook;
 mod workflow;
 
 pub use control::{ControlCommand, ControlMsg};
-pub use execution::ExecutionRecord;
+pub use execution::{ExecutionRecord, NewExecution};
 pub use idempotency::CachedRecord;
 pub use identity::{
     AuditLogRow, BlobRow, MembershipRow, OrgRow, PrincipalKind, QuotaRow, ResourceRow, ScopeKind,
     TriggerRow, UserRow, WorkspaceRow,
 };
-pub use job_dispatch::{CapabilityTag, DispatchOutcome, JobDispatchMsg};
+pub use job_dispatch::{CapabilityTag, DispatchKind, DispatchOutcome, JobDispatchMsg};
 pub use journal::JournalEntry;
 pub use node_result::{MAX_SUPPORTED_RESULT_SCHEMA_VERSION, NodeResultRecord};
 pub use trigger_dedup::TriggerDedupRow;
