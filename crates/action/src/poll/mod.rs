@@ -1273,7 +1273,11 @@ impl<A: PollAction> PollTriggerAdapter<A> {
                     return DispatchResult::Failed;
                 },
             };
-            if let Err(e) = ctx.emitter().emit(payload).await {
+            // CANCEL SAFETY: this path calls `.emit` with `event_id = None`
+            // (unconditional dispatch — no dedup row, inbox not involved).
+            // A cancel mid-await loses that tick's emission (at-most-once),
+            // which is the poll adapter's documented tolerance.
+            if let Err(e) = ctx.emitter().emit(payload, None).await {
                 if self.emit_warn.should_log() {
                     ctx.logger().log(
                         LogLevel::Warn,

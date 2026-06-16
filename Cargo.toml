@@ -87,6 +87,7 @@ unicode-width = "0.2"
 petgraph = "0.8"
 domain-key = { version = "0.6.0", features = ["serde", "ulid", "uuid"] }
 uuid = { version = "1.23", features = ["v4", "serde"] }
+ulid = "1.2.1"
 chrono = { version = "0.4.44", default-features = false, features = ["clock"] }
 chrono-tz = { version = "0.10", default-features = false, features = ["std"] }
 smallvec = { version = "1.15", features = ["union", "const_generics", "serde"] }

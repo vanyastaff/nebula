@@ -238,7 +238,7 @@ impl TestRuntime {
         let start_outcome = tokio::time::timeout(TRIGGER_STOP_GRACE, start_handle).await;
         let _ = handler.stop(&ctx).await;
 
-        let emitted = spy.emitted();
+        let emitted = spy.inputs();
         let count = emitted.len() as u32;
 
         let note = match start_outcome {
@@ -289,7 +289,7 @@ impl TestRuntime {
         let outcome = handler.handle_event(event, &ctx).await?;
         handler.stop(&ctx).await?;
 
-        let emitted = spy.emitted();
+        let emitted = spy.inputs();
 
         Ok(RunReport {
             kind: "trigger:webhook",

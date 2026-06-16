@@ -578,7 +578,7 @@ async fn poll_adapter_uses_initial_cursor() {
 
     assert!(poll_count.load(Ordering::Relaxed) >= 1);
     // First emitted event should be id: 1001 (initial_cursor = 1000, then +1)
-    let emitted = emitter.emitted();
+    let emitted = emitter.inputs();
     assert!(!emitted.is_empty());
     assert_eq!(emitted[0]["id"], 1001);
 }
@@ -606,6 +606,7 @@ impl ExecutionEmitter for FailingEmitter {
     fn emit(
         &self,
         _input: serde_json::Value,
+        _event_id: Option<nebula_action::IdempotencyKey>,
     ) -> Pin<Box<dyn Future<Output = Result<ExecutionId, ActionError>> + Send + '_>> {
         self.attempts.fetch_add(1, Ordering::Relaxed);
         Box::pin(async { Err(ActionError::retryable("emitter down")) })
@@ -729,6 +730,7 @@ impl ExecutionEmitter for DropCountingFailingEmitter {
     fn emit(
         &self,
         _input: serde_json::Value,
+        _event_id: Option<nebula_action::IdempotencyKey>,
     ) -> Pin<Box<dyn Future<Output = Result<ExecutionId, ActionError>> + Send + '_>> {
         self.drops.fetch_add(1, Ordering::Relaxed);
         Box::pin(async { Err(ActionError::retryable("drop me")) })

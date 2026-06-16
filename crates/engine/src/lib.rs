@@ -92,8 +92,10 @@ pub use credential::{
 };
 pub use credential_accessor::EngineCredentialAccessor;
 pub use daemon::{
-    AnyDaemonHandle, Daemon, DaemonConfig, DaemonError, DaemonRegistry, DaemonRuntime, EventSource,
-    EventSourceAdapter, EventSourceConfig, EventSourceRuntime, RestartPolicy,
+    AnyDaemonHandle, Daemon, DaemonConfig, DaemonError, DaemonRegistry, DaemonRuntime,
+    DispatchRoute, DurableExecutionEmitter, EngineExecutionSink, EventSource, EventSourceAdapter,
+    EventSourceConfig, EventSourceRuntime, RestartPolicy, RoutingError, RoutingResolver,
+    SLICE_FLAVOR_SHA, StaticRoutingResolver,
 };
 pub use engine::{DEFAULT_EVENT_CHANNEL_CAPACITY, WorkflowEngine};
 pub use error::EngineError;

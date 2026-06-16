@@ -13,15 +13,15 @@ keywords.workspace = true
 
 [dependencies]
 nebula-storage-port = { path = "../storage-port" }
-nebula-core          = { path = "../core" }
-nebula-metrics       = { path = "../metrics" }
+nebula-core = { path = "../core" }
+nebula-metrics = { path = "../metrics" }
 
-async-trait      = { workspace = true }
-thiserror        = { workspace = true }
-tracing          = { workspace = true }
-tokio            = { workspace = true, features = ["rt", "sync", "time", "macros"] }
-tokio-util       = { workspace = true }
-opentelemetry    = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true, features = ["rt", "sync", "time", "macros"] }
+tokio-util = { workspace = true }
+opentelemetry = { workspace = true }
 tracing-opentelemetry = { workspace = true }
 
 [dev-dependencies]
