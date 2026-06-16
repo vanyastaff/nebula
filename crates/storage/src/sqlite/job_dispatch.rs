@@ -145,52 +145,44 @@ impl JobDispatchQueue for SqliteJobDispatchQueue {
         let mut tx = self.pool.begin().await.map_err(conn_err)?;
 
         // Superset predicate: a job is claimable when `capability_tags ⊆
-        // advertised_tags`.  SQLite has no array bind, so we interpolate a
-        // parameter-placeholder list and bind the advertised tags twice —
-        // once for the index-friendly `required_plugin_key IN (…)` pre-filter
-        // and once for the exact `NOT EXISTS` superset check.
+        // advertised_tags`.  The advertised set is bound ONCE as a JSON array
+        // and unfolded via `json_each` into a CTE, referenced by both the
+        // index-friendly `required_plugin_key IN (…)` pre-filter and the exact
+        // `NOT EXISTS` superset check — no dynamic placeholder expansion and no
+        // per-tag bind, so the SQLite bound-variable limit is never a concern.
         //
-        // The pre-filter and superset check are in the same SELECT statement,
-        // so no row is fetched that fails the superset test.  A concurrent
-        // actor that flips a selected row to 'Processing' first is caught by
-        // the per-row `UPDATE … AND status = 'Pending'` guard below
-        // (rows_affected = 0 → row skipped); the whole exchange is inside one
-        // transaction (single-consumer SQLite boundary, spec §5).
+        // The pre-filter and superset check share one SELECT, so no row is
+        // fetched that fails the superset test.  A concurrent actor that flips
+        // a selected row to 'Processing' first is caught by the per-row
+        // `UPDATE … AND status = 'Pending'` guard below (rows_affected = 0 →
+        // row skipped); the whole exchange is inside one transaction
+        // (single-consumer SQLite boundary, spec §5).
         //
         // `NOT EXISTS` reads: "no element in json_each(capability_tags) is
         // absent from the advertised set", i.e. every required tag is covered.
         // An empty `capability_tags` JSON array yields no rows from json_each
         // ⇒ NOT EXISTS is vacuously true ⇒ claimable by anyone (consistent
         // with the InMemory backend).
-        let placeholders = advertised_tags
-            .iter()
-            .map(|_| "?")
-            .collect::<Vec<_>>()
-            .join(", ");
-        let select_sql = format!(
-            "SELECT id, execution_id, workspace_id, org_id, command, \
+        let advertised_json = tags_to_json(advertised_tags);
+        let rows = sqlx::query(
+            "WITH advertised(tag) AS (SELECT value FROM json_each(?1)) \
+             SELECT id, execution_id, workspace_id, org_id, command, \
                     payload, event_id, target_flavor_sha, required_plugin_key, \
                     capability_tags, w3c_traceparent, reclaim_count \
              FROM port_job_dispatch_queue \
              WHERE status = 'Pending' \
-               AND required_plugin_key IN ({placeholders}) \
+               AND required_plugin_key IN (SELECT tag FROM advertised) \
                AND NOT EXISTS ( \
                    SELECT 1 FROM json_each(capability_tags) je \
-                   WHERE je.value NOT IN ({placeholders}) \
+                   WHERE je.value NOT IN (SELECT tag FROM advertised) \
                ) \
-             ORDER BY id LIMIT ?"
-        );
-        let mut q = sqlx::query(sqlx::AssertSqlSafe(select_sql));
-        // Bind advertised tags for the IN pre-filter.
-        for tag in advertised_tags {
-            q = q.bind(tag.as_str());
-        }
-        // Bind advertised tags again for the NOT IN superset check.
-        for tag in advertised_tags {
-            q = q.bind(tag.as_str());
-        }
-        q = q.bind(i64::from(batch_size));
-        let rows = q.fetch_all(&mut *tx).await.map_err(conn_err)?;
+             ORDER BY id LIMIT ?2",
+        )
+        .bind(&advertised_json)
+        .bind(i64::from(batch_size))
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(conn_err)?;
 
         let mut claimed = Vec::with_capacity(rows.len());
         let now_ms = chrono::Utc::now().timestamp_millis();
