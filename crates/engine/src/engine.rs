@@ -3686,9 +3686,11 @@ impl WorkflowEngine {
         });
     }
 
-    // Private helper — scope was added for tenant isolation (U-D1.4c);
-    // combined with the fencing token this pushes past the 7-arg threshold
-    // that is designed for public APIs.
+    // Private helper — `scope` carries the originating message's tenant so
+    // every port call enforces cross-tenant isolation (invariant #7); the
+    // borrow checker then prevents any caller from substituting an alternate
+    // scope. Combined with the fencing token this pushes past the 7-arg
+    // threshold that is designed for public APIs.
     #[allow(clippy::too_many_arguments)]
     async fn checkpoint_node(
         &self,

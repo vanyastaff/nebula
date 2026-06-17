@@ -220,7 +220,7 @@ mod tests {
         )
     }
 
-    /// Invariant #7 — fail-closed cross-tenant isolation (U-D1.4c).
+    /// Invariant #7 — fail-closed cross-tenant isolation.
     ///
     /// The row is seeded under `single_tenant_scope()` — `("nebula","nebula")`,
     /// the exact value the old `engine_scope()` constant returned. A
