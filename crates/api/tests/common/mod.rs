@@ -201,10 +201,9 @@ pub(crate) struct PortHandles {
 /// directly under this scope (`seed_*`) and the engine seam binds its
 /// store handles to it (see `engine_seam`), so harness writes, engine
 /// writes, and API reads all key on the same `(TEST_WS, TEST_ORG)`
-/// tuple. The engine's internal `engine_scope()` placeholder is
-/// substituted by the request-scope-bound decorator the seam wraps the
-/// stores in (engine per-execution scoping is a separate, tracked
-/// follow-up — see storage port migration "Known follow-up").
+/// tuple. The engine threads the real per-message tenant scope through
+/// `resume_execution`; the request-scope-bound decorator the seam wraps
+/// the stores in binds those calls to the request scope.
 pub(crate) fn port_scope() -> Scope {
     Scope::new(TEST_WS, TEST_ORG)
 }
@@ -1026,15 +1025,14 @@ pub(crate) mod engine_seam {
         );
 
         // `AppState` now stores **raw** port handles and applies the
-        // per-request tenant scope in its accessors; the engine, by
-        // contrast, still calls its store handles with the internal
-        // `engine_scope()` placeholder (a separate, tracked follow-up —
-        // see storage port migration "Known follow-up: engine per-execution tenant
-        // scoping"). To keep the seam coherent the engine-side handles
+        // per-request tenant scope in its accessors; the engine now
+        // threads the real per-message tenant `Scope` through
+        // `resume_execution` (the `engine_scope()` placeholder was
+        // deleted). To keep the seam coherent the engine-side handles
         // are wrapped here in `nebula-tenancy` decorators bound to
         // `port_scope()` — the request scope the API derives and the
-        // tests seed under. The decorator substitutes its bound scope
-        // for whatever the engine passes, so engine writes, harness
+        // tests seed under. The decorator binds whatever the engine
+        // passes to that scope, so engine writes, harness
         // `seed_*` writes, and API reads all key on the same tenant.
         // This is the decorator's intended composition-seam use (the
         // security primitive, bound correctly), not a shim. The
