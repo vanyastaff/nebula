@@ -213,14 +213,24 @@ pub(super) async fn dispatch_inner(
                 debug!("capability token not in port store — continuing via in-memory map");
             },
             Err(err) => {
-                // Storage errors on the read path are non-fatal: dispatch can
-                // still proceed through the in-memory routing map.  Log and
-                // continue; do NOT return 500 here (availability > durable
-                // resolution on the inbound webhook hot path).
+                // Storage error resolving the capability token. Now that durable
+                // dispatch is LIVE, we cannot determine the activation `mode`, so
+                // we MUST NOT silently downgrade a Prod trigger to the Noop path:
+                // that would 2xx the sender and lose the event (no retry). Fail
+                // closed with 503 so the sender retries; on store recovery the
+                // retry resolves and `claim_and_materialize_start` dedups by
+                // `event_id`. Availability of the durable contract > availability
+                // of the in-memory path once durable dispatch exists (Codex P1).
                 warn!(
                     error = %err,
-                    "resolve_by_token storage error; falling through to in-memory dispatch"
+                    "resolve_by_token storage error; failing closed (503) — \
+                     cannot verify durable dispatch contract"
                 );
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "webhook activation store unavailable; retry",
+                )
+                    .into_response();
             },
         }
     }
@@ -237,8 +247,11 @@ pub(super) async fn dispatch_inner(
     // §4 — "webhook-id must be a unique identifier per message delivery") and
     // may be logged as a tracing field.
     //
-    // Fail-closed rule (inv #6): Prod-mode activations require `webhook-id`.
-    // Missing header in Prod → 400 (sender must supply a delivery id).
+    // Fail-closed rule (inv #6): an EMITTING Prod outcome requires `webhook-id`
+    // (the dedup key). The requirement is enforced AFTER dispatch, only on an
+    // `Emit` outcome — a provider verification probe (Slack `url_verification`,
+    // Stripe `pending_webhook`) returns `Skip` and needs no delivery id, so the
+    // header must NOT be required before the outcome is known (Codex P2).
     // Test mode / no-row → `event_id = None` is fine.
     // Bound the delivery-id length at the edge: an over-long `webhook-id`
     // would flow into the dedup-key PK and surface as a backend-dependent
@@ -265,22 +278,10 @@ pub(super) async fn dispatch_inner(
         None => None,
     };
 
-    if durable.is_some() && event_id.is_none() {
-        // Prod row resolved but `webhook-id` absent — fail closed.
-        // The sender must supply a delivery id for dedup correctness.
-        // Return 400 (bad request) so the sender is informed the header
-        // is required; a retry with the header will succeed.
-        warn!(
-            mode = "Prod",
-            "Prod-mode webhook: missing `webhook-id` header; \
-             fail-closed (dedup requires a delivery id)"
-        );
-        return (
-            StatusCode::BAD_REQUEST,
-            "missing webhook-id header for Prod-mode dispatch",
-        )
-            .into_response();
-    }
+    // NOTE: the `webhook-id` requirement is NOT enforced here — it is deferred
+    // to the post-dispatch `Emit` arm (see `dispatch_durable`), so a Prod
+    // verification probe that returns `Skip` is not rejected for lacking a
+    // delivery id it never needs.
 
     let request = match WebhookRequest::try_new(method, path, query, headers, body) {
         Ok(r) => r,
@@ -405,8 +406,9 @@ struct DurableTarget {
 ///   — one `event_id` cannot safely fan-out to N executions).
 /// - `Skip` → no emit; return the adapter's HTTP response.
 ///
-/// The `event_id` is guaranteed `Some` at call sites (enforced by the
-/// Prod+missing-header gate in `dispatch_inner`).
+/// The `event_id` is guaranteed `Some` here: the `Emit` arm in
+/// `dispatch_durable` rejects a missing `webhook-id` with 400 before calling
+/// this fn (an emitting outcome requires a dedup key; `Skip` does not).
 async fn dispatch_durable(
     target: DurableTarget,
     outcome: TriggerEventOutcome,
@@ -417,6 +419,23 @@ async fn dispatch_durable(
 
     match outcome {
         TriggerEventOutcome::Emit(payload) => {
+            // An emitting outcome needs a dedup key. The requirement applies
+            // ONLY here (not before dispatch): a verification probe returns
+            // `Skip` and never reaches this arm, so it is not rejected for a
+            // missing `webhook-id` it does not need (Codex P2).
+            if event_id.is_none() {
+                warn!(
+                    trigger_id = %row.trigger_id,
+                    mode = "Prod",
+                    "Prod-mode webhook Emit without `webhook-id`; \
+                     fail-closed (dedup requires a delivery id)"
+                );
+                return (
+                    StatusCode::BAD_REQUEST,
+                    "missing webhook-id header for Prod-mode emit",
+                )
+                    .into_response();
+            }
             let emit_result = do_emit_prod(&row, &components, payload, event_id.as_ref()).await;
             match emit_result {
                 Ok(()) => {
@@ -771,6 +790,63 @@ mod tests {
         }
     }
 
+    /// Activation store that delegates everything to an in-memory store EXCEPT
+    /// `resolve_by_token`, which errors — simulating a transient store outage on
+    /// the durable read path (Codex P1: must fail closed 503, not downgrade).
+    #[derive(Debug)]
+    struct FailingResolveStore(InMemoryWebhookActivationStore);
+
+    #[async_trait::async_trait]
+    impl WebhookActivationStore for FailingResolveStore {
+        async fn upsert(
+            &self,
+            scope: &Scope,
+            record: nebula_storage_port::dto::WebhookActivationRecord,
+        ) -> Result<(), nebula_storage_port::StorageError> {
+            self.0.upsert(scope, record).await
+        }
+
+        async fn resolve(
+            &self,
+            scope: &Scope,
+            slug: &str,
+        ) -> Result<
+            Option<nebula_storage_port::dto::WebhookActivationRecord>,
+            nebula_storage_port::StorageError,
+        > {
+            self.0.resolve(scope, slug).await
+        }
+
+        async fn deactivate(
+            &self,
+            scope: &Scope,
+            trigger_id: &str,
+        ) -> Result<(), nebula_storage_port::StorageError> {
+            self.0.deactivate(scope, trigger_id).await
+        }
+
+        async fn resolve_by_token(
+            &self,
+            _token_hash: &[u8; 32],
+        ) -> Result<
+            Option<nebula_storage_port::dto::WebhookActivationRecord>,
+            nebula_storage_port::StorageError,
+        > {
+            Err(nebula_storage_port::StorageError::Connection(
+                "injected resolve_by_token outage".into(),
+            ))
+        }
+
+        async fn list_all_active(
+            &self,
+        ) -> Result<
+            Vec<nebula_storage_port::dto::WebhookActivationRecord>,
+            nebula_storage_port::StorageError,
+        > {
+            self.0.list_all_active().await
+        }
+    }
+
     // ── TestFixture ───────────────────────────────────────────────────────────
 
     /// Fully-wired in-memory fixture for durable dispatch tests.
@@ -790,8 +866,17 @@ mod tests {
     }
 
     impl TestFixture {
-        /// Build a full Prod-mode fixture.
+        /// Build a full Prod-mode fixture (in-memory activation store).
         async fn prod(mode: WebhookMode) -> Self {
+            Self::prod_with_store(mode, Arc::new(InMemoryWebhookActivationStore::new())).await
+        }
+
+        /// Build a Prod-mode fixture with a caller-supplied activation store —
+        /// lets a test inject a store whose `resolve_by_token` errors.
+        async fn prod_with_store(
+            mode: WebhookMode,
+            activation_store: Arc<dyn WebhookActivationStore>,
+        ) -> Self {
             let scope = Scope::new("test-org", "test-ws");
             let workflow_id = WorkflowId::new();
             let trigger_id_key = node_key!("webhook_trigger");
@@ -801,8 +886,6 @@ mod tests {
             let dedup = Arc::new(InMemoryTriggerDedupInbox::new(&exec_store));
             let exec_store = Arc::new(exec_store);
             let version_store = Arc::new(InMemoryWorkflowVersionStore::new());
-            let activation_store: Arc<dyn WebhookActivationStore> =
-                Arc::new(InMemoryWebhookActivationStore::new());
 
             let outcome_cell = Arc::new(Mutex::new(TriggerEventOutcome::emit(json!({"ok": true}))));
 
@@ -1045,6 +1128,45 @@ mod tests {
             resp.status(),
             StatusCode::BAD_REQUEST,
             "oversized webhook-id must be a clean 400, not a backend 5xx"
+        );
+    }
+
+    /// A Prod verification probe (`Skip` outcome) without a `webhook-id` must
+    /// NOT be rejected — the dedup key is only required for emitting outcomes
+    /// (Codex P2). Slack `url_verification` / Stripe `pending_webhook` return
+    /// Skip and carry no delivery id.
+    ///
+    /// Red-on-revert: the old pre-dispatch `durable && event_id.is_none()` →
+    /// 400 check would reject this probe with 400.
+    #[tokio::test]
+    async fn prod_mode_skip_without_webhook_id_returns_200() {
+        let fix = TestFixture::prod(WebhookMode::Prod).await;
+        fix.set_outcome(TriggerEventOutcome::skip());
+        let resp = fix.dispatch_without_id().await;
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "Prod Skip without webhook-id is a verification probe, must pass (not 400)"
+        );
+    }
+
+    /// A transient activation-store outage on the durable read path must fail
+    /// closed with 503 (sender retries) rather than silently downgrade a Prod
+    /// trigger to the Noop path and return 2xx (Codex P1 — that would lose the
+    /// event with no retry).
+    ///
+    /// Red-on-revert: the old `Err(_) => fall-through` arm returned the
+    /// handler's 200, hiding the store failure.
+    #[tokio::test]
+    async fn resolve_store_error_returns_503() {
+        let failing: Arc<dyn WebhookActivationStore> =
+            Arc::new(FailingResolveStore(InMemoryWebhookActivationStore::new()));
+        let fix = TestFixture::prod_with_store(WebhookMode::Prod, failing).await;
+        let resp = fix.dispatch_with_id("delivery-503").await;
+        assert_eq!(
+            resp.status(),
+            StatusCode::SERVICE_UNAVAILABLE,
+            "resolve_by_token outage must fail closed 503, not downgrade to 200"
         );
     }
 
