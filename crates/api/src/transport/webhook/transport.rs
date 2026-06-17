@@ -329,9 +329,11 @@ pub enum ActivationError {
 
 /// Generate a 32-character random hex nonce.
 ///
-/// 128 bits of entropy — enough to make nonce collisions
-/// impossible over the lifetime of any Nebula deployment. Uses
-/// `Uuid::new_v4` under the hood because uuid is already pulled in.
+/// 122 bits of entropy (`Uuid::new_v4` fixes 6 of its 128 bits for
+/// version/variant) — above the W3C ≥120-bit capability-URL bar and
+/// enough to make nonce collisions/guessing infeasible over the lifetime
+/// of any Nebula deployment. Uses `Uuid::new_v4` because uuid is already
+/// pulled in.
 fn generate_nonce() -> String {
     let uuid = Uuid::new_v4();
     let bytes = uuid.as_bytes();
