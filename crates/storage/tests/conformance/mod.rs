@@ -24,7 +24,8 @@ use std::sync::Arc;
 use nebula_core::PluginKey;
 use nebula_storage_port::dto::{
     CachedRecord, ControlCommand, ControlMsg, DispatchKind, JobDispatchMsg, JournalEntry,
-    NewExecution, TriggerDedupRow, WebhookActivationRecord, WorkflowRecord, WorkflowVersionRecord,
+    NewExecution, TriggerDedupRow, WebhookActivationRecord, WebhookMode, WorkflowRecord,
+    WorkflowVersionRecord,
 };
 use nebula_storage_port::store::{
     ControlQueue, ExecutionJournalReader, ExecutionStore, IdempotencyGuard, IdempotencyStore,
@@ -1447,18 +1448,19 @@ pub async fn assert_idempotency_store_cross_scope_isolated(backend: &dyn Backend
 /// Webhook activation upsert → resolve → deactivate, with tenant
 /// isolation: the same slug in a different tenant does not resolve, and a
 /// deactivated activation stops routing.
+///
+/// Also covers the ADR-0096 extended fields: safe-default round-trip
+/// (new fields default to `Test` / `None` / zero-sentinel) and full
+/// round-trip of `workflow_id`, `mode`, and `token_hash`.
 pub async fn assert_webhook_activation_and_scope(backend: &dyn Backend) {
     let store = backend.webhook_store().await;
     let s = scope_a();
+    // Use the constructor so the call site is future-proof against further
+    // `#[non_exhaustive]` field additions (ADR-0096 commit 1 PREREQ).
     store
         .upsert(
             &s,
-            WebhookActivationRecord {
-                trigger_id: "trg_1".into(),
-                scope: s.clone(),
-                slug: "deploy-hook".into(),
-                active: true,
-            },
+            WebhookActivationRecord::new("trg_1", s.clone(), "deploy-hook", true),
         )
         .await
         .expect("upsert");
@@ -1472,6 +1474,15 @@ pub async fn assert_webhook_activation_and_scope(backend: &dyn Backend) {
         resolved.trigger_id,
         "trg_1",
         "[{}] resolve returns the owning trigger",
+        backend.name()
+    );
+    // Safe-default proof: a row inserted without an explicit mode must
+    // resolve with `Test`.  If the schema default were `'prod'` this
+    // assertion would fail — proving the migration default is load-bearing.
+    assert_eq!(
+        resolved.mode,
+        WebhookMode::Test,
+        "[{}] default mode must be Test (safe-default invariant)",
         backend.name()
     );
 
@@ -1496,6 +1507,52 @@ pub async fn assert_webhook_activation_and_scope(backend: &dyn Backend) {
     assert!(
         after.is_none(),
         "[{}] a deactivated activation must not resolve",
+        backend.name()
+    );
+
+    // ── Extended-fields round-trip ────────────────────────────────────────
+    // Upsert a record with all three ADR-0096 fields set to non-default
+    // values and verify exact round-trip (no tautological `is_some()`).
+    let token = [0xde_u8; 32];
+    let mut extended = WebhookActivationRecord::new("trg_2", s.clone(), "prod-hook", true);
+    extended.workflow_id = Some("wf_abc".to_string());
+    extended.mode = WebhookMode::Prod;
+    extended.token_hash = token;
+    store.upsert(&s, extended).await.expect("upsert extended");
+
+    let got = store
+        .resolve(&s, "prod-hook")
+        .await
+        .expect("resolve extended")
+        .unwrap_or_else(|| panic!("[{}] extended activation must resolve", backend.name()));
+    assert_eq!(
+        got.workflow_id.as_deref(),
+        Some("wf_abc"),
+        "[{}] workflow_id must round-trip exactly",
+        backend.name()
+    );
+    assert_eq!(
+        got.mode,
+        WebhookMode::Prod,
+        "[{}] mode must round-trip exactly",
+        backend.name()
+    );
+    assert_eq!(
+        got.token_hash,
+        token,
+        "[{}] token_hash must round-trip exactly",
+        backend.name()
+    );
+
+    // Cross-tenant isolation is carried forward: `prod-hook` in scope_b
+    // must not resolve, even though scope_a has an active activation for it.
+    let cross_ext = store
+        .resolve(&scope_b(), "prod-hook")
+        .await
+        .expect("resolve cross-scope extended");
+    assert!(
+        cross_ext.is_none(),
+        "[{}] extended activation must not resolve across a tenant boundary",
         backend.name()
     );
 }
