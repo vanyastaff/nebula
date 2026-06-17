@@ -460,7 +460,7 @@ pub mod webhook_replay_rejection_reason {
 /// Reason labels for [`NEBULA_WEBHOOK_BOOTSTRAP_FAILURES_TOTAL`].
 pub mod webhook_bootstrap_failure_reason {
     /// Storage-layer error reading active activations (DB conn,
-    /// schema drift). Surfaced by `WebhookActivationRepo::list_active`.
+    /// schema drift). Surfaced by `WebhookActivationStore::list_all_active`.
     pub const STORAGE: &str = "storage";
     /// `triggers.config.webhook_activation` JSONB failed to decode.
     pub const DECODE: &str = "decode";
