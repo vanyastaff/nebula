@@ -354,10 +354,9 @@ pub enum ActivateAndPersistError {
     Activation(#[from] ActivationError),
     /// The durability upsert to the B-world port store failed.
     ///
-    /// The in-memory routing entry was already inserted at this point.
-    /// The handle is still usable for the current process lifetime; the
-    /// token simply will not survive a restart.  Callers may choose to
-    /// deactivate and surface an error to the API layer.
+    /// The in-memory routing entry was NOT inserted (or was rolled back):
+    /// `activate_and_persist` removes the routing-map entry before returning
+    /// this error so no orphaned live route exists without a durable row.
     #[error("failed to persist activation token: {0}")]
     Storage(#[from] nebula_storage_port::StorageError),
 }
@@ -399,14 +398,25 @@ pub struct PersistParams {
 /// 4. Returns the plaintext [`ActivationHandle`] (endpoint URL + context) to
 ///    the caller **exactly once**.  The plaintext nonce is not persisted.
 ///
+/// # Atomicity / ordering
+///
+/// The in-memory routing entry is inserted **before** the store upsert.
+/// If the upsert fails the routing entry is immediately removed so no
+/// orphaned live route exists without a durable row.  From the caller's
+/// perspective, on `Err` the in-memory map is clean (as if `activate` was
+/// never called) — the only side-effect is that `activate` consumed a
+/// freshly-generated `(trigger_uuid, nonce)` pair which is then discarded.
+///
 /// # Errors
 ///
 /// Returns [`ActivateAndPersistError::Activation`] if the transport's in-memory
 /// activation fails (effectively unreachable — duplicate nonce collision).
 ///
 /// Returns [`ActivateAndPersistError::Storage`] if the port store upsert fails.
-/// In this case the in-memory entry exists but the token is not durable.  The
-/// caller must decide whether to surface an error and deactivate.
+/// In this case the in-memory routing entry has been rolled back: the routing
+/// map is left in the same state as before this call.  The nonce is also
+/// discarded (not returned to the caller), preventing use of an un-persisted
+/// capability token.
 ///
 /// # Security
 ///
@@ -450,7 +460,14 @@ pub async fn activate_and_persist(
     record.token_hash = hash;
 
     // Step 4: upsert to the port store.
-    store.upsert(&scope, record).await?;
+    //
+    // On failure, roll back the in-memory routing entry so no orphaned live
+    // route exists without a durable row.  The DashMap remove is infallible,
+    // so persist-failure + rollback is always clean.
+    if let Err(err) = store.upsert(&scope, record).await {
+        transport.deactivate(&handle);
+        return Err(ActivateAndPersistError::Storage(err));
+    }
 
     tracing::debug!(
         target: "nebula::api::webhook::transport",
@@ -610,6 +627,148 @@ mod tests {
         assert!(
             transport.inner.routing.lookup(&key).is_some(),
             "in-memory routing map must have the entry after activate_and_persist"
+        );
+    }
+
+    // ── FIX B: persist-failure must leave no orphan in the routing map ────────
+
+    /// A `WebhookActivationStore` that always fails on `upsert`.
+    ///
+    /// Used to prove that `activate_and_persist` rolls back the in-memory
+    /// routing entry when the durability write fails.
+    #[derive(Debug)]
+    struct AlwaysFailingStore;
+
+    #[async_trait::async_trait]
+    impl WebhookActivationStore for AlwaysFailingStore {
+        async fn upsert(
+            &self,
+            _scope: &Scope,
+            _record: nebula_storage_port::dto::WebhookActivationRecord,
+        ) -> Result<(), nebula_storage_port::StorageError> {
+            Err(nebula_storage_port::StorageError::Connection(
+                "injected failure for test".to_string(),
+            ))
+        }
+
+        async fn resolve(
+            &self,
+            _scope: &Scope,
+            _slug: &str,
+        ) -> Result<
+            Option<nebula_storage_port::dto::WebhookActivationRecord>,
+            nebula_storage_port::StorageError,
+        > {
+            Ok(None)
+        }
+
+        async fn deactivate(
+            &self,
+            _scope: &Scope,
+            _trigger_id: &str,
+        ) -> Result<(), nebula_storage_port::StorageError> {
+            Ok(())
+        }
+
+        async fn resolve_by_token(
+            &self,
+            _token_hash: &[u8; 32],
+        ) -> Result<
+            Option<nebula_storage_port::dto::WebhookActivationRecord>,
+            nebula_storage_port::StorageError,
+        > {
+            Ok(None)
+        }
+
+        async fn list_all_active(
+            &self,
+        ) -> Result<
+            Vec<nebula_storage_port::dto::WebhookActivationRecord>,
+            nebula_storage_port::StorageError,
+        > {
+            Ok(vec![])
+        }
+    }
+
+    /// FIX B — persist failure leaves no orphan:
+    ///
+    /// When `store.upsert` fails, `activate_and_persist` must return `Err`
+    /// AND the in-memory routing map must have NO entry for the attempted
+    /// activation.  Callers never see a capability URL they could use.
+    #[tokio::test]
+    async fn persist_failure_rolls_back_routing_entry() {
+        let transport = WebhookTransport::new(WebhookTransportConfig::default());
+        let store = AlwaysFailingStore;
+
+        let result = activate_and_persist(
+            &transport,
+            &store,
+            PersistParams {
+                handler: noop_handler(),
+                action_config: WebhookConfig::default(),
+                ctx_template: ctx_template(),
+                trigger_id: "trigger-rollback-test".to_string(),
+                scope: test_scope(),
+                workflow_id: None,
+                mode: WebhookMode::Test,
+            },
+        )
+        .await;
+
+        // Must return Err(Storage(...)).
+        assert!(
+            result.is_err(),
+            "activate_and_persist must propagate the store upsert error"
+        );
+        assert!(
+            matches!(result.unwrap_err(), ActivateAndPersistError::Storage(_)),
+            "error must be Storage variant"
+        );
+
+        // The routing map must be empty — no orphaned live route.
+        assert_eq!(
+            transport.inner.routing.len(),
+            0,
+            "routing map must have no entries after a persist failure (rollback invariant)"
+        );
+    }
+
+    /// FIX B — happy path still works after the rollback refactor:
+    ///
+    /// When `store.upsert` succeeds, the routing entry is present and
+    /// the function returns `Ok`.
+    #[tokio::test]
+    async fn persist_success_leaves_routing_entry_intact() {
+        let transport = WebhookTransport::new(WebhookTransportConfig::default());
+        let store = InMemoryWebhookActivationStore::new();
+
+        let handle = activate_and_persist(
+            &transport,
+            &store,
+            PersistParams {
+                handler: noop_handler(),
+                action_config: WebhookConfig::default(),
+                ctx_template: ctx_template(),
+                trigger_id: "trigger-happy-path-b".to_string(),
+                scope: test_scope(),
+                workflow_id: None,
+                mode: WebhookMode::Test,
+            },
+        )
+        .await
+        .expect("activate_and_persist must succeed when store is available");
+
+        // Plaintext handle returned — endpoint URL is usable.
+        assert!(
+            handle.endpoint_url.as_str().contains("/webhooks/"),
+            "endpoint URL must be populated"
+        );
+
+        // Routing entry is present.
+        let key = WebhookKey::programmatic(handle.trigger_uuid, handle.nonce);
+        assert!(
+            transport.inner.routing.lookup(&key).is_some(),
+            "routing map must have the entry on successful persist"
         );
     }
 }
