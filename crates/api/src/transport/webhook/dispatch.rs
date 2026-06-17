@@ -240,10 +240,30 @@ pub(super) async fn dispatch_inner(
     // Fail-closed rule (inv #6): Prod-mode activations require `webhook-id`.
     // Missing header in Prod → 400 (sender must supply a delivery id).
     // Test mode / no-row → `event_id = None` is fine.
-    let event_id: Option<IdempotencyKey> = headers
+    // Bound the delivery-id length at the edge: an over-long `webhook-id`
+    // would flow into the dedup-key PK and surface as a backend-dependent
+    // failure (e.g. a Postgres btree index-row-too-large INSERT error → 5xx)
+    // instead of a clean rejection. 256 bytes is far above any real delivery
+    // id (Svix `msg_…`, Stripe `evt_…`, GitHub UUID are all < 64). An empty /
+    // whitespace-only value is treated as absent (the Prod fail-closed check
+    // below then requires a real id).
+    const MAX_WEBHOOK_ID_LEN: usize = 256;
+    let event_id: Option<IdempotencyKey> = match headers
         .get(&WEBHOOK_ID_HEADER)
         .and_then(|v| v.to_str().ok())
-        .map(|s| IdempotencyKey::new(s.trim()));
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        Some(s) if s.len() > MAX_WEBHOOK_ID_LEN => {
+            warn!(
+                "webhook: `webhook-id` header exceeds {MAX_WEBHOOK_ID_LEN} bytes; \
+                 rejecting (delivery id never legitimately this long)"
+            );
+            return (StatusCode::BAD_REQUEST, "webhook-id header too long").into_response();
+        },
+        Some(s) => Some(IdempotencyKey::new(s)),
+        None => None,
+    };
 
     if durable.is_some() && event_id.is_none() {
         // Prod row resolved but `webhook-id` absent — fail closed.
@@ -1010,6 +1030,21 @@ mod tests {
             resp.status(),
             StatusCode::BAD_REQUEST,
             "Prod-mode without webhook-id must be 400"
+        );
+    }
+
+    /// An over-long `webhook-id` header is rejected at the edge with a clean
+    /// 400, rather than flowing into the dedup-key PK and surfacing as a
+    /// backend-dependent 5xx (e.g. Postgres index-row-too-large).
+    #[tokio::test]
+    async fn prod_mode_oversized_webhook_id_returns_400() {
+        let fix = TestFixture::prod(WebhookMode::Prod).await;
+        let oversized = "x".repeat(300);
+        let resp = fix.dispatch_with_id(&oversized).await;
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "oversized webhook-id must be a clean 400, not a backend 5xx"
         );
     }
 
