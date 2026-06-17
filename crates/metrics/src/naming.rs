@@ -324,15 +324,17 @@ pub mod auth_oauth_provider {
 ///
 /// Labeled by `reason` (see [`webhook_signature_failure_reason`]). Low
 /// cardinality by design — the label set is a small closed set of
-/// static strings (currently six: `missing`, `invalid`,
+/// static strings (currently seven: `missing`, `invalid`,
 /// `missing_secret`, `timestamp_missing`, `timestamp_malformed`,
-/// `timestamp_out_of_window`), no per-trigger dimension. Any non-zero
-/// value is an operational signal worth dashboarding: a
+/// `timestamp_out_of_window`, `prod_unsigned`), no per-trigger dimension.
+/// Any non-zero value is an operational signal worth dashboarding: a
 /// `missing_secret` crossing means an action shipped with a
 /// `SignaturePolicy::Required` it did not populate; `missing` /
 /// `invalid` means a provider is mis-signing or a caller is probing
 /// the endpoint; `timestamp_*` indicates clock skew, replay attacks,
-/// or a misconfigured `timestamp_format`.
+/// or a misconfigured `timestamp_format`; `prod_unsigned` means a Prod
+/// activation row was registered without a `Required` signature policy
+/// (composition-root misconfiguration).
 pub const NEBULA_WEBHOOK_SIGNATURE_FAILURES_TOTAL: &str = "nebula_webhook_signature_failures_total";
 
 /// Reason labels for [`NEBULA_WEBHOOK_SIGNATURE_FAILURES_TOTAL`].
@@ -364,6 +366,14 @@ pub mod webhook_signature_failure_reason {
     /// outside the configured window (likely a replay attack or
     /// significant clock skew).
     pub const TIMESTAMP_OUT_OF_WINDOW: &str = "timestamp_out_of_window";
+    /// A Prod-mode activation resolved to `SignaturePolicy::OptionalAcceptUnsigned`
+    /// — the composition root failed to configure a secret. Returns 500 (operator
+    /// misconfiguration, not a caller fault).
+    ///
+    /// Distinct from `missing_secret` (which fires when `Required` has an empty
+    /// secret) so dashboards can separately track "wrong policy on Prod row" vs.
+    /// "right policy but no secret".
+    pub const PROD_UNSIGNED: &str = "prod_unsigned";
 }
 
 /// Counter: webhook requests entering the transport.

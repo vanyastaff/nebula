@@ -27,8 +27,8 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use nebula_action::{
-    ExecutionEmitter, IdempotencyKey, TriggerEvent, TriggerEventOutcome, WebhookHttpResponse,
-    WebhookRequest,
+    ExecutionEmitter, IdempotencyKey, SignaturePolicy, TriggerEvent, TriggerEventOutcome,
+    WebhookHttpResponse, WebhookRequest,
 };
 use nebula_core::NodeKey;
 use nebula_engine::DurableExecutionEmitter;
@@ -46,8 +46,8 @@ use tracing::{debug, warn};
 use super::{
     key::WebhookKey,
     signature::{
-        SignatureVerdict, enforce_signature, missing_secret_response, record_signature_failure,
-        signature_rejected_response,
+        SignatureVerdict, enforce_signature, missing_secret_response,
+        prod_requires_signature_response, record_signature_failure, signature_rejected_response,
     },
     token::token_hash,
     transport::DurableDispatchComponents,
@@ -322,12 +322,39 @@ pub(super) async fn dispatch_inner(
         },
     };
 
-    // 5.5. Signature enforcement. The `Required` default
-    // means an action that forgot to configure a secret trips a 500
-    // here; an action that explicitly opted into
-    // `OptionalAcceptUnsigned` passes through; everything else
-    // (hex / base64 / custom) runs through the existing constant-time
-    // primitives before the handler sees the request.
+    // 5.5. Signature enforcement.
+    //
+    // B2 split-brain guard: a Prod-mode row (durable dispatch will spawn)
+    // MUST NOT be verifiable under `OptionalAcceptUnsigned`.  An unsigned
+    // Prod activation is an operator/composition-root misconfiguration — it
+    // would let an unverified caller spawn durable executions.  Fail closed
+    // with 500 (same surface as `missing_secret`) so dashboards see it.
+    // `durable.is_some()` ⟺ Prod row that resolved to a durable target.
+    if durable.is_some()
+        && matches!(
+            entry.config.signature_policy(),
+            SignaturePolicy::OptionalAcceptUnsigned
+        )
+    {
+        warn!(
+            mode = "Prod",
+            "Prod-mode webhook: signature policy is OptionalAcceptUnsigned; \
+             Prod activations must use SignaturePolicy::Required — \
+             refusing to dispatch (composition-root misconfiguration)"
+        );
+        record_signature_failure(
+            &transport.inner.metrics,
+            webhook_signature_failure_reason::PROD_UNSIGNED,
+        );
+        return prod_requires_signature_response(uri.path());
+    }
+
+    // The `Required` default means an action that forgot to configure a
+    // secret trips a 500 here; an action that explicitly opted into
+    // `OptionalAcceptUnsigned` passes through (for non-Prod paths only —
+    // the Prod guard above already rejected Prod+unsigned); everything else
+    // (hex / base64 / Standard Webhooks / custom) runs through the existing
+    // constant-time primitives before the handler sees the request.
     match enforce_signature(
         entry.config.signature_policy(),
         &request,
@@ -780,12 +807,14 @@ mod tests {
     //!   is set per-test via `Arc<Mutex<TriggerEventOutcome>>`.
 
     use std::sync::Arc;
+    use std::time::SystemTime;
 
     use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, Uri};
+    use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
     use nebula_action::{
-        Action, ActionMetadata, SignaturePolicy, TriggerContext, TriggerEventOutcome,
-        TriggerHandler, WebhookAction, WebhookConfig, WebhookRequest, WebhookResponse,
-        WebhookTriggerAdapter,
+        Action, ActionMetadata, RequiredPolicy, SignaturePolicy, SignatureScheme, TriggerContext,
+        TriggerEventOutcome, TriggerHandler, WebhookAction, WebhookConfig, WebhookRequest,
+        WebhookResponse, WebhookTriggerAdapter, hmac_sha256_compute,
     };
     use nebula_core::{BaseContext, Dependencies, NodeKey, WorkflowId, action_key, node_key};
     use nebula_storage::inmem::{
@@ -807,11 +836,73 @@ mod tests {
         PersistParams, WebhookTransport, WebhookTransportConfig, activate_and_persist,
     };
 
+    // ── Standard Webhooks test signing ────────────────────────────────────────
+
+    /// HMAC key used by all Prod-mode test fixtures.
+    ///
+    /// Raw bytes — no `whsec_` prefix. The verify path operates on
+    /// already-decoded bytes (registration concern is out of scope here).
+    const TEST_SWH_SECRET: &[u8] = b"nebula-dispatch-test-secret";
+
+    /// Build the SWH `SignaturePolicy` used by Prod fixtures.
+    fn swh_required_policy() -> SignaturePolicy {
+        SignaturePolicy::Required(
+            RequiredPolicy::new()
+                .with_secret(TEST_SWH_SECRET)
+                .with_scheme(SignatureScheme::StandardWebhooks),
+        )
+    }
+
+    /// Compute a valid Standard Webhooks `webhook-signature` header value.
+    ///
+    /// `to_sign = "{msg_id}.{ts_secs}.{body}"`
+    fn sign_swh(msg_id: &str, ts_secs: u64, body: &[u8]) -> String {
+        let prefix = format!("{msg_id}.{ts_secs}.");
+        let mut content = Vec::with_capacity(prefix.len() + body.len());
+        content.extend_from_slice(prefix.as_bytes());
+        content.extend_from_slice(body);
+        format!(
+            "v1,{}",
+            B64.encode(hmac_sha256_compute(TEST_SWH_SECRET, &content))
+        )
+    }
+
+    /// Unix seconds for the current wall time — used when constructing
+    /// test requests so the signature is valid against `SystemClock`.
+    fn now_secs() -> u64 {
+        SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .expect("system time after epoch")
+            .as_secs()
+    }
+
+    /// Build a header map with `webhook-id`, `webhook-timestamp`, and a
+    /// valid `webhook-signature` for the given body.
+    fn swh_headers(msg_id: &str, body: &[u8]) -> HeaderMap {
+        let ts = now_secs();
+        let sig = sign_swh(msg_id, ts, body);
+        let mut h = HeaderMap::new();
+        h.insert(WEBHOOK_ID_HEADER, HeaderValue::from_str(msg_id).unwrap());
+        h.insert(
+            HeaderName::from_static("webhook-timestamp"),
+            HeaderValue::from_str(&ts.to_string()).unwrap(),
+        );
+        h.insert(
+            HeaderName::from_static("webhook-signature"),
+            HeaderValue::from_str(&sig).unwrap(),
+        );
+        h
+    }
+
     // ── TestWebhookAction ─────────────────────────────────────────────────────
 
     /// Minimal `WebhookAction` whose `handle_request` returns whatever
-    /// `outcome_cell` says.  Signature checking is disabled so tests can
-    /// send unsigned bodies.
+    /// `outcome_cell` says.
+    ///
+    /// The `config` method returns the caller-supplied `WebhookConfig`, which
+    /// carries the `SignaturePolicy` for the test.  Prod-mode fixtures supply
+    /// `SignaturePolicy::Required` (SWH); non-Prod / legacy fixtures may use
+    /// `OptionalAcceptUnsigned`.
     struct ConfigurableWebhookAction {
         outcome_cell: Arc<Mutex<TriggerEventOutcome>>,
     }
@@ -976,13 +1067,20 @@ mod tests {
                     Arc::clone(&version_store) as Arc<dyn WorkflowVersionStore>,
                 );
 
+            // Prod rows must carry `Required`+SWH (B2 split-brain guard).
+            // Test rows can remain unsigned for simplicity.
+            let sig_policy = if mode == WebhookMode::Prod {
+                swh_required_policy()
+            } else {
+                SignaturePolicy::OptionalAcceptUnsigned
+            };
+
             let handle = activate_and_persist(
                 &transport,
                 activation_store.as_ref(),
                 PersistParams {
                     handler,
-                    action_config: WebhookConfig::default()
-                        .with_signature_policy(SignaturePolicy::OptionalAcceptUnsigned),
+                    action_config: WebhookConfig::default().with_signature_policy(sig_policy),
                     ctx_template,
                     trigger_id: trigger_id.clone(),
                     scope: scope.clone(),
@@ -1036,19 +1134,55 @@ mod tests {
             self.exec_store.count(&self.scope, None).await.unwrap()
         }
 
+        /// Dispatch with a fully-signed SWH request including `webhook-id`.
+        ///
+        /// The body is `{}`.  The headers include `webhook-id`,
+        /// `webhook-timestamp` (current wall time), and a valid
+        /// `webhook-signature` computed with [`TEST_SWH_SECRET`].
         async fn dispatch_with_id(&self, delivery_id: &str) -> Response {
+            let body = b"{}";
+            let headers = swh_headers(delivery_id, body);
             dispatch_inner(
                 self.transport.clone(),
                 self.key(),
                 Method::POST,
                 Uri::from_static("http://localhost/webhooks/test"),
-                headers_with_delivery_id(delivery_id),
+                headers,
+                Bytes::from(body as &[u8]),
+            )
+            .await
+        }
+
+        /// Dispatch with `webhook-timestamp` + `webhook-signature` but WITHOUT
+        /// `webhook-id`.
+        ///
+        /// With StandardWebhooks, the absence of `webhook-id` means the
+        /// signed content cannot be constructed → `SignatureOutcome::Missing`
+        /// → 401 (not 400 as in the pre-B2 dedup-key guard).
+        async fn dispatch_without_id(&self) -> Response {
+            // Only timestamp + signature, no id — SWH will return Missing → 401.
+            let ts = now_secs();
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                HeaderName::from_static("webhook-timestamp"),
+                HeaderValue::from_str(&ts.to_string()).unwrap(),
+            );
+            // Omit webhook-signature too: no id → no canonical content → no sig.
+            dispatch_inner(
+                self.transport.clone(),
+                self.key(),
+                Method::POST,
+                Uri::from_static("http://localhost/webhooks/test"),
+                headers,
                 Bytes::from(b"{}" as &[u8]),
             )
             .await
         }
 
-        async fn dispatch_without_id(&self) -> Response {
+        /// Dispatch without ANY SWH headers.  For tests that expect the raw
+        /// behavior when neither id nor timestamp is present (e.g., Test-mode
+        /// routes with `OptionalAcceptUnsigned`).
+        async fn dispatch_bare(&self) -> Response {
             dispatch_inner(
                 self.transport.clone(),
                 self.key(),
@@ -1066,15 +1200,6 @@ mod tests {
     }
 
     // ── Test helpers ──────────────────────────────────────────────────────────
-
-    fn headers_with_delivery_id(id: &str) -> HeaderMap {
-        let mut h = HeaderMap::new();
-        h.insert(
-            WEBHOOK_ID_HEADER,
-            HeaderValue::from_str(id).expect("valid header value"),
-        );
-        h
-    }
 
     fn base_ctx(
         workflow_id: WorkflowId,
@@ -1111,13 +1236,14 @@ mod tests {
 
     // ── Test 1: Prod-mode Emit spawns exactly one execution ───────────────────
 
-    /// Prod-mode activation + `webhook-id` header → emitter is called.
-    /// Verify the response is 200 OK.
+    /// Prod-mode activation + valid SWH `webhook-id` header → emitter is
+    /// called. Verify the response is 200 OK and one execution was spawned.
     ///
-    /// This is the nominal happy-path test.  Removing the mode gate or the
-    /// `durable_dispatch` wiring would cause this to still return 200 (via
-    /// the fallthrough path) — the behavioral assertion is that we get a 200
-    /// AND the inbox was hit (which we indirectly verify in test 3 via dedup).
+    /// This is the nominal happy-path test (B1 + B2).  The fixture is wired
+    /// with `SignaturePolicy::Required(StandardWebhooks)` and the request
+    /// carries a valid HMAC signature.  Removing the mode gate, the
+    /// `durable_dispatch` wiring, OR the signature policy would break the
+    /// behavioral assertion (execution_count == 1 AND 200).
     #[tokio::test]
     async fn prod_mode_emit_returns_200() {
         let fix = TestFixture::prod(WebhookMode::Prod).await;
@@ -1125,7 +1251,7 @@ mod tests {
         assert_eq!(
             resp.status(),
             StatusCode::OK,
-            "Prod emit must return 200 (Emit + durable inbox)"
+            "Prod emit must return 200 (Emit + durable inbox, SWH-signed)"
         );
         assert_eq!(
             fix.execution_count().await,
@@ -1139,15 +1265,17 @@ mod tests {
     /// mode=Test → the durable path is NEVER taken even when `durable_dispatch`
     /// is wired.  The fallthrough in-memory path returns 200.
     ///
+    /// Test-mode activations use `OptionalAcceptUnsigned` (the B2 guard only
+    /// fires for Prod rows), so requests can be sent bare (no signature).
+    ///
     /// Red-on-revert: removing the `row.mode == WebhookMode::Prod` guard would
     /// cause Test-mode activations to take the durable path, which would
     /// fail (inbox claim) OR spawn unexpectedly.
     #[tokio::test]
     async fn test_mode_skips_durable_dispatch_returns_200() {
         let fix = TestFixture::prod(WebhookMode::Test).await;
-        // Test-mode: no durable_dispatch wired means the mode guard must
-        // correctly NOT set durable = Some(...), so the fallthrough path runs.
-        let resp = fix.dispatch_with_id("delivery-002").await;
+        // Test-mode: OptionalAcceptUnsigned → no B2 guard, no sig check.
+        let resp = fix.dispatch_bare().await;
         assert_eq!(
             resp.status(),
             StatusCode::OK,
@@ -1162,10 +1290,10 @@ mod tests {
 
     // ── Test 3: Same webhook-id twice → second is deduplicated ────────────────
 
-    /// Delivering the same `webhook-id` twice: the first call spawns the
-    /// execution; the second is a duplicate from the inbox's perspective.
-    /// Both should return 200 (the second call is acked just like the first —
-    /// the dedup is at the storage layer, the HTTP response is always 200).
+    /// Delivering the same `webhook-id` twice with valid SWH signatures: the
+    /// first call spawns the execution; the second is deduplicated by the inbox.
+    /// Both should return 200 (the dedup is at the storage layer; the HTTP ack
+    /// is always 200).
     ///
     /// This proves the dedup PK contract: `(scope, trigger_id, event_id)`.
     #[tokio::test]
@@ -1186,31 +1314,50 @@ mod tests {
         );
     }
 
-    // ── Test 4: Missing webhook-id in Prod → 400 ─────────────────────────────
+    // ── Test 4: Missing webhook-id in Prod → 401 (SWH requires id for sig) ────
 
-    /// Prod-mode activation without `webhook-id` header → fail-closed 400.
+    /// Prod-mode activation without `webhook-id` header → 401 (SWH signature
+    /// missing, because the id is part of the signed content and cannot be
+    /// constructed without it).
     ///
-    /// Red-on-revert: removing the `durable.is_some() && event_id.is_none()`
-    /// guard would cause Prod-mode dispatch to proceed with `event_id = None`,
-    /// which defeats the dedup invariant.
+    /// Pre-B2 behaviour: the dedup-key guard returned 400 ("missing
+    /// webhook-id").  Post-B2: the SWH signature check fires first at step
+    /// 5.5 — no id means no signed content → `SignatureOutcome::Missing` → 401.
+    /// The dedup invariant is still protected: a request that fails sig
+    /// verification never reaches the emit path.
+    ///
+    /// Red-on-revert (B1): removing `SignatureScheme::StandardWebhooks` from
+    /// the required-policy arm causes `verify_standard_webhooks` to be
+    /// unreachable; the request would fall through to the old path and return
+    /// a different status.
     #[tokio::test]
-    async fn prod_mode_missing_webhook_id_returns_400() {
+    async fn prod_mode_missing_webhook_id_returns_401() {
         let fix = TestFixture::prod(WebhookMode::Prod).await;
+        // dispatch_without_id: has webhook-timestamp but no webhook-id or
+        // webhook-signature → SWH can't build signed content → Missing → 401.
         let resp = fix.dispatch_without_id().await;
         assert_eq!(
             resp.status(),
-            StatusCode::BAD_REQUEST,
-            "Prod-mode without webhook-id must be 400"
+            StatusCode::UNAUTHORIZED,
+            "Prod-mode without webhook-id must return 401 (SWH signature missing)"
+        );
+        assert_eq!(
+            fix.execution_count().await,
+            0,
+            "sig-failed request must not spawn any execution"
         );
     }
 
     /// An over-long `webhook-id` header is rejected at the edge with a clean
-    /// 400, rather than flowing into the dedup-key PK and surfacing as a
-    /// backend-dependent 5xx (e.g. Postgres index-row-too-large).
+    /// 400 (overflow guard fires before signature enforcement — the id
+    /// extraction happens before `WebhookRequest::try_new` and signature
+    /// check, so the 400 is independent of SWH policy).
     #[tokio::test]
     async fn prod_mode_oversized_webhook_id_returns_400() {
         let fix = TestFixture::prod(WebhookMode::Prod).await;
         let oversized = "x".repeat(300);
+        // dispatch_with_id includes valid SWH headers, but the oversized-id
+        // guard (step 7) fires before signature enforcement (step 5.5).
         let resp = fix.dispatch_with_id(&oversized).await;
         assert_eq!(
             resp.status(),
@@ -1221,6 +1368,10 @@ mod tests {
 
     /// Two `webhook-id` headers → 400. `HeaderMap::get` would silently pick one,
     /// letting conflicting delivery ids bypass dedup; reject the ambiguity.
+    ///
+    /// The duplicate-id check fires at step 7 (header extraction), before
+    /// signature enforcement (step 5.5), so this returns 400 regardless of
+    /// the SWH policy.
     #[tokio::test]
     async fn duplicate_webhook_id_headers_returns_400() {
         let fix = TestFixture::prod(WebhookMode::Prod).await;
@@ -1248,22 +1399,34 @@ mod tests {
         );
     }
 
-    /// A Prod verification probe (`Skip` outcome) without a `webhook-id` must
-    /// NOT be rejected — the dedup key is only required for emitting outcomes
-    /// (Codex P2). Slack `url_verification` / Stripe `pending_webhook` return
-    /// Skip and carry no delivery id.
+    /// A Prod verification probe (`Skip` outcome) with a valid SWH signature
+    /// must return 200 — the dedup key (`webhook-id`) is present (SWH requires
+    /// it for signing), and the `Emit` guard fires only on `Emit` outcomes
+    /// (Codex P2).
     ///
-    /// Red-on-revert: the old pre-dispatch `durable && event_id.is_none()` →
-    /// 400 check would reject this probe with 400.
+    /// Post-B2: Prod rows require `Required`+SWH.  A verification probe from a
+    /// well-behaved provider will include a valid SWH signature; the probe's
+    /// `Skip` outcome does NOT hit the "missing webhook-id" dedup guard because
+    /// that guard is in the `Emit` arm of `dispatch_durable`, not before.
+    ///
+    /// Red-on-revert (B2): removing the split-brain guard and reverting to
+    /// `OptionalAcceptUnsigned` for Prod rows would cause the B2 500 to
+    /// disappear from the split-brain test (separate test below).
     #[tokio::test]
-    async fn prod_mode_skip_without_webhook_id_returns_200() {
+    async fn prod_mode_skip_with_signed_id_returns_200() {
         let fix = TestFixture::prod(WebhookMode::Prod).await;
         fix.set_outcome(TriggerEventOutcome::skip());
-        let resp = fix.dispatch_without_id().await;
+        // Use dispatch_with_id: provides webhook-id + timestamp + valid sig.
+        let resp = fix.dispatch_with_id("probe-001").await;
         assert_eq!(
             resp.status(),
             StatusCode::OK,
-            "Prod Skip without webhook-id is a verification probe, must pass (not 400)"
+            "Prod Skip with valid SWH signature must return 200 (no dedup-key guard on Skip)"
+        );
+        assert_eq!(
+            fix.execution_count().await,
+            0,
+            "Skip must spawn NO execution"
         );
     }
 
@@ -1289,7 +1452,7 @@ mod tests {
 
     // ── Test 5: EmitMany in Prod → 500 ────────────────────────────────────────
 
-    /// `EmitMany` outcome in Prod mode → fail-closed 500.
+    /// `EmitMany` outcome in Prod mode → fail-closed 500 (with valid SWH sig).
     ///
     /// One `event_id` cannot safely fan-out to N executions (dedup-collision
     /// data-loss bug). No first-party webhook action returns EmitMany; if one
@@ -1319,6 +1482,7 @@ mod tests {
     async fn prod_mode_skip_returns_200_no_spawn() {
         let fix = TestFixture::prod(WebhookMode::Prod).await;
         fix.set_outcome(TriggerEventOutcome::skip());
+        // Signed request with a valid webhook-id.
         let resp = fix.dispatch_with_id("delivery-005").await;
         assert_eq!(
             resp.status(),
@@ -1377,7 +1541,7 @@ mod tests {
             PersistParams {
                 handler,
                 action_config: WebhookConfig::default()
-                    .with_signature_policy(SignaturePolicy::OptionalAcceptUnsigned),
+                    .with_signature_policy(swh_required_policy()),
                 ctx_template,
                 trigger_id,
                 scope: scope.clone(),
@@ -1390,13 +1554,15 @@ mod tests {
         .expect("activate_and_persist must succeed");
 
         let key = WebhookKey::programmatic(handle.trigger_uuid, handle.nonce.clone());
+        let body = b"{}";
+        let headers = swh_headers("delivery-006", body);
         let resp = dispatch_inner(
             transport,
             key,
             Method::POST,
             Uri::from_static("http://localhost/webhooks/test"),
-            headers_with_delivery_id("delivery-006"),
-            Bytes::from(b"{}" as &[u8]),
+            headers,
+            Bytes::from(body as &[u8]),
         )
         .await;
 
@@ -1452,14 +1618,14 @@ mod tests {
                 Arc::clone(&version_store) as Arc<dyn WorkflowVersionStore>,
             );
 
-        // Activation row registered under scope_a.
+        // Activation row registered under scope_a, with SWH policy (Prod).
         let handle = activate_and_persist(
             &transport,
             activation_store.as_ref(),
             PersistParams {
                 handler,
                 action_config: WebhookConfig::default()
-                    .with_signature_policy(SignaturePolicy::OptionalAcceptUnsigned),
+                    .with_signature_policy(swh_required_policy()),
                 ctx_template: ctx_template_a,
                 trigger_id: trigger_id.clone(),
                 scope: scope_a.clone(),
@@ -1487,13 +1653,15 @@ mod tests {
             .expect("version create");
 
         let key = WebhookKey::programmatic(handle.trigger_uuid, handle.nonce.clone());
+        let body = b"{}";
+        let headers = swh_headers("delivery-007", body);
         let resp = dispatch_inner(
             transport,
             key,
             Method::POST,
             Uri::from_static("http://localhost/webhooks/test"),
-            headers_with_delivery_id("delivery-007"),
-            Bytes::from(b"{}" as &[u8]),
+            headers,
+            Bytes::from(body as &[u8]),
         )
         .await;
 
@@ -1782,6 +1950,189 @@ mod tests {
             transport.inner.tenant_rate_limiter.is_some(),
             "with_durable_dispatch must install per-tenant tenant_rate_limiter even when \
              config.tenant_rate_limit_per_minute is None (structural guarantee)"
+        );
+    }
+
+    // ── B1: SWH tampered body → 401 ──────────────────────────────────────────
+
+    /// A Prod request with a valid SWH signature over the ORIGINAL body, but
+    /// the body has been tampered with in transit → 401 (SignatureInvalid).
+    ///
+    /// Red-on-revert (B1): removing `SignatureScheme::StandardWebhooks` from
+    /// `verify_with` reverts to the default `Sha256Hex` scheme, which checks a
+    /// different header and different content — the tampered body would slip
+    /// through whatever the routing-entry config says.
+    #[tokio::test]
+    async fn prod_mode_swh_tampered_body_returns_401() {
+        let fix = TestFixture::prod(WebhookMode::Prod).await;
+
+        let msg_id = "msg-tamper-001";
+        let ts = now_secs();
+        let original_body = b"{\"original\":true}";
+        let tampered_body = b"{\"tampered\":true}";
+
+        // Sign over the ORIGINAL body.
+        let sig = sign_swh(msg_id, ts, original_body);
+
+        // But send the TAMPERED body.
+        let mut headers = HeaderMap::new();
+        headers.insert(WEBHOOK_ID_HEADER, HeaderValue::from_str(msg_id).unwrap());
+        headers.insert(
+            HeaderName::from_static("webhook-timestamp"),
+            HeaderValue::from_str(&ts.to_string()).unwrap(),
+        );
+        headers.insert(
+            HeaderName::from_static("webhook-signature"),
+            HeaderValue::from_str(&sig).unwrap(),
+        );
+
+        let resp = dispatch_inner(
+            fix.transport.clone(),
+            fix.key(),
+            Method::POST,
+            Uri::from_static("http://localhost/webhooks/test"),
+            headers,
+            Bytes::from(tampered_body as &[u8]),
+        )
+        .await;
+
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "tampered body with valid sig (over original) must return 401"
+        );
+        assert_eq!(
+            fix.execution_count().await,
+            0,
+            "tampered-body request must not spawn any execution"
+        );
+    }
+
+    // ── B2: Split-brain guard — Prod + OptionalAcceptUnsigned → 500 ──────────
+
+    /// A Prod-mode activation whose **in-memory routing entry** carries
+    /// `SignaturePolicy::OptionalAcceptUnsigned` → 500 (misconfiguration
+    /// detected at dispatch time, no execution spawned).
+    ///
+    /// This is the B2 split-brain guard: `durable.is_some()` (Prod row that
+    /// will spawn) AND `OptionalAcceptUnsigned` is a composition-root
+    /// misconfiguration.  The invariant is enforced at the transport layer,
+    /// not only at activation time, so a stale in-memory routing entry cannot
+    /// silently downgrade a durable Prod path to unsigned acceptance.
+    ///
+    /// RED-on-revert: removing the B2 guard (the `if durable.is_some() &&
+    /// matches!(…OptionalAcceptUnsigned)` block in `dispatch_inner`) causes the
+    /// unsigned request to pass sig enforcement (`OptionalAcceptUnsigned →
+    /// Pass`) and the action to emit, materializing an execution.  The
+    /// `execution_count == 1` assertion below FAILS → test is RED.
+    #[tokio::test]
+    async fn prod_unsigned_policy_returns_500_and_spawns_nothing() {
+        // Build a Prod-mode fixture that DELIBERATELY uses OptionalAcceptUnsigned.
+        // This is the misconfiguration scenario: the activation row is Prod but
+        // the in-memory routing entry's action_config has no sig policy.
+        let scope = Scope::new("test-org", "test-ws");
+        let workflow_id = WorkflowId::new();
+        let trigger_id_key = node_key!("webhook_trigger");
+        let trigger_id = trigger_id_key.as_str().to_string();
+
+        let exec_store = InMemoryExecutionStore::new();
+        let dedup = Arc::new(InMemoryTriggerDedupInbox::new(&exec_store));
+        let exec_store = Arc::new(exec_store);
+        let version_store = Arc::new(InMemoryWorkflowVersionStore::new());
+        let activation_store: Arc<dyn WebhookActivationStore> =
+            Arc::new(InMemoryWebhookActivationStore::new());
+
+        let outcome_cell = Arc::new(Mutex::new(TriggerEventOutcome::emit(json!({"ok": true}))));
+        let handler: Arc<dyn TriggerHandler> =
+            Arc::new(WebhookTriggerAdapter::new(ConfigurableWebhookAction {
+                outcome_cell: Arc::clone(&outcome_cell),
+            }));
+        let ctx_template = base_ctx(workflow_id, trigger_id_key);
+        handler.start(&ctx_template).await.expect("handler start");
+
+        let transport = WebhookTransport::new(WebhookTransportConfig::default())
+            .with_activation_store(Arc::clone(&activation_store))
+            .with_durable_dispatch(
+                dedup as Arc<dyn TriggerDedupInbox>,
+                WebhookTransport::default_resolver(),
+                Arc::clone(&version_store) as Arc<dyn WorkflowVersionStore>,
+            );
+
+        // Deliberately misconfiguged: Prod mode row + OptionalAcceptUnsigned.
+        let handle = activate_and_persist(
+            &transport,
+            activation_store.as_ref(),
+            PersistParams {
+                handler,
+                action_config: WebhookConfig::default()
+                    .with_signature_policy(SignaturePolicy::OptionalAcceptUnsigned),
+                ctx_template,
+                trigger_id: trigger_id.clone(),
+                scope: scope.clone(),
+                workflow_id: Some(workflow_id.to_string()),
+                mode: WebhookMode::Prod, // Prod row — durable path will be taken
+            },
+        )
+        .await
+        .expect("activate_and_persist must succeed");
+
+        // Publish a valid workflow definition (so if the guard were missing,
+        // the emit would succeed — proving the guard is what stops it).
+        let def = minimal_workflow_def(workflow_id, trigger_id);
+        version_store
+            .create(
+                &scope,
+                WorkflowVersionRecord {
+                    workflow_id: workflow_id.to_string(),
+                    number: 1,
+                    published: true,
+                    pinned: false,
+                    definition: serde_json::to_value(&def).unwrap(),
+                },
+            )
+            .await
+            .expect("version store create");
+
+        let key = WebhookKey::programmatic(handle.trigger_uuid, handle.nonce.clone());
+
+        // Request carries `webhook-id` (satisfying the dedup-key requirement in
+        // `dispatch_durable`) but NO signature (correct for `OptionalAcceptUnsigned`
+        // — no sig is required when that policy is active).
+        //
+        // Why `webhook-id` is mandatory here: without it the request hits the
+        // 400-missing-dedup-key guard in `dispatch_durable`, and `execution_count`
+        // stays 0 on revert for the wrong reason — masking the B2 spawn-prevention
+        // property.  With `webhook-id` present, on revert: `OptionalAcceptUnsigned`
+        // → sig-enforcement Pass → handler emits → `do_emit_prod` spawns →
+        // `execution_count == 1` → the count assertion below goes RED.
+        let mut headers_with_id = HeaderMap::new();
+        headers_with_id.insert(
+            WEBHOOK_ID_HEADER,
+            HeaderValue::from_static("b2-revert-probe-001"),
+        );
+        let resp = dispatch_inner(
+            transport,
+            key,
+            Method::POST,
+            Uri::from_static("http://localhost/webhooks/test"),
+            headers_with_id,
+            Bytes::from(b"{}" as &[u8]),
+        )
+        .await;
+
+        // Count checked FIRST so both assertions are visible in revert runs.
+        // RED-on-revert: without B2, `OptionalAcceptUnsigned`→Pass, handler
+        // emits, `do_emit_prod` materializes one execution → count == 1 → FAIL.
+        assert_eq!(
+            exec_store.count(&scope, None).await.unwrap(),
+            0,
+            "B2 guard must prevent ANY execution from being spawned \
+             (RED-on-revert: execution_count becomes 1 without the guard)"
+        );
+        assert_eq!(
+            resp.status(),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Prod row with OptionalAcceptUnsigned must return 500 (B2 split-brain guard)"
         );
     }
 }
