@@ -25,7 +25,7 @@ use std::sync::Arc;
 use nebula_core::id::ExecutionId;
 use nebula_execution::ExecutionStatus;
 use nebula_orchestrator::{ExecutionSink, ExecutionSinkError};
-use nebula_storage_port::{dto::JobDispatchMsg, store::ExecutionStore};
+use nebula_storage_port::{Scope, dto::JobDispatchMsg, store::ExecutionStore};
 
 use crate::{WorkflowEngine, error::EngineError};
 
@@ -61,7 +61,12 @@ impl EngineExecutionSink {
     /// with via [`WorkflowEngine::with_execution_stores`] so the idempotency
     /// read and the engine's internal CAS observe the same row.
     ///
+    /// The idempotency reads performed by this sink use the `scope` carried in
+    /// each [`JobDispatchMsg`] — the same scope the emitter used when it
+    /// persisted the `Created` row — rather than a global placeholder.
+    ///
     /// [`WorkflowEngine::with_execution_stores`]: crate::WorkflowEngine::with_execution_stores
+    /// [`JobDispatchMsg`]: nebula_storage_port::dto::JobDispatchMsg
     #[must_use]
     pub fn new(engine: Arc<WorkflowEngine>, execution: Arc<dyn ExecutionStore>) -> Self {
         Self { engine, execution }
@@ -69,14 +74,20 @@ impl EngineExecutionSink {
 
     /// Read the persisted [`ExecutionStatus`] for idempotency, returning
     /// `None` if the row does not exist.
+    ///
+    /// `scope` must be the scope the emitter used when it wrote the `Created`
+    /// row — i.e. the [`Scope`] carried in the [`JobDispatchMsg`] — so the
+    /// read addresses the same tenant partition as the original write.
+    ///
+    /// [`JobDispatchMsg`]: nebula_storage_port::dto::JobDispatchMsg
     async fn read_status(
         &self,
+        scope: &Scope,
         execution_id: ExecutionId,
     ) -> Result<Option<ExecutionStatus>, ExecutionSinkError> {
-        let scope = crate::store_seam::engine_scope();
         let json = self
             .execution
-            .get(&scope, &execution_id.to_string())
+            .get(scope, &execution_id.to_string())
             .await
             .map_err(|e| {
                 ExecutionSinkError::Internal(format!(
@@ -106,7 +117,15 @@ impl EngineExecutionSink {
     /// Maps [`EngineError::Leased`] to `Ok(())` (sibling runner already owns
     /// the dispatch; we should not mark the row Failed) and re-checks terminal
     /// status before surfacing other engine errors as `Internal`.
-    async fn drive(&self, execution_id: ExecutionId) -> Result<(), ExecutionSinkError> {
+    ///
+    /// `scope` is threaded to [`Self::read_status`] for the last-ditch
+    /// idempotency re-read so it addresses the same tenant partition as the
+    /// initial read.
+    async fn drive(
+        &self,
+        scope: &Scope,
+        execution_id: ExecutionId,
+    ) -> Result<(), ExecutionSinkError> {
         match self.engine.resume_execution(execution_id).await {
             Ok(_) => Ok(()),
             // Concurrent dispatcher already holds the lease — the canonical
@@ -117,7 +136,7 @@ impl EngineExecutionSink {
                 // Last-ditch idempotency guard: re-read in case a sibling
                 // driver beat us to terminal state between our initial read and
                 // the engine's own `get_state` inside `resume_execution`.
-                if let Ok(Some(status)) = self.read_status(execution_id).await
+                if let Ok(Some(status)) = self.read_status(scope, execution_id).await
                     && (status.is_terminal() || matches!(status, ExecutionStatus::Cancelling))
                 {
                     return Ok(());
@@ -149,7 +168,7 @@ impl ExecutionSink for EngineExecutionSink {
             ))
         })?;
 
-        match self.read_status(execution_id).await? {
+        match self.read_status(&msg.scope, execution_id).await? {
             None => Err(ExecutionSinkError::Rejected(format!(
                 "execution {execution_id} not found — start command orphaned"
             ))),
@@ -164,7 +183,7 @@ impl ExecutionSink for EngineExecutionSink {
                 | ExecutionStatus::TimedOut,
             ) => Ok(()),
             Some(ExecutionStatus::Created | ExecutionStatus::Paused) => {
-                self.drive(execution_id).await
+                self.drive(&msg.scope, execution_id).await
             },
         }
     }
