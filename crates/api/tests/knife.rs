@@ -531,14 +531,13 @@ async fn knife_step3_engine_dispatches_start_end_to_end() {
     );
 
     // `AppState` stores **raw** port handles and applies the per-request
-    // tenant scope in its accessors; the engine still calls its handles
-    // with the internal `engine_scope()` placeholder (a separate, tracked
-    // follow-up — see storage port migration "Known follow-up: engine per-execution
-    // tenant scoping"). Wrap the engine-side handles in `nebula-tenancy`
-    // decorators bound to `knife_scope()` (= `port_scope()`, the scope
-    // the API derives and this test seeded the workflow/execution under)
-    // so the decorator substitutes the engine's scope and engine reads,
-    // the API-enqueued `Start`, and the seeded rows all key on the same
+    // tenant scope in its accessors; the engine now threads the real
+    // per-message tenant `Scope` through `resume_execution` (the
+    // `engine_scope()` placeholder was deleted). Wrap the engine-side
+    // handles in `nebula-tenancy` decorators bound to `knife_scope()`
+    // (= `port_scope()`, the scope the API derives and this test seeded
+    // the workflow/execution under) so the decorator binds engine reads,
+    // the API-enqueued `Start`, and the seeded rows to the same
     // tenant. The echo node never checkpoints or replays, so a fresh
     // in-memory checkpoint/idempotency pair suffices for the two
     // `ExecutionStores` fields `AppState` does not expose.

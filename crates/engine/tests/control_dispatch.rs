@@ -37,8 +37,8 @@ use nebula_workflow::{
 use tokio::sync::Notify;
 
 /// Bundled port adapters for one shared in-memory tenant (mirrors the
-/// in-source `TestStores` pattern). The engine threads the fixed
-/// `engine_scope()` placeholder, so the raw adapters behave as one tenant.
+/// in-source `TestStores` pattern). All store calls use `single_tenant_scope()`
+/// so the raw adapters behave as one coherent tenant.
 #[derive(Clone)]
 struct DispatchStores {
     execution: Arc<InMemoryExecutionStore>,
@@ -94,7 +94,7 @@ impl DispatchStores {
     async fn save_workflow(&self, wf: &WorkflowDefinition) {
         self.versions
             .create(
-                &nebula_engine::store_seam::engine_scope(),
+                &nebula_engine::store_seam::single_tenant_scope(),
                 WorkflowVersionRecord {
                     workflow_id: wf.id.to_string(),
                     number: 0,
@@ -287,7 +287,7 @@ impl Harness {
         self.stores
             .execution
             .create(
-                &nebula_engine::store_seam::engine_scope(),
+                &nebula_engine::store_seam::single_tenant_scope(),
                 &execution_id.to_string(),
                 &workflow_id.to_string(),
                 state_json,
@@ -326,7 +326,10 @@ impl Harness {
         let record = self
             .stores
             .execution
-            .get(&nebula_engine::store_seam::engine_scope(), &id.to_string())
+            .get(
+                &nebula_engine::store_seam::single_tenant_scope(),
+                &id.to_string(),
+            )
             .await
             .unwrap()
             .expect("execution exists");
@@ -367,7 +370,10 @@ async fn dispatch_start_drives_created_execution_to_completion() {
 
     harness
         .dispatch
-        .dispatch_start(execution_id)
+        .dispatch_start(
+            &nebula_engine::store_seam::single_tenant_scope(),
+            execution_id,
+        )
         .await
         .expect("dispatch_start succeeds");
 
@@ -395,7 +401,14 @@ async fn dispatch_start_is_idempotent_on_redelivery() {
         .persist_created_execution(workflow_id, serde_json::json!(42))
         .await;
 
-    harness.dispatch.dispatch_start(execution_id).await.unwrap();
+    harness
+        .dispatch
+        .dispatch_start(
+            &nebula_engine::store_seam::single_tenant_scope(),
+            execution_id,
+        )
+        .await
+        .unwrap();
     assert_eq!(harness.action_count.load(Ordering::SeqCst), 1);
     assert_eq!(
         harness.status(execution_id).await,
@@ -406,7 +419,10 @@ async fn dispatch_start_is_idempotent_on_redelivery() {
     // status and short-circuit; the engine must not be entered a second time.
     harness
         .dispatch
-        .dispatch_start(execution_id)
+        .dispatch_start(
+            &nebula_engine::store_seam::single_tenant_scope(),
+            execution_id,
+        )
         .await
         .expect("redelivered Start is idempotent");
 
@@ -431,7 +447,10 @@ async fn dispatch_resume_drives_created_execution_to_completion() {
 
     harness
         .dispatch
-        .dispatch_resume(execution_id)
+        .dispatch_resume(
+            &nebula_engine::store_seam::single_tenant_scope(),
+            execution_id,
+        )
         .await
         .expect("dispatch_resume succeeds");
 
@@ -454,14 +473,20 @@ async fn dispatch_resume_is_idempotent_on_completed_execution() {
 
     harness
         .dispatch
-        .dispatch_resume(execution_id)
+        .dispatch_resume(
+            &nebula_engine::store_seam::single_tenant_scope(),
+            execution_id,
+        )
         .await
         .unwrap();
     assert_eq!(harness.action_count.load(Ordering::SeqCst), 1);
 
     harness
         .dispatch
-        .dispatch_resume(execution_id)
+        .dispatch_resume(
+            &nebula_engine::store_seam::single_tenant_scope(),
+            execution_id,
+        )
         .await
         .expect("second resume is idempotent");
 
@@ -485,7 +510,10 @@ async fn dispatch_restart_drives_created_execution_to_completion() {
 
     harness
         .dispatch
-        .dispatch_restart(execution_id)
+        .dispatch_restart(
+            &nebula_engine::store_seam::single_tenant_scope(),
+            execution_id,
+        )
         .await
         .expect("dispatch_restart on a Created execution drives it to completion");
 
@@ -510,7 +538,14 @@ async fn dispatch_restart_rejects_terminal_execution() {
         .await;
 
     // Drive it to Completed first.
-    harness.dispatch.dispatch_start(execution_id).await.unwrap();
+    harness
+        .dispatch
+        .dispatch_start(
+            &nebula_engine::store_seam::single_tenant_scope(),
+            execution_id,
+        )
+        .await
+        .unwrap();
     assert_eq!(
         harness.status(execution_id).await,
         ExecutionStatus::Completed
@@ -521,7 +556,10 @@ async fn dispatch_restart_rejects_terminal_execution() {
     // support that yet — the dispatch must reject so operators can see the gap.
     let err = harness
         .dispatch
-        .dispatch_restart(execution_id)
+        .dispatch_restart(
+            &nebula_engine::store_seam::single_tenant_scope(),
+            execution_id,
+        )
         .await
         .expect_err("restart of terminal execution rejects for A2");
     match err {
@@ -551,7 +589,7 @@ async fn dispatch_start_rejects_nonexistent_execution() {
 
     let err = harness
         .dispatch
-        .dispatch_start(orphan)
+        .dispatch_start(&nebula_engine::store_seam::single_tenant_scope(), orphan)
         .await
         .expect_err("missing execution rejects");
     match err {
@@ -584,7 +622,14 @@ async fn dispatch_cancel_aborts_running_execution() {
     // Spawn the engine on a separate task so the test thread can drive the
     // `Cancel` dispatch while the frontier loop is live.
     let engine = Arc::clone(&harness.engine);
-    let run_handle = tokio::spawn(async move { engine.resume_execution(execution_id).await });
+    let run_handle = tokio::spawn(async move {
+        engine
+            .resume_execution(
+                &nebula_engine::store_seam::single_tenant_scope(),
+                execution_id,
+            )
+            .await
+    });
 
     // Wait for the slow handler to confirm it entered the `select!` — the
     // frontier loop is now observing the cancel token.
@@ -596,7 +641,10 @@ async fn dispatch_cancel_aborts_running_execution() {
     // handler exits via `ActionError::Cancelled`, frontier loop tears down.
     harness
         .dispatch
-        .dispatch_cancel(execution_id)
+        .dispatch_cancel(
+            &nebula_engine::store_seam::single_tenant_scope(),
+            execution_id,
+        )
         .await
         .expect("dispatch_cancel succeeds");
 
@@ -657,7 +705,14 @@ async fn dispatch_cancel_is_idempotent_on_terminal() {
         .await;
 
     // Drive the run to Completed first.
-    harness.dispatch.dispatch_start(execution_id).await.unwrap();
+    harness
+        .dispatch
+        .dispatch_start(
+            &nebula_engine::store_seam::single_tenant_scope(),
+            execution_id,
+        )
+        .await
+        .unwrap();
     assert_eq!(
         harness.status(execution_id).await,
         ExecutionStatus::Completed
@@ -670,7 +725,10 @@ async fn dispatch_cancel_is_idempotent_on_terminal() {
     // re-dispatched. The return value is `Ok(())`.
     harness
         .dispatch
-        .dispatch_cancel(execution_id)
+        .dispatch_cancel(
+            &nebula_engine::store_seam::single_tenant_scope(),
+            execution_id,
+        )
         .await
         .expect("re-delivered Cancel on terminal execution is Ok");
 
@@ -718,7 +776,10 @@ async fn dispatch_cancel_ok_when_execution_not_held_locally() {
 
     harness
         .dispatch
-        .dispatch_cancel(execution_id)
+        .dispatch_cancel(
+            &nebula_engine::store_seam::single_tenant_scope(),
+            execution_id,
+        )
         .await
         .expect("cross-runner Cancel is Ok — no local token is not an error");
 
@@ -739,7 +800,7 @@ async fn dispatch_cancel_rejects_nonexistent_execution() {
 
     let err = harness
         .dispatch
-        .dispatch_cancel(orphan)
+        .dispatch_cancel(&nebula_engine::store_seam::single_tenant_scope(), orphan)
         .await
         .expect_err("missing execution rejects");
     match err {
@@ -755,6 +816,72 @@ async fn dispatch_cancel_rejects_nonexistent_execution() {
     }
 }
 
+/// Invariant #7 — fail-closed cross-tenant isolation on the CONTROL-DISPATCH
+/// path (`EngineControlDispatch::read_status` → `dispatch_start`).
+///
+/// This is the symmetric companion to `cross_tenant_dispatch_is_rejected` in
+/// `execution_sink.rs`, which covers the orchestrator-dispatch path.
+///
+/// The row is seeded under `single_tenant_scope()` = `("nebula","nebula")`,
+/// the exact value the old `engine_scope()` constant returned. A `dispatch_start`
+/// call carrying `scope_b = ("wsB","orgB")` is then issued.
+///
+/// **Why this is RED on the old `read_status` (constant scope):**
+/// `read_status` calls `self.execution.get(single_tenant_scope(), id)` — the row
+/// IS there, so `Some(Created)` is returned. The method then calls `drive`, which
+/// calls `engine.resume_execution(single_tenant_scope(), id)`. The harness has a
+/// full workflow store attached, so the engine runs the workflow and returns `Ok`.
+/// The overall dispatch returns `Ok(())` — NOT `Rejected`. The assertion
+/// `expect_err("cross-tenant dispatch must be rejected")` therefore panics → RED.
+///
+/// **Why this is GREEN on the new `read_status` (per-message scope):**
+/// `read_status` calls `self.execution.get(scope_b, id)`. The store holds no row
+/// under `("wsB","orgB")` → `None` → `Rejected("… not found …")` immediately,
+/// never reaching `drive` → assertion passes → GREEN.
+#[tokio::test]
+async fn cross_tenant_control_dispatch_is_rejected() {
+    use nebula_storage_port::Scope;
+
+    let harness = Harness::new().await;
+
+    // Seed a workflow definition and execution row under single_tenant_scope().
+    // This is the SAME value the old engine_scope() constant returned, so the
+    // old code's read_status finds the row and proceeds to drive the workflow —
+    // returning Ok(()) instead of Rejected (see doc comment above).
+    let workflow_id = harness.persist_echo_workflow().await;
+    let execution_id = harness
+        .persist_created_execution(workflow_id, serde_json::json!("cross-tenant"))
+        .await;
+
+    // Deliver dispatch_start under a DIFFERENT tenant scope.
+    let scope_b = Scope::new("wsB", "orgB");
+    let err = harness
+        .dispatch
+        .dispatch_start(&scope_b, execution_id)
+        .await
+        .expect_err("cross-tenant dispatch must be rejected");
+
+    // New code: read_status reads under scope_b → None → Rejected.
+    // Old code: read_status reads under ("nebula","nebula") → finds the row →
+    //   drive → resume_execution → Ok(()) — NOT Rejected → RED.
+    match err {
+        ControlDispatchError::Rejected(msg) => {
+            assert!(
+                msg.contains("not found"),
+                "rejection message must name the missing row, got: {msg}"
+            );
+        },
+        other => panic!("expected Rejected, got {other:?}"),
+    }
+
+    // No workflow action was dispatched — the engine was never entered.
+    assert_eq!(
+        harness.action_count.load(Ordering::SeqCst),
+        0,
+        "cross-tenant rejection must not dispatch any action"
+    );
+}
+
 /// `Terminate` is a synonym for `Cancel` until a forced-shutdown path is
 /// wired ( and the module doc). Same idempotency / orphan /
 /// cross-runner contracts apply — this smoke test just asserts the
@@ -767,7 +894,7 @@ async fn dispatch_terminate_behaves_like_cancel() {
     // Orphan -> Rejected (same code path as dispatch_cancel).
     let err = harness
         .dispatch
-        .dispatch_terminate(orphan)
+        .dispatch_terminate(&nebula_engine::store_seam::single_tenant_scope(), orphan)
         .await
         .expect_err("orphan terminate rejects");
     assert!(matches!(err, ControlDispatchError::Rejected(_)));
@@ -777,14 +904,24 @@ async fn dispatch_terminate_behaves_like_cancel() {
     let execution_id = harness
         .persist_created_execution(workflow_id, serde_json::json!("t"))
         .await;
-    harness.dispatch.dispatch_start(execution_id).await.unwrap();
+    harness
+        .dispatch
+        .dispatch_start(
+            &nebula_engine::store_seam::single_tenant_scope(),
+            execution_id,
+        )
+        .await
+        .unwrap();
     assert_eq!(
         harness.status(execution_id).await,
         ExecutionStatus::Completed
     );
     harness
         .dispatch
-        .dispatch_terminate(execution_id)
+        .dispatch_terminate(
+            &nebula_engine::store_seam::single_tenant_scope(),
+            execution_id,
+        )
         .await
         .expect("terminal terminate is Ok");
 }

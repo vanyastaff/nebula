@@ -383,6 +383,7 @@ async fn registrars_do_not_regress_dispatch() {
 
     let result = engine
         .execute_workflow(
+            &nebula_engine::store_seam::single_tenant_scope(),
             &wf,
             serde_json::json!({ "ok": true }),
             ExecutionBudget::default(),

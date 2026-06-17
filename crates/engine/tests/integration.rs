@@ -274,7 +274,12 @@ async fn engine_and_runtime_share_metrics_registry() {
     );
 
     let _result = engine
-        .execute_workflow(&wf, serde_json::json!("hi"), ExecutionBudget::default())
+        .execute_workflow(
+            &nebula_engine::store_seam::single_tenant_scope(),
+            &wf,
+            serde_json::json!("hi"),
+            ExecutionBudget::default(),
+        )
         .await
         .unwrap();
 
@@ -317,7 +322,12 @@ async fn linear_pipeline_data_flows_through() {
     );
 
     let result = engine
-        .execute_workflow(&wf, serde_json::json!(5), ExecutionBudget::default())
+        .execute_workflow(
+            &nebula_engine::store_seam::single_tenant_scope(),
+            &wf,
+            serde_json::json!(5),
+            ExecutionBudget::default(),
+        )
         .await
         .unwrap();
 
@@ -353,7 +363,12 @@ async fn fan_out_parallel_execution() {
     );
 
     let result = engine
-        .execute_workflow(&wf, serde_json::json!(7), ExecutionBudget::default())
+        .execute_workflow(
+            &nebula_engine::store_seam::single_tenant_scope(),
+            &wf,
+            serde_json::json!(7),
+            ExecutionBudget::default(),
+        )
         .await
         .unwrap();
 
@@ -394,7 +409,12 @@ async fn diamond_merge_receives_combined_outputs() {
     );
 
     let result = engine
-        .execute_workflow(&wf, serde_json::json!(3), ExecutionBudget::default())
+        .execute_workflow(
+            &nebula_engine::store_seam::single_tenant_scope(),
+            &wf,
+            serde_json::json!(3),
+            ExecutionBudget::default(),
+        )
         .await
         .unwrap();
 
@@ -438,7 +458,12 @@ async fn error_propagation_stops_downstream() {
     );
 
     let result = engine
-        .execute_workflow(&wf, serde_json::json!("data"), ExecutionBudget::default())
+        .execute_workflow(
+            &nebula_engine::store_seam::single_tenant_scope(),
+            &wf,
+            serde_json::json!("data"),
+            ExecutionBudget::default(),
+        )
         .await
         .unwrap();
 
@@ -493,7 +518,12 @@ async fn cancellation_via_sibling_failure() {
 
     let result = tokio::time::timeout(
         Duration::from_secs(5),
-        engine.execute_workflow(&wf, serde_json::json!("go"), ExecutionBudget::default()),
+        engine.execute_workflow(
+            &nebula_engine::store_seam::single_tenant_scope(),
+            &wf,
+            serde_json::json!("go"),
+            ExecutionBudget::default(),
+        ),
     )
     .await
     .expect("should complete within 5s");
@@ -527,7 +557,12 @@ async fn metrics_cover_full_lifecycle() {
     );
 
     let result = engine
-        .execute_workflow(&wf, serde_json::json!(1), ExecutionBudget::default())
+        .execute_workflow(
+            &nebula_engine::store_seam::single_tenant_scope(),
+            &wf,
+            serde_json::json!(1),
+            ExecutionBudget::default(),
+        )
         .await
         .unwrap();
 
@@ -591,7 +626,12 @@ async fn bounded_concurrency_with_multiple_parallel_nodes() {
     let budget = ExecutionBudget::default().with_max_concurrent_nodes(2);
 
     let result = engine
-        .execute_workflow(&wf, serde_json::json!("parallel"), budget)
+        .execute_workflow(
+            &nebula_engine::store_seam::single_tenant_scope(),
+            &wf,
+            serde_json::json!("parallel"),
+            budget,
+        )
         .await
         .unwrap();
 
@@ -619,7 +659,12 @@ async fn zero_concurrency_budget_returns_planning_error() {
     };
 
     let err = engine
-        .execute_workflow(&wf, serde_json::json!({}), budget)
+        .execute_workflow(
+            &nebula_engine::store_seam::single_tenant_scope(),
+            &wf,
+            serde_json::json!({}),
+            budget,
+        )
         .await
         .expect_err("zero permits must not deadlock behind Semaphore::new(0)");
 
@@ -658,7 +703,12 @@ async fn deep_chain_propagates_outputs() {
     );
 
     let result = engine
-        .execute_workflow(&wf, serde_json::json!(2), ExecutionBudget::default())
+        .execute_workflow(
+            &nebula_engine::store_seam::single_tenant_scope(),
+            &wf,
+            serde_json::json!(2),
+            ExecutionBudget::default(),
+        )
         .await
         .unwrap();
 
@@ -684,7 +734,12 @@ async fn metrics_accurate_on_failure() {
     );
 
     let result = engine
-        .execute_workflow(&wf, serde_json::json!(null), ExecutionBudget::default())
+        .execute_workflow(
+            &nebula_engine::store_seam::single_tenant_scope(),
+            &wf,
+            serde_json::json!(null),
+            ExecutionBudget::default(),
+        )
         .await
         .unwrap();
 
@@ -743,7 +798,12 @@ async fn disabled_node_is_skipped_and_successor_executes() {
     );
 
     let result = engine
-        .execute_workflow(&wf, serde_json::json!("hello"), ExecutionBudget::default())
+        .execute_workflow(
+            &nebula_engine::store_seam::single_tenant_scope(),
+            &wf,
+            serde_json::json!("hello"),
+            ExecutionBudget::default(),
+        )
         .await
         .unwrap();
 
@@ -816,7 +876,12 @@ async fn skip_propagates_transitively_through_three_hop_chain() {
     );
 
     let result = engine
-        .execute_workflow(&wf, serde_json::json!("hi"), ExecutionBudget::default())
+        .execute_workflow(
+            &nebula_engine::store_seam::single_tenant_scope(),
+            &wf,
+            serde_json::json!("hi"),
+            ExecutionBudget::default(),
+        )
         .await
         .unwrap();
 
@@ -876,7 +941,12 @@ async fn diamond_with_one_skipped_branch_still_completes() {
     );
 
     let result = engine
-        .execute_workflow(&wf, serde_json::json!("hi"), ExecutionBudget::default())
+        .execute_workflow(
+            &nebula_engine::store_seam::single_tenant_scope(),
+            &wf,
+            serde_json::json!("hi"),
+            ExecutionBudget::default(),
+        )
         .await
         .unwrap();
 
@@ -922,7 +992,12 @@ async fn aggregate_with_one_skipped_source_fires() {
     );
 
     let result = engine
-        .execute_workflow(&wf, serde_json::json!(42), ExecutionBudget::default())
+        .execute_workflow(
+            &nebula_engine::store_seam::single_tenant_scope(),
+            &wf,
+            serde_json::json!(42),
+            ExecutionBudget::default(),
+        )
         .await
         .unwrap();
 
@@ -966,7 +1041,12 @@ async fn aggregate_with_all_sources_skipped_propagates_skip() {
     );
 
     let result = engine
-        .execute_workflow(&wf, serde_json::json!(0), ExecutionBudget::default())
+        .execute_workflow(
+            &nebula_engine::store_seam::single_tenant_scope(),
+            &wf,
+            serde_json::json!(0),
+            ExecutionBudget::default(),
+        )
         .await
         .unwrap();
 
@@ -1028,7 +1108,12 @@ async fn multi_hop_skip_with_sibling_activation_still_runs() {
     );
 
     let result = engine
-        .execute_workflow(&wf, serde_json::json!("hi"), ExecutionBudget::default())
+        .execute_workflow(
+            &nebula_engine::store_seam::single_tenant_scope(),
+            &wf,
+            serde_json::json!("hi"),
+            ExecutionBudget::default(),
+        )
         .await
         .unwrap();
 
@@ -1083,7 +1168,12 @@ async fn duplicate_edges_from_skipped_source_count_per_edge() {
     );
 
     let result = engine
-        .execute_workflow(&wf, serde_json::json!("in"), ExecutionBudget::default())
+        .execute_workflow(
+            &nebula_engine::store_seam::single_tenant_scope(),
+            &wf,
+            serde_json::json!("in"),
+            ExecutionBudget::default(),
+        )
         .await
         .unwrap();
 

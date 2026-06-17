@@ -109,10 +109,9 @@ impl TestStores {
     }
 }
 
-/// Fixed placeholder scope — deliberately mirrors `engine_scope()` from `nebula-engine`
-/// (the same `("nebula","nebula")` placeholder the engine uses for every port call).
-/// The request-derived `Scope` wiring belongs to U-D1.4; do NOT re-export `engine_scope`
-/// from `nebula-engine` here — it is a placeholder slated to change.
+/// Test scope used for worker integration tests. Matches `nebula_engine::store_seam::single_tenant_scope()`
+/// (`("nebula","nebula")`) so the worker and engine observe the same in-memory rows.
+/// Production code uses the per-message scope from the control-queue / job-dispatch DTO.
 fn scope() -> Scope {
     Scope::new("nebula", "nebula")
 }

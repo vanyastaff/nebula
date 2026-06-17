@@ -52,7 +52,7 @@ plugin-registry — и рискует разойтись с canon §12.2 control
 | `runtime::{ActionRuntime, ActionRegistry, ActionRunner, InProcessRunner, TaskQueue, MemoryQueue, BlobStorage, DataPassingPolicy, BoundedStreamBuffer, StatefulCheckpoint(-Sink)}` | `runtime/runtime.rs:61-116`, `registry.rs:53`, `runner.rs:25-89`, `queue.rs:22-132` |
 | `scoped_resources::{BranchId, ScopedResourceMap, DashScopedResourceMap, LayeredResourceAccessor, ScopedResourceGuard, run_cleanup(_with_timeout)}` (per-branch хранение, scoped→global precedence, RAII LIFO-cleanup с таймаутом) | `scoped_resources.rs:116-698` |
 | `daemon::{Daemon, DaemonRegistry, DaemonRuntime, EventSource, EventSourceRuntime/Adapter, RestartPolicy, DaemonError}` | `daemon/mod.rs:37-52`, `registry.rs:38-273`, `runtime.rs:37`, `event_source.rs:32-164` |
-| `store_seam::{ExecutionStores, WorkflowStores, engine_scope, node_output_record…}` (мост к spec-16 storage-port) | `store_seam.rs:44-126` |
+| `store_seam::{ExecutionStores, WorkflowStores, node_output_record…}` (мост к spec-16 storage-port; реальный per-message `Scope` протягивается в `resume_execution`, плейсхолдер удалён) | `store_seam.rs:44-126` |
 | `ExecutionResult` · `EngineError` · `ExecutionEvent` (eventbus broadcast) · `NodeOutput` | `result.rs:10` · `error.rs:10` · `event.rs:19` · `node_output.rs:9` |
 | `resource_status::{ResourceRuntimeStatus, EngineResourceStatus, EngineManagerResourceStatus}` | `resource_status.rs:45-91` |
 | Re-export plugin-типов: `Plugin, PluginKey, PluginManifest, PluginRegistry, ResolvedPlugin` | `lib.rs:102` |

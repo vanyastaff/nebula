@@ -10,14 +10,14 @@
 //!
 //! ## Tenancy
 //!
-//! The engine is tenant-agnostic. Every port call takes a `&Scope`, but the
-//! composition root wraps each store in `nebula_tenancy`'s scope-enforcing
-//! decorator, which **substitutes** the bound tenant scope and ignores
-//! whatever the engine passes. The engine therefore passes a single fixed
-//! [`engine_scope`] placeholder and structurally cannot reach across
-//! tenants (it never holds the raw adapter — only the decorated handle).
-//! Test wiring that uses raw in-memory adapters (no decorator) is internally
-//! consistent because every engine call uses the same placeholder scope.
+//! The engine is tenant-agnostic. Every port call takes a `&Scope`, which
+//! is threaded in from the per-message scope on the production path
+//! (control-queue / job-dispatch row). On the worker path there is no
+//! tenancy decorator, so the scope the engine passes is the real tenant
+//! scope from the message DTO — cross-tenant isolation invariant #7.
+//!
+//! Tests use raw in-memory adapters (no decorator) and call
+//! [`single_tenant_scope`] explicitly so every engine call observes one coherent fake tenant.
 //!
 //! ## Fencing
 //!
@@ -83,14 +83,30 @@ pub fn workflow_input_record(json: serde_json::Value) -> NodeResultRecord {
     }
 }
 
-/// The fixed placeholder scope every engine port call carries.
+/// The conventional single-tenant scope for embedded/library-mode and test
+/// callers that have no multi-tenant context.
 ///
-/// The tenancy decorator substitutes the request's bound scope and ignores
-/// this value, so its concrete contents are irrelevant in production. In
-/// decorator-less test wiring every call uses this same scope, so the raw
-/// in-memory adapters behave as a single coherent tenant.
+/// Callers pass it **explicitly** — no engine method manufactures a scope
+/// internally. This keeps the contract honest: any future multi-tenant caller
+/// of `execute_workflow` / `replay_execution` must supply its own real scope
+/// without needing a signature change.
+///
+/// ## When to use this
+///
+/// - `execute_workflow` / `execute_workflow_with_acquire_scope` / `replay_execution`
+///   in tests and library mode (pass as the `scope` argument).
+/// - Test wiring that bypasses the control queue (control-consumer mock impls,
+///   `DispatchStores`, etc.) where a real per-message scope is unavailable.
+///
+/// ## Why `pub`
+///
+/// Integration tests compile as separate crates and access this via
+/// `nebula_engine::store_seam::single_tenant_scope()`. `nebula-engine` is a
+/// private impl-detail crate (not re-exported by `nebula-sdk`), so this is not
+/// a public semver surface — it is test wiring internal to the engine workspace
+/// member.
 #[must_use]
-pub fn engine_scope() -> Scope {
+pub fn single_tenant_scope() -> Scope {
     Scope::new("nebula", "nebula")
 }
 
