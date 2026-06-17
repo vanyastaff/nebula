@@ -213,24 +213,30 @@ pub(super) async fn dispatch_inner(
                 debug!("capability token not in port store — continuing via in-memory map");
             },
             Err(err) => {
-                // Storage error resolving the capability token. Now that durable
-                // dispatch is LIVE, we cannot determine the activation `mode`, so
-                // we MUST NOT silently downgrade a Prod trigger to the Noop path:
-                // that would 2xx the sender and lose the event (no retry). Fail
-                // closed with 503 so the sender retries; on store recovery the
-                // retry resolves and `claim_and_materialize_start` dedups by
-                // `event_id`. Availability of the durable contract > availability
-                // of the in-memory path once durable dispatch exists (Codex P1).
+                // Storage error resolving the capability token. When durable
+                // dispatch is WIRED, the row is the trusted source of
+                // mode/scope/workflow, so we MUST NOT silently downgrade a Prod
+                // trigger to the Noop in-memory path: that would 2xx the sender
+                // and lose the event (no retry). Fail closed with 503 so the
+                // sender retries; on store recovery the retry resolves and
+                // `claim_and_materialize_start` dedups by `event_id`. If durable
+                // dispatch is NOT wired there is no durable contract to protect —
+                // fall through to in-memory for availability (Codex P1, refined
+                // to gate on `durable_dispatch` per CodeRabbit).
+                let durable_wired = transport.inner.durable_dispatch.is_some();
                 warn!(
                     error = %err,
-                    "resolve_by_token storage error; failing closed (503) — \
-                     cannot verify durable dispatch contract"
+                    durable = durable_wired,
+                    "resolve_by_token storage error"
                 );
-                return (
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "webhook activation store unavailable; retry",
-                )
-                    .into_response();
+                if durable_wired {
+                    return (
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "webhook activation store unavailable; retry",
+                    )
+                        .into_response();
+                }
+                // No durable contract — continue via the in-memory routing map.
             },
         }
     }
@@ -261,8 +267,16 @@ pub(super) async fn dispatch_inner(
     // whitespace-only value is treated as absent (the Prod fail-closed check
     // below then requires a real id).
     const MAX_WEBHOOK_ID_LEN: usize = 256;
-    let event_id: Option<IdempotencyKey> = match headers
-        .get(&WEBHOOK_ID_HEADER)
+    // Reject DUPLICATE `webhook-id` headers: `HeaderMap::get` silently returns
+    // one of several values, which would let two conflicting delivery ids slip
+    // past dedup. Exactly one (or zero) is permitted (Codex/CodeRabbit).
+    let mut webhook_id_values = headers.get_all(&WEBHOOK_ID_HEADER).iter();
+    let first_webhook_id = webhook_id_values.next();
+    if webhook_id_values.next().is_some() {
+        warn!("webhook: duplicate `webhook-id` headers; rejecting ambiguous delivery id");
+        return (StatusCode::BAD_REQUEST, "duplicate webhook-id header").into_response();
+    }
+    let event_id: Option<IdempotencyKey> = match first_webhook_id
         .and_then(|v| v.to_str().ok())
         .map(str::trim)
         .filter(|s| !s.is_empty())
@@ -730,7 +744,7 @@ mod tests {
     use nebula_storage_port::{
         Scope,
         dto::{WebhookMode, WorkflowVersionRecord},
-        store::{TriggerDedupInbox, WebhookActivationStore, WorkflowVersionStore},
+        store::{ExecutionStore, TriggerDedupInbox, WebhookActivationStore, WorkflowVersionStore},
     };
     use nebula_workflow::{WorkflowBuilder, WorkflowDefinition, node::NodeDefinition};
     use parking_lot::Mutex;
@@ -963,6 +977,14 @@ mod tests {
             WebhookKey::programmatic(self.trigger_uuid, self.nonce.clone())
         }
 
+        /// The durable side effect: execution rows materialized under the
+        /// fixture's tenant scope. Asserting this (not just the HTTP status)
+        /// proves Prod Emit spawns exactly one, Test/Skip spawn zero, and
+        /// redelivery dedups to one (CodeRabbit).
+        async fn execution_count(&self) -> u64 {
+            self.exec_store.count(&self.scope, None).await.unwrap()
+        }
+
         async fn dispatch_with_id(&self, delivery_id: &str) -> Response {
             dispatch_inner(
                 self.transport.clone(),
@@ -1054,6 +1076,11 @@ mod tests {
             StatusCode::OK,
             "Prod emit must return 200 (Emit + durable inbox)"
         );
+        assert_eq!(
+            fix.execution_count().await,
+            1,
+            "Prod Emit must materialize exactly one execution (durable side effect, not just 200)"
+        );
     }
 
     // ── Test 2: Test mode spawns nothing, returns 200 (existing behaviour) ────
@@ -1075,6 +1102,11 @@ mod tests {
             StatusCode::OK,
             "Test-mode must return 200 via fallthrough path"
         );
+        assert_eq!(
+            fix.execution_count().await,
+            0,
+            "Test mode must spawn NO execution (durable side effect, not just 200)"
+        );
     }
 
     // ── Test 3: Same webhook-id twice → second is deduplicated ────────────────
@@ -1095,6 +1127,11 @@ mod tests {
             r2.status(),
             StatusCode::OK,
             "redelivery (dedup) must also succeed"
+        );
+        assert_eq!(
+            fix.execution_count().await,
+            1,
+            "redelivery with the same webhook-id must dedup to exactly ONE execution, not two"
         );
     }
 
@@ -1128,6 +1165,35 @@ mod tests {
             resp.status(),
             StatusCode::BAD_REQUEST,
             "oversized webhook-id must be a clean 400, not a backend 5xx"
+        );
+    }
+
+    /// Two `webhook-id` headers → 400. `HeaderMap::get` would silently pick one,
+    /// letting conflicting delivery ids bypass dedup; reject the ambiguity.
+    #[tokio::test]
+    async fn duplicate_webhook_id_headers_returns_400() {
+        let fix = TestFixture::prod(WebhookMode::Prod).await;
+        let mut headers = HeaderMap::new();
+        headers.append(&WEBHOOK_ID_HEADER, HeaderValue::from_static("delivery-a"));
+        headers.append(&WEBHOOK_ID_HEADER, HeaderValue::from_static("delivery-b"));
+        let resp = dispatch_inner(
+            fix.transport.clone(),
+            fix.key(),
+            Method::POST,
+            Uri::from_static("http://localhost/webhooks/test"),
+            headers,
+            Bytes::from(b"{}" as &[u8]),
+        )
+        .await;
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "duplicate webhook-id headers must be a clean 400"
+        );
+        assert_eq!(
+            fix.execution_count().await,
+            0,
+            "duplicate webhook-id must spawn nothing"
         );
     }
 
@@ -1207,6 +1273,11 @@ mod tests {
             resp.status(),
             StatusCode::OK,
             "Skip in Prod must return 200"
+        );
+        assert_eq!(
+            fix.execution_count().await,
+            0,
+            "Skip must spawn NO execution (durable side effect, not just 200)"
         );
     }
 
