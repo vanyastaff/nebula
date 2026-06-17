@@ -182,7 +182,11 @@ impl WebhookActivationStore for SqliteWebhookActivationStore {
         .fetch_optional(&self.pool)
         .await
         .map_err(conn_err)?;
-        Ok(row.map(|r| {
+        // Use `transpose()` so column-decode errors inside the closure
+        // surface as `Err(StorageError)` instead of being silently swallowed
+        // by `unwrap_or_default` / `unwrap_or(None)` — aligns with the
+        // Postgres backend that propagates via `.map_err(conn_err)?`.
+        row.map(|r| -> Result<WebhookActivationRecord, StorageError> {
             // Fail-closed: any unrecognised mode text defaults to Test.
             let mode = match r
                 .try_get::<Option<String>, _>("webhook_mode")
@@ -200,8 +204,8 @@ impl WebhookActivationStore for SqliteWebhookActivationStore {
                 .ok()
                 .and_then(|v| v.try_into().ok())
                 .unwrap_or([0u8; 32]);
-            let trigger_id: String = r.try_get("trigger_id").unwrap_or_default();
-            let workflow_id: Option<String> = r.try_get("workflow_id").unwrap_or(None);
+            let trigger_id: String = r.try_get("trigger_id").map_err(conn_err)?;
+            let workflow_id: Option<String> = r.try_get("workflow_id").map_err(conn_err)?;
             // `WebhookActivationRecord` is `#[non_exhaustive]`; construct
             // via the public constructor then overwrite the non-default
             // fields through their public field accessors.
@@ -209,8 +213,9 @@ impl WebhookActivationStore for SqliteWebhookActivationStore {
             rec.workflow_id = workflow_id;
             rec.mode = mode;
             rec.token_hash = token_hash;
-            rec
-        }))
+            Ok(rec)
+        })
+        .transpose()
     }
 
     async fn deactivate(&self, scope: &Scope, trigger_id: &str) -> Result<(), StorageError> {
@@ -241,7 +246,7 @@ impl WebhookActivationStore for SqliteWebhookActivationStore {
             "SELECT workspace_id, org_id, slug, trigger_id, workflow_id, \
                     webhook_mode, token_hash \
              FROM port_webhook_activations \
-             WHERE token_hash = ?",
+             WHERE token_hash = ? AND active = 1",
         )
         .bind(token_hash.as_ref())
         .fetch_optional(&self.pool)

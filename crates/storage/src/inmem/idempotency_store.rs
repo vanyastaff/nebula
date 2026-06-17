@@ -153,7 +153,12 @@ impl WebhookActivationStore for InMemoryWebhookActivationStore {
             return Ok(None);
         }
         let map = self.inner.lock();
-        Ok(map.values().find(|r| &r.token_hash == token_hash).cloned())
+        // Only active rows are reachable by token; a deactivated row must
+        // never be returned (mirrors the SQL `AND active = 1/TRUE` predicate).
+        Ok(map
+            .values()
+            .find(|r| r.active && &r.token_hash == token_hash)
+            .cloned())
     }
 
     /// SYSTEM-SURFACE: cross-tenant enumeration for bootstrap map population.

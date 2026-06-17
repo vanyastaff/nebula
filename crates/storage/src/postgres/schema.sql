@@ -96,7 +96,8 @@ CREATE TABLE IF NOT EXISTS port_webhook_activations (
     webhook_mode TEXT NOT NULL DEFAULT 'test'
         CHECK (webhook_mode IN ('test', 'prod')),
     token_hash   BYTEA NOT NULL
-        DEFAULT decode(repeat('00', 32), 'hex'),
+        DEFAULT decode(repeat('00', 32), 'hex')
+        CHECK (octet_length(token_hash) = 32),
     PRIMARY KEY (workspace_id, org_id, slug)
 );
 

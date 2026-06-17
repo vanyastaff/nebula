@@ -252,7 +252,7 @@ impl WebhookActivationStore for PgWebhookActivationStore {
             "SELECT workspace_id, org_id, slug, trigger_id, workflow_id, \
                     webhook_mode, token_hash \
              FROM port_webhook_activations \
-             WHERE token_hash = $1",
+             WHERE token_hash = $1 AND active = TRUE",
         )
         .bind(token_hash.as_ref())
         .fetch_optional(&self.pool)

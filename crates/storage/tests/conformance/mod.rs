@@ -1685,12 +1685,32 @@ pub async fn assert_webhook_system_surface(backend: &dyn Backend) {
         backend.name()
     );
 
+    // ── Deactivated row must not resolve by token (F1) ────────────────────
+    //
+    // Deactivate A's row; `resolve_by_token` must return `None` even though
+    // the token_hash is still stored.  This guards the `AND active = TRUE`
+    // predicate across all three backends.
+    store
+        .deactivate(&sa, "trg_sys_a")
+        .await
+        .expect("deactivate trg_sys_a");
+    let deactivated = store
+        .resolve_by_token(&hash_a)
+        .await
+        .expect("resolve_by_token after deactivate");
+    assert!(
+        deactivated.is_none(),
+        "[{}] resolve_by_token must return None for a deactivated row",
+        backend.name()
+    );
+
     // ── list_all_active: cross-tenant enumeration ─────────────────────────
     let all = store.list_all_active().await.expect("list_all_active");
     let ids: Vec<&str> = all.iter().map(|r| r.trigger_id.as_str()).collect();
+    // Row A was deactivated above; only row B must appear.
     assert!(
-        ids.contains(&"trg_sys_a"),
-        "[{}] list_all_active must contain trg_sys_a (tenant A row)",
+        !ids.contains(&"trg_sys_a"),
+        "[{}] list_all_active must NOT contain deactivated trg_sys_a",
         backend.name()
     );
     assert!(

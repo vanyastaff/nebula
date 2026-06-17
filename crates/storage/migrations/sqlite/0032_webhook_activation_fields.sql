@@ -27,7 +27,8 @@ ALTER TABLE port_webhook_activations
 
 ALTER TABLE port_webhook_activations
     ADD COLUMN token_hash BLOB NOT NULL
-        DEFAULT X'0000000000000000000000000000000000000000000000000000000000000000';
+        DEFAULT X'0000000000000000000000000000000000000000000000000000000000000000'
+        CHECK (length(token_hash) = 32);
 
 -- Partial unique index: the sentinel (all-zeros 32 bytes) is excluded so
 -- rows without an assigned token do not collide with each other.

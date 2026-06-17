@@ -26,7 +26,8 @@ ALTER TABLE port_webhook_activations
     ADD COLUMN webhook_mode TEXT NOT NULL DEFAULT 'test'
         CHECK (webhook_mode IN ('test', 'prod')),
     ADD COLUMN token_hash   BYTEA NOT NULL
-        DEFAULT decode(repeat('00', 32), 'hex');
+        DEFAULT decode(repeat('00', 32), 'hex')
+        CHECK (octet_length(token_hash) = 32);
 
 -- Partial unique index on token_hash.  The sentinel (all-zeros) is excluded
 -- so rows without an assigned token do not collide with each other.
