@@ -15,8 +15,8 @@ use nebula_plugin::PluginRegistry;
 use nebula_storage::credential::InMemoryPendingStore;
 use nebula_storage_port::Scope;
 use nebula_storage_port::store::{
-    ControlQueue, ExecutionJournalReader, ExecutionStore, NodeResultStore, WebhookActivationStore,
-    WorkflowStore, WorkflowVersionStore,
+    ControlQueue, ExecutionJournalReader, ExecutionStore, NodeResultStore, TriggerDedupInbox,
+    WebhookActivationStore, WorkflowStore, WorkflowVersionStore,
 };
 use nebula_tenancy::{
     ScopedControlQueue, ScopedExecutionJournalReader, ScopedExecutionStore, ScopedNodeResultStore,
@@ -340,6 +340,18 @@ pub struct AppState {
     /// on restart — pre-ADR-0096 behaviour).
     pub webhook_activation_store: Option<Arc<dyn WebhookActivationStore>>,
 
+    /// Trigger dedup inbox for durable webhook dispatch (ADR-0095 D1, U-D1.4b).
+    ///
+    /// Shared with the orchestrator's `JobDispatchQueue` — both must wrap the
+    /// **same** underlying store so `claim_and_materialize_start` is atomic
+    /// across the dedup-guard, Created-execution-row, and Start-job writes.
+    ///
+    /// When `Some` and the activation row is `mode=Prod`, incoming webhook
+    /// events spawn durable executions via `DurableExecutionEmitter`.
+    /// When `None`, Prod-mode webhooks are rejected fail-closed (5xx) rather
+    /// than silently spawning dedup-blind.
+    pub trigger_dedup_inbox: Option<Arc<dyn TriggerDedupInbox>>,
+
     /// Optional lifecycle event bus (webhook activation — E2).
     ///
     /// Producers (storage CRUD callsites) emit
@@ -483,6 +495,7 @@ impl AppState {
             allow_insecure_tenant_rbac_bypass: false,
             idempotency_store: None,
             webhook_activation_store: None,
+            trigger_dedup_inbox: None,
             trigger_lifecycle_bus: None,
             webhook_secret_resolver: None,
             webhook_ctx_factory_b: None,
@@ -531,12 +544,22 @@ impl AppState {
     pub fn in_memory(jwt_secret: JwtSecret) -> Self {
         use nebula_storage::inmem::{
             InMemoryControlQueue, InMemoryExecutionStore, InMemoryJournalReader,
-            InMemoryNodeResultStore, InMemoryWorkflowStore, InMemoryWorkflowVersionStore,
+            InMemoryNodeResultStore, InMemoryTriggerDedupInbox, InMemoryWorkflowStore,
+            InMemoryWorkflowVersionStore,
         };
 
         let exec_store = InMemoryExecutionStore::new();
         let control_queue = InMemoryControlQueue::new(&exec_store);
         let journal = InMemoryJournalReader::new(&exec_store);
+        // TriggerDedupInbox must wrap the same shared core as the control
+        // queue and journal: `claim_and_materialize_start` writes the dedup
+        // guard, the Created execution row, and the Start job atomically in
+        // one critical section — only possible when all three share the same
+        // `Arc<Mutex<SharedState>>` (atomicity contract, durable_emitter.rs:106-108).
+        // `new(&exec_store)` must be called BEFORE `Arc::new(exec_store)` moves
+        // ownership — same ordering as `InMemoryControlQueue::new` and
+        // `InMemoryJournalReader::new` above.
+        let trigger_dedup_inbox = InMemoryTriggerDedupInbox::new(&exec_store);
         let node_results = InMemoryNodeResultStore::new();
         // The workflow-row store shares the version store's map so
         // `workflow_save`'s atomic `save_with_published_version` commits
@@ -555,6 +578,7 @@ impl AppState {
             Arc::new(control_queue),
             jwt_secret,
         )
+        .with_trigger_dedup_inbox(Arc::new(trigger_dedup_inbox))
     }
 
     /// Read a workflow's stored definition for the caller's tenant, or
@@ -1160,6 +1184,28 @@ impl AppState {
     #[must_use = "builder methods must be chained or built"]
     pub fn with_webhook_activation_store(mut self, store: Arc<dyn WebhookActivationStore>) -> Self {
         self.webhook_activation_store = Some(store);
+        self
+    }
+
+    /// Attach the trigger-dedup inbox for durable webhook dispatch (ADR-0095 D1,
+    /// U-D1.4b).
+    ///
+    /// **Atomicity requirement:** the inbox MUST share its underlying store with
+    /// the orchestrator's `JobDispatchQueue` — both must wrap the same
+    /// `Arc<Mutex<SharedState>>` (or equivalent transaction boundary) so
+    /// `claim_and_materialize_start` can write the dedup guard, the Created
+    /// execution row, and the Start job in one atomic critical section.
+    ///
+    /// [`AppState::in_memory`] wires this automatically via
+    /// `InMemoryTriggerDedupInbox::new(&exec_store)` before the exec-store is
+    /// moved into `Arc<dyn ExecutionStore>`.  Production composition roots must
+    /// supply the same atomic wiring over their chosen backend (SQLite / PG).
+    ///
+    /// When `None`, Prod-mode webhook dispatches are rejected fail-closed (5xx)
+    /// so dedup-blind spawns can never occur.
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_trigger_dedup_inbox(mut self, inbox: Arc<dyn TriggerDedupInbox>) -> Self {
+        self.trigger_dedup_inbox = Some(inbox);
         self
     }
 
