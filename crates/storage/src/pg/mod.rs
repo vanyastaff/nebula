@@ -25,7 +25,6 @@ mod pat;
 mod session;
 pub(crate) mod user;
 mod verification_token;
-mod webhook_activation;
 mod workspace;
 
 pub use control_queue::PgControlQueueRepo;
@@ -37,7 +36,6 @@ pub use pat::PgPatRepo;
 pub use session::PgSessionRepo;
 pub use user::PgUserRepo;
 pub use verification_token::PgVerificationTokenRepo;
-pub use webhook_activation::PgWebhookActivationRepo;
 pub use workspace::PgWorkspaceRepo;
 
 /// Translate an [`sqlx::Error`] into a [`StorageError`].

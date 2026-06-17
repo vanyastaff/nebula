@@ -435,10 +435,9 @@ pub mod webhook_request_outcome {
 
 /// Label values for `webhook_key_kind`.
 pub mod webhook_key_kind {
-    /// `WebhookKey::Programmatic { uuid, nonce }`.
+    /// `WebhookKey::Programmatic { uuid, nonce }` — the only variant since
+    /// ADR-0096 commit 3 retired the slug URL surface.
     pub const PROGRAMMATIC: &str = "programmatic";
-    /// `WebhookKey::Slug(TriggerCoordinates)`.
-    pub const SLUG: &str = "slug";
 }
 
 /// Reason labels for [`NEBULA_WEBHOOK_REPLAY_REJECTIONS_TOTAL`].

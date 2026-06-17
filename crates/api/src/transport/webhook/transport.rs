@@ -36,7 +36,7 @@ use nebula_storage_port::store::WebhookActivationStore;
 use url::Url;
 use uuid::Uuid;
 
-use super::dispatch::{slug_webhook_handler, webhook_handler};
+use super::dispatch::webhook_handler;
 use super::ratelimit::WebhookRateLimiter;
 use super::{
     key::WebhookKey,
@@ -286,108 +286,20 @@ impl WebhookTransport {
         self.inner.routing.remove(&key);
     }
 
-    /// Register a slug-routed activation (webhook activation).
-    ///
-    /// The handler comes from a [`nebula_action::WebhookActionFactory`]
-    /// invoked by the API bootstrap (E1) or the lifecycle subscriber
-    /// (E2). `config` is the [`WebhookConfig`] cached on the wrapping
-    /// adapter; the bootstrap reads it from
-    /// [`nebula_action::BuiltWebhookHandler::config`].
-    ///
-    /// `ctx` is a per-activation [`TriggerRuntimeContext`] template
-    /// the transport clones on every dispatch — same discipline as
-    /// programmatic [`Self::activate`].
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ActivationError::DuplicateRegistration`] if a slug
-    /// activation already exists at `coords`. Pair with
-    /// [`Self::unregister_slug`] for explicit replacement, or use
-    /// [`Self::replace_slug_map`] for atomic bulk swaps.
-    pub fn activate_slug(
-        &self,
-        coords: super::key::TriggerCoordinates,
-        handler: Arc<dyn TriggerHandler>,
-        config: WebhookConfig,
-        ctx: TriggerRuntimeContext,
-    ) -> Result<(), ActivationError> {
-        let entry = ActivationEntry {
-            handler,
-            ctx,
-            config,
-        };
-        let key = WebhookKey::slug(coords);
-        if !self.inner.routing.insert(key, entry) {
-            return Err(ActivationError::DuplicateRegistration);
-        }
-        Ok(())
-    }
-
-    /// Remove a slug activation. Idempotent.
-    pub fn unregister_slug(&self, coords: &super::key::TriggerCoordinates) -> bool {
-        let key = WebhookKey::Slug(coords.clone());
-        self.inner.routing.remove(&key)
-    }
-
-    /// Number of slug-routed activations currently in the routing
-    /// map. Driven by E1 bootstrap, E2 lifecycle subscriber, and E3
-    /// admin reload.
-    #[must_use]
-    pub fn slug_count(&self) -> usize {
-        self.inner.routing.count_by_kind("slug")
-    }
-
-    /// Total active registrations (programmatic + slug). Used by
-    /// `/healthz` reporters.
+    /// Total active registrations. Used by `/healthz` reporters.
     #[must_use]
     pub fn total_count(&self) -> usize {
         self.inner.routing.len()
     }
 
-    /// Atomic swap of all slug activations — used by the admin reload
-    /// endpoint (E3) so external observers do not see a half-loaded
-    /// routing table during a multi-thousand-row reload. Programmatic
-    /// activations are preserved.
-    pub fn replace_slug_map(
-        &self,
-        new: Vec<(
-            super::key::TriggerCoordinates,
-            Arc<dyn TriggerHandler>,
-            WebhookConfig,
-            TriggerRuntimeContext,
-        )>,
-    ) {
-        let payload = new
-            .into_iter()
-            .map(|(coords, handler, config, ctx)| {
-                (
-                    WebhookKey::Slug(coords),
-                    ActivationEntry {
-                        handler,
-                        ctx,
-                        config,
-                    },
-                )
-            })
-            .collect();
-        self.inner.routing.replace_slug_entries(payload);
-    }
-
     /// Build the axum router that dispatches incoming webhook
     /// requests to registered triggers.
     ///
-    /// Mounts both URL shapes (webhook activation):
+    /// Mounts the programmatic URL shape:
+    /// `POST {path_prefix}/{trigger_uuid}/{nonce}` — minted by [`Self::activate`].
     ///
-    /// - Programmatic: `POST {path_prefix}/{trigger_uuid}/{nonce}` —
-    ///   minted by [`Self::activate`].
-    /// - Slug: `POST /api/v1/hooks/{org}/{ws}/{slug}` and
-    ///   `GET /api/v1/hooks/{org}/{ws}/{slug}` (provider-specific
-    ///   challenge handshakes via `pre_handle`) — registered by
-    ///   [`Self::activate_slug`].
-    ///
-    /// Both routes funnel into `dispatch_inner` for a single
-    /// source of truth on signature, replay, rate-limit, and
-    /// pre-handle pipelines.
+    /// Slug-routed activations were retired in ADR-0096 commit 3; the
+    /// routing map is now programmatic-only.
     pub fn router(&self) -> Router {
         let programmatic = format!(
             "{prefix}/{{trigger_uuid}}/{{nonce}}",
@@ -395,10 +307,6 @@ impl WebhookTransport {
         );
         Router::new()
             .route(&programmatic, post(webhook_handler))
-            .route(
-                "/api/v1/hooks/{org}/{ws}/{trigger_slug}",
-                post(slug_webhook_handler).get(slug_webhook_handler),
-            )
             .layer(DefaultBodyLimit::max(self.inner.config.body_limit_bytes))
             .with_state(self.clone())
     }

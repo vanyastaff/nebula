@@ -1,11 +1,9 @@
 //! Webhook dispatch pipeline (webhook activation).
 //!
-//! Contains the shared `dispatch_inner` pipeline for both the
-//! programmatic and slug-routed webhook surfaces, plus the two axum
-//! handler functions that build a [`super::key::WebhookKey`] and
-//! delegate into it.
+//! Contains the shared `dispatch_inner` pipeline for programmatic webhook
+//! activations. The slug-routed surface was retired in ADR-0096 commit 3.
 //!
-//! ## Pipeline order (webhook activation single-pipe)
+//! ## Pipeline order (webhook activation)
 //!
 //! 1. Body size check → 413
 //! 2. Route lookup → 404 (before rate-limit so unregistered keys
@@ -114,24 +112,7 @@ pub(super) async fn webhook_handler(
     dispatch_inner(transport, key, method, uri, headers, body).await
 }
 
-/// Axum handler for `POST /api/v1/hooks/{org}/{ws}/{slug}`. Builds a
-/// [`WebhookKey::Slug`] and delegates to `dispatch_inner` — same
-/// signature/replay/rate-limit/pre-handle/handle pipeline as the
-/// programmatic surface.
-pub(super) async fn slug_webhook_handler(
-    State(transport): State<WebhookTransport>,
-    Path((org, workspace, trigger)): Path<(String, String, String)>,
-    method: Method,
-    uri: Uri,
-    headers: HeaderMap,
-    body: Bytes,
-) -> Response {
-    let coords = super::key::TriggerCoordinates::new(org, workspace, trigger);
-    let key = WebhookKey::Slug(coords);
-    dispatch_inner(transport, key, method, uri, headers, body).await
-}
-
-/// Shared dispatch pipeline for both programmatic and slug webhook
+/// Shared dispatch pipeline for programmatic webhook
 /// surfaces (webhook activation). Order of operations:
 ///
 /// 1. body size check → 413
@@ -293,14 +274,9 @@ fn record_rate_limit_rejection(transport: &WebhookTransport, key: &WebhookKey) {
         return;
     };
     let interner = reg.interner();
-    let kind = match key {
-        WebhookKey::Programmatic { .. } => webhook_key_kind::PROGRAMMATIC,
-        WebhookKey::Slug(_) => webhook_key_kind::SLUG,
-    };
-    let tenant_id = match key {
-        WebhookKey::Programmatic { .. } => "programmatic".to_owned(),
-        WebhookKey::Slug(coords) => format!("{}/{}", coords.org, coords.workspace),
-    };
+    let WebhookKey::Programmatic { uuid, .. } = key;
+    let kind = webhook_key_kind::PROGRAMMATIC;
+    let tenant_id = uuid.to_string();
     let labels = interner.label_set(&[
         ("webhook_key_kind", kind),
         ("tenant_id", tenant_id.as_str()),

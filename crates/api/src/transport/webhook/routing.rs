@@ -1,10 +1,12 @@
-//! Converged routing map keyed on [`WebhookKey`].
+//! Programmatic webhook routing map keyed on [`WebhookKey`].
 //!
-//! Both programmatic `(uuid, nonce)` and slug `(org, workspace, slug)`
-//! activations live in the same `DashMap`. The transport's
-//! `dispatch_inner` performs a single lookup and runs the same
-//! signature → replay → rate-limit → pre-handle → handle pipeline
-//! regardless of how the key was constructed.
+//! Runtime-minted `(uuid, nonce)` activations live in the same `DashMap`.
+//! The transport's `dispatch_inner` performs a single lookup and runs the same
+//! signature → replay → rate-limit → pre-handle → handle pipeline for every
+//! registered activation.
+//!
+//! Slug-routed activations were retired in ADR-0096 commit 3; the map is
+//! now programmatic-only.
 
 use std::sync::Arc;
 
@@ -17,7 +19,7 @@ use super::key::WebhookKey;
 ///
 /// Holds the handler pointer, a template [`TriggerRuntimeContext`]
 /// that the transport clones on every request, and the
-/// [`WebhookConfig`] enforced before dispatch (per ). Cloning
+/// [`WebhookConfig`] enforced before dispatch. Cloning
 /// the context gives each dispatch its own independent context
 /// without locking — the capability arcs inside (`emitter`, `health`,
 /// `webhook`, etc.) share state as designed.
@@ -85,44 +87,6 @@ impl RoutingMap {
         self.entries.remove(key).is_some()
     }
 
-    /// Replace all slug entries with a new set. Used by the admin
-    /// reload endpoint (E3); programmatic activations are preserved.
-    ///
-    /// **Atomicity note (webhook activation § "Out of scope"):**
-    /// The swap is performed by removing every slug entry and then
-    /// inserting the new set into the shared `DashMap`. Concurrent
-    /// readers between the two phases can observe a transient empty
-    /// slug map and receive `404 Not Found`. The window is bounded
-    /// by the size of the activation list (typically O(ms) for
-    /// thousands of rows) and is acceptable for the M3.3 scope —
-    /// admin reload is a low-frequency operator action, not a hot
-    /// path.
-    ///
-    /// True atomic swap (no transient 404s under concurrent readers)
-    /// requires moving slug entries behind an `ArcSwap<HashMap<...>>`
-    /// or an `RwLock`-guarded map; it is tracked as a 1.0 follow-up
-    /// alongside the broader concurrency hardening pass.
-    pub(crate) fn replace_slug_entries(&self, new: Vec<(WebhookKey, ActivationEntry)>) {
-        // Drop existing slug entries (programmatic activations stay
-        // in place — they are owned by the typed runtime).
-        self.entries
-            .retain(|k, _| !matches!(k, WebhookKey::Slug(_)));
-        for (key, entry) in new {
-            self.entries.insert(key, Arc::new(entry));
-        }
-    }
-
-    /// Number of entries with the given kind label, for telemetry
-    /// gauges (`NEBULA_WEBHOOK_REGISTRATIONS`).
-    #[must_use]
-    #[allow(dead_code)] // wired into G2 metrics in a subsequent commit
-    pub(crate) fn count_by_kind(&self, kind: &'static str) -> usize {
-        self.entries
-            .iter()
-            .filter(|e| e.key().kind_label() == kind)
-            .count()
-    }
-
     /// Current number of active registrations. Used by transport
     /// observability accessors and tests.
     pub(crate) fn len(&self) -> usize {
@@ -135,10 +99,7 @@ mod tests {
     use nebula_action::TriggerContext;
     use uuid::Uuid;
 
-    use super::{
-        super::key::{TriggerCoordinates, WebhookKey},
-        *,
-    };
+    use super::{super::key::WebhookKey, *};
 
     // A minimal dummy TriggerHandler for the routing tests so we
     // don't need a real webhook action here.
@@ -196,15 +157,6 @@ mod tests {
     }
 
     #[test]
-    fn insert_lookup_remove_roundtrip_slug() {
-        let map = RoutingMap::new();
-        let key = WebhookKey::slug(TriggerCoordinates::new("acme", "main", "github"));
-        assert!(map.insert(key.clone(), dummy_entry()));
-        assert!(map.lookup(&key).is_some());
-        assert!(map.remove(&key));
-    }
-
-    #[test]
     fn insert_rejects_duplicate_key() {
         let map = RoutingMap::new();
         let key = WebhookKey::programmatic(Uuid::new_v4(), "n");
@@ -213,40 +165,16 @@ mod tests {
     }
 
     #[test]
-    fn replace_slug_entries_preserves_programmatic() {
-        let map = RoutingMap::new();
-        let prog = WebhookKey::programmatic(Uuid::new_v4(), "n");
-        map.insert(prog.clone(), dummy_entry());
-
-        let slug_a = WebhookKey::slug(TriggerCoordinates::new("a", "b", "c"));
-        let slug_b = WebhookKey::slug(TriggerCoordinates::new("a", "b", "d"));
-        map.insert(slug_a.clone(), dummy_entry());
-
-        // Swap in just one slug entry — the original slug is gone,
-        // the new one lives, programmatic survives.
-        map.replace_slug_entries(vec![(slug_b.clone(), dummy_entry())]);
-
-        assert!(map.lookup(&prog).is_some());
-        assert!(map.lookup(&slug_a).is_none());
-        assert!(map.lookup(&slug_b).is_some());
-    }
-
-    #[test]
-    fn count_by_kind_separates_programmatic_and_slug() {
+    fn len_reflects_insertions() {
         let map = RoutingMap::new();
         map.insert(
             WebhookKey::programmatic(Uuid::new_v4(), "n1"),
             dummy_entry(),
         );
         map.insert(
-            WebhookKey::slug(TriggerCoordinates::new("a", "b", "c")),
+            WebhookKey::programmatic(Uuid::new_v4(), "n2"),
             dummy_entry(),
         );
-        map.insert(
-            WebhookKey::slug(TriggerCoordinates::new("a", "b", "d")),
-            dummy_entry(),
-        );
-        assert_eq!(map.count_by_kind("programmatic"), 1);
-        assert_eq!(map.count_by_kind("slug"), 2);
+        assert_eq!(map.len(), 2);
     }
 }

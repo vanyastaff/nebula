@@ -12,7 +12,7 @@ use nebula_credential::PendingToken;
 use nebula_engine::ActionRegistry;
 use nebula_metrics::MetricsRegistry;
 use nebula_plugin::PluginRegistry;
-use nebula_storage::{credential::InMemoryPendingStore, repos::WebhookActivationRepo};
+use nebula_storage::credential::InMemoryPendingStore;
 use nebula_storage_port::Scope;
 use nebula_storage_port::store::{
     ControlQueue, ExecutionJournalReader, ExecutionStore, NodeResultStore, WebhookActivationStore,
@@ -327,26 +327,12 @@ pub struct AppState {
     /// based on `ApiConfig.idempotency.backend`.
     pub idempotency_store: Option<Arc<dyn IdempotencyStore>>,
 
-    /// Optional webhook-activation repository (webhook activation — A-world legacy).
-    ///
-    /// When `Some`, the composition root invokes
-    /// [`crate::transport::webhook::bootstrap_webhook_activations`] before
-    /// `build_app` to populate the transport's slug map. The same repo
-    /// is consulted by the admin reload endpoint
-    /// (`POST /internal/v1/webhooks/reload`).
-    ///
-    /// Retained for commit 3 (A retirement); new code uses
-    /// [`Self::webhook_activation_store`].
-    pub webhook_activation_repo: Option<Arc<dyn WebhookActivationRepo>>,
-
     /// Optional webhook-activation port store (ADR-0096 — B-world, spec-16 aligned).
     ///
     /// The undecorated base store; per-request code builds
     /// `ScopedWebhookActivationStore::new(store, scope)` where a tenant-scoped
-    /// operation is needed.  System-surface calls (`resolve_by_token`,
-    /// `list_all_active`) go directly through the undecorated store or through
-    /// a decorator bound to any scope (the decorator delegates straight to the
-    /// inner store for those two methods — see `ScopedWebhookActivationStore`).
+    /// operation is needed. System-surface calls (`resolve_by_token`,
+    /// `list_all_active`) go directly through the undecorated store.
     ///
     /// When `Some`, the mint-persist wrapper persists capability tokens at
     /// activation time and `resolve_by_token` is real (not conformance-only).
@@ -357,10 +343,8 @@ pub struct AppState {
     /// Optional lifecycle event bus (webhook activation — E2).
     ///
     /// Producers (storage CRUD callsites) emit
-    /// [`crate::transport::webhook::TriggerLifecycleEvent`] on this
-    /// bus; the transport-side subscriber reapplies the change
-    /// without a full reload. M3.3 ships the consumer; producer
-    /// wiring is deferred to a follow-up.
+    /// `TriggerLifecycleEvent`s on this bus; future subscribers reapply
+    /// the change without a full reload. Producer wiring is deferred.
     pub trigger_lifecycle_bus: Option<crate::transport::webhook::TriggerLifecycleBus>,
 
     /// Webhook credential resolver (webhook activation — E1+E3).
@@ -368,8 +352,19 @@ pub struct AppState {
     /// Required for storage-driven slug bootstrap and admin reload.
     pub webhook_secret_resolver: Option<Arc<dyn crate::transport::webhook::WebhookSecretResolver>>,
 
-    /// Webhook ctx-template factory (webhook activation — E1+E3).
-    pub webhook_ctx_factory: Option<Arc<dyn crate::transport::webhook::WebhookContextFactory>>,
+    /// B-world webhook ctx-template factory (ADR-0096 — E1+E3).
+    ///
+    /// Builds [`nebula_action::TriggerRuntimeContext`] from a B-world
+    /// `WebhookActivationRecord` (carries `scope`, `trigger_id`, `workflow_id`).
+    pub webhook_ctx_factory_b:
+        Option<Arc<dyn crate::transport::webhook::WebhookActivationContextFactory>>,
+
+    /// B-world trigger-config spec lookup (ADR-0096 — E1+E3).
+    ///
+    /// Resolves the `WebhookActivationSpec` stored in `triggers.config` for a
+    /// given `trigger_id`. Required for bootstrap and admin reload — the B-world
+    /// row is lean (routing + token only); handler-build inputs live in the trigger config.
+    pub webhook_spec_lookup: Option<Arc<dyn crate::transport::webhook::TriggerSpecLookup>>,
 
     /// Internal-routes shared token (webhook activation — E3).
     ///
@@ -487,11 +482,11 @@ impl AppState {
             membership_store: None,
             allow_insecure_tenant_rbac_bypass: false,
             idempotency_store: None,
-            webhook_activation_repo: None,
             webhook_activation_store: None,
             trigger_lifecycle_bus: None,
             webhook_secret_resolver: None,
-            webhook_ctx_factory: None,
+            webhook_ctx_factory_b: None,
+            webhook_spec_lookup: None,
             internal_shared_token: None,
             execution_store,
             workflow_version_store,
@@ -1151,22 +1146,7 @@ impl AppState {
         self
     }
 
-    /// Attach a webhook-activation repository (webhook activation — A-world legacy).
-    ///
-    /// Required for storage-driven slug bootstrap and for the admin
-    /// reload endpoint. Composition roots that do not enable
-    /// `WebhookApiConfig::bootstrap_from_storage` may leave this
-    /// `None`.
-    ///
-    /// New code should prefer [`Self::with_webhook_activation_store`] (B-world,
-    /// ADR-0096); this builder is retained until commit 3 retires A.
-    #[must_use = "builder methods must be chained or built"]
-    pub fn with_webhook_activation_repo(mut self, repo: Arc<dyn WebhookActivationRepo>) -> Self {
-        self.webhook_activation_repo = Some(repo);
-        self
-    }
-
-    /// Attach the B-world webhook-activation port store (ADR-0096).
+    /// Attach the webhook-activation port store (ADR-0096).
     ///
     /// The store is the **undecorated** base implementation.  Per-request
     /// tenant-scoped operations build `ScopedWebhookActivationStore::new(store,
@@ -1204,13 +1184,29 @@ impl AppState {
         self
     }
 
-    /// Attach a webhook ctx-template factory (webhook activation — E1+E3).
+    /// Attach the B-world webhook ctx-template factory (ADR-0096 — E1+E3).
+    ///
+    /// Builds a [`nebula_action::TriggerRuntimeContext`] from a
+    /// `WebhookActivationRecord` (carries `scope`, `trigger_id`, `workflow_id`).
     #[must_use = "builder methods must be chained or built"]
-    pub fn with_webhook_ctx_factory(
+    pub fn with_webhook_ctx_factory_b(
         mut self,
-        factory: Arc<dyn crate::transport::webhook::WebhookContextFactory>,
+        factory: Arc<dyn crate::transport::webhook::WebhookActivationContextFactory>,
     ) -> Self {
-        self.webhook_ctx_factory = Some(factory);
+        self.webhook_ctx_factory_b = Some(factory);
+        self
+    }
+
+    /// Attach the trigger-config spec lookup (ADR-0096 — E1+E3).
+    ///
+    /// Resolves the `WebhookActivationSpec` from `triggers.config` for a given
+    /// `trigger_id`. Required for bootstrap and admin reload.
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_webhook_spec_lookup(
+        mut self,
+        lookup: Arc<dyn crate::transport::webhook::TriggerSpecLookup>,
+    ) -> Self {
+        self.webhook_spec_lookup = Some(lookup);
         self
     }
 

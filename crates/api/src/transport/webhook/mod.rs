@@ -10,7 +10,7 @@
 //!   [`deactivate`](WebhookTransport::deactivate) /
 //!   [`router`](WebhookTransport::router)) and `TransportInner` internals.
 //! - `dispatch` — shared `dispatch_inner` pipeline (routing lookup →
-//!   rate-limit → signature → oneshot dispatch) plus the two axum handler fns.
+//!   rate-limit → signature → oneshot dispatch) plus the axum handler fn.
 //! - `signature` —  signature-policy enforcement (`enforce_signature`,
 //!   problem+json response builders, metric recording).
 //! - `replay` — replay-window rejection reason mapping
@@ -38,16 +38,11 @@ pub mod token;
 pub mod transport;
 
 pub use bootstrap::{
-    BootstrapError, BootstrapErrorB, BootstrapReport, ResolvedActivation, SecretResolutionError,
-    TriggerSpecLookup, WebhookActivationContextFactory, WebhookContextFactory,
-    WebhookSecretResolver, bootstrap_webhook_activations, bootstrap_webhook_activations_b,
-    collect_webhook_activations, collect_webhook_activations_b,
+    BootstrapError, BootstrapReport, SecretResolutionError, TriggerSpecLookup,
+    WebhookActivationContextFactory, WebhookSecretResolver, bootstrap_webhook_activations,
 };
-pub use events::{
-    LifecycleApplyError, TriggerLifecycleBus, TriggerLifecycleEvent, TriggerLifecycleEventBus,
-    TriggerLifecycleSubscriber,
-};
-pub use key::{TriggerCoordinates, WebhookKey};
+pub use events::{TriggerLifecycleBus, TriggerLifecycleEvent, TriggerLifecycleEventBus};
+pub use key::WebhookKey;
 pub use provider::EndpointProviderImpl;
 pub use ratelimit::{RateLimitExceeded, WebhookRateLimiter};
 pub use transport::{

@@ -11,27 +11,22 @@ use axum::{Json, Router, extract::State, http::StatusCode, response::IntoRespons
 use serde::Serialize;
 
 use crate::state::AppState;
-use crate::transport::webhook::collect_webhook_activations;
+use crate::transport::webhook::bootstrap_webhook_activations;
 
 /// Body returned by `POST /internal/v1/webhooks/reload`.
 #[derive(Debug, Serialize)]
 pub struct WebhookReloadReport {
-    /// Slug activations registered after the swap.
+    /// Activations validated from the port store.
     pub loaded: usize,
-    /// Slug activations dropped relative to the previous map.
-    pub dropped: usize,
-    /// Slug activations newly added relative to the previous map.
-    pub added: usize,
-    /// Storage rows that surfaced a non-storage failure and were
-    /// skipped (factory rejection, secret resolution miss).
+    /// Rows that surfaced a non-storage failure and were skipped.
     pub skipped: usize,
 }
 
 async fn reload_webhooks(State(state): State<AppState>) -> impl IntoResponse {
-    let Some(repo) = state.webhook_activation_repo.as_ref() else {
+    let Some(store) = state.webhook_activation_store.as_ref() else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
-            "webhook activation repo not configured",
+            "webhook activation store not configured",
         )
             .into_response();
     };
@@ -42,17 +37,17 @@ async fn reload_webhooks(State(state): State<AppState>) -> impl IntoResponse {
         )
             .into_response();
     };
-    let Some(ctx_factory) = state.webhook_ctx_factory.as_ref() else {
+    let Some(ctx_factory) = state.webhook_ctx_factory_b.as_ref() else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             "webhook ctx factory not configured",
         )
             .into_response();
     };
-    let Some(transport) = state.webhook_transport.as_ref() else {
+    let Some(spec_lookup) = state.webhook_spec_lookup.as_ref() else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
-            "webhook transport not attached",
+            "webhook spec lookup not configured",
         )
             .into_response();
     };
@@ -64,37 +59,27 @@ async fn reload_webhooks(State(state): State<AppState>) -> impl IntoResponse {
             .into_response();
     };
 
-    let before = transport.slug_count();
-
-    match collect_webhook_activations(
-        repo.as_ref(),
+    match bootstrap_webhook_activations(
+        store.as_ref(),
         registry,
         secrets.as_ref(),
         ctx_factory.as_ref(),
+        spec_lookup.as_ref(),
+        None,
     )
     .await
     {
-        Ok((activations, report)) => {
-            let after = activations.len();
-            transport.replace_slug_map(activations);
-            let dropped = before.saturating_sub(after);
-            let added = after.saturating_sub(before);
+        Ok(report) => {
             tracing::info!(
                 target: "nebula::api::internal::webhook_reload",
                 loaded = report.loaded,
                 skipped = report.skipped,
-                before,
-                after,
-                dropped,
-                added,
-                "webhook slug map reloaded",
+                "webhook port store validated",
             );
             (
                 StatusCode::OK,
                 Json(WebhookReloadReport {
                     loaded: report.loaded,
-                    dropped,
-                    added,
                     skipped: report.skipped,
                 }),
             )

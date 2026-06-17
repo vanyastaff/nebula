@@ -224,9 +224,9 @@ pub struct AuthApiConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebhookApiConfig {
     /// When `true`, the composition root invokes
-    /// [`crate::transport::webhook::bootstrap_webhook_activations`]
-    /// before `build_app` to populate the transport's slug map from
-    /// `WebhookActivationRepo`. When `false`, the slug map starts
+    /// `bootstrap_webhook_activations` before `build_app` to populate
+    /// the transport's slug map from the port store
+    /// (`WebhookActivationStore`). When `false`, the slug map starts
     /// empty and only programmatic activations are dispatched.
     ///
     /// Env var: `API_WEBHOOK_BOOTSTRAP_FROM_STORAGE`
