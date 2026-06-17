@@ -37,8 +37,8 @@ use nebula_workflow::{
 use tokio::sync::Notify;
 
 /// Bundled port adapters for one shared in-memory tenant (mirrors the
-/// in-source `TestStores` pattern). All store calls use `test_scope()` so
-/// the raw adapters behave as one coherent tenant.
+/// in-source `TestStores` pattern). All store calls use `single_tenant_scope()`
+/// so the raw adapters behave as one coherent tenant.
 #[derive(Clone)]
 struct DispatchStores {
     execution: Arc<InMemoryExecutionStore>,

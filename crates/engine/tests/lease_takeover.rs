@@ -16,7 +16,7 @@
 //! via `WorkflowEngine::with_execution_stores`/`with_workflow_stores`,
 //! `EngineControlDispatch::new_port`, `ControlConsumer::new_port`). The
 //! engine threads the per-message scope from the DTO on the production
-//! path; test wiring uses `test_scope()` so the raw in-memory adapters
+//! path; test wiring uses `single_tenant_scope()` so the raw in-memory adapters
 //! behave as one coherent tenant — identical observable behaviour to the old single-tenant
 //! repos. The §M2.2 lease-handoff guarantees are unchanged and asserted
 //! verbatim:
@@ -77,7 +77,7 @@ fn proc16(label: &[u8]) -> [u8; 16] {
 
 /// Bundled port adapters for one shared in-memory tenant. Mirrors the
 /// in-source `TestStores` pattern: every field is a real port trait the
-/// engine consumes; `test_scope()` makes the raw adapters behave as a
+/// engine consumes; `single_tenant_scope()` makes the raw adapters behave as a
 /// single coherent tenant.
 #[derive(Clone)]
 struct LeaseStores {
