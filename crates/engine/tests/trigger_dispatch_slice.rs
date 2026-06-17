@@ -114,9 +114,9 @@ impl TestStores {
     }
 }
 
-/// Return `engine_scope()` via the public re-export.
+/// Return the test scope via the public re-export.
 fn scope() -> Scope {
-    nebula_engine::store_seam::engine_scope()
+    nebula_engine::store_seam::test_scope()
 }
 
 /// One-node echo workflow (StatelessAction that returns its input).

@@ -37,6 +37,7 @@ use nebula_metrics::{
     MetricsRegistry,
     naming::{NEBULA_ENGINE_CONTROL_RECLAIM_TOTAL, control_reclaim_outcome},
 };
+use nebula_storage_port::Scope;
 use nebula_storage_port::dto::ControlCommand;
 use nebula_storage_port::store::ControlQueue;
 use tokio::task::JoinHandle;
@@ -126,6 +127,10 @@ pub trait ControlDispatch: Send + Sync {
     /// Deliver a `Start` command to a newly-created execution (control-queue wiring,
     /// , #332).
     ///
+    /// `scope` is the per-message tenant scope sourced from `ControlMsg.scope`;
+    /// it scopes the idempotency status read and the engine's resume path so
+    /// that execution rows from a different tenant are never visible.
+    ///
     /// Enqueued by the API `start_execution` / `execute_workflow` handlers
     /// once the `ExecutionState::Created` row has been persisted. A2 wired
     /// the canonical engine-side body in
@@ -138,9 +143,15 @@ pub trait ControlDispatch: Send + Sync {
     /// Implementations must guard via CAS on `ExecutionRepo::transition` —
     /// a `Start` arriving for an already-running or already-terminal
     /// execution must be `Ok()`, not a second run.
-    async fn dispatch_start(&self, execution_id: ExecutionId) -> Result<(), ControlDispatchError>;
+    async fn dispatch_start(
+        &self,
+        scope: &Scope,
+        execution_id: ExecutionId,
+    ) -> Result<(), ControlDispatchError>;
 
     /// Deliver a `Cancel` command to a running execution.
+    ///
+    /// `scope` is the per-message tenant scope from `ControlMsg.scope`.
     ///
     /// A3 wired this into the engine's cooperative-cancel path (closes
     /// #330). The canonical engine-owned body lives in
@@ -155,9 +166,15 @@ pub trait ControlDispatch: Send + Sync {
     /// can fail after a successful dispatch, and the reclaim path (B1)
     /// will redeliver; because the signal itself is idempotent, re-delivery
     /// is safe without a short-circuit on persisted status.
-    async fn dispatch_cancel(&self, execution_id: ExecutionId) -> Result<(), ControlDispatchError>;
+    async fn dispatch_cancel(
+        &self,
+        scope: &Scope,
+        execution_id: ExecutionId,
+    ) -> Result<(), ControlDispatchError>;
 
     /// Deliver a `Terminate` command to a running execution.
+    ///
+    /// `scope` is the per-message tenant scope from `ControlMsg.scope`.
     ///
     /// calls this "forced termination", but there is no distinct
     /// forced-shutdown path in the engine today — cooperative cancel via
@@ -170,10 +187,13 @@ pub trait ControlDispatch: Send + Sync {
     /// **Idempotency:** same contract as [`dispatch_cancel`](Self::dispatch_cancel).
     async fn dispatch_terminate(
         &self,
+        scope: &Scope,
         execution_id: ExecutionId,
     ) -> Result<(), ControlDispatchError>;
 
     /// Deliver a `Resume` command to a suspended execution.
+    ///
+    /// `scope` is the per-message tenant scope from `ControlMsg.scope`.
     ///
     /// A2 wired the canonical body in
     /// [`crate::control_dispatch::EngineControlDispatch`].
@@ -182,9 +202,15 @@ pub trait ControlDispatch: Send + Sync {
     /// Implementations must guard via CAS on `ExecutionRepo::transition` —
     /// a `Resume` arriving for an already-running or already-terminal
     /// execution must be `Ok()`, not a second start.
-    async fn dispatch_resume(&self, execution_id: ExecutionId) -> Result<(), ControlDispatchError>;
+    async fn dispatch_resume(
+        &self,
+        scope: &Scope,
+        execution_id: ExecutionId,
+    ) -> Result<(), ControlDispatchError>;
 
     /// Deliver a `Restart` command to an execution.
+    ///
+    /// `scope` is the per-message tenant scope from `ControlMsg.scope`.
     ///
     /// A2 wired the canonical body in
     /// [`crate::control_dispatch::EngineControlDispatch`]. Full
@@ -196,8 +222,11 @@ pub trait ControlDispatch: Send + Sync {
     ///
     /// **Idempotency:** same `Resume` contract applies — double-restart
     /// rewinds twice. Guard with a monotonic restart counter or CAS.
-    async fn dispatch_restart(&self, execution_id: ExecutionId)
-    -> Result<(), ControlDispatchError>;
+    async fn dispatch_restart(
+        &self,
+        scope: &Scope,
+        execution_id: ExecutionId,
+    ) -> Result<(), ControlDispatchError>;
 }
 
 /// A raw claimed control message. The `execution_id` decode (and its
@@ -221,6 +250,11 @@ struct ClaimedRow {
     execution_id: ExecutionId,
     /// Command to deliver.
     command: ControlCommand,
+    /// Tenant scope this message belongs to (from `ControlMsg.scope`).
+    ///
+    /// Threaded into every `dispatch_*` call so the engine reads and drives
+    /// the execution under the correct tenant — cross-tenant isolation invariant #7.
+    scope: Scope,
     /// W3C `traceparent` carrier captured at enqueue, if any.
     w3c: Option<nebula_core::W3cTraceContext>,
 }
@@ -235,6 +269,10 @@ impl RawClaimed {
     /// Normalize into a [`ClaimedRow`], decoding `execution_id` (carried
     /// as the opaque string form — parsed directly, no "UTF-8 of the
     /// ULID string" decode).
+    ///
+    /// `scope` is taken directly from `ControlMsg.scope` — it is the
+    /// tenant this message belongs to and must be threaded into every
+    /// dispatch call (cross-tenant isolation invariant #7).
     fn normalize(self) -> Result<ClaimedRow, String> {
         let m = self.0;
         let execution_id = m.execution_id.parse::<ExecutionId>().map_err(|e| {
@@ -268,6 +306,7 @@ impl RawClaimed {
             id: m.id,
             execution_id,
             command: m.command,
+            scope: m.scope,
             w3c,
         })
     }
@@ -580,6 +619,7 @@ impl ControlConsumer {
             id: row_id,
             execution_id,
             command,
+            scope,
             w3c: w3c_opt,
         } = match raw.normalize() {
             Ok(row) => row,
@@ -617,23 +657,23 @@ impl ControlConsumer {
             match command {
                 ControlCommand::Start => {
                     tracing::debug!(%execution_id, "control-queue: dispatching Start (A2)");
-                    dispatch.dispatch_start(execution_id).await
+                    dispatch.dispatch_start(&scope, execution_id).await
                 },
                 ControlCommand::Cancel => {
                     tracing::debug!(%execution_id, "control-queue: dispatching Cancel (A3)");
-                    dispatch.dispatch_cancel(execution_id).await
+                    dispatch.dispatch_cancel(&scope, execution_id).await
                 },
                 ControlCommand::Terminate => {
                     tracing::debug!(%execution_id, "control-queue: dispatching Terminate (A3)");
-                    dispatch.dispatch_terminate(execution_id).await
+                    dispatch.dispatch_terminate(&scope, execution_id).await
                 },
                 ControlCommand::Resume => {
                     tracing::debug!(%execution_id, "control-queue: dispatching Resume (A2)");
-                    dispatch.dispatch_resume(execution_id).await
+                    dispatch.dispatch_resume(&scope, execution_id).await
                 },
                 ControlCommand::Restart => {
                     tracing::debug!(%execution_id, "control-queue: dispatching Restart (A2)");
-                    dispatch.dispatch_restart(execution_id).await
+                    dispatch.dispatch_restart(&scope, execution_id).await
                 },
             }
         }

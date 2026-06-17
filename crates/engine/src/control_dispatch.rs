@@ -49,7 +49,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use nebula_core::id::ExecutionId;
 use nebula_execution::ExecutionStatus;
-use nebula_storage_port::store::ExecutionStore;
+use nebula_storage_port::{Scope, store::ExecutionStore};
 
 use crate::{
     WorkflowEngine,
@@ -89,16 +89,20 @@ impl EngineControlDispatch {
         Self { engine, execution }
     }
 
-    /// Read the persisted [`ExecutionStatus`] for an execution, returning
-    /// `None` if the row does not exist.
+    /// Read the persisted [`ExecutionStatus`] for an execution under the given
+    /// tenant `scope`, returning `None` if the row does not exist.
+    ///
+    /// `scope` MUST be the per-message scope from `ControlMsg.scope` so that
+    /// execution rows belonging to a different tenant are never visible here
+    /// (cross-tenant isolation invariant #7).
     async fn read_status(
         &self,
+        scope: &Scope,
         execution_id: ExecutionId,
     ) -> Result<Option<ExecutionStatus>, ControlDispatchError> {
-        let scope = crate::store_seam::engine_scope();
         let json = self
             .execution
-            .get(&scope, &execution_id.to_string())
+            .get(scope, &execution_id.to_string())
             .await
             .map_err(|e| {
                 ControlDispatchError::Internal(format!(
@@ -124,13 +128,17 @@ impl EngineControlDispatch {
     }
 
     /// Drive an execution that is `Created` or `Paused` through the engine's
-    /// resume path. Shared by `dispatch_start`, `dispatch_resume`, and
-    /// `dispatch_restart` — the three commands converge on the same engine
-    /// entry today because the engine does not yet distinguish a
-    /// `restart-from-input` rewind from a normal resume (true rewind
-    /// requires durable output purge — tracked separately).
-    async fn drive(&self, execution_id: ExecutionId) -> Result<(), ControlDispatchError> {
-        match self.engine.resume_execution(execution_id).await {
+    /// resume path under the given tenant scope. Shared by `dispatch_start`,
+    /// `dispatch_resume`, and `dispatch_restart` — the three commands converge
+    /// on the same engine entry today because the engine does not yet
+    /// distinguish a `restart-from-input` rewind from a normal resume (true
+    /// rewind requires durable output purge — tracked separately).
+    async fn drive(
+        &self,
+        scope: &Scope,
+        execution_id: ExecutionId,
+    ) -> Result<(), ControlDispatchError> {
+        match self.engine.resume_execution(scope, execution_id).await {
             Ok(_) => Ok(()),
             // Concurrent dispatcher already holds the lease — the canonical
             // idempotency outcome. Returning `Ok()` here prevents
@@ -144,7 +152,7 @@ impl EngineControlDispatch {
                 // `resume_execution`. This catches both the "already terminal"
                 // `PlanningFailed` that `resume_execution` surfaces on re-entry
                 // and the race where a parallel `Cancel` beat us to the row.
-                if let Ok(Some(status)) = self.read_status(execution_id).await
+                if let Ok(Some(status)) = self.read_status(scope, execution_id).await
                     && (status.is_terminal() || matches!(status, ExecutionStatus::Cancelling))
                 {
                     return Ok(());
@@ -159,8 +167,12 @@ impl EngineControlDispatch {
 
 #[async_trait]
 impl ControlDispatch for EngineControlDispatch {
-    async fn dispatch_start(&self, execution_id: ExecutionId) -> Result<(), ControlDispatchError> {
-        match self.read_status(execution_id).await? {
+    async fn dispatch_start(
+        &self,
+        scope: &Scope,
+        execution_id: ExecutionId,
+    ) -> Result<(), ControlDispatchError> {
+        match self.read_status(scope, execution_id).await? {
             None => Err(ControlDispatchError::Rejected(format!(
                 "execution {execution_id} not found — start command orphaned"
             ))),
@@ -176,15 +188,19 @@ impl ControlDispatch for EngineControlDispatch {
                 | ExecutionStatus::TimedOut,
             ) => Ok(()),
             Some(ExecutionStatus::Created | ExecutionStatus::Paused) => {
-                self.drive(execution_id).await
+                self.drive(scope, execution_id).await
             },
         }
     }
 
-    async fn dispatch_resume(&self, execution_id: ExecutionId) -> Result<(), ControlDispatchError> {
+    async fn dispatch_resume(
+        &self,
+        scope: &Scope,
+        execution_id: ExecutionId,
+    ) -> Result<(), ControlDispatchError> {
         // `Resume` and `Start` converge on the same engine entry today — see
         // the `drive` docs. The idempotency read mirrors `dispatch_start`.
-        match self.read_status(execution_id).await? {
+        match self.read_status(scope, execution_id).await? {
             None => Err(ControlDispatchError::Rejected(format!(
                 "execution {execution_id} not found — resume command orphaned"
             ))),
@@ -197,16 +213,17 @@ impl ControlDispatch for EngineControlDispatch {
                 | ExecutionStatus::TimedOut,
             ) => Ok(()),
             Some(ExecutionStatus::Created | ExecutionStatus::Paused) => {
-                self.drive(execution_id).await
+                self.drive(scope, execution_id).await
             },
         }
     }
 
     async fn dispatch_restart(
         &self,
+        scope: &Scope,
         execution_id: ExecutionId,
     ) -> Result<(), ControlDispatchError> {
-        //        // rewind-from-input restart requires durable output purge plus a
+        // rewind-from-input restart requires durable output purge plus a
         // restart counter — neither exists yet. For A2, treat restart as a
         // re-entrant drive of the engine's resume path and honor the same
         // terminal / running idempotency outcomes.
@@ -214,7 +231,7 @@ impl ControlDispatch for EngineControlDispatch {
         // Restart-of-terminal intentionally errors so operators see the gap
         // in the `execution_control_queue.error_message` rather than the
         // command silently succeeding and not actually restarting anything.
-        match self.read_status(execution_id).await? {
+        match self.read_status(scope, execution_id).await? {
             None => Err(ControlDispatchError::Rejected(format!(
                 "execution {execution_id} not found — restart command orphaned"
             ))),
@@ -226,16 +243,19 @@ impl ControlDispatch for EngineControlDispatch {
                 | ExecutionStatus::TimedOut),
             ) => Err(ControlDispatchError::Rejected(format!(
                 "execution {execution_id} is already {status}; rewind-from-input restart \
- requires durable output purge — not yet implemented \
-                 follow-up"
+                 requires durable output purge — not yet implemented follow-up"
             ))),
             Some(ExecutionStatus::Created | ExecutionStatus::Paused) => {
-                self.drive(execution_id).await
+                self.drive(scope, execution_id).await
             },
         }
     }
 
-    async fn dispatch_cancel(&self, execution_id: ExecutionId) -> Result<(), ControlDispatchError> {
+    async fn dispatch_cancel(
+        &self,
+        scope: &Scope,
+        execution_id: ExecutionId,
+    ) -> Result<(), ControlDispatchError> {
         // A3 — every non-orphan `Cancel` signals the engine's
         // cancel registry, regardless of the persisted status.
         //
@@ -254,7 +274,7 @@ impl ControlDispatch for EngineControlDispatch {
         // returns `false` without side effects. Signalling always is the
         // honest minimum: it closes the live-loop gap and is safe under
         // at-least-once redelivery.
-        match self.read_status(execution_id).await? {
+        match self.read_status(scope, execution_id).await? {
             // Producer bug: queue row written without the execution row (or a
             // row that disappeared between enqueue and drain). Surface so the
             // diagnosis lands on `execution_control_queue.error_message`.
@@ -276,6 +296,7 @@ impl ControlDispatch for EngineControlDispatch {
 
     async fn dispatch_terminate(
         &self,
+        scope: &Scope,
         execution_id: ExecutionId,
     ) -> Result<(), ControlDispatchError> {
         // names `Terminate` "forced termination", but there is no
@@ -291,6 +312,6 @@ impl ControlDispatch for EngineControlDispatch {
         // (cancel-registry and cooperative-cancel contract) for
         // the design rationale and the upgrade path to a true forced-shutdown
         // distinction.
-        self.dispatch_cancel(execution_id).await
+        self.dispatch_cancel(scope, execution_id).await
     }
 }

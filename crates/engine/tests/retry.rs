@@ -445,9 +445,8 @@ async fn idempotency_key_differentiates_attempts() {
         },
     );
 
-    // Spec-16 port bundle (the engine always reads/commits at the
-    // fixed `engine_scope()` placeholder; this test inspects the same
-    // scope directly).
+    // Spec-16 port bundle (the engine threads the test scope; this test
+    // inspects the same scope directly).
     let execution = Arc::new(nebula_storage::InMemoryExecutionStore::new());
     let journal = Arc::new(nebula_storage::InMemoryJournalReader::new(&execution));
     let stores = nebula_engine::ExecutionStores {
@@ -475,7 +474,7 @@ async fn idempotency_key_differentiates_attempts() {
     // Pull the persisted state and inspect the attempts.
     let record = execution
         .get(
-            &nebula_engine::store_seam::engine_scope(),
+            &nebula_engine::store_seam::test_scope(),
             &result.execution_id.to_string(),
         )
         .await

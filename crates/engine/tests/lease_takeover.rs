@@ -15,9 +15,9 @@
 //! (`ExecutionStore` + `WorkflowVersionStore` + `ControlQueue`, bundled
 //! via `WorkflowEngine::with_execution_stores`/`with_workflow_stores`,
 //! `EngineControlDispatch::new_port`, `ControlConsumer::new_port`). The
-//! engine is tenant-agnostic and threads the fixed `engine_scope()`
-//! placeholder, so the raw in-memory adapters behave as one coherent
-//! tenant — identical observable behaviour to the old single-tenant
+//! engine threads the per-message scope from the DTO on the production
+//! path; test wiring uses `test_scope()` so the raw in-memory adapters
+//! behave as one coherent tenant — identical observable behaviour to the old single-tenant
 //! repos. The §M2.2 lease-handoff guarantees are unchanged and asserted
 //! verbatim:
 //! - heartbeat-loss → TTL-expiry takeover by a second runner with no
@@ -77,8 +77,8 @@ fn proc16(label: &[u8]) -> [u8; 16] {
 
 /// Bundled port adapters for one shared in-memory tenant. Mirrors the
 /// in-source `TestStores` pattern: every field is a real port trait the
-/// engine consumes; the `engine_scope()` placeholder makes the raw
-/// adapters behave as a single coherent tenant.
+/// engine consumes; `test_scope()` makes the raw adapters behave as a
+/// single coherent tenant.
 #[derive(Clone)]
 struct LeaseStores {
     execution: Arc<InMemoryExecutionStore>,
@@ -135,7 +135,7 @@ impl LeaseStores {
     /// Persist a workflow definition as published version 0 so the
     /// resume path's `get_published` lookup resolves it.
     async fn save_workflow(&self, wf: &WorkflowDefinition) {
-        let scope = nebula_engine::store_seam::engine_scope();
+        let scope = nebula_engine::store_seam::test_scope();
         let definition = serde_json::to_value(wf).unwrap();
         self.versions
             .create(
@@ -155,7 +155,7 @@ impl LeaseStores {
     /// Whether a stranger holder is blocked from acquiring the lease
     /// (the port analog of the legacy `!acquire_lease(...)` probe).
     async fn lease_held(&self, id: nebula_core::id::ExecutionId, ttl: Duration) -> bool {
-        let scope = nebula_engine::store_seam::engine_scope();
+        let scope = nebula_engine::store_seam::test_scope();
         self.execution
             .acquire_lease(&scope, &id.to_string(), "lease-probe-stranger", ttl)
             .await
@@ -462,7 +462,7 @@ async fn engine_b_takes_over_after_engine_a_runner_dies() {
     // - drive the workflow to Succeeded.
     let result_b = tokio::time::timeout(
         Duration::from_secs(10),
-        engine_b.resume_execution(execution_id),
+        engine_b.resume_execution(&nebula_engine::store_seam::test_scope(), execution_id),
     )
     .await
     .expect("resume_execution must complete within 10s")
@@ -644,7 +644,7 @@ async fn engine_b_cancels_execution_after_runner_a_death_via_reclaim_redeliver()
             id: cancel_row_id,
             execution_id: execution_id.to_string(),
             command: ControlCommand::Cancel,
-            scope: nebula_engine::store_seam::engine_scope(),
+            scope: nebula_engine::store_seam::test_scope(),
             w3c_traceparent: None,
             reclaim_count: 0,
         })
@@ -670,7 +670,11 @@ async fn engine_b_cancels_execution_after_runner_a_death_via_reclaim_redeliver()
     // re-dispatches Y. Its parking handler signals started_b on entry.
     let task_b = {
         let engine_b = Arc::clone(&engine_b);
-        tokio::spawn(async move { engine_b.resume_execution(execution_id).await })
+        tokio::spawn(async move {
+            engine_b
+                .resume_execution(&nebula_engine::store_seam::test_scope(), execution_id)
+                .await
+        })
     };
 
     // Wait until engine_b's running registry has the entry (parking

@@ -57,7 +57,7 @@ fn port_msg(execution_id: &ExecutionId, command: ControlCommand, row_id: u8) -> 
         id: [row_id; 16],
         execution_id: execution_id.to_string(),
         command,
-        scope: nebula_engine::store_seam::engine_scope(),
+        scope: nebula_engine::store_seam::test_scope(),
         w3c_traceparent: None,
         reclaim_count: 0,
     }
@@ -88,31 +88,45 @@ impl RecordingDispatch {
 
 #[async_trait]
 impl ControlDispatch for RecordingDispatch {
-    async fn dispatch_start(&self, execution_id: ExecutionId) -> Result<(), ControlDispatchError> {
+    async fn dispatch_start(
+        &self,
+        _scope: &nebula_storage_port::Scope,
+        execution_id: ExecutionId,
+    ) -> Result<(), ControlDispatchError> {
         self.record(ControlCommand::Start, execution_id);
         Ok(())
     }
 
-    async fn dispatch_cancel(&self, execution_id: ExecutionId) -> Result<(), ControlDispatchError> {
+    async fn dispatch_cancel(
+        &self,
+        _scope: &nebula_storage_port::Scope,
+        execution_id: ExecutionId,
+    ) -> Result<(), ControlDispatchError> {
         self.record(ControlCommand::Cancel, execution_id);
         Ok(())
     }
 
     async fn dispatch_terminate(
         &self,
+        _scope: &nebula_storage_port::Scope,
         execution_id: ExecutionId,
     ) -> Result<(), ControlDispatchError> {
         self.record(ControlCommand::Terminate, execution_id);
         Ok(())
     }
 
-    async fn dispatch_resume(&self, execution_id: ExecutionId) -> Result<(), ControlDispatchError> {
+    async fn dispatch_resume(
+        &self,
+        _scope: &nebula_storage_port::Scope,
+        execution_id: ExecutionId,
+    ) -> Result<(), ControlDispatchError> {
         self.record(ControlCommand::Resume, execution_id);
         Ok(())
     }
 
     async fn dispatch_restart(
         &self,
+        _scope: &nebula_storage_port::Scope,
         execution_id: ExecutionId,
     ) -> Result<(), ControlDispatchError> {
         self.record(ControlCommand::Restart, execution_id);
@@ -163,13 +177,21 @@ impl FlakyDispatch {
 
 #[async_trait]
 impl ControlDispatch for FlakyDispatch {
-    async fn dispatch_start(&self, execution_id: ExecutionId) -> Result<(), ControlDispatchError> {
+    async fn dispatch_start(
+        &self,
+        _scope: &nebula_storage_port::Scope,
+        execution_id: ExecutionId,
+    ) -> Result<(), ControlDispatchError> {
         self.maybe_stall(&execution_id).await;
         self.record(ControlCommand::Start, execution_id);
         Ok(())
     }
 
-    async fn dispatch_cancel(&self, execution_id: ExecutionId) -> Result<(), ControlDispatchError> {
+    async fn dispatch_cancel(
+        &self,
+        _scope: &nebula_storage_port::Scope,
+        execution_id: ExecutionId,
+    ) -> Result<(), ControlDispatchError> {
         self.maybe_stall(&execution_id).await;
         self.record(ControlCommand::Cancel, execution_id);
         Ok(())
@@ -177,6 +199,7 @@ impl ControlDispatch for FlakyDispatch {
 
     async fn dispatch_terminate(
         &self,
+        _scope: &nebula_storage_port::Scope,
         execution_id: ExecutionId,
     ) -> Result<(), ControlDispatchError> {
         self.maybe_stall(&execution_id).await;
@@ -184,7 +207,11 @@ impl ControlDispatch for FlakyDispatch {
         Ok(())
     }
 
-    async fn dispatch_resume(&self, execution_id: ExecutionId) -> Result<(), ControlDispatchError> {
+    async fn dispatch_resume(
+        &self,
+        _scope: &nebula_storage_port::Scope,
+        execution_id: ExecutionId,
+    ) -> Result<(), ControlDispatchError> {
         self.maybe_stall(&execution_id).await;
         self.record(ControlCommand::Resume, execution_id);
         Ok(())
@@ -192,6 +219,7 @@ impl ControlDispatch for FlakyDispatch {
 
     async fn dispatch_restart(
         &self,
+        _scope: &nebula_storage_port::Scope,
         execution_id: ExecutionId,
     ) -> Result<(), ControlDispatchError> {
         self.maybe_stall(&execution_id).await;

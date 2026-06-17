@@ -49,6 +49,8 @@ use nebula_workflow::{Connection, DependencyGraph, NodeState, WorkflowDefinition
 use tokio::{sync::Semaphore, task::JoinSet};
 use tokio_util::sync::CancellationToken;
 
+use nebula_storage_port::Scope;
+
 use crate::{
     credential_accessor::EngineCredentialAccessor, error::EngineError, event::ExecutionEvent,
     resolver::ParamResolver, resource::ResourceActivatorRegistry,
@@ -1103,8 +1105,10 @@ impl WorkflowEngine {
 
         // Run the frontier loop — same as execute_workflow, just different seed + pre-populated
         // outputs.
+        let replay_scope = crate::store_seam::test_scope();
         let failed_node = self
             .run_frontier(
+                &replay_scope,
                 &graph,
                 &node_map,
                 &outputs,
@@ -1211,6 +1215,7 @@ impl WorkflowEngine {
     /// coordination seam, and the caller proceeds without a lease.
     async fn acquire_and_heartbeat_lease(
         &self,
+        scope: &Scope,
         execution_id: ExecutionId,
         frontier_cancel: CancellationToken,
     ) -> Result<Option<LeaseGuard>, EngineError> {
@@ -1224,10 +1229,9 @@ impl WorkflowEngine {
         // lease, no fencing). A live lease held by another runner
         // surfaces as `EngineError::Leased` on both paths.
         let backend: crate::store_seam::LeaseBackend = if let Some(stores) = self.stores.clone() {
-            let scope = crate::store_seam::engine_scope();
             let token = stores
                 .execution
-                .acquire_lease(&scope, &execution_id.to_string(), &holder, ttl)
+                .acquire_lease(scope, &execution_id.to_string(), &holder, ttl)
                 .await
                 .map_err(|e| EngineError::PlanningFailed(format!("acquire lease: {e}")))?;
             let Some(token) = token else {
@@ -1248,7 +1252,7 @@ impl WorkflowEngine {
                     holder,
                 });
             };
-            crate::store_seam::LeaseBackend::new(stores.execution.clone(), scope, token)
+            crate::store_seam::LeaseBackend::new(stores.execution.clone(), scope.clone(), token)
         } else {
             // No storage seam configured — single-process library mode,
             // proceed without a lease.
@@ -1377,23 +1381,52 @@ impl WorkflowEngine {
     ///
     /// Entry nodes receive the workflow-level `input`. Subsequent nodes
     /// receive the output of their activated predecessors.
+    ///
+    /// This method is used in tests and local library mode. Production code
+    /// enters the engine via [`Self::resume_execution`] (which carries the
+    /// real per-message tenant scope from the control-queue / job-dispatch row).
+    /// Tests use the in-memory adapters (no tenancy decorator) and call this
+    /// method with the fixed test scope so all adapters observe one coherent tenant.
     pub async fn execute_workflow(
         &self,
         workflow: &WorkflowDefinition,
         input: serde_json::Value,
         budget: ExecutionBudget,
     ) -> Result<ExecutionResult, EngineError> {
-        self.execute_workflow_with_acquire_scope(workflow, input, budget, None)
+        let scope = crate::store_seam::test_scope();
+        self.execute_workflow_scoped(&scope, workflow, input, budget, None)
             .await
     }
 
-    /// Like [`execute_workflow`](Self::execute_workflow) with per-run tenant scope.
+    /// Like [`execute_workflow`](Self::execute_workflow) with per-run resource-acquire scope.
     ///
-    /// `run_acquire_scope` supplies `org_id` / `workspace_id` for this execution.
+    /// `run_acquire_scope` supplies `org_id` / `workspace_id` for resource acquisition.
     /// Fields set here override the engine default from
     /// [`with_resource_acquire_scope`](Self::with_resource_acquire_scope).
+    ///
+    /// Storage port calls use the fixed test scope (same as
+    /// [`execute_workflow`](Self::execute_workflow)). Production code uses
+    /// [`resume_execution`](Self::resume_execution).
     pub async fn execute_workflow_with_acquire_scope(
         &self,
+        workflow: &WorkflowDefinition,
+        input: serde_json::Value,
+        budget: ExecutionBudget,
+        run_acquire_scope: Option<nebula_core::scope::Scope>,
+    ) -> Result<ExecutionResult, EngineError> {
+        let scope = crate::store_seam::test_scope();
+        self.execute_workflow_scoped(&scope, workflow, input, budget, run_acquire_scope)
+            .await
+    }
+
+    /// Internal implementation — thread `scope` through the storage port calls.
+    ///
+    /// Called by [`execute_workflow`], [`execute_workflow_with_acquire_scope`], and
+    /// [`replay_execution`] with the test scope; called by [`resume_execution`] with
+    /// the per-message tenant scope from the control-queue / job-dispatch row.
+    async fn execute_workflow_scoped(
+        &self,
+        scope: &Scope,
         workflow: &WorkflowDefinition,
         input: serde_json::Value,
         budget: ExecutionBudget,
@@ -1448,7 +1481,7 @@ impl WorkflowEngine {
             stores
                 .execution
                 .create(
-                    &crate::store_seam::engine_scope(),
+                    scope,
                     &execution_id.to_string(),
                     &workflow.id.to_string(),
                     state_json,
@@ -1472,7 +1505,7 @@ impl WorkflowEngine {
         // just died must not overwrite the canonical state a new
         // holder already began driving.
         let lease = self
-            .acquire_and_heartbeat_lease(execution_id, cancel_token.clone())
+            .acquire_and_heartbeat_lease(scope, execution_id, cancel_token.clone())
             .await?;
 
         // Fencing token threaded into every checkpoint / final-state
@@ -1521,6 +1554,7 @@ impl WorkflowEngine {
         let seed_nodes: Vec<NodeKey> = graph.entry_nodes();
         let failed_node = self
             .run_frontier(
+                scope,
                 &graph,
                 &node_map,
                 &outputs,
@@ -1601,7 +1635,13 @@ impl WorkflowEngine {
             // non-terminal conflicts before surfacing a typed
             // `CasConflict` error.
             match self
-                .persist_final_state(execution_id, &mut exec_state, &mut repo_version, fencing)
+                .persist_final_state(
+                    scope,
+                    execution_id,
+                    &mut exec_state,
+                    &mut repo_version,
+                    fencing,
+                )
                 .await
             {
                 Ok(None) => final_status,
@@ -1710,6 +1750,7 @@ impl WorkflowEngine {
     /// - The persisted state cannot be deserialized
     pub async fn resume_execution(
         &self,
+        scope: &Scope,
         execution_id: ExecutionId,
     ) -> Result<ExecutionResult, EngineError> {
         let started = Instant::now();
@@ -1738,11 +1779,10 @@ impl WorkflowEngine {
                 .workflow_stores
                 .as_ref()
                 .ok_or_else(|| EngineError::PlanningFailed("no workflow_repo configured".into()))?;
-            let scope = crate::store_seam::engine_scope();
             let id = execution_id.to_string();
             let record = stores
                 .execution
-                .get(&scope, &id)
+                .get(scope, &id)
                 .await
                 .map_err(|e| EngineError::PlanningFailed(format!("load state: {e}")))?
                 .ok_or_else(|| {
@@ -1751,7 +1791,7 @@ impl WorkflowEngine {
             let workflow_id = record.workflow_id.clone();
             let workflow_json = workflow_stores
                 .versions
-                .get_published(&scope, &workflow_id)
+                .get_published(scope, &workflow_id)
                 .await
                 .map_err(|e| EngineError::PlanningFailed(format!("load workflow: {e}")))?
                 .ok_or_else(|| {
@@ -1765,7 +1805,7 @@ impl WorkflowEngine {
             // different value than a non-crashed run.
             let outputs = stores
                 .node_results
-                .load_all_node_outputs(&scope, &id)
+                .load_all_node_outputs(scope, &id)
                 .await
                 .map_err(|e| EngineError::PlanningFailed(format!("load outputs: {e}")))?
                 .into_iter()
@@ -1958,7 +1998,7 @@ impl WorkflowEngine {
         // with `EngineError::Leased` instead of running nodes in parallel
         // with the existing runner.
         let lease = self
-            .acquire_and_heartbeat_lease(execution_id, cancel_token.clone())
+            .acquire_and_heartbeat_lease(scope, execution_id, cancel_token.clone())
             .await?;
 
         // Fencing token threaded into every checkpoint / final-state
@@ -2004,6 +2044,7 @@ impl WorkflowEngine {
         };
         let failed_node = self
             .run_frontier(
+                scope,
                 &graph,
                 &node_map,
                 &outputs,
@@ -2072,7 +2113,13 @@ impl WorkflowEngine {
             // (issue #333). Mirrors `execute_workflow` — see its comment
             // for the full contract.
             match self
-                .persist_final_state(execution_id, &mut exec_state, &mut repo_version, fencing)
+                .persist_final_state(
+                    scope,
+                    execution_id,
+                    &mut exec_state,
+                    &mut repo_version,
+                    fencing,
+                )
                 .await
             {
                 Ok(None) => final_status,
@@ -2179,6 +2226,7 @@ impl WorkflowEngine {
     #[allow(clippy::too_many_arguments)]
     async fn run_frontier(
         &self,
+        scope: &Scope,
         graph: &DependencyGraph,
         node_map: &HashMap<NodeKey, &nebula_workflow::NodeDefinition>,
         outputs: &Arc<DashMap<NodeKey, serde_json::Value>>,
@@ -2356,6 +2404,7 @@ impl WorkflowEngine {
                 // mark it completed without re-dispatching.
                 if self
                     .check_and_apply_idempotency(
+                        scope,
                         execution_id,
                         node_key.clone(),
                         outputs,
@@ -2473,6 +2522,7 @@ impl WorkflowEngine {
                     {
                         if let Err(e) = self
                             .checkpoint_node(
+                                scope,
                                 execution_id,
                                 node_key.clone(),
                                 outputs,
@@ -2538,6 +2588,7 @@ impl WorkflowEngine {
 
                 if let Err(e) = self
                     .checkpoint_node(
+                        scope,
                         execution_id,
                         node_key.clone(),
                         outputs,
@@ -2769,6 +2820,7 @@ impl WorkflowEngine {
                     // on an undurable decision.
                     if let Err(e) = self
                         .checkpoint_node(
+                            scope,
                             execution_id,
                             node_key.clone(),
                             outputs,
@@ -2805,7 +2857,7 @@ impl WorkflowEngine {
                         cancel_token.cancel();
                         return Some((node_key.clone(), e.to_string()));
                     }
-                    self.record_idempotency(exec_state, execution_id, node_key.clone())
+                    self.record_idempotency(scope, exec_state, execution_id, node_key.clone())
                         .await;
 
                     // Persist the full ActionResult alongside the raw
@@ -2813,7 +2865,7 @@ impl WorkflowEngine {
                     // the exact routing semantics (issue #299).
                     //
                     // T4 — `attempt_count + 1` is the
-                    self.record_node_result(execution_id, node_key.clone(), &action_result)
+                    self.record_node_result(scope, execution_id, node_key.clone(), &action_result)
                         .await;
 
                     // T4 — push the success attempt
@@ -3035,6 +3087,7 @@ impl WorkflowEngine {
                                 // counter bump in one CAS write.
                                 if let Err(e) = self
                                     .checkpoint_node(
+                                        scope,
                                         execution_id,
                                         node_key.clone(),
                                         outputs,
@@ -3111,6 +3164,7 @@ impl WorkflowEngine {
 
                     if let Err(e) = self
                         .checkpoint_node(
+                            scope,
                             execution_id,
                             node_key.clone(),
                             outputs,
@@ -3154,6 +3208,7 @@ impl WorkflowEngine {
 
                     if let Some(node_key) = panicked_node {
                         self.handle_panicked_node(
+                            scope,
                             execution_id,
                             node_key.clone(),
                             &err_msg,
@@ -3390,6 +3445,7 @@ impl WorkflowEngine {
     #[allow(clippy::too_many_arguments)]
     async fn check_and_apply_idempotency(
         &self,
+        scope: &Scope,
         execution_id: ExecutionId,
         node_key: NodeKey,
         outputs: &Arc<DashMap<NodeKey, serde_json::Value>>,
@@ -3407,11 +3463,10 @@ impl WorkflowEngine {
         // re-execute). Without a store bundle there is no persistence,
         // so nothing can be replayed.
         let (output_value, stored_result) = if let Some(stores) = &self.stores {
-            let scope = crate::store_seam::engine_scope();
             let id = execution_id.to_string();
             let output_value = match stores
                 .node_results
-                .load_node_output(&scope, &id, node_key.as_str())
+                .load_node_output(scope, &id, node_key.as_str())
                 .await
             {
                 Ok(Some(record)) => record.json,
@@ -3428,7 +3483,7 @@ impl WorkflowEngine {
             };
             let stored_result = match stores
                 .node_results
-                .load_node_result(&scope, &id, node_key.as_str())
+                .load_node_result(scope, &id, node_key.as_str())
                 .await
             {
                 Ok(Some(record)) => deserialize_stored_result(record.json, execution_id, &node_key),
@@ -3487,6 +3542,7 @@ impl WorkflowEngine {
     /// implementation.
     async fn record_node_result(
         &self,
+        scope: &Scope,
         execution_id: ExecutionId,
         node_key: NodeKey,
         action_result: &ActionResult<serde_json::Value>,
@@ -3520,12 +3576,7 @@ impl WorkflowEngine {
             };
             if let Err(e) = stores
                 .node_results
-                .save_node_result(
-                    &crate::store_seam::engine_scope(),
-                    &execution_id.to_string(),
-                    node_key.as_str(),
-                    record,
-                )
+                .save_node_result(scope, &execution_id.to_string(), node_key.as_str(), record)
                 .await
             {
                 tracing::warn!(
@@ -3544,6 +3595,7 @@ impl WorkflowEngine {
     /// must not abort an otherwise healthy execution.
     async fn record_idempotency(
         &self,
+        scope: &Scope,
         exec_state: &ExecutionState,
         execution_id: ExecutionId,
         node_key: NodeKey,
@@ -3560,12 +3612,7 @@ impl WorkflowEngine {
                 .map_or(1, |ns| (ns.attempt_count() as u32).saturating_add(1));
             if let Err(e) = stores
                 .idempotency
-                .check_and_mark(
-                    &crate::store_seam::engine_scope(),
-                    &execution_id.to_string(),
-                    node_key.as_str(),
-                    attempt,
-                )
+                .check_and_mark(scope, &execution_id.to_string(), node_key.as_str(), attempt)
                 .await
             {
                 tracing::warn!(
@@ -3600,6 +3647,7 @@ impl WorkflowEngine {
     )]
     async fn handle_panicked_node(
         &self,
+        scope: &Scope,
         execution_id: ExecutionId,
         node_key: NodeKey,
         err_msg: &str,
@@ -3612,6 +3660,7 @@ impl WorkflowEngine {
         mark_node_failed(exec_state, node_key.clone(), &panic_err);
         let checkpoint_result = self
             .checkpoint_node(
+                scope,
                 execution_id,
                 node_key.clone(),
                 outputs,
@@ -3635,8 +3684,13 @@ impl WorkflowEngine {
         });
     }
 
+    // Private helper — scope was added for tenant isolation (U-D1.4c);
+    // combined with the fencing token this pushes past the 7-arg threshold
+    // that is designed for public APIs.
+    #[allow(clippy::too_many_arguments)]
     async fn checkpoint_node(
         &self,
+        scope: &Scope,
         execution_id: ExecutionId,
         node_key: NodeKey,
         outputs: &Arc<DashMap<NodeKey, serde_json::Value>>,
@@ -3664,6 +3718,7 @@ impl WorkflowEngine {
         // token is rejected even on a matching version (closes the
         // zombie-runner hole).
         self.checkpoint_node_port(
+            scope,
             stores,
             execution_id,
             node_key,
@@ -3685,6 +3740,7 @@ impl WorkflowEngine {
     #[allow(clippy::too_many_arguments)]
     async fn checkpoint_node_port(
         &self,
+        scope: &Scope,
         stores: &crate::store_seam::ExecutionStores,
         execution_id: ExecutionId,
         node_key: NodeKey,
@@ -3693,14 +3749,13 @@ impl WorkflowEngine {
         repo_version: &mut u64,
         token: nebula_storage_port::FencingToken,
     ) -> Result<(), EngineError> {
-        let scope = crate::store_seam::engine_scope();
         let id = execution_id.to_string();
 
         if let Some(output) = outputs.get(&node_key) {
             let record = crate::store_seam::node_output_record(output.value().clone());
             if let Err(e) = stores
                 .node_results
-                .save_node_output(&scope, &id, node_key.as_str(), record)
+                .save_node_output(scope, &id, node_key.as_str(), record)
                 .await
             {
                 return Err(EngineError::CheckpointFailed {
@@ -3750,7 +3805,7 @@ impl WorkflowEngine {
             Ok(nebula_storage_port::TransitionOutcome::VersionConflict { actual }) => {
                 let expected_version = *repo_version;
                 *repo_version = actual;
-                let observed_status = match stores.execution.get(&scope, &id).await {
+                let observed_status = match stores.execution.get(scope, &id).await {
                     Ok(Some(rec)) => {
                         *repo_version = rec.version;
                         parse_observed_status(&rec.state)
@@ -3825,6 +3880,7 @@ impl WorkflowEngine {
     ///   surfaces a typed failure instead of a silent success.
     async fn persist_final_state(
         &self,
+        scope: &Scope,
         execution_id: ExecutionId,
         exec_state: &mut ExecutionState,
         repo_version: &mut u64,
@@ -3841,8 +3897,15 @@ impl WorkflowEngine {
                 reason: "no fencing-gated store configured for final-state persist".to_owned(),
             });
         };
-        self.persist_final_state_port(&stores, execution_id, exec_state, repo_version, token)
-            .await
+        self.persist_final_state_port(
+            scope,
+            &stores,
+            execution_id,
+            exec_state,
+            repo_version,
+            token,
+        )
+        .await
     }
 
     /// Spec-16 port variant of [`Self::persist_final_state`]: the final
@@ -3853,13 +3916,13 @@ impl WorkflowEngine {
     /// holder owns the canonical state — ADR 0008, ).
     async fn persist_final_state_port(
         &self,
+        scope: &Scope,
         stores: &crate::store_seam::ExecutionStores,
         execution_id: ExecutionId,
         exec_state: &mut ExecutionState,
         repo_version: &mut u64,
         token: nebula_storage_port::FencingToken,
     ) -> Result<Option<ExecutionStatus>, EngineError> {
-        let scope = crate::store_seam::engine_scope();
         let id = execution_id.to_string();
 
         let build_batch = |version: u64,
@@ -3906,7 +3969,7 @@ impl WorkflowEngine {
             }),
             nebula_storage_port::TransitionOutcome::VersionConflict { actual } => {
                 let expected_version = *repo_version;
-                let observed = match stores.execution.get(&scope, &id).await {
+                let observed = match stores.execution.get(scope, &id).await {
                     Ok(Some(rec)) => rec,
                     Ok(None) => {
                         *repo_version = actual;
@@ -3981,7 +4044,7 @@ impl WorkflowEngine {
                         actual: retry_actual,
                     }) => {
                         let (latest_version, latest_status) =
-                            match stores.execution.get(&scope, &id).await {
+                            match stores.execution.get(scope, &id).await {
                                 Ok(Some(rec)) => {
                                     let s = parse_observed_status(&rec.state);
                                     (rec.version, s)
@@ -5431,8 +5494,8 @@ mod tests {
     /// `inject_state` / `inject_node_output` / `save_workflow`) so
     /// post-execution assertions read the durable state the same way
     /// they did against the old execution repo, mirroring the
-    /// production port path's scope/record semantics (the engine always
-    /// passes [`crate::store_seam::engine_scope`]).
+    /// production port path's scope/record semantics; test helpers call
+    /// [`crate::store_seam::test_scope`] for all store operations.
     ///
     /// This is test scaffolding, not a production shim: the bundle's
     /// fields are the same port traits production consumes; only the
@@ -5500,7 +5563,7 @@ mod tests {
         /// Persist a workflow definition as the published version 0 so the
         /// resume path's `get_published` lookup resolves it.
         async fn save_workflow(&self, wf: &WorkflowDefinition) {
-            let scope = crate::store_seam::engine_scope();
+            let scope = crate::store_seam::test_scope();
             let definition = serde_json::to_value(wf).unwrap();
             self.versions
                 .create(
@@ -5524,7 +5587,7 @@ mod tests {
             &self,
             id: ExecutionId,
         ) -> Result<Option<(u64, serde_json::Value)>, StorageError> {
-            let scope = crate::store_seam::engine_scope();
+            let scope = crate::store_seam::test_scope();
             Ok(self
                 .execution
                 .get(&scope, &id.to_string())
@@ -5539,7 +5602,7 @@ mod tests {
             id: ExecutionId,
             node: NodeKey,
         ) -> Result<Option<serde_json::Value>, StorageError> {
-            let scope = crate::store_seam::engine_scope();
+            let scope = crate::store_seam::test_scope();
             Ok(self
                 .node_results
                 .load_node_output(&scope, &id.to_string(), node.as_str())
@@ -5558,7 +5621,7 @@ mod tests {
             workflow_id: WorkflowId,
             state: serde_json::Value,
         ) {
-            let scope = crate::store_seam::engine_scope();
+            let scope = crate::store_seam::test_scope();
             self.execution
                 .create(&scope, &id.to_string(), &workflow_id.to_string(), state)
                 .await
@@ -5574,7 +5637,7 @@ mod tests {
             node: NodeKey,
             output: serde_json::Value,
         ) {
-            let scope = crate::store_seam::engine_scope();
+            let scope = crate::store_seam::test_scope();
             self.node_results
                 .save_node_output(
                     &scope,
@@ -5596,7 +5659,7 @@ mod tests {
             id: ExecutionId,
             node: NodeKey,
         ) -> Result<Option<nebula_storage_port::dto::NodeResultRecord>, StorageError> {
-            let scope = crate::store_seam::engine_scope();
+            let scope = crate::store_seam::test_scope();
             self.node_results
                 .load_node_result(&scope, &id.to_string(), node.as_str())
                 .await
@@ -5613,7 +5676,7 @@ mod tests {
             holder: &str,
             ttl: std::time::Duration,
         ) -> Result<bool, StorageError> {
-            let scope = crate::store_seam::engine_scope();
+            let scope = crate::store_seam::test_scope();
             Ok(self
                 .execution
                 .acquire_lease(&scope, &id.to_string(), holder, ttl)
@@ -5622,11 +5685,11 @@ mod tests {
         }
 
         /// Non-mutating dedup-state read. Mirrors the production path's
-        /// idempotency mark (`engine_scope()` + `{execution_id}:{node}:
-        /// {attempt}`) without perturbing it — the port analog of the
+        /// idempotency mark (scope + `{execution_id}:{node}:{attempt}`)
+        /// without perturbing it — the port analog of the
         /// legacy `ExecutionRepo::check_idempotency`.
         fn is_idempotency_marked(&self, id: ExecutionId, node: NodeKey, attempt: u32) -> bool {
-            let scope = crate::store_seam::engine_scope();
+            let scope = crate::store_seam::test_scope();
             self.idempotency
                 .is_marked(&scope, &id.to_string(), node.as_str(), attempt)
         }
@@ -6536,7 +6599,7 @@ mod tests {
         let (engine, _) = make_engine(registry);
         // No execution / workflow store bundles attached.
         let err = engine
-            .resume_execution(ExecutionId::new())
+            .resume_execution(&crate::store_seam::test_scope(), ExecutionId::new())
             .await
             .unwrap_err();
         assert!(
@@ -6553,7 +6616,7 @@ mod tests {
         let engine = engine.with_execution_stores(stores.execution_stores());
         // No workflow store attached.
         let err = engine
-            .resume_execution(ExecutionId::new())
+            .resume_execution(&crate::store_seam::test_scope(), ExecutionId::new())
             .await
             .unwrap_err();
         assert!(
@@ -6576,7 +6639,7 @@ mod tests {
         let engine = stores.attach(engine);
 
         let err = engine
-            .resume_execution(ExecutionId::new())
+            .resume_execution(&crate::store_seam::test_scope(), ExecutionId::new())
             .await
             .unwrap_err();
         assert!(
@@ -6611,7 +6674,7 @@ mod tests {
 
         // Now resume the completed execution — should fail.
         let err = engine
-            .resume_execution(result.execution_id)
+            .resume_execution(&crate::store_seam::test_scope(), result.execution_id)
             .await
             .unwrap_err();
         assert!(
@@ -6688,7 +6751,8 @@ mod tests {
 
         let engine = stores.attach(engine);
 
-        let result = engine.resume_execution(execution_id).await.unwrap();
+        let scope = crate::store_seam::test_scope();
+        let result = engine.resume_execution(&scope, execution_id).await.unwrap();
 
         assert!(result.is_success(), "resume should complete successfully");
         assert_eq!(result.execution_id, execution_id);
@@ -6833,7 +6897,11 @@ mod tests {
 
         let (engine2, _) = make_engine(registry);
         let engine2 = stores2.attach(engine2);
-        let resumed = engine2.resume_execution(execution_id).await.unwrap();
+        let scope = crate::store_seam::test_scope();
+        let resumed = engine2
+            .resume_execution(&scope, execution_id)
+            .await
+            .unwrap();
 
         // Resume must land in a terminal status — the Failed node is
         // already terminal, so the frontier has nothing to run.
@@ -6901,7 +6969,7 @@ mod tests {
     impl ExecutionStore for FailAtCommitN {
         async fn create(
             &self,
-            scope: &nebula_storage_port::Scope,
+            scope: &Scope,
             id: &str,
             workflow_id: &str,
             initial_state: serde_json::Value,
@@ -6913,7 +6981,7 @@ mod tests {
 
         async fn get(
             &self,
-            scope: &nebula_storage_port::Scope,
+            scope: &Scope,
             id: &str,
         ) -> Result<Option<nebula_storage_port::dto::ExecutionRecord>, StorageError> {
             self.inner.get(scope, id).await
@@ -6934,7 +7002,7 @@ mod tests {
 
         async fn acquire_lease(
             &self,
-            scope: &nebula_storage_port::Scope,
+            scope: &Scope,
             id: &str,
             holder: &str,
             ttl: Duration,
@@ -6944,7 +7012,7 @@ mod tests {
 
         async fn renew_lease(
             &self,
-            scope: &nebula_storage_port::Scope,
+            scope: &Scope,
             id: &str,
             token: nebula_storage_port::FencingToken,
             ttl: Duration,
@@ -6954,23 +7022,20 @@ mod tests {
 
         async fn release_lease(
             &self,
-            scope: &nebula_storage_port::Scope,
+            scope: &Scope,
             id: &str,
             token: nebula_storage_port::FencingToken,
         ) -> Result<bool, StorageError> {
             self.inner.release_lease(scope, id, token).await
         }
 
-        async fn list_running(
-            &self,
-            scope: &nebula_storage_port::Scope,
-        ) -> Result<Vec<String>, StorageError> {
+        async fn list_running(&self, scope: &Scope) -> Result<Vec<String>, StorageError> {
             self.inner.list_running(scope).await
         }
 
         async fn list_running_for_workflow(
             &self,
-            scope: &nebula_storage_port::Scope,
+            scope: &Scope,
             workflow_id: &str,
         ) -> Result<Vec<String>, StorageError> {
             self.inner
@@ -6980,7 +7045,7 @@ mod tests {
 
         async fn count(
             &self,
-            scope: &nebula_storage_port::Scope,
+            scope: &Scope,
             workflow_id: Option<&str>,
         ) -> Result<u64, StorageError> {
             self.inner.count(scope, workflow_id).await
@@ -7404,7 +7469,7 @@ mod tests {
         let state_str = serde_json::to_string(&state_json).unwrap();
         let exec_state: ExecutionState =
             serde_json::from_str(&state_str).expect("deserialize persisted execution state");
-        // The engine marks idempotency under `engine_scope()` with the
+        // The engine marks idempotency under the test scope with the
         // attempt number it dispatched the node under (1 on the first
         // run). Assert that mark was recorded without perturbing it.
         let attempt = exec_state
@@ -8469,7 +8534,8 @@ mod tests {
 
         let engine = stores.attach(engine);
 
-        let result = engine.resume_execution(execution_id).await.unwrap();
+        let scope = crate::store_seam::test_scope();
+        let result = engine.resume_execution(&scope, execution_id).await.unwrap();
 
         assert!(result.is_success());
         // Echo pipes the input through — so n1's output is exactly
@@ -8534,7 +8600,8 @@ mod tests {
         // instance, no memory of the original budget).
         let (engine, _) = make_engine(registry);
         let engine = stores.attach(engine);
-        let result = engine.resume_execution(execution_id).await.unwrap();
+        let scope = crate::store_seam::test_scope();
+        let result = engine.resume_execution(&scope, execution_id).await.unwrap();
         assert!(result.is_success());
 
         // Re-load the persisted state and assert the budget survived
@@ -8609,7 +8676,8 @@ mod tests {
 
         // Resume must succeed despite the missing budget — the engine
         // logs a warning and falls back to the default.
-        let result = engine.resume_execution(execution_id).await.unwrap();
+        let scope = crate::store_seam::test_scope();
+        let result = engine.resume_execution(&scope, execution_id).await.unwrap();
         assert!(result.is_success());
     }
 
@@ -8854,7 +8922,7 @@ mod tests {
     impl ExecutionStore for ExternalMutateBeforeN {
         async fn create(
             &self,
-            scope: &nebula_storage_port::Scope,
+            scope: &Scope,
             id: &str,
             workflow_id: &str,
             initial_state: serde_json::Value,
@@ -8866,7 +8934,7 @@ mod tests {
 
         async fn get(
             &self,
-            scope: &nebula_storage_port::Scope,
+            scope: &Scope,
             id: &str,
         ) -> Result<Option<nebula_storage_port::dto::ExecutionRecord>, StorageError> {
             self.inner.get(scope, id).await
@@ -8912,7 +8980,7 @@ mod tests {
 
         async fn acquire_lease(
             &self,
-            scope: &nebula_storage_port::Scope,
+            scope: &Scope,
             id: &str,
             holder: &str,
             ttl: Duration,
@@ -8922,7 +8990,7 @@ mod tests {
 
         async fn renew_lease(
             &self,
-            scope: &nebula_storage_port::Scope,
+            scope: &Scope,
             id: &str,
             token: nebula_storage_port::FencingToken,
             ttl: Duration,
@@ -8932,23 +9000,20 @@ mod tests {
 
         async fn release_lease(
             &self,
-            scope: &nebula_storage_port::Scope,
+            scope: &Scope,
             id: &str,
             token: nebula_storage_port::FencingToken,
         ) -> Result<bool, StorageError> {
             self.inner.release_lease(scope, id, token).await
         }
 
-        async fn list_running(
-            &self,
-            scope: &nebula_storage_port::Scope,
-        ) -> Result<Vec<String>, StorageError> {
+        async fn list_running(&self, scope: &Scope) -> Result<Vec<String>, StorageError> {
             self.inner.list_running(scope).await
         }
 
         async fn list_running_for_workflow(
             &self,
-            scope: &nebula_storage_port::Scope,
+            scope: &Scope,
             workflow_id: &str,
         ) -> Result<Vec<String>, StorageError> {
             self.inner
@@ -8958,7 +9023,7 @@ mod tests {
 
         async fn count(
             &self,
-            scope: &nebula_storage_port::Scope,
+            scope: &Scope,
             workflow_id: Option<&str>,
         ) -> Result<u64, StorageError> {
             self.inner.count(scope, workflow_id).await
@@ -9035,7 +9100,7 @@ mod tests {
 
         // The persisted row must carry `cancelled` — the engine must
         // NOT have overwritten it with its own `completed`.
-        let scope = crate::store_seam::engine_scope();
+        let scope = crate::store_seam::test_scope();
         let record = inner
             .get(&scope, &result.execution_id.to_string())
             .await
@@ -9132,7 +9197,7 @@ mod tests {
         // `cancelling` status — never overwritten. The engine's own
         // writes after CAS miss MUST NOT land.
         if let Some(execution_id) = execution_id_opt {
-            let scope = crate::store_seam::engine_scope();
+            let scope = crate::store_seam::test_scope();
             let record = inner
                 .get(&scope, &execution_id.to_string())
                 .await
@@ -9175,7 +9240,7 @@ mod tests {
         // durably persisted.
         let stores = TestStores::new();
         let execution = stores.execution.clone();
-        let scope = crate::store_seam::engine_scope();
+        let scope = crate::store_seam::test_scope();
         let token = nebula_storage_port::FencingToken::from_generation(0);
 
         let execution_id = ExecutionId::new();
@@ -9231,6 +9296,7 @@ mod tests {
 
         let outcome = engine
             .persist_final_state_port(
+                &scope,
                 &stores.execution_stores(),
                 execution_id,
                 &mut engine_final_state,
@@ -9288,7 +9354,7 @@ mod tests {
         // decision must NOT overwrite the durable Cancelled row.
         let stores = TestStores::new();
         let execution = stores.execution.clone();
-        let scope = crate::store_seam::engine_scope();
+        let scope = crate::store_seam::test_scope();
         let token = nebula_storage_port::FencingToken::from_generation(0);
 
         let execution_id = ExecutionId::new();
@@ -9350,6 +9416,7 @@ mod tests {
 
         let outcome = engine
             .persist_final_state_port(
+                &scope,
                 &stores.execution_stores(),
                 execution_id,
                 &mut engine_final_state,
@@ -9433,8 +9500,16 @@ mod tests {
 
         // Spawn both calls concurrently — whoever acquires first wins,
         // the other must see `EngineError::Leased`.
-        let handle_a = tokio::spawn(async move { engine_a.resume_execution(execution_id).await });
-        let handle_b = tokio::spawn(async move { engine_b.resume_execution(execution_id).await });
+        let handle_a = tokio::spawn(async move {
+            engine_a
+                .resume_execution(&crate::store_seam::test_scope(), execution_id)
+                .await
+        });
+        let handle_b = tokio::spawn(async move {
+            engine_b
+                .resume_execution(&crate::store_seam::test_scope(), execution_id)
+                .await
+        });
 
         let result_a = handle_a.await.unwrap();
         let result_b = handle_b.await.unwrap();
@@ -9530,8 +9605,11 @@ mod tests {
         // Winner: drive the workflow in the background. Its frontier loop
         // will be live (500ms sleep) long enough for the loser to race.
         let winner_engine = Arc::clone(&engine);
-        let winner =
-            tokio::spawn(async move { winner_engine.resume_execution(execution_id).await });
+        let winner = tokio::spawn(async move {
+            winner_engine
+                .resume_execution(&crate::store_seam::test_scope(), execution_id)
+                .await
+        });
 
         // Poll the registry until the winner has published its token.
         // This synchronises on the exact moment the race window opens.
@@ -9550,7 +9628,9 @@ mod tests {
         // Loser: a second resume call on the same engine for the same id.
         // Must fail fast with `Leased` — and crucially must NOT clobber
         // the registry entry the winner just published.
-        let loser = engine.resume_execution(execution_id).await;
+        let loser = engine
+            .resume_execution(&crate::store_seam::test_scope(), execution_id)
+            .await;
         assert!(
             matches!(loser, Err(EngineError::Leased { .. })),
             "overlapping resume must be fenced by the lease; got {loser:?}"

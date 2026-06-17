@@ -25,7 +25,7 @@ use std::sync::Arc;
 use nebula_core::id::ExecutionId;
 use nebula_execution::ExecutionStatus;
 use nebula_orchestrator::{ExecutionSink, ExecutionSinkError};
-use nebula_storage_port::{dto::JobDispatchMsg, store::ExecutionStore};
+use nebula_storage_port::{Scope, dto::JobDispatchMsg, store::ExecutionStore};
 
 use crate::{WorkflowEngine, error::EngineError};
 
@@ -67,16 +67,20 @@ impl EngineExecutionSink {
         Self { engine, execution }
     }
 
-    /// Read the persisted [`ExecutionStatus`] for idempotency, returning
-    /// `None` if the row does not exist.
+    /// Read the persisted [`ExecutionStatus`] for idempotency under the given
+    /// tenant `scope`, returning `None` if the row does not exist.
+    ///
+    /// `scope` MUST be the per-message scope from `JobDispatchMsg.scope` so
+    /// that a row persisted under a different tenant is never visible here
+    /// (cross-tenant isolation invariant #7).
     async fn read_status(
         &self,
+        scope: &Scope,
         execution_id: ExecutionId,
     ) -> Result<Option<ExecutionStatus>, ExecutionSinkError> {
-        let scope = crate::store_seam::engine_scope();
         let json = self
             .execution
-            .get(&scope, &execution_id.to_string())
+            .get(scope, &execution_id.to_string())
             .await
             .map_err(|e| {
                 ExecutionSinkError::Internal(format!(
@@ -101,13 +105,17 @@ impl EngineExecutionSink {
         }
     }
 
-    /// Drive an execution through `resume_execution`.
+    /// Drive an execution through `resume_execution` under the given tenant scope.
     ///
     /// Maps [`EngineError::Leased`] to `Ok(())` (sibling runner already owns
     /// the dispatch; we should not mark the row Failed) and re-checks terminal
     /// status before surfacing other engine errors as `Internal`.
-    async fn drive(&self, execution_id: ExecutionId) -> Result<(), ExecutionSinkError> {
-        match self.engine.resume_execution(execution_id).await {
+    async fn drive(
+        &self,
+        scope: &Scope,
+        execution_id: ExecutionId,
+    ) -> Result<(), ExecutionSinkError> {
+        match self.engine.resume_execution(scope, execution_id).await {
             Ok(_) => Ok(()),
             // Concurrent dispatcher already holds the lease — the canonical
             // idempotency outcome. Returning Ok prevents the orchestrator from
@@ -117,7 +125,7 @@ impl EngineExecutionSink {
                 // Last-ditch idempotency guard: re-read in case a sibling
                 // driver beat us to terminal state between our initial read and
                 // the engine's own `get_state` inside `resume_execution`.
-                if let Ok(Some(status)) = self.read_status(execution_id).await
+                if let Ok(Some(status)) = self.read_status(scope, execution_id).await
                     && (status.is_terminal() || matches!(status, ExecutionStatus::Cancelling))
                 {
                     return Ok(());
@@ -149,7 +157,10 @@ impl ExecutionSink for EngineExecutionSink {
             ))
         })?;
 
-        match self.read_status(execution_id).await? {
+        // msg.scope is the per-message tenant scope derived from the dispatch
+        // row. read_status uses it so a row persisted under a different tenant
+        // is not visible here — cross-tenant isolation invariant #7.
+        match self.read_status(&msg.scope, execution_id).await? {
             None => Err(ExecutionSinkError::Rejected(format!(
                 "execution {execution_id} not found — start command orphaned"
             ))),
@@ -164,8 +175,117 @@ impl ExecutionSink for EngineExecutionSink {
                 | ExecutionStatus::TimedOut,
             ) => Ok(()),
             Some(ExecutionStatus::Created | ExecutionStatus::Paused) => {
-                self.drive(execution_id).await
+                self.drive(&msg.scope, execution_id).await
             },
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use nebula_core::{id::ExecutionId, plugin_key};
+    use nebula_execution::ExecutionState;
+    use nebula_orchestrator::{ExecutionSink, ExecutionSinkError};
+    use nebula_storage::InMemoryExecutionStore;
+    use nebula_storage_port::{
+        Scope,
+        dto::{ControlCommand, JobDispatchMsg},
+        store::ExecutionStore,
+    };
+
+    use nebula_action::ActionResult;
+
+    use super::EngineExecutionSink;
+    use crate::{
+        ActionExecutor, ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner,
+        WorkflowEngine,
+    };
+
+    /// Build the minimal `ActionRuntime` needed to construct a `WorkflowEngine`.
+    /// The engine is never asked to actually run a workflow in this test — the
+    /// cross-tenant check short-circuits in `read_status` before `resume_execution`
+    /// is ever called.
+    fn minimal_runtime() -> Arc<ActionRuntime> {
+        let registry = Arc::new(ActionRegistry::new());
+        let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
+            Box::pin(async move { Ok(ActionResult::success(input)) })
+        });
+        let runner = Arc::new(InProcessRunner::new(executor));
+        let metrics = nebula_metrics::MetricsRegistry::new();
+        Arc::new(
+            ActionRuntime::try_new(registry, runner, DataPassingPolicy::default(), metrics)
+                .expect("minimal runtime"),
+        )
+    }
+
+    /// Invariant #7 — fail-closed cross-tenant isolation (U-D1.4c).
+    ///
+    /// Persisting an execution under scope-A then dispatching a `JobDispatchMsg`
+    /// carrying scope-B must yield `ExecutionSinkError::Rejected` because
+    /// `read_status` under scope-B finds no row.
+    ///
+    /// Under the old `engine_scope()` placeholder BOTH scopes collapsed to
+    /// `("nebula","nebula")` so the dispatch would succeed — proving the
+    /// placeholder masked cross-tenant access.  This test cannot pass until
+    /// `read_status` uses the message's real scope.
+    #[tokio::test]
+    async fn cross_tenant_dispatch_is_rejected() {
+        let scope_a = Scope::new("wsA", "orgA");
+        let scope_b = Scope::new("wsB", "orgB");
+
+        // Seed an execution row under scope-A.
+        let execution_store: Arc<dyn ExecutionStore> = Arc::new(InMemoryExecutionStore::new());
+        let execution_id = ExecutionId::new();
+        let exec_state = ExecutionState::new(execution_id, nebula_core::id::WorkflowId::new(), &[]);
+        let state_json = serde_json::to_value(&exec_state).unwrap();
+        execution_store
+            .create(
+                &scope_a,
+                &execution_id.to_string(),
+                &nebula_core::id::WorkflowId::new().to_string(),
+                state_json,
+            )
+            .await
+            .unwrap();
+
+        // Wire a sink backed by a minimal engine — the test never reaches
+        // resume_execution because read_status short-circuits with None first.
+        let metrics = nebula_metrics::MetricsRegistry::new();
+        let engine = Arc::new(WorkflowEngine::new(minimal_runtime(), metrics).expect("engine"));
+        let sink = EngineExecutionSink::new(Arc::clone(&engine), Arc::clone(&execution_store));
+
+        // Build a dispatch msg carrying scope-B for the scope-A execution.
+        let plugin_key = plugin_key!("test.cross_tenant");
+        let msg = JobDispatchMsg::new(
+            [0u8; 16],
+            execution_id.to_string(),
+            ControlCommand::Start,
+            scope_b, // <- wrong scope: execution lives under scope-A
+            serde_json::Value::Null,
+            None::<String>,
+            "sha",
+            plugin_key.clone(),
+            vec![plugin_key],
+            None::<String>,
+            0,
+        );
+
+        let result = sink.dispatch(&msg).await;
+
+        // Must be Rejected — not found under scope-B.
+        // Under the old placeholder both scopes aliased to ("nebula","nebula")
+        // so this would have returned Ok(()) after successfully finding the row —
+        // proving the placeholder masked the cross-tenant gap.
+        match result {
+            Err(ExecutionSinkError::Rejected(msg)) => {
+                assert!(
+                    msg.contains("not found"),
+                    "expected 'not found' in rejection message, got: {msg}"
+                );
+            },
+            other => panic!("expected Rejected, got: {other:?}"),
         }
     }
 }
