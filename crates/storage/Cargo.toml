@@ -2,6 +2,7 @@
 name = "nebula-storage"
 version.workspace = true
 edition.workspace = true
+publish = false
 rust-version.workspace = true
 description = "Storage abstraction for Nebula: key-value backends (memory, Redis, Postgres, S3)"
 keywords.workspace = true

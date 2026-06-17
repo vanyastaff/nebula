@@ -2,6 +2,7 @@
 name = "nebula-execution"
 version.workspace = true
 edition.workspace = true
+publish = false
 rust-version.workspace = true
 keywords.workspace = true
 authors.workspace = true

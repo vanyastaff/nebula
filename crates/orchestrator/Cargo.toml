@@ -2,6 +2,7 @@
 name = "nebula-orchestrator"
 version.workspace = true
 edition.workspace = true
+publish = false
 rust-version.workspace = true
 authors.workspace = true
 description = "Capability-routed job-dispatch pull loop for the Nebula orchestration layer (ADR-0095)"

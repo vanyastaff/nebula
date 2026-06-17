@@ -3,6 +3,7 @@
 name = "nebula-env"
 version.workspace = true
 edition.workspace = true
+publish = false
 rust-version.workspace = true
 description = "Typed, cross-cutting environment-variable reader for the Nebula workflow engine"
 keywords.workspace = true

@@ -2,6 +2,7 @@
 name = "nebula-tenancy"
 version.workspace = true
 edition.workspace = true
+publish = false
 rust-version.workspace = true
 description = "Multi-tenancy security boundary (ScopeResolver + scope-enforcing decorators) for Nebula"
 keywords.workspace = true
