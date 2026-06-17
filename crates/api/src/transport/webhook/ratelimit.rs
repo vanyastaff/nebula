@@ -54,6 +54,17 @@ pub struct RateLimitExceeded {
 /// rate-limited the same way; the cap does not create a bypass. A window that
 /// has been idle for longer than twice the request window is also eligible
 /// for eviction so paths decommissioned by operators do not linger.
+///
+/// # Per-replica limitation
+///
+/// The sliding-window state is **process-local** (held in an in-process
+/// `moka::Cache`). Under a horizontally-scaled deployment with `N` replicas
+/// the effective cap is `N ×` the configured RPM — a sender that spreads
+/// requests round-robin across replicas can sustain `N ×` the nominal limit
+/// before any single replica rejects it. A distributed rate-limit store
+/// (e.g. Redis `INCR` + TTL) is deferred; operators running multiple replicas
+/// should set `rate_limit_per_minute` conservatively (`target_rpm / N`)
+/// until a global-state backend is wired.
 #[derive(Debug, Clone)]
 pub struct WebhookRateLimiter {
     windows: Cache<String, Arc<SlidingWindow>>,

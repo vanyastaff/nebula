@@ -402,8 +402,11 @@ pub const NEBULA_WEBHOOK_REPLAY_REJECTIONS_TOTAL: &str = "nebula_webhook_replay_
 
 /// Counter: requests rejected by rate-limit enforcement.
 ///
-/// Labeled by `tenant_id`, `webhook_key_kind`, and `tier`
-/// (see [`webhook_rate_limit_tier`]).
+/// Labeled by `webhook_key_kind` and `tier` (see [`webhook_rate_limit_tier`]);
+/// `tenant_id` is included **only** for `tier="per_tenant"` rejections
+/// (post-resolution, where the bounded `(org, workspace)` slug is available).
+/// `tier="per_token"` rejections omit `tenant_id` — the trigger UUID would
+/// create one series per registered webhook, causing unbounded cardinality.
 ///
 /// - `tier="per_token"` — per-trigger-token sliding-window rejection
 ///   (pre-resolution; protects the DB lookup from unauthenticated churn).

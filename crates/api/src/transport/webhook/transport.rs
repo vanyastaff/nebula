@@ -293,12 +293,16 @@ impl WebhookTransport {
                      existing routing entries are preserved but this indicates \
                      a composition-root ordering bug"
                 );
+                // Preserve both rate limiters: they may have been installed by
+                // a prior `with_durable_dispatch` call.  Config override wins;
+                // if the config field is None, fall back to the already-running
+                // limiter so an in-flight `with_durable_dispatch` guarantee is
+                // not silently lost.
                 let rate_limiter = arc
                     .config
                     .rate_limit_per_minute
-                    .map(WebhookRateLimiter::new);
-                // Preserve the existing tenant_rate_limiter: it may have been
-                // installed by a prior `with_durable_dispatch` call.
+                    .map(WebhookRateLimiter::new)
+                    .or_else(|| arc.rate_limiter.clone());
                 let tenant_rate_limiter = arc
                     .config
                     .tenant_rate_limit_per_minute
@@ -345,6 +349,10 @@ impl WebhookTransport {
     /// not supply an explicit override.  Operators can still tune via
     /// `WebhookTransportConfig::rate_limit_per_minute` /
     /// `tenant_rate_limit_per_minute` — a `Some(n)` in the config wins.
+    ///
+    /// **Per-replica note:** both limiters are process-local; under `N`
+    /// replicas the effective cap is `N ×` the configured RPM.  See
+    /// [`WebhookRateLimiter`] for the full per-replica limitation note.
     #[must_use = "builder methods must be chained or the result used"]
     pub fn with_durable_dispatch(
         self,

@@ -2400,7 +2400,13 @@ fn verify_standard_webhooks(
     let id_str = match single_header_value(request.headers(), &ID_HEADER) {
         HeaderLookup::One(v) => v,
         HeaderLookup::Missing => {
-            // No id → treat as Missing (signature cannot be verified without id).
+            // No `webhook-id` → `SignatureOutcome::Missing`.
+            //
+            // Telemetry-granularity note: this conflates two distinct caller
+            // situations — (a) absent delivery id only, and (b) absent both
+            // `webhook-id` AND `webhook-signature` — under the same `Missing`
+            // outcome.  A dedicated `missing_delivery_id` failure reason for
+            // dashboards is deferred; the current surface is correct and safe.
             return Ok(SignatureOutcome::Missing);
         },
         HeaderLookup::Multiple => return Ok(SignatureOutcome::Invalid),
@@ -2459,13 +2465,11 @@ fn verify_standard_webhooks(
             continue;
         }
         any_v1_candidate = true;
-        // Decode — failure is a non-match (substitute zeroes for constant time).
-        let (candidate_bytes, decode_ok) = match BASE64_STANDARD.decode(b64_sig) {
-            Ok(v) => (v, true),
-            Err(_) => (vec![0u8; 32], false),
+        // Decode — a malformed token simply does not match; skip it.
+        let Ok(candidate_bytes) = BASE64_STANDARD.decode(b64_sig) else {
+            continue;
         };
-        // Constant-time compare.
-        if decode_ok && verify_tag_constant_time(&expected_mac, &candidate_bytes) {
+        if verify_tag_constant_time(&expected_mac, &candidate_bytes) {
             return Ok(SignatureOutcome::Valid);
         }
     }
