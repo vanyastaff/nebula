@@ -390,10 +390,28 @@ pub const NEBULA_WEBHOOK_LATENCY_SECONDS: &str = "nebula_webhook_latency_seconds
 /// [`webhook_replay_rejection_reason`]).
 pub const NEBULA_WEBHOOK_REPLAY_REJECTIONS_TOTAL: &str = "nebula_webhook_replay_rejections_total";
 
-/// Counter: requests rejected by per-key rate-limit enforcement
-///. Labels: `tenant_id`, `webhook_key_kind`.
+/// Counter: requests rejected by rate-limit enforcement.
+///
+/// Labeled by `tenant_id`, `webhook_key_kind`, and `tier`
+/// (see [`webhook_rate_limit_tier`]).
+///
+/// - `tier="per_token"` — per-trigger-token sliding-window rejection
+///   (pre-resolution; protects the DB lookup from unauthenticated churn).
+/// - `tier="per_tenant"` — per-tenant-aggregate sliding-window rejection
+///   (post-resolution; caps a single tenant flooding across many tokens).
 pub const NEBULA_WEBHOOK_RATE_LIMIT_REJECTIONS_TOTAL: &str =
     "nebula_webhook_rate_limit_rejections_total";
+
+/// Tier labels for [`NEBULA_WEBHOOK_RATE_LIMIT_REJECTIONS_TOTAL`].
+///
+/// Closed two-value set — adding a label permanently inflates the
+/// cardinality floor.
+pub mod webhook_rate_limit_tier {
+    /// Per-trigger-token rate-limit tier (step 4, pre-resolution).
+    pub const PER_TOKEN: &str = "per_token";
+    /// Per-tenant-aggregate rate-limit tier (step 4.5, post-resolution).
+    pub const PER_TENANT: &str = "per_tenant";
+}
 
 /// Counter: storage-driven bootstrap rows that failed to register
 /// in the transport ( / E1). Labeled by `reason` (see

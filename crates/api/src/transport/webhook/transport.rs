@@ -45,6 +45,24 @@ use super::{
     routing::{ActivationEntry, RoutingMap},
 };
 
+/// Default per-token (per-trigger-UUID) requests-per-minute limit installed
+/// automatically when `with_durable_dispatch` is called and the config did
+/// not set `rate_limit_per_minute`.
+///
+/// Operator-tunable starting point: 600 req/min (10 req/s) per token.
+/// Override via `WebhookTransportConfig { rate_limit_per_minute: Some(n), .. }`.
+pub const DEFAULT_PER_TOKEN_RPM: u64 = 600;
+
+/// Default per-tenant-aggregate requests-per-minute limit installed
+/// automatically when `with_durable_dispatch` is called and the config did
+/// not set `tenant_rate_limit_per_minute`.
+///
+/// Operator-tunable starting point: 3 000 req/min (50 req/s) per tenant.
+/// This cap bounds a single tenant flooding across many distinct tokens
+/// while keeping each token under its own independent quota.
+/// Override via `WebhookTransportConfig { tenant_rate_limit_per_minute: Some(n), .. }`.
+pub const DEFAULT_PER_TENANT_RPM: u64 = 3_000;
+
 /// Configuration for the webhook HTTP transport.
 #[derive(Debug, Clone)]
 pub struct WebhookTransportConfig {
@@ -61,9 +79,17 @@ pub struct WebhookTransportConfig {
     /// dispatching to `handle_event` before returning
     /// `504 Gateway Timeout`.
     pub response_timeout: Duration,
-    /// Per-path requests-per-minute cap. `None` disables per-path
-    /// rate limiting entirely.
+    /// Per-token (per-trigger-UUID) requests-per-minute cap.
+    ///
+    /// `None` — no explicit operator override; when `with_durable_dispatch`
+    /// is called, [`DEFAULT_PER_TOKEN_RPM`] is installed automatically.
+    /// For non-durable transports this stays `None` (no per-token limiter).
     pub rate_limit_per_minute: Option<u64>,
+    /// Per-tenant-aggregate requests-per-minute cap.
+    ///
+    /// `None` — no explicit operator override; when `with_durable_dispatch`
+    /// is called, [`DEFAULT_PER_TENANT_RPM`] is installed automatically.
+    pub tenant_rate_limit_per_minute: Option<u64>,
 }
 
 impl Default for WebhookTransportConfig {
@@ -76,6 +102,7 @@ impl Default for WebhookTransportConfig {
             body_limit_bytes: 1024 * 1024, // 1 MiB matches nebula-action default
             response_timeout: Duration::from_secs(10),
             rate_limit_per_minute: None,
+            tenant_rate_limit_per_minute: None,
         }
     }
 }
@@ -105,7 +132,21 @@ pub struct WebhookTransport {
 pub(super) struct TransportInner {
     pub(super) config: WebhookTransportConfig,
     pub(super) routing: RoutingMap,
+    /// Per-token (per-trigger-UUID) sliding-window rate limiter.
+    ///
+    /// Enforced at step 4 (pre-resolution) so unauthenticated churn
+    /// against registered keys never reaches the DB.
     pub(super) rate_limiter: Option<WebhookRateLimiter>,
+    /// Per-tenant-aggregate sliding-window rate limiter.
+    ///
+    /// Enforced at step 4.5 (post-resolution, post-token-lookup) so
+    /// the scope-key is available. Caps a single tenant flooding across
+    /// many distinct tokens while each token stays under its own quota.
+    ///
+    /// Structurally mandatory when `durable_dispatch` is wired:
+    /// `with_durable_dispatch` installs [`DEFAULT_PER_TENANT_RPM`] when
+    /// this field is `None`, so no disciplined opt-in is needed.
+    pub(super) tenant_rate_limiter: Option<WebhookRateLimiter>,
     /// Optional metrics registry. When `Some`, signature-failure
     /// outcomes increment [`NEBULA_WEBHOOK_SIGNATURE_FAILURES_TOTAL`]
     ///. `None` means the transport runs without emitting
@@ -197,11 +238,15 @@ impl WebhookTransport {
         clock: Arc<dyn Clock>,
     ) -> Self {
         let rate_limiter = config.rate_limit_per_minute.map(WebhookRateLimiter::new);
+        // `tenant_rate_limiter` is intentionally None here: it is installed
+        // structurally in `with_durable_dispatch`, not in the constructor.
+        // Non-durable transports (plain `new`) do not need the per-tenant tier.
         Self {
             inner: Arc::new(TransportInner {
                 config,
                 routing: RoutingMap::new(),
                 rate_limiter,
+                tenant_rate_limiter: None,
                 metrics,
                 clock,
                 activation_store: None,
@@ -252,11 +297,19 @@ impl WebhookTransport {
                     .config
                     .rate_limit_per_minute
                     .map(WebhookRateLimiter::new);
+                // Preserve the existing tenant_rate_limiter: it may have been
+                // installed by a prior `with_durable_dispatch` call.
+                let tenant_rate_limiter = arc
+                    .config
+                    .tenant_rate_limit_per_minute
+                    .map(WebhookRateLimiter::new)
+                    .or_else(|| arc.tenant_rate_limiter.clone());
                 Arc::new(TransportInner {
                     config: arc.config.clone(),
                     // Clone the existing routing map so live activations are not lost.
                     routing: arc.routing.clone(),
                     rate_limiter,
+                    tenant_rate_limiter,
                     metrics: arc.metrics.clone(),
                     clock: arc.clock.clone(),
                     activation_store: Some(store),
@@ -282,6 +335,16 @@ impl WebhookTransport {
     ///
     /// When `None` (default), Prod-mode dispatches fail closed (5xx) rather
     /// than spawning dedup-blind.
+    ///
+    /// # Rate-limit structural guarantee
+    ///
+    /// Installing durable dispatch is the point at which rate-limiting becomes
+    /// mandatory — it is impossible to have a durable transport without both
+    /// tiers.  This method installs [`DEFAULT_PER_TOKEN_RPM`] (per-token) and
+    /// [`DEFAULT_PER_TENANT_RPM`] (per-tenant-aggregate) when the config did
+    /// not supply an explicit override.  Operators can still tune via
+    /// `WebhookTransportConfig::rate_limit_per_minute` /
+    /// `tenant_rate_limit_per_minute` — a `Some(n)` in the config wins.
     #[must_use = "builder methods must be chained or the result used"]
     pub fn with_durable_dispatch(
         self,
@@ -296,6 +359,23 @@ impl WebhookTransport {
         };
         let inner = match Arc::try_unwrap(self.inner) {
             Ok(mut i) => {
+                // Structural guarantee: both limiters are mandatory with
+                // durable dispatch. Install the defaults when the config
+                // did not supply an explicit override.
+                if i.rate_limiter.is_none() {
+                    let rpm = i
+                        .config
+                        .rate_limit_per_minute
+                        .unwrap_or(DEFAULT_PER_TOKEN_RPM);
+                    i.rate_limiter = Some(WebhookRateLimiter::new(rpm));
+                }
+                if i.tenant_rate_limiter.is_none() {
+                    let rpm = i
+                        .config
+                        .tenant_rate_limit_per_minute
+                        .unwrap_or(DEFAULT_PER_TENANT_RPM);
+                    i.tenant_rate_limiter = Some(WebhookRateLimiter::new(rpm));
+                }
                 i.durable_dispatch = Some(components);
                 Arc::new(i)
             },
@@ -311,14 +391,22 @@ impl WebhookTransport {
                      existing routing entries are preserved but this indicates \
                      a composition-root ordering bug"
                 );
-                let rate_limiter = arc
-                    .config
-                    .rate_limit_per_minute
-                    .map(WebhookRateLimiter::new);
+                // Structural guarantee preserved on the slow path too.
+                let rate_limiter = Some(WebhookRateLimiter::new(
+                    arc.config
+                        .rate_limit_per_minute
+                        .unwrap_or(DEFAULT_PER_TOKEN_RPM),
+                ));
+                let tenant_rate_limiter = Some(WebhookRateLimiter::new(
+                    arc.config
+                        .tenant_rate_limit_per_minute
+                        .unwrap_or(DEFAULT_PER_TENANT_RPM),
+                ));
                 Arc::new(TransportInner {
                     config: arc.config.clone(),
                     routing: arc.routing.clone(),
                     rate_limiter,
+                    tenant_rate_limiter,
                     metrics: arc.metrics.clone(),
                     clock: arc.clock.clone(),
                     activation_store: arc.activation_store.clone(),

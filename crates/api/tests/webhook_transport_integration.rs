@@ -172,6 +172,7 @@ fn make_transport(rate_limit: Option<u64>, body_limit: usize) -> WebhookTranspor
         body_limit_bytes: body_limit,
         response_timeout: Duration::from_secs(5),
         rate_limit_per_minute: rate_limit,
+        tenant_rate_limit_per_minute: None,
     })
 }
 
@@ -463,6 +464,7 @@ async fn handler_timeout_returns_504() {
         body_limit_bytes: 1024 * 1024,
         response_timeout: Duration::from_millis(200),
         rate_limit_per_minute: None,
+        tenant_rate_limit_per_minute: None,
     });
 
     let hanging_adapter = WebhookTriggerAdapter::new(HangingWebhook);
@@ -812,6 +814,7 @@ async fn signature_failures_total_metric_increments_per_reason() {
             body_limit_bytes: 1024 * 1024,
             response_timeout: Duration::from_secs(5),
             rate_limit_per_minute: None,
+            tenant_rate_limit_per_minute: None,
         },
         registry.clone(),
     );
@@ -874,6 +877,7 @@ async fn signature_failures_total_metric_increments_missing_secret() {
             body_limit_bytes: 1024 * 1024,
             response_timeout: Duration::from_secs(5),
             rate_limit_per_minute: None,
+            tenant_rate_limit_per_minute: None,
         },
         registry.clone(),
     );
@@ -1009,6 +1013,7 @@ async fn token_resolution_skipped_on_unregistered_key_404() {
         body_limit_bytes: 1024 * 1024,
         response_timeout: Duration::from_secs(5),
         rate_limit_per_minute: None,
+        tenant_rate_limit_per_minute: None,
     })
     .with_activation_store(store);
 
@@ -1044,6 +1049,7 @@ async fn token_resolution_skipped_on_rate_limited_key_429() {
         body_limit_bytes: 1024 * 1024,
         response_timeout: Duration::from_secs(5),
         rate_limit_per_minute: Some(1),
+        tenant_rate_limit_per_minute: None,
     })
     .with_activation_store(store);
 
@@ -1094,6 +1100,7 @@ async fn token_resolution_called_exactly_once_on_registered_under_limit_key() {
         body_limit_bytes: 1024 * 1024,
         response_timeout: Duration::from_secs(5),
         rate_limit_per_minute: None,
+        tenant_rate_limit_per_minute: None,
     })
     .with_activation_store(Arc::clone(&store));
 

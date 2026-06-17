@@ -33,7 +33,8 @@ use nebula_action::{
 use nebula_core::NodeKey;
 use nebula_engine::DurableExecutionEmitter;
 use nebula_metrics::{
-    NEBULA_WEBHOOK_RATE_LIMIT_REJECTIONS_TOTAL, webhook_key_kind, webhook_signature_failure_reason,
+    NEBULA_WEBHOOK_RATE_LIMIT_REJECTIONS_TOTAL, webhook_key_kind, webhook_rate_limit_tier,
+    webhook_signature_failure_reason,
 };
 use nebula_storage_port::dto::WebhookMode;
 use nebula_storage_port::store::WorkflowVersionStore;
@@ -138,19 +139,16 @@ pub(super) async fn dispatch_inner(
         return (StatusCode::NOT_FOUND, "").into_response();
     };
 
-    // 4. Rate limit (if configured) — only for keys that resolve to a
-    // registered handler.
+    // 4. Per-token rate limit (if configured) — only for keys that resolve to a
+    // registered handler. Placed pre-resolution so unauthenticated churn against
+    // registered keys never reaches the DB.
     if let Some(limiter) = &transport.inner.rate_limiter {
         let bucket = key.rate_limit_key();
         if let Err(e) = limiter.check(&bucket).await {
             // `bucket` uses the trigger uuid only — nonce (bearer token) excluded.
-            debug!(bucket = %bucket, retry_after = e.retry_after_secs, "webhook rate limited");
-            record_rate_limit_rejection(&transport, &key);
-            let mut resp = (StatusCode::TOO_MANY_REQUESTS, "").into_response();
-            if let Ok(v) = e.retry_after_secs.to_string().parse() {
-                resp.headers_mut().insert("retry-after", v);
-            }
-            return resp;
+            debug!(bucket = %bucket, retry_after = e.retry_after_secs, "webhook per-token rate limited");
+            record_rate_limit_rejection(&transport, &key, webhook_rate_limit_tier::PER_TOKEN);
+            return rate_limit_429(e.retry_after_secs);
         }
     }
 
@@ -181,6 +179,22 @@ pub(super) async fn dispatch_inner(
                     // nonce / hash deliberately excluded
                     "capability token resolved to durable row"
                 );
+
+                // 4.5 — Per-tenant-aggregate rate limit (post-resolution).
+                //
+                // Placed here — after token resolution yielded the scope —
+                // so the stable tenant key is available without a second DB
+                // lookup. Enforced before the durable target is set so a
+                // tenant flooding across many tokens is capped even though
+                // each token is individually within its own per-token quota.
+                //
+                // Key: `Scope::credential_owner_id()` — length-prefixed,
+                // injective across arbitrary (org_id, workspace_id) pairs,
+                // same derivation every plane uses (ADR-0088 D7).
+                if let Some(resp) = check_tenant_rate_limit(&transport, &key, &row.scope).await {
+                    return resp;
+                }
+
                 // Mode gate: only Prod rows with a wired inbox spawn durable
                 // executions.  Fail-closed when inbox absent in Prod mode.
                 if row.mode == WebhookMode::Prod {
@@ -688,9 +702,45 @@ fn http_response_to_axum(resp: WebhookHttpResponse) -> Response {
     (resp.status, resp.headers, resp.body).into_response()
 }
 
-/// Record a per-key rate-limit rejection. Labelset:
-/// `(tenant_id, webhook_key_kind)`.
-fn record_rate_limit_rejection(transport: &WebhookTransport, key: &WebhookKey) {
+/// Build a `429 Too Many Requests` response with a `Retry-After` header.
+fn rate_limit_429(retry_after_secs: u64) -> Response {
+    let mut resp = (StatusCode::TOO_MANY_REQUESTS, "").into_response();
+    if let Ok(v) = retry_after_secs.to_string().parse() {
+        resp.headers_mut().insert("retry-after", v);
+    }
+    resp
+}
+
+/// Check the per-tenant-aggregate rate limiter for the resolved `scope`.
+///
+/// Returns `Some(Response)` (a 429) when the tenant aggregate is exceeded,
+/// `None` when the request is within quota or no tenant limiter is configured.
+///
+/// Extracted into a free function to keep the deeply-nested `Ok(Some(row))`
+/// arm under clippy's `excessive_nesting` threshold.
+async fn check_tenant_rate_limit(
+    transport: &WebhookTransport,
+    key: &WebhookKey,
+    scope: &nebula_storage_port::Scope,
+) -> Option<Response> {
+    let limiter = transport.inner.tenant_rate_limiter.as_ref()?;
+    let tenant_key = scope.credential_owner_id();
+    let err = limiter.check(&tenant_key).await.err()?;
+    debug!(
+        tenant_key = %tenant_key,
+        retry_after = err.retry_after_secs,
+        "webhook per-tenant-aggregate rate limited"
+    );
+    record_rate_limit_rejection(transport, key, webhook_rate_limit_tier::PER_TENANT);
+    Some(rate_limit_429(err.retry_after_secs))
+}
+
+/// Record a rate-limit rejection. Labelset:
+/// `(tenant_id, webhook_key_kind, tier)`.
+///
+/// `tier` must be one of [`webhook_rate_limit_tier::PER_TOKEN`] or
+/// [`webhook_rate_limit_tier::PER_TENANT`].
+fn record_rate_limit_rejection(transport: &WebhookTransport, key: &WebhookKey, tier: &'static str) {
     let Some(reg) = &transport.inner.metrics else {
         return;
     };
@@ -701,6 +751,7 @@ fn record_rate_limit_rejection(transport: &WebhookTransport, key: &WebhookKey) {
     let labels = interner.label_set(&[
         ("webhook_key_kind", kind),
         ("tenant_id", tenant_id.as_str()),
+        ("tier", tier),
     ]);
     if let Ok(c) = reg.counter_labeled(NEBULA_WEBHOOK_RATE_LIMIT_REJECTIONS_TOTAL, &labels) {
         c.inc();
@@ -1450,6 +1501,287 @@ mod tests {
             resp.status(),
             StatusCode::INTERNAL_SERVER_ERROR,
             "workflow stored in wrong scope must be invisible → 500"
+        );
+    }
+
+    // ── Rate-limit tier tests ─────────────────────────────────────────────────
+
+    /// Helper: build a transport with a *very* tight per-tenant limit (1 req/min)
+    /// but a generous per-token limit (1 000 req/min), then register two activations
+    /// under the same scope with distinct tokens.  Returns (transport, key_a, key_b,
+    /// activation_store) so callers can drive dispatches.
+    async fn two_token_same_scope_fixture(
+        tenant_rpm: u64,
+        per_token_rpm: u64,
+    ) -> (
+        WebhookTransport,
+        WebhookKey,
+        WebhookKey,
+        Arc<dyn WebhookActivationStore>,
+    ) {
+        let scope = Scope::new("same-org", "same-ws");
+        let activation_store: Arc<dyn WebhookActivationStore> =
+            Arc::new(InMemoryWebhookActivationStore::new());
+        let exec_store = InMemoryExecutionStore::new();
+        let dedup = Arc::new(InMemoryTriggerDedupInbox::new(&exec_store));
+        let version_store = Arc::new(InMemoryWorkflowVersionStore::new());
+
+        // Build transport with explicit tight limits so the test is deterministic.
+        let cfg = WebhookTransportConfig {
+            rate_limit_per_minute: Some(per_token_rpm),
+            tenant_rate_limit_per_minute: Some(tenant_rpm),
+            ..WebhookTransportConfig::default()
+        };
+        let transport = WebhookTransport::new(cfg)
+            .with_activation_store(Arc::clone(&activation_store))
+            .with_durable_dispatch(
+                dedup as Arc<dyn TriggerDedupInbox>,
+                WebhookTransport::default_resolver(),
+                Arc::clone(&version_store) as Arc<dyn WorkflowVersionStore>,
+            );
+
+        // Register activation A under the shared scope.
+        let outcome_a = Arc::new(Mutex::new(TriggerEventOutcome::skip()));
+        let handler_a: Arc<dyn TriggerHandler> =
+            Arc::new(WebhookTriggerAdapter::new(ConfigurableWebhookAction {
+                outcome_cell: Arc::clone(&outcome_a),
+            }));
+        let wf_a = WorkflowId::new();
+        let ctx_a = base_ctx(wf_a, node_key!("trigger_a"));
+        handler_a.start(&ctx_a).await.unwrap();
+        let handle_a = activate_and_persist(
+            &transport,
+            activation_store.as_ref(),
+            PersistParams {
+                handler: handler_a,
+                action_config: WebhookConfig::default()
+                    .with_signature_policy(SignaturePolicy::OptionalAcceptUnsigned),
+                ctx_template: ctx_a,
+                trigger_id: node_key!("trigger_a").as_str().to_string(),
+                scope: scope.clone(),
+                workflow_id: Some(wf_a.to_string()),
+                mode: WebhookMode::Test, // Test mode: no durable emit needed
+            },
+        )
+        .await
+        .unwrap();
+
+        // Register activation B — different token, same scope.
+        let outcome_b = Arc::new(Mutex::new(TriggerEventOutcome::skip()));
+        let handler_b: Arc<dyn TriggerHandler> =
+            Arc::new(WebhookTriggerAdapter::new(ConfigurableWebhookAction {
+                outcome_cell: Arc::clone(&outcome_b),
+            }));
+        let wf_b = WorkflowId::new();
+        let ctx_b = base_ctx(wf_b, node_key!("trigger_b"));
+        handler_b.start(&ctx_b).await.unwrap();
+        let handle_b = activate_and_persist(
+            &transport,
+            activation_store.as_ref(),
+            PersistParams {
+                handler: handler_b,
+                action_config: WebhookConfig::default()
+                    .with_signature_policy(SignaturePolicy::OptionalAcceptUnsigned),
+                ctx_template: ctx_b,
+                trigger_id: node_key!("trigger_b").as_str().to_string(),
+                scope: scope.clone(),
+                workflow_id: Some(wf_b.to_string()),
+                mode: WebhookMode::Test,
+            },
+        )
+        .await
+        .unwrap();
+
+        let key_a = WebhookKey::programmatic(handle_a.trigger_uuid, handle_a.nonce);
+        let key_b = WebhookKey::programmatic(handle_b.trigger_uuid, handle_b.nonce);
+        (transport, key_a, key_b, activation_store)
+    }
+
+    async fn dispatch_skip(
+        transport: &WebhookTransport,
+        key: WebhookKey,
+    ) -> axum::http::StatusCode {
+        dispatch_inner(
+            transport.clone(),
+            key,
+            Method::POST,
+            Uri::from_static("http://localhost/webhooks/test"),
+            HeaderMap::new(),
+            Bytes::from(b"{}" as &[u8]),
+        )
+        .await
+        .status()
+    }
+
+    /// Per-tenant-aggregate 429.
+    ///
+    /// Two activations share the SAME scope (tenant).  The per-tenant quota
+    /// is 1 req/min; per-token quota is generous (1 000 req/min).  The first
+    /// request from token A succeeds (per-token OK, per-tenant OK).  The
+    /// second request — from token B, a DIFFERENT token, so per-token is
+    /// fresh — must be rate-limited at the per-tenant tier and return 429.
+    ///
+    /// RED-on-revert: before the per-tenant limiter exists, both requests
+    /// succeed (200) because each token is within its own per-token quota.
+    #[tokio::test]
+    async fn per_tenant_aggregate_429() {
+        // per-tenant limit = 1 req/min; per-token limit = 1 000 req/min
+        let (transport, key_a, key_b, _store) = two_token_same_scope_fixture(1, 1_000).await;
+
+        // First request (token A) — should succeed.
+        let r1 = dispatch_skip(&transport, key_a).await;
+        assert_eq!(r1, StatusCode::OK, "first request (token A) must succeed");
+
+        // Second request (token B) — different token, fresh per-token window,
+        // but the tenant aggregate was exhausted by the first request.
+        let r2 = dispatch_skip(&transport, key_b).await;
+        assert_eq!(
+            r2,
+            StatusCode::TOO_MANY_REQUESTS,
+            "second request under a different token but same tenant must be 429 \
+             (per-tenant-aggregate limit exceeded)"
+        );
+    }
+
+    /// Per-token quotas remain independent across different scopes (tenants).
+    ///
+    /// Two tokens in DIFFERENT scopes each start with a fresh per-token window
+    /// and a fresh per-tenant aggregate — no cross-contamination.
+    ///
+    /// RED-on-revert: a bug that keys the per-tenant limiter by a constant
+    /// or by the trigger UUID would cause cross-scope contamination.
+    #[tokio::test]
+    async fn per_token_independent_scopes() {
+        let scope_x = Scope::new("org-x", "ws-x");
+        let scope_y = Scope::new("org-y", "ws-y");
+        let activation_store: Arc<dyn WebhookActivationStore> =
+            Arc::new(InMemoryWebhookActivationStore::new());
+        let exec_store = InMemoryExecutionStore::new();
+        let dedup = Arc::new(InMemoryTriggerDedupInbox::new(&exec_store));
+        let version_store = Arc::new(InMemoryWorkflowVersionStore::new());
+
+        // 1 req/min per-tenant; 1 000 per-token — tight enough to prove isolation.
+        let cfg = WebhookTransportConfig {
+            rate_limit_per_minute: Some(1_000),
+            tenant_rate_limit_per_minute: Some(1),
+            ..WebhookTransportConfig::default()
+        };
+        let transport = WebhookTransport::new(cfg)
+            .with_activation_store(Arc::clone(&activation_store))
+            .with_durable_dispatch(
+                dedup as Arc<dyn TriggerDedupInbox>,
+                WebhookTransport::default_resolver(),
+                Arc::clone(&version_store) as Arc<dyn WorkflowVersionStore>,
+            );
+
+        // Register one activation in scope_x.
+        let outcome_x = Arc::new(Mutex::new(TriggerEventOutcome::skip()));
+        let handler_x: Arc<dyn TriggerHandler> =
+            Arc::new(WebhookTriggerAdapter::new(ConfigurableWebhookAction {
+                outcome_cell: Arc::clone(&outcome_x),
+            }));
+        let wf_x = WorkflowId::new();
+        let ctx_x = base_ctx(wf_x, node_key!("trigger_x"));
+        handler_x.start(&ctx_x).await.unwrap();
+        let handle_x = activate_and_persist(
+            &transport,
+            activation_store.as_ref(),
+            PersistParams {
+                handler: handler_x,
+                action_config: WebhookConfig::default()
+                    .with_signature_policy(SignaturePolicy::OptionalAcceptUnsigned),
+                ctx_template: ctx_x,
+                trigger_id: node_key!("trigger_x").as_str().to_string(),
+                scope: scope_x.clone(),
+                workflow_id: Some(wf_x.to_string()),
+                mode: WebhookMode::Test,
+            },
+        )
+        .await
+        .unwrap();
+
+        // Register one activation in scope_y.
+        let outcome_y = Arc::new(Mutex::new(TriggerEventOutcome::skip()));
+        let handler_y: Arc<dyn TriggerHandler> =
+            Arc::new(WebhookTriggerAdapter::new(ConfigurableWebhookAction {
+                outcome_cell: Arc::clone(&outcome_y),
+            }));
+        let wf_y = WorkflowId::new();
+        let ctx_y = base_ctx(wf_y, node_key!("trigger_y"));
+        handler_y.start(&ctx_y).await.unwrap();
+        let handle_y = activate_and_persist(
+            &transport,
+            activation_store.as_ref(),
+            PersistParams {
+                handler: handler_y,
+                action_config: WebhookConfig::default()
+                    .with_signature_policy(SignaturePolicy::OptionalAcceptUnsigned),
+                ctx_template: ctx_y,
+                trigger_id: node_key!("trigger_y").as_str().to_string(),
+                scope: scope_y.clone(),
+                workflow_id: Some(wf_y.to_string()),
+                mode: WebhookMode::Test,
+            },
+        )
+        .await
+        .unwrap();
+
+        let key_x = WebhookKey::programmatic(handle_x.trigger_uuid, handle_x.nonce.clone());
+        let key_y = WebhookKey::programmatic(handle_y.trigger_uuid, handle_y.nonce.clone());
+
+        // Each tenant gets one allowed request — they should NOT interfere.
+        let r_x = dispatch_skip(&transport, key_x).await;
+        let r_y = dispatch_skip(&transport, key_y).await;
+        assert_eq!(r_x, StatusCode::OK, "scope_x first request must succeed");
+        assert_eq!(
+            r_y,
+            StatusCode::OK,
+            "scope_y first request must succeed independently of scope_x"
+        );
+    }
+
+    /// Structural coupling proof (anti-discipline, RED-on-revert).
+    ///
+    /// A transport built from a `None`-rate-limit config and then passed to
+    /// `with_durable_dispatch` must have BOTH `rate_limiter` and
+    /// `tenant_rate_limiter` populated — the defaults are installed
+    /// automatically by the builder, not by composition-root discipline.
+    ///
+    /// RED-on-revert: removing the `if i.rate_limiter.is_none()` /
+    /// `if i.tenant_rate_limiter.is_none()` installs in `with_durable_dispatch`
+    /// causes both `is_some()` assertions to fail.
+    #[tokio::test]
+    async fn structural_coupling_durable_dispatch_installs_both_limiters() {
+        use nebula_storage::inmem::{InMemoryTriggerDedupInbox, InMemoryWorkflowVersionStore};
+        use nebula_storage_port::store::{TriggerDedupInbox, WorkflowVersionStore};
+
+        let exec_store = InMemoryExecutionStore::new();
+        let dedup: Arc<dyn TriggerDedupInbox> =
+            Arc::new(InMemoryTriggerDedupInbox::new(&exec_store));
+        let version_store: Arc<dyn WorkflowVersionStore> =
+            Arc::new(InMemoryWorkflowVersionStore::new());
+
+        // Config with both rate limits as None — no explicit operator override.
+        let cfg = WebhookTransportConfig {
+            rate_limit_per_minute: None,
+            tenant_rate_limit_per_minute: None,
+            ..WebhookTransportConfig::default()
+        };
+        let transport = WebhookTransport::new(cfg).with_durable_dispatch(
+            dedup,
+            WebhookTransport::default_resolver(),
+            version_store,
+        );
+
+        assert!(
+            transport.inner.rate_limiter.is_some(),
+            "with_durable_dispatch must install per-token rate_limiter even when \
+             config.rate_limit_per_minute is None (structural guarantee)"
+        );
+        assert!(
+            transport.inner.tenant_rate_limiter.is_some(),
+            "with_durable_dispatch must install per-tenant tenant_rate_limiter even when \
+             config.tenant_rate_limit_per_minute is None (structural guarantee)"
         );
     }
 }
