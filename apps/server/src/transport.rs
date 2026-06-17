@@ -8,7 +8,7 @@
 //! The [`Transport`] clap enum lets the single `nebula-server` binary select
 //! which profile to run via `--transport` / `NEBULA_TRANSPORT`.
 
-use std::net::SocketAddr;
+use std::{net::SocketAddr, sync::Arc};
 
 use axum::{Json, Router, http::StatusCode, routing::get};
 use clap::ValueEnum;
@@ -120,14 +120,23 @@ impl ServerTransport for WebhookIngressTransport {
             ..nebula_api::transport::webhook::WebhookTransportConfig::default()
         };
 
-        // Build the transport, then attach the durable activation store when
-        // the composition root has wired one (ADR-0096 D3 — `resolve_by_token`
-        // on the hot path).  The store is attached at construction (refcount 1
-        // before the transport is cloned into handlers) so `with_activation_store`
-        // takes the `Arc::try_unwrap` fast path and never rebuilds the routing map.
+        // Build the transport, then attach components in order (refcount 1
+        // at each step so `Arc::try_unwrap` takes the fast path and never
+        // rebuilds the routing map):
+        //   1. activation store  (ADR-0096 — token resolution)
+        //   2. durable dispatch  (ADR-0095 D1 U-D1.4b — Prod-mode spawning)
+        // All builders are called before the transport is distributed to
+        // handlers so refcount stays 1 throughout.
         let transport = nebula_api::transport::webhook::WebhookTransport::new(webhook_config);
         let transport = if let Some(store) = state.webhook_activation_store.clone() {
             transport.with_activation_store(store)
+        } else {
+            transport
+        };
+        let transport = if let Some(dedup) = state.trigger_dedup_inbox.clone() {
+            let resolver = nebula_api::transport::webhook::WebhookTransport::default_resolver();
+            let version_store = Arc::clone(&state.workflow_version_store);
+            transport.with_durable_dispatch(dedup, resolver, version_store)
         } else {
             transport
         };

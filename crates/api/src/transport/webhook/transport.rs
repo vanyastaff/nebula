@@ -31,8 +31,9 @@ use nebula_action::{
     Clock, SystemClock, TriggerHandler, TriggerRuntimeContext, WebhookConfig,
     WebhookEndpointProvider,
 };
+use nebula_engine::{DefinitionRoutingResolver, RoutingResolver};
 use nebula_metrics::MetricsRegistry;
-use nebula_storage_port::store::WebhookActivationStore;
+use nebula_storage_port::store::{TriggerDedupInbox, WebhookActivationStore, WorkflowVersionStore};
 use url::Url;
 use uuid::Uuid;
 
@@ -120,8 +121,36 @@ pub(super) struct TransportInner {
     /// token to its durable row via `store.resolve_by_token(&hash)`,
     /// confirming the scope/workflow_id/mode tuple.  Dispatch still
     /// goes through the in-memory routing map — durable emitter install
-    /// is deferred to U-D1.4b (next sub-slice).
+    /// is handled in U-D1.4b (this sub-slice) via `durable_dispatch`.
     pub(super) activation_store: Option<Arc<dyn WebhookActivationStore>>,
+
+    /// Durable dispatch components (U-D1.4b).
+    ///
+    /// When `Some`, Prod-mode activation rows spawn durable executions
+    /// via `DurableExecutionEmitter`.  All three fields must be wired
+    /// together by the composition root; `None` means Prod-mode
+    /// dispatches fail closed (5xx).
+    pub(super) durable_dispatch: Option<DurableDispatchComponents>,
+}
+
+/// The three components required for durable webhook dispatch (U-D1.4b).
+///
+/// Grouped into one struct so `TransportInner` does not grow three
+/// independent `Option` fields whose validity is coupled — all three
+/// must be present together or absent together.
+// guard-justified: fields are read by `dispatch.rs` in commit 4 (same
+// webhook module); the lint fires on this intermediate commit only because
+// dispatch.rs does not yet consume them.  Remove this allow in commit 4.
+#[allow(dead_code)]
+#[derive(Clone)]
+pub(super) struct DurableDispatchComponents {
+    /// Atomic dedup + execution-row + job enqueue.  Shared with the
+    /// orchestrator's `JobDispatchQueue` (same underlying store / mutex).
+    pub(super) dedup: Arc<dyn TriggerDedupInbox>,
+    /// Maps `(validated_workflow, trigger_id)` → dispatch route.
+    pub(super) resolver: Arc<dyn RoutingResolver>,
+    /// Workflow-version store for per-request `ValidatedWorkflow` load.
+    pub(super) version_store: Arc<dyn WorkflowVersionStore>,
 }
 
 impl std::fmt::Debug for WebhookTransport {
@@ -180,6 +209,7 @@ impl WebhookTransport {
                 metrics,
                 clock,
                 activation_store: None,
+                durable_dispatch: None,
             }),
         }
     }
@@ -234,10 +264,84 @@ impl WebhookTransport {
                     metrics: arc.metrics.clone(),
                     clock: arc.clock.clone(),
                     activation_store: Some(store),
+                    durable_dispatch: arc.durable_dispatch.clone(),
                 })
             },
         };
         Self { inner }
+    }
+
+    /// Attach the durable-dispatch components for Prod-mode webhook
+    /// execution spawning (ADR-0095 D1, U-D1.4b).
+    ///
+    /// All three components must share the **same underlying store** so
+    /// `claim_and_materialize_start` is atomic (dedup guard + Created
+    /// execution row + Start job in one transaction).
+    ///
+    /// Returns a **new** `WebhookTransport` — same Arc-replacement contract
+    /// as [`Self::with_activation_store`]: call before distributing the
+    /// transport to handlers.  A refcount-1 `Arc::try_unwrap` is the fast
+    /// path; a pre-shared transport emits a warning and clones the routing
+    /// map (no activations lost).
+    ///
+    /// When `None` (default), Prod-mode dispatches fail closed (5xx) rather
+    /// than spawning dedup-blind.
+    #[must_use = "builder methods must be chained or the result used"]
+    pub fn with_durable_dispatch(
+        self,
+        dedup: Arc<dyn TriggerDedupInbox>,
+        resolver: Arc<dyn RoutingResolver>,
+        version_store: Arc<dyn WorkflowVersionStore>,
+    ) -> Self {
+        let components = DurableDispatchComponents {
+            dedup,
+            resolver,
+            version_store,
+        };
+        let inner = match Arc::try_unwrap(self.inner) {
+            Ok(mut i) => {
+                i.durable_dispatch = Some(components);
+                Arc::new(i)
+            },
+            Err(arc) => {
+                debug_assert!(
+                    false,
+                    "with_durable_dispatch called on a shared WebhookTransport (refcount > 1); \
+                     attach components before cloning the transport into handlers"
+                );
+                tracing::warn!(
+                    target: "nebula::api::webhook::transport",
+                    "with_durable_dispatch called on a shared transport; \
+                     existing routing entries are preserved but this indicates \
+                     a composition-root ordering bug"
+                );
+                let rate_limiter = arc
+                    .config
+                    .rate_limit_per_minute
+                    .map(WebhookRateLimiter::new);
+                Arc::new(TransportInner {
+                    config: arc.config.clone(),
+                    routing: arc.routing.clone(),
+                    rate_limiter,
+                    metrics: arc.metrics.clone(),
+                    clock: arc.clock.clone(),
+                    activation_store: arc.activation_store.clone(),
+                    durable_dispatch: Some(components),
+                })
+            },
+        };
+        Self { inner }
+    }
+
+    /// Build a `DefinitionRoutingResolver` with the slice flavor SHA and
+    /// return it as `Arc<dyn RoutingResolver>`.
+    ///
+    /// Convenience for composition roots that do not need to customize the
+    /// flavor SHA.  The `DefinitionRoutingResolver` is registry-free and
+    /// stateless; a single instance is safe to share across all dispatches.
+    #[must_use]
+    pub fn default_resolver() -> Arc<dyn RoutingResolver> {
+        Arc::new(DefinitionRoutingResolver::default())
     }
 
     /// Register a webhook trigger and allocate its public endpoint.
