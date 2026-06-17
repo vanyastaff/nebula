@@ -88,6 +88,21 @@ impl WebhookKey {
             Self::Programmatic { uuid, .. } => format!("rl:{uuid}"),
         }
     }
+
+    /// Extract the raw nonce (bearer token) from the key.
+    ///
+    /// # Security note
+    ///
+    /// The returned value is the plaintext capability token and must
+    /// **never** be emitted in logs or metrics.  This accessor exists
+    /// solely for the token-hash computation performed at the API edge
+    /// before querying the durable store.
+    #[must_use]
+    pub(super) fn nonce(&self) -> &str {
+        match self {
+            Self::Programmatic { nonce, .. } => nonce.as_str(),
+        }
+    }
 }
 
 #[cfg(test)]

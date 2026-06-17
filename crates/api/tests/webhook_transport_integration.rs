@@ -17,7 +17,10 @@
 //! and the failure modes easy to read.
 
 use std::{
-    sync::{Arc, Mutex, OnceLock},
+    sync::{
+        Arc, Mutex, OnceLock,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::Duration,
 };
 
@@ -31,8 +34,16 @@ use nebula_action::{
     TriggerHandler, TriggerRuntimeContext, WebhookAction, WebhookConfig, WebhookRequest,
     WebhookResponse, WebhookTriggerAdapter,
 };
-use nebula_api::transport::webhook::{WebhookTransport, WebhookTransportConfig};
+use nebula_api::transport::webhook::{
+    PersistParams, WebhookTransport, WebhookTransportConfig, activate_and_persist,
+};
 use nebula_core::Dependencies;
+use nebula_storage::inmem::InMemoryWebhookActivationStore;
+use nebula_storage_port::{
+    Scope,
+    dto::{WebhookActivationRecord, WebhookMode},
+    store::WebhookActivationStore,
+};
 use sha2::Sha256;
 use tokio_util::sync::CancellationToken;
 use tower::ServiceExt;
@@ -690,8 +701,7 @@ impl WebhookAction for DefaultConfigWebhook {
         _state: &(),
         _ctx: &(impl TriggerContext + ?Sized),
     ) -> Result<WebhookResponse, ActionError> {
-        self.reached_handler
-            .store(true, std::sync::atomic::Ordering::Release);
+        self.reached_handler.store(true, Ordering::Release);
         Ok(WebhookResponse::accept(TriggerEventOutcome::skip()))
     }
 }
@@ -782,7 +792,7 @@ async fn default_config_with_empty_secret_returns_500() {
     // Fail-closed means the handler is NEVER reached under the default
     // empty-secret policy.
     assert!(
-        !reached.load(std::sync::atomic::Ordering::Acquire),
+        !reached.load(Ordering::Acquire),
         "handle_request must not be invoked when signature policy rejects"
     );
 }
@@ -893,4 +903,243 @@ async fn signature_failures_total_metric_increments_missing_secret() {
         .unwrap()
         .get();
     assert_eq!(count, 1, "reason=missing_secret must increment once");
+}
+
+// ── FIX A: pre-auth DB amplifier guard ──────────────────────────────────────
+//
+// These three tests prove that `resolve_by_token` is called on the
+// `WebhookActivationStore` ONLY AFTER the route-lookup (404) and
+// rate-limit (429) checks have passed.  An unauthenticated attacker
+// hitting unknown paths or a rate-limited key must never trigger a DB
+// query.
+
+/// Spy `WebhookActivationStore` that delegates reads/writes to a real
+/// `InMemoryWebhookActivationStore` and counts how many times
+/// `resolve_by_token` is called.
+///
+/// Uses `AtomicUsize` (no async-unsafe `Mutex` across `.await`) so
+/// the counter is always safe to read after `oneshot` returns.
+#[derive(Debug)]
+struct ResolutionSpyStore {
+    inner: InMemoryWebhookActivationStore,
+    resolve_by_token_calls: Arc<AtomicUsize>,
+}
+
+impl ResolutionSpyStore {
+    fn new() -> (Self, Arc<AtomicUsize>) {
+        let counter = Arc::new(AtomicUsize::new(0));
+        let spy = Self {
+            inner: InMemoryWebhookActivationStore::new(),
+            resolve_by_token_calls: Arc::clone(&counter),
+        };
+        (spy, counter)
+    }
+}
+
+#[async_trait::async_trait]
+impl WebhookActivationStore for ResolutionSpyStore {
+    async fn upsert(
+        &self,
+        scope: &Scope,
+        record: WebhookActivationRecord,
+    ) -> Result<(), nebula_storage_port::StorageError> {
+        self.inner.upsert(scope, record).await
+    }
+
+    async fn resolve(
+        &self,
+        scope: &Scope,
+        slug: &str,
+    ) -> Result<Option<WebhookActivationRecord>, nebula_storage_port::StorageError> {
+        self.inner.resolve(scope, slug).await
+    }
+
+    async fn deactivate(
+        &self,
+        scope: &Scope,
+        trigger_id: &str,
+    ) -> Result<(), nebula_storage_port::StorageError> {
+        self.inner.deactivate(scope, trigger_id).await
+    }
+
+    async fn resolve_by_token(
+        &self,
+        token_hash: &[u8; 32],
+    ) -> Result<Option<WebhookActivationRecord>, nebula_storage_port::StorageError> {
+        // Increment before delegating so the count is accurate even if the
+        // inner call is synchronous.
+        self.resolve_by_token_calls.fetch_add(1, Ordering::Relaxed);
+        self.inner.resolve_by_token(token_hash).await
+    }
+
+    async fn list_all_active(
+        &self,
+    ) -> Result<Vec<WebhookActivationRecord>, nebula_storage_port::StorageError> {
+        self.inner.list_all_active().await
+    }
+}
+
+fn test_scope() -> Scope {
+    Scope::new("test-org", "test-ws")
+}
+
+fn noop_ctx_template() -> TriggerRuntimeContext {
+    TriggerRuntimeContext::new(
+        Arc::new(
+            nebula_core::BaseContext::builder()
+                .cancellation(CancellationToken::new())
+                .build(),
+        ),
+        nebula_core::WorkflowId::new(),
+        nebula_core::node_key!("test"),
+    )
+}
+
+/// Case 1: request hits an unregistered (uuid, nonce) → 404.
+///
+/// The store must NOT be queried — the route-lookup gate fires first
+/// and returns 404 before the token-resolution step is reached.
+#[tokio::test]
+async fn token_resolution_skipped_on_unregistered_key_404() {
+    let (spy, call_count) = ResolutionSpyStore::new();
+    let store: Arc<dyn WebhookActivationStore> = Arc::new(spy);
+    let transport = WebhookTransport::new(WebhookTransportConfig {
+        base_url: Url::parse("https://nebula.example.com").unwrap(),
+        path_prefix: "/webhooks".to_string(),
+        body_limit_bytes: 1024 * 1024,
+        response_timeout: Duration::from_secs(5),
+        rate_limit_per_minute: None,
+    })
+    .with_activation_store(store);
+
+    let router = transport.router();
+    // Well-formed UUID + nonce, but no route registered for it.
+    let req = Request::builder()
+        .method("POST")
+        .uri("/webhooks/550e8400-e29b-41d4-a716-446655440000/deadbeef00000000")
+        .body(Body::from("{}"))
+        .unwrap();
+    let resp = router.oneshot(req).await.unwrap();
+
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    assert_eq!(
+        call_count.load(Ordering::Relaxed),
+        0,
+        "resolve_by_token must not be called for an unregistered key (404 fires first)"
+    );
+}
+
+/// Case 2: request hits a registered key but is rate-limited → 429.
+///
+/// The store must NOT be queried — the rate-limit gate fires after
+/// route-lookup but before the token-resolution step.
+#[tokio::test]
+async fn token_resolution_skipped_on_rate_limited_key_429() {
+    let (spy, call_count) = ResolutionSpyStore::new();
+    let store: Arc<dyn WebhookActivationStore> = Arc::new(spy);
+    // 1 request per minute so the second request trips the limiter.
+    let transport = WebhookTransport::new(WebhookTransportConfig {
+        base_url: Url::parse("https://nebula.example.com").unwrap(),
+        path_prefix: "/webhooks".to_string(),
+        body_limit_bytes: 1024 * 1024,
+        response_timeout: Duration::from_secs(5),
+        rate_limit_per_minute: Some(1),
+    })
+    .with_activation_store(store);
+
+    // Register a route so the route-lookup passes on both requests.
+    let (handle, _) = register_webhook(&transport, b"secret".to_vec()).await;
+    let path = handle.endpoint_url.path().to_string();
+    let router = transport.router();
+
+    // First request: passes rate-limit, reaches token-resolution.
+    // We don't assert the count here — it may or may not find a row; that's fine.
+    let req1 = Request::builder()
+        .method("POST")
+        .uri(&path)
+        .body(Body::from("{}"))
+        .unwrap();
+    let _resp1 = router.clone().oneshot(req1).await.unwrap();
+    // The first request passed rate-limit, so the count may be 1 here.
+    // Snapshot it so we can assert the SECOND request adds nothing.
+    let count_after_first = call_count.load(Ordering::Relaxed);
+
+    // Second request: rate-limited → 429, token-resolution must NOT fire.
+    let req2 = Request::builder()
+        .method("POST")
+        .uri(&path)
+        .body(Body::from("{}"))
+        .unwrap();
+    let resp2 = router.clone().oneshot(req2).await.unwrap();
+
+    assert_eq!(resp2.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(
+        call_count.load(Ordering::Relaxed),
+        count_after_first,
+        "resolve_by_token must not be called when the rate-limit gate fires (429)"
+    );
+}
+
+/// Case 3: registered key, under rate limit, store has the matching row → queried exactly once.
+///
+/// Proves the happy path still calls the store for authenticated,
+/// under-limit requests that pass both guards.
+#[tokio::test]
+async fn token_resolution_called_exactly_once_on_registered_under_limit_key() {
+    let (spy, call_count) = ResolutionSpyStore::new();
+    let store: Arc<dyn WebhookActivationStore> = Arc::new(spy);
+    let transport = WebhookTransport::new(WebhookTransportConfig {
+        base_url: Url::parse("https://nebula.example.com").unwrap(),
+        path_prefix: "/webhooks".to_string(),
+        body_limit_bytes: 1024 * 1024,
+        response_timeout: Duration::from_secs(5),
+        rate_limit_per_minute: None,
+    })
+    .with_activation_store(Arc::clone(&store));
+
+    // Use `activate_and_persist` so the spy store has the row AND the
+    // routing map has the entry.  The adapter uses `OptionalAcceptUnsigned`
+    // so the request reaches token-resolution without needing a signature.
+    let adapter: Arc<dyn TriggerHandler> = {
+        let a = WebhookTriggerAdapter::new(UnsignedWebhook);
+        Arc::new(a)
+    };
+    // We need the config before erasing the type — but UnsignedWebhook's
+    // adapter is consumed by `new`; reconstruct for config only.
+    let config = WebhookTriggerAdapter::new(UnsignedWebhook).config().clone();
+
+    let handle = activate_and_persist(
+        &transport,
+        store.as_ref(),
+        PersistParams {
+            handler: adapter.clone(),
+            action_config: config,
+            ctx_template: noop_ctx_template(),
+            trigger_id: "trigger-spy-test".to_string(),
+            scope: test_scope(),
+            workflow_id: None,
+            mode: WebhookMode::Test,
+        },
+    )
+    .await
+    .expect("activate_and_persist must succeed");
+
+    adapter.start(&handle.ctx).await.unwrap();
+
+    let router = transport.router();
+    let req = Request::builder()
+        .method("POST")
+        .uri(handle.endpoint_url.path())
+        .body(Body::from("{}"))
+        .unwrap();
+    let resp = router.oneshot(req).await.unwrap();
+
+    // The unsigned webhook accepts without a signature; it should reach
+    // the handler and return 200.
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        call_count.load(Ordering::Relaxed),
+        1,
+        "resolve_by_token must be called exactly once for a registered, under-limit key"
+    );
 }
