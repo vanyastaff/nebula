@@ -226,4 +226,98 @@ impl WebhookActivationStore for SqliteWebhookActivationStore {
         .map_err(conn_err)?;
         Ok(())
     }
+
+    /// SYSTEM-SURFACE: scope comes out of the returned row, not in.
+    /// Rejects the all-zeros sentinel before querying (see trait doc).
+    async fn resolve_by_token(
+        &self,
+        token_hash: &[u8; 32],
+    ) -> Result<Option<WebhookActivationRecord>, StorageError> {
+        // Sentinel guard: all-zeros means "no token assigned"; never query.
+        if token_hash == &[0u8; 32] {
+            return Ok(None);
+        }
+        let row = sqlx::query(
+            "SELECT workspace_id, org_id, slug, trigger_id, workflow_id, \
+                    webhook_mode, token_hash \
+             FROM port_webhook_activations \
+             WHERE token_hash = ?",
+        )
+        .bind(token_hash.as_ref())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(conn_err)?;
+        let Some(r) = row else { return Ok(None) };
+        let scope = Scope::new(
+            r.try_get::<String, _>("workspace_id").map_err(conn_err)?,
+            r.try_get::<String, _>("org_id").map_err(conn_err)?,
+        );
+        let slug: String = r.try_get("slug").map_err(conn_err)?;
+        let trigger_id: String = r.try_get("trigger_id").map_err(conn_err)?;
+        let workflow_id: Option<String> = r.try_get("workflow_id").map_err(conn_err)?;
+        // Fail-closed: unrecognised mode → Test.
+        let mode = match r
+            .try_get::<Option<String>, _>("webhook_mode")
+            .ok()
+            .flatten()
+            .as_deref()
+        {
+            Some("prod") => WebhookMode::Prod,
+            _ => WebhookMode::Test,
+        };
+        // Fail-closed: malformed or short blob → zero sentinel.
+        let stored_hash: [u8; 32] = r
+            .try_get::<Vec<u8>, _>("token_hash")
+            .ok()
+            .and_then(|v| v.try_into().ok())
+            .unwrap_or([0u8; 32]);
+        let mut rec = WebhookActivationRecord::new(trigger_id, scope, slug, true);
+        rec.workflow_id = workflow_id;
+        rec.mode = mode;
+        rec.token_hash = stored_hash;
+        Ok(Some(rec))
+    }
+
+    /// SYSTEM-SURFACE: cross-tenant enumeration for bootstrap map population.
+    async fn list_all_active(&self) -> Result<Vec<WebhookActivationRecord>, StorageError> {
+        let rows = sqlx::query(
+            "SELECT workspace_id, org_id, slug, trigger_id, workflow_id, \
+                    webhook_mode, token_hash \
+             FROM port_webhook_activations \
+             WHERE active = 1",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(conn_err)?;
+        let mut out = Vec::with_capacity(rows.len());
+        for r in rows {
+            let scope = Scope::new(
+                r.try_get::<String, _>("workspace_id").map_err(conn_err)?,
+                r.try_get::<String, _>("org_id").map_err(conn_err)?,
+            );
+            let slug: String = r.try_get("slug").map_err(conn_err)?;
+            let trigger_id: String = r.try_get("trigger_id").map_err(conn_err)?;
+            let workflow_id: Option<String> = r.try_get("workflow_id").map_err(conn_err)?;
+            let mode = match r
+                .try_get::<Option<String>, _>("webhook_mode")
+                .ok()
+                .flatten()
+                .as_deref()
+            {
+                Some("prod") => WebhookMode::Prod,
+                _ => WebhookMode::Test,
+            };
+            let token_hash: [u8; 32] = r
+                .try_get::<Vec<u8>, _>("token_hash")
+                .ok()
+                .and_then(|v| v.try_into().ok())
+                .unwrap_or([0u8; 32]);
+            let mut rec = WebhookActivationRecord::new(trigger_id, scope, slug, true);
+            rec.workflow_id = workflow_id;
+            rec.mode = mode;
+            rec.token_hash = token_hash;
+            out.push(rec);
+        }
+        Ok(out)
+    }
 }

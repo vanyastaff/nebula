@@ -1557,6 +1557,149 @@ pub async fn assert_webhook_activation_and_scope(backend: &dyn Backend) {
     );
 }
 
+/// System-surface methods: `resolve_by_token` + `list_all_active`.
+///
+/// Proves:
+/// - Single-row token resolution with exact-value asserts (no tautological
+///   `is_some()`).
+/// - Cross-tenant isolation: resolving tenant A's hash never yields tenant B's
+///   row.
+/// - Sentinel rejection: the all-zeros token hash always returns `None`
+///   without querying.
+/// - Unknown hash returns `None` (no false-positive).
+/// - `list_all_active` enumerates rows from both tenants (cross-tenant
+///   bootstrap enumeration).
+pub async fn assert_webhook_system_surface(backend: &dyn Backend) {
+    let store = backend.webhook_store().await;
+    let sa = scope_a();
+    let sb = scope_b();
+
+    // Upsert two rows under different scopes, each with a distinct token hash
+    // and workflow_id so exact-value asserts are meaningful.
+    let hash_a: [u8; 32] = [0xa1; 32];
+    let hash_b: [u8; 32] = [0xb2; 32];
+
+    let mut row_a = WebhookActivationRecord::new("trg_sys_a", sa.clone(), "sys-hook-a", true);
+    row_a.workflow_id = Some("wf_a".to_string());
+    row_a.token_hash = hash_a;
+    store.upsert(&sa, row_a).await.expect("upsert row_a");
+
+    let mut row_b = WebhookActivationRecord::new("trg_sys_b", sb.clone(), "sys-hook-b", true);
+    row_b.workflow_id = Some("wf_b".to_string());
+    row_b.token_hash = hash_b;
+    store.upsert(&sb, row_b).await.expect("upsert row_b");
+
+    // ── resolve_by_token: tenant A's hash → A's row ───────────────────────
+    let got_a = store
+        .resolve_by_token(&hash_a)
+        .await
+        .expect("resolve_by_token hash_a")
+        .unwrap_or_else(|| {
+            panic!(
+                "[{}] resolve_by_token(hash_a) must return Some",
+                backend.name()
+            )
+        });
+    assert_eq!(
+        got_a.trigger_id,
+        "trg_sys_a",
+        "[{}] resolve_by_token(hash_a) must return row_a's trigger_id",
+        backend.name()
+    );
+    assert_eq!(
+        got_a.scope,
+        sa,
+        "[{}] resolve_by_token(hash_a) must carry scope_a",
+        backend.name()
+    );
+    assert_eq!(
+        got_a.workflow_id.as_deref(),
+        Some("wf_a"),
+        "[{}] resolve_by_token(hash_a) must carry wf_a",
+        backend.name()
+    );
+    assert_eq!(
+        got_a.token_hash,
+        hash_a,
+        "[{}] resolve_by_token(hash_a) must round-trip token_hash",
+        backend.name()
+    );
+
+    // ── resolve_by_token: tenant B's hash → B's row ───────────────────────
+    let got_b = store
+        .resolve_by_token(&hash_b)
+        .await
+        .expect("resolve_by_token hash_b")
+        .unwrap_or_else(|| {
+            panic!(
+                "[{}] resolve_by_token(hash_b) must return Some",
+                backend.name()
+            )
+        });
+    assert_eq!(
+        got_b.trigger_id,
+        "trg_sys_b",
+        "[{}] resolve_by_token(hash_b) must return row_b's trigger_id",
+        backend.name()
+    );
+    assert_eq!(
+        got_b.scope,
+        sb,
+        "[{}] resolve_by_token(hash_b) must carry scope_b",
+        backend.name()
+    );
+    assert_eq!(
+        got_b.workflow_id.as_deref(),
+        Some("wf_b"),
+        "[{}] resolve_by_token(hash_b) must carry wf_b",
+        backend.name()
+    );
+
+    // Cross-tenant isolation: A's hash must never yield B's row.
+    assert_ne!(
+        got_a.trigger_id,
+        got_b.trigger_id,
+        "[{}] resolve_by_token must never cross-pollinate tenant rows",
+        backend.name()
+    );
+
+    // ── Sentinel rejection: [0u8;32] → None (no query) ───────────────────
+    let sentinel = store
+        .resolve_by_token(&[0u8; 32])
+        .await
+        .expect("resolve_by_token sentinel");
+    assert!(
+        sentinel.is_none(),
+        "[{}] the all-zeros sentinel must always return None",
+        backend.name()
+    );
+
+    // ── Unknown hash → None ───────────────────────────────────────────────
+    let unknown = store
+        .resolve_by_token(&[0xff; 32])
+        .await
+        .expect("resolve_by_token unknown");
+    assert!(
+        unknown.is_none(),
+        "[{}] an unknown hash must return None",
+        backend.name()
+    );
+
+    // ── list_all_active: cross-tenant enumeration ─────────────────────────
+    let all = store.list_all_active().await.expect("list_all_active");
+    let ids: Vec<&str> = all.iter().map(|r| r.trigger_id.as_str()).collect();
+    assert!(
+        ids.contains(&"trg_sys_a"),
+        "[{}] list_all_active must contain trg_sys_a (tenant A row)",
+        backend.name()
+    );
+    assert!(
+        ids.contains(&"trg_sys_b"),
+        "[{}] list_all_active must contain trg_sys_b (tenant B row)",
+        backend.name()
+    );
+}
+
 /// A [`Backend`] whose stores are wrapped in the `nebula-tenancy`
 /// scope-enforcing decorators, all bound to one tenant ([`scope_a`]).
 ///

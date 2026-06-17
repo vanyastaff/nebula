@@ -59,4 +59,35 @@ impl WebhookActivationStore for ScopedWebhookActivationStore {
     async fn deactivate(&self, _scope: &Scope, trigger_id: &str) -> Result<(), StorageError> {
         self.inner.deactivate(&self.bound, trigger_id).await
     }
+
+    /// SYSTEM-SURFACE — delegates straight to `self.inner`, **ignoring the
+    /// bound scope**.
+    ///
+    /// The scope is the *result* of this call (it comes out of the returned
+    /// row), not an input: the caller supplies only a SHA-256 token hash and
+    /// gets back the tenant identity alongside the activation record.  Binding
+    /// the scope here would make it impossible to use the decorator for
+    /// token-keyed resolution — the confused-deputy boundary is enforced by
+    /// the fact that the caller must then construct a fresh
+    /// `ScopedWebhookActivationStore::new(store, row.scope)` for any
+    /// subsequent tenant-scoped operation, never by filtering the query.
+    ///
+    /// Mirrors the `reclaim_stuck` / `list_for_org` precedent on other stores.
+    async fn resolve_by_token(
+        &self,
+        token_hash: &[u8; 32],
+    ) -> Result<Option<WebhookActivationRecord>, StorageError> {
+        self.inner.resolve_by_token(token_hash).await
+    }
+
+    /// SYSTEM-SURFACE — delegates straight to `self.inner`, **ignoring the
+    /// bound scope**.
+    ///
+    /// Bootstrap map population requires the full cross-tenant set of active
+    /// rows; filtering by the decorator's bound scope would return only one
+    /// tenant's rows and leave the rest of the routing map dark.  Mirrors the
+    /// `reclaim_stuck` / `list_for_org` precedent on other stores.
+    async fn list_all_active(&self) -> Result<Vec<WebhookActivationRecord>, StorageError> {
+        self.inner.list_all_active().await
+    }
 }
