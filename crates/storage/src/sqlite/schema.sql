@@ -81,20 +81,38 @@ CREATE TABLE IF NOT EXISTS port_idempotency_cache (
 CREATE INDEX IF NOT EXISTS idx_port_idempotency_cache_expiry
     ON port_idempotency_cache (expires_at_ms);
 
--- Webhook activation lookup (ADR-0049): incoming POST /hooks/{slug} →
--- owning trigger, without scanning trigger configs. Scoped: a slug is
--- unique per tenant, so resolution never crosses a tenant boundary.
+-- Webhook activation lookup (ADR-0049, extended ADR-0096 commit 1):
+-- incoming POST /hooks/{slug} → owning trigger, without scanning trigger
+-- configs. Scoped: a slug is unique per tenant, so resolution never
+-- crosses a tenant boundary.
+--
+-- workflow_id   NULL  → not yet wired to a specific workflow
+-- webhook_mode  'test'→ safe default; 'prod' routes to the durable engine
+-- token_hash    all-zeros sentinel → no capability token assigned yet
 CREATE TABLE IF NOT EXISTS port_webhook_activations (
     workspace_id TEXT NOT NULL,
     org_id       TEXT NOT NULL,
     slug         TEXT NOT NULL,
     trigger_id   TEXT NOT NULL,
     active       INTEGER NOT NULL DEFAULT 1,
+    workflow_id  TEXT,
+    webhook_mode TEXT NOT NULL DEFAULT 'test'
+                     CHECK (webhook_mode IN ('test', 'prod')),
+    token_hash   BLOB NOT NULL
+                     DEFAULT X'0000000000000000000000000000000000000000000000000000000000000000'
+                     CHECK (length(token_hash) = 32),
     PRIMARY KEY (workspace_id, org_id, slug)
 );
 
 CREATE INDEX IF NOT EXISTS idx_port_webhook_activations_trigger
     ON port_webhook_activations (workspace_id, org_id, trigger_id);
+
+-- Partial unique index: the zero sentinel is excluded so rows without an
+-- assigned token do not collide with each other. A non-sentinel token_hash
+-- identifies at most one activation row (system-surface lookup).
+CREATE UNIQUE INDEX IF NOT EXISTS idx_port_webhook_activations_token_hash
+    ON port_webhook_activations (token_hash)
+    WHERE token_hash <> X'0000000000000000000000000000000000000000000000000000000000000000';
 
 -- Spec-16 workflow split: the workflow row (id / slug / soft-delete /
 -- CAS version) is separate from its versions. Scoped: every query is

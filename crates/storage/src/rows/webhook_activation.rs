@@ -282,41 +282,6 @@ fn other_type_name(value: &serde_json::Value) -> &'static str {
     }
 }
 
-/// Trigger-coordinate triple addressing an operator-configured
-/// webhook activation in storage.
-///
-/// All three slugs are taken verbatim from `organizations.slug`,
-/// `workspaces.slug`, and `triggers.slug`. The storage layer keeps
-/// them as plain strings — promotion to typed coordinates happens at
-/// the API layer (`crates/api/src/services/webhook/key.rs`).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WebhookActivationCoords {
-    /// `organizations.slug` of the trigger's tenant.
-    pub org_slug: String,
-    /// `workspaces.slug` of the trigger's workspace.
-    pub workspace_slug: String,
-    /// `triggers.slug` of the activation itself.
-    pub trigger_slug: String,
-}
-
-/// One operator-configured webhook activation row, post-decode.
-///
-/// Joins `triggers` ↔ `workflows` ↔ `workspaces` ↔ `organizations`
-/// down to the slug triple plus the decoded
-/// [`WebhookActivationSpec`]. The webhook bootstrap pathway turns
-/// each record into a `(WebhookKey::Slug, Arc<dyn TriggerHandler>)`
-/// registration in the transport.
-#[derive(Debug, Clone)]
-pub struct WebhookActivationRecord {
-    /// Trigger ID (16-byte BYTEA / BLOB ULID). Carried so admin
-    /// reload diffs can identify rows by primary key.
-    pub trigger_id: Vec<u8>,
-    /// Slug coordinates routed by the API layer.
-    pub coords: WebhookActivationCoords,
-    /// Decoded activation parameters.
-    pub spec: WebhookActivationSpec,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

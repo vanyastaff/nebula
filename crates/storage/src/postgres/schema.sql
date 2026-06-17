@@ -80,20 +80,33 @@ CREATE TABLE IF NOT EXISTS port_idempotency_cache (
 CREATE INDEX IF NOT EXISTS idx_port_idempotency_cache_expiry
     ON port_idempotency_cache (expires_at);
 
--- Webhook activation lookup (ADR-0049): incoming POST /hooks/{slug} →
--- owning trigger. Scoped: a slug is unique per tenant, so resolution
--- never crosses a tenant boundary.
+-- Webhook activation lookup: incoming webhook → owning trigger. Scoped per
+-- tenant. ADR-0096 added workflow_id / webhook_mode / token_hash (mirrors
+-- migration 0032 + sqlite/schema.sql; this DDL provisions the conformance
+-- pool, which does NOT layer the migrations — keep all four SQL files in sync).
+-- token_hash resolves the capability-token path (resolve_by_token); the
+-- all-zeros sentinel ("no token assigned") is excluded from the unique index.
 CREATE TABLE IF NOT EXISTS port_webhook_activations (
     workspace_id TEXT NOT NULL,
     org_id       TEXT NOT NULL,
     slug         TEXT NOT NULL,
     trigger_id   TEXT NOT NULL,
     active       BOOLEAN NOT NULL DEFAULT TRUE,
+    workflow_id  TEXT,
+    webhook_mode TEXT NOT NULL DEFAULT 'test'
+        CHECK (webhook_mode IN ('test', 'prod')),
+    token_hash   BYTEA NOT NULL
+        DEFAULT decode(repeat('00', 32), 'hex')
+        CHECK (octet_length(token_hash) = 32),
     PRIMARY KEY (workspace_id, org_id, slug)
 );
 
 CREATE INDEX IF NOT EXISTS idx_port_webhook_activations_trigger
     ON port_webhook_activations (workspace_id, org_id, trigger_id);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_port_webhook_activations_token_hash
+    ON port_webhook_activations (token_hash)
+    WHERE token_hash <> decode(repeat('00', 32), 'hex');
 
 -- Spec-16 workflow split: the workflow row (id / slug / soft-delete /
 -- CAS version) is separate from its versions. Scoped: every query is

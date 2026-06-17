@@ -373,7 +373,7 @@ pub mod webhook_signature_failure_reason {
 /// - `tenant_id` — `(org, workspace)` slug pair; bounded per
 ///   deployment.
 /// - `webhook_key_kind` — see [`webhook_key_kind`]
-///   (`programmatic` | `slug`).
+///   (`programmatic` only; slug-routed surface retired in ADR-0096 commit 3).
 ///
 /// **Cardinality budget:** trigger-slug is deliberately omitted from
 /// this counter — per-trigger detail lives in tracing spans. The
@@ -435,10 +435,9 @@ pub mod webhook_request_outcome {
 
 /// Label values for `webhook_key_kind`.
 pub mod webhook_key_kind {
-    /// `WebhookKey::Programmatic { uuid, nonce }`.
+    /// `WebhookKey::Programmatic { uuid, nonce }` — the only variant since
+    /// ADR-0096 commit 3 retired the slug URL surface.
     pub const PROGRAMMATIC: &str = "programmatic";
-    /// `WebhookKey::Slug(TriggerCoordinates)`.
-    pub const SLUG: &str = "slug";
 }
 
 /// Reason labels for [`NEBULA_WEBHOOK_REPLAY_REJECTIONS_TOTAL`].
@@ -461,7 +460,7 @@ pub mod webhook_replay_rejection_reason {
 /// Reason labels for [`NEBULA_WEBHOOK_BOOTSTRAP_FAILURES_TOTAL`].
 pub mod webhook_bootstrap_failure_reason {
     /// Storage-layer error reading active activations (DB conn,
-    /// schema drift). Surfaced by `WebhookActivationRepo::list_active`.
+    /// schema drift). Surfaced by `WebhookActivationStore::list_all_active`.
     pub const STORAGE: &str = "storage";
     /// `triggers.config.webhook_activation` JSONB failed to decode.
     pub const DECODE: &str = "decode";

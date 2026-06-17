@@ -32,10 +32,11 @@ use nebula_action::{
     WebhookEndpointProvider,
 };
 use nebula_metrics::MetricsRegistry;
+use nebula_storage_port::store::WebhookActivationStore;
 use url::Url;
 use uuid::Uuid;
 
-use super::dispatch::{slug_webhook_handler, webhook_handler};
+use super::dispatch::webhook_handler;
 use super::ratelimit::WebhookRateLimiter;
 use super::{
     key::WebhookKey,
@@ -113,6 +114,14 @@ pub(super) struct TransportInner {
     /// Production deployments use [`SystemClock`]; tests inject
     /// `MockClock` to drive deterministic timestamp scenarios.
     pub(super) clock: Arc<dyn Clock>,
+    /// Optional B-world port store (ADR-0096).
+    ///
+    /// When `Some`, `webhook_handler` resolves an incoming capability
+    /// token to its durable row via `store.resolve_by_token(&hash)`,
+    /// confirming the scope/workflow_id/mode tuple.  Dispatch still
+    /// goes through the in-memory routing map — durable emitter install
+    /// is deferred to U-D1.4b (next sub-slice).
+    pub(super) activation_store: Option<Arc<dyn WebhookActivationStore>>,
 }
 
 impl std::fmt::Debug for WebhookTransport {
@@ -170,8 +179,65 @@ impl WebhookTransport {
                 rate_limiter,
                 metrics,
                 clock,
+                activation_store: None,
             }),
         }
+    }
+
+    /// Attach the B-world port store for durable token resolution.
+    ///
+    /// When set, the webhook dispatch handler will resolve incoming capability
+    /// tokens via `store.resolve_by_token` in addition to the in-memory routing
+    /// map lookup.
+    ///
+    /// This method returns a **new** `WebhookTransport` — the inner `Arc`
+    /// is replaced (not mutated in place) so existing clones of the old
+    /// transport do not observe the change.  Call this before distributing
+    /// the transport to handlers.
+    #[must_use = "builder methods must be chained or the result used"]
+    pub fn with_activation_store(self, store: Arc<dyn WebhookActivationStore>) -> Self {
+        // Destructure inner to rebuild with the store attached.
+        // `Arc::try_unwrap` succeeds only when this is the sole handle —
+        // this builder is expected at construction time before the transport
+        // is cloned into handlers, so refcount should be 1.
+        let inner = match Arc::try_unwrap(self.inner) {
+            Ok(mut i) => {
+                i.activation_store = Some(store);
+                Arc::new(i)
+            },
+            Err(arc) => {
+                // Already shared — this is a programming error: the caller
+                // should attach the store before distributing the transport.
+                // We still attach the store correctly by cloning the existing
+                // routing map so no in-flight activations are silently lost,
+                // then emit a warning so the operator sees the misuse.
+                debug_assert!(
+                    false,
+                    "with_activation_store called on a shared WebhookTransport (refcount > 1); \
+                     attach the store before cloning the transport into handlers"
+                );
+                tracing::warn!(
+                    target: "nebula::api::webhook::transport",
+                    "with_activation_store called on a shared transport; \
+                     existing routing entries are preserved but this indicates \
+                     a composition-root ordering bug"
+                );
+                let rate_limiter = arc
+                    .config
+                    .rate_limit_per_minute
+                    .map(WebhookRateLimiter::new);
+                Arc::new(TransportInner {
+                    config: arc.config.clone(),
+                    // Clone the existing routing map so live activations are not lost.
+                    routing: arc.routing.clone(),
+                    rate_limiter,
+                    metrics: arc.metrics.clone(),
+                    clock: arc.clock.clone(),
+                    activation_store: Some(store),
+                })
+            },
+        };
+        Self { inner }
     }
 
     /// Register a webhook trigger and allocate its public endpoint.
@@ -234,108 +300,20 @@ impl WebhookTransport {
         self.inner.routing.remove(&key);
     }
 
-    /// Register a slug-routed activation (webhook activation).
-    ///
-    /// The handler comes from a [`nebula_action::WebhookActionFactory`]
-    /// invoked by the API bootstrap (E1) or the lifecycle subscriber
-    /// (E2). `config` is the [`WebhookConfig`] cached on the wrapping
-    /// adapter; the bootstrap reads it from
-    /// [`nebula_action::BuiltWebhookHandler::config`].
-    ///
-    /// `ctx` is a per-activation [`TriggerRuntimeContext`] template
-    /// the transport clones on every dispatch — same discipline as
-    /// programmatic [`Self::activate`].
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ActivationError::DuplicateRegistration`] if a slug
-    /// activation already exists at `coords`. Pair with
-    /// [`Self::unregister_slug`] for explicit replacement, or use
-    /// [`Self::replace_slug_map`] for atomic bulk swaps.
-    pub fn activate_slug(
-        &self,
-        coords: super::key::TriggerCoordinates,
-        handler: Arc<dyn TriggerHandler>,
-        config: WebhookConfig,
-        ctx: TriggerRuntimeContext,
-    ) -> Result<(), ActivationError> {
-        let entry = ActivationEntry {
-            handler,
-            ctx,
-            config,
-        };
-        let key = WebhookKey::slug(coords);
-        if !self.inner.routing.insert(key, entry) {
-            return Err(ActivationError::DuplicateRegistration);
-        }
-        Ok(())
-    }
-
-    /// Remove a slug activation. Idempotent.
-    pub fn unregister_slug(&self, coords: &super::key::TriggerCoordinates) -> bool {
-        let key = WebhookKey::Slug(coords.clone());
-        self.inner.routing.remove(&key)
-    }
-
-    /// Number of slug-routed activations currently in the routing
-    /// map. Driven by E1 bootstrap, E2 lifecycle subscriber, and E3
-    /// admin reload.
-    #[must_use]
-    pub fn slug_count(&self) -> usize {
-        self.inner.routing.count_by_kind("slug")
-    }
-
-    /// Total active registrations (programmatic + slug). Used by
-    /// `/healthz` reporters.
+    /// Total active registrations. Used by `/healthz` reporters.
     #[must_use]
     pub fn total_count(&self) -> usize {
         self.inner.routing.len()
     }
 
-    /// Atomic swap of all slug activations — used by the admin reload
-    /// endpoint (E3) so external observers do not see a half-loaded
-    /// routing table during a multi-thousand-row reload. Programmatic
-    /// activations are preserved.
-    pub fn replace_slug_map(
-        &self,
-        new: Vec<(
-            super::key::TriggerCoordinates,
-            Arc<dyn TriggerHandler>,
-            WebhookConfig,
-            TriggerRuntimeContext,
-        )>,
-    ) {
-        let payload = new
-            .into_iter()
-            .map(|(coords, handler, config, ctx)| {
-                (
-                    WebhookKey::Slug(coords),
-                    ActivationEntry {
-                        handler,
-                        ctx,
-                        config,
-                    },
-                )
-            })
-            .collect();
-        self.inner.routing.replace_slug_entries(payload);
-    }
-
     /// Build the axum router that dispatches incoming webhook
     /// requests to registered triggers.
     ///
-    /// Mounts both URL shapes (webhook activation):
+    /// Mounts the programmatic URL shape:
+    /// `POST {path_prefix}/{trigger_uuid}/{nonce}` — minted by [`Self::activate`].
     ///
-    /// - Programmatic: `POST {path_prefix}/{trigger_uuid}/{nonce}` —
-    ///   minted by [`Self::activate`].
-    /// - Slug: `POST /api/v1/hooks/{org}/{ws}/{slug}` and
-    ///   `GET /api/v1/hooks/{org}/{ws}/{slug}` (provider-specific
-    ///   challenge handshakes via `pre_handle`) — registered by
-    ///   [`Self::activate_slug`].
-    ///
-    /// Both routes funnel into `dispatch_inner` for a single
-    /// source of truth on signature, replay, rate-limit, and
-    /// pre-handle pipelines.
+    /// Slug-routed activations were retired in ADR-0096 commit 3; the
+    /// routing map is now programmatic-only.
     pub fn router(&self) -> Router {
         let programmatic = format!(
             "{prefix}/{{trigger_uuid}}/{{nonce}}",
@@ -343,10 +321,6 @@ impl WebhookTransport {
         );
         Router::new()
             .route(&programmatic, post(webhook_handler))
-            .route(
-                "/api/v1/hooks/{org}/{ws}/{trigger_slug}",
-                post(slug_webhook_handler).get(slug_webhook_handler),
-            )
             .layer(DefaultBodyLimit::max(self.inner.config.body_limit_bytes))
             .with_state(self.clone())
     }
@@ -369,9 +343,11 @@ pub enum ActivationError {
 
 /// Generate a 32-character random hex nonce.
 ///
-/// 128 bits of entropy — enough to make nonce collisions
-/// impossible over the lifetime of any Nebula deployment. Uses
-/// `Uuid::new_v4` under the hood because uuid is already pulled in.
+/// 122 bits of entropy (`Uuid::new_v4` fixes 6 of its 128 bits for
+/// version/variant) — above the W3C ≥120-bit capability-URL bar and
+/// enough to make nonce collisions/guessing infeasible over the lifetime
+/// of any Nebula deployment. Uses `Uuid::new_v4` because uuid is already
+/// pulled in.
 fn generate_nonce() -> String {
     let uuid = Uuid::new_v4();
     let bytes = uuid.as_bytes();
@@ -380,4 +356,433 @@ fn generate_nonce() -> String {
         out.push_str(&format!("{b:02x}"));
     }
     out
+}
+
+// ── Mint-persist wrapper (ADR-0096 commit 2b) ────────────────────────────────
+
+/// Error returned by [`activate_and_persist`].
+#[derive(Debug, thiserror::Error)]
+pub enum ActivateAndPersistError {
+    /// The in-memory activation failed (routing-map duplicate collision).
+    #[error("activation failed: {0}")]
+    Activation(#[from] ActivationError),
+    /// The durability upsert to the B-world port store failed.
+    ///
+    /// The in-memory routing entry was NOT inserted (or was rolled back):
+    /// `activate_and_persist` removes the routing-map entry before returning
+    /// this error so no orphaned live route exists without a durable row.
+    #[error("failed to persist activation token: {0}")]
+    Storage(#[from] nebula_storage_port::StorageError),
+}
+
+/// Parameters for [`activate_and_persist`].
+///
+/// Bundles the per-activation inputs into one struct so the function signature
+/// stays within `clippy::too-many-arguments` limits.
+pub struct PersistParams {
+    /// The webhook action handler that will service inbound requests.
+    pub handler: Arc<dyn TriggerHandler>,
+    /// Webhook-specific action configuration (method filter, path prefix, etc.).
+    pub action_config: WebhookConfig,
+    /// Context template forwarded to dispatch on each incoming request.
+    pub ctx_template: TriggerRuntimeContext,
+    /// Trigger identity in the B-world store (`triggers.trigger_id`).
+    pub trigger_id: String,
+    /// Tenant scope the activation belongs to; used as the store partition key.
+    pub scope: nebula_storage_port::Scope,
+    /// Optional workflow associated with this activation.
+    pub workflow_id: Option<String>,
+    /// Delivery mode (fire-and-forget vs durable-at-least-once).
+    pub mode: nebula_storage_port::dto::WebhookMode,
+}
+
+/// Mint-persist wrapper for programmatic webhook activations.
+///
+/// Keeps [`WebhookTransport`] in-memory-pure: the transport itself only sees
+/// the routing map; this wrapper adds the durability layer on top.
+///
+/// # Contract
+///
+/// 1. Calls `transport.activate(params.handler, params.action_config,
+///    params.ctx_template)` to mint `(trigger_uuid, nonce)` and insert the
+///    in-memory routing entry.
+/// 2. Computes `token_hash = SHA-256(nonce)` at the API edge.
+/// 3. Upserts `WebhookActivationRecord { trigger_id, scope, slug, active: true,
+///    workflow_id, mode, token_hash }` to `store`.
+/// 4. Returns the plaintext [`ActivationHandle`] (endpoint URL + context) to
+///    the caller **exactly once**.  The plaintext nonce is not persisted.
+///
+/// # Atomicity / ordering
+///
+/// The in-memory routing entry is inserted **before** the store upsert.
+/// If the upsert fails the routing entry is immediately removed so no
+/// orphaned live route exists without a durable row.  From the caller's
+/// perspective, on `Err` the in-memory map is clean (as if `activate` was
+/// never called) — the only side-effect is that `activate` consumed a
+/// freshly-generated `(trigger_uuid, nonce)` pair which is then discarded.
+///
+/// # Errors
+///
+/// Returns [`ActivateAndPersistError::Activation`] if the transport's in-memory
+/// activation fails (effectively unreachable — duplicate nonce collision).
+///
+/// Returns [`ActivateAndPersistError::Storage`] if the port store upsert fails.
+/// In this case the in-memory routing entry has been rolled back: the routing
+/// map is left in the same state as before this call.  The nonce is also
+/// discarded (not returned to the caller), preventing use of an un-persisted
+/// capability token.
+///
+/// # Security
+///
+/// The plaintext `nonce` (the bearer token embedded in the capability URL)
+/// never leaves this function; only its SHA-256 hash reaches the store.
+pub async fn activate_and_persist(
+    transport: &WebhookTransport,
+    store: &dyn WebhookActivationStore,
+    params: PersistParams,
+) -> Result<ActivationHandle, ActivateAndPersistError> {
+    let PersistParams {
+        handler,
+        action_config,
+        ctx_template,
+        trigger_id,
+        scope,
+        workflow_id,
+        mode,
+    } = params;
+
+    // Step 1: in-memory activation (mints uuid + nonce, inserts routing entry).
+    let handle = transport.activate(handler, action_config, ctx_template)?;
+
+    // Step 2: hash at the API edge — nonce never leaves this stack frame.
+    let hash = super::token::token_hash(&handle.nonce);
+
+    // Step 3: build the B-world record.
+    //
+    // `slug` is set to the trigger UUID string so the port store has a unique,
+    // human-readable identifier for the activation.  This field is used only
+    // for the slug-keyed `resolve` path (not exercised for programmatic
+    // activations); its value does not affect routing or token resolution.
+    let mut record = nebula_storage_port::dto::WebhookActivationRecord::new(
+        trigger_id,
+        scope.clone(),
+        handle.trigger_uuid.to_string(),
+        true,
+    );
+    record.workflow_id = workflow_id;
+    record.mode = mode;
+    record.token_hash = hash;
+
+    // Step 4: upsert to the port store.
+    //
+    // On failure, roll back the in-memory routing entry so no orphaned live
+    // route exists without a durable row.  The DashMap remove is infallible,
+    // so persist-failure + rollback is always clean.
+    if let Err(err) = store.upsert(&scope, record).await {
+        transport.deactivate(&handle);
+        return Err(ActivateAndPersistError::Storage(err));
+    }
+
+    tracing::debug!(
+        target: "nebula::api::webhook::transport",
+        trigger_uuid = %handle.trigger_uuid,
+        // nonce deliberately excluded from this span
+        "programmatic activation persisted to port store"
+    );
+
+    Ok(handle)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use nebula_action::{TriggerContext, TriggerHandler, WebhookConfig};
+    use nebula_core::BaseContext;
+    use nebula_storage::inmem::InMemoryWebhookActivationStore;
+    use nebula_storage_port::Scope;
+    use nebula_storage_port::dto::WebhookMode;
+    use nebula_storage_port::store::WebhookActivationStore;
+    use tokio_util::sync::CancellationToken;
+
+    use super::*;
+    use crate::transport::webhook::key::WebhookKey;
+    use crate::transport::webhook::token::token_hash;
+
+    // Minimal no-op TriggerHandler for tests.
+    struct Noop {
+        meta: nebula_action::ActionMetadata,
+    }
+
+    #[async_trait::async_trait]
+    impl TriggerHandler for Noop {
+        fn metadata(&self) -> &nebula_action::ActionMetadata {
+            &self.meta
+        }
+        async fn start(&self, _ctx: &dyn TriggerContext) -> Result<(), nebula_action::ActionError> {
+            Ok(())
+        }
+        async fn stop(&self, _ctx: &dyn TriggerContext) -> Result<(), nebula_action::ActionError> {
+            Ok(())
+        }
+    }
+
+    fn noop_handler() -> Arc<dyn TriggerHandler> {
+        Arc::new(Noop {
+            meta: nebula_action::ActionMetadata::new(
+                nebula_core::action_key!("test.transport.noop"),
+                "Noop",
+                "mint-persist test",
+            ),
+        })
+    }
+
+    fn ctx_template() -> TriggerRuntimeContext {
+        TriggerRuntimeContext::new(
+            Arc::new(
+                BaseContext::builder()
+                    .cancellation(CancellationToken::new())
+                    .build(),
+            ),
+            nebula_core::WorkflowId::new(),
+            nebula_core::node_key!("test"),
+        )
+    }
+
+    fn test_scope() -> Scope {
+        Scope::new("test-org", "test-ws")
+    }
+
+    /// Mint-persist round-trip:
+    ///
+    /// - `activate_and_persist` mints the token and upserts the hashed record.
+    /// - `resolve_by_token(sha256(plaintext))` returns the row with matching
+    ///   scope, trigger_id, and workflow_id.
+    /// - The port store row does NOT contain the plaintext token.
+    #[tokio::test]
+    async fn mint_persist_round_trip() {
+        let transport = WebhookTransport::new(WebhookTransportConfig::default());
+        let store: Arc<dyn WebhookActivationStore> =
+            Arc::new(InMemoryWebhookActivationStore::new());
+
+        let trigger_id = "trigger-abc-123";
+        let workflow_id = Some("wf-xyz-456".to_string());
+        let scope = test_scope();
+
+        let handle = activate_and_persist(
+            &transport,
+            store.as_ref(),
+            PersistParams {
+                handler: noop_handler(),
+                action_config: WebhookConfig::default(),
+                ctx_template: ctx_template(),
+                trigger_id: trigger_id.to_string(),
+                scope: scope.clone(),
+                workflow_id: workflow_id.clone(),
+                mode: WebhookMode::Test,
+            },
+        )
+        .await
+        .expect("activate_and_persist must succeed");
+
+        // Compute the hash as the consumer would.
+        let hash = token_hash(&handle.nonce);
+
+        // resolve_by_token must find the row.
+        let row = store
+            .resolve_by_token(&hash)
+            .await
+            .expect("storage must not error")
+            .expect("row must be found by token hash");
+
+        assert_eq!(row.trigger_id, trigger_id, "trigger_id must round-trip");
+        assert_eq!(row.scope, scope, "scope must round-trip");
+        assert_eq!(row.workflow_id, workflow_id, "workflow_id must round-trip");
+        assert_eq!(row.mode, WebhookMode::Test, "mode must round-trip");
+
+        // The stored token_hash matches the hash we computed from the plaintext.
+        assert_eq!(row.token_hash, hash, "stored hash must equal sha256(nonce)");
+
+        // The plaintext nonce is NOT stored in any field of the DTO.
+        // Verify via the serialised form — serde JSON must not contain the nonce.
+        let json = serde_json::to_string(&row).expect("DTO must be serialisable");
+        assert!(
+            !json.contains(&handle.nonce),
+            "serialised DTO must not contain the plaintext nonce. Got: {json}"
+        );
+    }
+
+    /// The in-memory routing map entry is present after `activate_and_persist`
+    /// so the transport can dispatch the activation immediately without a
+    /// storage read.
+    #[tokio::test]
+    async fn activate_and_persist_populates_routing_map() {
+        let transport = WebhookTransport::new(WebhookTransportConfig::default());
+        let store: Arc<dyn WebhookActivationStore> =
+            Arc::new(InMemoryWebhookActivationStore::new());
+
+        let handle = activate_and_persist(
+            &transport,
+            store.as_ref(),
+            PersistParams {
+                handler: noop_handler(),
+                action_config: WebhookConfig::default(),
+                ctx_template: ctx_template(),
+                trigger_id: "trigger-routing-test".to_string(),
+                scope: test_scope(),
+                workflow_id: None,
+                mode: WebhookMode::Test,
+            },
+        )
+        .await
+        .expect("activate_and_persist must succeed");
+
+        let key = WebhookKey::programmatic(handle.trigger_uuid, handle.nonce);
+        assert!(
+            transport.inner.routing.lookup(&key).is_some(),
+            "in-memory routing map must have the entry after activate_and_persist"
+        );
+    }
+
+    // ── FIX B: persist-failure must leave no orphan in the routing map ────────
+
+    /// A `WebhookActivationStore` that always fails on `upsert`.
+    ///
+    /// Used to prove that `activate_and_persist` rolls back the in-memory
+    /// routing entry when the durability write fails.
+    #[derive(Debug)]
+    struct AlwaysFailingStore;
+
+    #[async_trait::async_trait]
+    impl WebhookActivationStore for AlwaysFailingStore {
+        async fn upsert(
+            &self,
+            _scope: &Scope,
+            _record: nebula_storage_port::dto::WebhookActivationRecord,
+        ) -> Result<(), nebula_storage_port::StorageError> {
+            Err(nebula_storage_port::StorageError::Connection(
+                "injected failure for test".to_string(),
+            ))
+        }
+
+        async fn resolve(
+            &self,
+            _scope: &Scope,
+            _slug: &str,
+        ) -> Result<
+            Option<nebula_storage_port::dto::WebhookActivationRecord>,
+            nebula_storage_port::StorageError,
+        > {
+            Ok(None)
+        }
+
+        async fn deactivate(
+            &self,
+            _scope: &Scope,
+            _trigger_id: &str,
+        ) -> Result<(), nebula_storage_port::StorageError> {
+            Ok(())
+        }
+
+        async fn resolve_by_token(
+            &self,
+            _token_hash: &[u8; 32],
+        ) -> Result<
+            Option<nebula_storage_port::dto::WebhookActivationRecord>,
+            nebula_storage_port::StorageError,
+        > {
+            Ok(None)
+        }
+
+        async fn list_all_active(
+            &self,
+        ) -> Result<
+            Vec<nebula_storage_port::dto::WebhookActivationRecord>,
+            nebula_storage_port::StorageError,
+        > {
+            Ok(vec![])
+        }
+    }
+
+    /// FIX B — persist failure leaves no orphan:
+    ///
+    /// When `store.upsert` fails, `activate_and_persist` must return `Err`
+    /// AND the in-memory routing map must have NO entry for the attempted
+    /// activation.  Callers never see a capability URL they could use.
+    #[tokio::test]
+    async fn persist_failure_rolls_back_routing_entry() {
+        let transport = WebhookTransport::new(WebhookTransportConfig::default());
+        let store = AlwaysFailingStore;
+
+        let result = activate_and_persist(
+            &transport,
+            &store,
+            PersistParams {
+                handler: noop_handler(),
+                action_config: WebhookConfig::default(),
+                ctx_template: ctx_template(),
+                trigger_id: "trigger-rollback-test".to_string(),
+                scope: test_scope(),
+                workflow_id: None,
+                mode: WebhookMode::Test,
+            },
+        )
+        .await;
+
+        // Must return Err(Storage(...)).
+        assert!(
+            result.is_err(),
+            "activate_and_persist must propagate the store upsert error"
+        );
+        assert!(
+            matches!(result.unwrap_err(), ActivateAndPersistError::Storage(_)),
+            "error must be Storage variant"
+        );
+
+        // The routing map must be empty — no orphaned live route.
+        assert_eq!(
+            transport.inner.routing.len(),
+            0,
+            "routing map must have no entries after a persist failure (rollback invariant)"
+        );
+    }
+
+    /// FIX B — happy path still works after the rollback refactor:
+    ///
+    /// When `store.upsert` succeeds, the routing entry is present and
+    /// the function returns `Ok`.
+    #[tokio::test]
+    async fn persist_success_leaves_routing_entry_intact() {
+        let transport = WebhookTransport::new(WebhookTransportConfig::default());
+        let store = InMemoryWebhookActivationStore::new();
+
+        let handle = activate_and_persist(
+            &transport,
+            &store,
+            PersistParams {
+                handler: noop_handler(),
+                action_config: WebhookConfig::default(),
+                ctx_template: ctx_template(),
+                trigger_id: "trigger-happy-path-b".to_string(),
+                scope: test_scope(),
+                workflow_id: None,
+                mode: WebhookMode::Test,
+            },
+        )
+        .await
+        .expect("activate_and_persist must succeed when store is available");
+
+        // Plaintext handle returned — endpoint URL is usable.
+        assert!(
+            handle.endpoint_url.as_str().contains("/webhooks/"),
+            "endpoint URL must be populated"
+        );
+
+        // Routing entry is present.
+        let key = WebhookKey::programmatic(handle.trigger_uuid, handle.nonce);
+        assert!(
+            transport.inner.routing.lookup(&key).is_some(),
+            "routing map must have the entry on successful persist"
+        );
+    }
 }

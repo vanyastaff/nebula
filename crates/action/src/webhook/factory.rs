@@ -5,8 +5,8 @@
 //! parameters. The runtime registry looks up a
 //! [`WebhookActionFactory`] for that kind and calls
 //! [`WebhookActionFactory::build`] to produce the dyn-erased
-//! [`TriggerHandler`] the transport ultimately registers under a
-//! `WebhookKey::Slug`-equivalent key (the API-side enum lives in
+//! [`TriggerHandler`] the transport ultimately registers under its
+//! capability-token routing key (the API-side `WebhookKey` lives in
 //! `nebula-api` and is intentionally not imported here).
 //!
 //! This trait lives in `nebula-action` (not in the engine) so each

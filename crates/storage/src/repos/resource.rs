@@ -18,8 +18,8 @@ use crate::error::StorageError;
 /// be named through a vtable. `#[async_trait]` boxes the future
 /// (`Pin<Box<dyn Future + Send>>`) so `dyn ResourceRepo` is object-safe.
 /// This also matches the other `#[async_trait]` port repos the API
-/// layer holds as `Arc<dyn …>` (`ControlQueueRepo`,
-/// `WebhookActivationRepo`). `ResourceRepo` had no impls when written,
+/// layer holds as `Arc<dyn …>` (e.g. `ControlQueueRepo`).
+/// `ResourceRepo` had no impls when written,
 /// so the choice is non-breaking. (The sibling RPITIT
 /// `repos::WorkflowRepo` / `repos::ExecutionRepo` are spec-16
 /// planned/experimental and are *not* used as `dyn` anywhere — they are

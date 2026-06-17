@@ -30,7 +30,8 @@ use harness::{
     assert_journal_visibility_and_scope, assert_live_lease_blocks_acquire,
     assert_save_with_published_version_is_atomic, assert_stale_fencing_is_fenced_out,
     assert_trigger_dedup_first_writer, assert_trigger_dedup_is_scoped,
-    assert_webhook_activation_and_scope, assert_workflow_store_contract, skip_reason,
+    assert_webhook_activation_and_scope, assert_webhook_system_surface,
+    assert_workflow_store_contract, skip_reason,
 };
 use rstest::rstest;
 use std::future::Future;
@@ -111,6 +112,7 @@ matrix!(
     webhook_activation_and_scope,
     assert_webhook_activation_and_scope
 );
+matrix!(webhook_system_surface, assert_webhook_system_surface);
 matrix!(workflow_store_contract, assert_workflow_store_contract);
 matrix!(
     save_with_published_version_is_atomic,

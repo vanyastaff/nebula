@@ -53,7 +53,7 @@ pub use user::{
     VerificationTokenRow,
 };
 pub use webhook_activation::{
-    WEBHOOK_ACTIVATION_KEY, WebhookActivationCoords, WebhookActivationRecord,
-    WebhookActivationSpec, WebhookActivationSpecError, WebhookTimestampFormat,
+    WEBHOOK_ACTIVATION_KEY, WebhookActivationSpec, WebhookActivationSpecError,
+    WebhookTimestampFormat,
 };
 pub use workflow::{WorkflowRow, WorkflowVersionRow};

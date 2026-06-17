@@ -141,4 +141,29 @@ impl WebhookActivationStore for InMemoryWebhookActivationStore {
         }
         Ok(())
     }
+
+    /// SYSTEM-SURFACE: scope comes out of the returned row, not in.
+    /// Rejects the all-zeros sentinel before scanning (see trait doc).
+    async fn resolve_by_token(
+        &self,
+        token_hash: &[u8; 32],
+    ) -> Result<Option<WebhookActivationRecord>, StorageError> {
+        // Sentinel guard: all-zeros means "no token assigned"; never match.
+        if token_hash == &[0u8; 32] {
+            return Ok(None);
+        }
+        let map = self.inner.lock();
+        // Only active rows are reachable by token; a deactivated row must
+        // never be returned (mirrors the SQL `AND active = 1/TRUE` predicate).
+        Ok(map
+            .values()
+            .find(|r| r.active && &r.token_hash == token_hash)
+            .cloned())
+    }
+
+    /// SYSTEM-SURFACE: cross-tenant enumeration for bootstrap map population.
+    async fn list_all_active(&self) -> Result<Vec<WebhookActivationRecord>, StorageError> {
+        let map = self.inner.lock();
+        Ok(map.values().filter(|r| r.active).cloned().collect())
+    }
 }

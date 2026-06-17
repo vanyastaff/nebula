@@ -1,19 +1,19 @@
 //! Webhook dispatch pipeline (webhook activation).
 //!
-//! Contains the shared `dispatch_inner` pipeline for both the
-//! programmatic and slug-routed webhook surfaces, plus the two axum
-//! handler functions that build a [`super::key::WebhookKey`] and
-//! delegate into it.
+//! Contains the shared `dispatch_inner` pipeline for programmatic webhook
+//! activations. The slug-routed surface was retired in ADR-0096 commit 3.
 //!
-//! ## Pipeline order (webhook activation single-pipe)
+//! ## Pipeline order (webhook activation)
 //!
 //! 1. Body size check → 413
 //! 2. Route lookup → 404 (before rate-limit so unregistered keys
 //!    never touch the limiter — #271 follow-up)
 //! 3. Rate-limit by key → 429 + `Retry-After`
-//! 4. Construct [`WebhookRequest`] → 400 / 413
-//! 5. Signature enforcement ([`super::signature::enforce_signature`]) → 401 / 500
-//! 6. Dispatch via [`TriggerHandler::handle_event`] with timeout → 504 / 500 / handler response
+//! 4. Token resolution via B-world port store — after route+rate-limit so
+//!    unauthenticated churn never hits the DB (ADR-0096 security fix)
+//! 5. Construct [`WebhookRequest`] → 400 / 413
+//! 6. Signature enforcement ([`super::signature::enforce_signature`]) → 401 / 500
+//! 7. Dispatch via [`TriggerHandler::handle_event`] with timeout → 504 / 500 / handler response
 
 use std::sync::Arc;
 
@@ -36,6 +36,7 @@ use super::{
         SignatureVerdict, enforce_signature, missing_secret_response, record_signature_failure,
         signature_rejected_response,
     },
+    token::token_hash,
 };
 use crate::transport::webhook::transport::WebhookTransport;
 
@@ -67,35 +68,21 @@ pub(super) async fn webhook_handler(
         Err(_) => return (StatusCode::NOT_FOUND, "").into_response(),
     };
     let key = WebhookKey::programmatic(trigger_uuid, nonce);
+
     dispatch_inner(transport, key, method, uri, headers, body).await
 }
 
-/// Axum handler for `POST /api/v1/hooks/{org}/{ws}/{slug}`. Builds a
-/// [`WebhookKey::Slug`] and delegates to `dispatch_inner` — same
-/// signature/replay/rate-limit/pre-handle/handle pipeline as the
-/// programmatic surface.
-pub(super) async fn slug_webhook_handler(
-    State(transport): State<WebhookTransport>,
-    Path((org, workspace, trigger)): Path<(String, String, String)>,
-    method: Method,
-    uri: Uri,
-    headers: HeaderMap,
-    body: Bytes,
-) -> Response {
-    let coords = super::key::TriggerCoordinates::new(org, workspace, trigger);
-    let key = WebhookKey::Slug(coords);
-    dispatch_inner(transport, key, method, uri, headers, body).await
-}
-
-/// Shared dispatch pipeline for both programmatic and slug webhook
+/// Shared dispatch pipeline for programmatic webhook
 /// surfaces (webhook activation). Order of operations:
 ///
 /// 1. body size check → 413
 /// 2. routing lookup → 404 (before rate-limit — #271)
 /// 3. rate-limit by [`WebhookKey`] → 429 + `Retry-After`
-/// 4. construct [`WebhookRequest`] → 400 / 413
-/// 5. [`enforce_signature`] (uses [`nebula_action::Clock`]) → 401 / 500
-/// 6. dispatch via [`TriggerHandler::handle_event`] with a response
+/// 4. token resolution via B-world port store — after route+rate-limit so
+///    unauthenticated churn never hits the DB (ADR-0096 security fix)
+/// 5. construct [`WebhookRequest`] → 400 / 413
+/// 6. [`enforce_signature`] (uses [`nebula_action::Clock`]) → 401 / 500
+/// 7. dispatch via [`TriggerHandler::handle_event`] with a response
 ///    timeout → 504 / 500 / handler response
 pub(super) async fn dispatch_inner(
     transport: WebhookTransport,
@@ -125,6 +112,7 @@ pub(super) async fn dispatch_inner(
     let entry = if let Some(e) = transport.inner.routing.lookup(&key) {
         e
     } else {
+        // key's Debug impl redacts the nonce — safe to log.
         debug!(key = ?key, "no webhook registered for path");
         return (StatusCode::NOT_FOUND, "").into_response();
     };
@@ -134,13 +122,64 @@ pub(super) async fn dispatch_inner(
     if let Some(limiter) = &transport.inner.rate_limiter {
         let bucket = key.rate_limit_key();
         if let Err(e) = limiter.check(&bucket).await {
-            debug!(path = %bucket, retry_after = e.retry_after_secs, "webhook rate limited");
+            // `bucket` uses the trigger uuid only — nonce (bearer token) excluded.
+            debug!(bucket = %bucket, retry_after = e.retry_after_secs, "webhook rate limited");
             record_rate_limit_rejection(&transport, &key);
             let mut resp = (StatusCode::TOO_MANY_REQUESTS, "").into_response();
             if let Ok(v) = e.retry_after_secs.to_string().parse() {
                 resp.headers_mut().insert("retry-after", v);
             }
             return resp;
+        }
+    }
+
+    // 4.5. Token resolution via the B-world port store (ADR-0096 commit 2b).
+    //
+    // Placed AFTER route-lookup (step 3) and rate-limit (step 4) so an
+    // unauthenticated attacker hitting an unregistered path or a rate-limited
+    // key never triggers a DB query.  Only authenticated-enough requests
+    // (registered key, under rate limit) reach the store.
+    //
+    // Resolution proves the scope/workflow_id/mode tuple can be retrieved from
+    // the durable store.  Actual durable-emitter dispatch (installing a
+    // `DurableExecutionEmitter` under `row.scope`) is the NEXT sub-slice
+    // (U-D1.4b).  Until that lands the emitter remains Noop and dispatch
+    // continues via the in-memory routing map below.
+    //
+    // nonce / hash are deliberately excluded from all log fields — the nonce
+    // is the bearer token and must never appear in log aggregators or traces.
+    if let Some(store) = transport.inner.activation_store.as_deref() {
+        let hash = token_hash(key.nonce());
+        match store.resolve_by_token(&hash).await {
+            Ok(Some(row)) => {
+                debug!(
+                    trigger_id = %row.trigger_id,
+                    scope = ?row.scope,
+                    mode = ?row.mode,
+                    workflow_id = ?row.workflow_id,
+                    // nonce / hash deliberately excluded
+                    "capability token resolved to durable row \
+                     (durable-dispatch deferred to U-D1.4b, emitter still Noop)"
+                );
+            },
+            Ok(None) => {
+                // Row not found in port store.  This is expected during the
+                // transition period when the store is wired but the activation
+                // was minted without `activate_and_persist`.  Fall through to
+                // the in-memory routing map which is always authoritative for
+                // dispatch.
+                debug!("capability token not in port store — continuing via in-memory map");
+            },
+            Err(err) => {
+                // Storage errors on the read path are non-fatal: dispatch can
+                // still proceed through the in-memory routing map.  Log and
+                // continue; do NOT return 500 here (availability > durable
+                // resolution on the inbound webhook hot path).
+                warn!(
+                    error = %err,
+                    "resolve_by_token storage error; falling through to in-memory dispatch"
+                );
+            },
         }
     }
 
@@ -247,14 +286,9 @@ fn record_rate_limit_rejection(transport: &WebhookTransport, key: &WebhookKey) {
         return;
     };
     let interner = reg.interner();
-    let kind = match key {
-        WebhookKey::Programmatic { .. } => webhook_key_kind::PROGRAMMATIC,
-        WebhookKey::Slug(_) => webhook_key_kind::SLUG,
-    };
-    let tenant_id = match key {
-        WebhookKey::Programmatic { .. } => "programmatic".to_owned(),
-        WebhookKey::Slug(coords) => format!("{}/{}", coords.org, coords.workspace),
-    };
+    let WebhookKey::Programmatic { uuid, .. } = key;
+    let kind = webhook_key_kind::PROGRAMMATIC;
+    let tenant_id = uuid.to_string();
     let labels = interner.label_set(&[
         ("webhook_key_kind", kind),
         ("tenant_id", tenant_id.as_str()),

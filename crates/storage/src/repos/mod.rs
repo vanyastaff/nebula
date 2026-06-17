@@ -14,7 +14,6 @@
 //! - **Idempotency-cache store** — `IdempotencyStoreRepo` /
 //!   `InMemoryIdempotencyStoreRepo`, consumed by the API idempotency
 //!   middleware (`StorageBackedIdempotencyStore`).
-//! - **Webhook-activation store** — `WebhookActivationRepo`.
 //! - **Identity-row surface** — `AuditRepo`, `BlobRepo`,
 //!   `OrgRepo`, `QuotaRepo`, `ResourceRepo`, `TriggerRepo`, `UserRepo`,
 //!   `WorkspaceRepo`. The Postgres glue in `crate::pg` implements the
@@ -38,7 +37,6 @@ mod quota;
 mod resource;
 mod trigger;
 mod user;
-pub(crate) mod webhook_activation;
 mod workspace;
 
 pub use audit::AuditRepo;
@@ -54,5 +52,4 @@ pub use trigger::TriggerRepo;
 pub use user::{
     ExternalIdentityRepo, OAuthStateRepo, PatRepo, SessionRepo, UserRepo, VerificationTokenRepo,
 };
-pub use webhook_activation::{InMemoryWebhookActivationRepo, WebhookActivationRepo};
 pub use workspace::WorkspaceRepo;
