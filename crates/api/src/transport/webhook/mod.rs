@@ -34,12 +34,14 @@ pub mod ratelimit;
 pub(super) mod replay;
 pub(crate) mod routing;
 pub(super) mod signature;
+pub mod token;
 pub mod transport;
 
 pub use bootstrap::{
-    BootstrapError, BootstrapReport, ResolvedActivation, SecretResolutionError,
-    WebhookContextFactory, WebhookSecretResolver, bootstrap_webhook_activations,
-    collect_webhook_activations,
+    BootstrapError, BootstrapErrorB, BootstrapReport, ResolvedActivation, SecretResolutionError,
+    TriggerSpecLookup, WebhookActivationContextFactory, WebhookContextFactory,
+    WebhookSecretResolver, bootstrap_webhook_activations, bootstrap_webhook_activations_b,
+    collect_webhook_activations, collect_webhook_activations_b,
 };
 pub use events::{
     LifecycleApplyError, TriggerLifecycleBus, TriggerLifecycleEvent, TriggerLifecycleEventBus,
@@ -48,4 +50,7 @@ pub use events::{
 pub use key::{TriggerCoordinates, WebhookKey};
 pub use provider::EndpointProviderImpl;
 pub use ratelimit::{RateLimitExceeded, WebhookRateLimiter};
-pub use transport::{ActivationError, ActivationHandle, WebhookTransport, WebhookTransportConfig};
+pub use transport::{
+    ActivateAndPersistError, ActivationError, ActivationHandle, PersistParams, WebhookTransport,
+    WebhookTransportConfig, activate_and_persist,
+};

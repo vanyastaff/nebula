@@ -20,7 +20,7 @@
 //! [`crate::AppState`] into [`crate::app::build_app`] — the `Router`
 //! builder itself stays synchronous.
 
-use std::sync::Arc;
+use std::{future::Future, sync::Arc};
 
 use async_trait::async_trait;
 use nebula_action::{
@@ -38,6 +38,10 @@ use nebula_storage::{
         WebhookActivationRecord, WebhookActivationSpec as StorageWebhookActivationSpec,
         WebhookTimestampFormat,
     },
+};
+use nebula_storage_port::store::WebhookActivationStore;
+use nebula_storage_port::{
+    StorageError as PortStorageError, dto::WebhookActivationRecord as PortWebhookActivationRecord,
 };
 use thiserror::Error;
 
@@ -426,6 +430,325 @@ fn record_bootstrap_failure(metrics: Option<&MetricsRegistry>, reason: &'static 
     let labels = reg.interner().single("reason", reason);
     if let Ok(c) = reg.counter_labeled(NEBULA_WEBHOOK_BOOTSTRAP_FAILURES_TOTAL, &labels) {
         c.inc();
+    }
+}
+
+// ── B-world bootstrap (ADR-0096 — port store + spec-16 aligned) ─────────────
+
+/// Failure modes for the B-world bootstrap pathway.
+///
+/// Mirrors [`BootstrapError`] but sources rows from the spec-16 port store
+/// (`WebhookActivationStore`) rather than the A-world `WebhookActivationRepo`.
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum BootstrapErrorB {
+    /// `WebhookActivationStore::list_all_active` returned a storage error.
+    #[error("port store list_all_active failed: {0}")]
+    Storage(#[from] PortStorageError),
+    /// The trigger-config lookup returned no `WebhookActivationSpec` for the
+    /// row's `trigger_id`.  The activation row is skipped.
+    #[error("no webhook_activation spec found in trigger config for trigger_id={trigger_id}")]
+    MissingSpec {
+        /// Trigger id that had no spec in `triggers.config`.
+        trigger_id: String,
+    },
+    /// Could not resolve the credential reference to raw secret bytes.
+    #[error("failed to resolve secret '{secret_id}': {source}")]
+    SecretResolution {
+        /// Storage-layer credential identifier that failed to resolve.
+        secret_id: String,
+        /// Underlying cause.
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
+    /// No factory registered for the spec's `action_kind`.
+    #[error("no factory registered for kind '{0}'")]
+    UnknownProvider(String),
+    /// Factory rejected the spec.
+    #[error("factory build failed for kind '{kind}': {source}")]
+    Factory {
+        /// Provider kind.
+        kind: String,
+        /// Underlying [`FactoryError`].
+        #[source]
+        source: FactoryError,
+    },
+    /// Two active rows resolved to the same slug coordinates.
+    #[error("duplicate slug registration for {coords:?}")]
+    DuplicateRegistration {
+        /// Slug coordinates that were already registered.
+        coords: TriggerCoordinates,
+    },
+}
+
+/// Constructs a per-activation [`TriggerRuntimeContext`] from a B-world
+/// activation record.
+///
+/// The B-world record carries `scope`, `trigger_id`, and `workflow_id`; the
+/// factory converts these into a [`TriggerRuntimeContext`] template the
+/// transport clones on every dispatch.
+pub trait WebhookActivationContextFactory: Send + Sync {
+    /// Build a fresh ctx template for the B-world activation.
+    fn build(&self, record: &PortWebhookActivationRecord) -> TriggerRuntimeContext;
+}
+
+/// Return type for [`TriggerSpecLookup::lookup`] — a boxed future that resolves
+/// to an optional spec or a storage error.
+///
+/// Extracted as a type alias to keep the trait signature readable and to
+/// satisfy `clippy::type_complexity`.
+type SpecLookupFuture<'async_trait> = std::pin::Pin<
+    Box<
+        dyn Future<
+                Output = Result<
+                    Option<StorageWebhookActivationSpec>,
+                    Box<dyn std::error::Error + Send + Sync>,
+                >,
+            > + Send
+            + 'async_trait,
+    >,
+>;
+
+/// Looks up the `WebhookActivationSpec` stored in `triggers.config` for a
+/// given trigger id.
+///
+/// B's lean row carries only routing/token/scope/workflow/mode; the handler-build
+/// inputs (`action_kind`, `secret_id`, replay knobs) live in
+/// `triggers.config.webhook_activation`.  This trait abstracts the lookup so the
+/// bootstrap is independent of the DB query shape.
+pub trait TriggerSpecLookup: Send + Sync {
+    /// Resolve the webhook activation spec for `trigger_id`.
+    ///
+    /// Returns `None` when the trigger has no `webhook_activation` namespace in
+    /// its config, or the trigger does not exist.
+    ///
+    /// # Errors
+    ///
+    /// Returns a boxed error on storage failure.
+    fn lookup<'life0, 'life1, 'async_trait>(
+        &'life0 self,
+        trigger_id: &'life1 str,
+    ) -> SpecLookupFuture<'async_trait>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait;
+}
+
+/// Walk the B-world port store's active webhook activations and register each
+/// in the transport.
+///
+/// Reads routing rows from `WebhookActivationStore::list_all_active`, then
+/// fetches the handler-build spec from `spec_lookup` (which reads
+/// `triggers.config.webhook_activation` keyed by each row's `trigger_id`).
+///
+/// Failure isolation mirrors [`bootstrap_webhook_activations`]: per-row
+/// failures are logged and counted; storage failures bubble out.
+///
+/// # Errors
+///
+/// Returns [`BootstrapErrorB::Storage`] only when the underlying port store
+/// call fails. Per-row failures are absorbed into `report.skipped`.
+pub async fn bootstrap_webhook_activations_b(
+    store: &dyn WebhookActivationStore,
+    registry: &ActionRegistry,
+    transport: &WebhookTransport,
+    secrets: &dyn WebhookSecretResolver,
+    ctx_factory: &dyn WebhookActivationContextFactory,
+    spec_lookup: &dyn TriggerSpecLookup,
+    metrics: Option<&MetricsRegistry>,
+) -> Result<BootstrapReport, BootstrapErrorB> {
+    tracing::debug!(
+        target: "nebula::api::webhook::bootstrap_b",
+        "loading active webhook activations from port store"
+    );
+
+    let records = store.list_all_active().await.inspect_err(|_| {
+        record_bootstrap_failure(metrics, webhook_bootstrap_failure_reason::STORAGE);
+    })?;
+    let total = records.len();
+    let mut report = BootstrapReport::default();
+
+    for record in records {
+        match register_one_b(
+            &record,
+            registry,
+            transport,
+            secrets,
+            ctx_factory,
+            spec_lookup,
+        )
+        .await
+        {
+            Ok(()) => report.loaded += 1,
+            Err(err) => {
+                report.skipped += 1;
+                record_bootstrap_failure(metrics, bootstrap_failure_reason_b(&err));
+                tracing::warn!(
+                    target: "nebula::api::webhook::bootstrap_b",
+                    error = %err,
+                    trigger_id = %record.trigger_id,
+                    "skipping B-world webhook activation"
+                );
+            },
+        }
+    }
+
+    debug_assert!(
+        report.loaded + report.skipped == total,
+        "B-world bootstrap accounting must equal list_all_active count"
+    );
+
+    tracing::info!(
+        target: "nebula::api::webhook::bootstrap_b",
+        loaded = report.loaded,
+        skipped = report.skipped,
+        total,
+        source = "port_store",
+        "B-world webhook bootstrap complete"
+    );
+    Ok(report)
+}
+
+/// Build the full set of resolved activations from the B-world store without
+/// touching the transport. Used by the admin reload endpoint (E3) for atomic
+/// slug map swaps.
+///
+/// # Errors
+///
+/// Returns [`BootstrapErrorB::Storage`] only when the underlying port store
+/// call fails.
+pub async fn collect_webhook_activations_b(
+    store: &dyn WebhookActivationStore,
+    registry: &ActionRegistry,
+    secrets: &dyn WebhookSecretResolver,
+    ctx_factory: &dyn WebhookActivationContextFactory,
+    spec_lookup: &dyn TriggerSpecLookup,
+) -> Result<(Vec<ResolvedActivation>, BootstrapReport), BootstrapErrorB> {
+    let records = store.list_all_active().await?;
+    let mut report = BootstrapReport::default();
+    let mut activations: Vec<ResolvedActivation> = Vec::with_capacity(records.len());
+    for record in &records {
+        match resolve_one_b(record, registry, secrets, ctx_factory, spec_lookup).await {
+            Ok(resolved) => {
+                report.loaded += 1;
+                activations.push(resolved);
+            },
+            Err(err) => {
+                report.skipped += 1;
+                tracing::warn!(
+                    target: "nebula::api::webhook::bootstrap_b",
+                    error = %err,
+                    trigger_id = %record.trigger_id,
+                    "skipping B-world activation during collect"
+                );
+            },
+        }
+    }
+    Ok((activations, report))
+}
+
+async fn resolve_one_b(
+    record: &PortWebhookActivationRecord,
+    registry: &ActionRegistry,
+    secrets: &dyn WebhookSecretResolver,
+    ctx_factory: &dyn WebhookActivationContextFactory,
+    spec_lookup: &dyn TriggerSpecLookup,
+) -> Result<ResolvedActivation, BootstrapErrorB> {
+    let spec = spec_lookup
+        .lookup(&record.trigger_id)
+        .await
+        .map_err(|source| BootstrapErrorB::SecretResolution {
+            // Reuse SecretResolution variant shape for lookup failures to keep
+            // callers' match arms simple. The trigger_id is the "key" here.
+            secret_id: record.trigger_id.clone(),
+            source,
+        })?
+        .ok_or_else(|| BootstrapErrorB::MissingSpec {
+            trigger_id: record.trigger_id.clone(),
+        })?;
+
+    let secret = secrets.resolve(&spec.secret_id).await.map_err(|source| {
+        BootstrapErrorB::SecretResolution {
+            secret_id: spec.secret_id.clone(),
+            source,
+        }
+    })?;
+
+    let action_spec = into_action_spec(&spec, secret);
+
+    let factory = registry
+        .lookup_webhook_factory(&spec.action_kind)
+        .ok_or_else(|| BootstrapErrorB::UnknownProvider(spec.action_kind.clone()))?;
+
+    let BuiltWebhookHandler { handler, config } =
+        factory
+            .build(&action_spec)
+            .map_err(|source| BootstrapErrorB::Factory {
+                kind: spec.action_kind.clone(),
+                source,
+            })?;
+
+    let coords = TriggerCoordinates::new(&record.slug, "", "");
+    let ctx = ctx_factory.build(record);
+    Ok((coords, handler, config, ctx))
+}
+
+async fn register_one_b(
+    record: &PortWebhookActivationRecord,
+    registry: &ActionRegistry,
+    transport: &WebhookTransport,
+    secrets: &dyn WebhookSecretResolver,
+    ctx_factory: &dyn WebhookActivationContextFactory,
+    spec_lookup: &dyn TriggerSpecLookup,
+) -> Result<(), BootstrapErrorB> {
+    let (coords, handler, config, ctx) =
+        resolve_one_b(record, registry, secrets, ctx_factory, spec_lookup).await?;
+
+    let action_kind = {
+        // Re-fetch spec for the kind label (already verified to exist in resolve_one_b).
+        spec_lookup
+            .lookup(&record.trigger_id)
+            .await
+            .ok()
+            .flatten()
+            .map(|s| s.action_kind)
+            .unwrap_or_default()
+    };
+
+    register_with_transport(transport, coords.clone(), handler, config, ctx).map_err(|err| {
+        match err {
+            ActivationError::DuplicateRegistration => {
+                BootstrapErrorB::DuplicateRegistration { coords }
+            },
+            other => BootstrapErrorB::Factory {
+                kind: action_kind,
+                source: FactoryError::InvalidSpec {
+                    kind: "transport",
+                    reason: other.to_string(),
+                },
+            },
+        }
+    })?;
+
+    tracing::debug!(
+        target: "nebula::api::webhook::bootstrap_b",
+        trigger_id = %record.trigger_id,
+        scope = ?record.scope,
+        "B-world webhook activation registered"
+    );
+    Ok(())
+}
+
+fn bootstrap_failure_reason_b(err: &BootstrapErrorB) -> &'static str {
+    match err {
+        BootstrapErrorB::Storage(_) => webhook_bootstrap_failure_reason::STORAGE,
+        BootstrapErrorB::MissingSpec { .. }
+        | BootstrapErrorB::SecretResolution { .. }
+        | BootstrapErrorB::UnknownProvider(_)
+        | BootstrapErrorB::Factory { .. }
+        | BootstrapErrorB::DuplicateRegistration { .. } => {
+            webhook_bootstrap_failure_reason::FACTORY
+        },
     }
 }
 

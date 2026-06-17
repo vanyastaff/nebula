@@ -7,6 +7,14 @@
 //!
 //! The transport's `dispatch_inner` looks up by [`WebhookKey`]; rate
 //! limiting and metric labels are also keyed on the variant.
+//!
+//! # Security — nonce redaction
+//!
+//! The nonce in [`WebhookKey::Programmatic`] is the bearer token for the
+//! capability URL.  It is **never** emitted in logs or `Debug` output.
+//! [`WebhookKey`] has a manual `Debug` impl that prints only the trigger
+//! `uuid` and omits the nonce; `rate_limit_key` returns a token-free bucket
+//! label (`rl:{uuid}`) for the same reason.
 
 use uuid::Uuid;
 
@@ -55,7 +63,13 @@ impl TriggerCoordinates {
 /// storage. Both flow through the same transport `dispatch_inner` and
 /// receive the same signature, replay, rate-limit, and metric
 /// treatment.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+///
+/// # Security note
+///
+/// `Debug` is manually implemented to redact the `nonce` field on the
+/// `Programmatic` variant: the nonce is the bearer token embedded in
+/// the capability URL and must never appear in log output.
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub enum WebhookKey {
     /// Runtime-minted activation. The transport allocates a fresh
     /// `(uuid, nonce)` pair on each `activate(...)` call and hands
@@ -72,6 +86,24 @@ pub enum WebhookKey {
     /// registrations from the storage layer at startup and on
     /// lifecycle events.
     Slug(TriggerCoordinates),
+}
+
+/// Redacting `Debug` for [`WebhookKey`].
+///
+/// The `nonce` in `Programmatic` is the bearer token embedded in the
+/// capability URL — it is excluded from debug output to prevent token
+/// leakage into log aggregators and traces.
+impl std::fmt::Debug for WebhookKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Programmatic { uuid, .. } => f
+                .debug_struct("WebhookKey::Programmatic")
+                .field("trigger", uuid)
+                .field("nonce", &"<redacted>")
+                .finish(),
+            Self::Slug(coords) => f.debug_tuple("WebhookKey::Slug").field(coords).finish(),
+        }
+    }
 }
 
 impl WebhookKey {
@@ -103,10 +135,17 @@ impl WebhookKey {
     /// Stable string for rate-limit bucket lookup. Includes the kind
     /// prefix so a slug `acme/main/x` and a programmatic uuid that
     /// stringifies similarly cannot collide.
+    ///
+    /// # Security note
+    ///
+    /// The `Programmatic` bucket uses only the trigger `uuid` — the nonce
+    /// is the bearer token and must not appear in rate-limit logs or
+    /// bucket-key strings passed to limiters.
     #[must_use]
     pub fn rate_limit_key(&self) -> String {
         match self {
-            Self::Programmatic { uuid, nonce } => format!("p:{uuid}/{nonce}"),
+            // Intentionally exclude nonce — it is the bearer token.
+            Self::Programmatic { uuid, .. } => format!("rl:{uuid}"),
             Self::Slug(c) => format!("s:{}", c.path_suffix()),
         }
     }
@@ -130,5 +169,45 @@ mod tests {
     fn coordinates_path_suffix_round_trips() {
         let c = TriggerCoordinates::new("acme", "main", "github");
         assert_eq!(c.path_suffix(), "acme/main/github");
+    }
+
+    /// Security regression: the nonce (bearer token) must never appear in the
+    /// `Debug` representation of `WebhookKey::Programmatic`.  A log aggregator
+    /// that captures debug output must not inadvertently record a live bearer
+    /// token.
+    #[test]
+    fn programmatic_debug_does_not_contain_nonce() {
+        let uuid = Uuid::new_v4();
+        let nonce = "super-secret-nonce-token-do-not-log";
+        let key = WebhookKey::programmatic(uuid, nonce);
+        let debug_output = format!("{key:?}");
+        assert!(
+            !debug_output.contains(nonce),
+            "Debug output must not contain the nonce (bearer token). Got: {debug_output}"
+        );
+        assert!(
+            debug_output.contains("redacted"),
+            "Debug output must contain a redaction marker. Got: {debug_output}"
+        );
+    }
+
+    /// Security regression: the rate-limit bucket key must not embed the
+    /// nonce so that limiter telemetry/logs cannot expose the bearer token.
+    #[test]
+    fn programmatic_rate_limit_key_does_not_contain_nonce() {
+        let uuid = Uuid::new_v4();
+        let nonce = "super-secret-nonce-token-do-not-log";
+        let key = WebhookKey::programmatic(uuid, nonce);
+        let bucket = key.rate_limit_key();
+        assert!(
+            !bucket.contains(nonce),
+            "rate_limit_key must not contain the nonce (bearer token). Got: {bucket}"
+        );
+        // Must still contain the trigger uuid so different activations get
+        // independent buckets.
+        assert!(
+            bucket.contains(&uuid.to_string()),
+            "rate_limit_key must still contain the trigger uuid for per-activation bucketing"
+        );
     }
 }

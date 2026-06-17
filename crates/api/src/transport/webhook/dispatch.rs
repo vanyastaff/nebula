@@ -36,6 +36,7 @@ use super::{
         SignatureVerdict, enforce_signature, missing_secret_response, record_signature_failure,
         signature_rejected_response,
     },
+    token::token_hash,
 };
 use crate::transport::webhook::transport::WebhookTransport;
 
@@ -66,7 +67,50 @@ pub(super) async fn webhook_handler(
         Ok(u) => u,
         Err(_) => return (StatusCode::NOT_FOUND, "").into_response(),
     };
-    let key = WebhookKey::programmatic(trigger_uuid, nonce);
+    let key = WebhookKey::programmatic(trigger_uuid, nonce.clone());
+
+    // 2. Token resolution via the B-world port store (ADR-0096 commit 2b).
+    //
+    // Resolution is wired here and proves the scope/workflow_id/mode tuple
+    // can be retrieved from the durable store.  Actual durable-emitter dispatch
+    // (installing a `DurableExecutionEmitter` under `row.scope`) is the NEXT
+    // sub-slice (U-D1.4b).  Until that lands the emitter remains Noop and
+    // dispatch continues via the in-memory routing map below.
+    if let Some(store) = transport.inner.activation_store.as_deref() {
+        let hash = token_hash(&nonce);
+        match store.resolve_by_token(&hash).await {
+            Ok(Some(row)) => {
+                debug!(
+                    trigger_id = %row.trigger_id,
+                    scope = ?row.scope,
+                    mode = ?row.mode,
+                    workflow_id = ?row.workflow_id,
+                    // nonce / hash deliberately excluded
+                    "capability token resolved to durable row \
+                     (durable-dispatch deferred to U-D1.4b, emitter still Noop)"
+                );
+            },
+            Ok(None) => {
+                // Row not found in port store.  This is expected during the
+                // transition period when the store is wired but the activation
+                // was minted without `activate_and_persist`.  Fall through to
+                // the in-memory routing map which is always authoritative for
+                // dispatch.
+                debug!("capability token not in port store — continuing via in-memory map");
+            },
+            Err(err) => {
+                // Storage errors on the read path are non-fatal: dispatch can
+                // still proceed through the in-memory routing map.  Log and
+                // continue; do NOT return 500 here (availability > durable
+                // resolution on the inbound webhook hot path).
+                warn!(
+                    error = %err,
+                    "resolve_by_token storage error; falling through to in-memory dispatch"
+                );
+            },
+        }
+    }
+
     dispatch_inner(transport, key, method, uri, headers, body).await
 }
 
@@ -125,6 +169,7 @@ pub(super) async fn dispatch_inner(
     let entry = if let Some(e) = transport.inner.routing.lookup(&key) {
         e
     } else {
+        // key's Debug impl redacts the nonce — safe to log.
         debug!(key = ?key, "no webhook registered for path");
         return (StatusCode::NOT_FOUND, "").into_response();
     };
@@ -134,7 +179,8 @@ pub(super) async fn dispatch_inner(
     if let Some(limiter) = &transport.inner.rate_limiter {
         let bucket = key.rate_limit_key();
         if let Err(e) = limiter.check(&bucket).await {
-            debug!(path = %bucket, retry_after = e.retry_after_secs, "webhook rate limited");
+            // `bucket` uses the trigger uuid only — nonce (bearer token) excluded.
+            debug!(bucket = %bucket, retry_after = e.retry_after_secs, "webhook rate limited");
             record_rate_limit_rejection(&transport, &key);
             let mut resp = (StatusCode::TOO_MANY_REQUESTS, "").into_response();
             if let Ok(v) = e.retry_after_secs.to_string().parse() {
