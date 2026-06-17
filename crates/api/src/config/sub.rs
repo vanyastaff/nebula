@@ -224,10 +224,12 @@ pub struct AuthApiConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebhookApiConfig {
     /// When `true`, the composition root invokes
-    /// `bootstrap_webhook_activations` before `build_app` to populate
-    /// the transport's slug map from the port store
-    /// (`WebhookActivationStore`). When `false`, the slug map starts
-    /// empty and only programmatic activations are dispatched.
+    /// `bootstrap_webhook_activations` before `build_app` to validate
+    /// the active rows in the port store (`WebhookActivationStore`) —
+    /// confirming each row's factory, secret, and spec can be resolved
+    /// so startup logs surface misconfiguration early (ADR-0096).
+    /// Dispatch routing onto the in-memory map is deferred to U-D1.4b.
+    /// When `false`, the validation step is skipped entirely.
     ///
     /// Env var: `API_WEBHOOK_BOOTSTRAP_FROM_STORAGE`
     /// (`true` / `false` / `1` / `0`; default `true`).

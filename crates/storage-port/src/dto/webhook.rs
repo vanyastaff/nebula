@@ -27,7 +27,7 @@ pub enum WebhookMode {
 
 /// One webhook-activation row.
 ///
-/// Maps an incoming `POST /hooks/{slug}` to the owning trigger without
+/// Maps an incoming capability-token request to the owning trigger without
 /// scanning trigger configs. Scoped so dispatch resolves only within the
 /// request's tenant.
 ///
@@ -55,7 +55,7 @@ pub struct WebhookActivationRecord {
     /// [`WebhookMode::Prod`] before the activation participates in the
     /// ADR-0095 D1 U-D1.4b capability-token dispatch path.
     pub mode: WebhookMode,
-    /// BLAKE3 / SHA-256 hash of the capability token for this activation.
+    /// SHA-256 hash of the capability token for this activation.
     ///
     /// Stored as a fixed 32-byte array.  The all-zeros sentinel
     /// (`[0u8; 32]`) means "no token assigned yet" — the partial unique

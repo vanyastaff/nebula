@@ -197,25 +197,39 @@ impl WebhookTransport {
     #[must_use = "builder methods must be chained or the result used"]
     pub fn with_activation_store(self, store: Arc<dyn WebhookActivationStore>) -> Self {
         // Destructure inner to rebuild with the store attached.
-        // SAFETY: Arc::try_unwrap succeeds only if there are no other Arc
-        // handles — this builder is expected at construction time before
-        // the transport is cloned into handlers.  If other handles exist
-        // we fall back to a clone of all fields.
+        // `Arc::try_unwrap` succeeds only when this is the sole handle —
+        // this builder is expected at construction time before the transport
+        // is cloned into handlers, so refcount should be 1.
         let inner = match Arc::try_unwrap(self.inner) {
             Ok(mut i) => {
                 i.activation_store = Some(store);
                 Arc::new(i)
             },
             Err(arc) => {
-                // Already shared — build a new TransportInner by copying
-                // fields from the existing one.
+                // Already shared — this is a programming error: the caller
+                // should attach the store before distributing the transport.
+                // We still attach the store correctly by cloning the existing
+                // routing map so no in-flight activations are silently lost,
+                // then emit a warning so the operator sees the misuse.
+                debug_assert!(
+                    false,
+                    "with_activation_store called on a shared WebhookTransport (refcount > 1); \
+                     attach the store before cloning the transport into handlers"
+                );
+                tracing::warn!(
+                    target: "nebula::api::webhook::transport",
+                    "with_activation_store called on a shared transport; \
+                     existing routing entries are preserved but this indicates \
+                     a composition-root ordering bug"
+                );
                 let rate_limiter = arc
                     .config
                     .rate_limit_per_minute
                     .map(WebhookRateLimiter::new);
                 Arc::new(TransportInner {
                     config: arc.config.clone(),
-                    routing: RoutingMap::new(),
+                    // Clone the existing routing map so live activations are not lost.
+                    routing: arc.routing.clone(),
                     rate_limiter,
                     metrics: arc.metrics.clone(),
                     clock: arc.clock.clone(),

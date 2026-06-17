@@ -373,7 +373,7 @@ pub mod webhook_signature_failure_reason {
 /// - `tenant_id` — `(org, workspace)` slug pair; bounded per
 ///   deployment.
 /// - `webhook_key_kind` — see [`webhook_key_kind`]
-///   (`programmatic` | `slug`).
+///   (`programmatic` only; slug-routed surface retired in ADR-0096 commit 3).
 ///
 /// **Cardinality budget:** trigger-slug is deliberately omitted from
 /// this counter — per-trigger detail lives in tracing spans. The

@@ -93,6 +93,17 @@ pub enum BootstrapError {
         /// Trigger id that had no spec in `triggers.config`.
         trigger_id: String,
     },
+    /// The `TriggerSpecLookup` call itself failed (storage / decode error).
+    /// Distinct from [`Self::MissingSpec`] (spec absent) and
+    /// [`Self::SecretResolution`] (spec found, credential lookup failed).
+    #[error("trigger spec lookup failed for trigger_id={trigger_id}: {source}")]
+    SpecLookup {
+        /// Trigger id whose spec lookup failed.
+        trigger_id: String,
+        /// Underlying lookup error.
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
     /// Could not resolve the credential reference to raw secret bytes.
     #[error("failed to resolve secret '{secret_id}': {source}")]
     SecretResolution {
@@ -248,10 +259,8 @@ async fn validate_one(
     let spec = spec_lookup
         .lookup(&record.trigger_id)
         .await
-        .map_err(|source| BootstrapError::SecretResolution {
-            // Reuse SecretResolution variant shape for lookup failures to keep
-            // callers' match arms simple. The trigger_id is the "key" here.
-            secret_id: record.trigger_id.clone(),
+        .map_err(|source| BootstrapError::SpecLookup {
+            trigger_id: record.trigger_id.clone(),
             source,
         })?
         .ok_or_else(|| BootstrapError::MissingSpec {
@@ -334,6 +343,7 @@ fn bootstrap_failure_reason(err: &BootstrapError) -> &'static str {
     match err {
         BootstrapError::Storage(_) => webhook_bootstrap_failure_reason::STORAGE,
         BootstrapError::MissingSpec { .. }
+        | BootstrapError::SpecLookup { .. }
         | BootstrapError::SecretResolution { .. }
         | BootstrapError::UnknownProvider(_)
         | BootstrapError::Factory { .. } => webhook_bootstrap_failure_reason::FACTORY,

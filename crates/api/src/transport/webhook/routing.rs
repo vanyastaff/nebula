@@ -49,7 +49,7 @@ impl std::fmt::Debug for ActivationEntry {
 }
 
 /// Thread-safe [`WebhookKey`] → activation lookup table.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub(crate) struct RoutingMap {
     entries: DashMap<WebhookKey, Arc<ActivationEntry>>,
 }

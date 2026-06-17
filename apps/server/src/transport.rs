@@ -120,11 +120,18 @@ impl ServerTransport for WebhookIngressTransport {
             ..nebula_api::transport::webhook::WebhookTransportConfig::default()
         };
 
-        Ok(
-            state.with_webhook_transport(nebula_api::transport::webhook::WebhookTransport::new(
-                webhook_config,
-            )),
-        )
+        // Build the transport, then attach the durable activation store when
+        // the composition root has wired one (ADR-0096 D3 — `resolve_by_token`
+        // on the hot path).  The store is attached at construction (refcount 1
+        // before the transport is cloned into handlers) so `with_activation_store`
+        // takes the `Arc::try_unwrap` fast path and never rebuilds the routing map.
+        let transport = nebula_api::transport::webhook::WebhookTransport::new(webhook_config);
+        let transport = if let Some(store) = state.webhook_activation_store.clone() {
+            transport.with_activation_store(store)
+        } else {
+            transport
+        };
+        Ok(state.with_webhook_transport(transport))
     }
 
     fn build_router(

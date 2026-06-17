@@ -65,7 +65,7 @@ async fn reload_webhooks(State(state): State<AppState>) -> impl IntoResponse {
         secrets.as_ref(),
         ctx_factory.as_ref(),
         spec_lookup.as_ref(),
-        None,
+        state.metrics_registry.as_deref(),
     )
     .await
     {
