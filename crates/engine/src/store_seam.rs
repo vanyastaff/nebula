@@ -17,7 +17,7 @@
 //! scope from the message DTO — cross-tenant isolation invariant #7.
 //!
 //! Tests use raw in-memory adapters (no decorator) and call
-//! [`test_scope`] so every engine call observes one coherent fake tenant.
+//! [`single_tenant_scope`] explicitly so every engine call observes one coherent fake tenant.
 //!
 //! ## Fencing
 //!
@@ -83,26 +83,30 @@ pub fn workflow_input_record(json: serde_json::Value) -> NodeResultRecord {
     }
 }
 
-/// Fixed fake scope used by tests, replay paths, and `execute_workflow`.
+/// The conventional single-tenant scope for embedded/library-mode and test
+/// callers that have no multi-tenant context.
 ///
-/// Production code threads the per-message scope (from the control-queue
-/// or job-dispatch row) directly into every engine port call via
-/// `resume_execution(scope, ...)`. This helper is used only where a real
-/// per-message scope is unavailable:
+/// Callers pass it **explicitly** — no engine method manufactures a scope
+/// internally. This keeps the contract honest: any future multi-tenant caller
+/// of `execute_workflow` / `replay_execution` must supply its own real scope
+/// without needing a signature change.
 ///
-/// - `execute_workflow` / `execute_workflow_with_acquire_scope` — test
-///   and local library mode entry points (no control-queue message).
-/// - `replay_execution` — mints a fresh `ExecutionId` and is lease-less;
-///   never crosses a tenant boundary.
-/// - All test wiring that bypasses the control queue.
+/// ## When to use this
 ///
-/// The value is `pub` because integration tests (compiled as separate crates)
-/// call it via `nebula_engine::store_seam::test_scope()`. `nebula-engine` is a
+/// - `execute_workflow` / `execute_workflow_with_acquire_scope` / `replay_execution`
+///   in tests and library mode (pass as the `scope` argument).
+/// - Test wiring that bypasses the control queue (control-consumer mock impls,
+///   `DispatchStores`, etc.) where a real per-message scope is unavailable.
+///
+/// ## Why `pub`
+///
+/// Integration tests compile as separate crates and access this via
+/// `nebula_engine::store_seam::single_tenant_scope()`. `nebula-engine` is a
 /// private impl-detail crate (not re-exported by `nebula-sdk`), so this is not
 /// a public semver surface — it is test wiring internal to the engine workspace
 /// member.
 #[must_use]
-pub fn test_scope() -> Scope {
+pub fn single_tenant_scope() -> Scope {
     Scope::new("nebula", "nebula")
 }
 

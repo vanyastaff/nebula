@@ -135,7 +135,7 @@ impl LeaseStores {
     /// Persist a workflow definition as published version 0 so the
     /// resume path's `get_published` lookup resolves it.
     async fn save_workflow(&self, wf: &WorkflowDefinition) {
-        let scope = nebula_engine::store_seam::test_scope();
+        let scope = nebula_engine::store_seam::single_tenant_scope();
         let definition = serde_json::to_value(wf).unwrap();
         self.versions
             .create(
@@ -155,7 +155,7 @@ impl LeaseStores {
     /// Whether a stranger holder is blocked from acquiring the lease
     /// (the port analog of the legacy `!acquire_lease(...)` probe).
     async fn lease_held(&self, id: nebula_core::id::ExecutionId, ttl: Duration) -> bool {
-        let scope = nebula_engine::store_seam::test_scope();
+        let scope = nebula_engine::store_seam::single_tenant_scope();
         self.execution
             .acquire_lease(&scope, &id.to_string(), "lease-probe-stranger", ttl)
             .await
@@ -396,6 +396,7 @@ async fn engine_b_takes_over_after_engine_a_runner_dies() {
         tokio::spawn(async move {
             engine_a
                 .execute_workflow(
+                    &nebula_engine::store_seam::single_tenant_scope(),
                     &wf,
                     serde_json::json!("payload"),
                     ExecutionBudget::default(),
@@ -462,7 +463,10 @@ async fn engine_b_takes_over_after_engine_a_runner_dies() {
     // - drive the workflow to Succeeded.
     let result_b = tokio::time::timeout(
         Duration::from_secs(10),
-        engine_b.resume_execution(&nebula_engine::store_seam::test_scope(), execution_id),
+        engine_b.resume_execution(
+            &nebula_engine::store_seam::single_tenant_scope(),
+            execution_id,
+        ),
     )
     .await
     .expect("resume_execution must complete within 10s")
@@ -606,6 +610,7 @@ async fn engine_b_cancels_execution_after_runner_a_death_via_reclaim_redeliver()
         tokio::spawn(async move {
             engine_a
                 .execute_workflow(
+                    &nebula_engine::store_seam::single_tenant_scope(),
                     &wf,
                     serde_json::json!("payload"),
                     ExecutionBudget::default(),
@@ -644,7 +649,7 @@ async fn engine_b_cancels_execution_after_runner_a_death_via_reclaim_redeliver()
             id: cancel_row_id,
             execution_id: execution_id.to_string(),
             command: ControlCommand::Cancel,
-            scope: nebula_engine::store_seam::test_scope(),
+            scope: nebula_engine::store_seam::single_tenant_scope(),
             w3c_traceparent: None,
             reclaim_count: 0,
         })
@@ -672,7 +677,10 @@ async fn engine_b_cancels_execution_after_runner_a_death_via_reclaim_redeliver()
         let engine_b = Arc::clone(&engine_b);
         tokio::spawn(async move {
             engine_b
-                .resume_execution(&nebula_engine::store_seam::test_scope(), execution_id)
+                .resume_execution(
+                    &nebula_engine::store_seam::single_tenant_scope(),
+                    execution_id,
+                )
                 .await
         })
     };
@@ -860,7 +868,12 @@ async fn replay_does_not_contend_for_held_lease() {
         let wf_a = wf_a.clone();
         tokio::spawn(async move {
             engine_a
-                .execute_workflow(&wf_a, serde_json::json!("a"), ExecutionBudget::default())
+                .execute_workflow(
+                    &nebula_engine::store_seam::single_tenant_scope(),
+                    &wf_a,
+                    serde_json::json!("a"),
+                    ExecutionBudget::default(),
+                )
                 .await
         })
     };
@@ -895,7 +908,12 @@ async fn replay_does_not_contend_for_held_lease() {
     let plan = ReplayPlan::new(execution_id_a, x_b.clone());
     let result_b = tokio::time::timeout(
         Duration::from_secs(10),
-        engine_b.replay_execution(&wf_b, plan, ExecutionBudget::default()),
+        engine_b.replay_execution(
+            &nebula_engine::store_seam::single_tenant_scope(),
+            &wf_b,
+            plan,
+            ExecutionBudget::default(),
+        ),
     )
     .await
     .expect("replay_execution must complete within 10s")

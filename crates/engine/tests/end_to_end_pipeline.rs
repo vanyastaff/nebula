@@ -288,7 +288,12 @@ async fn pipeline_resolves_expressions_before_handler_runs() {
     // Capture wall-clock before+after to bound the resolved timestamp.
     let before = chrono::Utc::now().timestamp();
     let result = engine
-        .execute_workflow(&wf, serde_json::json!(null), ExecutionBudget::default())
+        .execute_workflow(
+            &nebula_engine::store_seam::single_tenant_scope(),
+            &wf,
+            serde_json::json!(null),
+            ExecutionBudget::default(),
+        )
         .await
         .expect("workflow execution");
     let after = chrono::Utc::now().timestamp();
@@ -403,7 +408,12 @@ async fn pipeline_with_resource_manager_resolves_and_executes() {
     let wf = make_workflow(vec![node_def]);
 
     let result = engine
-        .execute_workflow(&wf, serde_json::json!(null), ExecutionBudget::default())
+        .execute_workflow(
+            &nebula_engine::store_seam::single_tenant_scope(),
+            &wf,
+            serde_json::json!(null),
+            ExecutionBudget::default(),
+        )
         .await
         .expect("workflow execution");
 
@@ -466,7 +476,12 @@ async fn pipeline_unresolvable_expression_fails_node_before_handler() {
     let wf = make_workflow(vec![node_def]);
 
     let result = engine
-        .execute_workflow(&wf, serde_json::json!(null), ExecutionBudget::default())
+        .execute_workflow(
+            &nebula_engine::store_seam::single_tenant_scope(),
+            &wf,
+            serde_json::json!(null),
+            ExecutionBudget::default(),
+        )
         .await
         .expect("workflow finishes (the node fails, not the engine)");
 

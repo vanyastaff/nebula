@@ -222,27 +222,38 @@ mod tests {
 
     /// Invariant #7 — fail-closed cross-tenant isolation (U-D1.4c).
     ///
-    /// Persisting an execution under scope-A then dispatching a `JobDispatchMsg`
-    /// carrying scope-B must yield `ExecutionSinkError::Rejected` because
-    /// `read_status` under scope-B finds no row.
+    /// The row is seeded under `single_tenant_scope()` — `("nebula","nebula")`,
+    /// the exact value the old `engine_scope()` constant returned. A
+    /// `JobDispatchMsg` carrying `scope_b = ("wsB","orgB")` is then dispatched.
     ///
-    /// Under the old `engine_scope()` placeholder BOTH scopes collapsed to
-    /// `("nebula","nebula")` so the dispatch would succeed — proving the
-    /// placeholder masked cross-tenant access.  This test cannot pass until
-    /// `read_status` uses the message's real scope.
+    /// **Why this is RED on the old code:**
+    /// The old `read_status` called `self.execution.get(engine_scope(), id)` — i.e.
+    /// `get(("nebula","nebula"), id)` — which FINDS the seeded row, so the `None`
+    /// arm is NOT taken. Control falls through to `drive`, which calls
+    /// `resume_execution(engine_scope(), id)`. The engine has no workflow store
+    /// attached (minimal construction), so `resume_execution` returns
+    /// `EngineError::StoreNotConfigured` which maps to `ExecutionSinkError::Internal`
+    /// — NOT `Rejected`. The `assert!(matches!(Rejected))` therefore fails → RED.
+    ///
+    /// **Why this is GREEN on the new code:**
+    /// `read_status` now reads under `msg.scope = scope_b = ("wsB","orgB")`.
+    /// The store holds no row under that scope → `None` → the function returns
+    /// `Err(Rejected("not found …"))` immediately, never reaching `drive` → GREEN.
     #[tokio::test]
     async fn cross_tenant_dispatch_is_rejected() {
-        let scope_a = Scope::new("wsA", "orgA");
+        // The row is intentionally seeded under single_tenant_scope() — the same
+        // ("nebula","nebula") the OLD engine_scope() constant always returned.
+        // This makes the test RED when read_status is reverted to the constant.
+        let single_tenant = crate::store_seam::single_tenant_scope();
         let scope_b = Scope::new("wsB", "orgB");
 
-        // Seed an execution row under scope-A.
         let execution_store: Arc<dyn ExecutionStore> = Arc::new(InMemoryExecutionStore::new());
         let execution_id = ExecutionId::new();
         let exec_state = ExecutionState::new(execution_id, nebula_core::id::WorkflowId::new(), &[]);
         let state_json = serde_json::to_value(&exec_state).unwrap();
         execution_store
             .create(
-                &scope_a,
+                &single_tenant, // row lives under ("nebula","nebula") = old constant
                 &execution_id.to_string(),
                 &nebula_core::id::WorkflowId::new().to_string(),
                 state_json,
@@ -250,19 +261,19 @@ mod tests {
             .await
             .unwrap();
 
-        // Wire a sink backed by a minimal engine — the test never reaches
-        // resume_execution because read_status short-circuits with None first.
+        // Minimal engine (no stores) — the test must short-circuit in read_status,
+        // never reaching resume_execution.
         let metrics = nebula_metrics::MetricsRegistry::new();
         let engine = Arc::new(WorkflowEngine::new(minimal_runtime(), metrics).expect("engine"));
         let sink = EngineExecutionSink::new(Arc::clone(&engine), Arc::clone(&execution_store));
 
-        // Build a dispatch msg carrying scope-B for the scope-A execution.
+        // Dispatch under scope_b — a different tenant than the row's scope.
         let plugin_key = plugin_key!("test.cross_tenant");
         let msg = JobDispatchMsg::new(
             [0u8; 16],
             execution_id.to_string(),
             ControlCommand::Start,
-            scope_b, // <- wrong scope: execution lives under scope-A
+            scope_b, // wrong tenant: row lives under single_tenant, not scope_b
             serde_json::Value::Null,
             None::<String>,
             "sha",
@@ -274,10 +285,9 @@ mod tests {
 
         let result = sink.dispatch(&msg).await;
 
-        // Must be Rejected — not found under scope-B.
-        // Under the old placeholder both scopes aliased to ("nebula","nebula")
-        // so this would have returned Ok(()) after successfully finding the row —
-        // proving the placeholder masked the cross-tenant gap.
+        // New code: read_status reads under scope_b → None → Rejected.
+        // Old code: read_status reads under ("nebula","nebula") → finds the row →
+        //   drive → resume_execution → Internal (no store) — NOT Rejected → RED.
         match result {
             Err(ExecutionSinkError::Rejected(msg)) => {
                 assert!(

@@ -57,7 +57,7 @@ fn port_msg(execution_id: &ExecutionId, command: ControlCommand, row_id: u8) -> 
         id: [row_id; 16],
         execution_id: execution_id.to_string(),
         command,
-        scope: nebula_engine::store_seam::test_scope(),
+        scope: nebula_engine::store_seam::single_tenant_scope(),
         w3c_traceparent: None,
         reclaim_count: 0,
     }

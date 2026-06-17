@@ -993,6 +993,7 @@ impl WorkflowEngine {
     /// integration test in `crates/engine/tests/lease_takeover.rs`.
     pub async fn replay_execution(
         &self,
+        scope: &Scope,
         workflow: &WorkflowDefinition,
         plan: nebula_execution::ReplayPlan,
         budget: ExecutionBudget,
@@ -1105,10 +1106,9 @@ impl WorkflowEngine {
 
         // Run the frontier loop — same as execute_workflow, just different seed + pre-populated
         // outputs.
-        let replay_scope = crate::store_seam::test_scope();
         let failed_node = self
             .run_frontier(
-                &replay_scope,
+                scope,
                 &graph,
                 &node_map,
                 &outputs,
@@ -1385,45 +1385,47 @@ impl WorkflowEngine {
     /// This method is used in tests and local library mode. Production code
     /// enters the engine via [`Self::resume_execution`] (which carries the
     /// real per-message tenant scope from the control-queue / job-dispatch row).
-    /// Tests use the in-memory adapters (no tenancy decorator) and call this
-    /// method with the fixed test scope so all adapters observe one coherent tenant.
+    /// Tests and library-mode callers pass [`crate::store_seam::single_tenant_scope`]
+    /// (or a real scope) explicitly — this method does not manufacture one.
     pub async fn execute_workflow(
         &self,
+        scope: &Scope,
         workflow: &WorkflowDefinition,
         input: serde_json::Value,
         budget: ExecutionBudget,
     ) -> Result<ExecutionResult, EngineError> {
-        let scope = crate::store_seam::test_scope();
-        self.execute_workflow_scoped(&scope, workflow, input, budget, None)
+        self.execute_workflow_scoped(scope, workflow, input, budget, None)
             .await
     }
 
     /// Like [`execute_workflow`](Self::execute_workflow) with per-run resource-acquire scope.
     ///
+    /// `scope` is the storage tenant scope; pass
+    /// [`crate::store_seam::single_tenant_scope`] for tests and library mode.
+    ///
     /// `run_acquire_scope` supplies `org_id` / `workspace_id` for resource acquisition.
     /// Fields set here override the engine default from
     /// [`with_resource_acquire_scope`](Self::with_resource_acquire_scope).
     ///
-    /// Storage port calls use the fixed test scope (same as
-    /// [`execute_workflow`](Self::execute_workflow)). Production code uses
-    /// [`resume_execution`](Self::resume_execution).
+    /// Production code uses [`resume_execution`](Self::resume_execution).
     pub async fn execute_workflow_with_acquire_scope(
         &self,
+        scope: &Scope,
         workflow: &WorkflowDefinition,
         input: serde_json::Value,
         budget: ExecutionBudget,
         run_acquire_scope: Option<nebula_core::scope::Scope>,
     ) -> Result<ExecutionResult, EngineError> {
-        let scope = crate::store_seam::test_scope();
-        self.execute_workflow_scoped(&scope, workflow, input, budget, run_acquire_scope)
+        self.execute_workflow_scoped(scope, workflow, input, budget, run_acquire_scope)
             .await
     }
 
     /// Internal implementation — thread `scope` through the storage port calls.
     ///
     /// Called by [`execute_workflow`], [`execute_workflow_with_acquire_scope`], and
-    /// [`replay_execution`] with the test scope; called by [`resume_execution`] with
-    /// the per-message tenant scope from the control-queue / job-dispatch row.
+    /// [`replay_execution`] with a caller-supplied scope; called by
+    /// [`resume_execution`] with the per-message tenant scope from the
+    /// control-queue / job-dispatch row.
     async fn execute_workflow_scoped(
         &self,
         scope: &Scope,
@@ -5495,7 +5497,7 @@ mod tests {
     /// post-execution assertions read the durable state the same way
     /// they did against the old execution repo, mirroring the
     /// production port path's scope/record semantics; test helpers call
-    /// [`crate::store_seam::test_scope`] for all store operations.
+    /// [`crate::store_seam::single_tenant_scope`] for all store operations.
     ///
     /// This is test scaffolding, not a production shim: the bundle's
     /// fields are the same port traits production consumes; only the
@@ -5563,7 +5565,7 @@ mod tests {
         /// Persist a workflow definition as the published version 0 so the
         /// resume path's `get_published` lookup resolves it.
         async fn save_workflow(&self, wf: &WorkflowDefinition) {
-            let scope = crate::store_seam::test_scope();
+            let scope = crate::store_seam::single_tenant_scope();
             let definition = serde_json::to_value(wf).unwrap();
             self.versions
                 .create(
@@ -5587,7 +5589,7 @@ mod tests {
             &self,
             id: ExecutionId,
         ) -> Result<Option<(u64, serde_json::Value)>, StorageError> {
-            let scope = crate::store_seam::test_scope();
+            let scope = crate::store_seam::single_tenant_scope();
             Ok(self
                 .execution
                 .get(&scope, &id.to_string())
@@ -5602,7 +5604,7 @@ mod tests {
             id: ExecutionId,
             node: NodeKey,
         ) -> Result<Option<serde_json::Value>, StorageError> {
-            let scope = crate::store_seam::test_scope();
+            let scope = crate::store_seam::single_tenant_scope();
             Ok(self
                 .node_results
                 .load_node_output(&scope, &id.to_string(), node.as_str())
@@ -5621,7 +5623,7 @@ mod tests {
             workflow_id: WorkflowId,
             state: serde_json::Value,
         ) {
-            let scope = crate::store_seam::test_scope();
+            let scope = crate::store_seam::single_tenant_scope();
             self.execution
                 .create(&scope, &id.to_string(), &workflow_id.to_string(), state)
                 .await
@@ -5637,7 +5639,7 @@ mod tests {
             node: NodeKey,
             output: serde_json::Value,
         ) {
-            let scope = crate::store_seam::test_scope();
+            let scope = crate::store_seam::single_tenant_scope();
             self.node_results
                 .save_node_output(
                     &scope,
@@ -5659,7 +5661,7 @@ mod tests {
             id: ExecutionId,
             node: NodeKey,
         ) -> Result<Option<nebula_storage_port::dto::NodeResultRecord>, StorageError> {
-            let scope = crate::store_seam::test_scope();
+            let scope = crate::store_seam::single_tenant_scope();
             self.node_results
                 .load_node_result(&scope, &id.to_string(), node.as_str())
                 .await
@@ -5676,7 +5678,7 @@ mod tests {
             holder: &str,
             ttl: std::time::Duration,
         ) -> Result<bool, StorageError> {
-            let scope = crate::store_seam::test_scope();
+            let scope = crate::store_seam::single_tenant_scope();
             Ok(self
                 .execution
                 .acquire_lease(&scope, &id.to_string(), holder, ttl)
@@ -5689,7 +5691,7 @@ mod tests {
         /// without perturbing it — the port analog of the
         /// legacy `ExecutionRepo::check_idempotency`.
         fn is_idempotency_marked(&self, id: ExecutionId, node: NodeKey, attempt: u32) -> bool {
-            let scope = crate::store_seam::test_scope();
+            let scope = crate::store_seam::single_tenant_scope();
             self.idempotency
                 .is_marked(&scope, &id.to_string(), node.as_str(), attempt)
         }
@@ -5714,7 +5716,12 @@ mod tests {
         );
 
         let result = engine
-            .execute_workflow(&wf, serde_json::json!("hello"), ExecutionBudget::default())
+            .execute_workflow(
+                &crate::store_seam::single_tenant_scope(),
+                &wf,
+                serde_json::json!("hello"),
+                ExecutionBudget::default(),
+            )
             .await
             .unwrap();
 
@@ -5743,7 +5750,12 @@ mod tests {
         );
 
         let result = engine
-            .execute_workflow(&wf, serde_json::json!(42), ExecutionBudget::default())
+            .execute_workflow(
+                &crate::store_seam::single_tenant_scope(),
+                &wf,
+                serde_json::json!(42),
+                ExecutionBudget::default(),
+            )
             .await
             .unwrap();
 
@@ -5783,7 +5795,12 @@ mod tests {
         );
 
         let result = engine
-            .execute_workflow(&wf, serde_json::json!("start"), ExecutionBudget::default())
+            .execute_workflow(
+                &crate::store_seam::single_tenant_scope(),
+                &wf,
+                serde_json::json!("start"),
+                ExecutionBudget::default(),
+            )
             .await
             .unwrap();
 
@@ -5827,7 +5844,12 @@ mod tests {
         );
 
         let result = engine
-            .execute_workflow(&wf, serde_json::json!("input"), ExecutionBudget::default())
+            .execute_workflow(
+                &crate::store_seam::single_tenant_scope(),
+                &wf,
+                serde_json::json!("input"),
+                ExecutionBudget::default(),
+            )
             .await
             .unwrap();
 
@@ -5849,7 +5871,12 @@ mod tests {
         );
 
         let result = engine
-            .execute_workflow(&wf, serde_json::json!(null), ExecutionBudget::default())
+            .execute_workflow(
+                &crate::store_seam::single_tenant_scope(),
+                &wf,
+                serde_json::json!(null),
+                ExecutionBudget::default(),
+            )
             .await
             .expect("engine returns Ok even when a node fails");
 
@@ -5864,7 +5891,12 @@ mod tests {
 
         let wf = make_workflow(vec![], vec![]);
         let result = engine
-            .execute_workflow(&wf, serde_json::json!(null), ExecutionBudget::default())
+            .execute_workflow(
+                &crate::store_seam::single_tenant_scope(),
+                &wf,
+                serde_json::json!(null),
+                ExecutionBudget::default(),
+            )
             .await;
 
         assert!(matches!(result, Err(EngineError::PlanningFailed(_))));
@@ -5887,7 +5919,12 @@ mod tests {
         );
 
         engine
-            .execute_workflow(&wf, serde_json::json!("test"), ExecutionBudget::default())
+            .execute_workflow(
+                &crate::store_seam::single_tenant_scope(),
+                &wf,
+                serde_json::json!("test"),
+                ExecutionBudget::default(),
+            )
             .await
             .unwrap();
 
@@ -5924,7 +5961,12 @@ mod tests {
         );
 
         let result = engine
-            .execute_workflow(&wf, serde_json::json!(null), ExecutionBudget::default())
+            .execute_workflow(
+                &crate::store_seam::single_tenant_scope(),
+                &wf,
+                serde_json::json!(null),
+                ExecutionBudget::default(),
+            )
             .await
             .unwrap();
 
@@ -6065,7 +6107,12 @@ mod tests {
         );
 
         let result = engine
-            .execute_workflow(&wf, serde_json::json!("input"), ExecutionBudget::default())
+            .execute_workflow(
+                &crate::store_seam::single_tenant_scope(),
+                &wf,
+                serde_json::json!("input"),
+                ExecutionBudget::default(),
+            )
             .await
             .unwrap();
 
@@ -6111,7 +6158,12 @@ mod tests {
         );
 
         let result = engine
-            .execute_workflow(&wf, serde_json::json!("input"), ExecutionBudget::default())
+            .execute_workflow(
+                &crate::store_seam::single_tenant_scope(),
+                &wf,
+                serde_json::json!("input"),
+                ExecutionBudget::default(),
+            )
             .await
             .unwrap();
 
@@ -6156,7 +6208,12 @@ mod tests {
         );
 
         let result = engine
-            .execute_workflow(&wf, serde_json::json!("input"), ExecutionBudget::default())
+            .execute_workflow(
+                &crate::store_seam::single_tenant_scope(),
+                &wf,
+                serde_json::json!("input"),
+                ExecutionBudget::default(),
+            )
             .await
             .unwrap();
 
@@ -6202,7 +6259,12 @@ mod tests {
         );
 
         let result = engine
-            .execute_workflow(&wf, serde_json::json!("input"), ExecutionBudget::default())
+            .execute_workflow(
+                &crate::store_seam::single_tenant_scope(),
+                &wf,
+                serde_json::json!("input"),
+                ExecutionBudget::default(),
+            )
             .await
             .unwrap();
 
@@ -6234,7 +6296,12 @@ mod tests {
         );
 
         let result = engine
-            .execute_workflow(&wf, serde_json::json!("hello"), ExecutionBudget::default())
+            .execute_workflow(
+                &crate::store_seam::single_tenant_scope(),
+                &wf,
+                serde_json::json!("hello"),
+                ExecutionBudget::default(),
+            )
             .await
             .unwrap();
 
@@ -6276,7 +6343,12 @@ mod tests {
         );
 
         let result = engine
-            .execute_workflow(&wf, serde_json::json!("start"), ExecutionBudget::default())
+            .execute_workflow(
+                &crate::store_seam::single_tenant_scope(),
+                &wf,
+                serde_json::json!("start"),
+                ExecutionBudget::default(),
+            )
             .await
             .unwrap();
 
@@ -6311,7 +6383,12 @@ mod tests {
         );
 
         let result = engine
-            .execute_workflow(&wf, serde_json::json!("hello"), ExecutionBudget::default())
+            .execute_workflow(
+                &crate::store_seam::single_tenant_scope(),
+                &wf,
+                serde_json::json!("hello"),
+                ExecutionBudget::default(),
+            )
             .await
             .unwrap();
 
@@ -6354,7 +6431,12 @@ mod tests {
         );
 
         let result = engine
-            .execute_workflow(&wf, serde_json::json!(null), ExecutionBudget::default())
+            .execute_workflow(
+                &crate::store_seam::single_tenant_scope(),
+                &wf,
+                serde_json::json!(null),
+                ExecutionBudget::default(),
+            )
             .await
             .unwrap();
 
@@ -6390,7 +6472,12 @@ mod tests {
         );
 
         let result = engine
-            .execute_workflow(&wf, serde_json::json!(42), ExecutionBudget::default())
+            .execute_workflow(
+                &crate::store_seam::single_tenant_scope(),
+                &wf,
+                serde_json::json!(42),
+                ExecutionBudget::default(),
+            )
             .await
             .unwrap();
 
@@ -6443,7 +6530,12 @@ mod tests {
         let budget = ExecutionBudget::default().with_max_duration(Duration::from_millis(1));
 
         let result = engine
-            .execute_workflow(&wf, serde_json::json!("data"), budget)
+            .execute_workflow(
+                &crate::store_seam::single_tenant_scope(),
+                &wf,
+                serde_json::json!("data"),
+                budget,
+            )
             .await
             .unwrap();
 
@@ -6477,7 +6569,12 @@ mod tests {
         let budget = ExecutionBudget::default().with_max_output_bytes(5);
 
         let result = engine
-            .execute_workflow(&wf, serde_json::json!("hello"), budget)
+            .execute_workflow(
+                &crate::store_seam::single_tenant_scope(),
+                &wf,
+                serde_json::json!("hello"),
+                budget,
+            )
             .await
             .unwrap();
 
@@ -6530,7 +6627,12 @@ mod tests {
         );
 
         let result = engine
-            .execute_workflow(&wf, serde_json::json!("data"), ExecutionBudget::default())
+            .execute_workflow(
+                &crate::store_seam::single_tenant_scope(),
+                &wf,
+                serde_json::json!("data"),
+                ExecutionBudget::default(),
+            )
             .await
             .unwrap();
 
@@ -6578,7 +6680,12 @@ mod tests {
         );
 
         let result = engine
-            .execute_workflow(&wf, serde_json::json!("data"), ExecutionBudget::default())
+            .execute_workflow(
+                &crate::store_seam::single_tenant_scope(),
+                &wf,
+                serde_json::json!("data"),
+                ExecutionBudget::default(),
+            )
             .await
             .unwrap();
 
@@ -6599,7 +6706,10 @@ mod tests {
         let (engine, _) = make_engine(registry);
         // No execution / workflow store bundles attached.
         let err = engine
-            .resume_execution(&crate::store_seam::test_scope(), ExecutionId::new())
+            .resume_execution(
+                &crate::store_seam::single_tenant_scope(),
+                ExecutionId::new(),
+            )
             .await
             .unwrap_err();
         assert!(
@@ -6616,7 +6726,10 @@ mod tests {
         let engine = engine.with_execution_stores(stores.execution_stores());
         // No workflow store attached.
         let err = engine
-            .resume_execution(&crate::store_seam::test_scope(), ExecutionId::new())
+            .resume_execution(
+                &crate::store_seam::single_tenant_scope(),
+                ExecutionId::new(),
+            )
             .await
             .unwrap_err();
         assert!(
@@ -6639,7 +6752,10 @@ mod tests {
         let engine = stores.attach(engine);
 
         let err = engine
-            .resume_execution(&crate::store_seam::test_scope(), ExecutionId::new())
+            .resume_execution(
+                &crate::store_seam::single_tenant_scope(),
+                ExecutionId::new(),
+            )
             .await
             .unwrap_err();
         assert!(
@@ -6667,14 +6783,22 @@ mod tests {
 
         // Run to completion first.
         let result = engine
-            .execute_workflow(&wf, serde_json::json!("hi"), ExecutionBudget::default())
+            .execute_workflow(
+                &crate::store_seam::single_tenant_scope(),
+                &wf,
+                serde_json::json!("hi"),
+                ExecutionBudget::default(),
+            )
             .await
             .unwrap();
         assert!(result.is_success());
 
         // Now resume the completed execution — should fail.
         let err = engine
-            .resume_execution(&crate::store_seam::test_scope(), result.execution_id)
+            .resume_execution(
+                &crate::store_seam::single_tenant_scope(),
+                result.execution_id,
+            )
             .await
             .unwrap_err();
         assert!(
@@ -6751,7 +6875,7 @@ mod tests {
 
         let engine = stores.attach(engine);
 
-        let scope = crate::store_seam::test_scope();
+        let scope = crate::store_seam::single_tenant_scope();
         let result = engine.resume_execution(&scope, execution_id).await.unwrap();
 
         assert!(result.is_success(), "resume should complete successfully");
@@ -6827,7 +6951,12 @@ mod tests {
         let engine1 = stores1.attach(engine1);
 
         let result = engine1
-            .execute_workflow(&wf, serde_json::json!(null), ExecutionBudget::default())
+            .execute_workflow(
+                &crate::store_seam::single_tenant_scope(),
+                &wf,
+                serde_json::json!(null),
+                ExecutionBudget::default(),
+            )
             .await
             .unwrap();
 
@@ -6897,7 +7026,7 @@ mod tests {
 
         let (engine2, _) = make_engine(registry);
         let engine2 = stores2.attach(engine2);
-        let scope = crate::store_seam::test_scope();
+        let scope = crate::store_seam::single_tenant_scope();
         let resumed = engine2
             .resume_execution(&scope, execution_id)
             .await
@@ -7116,7 +7245,12 @@ mod tests {
             .with_event_bus(event_bus);
 
         let _ = engine
-            .execute_workflow(&wf, serde_json::json!(null), ExecutionBudget::default())
+            .execute_workflow(
+                &crate::store_seam::single_tenant_scope(),
+                &wf,
+                serde_json::json!(null),
+                ExecutionBudget::default(),
+            )
             .await;
 
         // Drop engine so the event channel closes; drain.
@@ -7186,7 +7320,12 @@ mod tests {
         let engine = stores.attach(engine);
 
         let result = engine
-            .execute_workflow(&wf, serde_json::json!(null), ExecutionBudget::default())
+            .execute_workflow(
+                &crate::store_seam::single_tenant_scope(),
+                &wf,
+                serde_json::json!(null),
+                ExecutionBudget::default(),
+            )
             .await
             .unwrap();
 
@@ -7281,7 +7420,12 @@ mod tests {
             .with_event_bus(event_bus);
 
         let _ = engine
-            .execute_workflow(&wf, serde_json::json!(null), ExecutionBudget::default())
+            .execute_workflow(
+                &crate::store_seam::single_tenant_scope(),
+                &wf,
+                serde_json::json!(null),
+                ExecutionBudget::default(),
+            )
             .await;
 
         drop(engine);
@@ -7341,7 +7485,12 @@ mod tests {
         let engine = stores.attach(engine);
 
         let result = engine
-            .execute_workflow(&wf, serde_json::json!(null), ExecutionBudget::default())
+            .execute_workflow(
+                &crate::store_seam::single_tenant_scope(),
+                &wf,
+                serde_json::json!(null),
+                ExecutionBudget::default(),
+            )
             .await
             .unwrap();
 
@@ -7437,6 +7586,7 @@ mod tests {
         // should be recorded.
         let result1 = engine
             .execute_workflow(
+                &crate::store_seam::single_tenant_scope(),
                 &wf,
                 serde_json::json!("payload"),
                 ExecutionBudget::default(),
@@ -7586,7 +7736,12 @@ mod tests {
         );
 
         let result = engine
-            .execute_workflow(&wf, serde_json::json!(null), ExecutionBudget::default())
+            .execute_workflow(
+                &crate::store_seam::single_tenant_scope(),
+                &wf,
+                serde_json::json!(null),
+                ExecutionBudget::default(),
+            )
             .await
             .unwrap();
 
@@ -7646,7 +7801,12 @@ mod tests {
         );
 
         let result = engine
-            .execute_workflow(&wf, serde_json::json!("x"), ExecutionBudget::default())
+            .execute_workflow(
+                &crate::store_seam::single_tenant_scope(),
+                &wf,
+                serde_json::json!("x"),
+                ExecutionBudget::default(),
+            )
             .await
             .unwrap();
 
@@ -7696,6 +7856,7 @@ mod tests {
 
         let result = engine
             .execute_workflow(
+                &crate::store_seam::single_tenant_scope(),
                 &wf,
                 serde_json::json!("payload"),
                 ExecutionBudget::default(),
@@ -8129,7 +8290,12 @@ mod tests {
         );
 
         let result = engine
-            .execute_workflow(&wf, serde_json::json!("x"), ExecutionBudget::default())
+            .execute_workflow(
+                &crate::store_seam::single_tenant_scope(),
+                &wf,
+                serde_json::json!("x"),
+                ExecutionBudget::default(),
+            )
             .await
             .expect("engine returns Ok(ExecutionResult) even on node failure");
 
@@ -8268,7 +8434,12 @@ mod tests {
 
         let wf = probe_workflow("probe", "api_key");
         let result = engine
-            .execute_workflow(&wf, serde_json::json!(null), ExecutionBudget::default())
+            .execute_workflow(
+                &crate::store_seam::single_tenant_scope(),
+                &wf,
+                serde_json::json!(null),
+                ExecutionBudget::default(),
+            )
             .await
             .expect("engine returns Ok(ExecutionResult) even on node failure");
 
@@ -8315,7 +8486,12 @@ mod tests {
 
         let wf = probe_workflow("probe", "api_key");
         let result = engine
-            .execute_workflow(&wf, serde_json::json!(null), ExecutionBudget::default())
+            .execute_workflow(
+                &crate::store_seam::single_tenant_scope(),
+                &wf,
+                serde_json::json!(null),
+                ExecutionBudget::default(),
+            )
             .await
             .expect("engine returns Ok(ExecutionResult)");
 
@@ -8343,7 +8519,12 @@ mod tests {
 
         let wf = probe_workflow("probe", "cred_b");
         let result = engine
-            .execute_workflow(&wf, serde_json::json!(null), ExecutionBudget::default())
+            .execute_workflow(
+                &crate::store_seam::single_tenant_scope(),
+                &wf,
+                serde_json::json!(null),
+                ExecutionBudget::default(),
+            )
             .await
             .expect("engine returns Ok(ExecutionResult) even on node failure");
 
@@ -8384,7 +8565,12 @@ mod tests {
         // probe_b tries shared_key → must fail even though probe_a has it declared.
         let wf = probe_workflow("probe_b", "shared_key");
         let result = engine
-            .execute_workflow(&wf, serde_json::json!(null), ExecutionBudget::default())
+            .execute_workflow(
+                &crate::store_seam::single_tenant_scope(),
+                &wf,
+                serde_json::json!(null),
+                ExecutionBudget::default(),
+            )
             .await
             .expect("engine returns Ok(ExecutionResult)");
 
@@ -8413,7 +8599,12 @@ mod tests {
         // Probing "second" must succeed — the second call adds, not replaces.
         let wf = probe_workflow("probe", "second");
         let result = engine
-            .execute_workflow(&wf, serde_json::json!(null), ExecutionBudget::default())
+            .execute_workflow(
+                &crate::store_seam::single_tenant_scope(),
+                &wf,
+                serde_json::json!(null),
+                ExecutionBudget::default(),
+            )
             .await
             .expect("engine returns Ok(ExecutionResult)");
         assert!(
@@ -8461,7 +8652,12 @@ mod tests {
         let wf = make_workflow(vec![node], vec![]);
 
         let result = engine
-            .execute_workflow(&wf, serde_json::json!("hello"), ExecutionBudget::default())
+            .execute_workflow(
+                &crate::store_seam::single_tenant_scope(),
+                &wf,
+                serde_json::json!("hello"),
+                ExecutionBudget::default(),
+            )
             .await
             .unwrap();
 
@@ -8534,7 +8730,7 @@ mod tests {
 
         let engine = stores.attach(engine);
 
-        let scope = crate::store_seam::test_scope();
+        let scope = crate::store_seam::single_tenant_scope();
         let result = engine.resume_execution(&scope, execution_id).await.unwrap();
 
         assert!(result.is_success());
@@ -8600,7 +8796,7 @@ mod tests {
         // instance, no memory of the original budget).
         let (engine, _) = make_engine(registry);
         let engine = stores.attach(engine);
-        let scope = crate::store_seam::test_scope();
+        let scope = crate::store_seam::single_tenant_scope();
         let result = engine.resume_execution(&scope, execution_id).await.unwrap();
         assert!(result.is_success());
 
@@ -8676,7 +8872,7 @@ mod tests {
 
         // Resume must succeed despite the missing budget — the engine
         // logs a warning and falls back to the default.
-        let scope = crate::store_seam::test_scope();
+        let scope = crate::store_seam::single_tenant_scope();
         let result = engine.resume_execution(&scope, execution_id).await.unwrap();
         assert!(result.is_success());
     }
@@ -8763,6 +8959,7 @@ mod tests {
 
         let result = engine
             .execute_workflow(
+                &crate::store_seam::single_tenant_scope(),
                 &wf,
                 serde_json::json!("ignored"),
                 ExecutionBudget::default(),
@@ -8842,6 +9039,7 @@ mod tests {
         // First run: A emits Branch{selected=true}. Only B fires.
         let first = engine
             .execute_workflow(
+                &crate::store_seam::single_tenant_scope(),
                 &wf,
                 serde_json::json!("payload"),
                 ExecutionBudget::default(),
@@ -9082,7 +9280,12 @@ mod tests {
             .with_workflow_stores(stores.workflow_stores());
 
         let result = engine
-            .execute_workflow(&wf, serde_json::json!(null), ExecutionBudget::default())
+            .execute_workflow(
+                &crate::store_seam::single_tenant_scope(),
+                &wf,
+                serde_json::json!(null),
+                ExecutionBudget::default(),
+            )
             .await
             .expect(
                 "execute_workflow should return Ok on external terminal override (§11.5, #333)",
@@ -9100,7 +9303,7 @@ mod tests {
 
         // The persisted row must carry `cancelled` — the engine must
         // NOT have overwritten it with its own `completed`.
-        let scope = crate::store_seam::test_scope();
+        let scope = crate::store_seam::single_tenant_scope();
         let record = inner
             .get(&scope, &result.execution_id.to_string())
             .await
@@ -9171,7 +9374,12 @@ mod tests {
         // Failed (node checkpoint aborted) or Cancelled (external).
         // Either way it MUST NOT claim Completed.
         let result = engine
-            .execute_workflow(&wf, serde_json::json!(null), ExecutionBudget::default())
+            .execute_workflow(
+                &crate::store_seam::single_tenant_scope(),
+                &wf,
+                serde_json::json!(null),
+                ExecutionBudget::default(),
+            )
             .await;
 
         let execution_id_opt = match &result {
@@ -9197,7 +9405,7 @@ mod tests {
         // `cancelling` status — never overwritten. The engine's own
         // writes after CAS miss MUST NOT land.
         if let Some(execution_id) = execution_id_opt {
-            let scope = crate::store_seam::test_scope();
+            let scope = crate::store_seam::single_tenant_scope();
             let record = inner
                 .get(&scope, &execution_id.to_string())
                 .await
@@ -9240,7 +9448,7 @@ mod tests {
         // durably persisted.
         let stores = TestStores::new();
         let execution = stores.execution.clone();
-        let scope = crate::store_seam::test_scope();
+        let scope = crate::store_seam::single_tenant_scope();
         let token = nebula_storage_port::FencingToken::from_generation(0);
 
         let execution_id = ExecutionId::new();
@@ -9354,7 +9562,7 @@ mod tests {
         // decision must NOT overwrite the durable Cancelled row.
         let stores = TestStores::new();
         let execution = stores.execution.clone();
-        let scope = crate::store_seam::test_scope();
+        let scope = crate::store_seam::single_tenant_scope();
         let token = nebula_storage_port::FencingToken::from_generation(0);
 
         let execution_id = ExecutionId::new();
@@ -9502,12 +9710,12 @@ mod tests {
         // the other must see `EngineError::Leased`.
         let handle_a = tokio::spawn(async move {
             engine_a
-                .resume_execution(&crate::store_seam::test_scope(), execution_id)
+                .resume_execution(&crate::store_seam::single_tenant_scope(), execution_id)
                 .await
         });
         let handle_b = tokio::spawn(async move {
             engine_b
-                .resume_execution(&crate::store_seam::test_scope(), execution_id)
+                .resume_execution(&crate::store_seam::single_tenant_scope(), execution_id)
                 .await
         });
 
@@ -9607,7 +9815,7 @@ mod tests {
         let winner_engine = Arc::clone(&engine);
         let winner = tokio::spawn(async move {
             winner_engine
-                .resume_execution(&crate::store_seam::test_scope(), execution_id)
+                .resume_execution(&crate::store_seam::single_tenant_scope(), execution_id)
                 .await
         });
 
@@ -9629,7 +9837,7 @@ mod tests {
         // Must fail fast with `Leased` — and crucially must NOT clobber
         // the registry entry the winner just published.
         let loser = engine
-            .resume_execution(&crate::store_seam::test_scope(), execution_id)
+            .resume_execution(&crate::store_seam::single_tenant_scope(), execution_id)
             .await;
         assert!(
             matches!(loser, Err(EngineError::Leased { .. })),
@@ -9692,7 +9900,12 @@ mod tests {
 
         // First run acquires + releases the lease on completion.
         let first = engine
-            .execute_workflow(&wf, serde_json::json!("v1"), ExecutionBudget::default())
+            .execute_workflow(
+                &crate::store_seam::single_tenant_scope(),
+                &wf,
+                serde_json::json!("v1"),
+                ExecutionBudget::default(),
+            )
             .await
             .unwrap();
         assert!(first.is_success());
@@ -9733,11 +9946,21 @@ mod tests {
         let engine = stores.attach(engine);
 
         let first = engine
-            .execute_workflow(&wf, serde_json::json!("v1"), ExecutionBudget::default())
+            .execute_workflow(
+                &crate::store_seam::single_tenant_scope(),
+                &wf,
+                serde_json::json!("v1"),
+                ExecutionBudget::default(),
+            )
             .await
             .unwrap();
         let second = engine
-            .execute_workflow(&wf, serde_json::json!("v2"), ExecutionBudget::default())
+            .execute_workflow(
+                &crate::store_seam::single_tenant_scope(),
+                &wf,
+                serde_json::json!("v2"),
+                ExecutionBudget::default(),
+            )
             .await
             .unwrap();
         assert!(first.is_success());
@@ -9834,6 +10057,7 @@ mod tests {
 
         let result = engine
             .execute_workflow(
+                &crate::store_seam::single_tenant_scope(),
                 &wf,
                 serde_json::json!({"hello": "factory"}),
                 ExecutionBudget::default(),
@@ -9889,7 +10113,12 @@ mod tests {
         );
 
         let result = engine
-            .execute_workflow(&wf, serde_json::json!("ok"), ExecutionBudget::default())
+            .execute_workflow(
+                &crate::store_seam::single_tenant_scope(),
+                &wf,
+                serde_json::json!("ok"),
+                ExecutionBudget::default(),
+            )
             .await
             .expect("workflow should succeed via factory path");
         assert!(result.is_success());

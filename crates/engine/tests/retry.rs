@@ -207,6 +207,7 @@ async fn retry_succeeds_on_attempt_2() {
     let wf = make_workflow(vec![node], vec![], WorkflowConfig::default());
     let result = engine
         .execute_workflow(
+            &nebula_engine::store_seam::single_tenant_scope(),
             &wf,
             serde_json::json!("payload"),
             ExecutionBudget::default(),
@@ -239,7 +240,12 @@ async fn retry_exhausts_max_attempts() {
 
     let wf = make_workflow(vec![node], vec![], WorkflowConfig::default());
     let result = engine
-        .execute_workflow(&wf, serde_json::json!(null), ExecutionBudget::default())
+        .execute_workflow(
+            &nebula_engine::store_seam::single_tenant_scope(),
+            &wf,
+            serde_json::json!(null),
+            ExecutionBudget::default(),
+        )
         .await
         .unwrap();
 
@@ -281,7 +287,12 @@ async fn cancel_during_retry_wait() {
     let engine_h = Arc::clone(&engine);
     let task = tokio::spawn(async move {
         engine_h
-            .execute_workflow(&wf, serde_json::json!(null), ExecutionBudget::default())
+            .execute_workflow(
+                &nebula_engine::store_seam::single_tenant_scope(),
+                &wf,
+                serde_json::json!(null),
+                ExecutionBudget::default(),
+            )
             .await
     });
 
@@ -363,7 +374,12 @@ async fn terminate_during_retry_wait() {
 
     let result = tokio::time::timeout(
         Duration::from_secs(5),
-        engine.execute_workflow(&wf, serde_json::json!(null), ExecutionBudget::default()),
+        engine.execute_workflow(
+            &nebula_engine::store_seam::single_tenant_scope(),
+            &wf,
+            serde_json::json!(null),
+            ExecutionBudget::default(),
+        ),
     )
     .await
     .expect("workflow must wind down within 5s")
@@ -419,7 +435,12 @@ async fn execution_budget_max_total_retries_caps_globally() {
     let budget = ExecutionBudget::default().with_max_total_retries(1);
 
     let result = engine
-        .execute_workflow(&wf, serde_json::json!(null), budget)
+        .execute_workflow(
+            &nebula_engine::store_seam::single_tenant_scope(),
+            &wf,
+            serde_json::json!(null),
+            budget,
+        )
         .await
         .unwrap();
 
@@ -464,7 +485,12 @@ async fn idempotency_key_differentiates_attempts() {
 
     let wf = make_workflow(vec![node], vec![], WorkflowConfig::default());
     let result = engine
-        .execute_workflow(&wf, serde_json::json!({"v": 1}), ExecutionBudget::default())
+        .execute_workflow(
+            &nebula_engine::store_seam::single_tenant_scope(),
+            &wf,
+            serde_json::json!({"v": 1}),
+            ExecutionBudget::default(),
+        )
         .await
         .unwrap();
 
@@ -474,7 +500,7 @@ async fn idempotency_key_differentiates_attempts() {
     // Pull the persisted state and inspect the attempts.
     let record = execution
         .get(
-            &nebula_engine::store_seam::test_scope(),
+            &nebula_engine::store_seam::single_tenant_scope(),
             &result.execution_id.to_string(),
         )
         .await
@@ -526,7 +552,12 @@ async fn per_node_retry_policy_overrides_workflow_default() {
 
     let wf = make_workflow(vec![node], vec![], config);
     let result = engine
-        .execute_workflow(&wf, serde_json::json!(null), ExecutionBudget::default())
+        .execute_workflow(
+            &nebula_engine::store_seam::single_tenant_scope(),
+            &wf,
+            serde_json::json!(null),
+            ExecutionBudget::default(),
+        )
         .await
         .unwrap();
 
@@ -562,7 +593,12 @@ async fn workflow_default_applies_when_node_has_none() {
 
     let wf = make_workflow(vec![node], vec![], config);
     let result = engine
-        .execute_workflow(&wf, serde_json::json!(null), ExecutionBudget::default())
+        .execute_workflow(
+            &nebula_engine::store_seam::single_tenant_scope(),
+            &wf,
+            serde_json::json!(null),
+            ExecutionBudget::default(),
+        )
         .await
         .unwrap();
 
@@ -593,7 +629,12 @@ async fn no_retry_policy_means_one_shot_failure() {
 
     let wf = make_workflow(vec![node], vec![], WorkflowConfig::default());
     let result = engine
-        .execute_workflow(&wf, serde_json::json!(null), ExecutionBudget::default())
+        .execute_workflow(
+            &nebula_engine::store_seam::single_tenant_scope(),
+            &wf,
+            serde_json::json!(null),
+            ExecutionBudget::default(),
+        )
         .await
         .unwrap();
 

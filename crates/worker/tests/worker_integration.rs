@@ -109,7 +109,7 @@ impl TestStores {
     }
 }
 
-/// Test scope used for worker integration tests. Matches `nebula_engine::store_seam::test_scope()`
+/// Test scope used for worker integration tests. Matches `nebula_engine::store_seam::single_tenant_scope()`
 /// (`("nebula","nebula")`) so the worker and engine observe the same in-memory rows.
 /// Production code uses the per-message scope from the control-queue / job-dispatch DTO.
 fn scope() -> Scope {

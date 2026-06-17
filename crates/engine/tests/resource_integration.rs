@@ -205,7 +205,12 @@ async fn action_acquires_resource_through_engine() {
     ]);
 
     let result = engine
-        .execute_workflow(&wf, serde_json::json!(null), ExecutionBudget::default())
+        .execute_workflow(
+            &nebula_engine::store_seam::single_tenant_scope(),
+            &wf,
+            serde_json::json!(null),
+            ExecutionBudget::default(),
+        )
         .await
         .expect("workflow execution");
 
@@ -258,7 +263,12 @@ async fn full_resource_lifecycle_with_shutdown() {
     ]);
 
     let result = engine
-        .execute_workflow(&wf, serde_json::json!(null), ExecutionBudget::default())
+        .execute_workflow(
+            &nebula_engine::store_seam::single_tenant_scope(),
+            &wf,
+            serde_json::json!(null),
+            ExecutionBudget::default(),
+        )
         .await
         .expect("workflow execution");
 
@@ -439,7 +449,12 @@ async fn engine_acquires_org_scoped_resource_through_accessor() {
     ]);
 
     let result = engine
-        .execute_workflow(&wf, serde_json::json!(null), ExecutionBudget::default())
+        .execute_workflow(
+            &nebula_engine::store_seam::single_tenant_scope(),
+            &wf,
+            serde_json::json!(null),
+            ExecutionBudget::default(),
+        )
         .await
         .expect("workflow execution");
 
@@ -490,7 +505,12 @@ async fn action_resource_fails_without_manager() {
     ]);
 
     let result = engine
-        .execute_workflow(&wf, serde_json::json!(null), ExecutionBudget::default())
+        .execute_workflow(
+            &nebula_engine::store_seam::single_tenant_scope(),
+            &wf,
+            serde_json::json!(null),
+            ExecutionBudget::default(),
+        )
         .await
         .expect("workflow execution");
 
