@@ -138,10 +138,6 @@ pub(super) struct TransportInner {
 /// Grouped into one struct so `TransportInner` does not grow three
 /// independent `Option` fields whose validity is coupled — all three
 /// must be present together or absent together.
-// guard-justified: fields are read by `dispatch.rs` in commit 4 (same
-// webhook module); the lint fires on this intermediate commit only because
-// dispatch.rs does not yet consume them.  Remove this allow in commit 4.
-#[allow(dead_code)]
 #[derive(Clone)]
 pub(super) struct DurableDispatchComponents {
     /// Atomic dedup + execution-row + job enqueue.  Shared with the

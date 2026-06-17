@@ -13,20 +13,32 @@
 //!    unauthenticated churn never hits the DB (ADR-0096 security fix)
 //! 5. Construct [`WebhookRequest`] → 400 / 413
 //! 6. Signature enforcement ([`super::signature::enforce_signature`]) → 401 / 500
-//! 7. Dispatch via [`TriggerHandler::handle_event`] with timeout → 504 / 500 / handler response
+//! 7. Extract `webhook-id` header → `event_id: Option<IdempotencyKey>` (Commit 3)
+//! 8. Dispatch via [`TriggerHandler::handle_event`] with timeout → 504 / 500 / handler response
+//! 9. Mode-gate: Prod rows with `durable_dispatch` wired call
+//!    [`DurableExecutionEmitter::emit`] before acking the HTTP response (Commit 4)
 
 use std::sync::Arc;
 
 use axum::{
     body::Bytes,
     extract::{Path, State},
-    http::{HeaderMap, Method, StatusCode, Uri},
+    http::{HeaderMap, HeaderName, Method, StatusCode, Uri},
     response::{IntoResponse, Response},
 };
-use nebula_action::{TriggerEvent, WebhookHttpResponse, WebhookRequest};
+use nebula_action::{
+    ExecutionEmitter, IdempotencyKey, TriggerEvent, TriggerEventOutcome, WebhookHttpResponse,
+    WebhookRequest,
+};
+use nebula_core::NodeKey;
+use nebula_engine::DurableExecutionEmitter;
 use nebula_metrics::{
     NEBULA_WEBHOOK_RATE_LIMIT_REJECTIONS_TOTAL, webhook_key_kind, webhook_signature_failure_reason,
 };
+use nebula_storage_port::dto::WebhookMode;
+use nebula_storage_port::store::WorkflowVersionStore;
+use nebula_tenancy::ScopedWorkflowVersionStore;
+use nebula_workflow::{ValidatedWorkflow, WorkflowDefinition};
 use tokio::sync::oneshot;
 use tracing::{debug, warn};
 
@@ -37,8 +49,14 @@ use super::{
         signature_rejected_response,
     },
     token::token_hash,
+    transport::DurableDispatchComponents,
 };
 use crate::transport::webhook::transport::WebhookTransport;
+
+/// Standard Webhooks delivery-id header (lowercase).
+/// Source: standardwebhooks.com — `webhook-id` is the canonical per-delivery
+/// idempotency key supplied by the sender; it is NOT a secret and may be logged.
+const WEBHOOK_ID_HEADER: HeaderName = HeaderName::from_static("webhook-id");
 
 /// Axum handler for `POST /{prefix}/{trigger_uuid}/{nonce}`.
 ///
@@ -82,8 +100,11 @@ pub(super) async fn webhook_handler(
 ///    unauthenticated churn never hits the DB (ADR-0096 security fix)
 /// 5. construct [`WebhookRequest`] → 400 / 413
 /// 6. [`enforce_signature`] (uses [`nebula_action::Clock`]) → 401 / 500
-/// 7. dispatch via [`TriggerHandler::handle_event`] with a response
+/// 7. extract `webhook-id` header → `event_id: Option<IdempotencyKey>`
+/// 8. dispatch via [`TriggerHandler::handle_event`] with a response
 ///    timeout → 504 / 500 / handler response
+/// 9. mode-gate: Prod rows call [`DurableExecutionEmitter::emit`] BEFORE
+///    returning the ack; emit failure → 5xx so the sender retries.
 pub(super) async fn dispatch_inner(
     transport: WebhookTransport,
     key: WebhookKey,
@@ -140,14 +161,14 @@ pub(super) async fn dispatch_inner(
     // key never triggers a DB query.  Only authenticated-enough requests
     // (registered key, under rate limit) reach the store.
     //
-    // Resolution proves the scope/workflow_id/mode tuple can be retrieved from
-    // the durable store.  Actual durable-emitter dispatch (installing a
-    // `DurableExecutionEmitter` under `row.scope`) is the NEXT sub-slice
-    // (U-D1.4b).  Until that lands the emitter remains Noop and dispatch
-    // continues via the in-memory routing map below.
-    //
     // nonce / hash are deliberately excluded from all log fields — the nonce
     // is the bearer token and must never appear in log aggregators or traces.
+    //
+    // U-D1.4b: when the row is Prod and `durable_dispatch` is wired, `durable`
+    // is set to `Some(DurableTarget { ... })` below.  Test mode and missing rows
+    // leave it `None` (no durable spawn, preserve today's behaviour).
+    let mut durable: Option<DurableTarget> = None;
+
     if let Some(store) = transport.inner.activation_store.as_deref() {
         let hash = token_hash(key.nonce());
         match store.resolve_by_token(&hash).await {
@@ -158,9 +179,30 @@ pub(super) async fn dispatch_inner(
                     mode = ?row.mode,
                     workflow_id = ?row.workflow_id,
                     // nonce / hash deliberately excluded
-                    "capability token resolved to durable row \
-                     (durable-dispatch deferred to U-D1.4b, emitter still Noop)"
+                    "capability token resolved to durable row"
                 );
+                // Mode gate: only Prod rows with a wired inbox spawn durable
+                // executions.  Fail-closed when inbox absent in Prod mode.
+                if row.mode == WebhookMode::Prod {
+                    if let Some(components) = transport.inner.durable_dispatch.as_ref() {
+                        durable = Some(DurableTarget {
+                            row,
+                            components: components.clone(),
+                        });
+                    } else {
+                        // Prod mode but no inbox wired — fail closed so a
+                        // misconfigured composition root never spawns
+                        // dedup-blind.
+                        warn!(
+                            mode = "Prod",
+                            "Prod-mode webhook: durable_dispatch not wired; \
+                             refusing to dispatch to prevent dedup-blind spawn"
+                        );
+                        return (StatusCode::INTERNAL_SERVER_ERROR, "").into_response();
+                    }
+                }
+                // Test mode: no durable spawn; fall through to in-memory
+                // dispatch with Noop emitter.
             },
             Ok(None) => {
                 // Row not found in port store.  This is expected during the
@@ -189,6 +231,37 @@ pub(super) async fn dispatch_inner(
     // exceed (rare; returns 400).
     let path = uri.path().to_string();
     let query = uri.query().map(String::from);
+
+    // Step 7 (Commit 3): extract `webhook-id` header before consuming `headers`
+    // into `WebhookRequest`.  The header is NOT a secret (Standard Webhooks spec
+    // §4 — "webhook-id must be a unique identifier per message delivery") and
+    // may be logged as a tracing field.
+    //
+    // Fail-closed rule (inv #6): Prod-mode activations require `webhook-id`.
+    // Missing header in Prod → 400 (sender must supply a delivery id).
+    // Test mode / no-row → `event_id = None` is fine.
+    let event_id: Option<IdempotencyKey> = headers
+        .get(&WEBHOOK_ID_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| IdempotencyKey::new(s.trim()));
+
+    if durable.is_some() && event_id.is_none() {
+        // Prod row resolved but `webhook-id` absent — fail closed.
+        // The sender must supply a delivery id for dedup correctness.
+        // Return 400 (bad request) so the sender is informed the header
+        // is required; a retry with the header will succeed.
+        warn!(
+            mode = "Prod",
+            "Prod-mode webhook: missing `webhook-id` header; \
+             fail-closed (dedup requires a delivery id)"
+        );
+        return (
+            StatusCode::BAD_REQUEST,
+            "missing webhook-id header for Prod-mode dispatch",
+        )
+            .into_response();
+    }
+
     let request = match WebhookRequest::try_new(method, path, query, headers, body) {
         Ok(r) => r,
         Err(nebula_action::ActionError::DataLimitExceeded { .. }) => {
@@ -230,40 +303,63 @@ pub(super) async fn dispatch_inner(
     let request = request.with_response_channel(tx);
     let event = TriggerEvent::new(None, request);
 
-    // 7. Dispatch with timeout. The handler sends the HTTP response
-    // through the oneshot; we race that against the configured
-    // `response_timeout`.
+    // 8+9. Dispatch with timeout.
+    //
+    // The combined future wraps BOTH `handle_event` AND the conditional
+    // `emitter.emit()` inside one `tokio::time::timeout` region.  This
+    // satisfies the "emit inside the timeout" invariant: a stuck DB write
+    // yields 504, not a hang.
+    //
+    // Ordering (research-confirmed at-least-once):
+    //
+    //   a. `handler.handle_event(event, &ctx)` → adapter sends HTTP response
+    //      via the oneshot BEFORE returning `Ok(outcome)`.
+    //   b. On `Emit(payload)` + `durable.is_some()`:
+    //      - Load ValidatedWorkflow under `row.scope`.
+    //      - Construct DurableExecutionEmitter.
+    //      - `emitter.emit(payload, Some(event_id)).await`.
+    //      - On emit Ok  → read the HTTP response from rx.
+    //      - On emit Err → return 5xx (discard oneshot's response so the
+    //        sender retries; same `webhook-id` → same `event_id` → dedup).
+    //   c. The adapter sends the response BEFORE returning, so `rx.await`
+    //      inside the combined future is non-blocking after `handle_event`
+    //      returns.  The combined timeout region correctly accounts for the
+    //      full wall-clock cost of dispatch + emit.
     let handler = Arc::clone(&entry.handler);
     let ctx = entry.ctx.clone();
     let timeout = transport.inner.config.response_timeout;
-    let dispatch_fut = async move { handler.handle_event(event, &ctx).await };
 
-    let dispatch_result = tokio::time::timeout(timeout, dispatch_fut).await;
+    let combined_fut = async move {
+        let outcome = match handler.handle_event(event, &ctx).await {
+            Ok(o) => o,
+            Err(e) => {
+                // Handler returned an error. The adapter ALREADY sent a
+                // response via the oneshot before returning Err.
+                debug!(error = %e, "webhook handler returned error");
+                let http = rx.await.unwrap_or_else(|_| {
+                    WebhookHttpResponse::new(StatusCode::INTERNAL_SERVER_ERROR, "")
+                });
+                return http_response_to_axum(http);
+            },
+        };
 
-    match dispatch_result {
-        Ok(Ok(_outcome)) => {
-            // Outcome is the workflow-emission outcome; it's already
-            // been used by the adapter to record health. The HTTP
-            // response comes through the oneshot the adapter sent to
-            // right before returning Ok.
-            if let Ok(http) = rx.await {
-                http_response_to_axum(http)
-            } else {
-                warn!("webhook handler returned Ok but oneshot sender was dropped");
-                (StatusCode::INTERNAL_SERVER_ERROR, "").into_response()
-            }
-        },
-        Ok(Err(e)) => {
-            // Handler returned an error. The adapter (after H1 fix)
-            // ALREADY sent a 500 via the oneshot before returning
-            // Err. We just read it.
-            debug!(error = %e, "webhook handler returned error");
-            match rx.await {
-                Ok(http) => http_response_to_axum(http),
-                Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "").into_response(),
-            }
-        },
-        Err(_) => {
+        // Handler succeeded — durable emit (if applicable) runs here,
+        // still inside the timeout region.
+        if let Some(target) = durable {
+            return dispatch_durable(target, outcome, event_id, rx).await;
+        }
+
+        // No durable dispatch (Test mode / no-row / fall-through).
+        let http = rx.await.unwrap_or_else(|_| {
+            warn!("webhook handler returned Ok but oneshot sender was dropped");
+            WebhookHttpResponse::new(StatusCode::INTERNAL_SERVER_ERROR, "")
+        });
+        http_response_to_axum(http)
+    };
+
+    match tokio::time::timeout(timeout, combined_fut).await {
+        Ok(resp) => resp,
+        Err(_elapsed) => {
             warn!(
                 timeout_secs = timeout.as_secs(),
                 "webhook handler dispatch timed out"
@@ -271,6 +367,250 @@ pub(super) async fn dispatch_inner(
             (StatusCode::GATEWAY_TIMEOUT, "").into_response()
         },
     }
+}
+
+// ── Durable dispatch ─────────────────────────────────────────────────────────
+
+/// Bundle carrying all data needed for the Prod-mode durable emit path.
+struct DurableTarget {
+    row: nebula_storage_port::dto::WebhookActivationRecord,
+    components: DurableDispatchComponents,
+}
+
+/// Attempt to spawn a durable execution for a Prod-mode outcome.
+///
+/// Returns the axum `Response` to send back to the caller:
+/// - `Emit(payload)` → load workflow + emit → ack on success, 5xx on failure.
+/// - `EmitMany(_)` in Prod → fail-closed 5xx (dedup-collision data-loss bug
+///   — one `event_id` cannot safely fan-out to N executions).
+/// - `Skip` → no emit; return the adapter's HTTP response.
+///
+/// The `event_id` is guaranteed `Some` at call sites (enforced by the
+/// Prod+missing-header gate in `dispatch_inner`).
+async fn dispatch_durable(
+    target: DurableTarget,
+    outcome: TriggerEventOutcome,
+    event_id: Option<IdempotencyKey>,
+    rx: oneshot::Receiver<WebhookHttpResponse>,
+) -> Response {
+    let DurableTarget { row, components } = target;
+
+    match outcome {
+        TriggerEventOutcome::Emit(payload) => {
+            let emit_result = do_emit_prod(&row, &components, payload, event_id.as_ref()).await;
+            match emit_result {
+                Ok(()) => {
+                    // Emit succeeded — ack the HTTP response the adapter sent.
+                    if let Ok(http) = rx.await {
+                        http_response_to_axum(http)
+                    } else {
+                        warn!("durable emit ok but oneshot sender was dropped");
+                        (StatusCode::INTERNAL_SERVER_ERROR, "").into_response()
+                    }
+                },
+                Err(err_response) => {
+                    // Emit failed — return the 5xx so the sender retries.
+                    // The adapter's oneshot response is discarded; the HTTP
+                    // ack is replaced with our 5xx.
+                    //
+                    // Retry delivers the same `webhook-id` → same `event_id`
+                    // → `claim_and_materialize_start` deduplicates.
+                    err_response
+                },
+            }
+        },
+        TriggerEventOutcome::EmitMany(_) => {
+            // Fail-closed: emitting N payloads under one `event_id` is a
+            // dedup-collision data-loss bug.  No first-party webhook action
+            // returns EmitMany; if one does, the operator must fix the action.
+            warn!(
+                trigger_id = %row.trigger_id,
+                scope = ?row.scope,
+                mode = "Prod",
+                "Prod-mode webhook: EmitMany outcome refused \
+                 (one event_id cannot safely fan-out to N executions; \
+                 action must not return EmitMany in Prod mode)"
+            );
+            (StatusCode::INTERNAL_SERVER_ERROR, "").into_response()
+        },
+        TriggerEventOutcome::Skip => {
+            // Skip — no emit.  Return the adapter's HTTP response.
+            if let Ok(http) = rx.await {
+                http_response_to_axum(http)
+            } else {
+                warn!("webhook handler Skip but oneshot sender was dropped");
+                (StatusCode::INTERNAL_SERVER_ERROR, "").into_response()
+            }
+        },
+        // `TriggerEventOutcome` is #[non_exhaustive] — any future variant
+        // whose semantics are unknown MUST be refused fail-closed.
+        _ => {
+            warn!(
+                trigger_id = %row.trigger_id,
+                scope = ?row.scope,
+                "Prod-mode webhook: unknown TriggerEventOutcome variant; \
+                 fail-closed — no execution spawned"
+            );
+            (StatusCode::INTERNAL_SERVER_ERROR, "").into_response()
+        },
+    }
+}
+
+/// Core Prod-mode emit path.
+///
+/// 1. Validates that `workflow_id` is present and parseable (fail-closed on
+///    `None` or malformed ULID — inv #5: single-row resolution must fully
+///    resolve the workflow).
+/// 2. Parses `trigger_id` as a [`NodeKey`] (fail-closed on parse failure).
+/// 3. Loads and validates the `ValidatedWorkflow` under `row.scope` via a
+///    freshly-bound `ScopedWorkflowVersionStore` (confused-deputy boundary is
+///    the scope carried in the row, never request-derived — inv #5).
+/// 4. Constructs [`DurableExecutionEmitter`] and calls `emit`.
+///
+/// Returns `Ok(())` on successful dispatch or `Err(Response)` with a 5xx
+/// response ready to return to the caller.
+///
+/// # Performance note
+///
+/// The per-delivery `ValidatedWorkflow` load+validate is on the request hot
+/// path; canonical webhook senders time out as low as ~3 s (Slack).  If this
+/// storage round-trip grows costly, cache `Arc<ValidatedWorkflow>` per
+/// activation or add a thinner raw-delivery inbox.  v1 ships the direct path.
+async fn do_emit_prod(
+    row: &nebula_storage_port::dto::WebhookActivationRecord,
+    components: &DurableDispatchComponents,
+    payload: serde_json::Value,
+    event_id: Option<&IdempotencyKey>,
+) -> Result<(), Response> {
+    let scope = &row.scope;
+
+    // Step 1a — workflow_id must be present (inv #5).
+    let workflow_id_str = if let Some(wid) = &row.workflow_id {
+        wid.as_str()
+    } else {
+        warn!(
+            trigger_id = %row.trigger_id,
+            scope = ?scope,
+            mode = "Prod",
+            "Prod-mode webhook: activation row has no workflow_id; \
+             fail-closed — no execution spawned"
+        );
+        return Err((StatusCode::INTERNAL_SERVER_ERROR, "").into_response());
+    };
+
+    // Step 1b — workflow_id must parse as a valid ULID WorkflowId (correction C).
+    use nebula_core::id::WorkflowId;
+    let workflow_id: WorkflowId = match workflow_id_str.parse() {
+        Ok(id) => id,
+        Err(e) => {
+            warn!(
+                trigger_id = %row.trigger_id,
+                scope = ?scope,
+                workflow_id = workflow_id_str,
+                error = %e,
+                "Prod-mode webhook: activation row workflow_id is not a valid WorkflowId; \
+                 fail-closed — no execution spawned"
+            );
+            return Err((StatusCode::INTERNAL_SERVER_ERROR, "").into_response());
+        },
+    };
+
+    // Step 2 — trigger_id must parse as a NodeKey (fail-closed on invalid key).
+    let trigger_node_key = match NodeKey::new(&row.trigger_id) {
+        Ok(k) => k,
+        Err(e) => {
+            warn!(
+                trigger_id = %row.trigger_id,
+                scope = ?scope,
+                error = %e,
+                "Prod-mode webhook: activation row trigger_id is not a valid NodeKey; \
+                 fail-closed — no execution spawned"
+            );
+            return Err((StatusCode::INTERNAL_SERVER_ERROR, "").into_response());
+        },
+    };
+
+    // Step 3 — load and validate the workflow under the row's scope (inv #5).
+    // The confused-deputy boundary is the decorator: `ScopedWorkflowVersionStore`
+    // pins the scope to `row.scope`; no cross-scope lookup is possible.
+    let scoped_versions =
+        ScopedWorkflowVersionStore::new(Arc::clone(&components.version_store), scope.clone());
+    let version_record = scoped_versions
+        .get_published(scope, &workflow_id.to_string())
+        .await
+        .map_err(|e| {
+            warn!(
+                trigger_id = %row.trigger_id,
+                scope = ?scope,
+                workflow_id = %workflow_id,
+                error = %e,
+                "Prod-mode webhook: storage error loading workflow version; \
+                 fail-closed — no execution spawned"
+            );
+            (StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response()
+        })?;
+
+    let version_record = if let Some(v) = version_record {
+        v
+    } else {
+        warn!(
+            trigger_id = %row.trigger_id,
+            scope = ?scope,
+            workflow_id = %workflow_id,
+            "Prod-mode webhook: workflow_id not found under row scope; \
+             fail-closed — no cross-scope lookup (inv #5)"
+        );
+        return Err((StatusCode::INTERNAL_SERVER_ERROR, "").into_response());
+    };
+
+    let def: WorkflowDefinition =
+        serde_json::from_value(version_record.definition).map_err(|e| {
+            warn!(
+                trigger_id = %row.trigger_id,
+                scope = ?scope,
+                workflow_id = %workflow_id,
+                error = %e,
+                "Prod-mode webhook: workflow definition failed to deserialize; \
+                 fail-closed — no execution spawned"
+            );
+            (StatusCode::INTERNAL_SERVER_ERROR, "").into_response()
+        })?;
+
+    let validated = ValidatedWorkflow::validate(def).map_err(|errors| {
+        warn!(
+            trigger_id = %row.trigger_id,
+            scope = ?scope,
+            workflow_id = %workflow_id,
+            errors = ?errors,
+            "Prod-mode webhook: workflow definition failed validation; \
+             fail-closed — no execution spawned"
+        );
+        (StatusCode::INTERNAL_SERVER_ERROR, "").into_response()
+    })?;
+
+    // Step 4 — construct emitter and call emit.
+    let emitter = DurableExecutionEmitter::new(
+        Arc::clone(&components.dedup),
+        Arc::clone(&components.resolver),
+        Arc::new(validated),
+        trigger_node_key,
+        scope.clone(),
+    );
+
+    emitter
+        .emit(payload, event_id.cloned())
+        .await
+        .map(|_execution_id| ())
+        .map_err(|e| {
+            warn!(
+                trigger_id = %row.trigger_id,
+                scope = ?scope,
+                workflow_id = %workflow_id,
+                error = %e,
+                "Prod-mode webhook: durable emit failed; returning 5xx so sender retries"
+            );
+            (StatusCode::INTERNAL_SERVER_ERROR, "").into_response()
+        })
 }
 
 /// Convert a `nebula-action` `WebhookHttpResponse` into an axum
