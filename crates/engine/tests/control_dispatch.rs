@@ -816,6 +816,72 @@ async fn dispatch_cancel_rejects_nonexistent_execution() {
     }
 }
 
+/// Invariant #7 — fail-closed cross-tenant isolation on the CONTROL-DISPATCH
+/// path (`EngineControlDispatch::read_status` → `dispatch_start`).
+///
+/// This is the symmetric companion to `cross_tenant_dispatch_is_rejected` in
+/// `execution_sink.rs`, which covers the orchestrator-dispatch path.
+///
+/// The row is seeded under `single_tenant_scope()` = `("nebula","nebula")`,
+/// the exact value the old `engine_scope()` constant returned. A `dispatch_start`
+/// call carrying `scope_b = ("wsB","orgB")` is then issued.
+///
+/// **Why this is RED on the old `read_status` (constant scope):**
+/// `read_status` calls `self.execution.get(single_tenant_scope(), id)` — the row
+/// IS there, so `Some(Created)` is returned. The method then calls `drive`, which
+/// calls `engine.resume_execution(single_tenant_scope(), id)`. The harness has a
+/// full workflow store attached, so the engine runs the workflow and returns `Ok`.
+/// The overall dispatch returns `Ok(())` — NOT `Rejected`. The assertion
+/// `expect_err("cross-tenant dispatch must be rejected")` therefore panics → RED.
+///
+/// **Why this is GREEN on the new `read_status` (per-message scope):**
+/// `read_status` calls `self.execution.get(scope_b, id)`. The store holds no row
+/// under `("wsB","orgB")` → `None` → `Rejected("… not found …")` immediately,
+/// never reaching `drive` → assertion passes → GREEN.
+#[tokio::test]
+async fn cross_tenant_control_dispatch_is_rejected() {
+    use nebula_storage_port::Scope;
+
+    let harness = Harness::new().await;
+
+    // Seed a workflow definition and execution row under single_tenant_scope().
+    // This is the SAME value the old engine_scope() constant returned, so the
+    // old code's read_status finds the row and proceeds to drive the workflow —
+    // returning Ok(()) instead of Rejected (see doc comment above).
+    let workflow_id = harness.persist_echo_workflow().await;
+    let execution_id = harness
+        .persist_created_execution(workflow_id, serde_json::json!("cross-tenant"))
+        .await;
+
+    // Deliver dispatch_start under a DIFFERENT tenant scope.
+    let scope_b = Scope::new("wsB", "orgB");
+    let err = harness
+        .dispatch
+        .dispatch_start(&scope_b, execution_id)
+        .await
+        .expect_err("cross-tenant dispatch must be rejected");
+
+    // New code: read_status reads under scope_b → None → Rejected.
+    // Old code: read_status reads under ("nebula","nebula") → finds the row →
+    //   drive → resume_execution → Ok(()) — NOT Rejected → RED.
+    match err {
+        ControlDispatchError::Rejected(msg) => {
+            assert!(
+                msg.contains("not found"),
+                "rejection message must name the missing row, got: {msg}"
+            );
+        },
+        other => panic!("expected Rejected, got {other:?}"),
+    }
+
+    // No workflow action was dispatched — the engine was never entered.
+    assert_eq!(
+        harness.action_count.load(Ordering::SeqCst),
+        0,
+        "cross-tenant rejection must not dispatch any action"
+    );
+}
+
 /// `Terminate` is a synonym for `Cancel` until a forced-shutdown path is
 /// wired ( and the module doc). Same idempotency / orphan /
 /// cross-runner contracts apply — this smoke test just asserts the

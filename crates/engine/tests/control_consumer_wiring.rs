@@ -25,8 +25,11 @@ use nebula_metrics::{
     naming::{NEBULA_ENGINE_CONTROL_RECLAIM_TOTAL, control_reclaim_outcome},
 };
 use nebula_storage::{InMemoryControlQueue, InMemoryExecutionStore};
-use nebula_storage_port::dto::{ControlCommand, ControlMsg};
 use nebula_storage_port::store::ControlQueue;
+use nebula_storage_port::{
+    Scope,
+    dto::{ControlCommand, ControlMsg},
+};
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
@@ -65,9 +68,15 @@ fn port_msg(execution_id: &ExecutionId, command: ControlCommand, row_id: u8) -> 
 
 /// Records every dispatch invocation so tests can assert the consumer
 /// translated storage rows → typed engine calls correctly.
+///
+/// The `scope` from each dispatch call is captured in `observations` alongside
+/// the command and execution id. This pins the invariant that `ControlConsumer`
+/// threads `ClaimedRow.scope` through to each dispatch method — a future
+/// refactor that drops or hardcodes the scope would still leave all other
+/// wiring tests green, so the captured scope is the decisive witness.
 #[derive(Default)]
 struct RecordingDispatch {
-    observations: Mutex<Vec<(ControlCommand, ExecutionId)>>,
+    observations: Mutex<Vec<(ControlCommand, ExecutionId, Scope)>>,
     notify: Notify,
 }
 
@@ -76,12 +85,15 @@ impl RecordingDispatch {
         Arc::new(Self::default())
     }
 
-    fn record(&self, cmd: ControlCommand, id: ExecutionId) {
-        self.observations.lock().expect("poisoned").push((cmd, id));
+    fn record(&self, cmd: ControlCommand, id: ExecutionId, scope: Scope) {
+        self.observations
+            .lock()
+            .expect("poisoned")
+            .push((cmd, id, scope));
         self.notify.notify_waiters();
     }
 
-    fn snapshot(&self) -> Vec<(ControlCommand, ExecutionId)> {
+    fn snapshot(&self) -> Vec<(ControlCommand, ExecutionId, Scope)> {
         self.observations.lock().expect("poisoned").clone()
     }
 }
@@ -90,46 +102,46 @@ impl RecordingDispatch {
 impl ControlDispatch for RecordingDispatch {
     async fn dispatch_start(
         &self,
-        _scope: &nebula_storage_port::Scope,
+        scope: &Scope,
         execution_id: ExecutionId,
     ) -> Result<(), ControlDispatchError> {
-        self.record(ControlCommand::Start, execution_id);
+        self.record(ControlCommand::Start, execution_id, scope.clone());
         Ok(())
     }
 
     async fn dispatch_cancel(
         &self,
-        _scope: &nebula_storage_port::Scope,
+        scope: &Scope,
         execution_id: ExecutionId,
     ) -> Result<(), ControlDispatchError> {
-        self.record(ControlCommand::Cancel, execution_id);
+        self.record(ControlCommand::Cancel, execution_id, scope.clone());
         Ok(())
     }
 
     async fn dispatch_terminate(
         &self,
-        _scope: &nebula_storage_port::Scope,
+        scope: &Scope,
         execution_id: ExecutionId,
     ) -> Result<(), ControlDispatchError> {
-        self.record(ControlCommand::Terminate, execution_id);
+        self.record(ControlCommand::Terminate, execution_id, scope.clone());
         Ok(())
     }
 
     async fn dispatch_resume(
         &self,
-        _scope: &nebula_storage_port::Scope,
+        scope: &Scope,
         execution_id: ExecutionId,
     ) -> Result<(), ControlDispatchError> {
-        self.record(ControlCommand::Resume, execution_id);
+        self.record(ControlCommand::Resume, execution_id, scope.clone());
         Ok(())
     }
 
     async fn dispatch_restart(
         &self,
-        _scope: &nebula_storage_port::Scope,
+        scope: &Scope,
         execution_id: ExecutionId,
     ) -> Result<(), ControlDispatchError> {
-        self.record(ControlCommand::Restart, execution_id);
+        self.record(ControlCommand::Restart, execution_id, scope.clone());
         Ok(())
     }
 }
@@ -179,7 +191,7 @@ impl FlakyDispatch {
 impl ControlDispatch for FlakyDispatch {
     async fn dispatch_start(
         &self,
-        _scope: &nebula_storage_port::Scope,
+        _scope: &Scope,
         execution_id: ExecutionId,
     ) -> Result<(), ControlDispatchError> {
         self.maybe_stall(&execution_id).await;
@@ -189,7 +201,7 @@ impl ControlDispatch for FlakyDispatch {
 
     async fn dispatch_cancel(
         &self,
-        _scope: &nebula_storage_port::Scope,
+        _scope: &Scope,
         execution_id: ExecutionId,
     ) -> Result<(), ControlDispatchError> {
         self.maybe_stall(&execution_id).await;
@@ -199,7 +211,7 @@ impl ControlDispatch for FlakyDispatch {
 
     async fn dispatch_terminate(
         &self,
-        _scope: &nebula_storage_port::Scope,
+        _scope: &Scope,
         execution_id: ExecutionId,
     ) -> Result<(), ControlDispatchError> {
         self.maybe_stall(&execution_id).await;
@@ -209,7 +221,7 @@ impl ControlDispatch for FlakyDispatch {
 
     async fn dispatch_resume(
         &self,
-        _scope: &nebula_storage_port::Scope,
+        _scope: &Scope,
         execution_id: ExecutionId,
     ) -> Result<(), ControlDispatchError> {
         self.maybe_stall(&execution_id).await;
@@ -219,7 +231,7 @@ impl ControlDispatch for FlakyDispatch {
 
     async fn dispatch_restart(
         &self,
-        _scope: &nebula_storage_port::Scope,
+        _scope: &Scope,
         execution_id: ExecutionId,
     ) -> Result<(), ControlDispatchError> {
         self.maybe_stall(&execution_id).await;
@@ -325,11 +337,12 @@ async fn consumer_observes_each_command_variant_via_dispatch_trait() {
     handle.await.expect("graceful shutdown");
 
     let mut seen = recorder.snapshot();
-    seen.sort_by_key(|(cmd, _)| cmd.as_str());
+    seen.sort_by_key(|(cmd, _, _)| cmd.as_str());
     assert_eq!(seen.len(), 5, "all commands observed exactly once");
 
+    let expected_scope = nebula_engine::store_seam::single_tenant_scope();
     let has =
-        |cmd: ControlCommand, id: ExecutionId| seen.iter().any(|(c, i)| *c == cmd && *i == id);
+        |cmd: ControlCommand, id: ExecutionId| seen.iter().any(|(c, i, _)| *c == cmd && *i == id);
     assert!(has(ControlCommand::Start, exec_start), "Start observed");
     assert!(has(ControlCommand::Cancel, exec_cancel), "Cancel observed");
     assert!(
@@ -341,6 +354,19 @@ async fn consumer_observes_each_command_variant_via_dispatch_trait() {
         has(ControlCommand::Restart, exec_restart),
         "Restart observed"
     );
+
+    // Scope propagation: every captured dispatch must carry the scope that
+    // was stamped on the ControlMsg by port_msg() — i.e. single_tenant_scope().
+    // This pins the invariant that ControlConsumer::handle_entry threads
+    // ClaimedRow.scope into each dispatch_* call rather than discarding or
+    // hardcoding it. All five observations must agree.
+    for (cmd, id, scope) in &seen {
+        assert_eq!(
+            scope, &expected_scope,
+            "dispatch {cmd:?} for {id} carried scope {scope:?} \
+             instead of the expected {expected_scope:?} from the ControlMsg"
+        );
+    }
 
     // Every row the consumer observed was acked via `mark_completed`:
     // a second `claim_pending` call from a fresh processor returns nothing
