@@ -2,11 +2,14 @@
 
 use std::collections::HashSet;
 
+use nebula_schema::is_assignable;
+
 use crate::{
     definition::{CURRENT_SCHEMA_VERSION, RetryConfig, WorkflowDefinition},
     error::WorkflowError,
     graph::DependencyGraph,
     node::ParamValue,
+    resolver::NodeSchemaResolver,
 };
 
 /// Validate a single `RetryConfig` against the engine's invariants.
@@ -180,6 +183,91 @@ pub fn validate_workflow(definition: &WorkflowDefinition) -> Vec<WorkflowError> 
     errors
 }
 
+/// Validate a workflow definition and run the TypeDAG per-edge schema check.
+///
+/// Runs every structural check that [`validate_workflow`] performs, then for
+/// each [`Connection`](crate::Connection) whose **both** endpoints can be
+/// resolved by `resolver`, calls
+/// `nebula_schema::is_assignable(producer.output, consumer.input)`.
+///
+/// An edge is **skipped** (fail-open, ADR-0100 T3.2) when:
+/// - either endpoint's `action_key` is missing from the catalog
+///   (`resolver.io_schemas` returns `None`), or
+/// - either endpoint's node does not exist in the definition (already
+///   reported by the structural pass as [`WorkflowError::UnknownNode`]).
+///
+/// The fail-open posture means that a workflow with no registered actions
+/// (e.g. when `action_registry` is `None`) behaves identically to the
+/// structural-only validator — no new hard errors, no new 422s.
+///
+/// # Arguments
+///
+/// - `definition` — the workflow to validate.
+/// - `resolver` — a `dyn NodeSchemaResolver` supplied by the caller; the
+///   workflow crate never imports `ActionRegistry` directly.
+///
+/// # Returns
+///
+/// All [`WorkflowError`]s collected (structural + schema), in encounter order:
+/// structural errors come first (from [`validate_workflow`]), followed by any
+/// [`WorkflowError::PortSchemaIncompatible`] variants in connection order.
+#[must_use]
+pub fn validate_workflow_with_resolver(
+    definition: &WorkflowDefinition,
+    resolver: &dyn NodeSchemaResolver,
+) -> Vec<WorkflowError> {
+    let mut errors = validate_workflow(definition);
+
+    // Build a node-id → &NodeDefinition lookup once: O(n) build, O(1) per
+    // edge lookup, avoiding O(n²) per-edge linear scan over `definition.nodes`.
+    let node_by_id: std::collections::HashMap<&nebula_core::NodeKey, &crate::node::NodeDefinition> =
+        definition.nodes.iter().map(|n| (&n.id, n)).collect();
+
+    for conn in &definition.connections {
+        // Skip edges whose nodes don't exist — already reported by the
+        // structural pass. Reporting a schema error on a structurally broken
+        // edge would be confusing and redundant.
+        let Some(producer_node) = node_by_id.get(&conn.from_node) else {
+            continue;
+        };
+        let Some(consumer_node) = node_by_id.get(&conn.to_node) else {
+            continue;
+        };
+
+        // Resolve both endpoints. Either `None` → fail-open (T3.2).
+        let Some(producer_schemas) = resolver.io_schemas(
+            &producer_node.action_key,
+            producer_node.interface_version.as_ref(),
+        ) else {
+            continue;
+        };
+        let Some(consumer_schemas) = resolver.io_schemas(
+            &consumer_node.action_key,
+            consumer_node.interface_version.as_ref(),
+        ) else {
+            continue;
+        };
+
+        // Run the directional assignability check: producer output ⊆ consumer input.
+        if let Err(incompat) = is_assignable(
+            producer_schemas.output.fields(),
+            consumer_schemas.input.fields(),
+        ) {
+            errors.push(WorkflowError::PortSchemaIncompatible(Box::new(
+                crate::error::PortSchemaIncompatDetails {
+                    from_node: conn.from_node.clone(),
+                    to_node: conn.to_node.clone(),
+                    from_port: conn.from_port.clone(),
+                    to_port: conn.to_port.clone(),
+                    reason: incompat.to_string(),
+                },
+            )));
+        }
+    }
+
+    errors
+}
+
 /// A [`WorkflowDefinition`] proven to pass [`validate_workflow`] with zero
 /// errors — the **shift-left dispatch witness** (canon §10 / §12.2, ROADMAP
 /// M3.6).
@@ -199,7 +287,13 @@ pub fn validate_workflow(definition: &WorkflowDefinition) -> Vec<WorkflowError> 
 pub struct ValidatedWorkflow(WorkflowDefinition);
 
 impl ValidatedWorkflow {
-    /// Validate `definition` and, on success, wrap it as a dispatch witness.
+    /// Validate `definition` structurally and, on success, wrap it as a
+    /// dispatch witness.
+    ///
+    /// This method runs only **structural** checks (DAG, node references,
+    /// schema version, retry config, …). It does not run the TypeDAG
+    /// per-edge schema check. To include schema-compatibility errors, use
+    /// [`Self::validate_with_resolver`] instead (T3.1 — sibling, non-breaking).
     ///
     /// # Errors
     ///
@@ -208,6 +302,34 @@ impl ValidatedWorkflow {
     /// moved into the witness untouched.
     pub fn validate(definition: WorkflowDefinition) -> Result<Self, Vec<WorkflowError>> {
         let errors = validate_workflow(&definition);
+        if errors.is_empty() {
+            Ok(Self(definition))
+        } else {
+            Err(errors)
+        }
+    }
+
+    /// Validate `definition` with both structural checks and the TypeDAG
+    /// per-edge schema check, then wrap it as a dispatch witness on success.
+    ///
+    /// Runs [`validate_workflow_with_resolver`], which collects all structural
+    /// errors (identical to [`Self::validate`]) plus per-edge
+    /// [`WorkflowError::PortSchemaIncompatible`] errors when both endpoint
+    /// schemas can be resolved from `resolver`.
+    ///
+    /// An edge whose producer or consumer returns `None` from `resolver` is
+    /// silently skipped (fail-open — ADR-0100 T3.2). Passing a resolver that
+    /// always returns `None` (e.g. when `action_registry` is absent) produces
+    /// the same result as [`Self::validate`].
+    ///
+    /// # Errors
+    ///
+    /// Returns every [`WorkflowError`] collected (structural + schema).
+    pub fn validate_with_resolver(
+        definition: WorkflowDefinition,
+        resolver: &dyn NodeSchemaResolver,
+    ) -> Result<Self, Vec<WorkflowError>> {
+        let errors = validate_workflow_with_resolver(&definition, resolver);
         if errors.is_empty() {
             Ok(Self(definition))
         } else {
@@ -233,7 +355,8 @@ mod tests {
     use std::collections::HashMap;
 
     use chrono::Utc;
-    use nebula_core::{NodeKey, WorkflowId, node_key};
+    use nebula_core::{ActionKey, NodeKey, WorkflowId, node_key};
+    use nebula_schema::{Field, FieldKey, Schema, ValidSchema};
 
     use super::*;
     use crate::{
@@ -241,6 +364,7 @@ mod tests {
         connection::Connection,
         definition::{CURRENT_SCHEMA_VERSION, RetryConfig, WorkflowConfig, WorkflowDefinition},
         node::{NodeDefinition, ParamValue},
+        resolver::{NodeIoSchemas, NodeSchemaResolver},
     };
 
     fn make_definition(
@@ -725,6 +849,258 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e, WorkflowError::InvalidRetryConfig { node: None, .. })),
             "workflow-default retry error must surface even when nodes is empty; got: {errors:?}"
+        );
+    }
+
+    // ── TypeDAG T3 tests (ADR-0100) ─────────────────────────────────────────
+
+    /// Build a `ValidSchema` with one named field.
+    fn single_field_schema(key: &str, required: bool) -> ValidSchema {
+        let fk = FieldKey::new(key).unwrap();
+        let field = if required {
+            Field::string(fk).required()
+        } else {
+            Field::string(fk)
+        };
+        Schema::builder().add(field).build().unwrap()
+    }
+
+    /// A resolver that maps `ActionKey` string → `NodeIoSchemas`.
+    struct MapResolver(HashMap<String, NodeIoSchemas>);
+
+    impl NodeSchemaResolver for MapResolver {
+        fn io_schemas(
+            &self,
+            action_key: &ActionKey,
+            _interface_version: Option<&semver::Version>,
+        ) -> Option<NodeIoSchemas> {
+            self.0.get(action_key.as_str()).cloned()
+        }
+    }
+
+    /// Build a two-node workflow (a → b) for schema tests.
+    fn two_node_def() -> (WorkflowDefinition, NodeKey, NodeKey) {
+        let a = node_key!("a");
+        let b = node_key!("b");
+        let def = make_definition(
+            "typedag-test",
+            vec![
+                NodeDefinition::new(a.clone(), "Producer", "core", "producer.action").unwrap(),
+                NodeDefinition::new(b.clone(), "Consumer", "core", "consumer.action").unwrap(),
+            ],
+            vec![Connection::new(a.clone(), b.clone())],
+        );
+        (def, a, b)
+    }
+
+    /// Compatible schemas → no `PortSchemaIncompatible` errors.
+    ///
+    /// Guards against false positives: a check that wrongly rejects compatible
+    /// schemas turns this RED. The primary red-on-revert guard for the check
+    /// existing at all is the sibling
+    /// `incompatible_schemas_produce_port_schema_incompatible_error`, which goes
+    /// RED if the per-edge check is removed.
+    #[test]
+    fn compatible_schemas_produce_no_port_schema_errors() {
+        let (def, _, _) = two_node_def();
+
+        // Producer emits `{a: required}`, consumer expects `{a: required}`.
+        let producer_output = single_field_schema("a", true);
+        let consumer_input = single_field_schema("a", true);
+
+        let mut schemas = HashMap::new();
+        schemas.insert(
+            "producer.action".to_owned(),
+            NodeIoSchemas {
+                input: ValidSchema::empty(),
+                output: producer_output,
+            },
+        );
+        schemas.insert(
+            "consumer.action".to_owned(),
+            NodeIoSchemas {
+                input: consumer_input,
+                output: ValidSchema::empty(),
+            },
+        );
+
+        let resolver = MapResolver(schemas);
+        let errors = validate_workflow_with_resolver(&def, &resolver);
+
+        assert!(
+            !errors
+                .iter()
+                .any(|e| matches!(e, WorkflowError::PortSchemaIncompatible(_))),
+            "compatible schemas must produce no PortSchemaIncompatible; got: {errors:?}"
+        );
+    }
+
+    /// Incompatible schemas → exactly one `PortSchemaIncompatible` with
+    /// the right node keys.
+    ///
+    /// This test goes RED if the per-edge check is removed from
+    /// `validate_workflow_with_resolver`.
+    #[test]
+    fn incompatible_schemas_produce_port_schema_incompatible_error() {
+        let (def, a, b) = two_node_def();
+
+        // Producer emits `{a: required}`, consumer requires `{b}` (absent).
+        let producer_output = single_field_schema("a", true);
+        let consumer_input = single_field_schema("b", true); // mismatch: `a` not present
+
+        let mut schemas = HashMap::new();
+        schemas.insert(
+            "producer.action".to_owned(),
+            NodeIoSchemas {
+                input: ValidSchema::empty(),
+                output: producer_output,
+            },
+        );
+        schemas.insert(
+            "consumer.action".to_owned(),
+            NodeIoSchemas {
+                input: consumer_input,
+                output: ValidSchema::empty(),
+            },
+        );
+
+        let resolver = MapResolver(schemas);
+        let errors = validate_workflow_with_resolver(&def, &resolver);
+
+        let schema_errors: Vec<_> = errors
+            .iter()
+            .filter(|e| matches!(e, WorkflowError::PortSchemaIncompatible(_)))
+            .collect();
+
+        assert_eq!(
+            schema_errors.len(),
+            1,
+            "expected exactly one PortSchemaIncompatible; got: {errors:?}"
+        );
+
+        // Assert the variant carries the correct node keys.
+        let Some(WorkflowError::PortSchemaIncompatible(details)) = schema_errors.first().copied()
+        else {
+            panic!("expected PortSchemaIncompatible; got: {errors:?}");
+        };
+        assert_eq!(details.from_node, a, "from_node must be the producer node");
+        assert_eq!(details.to_node, b, "to_node must be the consumer node");
+    }
+
+    /// Fail-open: when the resolver returns `None` for one endpoint,
+    /// no `PortSchemaIncompatible` is produced, even though the graph
+    /// would error if both sides resolved incompatibly.
+    #[test]
+    fn fail_open_when_one_endpoint_unresolvable() {
+        let (def, _, _) = two_node_def();
+
+        // Consumer resolves with a schema that would be incompatible with
+        // any non-empty producer, but the producer is unresolvable (`None`).
+        let consumer_input = single_field_schema("required_field", true);
+
+        let mut schemas = HashMap::new();
+        // Only consumer resolves; producer is absent from the map.
+        schemas.insert(
+            "consumer.action".to_owned(),
+            NodeIoSchemas {
+                input: consumer_input,
+                output: ValidSchema::empty(),
+            },
+        );
+
+        let resolver = MapResolver(schemas);
+        let errors = validate_workflow_with_resolver(&def, &resolver);
+
+        assert!(
+            !errors
+                .iter()
+                .any(|e| matches!(e, WorkflowError::PortSchemaIncompatible(_))),
+            "unresolvable endpoint must cause the edge to be skipped (fail-open); got: {errors:?}"
+        );
+    }
+
+    /// The non-resolver `validate_workflow` still returns only structural
+    /// errors — schema errors are never injected by the structural pass.
+    #[test]
+    fn structural_validate_unchanged_no_schema_errors() {
+        let (def, _, _) = two_node_def();
+        let errors = validate_workflow(&def);
+        assert!(
+            !errors
+                .iter()
+                .any(|e| matches!(e, WorkflowError::PortSchemaIncompatible(_))),
+            "validate_workflow must never produce PortSchemaIncompatible; got: {errors:?}"
+        );
+    }
+
+    /// `ValidatedWorkflow::validate_with_resolver` on a compatible graph
+    /// returns `Ok`.
+    #[test]
+    fn validated_workflow_with_resolver_accepts_compatible_graph() {
+        let (def, _, _) = two_node_def();
+
+        // Producer emits `{a}`, consumer expects `{a}`.
+        let output = single_field_schema("a", true);
+        let input = single_field_schema("a", true);
+
+        let mut schemas = HashMap::new();
+        schemas.insert(
+            "producer.action".to_owned(),
+            NodeIoSchemas {
+                input: ValidSchema::empty(),
+                output,
+            },
+        );
+        schemas.insert(
+            "consumer.action".to_owned(),
+            NodeIoSchemas {
+                input,
+                output: ValidSchema::empty(),
+            },
+        );
+
+        let resolver = MapResolver(schemas);
+        assert!(
+            ValidatedWorkflow::validate_with_resolver(def, &resolver).is_ok(),
+            "compatible schemas must produce a valid witness"
+        );
+    }
+
+    /// `ValidatedWorkflow::validate_with_resolver` on an incompatible graph
+    /// returns `Err` containing `PortSchemaIncompatible`.
+    #[test]
+    fn validated_workflow_with_resolver_rejects_incompatible_graph() {
+        let (def, _, _) = two_node_def();
+
+        // Producer emits `{a}`, consumer requires `{b}` — incompatible.
+        let output = single_field_schema("a", true);
+        let input = single_field_schema("b", true);
+
+        let mut schemas = HashMap::new();
+        schemas.insert(
+            "producer.action".to_owned(),
+            NodeIoSchemas {
+                input: ValidSchema::empty(),
+                output,
+            },
+        );
+        schemas.insert(
+            "consumer.action".to_owned(),
+            NodeIoSchemas {
+                input,
+                output: ValidSchema::empty(),
+            },
+        );
+
+        let resolver = MapResolver(schemas);
+        let errors = ValidatedWorkflow::validate_with_resolver(def, &resolver)
+            .expect_err("incompatible graph must be rejected");
+
+        assert!(
+            errors
+                .iter()
+                .any(|e| matches!(e, WorkflowError::PortSchemaIncompatible(_))),
+            "expected PortSchemaIncompatible in errors; got: {errors:?}"
         );
     }
 }

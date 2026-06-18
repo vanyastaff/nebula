@@ -547,7 +547,10 @@ pub async fn activate_workflow(
             ))
         })?;
 
-    let validation_errors = nebula_workflow::validate_workflow(&workflow_def);
+    let schema_resolver =
+        super::resolver::CatalogSchemaResolver::new(state.action_registry.clone());
+    let validation_errors =
+        nebula_workflow::validate_workflow_with_resolver(&workflow_def, &schema_resolver);
     if !validation_errors.is_empty() {
         let detail = format!(
             "Workflow definition is invalid ({} error(s))",
@@ -771,7 +774,9 @@ pub async fn validate_workflow_handler(
             ))
         })?;
 
-    let errors = nebula_workflow::validate_workflow(&workflow_def);
+    let schema_resolver =
+        super::resolver::CatalogSchemaResolver::new(state.action_registry.clone());
+    let errors = nebula_workflow::validate_workflow_with_resolver(&workflow_def, &schema_resolver);
     if errors.is_empty() {
         Ok(Json(WorkflowValidateResponse {
             valid: true,

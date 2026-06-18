@@ -115,6 +115,22 @@ pub enum WorkflowError {
         to: NodeKey,
     },
 
+    /// The producer node's output schema is not assignable to the consumer
+    /// node's input schema on this connection (ADR-0100 TypeDAG T3).
+    ///
+    /// Emitted by [`crate::validate::validate_workflow_with_resolver`] when
+    /// both endpoints resolve and `nebula_schema::is_assignable` returns an
+    /// incompatibility. Structural errors (unknown nodes, cycles, …) are
+    /// reported first; this error only fires when both nodes are structurally
+    /// valid and both schemas are resolvable from the catalog.
+    ///
+    /// The payload is `Box`ed because the struct is large (two `NodeKey`s,
+    /// two `Option<String>`s, one `String`) and boxing keeps the `WorkflowError`
+    /// enum small enough to satisfy `clippy::result_large_err`.
+    #[classify(category = "validation", code = "WORKFLOW:PORT_SCHEMA_INCOMPATIBLE")]
+    #[error("port schema incompatible: {0}")]
+    PortSchemaIncompatible(Box<PortSchemaIncompatDetails>),
+
     /// A `RetryConfig` (per-node or workflow-default) violates the validity
     /// rules: `max_attempts == 0`, `max_delay_ms < initial_delay_ms`,
     /// `backoff_multiplier <= 0` or non-finite, or `initial_delay_ms == 0`
@@ -134,4 +150,35 @@ pub enum WorkflowError {
         /// Why the config is invalid.
         reason: String,
     },
+}
+
+/// Payload for [`WorkflowError::PortSchemaIncompatible`].
+///
+/// Kept separate and `Box`ed on the enum to satisfy `clippy::result_large_err`
+/// — the combined size of two `NodeKey`s, two `Option<String>`s, and one
+/// `String` exceeds the 128-byte threshold for the `result_large_err` lint.
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct PortSchemaIncompatDetails {
+    /// The producer (source) node key.
+    pub from_node: NodeKey,
+    /// The consumer (target) node key.
+    pub to_node: NodeKey,
+    /// The source output port, if named (`None` = default `"main"`).
+    pub from_port: Option<String>,
+    /// The target input port, if named (`None` = default flow input).
+    pub to_port: Option<String>,
+    /// Human-readable description of the first incompatibility found
+    /// (from [`nebula_schema::SchemaIncompat`]'s `Display` impl).
+    pub reason: String,
+}
+
+impl std::fmt::Display for PortSchemaIncompatDetails {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}.{:?} \u{2192} {}.{:?}: {}",
+            self.from_node, self.from_port, self.to_node, self.to_port, self.reason
+        )
+    }
 }
