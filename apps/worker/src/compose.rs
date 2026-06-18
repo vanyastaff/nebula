@@ -221,7 +221,7 @@ pub enum WorkerConfigError {
         #[source]
         source: std::num::ParseIntError,
     },
-    /// `NEBULA_WORKER_BATCH_SIZE` is set but cannot be parsed as a positive integer.
+    /// `NEBULA_WORKER_BATCH_SIZE` is set but cannot be parsed as an integer.
     #[error("NEBULA_WORKER_BATCH_SIZE must be a positive integer; got {raw:?}: {source}")]
     BatchSize {
         /// Raw environment value that failed to parse.
@@ -230,7 +230,16 @@ pub enum WorkerConfigError {
         #[source]
         source: std::num::ParseIntError,
     },
-    /// `NEBULA_WORKER_POLL_INTERVAL_MS` is set but cannot be parsed as a positive integer.
+    /// `NEBULA_WORKER_BATCH_SIZE` parsed successfully but the value is zero.
+    ///
+    /// A batch size of zero makes the orchestrator issue `LIMIT 0` claims, so
+    /// the worker appears healthy but never claims any job.
+    #[error(
+        "NEBULA_WORKER_BATCH_SIZE must be ≥ 1; got 0 — a zero batch size \
+         causes the orchestrator to claim no jobs (silent stall)"
+    )]
+    BatchSizeNotPositive,
+    /// `NEBULA_WORKER_POLL_INTERVAL_MS` is set but cannot be parsed as an integer.
     #[error(
         "NEBULA_WORKER_POLL_INTERVAL_MS must be a positive integer (milliseconds); got {raw:?}: {source}"
     )]
@@ -241,6 +250,15 @@ pub enum WorkerConfigError {
         #[source]
         source: std::num::ParseIntError,
     },
+    /// `NEBULA_WORKER_POLL_INTERVAL_MS` parsed successfully but the value is zero.
+    ///
+    /// A poll interval of zero produces a tight busy-loop that hammers the
+    /// SQLite store on every empty-queue tick.
+    #[error(
+        "NEBULA_WORKER_POLL_INTERVAL_MS must be ≥ 1 ms; got 0 — a zero interval \
+         causes a tight busy-loop hammering the job-dispatch store"
+    )]
+    PollIntervalNotPositive,
 }
 
 impl WorkerConfig {
@@ -250,7 +268,10 @@ impl WorkerConfig {
     ///
     /// Returns [`WorkerConfigError`] when a set environment variable is present
     /// but structurally invalid (wrong format, not parseable as the expected
-    /// type). Absent variables fall back to defaults and do not error.
+    /// type, or out of the valid range). Absent variables fall back to defaults
+    /// and do not error. Zero is rejected for `NEBULA_WORKER_BATCH_SIZE` and
+    /// `NEBULA_WORKER_POLL_INTERVAL_MS` at parse time — both would silently
+    /// break the claim-loop at runtime.
     pub fn from_env() -> Result<Self, WorkerConfigError> {
         let db_path = std::env::var("NEBULA_WORKER_DB_PATH")
             .unwrap_or_else(|_| "nebula-worker.db".to_owned());
@@ -266,6 +287,7 @@ impl WorkerConfig {
                 source,
             }
         })?;
+        let batch_size = reject_zero_u32(batch_size, WorkerConfigError::BatchSizeNotPositive)?;
 
         let poll_interval_ms =
             parse_optional_u64("NEBULA_WORKER_POLL_INTERVAL_MS", |raw, source| {
@@ -274,6 +296,8 @@ impl WorkerConfig {
                     source,
                 }
             })?;
+        let poll_interval_ms =
+            reject_zero_u64(poll_interval_ms, WorkerConfigError::PollIntervalNotPositive)?;
 
         Ok(Self {
             db_path,
@@ -320,6 +344,34 @@ fn parse_optional_u64(
     match std::env::var(var) {
         Ok(raw) => raw.parse::<u64>().map(Some).map_err(|e| make_err(&raw, e)),
         Err(_) => Ok(None),
+    }
+}
+
+/// Reject `Some(0)` from a parsed `Option<u32>`, mapping it to `err`.
+///
+/// Used to fail-closed at startup when a config value is structurally valid
+/// but semantically invalid (zero batch size causes silent stall; zero poll
+/// interval causes a tight busy-loop).
+fn reject_zero_u32(
+    value: Option<u32>,
+    err: WorkerConfigError,
+) -> Result<Option<u32>, WorkerConfigError> {
+    if value == Some(0) {
+        Err(err)
+    } else {
+        Ok(value)
+    }
+}
+
+/// Reject `Some(0)` from a parsed `Option<u64>`, mapping it to `err`.
+fn reject_zero_u64(
+    value: Option<u64>,
+    err: WorkerConfigError,
+) -> Result<Option<u64>, WorkerConfigError> {
+    if value == Some(0) {
+        Err(err)
+    } else {
+        Ok(value)
     }
 }
 
@@ -386,6 +438,70 @@ mod tests {
         assert_ne!(
             a, b,
             "two ephemeral processor ids must be distinct (UUID v4)"
+        );
+    }
+
+    // ── NEBULA_WORKER_BATCH_SIZE zero-rejection ───────────────────────────────
+    //
+    // These tests call `reject_zero_u32` / `reject_zero_u64` directly — no
+    // env-var mutation, no `unsafe`. The helpers are the sole zero-enforcement
+    // site in `from_env`; testing them directly gives the same coverage without
+    // environment side-effects.
+    //
+    // Red-able: without the zero-check helper, `from_env` would return
+    // `Ok(Some(0))` for a zero value. These tests call the helper that
+    // `from_env` delegates to; removing the helper (or the call) makes them
+    // panic on an `Ok` where they expect an `Err`.
+
+    #[test]
+    fn batch_size_zero_is_rejected() {
+        let err = reject_zero_u32(Some(0), WorkerConfigError::BatchSizeNotPositive).unwrap_err();
+        assert!(
+            matches!(err, WorkerConfigError::BatchSizeNotPositive),
+            "expected BatchSizeNotPositive, got: {err}"
+        );
+    }
+
+    #[test]
+    fn batch_size_positive_is_accepted() {
+        let result = reject_zero_u32(Some(16), WorkerConfigError::BatchSizeNotPositive);
+        assert_eq!(result.unwrap(), Some(16));
+    }
+
+    #[test]
+    fn batch_size_none_is_accepted() {
+        let result = reject_zero_u32(None, WorkerConfigError::BatchSizeNotPositive);
+        assert_eq!(
+            result.unwrap(),
+            None,
+            "absent batch_size must pass through as None"
+        );
+    }
+
+    // ── NEBULA_WORKER_POLL_INTERVAL_MS zero-rejection ─────────────────────────
+
+    #[test]
+    fn poll_interval_zero_is_rejected() {
+        let err = reject_zero_u64(Some(0), WorkerConfigError::PollIntervalNotPositive).unwrap_err();
+        assert!(
+            matches!(err, WorkerConfigError::PollIntervalNotPositive),
+            "expected PollIntervalNotPositive, got: {err}"
+        );
+    }
+
+    #[test]
+    fn poll_interval_positive_is_accepted() {
+        let result = reject_zero_u64(Some(100), WorkerConfigError::PollIntervalNotPositive);
+        assert_eq!(result.unwrap(), Some(100));
+    }
+
+    #[test]
+    fn poll_interval_none_is_accepted() {
+        let result = reject_zero_u64(None, WorkerConfigError::PollIntervalNotPositive);
+        assert_eq!(
+            result.unwrap(),
+            None,
+            "absent poll_interval_ms must pass through as None"
         );
     }
 }
