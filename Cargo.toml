@@ -23,6 +23,7 @@ members = [
   "crates/resource",
   "crates/orchestrator",
   "crates/worker",
+  "apps/worker",
 
   "crates/validator",
   "crates/api",

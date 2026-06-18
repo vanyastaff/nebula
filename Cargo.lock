@@ -4078,6 +4078,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "nebula-worker-bin"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "nebula-action",
+ "nebula-core",
+ "nebula-engine",
+ "nebula-execution",
+ "nebula-metrics",
+ "nebula-plugin",
+ "nebula-plugin-core",
+ "nebula-storage",
+ "nebula-storage-port",
+ "nebula-worker",
+ "nebula-workflow",
+ "serde_json",
+ "sqlx",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "nebula-workflow"
 version = "0.1.0"
 dependencies = [
