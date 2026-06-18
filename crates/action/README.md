@@ -224,7 +224,7 @@ See `docs/MATURITY.md` row for `nebula-action`.
 
 - API stability: `frontier` — Variant A trait shape (Sized + type Input/Output + static metadata + slot-binding derive + FromWorkflowNode factory + ErasedAction dispatch) shipped under M6 / §M11 (2026-04-29). The `ActionHandler` enum and per-variant `XxxHandler` traits remain part of the public surface for transports / SDK harnesses / event sources that operate outside the workflow-node dispatch loop — the four production paths kept on the legacy handler surface are enumerated in the migration recipe above.
 - `#![forbid(unsafe_code)]`, `#![warn(missing_docs)]` enforced.
-- `CheckpointPolicy`: `planned` — not in `ActionMetadata` yet; engine does not consume it end-to-end.
+- `CheckpointPolicy`: persisted on `ActionMetadata` (`checkpoint_policy`, default `Inherit`); engine enforcement of non-`Inherit` cadences not yet wired end-to-end.
 - DX specializations (`PaginatedAction`, `BatchAction`, `WebhookAction`, `PollAction`) are implemented and tested; cross-action-type integration tests: partial.
 
 ## Related

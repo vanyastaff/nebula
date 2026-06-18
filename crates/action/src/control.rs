@@ -836,6 +836,10 @@ mod tests {
             StatelessHandler::metadata(&adapter).category,
             ActionCategory::Control
         );
+        assert_eq!(
+            StatelessHandler::metadata(&adapter).kind,
+            ActionKind::Control
+        );
     }
 
     #[test]
@@ -844,6 +848,12 @@ mod tests {
         assert_eq!(
             StatelessHandler::metadata(&adapter).category,
             ActionCategory::Terminal
+        );
+        // Terminal control keeps `Control` — terminality lives in the empty
+        // port set, not a distinct kind.
+        assert_eq!(
+            StatelessHandler::metadata(&adapter).kind,
+            ActionKind::Control
         );
     }
 

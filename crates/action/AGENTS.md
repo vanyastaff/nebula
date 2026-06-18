@@ -32,7 +32,7 @@
 - `Action: Sized` is **not** object-safe — never write `dyn Action`; engine dispatch goes through `Arc<dyn ActionFactory>` + `Box<dyn ErasedXxx>`.
 - No `schema` method — `Input`/`Output: HasSchema` is the single source of truth; read via `nebula_schema::schema_of::<A::Input>()` (ADR-0052 P3). Don't add per-trait `*_schema`.
 - Action structs hold **only** slot fields (`#[resource]`/`#[credential]`); user form data lives on a separate `Self::Input` companion struct. `#[credential]` slots hold `CredentialGuard<C::Scheme>`, not `CredentialGuard<C>`.
-- `CheckpointPolicy` is `planned`, NOT a field on `ActionMetadata` — do not document or wire it as current.
+- `CheckpointPolicy` is a field on `ActionMetadata` (`checkpoint_policy`, default `Inherit`); engine enforcement of non-`Inherit` cadences is not yet wired — treat a non-default policy as declared intent, not a runtime guarantee.
 - This crate is NOT the execution driver (the engine dispatches in-process), execution state machine (`nebula-execution`), schema system (`nebula-schema`), or engine retry layer; process/WASM isolation is a canon §12.6 / ADR-0091 non-goal.
 - `WebhookAction::config()` defaults to `SignaturePolicy::Required` (fail-closed); secret material never flows through the dyn `TriggerHandler` surface.
 - Cross-crate calls go through `nebula-eventbus`, not direct sibling imports.

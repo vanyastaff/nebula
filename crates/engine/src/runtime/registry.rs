@@ -298,8 +298,8 @@ impl ActionRegistry {
         <A as Action>::Input: serde::de::DeserializeOwned + Send + Sync,
         <A as Action>::Output: serde::Serialize + Send + Sync,
     {
-        let metadata = <A as Action>::metadata();
         let factory: Arc<dyn ActionFactory> = Arc::new(GenericStatelessFactory::<A>::new());
+        let metadata = factory.metadata().clone();
         self.register_factory(metadata, factory);
     }
 
@@ -311,8 +311,8 @@ impl ActionRegistry {
         <A as Action>::Output: serde::Serialize + Send + Sync,
         A::State: serde::Serialize + serde::de::DeserializeOwned + Clone + Send + Sync,
     {
-        let metadata = <A as Action>::metadata();
         let factory: Arc<dyn ActionFactory> = Arc::new(GenericStatefulFactory::<A>::new());
+        let metadata = factory.metadata().clone();
         self.register_factory(metadata, factory);
     }
 
@@ -322,8 +322,8 @@ impl ActionRegistry {
         A: TriggerAction + FromWorkflowNode<Error = ActionError> + Send + Sync + 'static,
         <A as TriggerAction>::Error: Into<ActionError>,
     {
-        let metadata = <A as Action>::metadata();
         let factory: Arc<dyn ActionFactory> = Arc::new(GenericTriggerFactory::<A>::new());
+        let metadata = factory.metadata().clone();
         self.register_factory(metadata, factory);
     }
 
@@ -332,8 +332,8 @@ impl ActionRegistry {
     where
         A: ResourceAction + FromWorkflowNode<Error = ActionError> + Send + Sync + 'static,
     {
-        let metadata = <A as Action>::metadata();
         let factory: Arc<dyn ActionFactory> = Arc::new(GenericResourceFactory::<A>::new());
+        let metadata = factory.metadata().clone();
         self.register_factory(metadata, factory);
     }
 
@@ -342,8 +342,8 @@ impl ActionRegistry {
     where
         A: ControlAction + FromWorkflowNode<Error = ActionError> + Send + Sync + 'static,
     {
-        let metadata = <A as Action>::metadata();
         let factory: Arc<dyn ActionFactory> = Arc::new(GenericControlFactory::<A>::new());
+        let metadata = factory.metadata().clone();
         self.register_factory(metadata, factory);
     }
 
@@ -472,10 +472,14 @@ mod tests {
     use std::sync::OnceLock;
 
     use nebula_action::{
-        action::Action, error::ActionError, metadata::ActionMetadata, result::ActionResult,
+        action::Action,
+        error::ActionError,
+        metadata::{ActionKind, ActionMetadata},
+        result::ActionResult,
         stateless::StatelessAction,
     };
     use nebula_core::{Dependencies, action_key};
+    use nebula_workflow::NodeDefinition;
 
     use super::*;
 
@@ -506,6 +510,69 @@ mod tests {
     fn meta_with(key: &'static str, major: u64, minor: u64) -> ActionMetadata {
         ActionMetadata::new(ActionKey::new(key).unwrap(), "Noop", "Does nothing")
             .with_version(major, minor)
+    }
+
+    // Stateful fixture used to prove the factory registration path stores the
+    // factory-stamped node kind. Its bare `Action::metadata()` carries the
+    // default `Stateless` kind; only the factory stamps `Stateful`.
+    struct NoopStateful;
+
+    impl Action for NoopStateful {
+        type Input = serde_json::Value;
+        type Output = serde_json::Value;
+
+        fn metadata() -> ActionMetadata {
+            ActionMetadata::new(
+                action_key!("test.noop_stateful"),
+                "NoopStateful",
+                "Does nothing, iteratively",
+            )
+        }
+        fn dependencies() -> &'static Dependencies {
+            static D: OnceLock<Dependencies> = OnceLock::new();
+            D.get_or_init(Dependencies::new)
+        }
+    }
+
+    impl StatefulAction for NoopStateful {
+        type State = serde_json::Value;
+
+        fn init_state(&self) -> Self::State {
+            serde_json::Value::Null
+        }
+
+        async fn execute(
+            &self,
+            input: <Self as Action>::Input,
+            _state: &mut Self::State,
+            _ctx: &(impl nebula_action::ActionContext + ?Sized),
+        ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
+            Ok(ActionResult::break_completed(input))
+        }
+    }
+
+    impl FromWorkflowNode for NoopStateful {
+        type Error = ActionError;
+
+        async fn from_workflow_node(
+            _node: &NodeDefinition,
+            _ctx: &dyn nebula_action::ActionContext,
+        ) -> Result<Self, Self::Error> {
+            Ok(NoopStateful)
+        }
+    }
+
+    #[test]
+    fn factory_registration_stores_stamped_kind() {
+        // The registry must store the factory-stamped node kind, not the
+        // unstamped `Action::metadata()` default — otherwise registry consumers
+        // see `Stateless` for a stateful action.
+        let registry = ActionRegistry::new();
+        registry.register_stateful_factory::<NoopStateful>();
+
+        let key = action_key!("test.noop_stateful");
+        let (metadata, _factory) = registry.get_factory(&key).expect("factory was registered");
+        assert_eq!(metadata.kind, ActionKind::Stateful);
     }
 
     #[test]
