@@ -123,6 +123,18 @@ pub struct ActivationHandle {
     pub endpoint_url: Url,
 }
 
+impl ActivationHandle {
+    /// The opaque activation identity (trigger UUID) as a string.
+    ///
+    /// Use this to correlate log entries and to populate the `activation_id`
+    /// response field in the registration endpoint.  The UUID is not a
+    /// secret — it appears in the webhook URL path segment.
+    #[must_use]
+    pub fn activation_id(&self) -> String {
+        self.trigger_uuid.to_string()
+    }
+}
+
 /// HTTP ingress layer for webhook triggers.
 #[derive(Clone)]
 pub struct WebhookTransport {
