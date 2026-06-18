@@ -74,14 +74,14 @@ deny = [
   ], reason = "API is top layer; lower-level crates must not depend on it directly" },
 
   # ---- Layer enforcement: Exec ----
-  # NOTE: nebula-worker (ADR-0095 D1) is the TOP exec-layer composition root and
-  # SHOULD be ban-guarded so no business/core crate may depend on it. But it has
-  # ZERO dependents today (library-only, no binary yet), and cargo-deny flags the
-  # workspace-root instance of a banned crate that has no wrapper edge to satisfy
-  # — so a `{ crate = "nebula-worker", wrappers = [] }` entry FAILS the bans check.
-  # Add that entry together with its first consumer (the per-flavor worker binary,
-  # U-D1.F) in the consumer's wrappers list. Until then worker has no inbound edges
-  # (verify: `cargo tree -i -p nebula-worker`), so the boundary is not violable.
+  # nebula-worker is the generic exec-layer claim-loop library. Only its
+  # first consumer — the per-flavor worker binary (`nebula-worker-bin`,
+  # `apps/worker`) — may depend on it. The ban entry was deferred until this
+  # binary existed (a wrappers-only entry with no real dependent fails cargo-deny).
+  { crate = "nebula-worker", wrappers = [
+    # The core-flavor worker binary is the sole consumer of the generic runtime.
+    "nebula-worker-bin",
+  ], reason = "Worker is the top exec-layer composition root; only per-flavor binary crates may depend on it (ADR-0095 D1)" },
   { crate = "nebula-engine", wrappers = [
     "nebula-cli",
     # Dev-only: `crates/api/tests/knife.rs` wires the API + Engine composition
@@ -96,6 +96,9 @@ deny = [
     # Dev-only: `crates/plugin-core/tests/plugin_wiring_e2e.rs` exercises the
     # plugin→engine action-wiring bridge end-to-end.
     "nebula-plugin-core",
+    # The core-flavor worker binary wires the engine directly via compose.rs
+    # (WorkflowEngine::new + with_plugin + ExecutionStores/WorkflowStores).
+    "nebula-worker-bin",
   ], reason = "Engine is exec-layer orchestration; business/core crates must not depend on it" },
   { crate = "nebula-storage", wrappers = [
     "nebula-engine",
@@ -111,6 +114,9 @@ deny = [
     # nebula-worker dev-depends on the InMemory adapter for its integration test
     # (the no-DATABASE_URL conformance double), same as nebula-orchestrator.
     "nebula-worker",
+    # The core-flavor worker binary wires the SQLite store adapters (prod path)
+    # and the InMemory adapters (smoke test dev-dep path).
+    "nebula-worker-bin",
   ], reason = "Storage is exec-layer; business and core crates must not depend on it directly" },
 
   # nebula-storage-port is the Core-tier storage contract: object-safe
@@ -133,6 +139,9 @@ deny = [
     "nebula-worker",
     # Dev-only: e2e test uses `single_tenant_scope()` which returns `Scope` from storage-port.
     "nebula-plugin-core",
+    # The core-flavor worker binary uses StorageError (schema init) and the
+    # JobDispatchQueue / ExecutionStore traits via the store bundles.
+    "nebula-worker-bin",
   ], reason = "Storage port is a Core-tier contract; the adapter, tenancy decorator, exec/api consumers, and nebula-credential (which hosts the refresh coordinator and depends on RefreshClaimStore, ADR-0092) may depend on it" },
 
   # nebula-tenancy is the Business-tier multi-tenancy security boundary: it
