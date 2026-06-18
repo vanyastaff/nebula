@@ -1304,25 +1304,6 @@ mod tests {
     }
 
     #[test]
-    fn map_output_with_streaming() {
-        use crate::output::{ExpectedOutput, StreamMode, StreamOutput, StreamState};
-        let r: ActionResult<i32> = ActionResult::Success {
-            output: ActionOutput::Streaming(StreamOutput {
-                stream_id: "s".into(),
-                mode: StreamMode::Events,
-                expected: ExpectedOutput::Dynamic,
-                state: StreamState::Pending,
-                buffer: None,
-            }),
-        };
-        let mapped = r.map_output(|n| n * 2);
-        match mapped {
-            ActionResult::Success { output } => assert!(output.is_streaming()),
-            _ => panic!("expected Success"),
-        }
-    }
-
-    #[test]
     fn map_output_with_collection() {
         let r: ActionResult<i32> = ActionResult::Success {
             output: ActionOutput::Collection(vec![ActionOutput::Value(1), ActionOutput::Value(2)]),

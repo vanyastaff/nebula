@@ -192,113 +192,8 @@ pub enum ExpectedOutput {
     },
     /// Will resolve to `ActionOutput::Reference`.
     Reference,
-    /// Will resolve to `ActionOutput::Streaming`.
-    Stream,
     /// Unknown at compile time.
     Dynamic,
-}
-
-/// A stream of output chunks arriving incrementally.
-///
-/// The engine can collect all chunks into a final value, forward the
-/// stream to a streaming-aware downstream node, or tap for progress.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct StreamOutput {
-    /// Unique stream identifier for subscription.
-    pub stream_id: String,
-    /// What kind of data is being streamed and how to consume it.
-    pub mode: StreamMode,
-    /// What the collected stream will produce.
-    pub expected: ExpectedOutput,
-    /// Current stream state (for serialization/checkpointing).
-    pub state: StreamState,
-    /// Backpressure configuration.
-    pub buffer: Option<BufferConfig>,
-}
-
-/// Streaming mode — determines how the engine processes chunks.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "mode", rename_all = "snake_case")]
-#[non_exhaustive]
-pub enum StreamMode {
-    /// LLM token stream. Engine concatenates tokens into final text.
-    Tokens {
-        /// Model producing tokens.
-        model: String,
-    },
-    /// Raw byte chunks (file download, binary generation).
-    Bytes {
-        /// MIME content type.
-        content_type: String,
-        /// Total expected size (for progress bars, pre-allocation).
-        total_size: Option<u64>,
-    },
-    /// JSON patches/deltas. Engine applies patches to build final Value.
-    Deltas {
-        /// Delta format.
-        format: DeltaFormat,
-    },
-    /// Server-Sent Events style: heterogeneous typed events.
-    Events,
-    /// Custom protocol — engine passes through, downstream interprets.
-    Custom {
-        /// Protocol identifier.
-        protocol: String,
-    },
-}
-
-/// Delta format for streaming patches.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[non_exhaustive]
-pub enum DeltaFormat {
-    /// RFC 7396.
-    JsonMergePatch,
-    /// RFC 6902.
-    JsonPatch,
-}
-
-/// Current state of a stream.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum StreamState {
-    /// Created but not started.
-    Pending,
-    /// Actively producing.
-    Active {
-        /// Number of chunks received so far.
-        chunks_received: u64,
-    },
-    /// Paused (backpressure, rate limit).
-    Paused,
-    /// Done — all data received.
-    Completed,
-    /// Error during streaming.
-    Failed {
-        /// Error description.
-        error: String,
-    },
-}
-
-/// Backpressure configuration for streams.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BufferConfig {
-    /// Maximum number of buffered items.
-    pub capacity: usize,
-    /// What to do when buffer is full.
-    pub on_overflow: Overflow,
-}
-
-/// Overflow strategy when a stream buffer is full.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Overflow {
-    /// Block the producer until space is available.
-    Block,
-    /// Drop the oldest item in the buffer.
-    DropOldest,
-    /// Drop the newest (incoming) item.
-    DropNewest,
-    /// Return an error to the producer.
-    Error,
 }
 
 /// Who/what is producing the output.
@@ -489,8 +384,8 @@ impl<T> OutputEnvelope<T> {
 /// First-class output type for actions.
 ///
 /// The engine dispatches on this enum to decide how to pass data between
-/// nodes. Variants cover immediate data, deferred (lazy) results, and
-/// streaming outputs.
+/// nodes. Variants cover immediate data, deferred (lazy) results, binary
+/// payloads, external references, collections, and empty outputs.
 ///
 /// ## Relationship with `ActionResult`
 ///
@@ -500,6 +395,13 @@ impl<T> OutputEnvelope<T> {
 /// An action can return `ActionResult::Success { output: ActionOutput::Deferred(..) }`
 /// meaning: "I successfully initiated generation — here's the handle."
 /// The engine resolves the Deferred before passing data to downstream nodes.
+///
+/// ## Stream kind
+///
+/// Stream actions fold their chunk stream into a single
+/// `ActionOutput::Value` before returning; there is no inline streaming
+/// variant on this enum. The fold happens inside the stream adapter and the
+/// engine receives a plain `Value`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
 #[non_exhaustive]
@@ -516,11 +418,6 @@ pub enum ActionOutput<T> {
     /// but the result isn't ready yet. The engine resolves this before
     /// passing to downstream nodes.
     Deferred(Box<DeferredOutput>),
-    /// Output arriving as a stream of chunks.
-    ///
-    /// The engine can collect into a final value before passing downstream,
-    /// or forward the stream if downstream supports streaming.
-    Streaming(StreamOutput),
     /// Multiple outputs in one (batch results, fan-out).
     Collection(Vec<ActionOutput<T>>),
     /// No output produced.
@@ -535,7 +432,6 @@ impl<T> ActionOutput<T> {
             Self::Binary(b) => ActionOutput::Binary(b),
             Self::Reference(r) => ActionOutput::Reference(r),
             Self::Deferred(d) => ActionOutput::Deferred(d),
-            Self::Streaming(s) => ActionOutput::Streaming(s),
             Self::Collection(items) => {
                 ActionOutput::Collection(items.into_iter().map(|item| item.map(f)).collect())
             },
@@ -553,7 +449,6 @@ impl<T> ActionOutput<T> {
             Self::Binary(b) => Ok(ActionOutput::Binary(b)),
             Self::Reference(r) => Ok(ActionOutput::Reference(r)),
             Self::Deferred(d) => Ok(ActionOutput::Deferred(d)),
-            Self::Streaming(s) => Ok(ActionOutput::Streaming(s)),
             Self::Collection(items) => {
                 let mapped = items
                     .into_iter()
@@ -601,11 +496,6 @@ impl<T> ActionOutput<T> {
         matches!(self, Self::Deferred(_))
     }
 
-    /// Returns `true` if this is a `Streaming` variant.
-    pub fn is_streaming(&self) -> bool {
-        matches!(self, Self::Streaming(_))
-    }
-
     /// Returns `true` if this is a `Collection` variant.
     pub fn is_collection(&self) -> bool {
         matches!(self, Self::Collection(_))
@@ -620,7 +510,7 @@ impl<T> ActionOutput<T> {
     /// before passing to downstream nodes.
     pub fn needs_resolution(&self) -> bool {
         match self {
-            Self::Deferred(_) | Self::Streaming(_) => true,
+            Self::Deferred(_) => true,
             Self::Collection(items) => items.iter().any(ActionOutput::needs_resolution),
             _ => false,
         }
@@ -709,39 +599,6 @@ impl<T> ActionOutput<T> {
             timeout,
         }))
     }
-
-    /// Create an LLM token stream output.
-    pub fn llm_stream(stream_id: impl Into<String>, model: impl Into<String>) -> Self {
-        Self::Streaming(StreamOutput {
-            stream_id: stream_id.into(),
-            mode: StreamMode::Tokens {
-                model: model.into(),
-            },
-            expected: ExpectedOutput::Value { schema: None },
-            state: StreamState::Pending,
-            buffer: None,
-        })
-    }
-
-    /// Create a binary stream (file download, progressive render).
-    pub fn byte_stream(
-        stream_id: impl Into<String>,
-        content_type: impl Into<String>,
-        total_size: Option<u64>,
-    ) -> Self {
-        Self::Streaming(StreamOutput {
-            stream_id: stream_id.into(),
-            mode: StreamMode::Bytes {
-                content_type: content_type.into(),
-                total_size,
-            },
-            expected: ExpectedOutput::Binary {
-                content_type: "application/octet-stream".into(),
-            },
-            state: StreamState::Pending,
-            buffer: None,
-        })
-    }
 }
 
 /// Binary data carried inline or stored externally.
@@ -828,7 +685,6 @@ mod tests {
         assert!(!out.is_binary());
         assert!(!out.is_reference());
         assert!(!out.is_deferred());
-        assert!(!out.is_streaming());
         assert!(!out.is_collection());
         assert!(!out.is_empty());
         assert_eq!(out.as_value(), Some(&42));
@@ -877,23 +733,6 @@ mod tests {
         }));
         assert!(out.is_deferred());
         assert!(!out.is_value());
-        assert!(!out.is_streaming());
-        assert!(out.needs_resolution());
-    }
-
-    #[test]
-    fn action_output_streaming() {
-        let out: ActionOutput<i32> = ActionOutput::Streaming(StreamOutput {
-            stream_id: "stream-1".into(),
-            mode: StreamMode::Tokens {
-                model: "claude".into(),
-            },
-            expected: ExpectedOutput::Value { schema: None },
-            state: StreamState::Pending,
-            buffer: None,
-        });
-        assert!(out.is_streaming());
-        assert!(!out.is_deferred());
         assert!(out.needs_resolution());
     }
 
@@ -1124,44 +963,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn llm_stream_constructor() {
-        let out =
-            ActionOutput::<serde_json::Value>::llm_stream("stream-1", "claude-sonnet-4-20250514");
-        assert!(out.is_streaming());
-        assert!(out.needs_resolution());
-        match &out {
-            ActionOutput::Streaming(s) => {
-                assert_eq!(s.stream_id, "stream-1");
-                assert!(matches!(s.mode, StreamMode::Tokens { .. }));
-                assert_eq!(s.state, StreamState::Pending);
-            },
-            _ => panic!("expected Streaming"),
-        }
-    }
-
-    #[test]
-    fn byte_stream_constructor() {
-        let out =
-            ActionOutput::<serde_json::Value>::byte_stream("bs-1", "video/mp4", Some(1_000_000));
-        match &out {
-            ActionOutput::Streaming(s) => {
-                assert_eq!(s.stream_id, "bs-1");
-                match &s.mode {
-                    StreamMode::Bytes {
-                        content_type,
-                        total_size,
-                    } => {
-                        assert_eq!(content_type, "video/mp4");
-                        assert_eq!(*total_size, Some(1_000_000));
-                    },
-                    _ => panic!("expected Bytes mode"),
-                }
-            },
-            _ => panic!("expected Streaming"),
-        }
-    }
-
     // ── OutputEnvelope tests ────────────────────────────────────────
 
     #[test]
@@ -1219,28 +1020,6 @@ mod tests {
         let json = serde_json::to_string(&deferred).unwrap();
         let back: DeferredOutput = serde_json::from_str(&json).unwrap();
         assert_eq!(deferred, back);
-    }
-
-    #[test]
-    fn serde_stream_output_roundtrip() {
-        let stream = StreamOutput {
-            stream_id: "s-1".into(),
-            mode: StreamMode::Tokens {
-                model: "claude".into(),
-            },
-            expected: ExpectedOutput::Value { schema: None },
-            state: StreamState::Active {
-                chunks_received: 42,
-            },
-            buffer: Some(BufferConfig {
-                capacity: 100,
-                on_overflow: Overflow::DropOldest,
-            }),
-        };
-
-        let json = serde_json::to_string(&stream).unwrap();
-        let back: StreamOutput = serde_json::from_str(&json).unwrap();
-        assert_eq!(stream, back);
     }
 
     #[test]

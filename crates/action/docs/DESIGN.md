@@ -55,7 +55,7 @@
 | `ActionError` + `RetryHintCode` (retryable vs fatal), `ValidationReason` | `src/error.rs:154,31,58` |
 | `ActionMetadata`, `ActionKind`, `CheckpointPolicy`, `IsolationLevel` | `src/metadata.rs:131,48,83,13` |
 | `ActionResult<T>`, `TerminationReason`, `WaitCondition`, `BranchKey` | `src/result.rs:40,195,297` |
-| `ActionOutput<T>`, `OutputEnvelope`, `DeferredOutput`, `StreamOutput` | `src/output.rs:506,465,86,206` |
+| `ActionOutput<T>`, `OutputEnvelope`, `DeferredOutput` | `src/output.rs` |
 | `ActionContext`/`TriggerContext` + `ActionRuntimeContext`/`TriggerRuntimeContext` | `src/context.rs:81,108,144,397` |
 | `#[derive(Action)]` + `#[action_phantom]` (proc-macro) | `macros/src/lib.rs` (re-export `lib.rs:126`) |
 | `TestActionContext`, `Spy*`, `StatefulTestHarness` | `src/testing.rs` |

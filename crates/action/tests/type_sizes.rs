@@ -16,7 +16,7 @@ use std::{collections::HashMap, mem::size_of, time::Duration};
 
 use nebula_action::{
     ActionError, ActionMetadata, ActionOutput, ActionResult, ActionRuntimeContext, BinaryData,
-    Cost, DeferredOutput, OutputEnvelope, OutputMeta, Progress, StreamOutput, Timing, TokenUsage,
+    Cost, DeferredOutput, OutputEnvelope, OutputMeta, Progress, Timing, TokenUsage,
     TriggerEventOutcome, WebhookRequest,
 };
 
@@ -39,7 +39,7 @@ fn top_level_type_sizes_are_stable() {
     );
     assert_eq!(
         size_of::<ActionOutput<serde_json::Value>>(),
-        144,
+        136,
         "ActionOutput<Value> grew — `BinaryData` is the inline variant \
          that drives this size, check it first."
     );
@@ -80,9 +80,8 @@ fn output_support_type_sizes_are_stable() {
     // sizes so the engine-side work that boxes or slims them later
     // has explicit before/after numbers.
     assert_eq!(size_of::<BinaryData>(), 136);
-    assert_eq!(size_of::<StreamOutput>(), 136);
     assert_eq!(size_of::<DeferredOutput>(), 360);
-    assert_eq!(size_of::<OutputEnvelope<serde_json::Value>>(), 416);
+    assert_eq!(size_of::<OutputEnvelope<serde_json::Value>>(), 408);
     assert_eq!(size_of::<OutputMeta>(), 272);
     assert_eq!(size_of::<Progress>(), 48);
     assert_eq!(size_of::<Timing>(), 56);
@@ -128,7 +127,6 @@ fn print_type_size_baseline() {
         ("WebhookRequest", size_of::<WebhookRequest>()),
         ("TriggerEventOutcome", size_of::<TriggerEventOutcome>()),
         ("BinaryData", size_of::<BinaryData>()),
-        ("StreamOutput", size_of::<StreamOutput>()),
         ("DeferredOutput", size_of::<DeferredOutput>()),
         (
             "OutputEnvelope<Value>",

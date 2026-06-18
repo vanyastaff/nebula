@@ -131,10 +131,9 @@ pub use nebula_credential::{CredentialGuard, CredentialRef};
 pub use nebula_resource::ResourceRef;
 pub use nebula_schema::{Field, Schema, ValidSchema, field_key};
 pub use output::{
-    ActionOutput, BinaryData, BinaryStorage, BufferConfig, CacheInfo, Cost, DataReference,
-    DeferredOutput, DeferredRetryConfig, DeltaFormat, ExpectedOutput, OutputEnvelope, OutputMeta,
-    OutputOrigin, Overflow, PollTarget, Producer, ProducerKind, Progress, Resolution, StreamMode,
-    StreamOutput, StreamState, Timing, TokenUsage,
+    ActionOutput, BinaryData, BinaryStorage, CacheInfo, Cost, DataReference, DeferredOutput,
+    DeferredRetryConfig, ExpectedOutput, OutputEnvelope, OutputMeta, OutputOrigin, PollTarget,
+    Producer, ProducerKind, Progress, Resolution, Timing, TokenUsage,
 };
 pub use poll::{
     DeduplicatingCursor, EmitFailurePolicy, POLL_INTERVAL_FLOOR, PollAction, PollConfig,

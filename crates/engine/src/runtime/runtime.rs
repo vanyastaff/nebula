@@ -802,14 +802,10 @@ impl ActionRuntime {
                     })?
                     .len() as u64,
                 // Intentional size-0: Deferred carries retry config + resolution
-                // metadata (no inline payload); Streaming carries a StreamOutput
-                // descriptor (mode + state tag, no inline bytes). The real payload
-                // for both is sized after resolution — either at the resolution site
-                // (Deferred resolved by the engine's resolution pass) or in the
-                // stream adapter (StreamAction::dispatch returns ActionOutput::Value
-                // once the fold completes, which IS measured above). Empty has no
-                // payload by definition.
-                ActionOutput::Deferred(_) | ActionOutput::Streaming(_) | ActionOutput::Empty => 0,
+                // metadata (no inline payload); the real payload is sized after
+                // resolution at the resolution site. Empty has no payload by
+                // definition.
+                ActionOutput::Deferred(_) | ActionOutput::Empty => 0,
                 ActionOutput::Collection(_) => 0, // collections are flattened before this loop
                 _ => 0,
             };
@@ -974,9 +970,9 @@ fn estimated_action_output_payload_bytes(slot: &ActionOutput<serde_json::Value>)
             .size
             .unwrap_or_else(|| serde_json::to_vec(r).map_or(0, |b| b.len() as u64)),
         // Size-0 is intentional — same rationale as enforce_data_limit:
-        // Deferred and Streaming carry descriptors, not inline payloads.
+        // Deferred carries retry config + resolution metadata, not inline
+        // payload bytes. The real payload is measured after resolution.
         ActionOutput::Deferred(_) => 0,
-        ActionOutput::Streaming(_) => 0,
         ActionOutput::Collection(items) => items
             .iter()
             .map(estimated_action_output_payload_bytes)
