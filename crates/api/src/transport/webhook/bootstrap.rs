@@ -168,28 +168,37 @@ type SpecLookupFuture<'async_trait> = std::pin::Pin<
 >;
 
 /// Looks up the `WebhookActivationSpec` stored in `triggers.config` for a
-/// given trigger id.
+/// given trigger id, **owner-scoped**.
 ///
 /// B's lean row carries only routing/token/scope/workflow/mode; the handler-build
-/// inputs (`action_kind`, `secret_id`, replay knobs) live in
+/// inputs (`provider`, `secret_id`, replay knobs) live in
 /// `triggers.config.webhook_activation`. This trait abstracts the lookup so the
 /// bootstrap is independent of the DB query shape.
+///
+/// # Scope enforcement
+///
+/// `scope` is mandatory: the implementation must partition the lookup by the
+/// activation row's `scope` so a `trigger_id` from one tenant never resolves
+/// a spec belonging to another (BOLA/IDOR closed by construction, mirroring
+/// `ScopedTriggerStore`).
 pub trait TriggerSpecLookup: Send + Sync {
-    /// Resolve the webhook activation spec for `trigger_id`.
+    /// Resolve the webhook activation spec for `trigger_id` within `scope`.
     ///
     /// Returns `None` when the trigger has no `webhook_activation` namespace in
-    /// its config, or the trigger does not exist.
+    /// its config, or the trigger does not exist in `scope`.
     ///
     /// # Errors
     ///
     /// Returns a boxed error on storage failure.
-    fn lookup<'life0, 'life1, 'async_trait>(
+    fn lookup<'life0, 'life1, 'life2, 'async_trait>(
         &'life0 self,
-        trigger_id: &'life1 str,
+        scope: &'life1 Scope,
+        trigger_id: &'life2 str,
     ) -> SpecLookupFuture<'async_trait>
     where
         'life0: 'async_trait,
-        'life1: 'async_trait;
+        'life1: 'async_trait,
+        'life2: 'async_trait;
 }
 
 /// Walk the B-world port store's active webhook activations and validate each
@@ -269,7 +278,7 @@ async fn validate_one(
     spec_lookup: &dyn TriggerSpecLookup,
 ) -> Result<(), BootstrapError> {
     let spec = spec_lookup
-        .lookup(&record.trigger_id)
+        .lookup(&record.scope, &record.trigger_id)
         .await
         .map_err(|source| BootstrapError::SpecLookup {
             trigger_id: record.trigger_id.clone(),
@@ -290,8 +299,8 @@ async fn validate_one(
     let action_spec = into_action_spec(&spec, secret);
 
     let factory = registry
-        .lookup_webhook_factory(&spec.action_kind)
-        .ok_or_else(|| BootstrapError::UnknownProvider(spec.action_kind.clone()))?;
+        .lookup_webhook_factory(&spec.provider)
+        .ok_or_else(|| BootstrapError::UnknownProvider(spec.provider.clone()))?;
 
     // Build the handler to prove the factory accepts the spec. The
     // resulting handler + ctx are discarded — dispatch onto the in-memory
@@ -300,7 +309,7 @@ async fn validate_one(
         factory
             .build(&action_spec)
             .map_err(|source| BootstrapError::Factory {
-                kind: spec.action_kind.clone(),
+                kind: spec.provider.clone(),
                 source,
             })?;
     let _ctx = ctx_factory.build(record);
@@ -318,7 +327,7 @@ fn into_action_spec(
     storage: &StorageWebhookActivationSpec,
     secret: Vec<u8>,
 ) -> ActionWebhookActivationSpec {
-    let mut spec = ActionWebhookActivationSpec::new(storage.action_kind.clone(), secret);
+    let mut spec = ActionWebhookActivationSpec::new(storage.provider.clone(), secret);
     if let Some(secs) = storage.replay_window_secs {
         spec = spec.with_replay_window_secs(secs);
     }

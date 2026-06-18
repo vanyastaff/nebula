@@ -13,7 +13,7 @@
 //! ```json
 //! {
 //!   "webhook_activation": {
-//!     "action_kind": "slack",
+//!     "provider": "slack",
 //!     "secret_id":   "cred_01J0...",
 //!     "replay_window_secs": 300,
 //!     "timestamp_header": "x-slack-request-timestamp",
@@ -74,7 +74,13 @@ pub struct WebhookActivationSpec {
     /// the trigger handler at registration time. Matches the
     /// `WebhookActionFactory::kind` returned by the factory
     /// (`"slack"` / `"stripe"` / `"generic"`).
-    pub action_kind: String,
+    ///
+    /// Renamed from `action_kind` (ADR-0101): the old name collided with
+    /// the `ActionKind` enum being introduced in ADR-0098.
+    /// `#[serde(alias = "action_kind")]` preserves read-compat with any
+    /// rows serialised under the old name.
+    #[serde(alias = "action_kind")]
+    pub provider: String,
 
     /// Storage identifier of the HMAC secret credential. Resolved
     /// against the credential registry by the webhook factory at
@@ -119,10 +125,12 @@ pub struct WebhookActivationSpec {
 impl WebhookActivationSpec {
     /// Construct a spec with the required fields populated. Optional
     /// knobs default to `None`; chain `with_*` to set them.
+    ///
+    /// `provider` is the factory-kind tag (e.g. `"generic"`, `"slack"`).
     #[must_use]
-    pub fn new(action_kind: impl Into<String>, secret_id: impl Into<String>) -> Self {
+    pub fn new(provider: impl Into<String>, secret_id: impl Into<String>) -> Self {
         Self {
-            action_kind: action_kind.into(),
+            provider: provider.into(),
             secret_id: secret_id.into(),
             replay_window_secs: None,
             timestamp_header: None,
@@ -295,7 +303,7 @@ mod tests {
         let decoded = WebhookActivationSpec::from_trigger_config(&config)
             .expect("decode")
             .expect("present");
-        assert_eq!(decoded.action_kind, "slack");
+        assert_eq!(decoded.provider, "slack");
         assert_eq!(decoded.secret_id, "cred_01J0");
         assert_eq!(decoded.replay_window_secs, Some(300));
     }
@@ -312,7 +320,7 @@ mod tests {
         assert_eq!(merged["schedule"].as_str(), Some("*/5 * * * *"));
         assert_eq!(merged["timezone"].as_str(), Some("UTC"));
         // Spec lands under the namespace key.
-        assert_eq!(merged[WEBHOOK_ACTIVATION_KEY]["action_kind"], "generic");
+        assert_eq!(merged[WEBHOOK_ACTIVATION_KEY]["provider"], "generic");
     }
 
     #[test]
@@ -326,7 +334,7 @@ mod tests {
     fn malformed_namespace_surfaces_typed_error() {
         let config = serde_json::json!({
             WEBHOOK_ACTIVATION_KEY: {
-                "action_kind": 42,
+                "provider": 42,
                 "secret_id": "x",
             }
         });
