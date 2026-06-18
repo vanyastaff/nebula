@@ -24,6 +24,7 @@ use std::sync::Arc;
 use nebula_credential::provider::ExternalProvider;
 use nebula_credential::{
     ApiKeyCredential, BasicAuthCredential, CredentialStore, ErasedPendingStore, OAuth2Credential,
+    SigningKeyCredential,
 };
 use nebula_credential::{
     CredentialRegistry, CredentialService, CredentialServiceError, DispatchError, DispatchOps,
@@ -237,6 +238,10 @@ pub fn with_store<S: CredentialStore + 'static>(
     register_runtime_ops::<ApiKeyCredential, ErasedPendingStore>(&mut ops)?;
     register_runtime_ops::<BasicAuthCredential, ErasedPendingStore>(&mut ops)?;
     register_runtime_ops::<OAuth2Credential, ErasedPendingStore>(&mut ops)?;
+    // signing_key: static non-interactive credential (HMAC webhook secret).
+    // No capability ops beyond base runtime ops — it carries no
+    // INTERACTIVE/REFRESHABLE/REVOCABLE/TESTABLE caps in the registry.
+    register_runtime_ops::<SigningKeyCredential, ErasedPendingStore>(&mut ops)?;
     register_interactive_ops::<OAuth2Credential, ErasedPendingStore>(&mut ops)?;
     register_refreshable_ops::<OAuth2Credential, ErasedPendingStore>(&mut ops)?;
     register_revocable_ops::<OAuth2Credential, ErasedPendingStore>(&mut ops)?;

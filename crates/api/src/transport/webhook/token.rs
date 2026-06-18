@@ -1,9 +1,14 @@
-//! API-edge bearer-token hashing.
+//! API-edge bearer-token hashing for webhook activations.
 //!
 //! The plaintext capability token is hashed here at the API edge and never
 //! crosses into `nebula-storage-port`.  Only the 32-byte SHA-256 digest is
 //! persisted (as `WebhookActivationRecord::token_hash`).  This is the single
 //! seam between the plaintext URL surface and the durable store.
+//!
+//! For `whsec_<base64>` signing-secret minting see
+//! [`super::secret_resolver::mint_whsec`], which lives alongside
+//! [`super::secret_resolver::decode_whsec`] where the `whsec_` format is
+//! owned and tested.
 //!
 //! # Security
 //!

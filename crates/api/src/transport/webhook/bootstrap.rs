@@ -37,7 +37,8 @@ use nebula_storage::rows::{
 };
 use nebula_storage_port::store::WebhookActivationStore;
 use nebula_storage_port::{
-    StorageError as PortStorageError, dto::WebhookActivationRecord as PortWebhookActivationRecord,
+    Scope, StorageError as PortStorageError,
+    dto::WebhookActivationRecord as PortWebhookActivationRecord,
 };
 use thiserror::Error;
 
@@ -49,20 +50,31 @@ pub type SecretResolutionError = Box<dyn std::error::Error + Send + Sync>;
 /// Resolves a credential identifier (storage-layer string) to the
 /// raw HMAC secret bytes consumed by the factory.
 ///
-/// Production deployments wire this through `nebula-credential`'s
-/// snapshot path; tests wire an in-memory map. Returning an empty
-/// `Vec` is **not** allowed — the factory would then build a
-/// fail-closed handler. Surface the misconfiguration as a typed
-/// error inside the boxed return.
+/// Production deployments wire this through [`nebula_credential::CredentialService`]
+/// via [`crate::transport::webhook::secret_resolver::CredentialBackedWebhookSecretResolver`];
+/// tests wire an in-memory map. Returning an empty `Vec` is **not** allowed —
+/// the factory would then build a fail-closed handler.  Surface the
+/// misconfiguration as a typed error inside the boxed return.
+///
+/// # Tenant isolation
+///
+/// `scope` is mandatory: [`nebula_credential::CredentialService::resolve_for_slot`]
+/// requires a [`nebula_credential::TenantScope`] derived from the B-world
+/// activation row's `scope`.  Without it the credential layer cannot enforce
+/// the owner check.
 #[async_trait]
 pub trait WebhookSecretResolver: Send + Sync {
-    /// Resolve `secret_id` to raw secret bytes.
+    /// Resolve `secret_id` to raw secret bytes, scoped to `scope`.
     ///
     /// # Errors
     ///
     /// Returns a boxed error on lookup failure. The bootstrap wraps
     /// it in [`BootstrapError::SecretResolution`].
-    async fn resolve(&self, secret_id: &str) -> Result<Vec<u8>, SecretResolutionError>;
+    async fn resolve(
+        &self,
+        scope: &Scope,
+        secret_id: &str,
+    ) -> Result<Vec<u8>, SecretResolutionError>;
 }
 
 /// Result of [`bootstrap_webhook_activations`].
@@ -267,12 +279,13 @@ async fn validate_one(
             trigger_id: record.trigger_id.clone(),
         })?;
 
-    let secret = secrets.resolve(&spec.secret_id).await.map_err(|source| {
-        BootstrapError::SecretResolution {
+    let secret = secrets
+        .resolve(&record.scope, &spec.secret_id)
+        .await
+        .map_err(|source| BootstrapError::SecretResolution {
             secret_id: spec.secret_id.clone(),
             source,
-        }
-    })?;
+        })?;
 
     let action_spec = into_action_spec(&spec, secret);
 
