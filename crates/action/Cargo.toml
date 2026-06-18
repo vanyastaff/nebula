@@ -16,6 +16,7 @@ default = []
 
 [dependencies]
 async-trait = { workspace = true }
+futures = { workspace = true }
 nebula-action-macros = { path = "macros" }
 nebula-core = { path = "../core" }
 nebula-credential = { path = "../credential" }

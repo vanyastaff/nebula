@@ -28,6 +28,8 @@ use nebula_workflow::NodeDefinition;
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
+use futures::StreamExt as _;
+
 use crate::{
     action::Action,
     context::{ActionContext, TriggerContext},
@@ -35,13 +37,15 @@ use crate::{
     error::{ActionError, ValidationReason},
     from_workflow_node::FromWorkflowNode,
     handle::{
-        ActionHandle, ControlHandle, ResourceHandle, StatefulHandle, StatelessHandle, TriggerHandle,
+        ActionHandle, ControlHandle, ResourceHandle, StatefulHandle, StatelessHandle, StreamHandle,
+        TriggerHandle,
     },
     metadata::{ActionKind, ActionMetadata},
     resource::ResourceAction,
     result::ActionResult,
     stateful::StatefulAction,
     stateless::StatelessAction,
+    stream::StreamAction,
     trigger::{TriggerAction, TriggerEvent, TriggerEventOutcome},
 };
 
@@ -688,5 +692,122 @@ where
             .evaluate(ControlInput::from_value(input), ctx)
             .await?;
         Ok(outcome.into())
+    }
+}
+
+// ── Stream ─────────────────────────────────────────────────────────────────
+
+/// Generic factory that produces [`ActionHandle::Stream`] for any type
+/// implementing [`StreamAction`] + [`FromWorkflowNode`].
+///
+/// The factory stamps [`ActionKind::Stream`] as the single writer of the kind
+/// on the stored metadata. The `StreamHandleImpl` adapter drives the chunk
+/// stream fully in-process and delivers a single folded value — identical to
+/// stateless from the engine's perspective.
+pub struct GenericStreamFactory<A> {
+    meta: OnceLock<ActionMetadata>,
+    _phantom: PhantomData<fn() -> A>,
+}
+
+impl<A> Default for GenericStreamFactory<A> {
+    fn default() -> Self {
+        Self {
+            meta: OnceLock::new(),
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<A> GenericStreamFactory<A> {
+    /// Construct a new stream factory.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl<A> ActionFactory for GenericStreamFactory<A>
+where
+    A: StreamAction + FromWorkflowNode<Error = ActionError>,
+    <A as Action>::Input: DeserializeOwned + Send + Sync,
+    <A as Action>::Output: Serialize + Send + Sync,
+{
+    fn metadata(&self) -> &ActionMetadata {
+        self.meta
+            .get_or_init(|| <A as Action>::metadata().with_kind(ActionKind::Stream))
+    }
+
+    fn instantiate<'a>(
+        &'a self,
+        node: &'a NodeDefinition,
+        ctx: &'a dyn ActionContext,
+    ) -> Pin<Box<dyn Future<Output = Result<ActionHandle, ActionError>> + Send + 'a>> {
+        Box::pin(async move {
+            let action = A::from_workflow_node(node, ctx).await?;
+            let meta = self.metadata().clone();
+            let inner = StreamHandleImpl::<A>::new(action, meta);
+            Ok(ActionHandle::Stream(Box::new(inner)))
+        })
+    }
+}
+
+struct StreamHandleImpl<A> {
+    action: A,
+    meta: ActionMetadata,
+}
+
+impl<A> StreamHandleImpl<A> {
+    fn new(action: A, meta: ActionMetadata) -> Self {
+        Self { action, meta }
+    }
+}
+
+#[async_trait]
+impl<A> StreamHandle for StreamHandleImpl<A>
+where
+    A: StreamAction,
+    <A as Action>::Input: DeserializeOwned + Send + Sync,
+    <A as Action>::Output: Serialize + Send + Sync,
+{
+    fn metadata(&self) -> &ActionMetadata {
+        &self.meta
+    }
+
+    #[tracing::instrument(
+        name = "stream_handle.dispatch",
+        skip_all,
+        fields(
+            action.key = %self.meta.base.key.as_str(),
+            action.kind = "stream",
+        )
+    )]
+    async fn dispatch(
+        &self,
+        input: Value,
+        ctx: &dyn ActionContext,
+    ) -> Result<ActionResult<Value>, ActionError> {
+        let typed_input: <A as Action>::Input = serde_json::from_value(input).map_err(|e| {
+            ActionError::validation(
+                "input",
+                ValidationReason::MalformedJson,
+                Some(e.to_string()),
+            )
+        })?;
+
+        let chunk_stream = self.action.open_stream(typed_input, ctx);
+        tokio::pin!(chunk_stream);
+
+        let mut accumulator = self.action.init();
+
+        while let Some(chunk_result) = chunk_stream.next().await {
+            // D-4: first Err short-circuits with no partial output.
+            let chunk = chunk_result?;
+            accumulator = self.action.fold(accumulator, chunk);
+        }
+
+        let output_value = serde_json::to_value(accumulator)
+            .map_err(|e| ActionError::fatal(format!("output serialization failed: {e}")))?;
+
+        Ok(ActionResult::success(output_value))
     }
 }

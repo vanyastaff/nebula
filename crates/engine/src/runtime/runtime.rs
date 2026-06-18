@@ -9,6 +9,7 @@ use async_trait::async_trait;
 use dashmap::DashMap;
 use nebula_action::{
     ActionContext, ActionError, ActionFactory, ActionHandle, ActionMetadata, IsolationLevel,
+    StreamHandle,
     output::{ActionOutput, DataReference},
     result::ActionResult,
 };
@@ -439,6 +440,13 @@ impl ActionRuntime {
                 self.observe_dispatched(started, &r);
                 r
             },
+            ActionHandle::Stream(inner) => {
+                let r = self
+                    .execute_stream_handle(&metadata, inner, input, context)
+                    .await;
+                self.observe_dispatched(started, &r);
+                r
+            },
             ActionHandle::Control(inner) => {
                 let r = self
                     .execute_control_handle(&metadata, inner, input, context)
@@ -506,6 +514,46 @@ impl ActionRuntime {
             // fail-closed until we explicitly wire dispatch for it.
             _ => Err(RuntimeError::Internal(format!(
                 "unknown isolation level for action '{}' — refusing to dispatch",
+                metadata.base.key.as_str()
+            ))),
+        }
+    }
+
+    /// Stream dispatch via `Box<dyn StreamHandle>`.
+    ///
+    /// Near-clone of [`Self::execute_stateless_handle`] — the only
+    /// difference is the handle trait (`StreamHandle` instead of
+    /// `StatelessHandle`). The stream is driven fully in-process inside
+    /// the adapter; the engine receives one folded value.
+    ///
+    /// Isolation contract mirrors stateless: `None` runs in-process;
+    /// `CapabilityGated` routes through the [`ActionRunner`]. Future
+    /// isolation variants fail-closed.
+    #[tracing::instrument(
+        name = "runtime.execute_stream_handle",
+        skip_all,
+        fields(
+            action.key = %metadata.base.key.as_str(),
+            action.kind = "stream",
+        )
+    )]
+    async fn execute_stream_handle(
+        &self,
+        metadata: &ActionMetadata,
+        handle: Box<dyn StreamHandle>,
+        input: serde_json::Value,
+        context: &dyn ActionContext,
+    ) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
+        match metadata.isolation_level {
+            IsolationLevel::None => Ok(handle.dispatch(input, context).await?),
+            IsolationLevel::CapabilityGated => {
+                let run_ctx = ActionRunContext::new(context);
+                Ok(self.runner.execute(run_ctx, metadata, input).await?)
+            },
+            // IsolationLevel is `#[non_exhaustive]`. Any future variant must
+            // fail-closed until we explicitly wire dispatch for it.
+            _ => Err(RuntimeError::Internal(format!(
+                "unknown isolation level for stream action '{}' — refusing to dispatch",
                 metadata.base.key.as_str()
             ))),
         }
@@ -753,6 +801,14 @@ impl ActionRuntime {
                         ))
                     })?
                     .len() as u64,
+                // Intentional size-0: Deferred carries retry config + resolution
+                // metadata (no inline payload); Streaming carries a StreamOutput
+                // descriptor (mode + state tag, no inline bytes). The real payload
+                // for both is sized after resolution — either at the resolution site
+                // (Deferred resolved by the engine's resolution pass) or in the
+                // stream adapter (StreamAction::dispatch returns ActionOutput::Value
+                // once the fold completes, which IS measured above). Empty has no
+                // payload by definition.
                 ActionOutput::Deferred(_) | ActionOutput::Streaming(_) | ActionOutput::Empty => 0,
                 ActionOutput::Collection(_) => 0, // collections are flattened before this loop
                 _ => 0,
@@ -917,6 +973,8 @@ fn estimated_action_output_payload_bytes(slot: &ActionOutput<serde_json::Value>)
         ActionOutput::Reference(r) => r
             .size
             .unwrap_or_else(|| serde_json::to_vec(r).map_or(0, |b| b.len() as u64)),
+        // Size-0 is intentional — same rationale as enforce_data_limit:
+        // Deferred and Streaming carry descriptors, not inline payloads.
         ActionOutput::Deferred(_) => 0,
         ActionOutput::Streaming(_) => 0,
         ActionOutput::Collection(items) => items
@@ -2103,6 +2161,183 @@ mod tests {
                 .get(),
             0,
             "dispatch-rejected counter must stay at zero for successful dispatch"
+        );
+    }
+
+    // ── Stream action dispatch ───────────────────────────────────────────────
+
+    /// Prove the end-to-end stream dispatch path:
+    /// register via `register_stream_factory` → execute → folded value reaches
+    /// the result. If the `ActionHandle::Stream` arm in `dispatch_action` is
+    /// reverted, this test goes red (the action would hit `_ => UNKNOWN_VARIANT`
+    /// and return `RuntimeError::Internal`).
+    #[tokio::test]
+    async fn stream_action_dispatch_yields_folded_value() {
+        use futures::stream;
+        use nebula_action::{FromWorkflowNode, stream::StreamAction};
+
+        struct CountingStream;
+
+        impl Action for CountingStream {
+            type Input = serde_json::Value;
+            type Output = serde_json::Value;
+
+            fn metadata() -> ActionMetadata {
+                ActionMetadata::new(
+                    action_key!("test.stream.counting"),
+                    "CountingStream",
+                    "yields 1,2,3 and sums",
+                )
+            }
+
+            fn dependencies() -> &'static Dependencies {
+                static D: OnceLock<Dependencies> = OnceLock::new();
+                D.get_or_init(Dependencies::new)
+            }
+        }
+
+        impl StreamAction for CountingStream {
+            type Chunk = u64;
+
+            fn open_stream(
+                &self,
+                _input: serde_json::Value,
+                _ctx: &(impl ActionContext + ?Sized),
+            ) -> impl futures::Stream<Item = Result<u64, ActionError>> + Send {
+                stream::iter([Ok(1u64), Ok(2), Ok(3)])
+            }
+
+            fn init(&self) -> serde_json::Value {
+                serde_json::json!(0u64)
+            }
+
+            fn fold(&self, acc: serde_json::Value, chunk: u64) -> serde_json::Value {
+                let running = acc.as_u64().unwrap_or(0);
+                serde_json::json!(running + chunk)
+            }
+        }
+
+        impl FromWorkflowNode for CountingStream {
+            type Error = ActionError;
+
+            async fn from_workflow_node(
+                _node: &NodeDefinition,
+                _ctx: &dyn ActionContext,
+            ) -> Result<Self, Self::Error> {
+                Ok(CountingStream)
+            }
+        }
+
+        let registry = Arc::new(ActionRegistry::new());
+        registry.register_stream_factory::<CountingStream>();
+        let rt = make_runtime(registry);
+
+        let result = rt
+            .execute_action(
+                "test.stream.counting",
+                serde_json::json!(null),
+                &test_context(),
+            )
+            .await
+            .expect("stream dispatch must succeed");
+
+        match result {
+            ActionResult::Success { output } => {
+                let value = output.into_value().expect("output must be inline Value");
+                assert_eq!(value, serde_json::json!(6u64), "1+2+3 must fold to 6");
+            },
+            other => panic!("expected Success, got {other:?}"),
+        }
+    }
+
+    /// D-2 regression: a stream-produced payload that exceeds the per-node
+    /// limit must be rejected (or spilled). The folded Value goes through
+    /// `ActionOutput::Value`, which IS measured by `enforce_data_limit`.
+    /// This test proves the D-2 path is not bypassed by the new kind.
+    #[tokio::test]
+    async fn stream_output_respects_data_limit() {
+        use futures::stream;
+        use nebula_action::{FromWorkflowNode, stream::StreamAction};
+
+        struct BigStream;
+
+        impl Action for BigStream {
+            type Input = serde_json::Value;
+            type Output = serde_json::Value;
+
+            fn metadata() -> ActionMetadata {
+                ActionMetadata::new(
+                    action_key!("test.stream.big"),
+                    "BigStream",
+                    "produces an oversized folded value",
+                )
+            }
+
+            fn dependencies() -> &'static Dependencies {
+                static D: OnceLock<Dependencies> = OnceLock::new();
+                D.get_or_init(Dependencies::new)
+            }
+        }
+
+        impl StreamAction for BigStream {
+            type Chunk = String;
+
+            fn open_stream(
+                &self,
+                _input: serde_json::Value,
+                _ctx: &(impl ActionContext + ?Sized),
+            ) -> impl futures::Stream<Item = Result<String, ActionError>> + Send {
+                // One chunk whose folded form exceeds any tiny limit.
+                stream::iter([Ok("x".repeat(1024))])
+            }
+
+            fn init(&self) -> serde_json::Value {
+                serde_json::json!("")
+            }
+
+            fn fold(&self, _acc: serde_json::Value, chunk: String) -> serde_json::Value {
+                serde_json::json!(chunk)
+            }
+        }
+
+        impl FromWorkflowNode for BigStream {
+            type Error = ActionError;
+
+            async fn from_workflow_node(
+                _node: &NodeDefinition,
+                _ctx: &dyn ActionContext,
+            ) -> Result<Self, Self::Error> {
+                Ok(BigStream)
+            }
+        }
+
+        let registry = Arc::new(ActionRegistry::new());
+        registry.register_stream_factory::<BigStream>();
+
+        let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
+            Box::pin(async move { Ok(ActionResult::success(input)) })
+        });
+        let runner = Arc::new(InProcessRunner::new(executor));
+        let metrics = MetricsRegistry::new();
+        let rt = ActionRuntime::try_new(
+            registry,
+            runner,
+            DataPassingPolicy {
+                max_node_output_bytes: 10, // far below the 1024-char chunk
+                ..Default::default()
+            },
+            metrics,
+        )
+        .unwrap();
+
+        let err = rt
+            .execute_action("test.stream.big", serde_json::json!(null), &test_context())
+            .await
+            .expect_err("oversized stream output must be rejected");
+
+        assert!(
+            matches!(err, RuntimeError::DataLimitExceeded { .. }),
+            "expected DataLimitExceeded, got {err:?}"
         );
     }
 

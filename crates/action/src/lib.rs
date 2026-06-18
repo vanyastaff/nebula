@@ -79,6 +79,9 @@ pub mod stateful;
 /// [`StatelessAction`] DX trait, [`StatelessHandler`] dyn contract, adapter,
 /// and function-backed DX adapters.
 pub mod stateless;
+/// [`StreamAction`] author trait — opens an async chunk stream and folds it
+/// into a single output value in-process.
+pub mod stream;
 /// Test utilities for action authors.
 pub mod testing;
 /// Base [`TriggerAction`] trait, [`TriggerHandler`] dyn contract, the
@@ -107,11 +110,12 @@ pub use error::{
 };
 pub use factory::{
     ActionFactory, GenericControlFactory, GenericResourceFactory, GenericStatefulFactory,
-    GenericStatelessFactory, GenericTriggerFactory, InstanceFactory,
+    GenericStatelessFactory, GenericStreamFactory, GenericTriggerFactory, InstanceFactory,
 };
 pub use from_workflow_node::FromWorkflowNode;
 pub use handle::{
-    ActionHandle, ControlHandle, ResourceHandle, StatefulHandle, StatelessHandle, TriggerHandle,
+    ActionHandle, ControlHandle, ResourceHandle, StatefulHandle, StatelessHandle, StreamHandle,
+    TriggerHandle,
 };
 pub use idempotency::IdempotencyKey;
 pub use metadata::{
@@ -148,6 +152,7 @@ pub use stateful::{
     StatefulAction, StatefulActionAdapter, StatefulHandler,
 };
 pub use stateless::{StatelessAction, StatelessActionAdapter, StatelessHandler};
+pub use stream::StreamAction;
 pub use testing::{
     SpyEmission, SpyEmitter, SpyLogger, SpyScheduler, StatefulTestHarness, TestActionContext,
     TestContextBuilder, TestTriggerContext, TriggerTestHarness,
