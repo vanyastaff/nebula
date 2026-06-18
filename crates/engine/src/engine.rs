@@ -8402,7 +8402,7 @@ mod tests {
         registry.register_stateless_instance(meta, CredProbeAction);
     }
 
-    /// Build a workflow with a single `CredProbeHandler` node that probes `cred_id`.
+    /// Build a workflow with a single `CredProbeAction` node that probes `cred_id`.
     fn probe_workflow(action: &str, cred_id: &str) -> WorkflowDefinition {
         let n1 = node_key!("probe");
         let node = NodeDefinition::new(n1, "probe", "core", action)
