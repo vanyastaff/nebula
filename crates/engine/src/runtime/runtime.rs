@@ -8,7 +8,7 @@ use std::{sync::Arc, time::Instant};
 use async_trait::async_trait;
 use dashmap::DashMap;
 use nebula_action::{
-    ActionContext, ActionError, ActionFactory, ActionHandler, ActionMetadata, ErasedAction,
+    ActionContext, ActionError, ActionFactory, ActionHandle, ActionHandler, ActionMetadata,
     IsolationLevel, StatefulHandler, StatelessHandler,
     output::{ActionOutput, DataReference},
     result::ActionResult,
@@ -30,7 +30,7 @@ use super::{
     runner::{ActionRunContext, ActionRunner},
 };
 
-/// Compute a digest of the erased stateful state for stuck-state detection.
+/// Compute a digest of the serialized stateful state for stuck-state detection.
 ///
 /// The runtime sees `state` as `serde_json::Value` — not `Hash`, but always
 /// serialisable. We route through `serde_json::to_vec` and hash the bytes.
@@ -487,7 +487,7 @@ impl ActionRuntime {
     }
 
     /// Dispatch through the factory path — instantiate a fresh
-    /// [`ErasedAction`] for the supplied workflow node and dispatch it.
+    /// [`ActionHandle`] for the supplied workflow node and dispatch it.
     ///
     /// Mirrors [`Self::run_handler`]'s metric contract:
     ///
@@ -529,7 +529,7 @@ impl ActionRuntime {
 
         // Instantiate the action via the factory. Slot-binding resolution
         // (and any FromWorkflowNode user code) runs here.
-        let erased = match factory.instantiate(node, context).await {
+        let handle = match factory.instantiate(node, context).await {
             Ok(e) => e,
             Err(e) => {
                 let result: Result<ActionResult<serde_json::Value>, RuntimeError> =
@@ -539,47 +539,47 @@ impl ActionRuntime {
             },
         };
 
-        let result = match erased {
-            ErasedAction::Stateless(inner) => {
+        let result = match handle {
+            ActionHandle::Stateless(inner) => {
                 let r = self
-                    .execute_erased_stateless(&metadata, inner, input, context)
+                    .execute_stateless_handle(&metadata, inner, input, context)
                     .await;
                 self.observe_dispatched(started, &r);
                 r
             },
-            ErasedAction::Stateful(inner) => {
+            ActionHandle::Stateful(inner) => {
                 let r = self
-                    .execute_erased_stateful(&metadata, inner, input, context, checkpoint)
+                    .execute_stateful_handle(&metadata, inner, input, context, checkpoint)
                     .await;
                 self.observe_dispatched(started, &r);
                 r
             },
-            ErasedAction::Control(inner) => {
+            ActionHandle::Control(inner) => {
                 let r = self
-                    .execute_erased_control(&metadata, inner, input, context)
+                    .execute_control_handle(&metadata, inner, input, context)
                     .await;
                 self.observe_dispatched(started, &r);
                 r
             },
-            ErasedAction::Trigger(_) => {
+            ActionHandle::Trigger(_) => {
                 self.observe_rejected(dispatch_reject_reason::TRIGGER_NOT_EXECUTABLE);
                 return Err(RuntimeError::TriggerNotExecutable {
                     key: action_key.to_owned(),
                 });
             },
-            ErasedAction::Resource(_) => {
+            ActionHandle::Resource(_) => {
                 self.observe_rejected(dispatch_reject_reason::RESOURCE_NOT_EXECUTABLE);
                 return Err(RuntimeError::ResourceNotExecutable {
                     key: action_key.to_owned(),
                 });
             },
-            // `ErasedAction` is `#[non_exhaustive]`. Unknown future variants
+            // `ActionHandle` is `#[non_exhaustive]`. Unknown future variants
             // surface as an internal runtime error rather than silently
             // succeeding.
             _ => {
                 self.observe_rejected(dispatch_reject_reason::UNKNOWN_VARIANT);
                 return Err(RuntimeError::Internal(format!(
-                    "unknown ErasedAction variant for action '{action_key}'"
+                    "unknown ActionHandle variant for action '{action_key}'"
                 )));
             },
         };
@@ -599,20 +599,20 @@ impl ActionRuntime {
         }
     }
 
-    /// Stateless dispatch via `Box<dyn ErasedStateless>`.
+    /// Stateless dispatch via `Box<dyn StatelessHandle>`.
     ///
     /// Mirrors [`Self::execute_stateless`] for the factory path. Honours
     /// the same isolation contract (`None` runs in-process; capability-gated
     /// dispatch routes through [`ActionRunner`] using the same `metadata`).
-    async fn execute_erased_stateless(
+    async fn execute_stateless_handle(
         &self,
         metadata: &ActionMetadata,
-        erased: Box<dyn nebula_action::ErasedStateless>,
+        handle: Box<dyn nebula_action::StatelessHandle>,
         input: serde_json::Value,
         context: &dyn ActionContext,
     ) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
         match metadata.isolation_level {
-            IsolationLevel::None => Ok(erased.dispatch(input, context).await?),
+            IsolationLevel::None => Ok(handle.dispatch(input, context).await?),
             IsolationLevel::CapabilityGated => {
                 let run_ctx = ActionRunContext::new(context);
                 Ok(self.runner.execute(run_ctx, metadata, input).await?)
@@ -626,17 +626,17 @@ impl ActionRuntime {
         }
     }
 
-    /// Stateful dispatch via `Box<dyn ErasedStateful>`.
+    /// Stateful dispatch via `Box<dyn StatefulHandle>`.
     ///
     /// Mirrors [`Self::execute_stateful`] for the factory path. The
-    /// erased trait works on `Value` state so the iteration body matches
+    /// handle trait works on `Value` state so the iteration body matches
     /// 1:1 with the legacy `Arc<dyn StatefulHandler>` path — same cancel
     /// race, same checkpoint contract, same iteration cap, same
     /// stuck-state guard.
-    async fn execute_erased_stateful(
+    async fn execute_stateful_handle(
         &self,
         metadata: &ActionMetadata,
-        erased: Box<dyn nebula_action::ErasedStateful>,
+        handle: Box<dyn nebula_action::StatefulHandle>,
         input: serde_json::Value,
         context: &dyn ActionContext,
         checkpoint: Option<Arc<dyn StatefulCheckpointSink>>,
@@ -655,7 +655,7 @@ impl ActionRuntime {
         let (mut state, mut iteration) = match checkpoint.as_deref() {
             Some(sink) => match sink.load().await {
                 Ok(Some(cp)) => (cp.state, cp.iteration),
-                Ok(None) => (erased.init_state()?, 0u32),
+                Ok(None) => (handle.init_state()?, 0u32),
                 Err(load_err) => {
                     tracing::warn!(
                         action_key = %metadata.base.key.as_str(),
@@ -665,10 +665,10 @@ impl ActionRuntime {
                         "stateful checkpoint load failed — falling back to init_state, \
                          iteration progress (if any) is lost"
                     );
-                    (erased.init_state()?, 0u32)
+                    (handle.init_state()?, 0u32)
                 },
             },
-            None => (erased.init_state()?, 0u32),
+            None => (handle.init_state()?, 0u32),
         };
 
         const MAX_ITERATIONS: u32 = 10_000;
@@ -689,7 +689,7 @@ impl ActionRuntime {
             let state_digest_before = stateful_state_digest(&state);
 
             let iteration_result = {
-                let exec_fut = erased.dispatch(&input, &mut state, context);
+                let exec_fut = handle.dispatch(&input, &mut state, context);
                 tokio::pin!(exec_fut);
 
                 tokio::select! {
@@ -748,17 +748,17 @@ impl ActionRuntime {
         }
     }
 
-    /// Control dispatch via `Box<dyn ErasedControl>`.
+    /// Control dispatch via `Box<dyn ControlHandle>`.
     ///
     /// Control nodes (If / Switch / Router / Filter / NoOp / Stop / Fail)
     /// dispatch as one-shot evaluators and never run through the runner —
     /// they produce flow-control [`ActionResult`] variants but no I/O. The
-    /// erased surface is intentionally identical to stateless from the
+    /// handle surface is intentionally identical to stateless from the
     /// runtime's POV.
-    async fn execute_erased_control(
+    async fn execute_control_handle(
         &self,
         metadata: &ActionMetadata,
-        erased: Box<dyn nebula_action::ErasedControl>,
+        handle: Box<dyn nebula_action::ControlHandle>,
         input: serde_json::Value,
         context: &dyn ActionContext,
     ) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
@@ -770,7 +770,7 @@ impl ActionRuntime {
                 metadata.base.key.as_str()
             )));
         }
-        Ok(erased.dispatch(input, context).await?)
+        Ok(handle.dispatch(input, context).await?)
     }
 
     /// Observe a dispatched handler execution.

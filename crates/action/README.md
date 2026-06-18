@@ -38,7 +38,7 @@ pub trait Action: Sized + Send + Sync + 'static {
 // (ADR-0052 P3).
 ```
 
-`Action` is **not object-safe** — `dyn Action` will not compile. Engine dispatch goes through `ActionFactory` + `ErasedAction` (see below).
+`Action` is **not object-safe** — `dyn Action` will not compile. Engine dispatch goes through `ActionFactory` + `ActionHandle` (see below).
 
 ### Sub-traits — execution shapes inherit `<Self as Action>::Input/Output`
 
@@ -135,17 +135,17 @@ pub trait FromWorkflowNode: Sized + Send + 'static {
 
 `#[derive(Action)]` emits the body — read `node.resource_binding(slot)` / `node.credential_binding(slot)` (falling back to the slot's `default_id`), call `ctx.acquire_resource_by_id::<R>(id)` / `ctx.resolve_credential_by_id::<C>(id)`, assemble `Self`. Plugin authors never write the body by hand.
 
-### Engine-side dispatch — `ActionFactory` + `ErasedAction`
+### Engine-side dispatch — `ActionFactory` + `ActionHandle`
 
-Because `Action: Sized` is not object-safe, the engine's registry holds `Arc<dyn ActionFactory>` (object-safe, generic over factory variant) and dispatches through `Box<dyn ErasedXxx>` per-variant trait objects:
+Because `Action: Sized` is not object-safe, the engine's registry holds `Arc<dyn ActionFactory>` (object-safe, generic over factory variant) and dispatches through `ActionHandle` over `Box<dyn XxxHandle>` per-variant trait objects:
 
-| Erased trait | Mirrors |
+| Handle trait | Mirrors |
 |---|---|
-| `ErasedStateless` | `StatelessHandler` (legacy) |
-| `ErasedStateful`  | `StatefulHandler` |
-| `ErasedTrigger`   | `TriggerHandler` |
-| `ErasedResource`  | `ResourceHandler` |
-| `ErasedControl`   | dyn-erased control flow |
+| `StatelessHandle` | `StatelessHandler` (legacy) |
+| `StatefulHandle`  | `StatefulHandler` |
+| `TriggerHandle`   | `TriggerHandler` |
+| `ResourceHandle`  | `ResourceHandler` |
+| `ControlHandle`   | dyn control flow |
 
 Generic factories (`GenericStatelessFactory<A>`, `GenericStatefulFactory<A>`, …) wrap any `A: Action + FromWorkflowNode + StatelessAction` (etc.) into an `ActionFactory` automatically — see `crates/action/src/factory.rs`.
 
@@ -179,7 +179,7 @@ The v4 surface is a hard break per `feedback_no_shims.md` / `feedback_hard_break
 2. **Drop `metadata()` boilerplate from `Self`.** The derive emits a `OnceLock` `metadata()` from the `#[action(key, version, …)]` arguments. Delete the manual `impl Action::metadata` block.
 3. **Replace `dependencies()` macros with field attributes.** Old: a separate `DeclaresDependencies` impl listing `ResourceKey`s and `CredentialKey`s. New: `#[resource(key = "…")]` / `#[credential(key = "…")]` per field on the struct.
 4. **Update sub-trait method signatures** to take `Self::Input` explicitly: `execute(&self, input: SendTelegramInput, ctx)` not `execute(&self, ctx)`.
-5. **Replace `dyn Action` with `Arc<dyn ActionFactory>`** anywhere the engine or plugin loader stored an erased action. Existing transports / SDK harnesses that wrap `Arc<dyn StatelessHandler>` continue to work — four production paths intentionally stay on the legacy handler surface: webhook routing, plugin discovery, SDK runtime, EventSource adapter. The original architectural rationale survives in `git log` (commits up to the retire-AI-Factory pass).
+5. **Replace `dyn Action` with `Arc<dyn ActionFactory>`** anywhere the engine or plugin loader stored a dynamic action handle. Existing transports / SDK harnesses that wrap `Arc<dyn StatelessHandler>` continue to work — four production paths intentionally stay on the legacy handler surface: webhook routing, plugin discovery, SDK runtime, EventSource adapter. The original architectural rationale survives in `git log` (commits up to the retire-AI-Factory pass).
 6. **For `ResourceAction` impls**, set `type Output = ResourceProduces<Self::Resource>`. The marker auto-derives `HasSchema`.
 7. **For `Resource` impls**, drop `type Credential` (per ADR-0044) and declare credential deps via `#[credential(key = "…")]` field attributes — see `crates/resource/README.md` for the resource-side migration.
 
@@ -222,7 +222,7 @@ The examples deliberately wire slot resolution manually (no `#[derive(Action)]`)
 
 See `docs/MATURITY.md` row for `nebula-action`.
 
-- API stability: `frontier` — Variant A trait shape (Sized + type Input/Output + static metadata + slot-binding derive + FromWorkflowNode factory + ErasedAction dispatch) shipped under M6 / §M11 (2026-04-29). The `ActionHandler` enum and per-variant `XxxHandler` traits remain part of the public surface for transports / SDK harnesses / event sources that operate outside the workflow-node dispatch loop — the four production paths kept on the legacy handler surface are enumerated in the migration recipe above.
+- API stability: `frontier` — Variant A trait shape (Sized + type Input/Output + static metadata + slot-binding derive + FromWorkflowNode factory + ActionHandle dispatch) shipped under M6 / §M11 (2026-04-29). The `ActionHandler` enum and per-variant `XxxHandler` traits remain part of the public surface for transports / SDK harnesses / event sources that operate outside the workflow-node dispatch loop — the four production paths kept on the legacy handler surface are enumerated in the migration recipe above.
 - `#![forbid(unsafe_code)]`, `#![warn(missing_docs)]` enforced.
 - `CheckpointPolicy`: persisted on `ActionMetadata` (`checkpoint_policy`, default `Inherit`); engine enforcement of non-`Inherit` cadences not yet wired end-to-end.
 - DX specializations (`PaginatedAction`, `BatchAction`, `WebhookAction`, `PollAction`) are implemented and tested; cross-action-type integration tests: partial.

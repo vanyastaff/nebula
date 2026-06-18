@@ -1,20 +1,19 @@
-//! `ErasedAction` enum + object-safe per-variant sub-traits.
+//! `ActionHandle` enum + object-safe per-variant sub-traits.
 //!
 //! The engine cannot dispatch on the
 //! `Sized` [`Action`](crate::Action) trait directly because Variant A makes
 //! it object-unsafe. Instead, the engine works against an enum
-//! [`ErasedAction`] whose variants wrap `Box<dyn ErasedXxx>` trait objects
+//! [`ActionHandle`] whose variants wrap `Box<dyn XxxHandle>` trait objects
 //! — one per execution-shape kind:
 //!
-//! - [`ErasedStateless`] — one-shot JSON in / JSON out (mirrors today's `StatelessHandler`).
-//! - [`ErasedStateful`] — iterative with mutable JSON state.
-//! - [`ErasedTrigger`] — start/stop trigger lifecycle.
-//! - [`ErasedResource`] — graph-scoped resource configure/cleanup.
-//! - [`ErasedControl`] — flow-control nodes desugared to a stateless surface.
+//! - [`StatelessHandle`] — one-shot JSON in / JSON out.
+//! - [`StatefulHandle`] — iterative with mutable JSON state.
+//! - [`TriggerHandle`] — start/stop trigger lifecycle.
+//! - [`ResourceHandle`] — graph-scoped resource configure/cleanup.
+//! - [`ControlHandle`] — flow-control nodes desugared to a stateless surface.
 //!
-//! These mirror the existing `XxxHandler` family one-for-one. Until the
-//! engine fully migrates to factory-based dispatch (later in this phase),
-//! both layers coexist; the Variant A foundation is what we ship.
+//! The engine produces an `ActionHandle` per execution via
+//! [`ActionFactory::instantiate`](crate::ActionFactory::instantiate).
 
 use std::{any::Any, fmt};
 
@@ -37,7 +36,7 @@ use crate::{
 /// on `Value` to/from for engine erasure. Implementors are typically
 /// generic wrappers produced by an [`ActionFactory`](crate::ActionFactory).
 #[async_trait]
-pub trait ErasedStateless: Send + Sync + 'static {
+pub trait StatelessHandle: Send + Sync + 'static {
     /// Action metadata (key, version, ports, schemas).
     fn metadata(&self) -> &ActionMetadata;
 
@@ -55,7 +54,7 @@ pub trait ErasedStateless: Send + Sync + 'static {
 
 /// Object-safe stateful dispatch surface.
 #[async_trait]
-pub trait ErasedStateful: Send + Sync + 'static {
+pub trait StatefulHandle: Send + Sync + 'static {
     /// Action metadata.
     fn metadata(&self) -> &ActionMetadata;
 
@@ -87,7 +86,7 @@ pub trait ErasedStateful: Send + Sync + 'static {
 
 /// Object-safe trigger dispatch surface (start / stop / handle_event).
 #[async_trait]
-pub trait ErasedTrigger: Send + Sync + 'static {
+pub trait TriggerHandle: Send + Sync + 'static {
     /// Action metadata.
     fn metadata(&self) -> &ActionMetadata;
 
@@ -130,7 +129,7 @@ pub trait ErasedTrigger: Send + Sync + 'static {
 
 /// Object-safe resource dispatch surface (configure/cleanup lifecycle).
 #[async_trait]
-pub trait ErasedResource: Send + Sync + 'static {
+pub trait ResourceHandle: Send + Sync + 'static {
     /// Action metadata.
     fn metadata(&self) -> &ActionMetadata;
 
@@ -159,7 +158,7 @@ pub trait ErasedResource: Send + Sync + 'static {
 
 /// Object-safe control dispatch surface (flow-control desugared to stateless).
 #[async_trait]
-pub trait ErasedControl: Send + Sync + 'static {
+pub trait ControlHandle: Send + Sync + 'static {
     /// Action metadata (with `ActionCategory::Control` or `Terminal` stamped).
     fn metadata(&self) -> &ActionMetadata;
 
@@ -177,25 +176,25 @@ pub trait ErasedControl: Send + Sync + 'static {
 
 // ── Top-level enum ──────────────────────────────────────────────────────────
 
-/// Top-level erased action enum — engine dispatches on the variant.
+/// Top-level action-handle enum — engine dispatches on the variant.
 ///
-/// Each variant wraps a `Box<dyn ErasedXxx>`. The engine produces these
+/// Each variant wraps a `Box<dyn XxxHandle>`. The engine produces these
 /// per-execution via [`ActionFactory::instantiate`](crate::ActionFactory::instantiate).
 #[non_exhaustive]
-pub enum ErasedAction {
+pub enum ActionHandle {
     /// One-shot stateless execution.
-    Stateless(Box<dyn ErasedStateless>),
+    Stateless(Box<dyn StatelessHandle>),
     /// Iterative execution with mutable JSON state.
-    Stateful(Box<dyn ErasedStateful>),
+    Stateful(Box<dyn StatefulHandle>),
     /// Workflow trigger (start/stop lifecycle).
-    Trigger(Box<dyn ErasedTrigger>),
+    Trigger(Box<dyn TriggerHandle>),
     /// Graph-scoped resource (configure/cleanup).
-    Resource(Box<dyn ErasedResource>),
+    Resource(Box<dyn ResourceHandle>),
     /// Flow-control node (If / Switch / Router / Filter / NoOp / Stop / Fail).
-    Control(Box<dyn ErasedControl>),
+    Control(Box<dyn ControlHandle>),
 }
 
-impl ErasedAction {
+impl ActionHandle {
     /// Get metadata regardless of variant.
     #[must_use]
     pub fn metadata(&self) -> &ActionMetadata {
@@ -208,38 +207,38 @@ impl ErasedAction {
         }
     }
 
-    /// Whether this is a stateless erased action.
+    /// Whether this is a stateless action handle.
     #[must_use]
     pub fn is_stateless(&self) -> bool {
         matches!(self, Self::Stateless(_))
     }
 
-    /// Whether this is a stateful erased action.
+    /// Whether this is a stateful action handle.
     #[must_use]
     pub fn is_stateful(&self) -> bool {
         matches!(self, Self::Stateful(_))
     }
 
-    /// Whether this is a trigger erased action.
+    /// Whether this is a trigger action handle.
     #[must_use]
     pub fn is_trigger(&self) -> bool {
         matches!(self, Self::Trigger(_))
     }
 
-    /// Whether this is a resource erased action.
+    /// Whether this is a resource action handle.
     #[must_use]
     pub fn is_resource(&self) -> bool {
         matches!(self, Self::Resource(_))
     }
 
-    /// Whether this is a control erased action.
+    /// Whether this is a control action handle.
     #[must_use]
     pub fn is_control(&self) -> bool {
         matches!(self, Self::Control(_))
     }
 }
 
-impl fmt::Debug for ErasedAction {
+impl fmt::Debug for ActionHandle {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let (tag, key) = match self {
             Self::Stateless(h) => ("Stateless", h.metadata().base.key.as_str()),
