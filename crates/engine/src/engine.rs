@@ -810,7 +810,22 @@ impl WorkflowEngine {
             }
         }
 
-        // Both guards passed — commit the registrations.
+        // on_load runs before any mutation: a failing hook aborts wiring with
+        // nothing registered (atomicity). ADR-0095 D2 load contract.
+        plugin.plugin().on_load().map_err(|source| {
+            tracing::warn!(
+                target: "nebula_engine::plugin_wiring",
+                plugin_key = %plugin_key,
+                error = %source,
+                "with_plugin: on_load hook failed — wiring aborted"
+            );
+            PluginWiringError::OnLoad {
+                plugin_key: plugin_key.clone(),
+                source,
+            }
+        })?;
+
+        // on_load succeeded — commit the registrations.
         let span = tracing::info_span!(
             "nebula_engine::plugin_wiring::with_plugin",
             plugin_key = %plugin_key,
@@ -830,10 +845,13 @@ impl WorkflowEngine {
         }
 
         // Register into the plugin registry for metadata / catalog queries.
-        // The duplicate-key guard above already confirmed this key is absent.
+        // Both guards above confirmed the key is absent; surface any unexpected
+        // registry fault as a typed error rather than a panic.
         self.plugin_registry
             .register(plugin)
-            .expect("plugin_registry.register must succeed after duplicate-key guard passed");
+            .map_err(|_| PluginWiringError::DuplicatePlugin {
+                plugin_key: plugin_key.clone(),
+            })?;
 
         tracing::info!(
             target: "nebula_engine::plugin_wiring",

@@ -20,7 +20,8 @@
 //! use nebula_plugin::ResolvedPlugin;
 //! use nebula_plugin_core::CorePlugin;
 //!
-//! let plugin = ResolvedPlugin::from(CorePlugin::new()).expect("core plugin must resolve");
+//! let plugin = ResolvedPlugin::from(CorePlugin::try_new()?)
+//!     .expect("core plugin must resolve");
 //! let engine = engine.with_plugin(std::sync::Arc::new(plugin))?;
 //! ```
 

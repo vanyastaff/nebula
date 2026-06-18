@@ -6,6 +6,14 @@
 //! `ActionRegistry` (making the actions dispatchable) **and** records the
 //! plugin in the engine's `PluginRegistry` (making its metadata queryable).
 //!
+//! ## Load ordering
+//!
+//! `Plugin::on_load` runs **before** any factory or plugin-registry mutation.
+//! A failing `on_load` aborts wiring with nothing registered — the engine
+//! state is unchanged. `Plugin::on_unload` and rollback of a later-step
+//! failure (e.g. `ActionRegistry` mutation) require an `InstallTxn` abstraction;
+//! that is a named deferral beyond this bridge.
+//!
 //! ## Out of scope (deliberate deferral)
 //!
 //! - **Resource wiring**: `Plugin::resources()` yields `Arc<dyn ResourceFactory>`
@@ -18,7 +26,7 @@
 //!   support requires an ADR decision on hot-reload safety.
 
 use nebula_core::ActionKey;
-use nebula_plugin::PluginKey;
+use nebula_plugin::{PluginError, PluginKey};
 
 /// Error returned when wiring a plugin into the engine fails.
 #[derive(Debug, thiserror::Error)]
@@ -54,5 +62,19 @@ pub enum PluginWiringError {
         plugin_key: PluginKey,
         /// The conflicting action key.
         action_key: ActionKey,
+    },
+
+    /// `Plugin::on_load` returned an error.
+    ///
+    /// The engine state is unchanged: no action factories were registered and
+    /// the plugin was not recorded in the plugin registry. The plugin should
+    /// be considered unloaded.
+    #[error("plugin '{plugin_key}' on_load hook failed: {source}")]
+    OnLoad {
+        /// The plugin whose `on_load` failed.
+        plugin_key: PluginKey,
+        /// The underlying plugin error.
+        #[source]
+        source: PluginError,
     },
 }

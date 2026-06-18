@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use nebula_action::ActionFactory;
 use nebula_action::factory::GenericStatelessFactory;
-use nebula_metadata::PluginManifest;
+use nebula_metadata::{ManifestError, PluginManifest};
 use nebula_plugin::Plugin;
 
 use crate::actions::SetFields;
@@ -20,7 +20,7 @@ use crate::actions::SetFields;
 /// use nebula_plugin::ResolvedPlugin;
 /// use nebula_plugin_core::CorePlugin;
 ///
-/// let plugin = Arc::new(ResolvedPlugin::from(CorePlugin::new())?);
+/// let plugin = Arc::new(ResolvedPlugin::from(CorePlugin::try_new()?)?);
 /// let engine = engine.with_plugin(plugin)?;
 /// ```
 #[derive(Debug)]
@@ -30,19 +30,16 @@ pub struct CorePlugin {
 
 impl CorePlugin {
     /// Construct the core plugin with its canonical manifest.
-    #[must_use]
-    pub fn new() -> Self {
+    ///
+    /// Returns `Err` if the plugin key or manifest is structurally invalid.
+    /// For the built-in `core` plugin this should never fail in practice;
+    /// the fallible return is required because `PluginManifest::builder().build()`
+    /// validates and normalizes the key at construction time.
+    pub fn try_new() -> Result<Self, ManifestError> {
         let manifest = PluginManifest::builder("core", "Core")
             .description("Built-in utility actions available in every Nebula deployment")
-            .build()
-            .expect("CorePlugin manifest is statically valid");
-        Self { manifest }
-    }
-}
-
-impl Default for CorePlugin {
-    fn default() -> Self {
-        Self::new()
+            .build()?;
+        Ok(Self { manifest })
     }
 }
 
@@ -64,14 +61,15 @@ mod tests {
 
     #[test]
     fn plugin_key_is_core() {
-        let plugin = CorePlugin::new();
+        let plugin = CorePlugin::try_new().expect("CorePlugin::try_new must succeed");
         assert_eq!(plugin.key().as_str(), "core");
     }
 
     #[test]
     fn resolves_set_fields_action() {
-        let resolved = ResolvedPlugin::from(CorePlugin::new())
-            .expect("CorePlugin must resolve without errors");
+        let resolved =
+            ResolvedPlugin::from(CorePlugin::try_new().expect("CorePlugin::try_new must succeed"))
+                .expect("CorePlugin must resolve without errors");
         let key = nebula_core::ActionKey::new("core.set_fields").unwrap();
         assert!(
             resolved.action(&key).is_some(),
@@ -83,7 +81,8 @@ mod tests {
     fn namespace_invariant_holds() {
         // ResolvedPlugin::from validates that every action key starts with
         // "core.". A construction failure here means a key was mis-prefixed.
-        let result = ResolvedPlugin::from(CorePlugin::new());
+        let core = CorePlugin::try_new().expect("CorePlugin::try_new must succeed");
+        let result = ResolvedPlugin::from(core);
         assert!(
             result.is_ok(),
             "CorePlugin must pass namespace validation: {result:?}"

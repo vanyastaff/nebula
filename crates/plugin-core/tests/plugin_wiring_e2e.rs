@@ -21,9 +21,11 @@
 //!   Unit: pre-registering an action with the same key as one inside the
 //!   plugin returns `PluginWiringError::DuplicateActionKey`.
 
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc};
 
-use nebula_action::ActionResult;
+use nebula_action::{
+    ActionContext, ActionError, ActionFactory, ActionHandle, ActionMetadata, ActionResult,
+};
 use nebula_engine::ActionExecutor;
 use nebula_engine::{
     ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner, PluginWiringError,
@@ -31,7 +33,7 @@ use nebula_engine::{
 };
 use nebula_execution::context::ExecutionBudget;
 use nebula_metrics::MetricsRegistry;
-use nebula_plugin::ResolvedPlugin;
+use nebula_plugin::{Plugin, PluginError, PluginManifest, ResolvedPlugin};
 use nebula_plugin_core::CorePlugin;
 use nebula_workflow::{
     CURRENT_SCHEMA_VERSION, NodeDefinition, ParamValue, Version, WorkflowConfig, WorkflowDefinition,
@@ -59,8 +61,10 @@ fn make_engine() -> WorkflowEngine {
 
 fn core_plugin() -> Arc<ResolvedPlugin> {
     Arc::new(
-        ResolvedPlugin::from(CorePlugin::new())
-            .expect("CorePlugin must resolve without namespace errors"),
+        ResolvedPlugin::from(
+            CorePlugin::try_new().expect("CorePlugin::try_new must succeed in tests"),
+        )
+        .expect("CorePlugin must resolve without namespace errors"),
     )
 }
 
@@ -224,6 +228,167 @@ async fn with_plugin_duplicate_plugin_key_returns_typed_error() {
     assert!(
         matches!(err, PluginWiringError::DuplicatePlugin { ref plugin_key } if plugin_key.as_str() == "core"),
         "expected DuplicatePlugin{{plugin_key: 'core'}}; got: {err:?}"
+    );
+}
+
+// ── on_load contract ─────────────────────────────────────────────────────────
+
+/// Minimal `ActionFactory` stub used by `FailOnLoadPlugin`.
+///
+/// The factory carries an action key under the `"failplugin."` namespace.
+/// Its `instantiate` is never called in this test — wiring aborts before
+/// registration.
+#[derive(Debug)]
+struct StubFactory {
+    meta: ActionMetadata,
+}
+
+impl StubFactory {
+    fn new() -> Self {
+        Self {
+            meta: ActionMetadata::new(
+                nebula_core::action_key!("failplugin.noop"),
+                "Noop",
+                "A stub action that is never dispatched",
+            ),
+        }
+    }
+}
+
+impl ActionFactory for StubFactory {
+    fn metadata(&self) -> &ActionMetadata {
+        &self.meta
+    }
+
+    fn instantiate<'a>(
+        &'a self,
+        _node: &'a NodeDefinition,
+        _ctx: &'a dyn ActionContext,
+    ) -> Pin<Box<dyn Future<Output = Result<ActionHandle, ActionError>> + Send + 'a>> {
+        // This method must never be called: on_load fails before registration.
+        Box::pin(async { unreachable!("StubFactory::instantiate must not be called in this test") })
+    }
+}
+
+/// A plugin whose `on_load` always returns an error.
+///
+/// Used to prove that `with_plugin` honours the `on_load` contract: when the
+/// hook fails, no factories are registered and the error is surfaced as
+/// `PluginWiringError::OnLoad`.
+#[derive(Debug)]
+struct FailOnLoadPlugin {
+    manifest: PluginManifest,
+}
+
+impl FailOnLoadPlugin {
+    fn new() -> Self {
+        let manifest = PluginManifest::builder("failplugin", "Fail-on-load test plugin")
+            .build()
+            .expect("FailOnLoadPlugin manifest is a statically valid test fixture");
+        Self { manifest }
+    }
+}
+
+impl Plugin for FailOnLoadPlugin {
+    fn manifest(&self) -> &PluginManifest {
+        &self.manifest
+    }
+
+    fn actions(&self) -> Vec<Arc<dyn ActionFactory>> {
+        vec![Arc::new(StubFactory::new())]
+    }
+
+    fn on_load(&self) -> Result<(), PluginError> {
+        Err(PluginError::NotFound("failplugin".parse().unwrap()))
+    }
+}
+
+/// `Plugin::on_load` is load-bearing: when it returns `Err`, `with_plugin`
+/// must surface `PluginWiringError::OnLoad` and leave the engine state
+/// completely unchanged — the plugin's actions must not be dispatchable.
+///
+/// RED without the `on_load` call: `with_plugin` would succeed and the action
+/// would be registered.
+#[tokio::test]
+async fn with_plugin_on_load_failure_aborts_wiring() {
+    let plugin = Arc::new(
+        ResolvedPlugin::from(FailOnLoadPlugin::new())
+            .expect("FailOnLoadPlugin must pass namespace validation"),
+    );
+
+    let engine = make_engine();
+
+    // The wiring must fail with the typed OnLoad variant.
+    let result = engine.with_plugin(Arc::clone(&plugin));
+    assert!(
+        result.is_err(),
+        "with_plugin must fail when on_load returns Err"
+    );
+    let err = result.err().expect("checked is_err() above");
+
+    assert!(
+        matches!(
+            err,
+            PluginWiringError::OnLoad { ref plugin_key, .. }
+            if plugin_key.as_str() == "failplugin"
+        ),
+        "expected OnLoad{{plugin_key: 'failplugin'}}; got: {err:?}"
+    );
+
+    // Nothing must be registered: dispatching the action must fail with
+    // action-not-found, proving the engine state is unchanged.
+    let engine = make_engine(); // fresh engine after the failed wiring attempt
+    let action_key_str = "failplugin.noop";
+    let node = NodeDefinition::new(
+        nebula_core::node_key!("step"),
+        "Stub step",
+        "failplugin",
+        action_key_str,
+    )
+    .expect("NodeDefinition must build");
+
+    let workflow = WorkflowDefinition {
+        id: nebula_core::WorkflowId::new(),
+        name: "test-on-load-abort".into(),
+        description: None,
+        version: Version::new(0, 1, 0),
+        nodes: vec![node],
+        connections: vec![],
+        variables: HashMap::new(),
+        config: WorkflowConfig::default(),
+        trigger_bindings: vec![],
+        tags: vec![],
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+        owner_id: None,
+        ui_metadata: None,
+        schema_version: CURRENT_SCHEMA_VERSION,
+    };
+
+    let dispatch_result = engine
+        .execute_workflow(
+            &scope(),
+            &workflow,
+            serde_json::json!({}),
+            ExecutionBudget::default(),
+        )
+        .await
+        .expect("execute_workflow itself must not error");
+
+    assert_eq!(
+        dispatch_result.status,
+        nebula_execution::ExecutionStatus::Failed,
+        "action must be absent from registry after failed on_load; got {:?}",
+        dispatch_result.status
+    );
+    let error_texts: Vec<&str> = dispatch_result
+        .node_errors
+        .values()
+        .map(String::as_str)
+        .collect();
+    assert!(
+        error_texts.iter().any(|s| s.contains("not found")),
+        "node_errors must show action-not-found; got: {error_texts:?}"
     );
 }
 
