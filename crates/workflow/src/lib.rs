@@ -32,6 +32,7 @@ pub mod definition;
 pub mod error;
 pub mod graph;
 pub mod node;
+pub mod resolver;
 pub mod state;
 pub mod validate;
 pub mod version;
@@ -42,11 +43,12 @@ pub use definition::{
     Annotation, CURRENT_SCHEMA_VERSION, CheckpointingConfig, ErrorStrategy, NodePosition,
     RetryConfig, TriggerBinding, UiMetadata, Viewport, WorkflowConfig, WorkflowDefinition,
 };
-pub use error::WorkflowError;
+pub use error::{PortSchemaIncompatDetails, WorkflowError};
 pub use graph::DependencyGraph;
 /// Re-export the shared serde helper so internal `crate::serde_duration_opt` still resolves.
 pub(crate) use nebula_core::serde_helpers::duration_opt_ms as serde_duration_opt;
 pub use node::{NodeDefinition, ParamValue, RateLimit, SlotBinding};
+pub use resolver::{NodeIoSchemas, NodeSchemaResolver};
 pub use state::NodeState;
-pub use validate::{ValidatedWorkflow, validate_workflow};
+pub use validate::{ValidatedWorkflow, validate_workflow, validate_workflow_with_resolver};
 pub use version::Version;

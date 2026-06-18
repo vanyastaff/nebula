@@ -41,6 +41,7 @@ nebula-credential = { path = "../credential" }
 # amendments).
 nebula-schema = { path = "../schema", features = ["schemars"] }
 nebula-eventbus = { path = "../eventbus" }
+semver = { workspace = true }
 
 opentelemetry = { workspace = true }
 opentelemetry-otlp = { workspace = true }
