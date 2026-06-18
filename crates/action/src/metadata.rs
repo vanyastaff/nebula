@@ -103,7 +103,8 @@ fn default_action_kind() -> ActionKind {
 /// Compatibility validation errors for action metadata evolution.
 ///
 /// Wraps [`nebula_metadata::BaseCompatError`] (shared catalog-entity rules)
-/// and layers the action-specific port-change rule on top.
+/// and layers action-specific rules on top: port-change and output-schema
+/// narrowing (TypeDAG producer→consumer assignability).
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum MetadataCompatibilityError {
@@ -114,6 +115,19 @@ pub enum MetadataCompatibilityError {
     /// Input or output ports changed without a major version bump.
     #[error("action ports changed without a major version bump")]
     PortsChangeWithoutMajorBump,
+
+    /// The action's output schema was narrowed (a field required by downstream
+    /// consumers was dropped or changed type) without a major version bump.
+    ///
+    /// TypeDAG edge checks use `output_schema` to validate producer→consumer
+    /// assignability. Narrowing the output on a same-major upgrade silently
+    /// breaks any typed downstream node that was bound against the old schema.
+    /// A major version bump is required to signal the breaking contract change.
+    #[error(
+        "action output schema narrowed without a major version bump: \
+         a field required by downstream consumers was dropped or changed type"
+    )]
+    OutputSchemaNarrowedWithoutMajorBump,
 }
 
 /// Static metadata describing an action type.
@@ -427,9 +441,26 @@ impl ActionMetadata {
     ) -> Result<(), MetadataCompatibilityError> {
         nebula_metadata::validate_base_compat(&self.base, &previous.base)?;
 
+        let same_major = self.base.version.major == previous.base.version.major;
+
         let ports_changed = self.inputs != previous.inputs || self.outputs != previous.outputs;
-        if ports_changed && self.base.version.major == previous.base.version.major {
+        if ports_changed && same_major {
             return Err(MetadataCompatibilityError::PortsChangeWithoutMajorBump);
+        }
+
+        // TypeDAG output-schema assignability: the NEW output is the producer;
+        // the OLD output is the consumer (downstream nodes were typed against it).
+        // If `is_assignable` returns Err the new output dropped or changed a field
+        // that old consumers required — that is a silent breaking change on a
+        // same-major upgrade. A major version bump is required.
+        if same_major
+            && nebula_schema::is_assignable(
+                self.output_schema.fields(),
+                previous.output_schema.fields(),
+            )
+            .is_err()
+        {
+            return Err(MetadataCompatibilityError::OutputSchemaNarrowedWithoutMajorBump);
         }
 
         Ok(())
@@ -969,5 +1000,119 @@ mod tests {
         let json = serde_json::to_string(&original).expect("serialize succeeds");
         let decoded: ActionMetadata = serde_json::from_str(&json).expect("deserialize succeeds");
         assert_eq!(original, decoded);
+    }
+
+    // ── validate_compatibility: output_schema narrowing ─────────────────────
+
+    #[test]
+    fn output_schema_narrowed_same_major_is_rejected() {
+        // v1.0 produces {result, status}; v1.1 drops `status` — downstream
+        // consumers that required `status` will break. Must be rejected on a
+        // same-major upgrade. Goes RED if the output-schema check is removed.
+        use nebula_schema::{FieldCollector, Schema, StringBuilder, field_key};
+        let two_field_schema = Schema::builder()
+            .string(field_key!("result"), StringBuilder::required)
+            .string(field_key!("status"), StringBuilder::required)
+            .build()
+            .unwrap();
+        let one_field_schema = Schema::builder()
+            .string(field_key!("result"), StringBuilder::required)
+            .build()
+            .unwrap();
+
+        let prev = ActionMetadata::new(action_key!("svc.action"), "A", "d")
+            .with_version(1, 0)
+            .with_output_schema(two_field_schema);
+        let next = ActionMetadata::new(action_key!("svc.action"), "A", "d")
+            .with_version(1, 1)
+            .with_output_schema(one_field_schema);
+
+        let err = next
+            .validate_compatibility(&prev)
+            .expect_err("narrowing output on same major must be rejected");
+        assert_eq!(
+            err,
+            MetadataCompatibilityError::OutputSchemaNarrowedWithoutMajorBump,
+            "expected OutputSchemaNarrowedWithoutMajorBump"
+        );
+    }
+
+    #[test]
+    fn output_schema_widened_same_major_is_allowed() {
+        // v1.0 produces {result}; v1.1 adds `extra` — existing consumers only
+        // required `result`, so width subtyping allows the addition.
+        use nebula_schema::{FieldCollector, Schema, StringBuilder, field_key};
+        let narrow = Schema::builder()
+            .string(field_key!("result"), StringBuilder::required)
+            .build()
+            .unwrap();
+        let wide = Schema::builder()
+            .string(field_key!("result"), StringBuilder::required)
+            .string(field_key!("extra"), StringBuilder::required)
+            .build()
+            .unwrap();
+
+        let prev = ActionMetadata::new(action_key!("svc.action"), "A", "d")
+            .with_version(1, 0)
+            .with_output_schema(narrow);
+        let next = ActionMetadata::new(action_key!("svc.action"), "A", "d")
+            .with_version(1, 1)
+            .with_output_schema(wide);
+
+        assert!(
+            next.validate_compatibility(&prev).is_ok(),
+            "widening the output schema on a same-major bump must be allowed"
+        );
+    }
+
+    #[test]
+    fn output_schema_narrowed_with_major_bump_is_allowed() {
+        // A major version bump signals a breaking contract change — narrowing
+        // the output is permitted regardless of what fields disappear.
+        use nebula_schema::{FieldCollector, Schema, StringBuilder, field_key};
+        let two_field_schema = Schema::builder()
+            .string(field_key!("result"), StringBuilder::required)
+            .string(field_key!("status"), StringBuilder::required)
+            .build()
+            .unwrap();
+        let one_field_schema = Schema::builder()
+            .string(field_key!("result"), StringBuilder::required)
+            .build()
+            .unwrap();
+
+        let prev = ActionMetadata::new(action_key!("svc.action"), "A", "d")
+            .with_version(1, 0)
+            .with_output_schema(two_field_schema);
+        let next = ActionMetadata::new(action_key!("svc.action"), "A", "d")
+            .with_version(2, 0)
+            .with_output_schema(one_field_schema);
+
+        assert!(
+            next.validate_compatibility(&prev).is_ok(),
+            "narrowing output with a major version bump must be allowed"
+        );
+    }
+
+    #[test]
+    fn output_schema_unchanged_same_major_is_allowed() {
+        // Identical output schema — the common no-op case must pass.
+        use nebula_schema::{FieldCollector, Schema, StringBuilder, field_key};
+        let schema = Schema::builder()
+            .string(field_key!("result"), StringBuilder::required)
+            .string(field_key!("status"), StringBuilder::required)
+            .build()
+            .unwrap();
+
+        let prev = ActionMetadata::new(action_key!("svc.action"), "A", "d")
+            .with_version(1, 0)
+            .with_output_schema(schema.clone());
+        let next = ActionMetadata::new(action_key!("svc.action"), "A", "d")
+            .with_version(1, 1)
+            .with_output_schema(schema);
+
+        assert!(
+            next.validate_compatibility(&prev).is_ok(),
+            "identical output schemas must be compatible on a same-major bump"
+        );
     }
 }
