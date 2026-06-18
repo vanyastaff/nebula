@@ -365,6 +365,17 @@ pub fn default_state(
             reason: e.reason,
         })?;
 
+    // Wire the trigger config store (ADR-0096 READ path). The undecorated
+    // `InMemoryTriggerStore` is the correct local-first backing —
+    // `TriggerStoreSpecLookup` applies `ScopedTriggerStore` per call so
+    // tenant isolation is structural. The same Arc is shared between the
+    // AppState trigger-store slot and the spec-lookup so they see the same
+    // rows in tests and dev.
+    let trigger_store = Arc::new(nebula_storage::inmem::InMemoryTriggerStore::new());
+    let trigger_spec_lookup = Arc::new(
+        nebula_api::transport::webhook::TriggerStoreSpecLookup::new(Arc::clone(&trigger_store) as _),
+    );
+
     Ok(AppState::in_memory(api_config.jwt_secret.clone())
         .with_api_keys(api_config.api_keys.clone())
         .with_credential_schema(credential_schema)
@@ -373,7 +384,9 @@ pub fn default_state(
         // derivation per ADR-0085 D-3 (recon-4). Boot-time validation
         // above (T2.8) rejects empty/relative values when
         // `auth.oauth.providers` is non-empty.
-        .with_public_url(api_config.public_url.clone()))
+        .with_public_url(api_config.public_url.clone())
+        .with_trigger_store(trigger_store)
+        .with_webhook_spec_lookup(trigger_spec_lookup))
 }
 
 /// Build the shared `Arc<dyn EmailPort>` from `api_config.smtp`.

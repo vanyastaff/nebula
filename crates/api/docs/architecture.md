@@ -86,7 +86,7 @@ pre_handle             → optional RespondNow (Slack url_verification,
 handle_request         → engine
 ```
 
-Provider-каталог (`Slack` / `Stripe` / `Generic`) живёт в `crates/action/src/webhook/providers/`; engine-`ActionRegistry` держит string-keyed factory map; bootstrap по `action_kind` в storage row выбирает фабрику, разрешает `secret_id` через `WebhookSecretResolver`, строит `BuiltWebhookHandler` и регистрирует через `transport.activate_slug(...)`.
+Provider-каталог (`Slack` / `Stripe` / `Generic`) живёт в `crates/action/src/webhook/providers/`; engine-`ActionRegistry` держит string-keyed factory map; bootstrap по `provider` в storage row выбирает фабрику, разрешает `secret_id` через `WebhookSecretResolver`, строит `BuiltWebhookHandler` и регистрирует через `transport.activate_slug(...)`.
 
 ## Итог
 

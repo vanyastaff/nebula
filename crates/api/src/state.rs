@@ -16,7 +16,7 @@ use nebula_storage::credential::InMemoryPendingStore;
 use nebula_storage_port::Scope;
 use nebula_storage_port::store::{
     ControlQueue, ExecutionJournalReader, ExecutionStore, NodeResultStore, TriggerDedupInbox,
-    WebhookActivationStore, WorkflowStore, WorkflowVersionStore,
+    TriggerStore, WebhookActivationStore, WorkflowStore, WorkflowVersionStore,
 };
 use nebula_tenancy::{
     ScopedControlQueue, ScopedExecutionJournalReader, ScopedExecutionStore, ScopedNodeResultStore,
@@ -327,6 +327,25 @@ pub struct AppState {
     /// based on `ApiConfig.idempotency.backend`.
     pub idempotency_store: Option<Arc<dyn IdempotencyStore>>,
 
+    /// Optional trigger config store (ADR-0096 — spec-16 `port_triggers`).
+    ///
+    /// The **undecorated** base store. Per-request / per-tenant code wraps it
+    /// in `nebula_tenancy::ScopedTriggerStore::new(store, scope)` at the call
+    /// site; the bootstrap pathway calls through it via `TriggerStoreSpecLookup`
+    /// which always supplies the activation row's own `scope`.
+    ///
+    /// Required for the webhook-bootstrap READ path: each `port_webhook_activations`
+    /// row carries only routing/token/scope/workflow/mode data; the handler-build
+    /// inputs (`provider`, `secret_id`, replay knobs) live in
+    /// `port_triggers.config.webhook_activation`. Wire this alongside
+    /// `webhook_activation_store` so `bootstrap_webhook_activations` can
+    /// reconstruct a handler after a restart.
+    ///
+    /// When `None`, `bootstrap_webhook_activations` skips every row (spec lookup
+    /// returns `None` for the absent store path) and `/internal/v1/webhooks/reload`
+    /// returns 503.
+    pub trigger_store: Option<Arc<dyn TriggerStore>>,
+
     /// Optional webhook-activation port store (ADR-0096 — B-world, spec-16 aligned).
     ///
     /// The undecorated base store; per-request code builds
@@ -494,6 +513,7 @@ impl AppState {
             membership_store: None,
             allow_insecure_tenant_rbac_bypass: false,
             idempotency_store: None,
+            trigger_store: None,
             webhook_activation_store: None,
             trigger_dedup_inbox: None,
             trigger_lifecycle_bus: None,
@@ -1170,8 +1190,24 @@ impl AppState {
         self
     }
 
-    /// Attach the webhook-activation port store (ADR-0096).
+    /// Attach the trigger config store (ADR-0096 — `port_triggers`).
     ///
+    /// The **undecorated** base store. The bootstrap pathway wraps it in a
+    /// `TriggerStoreSpecLookup` (see
+    /// [`crate::transport::webhook::TriggerStoreSpecLookup`]) that enforces
+    /// per-call scope binding via `nebula_tenancy::ScopedTriggerStore`, so
+    /// the raw store passed here is never queried cross-tenant.
+    ///
+    /// In production: wire the same `TriggerStore` adapter as the trigger-
+    /// CRUD endpoints. In tests: `nebula_storage::inmem::InMemoryTriggerStore`
+    /// is the correct backing implementation (durable-enough for test fixtures,
+    /// no bespoke double needed).
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_trigger_store(mut self, store: Arc<dyn TriggerStore>) -> Self {
+        self.trigger_store = Some(store);
+        self
+    }
+
     /// The store is the **undecorated** base implementation.  Per-request
     /// tenant-scoped operations build `ScopedWebhookActivationStore::new(store,
     /// scope)` at the call site; system-surface calls (`resolve_by_token`,
