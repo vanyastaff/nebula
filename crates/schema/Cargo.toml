@@ -24,6 +24,7 @@ audit-secret-expose = []
 nebula-validator = { path = "../validator" }
 nebula-expression = { path = "../expression" }
 nebula-schema-macros = { path = "macros" }
+thiserror = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 indexmap = { workspace = true }

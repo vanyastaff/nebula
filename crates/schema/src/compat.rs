@@ -18,14 +18,15 @@ use crate::{Field, FieldKey, RequiredMode};
 /// fails. Carries the first incompatibility found (depth-first, consumer-field
 /// order).
 ///
-/// This enum is `#[non_exhaustive]` — new incompatibility kinds (e.g. list
-/// cardinality, semantic type constraints) may be added in future minor
-/// versions without breaking existing `match` arms.
+/// This enum is `#[non_exhaustive]` — new incompatibility kinds (e.g. semantic
+/// type constraints) may be added in future minor versions without breaking
+/// existing `match` arms.
 #[non_exhaustive]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SchemaIncompat {
     /// A consumer field with [`RequiredMode::Always`] has no counterpart in the
     /// producer schema.
+    #[error("missing required field `{key}`")]
     MissingRequiredField {
         /// Key of the missing required field.
         key: FieldKey,
@@ -33,6 +34,9 @@ pub enum SchemaIncompat {
     /// A field present on both sides has incompatible types (different `Field`
     /// variants). The `producer` and `consumer` strings are the
     /// [`Field::type_name`] values — `"string"`, `"number"`, etc.
+    #[error(
+        "field `{key}` type mismatch: producer has `{producer}`, consumer expects `{consumer}`"
+    )]
     FieldTypeMismatch {
         /// Key of the mismatched field.
         key: FieldKey,
@@ -49,11 +53,27 @@ pub enum SchemaIncompat {
     /// This allows callers to distinguish "the outer field has the right type
     /// but a nested field is wrong" from "the outer field is a completely
     /// different type".
+    #[error("nested incompatibility in field `{key}`")]
     NestedIncompat {
         /// Key of the outer (container) field.
         key: FieldKey,
         /// The first incompatibility found inside the container.
+        #[source]
         inner: Box<SchemaIncompat>,
+    },
+    /// A `File` or `Select` field is present on both sides but the `multiple`
+    /// cardinality differs (scalar vs. array), making the wire shapes incompatible.
+    #[error(
+        "field `{key}` cardinality mismatch: \
+         producer multiple={producer_multiple}, consumer expects multiple={consumer_multiple}"
+    )]
+    CardinalityMismatch {
+        /// Key of the mismatched field.
+        key: FieldKey,
+        /// Whether the producer field allows multiple values.
+        producer_multiple: bool,
+        /// Whether the consumer field expects multiple values.
+        consumer_multiple: bool,
     },
 }
 
@@ -95,10 +115,17 @@ pub enum SchemaIncompat {
 /// - Only [`RequiredMode::Always`] consumer fields are hard requirements;
 ///   [`RequiredMode::When`] and the default optional mode are not enforced
 ///   statically (the runtime condition cannot be proved at validation time).
+/// - **`File` and `Select` cardinality** — the `multiple` flag (scalar vs.
+///   array) is checked for equality. A scalar producer paired with an array
+///   consumer (or vice versa) is a wire-shape mismatch and returns
+///   [`SchemaIncompat::CardinalityMismatch`].
 /// - **`Mode` fields** — `Mode`-vs-`Mode` is treated as compatible regardless
 ///   of variant payloads (lenient, never false-rejects). Real union-variance
 ///   compatibility (sum-type variance has opposite direction from record
 ///   width-subtyping) is deferred to an ADR-0100 addendum.
+/// - **`Number` integer vs. float** — both carry `type_name() == "number"` and
+///   are treated as compatible. Numeric-widening subtyping is deferred to an
+///   ADR-0100 addendum.
 ///
 /// # Errors
 ///
@@ -110,6 +137,8 @@ pub enum SchemaIncompat {
 /// - [`SchemaIncompat::NestedIncompat`] — a field present on both sides has the
 ///   same structural variant (both `Object` or both `List`) but the nested
 ///   fields are incompatible; wraps the inner [`SchemaIncompat`].
+/// - [`SchemaIncompat::CardinalityMismatch`] — a `File` or `Select` field is
+///   present on both sides but the `multiple` flag differs.
 #[must_use = "check the Result — an Err means the producer is not assignable to the consumer"]
 pub fn is_assignable(producer: &[Field], consumer: &[Field]) -> Result<(), SchemaIncompat> {
     fields_assignable(producer, consumer)
@@ -164,6 +193,8 @@ fn fields_assignable(
 /// Check a matched field pair (same key, both present).
 ///
 /// - `Dynamic`/`Computed` on either side → Any escape → `Ok`.
+/// - `File`/`File` and `Select`/`Select` → check `multiple` equality →
+///   [`SchemaIncompat::CardinalityMismatch`] if they differ.
 /// - Same structural variant with nested fields → recurse; wrap inner error in
 ///   [`SchemaIncompat::NestedIncompat`].
 /// - Different structural variants (different `type_name`) →
@@ -191,6 +222,26 @@ fn field_pair_assignable(
     }
 
     match (producer_field, consumer_field) {
+        (Field::File(p), Field::File(c)) => {
+            if p.multiple != c.multiple {
+                return Err(SchemaIncompat::CardinalityMismatch {
+                    key: key.clone(),
+                    producer_multiple: p.multiple,
+                    consumer_multiple: c.multiple,
+                });
+            }
+            Ok(())
+        },
+        (Field::Select(p), Field::Select(c)) => {
+            if p.multiple != c.multiple {
+                return Err(SchemaIncompat::CardinalityMismatch {
+                    key: key.clone(),
+                    producer_multiple: p.multiple,
+                    consumer_multiple: c.multiple,
+                });
+            }
+            Ok(())
+        },
         (Field::Object(producer_obj), Field::Object(consumer_obj)) => {
             fields_assignable(&producer_obj.fields, &consumer_obj.fields).map_err(|inner| {
                 SchemaIncompat::NestedIncompat {
@@ -215,6 +266,7 @@ fn field_pair_assignable(
         },
         // For all other variant pairs: same type_name = compatible.
         // Note: Mode-vs-Mode is intentionally lenient — see fn-level NOTE above.
+        // Note: Number integer-vs-float both have type_name "number" — deferred to ADR-0100 addendum.
         _ => {
             if producer_field.type_name() == consumer_field.type_name() {
                 Ok(())
@@ -462,6 +514,58 @@ mod tests {
             Field::boolean(fk("extra_b")).into(),
         ];
         let consumer = [Field::string(fk("name")).required().into()];
+        assert_eq!(is_assignable(&producer, &consumer), Ok(()));
+    }
+
+    // ── Cardinality: File single→multiple is a mismatch ───────────────────
+
+    #[test]
+    fn file_single_to_multiple_returns_cardinality_mismatch() {
+        // producer: single file; consumer expects multiple files
+        let producer = [Field::file(fk("attachment")).required().into()];
+        let consumer = [Field::file(fk("attachment")).multiple().required().into()];
+        assert_eq!(
+            is_assignable(&producer, &consumer),
+            Err(SchemaIncompat::CardinalityMismatch {
+                key: fk("attachment"),
+                producer_multiple: false,
+                consumer_multiple: true,
+            })
+        );
+    }
+
+    // ── Cardinality: File multiple→multiple is compatible ─────────────────
+
+    #[test]
+    fn file_multiple_to_multiple_is_ok() {
+        let producer = [Field::file(fk("attachment")).multiple().required().into()];
+        let consumer = [Field::file(fk("attachment")).multiple().required().into()];
+        assert_eq!(is_assignable(&producer, &consumer), Ok(()));
+    }
+
+    // ── Cardinality: Select cardinality mismatch ──────────────────────────
+
+    #[test]
+    fn select_cardinality_mismatch_returns_error() {
+        // producer: multi-select; consumer: single-select
+        let producer = [Field::select(fk("tags")).multiple().required().into()];
+        let consumer = [Field::select(fk("tags")).required().into()];
+        assert_eq!(
+            is_assignable(&producer, &consumer),
+            Err(SchemaIncompat::CardinalityMismatch {
+                key: fk("tags"),
+                producer_multiple: true,
+                consumer_multiple: false,
+            })
+        );
+    }
+
+    // ── Cardinality: Select same cardinality is compatible ────────────────
+
+    #[test]
+    fn select_same_cardinality_is_ok() {
+        let producer = [Field::select(fk("tags")).multiple().required().into()];
+        let consumer = [Field::select(fk("tags")).multiple().required().into()];
         assert_eq!(is_assignable(&producer, &consumer), Ok(()));
     }
 }
