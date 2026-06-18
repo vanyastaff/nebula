@@ -5,10 +5,22 @@
 
 use std::{collections::VecDeque, sync::Arc};
 
-use nebula_action::Overflow;
 use tokio::sync::{Mutex, Notify};
 
 use crate::RuntimeError;
+
+/// Overflow policy for a bounded stream buffer when it is full.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Overflow {
+    /// Block the producer until buffer space is available.
+    Block,
+    /// Evict the oldest buffered item to make room.
+    DropOldest,
+    /// Drop the incoming item silently.
+    DropNewest,
+    /// Return an error to the producer.
+    Error,
+}
 
 /// Result of pushing an item into a bounded stream buffer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

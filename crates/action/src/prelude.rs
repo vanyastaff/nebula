@@ -25,7 +25,6 @@ pub use crate::{
     metadata::{ActionMetadata, MetadataCompatibilityError},
     output::{
         ActionOutput, DeferredOutput, ExpectedOutput, Producer, ProducerKind, Progress, Resolution,
-        StreamMode, StreamOutput,
     },
     poll::{
         DeduplicatingCursor, EmitFailurePolicy, PollAction, PollConfig, PollCursor, PollOutcome,
