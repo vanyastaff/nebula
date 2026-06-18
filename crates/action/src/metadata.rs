@@ -173,6 +173,17 @@ pub struct ActionMetadata {
     /// Per Tech Spec §15.12 F9 + PRODUCT_ backpressure.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_concurrent: Option<core::num::NonZeroU32>,
+    /// Schema describing the type this action produces as output.
+    ///
+    /// Stamped by the factory or DX adapter from `<A::Output as HasSchema>::schema()`
+    /// — the single writer is the factory, mirroring how `kind` is stamped.
+    /// TypeDAG edge checks (`T3+`) read this field to validate that the
+    /// producer's output is assignable to the consumer's input.
+    ///
+    /// Defaults to [`ValidSchema::empty`] for metadata persisted before this
+    /// field existed (back-compat), and for actions with an untyped output.
+    #[serde(default = "ValidSchema::empty")]
+    pub output_schema: ValidSchema,
 }
 
 impl Metadata for ActionMetadata {
@@ -194,6 +205,7 @@ impl ActionMetadata {
             kind: ActionKind::Stateless,
             checkpoint_policy: CheckpointPolicy::Inherit,
             max_concurrent: None,
+            output_schema: ValidSchema::empty(),
         }
     }
 
@@ -258,6 +270,7 @@ impl ActionMetadata {
     {
         Self::new(key, name, description)
             .with_schema(<A::Input as nebula_schema::HasSchema>::schema())
+            .with_output_schema(<A::Output as nebula_schema::HasSchema>::schema())
     }
 
     /// Set the interface version from `(major, minor)` components.
@@ -331,6 +344,28 @@ impl ActionMetadata {
     pub fn with_schema(mut self, schema: ValidSchema) -> Self {
         self.base.schema = schema;
         self
+    }
+
+    /// Set the output schema for this action.
+    ///
+    /// The single writer is the factory or DX adapter (via
+    /// `<A::Output as HasSchema>::schema()`); action authors rarely call
+    /// this directly. Symmetric with [`with_schema`](Self::with_schema).
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_output_schema(mut self, schema: ValidSchema) -> Self {
+        self.output_schema = schema;
+        self
+    }
+
+    /// The schema describing what this action produces.
+    ///
+    /// Stamped from `<A::Output as HasSchema>::schema()` by the factory.
+    /// TypeDAG edge checks read this to validate producer→consumer
+    /// assignability. Returns an empty schema for actions that predated
+    /// this field or have an untyped output.
+    #[must_use]
+    pub fn output_schema(&self) -> &ValidSchema {
+        &self.output_schema
     }
 
     /// Set the isolation level for dispatch routing.
@@ -795,5 +830,144 @@ mod tests {
             err,
             MetadataCompatibilityError::Base(BaseCompatError::VersionRegressed { .. })
         ));
+    }
+
+    // ── output_schema field ─────────────────────────────────────────────
+
+    /// Fixture output type with a named field so the schema is non-empty and
+    /// the assertion `field_present` is non-vacuous (not just `is_empty()==false`).
+    #[derive(Debug, serde::Serialize, serde::Deserialize)]
+    struct EchoOutput {
+        message: String,
+    }
+
+    impl nebula_schema::HasSchema for EchoOutput {
+        fn schema() -> ValidSchema {
+            use nebula_schema::{FieldCollector, Schema, field_key};
+            Schema::builder()
+                .string(
+                    field_key!("message"),
+                    nebula_schema::StringBuilder::required,
+                )
+                .build()
+                .expect("EchoOutput schema is valid")
+        }
+    }
+
+    // Minimal Action impl used only to drive `for_action` / factory tests.
+    struct EchoAction;
+
+    #[derive(Debug, serde::Serialize, serde::Deserialize)]
+    struct EchoInput {
+        text: String,
+    }
+
+    impl nebula_schema::HasSchema for EchoInput {
+        fn schema() -> ValidSchema {
+            use nebula_schema::{FieldCollector, Schema, field_key};
+            Schema::builder()
+                .string(field_key!("text"), nebula_schema::StringBuilder::required)
+                .build()
+                .expect("EchoInput schema is valid")
+        }
+    }
+
+    impl crate::action::Action for EchoAction {
+        type Input = EchoInput;
+        type Output = EchoOutput;
+
+        fn metadata() -> ActionMetadata {
+            ActionMetadata::for_action::<Self>(action_key!("test.echo"), "Echo", "Echoes input")
+        }
+
+        fn dependencies() -> &'static nebula_core::Dependencies {
+            use std::sync::OnceLock;
+            static DEPS: OnceLock<nebula_core::Dependencies> = OnceLock::new();
+            DEPS.get_or_init(nebula_core::Dependencies::new)
+        }
+    }
+
+    #[test]
+    fn new_initialises_output_schema_to_empty() {
+        let meta = ActionMetadata::new(action_key!("test"), "T", "d");
+        assert!(
+            meta.output_schema.fields().is_empty(),
+            "output_schema must default to empty"
+        );
+    }
+
+    #[test]
+    fn with_output_schema_builder_stores_schema() {
+        use nebula_schema::{FieldCollector, Schema, field_key};
+        let schema = Schema::builder()
+            .string(
+                field_key!("message"),
+                nebula_schema::StringBuilder::required,
+            )
+            .build()
+            .unwrap();
+        let meta = ActionMetadata::new(action_key!("test"), "T", "d").with_output_schema(schema);
+        assert!(
+            !meta.output_schema.fields().is_empty(),
+            "output_schema must store the provided schema"
+        );
+        assert!(
+            meta.output_schema
+                .fields()
+                .iter()
+                .any(|f| f.key().as_str() == "message"),
+            "output_schema must contain the `message` field"
+        );
+    }
+
+    #[test]
+    fn for_action_stamps_output_schema_from_action_output_type() {
+        let meta = ActionMetadata::for_action::<EchoAction>(
+            action_key!("test.echo"),
+            "Echo",
+            "Echoes input",
+        );
+        // Non-vacuous: assert the `message` field is present in the output schema.
+        assert!(
+            meta.output_schema
+                .fields()
+                .iter()
+                .any(|f| f.key().as_str() == "message"),
+            "for_action must stamp output_schema from A::Output — `message` field missing"
+        );
+    }
+
+    #[test]
+    fn output_schema_back_compat_missing_field_deserializes_to_empty() {
+        // Metadata serialized before `output_schema` existed must still load,
+        // defaulting the field to an empty schema — mirrors kind_backward_compat_without_field.
+        let legacy = ActionMetadata::new(action_key!("http.request"), "HTTP", "desc");
+        let mut as_value: serde_json::Value = serde_json::to_value(&legacy).unwrap();
+        as_value
+            .as_object_mut()
+            .unwrap()
+            .remove("output_schema")
+            .expect("output_schema must be present after serialize");
+        let json_string = serde_json::to_string(&as_value).unwrap();
+        let decoded: ActionMetadata = serde_json::from_str(&json_string)
+            .expect("legacy metadata without output_schema must deserialize");
+        assert!(
+            decoded.output_schema.fields().is_empty(),
+            "missing output_schema field should default to empty"
+        );
+    }
+
+    #[test]
+    fn output_schema_serde_roundtrip() {
+        use nebula_schema::{FieldCollector, Schema, field_key};
+        let schema = Schema::builder()
+            .string(field_key!("result"), nebula_schema::StringBuilder::required)
+            .build()
+            .unwrap();
+        let original =
+            ActionMetadata::new(action_key!("test"), "T", "d").with_output_schema(schema);
+        let json = serde_json::to_string(&original).expect("serialize succeeds");
+        let decoded: ActionMetadata = serde_json::from_str(&json).expect("deserialize succeeds");
+        assert_eq!(original, decoded);
     }
 }

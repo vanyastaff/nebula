@@ -20,6 +20,83 @@ use nebula_action::{
 use nebula_core::{Dependencies, action_key, node_key};
 use nebula_workflow::NodeDefinition;
 
+// ── TypedEcho — fixture with a named Output field ──────────────────────────
+//
+// Used to assert that `InstanceFactory` stamps `output_schema` from `A::Output`.
+// `CountingEcho` cannot catch a missing stamp because its `Output = Value` whose
+// schema is empty — removing the stamp would leave the assertion vacuously true.
+
+/// Output type with a named field so the schema is non-empty and the assertion
+/// is non-vacuous (removing the `output_schema` stamp makes the test fail).
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct TypedEchoOutput {
+    message: String,
+}
+
+impl nebula_schema::HasSchema for TypedEchoOutput {
+    fn schema() -> nebula_action::ValidSchema {
+        use nebula_schema::{FieldCollector, Schema, field_key};
+        Schema::builder()
+            .string(
+                field_key!("message"),
+                nebula_schema::StringBuilder::required,
+            )
+            .build()
+            .expect("TypedEchoOutput schema is valid")
+    }
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct TypedEchoInput {
+    text: String,
+}
+
+impl nebula_schema::HasSchema for TypedEchoInput {
+    fn schema() -> nebula_action::ValidSchema {
+        use nebula_schema::{FieldCollector, Schema, field_key};
+        Schema::builder()
+            .string(field_key!("text"), nebula_schema::StringBuilder::required)
+            .build()
+            .expect("TypedEchoInput schema is valid")
+    }
+}
+
+/// Stateless action with a typed `Output` struct, so the factory-stamped
+/// `output_schema` is non-empty and the red-on-revert assertion is non-vacuous.
+struct TypedEcho;
+
+impl Action for TypedEcho {
+    type Input = TypedEchoInput;
+    type Output = TypedEchoOutput;
+
+    fn metadata() -> ActionMetadata {
+        ActionMetadata::new(
+            action_key!("builtin.typed_echo"),
+            "TypedEcho",
+            "fixture with typed output",
+        )
+    }
+
+    fn dependencies() -> &'static Dependencies {
+        static D: OnceLock<Dependencies> = OnceLock::new();
+        D.get_or_init(Dependencies::new)
+    }
+}
+
+impl StatelessAction for TypedEcho {
+    async fn execute(
+        &self,
+        input: <Self as Action>::Input,
+        _ctx: &(impl ActionContext + ?Sized),
+    ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
+        Ok(ActionResult::success(TypedEchoOutput {
+            message: input.text,
+        }))
+    }
+}
+
+// ── CountingEcho — shared-instance fixture ─────────────────────────────────
+
 /// Stateless action that counts every execution through a shared `Arc`, so a
 /// test can observe whether dispatches reuse one instance or rebuild it.
 struct CountingEcho {
@@ -138,4 +215,29 @@ async fn instance_factory_shares_one_instance_across_dispatches() {
             "shared instance: the counter must accumulate across dispatch cycles"
         );
     }
+}
+
+#[tokio::test]
+async fn instance_factory_stamps_output_schema_from_action_output_type() {
+    // TypedEcho.Output has a `message` field — the schema is non-empty.
+    // If the `output_schema` stamp is removed from `InstanceFactory::new`,
+    // this test goes RED (the field will not be present).
+    let factory = InstanceFactory::new(
+        ActionMetadata::new(
+            action_key!("tenant.typed_echo"),
+            "Typed Echo",
+            "per-registration metadata",
+        ),
+        TypedEcho,
+    );
+
+    let output_schema = factory.metadata().output_schema();
+    assert!(
+        output_schema
+            .fields()
+            .iter()
+            .any(|f| f.key().as_str() == "message"),
+        "InstanceFactory must stamp output_schema from A::Output — `message` field missing; \
+         revert the output_schema stamp in InstanceFactory::new to see this fail"
+    );
 }
