@@ -157,7 +157,7 @@ impl StatelessAction for EchoHandler {
 async fn make_engine(stores: &TestStores) -> (Arc<WorkflowEngine>, Arc<AtomicU32>) {
     let count = Arc::new(AtomicU32::new(0));
     let registry = Arc::new(ActionRegistry::new());
-    registry.legacy_register_stateless_with_metadata(
+    registry.register_stateless_instance(
         ActionMetadata::new(action_key!("test.echo.worker"), "Echo", "echo"),
         EchoHandler {
             count: count.clone(),

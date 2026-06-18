@@ -5331,7 +5331,7 @@ mod tests {
     // ── Variant A test fixtures ───────────────────────────────────────────
     //
     // Per Plan-agent R-NEW-7, fixtures register through
-    // [`ActionRegistry::legacy_register_stateless_with_metadata`] (the
+    // [`ActionRegistry::register_stateless_instance`] (the
     // test-only escape) so each test can vary key/version while the static
     // `<X as Action>::metadata()` keeps a placeholder default.
 
@@ -5704,7 +5704,7 @@ mod tests {
     #[tokio::test]
     async fn single_node_workflow() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.legacy_register_stateless_with_metadata(
+        registry.register_stateless_instance(
             ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
             EchoHandler,
         );
@@ -5734,7 +5734,7 @@ mod tests {
     #[tokio::test]
     async fn linear_two_node_workflow() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.legacy_register_stateless_with_metadata(
+        registry.register_stateless_instance(
             ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
             EchoHandler,
         );
@@ -5770,7 +5770,7 @@ mod tests {
     #[tokio::test]
     async fn diamond_workflow() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.legacy_register_stateless_with_metadata(
+        registry.register_stateless_instance(
             ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
             EchoHandler,
         );
@@ -5819,11 +5819,11 @@ mod tests {
     #[tokio::test]
     async fn failing_node_stops_execution() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.legacy_register_stateless_with_metadata(
+        registry.register_stateless_instance(
             ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
             EchoHandler,
         );
-        registry.legacy_register_stateless_with_metadata(
+        registry.register_stateless_instance(
             ActionMetadata::new(action_key!("fail"), "Fail", "always fails"),
             FailHandler,
         );
@@ -5907,7 +5907,7 @@ mod tests {
     #[tokio::test]
     async fn telemetry_events_emitted() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.legacy_register_stateless_with_metadata(
+        registry.register_stateless_instance(
             ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
             EchoHandler,
         );
@@ -5949,7 +5949,7 @@ mod tests {
     #[tokio::test]
     async fn metrics_recorded_on_failure() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.legacy_register_stateless_with_metadata(
+        registry.register_stateless_instance(
             ActionMetadata::new(action_key!("fail"), "Fail", "always fails"),
             FailHandler,
         );
@@ -6076,11 +6076,11 @@ mod tests {
     #[tokio::test]
     async fn branch_workflow_only_selected_path_executes() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.legacy_register_stateless_with_metadata(
+        registry.register_stateless_instance(
             ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
             EchoHandler,
         );
-        registry.legacy_register_stateless_with_metadata(
+        registry.register_stateless_instance(
             ActionMetadata::new(action_key!("branch"), "Branch", "branches"),
             BranchHandler {
                 selected: "true".into(),
@@ -6133,11 +6133,11 @@ mod tests {
     #[tokio::test]
     async fn skip_propagation() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.legacy_register_stateless_with_metadata(
+        registry.register_stateless_instance(
             ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
             EchoHandler,
         );
-        registry.legacy_register_stateless_with_metadata(
+        registry.register_stateless_instance(
             ActionMetadata::new(action_key!("skip"), "Skip", "always skips"),
             SkipHandler,
         );
@@ -6183,11 +6183,11 @@ mod tests {
     #[tokio::test]
     async fn error_routing_with_handler() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.legacy_register_stateless_with_metadata(
+        registry.register_stateless_instance(
             ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
             EchoHandler,
         );
-        registry.legacy_register_stateless_with_metadata(
+        registry.register_stateless_instance(
             ActionMetadata::new(action_key!("fail"), "Fail", "always fails"),
             FailHandler,
         );
@@ -6234,11 +6234,11 @@ mod tests {
     #[tokio::test]
     async fn error_without_handler_fails_fast() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.legacy_register_stateless_with_metadata(
+        registry.register_stateless_instance(
             ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
             EchoHandler,
         );
-        registry.legacy_register_stateless_with_metadata(
+        registry.register_stateless_instance(
             ActionMetadata::new(action_key!("fail"), "Fail", "always fails"),
             FailHandler,
         );
@@ -6280,7 +6280,7 @@ mod tests {
     #[tokio::test]
     async fn conditional_edge_on_result() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.legacy_register_stateless_with_metadata(
+        registry.register_stateless_instance(
             ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
             EchoHandler,
         );
@@ -6318,7 +6318,7 @@ mod tests {
     #[tokio::test]
     async fn diamond_with_mixed_conditions() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.legacy_register_stateless_with_metadata(
+        registry.register_stateless_instance(
             ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
             EchoHandler,
         );
@@ -6369,7 +6369,7 @@ mod tests {
     #[tokio::test]
     async fn persists_execution_state_on_success() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.legacy_register_stateless_with_metadata(
+        registry.register_stateless_instance(
             ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
             EchoHandler,
         );
@@ -6417,7 +6417,7 @@ mod tests {
     #[tokio::test]
     async fn persists_execution_state_on_failure() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.legacy_register_stateless_with_metadata(
+        registry.register_stateless_instance(
             ActionMetadata::new(action_key!("fail"), "Fail", "always fails"),
             FailHandler,
         );
@@ -6454,7 +6454,7 @@ mod tests {
     #[tokio::test]
     async fn persists_node_outputs_for_multi_node_workflow() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.legacy_register_stateless_with_metadata(
+        registry.register_stateless_instance(
             ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
             EchoHandler,
         );
@@ -6505,13 +6505,13 @@ mod tests {
     #[tokio::test]
     async fn budget_max_duration_exceeded() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.legacy_register_stateless_with_metadata(
+        registry.register_stateless_instance(
             ActionMetadata::new(action_key!("slow"), "Slow", "sleeps"),
             SlowHandler {
                 delay: Duration::from_millis(100),
             },
         );
-        registry.legacy_register_stateless_with_metadata(
+        registry.register_stateless_instance(
             ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
             EchoHandler,
         );
@@ -6549,7 +6549,7 @@ mod tests {
     #[tokio::test]
     async fn budget_max_output_bytes_exceeded() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.legacy_register_stateless_with_metadata(
+        registry.register_stateless_instance(
             ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
             EchoHandler,
         );
@@ -6589,11 +6589,11 @@ mod tests {
     #[tokio::test]
     async fn error_strategy_continue_on_error_skips_dependents() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.legacy_register_stateless_with_metadata(
+        registry.register_stateless_instance(
             ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
             EchoHandler,
         );
-        registry.legacy_register_stateless_with_metadata(
+        registry.register_stateless_instance(
             ActionMetadata::new(action_key!("fail"), "Fail", "always fails"),
             FailHandler,
         );
@@ -6651,11 +6651,11 @@ mod tests {
     #[tokio::test]
     async fn error_strategy_ignore_errors_continues_downstream() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.legacy_register_stateless_with_metadata(
+        registry.register_stateless_instance(
             ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
             EchoHandler,
         );
-        registry.legacy_register_stateless_with_metadata(
+        registry.register_stateless_instance(
             ActionMetadata::new(action_key!("fail"), "Fail", "always fails"),
             FailHandler,
         );
@@ -6769,7 +6769,7 @@ mod tests {
     #[tokio::test]
     async fn resume_returns_error_for_terminal_execution() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.legacy_register_stateless_with_metadata(
+        registry.register_stateless_instance(
             ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
             EchoHandler,
         );
@@ -6815,7 +6815,7 @@ mod tests {
         // before the crash. We manually inject the partially completed state into
         // the repos and verify that resume runs n2 and n3.
         let registry = Arc::new(ActionRegistry::new());
-        registry.legacy_register_stateless_with_metadata(
+        registry.register_stateless_instance(
             ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
             EchoHandler,
         );
@@ -6921,7 +6921,7 @@ mod tests {
         use nebula_workflow::ParamValue;
 
         let registry = Arc::new(ActionRegistry::new());
-        registry.legacy_register_stateless_with_metadata(
+        registry.register_stateless_instance(
             ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
             EchoHandler,
         );
@@ -7197,11 +7197,11 @@ mod tests {
     #[tokio::test]
     async fn runtime_failure_checkpoint_error_aborts_before_edge_routing() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.legacy_register_stateless_with_metadata(
+        registry.register_stateless_instance(
             ActionMetadata::new(action_key!("fail"), "Fail", "fails"),
             FailHandler,
         );
-        registry.legacy_register_stateless_with_metadata(
+        registry.register_stateless_instance(
             ActionMetadata::new(action_key!("echo"), "Echo", "echoes"),
             EchoHandler,
         );
@@ -7301,7 +7301,7 @@ mod tests {
     #[tokio::test]
     async fn ignore_errors_persists_recovered_completed_state() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.legacy_register_stateless_with_metadata(
+        registry.register_stateless_instance(
             ActionMetadata::new(action_key!("fail"), "Fail", "fails"),
             FailHandler,
         );
@@ -7380,7 +7380,7 @@ mod tests {
     async fn setup_failure_checkpoint_error_aborts_before_edge_routing() {
         use nebula_workflow::ParamValue;
         let registry = Arc::new(ActionRegistry::new());
-        registry.legacy_register_stateless_with_metadata(
+        registry.register_stateless_instance(
             ActionMetadata::new(action_key!("echo"), "Echo", "echoes"),
             EchoHandler,
         );
@@ -7458,11 +7458,11 @@ mod tests {
     #[tokio::test]
     async fn on_error_payload_is_persisted_before_checkpoint_commits() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.legacy_register_stateless_with_metadata(
+        registry.register_stateless_instance(
             ActionMetadata::new(action_key!("fail"), "Fail", "fails"),
             FailHandler,
         );
-        registry.legacy_register_stateless_with_metadata(
+        registry.register_stateless_instance(
             ActionMetadata::new(action_key!("echo"), "Echo", "echoes"),
             EchoHandler,
         );
@@ -7567,7 +7567,7 @@ mod tests {
         }
 
         let registry = Arc::new(ActionRegistry::new());
-        registry.legacy_register_stateless_with_metadata(
+        registry.register_stateless_instance(
             ActionMetadata::new(action_key!("counting"), "Counting", "counts calls"),
             CountingHandler {
                 count: call_count_clone,
@@ -7709,12 +7709,12 @@ mod tests {
         let v1 = Version::new(1, 0, 0);
         let v2 = Version::new(2, 0, 0);
         // Register v1 first; v2 will become the "latest" (handlers map entry).
-        registry.legacy_register_stateless_with_metadata(
+        registry.register_stateless_instance(
             ActionMetadata::new(action_key!("versioned"), "V1", "v1 handler")
                 .with_version_full(v1.clone()),
             V1Handler,
         );
-        registry.legacy_register_stateless_with_metadata(
+        registry.register_stateless_instance(
             ActionMetadata::new(action_key!("versioned"), "V2", "v2 handler")
                 .with_version_full(v2.clone()),
             V2Handler,
@@ -7771,7 +7771,7 @@ mod tests {
         let refresh_count_clone = refresh_count.clone();
 
         let registry = Arc::new(ActionRegistry::new());
-        registry.legacy_register_stateless_with_metadata(
+        registry.register_stateless_instance(
             ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
             EchoHandler,
         );
@@ -7834,7 +7834,7 @@ mod tests {
     #[tokio::test]
     async fn multi_edge_from_same_source_executes_target() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.legacy_register_stateless_with_metadata(
+        registry.register_stateless_instance(
             ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
             EchoHandler,
         );
@@ -8264,7 +8264,7 @@ mod tests {
 
         let invoked = Arc::new(AtomicU32::new(0));
         let registry = Arc::new(ActionRegistry::new());
-        registry.legacy_register_stateless_with_metadata(
+        registry.register_stateless_instance(
             ActionMetadata::new(action_key!("never"), "Never", "must not run"),
             NeverRunHandler {
                 invoked: invoked.clone(),
@@ -8629,7 +8629,7 @@ mod tests {
         // Force parameter resolution to fail by referencing a node
         // that has no output in the shared outputs map.
         let registry = Arc::new(ActionRegistry::new());
-        registry.legacy_register_stateless_with_metadata(
+        registry.register_stateless_instance(
             ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
             EchoHandler,
         );
@@ -8703,7 +8703,7 @@ mod tests {
     #[tokio::test]
     async fn resume_restores_original_workflow_input() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.legacy_register_stateless_with_metadata(
+        registry.register_stateless_instance(
             ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
             EchoHandler,
         );
@@ -8757,7 +8757,7 @@ mod tests {
         use std::time::Duration;
 
         let registry = Arc::new(ActionRegistry::new());
-        registry.legacy_register_stateless_with_metadata(
+        registry.register_stateless_instance(
             ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
             EchoHandler,
         );
@@ -8837,7 +8837,7 @@ mod tests {
     #[tokio::test]
     async fn resume_falls_back_to_default_budget_on_legacy_state() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.legacy_register_stateless_with_metadata(
+        registry.register_stateless_instance(
             ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
             EchoHandler,
         );
@@ -8944,7 +8944,7 @@ mod tests {
         }
 
         let registry = Arc::new(ActionRegistry::new());
-        registry.legacy_register_stateless_with_metadata(
+        registry.register_stateless_instance(
             ActionMetadata::new(action_key!("boom"), "Boom", "panics"),
             PanicHandler,
         );
@@ -9007,13 +9007,13 @@ mod tests {
     #[tokio::test]
     async fn idempotency_replay_preserves_branch_routing() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.legacy_register_stateless_with_metadata(
+        registry.register_stateless_instance(
             ActionMetadata::new(action_key!("branch"), "Branch", "branches"),
             BranchHandler {
                 selected: "true".into(),
             },
         );
-        registry.legacy_register_stateless_with_metadata(
+        registry.register_stateless_instance(
             ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
             EchoHandler,
         );
@@ -9244,7 +9244,7 @@ mod tests {
     #[tokio::test]
     async fn final_cas_conflict_with_external_cancel_honors_external_status() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.legacy_register_stateless_with_metadata(
+        registry.register_stateless_instance(
             ActionMetadata::new(action_key!("echo"), "Echo", "echoes"),
             EchoHandler,
         );
@@ -9332,7 +9332,7 @@ mod tests {
     #[tokio::test]
     async fn node_checkpoint_cas_conflict_surfaces_observed_status() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.legacy_register_stateless_with_metadata(
+        registry.register_stateless_instance(
             ActionMetadata::new(action_key!("echo"), "Echo", "echoes"),
             EchoHandler,
         );
@@ -9673,7 +9673,7 @@ mod tests {
         let registry = Arc::new(ActionRegistry::new());
         // Slow echo so the first runner is still inside the frontier
         // loop when the second call arrives.
-        registry.legacy_register_stateless_with_metadata(
+        registry.register_stateless_instance(
             ActionMetadata::new(action_key!("slow"), "Slow", "slow echoes"),
             SlowHandler {
                 delay: Duration::from_millis(300),
@@ -9779,7 +9779,7 @@ mod tests {
     #[tokio::test]
     async fn overlapping_resume_losers_do_not_clobber_winners_registry_entry() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.legacy_register_stateless_with_metadata(
+        registry.register_stateless_instance(
             ActionMetadata::new(action_key!("slow"), "Slow", "slow echoes"),
             SlowHandler {
                 delay: Duration::from_millis(500),
@@ -9885,7 +9885,7 @@ mod tests {
     #[tokio::test]
     async fn lease_is_released_after_terminal_completion_so_next_runner_can_acquire() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.legacy_register_stateless_with_metadata(
+        registry.register_stateless_instance(
             ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
             EchoHandler,
         );
@@ -9932,7 +9932,7 @@ mod tests {
     #[tokio::test]
     async fn execute_workflow_produces_independent_lease_per_execution_id() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.legacy_register_stateless_with_metadata(
+        registry.register_stateless_instance(
             ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
             EchoHandler,
         );
@@ -10091,16 +10091,20 @@ mod tests {
 
         let registry = Arc::new(ActionRegistry::new());
         registry.register_stateless_factory::<FactoryEcho>();
-        // Legacy registration with a *different* handler (FailHandler) so
-        // we can tell which path actually ran — if dispatch routed through
-        // the legacy path, the workflow would fail.
-        registry.legacy_register_stateless_with_metadata(
+        // Register a *legacy* `ActionHandler` (NOT a factory) for the same key
+        // via the low-level `register` primitive (the surviving legacy spine
+        // until PR3) with a different handler (FailHandler). If dispatch routed
+        // through the legacy path instead of preferring the factory, FailHandler
+        // would run and the workflow would fail.
+        registry.register(
             ActionMetadata::new(
                 action_key!("test.factory.echo"),
                 "LegacyEcho",
                 "legacy fallback",
             ),
-            FailHandler,
+            nebula_action::ActionHandler::Stateless(Arc::new(
+                nebula_action::StatelessActionAdapter::new(FailHandler),
+            )),
         );
 
         let (engine, _) = make_engine(registry);

@@ -174,7 +174,7 @@ async fn action_acquires_resource_through_engine() {
 
     // 2. Build the action registry
     let registry = Arc::new(ActionRegistry::new());
-    registry.legacy_register_stateless_with_metadata(
+    registry.register_stateless_instance(
         meta(action_key!("resource-consumer")),
         ResourceConsumerHandler,
     );
@@ -232,7 +232,7 @@ async fn full_resource_lifecycle_with_shutdown() {
 
     // 2. Build the action registry
     let registry = Arc::new(ActionRegistry::new());
-    registry.legacy_register_stateless_with_metadata(
+    registry.register_stateless_instance(
         meta(action_key!("resource-consumer")),
         ResourceConsumerHandler,
     );
@@ -415,7 +415,7 @@ async fn engine_acquires_org_scoped_resource_through_accessor() {
         .expect("register org-scoped resource");
 
     let registry = Arc::new(ActionRegistry::new());
-    registry.legacy_register_stateless_with_metadata(
+    registry.register_stateless_instance(
         meta(action_key!("engine-integration-acquire")),
         IntegrationAcquireHandler,
     );
@@ -476,10 +476,7 @@ async fn engine_acquires_org_scoped_resource_through_accessor() {
 #[tokio::test]
 async fn action_resource_fails_without_manager() {
     let registry = Arc::new(ActionRegistry::new());
-    registry.legacy_register_stateless_with_metadata(
-        meta(action_key!("resource-probe")),
-        ResourceProbeHandler,
-    );
+    registry.register_stateless_instance(meta(action_key!("resource-probe")), ResourceProbeHandler);
 
     let executor: ActionExecutor =
         Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));

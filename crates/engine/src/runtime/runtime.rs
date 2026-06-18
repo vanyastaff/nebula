@@ -1365,7 +1365,7 @@ mod tests {
     use super::*;
 
     /// Echo fixture — Variant A unit struct. Per-test metadata is supplied
-    /// via [`ActionRegistry::legacy_register_stateless_with_metadata`] (the
+    /// via [`ActionRegistry::register_stateless_instance`] (the
     /// R-NEW-7 test escape), so the static `<Self as Action>::metadata()`
     /// is only consulted when the test escape is bypassed.
     struct EchoAction;
@@ -1469,7 +1469,7 @@ mod tests {
     #[tokio::test]
     async fn max_total_execution_bytes_across_dispatches() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.legacy_register_stateless_with_metadata(
+        registry.register_stateless_instance(
             ActionMetadata::new(action_key!("test.echo"), "Echo", "echoes input"),
             EchoAction,
         );
@@ -1525,7 +1525,7 @@ mod tests {
     #[tokio::test]
     async fn execute_trusted_action() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.legacy_register_stateless_with_metadata(
+        registry.register_stateless_instance(
             ActionMetadata::new(action_key!("test.echo"), "Echo", "echoes input"),
             EchoAction,
         );
@@ -1557,7 +1557,7 @@ mod tests {
     #[tokio::test]
     async fn execute_failing_action_propagates_error() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.legacy_register_stateless_with_metadata(
+        registry.register_stateless_instance(
             ActionMetadata::new(action_key!("test.fail"), "Fail", "always fails"),
             FailAction,
         );
@@ -1573,7 +1573,7 @@ mod tests {
     #[tokio::test]
     async fn data_limit_enforcement() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.legacy_register_stateless_with_metadata(
+        registry.register_stateless_instance(
             ActionMetadata::new(action_key!("test.big"), "Big", "returns big output"),
             EchoAction,
         );
@@ -1606,7 +1606,7 @@ mod tests {
     #[tokio::test]
     async fn metrics_recorded_on_execution() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.legacy_register_stateless_with_metadata(
+        registry.register_stateless_instance(
             ActionMetadata::new(action_key!("test.tele"), "Tele", "test"),
             EchoAction,
         );
@@ -1674,7 +1674,7 @@ mod tests {
         let runner = Arc::new(InProcessRunner::new(executor));
 
         let registry = Arc::new(ActionRegistry::new());
-        registry.legacy_register_stateless_with_metadata(
+        registry.register_stateless_instance(
             ActionMetadata::new(action_key!("test.gated"), "Gated", "capability gated")
                 .with_isolation_level(IsolationLevel::CapabilityGated),
             EchoAction,
@@ -1701,7 +1701,7 @@ mod tests {
     #[tokio::test]
     async fn spill_to_blob_rejects_when_no_storage() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.legacy_register_stateless_with_metadata(
+        registry.register_stateless_instance(
             ActionMetadata::new(action_key!("test.spill"), "Spill", "large output"),
             EchoAction,
         );
@@ -1760,7 +1760,7 @@ mod tests {
         }
 
         let registry = Arc::new(ActionRegistry::new());
-        registry.legacy_register_stateless_with_metadata(
+        registry.register_stateless_instance(
             ActionMetadata::new(
                 action_key!("test.spill_ok"),
                 "SpillOk",
@@ -1861,7 +1861,7 @@ mod tests {
         }
 
         let registry = Arc::new(ActionRegistry::new());
-        registry.legacy_register_stateless_with_metadata(
+        registry.register_stateless_instance(
             ActionMetadata::new(
                 action_key!("test.multi_out"),
                 "MultiOut",
@@ -1941,7 +1941,7 @@ mod tests {
         }
 
         let registry = Arc::new(ActionRegistry::new());
-        registry.legacy_register_stateless_with_metadata(
+        registry.register_stateless_instance(
             ActionMetadata::new(action_key!("test.branch"), "Branch", "branch with alts"),
             BranchAction,
         );
@@ -2007,7 +2007,7 @@ mod tests {
         }
 
         let registry = Arc::new(ActionRegistry::new());
-        registry.legacy_register_stateless_with_metadata(
+        registry.register_stateless_instance(
             ActionMetadata::new(
                 action_key!("test.collection"),
                 "Collection",
@@ -2079,7 +2079,7 @@ mod tests {
         }
 
         let registry = Arc::new(ActionRegistry::new());
-        registry.legacy_register_stateless_with_metadata(
+        registry.register_stateless_instance(
             ActionMetadata::new(action_key!("test.binary"), "Binary", "inline bytes"),
             BinaryAction,
         );
@@ -2144,7 +2144,7 @@ mod tests {
         }
 
         let registry = Arc::new(ActionRegistry::new());
-        registry.legacy_register_stateless_with_metadata(
+        registry.register_stateless_instance(
             ActionMetadata::new(action_key!("test.ref"), "Reference", "large metadata"),
             RefAction,
         );
@@ -2355,7 +2355,7 @@ mod tests {
     #[tokio::test]
     async fn dispatched_stateless_observes_histogram_and_counter() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.legacy_register_stateless_with_metadata(
+        registry.register_stateless_instance(
             ActionMetadata::new(action_key!("test.dispatched"), "Disp", "dispatched"),
             EchoAction,
         );

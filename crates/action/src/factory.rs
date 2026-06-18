@@ -164,11 +164,16 @@ where
     }
 }
 
-// ── FixedFactory (instance-carrying stateless factory) ──────────────────────
+// ── InstanceFactory (instance-backed stateless factory) ─────────────────────
 
-/// Stateless [`ActionFactory`] that wraps a pre-built action **instance** plus
+/// Stateless [`ActionFactory`] backed by a pre-built action **instance** plus
 /// caller-supplied [`ActionMetadata`], instead of building the action from the
 /// workflow node like [`GenericStatelessFactory`].
+///
+/// This is the `useValue` half of the dependency-injection dichotomy
+/// (a pre-instantiated value) to [`GenericStatelessFactory`]'s `useFactory`
+/// half (construct-on-demand): the same action instance is shared across every
+/// dispatch, and the catalog metadata is supplied per registration.
 ///
 /// Two properties distinguish it from the generic factory:
 ///
@@ -183,14 +188,14 @@ where
 ///   dispatch via [`FromWorkflowNode`].
 ///
 /// The produced [`ActionHandle::Stateless`] dispatches through the same engine
-/// path as any other factory — `FixedFactory` is a first-class member of the
+/// path as any other factory — `InstanceFactory` is a first-class member of the
 /// factory spine, not a wrapper around a separate dispatch path.
-pub struct FixedFactory<A> {
+pub struct InstanceFactory<A> {
     action: Arc<A>,
     meta: Arc<ActionMetadata>,
 }
 
-impl<A> FixedFactory<A> {
+impl<A> InstanceFactory<A> {
     /// Wrap a pre-built action instance with explicit metadata.
     ///
     /// The metadata's [`kind`](ActionMetadata::kind) is stamped to
@@ -206,7 +211,7 @@ impl<A> FixedFactory<A> {
     }
 }
 
-impl<A> ActionFactory for FixedFactory<A>
+impl<A> ActionFactory for InstanceFactory<A>
 where
     A: StatelessAction,
     <A as Action>::Input: DeserializeOwned + Send + Sync,
@@ -221,7 +226,7 @@ where
         _node: &'a NodeDefinition,
         _ctx: &'a dyn ActionContext,
     ) -> Pin<Box<dyn Future<Output = Result<ActionHandle, ActionError>> + Send + 'a>> {
-        let inner = FixedStatelessHandle {
+        let inner = InstanceStatelessHandle {
             action: Arc::clone(&self.action),
             meta: Arc::clone(&self.meta),
         };
@@ -229,13 +234,13 @@ where
     }
 }
 
-struct FixedStatelessHandle<A> {
+struct InstanceStatelessHandle<A> {
     action: Arc<A>,
     meta: Arc<ActionMetadata>,
 }
 
 #[async_trait]
-impl<A> StatelessHandle for FixedStatelessHandle<A>
+impl<A> StatelessHandle for InstanceStatelessHandle<A>
 where
     A: StatelessAction,
     <A as Action>::Input: DeserializeOwned + Send + Sync,

@@ -1,7 +1,7 @@
-//! Integration tests for [`FixedFactory`] — the instance-carrying stateless
+//! Integration tests for [`InstanceFactory`] — the instance-backed stateless
 //! [`ActionFactory`].
 //!
-//! `FixedFactory` is the migration vehicle for the ADR-0098 D0 spine collapse:
+//! `InstanceFactory` is the migration vehicle for the ADR-0098 D0 spine collapse:
 //! it lets a registry hold a pre-built action instance plus per-registration
 //! metadata on the surviving factory spine, where the generic factory (which
 //! ties one type to one static key and rebuilds the action per dispatch) cannot.
@@ -15,7 +15,7 @@ use std::sync::{
 
 use nebula_action::{
     Action, ActionContext, ActionError, ActionFactory, ActionHandle, ActionKind, ActionMetadata,
-    ActionResult, FixedFactory, StatelessAction, TestContextBuilder,
+    ActionResult, InstanceFactory, StatelessAction, TestContextBuilder,
 };
 use nebula_core::{Dependencies, action_key, node_key};
 use nebula_workflow::NodeDefinition;
@@ -58,8 +58,8 @@ impl StatelessAction for CountingEcho {
 }
 
 #[tokio::test]
-async fn fixed_factory_uses_caller_metadata_not_type_metadata() {
-    let factory = FixedFactory::new(
+async fn instance_factory_uses_caller_metadata_not_type_metadata() {
+    let factory = InstanceFactory::new(
         ActionMetadata::new(
             action_key!("tenant.custom_echo"),
             "Custom Echo",
@@ -79,16 +79,16 @@ async fn fixed_factory_uses_caller_metadata_not_type_metadata() {
     assert_ne!(
         factory.metadata().base.key,
         <CountingEcho as Action>::metadata().base.key,
-        "FixedFactory must not fall back to the type's static metadata key"
+        "InstanceFactory must not fall back to the type's static metadata key"
     );
     // The factory is the single writer of the kind for the handle it produces.
     assert_eq!(factory.metadata().kind, ActionKind::Stateless);
 }
 
 #[tokio::test]
-async fn fixed_factory_shares_one_instance_across_dispatches() {
+async fn instance_factory_shares_one_instance_across_dispatches() {
     let hits = Arc::new(AtomicUsize::new(0));
-    let factory = FixedFactory::new(
+    let factory = InstanceFactory::new(
         ActionMetadata::new(action_key!("tenant.custom_echo"), "Custom Echo", ""),
         CountingEcho {
             hits: Arc::clone(&hits),
@@ -113,7 +113,7 @@ async fn fixed_factory_shares_one_instance_across_dispatches() {
             .await
             .expect("instantiate succeeds");
         let ActionHandle::Stateless(stateless) = handle else {
-            panic!("FixedFactory must produce ActionHandle::Stateless");
+            panic!("InstanceFactory must produce ActionHandle::Stateless");
         };
 
         let result = stateless

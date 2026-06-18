@@ -37,7 +37,7 @@ use nebula_workflow::{
 // ---------------------------------------------------------------------------
 // Test handlers — Variant A trait shape with placeholder static metadata.
 // Real per-instance metadata (varying action_key per test) flows through
-// `legacy_register_stateless_with_metadata` test escape (R-NEW-7).
+// `register_stateless_instance` test escape (R-NEW-7).
 // ---------------------------------------------------------------------------
 
 /// Macro to emit Variant A `impl Action` with placeholder static metadata.
@@ -191,7 +191,7 @@ fn make_workflow(
 async fn retry_succeeds_on_attempt_2() {
     let invocations = Arc::new(AtomicU32::new(0));
     let registry = Arc::new(ActionRegistry::new());
-    registry.legacy_register_stateless_with_metadata(
+    registry.register_stateless_instance(
         ActionMetadata::new(action_key!("flaky"), "Flaky", "fails once"),
         FlakyHandler {
             fail_count: 1,
@@ -226,7 +226,7 @@ async fn retry_succeeds_on_attempt_2() {
 async fn retry_exhausts_max_attempts() {
     let invocations = Arc::new(AtomicU32::new(0));
     let registry = Arc::new(ActionRegistry::new());
-    registry.legacy_register_stateless_with_metadata(
+    registry.register_stateless_instance(
         ActionMetadata::new(action_key!("doomed"), "Doomed", "always fails"),
         AlwaysFailingHandler {
             invocations: Arc::clone(&invocations),
@@ -266,7 +266,7 @@ async fn retry_exhausts_max_attempts() {
 async fn cancel_during_retry_wait() {
     let invocations = Arc::new(AtomicU32::new(0));
     let registry = Arc::new(ActionRegistry::new());
-    registry.legacy_register_stateless_with_metadata(
+    registry.register_stateless_instance(
         ActionMetadata::new(action_key!("flaky_long"), "FlakyLong", "fails forever"),
         AlwaysFailingHandler {
             invocations: Arc::clone(&invocations),
@@ -344,13 +344,13 @@ async fn cancel_during_retry_wait() {
 async fn terminate_during_retry_wait() {
     let invocations = Arc::new(AtomicU32::new(0));
     let registry = Arc::new(ActionRegistry::new());
-    registry.legacy_register_stateless_with_metadata(
+    registry.register_stateless_instance(
         ActionMetadata::new(action_key!("flaky_t"), "FlakyT", "fails forever"),
         AlwaysFailingHandler {
             invocations: Arc::clone(&invocations),
         },
     );
-    registry.legacy_register_stateless_with_metadata(
+    registry.register_stateless_instance(
         ActionMetadata::new(action_key!("term"), "Term", "terminates"),
         TerminateHandler,
     );
@@ -419,7 +419,7 @@ async fn terminate_during_retry_wait() {
 async fn execution_budget_max_total_retries_caps_globally() {
     let invocations = Arc::new(AtomicU32::new(0));
     let registry = Arc::new(ActionRegistry::new());
-    registry.legacy_register_stateless_with_metadata(
+    registry.register_stateless_instance(
         ActionMetadata::new(action_key!("doomed_g"), "DoomedG", "always fails"),
         AlwaysFailingHandler {
             invocations: Arc::clone(&invocations),
@@ -458,7 +458,7 @@ async fn execution_budget_max_total_retries_caps_globally() {
 async fn idempotency_key_differentiates_attempts() {
     let invocations = Arc::new(AtomicU32::new(0));
     let registry = Arc::new(ActionRegistry::new());
-    registry.legacy_register_stateless_with_metadata(
+    registry.register_stateless_instance(
         ActionMetadata::new(action_key!("flaky_idem"), "FlakyIdem", "fails once"),
         FlakyHandler {
             fail_count: 1,
@@ -528,7 +528,7 @@ async fn idempotency_key_differentiates_attempts() {
 async fn per_node_retry_policy_overrides_workflow_default() {
     let invocations = Arc::new(AtomicU32::new(0));
     let registry = Arc::new(ActionRegistry::new());
-    registry.legacy_register_stateless_with_metadata(
+    registry.register_stateless_instance(
         ActionMetadata::new(
             action_key!("flaky_o"),
             "FlakyO",
@@ -574,7 +574,7 @@ async fn per_node_retry_policy_overrides_workflow_default() {
 async fn workflow_default_applies_when_node_has_none() {
     let invocations = Arc::new(AtomicU32::new(0));
     let registry = Arc::new(ActionRegistry::new());
-    registry.legacy_register_stateless_with_metadata(
+    registry.register_stateless_instance(
         ActionMetadata::new(action_key!("flaky_d"), "FlakyD", "fails once"),
         FlakyHandler {
             fail_count: 1,
@@ -616,7 +616,7 @@ async fn workflow_default_applies_when_node_has_none() {
 async fn no_retry_policy_means_one_shot_failure() {
     let invocations = Arc::new(AtomicU32::new(0));
     let registry = Arc::new(ActionRegistry::new());
-    registry.legacy_register_stateless_with_metadata(
+    registry.register_stateless_instance(
         ActionMetadata::new(action_key!("oneshot"), "OneShot", "fails"),
         AlwaysFailingHandler {
             invocations: Arc::clone(&invocations),

@@ -243,7 +243,7 @@ fn meta(key: ActionKey) -> ActionMetadata {
 async fn pipeline_resolves_expressions_before_handler_runs() {
     let seen_input = Arc::new(parking_lot::Mutex::new(None::<serde_json::Value>));
     let registry = Arc::new(ActionRegistry::new());
-    registry.legacy_register_stateless_with_metadata(
+    registry.register_stateless_instance(
         meta(action_key!("phase9.witness")),
         PipelineWitness {
             seen_input: Arc::clone(&seen_input),
@@ -370,7 +370,7 @@ async fn pipeline_with_resource_manager_resolves_and_executes() {
 
     let seen_input = Arc::new(parking_lot::Mutex::new(None::<serde_json::Value>));
     let registry = Arc::new(ActionRegistry::new());
-    registry.legacy_register_stateless_with_metadata(
+    registry.register_stateless_instance(
         meta(action_key!("phase9.witness")),
         PipelineWitness {
             seen_input: Arc::clone(&seen_input),
@@ -443,7 +443,7 @@ async fn pipeline_with_resource_manager_resolves_and_executes() {
 async fn pipeline_unresolvable_expression_fails_node_before_handler() {
     let seen_input = Arc::new(parking_lot::Mutex::new(None::<serde_json::Value>));
     let registry = Arc::new(ActionRegistry::new());
-    registry.legacy_register_stateless_with_metadata(
+    registry.register_stateless_instance(
         meta(action_key!("phase9.witness")),
         PipelineWitness {
             seen_input: Arc::clone(&seen_input),

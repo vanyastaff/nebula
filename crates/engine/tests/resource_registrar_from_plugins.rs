@@ -244,7 +244,7 @@ impl StatelessAction for NoopHandler {
 
 fn build_engine(registrars: ResourceActivatorRegistry) -> WorkflowEngine {
     let registry = Arc::new(ActionRegistry::new());
-    registry.legacy_register_stateless_with_metadata(
+    registry.register_stateless_instance(
         ActionMetadata::new(action_key!("test.noop"), "Noop", "noop"),
         NoopHandler,
     );

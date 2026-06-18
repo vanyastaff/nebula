@@ -506,7 +506,7 @@ async fn knife_step3_engine_dispatches_start_end_to_end() {
     // ── Build the engine bound to the same scoped port handles the API
     // wrote to ──────────────────────────────────────────────────────────────
     let registry = Arc::new(ActionRegistry::new());
-    registry.legacy_register_stateless_with_metadata(
+    registry.register_stateless_instance(
         nebula_action::metadata::ActionMetadata::new(
             action_key!("echo"),
             "echo",
