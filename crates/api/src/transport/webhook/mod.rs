@@ -33,6 +33,7 @@ pub mod provider;
 pub mod ratelimit;
 pub(super) mod replay;
 pub(crate) mod routing;
+pub mod secret_resolver;
 pub(super) mod signature;
 pub mod token;
 pub mod transport;
@@ -45,6 +46,7 @@ pub use events::{TriggerLifecycleBus, TriggerLifecycleEvent, TriggerLifecycleEve
 pub use key::WebhookKey;
 pub use provider::EndpointProviderImpl;
 pub use ratelimit::{RateLimitExceeded, WebhookRateLimiter};
+pub use secret_resolver::{CredentialBackedWebhookSecretResolver, mint_whsec};
 pub use transport::{
     ActivateAndPersistError, ActivationError, ActivationHandle, PersistParams, WebhookTransport,
     WebhookTransportConfig, activate_and_persist,

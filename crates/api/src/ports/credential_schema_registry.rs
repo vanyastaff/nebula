@@ -22,7 +22,7 @@ use std::sync::Arc;
 
 use nebula_credential::{
     AnyCredential, ApiKeyCredential, BasicAuthCredential, Capabilities, CredentialRegistry,
-    OAuth2Credential,
+    OAuth2Credential, SigningKeyCredential,
 };
 use nebula_schema::FieldValues;
 
@@ -203,6 +203,9 @@ pub(crate) fn default_registry() -> Result<CredentialRegistry, nebula_credential
     registry.register(ApiKeyCredential, "nebula-credential")?;
     registry.register(BasicAuthCredential, "nebula-credential")?;
     registry.register(OAuth2Credential, "nebula-credential")?;
+    // signing_key: static non-interactive credential used for webhook HMAC
+    // secrets (Standard Webhooks `whsec_` format).
+    registry.register(SigningKeyCredential, "nebula-credential")?;
     Ok(registry)
 }
 
@@ -282,10 +285,10 @@ mod tests {
         );
         assert!(p.get_type("nope").is_none());
 
-        // The composition default registers all three first-party types.
+        // The composition default registers all first-party types.
         let default = try_default_registry_port().expect("first-party set registers (unique KEYs)");
         let listed = default.list_types();
-        for k in ["api_key", "basic_auth", "oauth2"] {
+        for k in ["api_key", "basic_auth", "oauth2", "signing_key"] {
             assert!(
                 listed.iter().any(|t| t.key == k),
                 "default port must register {k}; got {:?}",

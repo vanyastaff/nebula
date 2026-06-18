@@ -235,7 +235,17 @@ impl ServerRuntime {
             nebula_api::ports::credential_service_factory::try_default_credential_service()
                 .await
                 .map_err(|e| TransportInitError::CredentialServiceInit(e.to_string()))?;
-        state = state.with_credential_service(credential_service);
+        // Install the webhook secret resolver before consuming `credential_service`
+        // into AppState — clone the Arc so both the state and the resolver share
+        // a single CredentialService instance (no second construction).
+        let webhook_secret_resolver = Arc::new(
+            nebula_api::transport::webhook::CredentialBackedWebhookSecretResolver::new(Arc::clone(
+                &credential_service,
+            )),
+        );
+        state = state
+            .with_credential_service(credential_service)
+            .with_webhook_secret_resolver(webhook_secret_resolver);
         // Build ONE shared `Arc<dyn EmailPort>` and pass the same Arc
         // to both `AppState::email_port` and the selected auth backend.
         // `API_SMTP_HOST` unset → dev `EchoSink` (unchanged local-first
