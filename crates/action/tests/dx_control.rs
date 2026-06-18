@@ -18,7 +18,7 @@
 use std::sync::{Arc, OnceLock};
 
 use nebula_action::{
-    Action, ActionCategory, ActionError, ActionMetadata, ActionOutput, ActionResult,
+    Action, ActionError, ActionKind, ActionMetadata, ActionOutput, ActionResult,
     ActionRuntimeContext, ControlAction, ControlActionAdapter, ControlInput, ControlOutcome,
     OutputPort, StatelessHandler, TerminationReason, ValidationReason, testing::TestContextBuilder,
 };
@@ -138,9 +138,9 @@ async fn demo_if_wrong_type_is_validation_error() {
 }
 
 #[test]
-fn demo_if_has_control_category() {
+fn demo_if_has_control_kind() {
     let adapter = ControlActionAdapter::new(DemoIf);
-    assert_eq!(adapter.metadata().category, ActionCategory::Control);
+    assert_eq!(adapter.metadata().kind, ActionKind::Control);
 }
 
 // ── DemoSwitch ─ N-way static branch ───────────────────────────────────────
@@ -487,10 +487,13 @@ async fn demo_noop_preserves_input() {
 }
 
 #[test]
-fn demo_noop_has_control_category_with_default_port() {
-    // NoOp uses default output ports (one main output) → Control, not Terminal.
+fn demo_noop_has_control_kind_with_default_ports() {
+    // NoOp uses default output ports (one main output) → a non-terminal
+    // control node.
     let adapter = ControlActionAdapter::new(DemoNoOp);
-    assert_eq!(adapter.metadata().category, ActionCategory::Control);
+    let meta = adapter.metadata();
+    assert_eq!(meta.kind, ActionKind::Control);
+    assert!(!meta.outputs.is_empty(), "NoOp is not a terminal sink");
 }
 
 // ── DemoStop ─ explicit success termination ────────────────────────────────
@@ -557,10 +560,13 @@ async fn demo_stop_terminates_with_success() {
 }
 
 #[test]
-fn demo_stop_has_terminal_category() {
-    // Zero output ports → Terminal subcategory.
+fn demo_stop_is_terminal_control_node() {
+    // Stop keeps `ActionKind::Control`; terminality is carried by its empty
+    // `outputs` set, which the validator reads to recognise the graph sink.
     let adapter = ControlActionAdapter::new(DemoStop::new(None));
-    assert_eq!(adapter.metadata().category, ActionCategory::Terminal);
+    let meta = adapter.metadata();
+    assert_eq!(meta.kind, ActionKind::Control);
+    assert!(meta.outputs.is_empty(), "Stop is a terminal sink");
 }
 
 // ── DemoFail ─ explicit error termination ──────────────────────────────────
@@ -632,9 +638,11 @@ async fn demo_fail_terminates_with_failure() {
 }
 
 #[test]
-fn demo_fail_has_terminal_category() {
+fn demo_fail_is_terminal_control_node() {
     let adapter = ControlActionAdapter::new(DemoFail::new("E", "m"));
-    assert_eq!(adapter.metadata().category, ActionCategory::Terminal);
+    let meta = adapter.metadata();
+    assert_eq!(meta.kind, ActionKind::Control);
+    assert!(meta.outputs.is_empty(), "Fail is a terminal sink");
 }
 
 // ── Cross-cutting: all seven fixtures are dyn-compatible and registerable ──
@@ -667,39 +675,37 @@ fn all_demo_fixtures_are_dyn_stateless_handlers() {
 }
 
 #[test]
-fn category_inference_matches_expectation() {
-    let cases: &[(Arc<dyn StatelessHandler>, ActionCategory)] = &[
-        (
-            Arc::new(ControlActionAdapter::new(DemoIf)),
-            ActionCategory::Control,
-        ),
-        (
-            Arc::new(ControlActionAdapter::new(DemoSwitch)),
-            ActionCategory::Control,
-        ),
-        (
-            Arc::new(ControlActionAdapter::new(DemoFilter)),
-            ActionCategory::Control,
-        ),
-        (
-            Arc::new(ControlActionAdapter::new(DemoNoOp)),
-            ActionCategory::Control,
-        ),
+fn kind_and_terminality_inference_matches_expectation() {
+    // Every control node is stamped `ActionKind::Control`. Terminality is no
+    // longer a distinct kind: it is read structurally from an empty `outputs`
+    // set, so the `is_terminal` column maps to `outputs.is_empty()`.
+    let cases: &[(Arc<dyn StatelessHandler>, bool)] = &[
+        (Arc::new(ControlActionAdapter::new(DemoIf)), false),
+        (Arc::new(ControlActionAdapter::new(DemoSwitch)), false),
+        (Arc::new(ControlActionAdapter::new(DemoFilter)), false),
+        (Arc::new(ControlActionAdapter::new(DemoNoOp)), false),
         (
             Arc::new(ControlActionAdapter::new(DemoStop::new(None))),
-            ActionCategory::Terminal,
+            true,
         ),
         (
             Arc::new(ControlActionAdapter::new(DemoFail::new("E", "m"))),
-            ActionCategory::Terminal,
+            true,
         ),
     ];
-    for (handler, expected) in cases {
+    for (handler, is_terminal) in cases {
+        let meta = handler.metadata();
         assert_eq!(
-            handler.metadata().category,
-            *expected,
-            "unexpected category for {}",
-            handler.metadata().base.key
+            meta.kind,
+            ActionKind::Control,
+            "every control node is `Control`: {}",
+            meta.base.key
+        );
+        assert_eq!(
+            meta.outputs.is_empty(),
+            *is_terminal,
+            "terminality (empty outputs) mismatch for {}",
+            meta.base.key
         );
     }
 }

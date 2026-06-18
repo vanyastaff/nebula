@@ -54,7 +54,7 @@
 | `ActionFactory` + `Generic{Stateless,Stateful,Trigger,Resource,Control}Factory` | `src/factory.rs:53,69-497` |
 | `FromWorkflowNode` (async slot-binding фабрика; тело генерит derive) | `src/from_workflow_node.rs:61` |
 | `ActionError` + `RetryHintCode` (retryable vs fatal), `ValidationReason` | `src/error.rs:154,31,58` |
-| `ActionMetadata`, `ActionCategory`, `ActionKind`, `CheckpointPolicy`, `IsolationLevel` | `src/metadata.rs:175,44,92,127,13` |
+| `ActionMetadata`, `ActionKind`, `CheckpointPolicy`, `IsolationLevel` | `src/metadata.rs:131,48,83,13` |
 | `ActionResult<T>`, `TerminationReason`, `WaitCondition`, `BranchKey` | `src/result.rs:40,195,297` |
 | `ActionOutput<T>`, `OutputEnvelope`, `DeferredOutput`, `StreamOutput` | `src/output.rs:506,465,86,206` |
 | `ActionContext`/`TriggerContext` + `ActionRuntimeContext`/`TriggerRuntimeContext` | `src/context.rs:81,108,144,397` |
@@ -98,8 +98,9 @@ Dev: `nebula-credential-macros`, `nebula-expression`, `trybuild`, `insta`, `rste
 - **Slots-only на `Self`, form-data на `Self::Input`** (canon §3.5). Action-структура держит только
   slot-поля (`#[resource]`/`#[credential]`); пользовательские данные — на отдельной `Self::Input: HasSchema`.
   Устраняет `self.text` vs `input.text`-неоднозначность на этапе компиляции.
-- **Routing по трейту, не по `ActionCategory`** (canon §3.5). `ActionCategory` — метаданные для UI/tooling;
-  движок маршрутизирует по семейству трейта. Добавление нового трейта = canon-ревизия (§0.2).
+- **Routing по трейту, не по `ActionKind`** (canon §3.5). `ActionKind` — метаданные node-таксономии
+  для UI/валидатора/аудита; движок маршрутизирует по семейству трейта (структурно, по хендлу, который
+  производит фабрика). Добавление нового трейта = canon-ревизия (§0.2).
 - **Webhook fail-closed** (ADR-0022). `SignaturePolicy::Required` с пустым секретом по умолчанию;
   HTTP-транспорт даёт `401 problem+json` на mismatch, `500` на `Required`-без-секрета. `OptionalAcceptUnsigned`
   — явный opt-out. **Секрет НЕ течёт через dyn `TriggerHandler`** — webhook-конфиг читается из typed-action
