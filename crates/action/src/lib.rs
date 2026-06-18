@@ -111,8 +111,8 @@ pub use error::{
     ActionError, ActionErrorExt, MAX_VALIDATION_DETAIL, RetryHintCode, ValidationReason,
 };
 pub use factory::{
-    ActionFactory, GenericControlFactory, GenericResourceFactory, GenericStatefulFactory,
-    GenericStatelessFactory, GenericTriggerFactory,
+    ActionFactory, FixedFactory, GenericControlFactory, GenericResourceFactory,
+    GenericStatefulFactory, GenericStatelessFactory, GenericTriggerFactory,
 };
 pub use from_workflow_node::FromWorkflowNode;
 pub use handle::{

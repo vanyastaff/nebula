@@ -15,7 +15,13 @@
 //! [`FromWorkflowNode::from_workflow_node`](crate::FromWorkflowNode::from_workflow_node)
 //! and then erasing to the matching [`ActionHandle`] variant.
 
-use std::{any::Any, future::Future, marker::PhantomData, pin::Pin, sync::OnceLock};
+use std::{
+    any::Any,
+    future::Future,
+    marker::PhantomData,
+    pin::Pin,
+    sync::{Arc, OnceLock},
+};
 
 use async_trait::async_trait;
 use nebula_workflow::NodeDefinition;
@@ -127,6 +133,109 @@ impl<A> StatelessHandleImpl<A> {
 
 #[async_trait]
 impl<A> StatelessHandle for StatelessHandleImpl<A>
+where
+    A: StatelessAction,
+    <A as Action>::Input: DeserializeOwned + Send + Sync,
+    <A as Action>::Output: Serialize + Send + Sync,
+{
+    fn metadata(&self) -> &ActionMetadata {
+        &self.meta
+    }
+
+    async fn dispatch(
+        &self,
+        input: Value,
+        ctx: &dyn ActionContext,
+    ) -> Result<ActionResult<Value>, ActionError> {
+        let typed_input: <A as Action>::Input = serde_json::from_value(input).map_err(|e| {
+            ActionError::validation(
+                "input",
+                ValidationReason::MalformedJson,
+                Some(e.to_string()),
+            )
+        })?;
+
+        let result = self.action.execute(typed_input, ctx).await?;
+
+        result.try_map_output(|output| {
+            serde_json::to_value(output)
+                .map_err(|e| ActionError::fatal(format!("output serialization failed: {e}")))
+        })
+    }
+}
+
+// ── FixedFactory (instance-carrying stateless factory) ──────────────────────
+
+/// Stateless [`ActionFactory`] that wraps a pre-built action **instance** plus
+/// caller-supplied [`ActionMetadata`], instead of building the action from the
+/// workflow node like [`GenericStatelessFactory`].
+///
+/// Two properties distinguish it from the generic factory:
+///
+/// - **Caller metadata.** The metadata is supplied per registration, so one
+///   action type can back many distinct catalog keys / port shapes. The generic
+///   factory derives a single static [`Action::metadata`] from the type and so
+///   binds one type to one key.
+/// - **Shared instance.** It holds the action in an `Arc` and hands every
+///   dispatch a handle over the *same* instance, so interior state (counters,
+///   spies, caches) is shared across dispatches — matching a directly
+///   constructed handler. The generic factory rebuilds a fresh action per
+///   dispatch via [`FromWorkflowNode`].
+///
+/// The produced [`ActionHandle::Stateless`] dispatches through the same engine
+/// path as any other factory — `FixedFactory` is a first-class member of the
+/// factory spine, not a wrapper around a separate dispatch path.
+pub struct FixedFactory<A> {
+    action: Arc<A>,
+    meta: Arc<ActionMetadata>,
+}
+
+impl<A> FixedFactory<A> {
+    /// Wrap a pre-built action instance with explicit metadata.
+    ///
+    /// The metadata's [`kind`](ActionMetadata::kind) is stamped to
+    /// [`ActionKind::Stateless`] — the factory is the single writer of the kind
+    /// for the handle it produces — while every other field is preserved as the
+    /// caller supplied it.
+    #[must_use]
+    pub fn new(metadata: ActionMetadata, action: A) -> Self {
+        Self {
+            action: Arc::new(action),
+            meta: Arc::new(metadata.with_kind(ActionKind::Stateless)),
+        }
+    }
+}
+
+impl<A> ActionFactory for FixedFactory<A>
+where
+    A: StatelessAction,
+    <A as Action>::Input: DeserializeOwned + Send + Sync,
+    <A as Action>::Output: Serialize + Send + Sync,
+{
+    fn metadata(&self) -> &ActionMetadata {
+        &self.meta
+    }
+
+    fn instantiate<'a>(
+        &'a self,
+        _node: &'a NodeDefinition,
+        _ctx: &'a dyn ActionContext,
+    ) -> Pin<Box<dyn Future<Output = Result<ActionHandle, ActionError>> + Send + 'a>> {
+        let inner = FixedStatelessHandle {
+            action: Arc::clone(&self.action),
+            meta: Arc::clone(&self.meta),
+        };
+        Box::pin(async move { Ok(ActionHandle::Stateless(Box::new(inner))) })
+    }
+}
+
+struct FixedStatelessHandle<A> {
+    action: Arc<A>,
+    meta: Arc<ActionMetadata>,
+}
+
+#[async_trait]
+impl<A> StatelessHandle for FixedStatelessHandle<A>
 where
     A: StatelessAction,
     <A as Action>::Input: DeserializeOwned + Send + Sync,
