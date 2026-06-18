@@ -2,14 +2,14 @@
 //!
 //! Single source of truth for action registration in nebula. The runtime
 //! owns this type because registration is fundamentally an execution concern —
-//! the registry holds `Arc`-wrapped handlers for dispatch.
+//! the registry holds `Arc<dyn ActionFactory>` entries for dispatch.
 //!
 //! # Version-aware lookup
 //!
 //! Multiple versions of the same action can be registered simultaneously.
-//! [`ActionRegistry::get`] returns the **latest** version (highest major,
-//! then minor), while [`ActionRegistry::get_versioned`] retrieves a specific
-//! `"major.minor"` version.
+//! [`ActionRegistry::get_factory`] returns the **latest** version (highest major,
+//! then minor), while [`ActionRegistry::get_factory_versioned`] retrieves a
+//! specific `"major.minor"` version.
 //!
 //! # Thread safety
 //!
@@ -21,46 +21,29 @@ use std::sync::Arc;
 
 use dashmap::DashMap;
 use nebula_action::{
-    Action, ActionError, ActionFactory, ActionHandler, ActionMetadata, ControlAction,
-    FromWorkflowNode, GenericControlFactory, GenericResourceFactory, GenericStatefulFactory,
-    GenericStatelessFactory, GenericTriggerFactory, InstanceFactory, PollAction,
-    PollTriggerAdapter, ResourceAction, ResourceActionAdapter, StatefulAction,
-    StatefulActionAdapter, StatelessAction, StatelessActionAdapter, TriggerAction,
-    TriggerActionAdapter, WebhookAction, WebhookActionFactory, WebhookTriggerAdapter,
+    Action, ActionError, ActionFactory, ActionMetadata, ControlAction, FromWorkflowNode,
+    GenericControlFactory, GenericResourceFactory, GenericStatefulFactory, GenericStatelessFactory,
+    GenericTriggerFactory, InstanceFactory, ResourceAction, StatefulAction, StatelessAction,
+    TriggerAction, WebhookActionFactory,
 };
 use nebula_core::ActionKey;
 use semver::Version;
 
-/// A single entry in the registry: metadata paired with its handler.
-#[derive(Clone)]
-struct ActionEntry {
-    metadata: ActionMetadata,
-    handler: ActionHandler,
-}
-
-/// A single factory entry in the parallel factory map (Phase 3 / Session 4).
-///
-/// Stored alongside the legacy `ActionEntry` so the engine can transition
-/// dispatch to factory-based instantiation incrementally.
+/// A single factory entry in the registry.
 #[derive(Clone)]
 struct FactoryEntry {
     metadata: ActionMetadata,
     factory: Arc<dyn ActionFactory>,
 }
 
-/// Type-safe registry for action handlers, keyed by `ActionKey`.
+/// Type-safe registry for action factories, keyed by `ActionKey`.
 #[derive(Default)]
 pub struct ActionRegistry {
-    /// Map from action key to list of entries, each at a distinct version.
-    actions: DashMap<ActionKey, Vec<ActionEntry>>,
-    /// Parallel factory map per / Phase 3 Session 4. Engine
-    /// dispatch consults this first and falls back to `actions` when no
-    /// factory has been registered for the key.
+    /// Map from action key to list of factory entries, each at a distinct version.
     factories: DashMap<ActionKey, Vec<FactoryEntry>>,
-    /// Provider-typed webhook factory map (M3.3). Sibling
-    /// to `factories` because provider kinds are coarser than
-    /// `ActionKey` and arrive as runtime strings from operator-supplied
-    /// storage rows. Use [`Self::register_webhook_provider`] /
+    /// Provider-typed webhook factory map (M3.3). Sibling to `factories` because
+    /// provider kinds are coarser than `ActionKey` and arrive as runtime strings from
+    /// operator-supplied storage rows. Use [`Self::register_webhook_provider`] /
     /// [`Self::lookup_webhook_factory`] to access it.
     webhook_factories: DashMap<&'static str, Arc<dyn WebhookActionFactory>>,
 }
@@ -72,187 +55,17 @@ impl ActionRegistry {
         Self::default()
     }
 
-    /// Register an action handler.
+    /// Register an action factory.
     ///
-    /// If an entry with the same key **and** the same `"major.minor"` version
-    /// string already exists it is replaced in-place. Otherwise the new entry
-    /// is appended. Entries are kept sorted from lowest to highest version so
-    /// that [`get`](Self::get) can return the latest in O(1).
-    pub fn register(&self, metadata: ActionMetadata, handler: ActionHandler) {
-        let version = metadata.base.version.clone();
-        let mut entries = self.actions.entry(metadata.base.key.clone()).or_default();
-
-        if let Some(pos) = entries
-            .iter()
-            .position(|e| e.metadata.base.version == version)
-        {
-            entries[pos] = ActionEntry { metadata, handler };
-        } else {
-            entries.push(ActionEntry { metadata, handler });
-            entries.sort_by(|a, b| a.metadata.base.version.cmp(&b.metadata.base.version));
-        }
-    }
-
-    /// Look up an action by key, returning the **latest** registered version.
+    /// The factory is consulted at dispatch time to instantiate a fresh handle per
+    /// execution. This is the canonical path for all actions implementing
+    /// [`Action`] + [`FromWorkflowNode`] (Variant A) or registered via
+    /// [`register_stateless_instance`](Self::register_stateless_instance).
     ///
-    /// Returns owned `(metadata, handler)` — `ActionHandler` is `Arc` inside,
-    /// so cloning is a cheap pointer copy. Owned values avoid borrowing
-    /// `DashMap` guards across `.await` boundaries.
-    pub fn get(&self, key: &ActionKey) -> Option<(ActionMetadata, ActionHandler)> {
-        let entries = self.actions.get(key)?;
-        let last = entries.last()?;
-        Some((last.metadata.clone(), last.handler.clone()))
-    }
-
-    /// Look up an action by string key (parses into `ActionKey` first).
-    ///
-    /// Returns `None` for both unregistered actions AND invalid key strings.
-    /// Callers that need to distinguish should use [`ActionKey::new`] explicitly
-    /// before calling [`get`](Self::get), or use a higher-level wrapper like
-    /// `ActionRuntime::execute_action` which surfaces parse errors as
-    /// `RuntimeError::InvalidActionKey`.
-    pub fn get_by_str(&self, key: &str) -> Option<(ActionMetadata, ActionHandler)> {
-        ActionKey::new(key).ok().and_then(|k| self.get(&k))
-    }
-
-    /// Look up an action by key and exact version.
-    pub fn get_versioned(
-        &self,
-        key: &ActionKey,
-        version: &Version,
-    ) -> Option<(ActionMetadata, ActionHandler)> {
-        let entries = self.actions.get(key)?;
-        let entry = entries
-            .iter()
-            .find(|e| e.metadata.base.version == *version)?;
-        Some((entry.metadata.clone(), entry.handler.clone()))
-    }
-
-    /// Register a stateless action — wraps in `StatelessActionAdapter` automatically.
-    ///
-    /// # Examples
-    ///
-    /// ```rust,ignore
-    /// use nebula_engine::ActionRegistry;
-    /// let registry = ActionRegistry::new();
-    /// registry.register_stateless(my_stateless_action);
-    /// ```
-    ///
-    /// # Errors
-    ///
-    /// Does not return errors. If a handler with the same `(key, version)` is
-    /// already registered, it is replaced silently.
-    pub fn register_stateless<A>(&self, action: A)
-    where
-        A: Action + StatelessAction + Send + Sync + 'static,
-        <A as Action>::Input: serde::de::DeserializeOwned + Send + Sync,
-        <A as Action>::Output: serde::Serialize + Send + Sync,
-    {
-        let metadata = <A as Action>::metadata();
-        let handler = ActionHandler::Stateless(Arc::new(StatelessActionAdapter::new(action)));
-        self.register(metadata, handler);
-    }
-
-    /// Register a stateful action — wraps in `StatefulActionAdapter` automatically.
-    ///
-    /// See [`register_stateless`](Self::register_stateless) for usage and error semantics.
-    ///
-    /// # Errors
-    ///
-    /// Does not return errors. Same-version handlers are replaced silently.
-    pub fn register_stateful<A>(&self, action: A)
-    where
-        A: Action + StatefulAction + Send + Sync + 'static,
-        <A as Action>::Input: serde::de::DeserializeOwned + Send + Sync,
-        <A as Action>::Output: serde::Serialize + Send + Sync,
-        A::State: serde::Serialize + serde::de::DeserializeOwned + Clone + Send + Sync,
-    {
-        let metadata = <A as Action>::metadata();
-        let handler = ActionHandler::Stateful(Arc::new(StatefulActionAdapter::new(action)));
-        self.register(metadata, handler);
-    }
-
-    /// Register a trigger action — wraps in `TriggerActionAdapter` automatically.
-    ///
-    /// See [`register_stateless`](Self::register_stateless) for usage.
-    ///
-    /// # Errors
-    ///
-    /// Does not return errors. Same-version handlers are replaced silently.
-    pub fn register_trigger<A>(&self, action: A)
-    where
-        A: TriggerAction + Send + Sync + 'static,
-        A::Error: Into<ActionError>,
-    {
-        let metadata = <A as Action>::metadata();
-        let handler = ActionHandler::Trigger(Arc::new(TriggerActionAdapter::new(action)));
-        self.register(metadata, handler);
-    }
-
-    /// Register a webhook action — wraps in `WebhookTriggerAdapter` automatically.
-    ///
-    /// See [`register_stateless`](Self::register_stateless) for usage.
-    ///
-    /// # Errors
-    ///
-    /// Does not return errors. Same-version handlers are replaced silently.
-    pub fn register_webhook<A>(&self, action: A)
-    where
-        A: WebhookAction + Send + Sync + 'static,
-        <A as WebhookAction>::State: Send + Sync,
-    {
-        let metadata = <A as Action>::metadata();
-        let handler = ActionHandler::Trigger(Arc::new(WebhookTriggerAdapter::new(action)));
-        self.register(metadata, handler);
-    }
-
-    /// Register a poll action — wraps in `PollTriggerAdapter` automatically.
-    ///
-    /// See [`register_stateless`](Self::register_stateless) for usage.
-    ///
-    /// # Errors
-    ///
-    /// Does not return errors. Same-version handlers are replaced silently.
-    pub fn register_poll<A>(&self, action: A)
-    where
-        A: PollAction + Send + Sync + 'static,
-        <A as PollAction>::Cursor: Send + Sync,
-        <A as PollAction>::Event: Send + Sync,
-    {
-        let metadata = <A as Action>::metadata();
-        let handler = ActionHandler::Trigger(Arc::new(PollTriggerAdapter::new(action)));
-        self.register(metadata, handler);
-    }
-
-    /// Register a resource action — wraps in `ResourceActionAdapter` automatically.
-    ///
-    /// Named `register_resource_action` to disambiguate from the engine-level
-    /// `WorkflowEngine::register_resource` (which registers a `nebula_resource::Provider`
-    /// into the `ResourceActivatorRegistry`). Direct rename per ADR-0095 D5 —
-    /// no deprecated alias.
-    ///
-    /// See [`register_stateless`](Self::register_stateless) for usage.
-    ///
-    /// # Errors
-    ///
-    /// Does not return errors. Same-version handlers are replaced silently.
-    pub fn register_resource_action<A>(&self, action: A)
-    where
-        A: Action + ResourceAction + Send + Sync + 'static,
-    {
-        let metadata = <A as Action>::metadata();
-        let handler = ActionHandler::Resource(Arc::new(ResourceActionAdapter::new(action)));
-        self.register(metadata, handler);
-    }
-
-    /// Register an action factory (Phase 3 / Session 4 — ).
-    ///
-    /// The factory is consulted at dispatch time to instantiate a fresh
-    /// erased action per execution. This is the new path for actions that
-    /// implement [`Action`] + [`FromWorkflowNode`] (Variant A).
-    ///
-    /// Stored alongside any legacy `ActionHandler` registration; lookups
-    /// prefer the factory entry when present.
+    /// If an entry with the same key **and** the same `"major.minor"` version already
+    /// exists it is replaced in-place. Otherwise the new entry is appended; entries are
+    /// kept sorted from lowest to highest version so that
+    /// [`get_factory`](Self::get_factory) can return the latest in O(1).
     pub fn register_factory(&self, metadata: ActionMetadata, factory: Arc<dyn ActionFactory>) {
         let version = metadata.base.version.clone();
         let mut entries = self.factories.entry(metadata.base.key.clone()).or_default();
@@ -370,8 +183,6 @@ impl ActionRegistry {
     /// Look up the factory for the given key, returning the latest version.
     ///
     /// Returns `None` if no factory has been registered for this key.
-    /// Engine dispatch falls back to [`get`](Self::get) for the legacy
-    /// `ActionHandler` path.
     #[must_use]
     pub fn get_factory(&self, key: &ActionKey) -> Option<(ActionMetadata, Arc<dyn ActionFactory>)> {
         let entries = self.factories.get(key)?;
@@ -393,10 +204,10 @@ impl ActionRegistry {
         Some((entry.metadata.clone(), Arc::clone(&entry.factory)))
     }
 
-    /// All registered action keys.
+    /// All registered action keys (from the factory map).
     #[must_use]
     pub fn keys(&self) -> Vec<ActionKey> {
-        self.actions
+        self.factories
             .iter()
             .map(|entry| entry.key().clone())
             .collect()
@@ -405,71 +216,23 @@ impl ActionRegistry {
     /// Total number of registered action keys (not counting multiple versions of the same key).
     #[must_use]
     pub fn len(&self) -> usize {
-        self.actions.len()
+        self.factories.len()
     }
 
     /// Returns `true` if no actions have been registered.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.actions.is_empty()
+        self.factories.is_empty()
     }
 }
 
 impl std::fmt::Debug for ActionRegistry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let keys: Vec<ActionKey> = self.keys();
+        let registered_keys: Vec<ActionKey> = self.keys();
         f.debug_struct("ActionRegistry")
-            .field("action_count", &self.actions.len())
             .field("factory_count", &self.factories.len())
-            .field("keys", &keys)
+            .field("keys", &registered_keys)
             .finish_non_exhaustive()
-    }
-}
-
-// ── Test-only escape: dynamic metadata fixture registration ───────────────
-
-/// LEGACY test-only escape for fixtures that vary metadata per test.
-///
-/// Production code MUST use
-/// [`register_stateless_factory`](ActionRegistry::register_stateless_factory) (et al.) which
-/// require static `<A as Action>::metadata()`. Tests that need dynamic per-instance metadata
-/// (varying keys, version pairs, port lists) route through these helpers instead — see Plan-agent
-/// R-NEW-7.
-///
-/// These methods are public (instead of `pub(crate)`) because integration tests in
-/// `crates/engine/tests/`, `crates/plugin/tests/`, and `crates/api/tests/` need them too.
-/// Production callers should not invoke them — the doc strings explicitly say "LEGACY test-only".
-#[allow(dead_code, reason = "test escape API; not all variants used yet")]
-impl ActionRegistry {
-    /// Register a stateful action with caller-supplied metadata.
-    pub fn legacy_register_stateful_with_metadata<A>(&self, metadata: ActionMetadata, action: A)
-    where
-        A: StatefulAction + Send + Sync + 'static,
-        <A as Action>::Input: serde::de::DeserializeOwned + Send + Sync,
-        <A as Action>::Output: serde::Serialize + Send + Sync,
-        A::State: serde::Serialize + serde::de::DeserializeOwned + Clone + Send + Sync,
-    {
-        let handler = ActionHandler::Stateful(Arc::new(StatefulActionAdapter::new(action)));
-        self.register(metadata, handler);
-    }
-
-    /// Register a trigger action with caller-supplied metadata.
-    pub fn legacy_register_trigger_with_metadata<A>(&self, metadata: ActionMetadata, action: A)
-    where
-        A: TriggerAction + Send + Sync + 'static,
-        A::Error: Into<ActionError>,
-    {
-        let handler = ActionHandler::Trigger(Arc::new(TriggerActionAdapter::new(action)));
-        self.register(metadata, handler);
-    }
-
-    /// Register a resource action with caller-supplied metadata.
-    pub fn legacy_register_resource_with_metadata<A>(&self, metadata: ActionMetadata, action: A)
-    where
-        A: ResourceAction + Send + Sync + 'static,
-    {
-        let handler = ActionHandler::Resource(Arc::new(ResourceActionAdapter::new(action)));
-        self.register(metadata, handler);
     }
 }
 

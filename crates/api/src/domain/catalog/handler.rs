@@ -45,7 +45,7 @@ pub async fn list_actions(State(state): State<AppState>) -> ApiResult<Json<ListA
         .keys()
         .into_iter()
         .map(|key| {
-            let entry = registry.get(&key);
+            let entry = registry.get_factory(&key);
             let name = entry.as_ref().map_or_else(
                 || key.as_str().to_string(),
                 |(meta, _)| meta.base.name.clone(),
@@ -103,8 +103,8 @@ pub async fn get_action(
     let action_key = nebula_core::ActionKey::new(&key)
         .map_err(|e| ApiError::validation_message(format!("Invalid action key: {e}")))?;
 
-    let (meta, _handler) = registry
-        .get(&action_key)
+    let (meta, _) = registry
+        .get_factory(&action_key)
         .ok_or_else(|| ApiError::NotFound(format!("Action '{key}' not found")))?;
 
     Ok(Json(ActionDetailResponse {

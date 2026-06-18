@@ -4230,9 +4230,8 @@ impl NodeTask {
 
         // Production dispatch via the factory path: the runtime calls
         // `factory.instantiate(node, ctx)` to build a fresh erased
-        // action, then dispatches the matching variant. Falls back to
-        // the legacy `ActionHandler` path inside the runtime only when
-        // no factory is registered (test-escape registrations).
+        // action, then dispatches the matching variant. The factory
+        // spine is the sole dispatch path as of ADR-0098 D0 PR3.
         let result = self
             .runtime
             .execute_action_with_node(
@@ -8347,32 +8346,42 @@ mod tests {
 
     // -- Credential allowlist enforcement (PRODUCT_CANON / — audit ) --
 
-    /// Handler that attempts to acquire a credential by id and records the result.
+    /// Stateless action that acquires a credential by id and records the result.
     ///
-    /// Used by the allowlist tests below: a single stateless action whose
-    /// parameter chooses which credential id to probe. Implemented directly as
-    /// a [`StatelessHandler`] (rather than as a [`StatelessAction`]) because
-    /// that trait receives a concrete `&ActionContext` from the adapter — which
-    /// lets us call [`CredentialContextExt::credential_by_id`] without needing
-    /// a downcast from `&impl Context`.
+    /// Used by the allowlist tests: the `credential_id` input parameter selects
+    /// which credential to probe. Registered via
+    /// [`ActionRegistry::register_stateless_instance`] with per-probe metadata so
+    /// distinct keys/names can be assigned without multiple struct definitions.
     ///
-    /// The outcome (success vs typed error) is surfaced via the execution
-    /// result so tests can assert that denial propagates as a real error
-    /// rather than silently succeeding.
-    struct CredProbeHandler {
-        meta: ActionMetadata,
+    /// The outcome (success vs typed error) is surfaced via the execution result so
+    /// tests can assert that denial propagates as a real `ActionError` rather than
+    /// silently succeeding.
+    struct CredProbeAction;
+
+    impl Action for CredProbeAction {
+        type Input = serde_json::Value;
+        type Output = serde_json::Value;
+
+        fn metadata() -> ActionMetadata {
+            // Static placeholder — per-probe key/name are supplied at registration
+            // via `register_stateless_instance(meta, CredProbeAction)`.
+            ActionMetadata::new(
+                action_key!("test.cred_probe"),
+                "CredProbe",
+                "acquires a credential",
+            )
+        }
+        fn dependencies() -> &'static Dependencies {
+            static D: OnceLock<Dependencies> = OnceLock::new();
+            D.get_or_init(Dependencies::new)
+        }
     }
 
-    #[async_trait::async_trait]
-    impl nebula_action::StatelessHandler for CredProbeHandler {
-        fn metadata(&self) -> &ActionMetadata {
-            &self.meta
-        }
-
+    impl StatelessAction for CredProbeAction {
         async fn execute(
             &self,
             input: serde_json::Value,
-            ctx: &dyn nebula_action::ActionContext,
+            ctx: &(impl nebula_action::ActionContext + ?Sized),
         ) -> Result<ActionResult<serde_json::Value>, ActionError> {
             let id = input
                 .get("credential_id")
@@ -8387,13 +8396,10 @@ mod tests {
         }
     }
 
-    /// Register a `CredProbeHandler` under `key` into the given registry.
+    /// Register a `CredProbeAction` under `key` into the given registry.
     fn register_probe(registry: &ActionRegistry, key: ActionKey, name: &str) {
         let meta = ActionMetadata::new(key, name, "acquires a credential");
-        registry.register(
-            meta.clone(),
-            nebula_action::ActionHandler::Stateless(Arc::new(CredProbeHandler { meta })),
-        );
+        registry.register_stateless_instance(meta, CredProbeAction);
     }
 
     /// Build a workflow with a single `CredProbeHandler` node that probes `cred_id`.
@@ -9973,14 +9979,12 @@ mod tests {
         );
     }
 
-    // ── Phase 3 dispatch crossover regression ─────────────────────────────────
+    // ── Factory dispatch regression guard ────────────────────────────────────
     //
-    // These tests pin the contract that production registrations via
-    // `register_*_factory::<A>()` actually flow through `factory.instantiate`
-    // at dispatch — not the legacy `ActionHandler` enum path. Without this,
-    // a regression that silently routed factory registrations through the
-    // legacy lookup would not be caught by the existing test fixtures
-    // (which all use `legacy_register_*_with_metadata`).
+    // These tests pin the contract that registrations via
+    // `register_*_factory::<A>()` flow through `factory.instantiate`
+    // at dispatch. The legacy spine was deleted in ADR-0098 D0 PR3;
+    // these fixtures guard against any regression that skips instantiation.
 
     /// Variant A fixture — counts how many times `from_workflow_node` is
     /// called so the test can assert the factory path was taken.
@@ -10081,60 +10085,9 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn factory_path_takes_precedence_over_legacy_handler() {
-        // When BOTH a factory and a legacy handler are registered for the
-        // same key, the factory wins (production preference). This guards
-        // against regressions that flip the lookup order.
-        let _guard = FACTORY_TEST_LOCK.lock().await;
-        let baseline = FACTORY_INSTANTIATIONS.load(Ordering::SeqCst);
-
-        let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless_factory::<FactoryEcho>();
-        // Register a *legacy* `ActionHandler` (NOT a factory) for the same key
-        // via the low-level `register` primitive (the surviving legacy spine
-        // until PR3) with a different handler (FailHandler). If dispatch routed
-        // through the legacy path instead of preferring the factory, FailHandler
-        // would run and the workflow would fail.
-        registry.register(
-            ActionMetadata::new(
-                action_key!("test.factory.echo"),
-                "LegacyEcho",
-                "legacy fallback",
-            ),
-            nebula_action::ActionHandler::Stateless(Arc::new(
-                nebula_action::StatelessActionAdapter::new(FailHandler),
-            )),
-        );
-
-        let (engine, _) = make_engine(registry);
-
-        let n = node_key!("n");
-        let wf = make_workflow(
-            vec![
-                NodeDefinition::new(n.clone(), "factory_first", "core", "test.factory.echo")
-                    .unwrap(),
-            ],
-            vec![],
-        );
-
-        let result = engine
-            .execute_workflow(
-                &crate::store_seam::single_tenant_scope(),
-                &wf,
-                serde_json::json!("ok"),
-                ExecutionBudget::default(),
-            )
-            .await
-            .expect("workflow should succeed via factory path");
-        assert!(result.is_success());
-        assert_eq!(result.node_output(&n), Some(&serde_json::json!("ok")));
-
-        let after = FACTORY_INSTANTIATIONS.load(Ordering::SeqCst);
-        assert_eq!(
-            after - baseline,
-            1,
-            "factory should have been preferred — would have used FailHandler legacy path otherwise"
-        );
-    }
+    // There is intentionally no factory-vs-legacy precedence test: the scenario
+    // (a factory competing with a legacy `ActionHandler` for the same key) is
+    // structurally impossible now that the engine has a single dispatch spine.
+    // The surviving guarantee — factory dispatch is the sole execution path — is
+    // covered by `workflow_node_dispatches_through_factory_path`.
 }

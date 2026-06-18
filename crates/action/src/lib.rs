@@ -24,7 +24,6 @@
 //!   `ActionKind`, and `CheckpointPolicy`.
 //! - `ActionResult` — execution result with flow-control intent.
 //! - `ActionError` — typed error distinguishing retryable from fatal.
-//! - `ActionHandler` — top-level enum dispatcher over all handler variants.
 //!
 //! See `crates/action/README.md` for the full contract and canon invariants.
 
@@ -53,10 +52,6 @@ pub mod from_workflow_node;
 /// `ActionHandle` enum + per-variant object-safe `XxxHandle` sub-traits —
 /// the engine-side dynamic dispatch surface produced by `ActionFactory`.
 pub mod handle;
-/// Top-level [`ActionHandler`] enum dispatcher. Domain handler traits and
-/// adapters live in their respective domain files and are re-exported here
-/// for backwards compatibility of the `nebula_action::handler::*` path space.
-pub mod handler;
 /// [`IdempotencyKey`] — transport-level dedup identifier returned by triggers.
 pub mod idempotency;
 /// Assertion macros for testing action results (`assert_success!`, etc.).
@@ -118,7 +113,6 @@ pub use from_workflow_node::FromWorkflowNode;
 pub use handle::{
     ActionHandle, ControlHandle, ResourceHandle, StatefulHandle, StatelessHandle, TriggerHandle,
 };
-pub use handler::ActionHandler;
 pub use idempotency::IdempotencyKey;
 pub use metadata::{
     ActionKind, ActionMetadata, CheckpointPolicy, IsolationLevel, MetadataCompatibilityError,
