@@ -1,0 +1,38 @@
+[package]
+name = "nebula-plugin-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+authors.workspace = true
+description = "First-party core plugin for Nebula (SetFields and other utility actions)"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+
+[dependencies]
+nebula-action = { path = "../action" }
+nebula-core = { path = "../core" }
+nebula-plugin = { path = "../plugin" }
+nebula-schema = { path = "../schema" }
+nebula-metadata = { path = "../metadata" }
+nebula-workflow = { path = "../workflow" }
+
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+nebula-engine = { path = "../engine" }
+nebula-execution = { path = "../execution" }
+nebula-metrics = { path = "../metrics" }
+nebula-storage-port = { path = "../storage-port" }
+
+chrono = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt"] }
+
+[lints]
+workspace = true
