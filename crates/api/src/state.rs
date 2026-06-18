@@ -1190,8 +1190,6 @@ impl AppState {
         self
     }
 
-    /// Attach the webhook-activation port store (ADR-0096).
-    ///
     /// Attach the trigger config store (ADR-0096 — `port_triggers`).
     ///
     /// The **undecorated** base store. The bootstrap pathway wraps it in a

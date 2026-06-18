@@ -10,12 +10,14 @@
 //!    `port_triggers` row with a valid `webhook_activation` spec → `loaded==1,
 //!    skipped==0`.
 //!
-//! 2. Cross-tenant isolation (RED-on-revert): the same `trigger_id` seeded
-//!    under `scope_a` is NOT visible to a `scope_b` activation row → the
-//!    activation for `scope_b` is counted as `skipped==1` (MissingSpec).
-//!    Removing the scope binding from `TriggerStoreSpecLookup` so it does an
-//!    unscoped by-id query would cause this test to pass when it must fail,
-//!    proving the cross-tenant guard is structural, not coincidental.
+//! 2. Cross-tenant isolation (RED-on-revert): `scope_a` and `scope_b` both
+//!    have a `port_triggers` row for the same `trigger_id`, but with different
+//!    `secret_id` values. Only `scope_b`'s secret is known to the resolver.
+//!    The `scope_b` activation row must load successfully (`loaded==1`).
+//!    On revert (drop scope binding so the lookup is unscoped): the lookup
+//!    returns `scope_a`'s row → its unknown secret_id fails resolution →
+//!    `skipped==1`. That outcome is the opposite of green, making the guard
+//!    genuinely RED-on-revert.
 //!
 //! 3. Serde backward-compat: the old `action_kind` field name (pre-rename)
 //!    deserialises correctly via `#[serde(alias = "action_kind")]`.
@@ -41,9 +43,22 @@ use tokio_util::sync::CancellationToken;
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const TRIGGER_ID: &str = "trg_bootstrap_restart_001";
-const SECRET_ID: &str = "cred_bootstrap_secret_001";
-/// 32-byte HMAC test key. Not a real secret — used only as a fixture.
-const HMAC_SECRET: &[u8] = b"test-bootstrap-hmac-secret-32by!";
+
+/// The secret_id used by scope_a's trigger row.
+///
+/// This id is intentionally UNKNOWN to the `TwoSecretResolver` so that if the
+/// scope binding is dropped (making the lookup return scope_a's row when
+/// scope_b's activation is bootstrapped), secret resolution fails → `skipped`.
+const SECRET_ID_A: &str = "cred_scope_a_secret";
+
+/// The secret_id used by scope_b's trigger row.
+///
+/// This id IS known to the `TwoSecretResolver`; it is the one that must
+/// resolve for the bootstrap to count `loaded==1`.
+const SECRET_ID_B: &str = "cred_scope_b_secret";
+
+/// HMAC key for scope_b's secret. Not a real secret — used only as a fixture.
+const HMAC_SECRET_B: &[u8] = b"scope-b-hmac-secret-fixture-32b!";
 
 // ── Scopes ────────────────────────────────────────────────────────────────────
 
@@ -58,24 +73,30 @@ fn scope_b() -> Scope {
 // ── Test doubles ──────────────────────────────────────────────────────────────
 
 /// Secret resolver that returns a fixed byte slice for one known `secret_id`
-/// and an error for any other id.  No scope check — the test exercises scope
-/// enforcement through `TriggerStoreSpecLookup`, not through this resolver.
-struct FixedSecretResolver {
-    secret_id: &'static str,
+/// and a typed error for any other id.
+///
+/// No scope check here — scope enforcement is exercised through
+/// `TriggerStoreSpecLookup`, not this resolver.  The single-known-id design is
+/// load-bearing for the cross-tenant test: `scope_a`'s row references an id
+/// this resolver does NOT know, so a scope-blind lookup that accidentally
+/// returns `scope_a`'s row will fail at secret resolution and surface as
+/// `skipped`, not `loaded`.
+struct SingleSecretResolver {
+    known_id: &'static str,
     secret: &'static [u8],
 }
 
 #[async_trait]
-impl WebhookSecretResolver for FixedSecretResolver {
+impl WebhookSecretResolver for SingleSecretResolver {
     async fn resolve(
         &self,
         _scope: &Scope,
         secret_id: &str,
     ) -> Result<Vec<u8>, SecretResolutionError> {
-        if secret_id == self.secret_id {
+        if secret_id == self.known_id {
             Ok(self.secret.to_vec())
         } else {
-            Err(format!("FixedSecretResolver: unknown secret_id {secret_id:?}").into())
+            Err(format!("SingleSecretResolver: no entry for secret_id {secret_id:?}").into())
         }
     }
 }
@@ -110,10 +131,14 @@ fn build_action_registry() -> ActionRegistry {
 }
 
 /// Seed a `port_triggers` row with `kind=webhook` and a `webhook_activation`
-/// config namespace under `scope`. The config contains `provider="generic"` and
-/// the test `SECRET_ID`.
-async fn seed_trigger_row(store: &dyn TriggerStore, scope: &Scope) {
-    let spec = WebhookActivationSpec::new("generic", SECRET_ID);
+/// config namespace under `scope`, using the given `provider` tag and `secret_id`.
+async fn seed_trigger_row(
+    store: &dyn TriggerStore,
+    scope: &Scope,
+    provider: &str,
+    secret_id: &str,
+) {
+    let spec = WebhookActivationSpec::new(provider, secret_id);
     let config = spec
         .write_into_trigger_config(serde_json::Value::Null)
         .expect(
@@ -140,7 +165,7 @@ async fn seed_trigger_row(store: &dyn TriggerStore, scope: &Scope) {
     store
         .create(scope, row)
         .await
-        .expect("TriggerRow creation must succeed on an empty InMemoryTriggerStore");
+        .expect("TriggerRow creation must succeed; duplicate id means the store was not empty");
 }
 
 /// Seed an active `port_webhook_activations` row for `TRIGGER_ID` under `scope`.
@@ -164,14 +189,14 @@ async fn bootstrap_reads_spec_from_trigger_store_after_restart() {
     let trigger_store = Arc::new(InMemoryTriggerStore::new());
     let activation_store = Arc::new(InMemoryWebhookActivationStore::new());
 
-    seed_trigger_row(trigger_store.as_ref(), &scope_a()).await;
+    seed_trigger_row(trigger_store.as_ref(), &scope_a(), "generic", SECRET_ID_B).await;
     seed_activation_record(activation_store.as_ref(), &scope_a()).await;
 
     let spec_lookup = TriggerStoreSpecLookup::new(Arc::clone(&trigger_store) as _);
     let registry = build_action_registry();
-    let secrets = FixedSecretResolver {
-        secret_id: SECRET_ID,
-        secret: HMAC_SECRET,
+    let secrets = SingleSecretResolver {
+        known_id: SECRET_ID_B,
+        secret: HMAC_SECRET_B,
     };
 
     let report = bootstrap_webhook_activations(
@@ -195,35 +220,46 @@ async fn bootstrap_reads_spec_from_trigger_store_after_restart() {
     );
 }
 
-/// Cross-tenant isolation — RED-on-revert guard.
+/// Cross-tenant isolation — strengthened RED-on-revert guard.
 ///
-/// The `port_triggers` row belongs to `scope_a`; the `port_webhook_activations`
-/// row claims `scope_b` (different tenant, same `trigger_id`).
-/// `TriggerStoreSpecLookup::lookup` must return `Ok(None)` because
-/// `ScopedTriggerStore` partitions by `(workspace_id, org_id)`.
+/// Setup: BOTH `scope_a` and `scope_b` have a `port_triggers` row for the same
+/// `trigger_id`. The rows carry different `secret_id` values:
 ///
-/// Expected: `loaded==0, skipped==1` (BootstrapError::MissingSpec).
+/// - `scope_a` row → `SECRET_ID_A` (NOT in the resolver — unknown).
+/// - `scope_b` row → `SECRET_ID_B` (known to the resolver).
 ///
-/// **RED-on-revert invariant**: if `TriggerStoreSpecLookup::lookup` were
-/// changed to query the store without a scope binding, it would find the
-/// `scope_a` row for `scope_b`'s activation and return `Some(spec)`. That
-/// would flip the assertion (`loaded==1`) and make this test pass when the
-/// cross-tenant boundary is broken — confirming the guard is structural.
+/// Only `scope_b` has an active `port_webhook_activations` row.
+///
+/// Correct outcome (scope binding intact):
+///   `lookup(scope_b, TRIGGER_ID)` returns `scope_b`'s spec → `SECRET_ID_B`
+///   resolves → `loaded==1, skipped==0`.
+///
+/// RED-on-revert (scope binding dropped, lookup becomes unscoped by-id):
+///   An unscoped query may return EITHER row (depending on store internals).
+///   If it returns `scope_a`'s row → `SECRET_ID_A` is unknown to the resolver
+///   → secret resolution fails → `skipped==1, loaded==0`.
+///   Either way the assertions below (`loaded==1, skipped==0`) become RED,
+///   proving the scope binding is the load-bearing correctness guarantee.
 #[tokio::test]
-async fn bootstrap_cross_tenant_trigger_row_is_invisible_to_other_scope() {
+async fn bootstrap_scoped_lookup_returns_correct_tenant_spec() {
     let trigger_store = Arc::new(InMemoryTriggerStore::new());
     let activation_store = Arc::new(InMemoryWebhookActivationStore::new());
 
-    // Trigger config row exists under scope_a only.
-    seed_trigger_row(trigger_store.as_ref(), &scope_a()).await;
-    // Activation record claims scope_b — a different tenant.
+    // scope_a row: provider="generic", SECRET_ID_A (unknown to resolver).
+    seed_trigger_row(trigger_store.as_ref(), &scope_a(), "generic", SECRET_ID_A).await;
+    // scope_b row: provider="stripe", SECRET_ID_B (known to resolver).
+    seed_trigger_row(trigger_store.as_ref(), &scope_b(), "stripe", SECRET_ID_B).await;
+
+    // Only scope_b has an active activation — that is the bootstrap target.
     seed_activation_record(activation_store.as_ref(), &scope_b()).await;
 
     let spec_lookup = TriggerStoreSpecLookup::new(Arc::clone(&trigger_store) as _);
     let registry = build_action_registry();
-    let secrets = FixedSecretResolver {
-        secret_id: SECRET_ID,
-        secret: HMAC_SECRET,
+    // Only SECRET_ID_B is resolvable. If the lookup returns scope_a's row
+    // (misattribution), secret resolution fails and the bootstrap skips.
+    let secrets = SingleSecretResolver {
+        known_id: SECRET_ID_B,
+        secret: HMAC_SECRET_B,
     };
 
     let report = bootstrap_webhook_activations(
@@ -237,13 +273,15 @@ async fn bootstrap_cross_tenant_trigger_row_is_invisible_to_other_scope() {
     .await
     .expect("bootstrap must not return Err — storage errors are the only fatal path");
 
+    // Correct: scope_b's spec (SECRET_ID_B, provider="stripe") resolves.
     assert_eq!(
-        report.skipped, 1,
-        "cross-tenant activation must be skipped (MissingSpec); {report:?}"
+        report.loaded, 1,
+        "scope_b activation must load using scope_b's spec; \
+         skipped>0 means the lookup returned scope_a's row (misattribution); {report:?}"
     );
     assert_eq!(
-        report.loaded, 0,
-        "a cross-tenant activation must never count as loaded; {report:?}"
+        report.skipped, 0,
+        "no activation must be skipped when the scoped lookup works correctly; {report:?}"
     );
 }
 

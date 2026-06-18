@@ -82,6 +82,12 @@ impl TriggerSpecLookup for TriggerStoreSpecLookup {
         let scoped = ScopedTriggerStore::new(Arc::clone(&self.store), scope.clone());
         let trigger_id = trigger_id.to_owned();
         Box::pin(async move {
+            // The `scope` arg passed to `ScopedTriggerStore::get` is ignored by
+            // the decorator — it always partitions by `self.bound` (the scope
+            // captured in `ScopedTriggerStore::new` above). Passing it here
+            // matches the workspace convention used by every other scoped-store
+            // call site (e.g. `ScopedWorkflowVersionStore::get_published`); the
+            // isolation guarantee is structural via the bound scope, not the arg.
             let row = scoped
                 .get(scope, &trigger_id)
                 .await
