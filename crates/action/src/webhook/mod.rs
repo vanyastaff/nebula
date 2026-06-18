@@ -1155,7 +1155,14 @@ impl RequiredPolicy {
             return Err(SignatureError::SecretMissing);
         }
 
-        if let Some(name) = self.timestamp_header.as_ref() {
+        // `StandardWebhooks` ignores `timestamp_header` / `timestamp_format` —
+        // it uses fixed `webhook-timestamp` and validates inside
+        // `verify_standard_webhooks`.  Skipping the generic pre-check here
+        // prevents a stale custom `timestamp_header` value from triggering
+        // `TimestampMissing` before the SWH path runs its own check.
+        if !matches!(self.scheme, SignatureScheme::StandardWebhooks)
+            && let Some(name) = self.timestamp_header.as_ref()
+        {
             validate_timestamp(
                 request.headers(),
                 name,
@@ -2425,6 +2432,7 @@ fn verify_standard_webhooks(
 
     // 3. Validate timestamp (reuse the shared helper that understands replay_window
     //    and FUTURE_SKEW_SECS). Format is always Unix seconds for Standard Webhooks.
+    //    Cheap check — runs before the body HMAC.
     validate_timestamp(
         request.headers(),
         &TS_HEADER,
@@ -2433,54 +2441,68 @@ fn verify_standard_webhooks(
         clock,
     )?;
 
-    // 4. Build signed content: "{webhook-id}.{webhook-timestamp}.{body}".
-    //    Allocate once; avoid a format! with a Copy-heavy body clone.
-    let prefix = format!("{id_str}.{ts_str}.");
-    let mut signed_content = Vec::with_capacity(prefix.len() + request.body().len());
-    signed_content.extend_from_slice(prefix.as_bytes());
-    signed_content.extend_from_slice(request.body());
-
-    // 5. Compute expected MAC over the signed content. Done ONCE before any
-    //    candidate loop — ensures constant MAC-compute time regardless of how
-    //    many candidates pass or fail.
-    let expected_mac: [u8; 32] = hmac_sha256_compute(secret, &signed_content);
-
-    // 6. Parse webhook-signature header: SPACE-separated "version,base64" tokens.
+    // 4. Parse and pre-screen the webhook-signature header BEFORE doing any
+    //    body HMAC work.  A request without a signature header (or with no v1
+    //    candidate) exits here cheaply — no HMAC is wasted.  This mirrors the
+    //    hex/base64 verifiers which reject a missing header before MAC work.
     let sig_header_str = match single_header_value(request.headers(), &SIG_HEADER) {
         HeaderLookup::One(v) => v,
         HeaderLookup::Missing => return Ok(SignatureOutcome::Missing),
         HeaderLookup::Multiple => return Ok(SignatureOutcome::Invalid),
     };
 
-    let mut any_v1_candidate = false;
+    // Collect valid-format v1 candidates (decoded bytes) and detect whether any
+    // v1 token was present.  Tokens are collected BEFORE building signed_content
+    // so the HMAC is only computed when there is at least one candidate to compare.
+    let mut candidates: Vec<Vec<u8>> = Vec::new();
+    let mut any_v1_seen = false;
     for token in sig_header_str.split_ascii_whitespace() {
-        // Each token is "version,base64sig".
         let Some((version, b64_sig)) = token.split_once(',') else {
-            // Malformed token — ignore (not a valid candidate, not a hard failure).
+            // Malformed token — not a valid candidate; skip.
             continue;
         };
         if version != "v1" {
-            // Non-v1 algorithm — algorithm-confusion guard: skip entirely.
-            // Never select a weaker or unknown path.
+            // Non-v1 algorithm — algorithm-confusion guard; skip entirely.
             continue;
         }
-        any_v1_candidate = true;
-        // Decode — a malformed token simply does not match; skip it.
-        let Ok(candidate_bytes) = BASE64_STANDARD.decode(b64_sig) else {
-            continue;
-        };
-        if verify_tag_constant_time(&expected_mac, &candidate_bytes) {
+        any_v1_seen = true;
+        // Decode — a malformed base64 token simply does not contribute a candidate.
+        if let Ok(bytes) = BASE64_STANDARD.decode(b64_sig) {
+            candidates.push(bytes);
+        }
+    }
+
+    if !any_v1_seen {
+        // No v1 token at all (only non-v1 or malformed) — treat as Missing.
+        return Ok(SignatureOutcome::Missing);
+    }
+
+    if candidates.is_empty() {
+        // v1 tokens were present but all had invalid base64 — treat as Invalid.
+        return Ok(SignatureOutcome::Invalid);
+    }
+
+    // 5. Build signed content: "{webhook-id}.{webhook-timestamp}.{body}".
+    //    Only reached when there is at least one decodable v1 candidate.
+    let prefix = format!("{id_str}.{ts_str}.");
+    let mut signed_content = Vec::with_capacity(prefix.len() + request.body().len());
+    signed_content.extend_from_slice(prefix.as_bytes());
+    signed_content.extend_from_slice(request.body());
+
+    // 6. Compute expected MAC over the signed content. Done ONCE before the
+    //    candidate loop — constant MAC-compute time regardless of candidate count.
+    let expected_mac: [u8; 32] = hmac_sha256_compute(secret, &signed_content);
+
+    // 7. Constant-time compare each decoded candidate against the expected MAC.
+    //    Any match is a pass; no short-circuit across candidates.
+    for candidate_bytes in &candidates {
+        if verify_tag_constant_time(&expected_mac, candidate_bytes) {
             return Ok(SignatureOutcome::Valid);
         }
     }
 
-    if any_v1_candidate {
-        // v1 tokens present but none matched.
-        Ok(SignatureOutcome::Invalid)
-    } else {
-        // No v1 token at all — treat as Missing.
-        Ok(SignatureOutcome::Missing)
-    }
+    // v1 candidates present but none matched.
+    Ok(SignatureOutcome::Invalid)
 }
 
 /// Compute a raw HMAC-SHA256 tag over arbitrary bytes.
@@ -2837,6 +2859,41 @@ mod swh_tests {
     }
 
     /// Only `v2,<x>` token present → no v1 candidate → `SignatureMissing`.
+    /// A `RequiredPolicy` with a custom `timestamp_header` switched to
+    /// `StandardWebhooks` must NOT apply the generic timestamp pre-check.
+    ///
+    /// Before the fix, `verify_with` ran `validate_timestamp(custom_header, …)`
+    /// BEFORE dispatching to `verify_standard_webhooks`, so a valid SWH
+    /// request (which carries `webhook-timestamp`, not the custom header)
+    /// returned `TimestampMissing` for the absent custom header.
+    ///
+    /// RED-on-revert: removing the `!matches!(self.scheme, StandardWebhooks)`
+    /// guard causes `validate_timestamp` to run for the custom header, which
+    /// is absent from the request → `TimestampMissing` → test fails.
+    #[test]
+    fn swh_stale_custom_timestamp_header_does_not_reject_valid_request() {
+        let clock = MockClock::at_unix_secs(NOW_SECS);
+        let ts = NOW_SECS.to_string();
+        let body = b"{}";
+        let msg_id = "msg_custom_ts";
+        let sig = sign(msg_id, &ts, body);
+
+        // A policy that previously had a custom timestamp header, then was
+        // switched to StandardWebhooks. The stale `timestamp_header` is set.
+        let policy = RequiredPolicy::new()
+            .with_secret(KEY)
+            .with_timestamp_header(HeaderName::from_static("x-my-custom-ts"))
+            .with_scheme(SignatureScheme::StandardWebhooks);
+
+        // Request carries the Standard Webhooks headers, NOT the custom ts header.
+        let req = make_request(msg_id, &ts, &sig, body);
+
+        // Must succeed: SWH validates webhook-timestamp; the custom header is irrelevant.
+        policy
+            .verify_with(&req, &clock)
+            .expect("valid SWH request with stale custom timestamp_header must pass");
+    }
+
     #[test]
     fn swh_only_v2_no_v1_is_missing() {
         let clock = MockClock::at_unix_secs(NOW_SECS);

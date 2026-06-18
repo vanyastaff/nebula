@@ -903,7 +903,7 @@ mod tests {
         auth_outcome, idempotency_reject_reason, orchestrator_dispatch_outcome,
         orchestrator_reclaim_outcome, recycle_outcome, refresh_coord_claim_outcome,
         refresh_coord_coalesced_tier, refresh_coord_reclaim_outcome, refresh_coord_sentinel_action,
-        rotation_outcome,
+        rotation_outcome, webhook_rate_limit_tier, webhook_signature_failure_reason,
     };
 
     const RESOURCE_METRIC_NAMES: [&str; 22] = [
@@ -1438,5 +1438,55 @@ mod tests {
         }
 
         assert_eq!(unique.len(), 4);
+    }
+
+    #[test]
+    fn webhook_signature_failure_reason_labels_are_closed_set() {
+        // Closed label set — adding a value permanently inflates cardinality on
+        // the signature-failure counter; this test is the CI gate against silent
+        // expansion.  The full set must stay in sync with the counter's doc
+        // comment (currently seven values).
+        let labels = [
+            webhook_signature_failure_reason::MISSING,
+            webhook_signature_failure_reason::INVALID,
+            webhook_signature_failure_reason::MISSING_SECRET,
+            webhook_signature_failure_reason::TIMESTAMP_MISSING,
+            webhook_signature_failure_reason::TIMESTAMP_MALFORMED,
+            webhook_signature_failure_reason::TIMESTAMP_OUT_OF_WINDOW,
+            webhook_signature_failure_reason::PROD_UNSIGNED,
+        ];
+        let unique: HashSet<&str> = labels.iter().copied().collect();
+        assert_eq!(
+            unique.len(),
+            7,
+            "signature_failure_reason labels must be unique"
+        );
+        for label in labels {
+            assert!(!label.is_empty());
+            assert!(
+                label.chars().all(|ch| ch.is_ascii_lowercase() || ch == '_'),
+                "label {label:?} must match [a-z_]+"
+            );
+        }
+    }
+
+    #[test]
+    fn webhook_rate_limit_tier_labels_are_closed_set() {
+        // Closed label set — adding a value permanently inflates cardinality on
+        // the rate-limit-rejection counter; this test is the CI gate against
+        // silent expansion.
+        let labels = [
+            webhook_rate_limit_tier::PER_TOKEN,
+            webhook_rate_limit_tier::PER_TENANT,
+        ];
+        let unique: HashSet<&str> = labels.iter().copied().collect();
+        assert_eq!(unique.len(), 2, "rate_limit_tier labels must be unique");
+        for label in labels {
+            assert!(!label.is_empty());
+            assert!(
+                label.chars().all(|ch| ch.is_ascii_lowercase() || ch == '_'),
+                "label {label:?} must match [a-z_]+"
+            );
+        }
     }
 }
