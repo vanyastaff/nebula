@@ -14,8 +14,9 @@
 // Action traits and types
 pub use nebula_action::{
     Action, ActionContext, ActionError, ActionResult, Field, PollTriggerAdapter, Schema,
-    StatefulActionAdapter, StatelessAction, StatelessActionAdapter, TriggerContext, TriggerEvent,
-    TriggerEventOutcome, ValidSchema, WebhookRequest, WebhookTriggerAdapter, field_key,
+    StatefulActionAdapter, StatelessAction, StatelessActionAdapter, StreamAction, TriggerContext,
+    TriggerEvent, TriggerEventOutcome, ValidSchema, WebhookRequest, WebhookTriggerAdapter,
+    field_key,
     metadata::ActionMetadata,
     poll::{DeduplicatingCursor, PollAction, PollConfig, PollCursor, PollResult},
     port::{InputPort, OutputPort},

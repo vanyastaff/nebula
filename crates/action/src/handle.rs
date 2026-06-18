@@ -156,6 +156,38 @@ pub trait ResourceHandle: Send + Sync + 'static {
     ) -> Result<(), ActionError>;
 }
 
+/// Object-safe stream dispatch surface.
+///
+/// Mirrors [`StatelessHandle`] but is a **separate** trait so the streaming
+/// surface can later grow chunk-observing and persistence hooks (cursor-replay
+/// durability, live egress; see ADR-0102) without touching stateless dispatch.
+/// Today the engine sees only the folded [`ActionResult<Value>`] the adapter
+/// produces once the in-process stream completes.
+///
+/// Implementors are produced by [`GenericStreamFactory`](crate::factory::GenericStreamFactory).
+///
+/// # Errors
+///
+/// Returns [`ActionError`] on validation, retryable, or fatal failure. A chunk
+/// `Err` short-circuits without emitting partial output.
+#[async_trait]
+pub trait StreamHandle: Send + Sync + 'static {
+    /// Action metadata (key, version, ports, schemas), with `ActionKind::Stream` stamped.
+    fn metadata(&self) -> &ActionMetadata;
+
+    /// Drive the chunk stream to completion and return the folded value.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ActionError`] if input deserialization fails, a chunk errors
+    /// out, or output serialization fails.
+    async fn dispatch(
+        &self,
+        input: Value,
+        ctx: &dyn ActionContext,
+    ) -> Result<ActionResult<Value>, ActionError>;
+}
+
 /// Object-safe control dispatch surface (flow-control desugared to stateless).
 #[async_trait]
 pub trait ControlHandle: Send + Sync + 'static {
@@ -186,6 +218,8 @@ pub enum ActionHandle {
     Stateless(Box<dyn StatelessHandle>),
     /// Iterative execution with mutable JSON state.
     Stateful(Box<dyn StatefulHandle>),
+    /// Async chunk stream, folded in-process to a single output value.
+    Stream(Box<dyn StreamHandle>),
     /// Workflow trigger (start/stop lifecycle).
     Trigger(Box<dyn TriggerHandle>),
     /// Graph-scoped resource (configure/cleanup).
@@ -201,6 +235,7 @@ impl ActionHandle {
         match self {
             Self::Stateless(h) => h.metadata(),
             Self::Stateful(h) => h.metadata(),
+            Self::Stream(h) => h.metadata(),
             Self::Trigger(h) => h.metadata(),
             Self::Resource(h) => h.metadata(),
             Self::Control(h) => h.metadata(),
@@ -217,6 +252,12 @@ impl ActionHandle {
     #[must_use]
     pub fn is_stateful(&self) -> bool {
         matches!(self, Self::Stateful(_))
+    }
+
+    /// Whether this is a stream action handle.
+    #[must_use]
+    pub fn is_stream(&self) -> bool {
+        matches!(self, Self::Stream(_))
     }
 
     /// Whether this is a trigger action handle.
@@ -243,6 +284,7 @@ impl fmt::Debug for ActionHandle {
         let (tag, key) = match self {
             Self::Stateless(h) => ("Stateless", h.metadata().base.key.as_str()),
             Self::Stateful(h) => ("Stateful", h.metadata().base.key.as_str()),
+            Self::Stream(h) => ("Stream", h.metadata().base.key.as_str()),
             Self::Trigger(h) => ("Trigger", h.metadata().base.key.as_str()),
             Self::Resource(h) => ("Resource", h.metadata().base.key.as_str()),
             Self::Control(h) => ("Control", h.metadata().base.key.as_str()),

@@ -23,8 +23,8 @@ use dashmap::DashMap;
 use nebula_action::{
     Action, ActionError, ActionFactory, ActionMetadata, ControlAction, FromWorkflowNode,
     GenericControlFactory, GenericResourceFactory, GenericStatefulFactory, GenericStatelessFactory,
-    GenericTriggerFactory, InstanceFactory, ResourceAction, StatefulAction, StatelessAction,
-    TriggerAction, WebhookActionFactory,
+    GenericStreamFactory, GenericTriggerFactory, InstanceFactory, ResourceAction, StatefulAction,
+    StatelessAction, StreamAction, TriggerAction, WebhookActionFactory,
 };
 use nebula_core::ActionKey;
 use semver::Version;
@@ -166,6 +166,23 @@ impl ActionRegistry {
         A: ResourceAction + FromWorkflowNode<Error = ActionError> + Send + Sync + 'static,
     {
         let factory: Arc<dyn ActionFactory> = Arc::new(GenericResourceFactory::<A>::new());
+        let metadata = factory.metadata().clone();
+        self.register_factory(metadata, factory);
+    }
+
+    /// Register a stream action via the factory pipeline (Variant A).
+    ///
+    /// The produced [`ActionHandle::Stream`](nebula_action::ActionHandle::Stream)
+    /// drives the chunk stream fully in-process and delivers one folded value
+    /// to the downstream node — identical to stateless dispatch from the
+    /// engine's perspective.
+    pub fn register_stream_factory<A>(&self)
+    where
+        A: StreamAction + FromWorkflowNode<Error = ActionError>,
+        <A as Action>::Input: serde::de::DeserializeOwned + Send + Sync,
+        <A as Action>::Output: serde::Serialize + Send + Sync,
+    {
+        let factory: Arc<dyn ActionFactory> = Arc::new(GenericStreamFactory::<A>::new());
         let metadata = factory.metadata().clone();
         self.register_factory(metadata, factory);
     }
