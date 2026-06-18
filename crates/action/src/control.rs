@@ -471,6 +471,7 @@ impl<A: ControlAction> ControlActionAdapter<A> {
     pub fn new(action: A) -> Self {
         let mut meta = <A as Action>::metadata();
         meta.kind = ActionKind::Control;
+        meta.output_schema = <A::Output as nebula_schema::HasSchema>::schema();
         Self {
             action,
             cached_metadata: Arc::new(meta),

@@ -106,8 +106,11 @@ where
     <A as Action>::Output: Serialize + Send + Sync,
 {
     fn metadata(&self) -> &ActionMetadata {
-        self.meta
-            .get_or_init(|| <A as Action>::metadata().with_kind(ActionKind::Stateless))
+        self.meta.get_or_init(|| {
+            <A as Action>::metadata()
+                .with_kind(ActionKind::Stateless)
+                .with_output_schema(<A::Output as nebula_schema::HasSchema>::schema())
+        })
     }
 
     fn instantiate<'a>(
@@ -199,18 +202,23 @@ pub struct InstanceFactory<A> {
     meta: Arc<ActionMetadata>,
 }
 
-impl<A> InstanceFactory<A> {
+impl<A: Action> InstanceFactory<A> {
     /// Wrap a pre-built action instance with explicit metadata.
     ///
     /// The metadata's [`kind`](ActionMetadata::kind) is stamped to
-    /// [`ActionKind::Stateless`] — the factory is the single writer of the kind
-    /// for the handle it produces — while every other field is preserved as the
-    /// caller supplied it.
+    /// [`ActionKind::Stateless`] and `output_schema` is stamped from
+    /// `<A::Output as HasSchema>::schema()` — the factory is the single writer
+    /// of both fields — while every other field is preserved as the caller
+    /// supplied it.
     #[must_use]
     pub fn new(metadata: ActionMetadata, action: A) -> Self {
         Self {
             action: Arc::new(action),
-            meta: Arc::new(metadata.with_kind(ActionKind::Stateless)),
+            meta: Arc::new(
+                metadata
+                    .with_kind(ActionKind::Stateless)
+                    .with_output_schema(<A::Output as nebula_schema::HasSchema>::schema()),
+            ),
         }
     }
 }
@@ -310,8 +318,11 @@ where
     A::State: Serialize + DeserializeOwned + Clone + Send + Sync,
 {
     fn metadata(&self) -> &ActionMetadata {
-        self.meta
-            .get_or_init(|| <A as Action>::metadata().with_kind(ActionKind::Stateful))
+        self.meta.get_or_init(|| {
+            <A as Action>::metadata()
+                .with_kind(ActionKind::Stateful)
+                .with_output_schema(<A::Output as nebula_schema::HasSchema>::schema())
+        })
     }
 
     fn instantiate<'a>(
@@ -446,8 +457,11 @@ where
     <A as TriggerAction>::Error: Into<ActionError>,
 {
     fn metadata(&self) -> &ActionMetadata {
-        self.meta
-            .get_or_init(|| <A as Action>::metadata().with_kind(ActionKind::Trigger))
+        self.meta.get_or_init(|| {
+            <A as Action>::metadata()
+                .with_kind(ActionKind::Trigger)
+                .with_output_schema(<A::Output as nebula_schema::HasSchema>::schema())
+        })
     }
 
     fn instantiate<'a>(
@@ -550,8 +564,11 @@ where
     A: ResourceAction + FromWorkflowNode<Error = ActionError> + Send + Sync + 'static,
 {
     fn metadata(&self) -> &ActionMetadata {
-        self.meta
-            .get_or_init(|| <A as Action>::metadata().with_kind(ActionKind::Resource))
+        self.meta.get_or_init(|| {
+            <A as Action>::metadata()
+                .with_kind(ActionKind::Resource)
+                .with_output_schema(<A::Output as nebula_schema::HasSchema>::schema())
+        })
     }
 
     fn instantiate<'a>(
@@ -644,8 +661,11 @@ where
     A: ControlAction + FromWorkflowNode<Error = ActionError> + Send + Sync + 'static,
 {
     fn metadata(&self) -> &ActionMetadata {
-        self.meta
-            .get_or_init(|| <A as Action>::metadata().with_kind(ActionKind::Control))
+        self.meta.get_or_init(|| {
+            <A as Action>::metadata()
+                .with_kind(ActionKind::Control)
+                .with_output_schema(<A::Output as nebula_schema::HasSchema>::schema())
+        })
     }
 
     fn instantiate<'a>(
@@ -733,8 +753,11 @@ where
     <A as Action>::Output: Serialize + Send + Sync,
 {
     fn metadata(&self) -> &ActionMetadata {
-        self.meta
-            .get_or_init(|| <A as Action>::metadata().with_kind(ActionKind::Stream))
+        self.meta.get_or_init(|| {
+            <A as Action>::metadata()
+                .with_kind(ActionKind::Stream)
+                .with_output_schema(<A::Output as nebula_schema::HasSchema>::schema())
+        })
     }
 
     fn instantiate<'a>(

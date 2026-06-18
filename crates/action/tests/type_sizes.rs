@@ -45,11 +45,12 @@ fn top_level_type_sizes_are_stable() {
     );
     // NOTE: ActionMetadata is a composed `BaseMetadata<ActionKey>` plus
     // action-specific fields (version / inputs / outputs / isolation / kind /
-    // checkpoint_policy / max_concurrent). The shared prefix brings Icon,
-    // documentation_url, tags (Box<[String]>), MaturityLevel, and
+    // checkpoint_policy / max_concurrent / output_schema). The shared prefix
+    // brings Icon, documentation_url, tags (Box<[String]>), MaturityLevel, and
     // Option<DeprecationNotice>. Allocation is once-per-action type — not a hot
     // path — so we accept the size in exchange for the unified catalog contract.
-    assert_eq!(size_of::<ActionMetadata>(), 376);
+    // T2 (TypeDAG): +8 bytes for `output_schema: ValidSchema` (one Arc<_>).
+    assert_eq!(size_of::<ActionMetadata>(), 384);
     assert_eq!(size_of::<ActionError>(), 72);
 
     // `WebhookRequest` contains a `SystemTime`, which is 8 bytes on

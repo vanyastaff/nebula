@@ -103,7 +103,8 @@ fn default_action_kind() -> ActionKind {
 /// Compatibility validation errors for action metadata evolution.
 ///
 /// Wraps [`nebula_metadata::BaseCompatError`] (shared catalog-entity rules)
-/// and layers the action-specific port-change rule on top.
+/// and layers action-specific rules on top: port-change and output-schema
+/// narrowing (TypeDAG producer→consumer assignability).
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum MetadataCompatibilityError {
@@ -114,6 +115,19 @@ pub enum MetadataCompatibilityError {
     /// Input or output ports changed without a major version bump.
     #[error("action ports changed without a major version bump")]
     PortsChangeWithoutMajorBump,
+
+    /// The action's output schema was narrowed (a field required by downstream
+    /// consumers was dropped or changed type) without a major version bump.
+    ///
+    /// TypeDAG edge checks use `output_schema` to validate producer→consumer
+    /// assignability. Narrowing the output on a same-major upgrade silently
+    /// breaks any typed downstream node that was bound against the old schema.
+    /// A major version bump is required to signal the breaking contract change.
+    #[error(
+        "action output schema narrowed without a major version bump: \
+         a field required by downstream consumers was dropped or changed type"
+    )]
+    OutputSchemaNarrowedWithoutMajorBump,
 }
 
 /// Static metadata describing an action type.
@@ -173,6 +187,17 @@ pub struct ActionMetadata {
     /// Per Tech Spec §15.12 F9 + PRODUCT_ backpressure.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_concurrent: Option<core::num::NonZeroU32>,
+    /// Schema describing the type this action produces as output.
+    ///
+    /// Stamped by the factory or DX adapter from `<A::Output as HasSchema>::schema()`
+    /// — the single writer is the factory, mirroring how `kind` is stamped.
+    /// TypeDAG edge checks (`T3+`) read this field to validate that the
+    /// producer's output is assignable to the consumer's input.
+    ///
+    /// Defaults to [`ValidSchema::empty`] for metadata persisted before this
+    /// field existed (back-compat), and for actions with an untyped output.
+    #[serde(default = "ValidSchema::empty")]
+    pub output_schema: ValidSchema,
 }
 
 impl Metadata for ActionMetadata {
@@ -194,6 +219,7 @@ impl ActionMetadata {
             kind: ActionKind::Stateless,
             checkpoint_policy: CheckpointPolicy::Inherit,
             max_concurrent: None,
+            output_schema: ValidSchema::empty(),
         }
     }
 
@@ -258,6 +284,7 @@ impl ActionMetadata {
     {
         Self::new(key, name, description)
             .with_schema(<A::Input as nebula_schema::HasSchema>::schema())
+            .with_output_schema(<A::Output as nebula_schema::HasSchema>::schema())
     }
 
     /// Set the interface version from `(major, minor)` components.
@@ -333,6 +360,28 @@ impl ActionMetadata {
         self
     }
 
+    /// Set the output schema for this action.
+    ///
+    /// The single writer is the factory or DX adapter (via
+    /// `<A::Output as HasSchema>::schema()`); action authors rarely call
+    /// this directly. Symmetric with [`with_schema`](Self::with_schema).
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_output_schema(mut self, schema: ValidSchema) -> Self {
+        self.output_schema = schema;
+        self
+    }
+
+    /// The schema describing what this action produces.
+    ///
+    /// Stamped from `<A::Output as HasSchema>::schema()` by the factory.
+    /// TypeDAG edge checks read this to validate producer→consumer
+    /// assignability. Returns an empty schema for actions that predated
+    /// this field or have an untyped output.
+    #[must_use]
+    pub fn output_schema(&self) -> &ValidSchema {
+        &self.output_schema
+    }
+
     /// Set the isolation level for dispatch routing.
     #[must_use = "builder methods must be chained or built"]
     pub fn with_isolation_level(mut self, level: IsolationLevel) -> Self {
@@ -392,9 +441,26 @@ impl ActionMetadata {
     ) -> Result<(), MetadataCompatibilityError> {
         nebula_metadata::validate_base_compat(&self.base, &previous.base)?;
 
+        let same_major = self.base.version.major == previous.base.version.major;
+
         let ports_changed = self.inputs != previous.inputs || self.outputs != previous.outputs;
-        if ports_changed && self.base.version.major == previous.base.version.major {
+        if ports_changed && same_major {
             return Err(MetadataCompatibilityError::PortsChangeWithoutMajorBump);
+        }
+
+        // TypeDAG output-schema assignability: the NEW output is the producer;
+        // the OLD output is the consumer (downstream nodes were typed against it).
+        // If `is_assignable` returns Err the new output dropped or changed a field
+        // that old consumers required — that is a silent breaking change on a
+        // same-major upgrade. A major version bump is required.
+        if same_major
+            && nebula_schema::is_assignable(
+                self.output_schema.fields(),
+                previous.output_schema.fields(),
+            )
+            .is_err()
+        {
+            return Err(MetadataCompatibilityError::OutputSchemaNarrowedWithoutMajorBump);
         }
 
         Ok(())
@@ -795,5 +861,258 @@ mod tests {
             err,
             MetadataCompatibilityError::Base(BaseCompatError::VersionRegressed { .. })
         ));
+    }
+
+    // ── output_schema field ─────────────────────────────────────────────
+
+    /// Fixture output type with a named field so the schema is non-empty and
+    /// the assertion `field_present` is non-vacuous (not just `is_empty()==false`).
+    #[derive(Debug, serde::Serialize, serde::Deserialize)]
+    struct EchoOutput {
+        message: String,
+    }
+
+    impl nebula_schema::HasSchema for EchoOutput {
+        fn schema() -> ValidSchema {
+            use nebula_schema::{FieldCollector, Schema, field_key};
+            Schema::builder()
+                .string(
+                    field_key!("message"),
+                    nebula_schema::StringBuilder::required,
+                )
+                .build()
+                .expect("EchoOutput schema is valid")
+        }
+    }
+
+    // Minimal Action impl used only to drive `for_action` / factory tests.
+    struct EchoAction;
+
+    #[derive(Debug, serde::Serialize, serde::Deserialize)]
+    struct EchoInput {
+        text: String,
+    }
+
+    impl nebula_schema::HasSchema for EchoInput {
+        fn schema() -> ValidSchema {
+            use nebula_schema::{FieldCollector, Schema, field_key};
+            Schema::builder()
+                .string(field_key!("text"), nebula_schema::StringBuilder::required)
+                .build()
+                .expect("EchoInput schema is valid")
+        }
+    }
+
+    impl crate::action::Action for EchoAction {
+        type Input = EchoInput;
+        type Output = EchoOutput;
+
+        fn metadata() -> ActionMetadata {
+            ActionMetadata::for_action::<Self>(action_key!("test.echo"), "Echo", "Echoes input")
+        }
+
+        fn dependencies() -> &'static nebula_core::Dependencies {
+            use std::sync::OnceLock;
+            static DEPS: OnceLock<nebula_core::Dependencies> = OnceLock::new();
+            DEPS.get_or_init(nebula_core::Dependencies::new)
+        }
+    }
+
+    #[test]
+    fn new_initialises_output_schema_to_empty() {
+        let meta = ActionMetadata::new(action_key!("test"), "T", "d");
+        assert!(
+            meta.output_schema.fields().is_empty(),
+            "output_schema must default to empty"
+        );
+    }
+
+    #[test]
+    fn with_output_schema_builder_stores_schema() {
+        use nebula_schema::{FieldCollector, Schema, field_key};
+        let schema = Schema::builder()
+            .string(
+                field_key!("message"),
+                nebula_schema::StringBuilder::required,
+            )
+            .build()
+            .unwrap();
+        let meta = ActionMetadata::new(action_key!("test"), "T", "d").with_output_schema(schema);
+        assert!(
+            !meta.output_schema.fields().is_empty(),
+            "output_schema must store the provided schema"
+        );
+        assert!(
+            meta.output_schema
+                .fields()
+                .iter()
+                .any(|f| f.key().as_str() == "message"),
+            "output_schema must contain the `message` field"
+        );
+    }
+
+    #[test]
+    fn for_action_stamps_output_schema_from_action_output_type() {
+        let meta = ActionMetadata::for_action::<EchoAction>(
+            action_key!("test.echo"),
+            "Echo",
+            "Echoes input",
+        );
+        // Non-vacuous: assert the `message` field is present in the output schema.
+        assert!(
+            meta.output_schema
+                .fields()
+                .iter()
+                .any(|f| f.key().as_str() == "message"),
+            "for_action must stamp output_schema from A::Output — `message` field missing"
+        );
+    }
+
+    #[test]
+    fn output_schema_back_compat_missing_field_deserializes_to_empty() {
+        // Metadata serialized before `output_schema` existed must still load,
+        // defaulting the field to an empty schema — mirrors kind_backward_compat_without_field.
+        let legacy = ActionMetadata::new(action_key!("http.request"), "HTTP", "desc");
+        let mut as_value: serde_json::Value = serde_json::to_value(&legacy).unwrap();
+        as_value
+            .as_object_mut()
+            .unwrap()
+            .remove("output_schema")
+            .expect("output_schema must be present after serialize");
+        let json_string = serde_json::to_string(&as_value).unwrap();
+        let decoded: ActionMetadata = serde_json::from_str(&json_string)
+            .expect("legacy metadata without output_schema must deserialize");
+        assert!(
+            decoded.output_schema.fields().is_empty(),
+            "missing output_schema field should default to empty"
+        );
+    }
+
+    #[test]
+    fn output_schema_serde_roundtrip() {
+        use nebula_schema::{FieldCollector, Schema, field_key};
+        let schema = Schema::builder()
+            .string(field_key!("result"), nebula_schema::StringBuilder::required)
+            .build()
+            .unwrap();
+        let original =
+            ActionMetadata::new(action_key!("test"), "T", "d").with_output_schema(schema);
+        let json = serde_json::to_string(&original).expect("serialize succeeds");
+        let decoded: ActionMetadata = serde_json::from_str(&json).expect("deserialize succeeds");
+        assert_eq!(original, decoded);
+    }
+
+    // ── validate_compatibility: output_schema narrowing ─────────────────────
+
+    #[test]
+    fn output_schema_narrowed_same_major_is_rejected() {
+        // v1.0 produces {result, status}; v1.1 drops `status` — downstream
+        // consumers that required `status` will break. Must be rejected on a
+        // same-major upgrade. Goes RED if the output-schema check is removed.
+        use nebula_schema::{FieldCollector, Schema, StringBuilder, field_key};
+        let two_field_schema = Schema::builder()
+            .string(field_key!("result"), StringBuilder::required)
+            .string(field_key!("status"), StringBuilder::required)
+            .build()
+            .unwrap();
+        let one_field_schema = Schema::builder()
+            .string(field_key!("result"), StringBuilder::required)
+            .build()
+            .unwrap();
+
+        let prev = ActionMetadata::new(action_key!("svc.action"), "A", "d")
+            .with_version(1, 0)
+            .with_output_schema(two_field_schema);
+        let next = ActionMetadata::new(action_key!("svc.action"), "A", "d")
+            .with_version(1, 1)
+            .with_output_schema(one_field_schema);
+
+        let err = next
+            .validate_compatibility(&prev)
+            .expect_err("narrowing output on same major must be rejected");
+        assert_eq!(
+            err,
+            MetadataCompatibilityError::OutputSchemaNarrowedWithoutMajorBump,
+            "expected OutputSchemaNarrowedWithoutMajorBump"
+        );
+    }
+
+    #[test]
+    fn output_schema_widened_same_major_is_allowed() {
+        // v1.0 produces {result}; v1.1 adds `extra` — existing consumers only
+        // required `result`, so width subtyping allows the addition.
+        use nebula_schema::{FieldCollector, Schema, StringBuilder, field_key};
+        let narrow = Schema::builder()
+            .string(field_key!("result"), StringBuilder::required)
+            .build()
+            .unwrap();
+        let wide = Schema::builder()
+            .string(field_key!("result"), StringBuilder::required)
+            .string(field_key!("extra"), StringBuilder::required)
+            .build()
+            .unwrap();
+
+        let prev = ActionMetadata::new(action_key!("svc.action"), "A", "d")
+            .with_version(1, 0)
+            .with_output_schema(narrow);
+        let next = ActionMetadata::new(action_key!("svc.action"), "A", "d")
+            .with_version(1, 1)
+            .with_output_schema(wide);
+
+        assert!(
+            next.validate_compatibility(&prev).is_ok(),
+            "widening the output schema on a same-major bump must be allowed"
+        );
+    }
+
+    #[test]
+    fn output_schema_narrowed_with_major_bump_is_allowed() {
+        // A major version bump signals a breaking contract change — narrowing
+        // the output is permitted regardless of what fields disappear.
+        use nebula_schema::{FieldCollector, Schema, StringBuilder, field_key};
+        let two_field_schema = Schema::builder()
+            .string(field_key!("result"), StringBuilder::required)
+            .string(field_key!("status"), StringBuilder::required)
+            .build()
+            .unwrap();
+        let one_field_schema = Schema::builder()
+            .string(field_key!("result"), StringBuilder::required)
+            .build()
+            .unwrap();
+
+        let prev = ActionMetadata::new(action_key!("svc.action"), "A", "d")
+            .with_version(1, 0)
+            .with_output_schema(two_field_schema);
+        let next = ActionMetadata::new(action_key!("svc.action"), "A", "d")
+            .with_version(2, 0)
+            .with_output_schema(one_field_schema);
+
+        assert!(
+            next.validate_compatibility(&prev).is_ok(),
+            "narrowing output with a major version bump must be allowed"
+        );
+    }
+
+    #[test]
+    fn output_schema_unchanged_same_major_is_allowed() {
+        // Identical output schema — the common no-op case must pass.
+        use nebula_schema::{FieldCollector, Schema, StringBuilder, field_key};
+        let schema = Schema::builder()
+            .string(field_key!("result"), StringBuilder::required)
+            .string(field_key!("status"), StringBuilder::required)
+            .build()
+            .unwrap();
+
+        let prev = ActionMetadata::new(action_key!("svc.action"), "A", "d")
+            .with_version(1, 0)
+            .with_output_schema(schema.clone());
+        let next = ActionMetadata::new(action_key!("svc.action"), "A", "d")
+            .with_version(1, 1)
+            .with_output_schema(schema);
+
+        assert!(
+            next.validate_compatibility(&prev).is_ok(),
+            "identical output schemas must be compatible on a same-major bump"
+        );
     }
 }

@@ -23,6 +23,7 @@ use nebula_action::{
     OutputPort, StatelessHandler, TerminationReason, ValidationReason, testing::TestContextBuilder,
 };
 use nebula_core::{Dependencies, action_key};
+use nebula_schema::{FieldCollector, HasSchema, Schema, StringBuilder, ValidSchema, field_key};
 
 // ── Test helpers ───────────────────────────────────────────────────────────
 
@@ -749,4 +750,95 @@ async fn pass_and_drop_have_distinct_runtime_shapes() {
 
     let drop_result = run(&filter, serde_json::json!({ "score": 0 })).await;
     assert!(drop_result.into_primary_output().is_none());
+}
+
+// ── output_schema stamp: ControlActionAdapter ──────────────────────────────
+//
+// Every control action wrapped by `ControlActionAdapter` must carry a
+// non-empty `output_schema` when its `Output` type has typed fields.
+// T3 (TypeDAG edge check) reads `metadata().output_schema()` to validate
+// producer→consumer assignability; an empty schema here silently bypasses
+// the check for every control node.
+//
+// The fixture below uses a typed `Output` struct so the assertion is
+// non-vacuous: removing the `output_schema` stamp from
+// `ControlActionAdapter::new` causes this test to go RED.
+
+/// Typed output for the control-adapter stamp test.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct TypedBranchOutput {
+    /// The selected branch label, carried downstream for audit / tracing.
+    selected: String,
+}
+
+impl HasSchema for TypedBranchOutput {
+    fn schema() -> ValidSchema {
+        Schema::builder()
+            .string(field_key!("selected"), StringBuilder::required)
+            .build()
+            .expect("TypedBranchOutput schema is valid")
+    }
+}
+
+/// Control action that returns a typed `Output` so the factory-stamped
+/// `output_schema` is non-empty and the red-on-revert assertion is non-vacuous.
+struct DemoTypedBranch;
+
+impl Action for DemoTypedBranch {
+    type Input = serde_json::Value;
+    type Output = TypedBranchOutput;
+
+    fn metadata() -> ActionMetadata {
+        ActionMetadata::new(
+            action_key!("demo.typed_branch"),
+            "TypedBranch",
+            "Branch with typed output",
+        )
+        .with_outputs(vec![OutputPort::flow("true"), OutputPort::flow("false")])
+    }
+
+    fn dependencies() -> &'static Dependencies {
+        static D: OnceLock<Dependencies> = OnceLock::new();
+        D.get_or_init(Dependencies::new)
+    }
+}
+
+impl ControlAction for DemoTypedBranch {
+    async fn evaluate(
+        &self,
+        input: ControlInput,
+        _ctx: &(impl nebula_action::ActionContext + ?Sized),
+    ) -> Result<ControlOutcome, ActionError> {
+        let selected = if input.get_bool("/condition").unwrap_or(false) {
+            "true"
+        } else {
+            "false"
+        };
+        Ok(ControlOutcome::Branch {
+            selected: selected.into(),
+            output: serde_json::to_value(TypedBranchOutput {
+                selected: selected.into(),
+            })
+            .unwrap_or_default(),
+        })
+    }
+}
+
+#[test]
+fn control_action_adapter_stamps_output_schema_from_action_output_type() {
+    // Non-vacuous: `TypedBranchOutput` has a `selected` field.
+    // Removing the `output_schema` stamp from `ControlActionAdapter::new`
+    // causes this test to go RED — the schema will be empty and the `any()`
+    // predicate will return false.
+    let adapter = ControlActionAdapter::new(DemoTypedBranch);
+    let output_schema = adapter.metadata().output_schema();
+
+    assert!(
+        output_schema
+            .fields()
+            .iter()
+            .any(|f| f.key().as_str() == "selected"),
+        "ControlActionAdapter must stamp output_schema from A::Output — \
+         `selected` field missing; revert the stamp in ControlActionAdapter::new to see this fail"
+    );
 }
