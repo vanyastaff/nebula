@@ -63,12 +63,52 @@ pub const MAX_CLAIM_ERROR_BACKOFF: Duration = Duration::from_secs(30);
 ///
 /// Matches `ControlConsumer` — 5× a 30-second lease TTL so a runner that
 /// has missed 15 heartbeats is presumed dead.
+///
+/// ## Relationship between the job-dispatch claim and execution liveness
+///
+/// The job-dispatch claim is held for the **entire synchronous drive** of a
+/// workflow: the orchestrator claims the row, hands it to the sink, and only
+/// marks it `Dispatched` or `Failed` after `ExecutionSink::dispatch` returns.
+/// There is no heartbeat on the claim while the sink is running.
+///
+/// Execution liveness is tracked separately: the engine issues a per-execution
+/// lease (renewed by `nebula-engine`'s `acquire_and_heartbeat_lease` loop) whose
+/// TTL is the authoritative signal that a runner has crashed.  The
+/// job-dispatch `reclaim_stuck` sweep is a **routing-layer** recovery
+/// mechanism, not an execution-failure detector.
+///
+/// **Implication for long-running, non-parking workflows:** if a workflow
+/// drives synchronously from `Created` to `Completed` in a single
+/// `resume_execution` call and that drive takes longer than
+/// `reclaim_after × max_reclaim_count`, the orchestrator's reclaim sweep
+/// will eventually mark the dispatch row `Failed` — even though the execution
+/// itself completed correctly.  This is a routing-row observability artifact,
+/// not an execution failure; the execution status in the execution store is
+/// unaffected.
+///
+/// Operators expecting workflows whose single synchronous drive exceeds
+/// `reclaim_after × max_reclaim_count` should increase `max_reclaim_count`
+/// via [`Orchestrator::with_max_reclaim_count`] (or the corresponding builder
+/// method on `WorkerRuntimeBuilder` in `nebula-worker`).
+/// Long workflows that park at a checkpoint do not trigger this: parking
+/// returns control to the engine, the sink returns `Ok(())`, and the dispatch
+/// row is marked `Dispatched` promptly.
+///
+/// See ADR-0017 (execution lease contract) and ADR-0095 (job-dispatch
+/// routing) for the full context.
 pub const DEFAULT_RECLAIM_AFTER: Duration = Duration::from_secs(150);
 
 /// Default cadence of the reclaim sweep.
 pub const DEFAULT_RECLAIM_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Default retry budget before a reclaim-eligible row moves to `Failed`.
+///
+/// A row that has been reclaimed this many times transitions to `Failed` on
+/// the next sweep, preventing unbounded redelivery of permanently stuck jobs.
+///
+/// As noted on [`DEFAULT_RECLAIM_AFTER`], operators running long synchronous
+/// workflows should raise this value; the dispatch `Failed` status is a
+/// routing artifact and does not indicate execution failure.
 pub const DEFAULT_MAX_RECLAIM_COUNT: u32 = 3;
 
 /// Capability-routed job-dispatch pull loop (ADR-0095).
