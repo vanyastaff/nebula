@@ -35,7 +35,7 @@
 //!
 //! ```rust,ignore
 //! use nebula_action::{
-//!     Action, ActionCategory, DeclaresDependencies, ActionError,
+//!     Action, DeclaresDependencies, ActionError,
 //!     ActionMetadata, ControlAction, ControlInput, ControlOutcome,
 //! };
 //! use nebula_core::{Dependencies, action_key};
@@ -47,9 +47,10 @@
 //!     type Input = serde_json::Value;
 //!     type Output = serde_json::Value;
 //!
+//!     // The `ControlActionAdapter` stamps `ActionKind::Control` automatically;
+//!     // authors do not classify the node by hand.
 //!     fn metadata() -> ActionMetadata {
 //!         ActionMetadata::new(action_key!("control.if"), "If", "Binary branch")
-//!             .with_category(ActionCategory::Control)
 //!     }
 //!
 //!     fn dependencies() -> &'static Dependencies {
@@ -82,7 +83,7 @@ use crate::{
     action::Action,
     context::ActionContext,
     error::{ActionError, ValidationReason},
-    metadata::{ActionCategory, ActionKind, ActionMetadata},
+    metadata::{ActionKind, ActionMetadata},
     port::PortKey,
     result::{ActionResult, TerminationReason},
     stateless::StatelessHandler,
@@ -434,15 +435,13 @@ pub trait ControlAction: Action {
 
 /// Wraps a [`ControlAction`] as a [`dyn StatelessHandler`].
 ///
-/// The adapter caches a copy of the action's [`ActionMetadata`] with
-/// the [`ActionCategory`] field stamped automatically based on whether
-/// the action declares output ports:
-///
-/// - Zero outputs → [`ActionCategory::Terminal`] (Stop, Fail)
-/// - One or more outputs → [`ActionCategory::Control`]
-///
-/// Authors cannot forget to set the category; the adapter does it for
-/// them at registration time.
+/// The adapter caches a copy of the action's [`ActionMetadata`] with the
+/// [`ActionKind::Control`] node kind stamped automatically, so authors cannot
+/// forget to classify a control node. Terminal control nodes (Stop, Fail)
+/// declare an empty `outputs` set and keep [`ActionKind::Control`] —
+/// terminality is carried structurally by the empty port set, not by a
+/// distinct kind, so the workflow validator detects the graph sink from the
+/// ports.
 ///
 /// # Example
 ///
@@ -461,10 +460,9 @@ pub struct ControlActionAdapter<A: ControlAction> {
 impl<A: ControlAction> ControlActionAdapter<A> {
     /// Wrap a typed control action.
     ///
-    /// The adapter takes the action's metadata, stamps the appropriate
-    /// [`ActionCategory`] (Control or Terminal) and the [`ActionKind::Control`]
-    /// node kind, and caches the result in an `Arc` so subsequent `metadata()`
-    /// calls are cheap.
+    /// The adapter takes the action's metadata, stamps the
+    /// [`ActionKind::Control`] node kind, and caches the result in an `Arc` so
+    /// subsequent `metadata()` calls are cheap.
     ///
     /// A terminal control node (empty `outputs`) keeps
     /// [`ActionKind::Control`] — terminality is carried by the empty port set,
@@ -472,7 +470,6 @@ impl<A: ControlAction> ControlActionAdapter<A> {
     #[must_use]
     pub fn new(action: A) -> Self {
         let mut meta = <A as Action>::metadata();
-        meta.category = derive_category(&meta);
         meta.kind = ActionKind::Control;
         Self {
             action,
@@ -519,24 +516,8 @@ impl<A: ControlAction> fmt::Debug for ControlActionAdapter<A> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ControlActionAdapter")
             .field("action", &self.cached_metadata.base.key)
-            .field("category", &self.cached_metadata.category)
+            .field("kind", &self.cached_metadata.kind)
             .finish_non_exhaustive()
-    }
-}
-
-/// Infer the `ActionCategory` for a control action based on its declared
-/// output ports.
-///
-/// - Zero outputs → `Terminal` (Stop, Fail)
-/// - One or more outputs → `Control`
-///
-/// Called automatically by [`ControlActionAdapter::new`]. Exposed for
-/// testing only — authors should not override this.
-fn derive_category(meta: &ActionMetadata) -> ActionCategory {
-    if meta.outputs.is_empty() {
-        ActionCategory::Terminal
-    } else {
-        ActionCategory::Control
     }
 }
 
@@ -734,23 +715,6 @@ mod tests {
         }
     }
 
-    // ── derive_category ────────────────────────────────────────────
-
-    #[test]
-    fn derive_category_control_for_nodes_with_outputs() {
-        let meta = ActionMetadata::new(action_key!("test.if"), "If", "Binary branch");
-        // ActionMetadata::new uses default_output_ports() which has one main output.
-        assert!(!meta.outputs.is_empty());
-        assert_eq!(derive_category(&meta), ActionCategory::Control);
-    }
-
-    #[test]
-    fn derive_category_terminal_for_zero_output_nodes() {
-        let meta = ActionMetadata::new(action_key!("test.stop"), "Stop", "Terminate")
-            .with_outputs(Vec::new());
-        assert_eq!(derive_category(&meta), ActionCategory::Terminal);
-    }
-
     // ── ControlActionAdapter smoke test ────────────────────────────
 
     /// Minimal control action used for smoke tests.
@@ -830,30 +794,27 @@ mod tests {
     }
 
     #[test]
-    fn adapter_stamps_control_category() {
+    fn adapter_stamps_control_kind() {
         let adapter = ControlActionAdapter::new(TestIf::new());
-        assert_eq!(
-            StatelessHandler::metadata(&adapter).category,
-            ActionCategory::Control
-        );
-        assert_eq!(
-            StatelessHandler::metadata(&adapter).kind,
-            ActionKind::Control
+        let meta = StatelessHandler::metadata(&adapter);
+        assert_eq!(meta.kind, ActionKind::Control);
+        assert!(
+            !meta.outputs.is_empty(),
+            "a routing control node declares output ports"
         );
     }
 
     #[test]
-    fn adapter_stamps_terminal_category_for_zero_output_action() {
+    fn adapter_terminal_node_keeps_control_kind_with_empty_outputs() {
+        // A terminal control node (Stop/Fail) keeps `ActionKind::Control`;
+        // terminality is carried structurally by the empty `outputs` set, which
+        // is what the workflow validator reads to recognise the graph sink.
         let adapter = ControlActionAdapter::new(TestStop::new());
-        assert_eq!(
-            StatelessHandler::metadata(&adapter).category,
-            ActionCategory::Terminal
-        );
-        // Terminal control keeps `Control` — terminality lives in the empty
-        // port set, not a distinct kind.
-        assert_eq!(
-            StatelessHandler::metadata(&adapter).kind,
-            ActionKind::Control
+        let meta = StatelessHandler::metadata(&adapter);
+        assert_eq!(meta.kind, ActionKind::Control);
+        assert!(
+            meta.outputs.is_empty(),
+            "a terminal control node declares no output ports"
         );
     }
 
@@ -972,9 +933,10 @@ mod tests {
     // ── default_output_ports parity ────────────────────────────────
 
     #[test]
-    fn derive_category_default_output_ports_is_control() {
-        // Actions constructed with default ports (one main output) must
-        // land in Control, never Terminal.
+    fn default_control_node_has_non_empty_outputs() {
+        // A control node built with default ports (one main output) must not
+        // look like a terminal sink: terminality is read from an empty
+        // `outputs` set, so the defaults must stay non-empty.
         assert!(!default_output_ports().is_empty());
     }
 }

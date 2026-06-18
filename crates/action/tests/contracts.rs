@@ -8,7 +8,7 @@ use std::{collections::HashMap, time::Duration};
 
 use chrono::Utc;
 use nebula_action::{
-    ActionCategory, ActionOutput, ActionResult, BreakReason, DynamicPort, FlowKind, InputPort,
+    ActionKind, ActionOutput, ActionResult, BreakReason, DynamicPort, FlowKind, InputPort,
     OutputPort, SupportPort, TerminationReason, WaitCondition,
 };
 use nebula_core::id::ExecutionId;
@@ -301,28 +301,31 @@ fn termination_reason_round_trip_contract() {
     }
 }
 
-// ── ActionCategory contract ────────────────────────────────────────────────
+// ── ActionKind contract ─────────────────────────────────────────────────────
 //
-// Metadata discriminator added in Phase 0. Serialized as snake_case tag;
-// changing any variant name is a breaking change for UI editor / audit log.
+// The node-taxonomy discriminator (it superseded the retired `ActionCategory`).
+// Serialized as a snake_case tag read by the UI editor, workflow validator, and
+// audit log; changing any variant name is a breaking change for those consumers.
 
 #[test]
-fn action_category_serialization_contract() {
+fn action_kind_serialization_contract() {
     let cases = [
-        (ActionCategory::Data, r#""data""#),
-        (ActionCategory::Control, r#""control""#),
-        (ActionCategory::Trigger, r#""trigger""#),
-        (ActionCategory::Resource, r#""resource""#),
-        (ActionCategory::Agent, r#""agent""#),
-        (ActionCategory::Terminal, r#""terminal""#),
+        (ActionKind::Stateless, r#""stateless""#),
+        (ActionKind::Stateful, r#""stateful""#),
+        (ActionKind::Stream, r#""stream""#),
+        (ActionKind::Agent, r#""agent""#),
+        (ActionKind::Interactive, r#""interactive""#),
+        (ActionKind::Control, r#""control""#),
+        (ActionKind::Trigger, r#""trigger""#),
+        (ActionKind::Resource, r#""resource""#),
     ];
     for (value, expected) in cases {
         let json = serde_json::to_string(&value).unwrap();
         assert_eq!(
             json, expected,
-            "ActionCategory serialization changed for {value:?}"
+            "ActionKind serialization changed for {value:?}"
         );
-        let back: ActionCategory = serde_json::from_str(&json).unwrap();
+        let back: ActionKind = serde_json::from_str(&json).unwrap();
         assert_eq!(back, value);
     }
 }

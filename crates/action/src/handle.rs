@@ -159,7 +159,7 @@ pub trait ResourceHandle: Send + Sync + 'static {
 /// Object-safe control dispatch surface (flow-control desugared to stateless).
 #[async_trait]
 pub trait ControlHandle: Send + Sync + 'static {
-    /// Action metadata (with `ActionCategory::Control` or `Terminal` stamped).
+    /// Action metadata (with `ActionKind::Control` stamped).
     fn metadata(&self) -> &ActionMetadata;
 
     /// Evaluate the control decision and emit an [`ActionResult<Value>`].

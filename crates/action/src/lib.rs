@@ -21,7 +21,7 @@
 //! ## Key metadata and result types
 //!
 //! - `ActionMetadata` — key, version, ports, `ValidSchema` parameters, `IsolationLevel`,
-//!   `ActionCategory`, `ActionKind`, and `CheckpointPolicy`.
+//!   `ActionKind`, and `CheckpointPolicy`.
 //! - `ActionResult` — execution result with flow-control intent.
 //! - `ActionError` — typed error distinguishing retryable from fatal.
 //! - `ActionHandler` — top-level enum dispatcher over all handler variants.
@@ -121,8 +121,7 @@ pub use handle::{
 pub use handler::ActionHandler;
 pub use idempotency::IdempotencyKey;
 pub use metadata::{
-    ActionCategory, ActionKind, ActionMetadata, CheckpointPolicy, IsolationLevel,
-    MetadataCompatibilityError,
+    ActionKind, ActionMetadata, CheckpointPolicy, IsolationLevel, MetadataCompatibilityError,
 };
 pub use nebula_action_macros::{Action, action_phantom};
 pub use nebula_core::{

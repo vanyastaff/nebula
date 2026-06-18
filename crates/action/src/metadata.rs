@@ -26,50 +26,6 @@ pub enum IsolationLevel {
     CapabilityGated,
 }
 
-/// Broad category of an action — how it behaves in the workflow graph.
-///
-/// Used by UI editor, workflow validator, and audit log to group and
-/// display nodes. Runtime dispatch does **not** depend on this field —
-/// it is purely metadata for tooling. The engine routes actions based
-/// on which core trait they implement (`StatelessAction`, `StatefulAction`,
-/// `TriggerAction`, `ResourceAction`, `AgentAction`), not on `ActionCategory`.
-///
-/// Categories overlap with but are not identical to core traits: e.g.
-/// a `ControlAction` is a `StatelessAction` under the hood, but its
-/// category is [`ActionCategory::Control`] so the UI can distinguish
-/// it from data-transformation nodes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-#[non_exhaustive]
-pub enum ActionCategory {
-    /// Data-transformation node — takes input, produces output.
-    ///
-    /// Default for backward compatibility: any metadata serialized
-    /// before this field existed deserializes as `Data`.
-    #[default]
-    Data,
-    /// Flow-control node that routes, filters, or gates without
-    /// transforming data. Populated automatically by the
-    /// `ControlActionAdapter` for members of the `ControlAction` DX
-    /// family (If, Switch, Router, Filter, NoOp).
-    Control,
-    /// Workflow trigger — lives outside the execution graph and
-    /// starts new executions.
-    Trigger,
-    /// Resource provider — supplies scoped capabilities (DB pool,
-    /// HTTP client, browser session) to downstream nodes in a branch.
-    Resource,
-    /// Autonomous agent with an internal reasoning loop and budget.
-    Agent,
-    /// Terminal control node — ends execution with success or failure
-    /// and has no downstream outputs.
-    ///
-    /// Subcategory of `Control`, distinguished so that the workflow
-    /// validator can treat it as a legitimate graph sink even though
-    /// its `outputs` list is empty.
-    Terminal,
-}
-
 /// The kind of node an action is — its place in the workflow taxonomy.
 ///
 /// This is the authoritative classification an action carries. UI editors,
@@ -168,7 +124,7 @@ pub enum MetadataCompatibilityError {
 /// The shared catalog prefix (`key`, `name`, `description`, `schema`, `icon`,
 /// `documentation_url`, `tags`, `maturity`, `deprecation`) lives on the
 /// composed [`BaseMetadata`]. Entity-specific
-/// fields (`version`, ports, `isolation_level`, `category`, `kind`,
+/// fields (`version`, ports, `isolation_level`, `kind`,
 /// `checkpoint_policy`) stay on this struct.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -185,13 +141,6 @@ pub struct ActionMetadata {
     pub outputs: Vec<OutputPort>,
     /// Isolation level for this action's execution.
     pub isolation_level: IsolationLevel,
-    /// Broad category of this action for UI grouping, validator rules,
-    /// and audit log filtering. Runtime dispatch does not depend on it.
-    ///
-    /// Defaults to [`ActionCategory::Data`] for backward compatibility
-    /// with metadata serialized before this field existed.
-    #[serde(default)]
-    pub category: ActionCategory,
     /// Node-taxonomy classification of this action. Authoritative for UI
     /// grouping, validation, and audit; runtime dispatch is structural and
     /// does not read it.
@@ -242,7 +191,6 @@ impl ActionMetadata {
             inputs: port::default_input_ports(),
             outputs: port::default_output_ports(),
             isolation_level: IsolationLevel::None,
-            category: ActionCategory::Data,
             kind: ActionKind::Stateless,
             checkpoint_policy: CheckpointPolicy::Inherit,
             max_concurrent: None,
@@ -392,17 +340,6 @@ impl ActionMetadata {
         self
     }
 
-    /// Set the action category (used by UI editor and workflow validator).
-    ///
-    /// Most authors do not need to call this directly — the
-    /// `ControlActionAdapter` and other DX adapters stamp the correct
-    /// category when they wrap a typed action.
-    #[must_use = "builder methods must be chained or built"]
-    pub fn with_category(mut self, category: ActionCategory) -> Self {
-        self.category = category;
-        self
-    }
-
     /// Set the node-taxonomy kind for this action.
     ///
     /// The single writer is the factory or DX adapter that produces the
@@ -519,49 +456,32 @@ mod tests {
     }
 
     #[test]
-    fn category_default_is_data() {
-        let meta = ActionMetadata::new(action_key!("test"), "Test", "desc");
-        assert_eq!(meta.category, ActionCategory::Data);
-    }
-
-    #[test]
-    fn category_builder() {
-        let meta = ActionMetadata::new(action_key!("if"), "If", "Binary branch")
-            .with_category(ActionCategory::Control);
-        assert_eq!(meta.category, ActionCategory::Control);
-    }
-
-    #[test]
-    fn category_serde_roundtrip() {
-        let original = ActionMetadata::new(action_key!("stop"), "Stop", "Terminate early")
-            .with_category(ActionCategory::Terminal);
-        let json = serde_json::to_string(&original).unwrap();
-        let decoded: ActionMetadata = serde_json::from_str(&json).unwrap();
-        assert_eq!(decoded.category, ActionCategory::Terminal);
-        assert_eq!(original, decoded);
-    }
-
-    #[test]
-    fn category_backward_compat_without_field() {
-        // Metadata serialized before `category` existed must still deserialize.
-        // Round-trip an existing metadata through JSON, strip the `category`
-        // key, then re-parse — the `#[serde(default)]` attribute must fill
-        // the gap with `ActionCategory::Data`.
-        let legacy = ActionMetadata::new(action_key!("http.request"), "HTTP", "desc");
-        let mut as_value: serde_json::Value = serde_json::to_value(&legacy).unwrap();
-        // Simulate pre-field payload by removing the key we just added.
+    fn retired_category_field_is_ignored_on_load() {
+        // `category` was retired in favour of `kind`. Metadata persisted by an
+        // older build still carries a `"category"` key; loading it must succeed
+        // and ignore the stray field (no `deny_unknown_fields`), not error.
+        let mut as_value: serde_json::Value = serde_json::to_value(ActionMetadata::new(
+            action_key!("http.request"),
+            "HTTP",
+            "desc",
+        ))
+        .unwrap();
         as_value
             .as_object_mut()
             .unwrap()
-            .remove("category")
-            .expect("category field must be present after serialize");
-        let json_string = serde_json::to_string(&as_value).unwrap();
-        let decoded: ActionMetadata = serde_json::from_str(&json_string)
-            .expect("legacy metadata without category must deserialize");
-        assert_eq!(
-            decoded.category,
-            ActionCategory::Data,
-            "missing category field should default to Data"
+            .insert("category".to_string(), serde_json::json!("control"));
+        let json = serde_json::to_string(&as_value).unwrap();
+
+        let decoded: ActionMetadata = serde_json::from_str(&json)
+            .expect("legacy metadata carrying a retired `category` key must still load");
+        assert_eq!(decoded.kind, ActionKind::Stateless);
+        assert!(
+            !serde_json::to_value(&decoded)
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .contains_key("category"),
+            "re-serialized metadata must not resurrect the retired `category` field"
         );
     }
 

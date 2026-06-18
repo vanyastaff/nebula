@@ -43,12 +43,12 @@ fn top_level_type_sizes_are_stable() {
         "ActionOutput<Value> grew — `BinaryData` is the inline variant \
          that drives this size, check it first."
     );
-    // NOTE: ActionMetadata was flattened into a composed `BaseMetadata<ActionKey>`
-    // plus action-specific fields (version / inputs / outputs / isolation / category).
-    // The shared prefix brings Icon, documentation_url, tags (Box<[String]>),
-    // MaturityLevel, and Option<DeprecationNotice>. Allocation is once-per-action
-    // type — not a hot path — so we accept the growth in exchange for the
-    // unified catalog contract.
+    // NOTE: ActionMetadata is a composed `BaseMetadata<ActionKey>` plus
+    // action-specific fields (version / inputs / outputs / isolation / kind /
+    // checkpoint_policy / max_concurrent). The shared prefix brings Icon,
+    // documentation_url, tags (Box<[String]>), MaturityLevel, and
+    // Option<DeprecationNotice>. Allocation is once-per-action type — not a hot
+    // path — so we accept the size in exchange for the unified catalog contract.
     assert_eq!(size_of::<ActionMetadata>(), 376);
     assert_eq!(size_of::<ActionError>(), 72);
     assert_eq!(size_of::<ActionHandler>(), 24);
