@@ -348,8 +348,19 @@ wildcard_in_or_patterns = "warn"
 [profile.dev]
 # Standard dev mode
 opt-level = 0
-incremental = true
-debug = 2
+# Off to match policy: sccache + incremental fight (stale fingerprints across
+# worktrees, lock hangs) — `.cargo/config.toml` and CARGO_INCREMENTAL=0 already
+# force this off, so `true` here was dead and misleading.
+incremental = false
+# Full debuginfo (debug = 2) emits a 300+ MB PDB per test/bench/example binary on
+# Windows and is never garbage-collected — the dominant cause of multi-hundred-GB
+# target/ dirs. line-tables-only keeps file:line in panic backtraces; set 0 if unused.
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+# Dependencies carry no debuginfo: you rarely step into them, and this drops the bulk
+# of the PDB weight. Step-debugging a dep? Temporarily raise this for that package.
+debug = false
 
 [profile.release]
 # Optimized release builds (tuned for Windows stability)
