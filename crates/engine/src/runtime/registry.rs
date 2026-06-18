@@ -23,10 +23,10 @@ use dashmap::DashMap;
 use nebula_action::{
     Action, ActionError, ActionFactory, ActionHandler, ActionMetadata, ControlAction,
     FromWorkflowNode, GenericControlFactory, GenericResourceFactory, GenericStatefulFactory,
-    GenericStatelessFactory, GenericTriggerFactory, PollAction, PollTriggerAdapter, ResourceAction,
-    ResourceActionAdapter, StatefulAction, StatefulActionAdapter, StatelessAction,
-    StatelessActionAdapter, TriggerAction, TriggerActionAdapter, WebhookAction,
-    WebhookActionFactory, WebhookTriggerAdapter,
+    GenericStatelessFactory, GenericTriggerFactory, InstanceFactory, PollAction,
+    PollTriggerAdapter, ResourceAction, ResourceActionAdapter, StatefulAction,
+    StatefulActionAdapter, StatelessAction, StatelessActionAdapter, TriggerAction,
+    TriggerActionAdapter, WebhookAction, WebhookActionFactory, WebhookTriggerAdapter,
 };
 use nebula_core::ActionKey;
 use semver::Version;
@@ -303,6 +303,26 @@ impl ActionRegistry {
         self.register_factory(metadata, factory);
     }
 
+    /// Register a pre-built stateless action **instance** with caller-supplied
+    /// metadata, via the factory pipeline.
+    ///
+    /// The `useValue` complement to [`register_stateless_factory`](Self::register_stateless_factory)'s
+    /// `useFactory`: instead of constructing a fresh `A` from the node per
+    /// dispatch, this shares the one instance across dispatches and lets the
+    /// caller vary the catalog metadata (key / version / ports) per
+    /// registration — so one action type can back many distinct nodes. Backed
+    /// by [`InstanceFactory`].
+    pub fn register_stateless_instance<A>(&self, metadata: ActionMetadata, action: A)
+    where
+        A: StatelessAction + Send + Sync + 'static,
+        <A as Action>::Input: serde::de::DeserializeOwned + Send + Sync,
+        <A as Action>::Output: serde::Serialize + Send + Sync,
+    {
+        let factory: Arc<dyn ActionFactory> = Arc::new(InstanceFactory::new(metadata, action));
+        let meta = factory.metadata().clone();
+        self.register_factory(meta, factory);
+    }
+
     /// Register a stateful action via the factory pipeline (Variant A).
     pub fn register_stateful_factory<A>(&self)
     where
@@ -421,20 +441,6 @@ impl std::fmt::Debug for ActionRegistry {
 /// Production callers should not invoke them — the doc strings explicitly say "LEGACY test-only".
 #[allow(dead_code, reason = "test escape API; not all variants used yet")]
 impl ActionRegistry {
-    /// Register a stateless action with caller-supplied metadata.
-    ///
-    /// Bypasses `<A as Action>::metadata()` so tests can vary key/version
-    /// per fixture without redeclaring an entire `impl Action`.
-    pub fn legacy_register_stateless_with_metadata<A>(&self, metadata: ActionMetadata, action: A)
-    where
-        A: StatelessAction + Send + Sync + 'static,
-        <A as Action>::Input: serde::de::DeserializeOwned + Send + Sync,
-        <A as Action>::Output: serde::Serialize + Send + Sync,
-    {
-        let handler = ActionHandler::Stateless(Arc::new(StatelessActionAdapter::new(action)));
-        self.register(metadata, handler);
-    }
-
     /// Register a stateful action with caller-supplied metadata.
     pub fn legacy_register_stateful_with_metadata<A>(&self, metadata: ActionMetadata, action: A)
     where
@@ -577,36 +583,45 @@ mod tests {
 
     #[test]
     fn register_and_get_action() {
+        // `register_stateless_instance` lands on the factory spine, so assert
+        // via the factory lookup (the surviving registration path).
         let registry = ActionRegistry::new();
-        registry.legacy_register_stateless_with_metadata(meta_with("test.noop", 1, 0), NoopAction);
-        assert_eq!(registry.len(), 1);
+        registry.register_stateless_instance(meta_with("test.noop", 1, 0), NoopAction);
         let key = ActionKey::new("test.noop").unwrap();
-        let result = registry.get(&key);
-        assert!(result.is_some());
+        assert!(registry.get_factory(&key).is_some());
+        assert_eq!(registry.factories.len(), 1);
     }
 
     #[test]
     fn register_replaces_same_version() {
         let registry = ActionRegistry::new();
-        registry.legacy_register_stateless_with_metadata(meta_with("test.noop", 1, 0), NoopAction);
-        registry.legacy_register_stateless_with_metadata(meta_with("test.noop", 1, 0), NoopAction);
-        assert_eq!(registry.len(), 1);
+        registry.register_stateless_instance(meta_with("test.noop", 1, 0), NoopAction);
+        registry.register_stateless_instance(meta_with("test.noop", 1, 0), NoopAction);
+        let key = ActionKey::new("test.noop").unwrap();
+        assert_eq!(
+            registry.factories.get(&key).map(|entries| entries.len()),
+            Some(1),
+            "same (key, version) must replace in place, not append a duplicate"
+        );
     }
 
     #[test]
     fn versioned_lookup() {
         let registry = ActionRegistry::new();
-        registry.legacy_register_stateless_with_metadata(meta_with("test.noop", 1, 0), NoopAction);
-        registry.legacy_register_stateless_with_metadata(meta_with("test.noop", 2, 0), NoopAction);
+        registry.register_stateless_instance(meta_with("test.noop", 1, 0), NoopAction);
+        registry.register_stateless_instance(meta_with("test.noop", 2, 0), NoopAction);
 
         let key = ActionKey::new("test.noop").unwrap();
         let v1 = Version::new(1, 0, 0);
         let v2 = Version::new(2, 0, 0);
 
-        assert!(registry.get_versioned(&key, &v1).is_some());
-        assert!(registry.get_versioned(&key, &v2).is_some());
+        assert!(registry.get_factory_versioned(&key, &v1).is_some());
+        assert!(registry.get_factory_versioned(&key, &v2).is_some());
 
-        let (meta, _) = registry.get(&key).unwrap();
-        assert_eq!(meta.base.version, v2);
+        let (meta, _) = registry.get_factory(&key).unwrap();
+        assert_eq!(
+            meta.base.version, v2,
+            "get_factory returns the latest version"
+        );
     }
 }

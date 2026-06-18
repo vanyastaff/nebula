@@ -205,13 +205,13 @@ impl Harness {
         let slow_count = Arc::new(AtomicU32::new(0));
         let slow_started = Arc::new(Notify::new());
         let registry = Arc::new(ActionRegistry::new());
-        registry.legacy_register_stateless_with_metadata(
+        registry.register_stateless_instance(
             meta(action_key!("echo")),
             CountingEchoHandler {
                 count: Arc::clone(&action_count),
             },
         );
-        registry.legacy_register_stateless_with_metadata(
+        registry.register_stateless_instance(
             meta(action_key!("slow")),
             SlowCancellableHandler {
                 started: Arc::clone(&slow_started),

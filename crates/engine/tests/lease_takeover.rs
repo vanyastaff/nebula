@@ -169,7 +169,7 @@ impl LeaseStores {
 // ---------------------------------------------------------------------------
 
 /// Macro to emit Variant A `impl Action` with placeholder static metadata.
-/// Real per-instance metadata flows through `legacy_register_stateless_with_metadata`.
+/// Real per-instance metadata flows through `register_stateless_instance`.
 macro_rules! placeholder_action_impl {
     ($ty:ty, $key:expr, $name:expr, $desc:expr) => {
         impl Action for $ty {
@@ -326,13 +326,13 @@ async fn engine_b_takes_over_after_engine_a_runner_dies() {
 
     // Runner A — has a parking handler for "park" so it holds the lease.
     let registry_a = Arc::new(ActionRegistry::new());
-    registry_a.legacy_register_stateless_with_metadata(
+    registry_a.register_stateless_instance(
         meta(action_key!("echo")),
         CountingEchoHandler {
             invocations: Arc::clone(&echo_invocations),
         },
     );
-    registry_a.legacy_register_stateless_with_metadata(
+    registry_a.register_stateless_instance(
         meta(action_key!("park")),
         ParkHandler {
             started: Arc::clone(&started_a),
@@ -343,13 +343,13 @@ async fn engine_b_takes_over_after_engine_a_runner_dies() {
     // Runner B — same action_keys, but "park" is a fast-completing
     // handler so the resumed workflow can finish.
     let registry_b = Arc::new(ActionRegistry::new());
-    registry_b.legacy_register_stateless_with_metadata(
+    registry_b.register_stateless_instance(
         meta(action_key!("echo")),
         CountingEchoHandler {
             invocations: Arc::clone(&echo_invocations),
         },
     );
-    registry_b.legacy_register_stateless_with_metadata(
+    registry_b.register_stateless_instance(
         meta(action_key!("park")),
         CountingEchoHandler {
             invocations: Arc::clone(&park_invocations),
@@ -544,13 +544,13 @@ async fn engine_b_cancels_execution_after_runner_a_death_via_reclaim_redeliver()
 
     // engine_a — parking Y so it holds the lease.
     let registry_a = Arc::new(ActionRegistry::new());
-    registry_a.legacy_register_stateless_with_metadata(
+    registry_a.register_stateless_instance(
         meta(action_key!("echo")),
         CountingEchoHandler {
             invocations: Arc::clone(&echo_invocations),
         },
     );
-    registry_a.legacy_register_stateless_with_metadata(
+    registry_a.register_stateless_instance(
         meta(action_key!("park")),
         ParkHandler {
             started: Arc::clone(&started_a),
@@ -560,13 +560,13 @@ async fn engine_b_cancels_execution_after_runner_a_death_via_reclaim_redeliver()
 
     // engine_b — also parking Y so the cancel signal has somewhere to land.
     let registry_b = Arc::new(ActionRegistry::new());
-    registry_b.legacy_register_stateless_with_metadata(
+    registry_b.register_stateless_instance(
         meta(action_key!("echo")),
         CountingEchoHandler {
             invocations: Arc::clone(&echo_invocations),
         },
     );
-    registry_b.legacy_register_stateless_with_metadata(
+    registry_b.register_stateless_instance(
         meta(action_key!("park")),
         ParkHandler {
             started: Arc::clone(&started_b),
@@ -796,13 +796,13 @@ async fn replay_does_not_contend_for_held_lease() {
 
     // engine_a — parking workflow to hold the lease.
     let registry_a = Arc::new(ActionRegistry::new());
-    registry_a.legacy_register_stateless_with_metadata(
+    registry_a.register_stateless_instance(
         meta(action_key!("echo")),
         CountingEchoHandler {
             invocations: Arc::clone(&echo_invocations),
         },
     );
-    registry_a.legacy_register_stateless_with_metadata(
+    registry_a.register_stateless_instance(
         meta(action_key!("park")),
         ParkHandler {
             started: Arc::clone(&started_a),
@@ -812,7 +812,7 @@ async fn replay_does_not_contend_for_held_lease() {
 
     // engine_b — only needs the echo handler for its replay workflow.
     let registry_b = Arc::new(ActionRegistry::new());
-    registry_b.legacy_register_stateless_with_metadata(
+    registry_b.register_stateless_instance(
         meta(action_key!("echo")),
         CountingEchoHandler {
             invocations: Arc::clone(&echo_invocations),

@@ -998,7 +998,7 @@ pub(crate) mod engine_seam {
     pub(crate) fn spawn_engine_consumer(state: &AppState) -> EngineSeam {
         let slow_started = Arc::new(tokio::sync::Notify::new());
         let registry = Arc::new(ActionRegistry::new());
-        registry.legacy_register_stateless_with_metadata(
+        registry.register_stateless_instance(
             nebula_action::metadata::ActionMetadata::new(
                 action_key!("slow"),
                 "slow",
