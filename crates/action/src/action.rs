@@ -22,8 +22,8 @@ use crate::metadata::ActionMetadata;
 /// # Object safety
 ///
 /// **Not object-safe.** `dyn Action` does not compile. Engine dispatch uses
-/// per-execution factories (`ActionFactory` — Phase 3 / Session 4)
-/// returning `Box<dyn ErasedAction>` for JSON-erased dispatch.
+/// per-execution factories (`ActionFactory`) returning an
+/// [`ActionHandle`](crate::ActionHandle) for JSON-erased dispatch.
 ///
 /// # Example
 ///

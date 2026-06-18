@@ -36,7 +36,7 @@ use crate::context::ActionContext;
 /// **Not object-safe** — the trait carries `Sized` via the implementor
 /// bound and an associated `Error` type. Engine dispatch calls a thin
 /// non-generic wrapper ([`ActionFactory`](crate::ActionFactory) — Session 4)
-/// that erases this typed surface to a `Box<dyn ErasedAction>`.
+/// that erases this typed surface to an [`ActionHandle`](crate::ActionHandle).
 ///
 /// # Example (derive expansion sketch)
 ///

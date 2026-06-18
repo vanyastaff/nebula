@@ -34,7 +34,7 @@ pub trait Plugin: Send + Sync + Debug + 'static {
     /// Returns an empty list by default.
     ///
     /// Each entry is a typed factory that the engine registry will use to
-    /// construct an [`nebula_action::ErasedAction`] per dispatch (per
+    /// construct an [`nebula_action::ActionHandle`] per dispatch (per
     ///
     /// is `Sized`/object-unsafe, so plugins return factories not actions).
     fn actions(&self) -> Vec<Arc<dyn nebula_action::ActionFactory>> {

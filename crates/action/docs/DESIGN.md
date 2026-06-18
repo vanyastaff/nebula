@@ -14,13 +14,13 @@
 `nebula-action` определяет **типизированное семейство трейтов действий** (Action Trait Family) плюс
 статический дескриптор исполнения (`ActionMetadata`) — контракт между «что делает узел workflow»
 и «как движок его оркестрирует». Авторы пишут typed-трейты; движок диспатчит **in-process** через
-`ActionFactory` → `ErasedAction`.
+`ActionFactory` → `ActionHandle`.
 
 **Владеет:**
 - Базовым трейтом `Action` (Sized, identity + статич. метаданные) и под-трейтами
   `StatelessAction` / `StatefulAction` / `TriggerAction` / `ResourceAction` / `ControlAction`.
 - DX-надстройками: `PaginatedAction` / `BatchAction` (над Stateful), `WebhookAction` / `PollAction` (над Trigger).
-- Engine-side стиранием типов: `ErasedAction` enum + per-variant `Erased*` + `Generic*Factory`.
+- Engine-side стиранием типов: `ActionHandle` enum + per-variant `XxxHandle` + `Generic*Factory`.
 - Slot-binding фабрикой `FromWorkflowNode` (тело генерит derive).
 - Типизированной моделью результата/ошибки/выхода: `ActionResult` (flow-control intent),
   `ActionError` + `RetryHintCode`, `ActionOutput` (inline/blob/stream/deferred).
@@ -50,7 +50,7 @@
 | `WebhookAction` + HMAC (`verify_hmac_sha256*`, `SignaturePolicy` fail-closed `Required`) | `src/webhook/mod.rs` (2431 строк) |
 | `PollAction`, `PollTriggerAdapter`, `POLL_INTERVAL_FLOOR`, `DeduplicatingCursor` | `src/poll/mod.rs` |
 | `ActionHandler` — top-level enum-диспетчер над `Arc<dyn XxxHandler>` | `src/handler.rs:41` |
-| `ErasedAction` enum + `ErasedStateless/Stateful/Trigger/Resource/Control` | `src/erased.rs:185,40-162` |
+| `ActionHandle` enum + `StatelessHandle/StatefulHandle/TriggerHandle/ResourceHandle/ControlHandle` | `src/handle.rs:184,40-176` |
 | `ActionFactory` + `Generic{Stateless,Stateful,Trigger,Resource,Control}Factory` | `src/factory.rs:53,69-497` |
 | `FromWorkflowNode` (async slot-binding фабрика; тело генерит derive) | `src/from_workflow_node.rs:61` |
 | `ActionError` + `RetryHintCode` (retryable vs fatal), `ValidationReason` | `src/error.rs:154,31,58` |
@@ -83,7 +83,7 @@ Dev: `nebula-credential-macros`, `nebula-expression`, `trybuild`, `insta`, `rste
 - `poll/` — `PollAction` поверх Trigger: interval floor, warn-throttle, cursor-дедуп.
 - `resource.rs` + `resource_produces.rs` — `ResourceAction` (graph-DI) и Output-маркер.
 - `control.rs` — flow-control узлы, desugar в stateless-поверхность.
-- `erased.rs` + `factory.rs` — engine-side стирание типов и per-исполнение фабрики (т.к. `dyn Action` невозможен).
+- `handle.rs` + `factory.rs` — engine-side стирание типов (`ActionHandle` + `XxxHandle`) и per-исполнение фабрики (т.к. `dyn Action` невозможен).
 - `from_workflow_node.rs` — async-резолв slot-bindings из узла workflow.
 - `handler.rs` — суммирующий enum `ActionHandler`; домены ре-экспортируются «for backwards compatibility».
 - `context.rs` — capability-трейты контекстов + runtime-реализации.
@@ -94,7 +94,7 @@ Dev: `nebula-credential-macros`, `nebula-expression`, `trybuild`, `insta`, `rste
 ## 5. Инварианты и контракты
 
 - **`Action` не object-safe by construction.** `dyn Action` не компилируется; engine-диспатч идёт
-  через `Arc<dyn ActionFactory>` + per-variant `Box<dyn Erased*>`. Это структурный инвариант, не дисциплина.
+  через `Arc<dyn ActionFactory>` + `ActionHandle` над per-variant `Box<dyn XxxHandle>`. Это структурный инвариант, не дисциплина.
 - **Slots-only на `Self`, form-data на `Self::Input`** (canon §3.5). Action-структура держит только
   slot-поля (`#[resource]`/`#[credential]`); пользовательские данные — на отдельной `Self::Input: HasSchema`.
   Устраняет `self.text` vs `input.text`-неоднозначность на этапе компиляции.

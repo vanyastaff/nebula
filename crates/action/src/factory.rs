@@ -6,14 +6,14 @@
 //! [`instantiate`](ActionFactory::instantiate) with the current
 //! [`NodeDefinition`](nebula_workflow::NodeDefinition) + an
 //! [`ActionContext`](crate::ActionContext); the factory builds a fresh
-//! [`ErasedAction`](crate::ErasedAction) ready for dispatch.
+//! [`ActionHandle`](crate::ActionHandle) ready for dispatch.
 //!
 //! The default `GenericStatelessFactory<A>` / `GenericStatefulFactory<A>` /
 //! `GenericTriggerFactory<A>` / `GenericResourceFactory<A>` /
 //! `GenericControlFactory<A>` types wrap any `A: Action + FromWorkflowNode`
 //! into an [`ActionFactory`] by routing through
 //! [`FromWorkflowNode::from_workflow_node`](crate::FromWorkflowNode::from_workflow_node)
-//! and then erasing to the matching [`ErasedAction`] variant.
+//! and then erasing to the matching [`ActionHandle`] variant.
 
 use std::{any::Any, future::Future, marker::PhantomData, pin::Pin, sync::OnceLock};
 
@@ -26,11 +26,11 @@ use crate::{
     action::Action,
     context::{ActionContext, TriggerContext},
     control::{ControlAction, ControlInput},
-    erased::{
-        ErasedAction, ErasedControl, ErasedResource, ErasedStateful, ErasedStateless, ErasedTrigger,
-    },
     error::{ActionError, ValidationReason},
     from_workflow_node::FromWorkflowNode,
+    handle::{
+        ActionHandle, ControlHandle, ResourceHandle, StatefulHandle, StatelessHandle, TriggerHandle,
+    },
     metadata::{ActionKind, ActionMetadata},
     resource::ResourceAction,
     result::ActionResult,
@@ -54,18 +54,18 @@ pub trait ActionFactory: Send + Sync + 'static {
     /// Static metadata describing the action this factory produces.
     fn metadata(&self) -> &ActionMetadata;
 
-    /// Build an [`ErasedAction`] for the given workflow node + context.
+    /// Build an [`ActionHandle`] for the given workflow node + context.
     #[must_use = "the instantiated action handle must be dispatched, not discarded"]
     fn instantiate<'a>(
         &'a self,
         node: &'a NodeDefinition,
         ctx: &'a dyn ActionContext,
-    ) -> Pin<Box<dyn Future<Output = Result<ErasedAction, ActionError>> + Send + 'a>>;
+    ) -> Pin<Box<dyn Future<Output = Result<ActionHandle, ActionError>> + Send + 'a>>;
 }
 
 // ── Stateless ──────────────────────────────────────────────────────────────
 
-/// Generic factory that produces [`ErasedAction::Stateless`] for any type
+/// Generic factory that produces [`ActionHandle::Stateless`] for any type
 /// implementing [`StatelessAction`] + [`FromWorkflowNode`].
 pub struct GenericStatelessFactory<A> {
     meta: OnceLock<ActionMetadata>,
@@ -104,29 +104,29 @@ where
         &'a self,
         node: &'a NodeDefinition,
         ctx: &'a dyn ActionContext,
-    ) -> Pin<Box<dyn Future<Output = Result<ErasedAction, ActionError>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<ActionHandle, ActionError>> + Send + 'a>> {
         Box::pin(async move {
             let action = A::from_workflow_node(node, ctx).await?;
             let meta = self.metadata().clone();
-            let inner = ErasedStatelessImpl::<A>::new(action, meta);
-            Ok(ErasedAction::Stateless(Box::new(inner)))
+            let inner = StatelessHandleImpl::<A>::new(action, meta);
+            Ok(ActionHandle::Stateless(Box::new(inner)))
         })
     }
 }
 
-struct ErasedStatelessImpl<A> {
+struct StatelessHandleImpl<A> {
     action: A,
     meta: ActionMetadata,
 }
 
-impl<A> ErasedStatelessImpl<A> {
+impl<A> StatelessHandleImpl<A> {
     fn new(action: A, meta: ActionMetadata) -> Self {
         Self { action, meta }
     }
 }
 
 #[async_trait]
-impl<A> ErasedStateless for ErasedStatelessImpl<A>
+impl<A> StatelessHandle for StatelessHandleImpl<A>
 where
     A: StatelessAction,
     <A as Action>::Input: DeserializeOwned + Send + Sync,
@@ -160,7 +160,7 @@ where
 
 // ── Stateful ───────────────────────────────────────────────────────────────
 
-/// Generic factory that produces [`ErasedAction::Stateful`] for any type
+/// Generic factory that produces [`ActionHandle::Stateful`] for any type
 /// implementing [`StatefulAction`] + [`FromWorkflowNode`].
 pub struct GenericStatefulFactory<A> {
     meta: OnceLock<ActionMetadata>,
@@ -200,29 +200,29 @@ where
         &'a self,
         node: &'a NodeDefinition,
         ctx: &'a dyn ActionContext,
-    ) -> Pin<Box<dyn Future<Output = Result<ErasedAction, ActionError>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<ActionHandle, ActionError>> + Send + 'a>> {
         Box::pin(async move {
             let action = A::from_workflow_node(node, ctx).await?;
             let meta = self.metadata().clone();
-            let inner = ErasedStatefulImpl::<A>::new(action, meta);
-            Ok(ErasedAction::Stateful(Box::new(inner)))
+            let inner = StatefulHandleImpl::<A>::new(action, meta);
+            Ok(ActionHandle::Stateful(Box::new(inner)))
         })
     }
 }
 
-struct ErasedStatefulImpl<A> {
+struct StatefulHandleImpl<A> {
     action: A,
     meta: ActionMetadata,
 }
 
-impl<A> ErasedStatefulImpl<A> {
+impl<A> StatefulHandleImpl<A> {
     fn new(action: A, meta: ActionMetadata) -> Self {
         Self { action, meta }
     }
 }
 
 #[async_trait]
-impl<A> ErasedStateful for ErasedStatefulImpl<A>
+impl<A> StatefulHandle for StatefulHandleImpl<A>
 where
     A: StatefulAction,
     <A as Action>::Input: DeserializeOwned + Send + Sync,
@@ -298,7 +298,7 @@ where
 
 // ── Trigger ────────────────────────────────────────────────────────────────
 
-/// Generic factory that produces [`ErasedAction::Trigger`] for any type
+/// Generic factory that produces [`ActionHandle::Trigger`] for any type
 /// implementing [`TriggerAction`] + [`FromWorkflowNode`].
 pub struct GenericTriggerFactory<A> {
     meta: OnceLock<ActionMetadata>,
@@ -336,29 +336,29 @@ where
         &'a self,
         node: &'a NodeDefinition,
         ctx: &'a dyn ActionContext,
-    ) -> Pin<Box<dyn Future<Output = Result<ErasedAction, ActionError>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<ActionHandle, ActionError>> + Send + 'a>> {
         Box::pin(async move {
             let action = A::from_workflow_node(node, ctx).await?;
             let meta = self.metadata().clone();
-            let inner = ErasedTriggerImpl::<A>::new(action, meta);
-            Ok(ErasedAction::Trigger(Box::new(inner)))
+            let inner = TriggerHandleImpl::<A>::new(action, meta);
+            Ok(ActionHandle::Trigger(Box::new(inner)))
         })
     }
 }
 
-struct ErasedTriggerImpl<A> {
+struct TriggerHandleImpl<A> {
     action: A,
     meta: ActionMetadata,
 }
 
-impl<A> ErasedTriggerImpl<A> {
+impl<A> TriggerHandleImpl<A> {
     fn new(action: A, meta: ActionMetadata) -> Self {
         Self { action, meta }
     }
 }
 
 #[async_trait]
-impl<A> ErasedTrigger for ErasedTriggerImpl<A>
+impl<A> TriggerHandle for TriggerHandleImpl<A>
 where
     A: TriggerAction + Send + Sync + 'static,
     <A as TriggerAction>::Error: Into<ActionError>,
@@ -403,7 +403,7 @@ where
 
 // ── Resource ───────────────────────────────────────────────────────────────
 
-/// Generic factory that produces [`ErasedAction::Resource`] for any type
+/// Generic factory that produces [`ActionHandle::Resource`] for any type
 /// implementing [`ResourceAction`] + [`FromWorkflowNode`].
 pub struct GenericResourceFactory<A> {
     meta: OnceLock<ActionMetadata>,
@@ -440,29 +440,29 @@ where
         &'a self,
         node: &'a NodeDefinition,
         ctx: &'a dyn ActionContext,
-    ) -> Pin<Box<dyn Future<Output = Result<ErasedAction, ActionError>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<ActionHandle, ActionError>> + Send + 'a>> {
         Box::pin(async move {
             let action = A::from_workflow_node(node, ctx).await?;
             let meta = self.metadata().clone();
-            let inner = ErasedResourceImpl::<A>::new(action, meta);
-            Ok(ErasedAction::Resource(Box::new(inner)))
+            let inner = ResourceHandleImpl::<A>::new(action, meta);
+            Ok(ActionHandle::Resource(Box::new(inner)))
         })
     }
 }
 
-struct ErasedResourceImpl<A> {
+struct ResourceHandleImpl<A> {
     action: A,
     meta: ActionMetadata,
 }
 
-impl<A> ErasedResourceImpl<A> {
+impl<A> ResourceHandleImpl<A> {
     fn new(action: A, meta: ActionMetadata) -> Self {
         Self { action, meta }
     }
 }
 
 #[async_trait]
-impl<A> ErasedResource for ErasedResourceImpl<A>
+impl<A> ResourceHandle for ResourceHandleImpl<A>
 where
     A: ResourceAction + Send + Sync + 'static,
 {
@@ -487,7 +487,7 @@ where
     ) -> Result<(), ActionError> {
         let typed = instance.downcast::<A::Resource>().map_err(|_| {
             ActionError::fatal(format!(
-                "ErasedResourceImpl: downcast invariant violated for {}",
+                "ResourceHandleImpl: downcast invariant violated for {}",
                 std::any::type_name::<A::Resource>()
             ))
         })?;
@@ -497,7 +497,7 @@ where
 
 // ── Control ────────────────────────────────────────────────────────────────
 
-/// Generic factory that produces [`ErasedAction::Control`] for any type
+/// Generic factory that produces [`ActionHandle::Control`] for any type
 /// implementing [`ControlAction`] + [`FromWorkflowNode`].
 pub struct GenericControlFactory<A> {
     meta: OnceLock<ActionMetadata>,
@@ -534,29 +534,29 @@ where
         &'a self,
         node: &'a NodeDefinition,
         ctx: &'a dyn ActionContext,
-    ) -> Pin<Box<dyn Future<Output = Result<ErasedAction, ActionError>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<ActionHandle, ActionError>> + Send + 'a>> {
         Box::pin(async move {
             let action = A::from_workflow_node(node, ctx).await?;
             let meta = self.metadata().clone();
-            let inner = ErasedControlImpl::<A>::new(action, meta);
-            Ok(ErasedAction::Control(Box::new(inner)))
+            let inner = ControlHandleImpl::<A>::new(action, meta);
+            Ok(ActionHandle::Control(Box::new(inner)))
         })
     }
 }
 
-struct ErasedControlImpl<A> {
+struct ControlHandleImpl<A> {
     action: A,
     meta: ActionMetadata,
 }
 
-impl<A> ErasedControlImpl<A> {
+impl<A> ControlHandleImpl<A> {
     fn new(action: A, meta: ActionMetadata) -> Self {
         Self { action, meta }
     }
 }
 
 #[async_trait]
-impl<A> ErasedControl for ErasedControlImpl<A>
+impl<A> ControlHandle for ControlHandleImpl<A>
 where
     A: ControlAction + Send + Sync + 'static,
 {

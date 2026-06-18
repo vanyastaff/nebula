@@ -10,7 +10,7 @@
 |------|-------|
 | Add a new action type | 1. Implement one of the trait variants (`StatelessAction`, etc.) 2. Define `Input`/`Output` types with `HasSchema` 3. Add `#[resource]`/`#[credential]` slots if needed 4. Register in `PluginRegistry` |
 | Add a webhook action | Implement `WebhookAction` — defaults to `SignaturePolicy::Required` (fail-closed). Secret material never flows through dyn `TriggerHandler`. |
-| Understand action dispatch | `Action: Sized` is NOT object-safe. Engine dispatch goes through `Arc<dyn ActionFactory>` + `Box<dyn ErasedXxx>`. See `src/erased.rs` + `src/factory.rs`. |
+| Understand action dispatch | `Action: Sized` is NOT object-safe. Engine dispatch goes through `Arc<dyn ActionFactory>` + `Box<dyn XxxHandle>`. See `src/handle.rs` + `src/factory.rs`. |
 | Add retry hints | Use `ActionError` + `RetryHintCode` in `src/error.rs` — retryable vs fatal. The engine's Layer 2 retry handles the rest. |
 | Run derive tests | `cargo nextest run -p nebula-action` + trybuild probes in `tests/probes/`. Trybuild can false-TIMEOUT under nextest `agent` profile — warm cache + plain `cargo test` to confirm. |
 
@@ -22,14 +22,14 @@
 ## Key files
 - `src/lib.rs` — public re-export surface + module map (`#![forbid(unsafe_code)]`, `#![warn(missing_docs)]`)
 - `src/action.rs` — base `Action` trait (`Sized`, `type Input/Output: HasSchema`, static `metadata()`/`dependencies()`); NOT object-safe
-- `src/erased.rs` + `src/factory.rs` — `ErasedAction` per-variant trait objects + `ActionFactory`/`Generic*Factory` engine-side dispatch
+- `src/handle.rs` + `src/factory.rs` — `ActionHandle` enum + per-variant `XxxHandle` trait objects + `ActionFactory`/`Generic*Factory` engine-side dispatch
 - `src/from_workflow_node.rs` — `FromWorkflowNode` async slot-binding factory (derive emits the body)
 - `src/error.rs` — `ActionError` + `RetryHintCode` (retryable vs fatal)
 - `src/result.rs` / `src/output.rs` — `ActionResult` flow-control intent + `ActionOutput` (inline/blob/stream)
 - `src/webhook/` — `WebhookAction` + HMAC signature primitives (ADR-0022 fail-closed)
 
 ## Conventions & never-do
-- `Action: Sized` is **not** object-safe — never write `dyn Action`; engine dispatch goes through `Arc<dyn ActionFactory>` + `Box<dyn ErasedXxx>`.
+- `Action: Sized` is **not** object-safe — never write `dyn Action`; engine dispatch goes through `Arc<dyn ActionFactory>` + `Box<dyn XxxHandle>`.
 - No `schema` method — `Input`/`Output: HasSchema` is the single source of truth; read via `nebula_schema::schema_of::<A::Input>()` (ADR-0052 P3). Don't add per-trait `*_schema`.
 - Action structs hold **only** slot fields (`#[resource]`/`#[credential]`); user form data lives on a separate `Self::Input` companion struct. `#[credential]` slots hold `CredentialGuard<C::Scheme>`, not `CredentialGuard<C>`.
 - `CheckpointPolicy` is a field on `ActionMetadata` (`checkpoint_policy`, default `Inherit`); engine enforcement of non-`Inherit` cadences is not yet wired — treat a non-default policy as declared intent, not a runtime guarantee.

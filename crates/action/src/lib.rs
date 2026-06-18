@@ -42,17 +42,17 @@ pub mod context;
 /// public contract for flow-control nodes (If, Switch, Router, Filter,
 /// NoOp, Stop, Fail).
 pub mod control;
-/// `ErasedAction` enum + per-variant object-safe sub-traits + `ActionFactory`
-/// (Phase 3 / Session 4) — engine-side dispatch facade.
-pub mod erased;
 /// Error types distinguishing retryable from fatal failures.
 pub mod error;
-/// `ActionFactory` — engine-side per-execution factory that produces a
-/// `Box<dyn ErasedAction>` from a workflow node + context.
+/// `ActionFactory` — engine-side per-execution factory that produces an
+/// `ActionHandle` from a workflow node + context.
 pub mod factory;
 /// `FromWorkflowNode` async factory trait — resolves slot bindings against
 /// a workflow node + action context (Phase 3 / Session 2).
 pub mod from_workflow_node;
+/// `ActionHandle` enum + per-variant object-safe `XxxHandle` sub-traits —
+/// the engine-side dynamic dispatch surface produced by `ActionFactory`.
+pub mod handle;
 /// Top-level [`ActionHandler`] enum dispatcher. Domain handler traits and
 /// adapters live in their respective domain files and are re-exported here
 /// for backwards compatibility of the `nebula_action::handler::*` path space.
@@ -107,9 +107,6 @@ pub use context::{
     HasTriggerScheduling, HasWebhookEndpoint, TriggerContext, TriggerRuntimeContext,
 };
 pub use control::{ControlAction, ControlActionAdapter, ControlInput, ControlOutcome};
-pub use erased::{
-    ErasedAction, ErasedControl, ErasedResource, ErasedStateful, ErasedStateless, ErasedTrigger,
-};
 pub use error::{
     ActionError, ActionErrorExt, MAX_VALIDATION_DETAIL, RetryHintCode, ValidationReason,
 };
@@ -118,6 +115,9 @@ pub use factory::{
     GenericStatelessFactory, GenericTriggerFactory,
 };
 pub use from_workflow_node::FromWorkflowNode;
+pub use handle::{
+    ActionHandle, ControlHandle, ResourceHandle, StatefulHandle, StatelessHandle, TriggerHandle,
+};
 pub use handler::ActionHandler;
 pub use idempotency::IdempotencyKey;
 pub use metadata::{

@@ -2,7 +2,7 @@
 
 use std::{future::Future, pin::Pin, sync::Arc};
 
-use nebula_action::{ActionContext, ActionError, ActionFactory, ActionMetadata, ErasedAction};
+use nebula_action::{ActionContext, ActionError, ActionFactory, ActionHandle, ActionMetadata};
 use nebula_core::{ActionKey, CredentialKey, ResourceKey};
 use nebula_credential::{AnyCredential, AuthPattern, CredentialMetadata};
 use nebula_metadata::PluginManifest;
@@ -54,7 +54,7 @@ impl ActionFactory for StubAction {
         &'a self,
         _node: &'a NodeDefinition,
         _ctx: &'a dyn ActionContext,
-    ) -> Pin<Box<dyn Future<Output = Result<ErasedAction, ActionError>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<ActionHandle, ActionError>> + Send + 'a>> {
         Box::pin(async {
             Err(ActionError::fatal(
                 "StubAction::instantiate is a test stub — should never be invoked",
