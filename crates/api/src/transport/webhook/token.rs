@@ -6,9 +6,9 @@
 //! seam between the plaintext URL surface and the durable store.
 //!
 //! For `whsec_<base64>` signing-secret minting see
-//! [`super::secret_resolver::mint_whsec`], which lives alongside
-//! [`super::secret_resolver::decode_whsec`] where the `whsec_` format is
-//! owned and tested.
+//! [`super::secret_resolver::mint_whsec`], which lives in
+//! [`super::secret_resolver`] alongside the `decode_whsec` helper where the
+//! `whsec_` format is owned and tested.
 //!
 //! # Security
 //!
