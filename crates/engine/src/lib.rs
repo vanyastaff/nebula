@@ -69,6 +69,7 @@ pub mod engine;
 pub mod error;
 pub mod event;
 pub mod node_output;
+pub(crate) mod plugin_wiring;
 pub(crate) mod resolver;
 pub mod resource;
 pub mod resource_accessor;
@@ -100,6 +101,7 @@ pub use daemon::{
 pub use engine::{DEFAULT_EVENT_CHANNEL_CAPACITY, WorkflowEngine};
 pub use error::EngineError;
 pub use event::ExecutionEvent;
+pub use plugin_wiring::PluginWiringError;
 // Re-export plugin types for convenience.
 pub use nebula_plugin::{Plugin, PluginKey, PluginManifest, PluginRegistry, ResolvedPlugin};
 pub use node_output::NodeOutput;

@@ -36,6 +36,7 @@ members = [
   "crates/action/macros",
   "crates/credential/macros",
   "crates/plugin/macros",
+  "crates/plugin-core",
   "crates/validator/macros",
   "examples",
 ]

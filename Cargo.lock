@@ -3777,6 +3777,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "nebula-plugin-core"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "nebula-action",
+ "nebula-core",
+ "nebula-engine",
+ "nebula-execution",
+ "nebula-metadata",
+ "nebula-metrics",
+ "nebula-plugin",
+ "nebula-schema",
+ "nebula-storage-port",
+ "nebula-workflow",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "nebula-plugin-macros"
 version = "0.1.0"
 dependencies = [

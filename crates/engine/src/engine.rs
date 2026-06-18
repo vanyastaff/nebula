@@ -456,11 +456,6 @@ impl WorkflowEngine {
         &self.plugin_registry
     }
 
-    /// Mutable access to the node registry.
-    pub fn plugin_registry_mut(&mut self) -> &mut PluginRegistry {
-        &mut self.plugin_registry
-    }
-
     /// The closed `kind → typed registrar` allowlist.
     ///
     /// This is the only path from a stored resource row (a `kind` string
@@ -741,6 +736,112 @@ impl WorkflowEngine {
     pub fn with_resource_registrars(mut self, registrars: ResourceActivatorRegistry) -> Self {
         self.resource_registrars = registrars;
         self
+    }
+
+    /// Wire a resolved plugin's actions into the engine's executable registry.
+    ///
+    /// Registers every action factory declared by `plugin` into the engine's
+    /// live [`ActionRegistry`](crate::ActionRegistry) (making those actions
+    /// dispatchable) **and** records the plugin in the engine's
+    /// [`PluginRegistry`] (making its metadata queryable).
+    ///
+    /// # Idempotency / duplicate policy
+    ///
+    /// - Registering the **same plugin key** twice is rejected with
+    ///   `PluginWiringError::DuplicatePlugin`.
+    /// - If any **action key** contributed by the plugin already exists in the
+    ///   `ActionRegistry`, wiring is aborted before any mutation and
+    ///   `PluginWiringError::DuplicateActionKey` is returned.
+    ///
+    /// # Out of scope (explicit deferrals)
+    ///
+    /// Resource and credential wiring are not handled here; see
+    /// `crate::plugin_wiring::PluginWiringError` doc for rationale. Actions
+    /// that require no resources or credentials work end-to-end via this path.
+    ///
+    /// # Errors
+    ///
+    /// Returns `PluginWiringError` on duplicate plugin or duplicate action key.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// use std::sync::Arc;
+    /// use nebula_engine::{WorkflowEngine, PluginWiringError};
+    /// use nebula_plugin::ResolvedPlugin;
+    ///
+    /// let plugin = Arc::new(ResolvedPlugin::from(MyPlugin::new())?);
+    /// let engine = WorkflowEngine::new(runtime, metrics)?
+    ///     .with_plugin(plugin)?;
+    /// ```
+    pub fn with_plugin(
+        mut self,
+        plugin: Arc<nebula_plugin::ResolvedPlugin>,
+    ) -> Result<Self, crate::plugin_wiring::PluginWiringError> {
+        use crate::plugin_wiring::PluginWiringError;
+
+        let plugin_key = plugin.key().clone();
+
+        // Guard: duplicate plugin key in the plugin registry.
+        if self.plugin_registry.contains(&plugin_key) {
+            tracing::warn!(
+                target: "nebula_engine::plugin_wiring",
+                plugin_key = %plugin_key,
+                "with_plugin: rejected duplicate plugin key"
+            );
+            return Err(PluginWiringError::DuplicatePlugin { plugin_key });
+        }
+
+        // Guard: pre-flight check for duplicate action keys before any mutation.
+        // `ActionRegistry::get_factory` uses `&self` (interior-mutable DashMap),
+        // so we can probe without taking ownership of the registry.
+        for (action_key, _factory) in plugin.actions() {
+            if self.runtime.registry().get_factory(action_key).is_some() {
+                tracing::warn!(
+                    target: "nebula_engine::plugin_wiring",
+                    plugin_key = %plugin_key,
+                    action_key = %action_key,
+                    "with_plugin: rejected duplicate action key"
+                );
+                return Err(PluginWiringError::DuplicateActionKey {
+                    plugin_key,
+                    action_key: action_key.clone(),
+                });
+            }
+        }
+
+        // Both guards passed — commit the registrations.
+        let span = tracing::info_span!(
+            "nebula_engine::plugin_wiring::with_plugin",
+            plugin_key = %plugin_key,
+        );
+        let _guard = span.enter();
+
+        for (action_key, factory) in plugin.actions() {
+            let metadata = factory.metadata().clone();
+            self.runtime
+                .registry()
+                .register_factory(metadata, Arc::clone(factory));
+            tracing::debug!(
+                target: "nebula_engine::plugin_wiring",
+                %action_key,
+                "registered action factory from plugin"
+            );
+        }
+
+        // Register into the plugin registry for metadata / catalog queries.
+        // The duplicate-key guard above already confirmed this key is absent.
+        self.plugin_registry
+            .register(plugin)
+            .expect("plugin_registry.register must succeed after duplicate-key guard passed");
+
+        tracing::info!(
+            target: "nebula_engine::plugin_wiring",
+            plugin_key = %plugin_key,
+            "plugin wired into engine"
+        );
+
+        Ok(self)
     }
 
     /// Attach a credential resolver for providing credentials to actions.
