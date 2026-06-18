@@ -8,7 +8,7 @@
 //! | Variable | Default | Description |
 //! |---|---|---|
 //! | `NEBULA_WORKER_DB_PATH` | `nebula-worker.db` | SQLite database file path |
-//! | `NEBULA_WORKER_PROCESSOR_ID` | hostname-derived | 32 hex chars (16 bytes) |
+//! | `NEBULA_WORKER_PROCESSOR_ID` | random UUID v4 per boot | 32 hex chars (16 bytes); set explicitly for stable fence identity |
 //! | `NEBULA_WORKER_BATCH_SIZE` | orchestrator default (32) | Jobs per claim batch |
 //! | `NEBULA_WORKER_POLL_INTERVAL_MS` | 100 | Idle poll interval (ms) |
 //! | `RUST_LOG` | `info` | `tracing` subscriber filter |

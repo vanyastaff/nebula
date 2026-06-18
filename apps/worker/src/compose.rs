@@ -214,6 +214,14 @@ pub enum WorkerConfigError {
         /// Actual length of the supplied string.
         len: usize,
     },
+    /// `NEBULA_WORKER_PROCESSOR_ID` contains non-ASCII characters.
+    ///
+    /// Non-ASCII input passes the 32-byte length check (multibyte UTF-8 chars
+    /// each occupy >1 byte) but the subsequent byte-slice `&str[i*2..i*2+2]`
+    /// would land on a non-char boundary and panic. This variant is returned
+    /// before the slice loop so the function never panics on malformed input.
+    #[error("NEBULA_WORKER_PROCESSOR_ID must be ASCII hex (0-9, a-f, A-F)")]
+    ProcessorIdAscii,
     /// `NEBULA_WORKER_PROCESSOR_ID` contains non-hex characters.
     #[error("NEBULA_WORKER_PROCESSOR_ID contains non-hex characters: {source}")]
     ProcessorIdHex {
@@ -314,10 +322,18 @@ fn parse_processor_id(raw: &str) -> Result<[u8; 16], WorkerConfigError> {
     if trimmed.len() != 32 {
         return Err(WorkerConfigError::ProcessorIdLength { len: trimmed.len() });
     }
+    // Guard against multibyte UTF-8: a 32-BYTE non-ASCII string passes the
+    // length check above but byte-slicing `&str[i*2..i*2+2]` would land on a
+    // non-char boundary and panic. Requiring ASCII makes every byte offset a
+    // valid char boundary, so the slice loop below is panic-free.
+    if !trimmed.is_ascii() {
+        return Err(WorkerConfigError::ProcessorIdAscii);
+    }
     let mut out = [0u8; 16];
     for i in 0..16usize {
         // Slice directly into the &str — no allocation, no from_utf8, no expect.
-        // Bounds are safe: trimmed is exactly 32 chars, each i * 2..i * 2 + 2 is in [0, 32).
+        // Bounds are safe: trimmed is exactly 32 ASCII chars; each i*2..i*2+2
+        // is a valid char boundary (ASCII chars are single bytes) and in [0, 32).
         let hex_pair = &trimmed[i * 2..i * 2 + 2];
         out[i] = u8::from_str_radix(hex_pair, 16)
             .map_err(|source| WorkerConfigError::ProcessorIdHex { source })?;
@@ -425,6 +441,31 @@ mod tests {
         assert!(
             matches!(err, WorkerConfigError::ProcessorIdHex { .. }),
             "expected ProcessorIdHex, got {err}"
+        );
+    }
+
+    /// `£` is U+00A3 (2 bytes in UTF-8). Sixteen repetitions = 32 bytes,
+    /// which passes the `len() != 32` byte-length check. Without the ASCII
+    /// guard, the subsequent `&trimmed[i*2..i*2+2]` byte-slice lands on a
+    /// non-char boundary and panics. With the guard it returns `ProcessorIdAscii`.
+    ///
+    /// Red-able: removing (or bypassing) the `is_ascii()` guard causes this test
+    /// to panic rather than return `Err`, and `unwrap_err()` converts the panic
+    /// into a test failure with a clear message.
+    #[test]
+    fn parse_processor_id_rejects_non_ascii_multibyte() {
+        // 16 × "£" = 16 × 2 bytes = 32 bytes — passes the length check but is
+        // not ASCII. This is the exact shape that would panic without the guard.
+        let non_ascii_32_bytes = "£".repeat(16);
+        assert_eq!(
+            non_ascii_32_bytes.len(),
+            32,
+            "test invariant: input must be 32 bytes so the length check passes"
+        );
+        let err = parse_processor_id(&non_ascii_32_bytes).unwrap_err();
+        assert!(
+            matches!(err, WorkerConfigError::ProcessorIdAscii),
+            "expected ProcessorIdAscii for non-ASCII input, got: {err}"
         );
     }
 
