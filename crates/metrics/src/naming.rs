@@ -101,11 +101,11 @@ pub const NEBULA_ACTION_DISPATCH_REJECTED_TOTAL: &str = "nebula_action_dispatch_
 /// the dispatch-rejected counter. They are `pub const` so call sites and
 /// tests can compare without stringifying a value twice.
 pub mod dispatch_reject_reason {
-    /// `ActionHandler::Trigger` cannot be executed through `ActionRuntime`.
+    /// `ActionHandle::Trigger` cannot be executed through `ActionRuntime`.
     pub const TRIGGER_NOT_EXECUTABLE: &str = "trigger_not_executable";
-    /// `ActionHandler::Resource` cannot be executed through `ActionRuntime`.
+    /// `ActionHandle::Resource` cannot be executed through `ActionRuntime`.
     pub const RESOURCE_NOT_EXECUTABLE: &str = "resource_not_executable";
-    /// Unknown `ActionHandler` variant (`#[non_exhaustive]` guard).
+    /// Unknown `ActionHandle` variant (`#[non_exhaustive]` guard).
     pub const UNKNOWN_VARIANT: &str = "unknown_variant";
 }
 

@@ -8,8 +8,7 @@ use std::{sync::Arc, time::Instant};
 use async_trait::async_trait;
 use dashmap::DashMap;
 use nebula_action::{
-    ActionContext, ActionError, ActionFactory, ActionHandle, ActionHandler, ActionMetadata,
-    IsolationLevel, StatefulHandler, StatelessHandler,
+    ActionContext, ActionError, ActionFactory, ActionHandle, ActionMetadata, IsolationLevel,
     output::{ActionOutput, DataReference},
     result::ActionResult,
 };
@@ -208,11 +207,11 @@ impl ActionRuntime {
     /// Execute an action by key, with an optional stateful checkpoint sink.
     ///
     /// Same shape as [`Self::execute_action_versioned`] but also accepts a
-    /// [`StatefulCheckpointSink`]. The sink is consulted only when the
-    /// resolved handler is `ActionHandler::Stateful`:
+    /// [`StatefulCheckpointSink`]. The sink is consulted only for
+    /// `ActionHandle::Stateful` dispatch (produced by stateful factories):
     ///
     /// - Before the iteration loop, `sink.load()` is called. A `Some` checkpoint resumes from the
-    ///   last persisted `(iteration, state)`; `None` falls through to `handler.init_state()`.
+    ///   last persisted `(iteration, state)`; `None` falls through to `handle.init_state()`.
     /// - After every successful `Continue`, `sink.save(..)` persists the mutated state and
     ///   iteration counter before looping.
     /// - After a terminal iteration (`Break`, `Success`, …), `sink.clear()` drops the checkpoint so
@@ -303,18 +302,14 @@ impl ActionRuntime {
         .await
     }
 
-    /// Execute an action by node (preferred entry point — production dispatch).
+    /// Execute an action by node (production dispatch entry point).
     ///
-    /// Looks up the [`ActionFactory`] for `node.action_key` and invokes
+    /// Looks up the `Arc<dyn ActionFactory>` for `node.action_key` and invokes
     /// [`ActionFactory::instantiate`] with the supplied [`NodeDefinition`] +
-    /// [`ActionContext`] so slot bindings declared on the node resolve
-    /// correctly. Falls back to the legacy [`ActionHandler`] dispatch path
-    /// only when no factory is registered for the key (test fixtures
-    /// registered via `legacy_register_*_with_metadata`).
+    /// [`ActionContext`] so slot bindings declared on the node resolve correctly.
     ///
-    /// `version` is optional — when `Some`, an exact version match is
-    /// required; when `None`, the latest registered version of the action is
-    /// dispatched.
+    /// `version` is optional — when `Some`, an exact version match is required;
+    /// when `None`, the latest registered version of the action is dispatched.
     ///
     /// # Errors
     ///
@@ -340,9 +335,12 @@ impl ActionRuntime {
         .await
     }
 
-    /// Common dispatch entry — prefer factory path, fall back to legacy
-    /// [`ActionHandler`] path for the test-escape registrations
-    /// (`legacy_register_*_with_metadata`).
+    /// Common dispatch entry — routes all executions through the factory path.
+    ///
+    /// Looks up the `Arc<dyn ActionFactory>` for the action key, instantiates a
+    /// fresh `ActionHandle` via [`ActionFactory::instantiate`], and dispatches it
+    /// through [`Self::run_factory`]. Returns
+    /// [`RuntimeError::ActionNotFound`] if no factory is registered for the key.
     #[allow(clippy::too_many_arguments)]
     async fn dispatch_action(
         &self,
@@ -354,40 +352,18 @@ impl ActionRuntime {
         context: &dyn ActionContext,
         checkpoint: Option<Arc<dyn StatefulCheckpointSink>>,
     ) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
-        // Production path: factory dispatch via Arc<dyn ActionFactory>.
         let factory_lookup = match version {
             Some(v) => self.registry.get_factory_versioned(action_key, v),
             None => self.registry.get_factory(action_key),
         };
-        if let Some((metadata, factory)) = factory_lookup {
-            return self
-                .run_factory(
-                    action_key_str,
-                    metadata,
-                    factory,
-                    node,
-                    input,
-                    context,
-                    checkpoint,
-                )
-                .await;
-        }
-
-        // Legacy path: ActionHandler enum (kept for `legacy_register_*_with_metadata`
-        // test fixtures and currently-untouched dyn-handler registrations like
-        // EventSourceAdapter). Production registers via `register_*_factory::<A>()`.
-        let (metadata, handler) = match version {
-            Some(v) => self.registry.get_versioned(action_key, v),
-            None => self.registry.get(action_key),
-        }
-        .ok_or_else(|| RuntimeError::ActionNotFound {
+        let (metadata, factory) = factory_lookup.ok_or_else(|| RuntimeError::ActionNotFound {
             key: action_key_str.to_owned(),
         })?;
-
-        self.run_handler(
+        self.run_factory(
             action_key_str,
             metadata,
-            handler,
+            factory,
+            node,
             input,
             context,
             checkpoint,
@@ -395,101 +371,10 @@ impl ActionRuntime {
         .await
     }
 
-    /// Dispatch a resolved handler through its kind-specific execution path.
-    ///
-    /// # Metrics contract (#305 regression)
-    ///
-    /// Only the *dispatched* paths observe
-    /// [`NEBULA_ACTION_DURATION_SECONDS`] and increment
-    /// [`NEBULA_ACTION_EXECUTIONS_TOTAL`] /
-    /// [`NEBULA_ACTION_FAILURES_TOTAL`]. Early-rejection paths (trigger /
-    /// resource / agent / unknown variants) never reach a handler and would
-    /// skew the p50/p99 histogram toward zero if sampled; they increment
-    /// [`NEBULA_ACTION_DISPATCH_REJECTED_TOTAL`] with a `reason` label
-    /// instead so mis-routing is still visible in dashboards.
-    async fn run_handler(
-        &self,
-        action_key: &str,
-        metadata: ActionMetadata,
-        handler: ActionHandler,
-        input: serde_json::Value,
-        context: &dyn ActionContext,
-        checkpoint: Option<Arc<dyn StatefulCheckpointSink>>,
-    ) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
-        let error_counter = &self.action_failures_total;
-        // `ExecutionId::new()` generates a fresh ULID; we deliberately do
-        // *not* fall through to `ExecutionId::default()` (which returns nil)
-        // when the scope omits the field — missing execution IDs are synthetic
-        // and metrics/logs must still distinguish runs.
-        #[allow(
-            clippy::unwrap_or_default,
-            reason = "ExecutionId::new() != Default::default()"
-        )]
-        let execution_id = context
-            .scope()
-            .execution_id
-            .unwrap_or_else(ExecutionId::new);
-
-        // Commit to a dispatched path or a rejection path, then branch.
-        // The rejection arms never sample the histogram — they only touch
-        // the dispatch-rejected counter (see module-level contract).
-        let result = match handler {
-            ActionHandler::Stateless(h) => {
-                let started = Instant::now();
-                let r = self.execute_stateless(&metadata, h, input, context).await;
-                self.observe_dispatched(started, &r);
-                r
-            },
-            ActionHandler::Stateful(h) => {
-                let started = Instant::now();
-                let r = self
-                    .execute_stateful(&metadata, h, input, context, checkpoint)
-                    .await;
-                self.observe_dispatched(started, &r);
-                r
-            },
-            ActionHandler::Trigger(_) => {
-                self.observe_rejected(dispatch_reject_reason::TRIGGER_NOT_EXECUTABLE);
-                return Err(RuntimeError::TriggerNotExecutable {
-                    key: action_key.to_owned(),
-                });
-            },
-            ActionHandler::Resource(_) => {
-                self.observe_rejected(dispatch_reject_reason::RESOURCE_NOT_EXECUTABLE);
-                return Err(RuntimeError::ResourceNotExecutable {
-                    key: action_key.to_owned(),
-                });
-            },
-            // `ActionHandler` is `#[non_exhaustive]`. Unknown future variants
-            // are surfaced as an internal runtime error rather than silently
-            // succeeding.
-            _ => {
-                self.observe_rejected(dispatch_reject_reason::UNKNOWN_VARIANT);
-                return Err(RuntimeError::Internal(format!(
-                    "unknown ActionHandler variant for action '{action_key}'"
-                )));
-            },
-        };
-
-        match result {
-            Ok(mut action_result) => {
-                self.enforce_data_limit(
-                    action_key,
-                    execution_id,
-                    &mut action_result,
-                    error_counter,
-                )
-                .await?;
-                Ok(action_result)
-            },
-            Err(runtime_err) => Err(runtime_err),
-        }
-    }
-
     /// Dispatch through the factory path — instantiate a fresh
     /// [`ActionHandle`] for the supplied workflow node and dispatch it.
     ///
-    /// Mirrors [`Self::run_handler`]'s metric contract:
+    /// Metric contract:
     ///
     /// - Stateless / Stateful / Control variants observe the duration histogram and increment
     ///   executions / failures.
@@ -813,238 +698,6 @@ impl ActionRuntime {
         }
     }
 
-    /// Execute a stateless handler.
-    ///
-    /// Dispatch depends on the action's [`IsolationLevel`]:
-    ///
-    /// - `None` — handler invoked directly in-process.
-    /// - `CapabilityGated` — routed through [`ActionRunner`], which today is the sole in-process
-    ///   [`InProcessRunner`] (its `ActionExecutor` closure, wired at engine construction, invokes the
-    ///   registered handler for the action key). Out-of-process execution was retired (ADR-0091); the
-    ///   capability-gated level performs in-process capability checks against declared deps.
-    async fn execute_stateless(
-        &self,
-        metadata: &ActionMetadata,
-        handler: Arc<dyn StatelessHandler>,
-        input: serde_json::Value,
-        context: &dyn ActionContext,
-    ) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
-        match metadata.isolation_level {
-            IsolationLevel::None => Ok(handler.execute(input, context).await?),
-            IsolationLevel::CapabilityGated => {
-                let run_ctx = ActionRunContext::new(context);
-                Ok(self.runner.execute(run_ctx, metadata, input).await?)
-            },
-            // IsolationLevel is `#[non_exhaustive]`. Any future variant must
-            // fail-closed until we explicitly wire dispatch for it.
-            _ => Err(RuntimeError::Internal(format!(
-                "unknown isolation level for action '{}' — refusing to dispatch",
-                metadata.base.key.as_str()
-            ))),
-        }
-    }
-
-    /// Execute a stateful handler — loops through [`StatefulHandler::execute`]
-    /// with cross-iteration checkpointing.
-    ///
-    /// # Cancellation contract (#304 regression)
-    ///
-    /// The iteration body races `handler.execute(..)` against
-    /// `context.cancellation.cancelled()` via `tokio::select!`. A stuck
-    /// handler future that does not return on its own is aborted at its
-    /// next `.await` point by dropping the pinned future. Handlers whose
-    /// mid-`await` state cannot safely be dropped must document that and
-    /// guard their critical sections internally — the runtime will drop
-    /// them the moment cancellation fires.
-    ///
-    /// # Checkpoint contract (#308 regression)
-    ///
-    /// When a `checkpoint` sink is provided:
-    ///
-    /// - Before `init_state()`, `sink.load()` is consulted. A successful `Some` resumes at
-    ///   `(iteration, state)`; deserialization failure at the sink boundary (schema drift, etc.)
-    ///   logs a WARN with the action key, execution id and node id, and falls through to
-    ///   `init_state()` — iteration progress is lost, but the loss is visible in logs instead of
-    ///   silently swallowed.
-    /// - After every successful `Continue`, `sink.save(..)` persists the mutated state and
-    ///   iteration counter before the next loop turn.
-    /// - After any terminal iteration (`Break`, `Success`, `Skip`, …), `sink.clear()` deletes the
-    ///   checkpoint so a completed stateful action does not leave rows behind.
-    /// - On handler error, the checkpoint is **not** cleared — the engine decides whether to retry
-    ///   (reuse checkpoint) or fail the attempt (new attempt gets a new checkpoint row).
-    async fn execute_stateful(
-        &self,
-        metadata: &ActionMetadata,
-        handler: Arc<dyn StatefulHandler>,
-        input: serde_json::Value,
-        context: &dyn ActionContext,
-        checkpoint: Option<Arc<dyn StatefulCheckpointSink>>,
-    ) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
-        if !matches!(metadata.isolation_level, IsolationLevel::None) {
-            // Stateful capability-gated dispatch would require a long-lived
-            // loop to persist state across iterations. The current
-            // `ActionRunner` trait is a single-shot execute call with no
-            // iteration semantics, so it is fail-closed here.
-            return Err(ActionError::fatal(
-                "capability-gated stateful execution is not yet supported",
-            )
-            .into());
-        }
-
-        // Cancellation check BEFORE init_state / load — avoid the JSON
-        // round-trip if the caller already cancelled.
-        if context.cancellation().is_cancelled() {
-            return Err(ActionError::Cancelled.into());
-        }
-
-        // Attempt to resume from the checkpoint if a sink is configured.
-        //
-        // Three outcomes:
-        //
-        //   1. sink is None              → init_state fresh.
-        //   2. sink.load() -> None       → init_state fresh (no prior run).
-        //   3. sink.load() -> Some(cp)   → try to adopt cp.state directly. If the handler's current
-        //      schema rejects cp.state on the first iteration (StateDeserialization / migration
-        //      failure), the iteration body will surface that as ActionError. We do NOT
-        //      pre-validate here — the handler owns the schema.
-        //
-        // Any error from the sink itself (transport, serialization, etc.)
-        // is logged at WARN with full (action_key, execution_id, node_key)
-        // context and we fall through to init_state. This is the
-        // "checkpoint-deser-failure" contract: the runtime MUST NOT
-        // silently swallow sink errors — losing iteration progress has to
-        // be visible.
-        let (mut state, mut iteration) = match checkpoint.as_deref() {
-            Some(sink) => match sink.load().await {
-                Ok(Some(cp)) => (cp.state, cp.iteration),
-                Ok(None) => (handler.init_state()?, 0u32),
-                Err(load_err) => {
-                    tracing::warn!(
-                        action_key = %metadata.base.key.as_str(),
-                        execution_id = ?context.scope().execution_id,
-                        node_key = %context.node_key(),
-                        error = %load_err,
-                        "stateful checkpoint load failed — falling back to init_state, \
-                         iteration progress (if any) is lost"
-                    );
-                    (handler.init_state()?, 0u32)
-                },
-            },
-            None => (handler.init_state()?, 0u32),
-        };
-
-        // Hard cap to prevent runaway loops. Resumed iteration counts
-        // carry forward — the cap is per (execution, node, attempt), not
-        // per dispatch.
-        const MAX_ITERATIONS: u32 = 10_000;
-
-        loop {
-            if iteration >= MAX_ITERATIONS {
-                return Err(RuntimeError::IterationCapExceeded {
-                    action_key: metadata.base.key.clone(),
-                    node_key: context.node_key().clone(),
-                    cap: MAX_ITERATIONS,
-                });
-            }
-
-            // Cooperative cancellation check BEFORE the next iteration.
-            if context.cancellation().is_cancelled() {
-                return Err(ActionError::Cancelled.into());
-            }
-
-            // Spec 28 stuck-state guard. Serialize state before the
-            // iteration so we can detect infinite loops: if `Continue`
-            // returns with byte-identical state, the handler did not move
-            // the cursor — converting silent hangs into an explicit Fatal.
-            let state_digest_before = stateful_state_digest(&state);
-
-            // Race handler.execute against cancellation (#304). A stuck
-            // handler future dropped here aborts its work at the next
-            // .await point — this is the whole point of the fix.
-            //
-            // The select!'s `handler.execute(..)` arm borrows `state`
-            // mutably for the duration of the future. We scope the pin
-            // tightly so the borrow ends before the post-iteration
-            // checkpoint save, which also needs to read `state`.
-            let iteration_result = {
-                let exec_fut = handler.execute(&input, &mut state, context);
-                tokio::pin!(exec_fut);
-
-                tokio::select! {
-                    biased;
-                    () = context.cancellation().cancelled() => {
-                        return Err(ActionError::Cancelled.into());
-                    }
-                    res = &mut exec_fut => res,
-                }
-            };
-
-            let result = iteration_result?;
-            iteration = iteration.saturating_add(1);
-
-            match result {
-                ActionResult::Continue { delay, .. } => {
-                    // Stuck-state detection (spec 28 ): a `Continue` that
-                    // did not mutate the checkpoint is an infinite loop.
-                    // Happens in practice when an author forgets to advance
-                    // a cursor / page number. Surfacing a typed
-                    // `RuntimeError::StatefulStuck` lets retry/error routing
-                    // classify it explicitly instead of treating it as an
-                    // opaque action fatal.
-                    let state_digest_after = stateful_state_digest(&state);
-                    if state_digest_before == state_digest_after {
-                        return Err(RuntimeError::StatefulStuck {
-                            action_key: metadata.base.key.clone(),
-                            node_key: context.node_key().clone(),
-                            iteration,
-                        });
-                    }
-
-                    // Persist the new state BEFORE sleeping. If the
-                    // process dies during the delay, the next dispatch
-                    // resumes from this iteration boundary — not from
-                    // init_state.
-                    if let Some(sink) = checkpoint.as_deref() {
-                        let cp = StatefulCheckpoint::new(iteration, state.clone());
-                        sink.save(&cp).await?;
-                    }
-
-                    if let Some(d) = delay {
-                        // Cancel-aware sleep — abort the delay if cancelled mid-wait.
-                        tokio::select! {
-                            () = tokio::time::sleep(d) => {}
-                            () = context.cancellation().cancelled() => {
-                                return Err(ActionError::Cancelled.into());
-                            }
-                        }
-                    }
-                    // Loop continues with mutated state.
-                },
-                other => {
-                    // Terminal iteration — drop the checkpoint so a
-                    // completed stateful node does not leave rows behind.
-                    // Failure to clear is not fatal for this dispatch —
-                    // the engine's attempt lifecycle will garbage-collect
-                    // orphaned checkpoints on terminal transitions — but
-                    // we surface it as WARN so it is visible.
-                    if let Some(sink) = checkpoint.as_deref()
-                        && let Err(clear_err) = sink.clear().await
-                    {
-                        tracing::warn!(
-                            action_key = %metadata.base.key.as_str(),
-                            execution_id = ?context.scope().execution_id,
-                            node_key = %context.node_key(),
-                            error = %clear_err,
-                            "stateful checkpoint clear failed on terminal iteration; \
-                             orphaned row left for engine GC"
-                        );
-                    }
-                    return Ok(other);
-                },
-            }
-        }
-    }
-
     /// Check every downstream-visible output slot against the data-passing
     /// policy.
     ///
@@ -1350,8 +1003,9 @@ mod tests {
     use std::sync::OnceLock;
 
     use nebula_action::{
-        ActionRuntimeContext, TriggerRuntimeContext, action::Action, context::CredentialContextExt,
-        error::ActionError, metadata::ActionMetadata, stateless::StatelessAction,
+        ActionRuntimeContext, FromWorkflowNode, TriggerRuntimeContext, action::Action,
+        context::CredentialContextExt, error::ActionError, metadata::ActionMetadata,
+        stateful::StatefulAction, stateless::StatelessAction,
     };
     use nebula_core::{
         BaseContext, Dependencies, action_key,
@@ -2176,46 +1830,82 @@ mod tests {
 
     // ── #305 regression: dispatch-rejection paths do not skew histogram ─────
 
-    /// Register a handler that resolves to a kind which is *not* executable
-    /// via `ActionRuntime` — trigger, resource, agent — and assert that
-    /// `run_handler` does not record duration samples or bump the
-    /// executions / failures counters. Instead, the dispatch-rejected
-    /// counter increments once, labeled with the correct reason.
+    /// Register an action that resolves to a kind not executable via
+    /// `ActionRuntime` — trigger or resource — and assert that `run_factory`
+    /// does not record duration samples or bump the executions / failures
+    /// counters. Instead the dispatch-rejected counter increments once with the
+    /// correct reason label.
     #[tokio::test]
     async fn trigger_rejection_does_not_observe_histogram() {
-        use nebula_action::{handler::ActionHandler as AH, trigger::TriggerHandler as TH};
+        use nebula_action::{FromWorkflowNode, TriggerAction, TriggerEventOutcome, TriggerSource};
 
-        // Fake trigger handler — never actually invoked, only its variant
-        // matters. We implement the minimal surface the registry expects.
-        struct FakeTriggerHandler {
-            meta: ActionMetadata,
+        // Minimal TriggerAction fixture — never invoked, only its ActionHandle
+        // variant matters for the rejection test.
+        struct FakeTrigger;
+        struct FakeTriggerSource;
+        impl TriggerSource for FakeTriggerSource {
+            type Event = ();
         }
 
-        #[async_trait::async_trait]
-        impl TH for FakeTriggerHandler {
-            fn metadata(&self) -> &ActionMetadata {
-                &self.meta
+        impl Action for FakeTrigger {
+            type Input = serde_json::Value;
+            type Output = serde_json::Value;
+
+            fn metadata() -> ActionMetadata {
+                ActionMetadata::new(
+                    action_key!("test.trigger_reject"),
+                    "FakeTrigger",
+                    "rejection fixture",
+                )
             }
+            fn dependencies() -> &'static Dependencies {
+                static D: OnceLock<Dependencies> = OnceLock::new();
+                D.get_or_init(Dependencies::new)
+            }
+        }
+
+        impl TriggerAction for FakeTrigger {
+            type Source = FakeTriggerSource;
+            type Error = ActionError;
+
             async fn start(
                 &self,
-                _ctx: &dyn nebula_action::TriggerContext,
-            ) -> Result<(), ActionError> {
+                _ctx: &(impl nebula_action::TriggerContext + ?Sized),
+            ) -> Result<(), Self::Error> {
                 Ok(())
             }
+
             async fn stop(
                 &self,
-                _ctx: &dyn nebula_action::TriggerContext,
-            ) -> Result<(), ActionError> {
+                _ctx: &(impl nebula_action::TriggerContext + ?Sized),
+            ) -> Result<(), Self::Error> {
                 Ok(())
+            }
+
+            async fn handle(
+                &self,
+                _ctx: &(impl nebula_action::TriggerContext + ?Sized),
+                _event: (),
+            ) -> Result<TriggerEventOutcome, Self::Error> {
+                Err(ActionError::fatal(
+                    "trigger does not accept external events",
+                ))
+            }
+        }
+
+        impl FromWorkflowNode for FakeTrigger {
+            type Error = ActionError;
+
+            async fn from_workflow_node(
+                _node: &NodeDefinition,
+                _ctx: &dyn ActionContext,
+            ) -> Result<Self, Self::Error> {
+                Ok(FakeTrigger)
             }
         }
 
         let registry = Arc::new(ActionRegistry::new());
-        let meta = ActionMetadata::new(action_key!("test.trigger_reject"), "Trig", "reject case");
-        registry.register(
-            meta.clone(),
-            AH::Trigger(Arc::new(FakeTriggerHandler { meta })),
-        );
+        registry.register_trigger_factory::<FakeTrigger>();
         let (rt, metrics) = make_runtime_with_metrics(registry);
 
         let result = rt
@@ -2269,41 +1959,61 @@ mod tests {
 
     #[tokio::test]
     async fn resource_rejection_does_not_increment_execution_metrics() {
-        use std::any::Any;
+        use nebula_action::{FromWorkflowNode, ResourceAction};
 
-        use nebula_action::{handler::ActionHandler, resource::ResourceHandler};
+        // Minimal ResourceAction fixture — never invoked, only its ActionHandle
+        // variant matters for the rejection test.
+        struct FakeResource;
 
-        struct FakeResourceHandler {
-            meta: ActionMetadata,
+        impl Action for FakeResource {
+            type Input = serde_json::Value;
+            type Output = serde_json::Value;
+
+            fn metadata() -> ActionMetadata {
+                ActionMetadata::new(
+                    action_key!("test.resource_reject"),
+                    "FakeResource",
+                    "rejection fixture",
+                )
+            }
+            fn dependencies() -> &'static Dependencies {
+                static D: OnceLock<Dependencies> = OnceLock::new();
+                D.get_or_init(Dependencies::new)
+            }
         }
 
-        #[async_trait::async_trait]
-        impl ResourceHandler for FakeResourceHandler {
-            fn metadata(&self) -> &ActionMetadata {
-                &self.meta
-            }
+        impl ResourceAction for FakeResource {
+            type Resource = serde_json::Value;
+
             async fn configure(
                 &self,
-                _config: serde_json::Value,
-                _ctx: &dyn ActionContext,
-            ) -> Result<Box<dyn Any + Send + Sync>, ActionError> {
-                Ok(Box::new(()))
+                _ctx: &(impl ActionContext + ?Sized),
+            ) -> Result<Self::Resource, ActionError> {
+                Ok(serde_json::json!(null))
             }
+
             async fn cleanup(
                 &self,
-                _instance: Box<dyn Any + Send + Sync>,
-                _ctx: &dyn ActionContext,
+                _resource: Self::Resource,
+                _ctx: &(impl ActionContext + ?Sized),
             ) -> Result<(), ActionError> {
                 Ok(())
             }
         }
 
+        impl FromWorkflowNode for FakeResource {
+            type Error = ActionError;
+
+            async fn from_workflow_node(
+                _node: &NodeDefinition,
+                _ctx: &dyn ActionContext,
+            ) -> Result<Self, Self::Error> {
+                Ok(FakeResource)
+            }
+        }
+
         let registry = Arc::new(ActionRegistry::new());
-        let meta = ActionMetadata::new(action_key!("test.resource_reject"), "Res", "reject case");
-        registry.register(
-            meta.clone(),
-            ActionHandler::Resource(Arc::new(FakeResourceHandler { meta })),
-        );
+        registry.register_resource_factory::<FakeResource>();
         let (rt, metrics) = make_runtime_with_metrics(registry);
 
         let result = rt
@@ -2400,80 +2110,199 @@ mod tests {
 
     use std::sync::atomic::{AtomicU32, Ordering as AtomicOrdering};
 
-    use nebula_action::stateful::StatefulHandler;
     use serde_json::Value as JsonValue;
     use tokio::sync::Mutex as TokioMutex;
 
-    /// Counting stateful handler — counts from `state.count` to `target`,
-    /// emitting `Continue` until it reaches the target, then `Break`.
-    /// Used by #308 checkpoint + resume tests.
-    struct CountingHandler {
-        meta: ActionMetadata,
-        target: u32,
-    }
+    // ── Shared counting logic used by multiple fixtures ─────────────────────
 
-    #[async_trait::async_trait]
-    impl StatefulHandler for CountingHandler {
-        fn metadata(&self) -> &ActionMetadata {
-            &self.meta
-        }
-
-        fn init_state(&self) -> Result<JsonValue, ActionError> {
-            Ok(serde_json::json!({ "count": 0u32 }))
-        }
-
-        async fn execute(
-            &self,
-            _input: &JsonValue,
-            state: &mut JsonValue,
-            _ctx: &dyn ActionContext,
-        ) -> Result<ActionResult<JsonValue>, ActionError> {
-            let count = state
-                .get("count")
-                .and_then(serde_json::Value::as_u64)
-                .unwrap_or(0) as u32;
-            let next = count + 1;
-            *state = serde_json::json!({ "count": next });
-            if next >= self.target {
-                Ok(ActionResult::Break {
-                    output: ActionOutput::Value(serde_json::json!({ "final": next })),
-                    reason: nebula_action::result::BreakReason::Completed,
-                })
-            } else {
-                Ok(ActionResult::Continue {
-                    output: ActionOutput::Value(serde_json::json!({ "step": next })),
-                    progress: None,
-                    delay: None,
-                })
+    fn counting_step(state: &mut JsonValue, target: u32) -> ActionResult<JsonValue> {
+        let count = state
+            .get("count")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0) as u32;
+        let next = count + 1;
+        *state = serde_json::json!({ "count": next });
+        if next >= target {
+            ActionResult::Break {
+                output: ActionOutput::Value(serde_json::json!({ "final": next })),
+                reason: nebula_action::result::BreakReason::Completed,
+            }
+        } else {
+            ActionResult::Continue {
+                output: ActionOutput::Value(serde_json::json!({ "step": next })),
+                progress: None,
+                delay: None,
             }
         }
     }
 
-    /// Sleepy stateful handler — awaits a very long sleep inside
-    /// `execute`. Used by the #304 cancel-aborts-handler test.
-    struct SleepyHandler {
-        meta: ActionMetadata,
-    }
+    // ── CountingTo3 — #308 checkpoint test (3-iteration break) ───────────────
 
-    #[async_trait::async_trait]
-    impl StatefulHandler for SleepyHandler {
-        fn metadata(&self) -> &ActionMetadata {
-            &self.meta
+    /// Counts `state.count` from 0 to 3; used by checkpoint + resume tests.
+    struct CountingTo3;
+
+    impl Action for CountingTo3 {
+        type Input = serde_json::Value;
+        type Output = serde_json::Value;
+
+        fn metadata() -> ActionMetadata {
+            ActionMetadata::new(action_key!("test.count"), "CountTo3", "counts to 3")
         }
-        fn init_state(&self) -> Result<JsonValue, ActionError> {
-            Ok(serde_json::json!({}))
+        fn dependencies() -> &'static Dependencies {
+            static D: OnceLock<Dependencies> = OnceLock::new();
+            D.get_or_init(Dependencies::new)
+        }
+    }
+    impl StatefulAction for CountingTo3 {
+        type State = JsonValue;
+        fn init_state(&self) -> Self::State {
+            serde_json::json!({ "count": 0u32 })
         }
         async fn execute(
             &self,
-            _input: &JsonValue,
-            _state: &mut JsonValue,
+            _input: Self::Input,
+            state: &mut Self::State,
+            _ctx: &(impl ActionContext + ?Sized),
+        ) -> Result<ActionResult<Self::Output>, ActionError> {
+            Ok(counting_step(state, 3))
+        }
+    }
+    impl FromWorkflowNode for CountingTo3 {
+        type Error = ActionError;
+        async fn from_workflow_node(
+            _node: &NodeDefinition,
             _ctx: &dyn ActionContext,
-        ) -> Result<ActionResult<JsonValue>, ActionError> {
+        ) -> Result<Self, Self::Error> {
+            Ok(CountingTo3)
+        }
+    }
+
+    // ── CountingTo5 — #308 resume test (5-iteration break) ───────────────────
+
+    struct CountingTo5;
+
+    impl Action for CountingTo5 {
+        type Input = serde_json::Value;
+        type Output = serde_json::Value;
+
+        fn metadata() -> ActionMetadata {
+            ActionMetadata::new(action_key!("test.count5"), "CountTo5", "counts to 5")
+        }
+        fn dependencies() -> &'static Dependencies {
+            static D: OnceLock<Dependencies> = OnceLock::new();
+            D.get_or_init(Dependencies::new)
+        }
+    }
+    impl StatefulAction for CountingTo5 {
+        type State = JsonValue;
+        fn init_state(&self) -> Self::State {
+            serde_json::json!({ "count": 0u32 })
+        }
+        async fn execute(
+            &self,
+            _input: Self::Input,
+            state: &mut Self::State,
+            _ctx: &(impl ActionContext + ?Sized),
+        ) -> Result<ActionResult<Self::Output>, ActionError> {
+            Ok(counting_step(state, 5))
+        }
+    }
+    impl FromWorkflowNode for CountingTo5 {
+        type Error = ActionError;
+        async fn from_workflow_node(
+            _node: &NodeDefinition,
+            _ctx: &dyn ActionContext,
+        ) -> Result<Self, Self::Error> {
+            Ok(CountingTo5)
+        }
+    }
+
+    // ── CountingTo2 — #308 resume-from-checkpoint test (breaks at 2) ─────────
+
+    struct CountingTo2;
+
+    impl Action for CountingTo2 {
+        type Input = serde_json::Value;
+        type Output = serde_json::Value;
+
+        fn metadata() -> ActionMetadata {
+            ActionMetadata::new(action_key!("test.count2"), "CountTo2", "counts to 2")
+        }
+        fn dependencies() -> &'static Dependencies {
+            static D: OnceLock<Dependencies> = OnceLock::new();
+            D.get_or_init(Dependencies::new)
+        }
+    }
+    impl StatefulAction for CountingTo2 {
+        type State = JsonValue;
+        fn init_state(&self) -> Self::State {
+            serde_json::json!({ "count": 0u32 })
+        }
+        async fn execute(
+            &self,
+            _input: Self::Input,
+            state: &mut Self::State,
+            _ctx: &(impl ActionContext + ?Sized),
+        ) -> Result<ActionResult<Self::Output>, ActionError> {
+            Ok(counting_step(state, 2))
+        }
+    }
+    impl FromWorkflowNode for CountingTo2 {
+        type Error = ActionError;
+        async fn from_workflow_node(
+            _node: &NodeDefinition,
+            _ctx: &dyn ActionContext,
+        ) -> Result<Self, Self::Error> {
+            Ok(CountingTo2)
+        }
+    }
+
+    // ── SleepyStateful — #304 cancel-aborts-handler test ─────────────────────
+
+    /// Awaits a 1-hour sleep inside `execute`; used to prove cancellation aborts it.
+    struct SleepyStateful;
+
+    impl Action for SleepyStateful {
+        type Input = serde_json::Value;
+        type Output = serde_json::Value;
+
+        fn metadata() -> ActionMetadata {
+            ActionMetadata::new(
+                action_key!("test.sleepy"),
+                "SleepyStateful",
+                "hangs in execute",
+            )
+        }
+        fn dependencies() -> &'static Dependencies {
+            static D: OnceLock<Dependencies> = OnceLock::new();
+            D.get_or_init(Dependencies::new)
+        }
+    }
+    impl StatefulAction for SleepyStateful {
+        type State = JsonValue;
+        fn init_state(&self) -> Self::State {
+            serde_json::json!({})
+        }
+        async fn execute(
+            &self,
+            _input: Self::Input,
+            _state: &mut Self::State,
+            _ctx: &(impl ActionContext + ?Sized),
+        ) -> Result<ActionResult<Self::Output>, ActionError> {
             tokio::time::sleep(std::time::Duration::from_hours(1)).await;
             Ok(ActionResult::Break {
                 output: ActionOutput::Value(serde_json::json!(null)),
                 reason: nebula_action::result::BreakReason::Completed,
             })
+        }
+    }
+    impl FromWorkflowNode for SleepyStateful {
+        type Error = ActionError;
+        async fn from_workflow_node(
+            _node: &NodeDefinition,
+            _ctx: &dyn ActionContext,
+        ) -> Result<Self, Self::Error> {
+            Ok(SleepyStateful)
         }
     }
 
@@ -2522,18 +2351,14 @@ mod tests {
         }
     }
 
-    /// #304 regression: a handler that awaits a 1-hour sleep inside
+    /// #304 regression: a stateful action that awaits a 1-hour sleep inside
     /// `execute` must abort the moment the cancellation token fires — not
     /// 1 hour later. Uses `start_paused = true` so the sleep never
     /// naturally advances.
     #[tokio::test(start_paused = true)]
     async fn execute_stateful_aborts_handler_on_cancel() {
         let registry = Arc::new(ActionRegistry::new());
-        let meta = ActionMetadata::new(action_key!("test.sleepy"), "Sleepy", "hangs in execute");
-        registry.register(
-            meta.clone(),
-            ActionHandler::Stateful(Arc::new(SleepyHandler { meta })),
-        );
+        registry.register_stateful_factory::<SleepyStateful>();
         let rt = Arc::new(make_runtime(registry));
 
         let ctx = test_context();
@@ -2572,11 +2397,7 @@ mod tests {
     #[tokio::test]
     async fn execute_stateful_checkpoints_each_iteration() {
         let registry = Arc::new(ActionRegistry::new());
-        let meta = ActionMetadata::new(action_key!("test.count"), "Count", "counts");
-        registry.register(
-            meta.clone(),
-            ActionHandler::Stateful(Arc::new(CountingHandler { meta, target: 3 })),
-        );
+        registry.register_stateful_factory::<CountingTo3>();
         let rt = make_runtime(registry);
 
         let sink = Arc::new(RecordingSink::new());
@@ -2619,11 +2440,7 @@ mod tests {
     #[tokio::test]
     async fn execute_stateful_resumes_from_checkpoint() {
         let registry = Arc::new(ActionRegistry::new());
-        let meta = ActionMetadata::new(action_key!("test.resume"), "Resume", "resumes");
-        registry.register(
-            meta.clone(),
-            ActionHandler::Stateful(Arc::new(CountingHandler { meta, target: 5 })),
-        );
+        registry.register_stateful_factory::<CountingTo5>();
         let rt = make_runtime(registry);
 
         let seed = StatefulCheckpoint::new(3, serde_json::json!({ "count": 3u32 }));
@@ -2631,7 +2448,7 @@ mod tests {
 
         let result = rt
             .execute_action_with_checkpoint(
-                "test.resume",
+                "test.count5",
                 None,
                 serde_json::json!(null),
                 &test_context(),
@@ -2663,17 +2480,13 @@ mod tests {
     #[tokio::test]
     async fn execute_stateful_load_failure_falls_back_to_init_state() {
         let registry = Arc::new(ActionRegistry::new());
-        let meta = ActionMetadata::new(action_key!("test.load_fail"), "LoadFail", "load fails");
-        registry.register(
-            meta.clone(),
-            ActionHandler::Stateful(Arc::new(CountingHandler { meta, target: 2 })),
-        );
+        registry.register_stateful_factory::<CountingTo2>();
         let rt = make_runtime(registry);
 
         let sink = Arc::new(RecordingSink::with_failing_load());
         let result = rt
             .execute_action_with_checkpoint(
-                "test.load_fail",
+                "test.count2",
                 None,
                 serde_json::json!(null),
                 &test_context(),
@@ -2695,26 +2508,40 @@ mod tests {
         assert_eq!(sink.clears.load(AtomicOrdering::Relaxed), 1);
     }
 
-    /// A stateful handler that returns `Continue` without ever mutating its
-    /// state — used to pin the spec 28 stuck-state guard.
-    struct NoProgressHandler {
-        meta: ActionMetadata,
-    }
+    // ── NoProgressStateful — spec 28 stuck-state guard ───────────────────────
 
-    #[async_trait::async_trait]
-    impl StatefulHandler for NoProgressHandler {
-        fn metadata(&self) -> &ActionMetadata {
-            &self.meta
+    /// Returns `Continue` on every iteration without mutating state — pins the
+    /// spec 28 stuck-state guard (a `Continue` with byte-identical state must
+    /// surface as `RuntimeError::StatefulStuck`).
+    struct NoProgressStateful;
+
+    impl Action for NoProgressStateful {
+        type Input = serde_json::Value;
+        type Output = serde_json::Value;
+
+        fn metadata() -> ActionMetadata {
+            ActionMetadata::new(
+                action_key!("test.stuck"),
+                "NoProgress",
+                "never advances state",
+            )
         }
-        fn init_state(&self) -> Result<JsonValue, ActionError> {
-            Ok(serde_json::json!({ "cursor": 0u32 }))
+        fn dependencies() -> &'static Dependencies {
+            static D: OnceLock<Dependencies> = OnceLock::new();
+            D.get_or_init(Dependencies::new)
+        }
+    }
+    impl StatefulAction for NoProgressStateful {
+        type State = JsonValue;
+        fn init_state(&self) -> Self::State {
+            serde_json::json!({ "cursor": 0u32 })
         }
         async fn execute(
             &self,
-            _input: &JsonValue,
-            _state: &mut JsonValue,
-            _ctx: &dyn ActionContext,
-        ) -> Result<ActionResult<JsonValue>, ActionError> {
+            _input: Self::Input,
+            _state: &mut Self::State,
+            _ctx: &(impl ActionContext + ?Sized),
+        ) -> Result<ActionResult<Self::Output>, ActionError> {
             Ok(ActionResult::Continue {
                 output: ActionOutput::Value(serde_json::json!(null)),
                 progress: None,
@@ -2722,19 +2549,24 @@ mod tests {
             })
         }
     }
+    impl FromWorkflowNode for NoProgressStateful {
+        type Error = ActionError;
+        async fn from_workflow_node(
+            _node: &NodeDefinition,
+            _ctx: &dyn ActionContext,
+        ) -> Result<Self, Self::Error> {
+            Ok(NoProgressStateful)
+        }
+    }
 
-    /// Spec 28 : a stateful handler that Continues without mutating its
-    /// state must surface as a typed `RuntimeError::StatefulStuck`, NOT as
-    /// an opaque `ActionError::Fatal`. Retry/error routing depends on the
-    /// typed classification.
+    /// Spec 28: a stateful action that Continues without mutating its state
+    /// must surface as a typed `RuntimeError::StatefulStuck`, NOT as an opaque
+    /// `ActionError::Fatal`. Retry/error routing depends on the typed
+    /// classification.
     #[tokio::test]
     async fn execute_stateful_stuck_surfaces_typed_variant() {
         let registry = Arc::new(ActionRegistry::new());
-        let meta = ActionMetadata::new(action_key!("test.stuck"), "Stuck", "no progress");
-        registry.register(
-            meta.clone(),
-            ActionHandler::Stateful(Arc::new(NoProgressHandler { meta })),
-        );
+        registry.register_stateful_factory::<NoProgressStateful>();
         let rt = make_runtime(registry);
 
         let result = rt
@@ -2754,26 +2586,39 @@ mod tests {
         }
     }
 
-    /// A stateful handler that advances state on every iteration — used to
-    /// exercise the iteration cap without tripping the stuck-state guard.
-    struct EndlessCountingHandler {
-        meta: ActionMetadata,
-    }
+    // ── EndlessStateful — iteration-cap test ─────────────────────────────────
 
-    #[async_trait::async_trait]
-    impl StatefulHandler for EndlessCountingHandler {
-        fn metadata(&self) -> &ActionMetadata {
-            &self.meta
+    /// Advances `state.count` on every iteration but never breaks — exercises
+    /// the iteration cap without tripping the stuck-state guard.
+    struct EndlessStateful;
+
+    impl Action for EndlessStateful {
+        type Input = serde_json::Value;
+        type Output = serde_json::Value;
+
+        fn metadata() -> ActionMetadata {
+            ActionMetadata::new(
+                action_key!("test.endless"),
+                "EndlessStateful",
+                "never breaks",
+            )
         }
-        fn init_state(&self) -> Result<JsonValue, ActionError> {
-            Ok(serde_json::json!({ "count": 0u32 }))
+        fn dependencies() -> &'static Dependencies {
+            static D: OnceLock<Dependencies> = OnceLock::new();
+            D.get_or_init(Dependencies::new)
+        }
+    }
+    impl StatefulAction for EndlessStateful {
+        type State = JsonValue;
+        fn init_state(&self) -> Self::State {
+            serde_json::json!({ "count": 0u32 })
         }
         async fn execute(
             &self,
-            _input: &JsonValue,
-            state: &mut JsonValue,
-            _ctx: &dyn ActionContext,
-        ) -> Result<ActionResult<JsonValue>, ActionError> {
+            _input: Self::Input,
+            state: &mut Self::State,
+            _ctx: &(impl ActionContext + ?Sized),
+        ) -> Result<ActionResult<Self::Output>, ActionError> {
             let count = state
                 .get("count")
                 .and_then(serde_json::Value::as_u64)
@@ -2786,18 +2631,23 @@ mod tests {
             })
         }
     }
+    impl FromWorkflowNode for EndlessStateful {
+        type Error = ActionError;
+        async fn from_workflow_node(
+            _node: &NodeDefinition,
+            _ctx: &dyn ActionContext,
+        ) -> Result<Self, Self::Error> {
+            Ok(EndlessStateful)
+        }
+    }
 
-    /// A handler whose state evolves every iteration must still be capped
-    /// at `MAX_ITERATIONS`, and must surface as a typed
-    /// `RuntimeError::IterationCapExceeded` — not as a generic action fatal.
+    /// A stateful action whose state evolves every iteration must still be
+    /// capped at `MAX_ITERATIONS` and surface as a typed
+    /// `RuntimeError::IterationCapExceeded` — not a generic action fatal.
     #[tokio::test(flavor = "current_thread")]
     async fn execute_stateful_iteration_cap_surfaces_typed_variant() {
         let registry = Arc::new(ActionRegistry::new());
-        let meta = ActionMetadata::new(action_key!("test.endless"), "Endless", "never breaks");
-        registry.register(
-            meta.clone(),
-            ActionHandler::Stateful(Arc::new(EndlessCountingHandler { meta })),
-        );
+        registry.register_stateful_factory::<EndlessStateful>();
         let rt = make_runtime(registry);
 
         let result = rt

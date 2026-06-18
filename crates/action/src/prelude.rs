@@ -21,7 +21,6 @@ pub use crate::{
     },
     control::{ControlAction, ControlActionAdapter, ControlInput, ControlOutcome},
     error::{ActionError, ActionErrorExt, RetryHintCode, ValidationReason},
-    handler::ActionHandler,
     idempotency::IdempotencyKey,
     metadata::{ActionMetadata, MetadataCompatibilityError},
     output::{

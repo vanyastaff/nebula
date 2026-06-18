@@ -15,9 +15,9 @@
 use std::{collections::HashMap, mem::size_of, time::Duration};
 
 use nebula_action::{
-    ActionError, ActionHandler, ActionMetadata, ActionOutput, ActionResult, ActionRuntimeContext,
-    BinaryData, Cost, DeferredOutput, OutputEnvelope, OutputMeta, Progress, StreamOutput, Timing,
-    TokenUsage, TriggerEventOutcome, WebhookRequest,
+    ActionError, ActionMetadata, ActionOutput, ActionResult, ActionRuntimeContext, BinaryData,
+    Cost, DeferredOutput, OutputEnvelope, OutputMeta, Progress, StreamOutput, Timing, TokenUsage,
+    TriggerEventOutcome, WebhookRequest,
 };
 
 #[test]
@@ -51,7 +51,6 @@ fn top_level_type_sizes_are_stable() {
     // path — so we accept the size in exchange for the unified catalog contract.
     assert_eq!(size_of::<ActionMetadata>(), 376);
     assert_eq!(size_of::<ActionError>(), 72);
-    assert_eq!(size_of::<ActionHandler>(), 24);
 
     // `WebhookRequest` contains a `SystemTime`, which is 8 bytes on
     // Windows (FILETIME) and 16 bytes on Linux (timespec). Assert the
@@ -125,7 +124,6 @@ fn print_type_size_baseline() {
         ("ActionRuntimeContext", size_of::<ActionRuntimeContext>()),
         ("ActionMetadata", size_of::<ActionMetadata>()),
         ("ActionError", size_of::<ActionError>()),
-        ("ActionHandler", size_of::<ActionHandler>()),
         ("WebhookRequest", size_of::<WebhookRequest>()),
         ("TriggerEventOutcome", size_of::<TriggerEventOutcome>()),
         ("BinaryData", size_of::<BinaryData>()),

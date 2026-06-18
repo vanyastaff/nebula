@@ -49,7 +49,6 @@
 | `ControlAction` / `ControlOutcome` / `ControlInput` (If/Switch/Router/Stop/Fail) | `src/control.rs:393,269,109` |
 | `WebhookAction` + HMAC (`verify_hmac_sha256*`, `SignaturePolicy` fail-closed `Required`) | `src/webhook/mod.rs` (2431 строк) |
 | `PollAction`, `PollTriggerAdapter`, `POLL_INTERVAL_FLOOR`, `DeduplicatingCursor` | `src/poll/mod.rs` |
-| `ActionHandler` — top-level enum-диспетчер над `Arc<dyn XxxHandler>` | `src/handler.rs:41` |
 | `ActionHandle` enum + `StatelessHandle/StatefulHandle/TriggerHandle/ResourceHandle/ControlHandle` | `src/handle.rs:184,40-176` |
 | `ActionFactory` + `Generic{Stateless,Stateful,Trigger,Resource,Control}Factory` | `src/factory.rs:53,69-497` |
 | `FromWorkflowNode` (async slot-binding фабрика; тело генерит derive) | `src/from_workflow_node.rs:61` |
@@ -85,7 +84,6 @@ Dev: `nebula-credential-macros`, `nebula-expression`, `trybuild`, `insta`, `rste
 - `control.rs` — flow-control узлы, desugar в stateless-поверхность.
 - `handle.rs` + `factory.rs` — engine-side стирание типов (`ActionHandle` + `XxxHandle`) и per-исполнение фабрики (т.к. `dyn Action` невозможен).
 - `from_workflow_node.rs` — async-резолв slot-bindings из узла workflow.
-- `handler.rs` — суммирующий enum `ActionHandler`; домены ре-экспортируются «for backwards compatibility».
 - `context.rs` — capability-трейты контекстов + runtime-реализации.
 - `error.rs` / `result.rs` / `output.rs` — типизированные ошибки, flow-control результат, выходные данные.
 - `metadata.rs` / `port.rs` / `idempotency.rs` / `capability.rs` / `validation.rs` / `testing.rs` / `macros.rs` / `prelude.rs` — метаданные, порты, дедуп-ключ, Noop/default capability, валидация пакета, тест-утилиты, assert-макросы.
