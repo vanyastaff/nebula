@@ -324,15 +324,17 @@ pub mod auth_oauth_provider {
 ///
 /// Labeled by `reason` (see [`webhook_signature_failure_reason`]). Low
 /// cardinality by design — the label set is a small closed set of
-/// static strings (currently six: `missing`, `invalid`,
+/// static strings (currently seven: `missing`, `invalid`,
 /// `missing_secret`, `timestamp_missing`, `timestamp_malformed`,
-/// `timestamp_out_of_window`), no per-trigger dimension. Any non-zero
-/// value is an operational signal worth dashboarding: a
+/// `timestamp_out_of_window`, `prod_unsigned`), no per-trigger dimension.
+/// Any non-zero value is an operational signal worth dashboarding: a
 /// `missing_secret` crossing means an action shipped with a
 /// `SignaturePolicy::Required` it did not populate; `missing` /
 /// `invalid` means a provider is mis-signing or a caller is probing
 /// the endpoint; `timestamp_*` indicates clock skew, replay attacks,
-/// or a misconfigured `timestamp_format`.
+/// or a misconfigured `timestamp_format`; `prod_unsigned` means a Prod
+/// activation row was registered without a `Required` signature policy
+/// (composition-root misconfiguration).
 pub const NEBULA_WEBHOOK_SIGNATURE_FAILURES_TOTAL: &str = "nebula_webhook_signature_failures_total";
 
 /// Reason labels for [`NEBULA_WEBHOOK_SIGNATURE_FAILURES_TOTAL`].
@@ -364,6 +366,14 @@ pub mod webhook_signature_failure_reason {
     /// outside the configured window (likely a replay attack or
     /// significant clock skew).
     pub const TIMESTAMP_OUT_OF_WINDOW: &str = "timestamp_out_of_window";
+    /// A Prod-mode activation resolved to `SignaturePolicy::OptionalAcceptUnsigned`
+    /// — the composition root failed to configure a secret. Returns 500 (operator
+    /// misconfiguration, not a caller fault).
+    ///
+    /// Distinct from `missing_secret` (which fires when `Required` has an empty
+    /// secret) so dashboards can separately track "wrong policy on Prod row" vs.
+    /// "right policy but no secret".
+    pub const PROD_UNSIGNED: &str = "prod_unsigned";
 }
 
 /// Counter: webhook requests entering the transport.
@@ -390,10 +400,31 @@ pub const NEBULA_WEBHOOK_LATENCY_SECONDS: &str = "nebula_webhook_latency_seconds
 /// [`webhook_replay_rejection_reason`]).
 pub const NEBULA_WEBHOOK_REPLAY_REJECTIONS_TOTAL: &str = "nebula_webhook_replay_rejections_total";
 
-/// Counter: requests rejected by per-key rate-limit enforcement
-///. Labels: `tenant_id`, `webhook_key_kind`.
+/// Counter: requests rejected by rate-limit enforcement.
+///
+/// Labeled by `webhook_key_kind` and `tier` (see [`webhook_rate_limit_tier`]);
+/// `tenant_id` is included **only** for `tier="per_tenant"` rejections
+/// (post-resolution, where the bounded `(org, workspace)` slug is available).
+/// `tier="per_token"` rejections omit `tenant_id` — the trigger UUID would
+/// create one series per registered webhook, causing unbounded cardinality.
+///
+/// - `tier="per_token"` — per-trigger-token sliding-window rejection
+///   (pre-resolution; protects the DB lookup from unauthenticated churn).
+/// - `tier="per_tenant"` — per-tenant-aggregate sliding-window rejection
+///   (post-resolution; caps a single tenant flooding across many tokens).
 pub const NEBULA_WEBHOOK_RATE_LIMIT_REJECTIONS_TOTAL: &str =
     "nebula_webhook_rate_limit_rejections_total";
+
+/// Tier labels for [`NEBULA_WEBHOOK_RATE_LIMIT_REJECTIONS_TOTAL`].
+///
+/// Closed two-value set — adding a label permanently inflates the
+/// cardinality floor.
+pub mod webhook_rate_limit_tier {
+    /// Per-trigger-token rate-limit tier (step 4, pre-resolution).
+    pub const PER_TOKEN: &str = "per_token";
+    /// Per-tenant-aggregate rate-limit tier (step 4.5, post-resolution).
+    pub const PER_TENANT: &str = "per_tenant";
+}
 
 /// Counter: storage-driven bootstrap rows that failed to register
 /// in the transport ( / E1). Labeled by `reason` (see
@@ -872,7 +903,7 @@ mod tests {
         auth_outcome, idempotency_reject_reason, orchestrator_dispatch_outcome,
         orchestrator_reclaim_outcome, recycle_outcome, refresh_coord_claim_outcome,
         refresh_coord_coalesced_tier, refresh_coord_reclaim_outcome, refresh_coord_sentinel_action,
-        rotation_outcome,
+        rotation_outcome, webhook_rate_limit_tier, webhook_signature_failure_reason,
     };
 
     const RESOURCE_METRIC_NAMES: [&str; 22] = [
@@ -1407,5 +1438,55 @@ mod tests {
         }
 
         assert_eq!(unique.len(), 4);
+    }
+
+    #[test]
+    fn webhook_signature_failure_reason_labels_are_closed_set() {
+        // Closed label set — adding a value permanently inflates cardinality on
+        // the signature-failure counter; this test is the CI gate against silent
+        // expansion.  The full set must stay in sync with the counter's doc
+        // comment (currently seven values).
+        let labels = [
+            webhook_signature_failure_reason::MISSING,
+            webhook_signature_failure_reason::INVALID,
+            webhook_signature_failure_reason::MISSING_SECRET,
+            webhook_signature_failure_reason::TIMESTAMP_MISSING,
+            webhook_signature_failure_reason::TIMESTAMP_MALFORMED,
+            webhook_signature_failure_reason::TIMESTAMP_OUT_OF_WINDOW,
+            webhook_signature_failure_reason::PROD_UNSIGNED,
+        ];
+        let unique: HashSet<&str> = labels.iter().copied().collect();
+        assert_eq!(
+            unique.len(),
+            7,
+            "signature_failure_reason labels must be unique"
+        );
+        for label in labels {
+            assert!(!label.is_empty());
+            assert!(
+                label.chars().all(|ch| ch.is_ascii_lowercase() || ch == '_'),
+                "label {label:?} must match [a-z_]+"
+            );
+        }
+    }
+
+    #[test]
+    fn webhook_rate_limit_tier_labels_are_closed_set() {
+        // Closed label set — adding a value permanently inflates cardinality on
+        // the rate-limit-rejection counter; this test is the CI gate against
+        // silent expansion.
+        let labels = [
+            webhook_rate_limit_tier::PER_TOKEN,
+            webhook_rate_limit_tier::PER_TENANT,
+        ];
+        let unique: HashSet<&str> = labels.iter().copied().collect();
+        assert_eq!(unique.len(), 2, "rate_limit_tier labels must be unique");
+        for label in labels {
+            assert!(!label.is_empty());
+            assert!(
+                label.chars().all(|ch| ch.is_ascii_lowercase() || ch == '_'),
+                "label {label:?} must match [a-z_]+"
+            );
+        }
     }
 }

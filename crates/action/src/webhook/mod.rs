@@ -1155,7 +1155,14 @@ impl RequiredPolicy {
             return Err(SignatureError::SecretMissing);
         }
 
-        if let Some(name) = self.timestamp_header.as_ref() {
+        // `StandardWebhooks` ignores `timestamp_header` / `timestamp_format` —
+        // it uses fixed `webhook-timestamp` and validates inside
+        // `verify_standard_webhooks`.  Skipping the generic pre-check here
+        // prevents a stale custom `timestamp_header` value from triggering
+        // `TimestampMissing` before the SWH path runs its own check.
+        if !matches!(self.scheme, SignatureScheme::StandardWebhooks)
+            && let Some(name) = self.timestamp_header.as_ref()
+        {
             validate_timestamp(
                 request.headers(),
                 name,
@@ -1191,6 +1198,9 @@ impl RequiredPolicy {
                         SignatureOutcome::Invalid
                     },
                 }
+            },
+            SignatureScheme::StandardWebhooks => {
+                verify_standard_webhooks(request, &self.secret, self.replay_window, clock)?
             },
         };
 
@@ -1463,6 +1473,7 @@ fn days_from_civil(y: i64, m: i32, d: i32) -> i64 {
 ///   automatically)
 /// - Shopify `X-Shopify-Hmac-SHA256: <base64>` → [`Self::Sha256Base64`]
 /// - Nebula canonical `X-Nebula-Signature: sha256=<hex>` → [`Self::Sha256Hex`] (default)
+/// - Standard Webhooks (standardwebhooks.com) → [`Self::StandardWebhooks`]
 ///
 /// Providers whose signature is not a raw HMAC over the request body
 /// (Stripe, Slack) require [`SignaturePolicy::Custom`].
@@ -1474,6 +1485,31 @@ pub enum SignatureScheme {
     Sha256Hex,
     /// Base64-encoded HMAC-SHA256 (standard alphabet). Shopify, Square.
     Sha256Base64,
+    /// Standard Webhooks (standardwebhooks.com) interoperability scheme.
+    ///
+    /// Uses **fixed** header names regardless of [`RequiredPolicy::header`] or
+    /// [`RequiredPolicy::timestamp_header`]:
+    ///
+    /// | Header               | Role                         |
+    /// |----------------------|------------------------------|
+    /// | `webhook-id`         | Per-delivery idempotency key |
+    /// | `webhook-timestamp`  | Unix-epoch seconds           |
+    /// | `webhook-signature`  | Space-separated `version,base64sig` tokens |
+    ///
+    /// Timestamp validation is **mandatory** for this scheme (not opt-in):
+    /// the replay window and future-skew cap from [`RequiredPolicy`] apply.
+    ///
+    /// The signed content is `{webhook-id}.{webhook-timestamp}.{raw-body}` —
+    /// matching the Standard Webhooks `to_sign = "{msg_id}.{timestamp}.{payload}"`.
+    ///
+    /// The secret stored in [`RequiredPolicy`] is the **raw HMAC key bytes**.
+    /// Decoding a `whsec_` base64-encoded secret is a registration concern;
+    /// the verify path operates on already-decoded bytes.
+    ///
+    /// Multi-signature (`v1,<base64> v1,<base64>`) is supported for
+    /// key-rotation grace: any matching `v1` token passes. Non-`v1`
+    /// tokens (e.g. `v2,…`) are ignored — never selected as a weaker path.
+    StandardWebhooks,
 }
 
 // ── WebhookEndpointProvider ──────────────────────────────────────────────
@@ -2315,6 +2351,160 @@ pub fn verify_hmac_sha256_with_timestamp(
     ))
 }
 
+/// Standard Webhooks (standardwebhooks.com) signature verification.
+///
+/// Called by [`RequiredPolicy::verify_with`] when the scheme is
+/// [`SignatureScheme::StandardWebhooks`].
+///
+/// # Fixed header names
+///
+/// This function ignores [`RequiredPolicy::header`] and
+/// [`RequiredPolicy::timestamp_header`]. Standard Webhooks mandates:
+///
+/// | Header               | Role                                               |
+/// |----------------------|----------------------------------------------------|
+/// | `webhook-id`         | Per-delivery idempotency key (NOT a secret)        |
+/// | `webhook-timestamp`  | Unix-epoch seconds (mandatory)                     |
+/// | `webhook-signature`  | Space-separated `version,base64sig` tokens         |
+///
+/// # Signed content
+///
+/// The bytes fed to HMAC-SHA256 are `{webhook-id}.{webhook-timestamp}.{raw-body}`,
+/// matching the Standard Webhooks spec's `to_sign = "{msg_id}.{timestamp}.{payload}"`.
+///
+/// # Secret
+///
+/// `secret` is the **raw HMAC key bytes**. `whsec_` prefix decoding is a
+/// registration concern; verify operates on already-decoded bytes.
+///
+/// # Multi-signature / key rotation
+///
+/// `webhook-signature` is a SPACE-separated list of `version,base64sig` tokens.
+/// Any `v1` token whose decoded bytes constant-time-match the computed MAC passes.
+/// Non-`v1` tokens are ignored (algorithm-confusion guard — never fall through to a
+/// weaker path). A decode failure for a candidate token is a non-match, not an error.
+/// Absence of any `v1` token → `Missing`; all `v1` tokens fail → `Invalid`.
+///
+/// # Errors
+///
+/// Returns [`SignatureError`] when:
+/// - `webhook-timestamp` is absent → `TimestampMissing`
+/// - `webhook-timestamp` is malformed / outside the replay window → timestamp errors
+///
+/// Absent or all-failed `webhook-signature` returns `Ok(Missing/Invalid)`.
+fn verify_standard_webhooks(
+    request: &WebhookRequest,
+    secret: &[u8],
+    replay_window: Duration,
+    clock: &dyn Clock,
+) -> Result<SignatureOutcome, SignatureError> {
+    // Fixed Standard Webhooks header names (spec §4).
+    const ID_HEADER: HeaderName = HeaderName::from_static("webhook-id");
+    const TS_HEADER: HeaderName = HeaderName::from_static("webhook-timestamp");
+    const SIG_HEADER: HeaderName = HeaderName::from_static("webhook-signature");
+
+    // 1. Extract webhook-id.
+    let id_str = match single_header_value(request.headers(), &ID_HEADER) {
+        HeaderLookup::One(v) => v,
+        HeaderLookup::Missing => {
+            // No `webhook-id` → `SignatureOutcome::Missing`.
+            //
+            // Telemetry-granularity note: this conflates two distinct caller
+            // situations — (a) absent delivery id only, and (b) absent both
+            // `webhook-id` AND `webhook-signature` — under the same `Missing`
+            // outcome.  A dedicated `missing_delivery_id` failure reason for
+            // dashboards is deferred; the current surface is correct and safe.
+            return Ok(SignatureOutcome::Missing);
+        },
+        HeaderLookup::Multiple => return Ok(SignatureOutcome::Invalid),
+    };
+
+    // 2. Extract webhook-timestamp — mandatory for StandardWebhooks.
+    let ts_str = match single_header_value(request.headers(), &TS_HEADER) {
+        HeaderLookup::One(v) => v,
+        HeaderLookup::Missing => return Err(SignatureError::TimestampMissing),
+        HeaderLookup::Multiple => {
+            return Err(SignatureError::TimestampMalformed {
+                reason: "multiple webhook-timestamp headers".to_string(),
+            });
+        },
+    };
+
+    // 3. Validate timestamp (reuse the shared helper that understands replay_window
+    //    and FUTURE_SKEW_SECS). Format is always Unix seconds for Standard Webhooks.
+    //    Cheap check — runs before the body HMAC.
+    validate_timestamp(
+        request.headers(),
+        &TS_HEADER,
+        TimestampFormat::UnixSeconds,
+        replay_window,
+        clock,
+    )?;
+
+    // 4. Parse and pre-screen the webhook-signature header BEFORE doing any
+    //    body HMAC work.  A request without a signature header (or with no v1
+    //    candidate) exits here cheaply — no HMAC is wasted.  This mirrors the
+    //    hex/base64 verifiers which reject a missing header before MAC work.
+    let sig_header_str = match single_header_value(request.headers(), &SIG_HEADER) {
+        HeaderLookup::One(v) => v,
+        HeaderLookup::Missing => return Ok(SignatureOutcome::Missing),
+        HeaderLookup::Multiple => return Ok(SignatureOutcome::Invalid),
+    };
+
+    // Collect valid-format v1 candidates (decoded bytes) and detect whether any
+    // v1 token was present.  Tokens are collected BEFORE building signed_content
+    // so the HMAC is only computed when there is at least one candidate to compare.
+    let mut candidates: Vec<Vec<u8>> = Vec::new();
+    let mut any_v1_seen = false;
+    for token in sig_header_str.split_ascii_whitespace() {
+        let Some((version, b64_sig)) = token.split_once(',') else {
+            // Malformed token — not a valid candidate; skip.
+            continue;
+        };
+        if version != "v1" {
+            // Non-v1 algorithm — algorithm-confusion guard; skip entirely.
+            continue;
+        }
+        any_v1_seen = true;
+        // Decode — a malformed base64 token simply does not contribute a candidate.
+        if let Ok(bytes) = BASE64_STANDARD.decode(b64_sig) {
+            candidates.push(bytes);
+        }
+    }
+
+    if !any_v1_seen {
+        // No v1 token at all (only non-v1 or malformed) — treat as Missing.
+        return Ok(SignatureOutcome::Missing);
+    }
+
+    if candidates.is_empty() {
+        // v1 tokens were present but all had invalid base64 — treat as Invalid.
+        return Ok(SignatureOutcome::Invalid);
+    }
+
+    // 5. Build signed content: "{webhook-id}.{webhook-timestamp}.{body}".
+    //    Only reached when there is at least one decodable v1 candidate.
+    let prefix = format!("{id_str}.{ts_str}.");
+    let mut signed_content = Vec::with_capacity(prefix.len() + request.body().len());
+    signed_content.extend_from_slice(prefix.as_bytes());
+    signed_content.extend_from_slice(request.body());
+
+    // 6. Compute expected MAC over the signed content. Done ONCE before the
+    //    candidate loop — constant MAC-compute time regardless of candidate count.
+    let expected_mac: [u8; 32] = hmac_sha256_compute(secret, &signed_content);
+
+    // 7. Constant-time compare each decoded candidate against the expected MAC.
+    //    Any match is a pass; no short-circuit across candidates.
+    for candidate_bytes in &candidates {
+        if verify_tag_constant_time(&expected_mac, candidate_bytes) {
+            return Ok(SignatureOutcome::Valid);
+        }
+    }
+
+    // v1 candidates present but none matched.
+    Ok(SignatureOutcome::Invalid)
+}
+
 /// Compute a raw HMAC-SHA256 tag over arbitrary bytes.
 ///
 /// Escape hatch for signature schemes not handled by
@@ -2428,4 +2618,295 @@ pub fn webhook_request_for_test_with_limits(
         max_body,
         max_headers,
     )
+}
+
+// ── Unit tests: Standard Webhooks HMAC scheme ─────────────────────────────────
+
+#[cfg(test)]
+mod swh_tests {
+    //! Unit tests for [`SignatureScheme::StandardWebhooks`] via
+    //! [`RequiredPolicy::verify_with`].
+    //!
+    //! All tests use a deterministic [`MockClock`] so replay-window
+    //! assertions are immune to wall-clock drift.
+
+    use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
+
+    use super::*;
+
+    /// Fixed Unix-epoch anchor shared across tests.
+    const NOW_SECS: u64 = 1_700_000_000;
+
+    /// Test HMAC key (raw bytes — no whsec_ prefix).
+    const KEY: &[u8] = b"test-secret-key-for-standard-webhooks";
+
+    /// Build a [`RequiredPolicy`] configured for Standard Webhooks.
+    fn swh_policy() -> RequiredPolicy {
+        RequiredPolicy::new()
+            .with_secret(KEY)
+            .with_scheme(SignatureScheme::StandardWebhooks)
+    }
+
+    /// Compute a valid Standard Webhooks signature token for the given
+    /// message-id, timestamp-string, and body.
+    ///
+    /// Returns a `webhook-signature` header value of the form `v1,<base64>`.
+    fn sign(msg_id: &str, ts_str: &str, body: &[u8]) -> String {
+        let prefix = format!("{msg_id}.{ts_str}.");
+        let mut content = Vec::with_capacity(prefix.len() + body.len());
+        content.extend_from_slice(prefix.as_bytes());
+        content.extend_from_slice(body);
+        let mac = hmac_sha256_compute(KEY, &content);
+        format!("v1,{}", B64.encode(mac))
+    }
+
+    fn make_request(msg_id: &str, ts_str: &str, sig: &str, body: &[u8]) -> WebhookRequest {
+        webhook_request_for_test(
+            body,
+            &[
+                ("webhook-id", msg_id),
+                ("webhook-timestamp", ts_str),
+                ("webhook-signature", sig),
+            ],
+        )
+        .expect("test request must be constructable")
+    }
+
+    // ── Happy path ────────────────────────────────────────────────────────────
+
+    /// Valid Standard Webhooks request → `Ok(())`.
+    #[test]
+    fn swh_valid_signature_passes() {
+        let clock = MockClock::at_unix_secs(NOW_SECS);
+        let ts = NOW_SECS.to_string();
+        let body = b"{\"event\":\"test\"}";
+        let sig = sign("msg_abc123", &ts, body);
+        let req = make_request("msg_abc123", &ts, &sig, body);
+        swh_policy()
+            .verify_with(&req, &clock)
+            .expect("valid SWH signature must pass");
+    }
+
+    // ── Tampering ─────────────────────────────────────────────────────────────
+
+    /// Tampered body → signature mismatch → `SignatureInvalid`.
+    ///
+    /// Red-on-revert: removing the body from the signed content makes a
+    /// body-tamper undetectable.
+    #[test]
+    fn swh_tampered_body_is_invalid() {
+        let clock = MockClock::at_unix_secs(NOW_SECS);
+        let ts = NOW_SECS.to_string();
+        let original_body = b"{\"event\":\"test\"}";
+        let tampered_body = b"{\"event\":\"hacked\"}";
+        let sig = sign("msg_abc123", &ts, original_body);
+        // Request body differs from what was signed.
+        let req = make_request("msg_abc123", &ts, &sig, tampered_body);
+        let err = swh_policy()
+            .verify_with(&req, &clock)
+            .expect_err("tampered body must fail verification");
+        assert!(
+            matches!(err, SignatureError::SignatureInvalid),
+            "expected SignatureInvalid, got {err:?}"
+        );
+    }
+
+    /// Tampered timestamp → signature mismatch → `SignatureInvalid`.
+    ///
+    /// The timestamp is part of the signed content, so changing it after
+    /// signing invalidates the MAC.
+    #[test]
+    fn swh_tampered_timestamp_is_invalid() {
+        let clock = MockClock::at_unix_secs(NOW_SECS);
+        let ts = NOW_SECS.to_string();
+        let tampered_ts = (NOW_SECS - 10).to_string(); // different ts sent in header
+        let body = b"{\"event\":\"test\"}";
+        let sig = sign("msg_abc123", &ts, body);
+        // Header has a different timestamp than what was signed.
+        let req = make_request("msg_abc123", &tampered_ts, &sig, body);
+        let err = swh_policy()
+            .verify_with(&req, &clock)
+            .expect_err("tampered timestamp must fail verification");
+        assert!(
+            matches!(err, SignatureError::SignatureInvalid),
+            "expected SignatureInvalid, got {err:?}"
+        );
+    }
+
+    // ── Replay window ─────────────────────────────────────────────────────────
+
+    /// Timestamp older than the replay window → `TimestampOutOfWindow`.
+    #[test]
+    fn swh_expired_timestamp_rejected() {
+        // Advance clock 6 minutes past the request timestamp.
+        let req_ts = NOW_SECS;
+        let clock_now = NOW_SECS + 360; // 6 min later, outside 5-min window
+        let clock = MockClock::at_unix_secs(clock_now);
+        let ts = req_ts.to_string();
+        let body = b"{}";
+        let sig = sign("msg_exp", &ts, body);
+        let req = make_request("msg_exp", &ts, &sig, body);
+        let err = swh_policy()
+            .verify_with(&req, &clock)
+            .expect_err("expired timestamp must be rejected");
+        assert!(
+            matches!(err, SignatureError::TimestampOutOfWindow { .. }),
+            "expected TimestampOutOfWindow, got {err:?}"
+        );
+    }
+
+    /// Timestamp more than 60 s in the future → `TimestampOutOfWindow`.
+    ///
+    /// The future-skew cap (`FUTURE_SKEW_SECS = 60`) applies independently of
+    /// the configured replay window, preventing tokens pre-dated in the future.
+    #[test]
+    fn swh_future_skew_beyond_cap_rejected() {
+        let req_ts = NOW_SECS + 120; // 2 min ahead — exceeds the 60-s cap
+        let clock_now = NOW_SECS;
+        let clock = MockClock::at_unix_secs(clock_now);
+        let ts = req_ts.to_string();
+        let body = b"{}";
+        let sig = sign("msg_future", &ts, body);
+        let req = make_request("msg_future", &ts, &sig, body);
+        let err = swh_policy()
+            .verify_with(&req, &clock)
+            .expect_err("far-future timestamp must be rejected");
+        assert!(
+            matches!(err, SignatureError::TimestampOutOfWindow { .. }),
+            "expected TimestampOutOfWindow, got {err:?}"
+        );
+    }
+
+    // ── Missing headers ───────────────────────────────────────────────────────
+
+    /// Missing `webhook-timestamp` → `TimestampMissing` (mandatory for SWH).
+    #[test]
+    fn swh_missing_timestamp_is_error() {
+        let clock = MockClock::at_unix_secs(NOW_SECS);
+        let ts = NOW_SECS.to_string();
+        let body = b"{}";
+        let sig = sign("msg_nots", &ts, body);
+        // No webhook-timestamp header.
+        let req = webhook_request_for_test(
+            body,
+            &[("webhook-id", "msg_nots"), ("webhook-signature", &sig)],
+        )
+        .expect("request build");
+        let err = swh_policy()
+            .verify_with(&req, &clock)
+            .expect_err("missing timestamp must error");
+        assert!(
+            matches!(err, SignatureError::TimestampMissing),
+            "expected TimestampMissing, got {err:?}"
+        );
+    }
+
+    /// Missing `webhook-signature` → `SignatureMissing`.
+    #[test]
+    fn swh_missing_signature_header() {
+        let clock = MockClock::at_unix_secs(NOW_SECS);
+        let ts = NOW_SECS.to_string();
+        let body = b"{}";
+        // No webhook-signature header.
+        let req = webhook_request_for_test(
+            body,
+            &[("webhook-id", "msg_nosig"), ("webhook-timestamp", &ts)],
+        )
+        .expect("request build");
+        let err = swh_policy()
+            .verify_with(&req, &clock)
+            .expect_err("missing signature must error");
+        assert!(
+            matches!(err, SignatureError::SignatureMissing),
+            "expected SignatureMissing, got {err:?}"
+        );
+    }
+
+    // ── Multi-signature scenarios ─────────────────────────────────────────────
+
+    /// `v1,<bad> v1,<good>` → first candidate fails, second succeeds → `Valid`.
+    ///
+    /// Proves the candidate loop does not short-circuit on a bad token.
+    #[test]
+    fn swh_multi_sig_bad_then_good_passes() {
+        let clock = MockClock::at_unix_secs(NOW_SECS);
+        let ts = NOW_SECS.to_string();
+        let body = b"{}";
+        let good = sign("msg_multi", &ts, body);
+        let bad = "v1,AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+        let sig_header = format!("{bad} {good}");
+        let req = make_request("msg_multi", &ts, &sig_header, body);
+        swh_policy()
+            .verify_with(&req, &clock)
+            .expect("bad-then-good multi-sig must pass");
+    }
+
+    /// `v2,<x> v1,<good>` → non-v1 ignored, v1 accepted → `Valid`.
+    ///
+    /// Proves algorithm-confusion guard: `v2` is never selected even if it
+    /// appears first.
+    #[test]
+    fn swh_v2_ignored_v1_accepted() {
+        let clock = MockClock::at_unix_secs(NOW_SECS);
+        let ts = NOW_SECS.to_string();
+        let body = b"{}";
+        let good = sign("msg_v2v1", &ts, body);
+        let sig_header = format!("v2,AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= {good}");
+        let req = make_request("msg_v2v1", &ts, &sig_header, body);
+        swh_policy()
+            .verify_with(&req, &clock)
+            .expect("v2 must be ignored; v1 must pass");
+    }
+
+    /// Only `v2,<x>` token present → no v1 candidate → `SignatureMissing`.
+    /// A `RequiredPolicy` with a custom `timestamp_header` switched to
+    /// `StandardWebhooks` must NOT apply the generic timestamp pre-check.
+    ///
+    /// Before the fix, `verify_with` ran `validate_timestamp(custom_header, …)`
+    /// BEFORE dispatching to `verify_standard_webhooks`, so a valid SWH
+    /// request (which carries `webhook-timestamp`, not the custom header)
+    /// returned `TimestampMissing` for the absent custom header.
+    ///
+    /// RED-on-revert: removing the `!matches!(self.scheme, StandardWebhooks)`
+    /// guard causes `validate_timestamp` to run for the custom header, which
+    /// is absent from the request → `TimestampMissing` → test fails.
+    #[test]
+    fn swh_stale_custom_timestamp_header_does_not_reject_valid_request() {
+        let clock = MockClock::at_unix_secs(NOW_SECS);
+        let ts = NOW_SECS.to_string();
+        let body = b"{}";
+        let msg_id = "msg_custom_ts";
+        let sig = sign(msg_id, &ts, body);
+
+        // A policy that previously had a custom timestamp header, then was
+        // switched to StandardWebhooks. The stale `timestamp_header` is set.
+        let policy = RequiredPolicy::new()
+            .with_secret(KEY)
+            .with_timestamp_header(HeaderName::from_static("x-my-custom-ts"))
+            .with_scheme(SignatureScheme::StandardWebhooks);
+
+        // Request carries the Standard Webhooks headers, NOT the custom ts header.
+        let req = make_request(msg_id, &ts, &sig, body);
+
+        // Must succeed: SWH validates webhook-timestamp; the custom header is irrelevant.
+        policy
+            .verify_with(&req, &clock)
+            .expect("valid SWH request with stale custom timestamp_header must pass");
+    }
+
+    #[test]
+    fn swh_only_v2_no_v1_is_missing() {
+        let clock = MockClock::at_unix_secs(NOW_SECS);
+        let ts = NOW_SECS.to_string();
+        let body = b"{}";
+        let sig_header = "v2,AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+        let req = make_request("msg_v2only", &ts, sig_header, body);
+        let err = swh_policy()
+            .verify_with(&req, &clock)
+            .expect_err("only-v2 must be SignatureMissing");
+        assert!(
+            matches!(err, SignatureError::SignatureMissing),
+            "expected SignatureMissing, got {err:?}"
+        );
+    }
 }

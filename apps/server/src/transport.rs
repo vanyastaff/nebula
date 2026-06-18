@@ -127,6 +127,13 @@ impl ServerTransport for WebhookIngressTransport {
         //   2. durable dispatch  (ADR-0095 D1 U-D1.4b — Prod-mode spawning)
         // All builders are called before the transport is distributed to
         // handlers so refcount stays 1 throughout.
+        //
+        // Rate-limiting: `..default()` leaves `rate_limit_per_minute` and
+        // `tenant_rate_limit_per_minute` as `None`, which is correct here.
+        // `with_durable_dispatch` installs DEFAULT_PER_TOKEN_RPM /
+        // DEFAULT_PER_TENANT_RPM automatically — no composition-root discipline
+        // required.  Override the limits by setting them in `webhook_config`
+        // before calling the builder.
         let transport = nebula_api::transport::webhook::WebhookTransport::new(webhook_config);
         let transport = if let Some(store) = state.webhook_activation_store.clone() {
             transport.with_activation_store(store)

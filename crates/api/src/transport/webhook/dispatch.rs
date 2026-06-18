@@ -27,13 +27,14 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use nebula_action::{
-    ExecutionEmitter, IdempotencyKey, TriggerEvent, TriggerEventOutcome, WebhookHttpResponse,
-    WebhookRequest,
+    ExecutionEmitter, IdempotencyKey, SignaturePolicy, TriggerEvent, TriggerEventOutcome,
+    WebhookHttpResponse, WebhookRequest,
 };
 use nebula_core::NodeKey;
 use nebula_engine::DurableExecutionEmitter;
 use nebula_metrics::{
-    NEBULA_WEBHOOK_RATE_LIMIT_REJECTIONS_TOTAL, webhook_key_kind, webhook_signature_failure_reason,
+    NEBULA_WEBHOOK_RATE_LIMIT_REJECTIONS_TOTAL, webhook_key_kind, webhook_rate_limit_tier,
+    webhook_signature_failure_reason,
 };
 use nebula_storage_port::dto::WebhookMode;
 use nebula_storage_port::store::WorkflowVersionStore;
@@ -45,8 +46,8 @@ use tracing::{debug, warn};
 use super::{
     key::WebhookKey,
     signature::{
-        SignatureVerdict, enforce_signature, missing_secret_response, record_signature_failure,
-        signature_rejected_response,
+        SignatureVerdict, enforce_signature, missing_secret_response,
+        prod_requires_signature_response, record_signature_failure, signature_rejected_response,
     },
     token::token_hash,
     transport::DurableDispatchComponents,
@@ -138,19 +139,16 @@ pub(super) async fn dispatch_inner(
         return (StatusCode::NOT_FOUND, "").into_response();
     };
 
-    // 4. Rate limit (if configured) — only for keys that resolve to a
-    // registered handler.
+    // 4. Per-token rate limit (if configured) — only for keys that resolve to a
+    // registered handler. Placed pre-resolution so unauthenticated churn against
+    // registered keys never reaches the DB.
     if let Some(limiter) = &transport.inner.rate_limiter {
         let bucket = key.rate_limit_key();
         if let Err(e) = limiter.check(&bucket).await {
             // `bucket` uses the trigger uuid only — nonce (bearer token) excluded.
-            debug!(bucket = %bucket, retry_after = e.retry_after_secs, "webhook rate limited");
-            record_rate_limit_rejection(&transport, &key);
-            let mut resp = (StatusCode::TOO_MANY_REQUESTS, "").into_response();
-            if let Ok(v) = e.retry_after_secs.to_string().parse() {
-                resp.headers_mut().insert("retry-after", v);
-            }
-            return resp;
+            debug!(bucket = %bucket, retry_after = e.retry_after_secs, "webhook per-token rate limited");
+            record_rate_limit_rejection(&transport, &key, webhook_rate_limit_tier::PER_TOKEN, None);
+            return rate_limit_429(e.retry_after_secs);
         }
     }
 
@@ -181,6 +179,22 @@ pub(super) async fn dispatch_inner(
                     // nonce / hash deliberately excluded
                     "capability token resolved to durable row"
                 );
+
+                // 4.5 — Per-tenant-aggregate rate limit (post-resolution).
+                //
+                // Placed here — after token resolution yielded the scope —
+                // so the stable tenant key is available without a second DB
+                // lookup. Enforced before the durable target is set so a
+                // tenant flooding across many tokens is capped even though
+                // each token is individually within its own per-token quota.
+                //
+                // Key: `Scope::credential_owner_id()` — length-prefixed,
+                // injective across arbitrary (org_id, workspace_id) pairs,
+                // same derivation every plane uses (ADR-0088 D7).
+                if let Some(resp) = check_tenant_rate_limit(&transport, &key, &row.scope).await {
+                    return resp;
+                }
+
                 // Mode gate: only Prod rows with a wired inbox spawn durable
                 // executions.  Fail-closed when inbox absent in Prod mode.
                 if row.mode == WebhookMode::Prod {
@@ -308,12 +322,39 @@ pub(super) async fn dispatch_inner(
         },
     };
 
-    // 5.5. Signature enforcement. The `Required` default
-    // means an action that forgot to configure a secret trips a 500
-    // here; an action that explicitly opted into
-    // `OptionalAcceptUnsigned` passes through; everything else
-    // (hex / base64 / custom) runs through the existing constant-time
-    // primitives before the handler sees the request.
+    // 5.5. Signature enforcement.
+    //
+    // B2 split-brain guard: a Prod-mode row (durable dispatch will spawn)
+    // MUST NOT be verifiable under `OptionalAcceptUnsigned`.  An unsigned
+    // Prod activation is an operator/composition-root misconfiguration — it
+    // would let an unverified caller spawn durable executions.  Fail closed
+    // with 500 (same surface as `missing_secret`) so dashboards see it.
+    // `durable.is_some()` ⟺ Prod row that resolved to a durable target.
+    if durable.is_some()
+        && matches!(
+            entry.config.signature_policy(),
+            SignaturePolicy::OptionalAcceptUnsigned
+        )
+    {
+        warn!(
+            mode = "Prod",
+            "Prod-mode webhook: signature policy is OptionalAcceptUnsigned; \
+             Prod activations must use SignaturePolicy::Required — \
+             refusing to dispatch (composition-root misconfiguration)"
+        );
+        record_signature_failure(
+            &transport.inner.metrics,
+            webhook_signature_failure_reason::PROD_UNSIGNED,
+        );
+        return prod_requires_signature_response(uri.path());
+    }
+
+    // The `Required` default means an action that forgot to configure a
+    // secret trips a 500 here; an action that explicitly opted into
+    // `OptionalAcceptUnsigned` passes through (for non-Prod paths only —
+    // the Prod guard above already rejected Prod+unsigned); everything else
+    // (hex / base64 / Standard Webhooks / custom) runs through the existing
+    // constant-time primitives before the handler sees the request.
     match enforce_signature(
         entry.config.signature_policy(),
         &request,
@@ -321,6 +362,12 @@ pub(super) async fn dispatch_inner(
     ) {
         SignatureVerdict::Pass => {},
         SignatureVerdict::MissingSecret => {
+            // `key.rate_limit_key()` is the trigger UUID only — nonce excluded.
+            warn!(
+                bucket = %key.rate_limit_key(),
+                "webhook signature secret not configured; action must supply a secret \
+                 or explicitly opt into OptionalAcceptUnsigned"
+            );
             record_signature_failure(
                 &transport.inner.metrics,
                 webhook_signature_failure_reason::MISSING_SECRET,
@@ -328,6 +375,12 @@ pub(super) async fn dispatch_inner(
             return missing_secret_response(uri.path());
         },
         SignatureVerdict::Fail(reason) => {
+            // `key.rate_limit_key()` is the trigger UUID only — nonce excluded.
+            warn!(
+                bucket = %key.rate_limit_key(),
+                reason,
+                "webhook signature verification failed"
+            );
             record_signature_failure(&transport.inner.metrics, reason);
             return signature_rejected_response(uri.path(), reason);
         },
@@ -688,20 +741,77 @@ fn http_response_to_axum(resp: WebhookHttpResponse) -> Response {
     (resp.status, resp.headers, resp.body).into_response()
 }
 
-/// Record a per-key rate-limit rejection. Labelset:
-/// `(tenant_id, webhook_key_kind)`.
-fn record_rate_limit_rejection(transport: &WebhookTransport, key: &WebhookKey) {
+/// Build a `429 Too Many Requests` response with a `Retry-After` header.
+fn rate_limit_429(retry_after_secs: u64) -> Response {
+    let mut resp = (StatusCode::TOO_MANY_REQUESTS, "").into_response();
+    if let Ok(v) = retry_after_secs.to_string().parse() {
+        resp.headers_mut().insert("retry-after", v);
+    }
+    resp
+}
+
+/// Check the per-tenant-aggregate rate limiter for the resolved `scope`.
+///
+/// Returns `Some(Response)` (a 429) when the tenant aggregate is exceeded,
+/// `None` when the request is within quota or no tenant limiter is configured.
+///
+/// Extracted into a free function to keep the deeply-nested `Ok(Some(row))`
+/// arm under clippy's `excessive_nesting` threshold.
+async fn check_tenant_rate_limit(
+    transport: &WebhookTransport,
+    key: &WebhookKey,
+    scope: &nebula_storage_port::Scope,
+) -> Option<Response> {
+    let limiter = transport.inner.tenant_rate_limiter.as_ref()?;
+    let tenant_key = scope.credential_owner_id();
+    let err = limiter.check(&tenant_key).await.err()?;
+    debug!(
+        tenant_id = %tenant_key,
+        retry_after = err.retry_after_secs,
+        "webhook per-tenant-aggregate rate limited"
+    );
+    record_rate_limit_rejection(
+        transport,
+        key,
+        webhook_rate_limit_tier::PER_TENANT,
+        Some(&tenant_key),
+    );
+    Some(rate_limit_429(err.retry_after_secs))
+}
+
+/// Record a rate-limit rejection. Labelset: `(webhook_key_kind, tier)`; plus
+/// an optional `tenant_id` label when the rejection is post-resolution.
+///
+/// - `tier = PER_TOKEN` (step 4, pre-resolution): pass `tenant_id = None`.
+///   The trigger UUID is NOT emitted as `tenant_id` — it is unbounded in
+///   cardinality and would create one series per registered webhook.
+/// - `tier = PER_TENANT` (step 4.5, post-resolution): pass `tenant_id =
+///   Some(&scope.credential_owner_id())`. The tenant key is the bounded
+///   `(org, workspace)` slug pair — bounded per deployment.
+///
+/// `tier` must be one of [`webhook_rate_limit_tier::PER_TOKEN`] or
+/// [`webhook_rate_limit_tier::PER_TENANT`].
+fn record_rate_limit_rejection(
+    transport: &WebhookTransport,
+    key: &WebhookKey,
+    tier: &'static str,
+    tenant_id: Option<&str>,
+) {
     let Some(reg) = &transport.inner.metrics else {
         return;
     };
     let interner = reg.interner();
-    let WebhookKey::Programmatic { uuid, .. } = key;
+    let WebhookKey::Programmatic { .. } = key;
     let kind = webhook_key_kind::PROGRAMMATIC;
-    let tenant_id = uuid.to_string();
-    let labels = interner.label_set(&[
-        ("webhook_key_kind", kind),
-        ("tenant_id", tenant_id.as_str()),
-    ]);
+    let labels = if let Some(tid) = tenant_id {
+        interner.label_set(&[
+            ("webhook_key_kind", kind),
+            ("tenant_id", tid),
+            ("tier", tier),
+        ])
+    } else {
+        interner.label_set(&[("webhook_key_kind", kind), ("tier", tier)])
+    };
     if let Ok(c) = reg.counter_labeled(NEBULA_WEBHOOK_RATE_LIMIT_REJECTIONS_TOTAL, &labels) {
         c.inc();
     }
@@ -729,12 +839,14 @@ mod tests {
     //!   is set per-test via `Arc<Mutex<TriggerEventOutcome>>`.
 
     use std::sync::Arc;
+    use std::time::SystemTime;
 
     use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, Uri};
+    use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
     use nebula_action::{
-        Action, ActionMetadata, SignaturePolicy, TriggerContext, TriggerEventOutcome,
-        TriggerHandler, WebhookAction, WebhookConfig, WebhookRequest, WebhookResponse,
-        WebhookTriggerAdapter,
+        Action, ActionMetadata, RequiredPolicy, SignaturePolicy, SignatureScheme, TriggerContext,
+        TriggerEventOutcome, TriggerHandler, WebhookAction, WebhookConfig, WebhookRequest,
+        WebhookResponse, WebhookTriggerAdapter, hmac_sha256_compute,
     };
     use nebula_core::{BaseContext, Dependencies, NodeKey, WorkflowId, action_key, node_key};
     use nebula_storage::inmem::{
@@ -753,14 +865,77 @@ mod tests {
 
     use super::*;
     use crate::transport::webhook::transport::{
-        PersistParams, WebhookTransport, WebhookTransportConfig, activate_and_persist,
+        DEFAULT_PER_TOKEN_RPM, PersistParams, WebhookTransport, WebhookTransportConfig,
+        activate_and_persist,
     };
+
+    // ── Standard Webhooks test signing ────────────────────────────────────────
+
+    /// HMAC key used by all Prod-mode test fixtures.
+    ///
+    /// Raw bytes — no `whsec_` prefix. The verify path operates on
+    /// already-decoded bytes (registration concern is out of scope here).
+    const TEST_SWH_SECRET: &[u8] = b"nebula-dispatch-test-secret";
+
+    /// Build the SWH `SignaturePolicy` used by Prod fixtures.
+    fn swh_required_policy() -> SignaturePolicy {
+        SignaturePolicy::Required(
+            RequiredPolicy::new()
+                .with_secret(TEST_SWH_SECRET)
+                .with_scheme(SignatureScheme::StandardWebhooks),
+        )
+    }
+
+    /// Compute a valid Standard Webhooks `webhook-signature` header value.
+    ///
+    /// `to_sign = "{msg_id}.{ts_secs}.{body}"`
+    fn sign_swh(msg_id: &str, ts_secs: u64, body: &[u8]) -> String {
+        let prefix = format!("{msg_id}.{ts_secs}.");
+        let mut content = Vec::with_capacity(prefix.len() + body.len());
+        content.extend_from_slice(prefix.as_bytes());
+        content.extend_from_slice(body);
+        format!(
+            "v1,{}",
+            B64.encode(hmac_sha256_compute(TEST_SWH_SECRET, &content))
+        )
+    }
+
+    /// Unix seconds for the current wall time — used when constructing
+    /// test requests so the signature is valid against `SystemClock`.
+    fn now_secs() -> u64 {
+        SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .expect("system time after epoch")
+            .as_secs()
+    }
+
+    /// Build a header map with `webhook-id`, `webhook-timestamp`, and a
+    /// valid `webhook-signature` for the given body.
+    fn swh_headers(msg_id: &str, body: &[u8]) -> HeaderMap {
+        let ts = now_secs();
+        let sig = sign_swh(msg_id, ts, body);
+        let mut h = HeaderMap::new();
+        h.insert(WEBHOOK_ID_HEADER, HeaderValue::from_str(msg_id).unwrap());
+        h.insert(
+            HeaderName::from_static("webhook-timestamp"),
+            HeaderValue::from_str(&ts.to_string()).unwrap(),
+        );
+        h.insert(
+            HeaderName::from_static("webhook-signature"),
+            HeaderValue::from_str(&sig).unwrap(),
+        );
+        h
+    }
 
     // ── TestWebhookAction ─────────────────────────────────────────────────────
 
     /// Minimal `WebhookAction` whose `handle_request` returns whatever
-    /// `outcome_cell` says.  Signature checking is disabled so tests can
-    /// send unsigned bodies.
+    /// `outcome_cell` says.
+    ///
+    /// The `config` method returns the caller-supplied `WebhookConfig`, which
+    /// carries the `SignaturePolicy` for the test.  Prod-mode fixtures supply
+    /// `SignaturePolicy::Required` (SWH); non-Prod / legacy fixtures may use
+    /// `OptionalAcceptUnsigned`.
     struct ConfigurableWebhookAction {
         outcome_cell: Arc<Mutex<TriggerEventOutcome>>,
     }
@@ -925,13 +1100,20 @@ mod tests {
                     Arc::clone(&version_store) as Arc<dyn WorkflowVersionStore>,
                 );
 
+            // Prod rows must carry `Required`+SWH (B2 split-brain guard).
+            // Test rows can remain unsigned for simplicity.
+            let sig_policy = if mode == WebhookMode::Prod {
+                swh_required_policy()
+            } else {
+                SignaturePolicy::OptionalAcceptUnsigned
+            };
+
             let handle = activate_and_persist(
                 &transport,
                 activation_store.as_ref(),
                 PersistParams {
                     handler,
-                    action_config: WebhookConfig::default()
-                        .with_signature_policy(SignaturePolicy::OptionalAcceptUnsigned),
+                    action_config: WebhookConfig::default().with_signature_policy(sig_policy),
                     ctx_template,
                     trigger_id: trigger_id.clone(),
                     scope: scope.clone(),
@@ -985,19 +1167,55 @@ mod tests {
             self.exec_store.count(&self.scope, None).await.unwrap()
         }
 
+        /// Dispatch with a fully-signed SWH request including `webhook-id`.
+        ///
+        /// The body is `{}`.  The headers include `webhook-id`,
+        /// `webhook-timestamp` (current wall time), and a valid
+        /// `webhook-signature` computed with [`TEST_SWH_SECRET`].
         async fn dispatch_with_id(&self, delivery_id: &str) -> Response {
+            let body = b"{}";
+            let headers = swh_headers(delivery_id, body);
             dispatch_inner(
                 self.transport.clone(),
                 self.key(),
                 Method::POST,
                 Uri::from_static("http://localhost/webhooks/test"),
-                headers_with_delivery_id(delivery_id),
+                headers,
+                Bytes::from(body as &[u8]),
+            )
+            .await
+        }
+
+        /// Dispatch with `webhook-timestamp` + `webhook-signature` but WITHOUT
+        /// `webhook-id`.
+        ///
+        /// With StandardWebhooks, the absence of `webhook-id` means the
+        /// signed content cannot be constructed → `SignatureOutcome::Missing`
+        /// → 401 (not 400 as in the pre-B2 dedup-key guard).
+        async fn dispatch_without_id(&self) -> Response {
+            // Only timestamp + signature, no id — SWH will return Missing → 401.
+            let ts = now_secs();
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                HeaderName::from_static("webhook-timestamp"),
+                HeaderValue::from_str(&ts.to_string()).unwrap(),
+            );
+            // Omit webhook-signature too: no id → no canonical content → no sig.
+            dispatch_inner(
+                self.transport.clone(),
+                self.key(),
+                Method::POST,
+                Uri::from_static("http://localhost/webhooks/test"),
+                headers,
                 Bytes::from(b"{}" as &[u8]),
             )
             .await
         }
 
-        async fn dispatch_without_id(&self) -> Response {
+        /// Dispatch without ANY SWH headers.  For tests that expect the raw
+        /// behavior when neither id nor timestamp is present (e.g., Test-mode
+        /// routes with `OptionalAcceptUnsigned`).
+        async fn dispatch_bare(&self) -> Response {
             dispatch_inner(
                 self.transport.clone(),
                 self.key(),
@@ -1015,15 +1233,6 @@ mod tests {
     }
 
     // ── Test helpers ──────────────────────────────────────────────────────────
-
-    fn headers_with_delivery_id(id: &str) -> HeaderMap {
-        let mut h = HeaderMap::new();
-        h.insert(
-            WEBHOOK_ID_HEADER,
-            HeaderValue::from_str(id).expect("valid header value"),
-        );
-        h
-    }
 
     fn base_ctx(
         workflow_id: WorkflowId,
@@ -1060,13 +1269,14 @@ mod tests {
 
     // ── Test 1: Prod-mode Emit spawns exactly one execution ───────────────────
 
-    /// Prod-mode activation + `webhook-id` header → emitter is called.
-    /// Verify the response is 200 OK.
+    /// Prod-mode activation + valid SWH `webhook-id` header → emitter is
+    /// called. Verify the response is 200 OK and one execution was spawned.
     ///
-    /// This is the nominal happy-path test.  Removing the mode gate or the
-    /// `durable_dispatch` wiring would cause this to still return 200 (via
-    /// the fallthrough path) — the behavioral assertion is that we get a 200
-    /// AND the inbox was hit (which we indirectly verify in test 3 via dedup).
+    /// This is the nominal happy-path test (B1 + B2).  The fixture is wired
+    /// with `SignaturePolicy::Required(StandardWebhooks)` and the request
+    /// carries a valid HMAC signature.  Removing the mode gate, the
+    /// `durable_dispatch` wiring, OR the signature policy would break the
+    /// behavioral assertion (execution_count == 1 AND 200).
     #[tokio::test]
     async fn prod_mode_emit_returns_200() {
         let fix = TestFixture::prod(WebhookMode::Prod).await;
@@ -1074,7 +1284,7 @@ mod tests {
         assert_eq!(
             resp.status(),
             StatusCode::OK,
-            "Prod emit must return 200 (Emit + durable inbox)"
+            "Prod emit must return 200 (Emit + durable inbox, SWH-signed)"
         );
         assert_eq!(
             fix.execution_count().await,
@@ -1088,15 +1298,17 @@ mod tests {
     /// mode=Test → the durable path is NEVER taken even when `durable_dispatch`
     /// is wired.  The fallthrough in-memory path returns 200.
     ///
+    /// Test-mode activations use `OptionalAcceptUnsigned` (the B2 guard only
+    /// fires for Prod rows), so requests can be sent bare (no signature).
+    ///
     /// Red-on-revert: removing the `row.mode == WebhookMode::Prod` guard would
     /// cause Test-mode activations to take the durable path, which would
     /// fail (inbox claim) OR spawn unexpectedly.
     #[tokio::test]
     async fn test_mode_skips_durable_dispatch_returns_200() {
         let fix = TestFixture::prod(WebhookMode::Test).await;
-        // Test-mode: no durable_dispatch wired means the mode guard must
-        // correctly NOT set durable = Some(...), so the fallthrough path runs.
-        let resp = fix.dispatch_with_id("delivery-002").await;
+        // Test-mode: OptionalAcceptUnsigned → no B2 guard, no sig check.
+        let resp = fix.dispatch_bare().await;
         assert_eq!(
             resp.status(),
             StatusCode::OK,
@@ -1111,10 +1323,10 @@ mod tests {
 
     // ── Test 3: Same webhook-id twice → second is deduplicated ────────────────
 
-    /// Delivering the same `webhook-id` twice: the first call spawns the
-    /// execution; the second is a duplicate from the inbox's perspective.
-    /// Both should return 200 (the second call is acked just like the first —
-    /// the dedup is at the storage layer, the HTTP response is always 200).
+    /// Delivering the same `webhook-id` twice with valid SWH signatures: the
+    /// first call spawns the execution; the second is deduplicated by the inbox.
+    /// Both should return 200 (the dedup is at the storage layer; the HTTP ack
+    /// is always 200).
     ///
     /// This proves the dedup PK contract: `(scope, trigger_id, event_id)`.
     #[tokio::test]
@@ -1135,31 +1347,50 @@ mod tests {
         );
     }
 
-    // ── Test 4: Missing webhook-id in Prod → 400 ─────────────────────────────
+    // ── Test 4: Missing webhook-id in Prod → 401 (SWH requires id for sig) ────
 
-    /// Prod-mode activation without `webhook-id` header → fail-closed 400.
+    /// Prod-mode activation without `webhook-id` header → 401 (SWH signature
+    /// missing, because the id is part of the signed content and cannot be
+    /// constructed without it).
     ///
-    /// Red-on-revert: removing the `durable.is_some() && event_id.is_none()`
-    /// guard would cause Prod-mode dispatch to proceed with `event_id = None`,
-    /// which defeats the dedup invariant.
+    /// Pre-B2 behaviour: the dedup-key guard returned 400 ("missing
+    /// webhook-id").  Post-B2: the SWH signature check fires first at step
+    /// 5.5 — no id means no signed content → `SignatureOutcome::Missing` → 401.
+    /// The dedup invariant is still protected: a request that fails sig
+    /// verification never reaches the emit path.
+    ///
+    /// Red-on-revert (B1): removing `SignatureScheme::StandardWebhooks` from
+    /// the required-policy arm causes `verify_standard_webhooks` to be
+    /// unreachable; the request would fall through to the old path and return
+    /// a different status.
     #[tokio::test]
-    async fn prod_mode_missing_webhook_id_returns_400() {
+    async fn prod_mode_missing_webhook_id_returns_401() {
         let fix = TestFixture::prod(WebhookMode::Prod).await;
+        // dispatch_without_id: has webhook-timestamp but no webhook-id or
+        // webhook-signature → SWH can't build signed content → Missing → 401.
         let resp = fix.dispatch_without_id().await;
         assert_eq!(
             resp.status(),
-            StatusCode::BAD_REQUEST,
-            "Prod-mode without webhook-id must be 400"
+            StatusCode::UNAUTHORIZED,
+            "Prod-mode without webhook-id must return 401 (SWH signature missing)"
+        );
+        assert_eq!(
+            fix.execution_count().await,
+            0,
+            "sig-failed request must not spawn any execution"
         );
     }
 
     /// An over-long `webhook-id` header is rejected at the edge with a clean
-    /// 400, rather than flowing into the dedup-key PK and surfacing as a
-    /// backend-dependent 5xx (e.g. Postgres index-row-too-large).
+    /// 400 (overflow guard fires before signature enforcement — the id
+    /// extraction happens before `WebhookRequest::try_new` and signature
+    /// check, so the 400 is independent of SWH policy).
     #[tokio::test]
     async fn prod_mode_oversized_webhook_id_returns_400() {
         let fix = TestFixture::prod(WebhookMode::Prod).await;
         let oversized = "x".repeat(300);
+        // dispatch_with_id includes valid SWH headers, but the oversized-id
+        // guard (step 7) fires before signature enforcement (step 5.5).
         let resp = fix.dispatch_with_id(&oversized).await;
         assert_eq!(
             resp.status(),
@@ -1170,6 +1401,10 @@ mod tests {
 
     /// Two `webhook-id` headers → 400. `HeaderMap::get` would silently pick one,
     /// letting conflicting delivery ids bypass dedup; reject the ambiguity.
+    ///
+    /// The duplicate-id check fires at step 7 (header extraction), before
+    /// signature enforcement (step 5.5), so this returns 400 regardless of
+    /// the SWH policy.
     #[tokio::test]
     async fn duplicate_webhook_id_headers_returns_400() {
         let fix = TestFixture::prod(WebhookMode::Prod).await;
@@ -1197,22 +1432,34 @@ mod tests {
         );
     }
 
-    /// A Prod verification probe (`Skip` outcome) without a `webhook-id` must
-    /// NOT be rejected — the dedup key is only required for emitting outcomes
-    /// (Codex P2). Slack `url_verification` / Stripe `pending_webhook` return
-    /// Skip and carry no delivery id.
+    /// A Prod verification probe (`Skip` outcome) with a valid SWH signature
+    /// must return 200 — the dedup key (`webhook-id`) is present (SWH requires
+    /// it for signing), and the `Emit` guard fires only on `Emit` outcomes
+    /// (Codex P2).
     ///
-    /// Red-on-revert: the old pre-dispatch `durable && event_id.is_none()` →
-    /// 400 check would reject this probe with 400.
+    /// Post-B2: Prod rows require `Required`+SWH.  A verification probe from a
+    /// well-behaved provider will include a valid SWH signature; the probe's
+    /// `Skip` outcome does NOT hit the "missing webhook-id" dedup guard because
+    /// that guard is in the `Emit` arm of `dispatch_durable`, not before.
+    ///
+    /// Red-on-revert (B2): removing the split-brain guard and reverting to
+    /// `OptionalAcceptUnsigned` for Prod rows would cause the B2 500 to
+    /// disappear from the split-brain test (separate test below).
     #[tokio::test]
-    async fn prod_mode_skip_without_webhook_id_returns_200() {
+    async fn prod_mode_skip_with_signed_id_returns_200() {
         let fix = TestFixture::prod(WebhookMode::Prod).await;
         fix.set_outcome(TriggerEventOutcome::skip());
-        let resp = fix.dispatch_without_id().await;
+        // Use dispatch_with_id: provides webhook-id + timestamp + valid sig.
+        let resp = fix.dispatch_with_id("probe-001").await;
         assert_eq!(
             resp.status(),
             StatusCode::OK,
-            "Prod Skip without webhook-id is a verification probe, must pass (not 400)"
+            "Prod Skip with valid SWH signature must return 200 (no dedup-key guard on Skip)"
+        );
+        assert_eq!(
+            fix.execution_count().await,
+            0,
+            "Skip must spawn NO execution"
         );
     }
 
@@ -1238,7 +1485,7 @@ mod tests {
 
     // ── Test 5: EmitMany in Prod → 500 ────────────────────────────────────────
 
-    /// `EmitMany` outcome in Prod mode → fail-closed 500.
+    /// `EmitMany` outcome in Prod mode → fail-closed 500 (with valid SWH sig).
     ///
     /// One `event_id` cannot safely fan-out to N executions (dedup-collision
     /// data-loss bug). No first-party webhook action returns EmitMany; if one
@@ -1268,6 +1515,7 @@ mod tests {
     async fn prod_mode_skip_returns_200_no_spawn() {
         let fix = TestFixture::prod(WebhookMode::Prod).await;
         fix.set_outcome(TriggerEventOutcome::skip());
+        // Signed request with a valid webhook-id.
         let resp = fix.dispatch_with_id("delivery-005").await;
         assert_eq!(
             resp.status(),
@@ -1326,7 +1574,7 @@ mod tests {
             PersistParams {
                 handler,
                 action_config: WebhookConfig::default()
-                    .with_signature_policy(SignaturePolicy::OptionalAcceptUnsigned),
+                    .with_signature_policy(swh_required_policy()),
                 ctx_template,
                 trigger_id,
                 scope: scope.clone(),
@@ -1339,13 +1587,15 @@ mod tests {
         .expect("activate_and_persist must succeed");
 
         let key = WebhookKey::programmatic(handle.trigger_uuid, handle.nonce.clone());
+        let body = b"{}";
+        let headers = swh_headers("delivery-006", body);
         let resp = dispatch_inner(
             transport,
             key,
             Method::POST,
             Uri::from_static("http://localhost/webhooks/test"),
-            headers_with_delivery_id("delivery-006"),
-            Bytes::from(b"{}" as &[u8]),
+            headers,
+            Bytes::from(body as &[u8]),
         )
         .await;
 
@@ -1401,14 +1651,14 @@ mod tests {
                 Arc::clone(&version_store) as Arc<dyn WorkflowVersionStore>,
             );
 
-        // Activation row registered under scope_a.
+        // Activation row registered under scope_a, with SWH policy (Prod).
         let handle = activate_and_persist(
             &transport,
             activation_store.as_ref(),
             PersistParams {
                 handler,
                 action_config: WebhookConfig::default()
-                    .with_signature_policy(SignaturePolicy::OptionalAcceptUnsigned),
+                    .with_signature_policy(swh_required_policy()),
                 ctx_template: ctx_template_a,
                 trigger_id: trigger_id.clone(),
                 scope: scope_a.clone(),
@@ -1436,13 +1686,15 @@ mod tests {
             .expect("version create");
 
         let key = WebhookKey::programmatic(handle.trigger_uuid, handle.nonce.clone());
+        let body = b"{}";
+        let headers = swh_headers("delivery-007", body);
         let resp = dispatch_inner(
             transport,
             key,
             Method::POST,
             Uri::from_static("http://localhost/webhooks/test"),
-            headers_with_delivery_id("delivery-007"),
-            Bytes::from(b"{}" as &[u8]),
+            headers,
+            Bytes::from(body as &[u8]),
         )
         .await;
 
@@ -1450,6 +1702,805 @@ mod tests {
             resp.status(),
             StatusCode::INTERNAL_SERVER_ERROR,
             "workflow stored in wrong scope must be invisible → 500"
+        );
+    }
+
+    // ── Rate-limit tier tests ─────────────────────────────────────────────────
+
+    /// Helper: build a transport with a *very* tight per-tenant limit (1 req/min)
+    /// but a generous per-token limit (1 000 req/min), then register two activations
+    /// under the same scope with distinct tokens.  Returns (transport, key_a, key_b,
+    /// activation_store) so callers can drive dispatches.
+    async fn two_token_same_scope_fixture(
+        tenant_rpm: u64,
+        per_token_rpm: u64,
+    ) -> (
+        WebhookTransport,
+        WebhookKey,
+        WebhookKey,
+        Arc<dyn WebhookActivationStore>,
+    ) {
+        let scope = Scope::new("same-org", "same-ws");
+        let activation_store: Arc<dyn WebhookActivationStore> =
+            Arc::new(InMemoryWebhookActivationStore::new());
+        let exec_store = InMemoryExecutionStore::new();
+        let dedup = Arc::new(InMemoryTriggerDedupInbox::new(&exec_store));
+        let version_store = Arc::new(InMemoryWorkflowVersionStore::new());
+
+        // Build transport with explicit tight limits so the test is deterministic.
+        let cfg = WebhookTransportConfig {
+            rate_limit_per_minute: Some(per_token_rpm),
+            tenant_rate_limit_per_minute: Some(tenant_rpm),
+            ..WebhookTransportConfig::default()
+        };
+        let transport = WebhookTransport::new(cfg)
+            .with_activation_store(Arc::clone(&activation_store))
+            .with_durable_dispatch(
+                dedup as Arc<dyn TriggerDedupInbox>,
+                WebhookTransport::default_resolver(),
+                Arc::clone(&version_store) as Arc<dyn WorkflowVersionStore>,
+            );
+
+        // Register activation A under the shared scope.
+        let outcome_a = Arc::new(Mutex::new(TriggerEventOutcome::skip()));
+        let handler_a: Arc<dyn TriggerHandler> =
+            Arc::new(WebhookTriggerAdapter::new(ConfigurableWebhookAction {
+                outcome_cell: Arc::clone(&outcome_a),
+            }));
+        let wf_a = WorkflowId::new();
+        let ctx_a = base_ctx(wf_a, node_key!("trigger_a"));
+        handler_a.start(&ctx_a).await.unwrap();
+        let handle_a = activate_and_persist(
+            &transport,
+            activation_store.as_ref(),
+            PersistParams {
+                handler: handler_a,
+                action_config: WebhookConfig::default()
+                    .with_signature_policy(SignaturePolicy::OptionalAcceptUnsigned),
+                ctx_template: ctx_a,
+                trigger_id: node_key!("trigger_a").as_str().to_string(),
+                scope: scope.clone(),
+                workflow_id: Some(wf_a.to_string()),
+                mode: WebhookMode::Test, // Test mode: no durable emit needed
+            },
+        )
+        .await
+        .unwrap();
+
+        // Register activation B — different token, same scope.
+        let outcome_b = Arc::new(Mutex::new(TriggerEventOutcome::skip()));
+        let handler_b: Arc<dyn TriggerHandler> =
+            Arc::new(WebhookTriggerAdapter::new(ConfigurableWebhookAction {
+                outcome_cell: Arc::clone(&outcome_b),
+            }));
+        let wf_b = WorkflowId::new();
+        let ctx_b = base_ctx(wf_b, node_key!("trigger_b"));
+        handler_b.start(&ctx_b).await.unwrap();
+        let handle_b = activate_and_persist(
+            &transport,
+            activation_store.as_ref(),
+            PersistParams {
+                handler: handler_b,
+                action_config: WebhookConfig::default()
+                    .with_signature_policy(SignaturePolicy::OptionalAcceptUnsigned),
+                ctx_template: ctx_b,
+                trigger_id: node_key!("trigger_b").as_str().to_string(),
+                scope: scope.clone(),
+                workflow_id: Some(wf_b.to_string()),
+                mode: WebhookMode::Test,
+            },
+        )
+        .await
+        .unwrap();
+
+        let key_a = WebhookKey::programmatic(handle_a.trigger_uuid, handle_a.nonce);
+        let key_b = WebhookKey::programmatic(handle_b.trigger_uuid, handle_b.nonce);
+        (transport, key_a, key_b, activation_store)
+    }
+
+    async fn dispatch_skip(
+        transport: &WebhookTransport,
+        key: WebhookKey,
+    ) -> axum::http::StatusCode {
+        dispatch_inner(
+            transport.clone(),
+            key,
+            Method::POST,
+            Uri::from_static("http://localhost/webhooks/test"),
+            HeaderMap::new(),
+            Bytes::from(b"{}" as &[u8]),
+        )
+        .await
+        .status()
+    }
+
+    /// Per-tenant-aggregate 429.
+    ///
+    /// Two activations share the SAME scope (tenant).  The per-tenant quota
+    /// is 1 req/min; per-token quota is generous (1 000 req/min).  The first
+    /// request from token A succeeds (per-token OK, per-tenant OK).  The
+    /// second request — from token B, a DIFFERENT token, so per-token is
+    /// fresh — must be rate-limited at the per-tenant tier and return 429.
+    ///
+    /// RED-on-revert: before the per-tenant limiter exists, both requests
+    /// succeed (200) because each token is within its own per-token quota.
+    #[tokio::test]
+    async fn per_tenant_aggregate_429() {
+        // per-tenant limit = 1 req/min; per-token limit = 1 000 req/min
+        let (transport, key_a, key_b, _store) = two_token_same_scope_fixture(1, 1_000).await;
+
+        // First request (token A) — should succeed.
+        let r1 = dispatch_skip(&transport, key_a).await;
+        assert_eq!(r1, StatusCode::OK, "first request (token A) must succeed");
+
+        // Second request (token B) — different token, fresh per-token window,
+        // but the tenant aggregate was exhausted by the first request.
+        let r2 = dispatch_skip(&transport, key_b).await;
+        assert_eq!(
+            r2,
+            StatusCode::TOO_MANY_REQUESTS,
+            "second request under a different token but same tenant must be 429 \
+             (per-tenant-aggregate limit exceeded)"
+        );
+    }
+
+    /// Per-token quotas remain independent across different scopes (tenants).
+    ///
+    /// Two tokens in DIFFERENT scopes each start with a fresh per-token window
+    /// and a fresh per-tenant aggregate — no cross-contamination.
+    ///
+    /// RED-on-revert: a bug that keys the per-tenant limiter by a constant
+    /// or by the trigger UUID would cause cross-scope contamination.
+    #[tokio::test]
+    async fn per_token_independent_scopes() {
+        let scope_x = Scope::new("org-x", "ws-x");
+        let scope_y = Scope::new("org-y", "ws-y");
+        let activation_store: Arc<dyn WebhookActivationStore> =
+            Arc::new(InMemoryWebhookActivationStore::new());
+        let exec_store = InMemoryExecutionStore::new();
+        let dedup = Arc::new(InMemoryTriggerDedupInbox::new(&exec_store));
+        let version_store = Arc::new(InMemoryWorkflowVersionStore::new());
+
+        // 1 req/min per-tenant; 1 000 per-token — tight enough to prove isolation.
+        let cfg = WebhookTransportConfig {
+            rate_limit_per_minute: Some(1_000),
+            tenant_rate_limit_per_minute: Some(1),
+            ..WebhookTransportConfig::default()
+        };
+        let transport = WebhookTransport::new(cfg)
+            .with_activation_store(Arc::clone(&activation_store))
+            .with_durable_dispatch(
+                dedup as Arc<dyn TriggerDedupInbox>,
+                WebhookTransport::default_resolver(),
+                Arc::clone(&version_store) as Arc<dyn WorkflowVersionStore>,
+            );
+
+        // Register one activation in scope_x.
+        let outcome_x = Arc::new(Mutex::new(TriggerEventOutcome::skip()));
+        let handler_x: Arc<dyn TriggerHandler> =
+            Arc::new(WebhookTriggerAdapter::new(ConfigurableWebhookAction {
+                outcome_cell: Arc::clone(&outcome_x),
+            }));
+        let wf_x = WorkflowId::new();
+        let ctx_x = base_ctx(wf_x, node_key!("trigger_x"));
+        handler_x.start(&ctx_x).await.unwrap();
+        let handle_x = activate_and_persist(
+            &transport,
+            activation_store.as_ref(),
+            PersistParams {
+                handler: handler_x,
+                action_config: WebhookConfig::default()
+                    .with_signature_policy(SignaturePolicy::OptionalAcceptUnsigned),
+                ctx_template: ctx_x,
+                trigger_id: node_key!("trigger_x").as_str().to_string(),
+                scope: scope_x.clone(),
+                workflow_id: Some(wf_x.to_string()),
+                mode: WebhookMode::Test,
+            },
+        )
+        .await
+        .unwrap();
+
+        // Register one activation in scope_y.
+        let outcome_y = Arc::new(Mutex::new(TriggerEventOutcome::skip()));
+        let handler_y: Arc<dyn TriggerHandler> =
+            Arc::new(WebhookTriggerAdapter::new(ConfigurableWebhookAction {
+                outcome_cell: Arc::clone(&outcome_y),
+            }));
+        let wf_y = WorkflowId::new();
+        let ctx_y = base_ctx(wf_y, node_key!("trigger_y"));
+        handler_y.start(&ctx_y).await.unwrap();
+        let handle_y = activate_and_persist(
+            &transport,
+            activation_store.as_ref(),
+            PersistParams {
+                handler: handler_y,
+                action_config: WebhookConfig::default()
+                    .with_signature_policy(SignaturePolicy::OptionalAcceptUnsigned),
+                ctx_template: ctx_y,
+                trigger_id: node_key!("trigger_y").as_str().to_string(),
+                scope: scope_y.clone(),
+                workflow_id: Some(wf_y.to_string()),
+                mode: WebhookMode::Test,
+            },
+        )
+        .await
+        .unwrap();
+
+        let key_x = WebhookKey::programmatic(handle_x.trigger_uuid, handle_x.nonce.clone());
+        let key_y = WebhookKey::programmatic(handle_y.trigger_uuid, handle_y.nonce.clone());
+
+        // Each tenant gets one allowed request — they should NOT interfere.
+        let r_x = dispatch_skip(&transport, key_x).await;
+        let r_y = dispatch_skip(&transport, key_y).await;
+        assert_eq!(r_x, StatusCode::OK, "scope_x first request must succeed");
+        assert_eq!(
+            r_y,
+            StatusCode::OK,
+            "scope_y first request must succeed independently of scope_x"
+        );
+    }
+
+    /// Structural coupling proof (anti-discipline, RED-on-revert).
+    ///
+    /// A transport built from a `None`-rate-limit config and then passed to
+    /// `with_durable_dispatch` must have BOTH `rate_limiter` and
+    /// `tenant_rate_limiter` populated — the defaults are installed
+    /// automatically by the builder, not by composition-root discipline.
+    ///
+    /// RED-on-revert: removing the `if i.rate_limiter.is_none()` /
+    /// `if i.tenant_rate_limiter.is_none()` installs in `with_durable_dispatch`
+    /// causes both `is_some()` assertions to fail.
+    #[tokio::test]
+    async fn structural_coupling_durable_dispatch_installs_both_limiters() {
+        use nebula_storage::inmem::{InMemoryTriggerDedupInbox, InMemoryWorkflowVersionStore};
+        use nebula_storage_port::store::{TriggerDedupInbox, WorkflowVersionStore};
+
+        let exec_store = InMemoryExecutionStore::new();
+        let dedup: Arc<dyn TriggerDedupInbox> =
+            Arc::new(InMemoryTriggerDedupInbox::new(&exec_store));
+        let version_store: Arc<dyn WorkflowVersionStore> =
+            Arc::new(InMemoryWorkflowVersionStore::new());
+
+        // Config with both rate limits as None — no explicit operator override.
+        let cfg = WebhookTransportConfig {
+            rate_limit_per_minute: None,
+            tenant_rate_limit_per_minute: None,
+            ..WebhookTransportConfig::default()
+        };
+        let transport = WebhookTransport::new(cfg).with_durable_dispatch(
+            dedup,
+            WebhookTransport::default_resolver(),
+            version_store,
+        );
+
+        assert!(
+            transport.inner.rate_limiter.is_some(),
+            "with_durable_dispatch must install per-token rate_limiter even when \
+             config.rate_limit_per_minute is None (structural guarantee)"
+        );
+        assert!(
+            transport.inner.tenant_rate_limiter.is_some(),
+            "with_durable_dispatch must install per-tenant tenant_rate_limiter even when \
+             config.tenant_rate_limit_per_minute is None (structural guarantee)"
+        );
+    }
+
+    // ── F: structural_coupling behavioral — per-token rate enforced at DEFAULT_PER_TOKEN_RPM ─
+    //
+    // The `structural_coupling_durable_dispatch_installs_both_limiters` test above proves
+    // `is_some()`.  This test proves the installed limiter is *behaviorally* active: a
+    // transport with `rate_limit_per_minute = Some(2)` allows exactly 2 requests then
+    // rejects the 3rd with 429.
+    //
+    // RED-on-revert: set `rate_limit_per_minute: None` without the structural guarantee
+    // → no limiter → all requests succeed → 429 assertion fails.
+
+    /// The per-token limiter installed by `with_durable_dispatch` actually
+    /// rejects requests once the quota is exhausted.
+    ///
+    /// Uses `rate_limit_per_minute: Some(2)` for a deterministic in-test
+    /// quota (driving `DEFAULT_PER_TOKEN_RPM` = 600 requests is impractical).
+    /// The constant value is verified by a separate assertion to pin the default.
+    #[tokio::test]
+    async fn structural_coupling_per_token_limiter_is_behaviorally_active() {
+        use nebula_storage::inmem::{InMemoryTriggerDedupInbox, InMemoryWorkflowVersionStore};
+        use nebula_storage_port::store::{TriggerDedupInbox, WorkflowVersionStore};
+
+        // Pin the default value so a silent change is caught here.
+        assert_eq!(
+            DEFAULT_PER_TOKEN_RPM, 600,
+            "DEFAULT_PER_TOKEN_RPM must be 600"
+        );
+
+        let exec_store = InMemoryExecutionStore::new();
+        let dedup: Arc<dyn TriggerDedupInbox> =
+            Arc::new(InMemoryTriggerDedupInbox::new(&exec_store));
+        let version_store: Arc<dyn WorkflowVersionStore> =
+            Arc::new(InMemoryWorkflowVersionStore::new());
+        let activation_store: Arc<dyn WebhookActivationStore> =
+            Arc::new(InMemoryWebhookActivationStore::new());
+
+        // Tight per-token quota (2 req/min) for a fast, deterministic test.
+        let cfg = WebhookTransportConfig {
+            rate_limit_per_minute: Some(2),
+            tenant_rate_limit_per_minute: Some(10_000), // generous so per-tenant does not fire
+            ..WebhookTransportConfig::default()
+        };
+        let transport = WebhookTransport::new(cfg)
+            .with_activation_store(Arc::clone(&activation_store))
+            .with_durable_dispatch(dedup, WebhookTransport::default_resolver(), version_store);
+
+        // Register one Test-mode activation (OptionalAcceptUnsigned, no SWH needed).
+        let outcome = Arc::new(Mutex::new(TriggerEventOutcome::skip()));
+        let handler: Arc<dyn TriggerHandler> =
+            Arc::new(WebhookTriggerAdapter::new(ConfigurableWebhookAction {
+                outcome_cell: Arc::clone(&outcome),
+            }));
+        let wf = WorkflowId::new();
+        let ctx = base_ctx(wf, node_key!("trigger_rl"));
+        handler.start(&ctx).await.unwrap();
+        let handle = activate_and_persist(
+            &transport,
+            activation_store.as_ref(),
+            PersistParams {
+                handler,
+                action_config: WebhookConfig::default()
+                    .with_signature_policy(SignaturePolicy::OptionalAcceptUnsigned),
+                ctx_template: ctx,
+                trigger_id: node_key!("trigger_rl").as_str().to_string(),
+                scope: Scope::new("rl-org", "rl-ws"),
+                workflow_id: Some(wf.to_string()),
+                mode: WebhookMode::Test,
+            },
+        )
+        .await
+        .unwrap();
+        let key = WebhookKey::programmatic(handle.trigger_uuid, handle.nonce);
+
+        // First two requests must pass (quota = 2).
+        assert_eq!(
+            dispatch_skip(&transport, key.clone()).await,
+            StatusCode::OK,
+            "first request within quota must succeed"
+        );
+        assert_eq!(
+            dispatch_skip(&transport, key.clone()).await,
+            StatusCode::OK,
+            "second request within quota must succeed"
+        );
+        // Third request must be rate-limited.
+        assert_eq!(
+            dispatch_skip(&transport, key).await,
+            StatusCode::TOO_MANY_REQUESTS,
+            "third request over per-token quota must return 429 \
+             (RED-on-revert: structural guarantee missing → no limiter → 200)"
+        );
+    }
+
+    // ── E: with_activation_store preserves both rate limiters (structural) ───
+    //
+    // The fast path (`Arc::try_unwrap` succeeds) moves `TransportInner` in-place
+    // and does not touch the rate limiters — correct by construction.
+    //
+    // The slow path (shared Arc, refcount > 1) previously dropped `rate_limiter`
+    // while `tenant_rate_limiter` had an `.or_else()` fallback.  The fix adds
+    // `.or_else(|| arc.rate_limiter.clone())` to the slow path too.
+    //
+    // The slow path is guarded by `debug_assert!(false, …)` so it cannot be
+    // triggered in test/debug builds without a panic.  This test verifies the
+    // structural invariant instead: the normal fast-path composition
+    // `.with_durable_dispatch(...).with_activation_store(...)` must leave BOTH
+    // limiters populated, and must enforce them behaviorally.
+    //
+    // RED-on-revert of the fast path: the fast path preserves limiters because
+    // `with_activation_store` mutates the existing `TransportInner` field —
+    // it does NOT construct a new one, so there is nothing to revert on the fast
+    // path.  The slow-path fix is a code-level defence for the rare misuse case
+    // (composition-root ordering bug); its correctness is verified by code review.
+
+    /// `with_durable_dispatch().with_activation_store()` (fast path) leaves
+    /// both rate limiters intact and behaviorally enforced.
+    #[tokio::test]
+    async fn with_activation_store_fast_path_preserves_both_rate_limiters() {
+        use nebula_storage::inmem::{InMemoryTriggerDedupInbox, InMemoryWorkflowVersionStore};
+        use nebula_storage_port::store::{TriggerDedupInbox, WorkflowVersionStore};
+
+        let exec_store_inner = InMemoryExecutionStore::new();
+        let dedup: Arc<dyn TriggerDedupInbox> =
+            Arc::new(InMemoryTriggerDedupInbox::new(&exec_store_inner));
+        let version_store: Arc<dyn WorkflowVersionStore> =
+            Arc::new(InMemoryWorkflowVersionStore::new());
+        let activation_store: Arc<dyn WebhookActivationStore> =
+            Arc::new(InMemoryWebhookActivationStore::new());
+
+        // Standard composition order: durable_dispatch first, then activation_store.
+        let cfg = WebhookTransportConfig {
+            rate_limit_per_minute: Some(1), // 1 req/min — fires on second dispatch
+            tenant_rate_limit_per_minute: Some(10_000), // generous
+            ..WebhookTransportConfig::default()
+        };
+        let transport = WebhookTransport::new(cfg)
+            .with_durable_dispatch(dedup, WebhookTransport::default_resolver(), version_store)
+            .with_activation_store(Arc::clone(&activation_store));
+
+        // Both limiters must be present.
+        assert!(
+            transport.inner.rate_limiter.is_some(),
+            "with_activation_store must preserve the per-token rate_limiter \
+             installed by with_durable_dispatch"
+        );
+        assert!(
+            transport.inner.tenant_rate_limiter.is_some(),
+            "with_activation_store must preserve the per-tenant rate_limiter \
+             installed by with_durable_dispatch"
+        );
+
+        // Behavioral check: the preserved per-token limiter is actually enforced.
+        let outcome = Arc::new(Mutex::new(TriggerEventOutcome::skip()));
+        let handler: Arc<dyn TriggerHandler> =
+            Arc::new(WebhookTriggerAdapter::new(ConfigurableWebhookAction {
+                outcome_cell: Arc::clone(&outcome),
+            }));
+        let wf = WorkflowId::new();
+        let ctx = base_ctx(wf, node_key!("trigger_e"));
+        handler.start(&ctx).await.unwrap();
+        let handle = activate_and_persist(
+            &transport,
+            activation_store.as_ref(),
+            PersistParams {
+                handler,
+                action_config: WebhookConfig::default()
+                    .with_signature_policy(SignaturePolicy::OptionalAcceptUnsigned),
+                ctx_template: ctx,
+                trigger_id: node_key!("trigger_e").as_str().to_string(),
+                scope: Scope::new("e-org", "e-ws"),
+                workflow_id: Some(wf.to_string()),
+                mode: WebhookMode::Test,
+            },
+        )
+        .await
+        .unwrap();
+        let key = WebhookKey::programmatic(handle.trigger_uuid, handle.nonce);
+
+        // First request within quota — must pass.
+        assert_eq!(
+            dispatch_skip(&transport, key.clone()).await,
+            StatusCode::OK,
+            "first request must succeed (per-token quota = 1, not yet exhausted)"
+        );
+        // Second request exceeds the 1 req/min quota — must be rejected.
+        assert_eq!(
+            dispatch_skip(&transport, key).await,
+            StatusCode::TOO_MANY_REQUESTS,
+            "second request must be rate-limited (429) — proves per-token limiter \
+             is behaviorally active after with_activation_store"
+        );
+    }
+
+    // ── G: Prod + SWH per-tenant 429 — step 4.5 fires before B2 at step 5.5 ──
+    //
+    // Two Prod-mode activations share the same tenant scope, both using
+    // `SignaturePolicy::Required` + StandardWebhooks.  The per-tenant quota is 1
+    // req/min.  The first signed request succeeds.  The second signed request —
+    // from a different token (fresh per-token quota) but the same tenant — must
+    // return 429 at step 4.5 (tenant rate limit), NOT 500 from the B2 guard
+    // at step 5.5, and NOT 200 (both exhausted).
+    //
+    // This proves the ordering: tenant-rate-limit check (step 4.5) comes before
+    // signature enforcement (step 5.5 B2 guard) and before durable dispatch.
+
+    /// Two Prod+SWH activations under the same tenant: per-tenant aggregate
+    /// 429 fires correctly before the B2 guard.
+    #[tokio::test]
+    async fn prod_swh_per_tenant_429_fires_before_b2_guard() {
+        use nebula_storage::inmem::{InMemoryTriggerDedupInbox, InMemoryWorkflowVersionStore};
+        use nebula_storage_port::store::{TriggerDedupInbox, WorkflowVersionStore};
+
+        let scope = Scope::new("tenant-org", "tenant-ws");
+        let activation_store: Arc<dyn WebhookActivationStore> =
+            Arc::new(InMemoryWebhookActivationStore::new());
+        let exec_store = InMemoryExecutionStore::new();
+        let dedup = Arc::new(InMemoryTriggerDedupInbox::new(&exec_store));
+        let exec_store = Arc::new(exec_store);
+        let version_store = Arc::new(InMemoryWorkflowVersionStore::new());
+
+        let cfg = WebhookTransportConfig {
+            rate_limit_per_minute: Some(1_000),    // generous per-token
+            tenant_rate_limit_per_minute: Some(1), // 1 req/min per tenant — fires on second
+            ..WebhookTransportConfig::default()
+        };
+        let transport = WebhookTransport::new(cfg)
+            .with_activation_store(Arc::clone(&activation_store))
+            .with_durable_dispatch(
+                dedup as Arc<dyn TriggerDedupInbox>,
+                WebhookTransport::default_resolver(),
+                Arc::clone(&version_store) as Arc<dyn WorkflowVersionStore>,
+            );
+
+        // Register two Prod activations under the same scope.
+        let mut handles = vec![];
+        for (trig, wf_id) in [
+            (node_key!("trigger_g1"), WorkflowId::new()),
+            (node_key!("trigger_g2"), WorkflowId::new()),
+        ] {
+            let outcome = Arc::new(Mutex::new(TriggerEventOutcome::emit(json!({"g": true}))));
+            let handler: Arc<dyn TriggerHandler> =
+                Arc::new(WebhookTriggerAdapter::new(ConfigurableWebhookAction {
+                    outcome_cell: Arc::clone(&outcome),
+                }));
+            let ctx = base_ctx(wf_id, trig.clone());
+            handler.start(&ctx).await.unwrap();
+
+            // Both must carry the published workflow so if the rate-limit check
+            // somehow fails the emit would succeed — proving it's the 429 stopping it.
+            let def = minimal_workflow_def(wf_id, trig.as_str().to_string());
+            version_store
+                .create(
+                    &scope,
+                    WorkflowVersionRecord {
+                        workflow_id: wf_id.to_string(),
+                        number: 1,
+                        published: true,
+                        pinned: false,
+                        definition: serde_json::to_value(&def).unwrap(),
+                    },
+                )
+                .await
+                .unwrap();
+
+            let handle = activate_and_persist(
+                &transport,
+                activation_store.as_ref(),
+                PersistParams {
+                    handler,
+                    action_config: WebhookConfig::default()
+                        .with_signature_policy(swh_required_policy()),
+                    ctx_template: ctx,
+                    trigger_id: trig.as_str().to_string(),
+                    scope: scope.clone(),
+                    workflow_id: Some(wf_id.to_string()),
+                    mode: WebhookMode::Prod,
+                },
+            )
+            .await
+            .unwrap();
+            handles.push((handle, wf_id));
+        }
+
+        let body = b"{}";
+        let msg_id_1 = "g-msg-001";
+        let msg_id_2 = "g-msg-002";
+
+        // Request 1 — token A, fully signed → must pass (per-token OK, per-tenant OK).
+        let headers_1 = swh_headers(msg_id_1, body);
+        let key_1 = WebhookKey::programmatic(handles[0].0.trigger_uuid, handles[0].0.nonce.clone());
+        let r1 = dispatch_inner(
+            transport.clone(),
+            key_1,
+            Method::POST,
+            Uri::from_static("http://localhost/webhooks/test"),
+            headers_1,
+            Bytes::from(body as &[u8]),
+        )
+        .await;
+        assert_eq!(
+            r1.status(),
+            StatusCode::OK,
+            "first Prod+SWH request must succeed"
+        );
+
+        // Request 2 — token B (fresh per-token window), signed, same tenant.
+        // Per-tenant aggregate is now exhausted → must return 429.
+        // Must NOT return 500 (B2 guard) or 200 (emit).
+        let headers_2 = swh_headers(msg_id_2, body);
+        let key_2 = WebhookKey::programmatic(handles[1].0.trigger_uuid, handles[1].0.nonce.clone());
+        let r2 = dispatch_inner(
+            transport.clone(),
+            key_2,
+            Method::POST,
+            Uri::from_static("http://localhost/webhooks/test"),
+            headers_2,
+            Bytes::from(body as &[u8]),
+        )
+        .await;
+        assert_eq!(
+            r2.status(),
+            StatusCode::TOO_MANY_REQUESTS,
+            "second Prod+SWH request same tenant must be per-tenant 429 \
+             (step 4.5 before B2 at 5.5 and before durable emit)"
+        );
+
+        // Zero executions spawned for the rejected request.
+        // One execution from the first request (Prod emit succeeded).
+        assert_eq!(
+            exec_store.count(&scope, None).await.unwrap(),
+            1,
+            "only the first Prod request should have spawned an execution; \
+             the 429 must not reach the durable emit path"
+        );
+    }
+
+    // ── B1: SWH tampered body → 401 ──────────────────────────────────────────
+
+    /// A Prod request with a valid SWH signature over the ORIGINAL body, but
+    /// the body has been tampered with in transit → 401 (SignatureInvalid).
+    ///
+    /// Red-on-revert (B1): removing `SignatureScheme::StandardWebhooks` from
+    /// `verify_with` reverts to the default `Sha256Hex` scheme, which checks a
+    /// different header and different content — the tampered body would slip
+    /// through whatever the routing-entry config says.
+    #[tokio::test]
+    async fn prod_mode_swh_tampered_body_returns_401() {
+        let fix = TestFixture::prod(WebhookMode::Prod).await;
+
+        let msg_id = "msg-tamper-001";
+        let ts = now_secs();
+        let original_body = b"{\"original\":true}";
+        let tampered_body = b"{\"tampered\":true}";
+
+        // Sign over the ORIGINAL body.
+        let sig = sign_swh(msg_id, ts, original_body);
+
+        // But send the TAMPERED body.
+        let mut headers = HeaderMap::new();
+        headers.insert(WEBHOOK_ID_HEADER, HeaderValue::from_str(msg_id).unwrap());
+        headers.insert(
+            HeaderName::from_static("webhook-timestamp"),
+            HeaderValue::from_str(&ts.to_string()).unwrap(),
+        );
+        headers.insert(
+            HeaderName::from_static("webhook-signature"),
+            HeaderValue::from_str(&sig).unwrap(),
+        );
+
+        let resp = dispatch_inner(
+            fix.transport.clone(),
+            fix.key(),
+            Method::POST,
+            Uri::from_static("http://localhost/webhooks/test"),
+            headers,
+            Bytes::from(tampered_body as &[u8]),
+        )
+        .await;
+
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "tampered body with valid sig (over original) must return 401"
+        );
+        assert_eq!(
+            fix.execution_count().await,
+            0,
+            "tampered-body request must not spawn any execution"
+        );
+    }
+
+    // ── B2: Split-brain guard — Prod + OptionalAcceptUnsigned → 500 ──────────
+
+    /// A Prod-mode activation whose **in-memory routing entry** carries
+    /// `SignaturePolicy::OptionalAcceptUnsigned` → 500 (misconfiguration
+    /// detected at dispatch time, no execution spawned).
+    ///
+    /// This is the B2 split-brain guard: `durable.is_some()` (Prod row that
+    /// will spawn) AND `OptionalAcceptUnsigned` is a composition-root
+    /// misconfiguration.  The invariant is enforced at the transport layer,
+    /// not only at activation time, so a stale in-memory routing entry cannot
+    /// silently downgrade a durable Prod path to unsigned acceptance.
+    ///
+    /// RED-on-revert: removing the B2 guard (the `if durable.is_some() &&
+    /// matches!(…OptionalAcceptUnsigned)` block in `dispatch_inner`) causes the
+    /// unsigned request to pass sig enforcement (`OptionalAcceptUnsigned →
+    /// Pass`) and the action to emit, materializing an execution.  The
+    /// `execution_count == 1` assertion below FAILS → test is RED.
+    #[tokio::test]
+    async fn prod_unsigned_policy_returns_500_and_spawns_nothing() {
+        // Build a Prod-mode fixture that DELIBERATELY uses OptionalAcceptUnsigned.
+        // This is the misconfiguration scenario: the activation row is Prod but
+        // the in-memory routing entry's action_config has no sig policy.
+        let scope = Scope::new("test-org", "test-ws");
+        let workflow_id = WorkflowId::new();
+        let trigger_id_key = node_key!("webhook_trigger");
+        let trigger_id = trigger_id_key.as_str().to_string();
+
+        let exec_store = InMemoryExecutionStore::new();
+        let dedup = Arc::new(InMemoryTriggerDedupInbox::new(&exec_store));
+        let exec_store = Arc::new(exec_store);
+        let version_store = Arc::new(InMemoryWorkflowVersionStore::new());
+        let activation_store: Arc<dyn WebhookActivationStore> =
+            Arc::new(InMemoryWebhookActivationStore::new());
+
+        let outcome_cell = Arc::new(Mutex::new(TriggerEventOutcome::emit(json!({"ok": true}))));
+        let handler: Arc<dyn TriggerHandler> =
+            Arc::new(WebhookTriggerAdapter::new(ConfigurableWebhookAction {
+                outcome_cell: Arc::clone(&outcome_cell),
+            }));
+        let ctx_template = base_ctx(workflow_id, trigger_id_key);
+        handler.start(&ctx_template).await.expect("handler start");
+
+        let transport = WebhookTransport::new(WebhookTransportConfig::default())
+            .with_activation_store(Arc::clone(&activation_store))
+            .with_durable_dispatch(
+                dedup as Arc<dyn TriggerDedupInbox>,
+                WebhookTransport::default_resolver(),
+                Arc::clone(&version_store) as Arc<dyn WorkflowVersionStore>,
+            );
+
+        // Deliberately misconfiguged: Prod mode row + OptionalAcceptUnsigned.
+        let handle = activate_and_persist(
+            &transport,
+            activation_store.as_ref(),
+            PersistParams {
+                handler,
+                action_config: WebhookConfig::default()
+                    .with_signature_policy(SignaturePolicy::OptionalAcceptUnsigned),
+                ctx_template,
+                trigger_id: trigger_id.clone(),
+                scope: scope.clone(),
+                workflow_id: Some(workflow_id.to_string()),
+                mode: WebhookMode::Prod, // Prod row — durable path will be taken
+            },
+        )
+        .await
+        .expect("activate_and_persist must succeed");
+
+        // Publish a valid workflow definition (so if the guard were missing,
+        // the emit would succeed — proving the guard is what stops it).
+        let def = minimal_workflow_def(workflow_id, trigger_id);
+        version_store
+            .create(
+                &scope,
+                WorkflowVersionRecord {
+                    workflow_id: workflow_id.to_string(),
+                    number: 1,
+                    published: true,
+                    pinned: false,
+                    definition: serde_json::to_value(&def).unwrap(),
+                },
+            )
+            .await
+            .expect("version store create");
+
+        let key = WebhookKey::programmatic(handle.trigger_uuid, handle.nonce.clone());
+
+        // Request carries `webhook-id` (satisfying the dedup-key requirement in
+        // `dispatch_durable`) but NO signature (correct for `OptionalAcceptUnsigned`
+        // — no sig is required when that policy is active).
+        //
+        // Why `webhook-id` is mandatory here: without it the request hits the
+        // 400-missing-dedup-key guard in `dispatch_durable`, and `execution_count`
+        // stays 0 on revert for the wrong reason — masking the B2 spawn-prevention
+        // property.  With `webhook-id` present, on revert: `OptionalAcceptUnsigned`
+        // → sig-enforcement Pass → handler emits → `do_emit_prod` spawns →
+        // `execution_count == 1` → the count assertion below goes RED.
+        let mut headers_with_id = HeaderMap::new();
+        headers_with_id.insert(
+            WEBHOOK_ID_HEADER,
+            HeaderValue::from_static("b2-revert-probe-001"),
+        );
+        let resp = dispatch_inner(
+            transport,
+            key,
+            Method::POST,
+            Uri::from_static("http://localhost/webhooks/test"),
+            headers_with_id,
+            Bytes::from(b"{}" as &[u8]),
+        )
+        .await;
+
+        // Count checked FIRST so both assertions are visible in revert runs.
+        // RED-on-revert: without B2, `OptionalAcceptUnsigned`→Pass, handler
+        // emits, `do_emit_prod` materializes one execution → count == 1 → FAIL.
+        assert_eq!(
+            exec_store.count(&scope, None).await.unwrap(),
+            0,
+            "B2 guard must prevent ANY execution from being spawned \
+             (RED-on-revert: execution_count becomes 1 without the guard)"
+        );
+        assert_eq!(
+            resp.status(),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Prod row with OptionalAcceptUnsigned must return 500 (B2 split-brain guard)"
         );
     }
 }

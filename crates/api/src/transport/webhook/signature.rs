@@ -195,3 +195,31 @@ pub(super) fn missing_secret_response(instance_path: &str) -> Response {
     .with_instance(instance_path.to_string());
     problem_response(StatusCode::INTERNAL_SERVER_ERROR, problem)
 }
+
+/// 500 response for a Prod-mode activation whose in-memory routing entry
+/// carries `SignaturePolicy::OptionalAcceptUnsigned`.
+///
+/// A Prod row dispatching unsigned is a composition-root misconfiguration:
+/// the activation was registered without a `Required` signature policy.
+/// Returned as 500 so the sender retries (the misconfiguration must be
+/// fixed on the operator side); the event is NOT accepted.
+///
+/// Distinct from [`missing_secret_response`] (which fires when `Required`
+/// policy has an empty secret) so dashboards can separately alert on
+/// "Prod row has no signature policy at all".
+pub(super) fn prod_requires_signature_response(instance_path: &str) -> Response {
+    let problem = ProblemDetails::new(
+        "https://nebula.dev/problems/webhook-prod-requires-signature",
+        "Prod Webhook Activation Requires Signature Policy",
+        StatusCode::INTERNAL_SERVER_ERROR,
+    )
+    .with_detail(
+        "Prod-mode webhook activation is configured with \
+         SignaturePolicy::OptionalAcceptUnsigned; Prod activations must \
+         use SignaturePolicy::Required with an HMAC secret to prevent \
+         unsigned requests from spawning executions"
+            .to_string(),
+    )
+    .with_instance(instance_path.to_string());
+    problem_response(StatusCode::INTERNAL_SERVER_ERROR, problem)
+}
