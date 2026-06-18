@@ -31,7 +31,7 @@ use crate::{
     },
     error::{ActionError, ValidationReason},
     from_workflow_node::FromWorkflowNode,
-    metadata::ActionMetadata,
+    metadata::{ActionKind, ActionMetadata},
     resource::ResourceAction,
     result::ActionResult,
     stateful::StatefulAction,
@@ -55,6 +55,7 @@ pub trait ActionFactory: Send + Sync + 'static {
     fn metadata(&self) -> &ActionMetadata;
 
     /// Build an [`ErasedAction`] for the given workflow node + context.
+    #[must_use = "the instantiated action handle must be dispatched, not discarded"]
     fn instantiate<'a>(
         &'a self,
         node: &'a NodeDefinition,
@@ -95,7 +96,8 @@ where
     <A as Action>::Output: Serialize + Send + Sync,
 {
     fn metadata(&self) -> &ActionMetadata {
-        self.meta.get_or_init(<A as Action>::metadata)
+        self.meta
+            .get_or_init(|| <A as Action>::metadata().with_kind(ActionKind::Stateless))
     }
 
     fn instantiate<'a>(
@@ -190,7 +192,8 @@ where
     A::State: Serialize + DeserializeOwned + Clone + Send + Sync,
 {
     fn metadata(&self) -> &ActionMetadata {
-        self.meta.get_or_init(<A as Action>::metadata)
+        self.meta
+            .get_or_init(|| <A as Action>::metadata().with_kind(ActionKind::Stateful))
     }
 
     fn instantiate<'a>(
@@ -325,7 +328,8 @@ where
     <A as TriggerAction>::Error: Into<ActionError>,
 {
     fn metadata(&self) -> &ActionMetadata {
-        self.meta.get_or_init(<A as Action>::metadata)
+        self.meta
+            .get_or_init(|| <A as Action>::metadata().with_kind(ActionKind::Trigger))
     }
 
     fn instantiate<'a>(
@@ -428,7 +432,8 @@ where
     A: ResourceAction + FromWorkflowNode<Error = ActionError> + Send + Sync + 'static,
 {
     fn metadata(&self) -> &ActionMetadata {
-        self.meta.get_or_init(<A as Action>::metadata)
+        self.meta
+            .get_or_init(|| <A as Action>::metadata().with_kind(ActionKind::Resource))
     }
 
     fn instantiate<'a>(
@@ -521,7 +526,8 @@ where
     A: ControlAction + FromWorkflowNode<Error = ActionError> + Send + Sync + 'static,
 {
     fn metadata(&self) -> &ActionMetadata {
-        self.meta.get_or_init(<A as Action>::metadata)
+        self.meta
+            .get_or_init(|| <A as Action>::metadata().with_kind(ActionKind::Control))
     }
 
     fn instantiate<'a>(

@@ -21,14 +21,12 @@
 //! ## Key metadata and result types
 //!
 //! - `ActionMetadata` — key, version, ports, `ValidSchema` parameters, `IsolationLevel`,
-//!   `ActionCategory`. NOTE: `CheckpointPolicy` is planned but not yet a field — see
-//!   `crates/action/README.md` Contract section.
+//!   `ActionCategory`, `ActionKind`, and `CheckpointPolicy`.
 //! - `ActionResult` — execution result with flow-control intent.
 //! - `ActionError` — typed error distinguishing retryable from fatal.
 //! - `ActionHandler` — top-level enum dispatcher over all handler variants.
 //!
-//! See `crates/action/README.md` for the full contract, canon invariants,
-//! and CheckpointPolicy status note.
+//! See `crates/action/README.md` for the full contract and canon invariants.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -122,7 +120,10 @@ pub use factory::{
 pub use from_workflow_node::FromWorkflowNode;
 pub use handler::ActionHandler;
 pub use idempotency::IdempotencyKey;
-pub use metadata::{ActionCategory, ActionMetadata, IsolationLevel, MetadataCompatibilityError};
+pub use metadata::{
+    ActionCategory, ActionKind, ActionMetadata, CheckpointPolicy, IsolationLevel,
+    MetadataCompatibilityError,
+};
 pub use nebula_action_macros::{Action, action_phantom};
 pub use nebula_core::{
     Context, Dependencies,

@@ -82,7 +82,7 @@ use crate::{
     action::Action,
     context::ActionContext,
     error::{ActionError, ValidationReason},
-    metadata::{ActionCategory, ActionMetadata},
+    metadata::{ActionCategory, ActionKind, ActionMetadata},
     port::PortKey,
     result::{ActionResult, TerminationReason},
     stateless::StatelessHandler,
@@ -462,12 +462,18 @@ impl<A: ControlAction> ControlActionAdapter<A> {
     /// Wrap a typed control action.
     ///
     /// The adapter takes the action's metadata, stamps the appropriate
-    /// [`ActionCategory`] (Control or Terminal), and caches the result
-    /// in an `Arc` so subsequent `metadata()` calls are cheap.
+    /// [`ActionCategory`] (Control or Terminal) and the [`ActionKind::Control`]
+    /// node kind, and caches the result in an `Arc` so subsequent `metadata()`
+    /// calls are cheap.
+    ///
+    /// A terminal control node (empty `outputs`) keeps
+    /// [`ActionKind::Control`] — terminality is carried by the empty port set,
+    /// not by a distinct kind.
     #[must_use]
     pub fn new(action: A) -> Self {
         let mut meta = <A as Action>::metadata();
         meta.category = derive_category(&meta);
+        meta.kind = ActionKind::Control;
         Self {
             action,
             cached_metadata: Arc::new(meta),

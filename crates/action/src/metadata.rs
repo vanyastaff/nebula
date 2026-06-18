@@ -70,6 +70,80 @@ pub enum ActionCategory {
     Terminal,
 }
 
+/// The kind of node an action is — its place in the workflow taxonomy.
+///
+/// This is the authoritative classification an action carries. UI editors,
+/// the workflow validator, and the audit log read it to group, render, and
+/// reason about nodes. Runtime dispatch does **not** branch on this field:
+/// the engine routes structurally on the handle the factory produces, and
+/// the factory (or DX adapter) stamps the matching `ActionKind` onto the
+/// metadata, so the stored kind and the dispatched handle cannot drift.
+///
+/// The eight kinds group into four families — executors
+/// ([`Stateless`](Self::Stateless), [`Stateful`](Self::Stateful),
+/// [`Stream`](Self::Stream), [`Agent`](Self::Agent),
+/// [`Interactive`](Self::Interactive)), flow ([`Control`](Self::Control)),
+/// entry ([`Trigger`](Self::Trigger)), and provider
+/// ([`Resource`](Self::Resource)) — derived from the kind rather than stored
+/// as a separate field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum ActionKind {
+    /// Pure executor: runs input to output with no state kept between
+    /// executions. The engine may run instances in parallel.
+    Stateless,
+    /// Iterative executor with persistent state the engine checkpoints
+    /// between calls — pagination, long-running loops, multi-step processing.
+    Stateful,
+    /// Executor that produces its output as a stream of chunks (LLM tokens,
+    /// byte streams, event deltas) rather than a single value.
+    Stream,
+    /// Autonomous executor with an internal reasoning loop that selects and
+    /// calls tools across turns under a budget.
+    Agent,
+    /// Executor that pauses for external input (human approval, a callback)
+    /// and resumes when it arrives.
+    Interactive,
+    /// Flow-control node that routes, branches, filters, gates, or terminates
+    /// without transforming data.
+    Control,
+    /// Entry node that lives outside the execution graph and starts new
+    /// executions.
+    Trigger,
+    /// Provider node that supplies a scoped capability (DB pool, HTTP client,
+    /// browser session) to downstream nodes in a branch.
+    Resource,
+}
+
+/// How often the engine checkpoints an action's progress.
+///
+/// Orthogonal to [`ActionKind`]: any kind can request a checkpointing
+/// cadence. The default, [`Inherit`](Self::Inherit), defers to the engine's
+/// execution-wide policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum CheckpointPolicy {
+    /// Defer to the engine's execution-wide checkpoint cadence.
+    #[default]
+    Inherit,
+    /// Checkpoint once, after the action completes.
+    OnePass,
+    /// Checkpoint after every step or iteration — maximum durability at the
+    /// cost of write volume.
+    Stepwise,
+    /// Force a durable checkpoint and hand the execution back to the
+    /// scheduler, used when an action parks waiting for an external event.
+    ForcedHandoff,
+}
+
+/// Default [`ActionKind`] for metadata that predates the field or is built
+/// without a kind set. The factory or DX adapter stamps the real kind.
+fn default_action_kind() -> ActionKind {
+    ActionKind::Stateless
+}
+
 /// Compatibility validation errors for action metadata evolution.
 ///
 /// Wraps [`nebula_metadata::BaseCompatError`] (shared catalog-entity rules)
@@ -94,8 +168,8 @@ pub enum MetadataCompatibilityError {
 /// The shared catalog prefix (`key`, `name`, `description`, `schema`, `icon`,
 /// `documentation_url`, `tags`, `maturity`, `deprecation`) lives on the
 /// composed [`BaseMetadata`]. Entity-specific
-/// fields (`version`, ports, `isolation_level`, `category`) stay on this
-/// struct.
+/// fields (`version`, ports, `isolation_level`, `category`, `kind`,
+/// `checkpoint_policy`) stay on this struct.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ActionMetadata {
@@ -118,6 +192,21 @@ pub struct ActionMetadata {
     /// with metadata serialized before this field existed.
     #[serde(default)]
     pub category: ActionCategory,
+    /// Node-taxonomy classification of this action. Authoritative for UI
+    /// grouping, validation, and audit; runtime dispatch is structural and
+    /// does not read it.
+    ///
+    /// The factory or DX adapter that produces the dispatch handle stamps the
+    /// matching kind, so it cannot drift from the dispatched handle. Defaults
+    /// to [`ActionKind::Stateless`] for metadata that predates the field.
+    #[serde(default = "default_action_kind")]
+    pub kind: ActionKind,
+    /// Checkpointing cadence requested for this action.
+    ///
+    /// Defaults to [`CheckpointPolicy::Inherit`], which defers to the engine's
+    /// execution-wide policy.
+    #[serde(default)]
+    pub checkpoint_policy: CheckpointPolicy,
     /// Per-action concurrency throttle hint — **persisted hint, not yet
     /// enforced** as of П1.
     ///
@@ -154,6 +243,8 @@ impl ActionMetadata {
             outputs: port::default_output_ports(),
             isolation_level: IsolationLevel::None,
             category: ActionCategory::Data,
+            kind: ActionKind::Stateless,
+            checkpoint_policy: CheckpointPolicy::Inherit,
             max_concurrent: None,
         }
     }
@@ -312,6 +403,23 @@ impl ActionMetadata {
         self
     }
 
+    /// Set the node-taxonomy kind for this action.
+    ///
+    /// The single writer is the factory or DX adapter that produces the
+    /// dispatch handle; action authors rarely call this directly.
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_kind(mut self, kind: ActionKind) -> Self {
+        self.kind = kind;
+        self
+    }
+
+    /// Set the checkpointing cadence for this action.
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_checkpoint_policy(mut self, policy: CheckpointPolicy) -> Self {
+        self.checkpoint_policy = policy;
+        self
+    }
+
     /// Set the per-action concurrency throttle hint.
     ///
     /// **Persisted hint, not yet enforced** as of П1 — see
@@ -455,6 +563,124 @@ mod tests {
             ActionCategory::Data,
             "missing category field should default to Data"
         );
+    }
+
+    // ── ActionKind ──────────────────────────────────────────────────
+
+    #[test]
+    fn kind_default_is_stateless() {
+        let meta = ActionMetadata::new(action_key!("test"), "Test", "desc");
+        assert_eq!(meta.kind, ActionKind::Stateless);
+    }
+
+    #[test]
+    fn kind_builder() {
+        let meta = ActionMetadata::new(action_key!("res"), "Resource", "Provide a pool")
+            .with_kind(ActionKind::Resource);
+        assert_eq!(meta.kind, ActionKind::Resource);
+    }
+
+    #[test]
+    fn action_kind_serde_roundtrip() {
+        // Every variant must round-trip through JSON with a stable
+        // snake_case wire tag — UI, validator, and audit consumers read it.
+        let cases = [
+            (ActionKind::Stateless, r#""stateless""#),
+            (ActionKind::Stateful, r#""stateful""#),
+            (ActionKind::Stream, r#""stream""#),
+            (ActionKind::Agent, r#""agent""#),
+            (ActionKind::Interactive, r#""interactive""#),
+            (ActionKind::Control, r#""control""#),
+            (ActionKind::Trigger, r#""trigger""#),
+            (ActionKind::Resource, r#""resource""#),
+        ];
+        for (kind, wire) in cases {
+            let json = serde_json::to_string(&kind).unwrap();
+            assert_eq!(json, wire, "ActionKind wire tag changed for {kind:?}");
+            let back: ActionKind = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, kind);
+        }
+    }
+
+    #[test]
+    fn kind_metadata_serde_roundtrip() {
+        let original = ActionMetadata::new(action_key!("trig"), "Trigger", "desc")
+            .with_kind(ActionKind::Trigger);
+        let json = serde_json::to_string(&original).unwrap();
+        let decoded: ActionMetadata = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.kind, ActionKind::Trigger);
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn kind_backward_compat_without_field() {
+        // Metadata serialized before `kind` existed must still deserialize,
+        // defaulting to `Stateless`.
+        let legacy = ActionMetadata::new(action_key!("http.request"), "HTTP", "desc");
+        let mut as_value: serde_json::Value = serde_json::to_value(&legacy).unwrap();
+        as_value
+            .as_object_mut()
+            .unwrap()
+            .remove("kind")
+            .expect("kind field must be present after serialize");
+        let json_string = serde_json::to_string(&as_value).unwrap();
+        let decoded: ActionMetadata = serde_json::from_str(&json_string)
+            .expect("legacy metadata without kind must deserialize");
+        assert_eq!(
+            decoded.kind,
+            ActionKind::Stateless,
+            "missing kind field should default to Stateless"
+        );
+    }
+
+    // ── CheckpointPolicy ────────────────────────────────────────────
+
+    #[test]
+    fn checkpoint_policy_default_is_inherit() {
+        let meta = ActionMetadata::new(action_key!("test"), "Test", "desc");
+        assert_eq!(meta.checkpoint_policy, CheckpointPolicy::Inherit);
+        assert_eq!(CheckpointPolicy::default(), CheckpointPolicy::Inherit);
+    }
+
+    #[test]
+    fn checkpoint_policy_builder() {
+        let meta = ActionMetadata::new(action_key!("loop"), "Loop", "Iterate")
+            .with_checkpoint_policy(CheckpointPolicy::Stepwise);
+        assert_eq!(meta.checkpoint_policy, CheckpointPolicy::Stepwise);
+    }
+
+    #[test]
+    fn checkpoint_policy_serde_roundtrip() {
+        let cases = [
+            (CheckpointPolicy::Inherit, r#""inherit""#),
+            (CheckpointPolicy::OnePass, r#""one_pass""#),
+            (CheckpointPolicy::Stepwise, r#""stepwise""#),
+            (CheckpointPolicy::ForcedHandoff, r#""forced_handoff""#),
+        ];
+        for (policy, wire) in cases {
+            let json = serde_json::to_string(&policy).unwrap();
+            assert_eq!(
+                json, wire,
+                "CheckpointPolicy wire tag changed for {policy:?}"
+            );
+            let back: CheckpointPolicy = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, policy);
+        }
+    }
+
+    #[test]
+    fn checkpoint_policy_backward_compat_without_field() {
+        let legacy = ActionMetadata::new(action_key!("http.request"), "HTTP", "desc");
+        let mut as_value: serde_json::Value = serde_json::to_value(&legacy).unwrap();
+        as_value
+            .as_object_mut()
+            .unwrap()
+            .remove("checkpoint_policy")
+            .expect("checkpoint_policy field must be present after serialize");
+        let json_string = serde_json::to_string(&as_value).unwrap();
+        let decoded: ActionMetadata = serde_json::from_str(&json_string)
+            .expect("legacy metadata without checkpoint_policy must deserialize");
+        assert_eq!(decoded.checkpoint_policy, CheckpointPolicy::Inherit);
     }
 
     #[test]

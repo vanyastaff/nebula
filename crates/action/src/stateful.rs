@@ -62,6 +62,7 @@ pub trait StatefulAction: Action {
     ///
     /// Return `Continue { output, progress, delay }` for another iteration,
     /// or `Break { output, reason }` when finished.
+    #[must_use = "an action does nothing unless its returned future is awaited"]
     fn execute(
         &self,
         input: <Self as Action>::Input,

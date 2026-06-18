@@ -52,6 +52,7 @@ pub trait StatelessAction: Action {
     ///
     /// The returned future must be `Send` so the runtime can run it in
     /// `tokio::select!` with cancellation (no per-action cancellation boilerplate).
+    #[must_use = "an action does nothing unless its returned future is awaited"]
     fn execute(
         &self,
         input: <Self as Action>::Input,

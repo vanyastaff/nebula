@@ -54,7 +54,7 @@
 | `ActionFactory` + `Generic{Stateless,Stateful,Trigger,Resource,Control}Factory` | `src/factory.rs:53,69-497` |
 | `FromWorkflowNode` (async slot-binding фабрика; тело генерит derive) | `src/from_workflow_node.rs:61` |
 | `ActionError` + `RetryHintCode` (retryable vs fatal), `ValidationReason` | `src/error.rs:154,31,58` |
-| `ActionMetadata`, `ActionCategory`, `IsolationLevel` | `src/metadata.rs:98,41,13` |
+| `ActionMetadata`, `ActionCategory`, `ActionKind`, `CheckpointPolicy`, `IsolationLevel` | `src/metadata.rs:175,44,92,127,13` |
 | `ActionResult<T>`, `TerminationReason`, `WaitCondition`, `BranchKey` | `src/result.rs:40,195,297` |
 | `ActionOutput<T>`, `OutputEnvelope`, `DeferredOutput`, `StreamOutput` | `src/output.rs:506,465,86,206` |
 | `ActionContext`/`TriggerContext` + `ActionRuntimeContext`/`TriggerRuntimeContext` | `src/context.rs:81,108,144,397` |
