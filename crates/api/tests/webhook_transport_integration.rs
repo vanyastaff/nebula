@@ -1123,6 +1123,7 @@ async fn token_resolution_called_exactly_once_on_registered_under_limit_key() {
             action_config: config,
             ctx_template: noop_ctx_template(),
             trigger_id: "trigger-spy-test".to_string(),
+            spec_trigger_id: "trg_test_spy_test".to_string(),
             scope: test_scope(),
             workflow_id: None,
             mode: WebhookMode::Test,

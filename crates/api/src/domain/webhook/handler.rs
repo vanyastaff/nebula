@@ -336,14 +336,49 @@ pub async fn register_webhook(
             action_spec = action_spec.with_rate_limit_per_minute(rpm);
         }
 
+        // P2: map FactoryError variants to the correct HTTP status.
+        // - InvalidSpec → 422 (semantically-invalid caller input, same tier as
+        //   the OptionalAcceptUnsigned gate just below).
+        // - UnknownKind → 400 (the provider string is not registered).
+        // - SecretResolution + catch-all → 500 (genuine server fault).
         let built = factory.build(&action_spec).map_err(|e| {
-            tracing::error!(
-                target: "nebula::api::webhook::register",
-                error = %e,
-                provider = %body.provider,
-                "factory build failed"
-            );
-            ApiError::Internal(format!("factory build failed for {:?}: {e}", body.provider))
+            use nebula_action::webhook::factory::FactoryError;
+            match e {
+                FactoryError::InvalidSpec { kind, ref reason } => {
+                    tracing::warn!(
+                        target: "nebula::api::webhook::register",
+                        provider = %body.provider,
+                        kind = %kind,
+                        reason = %reason,
+                        "factory rejected spec (invalid input)"
+                    );
+                    ApiError::Unprocessable(format!(
+                        "invalid webhook spec for provider {kind:?}: {reason}"
+                    ))
+                },
+                FactoryError::UnknownKind(ref kind) => {
+                    tracing::warn!(
+                        target: "nebula::api::webhook::register",
+                        provider = %body.provider,
+                        kind = %kind,
+                        "factory build failed — unknown provider kind"
+                    );
+                    ApiError::Validation {
+                        detail: format!("unknown webhook provider {kind:?}"),
+                        errors: vec![],
+                    }
+                },
+                // SecretResolution and any future variants are server faults.
+                _ => {
+                    tracing::error!(
+                        target: "nebula::api::webhook::register",
+                        error = %e,
+                        provider = %body.provider,
+                        "factory build failed (server fault)"
+                    );
+                    ApiError::Internal(format!("factory build failed for {:?}: {e}", body.provider))
+                },
+            }
         })?;
 
         // Security gate: refuse `OptionalAcceptUnsigned` — the Prod producer
@@ -361,11 +396,10 @@ pub async fn register_webhook(
         }
 
         // Build the ctx template from the (yet-to-be-persisted) activation
-        // record.  The ctx factory needs the storage row id, scope, workflow_id.
-        // `trigger_row_id` is the server-generated `TriggerId`; `body.trigger_id`
-        // is the NodeKey slug stored in `triggers.slug`.
+        // record.  `trigger_id` is the NodeKey (dispatch routing key); the ctx
+        // factory builds the runtime context template keyed on it.
         let mut activation_record = nebula_storage_port::dto::WebhookActivationRecord::new(
-            &trigger_row_id,
+            &body.trigger_id, // NodeKey — the dispatch routing key
             scope.clone(),
             &body.trigger_id, // slug = NodeKey from the workflow definition binding
             true,
@@ -382,7 +416,15 @@ pub async fn register_webhook(
                 handler: built.handler,
                 action_config: built.config,
                 ctx_template,
-                trigger_id: trigger_row_id.clone(),
+                // P1 FIX: trigger_id must be the NodeKey (dispatch routing key),
+                // NOT the trg_ spec-row PK.  `do_emit_prod` calls
+                // `NodeKey::new(&row.trigger_id)` to resolve the binding in
+                // `ValidatedWorkflow.trigger_bindings`.
+                trigger_id: body.trigger_id.clone(),
+                // ADR-0101 L1 spec link: the port_triggers PK so bootstrap
+                // reconstruct can re-resolve the webhook spec via
+                // TriggerSpecLookup::lookup.
+                spec_trigger_id: trigger_row_id.clone(),
                 scope: scope.clone(),
                 workflow_id: Some(body.workflow_id.clone()),
                 mode: WebhookMode::Prod,

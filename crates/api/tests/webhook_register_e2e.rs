@@ -755,3 +755,365 @@ async fn register_compensation_cleans_up_on_activation_failure() {
         );
     }
 }
+
+// ── P1 producer regression ────────────────────────────────────────────────────
+
+/// T6 — P1 producer regression: activation row must store the NodeKey as
+/// `trigger_id` (dispatch routing) and the `trg_` spec-row PK as
+/// `spec_trigger_id` (ADR-0101 L1 spec link).
+///
+/// `do_emit_prod` calls `NodeKey::new(&row.trigger_id)` to resolve the
+/// binding in `ValidatedWorkflow.trigger_bindings`.  If the handler writes the
+/// `trg_` PK there instead, dispatch mis-routes and produces a 5xx.
+///
+/// RED-on-revert: revert the handler to
+/// `PersistParams { trigger_id: trigger_row_id.clone(), .. }` and the
+/// `trigger_id` assertion below panics, proving the fix is load-bearing.
+#[tokio::test]
+async fn register_activation_row_has_node_key_trigger_id_and_spec_link() {
+    let (state, trigger_store, activation_store, workflow_versions, workflow_store) =
+        build_full_state().await;
+
+    let workflow_id = WorkflowId::new();
+    let trigger_node_key = "wh-trigger-p1-regression";
+    let scope = scope_a();
+    let tenant = tenant_for_scope_a();
+
+    seed_workflow(
+        &workflow_store,
+        &workflow_versions,
+        &scope,
+        workflow_id,
+        workflow_definition_with_binding(workflow_id, trigger_node_key),
+    )
+    .await;
+
+    let body = RegisterWebhookRequest {
+        workflow_id: workflow_id.to_string(),
+        trigger_id: trigger_node_key.to_string(),
+        provider: "generic".to_string(),
+        replay_window_secs: None,
+        timestamp_header: None,
+        provider_config: None,
+        rate_limit_per_minute: None,
+    };
+
+    let (status, _resp) = register_webhook(
+        State(state),
+        Extension(dummy_user()),
+        Extension(tenant),
+        Path((TEST_ORG_A.to_string(), TEST_WS_A.to_string())),
+        Json(body),
+    )
+    .await
+    .expect("happy-path registration must succeed");
+    assert_eq!(status, axum::http::StatusCode::CREATED);
+
+    // The port_triggers row carries the trg_ PK (server-generated).
+    let trigger_rows = trigger_store.list(&scope).await.expect("list must succeed");
+    assert_eq!(trigger_rows.len(), 1, "exactly one trigger row expected");
+    let spec_pk = trigger_rows[0].id.clone();
+    assert!(
+        spec_pk.starts_with("trg_"),
+        "port_triggers PK must start with trg_; got {spec_pk:?}"
+    );
+
+    // The activation row's trigger_id must be the NodeKey (for dispatch routing),
+    // NOT the trg_ PK.
+    let activation_rows = activation_store
+        .list_all_active()
+        .await
+        .expect("list_all_active must succeed");
+    assert_eq!(
+        activation_rows.len(),
+        1,
+        "exactly one activation row expected"
+    );
+    let row = &activation_rows[0];
+
+    assert_eq!(
+        row.trigger_id, trigger_node_key,
+        "activation row.trigger_id must be the NodeKey (dispatch routing key); \
+         got {:?} — if this is a trg_ prefix, the P1 bug is not fixed",
+        row.trigger_id
+    );
+
+    // The activation row's spec_trigger_id must be the trg_ PK (L1 spec link).
+    assert_eq!(
+        row.spec_trigger_id,
+        Some(spec_pk.clone()),
+        "activation row.spec_trigger_id must be the port_triggers PK ({spec_pk:?}); \
+         got {:?}",
+        row.spec_trigger_id
+    );
+}
+
+// ── Bootstrap reconstruct RED→GREEN ──────────────────────────────────────────
+
+/// T7 — Bootstrap reconstruct: seeding an activation row with
+/// `spec_trigger_id = Some(trg_X)` lets bootstrap find the spec and validate
+/// the activation; `spec_trigger_id = None` (legacy) is skipped with
+/// `MissingSpec`.
+///
+/// RED proof: with the OLD bootstrap code (`spec_lookup.lookup(&record.trigger_id)`)
+/// the `spec_trigger_id = Some(trg_X)` case would look up by NodeKey (which has
+/// no spec row) and return `MissingSpec`; the test asserts `report.loaded == 1`
+/// which fails — proving the fix is needed.
+#[tokio::test]
+async fn bootstrap_reconstruct_uses_spec_trigger_id() {
+    use std::future::Future;
+    use std::pin::Pin;
+
+    use nebula_api::transport::webhook::{
+        TriggerSpecLookup, WebhookSecretResolver, bootstrap_webhook_activations,
+    };
+    use nebula_storage::rows::WebhookActivationSpec as StorageWebhookActivationSpec;
+
+    // We need a TriggerSpecLookup that serves a spec for trg_X but NOT for the
+    // NodeKey "wh-node-key".  This proves the bootstrap uses spec_trigger_id
+    // (the trg_ PK) and not trigger_id (the NodeKey).
+    const TRG_SPEC_PK: &str = "trg_bootstrap_reconstruct_test";
+    const NODE_KEY: &str = "wh-node-key";
+    const SECRET_ID: &str = "cred_test_secret";
+
+    struct SpecByPkLookup;
+
+    impl TriggerSpecLookup for SpecByPkLookup {
+        fn lookup<'life0, 'life1, 'life2, 'async_trait>(
+            &'life0 self,
+            _scope: &'life1 Scope,
+            trigger_id: &'life2 str,
+        ) -> Pin<
+            Box<
+                dyn Future<
+                        Output = Result<
+                            Option<StorageWebhookActivationSpec>,
+                            Box<dyn std::error::Error + Send + Sync>,
+                        >,
+                    > + Send
+                    + 'async_trait,
+            >,
+        >
+        where
+            'life0: 'async_trait,
+            'life1: 'async_trait,
+            'life2: 'async_trait,
+        {
+            let id = trigger_id.to_string();
+            Box::pin(async move {
+                if id == TRG_SPEC_PK {
+                    // Return a minimal spec so factory build can proceed.
+                    let spec = StorageWebhookActivationSpec::new("generic", SECRET_ID);
+                    Ok(Some(spec))
+                } else {
+                    // NodeKey lookup → no spec (proves separation).
+                    Ok(None)
+                }
+            })
+        }
+    }
+
+    // A secret resolver that returns a fixed HMAC key for our test secret.
+    struct FakeSecretResolver;
+    #[async_trait::async_trait]
+    impl WebhookSecretResolver for FakeSecretResolver {
+        async fn resolve(
+            &self,
+            _scope: &Scope,
+            secret_id: &str,
+        ) -> Result<Vec<u8>, nebula_api::transport::webhook::SecretResolutionError> {
+            if secret_id == SECRET_ID {
+                Ok(vec![0x42u8; 32]) // 32-byte dummy HMAC key
+            } else {
+                Err(format!("unknown secret_id: {secret_id}").into())
+            }
+        }
+    }
+
+    // Seed an activation store with two rows:
+    //   Row A: spec_trigger_id = Some(trg_X) → bootstrap should load it.
+    //   Row B: spec_trigger_id = None         → bootstrap should skip it.
+    let activation_store = Arc::new(InMemoryWebhookActivationStore::new());
+
+    let mut row_with_spec =
+        WebhookActivationRecord::new(NODE_KEY, scope_a(), "slug-with-spec", true);
+    row_with_spec.spec_trigger_id = Some(TRG_SPEC_PK.to_string());
+
+    let row_legacy = WebhookActivationRecord::new(NODE_KEY, scope_a(), "slug-legacy", true);
+    // spec_trigger_id defaults to None — simulates a pre-ADR-0101 row.
+
+    activation_store
+        .upsert(&scope_a(), row_with_spec)
+        .await
+        .expect("upsert row_with_spec must succeed");
+    activation_store
+        .upsert(&scope_a(), row_legacy)
+        .await
+        .expect("upsert row_legacy must succeed");
+
+    let registry = ActionRegistry::new();
+    for f in default_factories() {
+        registry.register_webhook_provider(f);
+    }
+
+    let report = bootstrap_webhook_activations(
+        activation_store.as_ref(),
+        &registry,
+        &FakeSecretResolver,
+        &NoopCtxFactory,
+        &SpecByPkLookup,
+        None,
+    )
+    .await
+    .expect("bootstrap must not return a storage error");
+
+    assert_eq!(
+        report.loaded, 1,
+        "exactly one activation should be loaded (the row with spec_trigger_id set); \
+         got loaded={}, skipped={} — \
+         if loaded=0 the bootstrap is still using trigger_id (NodeKey) for spec lookup",
+        report.loaded, report.skipped
+    );
+    assert_eq!(
+        report.skipped, 1,
+        "exactly one activation should be skipped (the legacy row with spec_trigger_id=None); \
+         got skipped={}",
+        report.skipped
+    );
+}
+
+// ── P2 — factory InvalidSpec → 422 ───────────────────────────────────────────
+
+/// T8 — P2 factory error mapping: a factory that returns `InvalidSpec` must
+/// produce HTTP 422 (not 500) at the registration endpoint.
+///
+/// Approach: register a custom `WebhookActionFactory` in the test's registry
+/// that always returns `FactoryError::InvalidSpec` for provider `"bad-provider"`.
+/// The test sends a `RegisterWebhookRequest` with `provider = "bad-provider"`.
+///
+/// We cannot reach `InvalidSpec` through the generic/slack/stripe providers via
+/// the DTO alone (they accept any spec with a non-empty secret), so a fake factory
+/// is the correct injection point as specified in the task.
+#[tokio::test]
+async fn register_factory_invalid_spec_returns_422() {
+    use nebula_action::webhook::factory::{
+        BuiltWebhookHandler, FactoryError, WebhookActionFactory, WebhookActivationSpec,
+    };
+
+    // A factory that always returns InvalidSpec.
+    struct AlwaysInvalidSpecFactory;
+    impl WebhookActionFactory for AlwaysInvalidSpecFactory {
+        fn kind(&self) -> &'static str {
+            "bad-provider"
+        }
+        fn build(
+            &self,
+            _spec: &WebhookActivationSpec,
+        ) -> Result<BuiltWebhookHandler, FactoryError> {
+            Err(FactoryError::InvalidSpec {
+                kind: "bad-provider",
+                reason: "injected InvalidSpec for P2 test".to_string(),
+            })
+        }
+    }
+
+    // Build state with the bad-provider factory registered.
+    let key: Arc<dyn KeyProvider> =
+        Arc::new(EnvKeyProvider::from_base64(TEST_KEY_B64).expect("valid AES key"));
+    let credential_svc = with_memory_store(Arc::clone(&key))
+        .await
+        .expect("credential service builds");
+
+    let trigger_store = Arc::new(InMemoryTriggerStore::new());
+    let activation_store = Arc::new(InMemoryWebhookActivationStore::new());
+    let workflow_versions = Arc::new(InMemoryWorkflowVersionStore::new());
+    let workflow_store = Arc::new(InMemoryWorkflowStore::new_with_versions(&workflow_versions));
+
+    let exec_store = InMemoryExecutionStore::new();
+    let control_queue = InMemoryControlQueue::new(&exec_store);
+    let journal = nebula_storage::inmem::InMemoryJournalReader::new(&exec_store);
+    let node_results = InMemoryNodeResultStore::new();
+
+    let action_registry = Arc::new({
+        let r = ActionRegistry::new();
+        r.register_webhook_provider(Arc::new(AlwaysInvalidSpecFactory));
+        r
+    });
+
+    let transport = WebhookTransport::new(WebhookTransportConfig {
+        base_url: Url::parse("https://nebula.example.com").expect("valid base URL"),
+        path_prefix: "/webhooks".to_string(),
+        body_limit_bytes: 1 << 20,
+        response_timeout: Duration::from_secs(5),
+        rate_limit_per_minute: None,
+        tenant_rate_limit_per_minute: None,
+    });
+
+    let secret_resolver = Arc::new(CredentialBackedWebhookSecretResolver::new(
+        credential_svc.clone(),
+    ));
+    let ctx_factory: Arc<dyn WebhookActivationContextFactory> = Arc::new(NoopCtxFactory);
+    let spec_lookup =
+        TriggerStoreSpecLookup::new(Arc::clone(&trigger_store) as Arc<dyn TriggerStore>);
+
+    let config = nebula_api::ApiConfig::for_test();
+    let state = AppState::new(
+        Arc::clone(&workflow_store) as _,
+        Arc::clone(&workflow_versions) as _,
+        Arc::new(exec_store),
+        Arc::new(node_results),
+        Arc::new(journal),
+        Arc::new(control_queue),
+        config.jwt_secret,
+    )
+    .with_credential_service(credential_svc)
+    .with_trigger_store(Arc::clone(&trigger_store) as _)
+    .with_webhook_activation_store(Arc::clone(&activation_store) as _)
+    .with_action_registry(Arc::clone(&action_registry))
+    .with_webhook_transport(transport)
+    .with_webhook_secret_resolver(secret_resolver)
+    .with_webhook_ctx_factory_b(ctx_factory)
+    .with_webhook_spec_lookup(Arc::new(spec_lookup))
+    .with_insecure_tenant_rbac_bypass_for_tests();
+
+    // Seed a workflow so we get past the ownership check.
+    let workflow_id = WorkflowId::new();
+    let trigger_node_key = "wh-trigger-p2-test";
+    seed_workflow(
+        &workflow_store,
+        &workflow_versions,
+        &scope_a(),
+        workflow_id,
+        workflow_definition_with_binding(workflow_id, trigger_node_key),
+    )
+    .await;
+
+    let body = RegisterWebhookRequest {
+        workflow_id: workflow_id.to_string(),
+        trigger_id: trigger_node_key.to_string(),
+        provider: "bad-provider".to_string(),
+        replay_window_secs: None,
+        timestamp_header: None,
+        provider_config: None,
+        rate_limit_per_minute: None,
+    };
+
+    let result = register_webhook(
+        State(state),
+        Extension(dummy_user()),
+        Extension(tenant_for_scope_a()),
+        Path((TEST_ORG_A.to_string(), TEST_WS_A.to_string())),
+        Json(body),
+    )
+    .await;
+
+    let err =
+        result.expect_err("factory InvalidSpec must return Err; Ok(_) means P2 mapping is broken");
+    let (status, _) = err.to_problem_details();
+    assert_eq!(
+        status,
+        axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+        "FactoryError::InvalidSpec must map to HTTP 422; got {status} — \
+         if 500, the P2 catch-all branch is firing instead of the typed match"
+    );
+}

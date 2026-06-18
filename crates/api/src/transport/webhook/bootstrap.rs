@@ -277,8 +277,24 @@ async fn validate_one(
     ctx_factory: &dyn WebhookActivationContextFactory,
     spec_lookup: &dyn TriggerSpecLookup,
 ) -> Result<(), BootstrapError> {
+    // Use spec_trigger_id (the port_triggers PK, `trg_` prefix) as the spec
+    // lookup key — NOT trigger_id (the dispatch routing NodeKey).  Legacy rows
+    // written before ADR-0101 have spec_trigger_id = None; skip them with
+    // MissingSpec so we never confuse a NodeKey for a spec-row PK.
+    let spec_pk = record.spec_trigger_id.as_deref().ok_or_else(|| {
+        tracing::warn!(
+            target: "nebula::api::webhook::bootstrap",
+            trigger_id = %record.trigger_id,
+            "activation row has no spec_trigger_id (legacy row written before ADR-0101); \
+             skipping bootstrap reconstruct for this activation"
+        );
+        BootstrapError::MissingSpec {
+            trigger_id: record.trigger_id.clone(),
+        }
+    })?;
+
     let spec = spec_lookup
-        .lookup(&record.scope, &record.trigger_id)
+        .lookup(&record.scope, spec_pk)
         .await
         .map_err(|source| BootstrapError::SpecLookup {
             trigger_id: record.trigger_id.clone(),
