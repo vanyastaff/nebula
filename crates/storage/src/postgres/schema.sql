@@ -87,17 +87,18 @@ CREATE INDEX IF NOT EXISTS idx_port_idempotency_cache_expiry
 -- token_hash resolves the capability-token path (resolve_by_token); the
 -- all-zeros sentinel ("no token assigned") is excluded from the unique index.
 CREATE TABLE IF NOT EXISTS port_webhook_activations (
-    workspace_id TEXT NOT NULL,
-    org_id       TEXT NOT NULL,
-    slug         TEXT NOT NULL,
-    trigger_id   TEXT NOT NULL,
-    active       BOOLEAN NOT NULL DEFAULT TRUE,
-    workflow_id  TEXT,
-    webhook_mode TEXT NOT NULL DEFAULT 'test'
+    workspace_id    TEXT    NOT NULL,
+    org_id          TEXT    NOT NULL,
+    slug            TEXT    NOT NULL,
+    trigger_id      TEXT    NOT NULL,
+    active          BOOLEAN NOT NULL DEFAULT TRUE,
+    workflow_id     TEXT,
+    webhook_mode    TEXT    NOT NULL DEFAULT 'test'
         CHECK (webhook_mode IN ('test', 'prod')),
-    token_hash   BYTEA NOT NULL
+    token_hash      BYTEA   NOT NULL
         DEFAULT decode(repeat('00', 32), 'hex')
         CHECK (octet_length(token_hash) = 32),
+    spec_trigger_id TEXT,    -- ADR-0101 L1 spec link: port_triggers PK (trg_ prefix), NULL on legacy rows
     PRIMARY KEY (workspace_id, org_id, slug)
 );
 

@@ -33,8 +33,7 @@ pub mod metrics;
 pub mod org;
 pub mod resource;
 pub mod shared;
-// `pub mod webhook;` — removed by M3.3 task C3. The slug-routed
-// surface is mounted by `transport::webhook::WebhookTransport::router`.
+pub mod webhook;
 pub mod workflow;
 pub mod workspace;
 

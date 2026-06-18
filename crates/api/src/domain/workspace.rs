@@ -26,7 +26,7 @@ use crate::{
     access,
     domain::{
         credential::handler as credential, execution::handler as execution,
-        resource::handler as resource, workflow::handler as workflow,
+        resource::handler as resource, webhook::handler as webhook, workflow::handler as workflow,
     },
     state::AppState,
 };
@@ -125,6 +125,11 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(access::protected(
             Permission::ResourceDelete,
             routes!(resource::delete_resource),
+        ))
+        // Webhooks — registration producer (`mode=Prod`; mints secret + URL once).
+        .routes(access::protected(
+            Permission::WorkflowWrite,
+            routes!(webhook::register_webhook),
         ))
         // Credentials (Plane B — API-owned OAuth flow). Literal paths first, then
         // collection, then parameterized `{cred}`, then sub-resources.

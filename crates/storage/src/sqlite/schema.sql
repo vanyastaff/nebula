@@ -90,17 +90,18 @@ CREATE INDEX IF NOT EXISTS idx_port_idempotency_cache_expiry
 -- webhook_mode  'test'→ safe default; 'prod' routes to the durable engine
 -- token_hash    all-zeros sentinel → no capability token assigned yet
 CREATE TABLE IF NOT EXISTS port_webhook_activations (
-    workspace_id TEXT NOT NULL,
-    org_id       TEXT NOT NULL,
-    slug         TEXT NOT NULL,
-    trigger_id   TEXT NOT NULL,
-    active       INTEGER NOT NULL DEFAULT 1,
-    workflow_id  TEXT,
-    webhook_mode TEXT NOT NULL DEFAULT 'test'
-                     CHECK (webhook_mode IN ('test', 'prod')),
-    token_hash   BLOB NOT NULL
-                     DEFAULT X'0000000000000000000000000000000000000000000000000000000000000000'
-                     CHECK (length(token_hash) = 32),
+    workspace_id    TEXT NOT NULL,
+    org_id          TEXT NOT NULL,
+    slug            TEXT NOT NULL,
+    trigger_id      TEXT NOT NULL,
+    active          INTEGER NOT NULL DEFAULT 1,
+    workflow_id     TEXT,
+    webhook_mode    TEXT NOT NULL DEFAULT 'test'
+                        CHECK (webhook_mode IN ('test', 'prod')),
+    token_hash      BLOB NOT NULL
+                        DEFAULT X'0000000000000000000000000000000000000000000000000000000000000000'
+                        CHECK (length(token_hash) = 32),
+    spec_trigger_id TEXT,  -- ADR-0101 L1 spec link: port_triggers PK (trg_ prefix), NULL on legacy rows
     PRIMARY KEY (workspace_id, org_id, slug)
 );
 

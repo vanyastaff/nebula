@@ -36,7 +36,9 @@ pub enum WebhookMode {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct WebhookActivationRecord {
-    /// Owning trigger id (opaque string form).
+    /// The workflow trigger-binding NodeKey — the dispatch routing key
+    /// (`do_emit_prod` parses it as a NodeKey to resolve the binding).
+    /// NOT the `port_triggers` PK (that is `spec_trigger_id`).
     pub trigger_id: String,
     /// Tenant scope this activation belongs to.
     pub scope: Scope,
@@ -62,14 +64,22 @@ pub struct WebhookActivationRecord {
     /// index on the `port_webhook_activations` table excludes the sentinel
     /// so existing rows do not collide.
     pub token_hash: [u8; 32],
+    /// The `port_triggers` spec-row PK (`TriggerId`, `trg_` prefix) this
+    /// activation was built from — the ADR-0101 L1 spec link, used by
+    /// bootstrap reconstruct to re-resolve the webhook spec via the API
+    /// crate's `TriggerSpecLookup` (the trait lives in `nebula-api`, so this
+    /// is a plain reference, not an intra-doc link).
+    ///
+    /// `None` on legacy rows written before this field existed.
+    pub spec_trigger_id: Option<String>,
 }
 
 impl WebhookActivationRecord {
     /// Construct a new record with safe defaults for the extended fields.
     ///
     /// `workflow_id` is `None`, `mode` is [`WebhookMode::default()`]
-    /// (currently [`WebhookMode::Test`]), and `token_hash` is the all-zeros
-    /// sentinel (no token assigned yet).
+    /// (currently [`WebhookMode::Test`]), `token_hash` is the all-zeros
+    /// sentinel (no token assigned yet), and `spec_trigger_id` is `None`.
     #[must_use]
     pub fn new(
         trigger_id: impl Into<String>,
@@ -85,6 +95,7 @@ impl WebhookActivationRecord {
             workflow_id: None,
             mode: WebhookMode::default(),
             token_hash: [0u8; 32],
+            spec_trigger_id: None,
         }
     }
 }

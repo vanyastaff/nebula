@@ -140,14 +140,15 @@ impl WebhookActivationStore for SqliteWebhookActivationStore {
         sqlx::query(
             "INSERT INTO port_webhook_activations \
              (workspace_id, org_id, slug, trigger_id, active, \
-              workflow_id, webhook_mode, token_hash) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?) \
+              workflow_id, webhook_mode, token_hash, spec_trigger_id) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) \
              ON CONFLICT (workspace_id, org_id, slug) DO UPDATE SET \
-               trigger_id   = excluded.trigger_id, \
-               active       = excluded.active, \
-               workflow_id  = excluded.workflow_id, \
-               webhook_mode = excluded.webhook_mode, \
-               token_hash   = excluded.token_hash",
+               trigger_id      = excluded.trigger_id, \
+               active          = excluded.active, \
+               workflow_id     = excluded.workflow_id, \
+               webhook_mode    = excluded.webhook_mode, \
+               token_hash      = excluded.token_hash, \
+               spec_trigger_id = excluded.spec_trigger_id",
         )
         .bind(&scope.workspace_id)
         .bind(&scope.org_id)
@@ -157,6 +158,7 @@ impl WebhookActivationStore for SqliteWebhookActivationStore {
         .bind(&record.workflow_id)
         .bind(mode_str)
         .bind(record.token_hash.as_ref())
+        .bind(&record.spec_trigger_id)
         .execute(&self.pool)
         .await
         .map_err(conn_err)?;
@@ -171,7 +173,7 @@ impl WebhookActivationStore for SqliteWebhookActivationStore {
         // Only an active activation resolves (never route a paused hook),
         // and only within this tenant's scope.
         let row = sqlx::query(
-            "SELECT trigger_id, workflow_id, webhook_mode, token_hash \
+            "SELECT trigger_id, workflow_id, webhook_mode, token_hash, spec_trigger_id \
              FROM port_webhook_activations \
              WHERE workspace_id = ? AND org_id = ? AND slug = ? \
                AND active = 1",
@@ -206,6 +208,7 @@ impl WebhookActivationStore for SqliteWebhookActivationStore {
                 .unwrap_or([0u8; 32]);
             let trigger_id: String = r.try_get("trigger_id").map_err(conn_err)?;
             let workflow_id: Option<String> = r.try_get("workflow_id").map_err(conn_err)?;
+            let spec_trigger_id: Option<String> = r.try_get("spec_trigger_id").map_err(conn_err)?;
             // `WebhookActivationRecord` is `#[non_exhaustive]`; construct
             // via the public constructor then overwrite the non-default
             // fields through their public field accessors.
@@ -213,6 +216,7 @@ impl WebhookActivationStore for SqliteWebhookActivationStore {
             rec.workflow_id = workflow_id;
             rec.mode = mode;
             rec.token_hash = token_hash;
+            rec.spec_trigger_id = spec_trigger_id;
             Ok(rec)
         })
         .transpose()
@@ -244,7 +248,7 @@ impl WebhookActivationStore for SqliteWebhookActivationStore {
         }
         let row = sqlx::query(
             "SELECT workspace_id, org_id, slug, trigger_id, workflow_id, \
-                    webhook_mode, token_hash \
+                    webhook_mode, token_hash, spec_trigger_id \
              FROM port_webhook_activations \
              WHERE token_hash = ? AND active = 1",
         )
@@ -260,6 +264,7 @@ impl WebhookActivationStore for SqliteWebhookActivationStore {
         let slug: String = r.try_get("slug").map_err(conn_err)?;
         let trigger_id: String = r.try_get("trigger_id").map_err(conn_err)?;
         let workflow_id: Option<String> = r.try_get("workflow_id").map_err(conn_err)?;
+        let spec_trigger_id: Option<String> = r.try_get("spec_trigger_id").map_err(conn_err)?;
         // Fail-closed: unrecognised mode → Test.
         let mode = match r
             .try_get::<Option<String>, _>("webhook_mode")
@@ -280,6 +285,7 @@ impl WebhookActivationStore for SqliteWebhookActivationStore {
         rec.workflow_id = workflow_id;
         rec.mode = mode;
         rec.token_hash = stored_hash;
+        rec.spec_trigger_id = spec_trigger_id;
         Ok(Some(rec))
     }
 
@@ -287,7 +293,7 @@ impl WebhookActivationStore for SqliteWebhookActivationStore {
     async fn list_all_active(&self) -> Result<Vec<WebhookActivationRecord>, StorageError> {
         let rows = sqlx::query(
             "SELECT workspace_id, org_id, slug, trigger_id, workflow_id, \
-                    webhook_mode, token_hash \
+                    webhook_mode, token_hash, spec_trigger_id \
              FROM port_webhook_activations \
              WHERE active = 1",
         )
@@ -303,6 +309,7 @@ impl WebhookActivationStore for SqliteWebhookActivationStore {
             let slug: String = r.try_get("slug").map_err(conn_err)?;
             let trigger_id: String = r.try_get("trigger_id").map_err(conn_err)?;
             let workflow_id: Option<String> = r.try_get("workflow_id").map_err(conn_err)?;
+            let spec_trigger_id: Option<String> = r.try_get("spec_trigger_id").map_err(conn_err)?;
             let mode = match r
                 .try_get::<Option<String>, _>("webhook_mode")
                 .ok()
@@ -321,6 +328,7 @@ impl WebhookActivationStore for SqliteWebhookActivationStore {
             rec.workflow_id = workflow_id;
             rec.mode = mode;
             rec.token_hash = token_hash;
+            rec.spec_trigger_id = spec_trigger_id;
             out.push(rec);
         }
         Ok(out)

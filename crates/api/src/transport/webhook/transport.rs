@@ -123,6 +123,18 @@ pub struct ActivationHandle {
     pub endpoint_url: Url,
 }
 
+impl ActivationHandle {
+    /// The opaque activation identity (trigger UUID) as a string.
+    ///
+    /// Use this to correlate log entries and to populate the `activation_id`
+    /// response field in the registration endpoint.  The UUID is not a
+    /// secret — it appears in the webhook URL path segment.
+    #[must_use]
+    pub fn activation_id(&self) -> String {
+        self.trigger_uuid.to_string()
+    }
+}
+
 /// HTTP ingress layer for webhook triggers.
 #[derive(Clone)]
 pub struct WebhookTransport {
@@ -582,8 +594,14 @@ pub struct PersistParams {
     pub action_config: WebhookConfig,
     /// Context template forwarded to dispatch on each incoming request.
     pub ctx_template: TriggerRuntimeContext,
-    /// Trigger identity in the B-world store (`triggers.trigger_id`).
+    /// The workflow trigger-binding NodeKey — the dispatch routing key used by
+    /// `do_emit_prod` to resolve the binding in `ValidatedWorkflow.trigger_bindings`.
+    /// NOT the `port_triggers` spec-row PK (that is `spec_trigger_id`).
     pub trigger_id: String,
+    /// The `port_triggers` spec-row PK (`trg_` prefix) — stored as the ADR-0101
+    /// L1 spec link so bootstrap reconstruct can re-resolve the webhook spec via
+    /// `TriggerSpecLookup::lookup` without conflating it with the routing NodeKey.
+    pub spec_trigger_id: String,
     /// Tenant scope the activation belongs to; used as the store partition key.
     pub scope: nebula_storage_port::Scope,
     /// Optional workflow associated with this activation.
@@ -642,6 +660,7 @@ pub async fn activate_and_persist(
         action_config,
         ctx_template,
         trigger_id,
+        spec_trigger_id,
         scope,
         workflow_id,
         mode,
@@ -655,6 +674,9 @@ pub async fn activate_and_persist(
 
     // Step 3: build the B-world record.
     //
+    // `trigger_id` is the dispatch routing NodeKey (used by `do_emit_prod`).
+    // `spec_trigger_id` is the ADR-0101 L1 spec link (the `port_triggers` PK)
+    // used by bootstrap reconstruct to re-resolve the webhook spec.
     // `slug` is set to the trigger UUID string so the port store has a unique,
     // human-readable identifier for the activation.  This field is used only
     // for the slug-keyed `resolve` path (not exercised for programmatic
@@ -668,6 +690,7 @@ pub async fn activate_and_persist(
     record.workflow_id = workflow_id;
     record.mode = mode;
     record.token_hash = hash;
+    record.spec_trigger_id = Some(spec_trigger_id);
 
     // Step 4: upsert to the port store.
     //
@@ -773,6 +796,7 @@ mod tests {
                 action_config: WebhookConfig::default(),
                 ctx_template: ctx_template(),
                 trigger_id: trigger_id.to_string(),
+                spec_trigger_id: "trg_test_spec_link".to_string(),
                 scope: scope.clone(),
                 workflow_id: workflow_id.clone(),
                 mode: WebhookMode::Test,
@@ -825,6 +849,7 @@ mod tests {
                 action_config: WebhookConfig::default(),
                 ctx_template: ctx_template(),
                 trigger_id: "trigger-routing-test".to_string(),
+                spec_trigger_id: "trg_routing_test_spec".to_string(),
                 scope: test_scope(),
                 workflow_id: None,
                 mode: WebhookMode::Test,
@@ -918,6 +943,7 @@ mod tests {
                 action_config: WebhookConfig::default(),
                 ctx_template: ctx_template(),
                 trigger_id: "trigger-rollback-test".to_string(),
+                spec_trigger_id: "trg_rollback_test_spec".to_string(),
                 scope: test_scope(),
                 workflow_id: None,
                 mode: WebhookMode::Test,
@@ -960,6 +986,7 @@ mod tests {
                 action_config: WebhookConfig::default(),
                 ctx_template: ctx_template(),
                 trigger_id: "trigger-happy-path-b".to_string(),
+                spec_trigger_id: "trg_happy_path_b_spec".to_string(),
                 scope: test_scope(),
                 workflow_id: None,
                 mode: WebhookMode::Test,

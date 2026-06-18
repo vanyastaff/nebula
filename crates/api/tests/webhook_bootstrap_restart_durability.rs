@@ -169,8 +169,17 @@ async fn seed_trigger_row(
 }
 
 /// Seed an active `port_webhook_activations` row for `TRIGGER_ID` under `scope`.
+///
+/// `spec_trigger_id` is set to `TRIGGER_ID` so the bootstrap reconstruct can
+/// find the spec row via `TriggerStoreSpecLookup::lookup`.  This matches the
+/// production write path (PR-3b handler): the spec PK is stored in
+/// `spec_trigger_id` and the NodeKey goes into `trigger_id`.  In these tests
+/// both happen to be `TRIGGER_ID` (the constant is used as both the `trg_` PK
+/// and the NodeKey for simplicity).
 async fn seed_activation_record(store: &dyn WebhookActivationStore, scope: &Scope) {
-    let record = WebhookActivationRecord::new(TRIGGER_ID, scope.clone(), "bootstrap-slug", true);
+    let mut record =
+        WebhookActivationRecord::new(TRIGGER_ID, scope.clone(), "bootstrap-slug", true);
+    record.spec_trigger_id = Some(TRIGGER_ID.to_string());
     store
         .upsert(scope, record)
         .await
