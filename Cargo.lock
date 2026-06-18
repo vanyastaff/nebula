@@ -3870,6 +3870,7 @@ dependencies = [
  "serde_json",
  "smallvec",
  "subtle",
+ "thiserror",
  "tokio",
  "tracing",
  "trybuild",

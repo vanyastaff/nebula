@@ -123,6 +123,8 @@ extern crate self as nebula_schema;
 
 /// Typed-closure builder DSL (leaf aliases + Object/List/Group composite builders).
 pub mod builder;
+/// Schema-compatibility check: structural width-subtyping (TypeDAG T1).
+pub mod compat;
 /// Builds the validator predicate context (visibility/required) from schema fields + values.
 pub mod context;
 /// Error types for schema operations.
@@ -173,6 +175,7 @@ pub use builder::{
     BooleanBuilder, CodeBuilder, FieldCollector, GroupBuilder, ListBuilder, NumberBuilder,
     ObjectBuilder, SecretBuilder, SelectBuilder, StringBuilder,
 };
+pub use compat::{SchemaIncompat, is_assignable};
 pub use error::{
     STANDARD_CODES, Severity, ValidationError, ValidationErrorBuilder, ValidationReport,
 };
