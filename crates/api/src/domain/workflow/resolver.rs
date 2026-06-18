@@ -227,4 +227,59 @@ mod tests {
             "None registry must return None"
         );
     }
+
+    /// A pinned `interface_version` that matches the registered version resolves.
+    ///
+    /// `register_stateless_instance` stores `metadata.base.version` so that
+    /// `get_factory_versioned` can match on it. This test exercises the
+    /// `Some(version)` branch of `io_schemas`.
+    ///
+    /// Goes RED if `io_schemas` falls through to `get_factory` (ignoring the
+    /// version) or returns `None` for a known-good pinned version.
+    #[test]
+    fn versioned_hit_returns_schemas() {
+        let input = field_schema("in_field", true);
+        // registry_with_typed_action registers at version 1.0 (via with_version(1,0)).
+        let registry = registry_with_typed_action("test.versioned", input.clone());
+        let resolver = CatalogSchemaResolver::new(Some(Arc::new(registry)));
+        let key = ActionKey::new("test.versioned").unwrap();
+        let v1 = Version::new(1, 0, 0);
+
+        let schemas = resolver
+            .io_schemas(&key, Some(&v1))
+            .expect("version 1.0.0 is registered; io_schemas must return Some");
+
+        assert_eq!(
+            schemas.input, input,
+            "versioned hit: input schema must match caller-supplied base.schema"
+        );
+        assert_eq!(
+            schemas.output,
+            TypedOut::schema(),
+            "versioned hit: output schema must match TypedOut::schema()"
+        );
+    }
+
+    /// A pinned `interface_version` that is NOT registered returns `None` (fail-open).
+    ///
+    /// `get_factory_versioned` returns `None` for an unknown version; the
+    /// resolver must propagate that as `None` so the edge is skipped rather
+    /// than producing a spurious schema error.
+    ///
+    /// Goes RED if `io_schemas` falls through to `get_factory` (returning the
+    /// latest version) instead of returning `None` for the unregistered version.
+    #[test]
+    fn versioned_miss_returns_none() {
+        let input = field_schema("in_field", true);
+        let registry = registry_with_typed_action("test.versioned", input);
+        let resolver = CatalogSchemaResolver::new(Some(Arc::new(registry)));
+        let key = ActionKey::new("test.versioned").unwrap();
+        // Version 2.0.0 was never registered.
+        let v2 = Version::new(2, 0, 0);
+
+        assert!(
+            resolver.io_schemas(&key, Some(&v2)).is_none(),
+            "unregistered version must return None (fail-open)"
+        );
+    }
 }

@@ -190,7 +190,15 @@ pub fn validate_workflow(definition: &WorkflowDefinition) -> Vec<WorkflowError> 
 /// resolved by `resolver`, calls
 /// `nebula_schema::is_assignable(producer.output, consumer.input)`.
 ///
-/// An edge is **skipped** (fail-open, ADR-0100 T3.2) when:
+/// An edge is **skipped** (fail-open, ADR-0100 T3.2) when **any** of the
+/// following hold:
+/// - the edge is not a main-flow edge: `from_port` resolves to something other
+///   than `"main"` (e.g. `"error"`, `"true"`, a dynamic / support port key), or
+///   `to_port` is a named port (support / supply input). Only default
+///   main-flow edges — `from_port: None` (effective `"main"`) **and**
+///   `to_port: None` — carry the typed `A::Output` / `A::Input` payload that
+///   `output_schema` / `base.schema` describe. Named ports carry different
+///   payloads and must not be validated against the success-output schema.
 /// - either endpoint's `action_key` is missing from the catalog
 ///   (`resolver.io_schemas` returns `None`), or
 /// - either endpoint's node does not exist in the definition (already
@@ -233,6 +241,23 @@ pub fn validate_workflow_with_resolver(
         let Some(consumer_node) = node_by_id.get(&conn.to_node) else {
             continue;
         };
+
+        // Port-scope guard: only type-check main-flow edges.
+        //
+        // `output_schema` / `base.schema` describe the typed A::Output / A::Input
+        // on the SUCCESS path — the default main-flow edge. Named `from_port` values
+        // (e.g. `"error"` for recovery routing, `"true"`/`"false"` for control
+        // branches, dynamic port keys) carry a *different* payload shape and must
+        // not be validated against the success output schema, or legitimate
+        // error/recovery edges would be falsely rejected at `/activate`/`/validate`.
+        //
+        // `effective_from_port()` normalises `None → "main"` (the engine's
+        // canonical main-flow sentinel). `to_port: None` is the engine's default
+        // flow input; a named `to_port` indicates a support or supply input whose
+        // schema is not captured by `base.schema`.
+        if conn.effective_from_port() != "main" || conn.to_port.is_some() {
+            continue;
+        }
 
         // Resolve both endpoints. Either `None` → fail-open (T3.2).
         let Some(producer_schemas) = resolver.io_schemas(
@@ -1016,6 +1041,69 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e, WorkflowError::PortSchemaIncompatible(_))),
             "unresolvable endpoint must cause the edge to be skipped (fail-open); got: {errors:?}"
+        );
+    }
+
+    /// Non-main-flow edges are skipped regardless of schema compatibility.
+    ///
+    /// `output_schema` / `base.schema` describe the typed `A::Output` / `A::Input`
+    /// on the SUCCESS path only. A named `from_port` (e.g. `"error"` for recovery
+    /// routing) carries a *different* payload shape and must not be compared against
+    /// the success output schema, or legitimate error/recovery edges would be
+    /// falsely rejected at `/activate`/`/validate`.
+    ///
+    /// Non-vacuous contract: the SAME incompatible schemas on the default
+    /// main-flow edge (from the existing `incompatible_schemas_produce_port_schema_incompatible_error`
+    /// test) DO produce `PortSchemaIncompatible`. The guard is what makes this
+    /// test pass — removing it would cause the error-port edge to be wrongly
+    /// rejected (RED).
+    #[test]
+    fn non_main_port_edge_is_skipped() {
+        let a = node_key!("a");
+        let b = node_key!("b");
+
+        // Producer output {x: required} and consumer input {y: required} are
+        // structurally incompatible (missing field `y`). On the main-flow edge
+        // this would produce `PortSchemaIncompatible` — but this edge routes
+        // through the `"error"` port, which carries a different payload shape.
+        let producer_output = single_field_schema("x", true);
+        let consumer_input = single_field_schema("y", true);
+
+        let def = make_definition(
+            "non-main-port-test",
+            vec![
+                NodeDefinition::new(a.clone(), "Producer", "core", "producer.action").unwrap(),
+                NodeDefinition::new(b.clone(), "Consumer", "core", "consumer.action").unwrap(),
+            ],
+            // Error-port edge: producer's "error" output → consumer's default input.
+            vec![Connection::new(a, b).with_from_port("error")],
+        );
+
+        let mut schemas = HashMap::new();
+        schemas.insert(
+            "producer.action".to_owned(),
+            NodeIoSchemas {
+                input: ValidSchema::empty(),
+                output: producer_output,
+            },
+        );
+        schemas.insert(
+            "consumer.action".to_owned(),
+            NodeIoSchemas {
+                input: consumer_input,
+                output: ValidSchema::empty(),
+            },
+        );
+
+        let resolver = MapResolver(schemas);
+        let errors = validate_workflow_with_resolver(&def, &resolver);
+
+        assert!(
+            !errors
+                .iter()
+                .any(|e| matches!(e, WorkflowError::PortSchemaIncompatible(_))),
+            "named from_port (\"error\") must be skipped — schema check applies only to \
+             main-flow edges; got: {errors:?}"
         );
     }
 

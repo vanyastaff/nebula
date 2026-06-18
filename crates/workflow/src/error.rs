@@ -175,10 +175,12 @@ pub struct PortSchemaIncompatDetails {
 
 impl std::fmt::Display for PortSchemaIncompatDetails {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let from_port = self.from_port.as_deref().unwrap_or("main");
+        let to_port = self.to_port.as_deref().unwrap_or("default");
         write!(
             f,
-            "{}.{:?} \u{2192} {}.{:?}: {}",
-            self.from_node, self.from_port, self.to_node, self.to_port, self.reason
+            "{}.{} \u{2192} {}.{}: {}",
+            self.from_node, from_port, self.to_node, to_port, self.reason
         )
     }
 }
