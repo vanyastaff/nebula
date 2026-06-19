@@ -47,6 +47,39 @@ pub enum ExecutionEvent {
         error: String,
     },
 
+    /// A node returned `ActionResult::Wait` and has been durably parked
+    /// pending an external condition (timer, webhook, or human approval).
+    ///
+    /// The node has transitioned to `Waiting`, the worker has been
+    /// released, and downstream edges are gated until
+    /// [`ExecutionEvent::NodeWaitCompleted`] fires.
+    ///
+    /// `wake_at` is `Some` for timer-driven conditions (`Until` /
+    /// `Duration`) and `None` for signal-driven conditions (`Webhook` /
+    /// `Approval` / `Execution`) that have no timeout.
+    NodeParked {
+        /// Execution this node belongs to.
+        execution_id: ExecutionId,
+        /// The node that was parked.
+        node_key: NodeKey,
+        /// Wall-clock instant the engine plans to satisfy the wait, or
+        /// `None` for signal-only conditions.
+        wake_at: Option<DateTime<Utc>>,
+    },
+
+    /// A parked node's wait condition was satisfied and the node has
+    /// been transitioned to `Completed`. Downstream edges are now active.
+    ///
+    /// Subscribers should treat [`ExecutionEvent::NodeParked`] and this
+    /// event as a matched pair: `Parked` gates downstream, `WaitCompleted`
+    /// unblocks it.
+    NodeWaitCompleted {
+        /// Execution this node belongs to.
+        execution_id: ExecutionId,
+        /// The node whose wait condition was satisfied.
+        node_key: NodeKey,
+    },
+
     /// A node attempt failed but the engine scheduled a retry per
     /// (Layer 2 — engine-level retry). The node has
     /// transitioned to `WaitingRetry` and will be re-dispatched at

@@ -28,6 +28,17 @@ pub enum NodeState {
     /// transition back to `Ready`/`Running` (retry attempt) or to
     /// `Cancelled` (shutdown / explicit cancel during the wait).
     WaitingRetry,
+
+    /// Parked pending an external wait condition (timer, webhook, or
+    /// human approval). `NodeExecutionState::next_attempt_at` holds
+    /// the timer wake instant when the condition is timer-based; it is
+    /// `None` for conditions that require an explicit `Resume` signal.
+    ///
+    /// Not terminal: a `Waiting` node will eventually transition to
+    /// `Completed` (condition satisfied) or `Cancelled` (shutdown /
+    /// explicit cancel during the wait). Downstream edges are gated
+    /// until the transition to `Completed` fires.
+    Waiting,
 }
 
 impl NodeState {
@@ -38,6 +49,16 @@ impl NodeState {
             self,
             Self::Completed | Self::Failed | Self::Skipped | Self::Cancelled
         )
+    }
+
+    /// Returns `true` if the node is parked pending an external wait condition.
+    ///
+    /// A `Waiting` node holds no worker: the engine released the worker
+    /// when it parked the node and will re-complete it when the condition
+    /// is satisfied. Downstream edges remain gated until `Completed`.
+    #[must_use]
+    pub fn is_waiting(&self) -> bool {
+        matches!(self, Self::Waiting)
     }
 
     /// Returns `true` if the node is currently doing work.
@@ -83,6 +104,7 @@ impl std::fmt::Display for NodeState {
             Self::Skipped => write!(f, "skipped"),
             Self::Cancelled => write!(f, "cancelled"),
             Self::WaitingRetry => write!(f, "waiting_retry"),
+            Self::Waiting => write!(f, "waiting"),
         }
     }
 }
@@ -106,6 +128,11 @@ mod tests {
             "WaitingRetry must be non-terminal — engine flips it back \
              to Ready when next_attempt_at fires"
         );
+        assert!(
+            !NodeState::Waiting.is_terminal(),
+            "Waiting must be non-terminal — engine transitions it to \
+             Completed when the wait condition is satisfied"
+        );
     }
 
     #[test]
@@ -123,6 +150,11 @@ mod tests {
             "WaitingRetry is parked between attempts; the work is not \
              running — frontier loop's max_concurrent guard must not \
              count it toward active concurrency"
+        );
+        assert!(
+            !NodeState::Waiting.is_active(),
+            "Waiting is parked for an external condition; the worker was \
+             released — must not count toward active concurrency"
         );
     }
 
@@ -165,6 +197,7 @@ mod tests {
         assert_eq!(NodeState::Skipped.to_string(), "skipped");
         assert_eq!(NodeState::Cancelled.to_string(), "cancelled");
         assert_eq!(NodeState::WaitingRetry.to_string(), "waiting_retry");
+        assert_eq!(NodeState::Waiting.to_string(), "waiting");
     }
 
     #[test]
@@ -178,6 +211,7 @@ mod tests {
             NodeState::Skipped,
             NodeState::Cancelled,
             NodeState::WaitingRetry,
+            NodeState::Waiting,
         ];
 
         for state in &states {
@@ -207,6 +241,28 @@ mod tests {
 
         let json = serde_json::to_string(&NodeState::Failed).unwrap();
         assert_eq!(json, "\"failed\"");
+    }
+
+    /// `Waiting` is the parked-for-external-condition state. It is non-terminal
+    /// (the engine will transition it to `Completed` on satisfaction or
+    /// `Cancelled` on shutdown) and not active (the worker was released when
+    /// the node was parked). `is_failure()` returns `false`.
+    #[test]
+    fn waiting_is_non_terminal_non_active_non_failure() {
+        assert!(!NodeState::Waiting.is_terminal());
+        assert!(!NodeState::Waiting.is_active());
+        assert!(!NodeState::Waiting.is_failure());
+        assert!(NodeState::Waiting.is_waiting());
+        assert!(!NodeState::WaitingRetry.is_waiting());
+        assert!(!NodeState::Running.is_waiting());
+    }
+
+    #[test]
+    fn serde_waiting_uses_snake_case() {
+        let json = serde_json::to_string(&NodeState::Waiting).unwrap();
+        assert_eq!(json, "\"waiting\"");
+        let back: NodeState = serde_json::from_str("\"waiting\"").unwrap();
+        assert_eq!(back, NodeState::Waiting);
     }
 
     #[test]
