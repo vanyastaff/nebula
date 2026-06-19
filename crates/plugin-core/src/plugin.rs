@@ -7,7 +7,7 @@ use nebula_action::factory::{GenericControlFactory, GenericStatelessFactory};
 use nebula_metadata::{ManifestError, PluginManifest};
 use nebula_plugin::Plugin;
 
-use crate::actions::{CoreIf, CoreSwitch, JsonTransform, SetFields};
+use crate::actions::{CoreIf, CoreSwitch, DateTimeAction, JsonTransform, SetFields};
 
 /// First-party core plugin.
 ///
@@ -52,6 +52,7 @@ impl Plugin for CorePlugin {
         vec![
             Arc::new(GenericStatelessFactory::<SetFields>::new()),
             Arc::new(GenericStatelessFactory::<JsonTransform>::new()),
+            Arc::new(GenericStatelessFactory::<DateTimeAction>::new()),
             Arc::new(GenericControlFactory::<CoreIf>::new()),
             Arc::new(GenericControlFactory::<CoreSwitch>::new()),
         ]
@@ -91,6 +92,18 @@ mod tests {
         assert!(
             resolved.action(&key).is_some(),
             "core.json_transform must be registered in the resolved plugin"
+        );
+    }
+
+    #[test]
+    fn resolves_datetime_action() {
+        let resolved =
+            ResolvedPlugin::from(CorePlugin::try_new().expect("CorePlugin::try_new must succeed"))
+                .expect("CorePlugin must resolve without errors");
+        let key = nebula_core::ActionKey::new("core.datetime").unwrap();
+        assert!(
+            resolved.action(&key).is_some(),
+            "core.datetime must be registered in the resolved plugin"
         );
     }
 
