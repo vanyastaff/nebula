@@ -15,6 +15,7 @@
 //! | `core.datetime`        | Offset-aware RFC3339 timestamp formatting, parsing, arithmetic, and diff |
 //! | `core.filter`          | Filter array elements by a condition                           |
 //! | `core.if`              | Binary branch: route to `"true"` or `"false"` port on a field condition |
+//! | `core.sort`            | Sort an array of objects by one or more fields (asc/desc)           |
 //! | `core.switch`          | N-way branch: route to the first matching case port, or `"default"` |
 //!
 //! ## Usage

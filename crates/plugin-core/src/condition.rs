@@ -382,17 +382,21 @@ pub(crate) fn evaluate_condition(
     }
 }
 
-/// Evaluate an ordered operator (`Gt`/`Gte`/`Lt`/`Lte`) between two JSON values.
+/// Compare two JSON values for order.
 ///
 /// Both values must be the same JSON kind: both numbers (compared via f64) or
-/// both strings (lexicographic byte order). Any other combination is a Fatal
-/// error that names both types.
-pub(crate) fn evaluate_ordered(
-    op: ConditionOp,
-    actual: &Value,
-    expected: &Value,
-) -> Result<bool, ActionError> {
-    match (actual, expected) {
+/// both strings (lexicographic byte order). Any other combination — including
+/// a number vs. a string — is a Fatal error that names both types.
+///
+/// serde_json `Number` values are always finite (they are parsed from valid
+/// JSON text, which cannot represent NaN or Infinity). However, `as_f64()`
+/// returns `None` for very large `u64` values that do not fit in an f64
+/// mantissa without loss, so we still guard the conversion with `ok_or_else`
+/// rather than assuming `as_f64()` can never fail. In the vanishingly rare
+/// case that `f64::partial_cmp` returns `None` (two NaN-like values) we map
+/// it to Fatal rather than panicking.
+pub(crate) fn compare_ordered(a: &Value, b: &Value) -> Result<std::cmp::Ordering, ActionError> {
+    match (a, b) {
         (Value::Number(lhs), Value::Number(rhs)) => {
             // f64 is the common numeric type in serde_json; precision loss on
             // integers larger than 2^53 is a known limitation (documented in
@@ -407,30 +411,44 @@ pub(crate) fn evaluate_ordered(
                     "could not represent right-hand number `{rhs}` as f64"
                 ))
             })?;
-            let result = match op {
-                ConditionOp::Gt => lhs_f64 > rhs_f64,
-                ConditionOp::Gte => lhs_f64 >= rhs_f64,
-                ConditionOp::Lt => lhs_f64 < rhs_f64,
-                ConditionOp::Lte => lhs_f64 <= rhs_f64,
-                _ => unreachable!("evaluate_ordered called with non-ordered op"),
-            };
-            Ok(result)
+            // serde_json numbers are always finite, but we handle None defensively.
+            lhs_f64.partial_cmp(&rhs_f64).ok_or_else(|| {
+                ActionError::fatal(format!(
+                    "cannot compare non-finite numbers `{lhs_f64}` and `{rhs_f64}`"
+                ))
+            })
         },
-        (Value::String(lhs), Value::String(rhs)) => {
-            let result = match op {
-                ConditionOp::Gt => lhs > rhs,
-                ConditionOp::Gte => lhs >= rhs,
-                ConditionOp::Lt => lhs < rhs,
-                ConditionOp::Lte => lhs <= rhs,
-                _ => unreachable!("evaluate_ordered called with non-ordered op"),
-            };
-            Ok(result)
-        },
+        (Value::String(lhs), Value::String(rhs)) => Ok(lhs.as_str().cmp(rhs.as_str())),
         (lhs_val, rhs_val) => Err(ActionError::fatal(format!(
             "cannot apply ordered comparison to {} and {}",
             lhs_val.type_name_str(),
             rhs_val.type_name_str()
         ))),
+    }
+}
+
+/// Evaluate an ordered operator (`Gt`/`Gte`/`Lt`/`Lte`) between two JSON values.
+///
+/// Both values must be the same JSON kind: both numbers (compared via f64) or
+/// both strings (lexicographic byte order). Any other combination is a Fatal
+/// error that names both types.
+pub(crate) fn evaluate_ordered(
+    op: ConditionOp,
+    actual: &Value,
+    expected: &Value,
+) -> Result<bool, ActionError> {
+    use std::cmp::Ordering;
+    let ord = compare_ordered(actual, expected)?;
+    match op {
+        ConditionOp::Gt => Ok(ord == Ordering::Greater),
+        ConditionOp::Gte => Ok(ord != Ordering::Less),
+        ConditionOp::Lt => Ok(ord == Ordering::Less),
+        ConditionOp::Lte => Ok(ord != Ordering::Greater),
+        // Internal invariant: the only caller dispatches the four ordered ops
+        // here. Fail closed rather than panic if that ever changes.
+        _ => Err(ActionError::fatal(
+            "internal: evaluate_ordered called with a non-ordered operator",
+        )),
     }
 }
 

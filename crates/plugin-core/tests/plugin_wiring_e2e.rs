@@ -1452,6 +1452,133 @@ async fn without_plugin_aggregate_dispatch_fails() {
     );
 }
 
+// ── core.sort e2e ─────────────────────────────────────────────────────────────
+
+/// Build a single-node `core.sort` workflow.
+///
+/// `data_json` is the input array and `keys_json` is the serialized sort-key
+/// array. Both are wired as `ParamValue::literal` parameters so the engine
+/// resolves them into `SortInput` before dispatch.
+fn sort_workflow(data_json: serde_json::Value, keys_json: serde_json::Value) -> WorkflowDefinition {
+    let now = chrono::Utc::now();
+    let node = NodeDefinition::new(
+        nebula_core::node_key!("step"),
+        "Sort step",
+        "core",
+        "core.sort",
+    )
+    .expect("NodeDefinition must build with valid keys")
+    .with_parameter("data", ParamValue::literal(data_json))
+    .with_parameter("keys", ParamValue::literal(keys_json));
+
+    WorkflowDefinition {
+        id: nebula_core::WorkflowId::new(),
+        name: "test-core-sort".into(),
+        description: None,
+        version: Version::new(0, 1, 0),
+        nodes: vec![node],
+        connections: vec![],
+        variables: HashMap::new(),
+        config: WorkflowConfig::default(),
+        trigger_bindings: vec![],
+        tags: vec![],
+        created_at: now,
+        updated_at: now,
+        owner_id: None,
+        ui_metadata: None,
+        schema_version: CURRENT_SCHEMA_VERSION,
+    }
+}
+
+/// RED witness: dispatching `core.sort` on an engine without the CorePlugin
+/// wired returns `ExecutionStatus::Failed` with an action-not-found node error.
+///
+/// Removing `with_plugin` from the GREEN test below causes it to hit this same
+/// failure mode, proving the GREEN test distinguishes "action registered" from
+/// "action absent".
+#[tokio::test]
+async fn without_plugin_sort_dispatch_fails() {
+    let engine = make_engine(); // no with_plugin call
+
+    let workflow = sort_workflow(
+        serde_json::json!([{"n": 2}, {"n": 1}]),
+        serde_json::json!([{"field": "n", "order": "asc"}]),
+    );
+
+    let result = engine
+        .execute_workflow(
+            &scope(),
+            &workflow,
+            serde_json::json!({}),
+            ExecutionBudget::default(),
+        )
+        .await
+        .expect("execute_workflow itself must not error — failure is recorded in the result");
+
+    assert_eq!(
+        result.status,
+        nebula_execution::ExecutionStatus::Failed,
+        "execution without a wired plugin must reach Failed; got {:?}",
+        result.status
+    );
+
+    let error_texts: Vec<&str> = result.node_errors.values().map(String::as_str).collect();
+    assert!(
+        error_texts.iter().any(|s| s.contains("not found")),
+        "node_errors must contain an action-not-found message; got: {error_texts:?}"
+    );
+}
+
+/// GREEN proof: after `with_plugin(CorePlugin)`, the `core.sort` action
+/// executes and returns the correctly sorted output.
+///
+/// Input: `[{n:3},{n:1},{n:2}]`, key `n asc`.
+/// Expected output: `[{n:1},{n:2},{n:3}]` (concrete array value asserted).
+///
+/// RED witness: without `with_plugin`, the execution reaches `Failed`
+/// (same path as `without_plugin_sort_dispatch_fails` above).
+#[tokio::test]
+async fn with_plugin_sort_executes_and_sorts() {
+    let engine = make_engine()
+        .with_plugin(core_plugin())
+        .expect("with_plugin(CorePlugin) must succeed on a fresh engine");
+
+    let workflow = sort_workflow(
+        serde_json::json!([{"n": 3}, {"n": 1}, {"n": 2}]),
+        serde_json::json!([{"field": "n", "order": "asc"}]),
+    );
+
+    let result = engine
+        .execute_workflow(
+            &scope(),
+            &workflow,
+            serde_json::json!({}),
+            ExecutionBudget::default(),
+        )
+        .await
+        .expect("with_plugin(CorePlugin) + core.sort must succeed");
+
+    assert_eq!(
+        result.status,
+        nebula_execution::ExecutionStatus::Completed,
+        "execution must reach Completed; got {:?} (node_errors: {:?})",
+        result.status,
+        result.node_errors
+    );
+
+    let node_key = nebula_core::node_key!("step");
+    let node_output = result
+        .node_outputs
+        .get(&node_key)
+        .expect("node 'step' must have output after Completed execution");
+
+    assert_eq!(
+        *node_output,
+        serde_json::json!([{"n": 1}, {"n": 2}, {"n": 3}]),
+        "sort must return elements in ascending order by n"
+    );
+}
+
 /// GREEN proof: after `with_plugin(CorePlugin)`, the `core.aggregate` action
 /// executes and returns the correct grouped summary rows.
 ///
