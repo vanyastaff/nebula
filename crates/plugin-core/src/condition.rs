@@ -188,6 +188,21 @@ impl<'de> Visitor<'de> for ConditionVisitor {
             });
         }
 
+        // Count how many combinator keys are present before dispatching.
+        // A well-formed combinator carries exactly one of `all`, `any`, `not`.
+        // Multiple combinator keys on a single object is an ambiguous config —
+        // fail closed with a clear error rather than silently picking the first.
+        let combinator_count = ["all", "any", "not"]
+            .iter()
+            .filter(|k| raw.get(*k).is_some())
+            .count();
+
+        if combinator_count > 1 {
+            return Err(de::Error::custom(
+                "ambiguous condition: an object may contain at most one of `all`, `any`, `not`",
+            ));
+        }
+
         if let Some(all_val) = raw.get("all") {
             let children: Vec<Condition> =
                 serde_json::from_value(all_val.clone()).map_err(de::Error::custom)?;
@@ -971,6 +986,62 @@ mod tests {
         assert!(
             matches!(cond, Condition::All(ref cs) if cs.len() == 2),
             "must be Condition::All with 2 children; got: {cond:?}"
+        );
+    }
+
+    // ── Ambiguous combinator detection ────────────────────────────────────────
+
+    // RED with the old first-match short-circuit: `{"all":[],"any":[]}` would
+    // have returned `Ok(Condition::All([]))` silently ignoring `"any"`.
+    // With the ambiguity check it must return an Err whose message names the
+    // problem.
+    #[test]
+    fn ambiguous_combinator_keys_error() {
+        let result = serde_json::from_str::<Condition>(r#"{"all":[],"any":[]}"#);
+        let err = result.expect_err("ambiguous combinator must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("ambiguous") || msg.contains("at most one"),
+            "error must describe the ambiguity; got: {msg}"
+        );
+    }
+
+    // A single `any` combinator (no `field`) must still parse as Any.
+    #[test]
+    fn single_any_combinator_parses_as_any() {
+        let cond = serde_json::from_str::<Condition>(r#"{"any":[{"field":"flag","op":"truthy"}]}"#)
+            .expect("single-combinator Any must parse");
+        assert!(
+            matches!(cond, Condition::Any(ref cs) if cs.len() == 1),
+            "must be Condition::Any with 1 child; got: {cond:?}"
+        );
+    }
+
+    // A single `not` combinator (no `field`) must still parse as Not.
+    #[test]
+    fn single_not_combinator_parses_as_not() {
+        let cond =
+            serde_json::from_str::<Condition>(r#"{"not":{"field":"archived","op":"truthy"}}"#)
+                .expect("single-combinator Not must parse");
+        assert!(
+            matches!(cond, Condition::Not(_)),
+            "must be Condition::Not; got: {cond:?}"
+        );
+    }
+
+    // Back-compat: a leaf WITH a `field` key is never treated as ambiguous,
+    // even if it also carries combinator keys — the `field` key wins.
+    #[test]
+    fn leaf_with_extras_is_not_ambiguous() {
+        // This already has a test (`flat_leaf_with_stray_combinator_key_parses_as_leaf`)
+        // but confirm it still holds after the ambiguity check was added.
+        let cond = serde_json::from_str::<Condition>(
+            r#"{"field":"status","op":"eq","value":"active","all":"metadata","any":"x"}"#,
+        )
+        .expect("leaf with stray combinator keys must parse as leaf (back-compat)");
+        assert!(
+            matches!(cond, Condition::Leaf { .. }),
+            "must be Condition::Leaf; got: {cond:?}"
         );
     }
 
