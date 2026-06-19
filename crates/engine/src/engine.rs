@@ -2374,20 +2374,29 @@ impl WorkflowEngine {
     /// `WaitCondition` and released its worker; the execution sits at `Paused` waiting
     /// for an external Resume signal.
     ///
-    /// This method transitions every such node `Waiting → Completed` (setting
-    /// `completed_at`) and persists the result via the spec-16 `ExecutionStore`
-    /// with a version-CAS + fencing batch — the same durability contract as
-    /// `checkpoint_node`. The CAS serialises concurrent Resume calls: a second
-    /// caller sees the nodes already `Completed` (or the execution already
-    /// `Running`) and the status short-circuit in `dispatch_resume` makes it a
-    /// no-op without re-running downstream.
+    /// This method *arms* every such node for completion by setting its
+    /// `next_attempt_at = now` while LEAVING it `Waiting`, persisted via the
+    /// spec-16 `ExecutionStore` with a version-CAS + fencing batch (the same
+    /// durability contract as `checkpoint_node`). The subsequent `drive`
+    /// re-seeds the armed node into the frontier `wait_heap` and Phase-0b
+    /// transitions it `Waiting → Completed` and activates its downstream edges
+    /// through the **port-aware** `process_outgoing_edges` — exactly the path a
+    /// timer wait takes. Completing the node here instead would route its edges
+    /// through `resume_execution`'s port-blind rebuild, which activates *every*
+    /// outgoing edge (so a multi-port wait would fire its `error`/custom branch
+    /// on a normal Resume). The CAS serialises concurrent Resume calls: a
+    /// second caller sees the node already armed (`next_attempt_at == Some`) or
+    /// `Completed` and returns `NothingToSatisfy`, and the status short-circuit
+    /// in `dispatch_resume` makes a post-completion duplicate a no-op.
     ///
-    /// A signal-driven wait is satisfied ONLY by this method — a reclaim
+    /// A signal-driven wait is satisfied ONLY by this method — it is the sole
+    /// writer of `next_attempt_at` on a signal-`Waiting{None}` node. A reclaim
     /// re-drive (`dispatch_start`, `dispatch_restart`, worker `EngineExecutionSink`)
-    /// enters `resume_execution` without calling this method first, so it
-    /// re-parks the nodes and the execution returns to `Paused` unchanged.
-    /// That structural discriminator prevents a crashed Paused execution from
-    /// auto-completing its wait on reclaim (data-corruption / security class bug).
+    /// enters `resume_execution` without calling this method first, so the node
+    /// stays `Waiting{next_attempt_at == None}`, is never wait-heap-seeded, and
+    /// the execution returns to `Paused` unchanged. That structural
+    /// discriminator prevents a crashed Paused execution from auto-completing
+    /// its wait on reclaim (data-corruption / security class bug).
     ///
     /// # Lease contract
     ///
@@ -2402,9 +2411,9 @@ impl WorkflowEngine {
     ///
     /// # Returns
     ///
-    /// [`SatisfyOutcome::Satisfied(n)`] when `n` nodes were transitioned to
-    /// `Completed`, or [`SatisfyOutcome::NothingToSatisfy`] when no
-    /// signal-driven waiting nodes exist.
+    /// [`SatisfyOutcome::Satisfied(n)`] when `n` signal-driven waiting nodes
+    /// were armed for completion, or [`SatisfyOutcome::NothingToSatisfy`] when
+    /// none exist.
     ///
     /// # Errors
     ///
@@ -2562,30 +2571,28 @@ impl WorkflowEngine {
         let now = Utc::now();
 
         for node_key in &signal_waiting_nodes {
-            // `Waiting → Completed` is in the valid transition table.
-            exec_state
-                .transition_node(node_key.clone(), NodeState::Completed)
-                .map_err(|e| {
-                    EngineError::PlanningFailed(format!(
-                        "satisfy_signal_waits: transition {node_key} Waiting→Completed: {e}"
-                    ))
-                })?;
-            // Stamp completion time on the satisfied node.
+            // Arm the node for Phase-0b completion: set the wake instant to
+            // `now` and LEAVE the node `Waiting`. The subsequent `drive`
+            // re-seeds it into the frontier `wait_heap` (its `next_attempt_at`
+            // is now `Some`) and Phase-0b transitions it `Waiting → Completed`
+            // and activates downstream through the PORT-AWARE
+            // `process_outgoing_edges` — the same path a timer wait takes.
+            // Transitioning to `Completed` HERE would instead route the node's
+            // edges through `resume_execution`'s port-blind rebuild, which
+            // activates every outgoing edge (a multi-port wait would fire its
+            // `error`/custom branch on a normal Resume).
             if let Some(ns) = exec_state.node_states.get_mut(node_key) {
-                ns.next_attempt_at = None;
-                ns.completed_at = Some(now);
+                ns.next_attempt_at = Some(now);
             }
-            // Events are emitted AFTER the CAS commit succeeds (see below) so
-            // that observers never see a `NodeWaitCompleted` for a transition
-            // that was rejected by a concurrent actor.
         }
 
         // Persist the satisfy-CAS. This is the single discriminator between
-        // a genuine Resume and a reclaim re-drive: only this code path writes
-        // the `Completed` transition before `drive` runs. A reclaim that
-        // re-enters `resume_execution` without calling this method first will
-        // see the nodes still `Waiting` and re-park, returning the execution
-        // to `Paused` without completing the wait.
+        // a genuine Resume and a reclaim re-drive: only this code path arms
+        // `next_attempt_at` on a signal-`Waiting{None}` node before `drive`
+        // runs. A reclaim that re-enters `resume_execution` without calling
+        // this method first sees the node still `Waiting{next_attempt_at ==
+        // None}`, never wait-heap-seeds it, and re-parks — returning the
+        // execution to `Paused` without completing the wait.
         //
         // We use the freshly-acquired lease token — not the stale generation
         // read from the row — so the CAS is always guarded by the
@@ -2617,24 +2624,14 @@ impl WorkflowEngine {
                     %execution_id,
                     satisfied_count,
                     new_version,
-                    "satisfy_signal_waits: committed — Resume will activate downstream nodes"
+                    "satisfy_signal_waits: armed signal waits for Phase-0b completion — \
+                     drive will complete them and activate downstream on the main port"
                 );
-                // Emit events only after the durable write succeeds.  Emitting
-                // before commit would let observers see `NodeWaitCompleted` for
-                // a transition that was later rejected by a concurrent CAS.
-                for node_key in &signal_waiting_nodes {
-                    tracing::info!(
-                        target = "engine::wait",
-                        %execution_id,
-                        %node_key,
-                        "signal-driven wait satisfied by Resume command — node transitioned \
-                         Waiting→Completed via durable CAS; downstream will activate on re-drive"
-                    );
-                    self.emit_event(ExecutionEvent::NodeWaitCompleted {
-                        execution_id,
-                        node_key: node_key.clone(),
-                    });
-                }
+                // No `NodeWaitCompleted` is emitted here: the node is still
+                // `Waiting`. Phase-0b emits that event when it transitions the
+                // node `Waiting → Completed` (the single completion site shared
+                // with timer waits), so observers never see a completion for a
+                // node that is not yet durably `Completed`.
                 Ok(SatisfyOutcome::Satisfied(satisfied_count))
             },
             Ok(nebula_storage_port::TransitionOutcome::FencedOut) => {

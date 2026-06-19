@@ -150,6 +150,30 @@ impl StatelessAction for CountingEchoNode {
     }
 }
 
+/// Error-branch probe: a second counting node under a distinct action key so a
+/// multi-port wait test can assert the `error`-port branch's invocation count
+/// independently of the `main`-port branch.
+struct CountingErrorNode {
+    invocation_count: Arc<AtomicU32>,
+}
+
+static_action_impl!(
+    CountingErrorNode,
+    action_key!("test.signal.counting_error"),
+    "CountingErrorNode"
+);
+
+impl StatelessAction for CountingErrorNode {
+    async fn execute(
+        &self,
+        input: <Self as Action>::Input,
+        _ctx: &(impl nebula_action::ActionContext + ?Sized),
+    ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
+        self.invocation_count.fetch_add(1, Ordering::SeqCst);
+        Ok(ActionResult::success(input))
+    }
+}
+
 // ── Shared harness ────────────────────────────────────────────────────────────
 
 /// In-memory port adapters wired to one store-backed `WorkflowEngine`.
@@ -366,8 +390,9 @@ impl SignalHarness {
 
 /// **W-S2.2 — satisfy (red-on-revert)**:
 /// `dispatch_start` parks the signal node → execution `Paused` in the store →
-/// `dispatch_resume` calls `satisfy_signal_waits` (durable CAS: `Waiting→Completed`)
-/// → frontier re-drives → downstream runs exactly once → execution `Completed`.
+/// `dispatch_resume` calls `satisfy_signal_waits` (durable CAS arming the wait's
+/// `next_attempt_at`) → frontier re-drives → Phase-0b completes the node and runs
+/// downstream exactly once → execution `Completed`.
 ///
 /// **Falsifiability**: remove the `satisfy_signal_waits` call from
 /// `dispatch_resume` (replace with a plain `drive`) → the frontier re-encounters
@@ -402,8 +427,9 @@ async fn dispatch_resume_satisfies_signal_wait_and_drives_to_completed() {
         "downstream must NOT run while the signal node is Waiting"
     );
 
-    // Resume: satisfy_signal_waits writes Waiting→Completed (CAS), then drive
-    // re-runs the frontier, activates the downstream edge, and completes.
+    // Resume: satisfy_signal_waits arms the wait (CAS on next_attempt_at), then
+    // drive re-runs the frontier; Phase-0b completes the node, activates the
+    // downstream edge, and the execution completes.
     harness
         .dispatch
         .dispatch_resume(
@@ -584,8 +610,8 @@ async fn dispatch_resume_is_idempotent_after_signal_wait_satisfied() {
 /// **W-S2.2 — multi-node: two parallel signal waits, one Resume satisfies both**:
 /// a workflow with two parallel root `webhook_wait` nodes merging to one shared
 /// `counting_echo` downstream.  After both wait nodes park (execution `Paused`),
-/// a single `dispatch_resume` must transition BOTH `Waiting→Completed` in one
-/// `satisfy_signal_waits` pass, then activate the downstream exactly once.
+/// a single `dispatch_resume` must arm BOTH waits in one `satisfy_signal_waits`
+/// pass; Phase-0b then completes both and activates the downstream exactly once.
 ///
 /// The downstream node has `required_count == 2` (two incoming edges from `wait_a`
 /// and `wait_b`).  The engine pushes it to the `ready_queue` only when BOTH
@@ -1082,7 +1108,7 @@ async fn dispatch_resume_defers_when_execution_lease_is_held() {
 
 /// **P1 #1 — satisfy_signal_waits acquires lease before CAS (no stale token)**:
 /// verifies that `satisfy_signal_waits` holds the execution lease while committing
-/// the `Waiting→Completed` CAS, so a concurrent runner that acquired the lease
+/// the arming CAS (next_attempt_at), so a concurrent runner that acquired the lease
 /// just before us cannot slip a stale token through.
 ///
 /// This test exercises the "lease handoff" path: the engine acquires the lease for
@@ -1121,7 +1147,8 @@ async fn satisfy_signal_waits_releases_lease_after_commit() {
         ExecutionStatus::Paused
     );
 
-    // First Resume: acquires lease, commits Waiting→Completed, releases lease, drives.
+    // First Resume: acquires lease, commits the arm (next_attempt_at), releases
+    // lease, drives (Phase-0b completes the node).
     harness
         .dispatch
         .dispatch_resume(&scope, execution_id)
@@ -1711,5 +1738,533 @@ async fn satisfy_signal_waits_skips_when_execution_cancelled_under_lease() {
         downstream_invocations_2.load(Ordering::SeqCst),
         0,
         "downstream must not run when the satisfy was skipped on a cancelled execution"
+    );
+}
+
+/// **P2 — a satisfied signal wait routes on the `main` port only** (regression
+/// guard for the Codex finding on commit `9b1c2457`):
+///
+/// A signal-wait node wired with both a `main` and an `error` outgoing port must,
+/// on a normal Resume, activate ONLY the `main` branch — the `error` branch must
+/// be `Skipped`, exactly as a timer wait's Phase-0b completion routes via the
+/// port-aware `process_outgoing_edges(None)` → main.
+///
+/// The bug: `satisfy_signal_waits` used to transition the node `Waiting →
+/// Completed`, after which `resume_execution`'s rebuild activated EVERY outgoing
+/// edge of a `Completed` node (port-blind), firing the `error` branch too. The
+/// fix arms `next_attempt_at = now` and leaves the node `Waiting`, so Phase-0b
+/// completes it through the main-port-only path.
+///
+/// **Falsifiability**: revert `satisfy_signal_waits` to transition the node
+/// `Waiting → Completed` (so the port-blind resume rebuild routes its edges) →
+/// the `error` branch runs → `error_invocations == 1` and the node is
+/// `Completed` not `Skipped` → the assertions fail → RED.
+#[tokio::test]
+async fn satisfied_signal_wait_activates_main_port_only_not_error_branch() {
+    let scope = nebula_engine::store_seam::single_tenant_scope();
+    let stores = SignalStores::new();
+
+    let main_invocations = Arc::new(AtomicU32::new(0));
+    let error_invocations = Arc::new(AtomicU32::new(0));
+
+    let registry = Arc::new(ActionRegistry::new());
+    registry.register_stateless_instance(
+        ActionMetadata::new(
+            action_key!("test.signal.webhook_wait"),
+            "WebhookWaitNode",
+            "multi-port signal-wait test stub",
+        ),
+        WebhookWaitNode,
+    );
+    registry.register_stateless_instance(
+        ActionMetadata::new(
+            action_key!("test.signal.counting_echo"),
+            "CountingEchoNode",
+            "main-port downstream probe",
+        ),
+        CountingEchoNode {
+            invocation_count: Arc::clone(&main_invocations),
+        },
+    );
+    registry.register_stateless_instance(
+        ActionMetadata::new(
+            action_key!("test.signal.counting_error"),
+            "CountingErrorNode",
+            "error-port downstream probe",
+        ),
+        CountingErrorNode {
+            invocation_count: Arc::clone(&error_invocations),
+        },
+    );
+
+    let executor: ActionExecutor =
+        Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
+    let runner = Arc::new(InProcessRunner::new(executor));
+    let metrics = MetricsRegistry::new();
+    let runtime = Arc::new(
+        ActionRuntime::try_new(
+            registry,
+            runner,
+            DataPassingPolicy::default(),
+            metrics.clone(),
+        )
+        .unwrap(),
+    );
+    let engine = Arc::new(stores.attach(WorkflowEngine::new(runtime, metrics).unwrap()));
+    let dispatch = EngineControlDispatch::new(Arc::clone(&engine), stores.execution.clone());
+
+    // Workflow: wait_node ──main──> main_node
+    //                    └─error──> error_node
+    let workflow_id = nebula_core::WorkflowId::new();
+    let now = Utc::now();
+    let wait_node = node_key!("signal_node");
+    let main_node = node_key!("main_node");
+    let error_node = node_key!("error_node");
+    let wf = WorkflowDefinition {
+        id: workflow_id,
+        name: "signal-resume-multiport-test".into(),
+        description: None,
+        version: Version::new(0, 1, 0),
+        nodes: vec![
+            NodeDefinition::new(
+                wait_node.clone(),
+                "SignalNode",
+                "core",
+                "test.signal.webhook_wait",
+            )
+            .unwrap(),
+            NodeDefinition::new(
+                main_node.clone(),
+                "MainNode",
+                "core",
+                "test.signal.counting_echo",
+            )
+            .unwrap(),
+            NodeDefinition::new(
+                error_node.clone(),
+                "ErrorNode",
+                "core",
+                "test.signal.counting_error",
+            )
+            .unwrap(),
+        ],
+        connections: vec![
+            // main port (default) → main_node
+            Connection::new(wait_node.clone(), main_node.clone()),
+            // error port → error_node
+            Connection::new(wait_node.clone(), error_node.clone()).with_from_port("error"),
+        ],
+        variables: HashMap::new(),
+        config: WorkflowConfig::default(),
+        trigger_bindings: Vec::new(),
+        tags: Vec::new(),
+        created_at: now,
+        updated_at: now,
+        owner_id: None,
+        ui_metadata: None,
+        schema_version: CURRENT_SCHEMA_VERSION,
+    };
+    stores.save_workflow(&wf).await;
+
+    let execution_id = ExecutionId::new();
+    let mut exec_state = ExecutionState::new(execution_id, workflow_id, &[]);
+    exec_state.set_workflow_input(serde_json::json!(null));
+    stores
+        .execution
+        .create(
+            &scope,
+            &execution_id.to_string(),
+            &workflow_id.to_string(),
+            serde_json::to_value(&exec_state).unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // Park the signal node.
+    dispatch
+        .dispatch_start(&scope, execution_id)
+        .await
+        .expect("dispatch_start must park the signal node");
+    assert_eq!(
+        stores
+            .execution
+            .get(&scope, &execution_id.to_string())
+            .await
+            .unwrap()
+            .map(|r| serde_json::from_value::<ExecutionStatus>(
+                r.state.get("status").cloned().unwrap()
+            )
+            .unwrap()),
+        Some(ExecutionStatus::Paused),
+        "execution must be Paused after parking the signal node"
+    );
+
+    // Resume: satisfy arms the wait, Phase-0b completes it on the main port.
+    dispatch
+        .dispatch_resume(&scope, execution_id)
+        .await
+        .expect("dispatch_resume must succeed");
+
+    // The main branch ran exactly once; the error branch never ran.
+    assert_eq!(
+        main_invocations.load(Ordering::SeqCst),
+        1,
+        "the main-port downstream must run exactly once on Resume"
+    );
+    assert_eq!(
+        error_invocations.load(Ordering::SeqCst),
+        0,
+        "the error-port branch must NOT run on a normal Resume (port-blind routing bug)"
+    );
+
+    // Durable state: wait + main Completed, error Skipped, execution Completed.
+    let record = stores
+        .execution
+        .get(&scope, &execution_id.to_string())
+        .await
+        .unwrap()
+        .expect("execution row must exist");
+    let state_str = serde_json::to_string(&record.state).unwrap();
+    let state: ExecutionState = serde_json::from_str(&state_str).unwrap();
+    let node_display = |k: &nebula_core::NodeKey| {
+        state
+            .node_states
+            .get(k)
+            .map(|ns| ns.state.to_string())
+            .unwrap_or_else(|| "<missing>".to_owned())
+    };
+    assert_eq!(
+        node_display(&main_node),
+        "completed",
+        "main_node must be Completed"
+    );
+    assert_eq!(
+        node_display(&error_node),
+        "skipped",
+        "error_node must be Skipped (its edge was never activated on the main-port completion)"
+    );
+    assert_eq!(
+        serde_json::from_value::<ExecutionStatus>(record.state.get("status").cloned().unwrap())
+            .unwrap(),
+        ExecutionStatus::Completed,
+        "execution must be Completed after the main branch runs"
+    );
+}
+
+/// Wraps an [`InMemoryExecutionStore`] and, once armed, lets the next
+/// `acquire_lease` succeed and fails the one after that (returns `Ok(None)` =
+/// lease held elsewhere), then self-disarms. Used to fail the `drive`'s lease
+/// acquisition that follows a successful `satisfy_signal_waits` arm, leaving the
+/// wait node armed-but-not-completed so a later reclaim can finish it.
+#[derive(Debug)]
+struct LeaseFailAfterArmInterceptor {
+    inner: Arc<InMemoryExecutionStore>,
+    armed: AtomicBool,
+    /// While armed, this many `acquire_lease` calls succeed before one fails.
+    successes_before_fail: AtomicU32,
+}
+
+impl LeaseFailAfterArmInterceptor {
+    fn new(inner: Arc<InMemoryExecutionStore>) -> Self {
+        Self {
+            inner,
+            armed: AtomicBool::new(false),
+            successes_before_fail: AtomicU32::new(0),
+        }
+    }
+
+    /// Arm so the NEXT lease acquisition succeeds (satisfy's) and the one after
+    /// it fails (the drive's), then disarms.
+    fn arm_to_fail_the_drive(&self) {
+        self.successes_before_fail.store(1, Ordering::SeqCst);
+        self.armed.store(true, Ordering::SeqCst);
+    }
+}
+
+#[async_trait::async_trait]
+impl ExecutionStore for LeaseFailAfterArmInterceptor {
+    async fn create(
+        &self,
+        scope: &Scope,
+        id: &str,
+        workflow_id: &str,
+        initial_state: serde_json::Value,
+    ) -> Result<(), StorageError> {
+        self.inner
+            .create(scope, id, workflow_id, initial_state)
+            .await
+    }
+
+    async fn get(
+        &self,
+        scope: &Scope,
+        id: &str,
+    ) -> Result<Option<nebula_storage_port::dto::ExecutionRecord>, StorageError> {
+        self.inner.get(scope, id).await
+    }
+
+    async fn commit(&self, batch: TransitionBatch) -> Result<TransitionOutcome, StorageError> {
+        self.inner.commit(batch).await
+    }
+
+    async fn acquire_lease(
+        &self,
+        scope: &Scope,
+        id: &str,
+        holder: &str,
+        ttl: Duration,
+    ) -> Result<Option<FencingToken>, StorageError> {
+        if self.armed.load(Ordering::SeqCst) {
+            if self.successes_before_fail.load(Ordering::SeqCst) == 0 {
+                // Fail this acquisition (the drive's, after satisfy's arm).
+                self.armed.store(false, Ordering::SeqCst);
+                return Ok(None);
+            }
+            self.successes_before_fail.fetch_sub(1, Ordering::SeqCst);
+        }
+        self.inner.acquire_lease(scope, id, holder, ttl).await
+    }
+
+    async fn renew_lease(
+        &self,
+        scope: &Scope,
+        id: &str,
+        token: FencingToken,
+        ttl: Duration,
+    ) -> Result<bool, StorageError> {
+        self.inner.renew_lease(scope, id, token, ttl).await
+    }
+
+    async fn release_lease(
+        &self,
+        scope: &Scope,
+        id: &str,
+        token: FencingToken,
+    ) -> Result<bool, StorageError> {
+        self.inner.release_lease(scope, id, token).await
+    }
+
+    async fn list_running(&self, scope: &Scope) -> Result<Vec<String>, StorageError> {
+        self.inner.list_running(scope).await
+    }
+
+    async fn list_running_for_workflow(
+        &self,
+        scope: &Scope,
+        workflow_id: &str,
+    ) -> Result<Vec<String>, StorageError> {
+        self.inner
+            .list_running_for_workflow(scope, workflow_id)
+            .await
+    }
+
+    async fn count(&self, scope: &Scope, workflow_id: Option<&str>) -> Result<u64, StorageError> {
+        self.inner.count(scope, workflow_id).await
+    }
+}
+
+/// **Q2c — an armed signal wait survives a failed Resume drive and is completed
+/// by a later reclaim drive, never lost** (concurrency hardening for the
+/// satisfy/lease seam, per the W-S2 fix-A review):
+///
+/// `satisfy_signal_waits` arms the wait (`next_attempt_at = now`) under its own
+/// lease and commits. If the genuine Resume's follow-up `drive` then fails to
+/// acquire the lease (a concurrent runner grabbed it), the control-queue row is
+/// acked but the node is durably `Waiting{next_attempt_at = Some}`. A later
+/// reclaim drive (`dispatch_start`, which does NOT call satisfy) re-seeds the
+/// armed node into the `wait_heap` and Phase-0b completes it — the Resume's work
+/// is guaranteed, not lost. This is correct recovery, not a discriminator
+/// breach: only `satisfy_signal_waits` ever arms `next_attempt_at` on a
+/// `Waiting{None}` node (a never-armed wait stays parked under any reclaim — see
+/// `dispatch_start_redelivery_does_not_satisfy_signal_wait`).
+///
+/// **Falsifiability**: if a reclaim drive did not complete an armed wait (e.g.
+/// the wait-heap resume-seed at `resume_execution` excluded armed nodes), the
+/// downstream would never run → the `== 1` assertion fails → RED.
+#[tokio::test]
+async fn armed_signal_wait_is_completed_by_reclaim_drive_not_lost() {
+    let scope = nebula_engine::store_seam::single_tenant_scope();
+    let stores = SignalStores::new();
+    let interceptor = Arc::new(LeaseFailAfterArmInterceptor::new(Arc::clone(
+        &stores.execution,
+    )));
+    let interceptor_as_store: Arc<dyn ExecutionStore> = Arc::clone(&interceptor) as _;
+
+    let downstream = Arc::new(AtomicU32::new(0));
+    let registry = Arc::new(ActionRegistry::new());
+    registry.register_stateless_instance(
+        ActionMetadata::new(
+            action_key!("test.signal.webhook_wait"),
+            "WebhookWaitNode",
+            "armed-wait reclaim test stub",
+        ),
+        WebhookWaitNode,
+    );
+    registry.register_stateless_instance(
+        ActionMetadata::new(
+            action_key!("test.signal.counting_echo"),
+            "CountingEchoNode",
+            "armed-wait reclaim downstream probe",
+        ),
+        CountingEchoNode {
+            invocation_count: Arc::clone(&downstream),
+        },
+    );
+    let executor: ActionExecutor =
+        Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
+    let runner = Arc::new(InProcessRunner::new(executor));
+    let metrics = MetricsRegistry::new();
+    let runtime = Arc::new(
+        ActionRuntime::try_new(
+            registry,
+            runner,
+            DataPassingPolicy::default(),
+            metrics.clone(),
+        )
+        .unwrap(),
+    );
+
+    let execution_stores = nebula_engine::ExecutionStores {
+        execution: Arc::clone(&interceptor) as _,
+        journal: stores.journal.clone(),
+        node_results: stores.node_results.clone(),
+        checkpoints: stores.checkpoints.clone(),
+        idempotency: stores.idempotency.clone(),
+    };
+    let engine = Arc::new(
+        WorkflowEngine::new(runtime, metrics)
+            .unwrap()
+            .with_execution_stores(execution_stores)
+            .with_workflow_stores(stores.workflow_stores()),
+    );
+    let dispatch = EngineControlDispatch::new(Arc::clone(&engine), interceptor_as_store.clone());
+
+    // Two-node workflow: webhook_wait → counting_echo.
+    let workflow_id = nebula_core::WorkflowId::new();
+    let now = Utc::now();
+    let wait_node = node_key!("signal_node");
+    let downstream_node = node_key!("downstream_node");
+    let wf = WorkflowDefinition {
+        id: workflow_id,
+        name: "armed-wait-reclaim-test".into(),
+        description: None,
+        version: Version::new(0, 1, 0),
+        nodes: vec![
+            NodeDefinition::new(
+                wait_node.clone(),
+                "SignalNode",
+                "core",
+                "test.signal.webhook_wait",
+            )
+            .unwrap(),
+            NodeDefinition::new(
+                downstream_node.clone(),
+                "DownstreamNode",
+                "core",
+                "test.signal.counting_echo",
+            )
+            .unwrap(),
+        ],
+        connections: vec![Connection::new(wait_node.clone(), downstream_node.clone())],
+        variables: HashMap::new(),
+        config: WorkflowConfig::default(),
+        trigger_bindings: Vec::new(),
+        tags: Vec::new(),
+        created_at: now,
+        updated_at: now,
+        owner_id: None,
+        ui_metadata: None,
+        schema_version: CURRENT_SCHEMA_VERSION,
+    };
+    stores.save_workflow(&wf).await;
+
+    let execution_id = ExecutionId::new();
+    let mut exec_state = ExecutionState::new(execution_id, workflow_id, &[]);
+    exec_state.set_workflow_input(serde_json::json!(null));
+    stores
+        .execution
+        .create(
+            &scope,
+            &execution_id.to_string(),
+            &workflow_id.to_string(),
+            serde_json::to_value(&exec_state).unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // Park (interceptor not armed → normal lease behaviour).
+    dispatch
+        .dispatch_start(&scope, execution_id)
+        .await
+        .expect("dispatch_start must park");
+
+    let read_state = |stores: &SignalStores, eid: ExecutionId| {
+        let stores = stores.execution.clone();
+        async move {
+            let rec = stores
+                .get(
+                    &nebula_engine::store_seam::single_tenant_scope(),
+                    &eid.to_string(),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+            let s = serde_json::to_string(&rec.state).unwrap();
+            serde_json::from_str::<ExecutionState>(&s).unwrap()
+        }
+    };
+
+    let parked = read_state(&stores, execution_id).await;
+    assert_eq!(
+        parked.status,
+        ExecutionStatus::Paused,
+        "execution must be Paused after park"
+    );
+
+    // Resume: satisfy arms (lease #1 succeeds), the drive's lease (#2) fails →
+    // node left armed-but-not-completed.
+    interceptor.arm_to_fail_the_drive();
+    dispatch
+        .dispatch_resume(&scope, execution_id)
+        .await
+        .expect("dispatch_resume returns Ok even when the post-satisfy drive defers on Leased");
+
+    let armed = read_state(&stores, execution_id).await;
+    assert_eq!(
+        armed.status,
+        ExecutionStatus::Paused,
+        "execution stays Paused — the drive deferred before completing the armed wait"
+    );
+    let wait_ns = armed.node_states.get(&wait_node).unwrap();
+    assert!(
+        wait_ns.state.is_waiting(),
+        "the wait node must still be Waiting (armed, not yet completed)"
+    );
+    assert!(
+        wait_ns.next_attempt_at.is_some(),
+        "satisfy must have armed next_attempt_at on the wait node"
+    );
+    assert_eq!(
+        downstream.load(Ordering::SeqCst),
+        0,
+        "downstream must not run while the armed wait is uncompleted"
+    );
+
+    // Reclaim drive (dispatch_start, no satisfy) completes the armed wait.
+    dispatch
+        .dispatch_start(&scope, execution_id)
+        .await
+        .expect("reclaim drive must succeed");
+
+    let done = read_state(&stores, execution_id).await;
+    assert_eq!(
+        done.status,
+        ExecutionStatus::Completed,
+        "the reclaim drive must complete the armed wait via Phase-0b"
+    );
+    assert_eq!(
+        downstream.load(Ordering::SeqCst),
+        1,
+        "downstream must run exactly once — the armed Resume's work was recovered, not lost"
     );
 }
