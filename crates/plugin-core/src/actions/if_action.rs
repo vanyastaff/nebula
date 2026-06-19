@@ -70,9 +70,11 @@
 //!
 //! ## Non-object `data`
 //!
-//! If `data` is a JSON array, boolean, number, or string (not an object or
-//! null), all ordered operators and `eq`/`ne` return a **Fatal** error using
-//! the type name. `null` and absent `data` are treated as `{}`.
+//! If `data` is a JSON array, boolean, number, or string (anything other than
+//! a JSON object or null), **every** operator returns a **Fatal** error naming
+//! the actual type. The check happens before operator dispatch, so there is no
+//! operator that silently accepts a non-object `data`. `null` and absent `data`
+//! are treated as `{}`.
 //!
 //! The action is **pure** — no I/O, no credentials, no resources.
 
@@ -139,7 +141,9 @@ pub struct Condition {
     pub field: String,
     /// Comparison operator.
     pub op: ConditionOp,
-    /// Right-hand operand. Required for equality and ordered operators.
+    /// Right-hand operand. **Required** (enforced at runtime) for `Eq`, `Ne`,
+    /// `Gt`, `Gte`, `Lt`, and `Lte` — absence returns `ActionError::Fatal`.
+    /// Ignored for `Exists`, `NotExists`, and `Truthy`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub value: Option<Value>,
 }
@@ -283,6 +287,20 @@ fn normalize_data(data: Option<Value>) -> Result<Value, ActionError> {
     }
 }
 
+/// Assert that `condition.value` is present for operators that require it.
+///
+/// `Eq`, `Ne`, `Gt`, `Gte`, `Lt`, `Lte` all need a right-hand operand.
+/// Returning `None` from the workflow definition for those operators is a
+/// Fatal configuration error — the action fails closed instead of silently
+/// treating the missing value as `null`.
+fn require_value(op: ConditionOp, value: &Option<Value>) -> Result<&Value, ActionError> {
+    value.as_ref().ok_or_else(|| {
+        ActionError::fatal(format!(
+            "core.if: operator `{op:?}` requires a `value` field, but none was provided"
+        ))
+    })
+}
+
 /// Evaluate `cond` against the top-level fields of `data_object`.
 ///
 /// See module doc for the full semantics per operator.
@@ -294,28 +312,31 @@ pub(crate) fn evaluate_condition(
 
     match cond.op {
         ConditionOp::Eq => {
+            let expected = require_value(ConditionOp::Eq, &cond.value)?;
             let Some(actual) = field_value else {
                 return Ok(false);
             };
-            Ok(actual == cond.value.as_ref().unwrap_or(&Value::Null))
+            Ok(actual == expected)
         },
 
         ConditionOp::Ne => {
+            let expected = require_value(ConditionOp::Ne, &cond.value)?;
             let Some(actual) = field_value else {
                 // Missing field is "not equal" to anything.
                 return Ok(true);
             };
-            Ok(actual != cond.value.as_ref().unwrap_or(&Value::Null))
+            Ok(actual != expected)
         },
 
         ConditionOp::Gt | ConditionOp::Gte | ConditionOp::Lt | ConditionOp::Lte => {
+            let expected = require_value(cond.op, &cond.value)?;
             let Some(actual) = field_value else {
                 return Err(ActionError::fatal(format!(
                     "core.if: ordered comparison requires field `{}` to be present, but it is missing",
                     cond.field
                 )));
             };
-            evaluate_ordered(cond.op, actual, cond.value.as_ref().unwrap_or(&Value::Null))
+            evaluate_ordered(cond.op, actual, expected)
         },
 
         ConditionOp::Exists => Ok(field_value.is_some()),
@@ -871,7 +892,7 @@ mod tests {
         assert_eq!(output, json!({}));
     }
 
-    // ── Non-object data → Fatal ───────────────────────────────────────────────
+    // ── Non-object data → Fatal (all operators) ───────────────────────────────
 
     #[tokio::test]
     async fn non_object_data_array_returns_fatal() {
@@ -884,6 +905,58 @@ mod tests {
         assert!(
             matches!(err, ActionError::Fatal { .. }),
             "expected Fatal for array data; got: {err:?}"
+        );
+    }
+
+    // Locks the contract: normalize_data rejects non-objects BEFORE operator
+    // dispatch, so even exists (which needs no value) must return Fatal on
+    // array data.
+    #[tokio::test]
+    async fn non_object_data_with_exists_returns_fatal() {
+        let err = run_if(json!({
+            "data": true,
+            "condition": { "field": "x", "op": "exists" }
+        }))
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(err, ActionError::Fatal { .. }),
+            "expected Fatal for bool data with exists op; got: {err:?}"
+        );
+    }
+
+    // ── Missing condition.value → Fatal for comparison ops ────────────────────
+
+    // RED witness: with the old `unwrap_or(&Value::Null)` this evaluated as
+    // "x == null" and returned Ok("false") instead of Err(Fatal).
+    #[tokio::test]
+    async fn eq_missing_value_returns_fatal() {
+        let err = run_if(json!({
+            "data": { "x": "hello" },
+            "condition": { "field": "x", "op": "eq" }   // no "value" key
+        }))
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(err, ActionError::Fatal { .. }),
+            "expected Fatal when condition.value is absent for Eq; got: {err:?}"
+        );
+    }
+
+    // RED witness: with the old `unwrap_or(&Value::Null)` this fell through to
+    // evaluate_ordered comparing 10 vs null (type mismatch Fatal) — wrong error
+    // *source*. Now it errors before even inspecting the field.
+    #[tokio::test]
+    async fn gt_missing_value_returns_fatal() {
+        let err = run_if(json!({
+            "data": { "score": 10 },
+            "condition": { "field": "score", "op": "gt" }   // no "value" key
+        }))
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(err, ActionError::Fatal { .. }),
+            "expected Fatal when condition.value is absent for Gt; got: {err:?}"
         );
     }
 
