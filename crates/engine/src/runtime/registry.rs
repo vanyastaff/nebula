@@ -21,10 +21,11 @@ use std::sync::Arc;
 
 use dashmap::DashMap;
 use nebula_action::{
-    Action, ActionError, ActionFactory, ActionMetadata, ControlAction, FromWorkflowNode,
-    GenericControlFactory, GenericResourceFactory, GenericStatefulFactory, GenericStatelessFactory,
-    GenericStreamFactory, GenericTriggerFactory, InstanceFactory, ResourceAction, StatefulAction,
-    StatelessAction, StreamAction, TriggerAction, WebhookActionFactory,
+    Action, ActionError, ActionFactory, ActionMetadata, AgentAction, ControlAction,
+    FromWorkflowNode, GenericAgentFactory, GenericControlFactory, GenericResourceFactory,
+    GenericStatefulFactory, GenericStatelessFactory, GenericStreamFactory, GenericTriggerFactory,
+    InstanceFactory, ResourceAction, StatefulAction, StatelessAction, StreamAction, TriggerAction,
+    WebhookActionFactory,
 };
 use nebula_core::ActionKey;
 use semver::Version;
@@ -183,6 +184,24 @@ impl ActionRegistry {
         <A as Action>::Output: serde::Serialize + Send + Sync,
     {
         let factory: Arc<dyn ActionFactory> = Arc::new(GenericStreamFactory::<A>::new());
+        let metadata = factory.metadata().clone();
+        self.register_factory(metadata, factory);
+    }
+
+    /// Register an agent action via the factory pipeline (Variant A).
+    ///
+    /// The produced [`ActionHandle::Agent`](nebula_action::ActionHandle::Agent)
+    /// is dispatched through the engine's own agent turn loop
+    /// (`execute_agent_handle`), which enforces `max_turns()` and the
+    /// per-turn wall-clock timeout without the `StatefulStuck` digest guard.
+    pub fn register_agent_factory<A>(&self)
+    where
+        A: AgentAction + FromWorkflowNode<Error = ActionError>,
+        <A as Action>::Input: serde::de::DeserializeOwned + Send + Sync,
+        <A as Action>::Output: serde::Serialize + Send + Sync,
+        A::Turn: serde::Serialize + serde::de::DeserializeOwned + Clone + Send + Sync,
+    {
+        let factory: Arc<dyn ActionFactory> = Arc::new(GenericAgentFactory::<A>::new());
         let metadata = factory.metadata().clone();
         self.register_factory(metadata, factory);
     }

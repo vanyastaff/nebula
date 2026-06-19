@@ -2626,7 +2626,12 @@ impl WorkflowEngine {
                     // Setup failures (param resolution etc.) have no typed
                     // `ActionError` and stay retry-eligible — "the action
                     // never started", so no fatal short-circuit applies.
-                    compute_retry_decision(&node_key, exec_state, setup_retry_policy.as_ref(), None)
+                    compute_retry_decision(
+                        &node_key,
+                        exec_state,
+                        setup_retry_policy.as_ref(),
+                        false,
+                    )
                 } else {
                     RetryDecision::Finalize
                 };
@@ -3189,7 +3194,7 @@ impl WorkflowEngine {
                             &node_key,
                             exec_state,
                             retry_policy_resolved.as_ref(),
-                            err.as_action_error(),
+                            error_is_terminal(err),
                         )
                     } else {
                         RetryDecision::Finalize
@@ -4675,19 +4680,41 @@ enum RetryDecision {
 /// history (the runtime-failure path supplies it; the setup-failure path
 /// passes `None` because a param-resolution failure has no `ActionError`
 /// and stays retry-eligible — "the action never started").
+/// Whether a just-recorded node failure is **terminal** — never re-dispatched,
+/// whatever the retry policy says.
+///
+/// A fatal [`ActionError`] (direct, or wrapped in `RuntimeError::ActionError`)
+/// is terminal, preserving the long-standing fatal-action short-circuit. A
+/// non-`ActionError` runtime condition is terminal unless it is explicitly
+/// retryable: the iteration cap, stuck-state, data-limit, agent turn-budget,
+/// and unsupported-wait variants finalize, while `AgentTurnTimeout` stays
+/// retryable.
+///
+/// The ActionError case routes through `is_fatal` rather than
+/// `EngineError::is_retryable`: the `RuntimeError::ActionError` variant carries
+/// `retryable = false` in its own classify metadata, which would otherwise
+/// shadow the inner action error's real retryability and stop a legitimately
+/// retryable action error from retrying.
+fn error_is_terminal(err: &EngineError) -> bool {
+    match err.as_action_error() {
+        Some(action_err) => action_err.is_fatal(),
+        None => !nebula_error::Classify::is_retryable(err),
+    }
+}
+
 fn compute_retry_decision(
     node_key: &NodeKey,
     exec_state: &ExecutionState,
     retry_policy: Option<&nebula_workflow::RetryConfig>,
-    recorded_error: Option<&ActionError>,
+    recorded_error_is_terminal: bool,
 ) -> RetryDecision {
-    if recorded_error.is_some_and(ActionError::is_fatal) {
+    if recorded_error_is_terminal {
         tracing::debug!(
             target = "engine::retry",
             execution_id = %exec_state.execution_id,
             %node_key,
-            "retry skipped: just-recorded attempt error is fatal \
-             (no re-dispatch — closes the pre-existing engine-fatality gap)"
+            "retry skipped: just-recorded attempt error is terminal \
+             (fatal action error or non-retryable runtime condition) — no re-dispatch"
         );
         return RetryDecision::Finalize;
     }
@@ -8461,6 +8488,50 @@ mod tests {
             engine_err,
             EngineError::Action(ActionError::CredentialRefreshFailed { .. })
         ));
+    }
+
+    /// `error_is_terminal` decides retry eligibility by error nature (Codex P2).
+    /// Non-retryable runtime conditions are terminal; `AgentTurnTimeout` and
+    /// retryable action errors are not. Regression guard: the
+    /// `RuntimeError::ActionError` classify metadata (`retryable = false`) must
+    /// NOT shadow the inner action error's real retryability.
+    #[test]
+    fn error_is_terminal_classification() {
+        use crate::runtime::RuntimeError;
+
+        // Non-retryable runtime conditions → terminal (never re-dispatched).
+        assert!(error_is_terminal(&EngineError::Runtime(
+            RuntimeError::AgentBudgetExceeded {
+                key: "a".into(),
+                max_turns: 3,
+            }
+        )));
+        assert!(error_is_terminal(&EngineError::Runtime(
+            RuntimeError::AgentWaitNotSupported { key: "a".into() }
+        )));
+
+        // `AgentTurnTimeout` is retryable → NOT terminal.
+        assert!(!error_is_terminal(&EngineError::Runtime(
+            RuntimeError::AgentTurnTimeout {
+                key: "a".into(),
+                turn: 0,
+                timeout: std::time::Duration::from_millis(10),
+            }
+        )));
+
+        // Regression guard: a retryable action error (direct or runtime-wrapped)
+        // must NOT be terminal, despite the wrapper variant's classify metadata.
+        assert!(!error_is_terminal(&EngineError::Action(
+            ActionError::retryable("x")
+        )));
+        assert!(!error_is_terminal(&EngineError::Runtime(
+            RuntimeError::ActionError(ActionError::retryable("x"))
+        )));
+
+        // Fatal action errors are terminal.
+        assert!(error_is_terminal(&EngineError::Action(ActionError::fatal(
+            "x"
+        ))));
     }
 
     // -- Credential allowlist enforcement (PRODUCT_CANON / — audit ) --

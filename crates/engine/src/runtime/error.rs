@@ -7,7 +7,11 @@ use nebula_core::{ActionKey, NodeKey};
 #[non_exhaustive]
 pub enum RuntimeError {
     /// Action not found in the registry.
-    #[classify(category = "not_found", code = "RUNTIME:ACTION_NOT_FOUND")]
+    #[classify(
+        category = "not_found",
+        code = "RUNTIME:ACTION_NOT_FOUND",
+        retryable = false
+    )]
     #[error("action not found: {key}")]
     ActionNotFound {
         /// The action key that was looked up.
@@ -138,6 +142,68 @@ pub enum RuntimeError {
         requested: usize,
     },
 
+    /// An agent action exceeded its `max_turns()` budget without returning a
+    /// terminal result. Separate from
+    /// [`IterationCapExceeded`](Self::IterationCapExceeded): the stateful cap
+    /// is a hard 10 000-iteration global guard; this cap is the author-declared
+    /// per-agent turn budget (default 25), enforced per-handle.
+    #[classify(
+        category = "exhausted",
+        code = "RUNTIME:AGENT_BUDGET_EXCEEDED",
+        retryable = false
+    )]
+    #[error(
+        "agent action '{key}' exceeded its turn budget of {max_turns} turns \
+         without returning a terminal result"
+    )]
+    AgentBudgetExceeded {
+        /// The action key whose loop ran out of turns.
+        key: String,
+        /// The author-declared turn budget that was tripped.
+        max_turns: u32,
+    },
+
+    /// A single turn of an agent action exceeded its per-turn wall-clock timeout.
+    ///
+    /// Returned when `AgentHandle::turn_timeout()` returns `Some(d)` and the
+    /// `step` future did not resolve within that deadline. Prevents a hung
+    /// provider call from pinning a worker indefinitely.
+    #[classify(
+        category = "exhausted",
+        code = "RUNTIME:AGENT_TURN_TIMEOUT",
+        retryable = true
+    )]
+    #[error("agent action '{key}' turn {turn} exceeded per-turn timeout of {timeout:?}")]
+    AgentTurnTimeout {
+        /// The action key whose turn timed out.
+        key: String,
+        /// The zero-based turn index that timed out.
+        turn: u32,
+        /// The per-turn timeout that was exceeded.
+        timeout: std::time::Duration,
+    },
+
+    /// An agent action returned `ActionResult::Wait` in a phase where the
+    /// wait-state engine is not yet wired.
+    ///
+    /// The `Wait` arm of the agent loop requires the durable park/resume
+    /// machinery. Until that ships, returning `Wait` from an agent step is an
+    /// explicit boundary — the engine surfaces this error rather than silently
+    /// dropping the result.
+    #[classify(
+        category = "unsupported",
+        code = "RUNTIME:AGENT_WAIT_NOT_SUPPORTED",
+        retryable = false
+    )]
+    #[error(
+        "agent action '{key}' returned ActionResult::Wait, which is not yet wired \
+         in the engine's agent loop — the wait-state engine must ship first"
+    )]
+    AgentWaitNotSupported {
+        /// The action key that tried to park.
+        key: String,
+    },
+
     /// Internal runtime error.
     #[classify(category = "internal", code = "RUNTIME:INTERNAL")]
     #[error("runtime error: {0}")]
@@ -145,10 +211,19 @@ pub enum RuntimeError {
 }
 
 impl RuntimeError {
-    /// Whether this error originated from a retryable action error.
+    /// Whether this error is retryable.
+    ///
+    /// Returns `true` when the error is a transient condition that a retry
+    /// policy may safely re-attempt:
+    /// - An [`ActionError`](Self::ActionError) whose inner error reports itself
+    ///   retryable.
+    /// - [`AgentTurnTimeout`](Self::AgentTurnTimeout): a single turn exceeded
+    ///   its per-turn wall-clock deadline; retrying from the last checkpoint is
+    ///   the intended recovery path.
     pub fn is_retryable(&self) -> bool {
         match self {
             Self::ActionError(e) => e.is_retryable(),
+            Self::AgentTurnTimeout { .. } => true,
             _ => false,
         }
     }
@@ -193,6 +268,28 @@ mod tests {
         let err = RuntimeError::DataLimitExceeded {
             limit_bytes: 1_000,
             actual_bytes: 5_000,
+        };
+        assert!(!err.is_retryable());
+    }
+
+    #[test]
+    fn agent_turn_timeout_is_retryable() {
+        // `AgentTurnTimeout` carries `retryable = true` in its `#[classify]`
+        // attribute; `is_retryable()` must agree so retry policies that call
+        // the method (rather than reading classify metadata) honour it.
+        let err = RuntimeError::AgentTurnTimeout {
+            key: "my.agent".into(),
+            turn: 0,
+            timeout: std::time::Duration::from_millis(10),
+        };
+        assert!(err.is_retryable(), "AgentTurnTimeout must be retryable");
+    }
+
+    #[test]
+    fn agent_budget_exceeded_not_retryable() {
+        let err = RuntimeError::AgentBudgetExceeded {
+            key: "my.agent".into(),
+            max_turns: 3,
         };
         assert!(!err.is_retryable());
     }

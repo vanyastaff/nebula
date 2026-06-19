@@ -834,3 +834,62 @@ where
         Ok(ActionResult::success(output_value))
     }
 }
+
+// ── Agent ──────────────────────────────────────────────────────────────────
+
+/// Generic factory that produces [`ActionHandle::Agent`] for any type
+/// implementing [`crate::agent::AgentAction`] + [`FromWorkflowNode`].
+///
+/// The factory stamps [`ActionKind::Agent`] as the single writer of the kind
+/// on the stored metadata. The adapter inside the handle drives the turn loop
+/// in the engine, deserializing/serializing turn state on each call to `step`.
+pub struct GenericAgentFactory<A> {
+    meta: OnceLock<ActionMetadata>,
+    _phantom: PhantomData<fn() -> A>,
+}
+
+impl<A> Default for GenericAgentFactory<A> {
+    fn default() -> Self {
+        Self {
+            meta: OnceLock::new(),
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<A> GenericAgentFactory<A> {
+    /// Construct a new agent factory.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl<A> ActionFactory for GenericAgentFactory<A>
+where
+    A: crate::agent::AgentAction + FromWorkflowNode<Error = ActionError>,
+    <A as Action>::Input: DeserializeOwned + Send + Sync,
+    <A as Action>::Output: Serialize + Send + Sync,
+    A::Turn: Serialize + DeserializeOwned + Clone + Send + Sync,
+{
+    fn metadata(&self) -> &ActionMetadata {
+        self.meta.get_or_init(|| {
+            <A as Action>::metadata()
+                .with_kind(ActionKind::Agent)
+                .with_output_schema(<A::Output as nebula_schema::HasSchema>::schema())
+        })
+    }
+
+    fn instantiate<'a>(
+        &'a self,
+        node: &'a NodeDefinition,
+        ctx: &'a dyn ActionContext,
+    ) -> Pin<Box<dyn Future<Output = Result<ActionHandle, ActionError>> + Send + 'a>> {
+        Box::pin(async move {
+            let action = A::from_workflow_node(node, ctx).await?;
+            let meta = self.metadata().clone();
+            let adapter = crate::agent::AgentActionAdapter::<A>::new(action, meta);
+            Ok(ActionHandle::Agent(Box::new(adapter)))
+        })
+    }
+}
