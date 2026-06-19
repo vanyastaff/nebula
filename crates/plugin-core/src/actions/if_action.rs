@@ -91,62 +91,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::instrument;
 
-use crate::util::ValueTypeNameStr;
+use crate::condition::{evaluate_condition, normalize_data};
+
+// Re-export shared types so the existing public path
+// `nebula_plugin_core::actions::if_action::{Condition, ConditionOp}` stays
+// valid for any downstream code that imported them from here.
+pub use crate::condition::{Condition, ConditionOp};
 
 // ── Wire types ────────────────────────────────────────────────────────────────
-
-/// The comparison operator applied to a single top-level field.
-///
-/// Variants without a `value` operand (`Exists`, `NotExists`, `Truthy`)
-/// ignore the `value` field in [`Condition`].
-///
-/// Forward-compatibility for new optional fields is handled via
-/// `#[serde(default)]` in future versions, not `#[non_exhaustive]`, because
-/// these types are deserialized from workflow JSON rather than
-/// literal-constructed by external Rust code.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ConditionOp {
-    /// JSON deep-equality: missing field evaluates as `false`.
-    Eq,
-    /// Logical negation of `Eq`: missing field evaluates as `true`.
-    Ne,
-    /// Strictly greater than. Both operands must have the same JSON kind
-    /// (both numbers or both strings); missing field is a Fatal error.
-    Gt,
-    /// Greater than or equal. Same rules as `Gt`.
-    Gte,
-    /// Strictly less than. Same rules as `Gt`.
-    Lt,
-    /// Less than or equal. Same rules as `Gt`.
-    Lte,
-    /// True when the field key is present (any value, including `null`).
-    Exists,
-    /// True when the field key is absent.
-    NotExists,
-    /// True when the field value is truthy (see module doc table).
-    Truthy,
-}
-
-/// A single field-level predicate.
-///
-/// The `value` operand is required for `Eq`/`Ne`/`Gt`/`Gte`/`Lt`/`Lte`;
-/// it is ignored for `Exists`, `NotExists`, and `Truthy`.
-///
-/// `serde(default)` on `value` lets workflows omit it for operator kinds
-/// that do not use it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Condition {
-    /// Top-level key to test in `data`.
-    pub field: String,
-    /// Comparison operator.
-    pub op: ConditionOp,
-    /// Right-hand operand. **Required** (enforced at runtime) for `Eq`, `Ne`,
-    /// `Gt`, `Gte`, `Lt`, and `Lte` — absence returns `ActionError::Fatal`.
-    /// Ignored for `Exists`, `NotExists`, and `Truthy`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub value: Option<Value>,
-}
 
 /// Resolved input for the `If` action.
 ///
@@ -259,7 +211,10 @@ impl ControlAction for CoreIf {
                 ))
             })?;
 
-        let data_object = normalize_data(data)?;
+        let data_object = normalize_data(data).map_err(|err| {
+            // Prefix the normalisation error with the action key for context.
+            ActionError::fatal(format!("core.if: {err}"))
+        })?;
         let branch_taken = evaluate_condition(&data_object, &condition)?;
         let selected_port = if branch_taken { "true" } else { "false" }.to_string();
 
@@ -267,153 +222,6 @@ impl ControlAction for CoreIf {
             selected: selected_port,
             output: data_object,
         })
-    }
-}
-
-// ── Condition evaluation ──────────────────────────────────────────────────────
-
-/// Normalise `data` to a JSON object.
-///
-/// `null` and absent values become `{}`. Any other non-object type is a Fatal
-/// error because field-level conditions require an object to index into.
-fn normalize_data(data: Option<Value>) -> Result<Value, ActionError> {
-    match data {
-        Some(Value::Object(_)) | None => Ok(data.unwrap_or(Value::Object(Default::default()))),
-        Some(Value::Null) => Ok(Value::Object(Default::default())),
-        Some(other) => Err(ActionError::fatal(format!(
-            "core.if: `data` must be a JSON object or null, got {}",
-            other.type_name_str()
-        ))),
-    }
-}
-
-/// Assert that `condition.value` is present for operators that require it.
-///
-/// `Eq`, `Ne`, `Gt`, `Gte`, `Lt`, `Lte` all need a right-hand operand.
-/// Returning `None` from the workflow definition for those operators is a
-/// Fatal configuration error — the action fails closed instead of silently
-/// treating the missing value as `null`.
-fn require_value(op: ConditionOp, value: &Option<Value>) -> Result<&Value, ActionError> {
-    value.as_ref().ok_or_else(|| {
-        ActionError::fatal(format!(
-            "core.if: operator `{op:?}` requires a `value` field, but none was provided"
-        ))
-    })
-}
-
-/// Evaluate `cond` against the top-level fields of `data_object`.
-///
-/// See module doc for the full semantics per operator.
-pub(crate) fn evaluate_condition(
-    data_object: &Value,
-    cond: &Condition,
-) -> Result<bool, ActionError> {
-    let field_value = data_object.get(&cond.field);
-
-    match cond.op {
-        ConditionOp::Eq => {
-            let expected = require_value(ConditionOp::Eq, &cond.value)?;
-            let Some(actual) = field_value else {
-                return Ok(false);
-            };
-            Ok(actual == expected)
-        },
-
-        ConditionOp::Ne => {
-            let expected = require_value(ConditionOp::Ne, &cond.value)?;
-            let Some(actual) = field_value else {
-                // Missing field is "not equal" to anything.
-                return Ok(true);
-            };
-            Ok(actual != expected)
-        },
-
-        ConditionOp::Gt | ConditionOp::Gte | ConditionOp::Lt | ConditionOp::Lte => {
-            let expected = require_value(cond.op, &cond.value)?;
-            let Some(actual) = field_value else {
-                return Err(ActionError::fatal(format!(
-                    "core.if: ordered comparison requires field `{}` to be present, but it is missing",
-                    cond.field
-                )));
-            };
-            evaluate_ordered(cond.op, actual, expected)
-        },
-
-        ConditionOp::Exists => Ok(field_value.is_some()),
-
-        ConditionOp::NotExists => Ok(field_value.is_none()),
-
-        ConditionOp::Truthy => Ok(is_truthy(field_value)),
-    }
-}
-
-/// Evaluate an ordered operator (`Gt`/`Gte`/`Lt`/`Lte`) between two JSON values.
-///
-/// Both values must be the same JSON kind: both numbers (compared via f64) or
-/// both strings (lexicographic byte order). Any other combination is a Fatal
-/// error that names both types.
-fn evaluate_ordered(
-    op: ConditionOp,
-    actual: &Value,
-    expected: &Value,
-) -> Result<bool, ActionError> {
-    match (actual, expected) {
-        (Value::Number(lhs), Value::Number(rhs)) => {
-            // f64 is the common numeric type in serde_json; precision loss on
-            // integers larger than 2^53 is a known limitation (documented in
-            // the module doc; exact large-integer ops deferred to v2).
-            let lhs_f64 = lhs.as_f64().ok_or_else(|| {
-                ActionError::fatal(format!(
-                    "core.if: could not represent left-hand number `{lhs}` as f64"
-                ))
-            })?;
-            let rhs_f64 = rhs.as_f64().ok_or_else(|| {
-                ActionError::fatal(format!(
-                    "core.if: could not represent right-hand number `{rhs}` as f64"
-                ))
-            })?;
-            let result = match op {
-                ConditionOp::Gt => lhs_f64 > rhs_f64,
-                ConditionOp::Gte => lhs_f64 >= rhs_f64,
-                ConditionOp::Lt => lhs_f64 < rhs_f64,
-                ConditionOp::Lte => lhs_f64 <= rhs_f64,
-                _ => unreachable!("evaluate_ordered called with non-ordered op"),
-            };
-            Ok(result)
-        },
-        (Value::String(lhs), Value::String(rhs)) => {
-            let result = match op {
-                ConditionOp::Gt => lhs > rhs,
-                ConditionOp::Gte => lhs >= rhs,
-                ConditionOp::Lt => lhs < rhs,
-                ConditionOp::Lte => lhs <= rhs,
-                _ => unreachable!("evaluate_ordered called with non-ordered op"),
-            };
-            Ok(result)
-        },
-        (lhs_val, rhs_val) => Err(ActionError::fatal(format!(
-            "core.if: cannot apply ordered comparison to {} and {}",
-            lhs_val.type_name_str(),
-            rhs_val.type_name_str()
-        ))),
-    }
-}
-
-/// Truthiness per the table in the module doc.
-///
-/// Missing field (`None`) is falsy.
-fn is_truthy(field_value: Option<&Value>) -> bool {
-    match field_value {
-        None => false,
-        Some(Value::Bool(b)) => *b,
-        Some(Value::Null) => false,
-        Some(Value::Number(n)) => {
-            // Both 0 and 0.0 are falsy; any other number is truthy.
-            n.as_f64() != Some(0.0)
-        },
-        Some(Value::String(s)) => !s.is_empty(),
-        Some(Value::Array(arr)) => !arr.is_empty(),
-        Some(Value::Object(obj)) => !obj.is_empty(),
     }
 }
 
