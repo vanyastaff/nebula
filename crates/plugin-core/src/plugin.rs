@@ -7,7 +7,7 @@ use nebula_action::factory::GenericStatelessFactory;
 use nebula_metadata::{ManifestError, PluginManifest};
 use nebula_plugin::Plugin;
 
-use crate::actions::SetFields;
+use crate::actions::{JsonTransform, SetFields};
 
 /// First-party core plugin.
 ///
@@ -49,7 +49,10 @@ impl Plugin for CorePlugin {
     }
 
     fn actions(&self) -> Vec<Arc<dyn ActionFactory>> {
-        vec![Arc::new(GenericStatelessFactory::<SetFields>::new())]
+        vec![
+            Arc::new(GenericStatelessFactory::<SetFields>::new()),
+            Arc::new(GenericStatelessFactory::<JsonTransform>::new()),
+        ]
     }
 }
 
@@ -74,6 +77,18 @@ mod tests {
         assert!(
             resolved.action(&key).is_some(),
             "core.set_fields must be registered in the resolved plugin"
+        );
+    }
+
+    #[test]
+    fn resolves_json_transform_action() {
+        let resolved =
+            ResolvedPlugin::from(CorePlugin::try_new().expect("CorePlugin::try_new must succeed"))
+                .expect("CorePlugin must resolve without errors");
+        let key = nebula_core::ActionKey::new("core.json_transform").unwrap();
+        assert!(
+            resolved.action(&key).is_some(),
+            "core.json_transform must be registered in the resolved plugin"
         );
     }
 

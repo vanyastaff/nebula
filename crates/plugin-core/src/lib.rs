@@ -9,7 +9,8 @@
 //!
 //! | Key | Description |
 //! |-----|-------------|
-//! | `core.set_fields` | Merge a list of named field assignments onto a JSON object |
+//! | `core.set_fields`      | Merge a list of named field assignments onto a JSON object |
+//! | `core.json_transform`  | Apply pick/omit/rename operations to a JSON object         |
 //!
 //! ## Usage
 //!
@@ -30,5 +31,6 @@
 
 pub mod actions;
 mod plugin;
+mod util;
 
 pub use plugin::CorePlugin;

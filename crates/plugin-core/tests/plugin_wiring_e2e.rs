@@ -392,6 +392,136 @@ async fn with_plugin_on_load_failure_aborts_wiring() {
     );
 }
 
+// ── json_transform e2e ────────────────────────────────────────────────────────
+
+/// Builds a single-node `core.json_transform` workflow.
+///
+/// `data_json` is the base object and `operations_json` is the serialized
+/// operations array. Both are wired as `ParamValue::literal` parameters so the
+/// engine resolves them into [`JsonTransformInput`] before dispatch.
+fn json_transform_workflow(
+    data_json: serde_json::Value,
+    operations_json: serde_json::Value,
+) -> WorkflowDefinition {
+    let now = chrono::Utc::now();
+    let node = NodeDefinition::new(
+        nebula_core::node_key!("step"),
+        "JsonTransform step",
+        "core",
+        "core.json_transform",
+    )
+    .expect("NodeDefinition must build with valid keys")
+    .with_parameter("data", ParamValue::literal(data_json))
+    .with_parameter("operations", ParamValue::literal(operations_json));
+
+    WorkflowDefinition {
+        id: nebula_core::WorkflowId::new(),
+        name: "test-json-transform".into(),
+        description: None,
+        version: Version::new(0, 1, 0),
+        nodes: vec![node],
+        connections: vec![],
+        variables: HashMap::new(),
+        config: WorkflowConfig::default(),
+        trigger_bindings: vec![],
+        tags: vec![],
+        created_at: now,
+        updated_at: now,
+        owner_id: None,
+        ui_metadata: None,
+        schema_version: CURRENT_SCHEMA_VERSION,
+    }
+}
+
+/// RED witness: dispatching `core.json_transform` on an engine without the
+/// CorePlugin wired returns `ExecutionStatus::Failed` with an action-not-found
+/// node error.
+///
+/// Removing `with_plugin` from the GREEN test below causes it to hit this same
+/// failure mode.
+#[tokio::test]
+async fn without_plugin_json_transform_dispatch_fails() {
+    let engine = make_engine(); // no with_plugin call
+
+    let workflow = json_transform_workflow(
+        serde_json::json!({"a": 1, "b": 2}),
+        serde_json::json!([{"op": "pick", "fields": ["a"]}]),
+    );
+
+    let result = engine
+        .execute_workflow(
+            &scope(),
+            &workflow,
+            serde_json::json!({}),
+            ExecutionBudget::default(),
+        )
+        .await
+        .expect("execute_workflow itself must not error — failure is recorded in the result");
+
+    assert_eq!(
+        result.status,
+        nebula_execution::ExecutionStatus::Failed,
+        "execution without a wired plugin must reach Failed; got {:?}",
+        result.status
+    );
+
+    let error_texts: Vec<&str> = result.node_errors.values().map(String::as_str).collect();
+    assert!(
+        error_texts.iter().any(|s| s.contains("not found")),
+        "node_errors must contain an action-not-found message; got: {error_texts:?}"
+    );
+}
+
+/// GREEN proof: after `with_plugin(CorePlugin)`, the `core.json_transform`
+/// action executes and returns the correct transformed output.
+///
+/// Uses `Pick { fields: ["a", "b"] }` on `{"a":1,"b":2,"c":3}` and asserts:
+/// - execution status is `Completed`,
+/// - `a` and `b` are present with their original values,
+/// - `c` is absent.
+#[tokio::test]
+async fn with_plugin_json_transform_executes_and_transforms() {
+    let engine = make_engine()
+        .with_plugin(core_plugin())
+        .expect("with_plugin(CorePlugin) must succeed on a fresh engine");
+
+    let workflow = json_transform_workflow(
+        serde_json::json!({"a": 1, "b": 2, "c": 3}),
+        serde_json::json!([{"op": "pick", "fields": ["a", "b"]}]),
+    );
+
+    let result = engine
+        .execute_workflow(
+            &scope(),
+            &workflow,
+            serde_json::json!({}),
+            ExecutionBudget::default(),
+        )
+        .await
+        .expect("with_plugin(CorePlugin) + core.json_transform must succeed");
+
+    assert_eq!(
+        result.status,
+        nebula_execution::ExecutionStatus::Completed,
+        "execution must reach Completed; got {:?}",
+        result.status
+    );
+
+    let node_key = nebula_core::node_key!("step");
+    let node_output = result
+        .node_outputs
+        .get(&node_key)
+        .expect("node 'step' must have output after Completed execution");
+
+    assert_eq!(node_output["a"], serde_json::json!(1), "a must be present");
+    assert_eq!(node_output["b"], serde_json::json!(2), "b must be present");
+    assert_eq!(
+        node_output.get("c"),
+        None,
+        "c must be absent after Pick [a, b]"
+    );
+}
+
 /// Pre-registering an action with the same key as a plugin action returns
 /// `PluginWiringError::DuplicateActionKey`.
 #[tokio::test]
