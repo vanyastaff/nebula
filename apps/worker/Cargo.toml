@@ -24,6 +24,10 @@ nebula-plugin-core = { path = "../../crates/plugin-core" }
 # ResolvedPlugin::from wraps the concrete plugin for the engine.
 nebula-plugin = { path = "../../crates/plugin" }
 # SQLite-backed stores (ExecutionStore, WorkflowVersionStore, JobDispatchQueue).
+# The `postgres` feature (below) adds `nebula-storage/postgres` at feature-selection time,
+# which transitively enables `sqlx/postgres` + `sqlx/tls-rustls-ring-native-roots` in the
+# workspace crate so `compose_main.rs` can use `sqlx::postgres::PgPoolOptions` without
+# declaring those features directly here.
 nebula-storage = { path = "../../crates/storage", features = ["sqlite"] }
 # Metrics registry shared across ActionRuntime and WorkerRuntime.
 nebula-metrics = { path = "../../crates/metrics" }
@@ -31,6 +35,8 @@ nebula-metrics = { path = "../../crates/metrics" }
 nebula-storage-port = { path = "../../crates/storage-port" }
 
 # sqlx for SqlitePool construction; features forwarded to match nebula-storage/sqlite.
+# The postgres driver features come transitively via nebula-storage/postgres (activated
+# by the `postgres` cargo feature below) — no separate entry needed.
 sqlx = { workspace = true, features = ["sqlite", "runtime-tokio"] }
 # Random v4 UUID for ephemeral processor-id generation when NEBULA_WORKER_PROCESSOR_ID is unset.
 uuid = { workspace = true, features = ["v4"] }
@@ -39,6 +45,17 @@ tokio-util = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter", "fmt", "ansi"] }
+
+[features]
+# Opt-in Postgres backend. When this feature is enabled:
+#   - `nebula-storage/postgres` is activated, which transitively enables
+#     `sqlx/postgres` + `sqlx/tls-rustls-ring-native-roots`.
+#   - `compose_main::build_pg_stores` is compiled and reachable.
+#   - Setting `NEBULA_WORKER_DATABASE_URL` will use the Postgres path.
+#
+# Without this feature, setting `NEBULA_WORKER_DATABASE_URL` causes a
+# fail-closed startup error rather than a silent SQLite fallback.
+postgres = ["nebula-storage/postgres"]
 
 [dev-dependencies]
 # In-memory adapters for the smoke test (avoids SQLite file I/O in tests).

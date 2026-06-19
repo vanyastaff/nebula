@@ -168,11 +168,24 @@ fn hex_id(bytes: &[u8]) -> String {
 /// All fields are optional with sensible defaults for local/dev runs.
 #[derive(Debug)]
 pub struct WorkerConfig {
+    /// Postgres connection URL.
+    ///
+    /// Set `NEBULA_WORKER_DATABASE_URL` to a `postgres://` DSN to use the
+    /// Postgres backend. When unset the worker uses SQLite (see `db_path`).
+    ///
+    /// The binary must be compiled with `--features postgres` (i.e. the
+    /// `postgres` cargo feature) for the Postgres path to be available. If
+    /// `NEBULA_WORKER_DATABASE_URL` is set on a binary built without that
+    /// feature, startup fails with an explicit error rather than silently
+    /// falling back to SQLite.
+    pub database_url: Option<String>,
+
     /// Path to the SQLite database file.
     ///
     /// Defaults to `nebula-worker.db` in the current working directory.
     /// Set `NEBULA_WORKER_DB_PATH` to override. An in-memory database is not
     /// suitable for production because durability is lost on process restart.
+    /// Ignored when `database_url` is `Some` (Postgres path takes precedence).
     pub db_path: String,
 
     /// 16-byte processor identity, hex-encoded (32 hex chars).
@@ -281,6 +294,8 @@ impl WorkerConfig {
     /// `NEBULA_WORKER_POLL_INTERVAL_MS` at parse time — both would silently
     /// break the claim-loop at runtime.
     pub fn from_env() -> Result<Self, WorkerConfigError> {
+        let database_url = std::env::var("NEBULA_WORKER_DATABASE_URL").ok();
+
         let db_path = std::env::var("NEBULA_WORKER_DB_PATH")
             .unwrap_or_else(|_| "nebula-worker.db".to_owned());
 
@@ -308,6 +323,7 @@ impl WorkerConfig {
             reject_zero_u64(poll_interval_ms, WorkerConfigError::PollIntervalNotPositive)?;
 
         Ok(Self {
+            database_url,
             db_path,
             processor_id,
             batch_size,

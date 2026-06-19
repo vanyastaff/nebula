@@ -7,7 +7,8 @@
 //!
 //! | Variable | Default | Description |
 //! |---|---|---|
-//! | `NEBULA_WORKER_DB_PATH` | `nebula-worker.db` | SQLite database file path |
+//! | `NEBULA_WORKER_DATABASE_URL` | unset | Postgres DSN; when set, uses Postgres backend (requires `--features postgres`). Unset = SQLite default. |
+//! | `NEBULA_WORKER_DB_PATH` | `nebula-worker.db` | SQLite database file path (ignored when `NEBULA_WORKER_DATABASE_URL` is set) |
 //! | `NEBULA_WORKER_PROCESSOR_ID` | random UUID v4 per boot | 32 hex chars (16 bytes); set explicitly for stable fence identity |
 //! | `NEBULA_WORKER_BATCH_SIZE` | orchestrator default (32) | Jobs per claim batch |
 //! | `NEBULA_WORKER_POLL_INTERVAL_MS` | 100 | Idle poll interval (ms) |
