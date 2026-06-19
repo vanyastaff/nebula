@@ -167,6 +167,27 @@ impl<'de> Visitor<'de> for ConditionVisitor {
         // Collect the map into a serde_json::Value so we can key-sniff.
         let raw: Value = Deserialize::deserialize(de::value::MapAccessDeserializer::new(map))?;
 
+        // DISPATCH RULE: leaf-first.
+        //
+        // A `"field"` key unambiguously identifies a leaf predicate — no
+        // legitimate combinator carries one. Check it BEFORE the combinator
+        // keys so that a stored leaf with an incidental stray key (e.g.
+        // `{"field":"x","op":"eq","value":1,"all":"metadata"}`) continues
+        // to deserialize as a leaf, matching the back-compat behaviour of
+        // the old derived `Deserialize` (which ignored unknown fields).
+        //
+        // Only dispatch to a combinator when `"field"` is absent, which is
+        // the true combinator shape: `{"all":[...]}` / `{"any":[...]}` /
+        // `{"not":{...}}`.
+        if raw.get("field").is_some() {
+            let leaf: LeafFields = serde_json::from_value(raw).map_err(de::Error::custom)?;
+            return Ok(Condition::Leaf {
+                field: leaf.field,
+                op: leaf.op,
+                value: leaf.value,
+            });
+        }
+
         if let Some(all_val) = raw.get("all") {
             let children: Vec<Condition> =
                 serde_json::from_value(all_val.clone()).map_err(de::Error::custom)?;
@@ -183,9 +204,8 @@ impl<'de> Visitor<'de> for ConditionVisitor {
             return Ok(Condition::Not(Box::new(child)));
         }
 
-        // No combinator key — treat as leaf. Delegate to `LeafFields` so
-        // that a bad `op` value yields the typed serde error from
-        // `ConditionOp`'s derive, not a generic "untagged" message.
+        // No `field` key and no combinator key — delegate to `LeafFields`
+        // which will produce the clean "missing field `field`" serde error.
         let leaf: LeafFields = serde_json::from_value(raw).map_err(de::Error::custom)?;
         Ok(Condition::Leaf {
             field: leaf.field,
@@ -898,6 +918,59 @@ mod tests {
         assert!(
             msg.contains("bogus") || msg.contains("unknown variant"),
             "error message must name the bad value or say 'unknown variant'; got: {msg}"
+        );
+    }
+
+    // ── Back-compat: leaf-first dispatch ─────────────────────────────────────
+    //
+    // RED with combinator-first order: `{"field":"status","op":"eq","value":"active","all":"metadata"}`
+    // would attempt to parse `"metadata"` as `Vec<Condition>` → Err.
+    // With leaf-first dispatch the `"field"` key wins and the stray key is ignored,
+    // matching the back-compat behaviour of the old derived `Deserialize`.
+    #[test]
+    fn flat_leaf_with_stray_combinator_key_parses_as_leaf() {
+        let result = serde_json::from_str::<Condition>(
+            r#"{"field":"status","op":"eq","value":"active","all":"metadata"}"#,
+        );
+        let cond = result.expect("must parse successfully despite stray 'all' key");
+        assert_eq!(
+            cond,
+            Condition::Leaf {
+                field: "status".into(),
+                op: ConditionOp::Eq,
+                value: Some(json!("active")),
+            },
+            "stray 'all' key must be ignored; leaf fields take precedence"
+        );
+        // Verify the deserialized leaf evaluates correctly.
+        let data = json!({"status": "active"});
+        assert!(
+            evaluate_condition(&data, &cond).unwrap(),
+            "leaf parsed from a doc with stray 'all' key must evaluate correctly"
+        );
+    }
+
+    // A pure combinator shape (no "field" key) with a non-array "all" value
+    // must produce a clean error — not a panic.
+    #[test]
+    fn combinator_all_with_non_array_value_errors() {
+        let result = serde_json::from_str::<Condition>(r#"{"all":"nope"}"#);
+        assert!(
+            result.is_err(),
+            r#"{{"all":"nope"}} must fail (expected Vec<Condition>, got string)"#
+        );
+    }
+
+    // A real All (no "field" key) must still deserialize as Condition::All.
+    #[test]
+    fn real_all_without_field_key_parses_as_all() {
+        let result = serde_json::from_str::<Condition>(
+            r#"{"all":[{"field":"a","op":"exists"},{"field":"b","op":"exists"}]}"#,
+        );
+        let cond = result.expect("must parse as All");
+        assert!(
+            matches!(cond, Condition::All(ref cs) if cs.len() == 2),
+            "must be Condition::All with 2 children; got: {cond:?}"
         );
     }
 
