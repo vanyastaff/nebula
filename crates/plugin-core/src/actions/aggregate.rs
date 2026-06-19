@@ -46,6 +46,8 @@
 //!   silently, which would cause group-key and field reads to misfire).
 //! - `aggregations` empty → **Fatal** (authoring error: nothing to compute).
 //! - Duplicate `out` key across aggregations → **Fatal** (authoring error).
+//! - Any aggregation `out` key that matches a `group_by` field name → **Fatal**
+//!   (would silently overwrite the group key with the aggregation result).
 //! - `group_by` field absent on any element → **Fatal** (cannot determine
 //!   the group; fail-closed is safer than treating absent as a synthetic key).
 //! - `on_error: fail` (default) and a numeric aggregation encounters a
@@ -331,35 +333,46 @@ impl Accumulator {
                 }
             },
 
-            // SUM (integer path) — preserves i64; upgrades to float on first f64.
+            // SUM (integer path) — preserves i64 when all values are integers;
+            // upgrades to SumFloat on the first u64-only or floating-point value.
+            //
+            // Matching on `v.is_number()` then trying i64 first (covers both i64
+            // and all integers ≤ i64::MAX) then falling through to as_f64 (covers
+            // u64 > i64::MAX and genuine floats — serde_json's as_f64 returns Some
+            // for any Number) avoids any expect/unreachable in library code.
             (acc @ Accumulator::SumInt { .. }, Aggregation::Sum { field, out }) => {
-                let field_value = element.get(field.as_str());
-                match field_value {
-                    Some(v) if v.is_i64() => {
-                        // `is_i64()` was just verified — `as_i64()` cannot fail.
-                        let addend = v.as_i64().expect("is_i64() holds: as_i64() must succeed");
-                        if let Accumulator::SumInt { integer_total } = acc {
-                            *integer_total = integer_total
-                                .checked_add(addend)
-                                .ok_or_else(|| ActionError::fatal("aggregate: sum overflow"))?;
-                        }
-                    },
-                    Some(v) if v.is_f64() => {
-                        // Upgrade path: carry the integer running total into float.
-                        let prior_integer_total =
-                            if let Accumulator::SumInt { integer_total } = &*acc {
-                                // i64 → f64: precision may degrade for very large integers,
-                                // but JSON numbers with that many digits are already f64-lossy
-                                // at parse time, so no additional precision is lost here.
+                match element.get(field.as_str()) {
+                    Some(v) if v.is_number() => {
+                        if let Some(addend) = v.as_i64() {
+                            // Fast path: i64-representable integer — stay integer.
+                            if let Accumulator::SumInt { integer_total } = acc {
+                                *integer_total = integer_total
+                                    .checked_add(addend)
+                                    .ok_or_else(|| ActionError::fatal("aggregate: sum overflow"))?;
+                            }
+                        } else if let Some(addend) = v.as_f64() {
+                            // Upgrade path: u64 above i64::MAX, or a float literal.
+                            // i64 → f64: precision may degrade for very large integers,
+                            // but JSON numbers with that many digits are already f64-lossy
+                            // at parse time, so no additional precision is lost here.
+                            let prior = if let Accumulator::SumInt { integer_total } = &*acc {
                                 *integer_total as f64
                             } else {
-                                unreachable!("arm guard ensures acc is SumInt")
+                                0.0 // unreachable: arm guard `acc @ SumInt` holds
                             };
-                        // `is_f64()` was just verified — `as_f64()` cannot fail.
-                        let addend = v.as_f64().expect("is_f64() holds: as_f64() must succeed");
-                        *acc = Accumulator::SumFloat {
-                            float_total: prior_integer_total + addend,
-                        };
+                            *acc = Accumulator::SumFloat {
+                                float_total: prior + addend,
+                            };
+                        } else {
+                            // is_number() true but neither i64 nor f64 representable —
+                            // treat as a dirty value (subject to on_error policy).
+                            return apply_dirty_value_policy(
+                                field,
+                                out,
+                                v.type_name_str(),
+                                dirty_value_policy,
+                            );
+                        }
                     },
                     Some(v) if v.is_null() => {
                         return apply_dirty_value_policy(field, out, "null", dirty_value_policy);
@@ -527,10 +540,12 @@ impl Accumulator {
             // `Accumulator::new` to match by variant. A mismatch here means the
             // caller zipped a different aggregation list than was used to build
             // the accumulators — a logic error in the caller, not in user data.
-            _ => unreachable!(
-                "accumulator variant does not match aggregation variant; \
-                 callers must zip the same aggregation list used in Accumulator::new"
-            ),
+            _ => {
+                return Err(ActionError::fatal(
+                    "aggregate: internal — accumulator variant does not match aggregation variant; \
+                     callers must zip the same aggregation list used in Accumulator::new",
+                ));
+            },
         }
         Ok(())
     }
@@ -716,6 +731,20 @@ impl StatelessAction for Aggregate {
             }
         }
 
+        // ── 3b. Reject aggregation `out` keys that collide with group_by fields ─
+        //
+        // A collision silently overwrites the group key in the output row with
+        // the aggregation result. Fail-closed is the correct policy here: the
+        // author almost certainly made a naming mistake.
+        for aggregation in &input.aggregations {
+            let output_key = aggregation.out_key();
+            if input.group_by.iter().any(|f| f == output_key) {
+                return Err(ActionError::fatal(format!(
+                    "aggregate: aggregation output `{output_key}` collides with a group_by field"
+                )));
+            }
+        }
+
         // ── 4. Partition elements into groups and accumulate ──────────────────
         //
         // `group_insertion_order` tracks first-seen group keys so output rows
@@ -775,9 +804,10 @@ impl StatelessAction for Aggregate {
                         }
                     }
                     // `key_values` contains only cloned JSON Values — serialization
-                    // cannot fail for any valid `Value`.
-                    serde_json::to_string(&Value::Array(key_values))
-                        .expect("all key_values are valid JSON Values: to_string cannot fail")
+                    // should not fail, but we propagate any error rather than panic.
+                    serde_json::to_string(&Value::Array(key_values)).map_err(|e| {
+                        ActionError::fatal(format!("aggregate: failed to serialize group key: {e}"))
+                    })?
                 };
 
                 // Initialize accumulators on first encounter with this group key.
@@ -793,9 +823,11 @@ impl StatelessAction for Aggregate {
                 // `group_insertion_order` and `group_accumulators` are kept in sync:
                 // every key pushed to `group_insertion_order` has a corresponding
                 // entry in `group_accumulators` inserted in the same branch above.
-                let accumulators = group_accumulators.get_mut(&group_key).expect(
-                    "group_accumulators entry exists: inserted above when group_key was new",
-                );
+                let accumulators = group_accumulators.get_mut(&group_key).ok_or_else(|| {
+                    ActionError::fatal(
+                        "aggregate: internal — group accumulator missing for inserted key",
+                    )
+                })?;
                 for (accumulator, aggregation) in accumulators.iter_mut().zip(&input.aggregations) {
                     accumulator.feed(element, aggregation, input.on_error)?;
                 }
@@ -808,16 +840,17 @@ impl StatelessAction for Aggregate {
         for group_key in group_insertion_order {
             // `group_key` came from `group_insertion_order`, which only holds keys
             // that were simultaneously inserted into `group_accumulators`.
-            let accumulators = group_accumulators
-                .remove(&group_key)
-                .expect("group_insertion_order only contains keys present in group_accumulators");
+            let accumulators = group_accumulators.remove(&group_key).ok_or_else(|| {
+                ActionError::fatal("aggregate: internal — group key missing from accumulators")
+            })?;
 
             let mut summary_row = serde_json::Map::new();
 
             // Inject the group-by field values first (before aggregation outputs).
             if !input.group_by.is_empty() {
-                let key_values: Vec<Value> = serde_json::from_str(&group_key)
-                    .expect("group_key was produced by serde_json::to_string: round-trip is safe");
+                let key_values: Vec<Value> = serde_json::from_str(&group_key).map_err(|e| {
+                    ActionError::fatal(format!("aggregate: failed to parse group key: {e}"))
+                })?;
                 for (group_field, field_value) in input.group_by.iter().zip(key_values) {
                     summary_row.insert(group_field.clone(), field_value);
                 }
@@ -1479,6 +1512,64 @@ mod tests {
                 {"dept": "eng", "level": "jr", "s": 2}
             ]),
             "multi-key group_by must produce one row per unique key tuple in first-seen order"
+        );
+    }
+
+    // ── FIX B: u64 above i64::MAX is accepted by sum ─────────────────────────
+    //
+    // serde_json represents u64::MAX as a Number that returns None from as_i64()
+    // but Some from as_f64(). The old `is_i64()/is_f64()` match fell through
+    // to the dirty-value arm and returned Fatal for a valid JSON number.
+    //
+    // RED witness: the old impl returned Err(Fatal) causing `unwrap()` to panic.
+    // The new `is_number()` → `as_i64()` → `as_f64()` path routes u64-only
+    // values through the float upgrade, returning a finite f64 approximation.
+    #[tokio::test]
+    async fn sum_handles_u64_above_i64_max() {
+        // u64::MAX = 18446744073709551615; serde_json encodes this as a u64 Number.
+        let input = AggregateInput {
+            data: Some(json!([{"x": u64::MAX}])),
+            group_by: vec![],
+            aggregations: vec![Aggregation::Sum {
+                field: "x".into(),
+                out: "total".into(),
+            }],
+            on_error: OnError::Fail,
+        };
+        // Must NOT be Fatal; must return a finite numeric result.
+        let output = extract_output(run(input).await.unwrap());
+        let total = output[0]["total"]
+            .as_f64()
+            .expect("sum of u64::MAX must be a float Number");
+        assert!(
+            total.is_finite(),
+            "sum of u64::MAX must be a finite float, not Inf/NaN; got: {total}"
+        );
+    }
+
+    // ── FIX C: aggregation `out` colliding with group_by field is Fatal ───────
+    //
+    // Without this check, the aggregation result would silently overwrite the
+    // group key value in the output row — data corruption invisible to the author.
+    //
+    // RED witness: without the collision check, sum(amount) out="region" would
+    // emit `[{"region": 30}]` (the sum value overwrites the group key), causing
+    // `unwrap_err()` to panic on the Ok result.
+    #[tokio::test]
+    async fn out_colliding_with_group_by_is_fatal() {
+        let input = AggregateInput {
+            data: Some(json!([{"region": "west", "amount": 10}])),
+            group_by: vec!["region".into()],
+            aggregations: vec![Aggregation::Sum {
+                field: "amount".into(),
+                out: "region".into(), // collides with the group_by field
+            }],
+            on_error: OnError::Fail,
+        };
+        let err = run(input).await.unwrap_err();
+        assert!(
+            matches!(err, ActionError::Fatal { .. }),
+            "aggregation out key colliding with group_by field must be Fatal; got: {err:?}"
         );
     }
 }
