@@ -104,15 +104,17 @@ pub enum ControlDispatchError {
     #[error("control dispatch failed: {0}")]
     Internal(String),
 
-    /// A transient contention condition prevented dispatch — the control-queue
-    /// row should be left in `Processing` so the B1 reclaim sweep redelivers
-    /// it once the contention clears.
+    /// A retriable dispatch condition prevented a safe ack/fail decision — the
+    /// control-queue row should be left in `Processing` so the B1 reclaim sweep
+    /// redelivers it once the condition clears or the state can be re-checked.
     ///
     /// Unlike `Rejected` and `Internal` (which call `mark_failed`), this
     /// variant causes the consumer to call neither `mark_completed` nor
     /// `mark_failed`, relying on the reclaim sweep to move the row back to
-    /// `Pending`. Use only for conditions that are guaranteed to resolve
-    /// (e.g. lease contention), not for permanent failures.
+    /// `Pending`. Use only when at-least-once redelivery is the correct recovery
+    /// path — e.g. lease contention, or a `dispatch_resume` whose `satisfy`
+    /// write did not durably land (and must not be acked while the wait may
+    /// still be pending) — never for permanent failures.
     #[error("control dispatch deferred (transient contention): {0}")]
     Deferred(String),
 }

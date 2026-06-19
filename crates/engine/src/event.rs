@@ -166,15 +166,16 @@ pub enum ExecutionEvent {
         termination_reason: Option<ExecutionTerminationReason>,
     },
 
-    /// A `dispatch_resume` command's durable `satisfy_signal_waits` CAS was
-    /// rejected by a concurrent actor (version conflict or fencing rejection)
-    /// before the signal-driven wait nodes could be transitioned to `Completed`.
+    /// A `dispatch_resume` command's durable `satisfy_signal_waits` step could
+    /// not land — the execution lease was held by another runner, or the CAS was
+    /// rejected by a concurrent actor (version conflict or fencing rejection) —
+    /// so the signal-driven wait nodes were not armed for completion.
     ///
-    /// The Resume is treated as a no-op at-least-once semantics: the competing
-    /// actor owns the execution, so this Resume is deferred/dropped safely.
-    /// At-least-once redelivery will retry if the competing actor was a reclaim
-    /// re-drive (re-parks rather than completing); a genuine concurrent Resume
-    /// makes this event vacuous.
+    /// The Resume is NOT dropped: the control-queue row is left unacked so
+    /// at-least-once redelivery (B1 reclaim) retries it once the competing actor
+    /// releases the lease. If that actor was a reclaim re-drive it re-parks
+    /// (leaving the wait for the redelivered Resume to arm); if it was a genuine
+    /// concurrent Resume that already armed the wait, the redelivery is a no-op.
     ///
     /// # Observability
     ///

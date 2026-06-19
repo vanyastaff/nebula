@@ -23,7 +23,7 @@
 use std::{
     collections::HashMap,
     sync::{
-        Arc, OnceLock,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicBool, AtomicU32, Ordering},
     },
     time::Duration,
@@ -2266,5 +2266,259 @@ async fn armed_signal_wait_is_completed_by_reclaim_drive_not_lost() {
         downstream.load(Ordering::SeqCst),
         1,
         "downstream must run exactly once — the armed Resume's work was recovered, not lost"
+    );
+}
+
+/// Wraps an [`InMemoryExecutionStore`] and records, for every `commit`, a pair
+/// `(status, has_signal_waiting_node)` parsed from the committed state snapshot.
+/// Lets a test assert the SHIP-C invariant: no durable commit ever pairs
+/// `status == "running"` with a signal-`Waiting{next_attempt_at: null}` node.
+#[derive(Debug)]
+struct CommitStatusRecorder {
+    inner: Arc<InMemoryExecutionStore>,
+    /// `(status_string, any signal-Waiting node present)` per commit.
+    commits: Mutex<Vec<(String, bool)>>,
+}
+
+impl CommitStatusRecorder {
+    fn new(inner: Arc<InMemoryExecutionStore>) -> Self {
+        Self {
+            inner,
+            commits: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl ExecutionStore for CommitStatusRecorder {
+    async fn create(
+        &self,
+        scope: &Scope,
+        id: &str,
+        workflow_id: &str,
+        initial_state: serde_json::Value,
+    ) -> Result<(), StorageError> {
+        self.inner
+            .create(scope, id, workflow_id, initial_state)
+            .await
+    }
+
+    async fn get(
+        &self,
+        scope: &Scope,
+        id: &str,
+    ) -> Result<Option<nebula_storage_port::dto::ExecutionRecord>, StorageError> {
+        self.inner.get(scope, id).await
+    }
+
+    async fn commit(&self, batch: TransitionBatch) -> Result<TransitionOutcome, StorageError> {
+        let state = batch.new_state();
+        let status = state
+            .get("status")
+            .and_then(|s| s.as_str())
+            .unwrap_or("<missing>")
+            .to_owned();
+        // A signal wait is a node `state == "waiting"` with `next_attempt_at` null.
+        let has_signal_waiting = state
+            .get("node_states")
+            .and_then(|m| m.as_object())
+            .is_some_and(|m| {
+                m.values().any(|ns| {
+                    ns.get("state").and_then(|s| s.as_str()) == Some("waiting")
+                        && ns
+                            .get("next_attempt_at")
+                            .is_some_and(serde_json::Value::is_null)
+                })
+            });
+        self.commits
+            .lock()
+            .unwrap()
+            .push((status, has_signal_waiting));
+        self.inner.commit(batch).await
+    }
+
+    async fn acquire_lease(
+        &self,
+        scope: &Scope,
+        id: &str,
+        holder: &str,
+        ttl: Duration,
+    ) -> Result<Option<FencingToken>, StorageError> {
+        self.inner.acquire_lease(scope, id, holder, ttl).await
+    }
+
+    async fn renew_lease(
+        &self,
+        scope: &Scope,
+        id: &str,
+        token: FencingToken,
+        ttl: Duration,
+    ) -> Result<bool, StorageError> {
+        self.inner.renew_lease(scope, id, token, ttl).await
+    }
+
+    async fn release_lease(
+        &self,
+        scope: &Scope,
+        id: &str,
+        token: FencingToken,
+    ) -> Result<bool, StorageError> {
+        self.inner.release_lease(scope, id, token).await
+    }
+
+    async fn list_running(&self, scope: &Scope) -> Result<Vec<String>, StorageError> {
+        self.inner.list_running(scope).await
+    }
+
+    async fn list_running_for_workflow(
+        &self,
+        scope: &Scope,
+        workflow_id: &str,
+    ) -> Result<Vec<String>, StorageError> {
+        self.inner
+            .list_running_for_workflow(scope, workflow_id)
+            .await
+    }
+
+    async fn count(&self, scope: &Scope, workflow_id: Option<&str>) -> Result<u64, StorageError> {
+        self.inner.count(scope, workflow_id).await
+    }
+}
+
+/// **P1 SHIP-C — a signal park persists `Paused` atomically, never a durable
+/// `Running` + signal-`Waiting{None}` window** (regression guard for the Codex P1
+/// on commit `fb39ef08`):
+///
+/// When a signal park leaves no other active frontier work, the park's
+/// `checkpoint_node` batch must already carry `status == Paused` — otherwise the
+/// row sits durably `Running` + `Waiting{next_attempt_at: None}` until the
+/// frontier-exit `persist_final_state`, and a crash in that window is
+/// unrecoverable (`dispatch_start`/`dispatch_resume` short-circuit on `Running`,
+/// and a Resume only satisfies a `Paused` execution).
+///
+/// Test mechanics: a single signal-wait node (the park IS the last work), driven
+/// through a `CommitStatusRecorder`. Assert NO commit ever pairs
+/// `status == "running"` with a signal-`Waiting{None}` node present.
+///
+/// **Falsifiability**: drop the `transition_status(Paused)` from the signal-park
+/// branch → the park checkpoint commits `("running", true)` → the invariant
+/// assertion fails → RED.
+#[tokio::test]
+async fn signal_park_persists_paused_atomically_no_running_waiting_window() {
+    let scope = nebula_engine::store_seam::single_tenant_scope();
+    let stores = SignalStores::new();
+    let recorder = Arc::new(CommitStatusRecorder::new(Arc::clone(&stores.execution)));
+    let recorder_as_store: Arc<dyn ExecutionStore> = Arc::clone(&recorder) as _;
+
+    let registry = Arc::new(ActionRegistry::new());
+    registry.register_stateless_instance(
+        ActionMetadata::new(
+            action_key!("test.signal.webhook_wait"),
+            "WebhookWaitNode",
+            "SHIP-C atomic-Paused test stub",
+        ),
+        WebhookWaitNode,
+    );
+    let executor: ActionExecutor =
+        Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
+    let runner = Arc::new(InProcessRunner::new(executor));
+    let metrics = MetricsRegistry::new();
+    let runtime = Arc::new(
+        ActionRuntime::try_new(
+            registry,
+            runner,
+            DataPassingPolicy::default(),
+            metrics.clone(),
+        )
+        .unwrap(),
+    );
+
+    let execution_stores = nebula_engine::ExecutionStores {
+        execution: Arc::clone(&recorder) as _,
+        journal: stores.journal.clone(),
+        node_results: stores.node_results.clone(),
+        checkpoints: stores.checkpoints.clone(),
+        idempotency: stores.idempotency.clone(),
+    };
+    let engine = Arc::new(
+        WorkflowEngine::new(runtime, metrics)
+            .unwrap()
+            .with_execution_stores(execution_stores)
+            .with_workflow_stores(stores.workflow_stores()),
+    );
+    let dispatch = EngineControlDispatch::new(Arc::clone(&engine), recorder_as_store.clone());
+
+    // Single signal-wait node — the park is the last (and only) frontier work.
+    let workflow_id = nebula_core::WorkflowId::new();
+    let now = Utc::now();
+    let wait_node = node_key!("signal_node");
+    let wf = WorkflowDefinition {
+        id: workflow_id,
+        name: "ship-c-atomic-paused-test".into(),
+        description: None,
+        version: Version::new(0, 1, 0),
+        nodes: vec![
+            NodeDefinition::new(wait_node, "SignalNode", "core", "test.signal.webhook_wait")
+                .unwrap(),
+        ],
+        connections: vec![],
+        variables: HashMap::new(),
+        config: WorkflowConfig::default(),
+        trigger_bindings: Vec::new(),
+        tags: Vec::new(),
+        created_at: now,
+        updated_at: now,
+        owner_id: None,
+        ui_metadata: None,
+        schema_version: CURRENT_SCHEMA_VERSION,
+    };
+    stores.save_workflow(&wf).await;
+
+    let execution_id = ExecutionId::new();
+    let mut exec_state = ExecutionState::new(execution_id, workflow_id, &[]);
+    exec_state.set_workflow_input(serde_json::json!(null));
+    stores
+        .execution
+        .create(
+            &scope,
+            &execution_id.to_string(),
+            &workflow_id.to_string(),
+            serde_json::to_value(&exec_state).unwrap(),
+        )
+        .await
+        .unwrap();
+
+    dispatch
+        .dispatch_start(&scope, execution_id)
+        .await
+        .expect("dispatch_start must park the signal node");
+
+    // The execution ends Paused.
+    let record = stores
+        .execution
+        .get(&scope, &execution_id.to_string())
+        .await
+        .unwrap()
+        .expect("execution row must exist");
+    assert_eq!(
+        serde_json::from_value::<ExecutionStatus>(record.state.get("status").cloned().unwrap())
+            .unwrap(),
+        ExecutionStatus::Paused,
+        "execution must be Paused after the signal park"
+    );
+
+    // SHIP-C invariant: no durable commit pairs `Running` with a signal-`Waiting{None}` node.
+    let commits = recorder.commits.lock().unwrap().clone();
+    assert!(
+        commits.iter().any(|(_, waiting)| *waiting),
+        "the park must have committed a signal-Waiting node (invariant is not vacuous); \
+         commits = {commits:?}"
+    );
+    assert!(
+        !commits
+            .iter()
+            .any(|(status, waiting)| status == "running" && *waiting),
+        "SHIP-C: no durable commit may pair status=running with a signal-Waiting{{None}} node \
+         (that would be the unrecoverable crash window); commits = {commits:?}"
     );
 }
