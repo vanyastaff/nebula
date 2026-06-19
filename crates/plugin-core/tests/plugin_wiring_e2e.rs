@@ -1644,3 +1644,138 @@ async fn with_plugin_aggregate_executes_and_summarizes() {
         "aggregate must return grouped summary rows in first-seen order with correct sums"
     );
 }
+
+// ── core.dedupe e2e ───────────────────────────────────────────────────────────
+
+/// Build a single-node `core.dedupe` workflow.
+///
+/// `data_json` is the input array and `keys_json` is the serialized key list.
+/// Both are wired as `ParamValue::literal` parameters so the engine resolves
+/// them into `DedupeInput` before dispatch.
+fn dedupe_workflow(
+    data_json: serde_json::Value,
+    keys_json: serde_json::Value,
+) -> WorkflowDefinition {
+    let now = chrono::Utc::now();
+    let node = NodeDefinition::new(
+        nebula_core::node_key!("step"),
+        "Dedupe step",
+        "core",
+        "core.dedupe",
+    )
+    .expect("NodeDefinition must build with valid keys")
+    .with_parameter("data", ParamValue::literal(data_json))
+    .with_parameter("keys", ParamValue::literal(keys_json));
+
+    WorkflowDefinition {
+        id: nebula_core::WorkflowId::new(),
+        name: "test-core-dedupe".into(),
+        description: None,
+        version: Version::new(0, 1, 0),
+        nodes: vec![node],
+        connections: vec![],
+        variables: HashMap::new(),
+        config: WorkflowConfig::default(),
+        trigger_bindings: vec![],
+        tags: vec![],
+        created_at: now,
+        updated_at: now,
+        owner_id: None,
+        ui_metadata: None,
+        schema_version: CURRENT_SCHEMA_VERSION,
+    }
+}
+
+/// RED witness: dispatching `core.dedupe` on an engine without the CorePlugin
+/// wired returns `ExecutionStatus::Failed` with an action-not-found node error.
+///
+/// Removing `with_plugin` from the GREEN test below causes it to hit this same
+/// failure mode, proving the GREEN test distinguishes "action registered" from
+/// "action absent".
+#[tokio::test]
+async fn without_plugin_dedupe_dispatch_fails() {
+    let engine = make_engine(); // no with_plugin call
+
+    let workflow = dedupe_workflow(
+        serde_json::json!([{"id": 1}, {"id": 1}]),
+        serde_json::json!(["id"]),
+    );
+
+    let result = engine
+        .execute_workflow(
+            &scope(),
+            &workflow,
+            serde_json::json!({}),
+            ExecutionBudget::default(),
+        )
+        .await
+        .expect("execute_workflow itself must not error — failure is recorded in the result");
+
+    assert_eq!(
+        result.status,
+        nebula_execution::ExecutionStatus::Failed,
+        "execution without a wired plugin must reach Failed; got {:?}",
+        result.status
+    );
+
+    let error_texts: Vec<&str> = result.node_errors.values().map(String::as_str).collect();
+    assert!(
+        error_texts.iter().any(|s| s.contains("not found")),
+        "node_errors must contain an action-not-found message; got: {error_texts:?}"
+    );
+}
+
+/// GREEN proof: after `with_plugin(CorePlugin)`, the `core.dedupe` action
+/// executes and returns the correctly deduped output.
+///
+/// Input: `[{id:1,v:"a"},{id:2,v:"b"},{id:1,v:"c"}]`, keys `["id"]`.
+/// Expected output: `[{id:1,v:"a"},{id:2,v:"b"}]` — first id=1 element kept,
+/// later duplicate dropped. Asserts concrete array value, not `is_ok()`.
+///
+/// RED witness: without `with_plugin`, the execution reaches `Failed`
+/// (same path as `without_plugin_dedupe_dispatch_fails` above).
+#[tokio::test]
+async fn with_plugin_dedupe_executes_and_dedupes() {
+    let engine = make_engine()
+        .with_plugin(core_plugin())
+        .expect("with_plugin(CorePlugin) must succeed on a fresh engine");
+
+    let workflow = dedupe_workflow(
+        serde_json::json!([
+            {"id": 1, "v": "a"},
+            {"id": 2, "v": "b"},
+            {"id": 1, "v": "c"}
+        ]),
+        serde_json::json!(["id"]),
+    );
+
+    let result = engine
+        .execute_workflow(
+            &scope(),
+            &workflow,
+            serde_json::json!({}),
+            ExecutionBudget::default(),
+        )
+        .await
+        .expect("with_plugin(CorePlugin) + core.dedupe must succeed");
+
+    assert_eq!(
+        result.status,
+        nebula_execution::ExecutionStatus::Completed,
+        "execution must reach Completed; got {:?} (node_errors: {:?})",
+        result.status,
+        result.node_errors
+    );
+
+    let node_key = nebula_core::node_key!("step");
+    let node_output = result
+        .node_outputs
+        .get(&node_key)
+        .expect("node 'step' must have output after Completed execution");
+
+    assert_eq!(
+        *node_output,
+        serde_json::json!([{"id": 1, "v": "a"}, {"id": 2, "v": "b"}]),
+        "dedupe must keep first id=1 (v=a) and drop the later id=1 (v=c)"
+    );
+}
