@@ -16,6 +16,7 @@
 //! | `core.dedupe`          | Remove duplicate array elements by one or more key fields (first occurrence wins) |
 //! | `core.filter`          | Filter array elements by a condition                           |
 //! | `core.if`              | Binary branch: route to `"true"` or `"false"` port on a field condition |
+//! | `core.map`             | Reshape each element of an array (per-element pick/omit/rename) |
 //! | `core.sort`            | Sort an array of objects by one or more fields (asc/desc)           |
 //! | `core.switch`          | N-way branch: route to the first matching case port, or `"default"` |
 //!

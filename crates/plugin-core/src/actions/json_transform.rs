@@ -107,6 +107,59 @@ impl HasSchema for JsonTransformInput {
     }
 }
 
+// ── Shared operation applier ──────────────────────────────────────────────────
+
+/// Apply a sequence of [`TransformOperation`]s left-to-right to a single JSON
+/// object map in place.
+///
+/// This is the shared implementation used by both `core.json_transform` (one
+/// object) and `core.map` (one object per array element). Keeping the loop
+/// here prevents duplication and ensures both actions have identical per-object
+/// semantics.
+///
+/// # Errors
+///
+/// Returns [`ActionError::Fatal`] when a `Rename` operation references a source
+/// key that is absent from `target`. `Pick` and `Omit` missing keys are silent
+/// no-ops per the documented contract.
+pub(crate) fn apply_operations(
+    target: &mut Map<String, Value>,
+    operations: &[TransformOperation],
+) -> Result<(), ActionError> {
+    for operation in operations {
+        match operation {
+            TransformOperation::Pick { fields } => {
+                let retained: Map<String, Value> = fields
+                    .iter()
+                    .filter_map(|key| {
+                        let value = target.remove(key.as_str())?;
+                        Some((key.clone(), value))
+                    })
+                    .collect();
+                *target = retained;
+            },
+            TransformOperation::Omit { fields } => {
+                for key in fields {
+                    target.remove(key.as_str());
+                }
+            },
+            TransformOperation::Rename { from, to } => {
+                if from == to {
+                    // Source and destination are the same key — nothing to move.
+                    continue;
+                }
+                let moved_value = target.remove(from.as_str()).ok_or_else(|| {
+                    ActionError::fatal(format!(
+                        "json_transform: rename source key `{from}` not found in object"
+                    ))
+                })?;
+                target.insert(to.clone(), moved_value);
+            },
+        }
+    }
+    Ok(())
+}
+
 // ── Action ────────────────────────────────────────────────────────────────────
 
 /// Pure action that applies a sequence of transform operations to a JSON object.
@@ -190,36 +243,7 @@ impl StatelessAction for JsonTransform {
             },
         };
 
-        for operation in input.operations {
-            match operation {
-                TransformOperation::Pick { fields } => {
-                    working_fields = fields
-                        .into_iter()
-                        .filter_map(|key| {
-                            let value = working_fields.remove(&key)?;
-                            Some((key, value))
-                        })
-                        .collect();
-                },
-                TransformOperation::Omit { fields } => {
-                    for key in fields {
-                        working_fields.remove(&key);
-                    }
-                },
-                TransformOperation::Rename { from, to } => {
-                    if from == to {
-                        // Source and destination are the same key — nothing to move.
-                        continue;
-                    }
-                    let moved_value = working_fields.remove(&from).ok_or_else(|| {
-                        ActionError::fatal(format!(
-                            "json_transform: rename source key `{from}` not found in object"
-                        ))
-                    })?;
-                    working_fields.insert(to, moved_value);
-                },
-            }
-        }
+        apply_operations(&mut working_fields, &input.operations)?;
 
         Ok(ActionResult::success(Value::Object(working_fields)))
     }
