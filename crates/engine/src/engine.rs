@@ -87,6 +87,11 @@ pub(crate) enum SatisfyOutcome {
     /// No signal-driven `Waiting` nodes existed — execution was already
     /// satisfied, cancelled, or never had wait nodes.
     NothingToSatisfy,
+    /// The execution left the `Paused` state (terminal or `Cancelling`) between
+    /// the caller's pre-lease status read and the under-lease reload — a
+    /// concurrent Cancel/Terminate won the race. No nodes were touched; the
+    /// Resume is moot and the caller should ack it without driving.
+    ExecutionNotResumable,
 }
 
 /// Default execution-lease TTL.
@@ -2518,6 +2523,24 @@ impl WorkflowEngine {
                 "satisfy_signal_waits: deserialise state for {execution_id}: {e}"
             ))
         })?;
+
+        // Re-check the execution status under the lease before satisfying any
+        // node. `dispatch_resume` read `Paused` BEFORE acquiring the lease; a
+        // concurrent Cancel/Terminate may have committed a terminal (or
+        // `Cancelling`) status in that window. The per-node `Waiting → Completed`
+        // CAS below guards only the node version, not the execution status, so
+        // without this gate we would flip — and durably commit — a wait node on
+        // an already-cancelled execution, corrupting its terminal audit state.
+        // Treat it as an idempotent no-op; the caller acks the Resume.
+        if exec_state.status.is_terminal() || exec_state.status == ExecutionStatus::Cancelling {
+            tracing::info!(
+                %execution_id,
+                status = %exec_state.status,
+                "satisfy_signal_waits: execution left Paused before the under-lease reload \
+                 (concurrent cancel/terminate); skipping satisfy as idempotent no-op"
+            );
+            return Ok(SatisfyOutcome::ExecutionNotResumable);
+        }
 
         // Collect nodes that are signal-driven waits. We identify them by
         // `state == Waiting` AND `next_attempt_at == None` (no timer wake).

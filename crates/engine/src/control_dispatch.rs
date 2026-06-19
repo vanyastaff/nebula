@@ -262,6 +262,21 @@ impl ControlDispatch for EngineControlDispatch {
                              or execution has no wait nodes); driving execution"
                         );
                     },
+                    Ok(SatisfyOutcome::ExecutionNotResumable) => {
+                        // A concurrent Cancel/Terminate moved the execution off
+                        // `Paused` between our pre-lease status read and the
+                        // under-lease reload inside `satisfy_signal_waits`. The
+                        // Resume is moot — ack WITHOUT driving, mirroring the
+                        // up-front terminal/`Cancelling` handling above. Driving
+                        // here would re-enter the engine on a terminating
+                        // execution; satisfy already made no durable write.
+                        tracing::info!(
+                            %execution_id,
+                            "dispatch_resume: execution left Paused before satisfy (concurrent \
+                             cancel/terminate); acking Resume as idempotent no-op"
+                        );
+                        return Ok(());
+                    },
                     Err(EngineError::Leased { ref holder, .. }) => {
                         // Transient lease contention — another runner is actively
                         // driving this execution. Leave the control-queue row in

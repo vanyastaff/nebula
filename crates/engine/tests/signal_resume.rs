@@ -1422,3 +1422,294 @@ async fn dispatch_resume_defers_when_satisfy_commit_is_fenced_out_and_execution_
         "downstream must run exactly once — triggered only by the redelivered Resume"
     );
 }
+
+/// Wraps an [`InMemoryExecutionStore`] and simulates a **concurrent Cancel
+/// landing during lease acquisition**: once `acquire_lease` has run, the next
+/// `get` (the under-lease reload inside `satisfy_signal_waits`) returns a record
+/// whose execution status is rewritten to `Cancelled`, while the earlier status
+/// read (`dispatch_resume`'s pre-lease `read_status`) still observes the real
+/// `Paused` row. Records whether any `commit` was attempted.
+#[derive(Debug)]
+struct CancelDuringSatisfyInterceptor {
+    inner: Arc<InMemoryExecutionStore>,
+    /// When `true`, the first `get` AFTER `acquire_lease` returns a `Cancelled`
+    /// view of the row (then self-disarms).
+    armed: AtomicBool,
+    /// Set once `acquire_lease` has been called, so only the under-lease reload
+    /// (not the pre-lease `read_status`) sees the injected cancel.
+    lease_acquired: AtomicBool,
+    /// Set if any `commit` is attempted — the fix must prevent a durable write
+    /// once the under-lease reload observes a terminal status.
+    commit_attempted: AtomicBool,
+}
+
+impl CancelDuringSatisfyInterceptor {
+    fn new(inner: Arc<InMemoryExecutionStore>) -> Self {
+        Self {
+            inner,
+            armed: AtomicBool::new(false),
+            lease_acquired: AtomicBool::new(false),
+            commit_attempted: AtomicBool::new(false),
+        }
+    }
+
+    /// Arm the injection: the first `get` after the lease is acquired returns a
+    /// `Cancelled` view.
+    fn arm(&self) {
+        self.armed.store(true, Ordering::SeqCst);
+    }
+
+    fn commit_attempted(&self) -> bool {
+        self.commit_attempted.load(Ordering::SeqCst)
+    }
+}
+
+#[async_trait::async_trait]
+impl ExecutionStore for CancelDuringSatisfyInterceptor {
+    async fn create(
+        &self,
+        scope: &Scope,
+        id: &str,
+        workflow_id: &str,
+        initial_state: serde_json::Value,
+    ) -> Result<(), StorageError> {
+        self.inner
+            .create(scope, id, workflow_id, initial_state)
+            .await
+    }
+
+    async fn get(
+        &self,
+        scope: &Scope,
+        id: &str,
+    ) -> Result<Option<nebula_storage_port::dto::ExecutionRecord>, StorageError> {
+        let rec = self.inner.get(scope, id).await?;
+        // Inject the concurrent cancel only on the under-lease reload (after
+        // acquire_lease), and only once.
+        if self.lease_acquired.load(Ordering::SeqCst)
+            && self
+                .armed
+                .compare_exchange(true, false, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+        {
+            return Ok(rec.map(|mut record| {
+                if let Some(obj) = record.state.as_object_mut() {
+                    obj.insert(
+                        "status".to_owned(),
+                        serde_json::to_value(ExecutionStatus::Cancelled)
+                            .expect("serialize ExecutionStatus::Cancelled"),
+                    );
+                }
+                record
+            }));
+        }
+        Ok(rec)
+    }
+
+    async fn commit(&self, batch: TransitionBatch) -> Result<TransitionOutcome, StorageError> {
+        self.commit_attempted.store(true, Ordering::SeqCst);
+        self.inner.commit(batch).await
+    }
+
+    async fn acquire_lease(
+        &self,
+        scope: &Scope,
+        id: &str,
+        holder: &str,
+        ttl: Duration,
+    ) -> Result<Option<FencingToken>, StorageError> {
+        let token = self.inner.acquire_lease(scope, id, holder, ttl).await?;
+        self.lease_acquired.store(true, Ordering::SeqCst);
+        Ok(token)
+    }
+
+    async fn renew_lease(
+        &self,
+        scope: &Scope,
+        id: &str,
+        token: FencingToken,
+        ttl: Duration,
+    ) -> Result<bool, StorageError> {
+        self.inner.renew_lease(scope, id, token, ttl).await
+    }
+
+    async fn release_lease(
+        &self,
+        scope: &Scope,
+        id: &str,
+        token: FencingToken,
+    ) -> Result<bool, StorageError> {
+        self.inner.release_lease(scope, id, token).await
+    }
+
+    async fn list_running(&self, scope: &Scope) -> Result<Vec<String>, StorageError> {
+        self.inner.list_running(scope).await
+    }
+
+    async fn list_running_for_workflow(
+        &self,
+        scope: &Scope,
+        workflow_id: &str,
+    ) -> Result<Vec<String>, StorageError> {
+        self.inner
+            .list_running_for_workflow(scope, workflow_id)
+            .await
+    }
+
+    async fn count(&self, scope: &Scope, workflow_id: Option<&str>) -> Result<u64, StorageError> {
+        self.inner.count(scope, workflow_id).await
+    }
+}
+
+/// **P2 — satisfy_signal_waits must guard the execution status under the lease**
+/// (regression guard for the Codex finding on commit `d8814879`):
+///
+/// `dispatch_resume` reads `Paused` BEFORE acquiring the execution lease. If a
+/// concurrent Cancel/Terminate commits `Cancelled` in the window before
+/// `satisfy_signal_waits` reloads under the lease, the per-node `Waiting →
+/// Completed` CAS (which guards only the node version, not the execution status)
+/// would flip — and durably commit — a wait node on an already-cancelled
+/// execution, corrupting its terminal audit state. `drive()` then only observes
+/// the terminal status and acks the Resume.
+///
+/// The fix: `satisfy_signal_waits` re-checks `exec_state.status` under the lease
+/// and returns `ExecutionNotResumable` (idempotent no-op, no commit) when the
+/// execution is terminal/`Cancelling`; `dispatch_resume` acks without driving.
+///
+/// Test mechanics:
+/// 1. Park with a real store (`Paused` persisted, signal node `Waiting`).
+/// 2. Wire a second engine against a `CancelDuringSatisfyInterceptor`: the
+///    pre-lease `read_status` sees `Paused`, but the under-lease reload inside
+///    `satisfy_signal_waits` sees an injected `Cancelled` status.
+/// 3. Call `dispatch_resume` → must return `Ok` (idempotent ack).
+/// 4. Assert NO commit was attempted (the durable-write invariant).
+/// 5. Assert the signal node is still `Waiting` in the real row (not flipped).
+/// 6. Assert downstream ran 0 times.
+///
+/// **Falsifiability**: remove the under-lease status guard in
+/// `satisfy_signal_waits` → satisfy collects the `Waiting` node and commits it
+/// `Completed` → step 4 (`commit_attempted == false`) and step 5 (node still
+/// `Waiting`) both fail → RED.
+#[tokio::test]
+async fn satisfy_signal_waits_skips_when_execution_cancelled_under_lease() {
+    // ── Phase 1: park with a real store ──────────────────────────────────────
+    let harness = SignalHarness::new().await;
+    let workflow_id = harness.persist_signal_workflow().await;
+    let execution_id = harness.persist_created_execution(workflow_id).await;
+    let scope = nebula_engine::store_seam::single_tenant_scope();
+
+    harness
+        .dispatch
+        .dispatch_start(&scope, execution_id)
+        .await
+        .expect("dispatch_start must park the signal node");
+
+    assert_eq!(
+        harness.persisted_status(execution_id).await,
+        ExecutionStatus::Paused,
+        "execution must be Paused before the cancel-under-lease test"
+    );
+
+    // ── Phase 2: wire a second engine with the cancel-injecting interceptor ───
+    let interceptor = Arc::new(CancelDuringSatisfyInterceptor::new(Arc::clone(
+        &harness.stores.execution,
+    )));
+    let interceptor_as_store: Arc<dyn ExecutionStore> = Arc::clone(&interceptor) as _;
+
+    let downstream_invocations_2 = Arc::new(AtomicU32::new(0));
+    let registry2 = Arc::new(ActionRegistry::new());
+    registry2.register_stateless_instance(
+        ActionMetadata::new(
+            action_key!("test.signal.webhook_wait"),
+            "WebhookWaitNode",
+            "signal_resume cancel-under-lease test stub",
+        ),
+        WebhookWaitNode,
+    );
+    registry2.register_stateless_instance(
+        ActionMetadata::new(
+            action_key!("test.signal.counting_echo"),
+            "CountingEchoNode",
+            "signal_resume cancel-under-lease test stub",
+        ),
+        CountingEchoNode {
+            invocation_count: Arc::clone(&downstream_invocations_2),
+        },
+    );
+    let executor2: ActionExecutor =
+        Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
+    let runner2 = Arc::new(InProcessRunner::new(executor2));
+    let metrics2 = MetricsRegistry::new();
+    let runtime2 = Arc::new(
+        ActionRuntime::try_new(
+            registry2,
+            runner2,
+            DataPassingPolicy::default(),
+            metrics2.clone(),
+        )
+        .unwrap(),
+    );
+
+    let execution_stores_with_interceptor = nebula_engine::ExecutionStores {
+        execution: Arc::clone(&interceptor) as _,
+        journal: harness.stores.journal.clone(),
+        node_results: harness.stores.node_results.clone(),
+        checkpoints: harness.stores.checkpoints.clone(),
+        idempotency: harness.stores.idempotency.clone(),
+    };
+
+    let engine2 = Arc::new(
+        WorkflowEngine::new(runtime2, metrics2)
+            .unwrap()
+            .with_execution_stores(execution_stores_with_interceptor)
+            .with_workflow_stores(harness.stores.workflow_stores()),
+    );
+    let dispatch2 = EngineControlDispatch::new(Arc::clone(&engine2), interceptor_as_store.clone());
+
+    // ── Phase 3: arm the injection and call dispatch_resume ───────────────────
+    interceptor.arm();
+
+    let result = dispatch2.dispatch_resume(&scope, execution_id).await;
+    assert!(
+        result.is_ok(),
+        "dispatch_resume must ack (Ok) when the execution was cancelled before satisfy; \
+         got {result:?}"
+    );
+
+    // ── Phase 4: the durable-write invariant — NO commit on a terminal exec ───
+    assert!(
+        !interceptor.commit_attempted(),
+        "satisfy_signal_waits must NOT commit any transition once the under-lease reload \
+         observes a terminal status (would corrupt a cancelled execution's audit state)"
+    );
+
+    // ── Phase 5: the signal node must remain Waiting (not flipped) ────────────
+    let record = harness
+        .stores
+        .execution
+        .get(&scope, &execution_id.to_string())
+        .await
+        .unwrap()
+        .expect("execution row must exist");
+    // `from_value` cannot satisfy ExecutionState's borrowed-string fields; go
+    // through a string the same way the engine's reload does.
+    let state_str = serde_json::to_string(&record.state).unwrap();
+    let state: ExecutionState = serde_json::from_str(&state_str).unwrap();
+    let waiting_nodes = state
+        .node_states
+        .values()
+        .filter(|ns| ns.state.is_waiting())
+        .count();
+    assert_eq!(
+        waiting_nodes, 1,
+        "the signal node must remain Waiting after a cancel-under-lease race \
+         (the satisfy must not have flipped it to Completed)"
+    );
+
+    // ── Phase 6: downstream gate stays closed ─────────────────────────────────
+    assert_eq!(
+        downstream_invocations_2.load(Ordering::SeqCst),
+        0,
+        "downstream must not run when the satisfy was skipped on a cancelled execution"
+    );
+}
