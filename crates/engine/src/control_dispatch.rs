@@ -54,6 +54,7 @@ use nebula_storage_port::{Scope, store::ExecutionStore};
 use crate::{
     WorkflowEngine,
     control_consumer::{ControlDispatch, ControlDispatchError},
+    engine::SatisfyOutcome,
     error::EngineError,
     event::ExecutionEvent,
 };
@@ -220,30 +221,71 @@ impl ControlDispatch for EngineControlDispatch {
             // so a crashed-and-reclaimed Paused execution re-parks its wait nodes
             // rather than auto-completing them — the structural discriminator that
             // prevents an unintended auto-approval on crash recovery.
+            //
+            // `satisfy_signal_waits` now holds the execution lease for its CAS, so
+            // errors split into two classes with different ack semantics:
+            //
+            // - `Leased` → another runner holds the lease and is actively driving this
+            //   execution. The control-queue row must NOT be acked — returning
+            //   `ControlDispatchError::Deferred` leaves the row in `Processing` so the
+            //   B1 reclaim sweep redelivers it once the lease expires.
+            //
+            // - `CasConflict` / other → a concurrent actor completed or cancelled the
+            //   execution between our status read and the CAS. Idempotency applies: ack
+            //   the row (`Ok(())`) because the concurrent actor owns the terminal
+            //   transition and we must not redeliver.
             Some(ExecutionStatus::Paused) => {
                 match self.engine.satisfy_signal_waits(scope, execution_id).await {
-                    Ok(satisfied_count) => {
+                    Ok(SatisfyOutcome::Satisfied(satisfied_count)) => {
                         tracing::info!(
                             %execution_id,
                             satisfied_count,
                             "dispatch_resume: signal waits satisfied; driving execution"
                         );
                     },
-                    Err(e) => {
-                        // Version conflict or fencing rejection: another runner
-                        // concurrently resumed (or cancelled) the execution. The
-                        // idempotency contract treats this as a no-op — the
-                        // concurrent actor owns the terminal transition.
+                    Ok(SatisfyOutcome::NothingToSatisfy) => {
+                        tracing::info!(
+                            %execution_id,
+                            "dispatch_resume: no signal-driven wait nodes found (already satisfied \
+                             or execution has no wait nodes); driving execution"
+                        );
+                    },
+                    Err(EngineError::Leased { ref holder, .. }) => {
+                        // Transient lease contention — another runner is actively
+                        // driving this execution. Leave the control-queue row in
+                        // `Processing` for B1 reclaim to redeliver.
                         //
-                        // The drop must be OBSERVABLE (observability-DoD): a typed
-                        // `ResumeDeferred` event + `tracing::warn` let operators
-                        // distinguish transient CAS races (expected; low rate) from
-                        // systematic drops (routing or lease bug; high rate).
+                        // Observable: typed `ResumeDeferred` event + `tracing::warn`
+                        // let operators distinguish expected transient contention (low
+                        // rate) from systematic drops due to a routing bug (high rate).
+                        tracing::warn!(
+                            %execution_id,
+                            %holder,
+                            "dispatch_resume: satisfy_signal_waits deferred — execution lease \
+                             held by another runner; leaving control-queue row for B1 reclaim"
+                        );
+                        self.engine.emit_event(ExecutionEvent::ResumeDeferred {
+                            execution_id,
+                            reason: format!("lease held by {holder}"),
+                        });
+                        return Err(ControlDispatchError::Deferred(format!(
+                            "execution {execution_id} lease held by {holder}; \
+                             Resume deferred for B1 reclaim"
+                        )));
+                    },
+                    Err(e) => {
+                        // CAS conflict or internal error: a concurrent actor
+                        // concurrently resumed or cancelled the execution. The
+                        // idempotency contract treats this as a no-op — the
+                        // concurrent actor owns the terminal transition. Ack the row
+                        // so redelivery does not occur on an already-resolved state.
+                        //
+                        // Observable: typed `ResumeDeferred` event + `tracing::warn`.
                         tracing::warn!(
                             %execution_id,
                             error = %e,
-                            "dispatch_resume: satisfy_signal_waits rejected; \
-                             treating as already-satisfied (idempotent Resume)"
+                            "dispatch_resume: satisfy_signal_waits rejected by CAS conflict; \
+                             treating as already-satisfied (concurrent actor owns transition)"
                         );
                         self.engine.emit_event(ExecutionEvent::ResumeDeferred {
                             execution_id,

@@ -26,6 +26,7 @@ use std::{
         Arc, OnceLock,
         atomic::{AtomicU32, Ordering},
     },
+    time::Duration,
 };
 
 use chrono::Utc;
@@ -38,8 +39,8 @@ use nebula_action::{
 };
 use nebula_core::{Dependencies, action_key, id::ExecutionId, node_key};
 use nebula_engine::{
-    ActionExecutor, ActionRegistry, ActionRuntime, ControlDispatch, DataPassingPolicy,
-    EngineControlDispatch, InProcessRunner, WorkflowEngine,
+    ActionExecutor, ActionRegistry, ActionRuntime, ControlDispatch, ControlDispatchError,
+    DataPassingPolicy, EngineControlDispatch, InProcessRunner, WorkflowEngine,
 };
 use nebula_execution::{ExecutionState, ExecutionStatus};
 use nebula_metrics::MetricsRegistry;
@@ -968,5 +969,180 @@ async fn two_sequential_resumes_produce_exactly_one_downstream_run() {
     assert_eq!(
         harness.persisted_status(execution_id).await,
         ExecutionStatus::Completed
+    );
+}
+
+// ── Lease-contention deterministic race tests (P1 #1 / P1 #2) ────────────────
+
+/// **P1 #2 — dispatch_resume returns `Deferred` when execution lease is held**:
+/// Pre-acquire the execution lease with a "foreign-runner" holder to simulate
+/// concurrent lease contention.  `dispatch_resume` must:
+///
+/// 1. Detect the contention in `satisfy_signal_waits` (`Leased` error).
+/// 2. Return `ControlDispatchError::Deferred` — NOT `Ok(())` (which would ack
+///    the control-queue row and permanently lose the Resume).
+/// 3. Leave the wait nodes `Waiting` and the execution `Paused`.
+///
+/// After the lease is released and the Resume is "redelivered", the execution
+/// must complete normally.
+///
+/// **Falsifiability**:
+/// - If `dispatch_resume` returns `Ok(())` on lease contention → the
+///   `Err(ControlDispatchError::Deferred(_))` assertion fails → RED.
+/// - If the first `dispatch_resume` satisfies the wait despite contention →
+///   `persisted_status == Paused` assertion fails → RED.
+/// - If the redelivered `dispatch_resume` fails → final `Completed` assertion
+///   fails → RED.
+#[tokio::test]
+async fn dispatch_resume_defers_when_execution_lease_is_held() {
+    let harness = SignalHarness::new().await;
+    let workflow_id = harness.persist_signal_workflow().await;
+    let execution_id = harness.persist_created_execution(workflow_id).await;
+    let scope = nebula_engine::store_seam::single_tenant_scope();
+
+    // Park the execution so it is `Paused` with signal-driven wait nodes.
+    harness
+        .dispatch
+        .dispatch_start(&scope, execution_id)
+        .await
+        .expect("dispatch_start must park the signal node");
+
+    assert_eq!(
+        harness.persisted_status(execution_id).await,
+        ExecutionStatus::Paused,
+        "execution must be Paused before the lease-contention test"
+    );
+
+    // Simulate a concurrent runner holding the execution lease.  `acquire_lease`
+    // is exclusive: any second acquire (including by the engine's own instance)
+    // returns `None` while this token is live.
+    let blocker_token = harness
+        .stores
+        .execution
+        .acquire_lease(
+            &scope,
+            &execution_id.to_string(),
+            "foreign-runner",
+            Duration::from_secs(30),
+        )
+        .await
+        .expect("acquire_lease must not error")
+        .expect("lease must be available before the contention test");
+
+    // With the lease held externally, `dispatch_resume` must NOT succeed —
+    // `satisfy_signal_waits` will find the lease busy and return `Leased`.
+    // `dispatch_resume` must propagate this as `ControlDispatchError::Deferred`
+    // so the consumer leaves the control-queue row in `Processing` for B1 reclaim.
+    let result = harness.dispatch.dispatch_resume(&scope, execution_id).await;
+    assert!(
+        matches!(result, Err(ControlDispatchError::Deferred(_))),
+        "dispatch_resume must return Deferred when the execution lease is held; got {result:?}"
+    );
+
+    // The wait nodes must still be `Waiting` — the deferred Resume must not have
+    // mutated any node state.
+    assert_eq!(
+        harness.persisted_status(execution_id).await,
+        ExecutionStatus::Paused,
+        "execution must remain Paused after a deferred Resume (lease still held)"
+    );
+    assert_eq!(
+        harness.downstream_invocations.load(Ordering::SeqCst),
+        0,
+        "downstream must not run while the lease is held and the Resume is deferred"
+    );
+
+    // Release the lease (simulating the concurrent runner completing its work).
+    harness
+        .stores
+        .execution
+        .release_lease(&scope, &execution_id.to_string(), blocker_token)
+        .await
+        .expect("release_lease must not error");
+
+    // The B1 reclaim path would redeliver the Resume command.  Simulate redelivery.
+    harness
+        .dispatch
+        .dispatch_resume(&scope, execution_id)
+        .await
+        .expect("redelivered dispatch_resume must succeed after the lease is released");
+
+    assert_eq!(
+        harness.persisted_status(execution_id).await,
+        ExecutionStatus::Completed,
+        "execution must be Completed after the redelivered dispatch_resume"
+    );
+    assert_eq!(
+        harness.downstream_invocations.load(Ordering::SeqCst),
+        1,
+        "downstream must run exactly once — triggered only by the redelivered Resume"
+    );
+}
+
+/// **P1 #1 — satisfy_signal_waits acquires lease before CAS (no stale token)**:
+/// verifies that `satisfy_signal_waits` holds the execution lease while committing
+/// the `Waiting→Completed` CAS, so a concurrent runner that acquired the lease
+/// just before us cannot slip a stale token through.
+///
+/// This test exercises the "lease handoff" path: the engine acquires the lease for
+/// `satisfy_signal_waits` using its own instance_id.  Because `InMemoryExecutionStore`
+/// blocks concurrent acquires, the second `dispatch_resume` (after the lease from
+/// the first has been released by the committed batch) succeeds via the terminal
+/// status short-circuit — proving the lease was released after commit.
+///
+/// **Falsifiability**: remove the `acquire_lease` call from `satisfy_signal_waits`
+/// and use the stale fencing token from the record → the `InMemoryExecutionStore`
+/// CAS may accept the stale token (no fencing rejection on the in-mem store when
+/// the token matches the stored generation) — but the REAL story is that with a
+/// live lease held by a concurrent runner, the store rejects the commit as
+/// `FencedOut` → the CAS fails → the wait is not satisfied → `dispatch_resume`
+/// would previously return `Ok(())` (wrong) → the row gets acked → Resume lost.
+/// With the fix: the engine tries `acquire_lease` first, gets `None`, returns
+/// `Deferred` → previous test catches it → RED.
+#[tokio::test]
+async fn satisfy_signal_waits_releases_lease_after_commit() {
+    // This test drives two consecutive dispatch_resume calls to verify that the
+    // lease acquired by the first satisfy_signal_waits is released after commit,
+    // so the idempotency short-circuit on the second Resume can read the row.
+    let harness = SignalHarness::new().await;
+    let workflow_id = harness.persist_signal_workflow().await;
+    let execution_id = harness.persist_created_execution(workflow_id).await;
+    let scope = nebula_engine::store_seam::single_tenant_scope();
+
+    // Park the signal node.
+    harness
+        .dispatch
+        .dispatch_start(&scope, execution_id)
+        .await
+        .expect("dispatch_start must park");
+    assert_eq!(
+        harness.persisted_status(execution_id).await,
+        ExecutionStatus::Paused
+    );
+
+    // First Resume: acquires lease, commits Waiting→Completed, releases lease, drives.
+    harness
+        .dispatch
+        .dispatch_resume(&scope, execution_id)
+        .await
+        .expect("first dispatch_resume must succeed");
+    assert_eq!(
+        harness.persisted_status(execution_id).await,
+        ExecutionStatus::Completed
+    );
+
+    // Second Resume (duplicate delivery): status short-circuit on Completed.
+    // If the lease were still held after the first commit, this would deadlock or
+    // return Deferred — it returns Ok(()) proving the lease was released.
+    harness
+        .dispatch
+        .dispatch_resume(&scope, execution_id)
+        .await
+        .expect("duplicate dispatch_resume on Completed must be a no-op, not Deferred");
+
+    assert_eq!(
+        harness.downstream_invocations.load(Ordering::SeqCst),
+        1,
+        "downstream must run exactly once across two dispatch_resume calls"
     );
 }

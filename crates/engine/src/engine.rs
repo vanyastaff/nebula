@@ -76,6 +76,19 @@ type EventBus = nebula_eventbus::EventBus<ExecutionEvent>;
 /// the workspace-standard fan-out primitive.
 pub const DEFAULT_EVENT_CHANNEL_CAPACITY: usize = 1024;
 
+/// Outcome of [`WorkflowEngine::satisfy_signal_waits`].
+///
+/// Distinguishes "nodes transitioned to `Completed`" from "nothing to do"
+/// so callers can log counts accurately without treating zero as an error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SatisfyOutcome {
+    /// `n` signal-driven `Waiting` nodes were transitioned to `Completed`.
+    Satisfied(usize),
+    /// No signal-driven `Waiting` nodes existed — execution was already
+    /// satisfied, cancelled, or never had wait nodes.
+    NothingToSatisfy,
+}
+
 /// Default execution-lease TTL.
 ///
 /// Long enough to survive a GC pause or a slow checkpoint write; short
@@ -2371,31 +2384,116 @@ impl WorkflowEngine {
     /// That structural discriminator prevents a crashed Paused execution from
     /// auto-completing its wait on reclaim (data-corruption / security class bug).
     ///
+    /// # Lease contract
+    ///
+    /// This method acquires the execution lease for the duration of the
+    /// read-modify-write cycle so that the CAS token is always fresh and
+    /// authoritative. Acquiring a lease prevents concurrent runners from
+    /// modifying the execution row between our read and our commit:
+    ///
+    /// - If the lease is held elsewhere, returns [`EngineError::Leased`] —
+    ///   the caller must defer and let the current lease holder finish.
+    /// - On success, the lease is released (best-effort) after the commit.
+    ///
     /// # Returns
     ///
-    /// The number of nodes transitioned to `Completed`. Zero means the execution
-    /// had no signal-driven waiting nodes (already satisfied, or no store configured).
+    /// [`SatisfyOutcome::Satisfied(n)`] when `n` nodes were transitioned to
+    /// `Completed`, or [`SatisfyOutcome::NothingToSatisfy`] when no
+    /// signal-driven waiting nodes exist.
     ///
     /// # Errors
     ///
+    /// - [`EngineError::Leased`] if the lease is held by another runner —
+    ///   callers should defer (redeliver) rather than treating this as a
+    ///   permanent failure.
     /// - [`EngineError::PlanningFailed`] if the execution row cannot be loaded or
     ///   its state cannot be deserialised.
-    /// - [`EngineError::CasConflict`] / [`EngineError::CheckpointFailed`] if the
-    ///   durable write is rejected (lease superseded, version mismatch).
-    pub async fn satisfy_signal_waits(
+    /// - [`EngineError::CasConflict`] if the durable write is rejected by a
+    ///   concurrent transition (version or fencing mismatch after our lease was
+    ///   released by another path — should not happen under normal flow).
+    /// - [`EngineError::CheckpointFailed`] on serialisation or store errors.
+    pub(crate) async fn satisfy_signal_waits(
         &self,
         scope: &Scope,
         execution_id: ExecutionId,
-    ) -> Result<usize, EngineError> {
+    ) -> Result<SatisfyOutcome, EngineError> {
         let Some(stores) = &self.stores else {
             // Library mode (no storage) — signal-park resume is a no-op.
-            return Ok(0);
+            return Ok(SatisfyOutcome::NothingToSatisfy);
         };
 
         let id = execution_id.to_string();
+        let holder = self.instance_id.to_string();
+
+        // Acquire the execution lease before the read-modify-write. This
+        // ensures the fencing token we commit with is the authoritative
+        // current generation — no stale token from a previous runner can
+        // slip through under concurrent lease acquisition.
+        //
+        // A live lease held elsewhere means another runner is already driving
+        // this execution. Return `Leased` so the caller defers the Resume
+        // rather than racing the CAS and potentially dropping the signal.
+        let lease_token = stores
+            .execution
+            .acquire_lease(scope, &id, &holder, self.lease_ttl)
+            .await
+            .map_err(|e| {
+                EngineError::PlanningFailed(format!(
+                    "satisfy_signal_waits: acquire lease for {execution_id}: {e}"
+                ))
+            })?;
+        let Some(lease_token) = lease_token else {
+            tracing::warn!(
+                %execution_id,
+                %holder,
+                "satisfy_signal_waits: execution lease held by another runner; \
+                 deferring Resume (will redeliver)"
+            );
+            return Err(EngineError::Leased {
+                execution_id,
+                holder,
+            });
+        };
+
+        // Lease acquired — proceed under mutual exclusion.
+        let outcome = self
+            .satisfy_signal_waits_under_lease(stores, scope, execution_id, &id, lease_token)
+            .await;
+
+        // Release the lease best-effort. The commit already wrote the new
+        // fencing generation, so a release failure leaves the lease to expire
+        // at TTL — the correct fail-safe behaviour (another runner can then
+        // re-acquire after TTL rather than being blocked indefinitely).
+        if let Err(e) = stores
+            .execution
+            .release_lease(scope, &id, lease_token)
+            .await
+        {
+            tracing::warn!(
+                %execution_id,
+                error = %e,
+                "satisfy_signal_waits: best-effort lease release failed (will expire at TTL)"
+            );
+        }
+
+        outcome
+    }
+
+    /// Inner read-modify-write under an already-held lease.
+    ///
+    /// Extracted so the lease release in `satisfy_signal_waits` is guaranteed
+    /// to run even when this inner path errors.
+    async fn satisfy_signal_waits_under_lease(
+        &self,
+        stores: &crate::store_seam::ExecutionStores,
+        scope: &Scope,
+        execution_id: ExecutionId,
+        id: &str,
+        lease_token: nebula_storage_port::FencingToken,
+    ) -> Result<SatisfyOutcome, EngineError> {
         let record = stores
             .execution
-            .get(scope, &id)
+            .get(scope, id)
             .await
             .map_err(|e| {
                 EngineError::PlanningFailed(format!(
@@ -2409,11 +2507,6 @@ impl WorkflowEngine {
             })?;
 
         let repo_version = record.version;
-        // The fencing generation last written to the row. Before any lease is
-        // acquired the generation is 0 (the store initialises `fencing_generation`
-        // at 0 and `record.fencing` carries `None` until a lease write bumps it).
-        let current_fencing =
-            nebula_storage_port::FencingToken::from_generation(record.fencing.unwrap_or(0));
 
         let state_str = serde_json::to_string(&record.state).map_err(|e| {
             EngineError::PlanningFailed(format!(
@@ -2439,7 +2532,7 @@ impl WorkflowEngine {
             .collect();
 
         if signal_waiting_nodes.is_empty() {
-            return Ok(0);
+            return Ok(SatisfyOutcome::NothingToSatisfy);
         }
 
         let satisfied_count = signal_waiting_nodes.len();
@@ -2471,12 +2564,11 @@ impl WorkflowEngine {
         // see the nodes still `Waiting` and re-park, returning the execution
         // to `Paused` without completing the wait.
         //
-        // We use the fencing generation we read from the record (`current_fencing`).
-        // This matches the generation that was written when the row was last
-        // modified (by `park_node` via `checkpoint_node`). If another runner
-        // acquired a new lease and bumped the generation between our read and
-        // this write, the store rejects the commit as `FencedOut` — the
-        // correct outcome (the other runner now owns the execution).
+        // We use the freshly-acquired lease token — not the stale generation
+        // read from the row — so the CAS is always guarded by the
+        // authoritative current generation. A concurrent runner that acquired
+        // the lease between our read and this write would be blocked because
+        // we hold the lease here.
         let state_json =
             serde_json::to_value(&exec_state).map_err(|e| EngineError::CheckpointFailed {
                 node_key: final_state_node_key(),
@@ -2485,9 +2577,9 @@ impl WorkflowEngine {
 
         let batch = nebula_storage_port::TransitionBatch::builder()
             .scope(scope.clone())
-            .execution_id(&id)
+            .execution_id(id)
             .expected_version(repo_version)
-            .fencing(current_fencing)
+            .fencing(lease_token)
             .new_state(state_json)
             .build()
             .map_err(|e| EngineError::CheckpointFailed {
@@ -2520,17 +2612,16 @@ impl WorkflowEngine {
                         node_key: node_key.clone(),
                     });
                 }
-                Ok(satisfied_count)
+                Ok(SatisfyOutcome::Satisfied(satisfied_count))
             },
             Ok(nebula_storage_port::TransitionOutcome::FencedOut) => {
-                // No lease was held at this point, so FencedOut means the
-                // execution store rejected the write on a stale token from
-                // a previous runner. Treat as a CAS conflict and let the
-                // caller abort the Resume (another runner re-drove it).
+                // We hold the lease, so FencedOut should not occur in normal
+                // flow — it would mean the store rejected our own lease token.
+                // Surface as a CAS conflict so the caller can redeliver.
                 tracing::warn!(
                     %execution_id,
-                    "satisfy_signal_waits: CAS fenced out — another runner may have \
-                     resumed this execution concurrently"
+                    "satisfy_signal_waits: CAS fenced out under our own lease — \
+                     store inconsistency or lease TTL expired during commit"
                 );
                 Err(EngineError::CasConflict {
                     execution_id,
@@ -2540,16 +2631,16 @@ impl WorkflowEngine {
                 })
             },
             Ok(nebula_storage_port::TransitionOutcome::VersionConflict { actual }) => {
-                // The row moved between our read and the write — a concurrent
-                // Resume (or cancel) beat us. Idempotency is preserved: if
-                // another Resume already satisfied the wait, the next
-                // `dispatch_resume` read will short-circuit on the new status.
+                // The row version advanced between our read and the commit —
+                // a concurrent transition (outside our lease window) beat us.
+                // Surface as a CAS conflict; the caller decides whether to
+                // redeliver or treat as already-satisfied.
                 tracing::warn!(
                     %execution_id,
                     expected_version = repo_version,
                     actual_version = actual,
-                    "satisfy_signal_waits: version conflict — concurrent Resume or \
-                     external transition; this Resume is a no-op"
+                    "satisfy_signal_waits: version conflict — concurrent transition \
+                     occurred inside our lease window"
                 );
                 Err(EngineError::CasConflict {
                     execution_id,
