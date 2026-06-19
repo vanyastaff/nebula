@@ -725,6 +725,247 @@ async fn if_action_false_condition_executes_false_branch_skips_true() {
     );
 }
 
+// ── core.switch e2e ───────────────────────────────────────────────────────────
+
+/// Build a 4-node workflow:
+///
+/// ```text
+/// [switch_node] --"a"-------> [node_a]
+///               --"b"-------> [node_b]
+///               --"default"--> [node_default]
+/// ```
+///
+/// All three branch nodes are `core.set_fields` nodes that stamp a distinct
+/// `branch_taken` marker so we can tell which ran. The switch `data` and
+/// `cases` are wired as `ParamValue::literal` parameters.
+///
+/// `cases` ports use the literal string names "a" and "b". Edges reference
+/// those same strings via `with_from_port`. The engine routes via the
+/// `ControlOutcome::Branch { selected }` value; since the port is matched by
+/// string name the dynamic metadata is not consulted at runtime.
+///
+/// Returns `(workflow, key_a, key_b, key_default)`.
+fn switch_branch_workflow(
+    data_json: serde_json::Value,
+    cases_json: serde_json::Value,
+) -> (
+    WorkflowDefinition,
+    nebula_core::NodeKey,
+    nebula_core::NodeKey,
+    nebula_core::NodeKey,
+) {
+    let now = chrono::Utc::now();
+
+    let switch_node_key = nebula_core::node_key!("switch_step");
+    let node_a_key = nebula_core::node_key!("node_a");
+    let node_b_key = nebula_core::node_key!("node_b");
+    let node_default_key = nebula_core::node_key!("node_default");
+
+    let switch_node = NodeDefinition::new(
+        switch_node_key.clone(),
+        "Switch step",
+        "core",
+        "core.switch",
+    )
+    .expect("NodeDefinition must build with valid keys")
+    .with_parameter("data", ParamValue::literal(data_json))
+    .with_parameter("cases", ParamValue::literal(cases_json));
+
+    let node_a = NodeDefinition::new(node_a_key.clone(), "Branch A", "core", "core.set_fields")
+        .expect("NodeDefinition must build")
+        .with_parameter(
+            "assignments",
+            ParamValue::literal(serde_json::json!([{"name": "branch_taken", "value": "a"}])),
+        );
+
+    let node_b = NodeDefinition::new(node_b_key.clone(), "Branch B", "core", "core.set_fields")
+        .expect("NodeDefinition must build")
+        .with_parameter(
+            "assignments",
+            ParamValue::literal(serde_json::json!([{"name": "branch_taken", "value": "b"}])),
+        );
+
+    let node_default = NodeDefinition::new(
+        node_default_key.clone(),
+        "Branch default",
+        "core",
+        "core.set_fields",
+    )
+    .expect("NodeDefinition must build")
+    .with_parameter(
+        "assignments",
+        ParamValue::literal(serde_json::json!([{"name": "branch_taken", "value": "default"}])),
+    );
+
+    // Wire switch output ports to the three branch nodes.
+    let edge_to_a =
+        Connection::new(switch_node_key.clone(), node_a_key.clone()).with_from_port("a");
+    let edge_to_b =
+        Connection::new(switch_node_key.clone(), node_b_key.clone()).with_from_port("b");
+    let edge_to_default =
+        Connection::new(switch_node_key, node_default_key.clone()).with_from_port("default");
+
+    let workflow = WorkflowDefinition {
+        id: nebula_core::WorkflowId::new(),
+        name: "test-core-switch-branch".into(),
+        description: None,
+        version: Version::new(0, 1, 0),
+        nodes: vec![switch_node, node_a, node_b, node_default],
+        connections: vec![edge_to_a, edge_to_b, edge_to_default],
+        variables: HashMap::new(),
+        config: WorkflowConfig::default(),
+        trigger_bindings: vec![],
+        tags: vec![],
+        created_at: now,
+        updated_at: now,
+        owner_id: None,
+        ui_metadata: None,
+        schema_version: CURRENT_SCHEMA_VERSION,
+    };
+
+    (workflow, node_a_key, node_b_key, node_default_key)
+}
+
+/// GREEN proof — second case matches (`port "b"`): engine routes to node_b,
+/// marks node_a and node_default as Skipped.
+///
+/// RED witness for Skipped proof: if the engine ran all branches, node_a and
+/// node_default would have outputs and the `contains_key` asserts would fail.
+/// If the engine selected the wrong port, the `branch_taken` assertion fails.
+#[tokio::test]
+async fn switch_action_second_case_matches_routes_to_b_skips_others() {
+    let engine = make_engine()
+        .with_plugin(core_plugin())
+        .expect("with_plugin(CorePlugin) must succeed");
+
+    let (workflow, node_a_key, node_b_key, node_default_key) = switch_branch_workflow(
+        serde_json::json!({ "status": "pending", "score": 95 }),
+        serde_json::json!([
+            // case[0]: status == "active" — does NOT match ("pending")
+            { "condition": { "field": "status", "op": "eq", "value": "active" }, "port": "a" },
+            // case[1]: score > 90 — MATCHES (95 > 90)
+            { "condition": { "field": "score",  "op": "gt", "value": 90 },       "port": "b" }
+        ]),
+    );
+
+    let result = engine
+        .execute_workflow(
+            &scope(),
+            &workflow,
+            serde_json::json!({}),
+            ExecutionBudget::default(),
+        )
+        .await
+        .expect("execute_workflow must not error");
+
+    assert_eq!(
+        result.status,
+        nebula_execution::ExecutionStatus::Completed,
+        "execution must reach Completed; got {:?} (node_errors: {:?})",
+        result.status,
+        result.node_errors
+    );
+
+    // node_b must have run and stamped its marker.
+    let b_output = result
+        .node_outputs
+        .get(&node_b_key)
+        .expect("node_b must have output (it ran)");
+    assert_eq!(
+        b_output["branch_taken"],
+        serde_json::json!("b"),
+        "node_b must have set branch_taken = 'b'"
+    );
+
+    // node_a and node_default must be Skipped: no output and no error entry.
+    assert!(
+        !result.node_outputs.contains_key(&node_a_key),
+        "node_a must be Skipped (absent from node_outputs)"
+    );
+    assert!(
+        !result.node_errors.contains_key(&node_a_key),
+        "node_a must be Skipped (absent from node_errors)"
+    );
+    assert!(
+        !result.node_outputs.contains_key(&node_default_key),
+        "node_default must be Skipped (absent from node_outputs)"
+    );
+    assert!(
+        !result.node_errors.contains_key(&node_default_key),
+        "node_default must be Skipped (absent from node_errors)"
+    );
+}
+
+/// GREEN proof — no case matches: engine routes to node_default, marks
+/// node_a and node_b as Skipped.
+///
+/// RED witness: if the engine did not honour `"default"` routing, node_default
+/// would be absent from node_outputs or the status would be Failed.
+#[tokio::test]
+async fn switch_action_no_match_routes_to_default_skips_others() {
+    let engine = make_engine()
+        .with_plugin(core_plugin())
+        .expect("with_plugin(CorePlugin) must succeed");
+
+    let (workflow, node_a_key, node_b_key, node_default_key) = switch_branch_workflow(
+        // Neither "active" nor score > 90 — no case matches.
+        serde_json::json!({ "status": "unknown", "score": 50 }),
+        serde_json::json!([
+            { "condition": { "field": "status", "op": "eq", "value": "active" }, "port": "a" },
+            { "condition": { "field": "score",  "op": "gt", "value": 90 },       "port": "b" }
+        ]),
+    );
+
+    let result = engine
+        .execute_workflow(
+            &scope(),
+            &workflow,
+            serde_json::json!({}),
+            ExecutionBudget::default(),
+        )
+        .await
+        .expect("execute_workflow must not error");
+
+    assert_eq!(
+        result.status,
+        nebula_execution::ExecutionStatus::Completed,
+        "execution must reach Completed; got {:?} (node_errors: {:?})",
+        result.status,
+        result.node_errors
+    );
+
+    // node_default must have run.
+    let default_output = result
+        .node_outputs
+        .get(&node_default_key)
+        .expect("node_default must have output (it ran)");
+    assert_eq!(
+        default_output["branch_taken"],
+        serde_json::json!("default"),
+        "node_default must have set branch_taken = 'default'"
+    );
+
+    // node_a and node_b must be Skipped.
+    assert!(
+        !result.node_outputs.contains_key(&node_a_key),
+        "node_a must be Skipped (absent from node_outputs)"
+    );
+    assert!(
+        !result.node_errors.contains_key(&node_a_key),
+        "node_a must be Skipped (absent from node_errors)"
+    );
+    assert!(
+        !result.node_outputs.contains_key(&node_b_key),
+        "node_b must be Skipped (absent from node_outputs)"
+    );
+    assert!(
+        !result.node_errors.contains_key(&node_b_key),
+        "node_b must be Skipped (absent from node_errors)"
+    );
+}
+
+// ── Duplicate-key unit tests ──────────────────────────────────────────────────
+
 /// Pre-registering an action with the same key as a plugin action returns
 /// `PluginWiringError::DuplicateActionKey`.
 #[tokio::test]

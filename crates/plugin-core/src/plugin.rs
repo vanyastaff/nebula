@@ -7,7 +7,7 @@ use nebula_action::factory::{GenericControlFactory, GenericStatelessFactory};
 use nebula_metadata::{ManifestError, PluginManifest};
 use nebula_plugin::Plugin;
 
-use crate::actions::{CoreIf, JsonTransform, SetFields};
+use crate::actions::{CoreIf, CoreSwitch, JsonTransform, SetFields};
 
 /// First-party core plugin.
 ///
@@ -53,6 +53,7 @@ impl Plugin for CorePlugin {
             Arc::new(GenericStatelessFactory::<SetFields>::new()),
             Arc::new(GenericStatelessFactory::<JsonTransform>::new()),
             Arc::new(GenericControlFactory::<CoreIf>::new()),
+            Arc::new(GenericControlFactory::<CoreSwitch>::new()),
         ]
     }
 }
@@ -102,6 +103,18 @@ mod tests {
         assert!(
             resolved.action(&key).is_some(),
             "core.if must be registered in the resolved plugin"
+        );
+    }
+
+    #[test]
+    fn resolves_switch_action() {
+        let resolved =
+            ResolvedPlugin::from(CorePlugin::try_new().expect("CorePlugin::try_new must succeed"))
+                .expect("CorePlugin must resolve without errors");
+        let key = nebula_core::ActionKey::new("core.switch").unwrap();
+        assert!(
+            resolved.action(&key).is_some(),
+            "core.switch must be registered in the resolved plugin"
         );
     }
 
