@@ -1237,3 +1237,132 @@ async fn with_plugin_duplicate_action_key_returns_typed_error() {
         "expected DuplicateActionKey{{action_key: 'core.set_fields'}}; got: {err:?}"
     );
 }
+
+// ── core.filter e2e ───────────────────────────────────────────────────────────
+
+/// Build a single-node `core.filter` workflow.
+///
+/// `data_json` is the input array and `condition_json` is the serialized
+/// `Condition`. Both are wired as `ParamValue::literal` parameters so the
+/// engine resolves them into `FilterInput` before dispatch.
+fn filter_workflow(
+    data_json: serde_json::Value,
+    condition_json: serde_json::Value,
+) -> WorkflowDefinition {
+    let now = chrono::Utc::now();
+    let node = NodeDefinition::new(
+        nebula_core::node_key!("step"),
+        "Filter step",
+        "core",
+        "core.filter",
+    )
+    .expect("NodeDefinition must build with valid keys")
+    .with_parameter("data", ParamValue::literal(data_json))
+    .with_parameter("condition", ParamValue::literal(condition_json));
+
+    WorkflowDefinition {
+        id: nebula_core::WorkflowId::new(),
+        name: "test-core-filter".into(),
+        description: None,
+        version: Version::new(0, 1, 0),
+        nodes: vec![node],
+        connections: vec![],
+        variables: HashMap::new(),
+        config: WorkflowConfig::default(),
+        trigger_bindings: vec![],
+        tags: vec![],
+        created_at: now,
+        updated_at: now,
+        owner_id: None,
+        ui_metadata: None,
+        schema_version: CURRENT_SCHEMA_VERSION,
+    }
+}
+
+/// RED witness: dispatching `core.filter` on an engine without the CorePlugin
+/// wired returns `ExecutionStatus::Failed` with an action-not-found node error.
+///
+/// Removing `with_plugin` from the GREEN test below causes it to hit this
+/// same failure mode.
+#[tokio::test]
+async fn without_plugin_filter_dispatch_fails() {
+    let engine = make_engine(); // no with_plugin call
+
+    let workflow = filter_workflow(
+        serde_json::json!([{"x": 1}, {"x": 2}]),
+        serde_json::json!({ "field": "x", "op": "gt", "value": 1 }),
+    );
+
+    let result = engine
+        .execute_workflow(
+            &scope(),
+            &workflow,
+            serde_json::json!({}),
+            ExecutionBudget::default(),
+        )
+        .await
+        .expect("execute_workflow itself must not error — failure is recorded in the result");
+
+    assert_eq!(
+        result.status,
+        nebula_execution::ExecutionStatus::Failed,
+        "execution without a wired plugin must reach Failed; got {:?}",
+        result.status
+    );
+
+    let error_texts: Vec<&str> = result.node_errors.values().map(String::as_str).collect();
+    assert!(
+        error_texts.iter().any(|s| s.contains("not found")),
+        "node_errors must contain an action-not-found message; got: {error_texts:?}"
+    );
+}
+
+/// GREEN proof: after `with_plugin(CorePlugin)`, the `core.filter` action
+/// executes and returns the correctly filtered output.
+///
+/// Input: `[{x:1},{x:2},{x:3}]`, condition `x > 1`.
+/// Expected output: `[{x:2},{x:3}]` (concrete array value asserted).
+///
+/// RED witness: without `with_plugin`, the execution reaches `Failed`
+/// (same path as `without_plugin_filter_dispatch_fails` above).
+#[tokio::test]
+async fn with_plugin_filter_executes_and_filters() {
+    let engine = make_engine()
+        .with_plugin(core_plugin())
+        .expect("with_plugin(CorePlugin) must succeed on a fresh engine");
+
+    let workflow = filter_workflow(
+        serde_json::json!([{"x": 1}, {"x": 2}, {"x": 3}]),
+        serde_json::json!({ "field": "x", "op": "gt", "value": 1 }),
+    );
+
+    let result = engine
+        .execute_workflow(
+            &scope(),
+            &workflow,
+            serde_json::json!({}),
+            ExecutionBudget::default(),
+        )
+        .await
+        .expect("with_plugin(CorePlugin) + core.filter must succeed");
+
+    assert_eq!(
+        result.status,
+        nebula_execution::ExecutionStatus::Completed,
+        "execution must reach Completed; got {:?} (node_errors: {:?})",
+        result.status,
+        result.node_errors
+    );
+
+    let node_key = nebula_core::node_key!("step");
+    let node_output = result
+        .node_outputs
+        .get(&node_key)
+        .expect("node 'step' must have output after Completed execution");
+
+    assert_eq!(
+        *node_output,
+        serde_json::json!([{"x": 2}, {"x": 3}]),
+        "filter must return exactly the elements where x > 1, in original order"
+    );
+}
