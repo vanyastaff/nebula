@@ -18,7 +18,8 @@ use std::{
 };
 
 use nebula_action::{
-    ActionError, action::Action, metadata::ActionMetadata, result::ActionResult,
+    ActionError, AgentAction, action::Action, from_workflow_node::FromWorkflowNode,
+    metadata::ActionMetadata, output::ActionOutput, result::ActionResult,
     stateless::StatelessAction,
 };
 use nebula_core::{Dependencies, action_key, id::WorkflowId, node_key};
@@ -133,6 +134,60 @@ impl StatelessAction for TerminateHandler {
         Ok(ActionResult::terminate_success(Some(
             "test-stop".to_owned(),
         )))
+    }
+}
+
+/// Always returns `Continue`, so the engine's agent loop exhausts `max_turns`
+/// (= 2) and surfaces the non-retryable `RuntimeError::AgentBudgetExceeded`.
+/// A process-static counter records every `step` call across attempts so a
+/// test can prove the node is NOT re-dispatched under a retry policy.
+struct BudgetExhaustingAgent;
+
+static AGENT_STEP_CALLS: AtomicU32 = AtomicU32::new(0);
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct EmptyTurn;
+
+placeholder_action_impl!(
+    BudgetExhaustingAgent,
+    action_key!("placeholder.budget_agent"),
+    "BudgetAgentPlaceholder",
+    "placeholder"
+);
+
+impl FromWorkflowNode for BudgetExhaustingAgent {
+    type Error = ActionError;
+
+    async fn from_workflow_node(
+        _node: &NodeDefinition,
+        _ctx: &dyn nebula_action::ActionContext,
+    ) -> Result<Self, Self::Error> {
+        Ok(BudgetExhaustingAgent)
+    }
+}
+
+impl AgentAction for BudgetExhaustingAgent {
+    type Turn = EmptyTurn;
+
+    fn max_turns(&self) -> u32 {
+        2
+    }
+
+    fn init_turn(&self, _input: &serde_json::Value) -> EmptyTurn {
+        EmptyTurn
+    }
+
+    async fn step(
+        &self,
+        _turn: &mut EmptyTurn,
+        _ctx: &(impl nebula_action::ActionContext + ?Sized),
+    ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
+        AGENT_STEP_CALLS.fetch_add(1, Ordering::SeqCst);
+        Ok(ActionResult::Continue {
+            output: ActionOutput::Value(serde_json::Value::Null),
+            progress: None,
+            delay: None,
+        })
     }
 }
 
@@ -255,6 +310,49 @@ async fn retry_exhausts_max_attempts() {
         invocations.load(Ordering::SeqCst),
         3,
         "max_attempts=3 must run the handler exactly 3 times"
+    );
+}
+
+/// Agent budget exhaustion is terminal under a retry policy (Codex P2):
+/// `RuntimeError::AgentBudgetExceeded` is non-retryable, so the node must
+/// finalize Failed after ONE agent-loop run — never re-dispatching despite a
+/// `max_attempts = 3` policy. Falsifiable: before the terminal-error fix the
+/// budget error fell through to the retry path and the loop re-ran per attempt
+/// (2 steps × 3 attempts = 6 calls).
+#[tokio::test]
+async fn agent_budget_exhaustion_is_terminal_under_retry_policy() {
+    AGENT_STEP_CALLS.store(0, Ordering::SeqCst);
+
+    let registry = Arc::new(ActionRegistry::new());
+    registry.register_agent_factory::<BudgetExhaustingAgent>();
+
+    let engine = make_engine(registry);
+    let n = node_key!("agent_budget");
+    let mut node =
+        NodeDefinition::new(n, "agent_node", "core", "placeholder.budget_agent").unwrap();
+    node.retry_policy = Some(RetryConfig::fixed(3, 1));
+
+    let wf = make_workflow(vec![node], vec![], WorkflowConfig::default());
+    let result = engine
+        .execute_workflow(
+            &nebula_engine::store_seam::single_tenant_scope(),
+            &wf,
+            serde_json::json!(null),
+            ExecutionBudget::default(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        result.status,
+        ExecutionStatus::Failed,
+        "agent budget exhaustion must fail the node"
+    );
+    assert_eq!(
+        AGENT_STEP_CALLS.load(Ordering::SeqCst),
+        2,
+        "AgentBudgetExceeded is non-retryable — the agent loop must run once \
+         (max_turns=2), not re-dispatch under the retry policy"
     );
 }
 
