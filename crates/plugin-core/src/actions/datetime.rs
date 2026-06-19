@@ -640,6 +640,70 @@ mod tests {
         assert_eq!(out, json!(-3600_i64));
     }
 
+    /// Diff with a non-exact unit truncates toward zero (partial unit = 0 whole units).
+    ///
+    /// 25 h gap with Days unit → 1 (not 2).
+    /// 23 h gap with Days unit → 0 (not 1).
+    ///
+    /// RED witness: if the implementation rounded instead of truncating, the
+    /// 23 h case would return 1 (wrong) — the second assertion would fail.
+    #[tokio::test]
+    async fn diff_days_truncates_partial() {
+        // 25 hours → 1 full day (integer-division of 90000 / 86400 = 1)
+        let out = extract_output(
+            run(diff_input(
+                "2026-06-19T00:00:00Z",
+                "2026-06-20T01:00:00Z",
+                DurationUnit::Days,
+            ))
+            .await
+            .unwrap(),
+        );
+        assert_eq!(out, json!(1_i64), "25 h must truncate to 1 full day");
+
+        // 23 hours → 0 full days (integer-division of 82800 / 86400 = 0)
+        let out2 = extract_output(
+            run(diff_input(
+                "2026-06-19T00:00:00Z",
+                "2026-06-19T23:00:00Z",
+                DurationUnit::Days,
+            ))
+            .await
+            .unwrap(),
+        );
+        assert_eq!(out2, json!(0_i64), "23 h must truncate to 0 full days");
+    }
+
+    /// Diff with Weeks unit: a 14-day gap returns 2 whole weeks.
+    #[tokio::test]
+    async fn diff_weeks() {
+        let out = extract_output(
+            run(diff_input(
+                "2026-06-19T00:00:00Z",
+                "2026-07-03T00:00:00Z",
+                DurationUnit::Weeks,
+            ))
+            .await
+            .unwrap(),
+        );
+        assert_eq!(out, json!(2_i64), "14-day gap must equal 2 whole weeks");
+    }
+
+    /// Diff with Minutes unit: a 90-minute gap returns 90.
+    #[tokio::test]
+    async fn diff_minutes() {
+        let out = extract_output(
+            run(diff_input(
+                "2026-06-19T00:00:00Z",
+                "2026-06-19T01:30:00Z",
+                DurationUnit::Minutes,
+            ))
+            .await
+            .unwrap(),
+        );
+        assert_eq!(out, json!(90_i64), "90-minute gap must equal 90 minutes");
+    }
+
     // ── Error paths (RED witnesses) ───────────────────────────────────────────
 
     /// Malformed timestamp → Fatal.
