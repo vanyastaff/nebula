@@ -202,12 +202,15 @@ pub enum TransportInitError {
 /// [`default_state`]. The three-backend shape (Memory / SQLite / Postgres)
 /// is resolved once at startup; downstream code sees only the trait objects.
 ///
-/// `trigger_dedup_inbox` is `Some` only for the Memory backend (where it
-/// must share the same `Arc<Mutex<SharedState>>` as the control queue and
-/// journal). On durable backends the engine's claim-after-effect
-/// `IdempotencyGuard` handles trigger dedup at the storage level, so the
-/// inbox slot is left as `None` and the `AppState` accessor falls back to
-/// its port-absent path.
+/// `trigger_dedup_inbox` is `Some` on ALL backends:
+/// - Memory: shares the same `Arc<Mutex<SharedState>>` as the control queue and journal
+///   (ordering invariant — `new(&exec_store)` before `Arc::new(exec_store)`).
+/// - SQLite: `SqliteTriggerDedupInbox` wraps the WAL pool.
+/// - Postgres: `PgTriggerDedupInbox` wraps the PG pool.
+///
+/// `WebhookIngressTransport::prepare_state` only installs `with_durable_dispatch` when
+/// `trigger_dedup_inbox` is `Some` — returning `None` here silently disables durable
+/// webhook dispatch for that backend, which is the defect this `Some` prevents.
 pub(crate) struct ExecutionStoreBundle {
     workflow_store: Arc<dyn nebula_storage_port::store::WorkflowStore>,
     workflow_version_store: Arc<dyn nebula_storage_port::store::WorkflowVersionStore>,
@@ -303,8 +306,8 @@ async fn build_sqlite_execution_stores(
 ) -> Result<ExecutionStoreBundle, TransportInitError> {
     use nebula_storage::InMemoryNodeResultStore;
     use nebula_storage::sqlite::{
-        SqliteControlQueue, SqliteExecutionStore, SqliteJournalReader, SqliteWorkflowStore,
-        SqliteWorkflowVersionStore, init_schema,
+        SqliteControlQueue, SqliteExecutionStore, SqliteJournalReader, SqliteTriggerDedupInbox,
+        SqliteWorkflowStore, SqliteWorkflowVersionStore, init_schema,
     };
     use sqlx::sqlite::{
         SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous,
@@ -355,9 +358,12 @@ async fn build_sqlite_execution_stores(
         node_result_store: node_results,
         journal_reader: Arc::new(SqliteJournalReader::new(pool.clone())),
         control_queue: Arc::new(SqliteControlQueue::new(pool.clone())),
-        // Durable backends: trigger dedup is handled at the storage level by
-        // the claim-after-effect IdempotencyGuard; no in-process inbox needed.
-        trigger_dedup_inbox: None,
+        // Durable backends wire the storage-backed TriggerDedupInbox so
+        // `WebhookIngressTransport::prepare_state` can install `with_durable_dispatch`.
+        // Without this `Some`, the `if let Some(dedup)` guard in prepare_state is never
+        // taken and webhook rows are spawned without the durable dedup fence — exactly
+        // backwards for a durable backend.
+        trigger_dedup_inbox: Some(Arc::new(SqliteTriggerDedupInbox::new(pool))),
     })
 }
 
@@ -369,8 +375,8 @@ async fn build_pg_execution_stores(
 ) -> Result<ExecutionStoreBundle, TransportInitError> {
     use nebula_storage::InMemoryNodeResultStore;
     use nebula_storage::postgres::{
-        PgControlQueue, PgExecutionStore, PgJournalReader, PgWorkflowStore, PgWorkflowVersionStore,
-        init_schema as pg_init_schema,
+        PgControlQueue, PgExecutionStore, PgJournalReader, PgTriggerDedupInbox, PgWorkflowStore,
+        PgWorkflowVersionStore, init_schema as pg_init_schema,
     };
     use sqlx::postgres::PgPoolOptions;
 
@@ -412,8 +418,10 @@ async fn build_pg_execution_stores(
         execution_store: Arc::new(PgExecutionStore::new(pool.clone())),
         node_result_store: Arc::new(InMemoryNodeResultStore::new()),
         journal_reader: Arc::new(PgJournalReader::new(pool.clone())),
-        control_queue: Arc::new(PgControlQueue::new(pool)),
-        trigger_dedup_inbox: None,
+        control_queue: Arc::new(PgControlQueue::new(pool.clone())),
+        // Same rationale as the SQLite arm: durable dispatch in
+        // `WebhookIngressTransport::prepare_state` is only installed when `Some`.
+        trigger_dedup_inbox: Some(Arc::new(PgTriggerDedupInbox::new(pool))),
     })
 }
 
@@ -930,7 +938,43 @@ pub(crate) async fn health_ok() -> axum::http::StatusCode {
 mod tests {
     use std::net::SocketAddr;
 
-    use super::{ServerRunError, parse_bind_address, resolve_bind_address};
+    use super::{ServerRunError, build_execution_stores, parse_bind_address, resolve_bind_address};
+
+    /// Red→green proof that the SQLite backend wires `trigger_dedup_inbox: Some(...)`.
+    ///
+    /// Without the fix this test fails because `build_sqlite_execution_stores` returned
+    /// `trigger_dedup_inbox: None`, which causes `WebhookIngressTransport::prepare_state`
+    /// to skip `with_durable_dispatch` — breaking prod webhook spawning on a durable backend.
+    #[tokio::test]
+    async fn sqlite_execution_bundle_wires_trigger_dedup_inbox() {
+        use nebula_api::config::{ExecutionBackendKind, ExecutionStoreConfig};
+
+        let tmp = tempfile::NamedTempFile::new().expect("tempfile");
+        let (_, db_path) = tmp.keep().expect("persist tempfile");
+
+        let mut cfg = nebula_api::ApiConfig::for_test();
+        cfg.execution = ExecutionStoreConfig {
+            backend: ExecutionBackendKind::Sqlite,
+            db_path: db_path.to_string_lossy().into_owned(),
+        };
+
+        let bundle = build_execution_stores(&cfg)
+            .await
+            .expect("sqlite bundle must build");
+
+        // The inbox MUST be Some so WebhookIngressTransport::prepare_state
+        // installs with_durable_dispatch. A None here silently disables durable
+        // webhook dispatch for operators running API_EXECUTION_BACKEND=sqlite.
+        assert!(
+            bundle.trigger_dedup_inbox.is_some(),
+            "sqlite bundle must provide a TriggerDedupInbox for durable webhook dispatch"
+        );
+
+        // Clean up temp db file.
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    }
 
     #[test]
     fn parse_bind_address_accepts_valid_socket_address() {

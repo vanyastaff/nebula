@@ -13,15 +13,14 @@ path = "src/main.rs"
 
 [dependencies]
 nebula-api = { path = "../../crates/api" }
-# The in-memory adapters (AppState::in_memory) and the SQLite execution-store
-# path both live in nebula-storage. The `sqlite` feature enables
-# SqliteConnectOptions/Pool/stores; the PG-backed stores are gated behind the
-# `postgres` feature. `nebula-storage-port` / `nebula-tenancy` are not direct
-# deps — they are accessed through nebula-api / nebula-storage's re-exports.
+# In-memory adapters and the SQLite/Postgres execution-store paths live in
+# nebula-storage. The `sqlite` feature enables SqliteConnectOptions/Pool/stores;
+# PG-backed stores are gated behind the `postgres` cargo feature.
 nebula-storage = { path = "../../crates/storage", features = ["credential-in-memory", "sqlite"] }
-# Port contract: trait objects in ExecutionStoreBundle (`WorkflowStore`, `ControlQueue`, etc.)
-# are named directly in compose.rs, requiring the storage-port crate as a direct dep, not
-# just dev-dep. nebula-server is allow-listed in deny.toml's nebula-storage-port wrappers.
+# Direct dep: `ExecutionStoreBundle` in compose.rs names the port trait objects
+# (`WorkflowStore`, `ControlQueue`, `TriggerDedupInbox`, …) directly, so the
+# storage-port crate must be a real dependency, not accessed through re-exports.
+# nebula-server is in deny.toml's nebula-storage-port `wrappers` allowlist.
 nebula-storage-port = { path = "../../crates/storage-port" }
 # Composition root wires a process-wide `MetricsRegistry` and attaches the OTLP push
 # pipeline via `TelemetryGuard::attach_metrics_exporter`. Direct dep so the surface stays
@@ -51,6 +50,10 @@ postgres = ["nebula-api/postgres", "sqlx/postgres", "sqlx/tls-rustls-ring-native
 
 [dev-dependencies]
 tempfile = { workspace = true }
+# Activate the `test-util` feature of nebula-api for tests — exposes
+# `ApiConfig::for_test()`. Cargo unions features from [dependencies] and
+# [dev-dependencies], so this only activates the feature in test builds.
+nebula-api = { path = "../../crates/api", features = ["test-util"] }
 
 [lints]
 workspace = true
