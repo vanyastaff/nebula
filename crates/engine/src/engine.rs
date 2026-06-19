@@ -3077,16 +3077,61 @@ impl WorkflowEngine {
                     // state in one atomic write. Downstream edges are NOT
                     // activated here — they remain gated until Phase 0b
                     // transitions this node to `Completed` when the timer
-                    // fires (or until an explicit Resume signal arrives for
-                    // signal-driven conditions).
-                    if let ActionResult::Wait { ref condition, .. } = action_result {
-                        // Compute the timer wake instant.
-                        // Only `Until{datetime}` and `Duration{d}` are wired in
-                        // W-S1. Signal-driven conditions (Webhook / Approval /
-                        // Execution) require an explicit Resume signal that W-S2
-                        // will implement — reject them here with a typed error
-                        // rather than parking with no timer entry and permanently
-                        // stalling the execution.
+                    // fires.
+                    //
+                    // W-S1 boundary conditions rejected here (both marked
+                    // `WaitConditionNotSupported`):
+                    //   1. Signal-driven conditions (Webhook/Approval/Execution):
+                    //      W-S2 will wire the Resume signal path.
+                    //   2. Timer conditions with an explicit `timeout`: the
+                    //      fail-on-timeout enforcement path is also W-S2.
+                    //      Only `timeout: None` timer waits are supported.
+                    if let ActionResult::Wait {
+                        ref condition,
+                        timeout,
+                        ..
+                    } = action_result
+                    {
+                        // Reject explicit timeouts: the timeout-as-cancellation
+                        // path belongs to W-S2. Silently ignoring a `timeout`
+                        // would mean the node waits the full condition duration
+                        // (up to hours) instead of the declared maximum, which
+                        // is a correctness bug, not a missing optimisation.
+                        if let Some(_timeout_dur) = timeout {
+                            let condition_kind = match condition {
+                                WaitCondition::Until { .. } => "Until with explicit timeout",
+                                WaitCondition::Duration { .. } => "Duration with explicit timeout",
+                                WaitCondition::Webhook { .. } => "Webhook with explicit timeout",
+                                WaitCondition::Approval { .. } => "Approval with explicit timeout",
+                                WaitCondition::Execution { .. } => {
+                                    "Execution with explicit timeout"
+                                },
+                                _ => "Unknown with explicit timeout",
+                            };
+                            let runtime_err =
+                                crate::runtime::error::RuntimeError::WaitConditionNotSupported {
+                                    condition_kind: condition_kind.to_owned(),
+                                };
+                            let engine_err = EngineError::Runtime(runtime_err);
+                            tracing::error!(
+                                target = "engine::wait",
+                                %execution_id,
+                                %node_key,
+                                condition_kind,
+                                error = %engine_err,
+                                "explicit timeout on WaitCondition not supported in W-S1; \
+                                 marking node Failed and returning error"
+                            );
+                            mark_node_failed(exec_state, node_key.clone(), &engine_err);
+                            cancel_token.cancel();
+                            return Some((node_key.clone(), engine_err.to_string()));
+                        }
+
+                        // Compute the timer wake instant for timer-based conditions.
+                        // Signal-driven conditions (Webhook / Approval / Execution)
+                        // require an explicit Resume signal that W-S2 will implement —
+                        // reject them with a typed error rather than parking with no
+                        // timer entry and permanently stalling the execution.
                         let now = Utc::now();
                         let wake_at: Option<DateTime<Utc>> = match condition {
                             WaitCondition::Until { datetime } => Some(*datetime),
@@ -3114,16 +3159,59 @@ impl WorkflowEngine {
                                     "signal-driven WaitCondition not supported in W-S1; \
                                      marking node Failed and returning error"
                                 );
-                                // Stamp the node as Failed with the typed error so
-                                // `node_errors` in the returned `ExecutionResult`
-                                // carries the diagnostic message. Without this, the
-                                // node stays `Running` in `exec_state` and the
-                                // error map is empty even though the execution is Failed.
                                 mark_node_failed(exec_state, node_key.clone(), &engine_err);
                                 cancel_token.cancel();
                                 return Some((node_key.clone(), engine_err.to_string()));
                             },
                         };
+
+                        // Budget enforcement for the partial output committed at park
+                        // time. The normal success path increments `total_output_bytes`
+                        // AFTER the node completes; Phase 1's `check_budget` catches
+                        // the violation before the next downstream node is dispatched.
+                        // The park path's `continue` skips Phase 3 output accounting
+                        // entirely — so we must enforce the budget HERE, before park,
+                        // or a large `partial_output` bypasses the limit silently.
+                        //
+                        // If the partial output is over-budget, fail the node (do NOT
+                        // park) so the downstream child is never dispatched.
+                        let partial_output_bytes: u64 = outputs
+                            .get(&node_key)
+                            .and_then(|v| serde_json::to_string(v.value()).ok())
+                            .map_or(0, |s| s.len() as u64);
+                        if partial_output_bytes > 0 {
+                            let new_total = total_output_bytes
+                                .fetch_add(partial_output_bytes, Ordering::Relaxed)
+                                + partial_output_bytes;
+                            if let Some(max_bytes) = budget.max_output_bytes
+                                && new_total > max_bytes
+                            {
+                                let budget_err = "execution budget exceeded: max_output_bytes \
+                                                  (partial_output at park time)";
+                                tracing::error!(
+                                    target = "engine::wait",
+                                    %execution_id,
+                                    %node_key,
+                                    partial_output_bytes,
+                                    new_total,
+                                    max_bytes,
+                                    "partial_output at park exceeds max_output_bytes budget; \
+                                     failing node instead of parking"
+                                );
+                                // Restore the counter — the node is being failed, not
+                                // committed, so its bytes should not count against the
+                                // budget for the remaining nodes.
+                                total_output_bytes
+                                    .fetch_sub(partial_output_bytes, Ordering::Relaxed);
+                                mark_node_failed(
+                                    exec_state,
+                                    node_key.clone(),
+                                    &EngineError::BudgetExceeded(budget_err.to_owned()),
+                                );
+                                cancel_token.cancel();
+                                return Some((node_key.clone(), budget_err.to_owned()));
+                            }
+                        }
 
                         match exec_state.park_node(node_key.clone(), wake_at) {
                             Ok(()) => {

@@ -131,6 +131,71 @@ impl StatelessAction for WaitUntilHandler {
 /// `WaitConditionNotSupported` is returned rather than silently parking.
 struct WebhookWaitHandler;
 
+/// Returns `ActionResult::Wait` with a timer condition AND an explicit
+/// `timeout`. W-S1 does not wire timeout-as-cancellation — parking while
+/// silently ignoring the timeout would let the full timer run (potentially
+/// hours) instead of the declared maximum. Must be rejected with a typed error.
+struct WaitWithTimeoutHandler {
+    wait_for: Duration,
+    timeout: Duration,
+}
+
+placeholder_action_impl!(
+    WaitWithTimeoutHandler,
+    action_key!("placeholder.wait_with_timeout"),
+    "WaitWithTimeoutPlaceholder",
+    "placeholder"
+);
+
+impl StatelessAction for WaitWithTimeoutHandler {
+    async fn execute(
+        &self,
+        _input: <Self as Action>::Input,
+        _ctx: &(impl nebula_action::ActionContext + ?Sized),
+    ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
+        Ok(ActionResult::Wait {
+            condition: WaitCondition::Duration {
+                duration: self.wait_for,
+            },
+            timeout: Some(self.timeout),
+            partial_output: None,
+        })
+    }
+}
+
+/// Returns `ActionResult::Wait` with a timer condition and a large
+/// `partial_output` that exceeds a tight `ExecutionBudget::max_output_bytes`.
+/// Used to verify that the park path enforces the output-size budget before
+/// committing the park, rather than letting an over-budget output sneak through.
+struct WaitWithOversizedOutputHandler {
+    wait_for: Duration,
+    /// The output value; its JSON serialization intentionally exceeds the test budget.
+    output: serde_json::Value,
+}
+
+placeholder_action_impl!(
+    WaitWithOversizedOutputHandler,
+    action_key!("placeholder.wait_oversized_output"),
+    "WaitOversizedOutputPlaceholder",
+    "placeholder"
+);
+
+impl StatelessAction for WaitWithOversizedOutputHandler {
+    async fn execute(
+        &self,
+        _input: <Self as Action>::Input,
+        _ctx: &(impl nebula_action::ActionContext + ?Sized),
+    ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
+        Ok(ActionResult::Wait {
+            condition: WaitCondition::Duration {
+                duration: self.wait_for,
+            },
+            timeout: None,
+            partial_output: Some(ActionOutput::Value(self.output.clone())),
+        })
+    }
+}
+
 placeholder_action_impl!(
     WebhookWaitHandler,
     action_key!("placeholder.webhook_wait"),
@@ -612,5 +677,157 @@ async fn webhook_wait_condition_returns_unsupported_error() {
     assert!(
         all_errors.contains("Webhook") || all_errors.contains("not supported"),
         "node errors must reference 'Webhook' or 'not supported', got: {all_errors}"
+    );
+}
+
+/// 6) **Explicit `timeout` on a timer `Wait` is rejected (P2-1)**:
+/// an action returning `ActionResult::Wait` with `WaitCondition::Duration`
+/// AND `timeout: Some(5s)` must fail with `WaitConditionNotSupported` rather
+/// than parking for the full duration while silently discarding the timeout.
+///
+/// **Falsifiability**: change the park branch to strip the `timeout` field
+/// from the destructure (via `..`) → the engine parks the node for the full
+/// `wait_for` duration → the 5s test timeout fires first → the test panics
+/// with "workflow must settle quickly". Restore the `timeout` capture and
+/// rejection → the node fails immediately → `Failed` status → green.
+#[tokio::test]
+async fn explicit_timeout_on_timer_wait_returns_unsupported_error() {
+    let registry = Arc::new(ActionRegistry::new());
+    // The action requests a 1-minute park but also declares a 5-second
+    // timeout. Without the rejection fix, the engine would ignore the 5s
+    // timeout and park for the full minute, breaking the test budget.
+    registry.register_stateless_instance(
+        ActionMetadata::new(
+            action_key!("timeout_waiter"),
+            "TimeoutWaiter",
+            "parks with an explicit timeout",
+        ),
+        WaitWithTimeoutHandler {
+            wait_for: Duration::from_mins(1),
+            timeout: Duration::from_secs(5),
+        },
+    );
+
+    let engine = make_engine(registry);
+    let n = node_key!("timeout_node");
+    let wf = make_workflow(
+        vec![NodeDefinition::new(n, "timeout_wait_node", "core", "timeout_waiter").unwrap()],
+        vec![],
+        WorkflowConfig::default(),
+    );
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        engine.execute_workflow(
+            &nebula_engine::store_seam::single_tenant_scope(),
+            &wf,
+            serde_json::json!(null),
+            ExecutionBudget::default(),
+        ),
+    )
+    .await
+    .expect(
+        "workflow must fail immediately (timeout rejection) — \
+         if the engine silently parks for 1 min, the 5s test deadline fires first",
+    )
+    .unwrap();
+
+    assert_eq!(
+        result.status,
+        ExecutionStatus::Failed,
+        "explicit timeout on WaitCondition must cause a Failed execution, got {:?}",
+        result.status
+    );
+
+    let all_errors: String = result
+        .node_errors
+        .values()
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("; ");
+    assert!(
+        all_errors.contains("timeout") || all_errors.contains("not supported"),
+        "node errors must reference 'timeout' or 'not supported', got: {all_errors}"
+    );
+}
+
+/// 7) **Over-budget `partial_output` fails the node, not parks it (P2-2)**:
+/// a two-node workflow `node1 → node2` where `node1` parks itself with a
+/// `partial_output` larger than `ExecutionBudget::max_output_bytes`. The
+/// engine must fail `node1` (not park it) so `node2` is NEVER dispatched.
+///
+/// **Falsifiability**: remove the budget enforcement block from the park path
+/// (the `partial_output_bytes > 0` block) → `node1` parks successfully →
+/// the timer fires → `node2` is dispatched → `downstream_calls == 1` →
+/// the `== 0` assertion fails. Restore the budget check → `node1` fails
+/// immediately → `downstream_calls` stays 0 → green.
+#[tokio::test]
+async fn oversized_partial_output_fails_node_not_parks_downstream_blocked() {
+    let downstream_calls = Arc::new(AtomicU32::new(0));
+
+    let registry = Arc::new(ActionRegistry::new());
+    // The partial output is 50 bytes of JSON; the budget allows only 10.
+    let big_output = serde_json::json!("this-string-is-longer-than-ten-bytes");
+    registry.register_stateless_instance(
+        ActionMetadata::new(
+            action_key!("oversized_waiter"),
+            "OversizedWaiter",
+            "parks with an oversized partial output",
+        ),
+        WaitWithOversizedOutputHandler {
+            wait_for: Duration::from_millis(60),
+            output: big_output,
+        },
+    );
+    registry.register_stateless_instance(
+        ActionMetadata::new(
+            action_key!("ds_oversized"),
+            "DsOversized",
+            "downstream echo",
+        ),
+        EchoHandler {
+            invocations: Arc::clone(&downstream_calls),
+        },
+    );
+
+    let engine = make_engine(registry);
+    let n1 = node_key!("big_waiter");
+    let n2 = node_key!("ds_big");
+    let wf = make_workflow(
+        vec![
+            NodeDefinition::new(n1.clone(), "big_waiter_node", "core", "oversized_waiter").unwrap(),
+            NodeDefinition::new(n2, "ds_big_node", "core", "ds_oversized").unwrap(),
+        ],
+        vec![Connection::new(n1, node_key!("ds_big"))],
+        WorkflowConfig::default(),
+    );
+
+    // Budget of 10 bytes; the partial_output JSON is longer than that.
+    let budget = ExecutionBudget::default().with_max_output_bytes(10);
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        engine.execute_workflow(
+            &nebula_engine::store_seam::single_tenant_scope(),
+            &wf,
+            serde_json::json!(null),
+            budget,
+        ),
+    )
+    .await
+    .expect("workflow must settle quickly — budget violation fails the node immediately")
+    .unwrap();
+
+    assert_eq!(
+        result.status,
+        ExecutionStatus::Failed,
+        "over-budget partial_output must cause a Failed execution, got {:?}",
+        result.status
+    );
+    assert_eq!(
+        downstream_calls.load(Ordering::SeqCst),
+        0,
+        "downstream must NEVER run when node1 fails due to budget violation \
+         (falsifiability: without budget check, node1 parks and timer fires → ds runs → count=1)"
     );
 }
