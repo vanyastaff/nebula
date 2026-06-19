@@ -2,6 +2,7 @@
 
 pub mod aggregate;
 pub mod datetime;
+pub mod dedupe;
 pub mod filter;
 pub mod if_action;
 pub mod json_transform;
@@ -11,6 +12,7 @@ pub mod switch_action;
 
 pub use aggregate::Aggregate;
 pub use datetime::DateTimeAction;
+pub use dedupe::Dedupe;
 pub use filter::Filter;
 pub use if_action::CoreIf;
 pub use json_transform::JsonTransform;
