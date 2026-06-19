@@ -331,6 +331,64 @@ pub struct SmtpEmailConfig {
     pub tls: SmtpTlsMode,
 }
 
+/// Backend selection for the execution stores and control queue.
+///
+/// Drives composition-root selection between the dev-only in-memory adapters
+/// (the default; state lost on restart) and durable file-local SQLite or
+/// shared PostgreSQL backends.
+///
+/// The composition root MUST fail closed when [`ExecutionBackendKind::Postgres`]
+/// is selected without a configured `DATABASE_URL`, mirroring the idempotency
+/// backend selector — silently falling back to Memory would mean an operator
+/// who asked for durable execution state sees execution rows vanish on restart
+/// with no diagnostic.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+#[non_exhaustive]
+pub enum ExecutionBackendKind {
+    /// Process-local in-memory adapters. Dev default; execution state is lost
+    /// on restart and cannot be shared across processes.
+    #[default]
+    Memory,
+    /// File-local SQLite (WAL mode). Survives restarts within a single process;
+    /// not shareable across hosts or multiple concurrent writer processes.
+    Sqlite,
+    /// PostgreSQL-backed durable store. Survives restarts and is shared across
+    /// replicas that point at the same database.
+    Postgres,
+}
+
+/// Execution-store and control-queue configuration.
+///
+/// Parallel to [`IdempotencyApiConfig`]: one `backend` selector plus a
+/// `db_path` field consumed by the SQLite arm. Future PRs (pool size, schema
+/// namespace) extend this struct under the `API_EXECUTION_*` prefix without
+/// changing the overall shape.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecutionStoreConfig {
+    /// Selected execution-store backend. Defaults to
+    /// [`ExecutionBackendKind::Memory`] so a missing `API_EXECUTION_BACKEND`
+    /// keeps current dev behaviour; the composition root flips this for
+    /// production deployments that need durability.
+    pub backend: ExecutionBackendKind,
+
+    /// SQLite-only: path to the database file.
+    ///
+    /// Ignored when `backend` is `Memory` or `Postgres`. Defaults to
+    /// `"nebula-server-execution.db"` (relative to the working directory).
+    /// Env var: `API_EXECUTION_DB_PATH`.
+    pub db_path: String,
+}
+
+impl Default for ExecutionStoreConfig {
+    fn default() -> Self {
+        Self {
+            backend: ExecutionBackendKind::Memory,
+            db_path: "nebula-server-execution.db".to_string(),
+        }
+    }
+}
+
 /// Pagination configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PaginationConfig {

@@ -10,7 +10,7 @@ use thiserror::Error;
 
 use nebula_api::{
     ApiConfig, ApiConfigError, AppState, TelemetryGuard, TelemetryInitError, app,
-    config::{AuthBackendKind, IdempotencyBackend, SmtpTlsMode},
+    config::{AuthBackendKind, ExecutionBackendKind, IdempotencyBackend, SmtpTlsMode},
     domain::auth::backend::{AuthBackend, InMemoryAuthBackend},
     middleware::{IdempotencyStore, InMemoryIdempotencyStore},
     ports::email::{EchoSink, EmailPort},
@@ -172,6 +172,276 @@ pub enum TransportInitError {
         #[source]
         source: SmtpEmailPortBuildError,
     },
+    /// `API_EXECUTION_BACKEND` selects a backend that the current build
+    /// cannot satisfy (e.g. `postgres` without the `postgres` feature).
+    ///
+    /// Mirrors the fail-closed posture of
+    /// [`Self::IdempotencyBackendUnavailable`]: silently falling back to
+    /// in-memory when the operator asked for durable execution state would
+    /// mean execution rows vanish on restart with no diagnostic.
+    #[error(
+        "API_EXECUTION_BACKEND={requested} requires {requirement}; \
+         set API_EXECUTION_BACKEND=memory or land the missing wiring"
+    )]
+    ExecutionBackendUnavailable {
+        /// Backend the operator requested.
+        requested: &'static str,
+        /// What is missing for that backend to work.
+        requirement: &'static str,
+    },
+    /// The execution-store database (SQLite file or Postgres pool) could
+    /// not be opened or the schema DDL failed. Carried as a `String` so the
+    /// typed `sqlx::Error` does not escape this crate boundary.
+    #[error("execution-store database init failed: {0}")]
+    ExecutionDatabase(String),
+}
+
+/// The six execution/workflow/control-queue handles wired into `AppState::new`.
+///
+/// Produced by [`build_execution_stores`] and consumed immediately by
+/// [`default_state`]. The three-backend shape (Memory / SQLite / Postgres)
+/// is resolved once at startup; downstream code sees only the trait objects.
+///
+/// `trigger_dedup_inbox` is `Some` only for the Memory backend (where it
+/// must share the same `Arc<Mutex<SharedState>>` as the control queue and
+/// journal). On durable backends the engine's claim-after-effect
+/// `IdempotencyGuard` handles trigger dedup at the storage level, so the
+/// inbox slot is left as `None` and the `AppState` accessor falls back to
+/// its port-absent path.
+pub(crate) struct ExecutionStoreBundle {
+    workflow_store: Arc<dyn nebula_storage_port::store::WorkflowStore>,
+    workflow_version_store: Arc<dyn nebula_storage_port::store::WorkflowVersionStore>,
+    execution_store: Arc<dyn nebula_storage_port::store::ExecutionStore>,
+    node_result_store: Arc<dyn nebula_storage_port::store::NodeResultStore>,
+    journal_reader: Arc<dyn nebula_storage_port::store::ExecutionJournalReader>,
+    control_queue: Arc<dyn nebula_storage_port::store::ControlQueue>,
+    trigger_dedup_inbox: Option<Arc<dyn nebula_storage_port::store::TriggerDedupInbox>>,
+}
+
+/// Build the execution-store bundle for the configured backend.
+///
+/// `Memory` resolves immediately (same in-memory adapters as `AppState::in_memory`).
+/// `Sqlite` opens a WAL-mode file pool, calls `init_schema`, and wraps the stores.
+/// `Postgres` follows the same pattern behind `#[cfg(feature = "postgres")]`; the
+/// `#[cfg(not(...))]` twin always returns
+/// [`TransportInitError::ExecutionBackendUnavailable`] — never silently falls back
+/// to Memory (fail-closed per the feedback_no_shims invariant).
+///
+/// NodeResult and Checkpoint have no durable implementation and stay in-memory on
+/// all backends — they store transient per-execution data (node output slots,
+/// stateful action checkpoints); durability is provided by the execution-store
+/// state machine's single JSON blob, not by these auxiliary stores. On a crash the
+/// reclaim sweep re-delivers the job and the engine re-executes from the last
+/// persisted state.
+async fn build_execution_stores(
+    api_config: &ApiConfig,
+) -> Result<ExecutionStoreBundle, TransportInitError> {
+    match api_config.execution.backend {
+        ExecutionBackendKind::Memory => {
+            warn_execution_memory_outside_dev();
+            build_memory_execution_stores()
+        },
+        ExecutionBackendKind::Sqlite => build_sqlite_execution_stores(api_config).await,
+        ExecutionBackendKind::Postgres => build_pg_execution_stores(api_config).await,
+        // `ExecutionBackendKind` is `#[non_exhaustive]` so a wildcard arm is required
+        // by the compiler even though all three current variants are handled above.
+        // A new variant added to the enum must be explicitly handled here — the panic
+        // ensures the compiler forces an update to this match rather than silently
+        // falling back to a wrong backend.
+        _ => unreachable!(
+            "unrecognised ExecutionBackendKind variant — update build_execution_stores to handle it"
+        ),
+    }
+}
+
+/// In-memory bundle — same wiring as `AppState::in_memory` but returned as a
+/// bundle so `default_state` can call `AppState::new(...)` uniformly regardless
+/// of backend. `AppState::in_memory` itself is NOT called here to avoid
+/// duplicating the trigger-dedup-inbox wiring in the Memory path.
+fn build_memory_execution_stores() -> Result<ExecutionStoreBundle, TransportInitError> {
+    use nebula_storage::inmem::{
+        InMemoryControlQueue, InMemoryExecutionStore, InMemoryJournalReader,
+        InMemoryNodeResultStore, InMemoryTriggerDedupInbox, InMemoryWorkflowStore,
+        InMemoryWorkflowVersionStore,
+    };
+
+    let exec_store = InMemoryExecutionStore::new();
+    let control_queue = InMemoryControlQueue::new(&exec_store);
+    let journal = InMemoryJournalReader::new(&exec_store);
+    // TriggerDedupInbox must share the same `Arc<Mutex<SharedState>>` as the
+    // control queue and journal — `new(&exec_store)` must be called BEFORE
+    // `Arc::new(exec_store)` moves ownership.
+    let trigger_dedup_inbox = InMemoryTriggerDedupInbox::new(&exec_store);
+    let node_results = InMemoryNodeResultStore::new();
+    let workflow_versions = InMemoryWorkflowVersionStore::new();
+    let workflow_store = InMemoryWorkflowStore::new_with_versions(&workflow_versions);
+
+    tracing::info!(
+        backend = "memory",
+        "execution-stores: in-memory adapters wired"
+    );
+    Ok(ExecutionStoreBundle {
+        workflow_store: Arc::new(workflow_store),
+        workflow_version_store: Arc::new(workflow_versions),
+        execution_store: Arc::new(exec_store),
+        node_result_store: Arc::new(node_results),
+        journal_reader: Arc::new(journal),
+        control_queue: Arc::new(control_queue),
+        trigger_dedup_inbox: Some(Arc::new(trigger_dedup_inbox)),
+    })
+}
+
+/// SQLite bundle — WAL + single connection + `init_schema` (idempotent DDL).
+///
+/// Single `max_connections(1)` serialises all writes: `BEGIN IMMEDIATE` CAS +
+/// claim-fencing in the store are only correct when one writer owns the WAL lock.
+/// `busy_timeout(5s)` prevents instant `SQLITE_BUSY` if a CLI probe briefly holds
+/// the write lock. This file is NOT shareable across processes — for multi-process
+/// or multi-host deployments operators must use `API_EXECUTION_BACKEND=postgres`.
+async fn build_sqlite_execution_stores(
+    api_config: &ApiConfig,
+) -> Result<ExecutionStoreBundle, TransportInitError> {
+    use nebula_storage::InMemoryNodeResultStore;
+    use nebula_storage::sqlite::{
+        SqliteControlQueue, SqliteExecutionStore, SqliteJournalReader, SqliteWorkflowStore,
+        SqliteWorkflowVersionStore, init_schema,
+    };
+    use sqlx::sqlite::{
+        SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous,
+    };
+
+    let db_path = &api_config.execution.db_path;
+    let opts = SqliteConnectOptions::new()
+        .filename(db_path)
+        .create_if_missing(true)
+        .journal_mode(SqliteJournalMode::Wal)
+        .synchronous(SqliteSynchronous::Normal)
+        .busy_timeout(Duration::from_secs(5));
+
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(opts)
+        .await
+        .map_err(|err| {
+            TransportInitError::ExecutionDatabase(format!(
+                "SQLite: failed to open '{db_path}': {err}"
+            ))
+        })?;
+
+    init_schema(&pool).await.map_err(|err| {
+        TransportInitError::ExecutionDatabase(format!(
+            "SQLite: schema init failed for '{db_path}': {err}"
+        ))
+    })?;
+
+    tracing::info!(
+        backend = "sqlite",
+        db_path = %db_path,
+        "execution-stores: SQLite schema applied"
+    );
+    // NodeResult and Checkpoint have no SQLite implementation — transient,
+    // per-execution data that is re-derived from the authoritative execution row
+    // on crash-recovery via the reclaim sweep.
+    let node_results = Arc::new(InMemoryNodeResultStore::new());
+    tracing::warn!(
+        "node-result and checkpoint stores are in-memory (not persisted across restarts); \
+         crash-recovery re-executes affected nodes via the reclaim sweep — \
+         authoritative execution state is the SQLite execution row"
+    );
+    Ok(ExecutionStoreBundle {
+        workflow_store: Arc::new(SqliteWorkflowStore::new(pool.clone())),
+        workflow_version_store: Arc::new(SqliteWorkflowVersionStore::new(pool.clone())),
+        execution_store: Arc::new(SqliteExecutionStore::new(pool.clone())),
+        node_result_store: node_results,
+        journal_reader: Arc::new(SqliteJournalReader::new(pool.clone())),
+        control_queue: Arc::new(SqliteControlQueue::new(pool.clone())),
+        // Durable backends: trigger dedup is handled at the storage level by
+        // the claim-after-effect IdempotencyGuard; no in-process inbox needed.
+        trigger_dedup_inbox: None,
+    })
+}
+
+/// Postgres execution bundle — compiled only with `--features postgres`.
+/// The `#[cfg(not(...))]` twin always fails closed.
+#[cfg(feature = "postgres")]
+async fn build_pg_execution_stores(
+    _api_config: &ApiConfig,
+) -> Result<ExecutionStoreBundle, TransportInitError> {
+    use nebula_storage::InMemoryNodeResultStore;
+    use nebula_storage::postgres::{
+        PgControlQueue, PgExecutionStore, PgJournalReader, PgWorkflowStore, PgWorkflowVersionStore,
+        init_schema as pg_init_schema,
+    };
+    use sqlx::postgres::PgPoolOptions;
+
+    let url = std::env::var("DATABASE_URL").map_err(|_| {
+        TransportInitError::ExecutionBackendUnavailable {
+            requested: "postgres",
+            requirement: "DATABASE_URL must be set when API_EXECUTION_BACKEND=postgres",
+        }
+    })?;
+
+    let pool = PgPoolOptions::new()
+        .max_connections(8)
+        .connect(&url)
+        .await
+        .map_err(|err| {
+            TransportInitError::ExecutionDatabase(format!(
+                "Postgres: failed to connect to DATABASE_URL for execution stores: {err}"
+            ))
+        })?;
+
+    pg_init_schema(&pool).await.map_err(|err| {
+        TransportInitError::ExecutionDatabase(format!(
+            "Postgres: execution-store schema init failed: {err}"
+        ))
+    })?;
+
+    tracing::info!(
+        backend = "postgres",
+        "execution-stores: Postgres schema applied"
+    );
+    tracing::warn!(
+        "node-result and checkpoint stores are in-memory (not persisted across restarts); \
+         crash-recovery re-executes affected nodes via the reclaim sweep — \
+         authoritative execution state is the Postgres execution row"
+    );
+    Ok(ExecutionStoreBundle {
+        workflow_store: Arc::new(PgWorkflowStore::new(pool.clone())),
+        workflow_version_store: Arc::new(PgWorkflowVersionStore::new(pool.clone())),
+        execution_store: Arc::new(PgExecutionStore::new(pool.clone())),
+        node_result_store: Arc::new(InMemoryNodeResultStore::new()),
+        journal_reader: Arc::new(PgJournalReader::new(pool.clone())),
+        control_queue: Arc::new(PgControlQueue::new(pool)),
+        trigger_dedup_inbox: None,
+    })
+}
+
+/// Fail-closed twin: `API_EXECUTION_BACKEND=postgres` without the `postgres` feature.
+#[cfg(not(feature = "postgres"))]
+async fn build_pg_execution_stores(
+    _api_config: &ApiConfig,
+) -> Result<ExecutionStoreBundle, TransportInitError> {
+    Err(TransportInitError::ExecutionBackendUnavailable {
+        requested: "postgres",
+        requirement: "build with `nebula-api/postgres` cargo feature to link sqlx + Pg execution stores",
+    })
+}
+
+fn warn_execution_memory_outside_dev() {
+    let env_mode = std::env::var("NEBULA_ENV").unwrap_or_default();
+    let is_dev = matches!(env_mode.as_str(), "development" | "dev" | "local");
+    if !is_dev {
+        tracing::warn!(
+            backend = "memory",
+            nebula_env = %env_mode,
+            component = "execution-stores",
+            "execution-stores: in-memory adapters selected — execution state is lost \
+             on restart and cannot be shared across processes; \
+             set API_EXECUTION_BACKEND=sqlite (single-process durable) or \
+             API_EXECUTION_BACKEND=postgres (multi-process) for production"
+        );
+    }
 }
 
 /// Start a server binary for a selected transport profile.
@@ -212,7 +482,11 @@ impl ServerRuntime {
         telemetry_guard
             .attach_metrics_exporter(Arc::clone(&metrics_registry))
             .map_err(ServerRunError::MetricsExporter)?;
-        let mut state = default_state(&api_config, Arc::clone(&metrics_registry))?;
+        // Build the execution-store bundle inside the async context so the SQLite and
+        // Postgres paths can `await` pool construction.
+        let execution_bundle = build_execution_stores(&api_config).await?;
+        let mut state =
+            default_state(&api_config, Arc::clone(&metrics_registry), execution_bundle)?;
         let bind_address =
             resolve_bind_address(transport.bind_override_var(), api_config.bind_address)?;
         state = transport.prepare_state(state, bind_address)?;
@@ -272,17 +546,14 @@ impl ServerRuntime {
     }
 }
 
-/// Build default local-first state used by transport binaries.
+/// Build default server `AppState` from a pre-built execution-store bundle.
 ///
-/// The execution / workflow / control-queue surface is the scoped
-/// storage port: the in-memory adapters wrapped in the `nebula-tenancy`
-/// scoping decorators bound to the local-first placeholder scope. One
-/// shared execution-store core backs the control queue and journal so a
-/// `commit`/`enqueue` is observable through every reader (the same
-/// wiring contract the conformance harness uses). A single
-/// workflow-version store instance is shared between the workflow-CRUD
-/// path and the resume/definition path so a version published via the
-/// workflow handlers is readable through the execution accessor.
+/// The execution / workflow / control-queue handles come from `execution_bundle`,
+/// which was constructed asynchronously by [`build_execution_stores`] before
+/// this function is called (so the SQLite and Postgres paths can `await` pool
+/// construction). This function is sync: it only wires the remaining
+/// deployment-specific ports (credential-schema, api keys, OAuth validation,
+/// trigger-store) on top of the already-constructed bundle.
 ///
 /// The idempotency store is **not** attached here — it is wired
 /// asynchronously by [`ServerRuntime::run_transport`] so the PG-backed
@@ -291,17 +562,16 @@ impl ServerRuntime {
 /// the async context (so the PG arm can `await` the sqlx pool) and
 /// `default_state` no longer wires an unconditional in-memory backend
 /// — the conditional builder owns the slot now.
-pub fn default_state(
+///
+/// `AppState::in_memory` is NOT called here: the bundle already holds the
+/// correct store handles (including the shared-core in-memory wiring for the
+/// Memory backend), and calling `in_memory` would build a second independent
+/// store set that the bundle's stores are not connected to.
+pub(crate) fn default_state(
     api_config: &ApiConfig,
     metrics_registry: Arc<MetricsRegistry>,
+    execution_bundle: ExecutionStoreBundle,
 ) -> Result<AppState, TransportInitError> {
-    // The execution / workflow / control-queue port wiring (the
-    // six-handle in-memory-adapter + `nebula-tenancy`-decorator stack) is
-    // the single-source-of-truth `AppState::in_memory`. This composition
-    // root only layers the deployment-specific ports on top of it
-    // (identity backend, credential-schema, api keys) so the wiring
-    // contract cannot drift between the binary and the runnable example.
-
     // Plane-A identity backend is wired asynchronously by
     // [`build_auth_backend`] inside [`ServerRuntime::run_transport`]
     // so the PG-backed arm can `await` the sqlx pool. The selector
@@ -376,17 +646,46 @@ pub fn default_state(
         nebula_api::transport::webhook::TriggerStoreSpecLookup::new(Arc::clone(&trigger_store) as _),
     );
 
-    Ok(AppState::in_memory(api_config.jwt_secret.clone())
-        .with_api_keys(api_config.api_keys.clone())
-        .with_credential_schema(credential_schema)
-        .with_metrics_registry(metrics_registry)
-        // Public URL is required for Plane-A OAuth `redirect_uri`
-        // derivation per ADR-0085 D-3 (recon-4). Boot-time validation
-        // above (T2.8) rejects empty/relative values when
-        // `auth.oauth.providers` is non-empty.
-        .with_public_url(api_config.public_url.clone())
-        .with_trigger_store(trigger_store)
-        .with_webhook_spec_lookup(trigger_spec_lookup))
+    // Destructure the bundle so each handle is passed into `AppState::new`
+    // positionally, matching its parameter order. The `trigger_dedup_inbox`
+    // is wired via `with_trigger_dedup_inbox` only when the bundle provides
+    // one (Memory backend); durable backends leave the slot empty (the engine
+    // uses the storage-level IdempotencyGuard instead).
+    let ExecutionStoreBundle {
+        workflow_store,
+        workflow_version_store,
+        execution_store,
+        node_result_store,
+        journal_reader,
+        control_queue,
+        trigger_dedup_inbox,
+    } = execution_bundle;
+
+    let mut state = AppState::new(
+        workflow_store,
+        workflow_version_store,
+        execution_store,
+        node_result_store,
+        journal_reader,
+        control_queue,
+        api_config.jwt_secret.clone(),
+    )
+    .with_api_keys(api_config.api_keys.clone())
+    .with_credential_schema(credential_schema)
+    .with_metrics_registry(metrics_registry)
+    // Public URL is required for Plane-A OAuth `redirect_uri`
+    // derivation per ADR-0085 D-3 (recon-4). Boot-time validation
+    // above (T2.8) rejects empty/relative values when
+    // `auth.oauth.providers` is non-empty.
+    .with_public_url(api_config.public_url.clone())
+    .with_trigger_store(trigger_store)
+    .with_webhook_spec_lookup(trigger_spec_lookup);
+
+    if let Some(inbox) = trigger_dedup_inbox {
+        state = state.with_trigger_dedup_inbox(inbox);
+    }
+
+    Ok(state)
 }
 
 /// Build the shared `Arc<dyn EmailPort>` from `api_config.smtp`.

@@ -142,6 +142,11 @@ deny = [
     # The core-flavor worker binary uses StorageError (schema init) and the
     # JobDispatchQueue / ExecutionStore traits via the store bundles.
     "nebula-worker-bin",
+    # apps/server integration tests (execution_store_durability) use ControlQueue,
+    # ControlMsg, ControlCommand, and Scope from storage-port to drive the durability
+    # proof against SqliteControlQueue. The binary itself is an exec-layer consumer
+    # (same posture as nebula-worker-bin).
+    "nebula-server",
   ], reason = "Storage port is a Core-tier contract; the adapter, tenancy decorator, exec/api consumers, and nebula-credential (which hosts the refresh coordinator and depends on RefreshClaimStore, ADR-0092) may depend on it" },
 
   # nebula-tenancy is the Business-tier multi-tenancy security boundary: it
