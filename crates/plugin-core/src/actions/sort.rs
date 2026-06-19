@@ -572,6 +572,40 @@ mod tests {
         );
     }
 
+    // ── 11b: explicit null field sorts as GREATEST (same as a missing key) ────
+    //
+    // A present field whose value is `null` is treated identically to an absent
+    // key — GREATEST — so it sorts last in asc / first in desc. This is a
+    // distinct code path (`Some(Value::Null)`) from the missing-key (`None`)
+    // case above; assert it directly so the doc claim can't silently regress.
+    #[tokio::test]
+    async fn null_field_sorts_last_ascending() {
+        let input = SortInput {
+            data: Some(json!([{"n": 2}, {"n": null}, {"n": 1}])),
+            keys: vec![asc("n")],
+        };
+        let out = extract_output(run(input).await.unwrap());
+        assert_eq!(
+            out,
+            json!([{"n": 1}, {"n": 2}, {"n": null}]),
+            "explicit-null field must sort last in ascending order"
+        );
+    }
+
+    #[tokio::test]
+    async fn null_field_sorts_first_descending() {
+        let input = SortInput {
+            data: Some(json!([{"n": 2}, {"n": null}, {"n": 1}])),
+            keys: vec![desc("n")],
+        };
+        let out = extract_output(run(input).await.unwrap());
+        assert_eq!(
+            out,
+            json!([{"n": null}, {"n": 2}, {"n": 1}]),
+            "explicit-null field must sort first in descending order"
+        );
+    }
+
     // ── 12: type-mismatch field is Fatal ─────────────────────────────────────
     //
     // Input:  [{n:1},{n:"x"}]  — `n` is a number in element 0, a string in
