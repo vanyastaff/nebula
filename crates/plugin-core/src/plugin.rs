@@ -8,7 +8,7 @@ use nebula_metadata::{ManifestError, PluginManifest};
 use nebula_plugin::Plugin;
 
 use crate::actions::{
-    Aggregate, CoreIf, CoreSwitch, DateTimeAction, Filter, JsonTransform, SetFields,
+    Aggregate, CoreIf, CoreSwitch, DateTimeAction, Filter, JsonTransform, SetFields, Sort,
 };
 
 /// First-party core plugin.
@@ -57,6 +57,7 @@ impl Plugin for CorePlugin {
             Arc::new(GenericStatelessFactory::<JsonTransform>::new()),
             Arc::new(GenericStatelessFactory::<DateTimeAction>::new()),
             Arc::new(GenericStatelessFactory::<Filter>::new()),
+            Arc::new(GenericStatelessFactory::<Sort>::new()),
             Arc::new(GenericControlFactory::<CoreIf>::new()),
             Arc::new(GenericControlFactory::<CoreSwitch>::new()),
         ]
@@ -156,6 +157,18 @@ mod tests {
         assert!(
             resolved.action(&key).is_some(),
             "core.switch must be registered in the resolved plugin"
+        );
+    }
+
+    #[test]
+    fn resolves_sort_action() {
+        let resolved =
+            ResolvedPlugin::from(CorePlugin::try_new().expect("CorePlugin::try_new must succeed"))
+                .expect("CorePlugin must resolve without errors");
+        let key = nebula_core::ActionKey::new("core.sort").unwrap();
+        assert!(
+            resolved.action(&key).is_some(),
+            "core.sort must be registered in the resolved plugin"
         );
     }
 
