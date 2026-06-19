@@ -1779,3 +1779,139 @@ async fn with_plugin_dedupe_executes_and_dedupes() {
         "dedupe must keep first id=1 (v=a) and drop the later id=1 (v=c)"
     );
 }
+
+// ── core.map e2e ──────────────────────────────────────────────────────────────
+
+/// Build a single-node `core.map` workflow.
+///
+/// `data_json` is the input array and `operations_json` is the serialized
+/// operations array. Both are wired as `ParamValue::literal` parameters so the
+/// engine resolves them into `MapInput` before dispatch.
+fn map_workflow(
+    data_json: serde_json::Value,
+    operations_json: serde_json::Value,
+) -> WorkflowDefinition {
+    let now = chrono::Utc::now();
+    let node = NodeDefinition::new(
+        nebula_core::node_key!("step"),
+        "Map step",
+        "core",
+        "core.map",
+    )
+    .expect("NodeDefinition must build with valid keys")
+    .with_parameter("data", ParamValue::literal(data_json))
+    .with_parameter("operations", ParamValue::literal(operations_json));
+
+    WorkflowDefinition {
+        id: nebula_core::WorkflowId::new(),
+        name: "test-core-map".into(),
+        description: None,
+        version: Version::new(0, 1, 0),
+        nodes: vec![node],
+        connections: vec![],
+        variables: HashMap::new(),
+        config: WorkflowConfig::default(),
+        trigger_bindings: vec![],
+        tags: vec![],
+        created_at: now,
+        updated_at: now,
+        owner_id: None,
+        ui_metadata: None,
+        schema_version: CURRENT_SCHEMA_VERSION,
+    }
+}
+
+/// RED witness: dispatching `core.map` on an engine without the CorePlugin
+/// wired returns `ExecutionStatus::Failed` with an action-not-found node error.
+///
+/// Removing `with_plugin` from the GREEN test below causes it to hit this same
+/// failure mode, proving the GREEN test distinguishes "action registered" from
+/// "action absent".
+#[tokio::test]
+async fn without_plugin_map_dispatch_fails() {
+    let engine = make_engine(); // no with_plugin call
+
+    let workflow = map_workflow(
+        serde_json::json!([{"a": 1, "b": 2}]),
+        serde_json::json!([{"op": "pick", "fields": ["a"]}]),
+    );
+
+    let result = engine
+        .execute_workflow(
+            &scope(),
+            &workflow,
+            serde_json::json!({}),
+            ExecutionBudget::default(),
+        )
+        .await
+        .expect("execute_workflow itself must not error — failure is recorded in the result");
+
+    assert_eq!(
+        result.status,
+        nebula_execution::ExecutionStatus::Failed,
+        "execution without a wired plugin must reach Failed; got {:?}",
+        result.status
+    );
+
+    let error_texts: Vec<&str> = result.node_errors.values().map(String::as_str).collect();
+    assert!(
+        error_texts.iter().any(|s| s.contains("not found")),
+        "node_errors must contain an action-not-found message; got: {error_texts:?}"
+    );
+}
+
+/// GREEN proof: after `with_plugin(CorePlugin)`, the `core.map` action executes
+/// and reshapes every element of the array.
+///
+/// Input: `[{"a":1,"b":2},{"a":3,"b":4}]`, operation `pick ["a"]`.
+/// Expected output: `[{"a":1},{"a":3}]` — `b` is absent on every element.
+///
+/// Asserts concrete output value, not `is_ok()`.
+///
+/// RED witness: without `with_plugin`, the execution reaches `Failed`
+/// (same path as `without_plugin_map_dispatch_fails` above).
+#[tokio::test]
+async fn with_plugin_map_executes_and_reshapes() {
+    let engine = make_engine()
+        .with_plugin(core_plugin())
+        .expect("with_plugin(CorePlugin) must succeed on a fresh engine");
+
+    let workflow = map_workflow(
+        serde_json::json!([
+            {"a": 1, "b": 2},
+            {"a": 3, "b": 4},
+            {"a": 5, "b": 6}
+        ]),
+        serde_json::json!([{"op": "pick", "fields": ["a"]}]),
+    );
+
+    let result = engine
+        .execute_workflow(
+            &scope(),
+            &workflow,
+            serde_json::json!({}),
+            ExecutionBudget::default(),
+        )
+        .await
+        .expect("with_plugin(CorePlugin) + core.map must succeed");
+
+    assert_eq!(
+        result.status,
+        nebula_execution::ExecutionStatus::Completed,
+        "execution must reach Completed; got {:?} (node_errors: {:?})",
+        result.status,
+        result.node_errors
+    );
+
+    let node_key = nebula_core::node_key!("step");
+    let node_output = result
+        .node_outputs
+        .get(&node_key)
+        .expect("node 'step' must have output after Completed execution");
+
+    assert_eq!(
+        *node_output,
+        serde_json::json!([{"a": 1}, {"a": 3}, {"a": 5}]),
+        "map must return the reshaped array with only 'a' on every element, order preserved"
+    );
+}

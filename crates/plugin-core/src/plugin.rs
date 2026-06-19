@@ -8,7 +8,8 @@ use nebula_metadata::{ManifestError, PluginManifest};
 use nebula_plugin::Plugin;
 
 use crate::actions::{
-    Aggregate, CoreIf, CoreSwitch, DateTimeAction, Dedupe, Filter, JsonTransform, SetFields, Sort,
+    Aggregate, CoreIf, CoreSwitch, DateTimeAction, Dedupe, Filter, JsonTransform, MapAction,
+    SetFields, Sort,
 };
 
 /// First-party core plugin.
@@ -58,6 +59,7 @@ impl Plugin for CorePlugin {
             Arc::new(GenericStatelessFactory::<DateTimeAction>::new()),
             Arc::new(GenericStatelessFactory::<Dedupe>::new()),
             Arc::new(GenericStatelessFactory::<Filter>::new()),
+            Arc::new(GenericStatelessFactory::<MapAction>::new()),
             Arc::new(GenericStatelessFactory::<Sort>::new()),
             Arc::new(GenericControlFactory::<CoreIf>::new()),
             Arc::new(GenericControlFactory::<CoreSwitch>::new()),
@@ -182,6 +184,18 @@ mod tests {
         assert!(
             resolved.action(&key).is_some(),
             "core.sort must be registered in the resolved plugin"
+        );
+    }
+
+    #[test]
+    fn resolves_map_action() {
+        let resolved =
+            ResolvedPlugin::from(CorePlugin::try_new().expect("CorePlugin::try_new must succeed"))
+                .expect("CorePlugin must resolve without errors");
+        let key = nebula_core::ActionKey::new("core.map").unwrap();
+        assert!(
+            resolved.action(&key).is_some(),
+            "core.map must be registered in the resolved plugin"
         );
     }
 
