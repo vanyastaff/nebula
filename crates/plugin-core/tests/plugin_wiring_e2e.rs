@@ -1090,6 +1090,107 @@ async fn if_action_compound_all_condition_routes_correctly() {
     );
 }
 
+// ── core.datetime e2e ─────────────────────────────────────────────────────────
+
+/// Build a single-node `core.datetime` workflow with the given `op` JSON.
+///
+/// The `op` value and any accompanying fields are passed as individual
+/// `ParamValue::literal` parameters so the engine resolves them into a flat
+/// `DateTimeInput` before dispatch.  The helper accepts a single JSON object
+/// whose keys map one-to-one to `DateTimeInput` fields (including the `"op"`
+/// discriminant injected via `serde(tag = "op")`).
+fn datetime_workflow(params: serde_json::Value) -> WorkflowDefinition {
+    let now = chrono::Utc::now();
+
+    // `params` is an object like {"op":"format","input":"...","format":"..."}.
+    // Wire each key as a separate ParamValue::literal parameter.
+    let params_map = params
+        .as_object()
+        .expect("datetime_workflow: params must be a JSON object");
+
+    let mut node = NodeDefinition::new(
+        nebula_core::node_key!("step"),
+        "DateTime step",
+        "core",
+        "core.datetime",
+    )
+    .expect("NodeDefinition must build with valid keys");
+
+    for (key, value) in params_map {
+        node = node.with_parameter(key.as_str(), ParamValue::literal(value.clone()));
+    }
+
+    WorkflowDefinition {
+        id: nebula_core::WorkflowId::new(),
+        name: "test-core-datetime".into(),
+        description: None,
+        version: Version::new(0, 1, 0),
+        nodes: vec![node],
+        connections: vec![],
+        variables: HashMap::new(),
+        config: WorkflowConfig::default(),
+        trigger_bindings: vec![],
+        tags: vec![],
+        created_at: now,
+        updated_at: now,
+        owner_id: None,
+        ui_metadata: None,
+        schema_version: CURRENT_SCHEMA_VERSION,
+    }
+}
+
+/// GREEN proof — `core.datetime` Format op: the engine executes the action and
+/// returns the formatted string as the node output.
+///
+/// Input: `2026-06-19T00:00:00Z` formatted with `%Y-%m-%d` → `"2026-06-19"`.
+/// Asserts a concrete output value, not `is_ok()`.
+///
+/// RED witness: without `with_plugin(core_plugin())`, the execution reaches
+/// `Failed` with an action-not-found node error (same as the existing
+/// `without_plugin_dispatch_fails` test covers the general case).
+#[tokio::test]
+async fn with_plugin_datetime_format_executes_and_returns_formatted_string() {
+    let engine = make_engine()
+        .with_plugin(core_plugin())
+        .expect("with_plugin(CorePlugin) must succeed on a fresh engine");
+
+    let workflow = datetime_workflow(serde_json::json!({
+        "op":     "format",
+        "input":  "2026-06-19T00:00:00Z",
+        "format": "%Y-%m-%d"
+    }));
+
+    let result = engine
+        .execute_workflow(
+            &scope(),
+            &workflow,
+            serde_json::json!({}),
+            ExecutionBudget::default(),
+        )
+        .await
+        .expect("execute_workflow must not error");
+
+    assert_eq!(
+        result.status,
+        nebula_execution::ExecutionStatus::Completed,
+        "execution must reach Completed; got {:?} (node_errors: {:?})",
+        result.status,
+        result.node_errors
+    );
+
+    let node_key = nebula_core::node_key!("step");
+    let node_output = result
+        .node_outputs
+        .get(&node_key)
+        .expect("node 'step' must have output after Completed execution");
+
+    assert_eq!(
+        *node_output,
+        serde_json::json!("2026-06-19"),
+        "Format op must return the date-only string"
+    );
+}
+
 // ── Duplicate-key unit tests ──────────────────────────────────────────────────
 
 /// Pre-registering an action with the same key as a plugin action returns

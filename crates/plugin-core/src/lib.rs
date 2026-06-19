@@ -11,6 +11,7 @@
 //! |-----|-------------|
 //! | `core.set_fields`      | Merge a list of named field assignments onto a JSON object      |
 //! | `core.json_transform`  | Apply pick/omit/rename operations to a JSON object             |
+//! | `core.datetime`        | Offset-aware RFC3339 timestamp formatting, parsing, arithmetic, and diff |
 //! | `core.if`              | Binary branch: route to `"true"` or `"false"` port on a field condition |
 //! | `core.switch`          | N-way branch: route to the first matching case port, or `"default"` |
 //!
