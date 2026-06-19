@@ -9,6 +9,7 @@
 //!
 //! | Key | Description |
 //! |-----|-------------|
+//! | `core.aggregate`       | Reduce an array of objects to grouped/scalar summaries (sum/count/avg/min/max/collect/join) |
 //! | `core.set_fields`      | Merge a list of named field assignments onto a JSON object      |
 //! | `core.json_transform`  | Apply pick/omit/rename operations to a JSON object             |
 //! | `core.datetime`        | Offset-aware RFC3339 timestamp formatting, parsing, arithmetic, and diff |

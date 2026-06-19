@@ -1,5 +1,6 @@
 //! Actions provided by the `core` plugin.
 
+pub mod aggregate;
 pub mod datetime;
 pub mod filter;
 pub mod if_action;
@@ -7,6 +8,7 @@ pub mod json_transform;
 pub mod set_fields;
 pub mod switch_action;
 
+pub use aggregate::Aggregate;
 pub use datetime::DateTimeAction;
 pub use filter::Filter;
 pub use if_action::CoreIf;

@@ -1366,3 +1366,154 @@ async fn with_plugin_filter_executes_and_filters() {
         "filter must return exactly the elements where x > 1, in original order"
     );
 }
+
+// ── core.aggregate e2e ────────────────────────────────────────────────────────
+
+/// Build a single-node `core.aggregate` workflow.
+///
+/// Parameters are wired as `ParamValue::literal` so the engine resolves them
+/// into `AggregateInput` before dispatch. `aggregations_json` is the
+/// serialized aggregation array; `group_by_json` is the serialized group-by
+/// field list.
+fn aggregate_workflow(
+    data_json: serde_json::Value,
+    group_by_json: serde_json::Value,
+    aggregations_json: serde_json::Value,
+) -> WorkflowDefinition {
+    let now = chrono::Utc::now();
+    let node = NodeDefinition::new(
+        nebula_core::node_key!("step"),
+        "Aggregate step",
+        "core",
+        "core.aggregate",
+    )
+    .expect("NodeDefinition must build with valid keys")
+    .with_parameter("data", ParamValue::literal(data_json))
+    .with_parameter("group_by", ParamValue::literal(group_by_json))
+    .with_parameter("aggregations", ParamValue::literal(aggregations_json));
+
+    WorkflowDefinition {
+        id: nebula_core::WorkflowId::new(),
+        name: "test-core-aggregate".into(),
+        description: None,
+        version: Version::new(0, 1, 0),
+        nodes: vec![node],
+        connections: vec![],
+        variables: HashMap::new(),
+        config: WorkflowConfig::default(),
+        trigger_bindings: vec![],
+        tags: vec![],
+        created_at: now,
+        updated_at: now,
+        owner_id: None,
+        ui_metadata: None,
+        schema_version: CURRENT_SCHEMA_VERSION,
+    }
+}
+
+/// RED witness: dispatching `core.aggregate` on an engine without the
+/// CorePlugin wired returns `ExecutionStatus::Failed` with an action-not-found
+/// node error.
+///
+/// Removing `with_plugin` from the GREEN test below causes it to hit this same
+/// failure mode, proving the GREEN test distinguishes "action registered" from
+/// "action absent".
+#[tokio::test]
+async fn without_plugin_aggregate_dispatch_fails() {
+    let engine = make_engine(); // no with_plugin call
+
+    let workflow = aggregate_workflow(
+        serde_json::json!([{"region": "west", "amount": 10}]),
+        serde_json::json!(["region"]),
+        serde_json::json!([{"fn": "count", "out": "n"}]),
+    );
+
+    let result = engine
+        .execute_workflow(
+            &scope(),
+            &workflow,
+            serde_json::json!({}),
+            ExecutionBudget::default(),
+        )
+        .await
+        .expect("execute_workflow itself must not error — failure is recorded in the result");
+
+    assert_eq!(
+        result.status,
+        nebula_execution::ExecutionStatus::Failed,
+        "execution without a wired plugin must reach Failed; got {:?}",
+        result.status
+    );
+
+    let error_texts: Vec<&str> = result.node_errors.values().map(String::as_str).collect();
+    assert!(
+        error_texts.iter().any(|s| s.contains("not found")),
+        "node_errors must contain an action-not-found message; got: {error_texts:?}"
+    );
+}
+
+/// GREEN proof: after `with_plugin(CorePlugin)`, the `core.aggregate` action
+/// executes and returns the correct grouped summary rows.
+///
+/// Input: three elements with two distinct `region` values.
+/// group_by: `["region"]`.
+/// aggregations: count(*) → `"n"`, sum(amount) → `"total"`.
+///
+/// Expected: two rows in first-seen order with the correct group values and
+/// sums. Asserts concrete row values, not `is_ok()`.
+///
+/// RED witness: without `with_plugin`, the execution reaches `Failed`
+/// (same path as `without_plugin_aggregate_dispatch_fails`).
+#[tokio::test]
+async fn with_plugin_aggregate_executes_and_summarizes() {
+    let engine = make_engine()
+        .with_plugin(core_plugin())
+        .expect("with_plugin(CorePlugin) must succeed on a fresh engine");
+
+    let workflow = aggregate_workflow(
+        serde_json::json!([
+            { "region": "west", "amount": 10 },
+            { "region": "east", "amount": 20 },
+            { "region": "west", "amount": 30 }
+        ]),
+        serde_json::json!(["region"]),
+        serde_json::json!([
+            { "fn": "count", "out": "n" },
+            { "fn": "sum",   "field": "amount", "out": "total" }
+        ]),
+    );
+
+    let result = engine
+        .execute_workflow(
+            &scope(),
+            &workflow,
+            serde_json::json!({}),
+            ExecutionBudget::default(),
+        )
+        .await
+        .expect("with_plugin(CorePlugin) + core.aggregate must succeed");
+
+    assert_eq!(
+        result.status,
+        nebula_execution::ExecutionStatus::Completed,
+        "execution must reach Completed; got {:?} (node_errors: {:?})",
+        result.status,
+        result.node_errors
+    );
+
+    let node_key = nebula_core::node_key!("step");
+    let node_output = result
+        .node_outputs
+        .get(&node_key)
+        .expect("node 'step' must have output after Completed execution");
+
+    // Two rows in first-seen order: west first, east second.
+    assert_eq!(
+        *node_output,
+        serde_json::json!([
+            { "region": "west", "n": 2, "total": 40 },
+            { "region": "east", "n": 1, "total": 20 }
+        ]),
+        "aggregate must return grouped summary rows in first-seen order with correct sums"
+    );
+}
