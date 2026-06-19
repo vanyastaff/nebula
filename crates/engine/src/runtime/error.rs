@@ -204,6 +204,30 @@ pub enum RuntimeError {
         key: String,
     },
 
+    /// An action returned `ActionResult::Wait` with a signal-driven condition
+    /// (`Webhook`, `Approval`, or `Execution`) that requires an explicit Resume
+    /// signal to satisfy. The W-S1 slice only wires timer-based conditions
+    /// (`Until` / `Duration`). Signal-driven resume is the W-S2 work item.
+    ///
+    /// The engine surfaces this error rather than parking the node with
+    /// `wake_at = None` and no timer entry — which would permanently stall
+    /// the execution until a Resume signal arrived through an unimplemented
+    /// path.
+    #[classify(
+        category = "unsupported",
+        code = "RUNTIME:WAIT_CONDITION_NOT_SUPPORTED",
+        retryable = false
+    )]
+    #[error(
+        "ActionResult::Wait with condition '{condition_kind}' is not yet supported — \
+         only 'Until' and 'Duration' (timer-based) conditions are wired in W-S1; \
+         signal-driven resume (Webhook/Approval/Execution) ships in W-S2"
+    )]
+    WaitConditionNotSupported {
+        /// The `WaitCondition` variant name that was rejected.
+        condition_kind: String,
+    },
+
     /// Internal runtime error.
     #[classify(category = "internal", code = "RUNTIME:INTERNAL")]
     #[error("runtime error: {0}")]

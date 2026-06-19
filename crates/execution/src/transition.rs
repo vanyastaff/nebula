@@ -60,6 +60,15 @@ pub fn validate_execution_transition(
 /// next attempt. A cancel signal during the wait shortcuts directly to
 /// `Cancelled` without observing another `Failed` — the previous
 /// attempt's failure is already recorded in `NodeAttempt`.
+///
+/// The wait-park edges (`Running → Waiting`, `Waiting → Completed`,
+/// `Waiting → Cancelled`) implement the durable park path: when an
+/// action returns `ActionResult::Wait`, the engine parks the node
+/// (`Running → Waiting`), releasing the worker and gating downstream
+/// edges until the wait condition is satisfied. Once the condition
+/// fires the engine transitions directly to `Completed` (`Waiting →
+/// Completed`) and activates downstream. A shutdown/cancel during the
+/// wait goes to `Cancelled` (`Waiting → Cancelled`).
 #[must_use]
 pub fn can_transition_node(from: NodeState, to: NodeState) -> bool {
     matches!(
@@ -72,13 +81,16 @@ pub fn can_transition_node(from: NodeState, to: NodeState) -> bool {
             NodeState::Running | NodeState::Skipped | NodeState::Cancelled
         ) | (
             NodeState::Running,
-            NodeState::Completed | NodeState::Failed | NodeState::Cancelled
+            NodeState::Completed | NodeState::Failed | NodeState::Cancelled | NodeState::Waiting
         ) | (
             NodeState::Failed,
             NodeState::Cancelled | NodeState::WaitingRetry
         ) | (
             NodeState::WaitingRetry,
             NodeState::Ready | NodeState::Cancelled
+        ) | (
+            NodeState::Waiting,
+            NodeState::Completed | NodeState::Cancelled
         )
     )
 }
@@ -338,6 +350,61 @@ mod tests {
         assert!(can_transition_node(
             NodeState::WaitingRetry,
             NodeState::Cancelled
+        ));
+    }
+
+    /// `Running → Waiting` is the park step: the action returned
+    /// `ActionResult::Wait`; the engine releases the worker and parks
+    /// the node.
+    #[test]
+    fn running_can_transition_to_waiting() {
+        assert!(can_transition_node(NodeState::Running, NodeState::Waiting));
+    }
+
+    /// `Waiting → Completed` fires when the wait condition is satisfied
+    /// (timer expires, external resume arrives). Downstream edges
+    /// activate from `Completed`, not from `Waiting`.
+    #[test]
+    fn waiting_can_transition_to_completed() {
+        assert!(can_transition_node(
+            NodeState::Waiting,
+            NodeState::Completed
+        ));
+    }
+
+    /// `Waiting → Cancelled` lets a shutdown/cancel drain the parked
+    /// node without a phantom `Waiting → Completed` step.
+    #[test]
+    fn waiting_can_transition_to_cancelled() {
+        assert!(can_transition_node(
+            NodeState::Waiting,
+            NodeState::Cancelled
+        ));
+    }
+
+    /// Illegal edges from `Waiting` must be rejected: the engine
+    /// must not be able to re-run a parked node (`Waiting → Running`)
+    /// or collapse it to `Failed` without an explicit failure reason.
+    #[test]
+    fn waiting_cannot_transition_to_illegal_states() {
+        assert!(!can_transition_node(NodeState::Waiting, NodeState::Running));
+        assert!(!can_transition_node(NodeState::Waiting, NodeState::Failed));
+        assert!(!can_transition_node(NodeState::Waiting, NodeState::Ready));
+        assert!(!can_transition_node(
+            NodeState::Waiting,
+            NodeState::WaitingRetry
+        ));
+        // Self-loop is not a valid transition.
+        assert!(!can_transition_node(NodeState::Waiting, NodeState::Waiting));
+    }
+
+    /// `Completed → Waiting` must be rejected — a completed node
+    /// cannot be parked retroactively.
+    #[test]
+    fn completed_cannot_transition_to_waiting() {
+        assert!(!can_transition_node(
+            NodeState::Completed,
+            NodeState::Waiting
         ));
     }
 }

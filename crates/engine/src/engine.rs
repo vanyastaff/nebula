@@ -19,7 +19,9 @@ use std::{
 
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
-use nebula_action::{ActionError, ActionResult, capability::default_resource_accessor};
+use nebula_action::{
+    ActionError, ActionResult, capability::default_resource_accessor, result::WaitCondition,
+};
 use nebula_core::{
     ActionKey, NodeKey, ResourceKey,
     accessor::{CredentialAccessor, ResourceAccessor},
@@ -1993,10 +1995,21 @@ impl WorkflowEngine {
         // immediately on resume, defeating T2's
         // resume guarantee. (Crashed `Running` attempts have no
         // such timestamp and must be re-driven from `Pending`.)
+        //
+        // `Waiting` nodes are excluded for the same reason: they are
+        // durably parked for an external wait condition (timer or
+        // signal). Their `next_attempt_at` is the timer wake instant;
+        // the Phase-0b drain re-seeds `wait_heap` from them below.
+        // Resetting a `Waiting` node to `Pending` would immediately
+        // re-dispatch it, defeating the durable park guarantee.
         let non_terminal: Vec<NodeKey> = exec_state
             .node_states
             .iter()
-            .filter(|(_, ns)| !ns.state.is_terminal() && ns.state != NodeState::WaitingRetry)
+            .filter(|(_, ns)| {
+                !ns.state.is_terminal()
+                    && ns.state != NodeState::WaitingRetry
+                    && ns.state != NodeState::Waiting
+            })
             .map(|(id, _)| id.clone())
             .collect();
         for id in non_terminal {
@@ -2076,6 +2089,14 @@ impl WorkflowEngine {
             // separately; including them here would re-dispatch
             // immediately and bypass the persisted backoff timer.
             if ns.state == NodeState::WaitingRetry {
+                continue;
+            }
+            // `Waiting` nodes are durably parked for an external
+            // wait condition. Like `WaitingRetry`, they must NOT
+            // enter the seed/ready_queue. The Phase-0b wait drain
+            // re-seeds `wait_heap` from these nodes and drives
+            // timer-based `Waiting→Completed` transitions.
+            if ns.state == NodeState::Waiting {
                 continue;
             }
             let incoming = graph.incoming_connections(node_key.clone());
@@ -2406,6 +2427,27 @@ impl WorkflowEngine {
             }
         }
 
+        // Min-heap of `(wake_at, NodeKey)` for nodes parked in `Waiting`
+        // with a timer-based condition (`Until` / `Duration`). Mirrors
+        // `retry_heap` but drains to `Completed` instead of `Ready` —
+        // a satisfied wait condition means the node is done, not
+        // restarted. Signal-only parked nodes (webhook/approval/execution
+        // with no timeout) are NOT on this heap; they stay parked until
+        // a `Resume` signal arrives (built separately).
+        let mut wait_heap: BinaryHeap<Reverse<(DateTime<Utc>, NodeKey)>> = BinaryHeap::new();
+
+        // Resume seeding for `Waiting` nodes: a crashed engine may have
+        // persisted a node in `Waiting` with a `next_attempt_at` timer;
+        // re-seed the heap so the wake fires without requiring a fresh
+        // `ActionResult::Wait` dispatch.
+        for (key, ns) in &exec_state.node_states {
+            if ns.state == NodeState::Waiting
+                && let Some(when) = ns.next_attempt_at
+            {
+                wait_heap.push(Reverse((when, key.clone())));
+            }
+        }
+
         // In-flight tasks + a side map from tokio task id → NodeKey so
         // that panics (where the inner future's `(NodeKey, _)` payload
         // is lost) can still be attributed to the real node instead
@@ -2482,6 +2524,107 @@ impl WorkflowEngine {
                         %execution_id,
                         %node_key,
                         "retry drained but node no longer in WaitingRetry; skipping"
+                    );
+                }
+            }
+
+            // Phase 0b: Drain due timer-wakes from `wait_heap`.
+            //
+            // A `Waiting` node whose `next_attempt_at` has passed has its
+            // wait condition satisfied: the engine transitions it directly
+            // to `Completed` (the action's `partial_output` was already
+            // committed to the outputs map when the node was parked) and
+            // activates its downstream edges. This mirrors Phase 0 for
+            // retries but targets `Completed` instead of `Ready`.
+            let now_wait_drain = Utc::now();
+            while let Some(Reverse((when, _))) = wait_heap.peek() {
+                if *when > now_wait_drain {
+                    break;
+                }
+                let Some(Reverse((_, node_key))) = wait_heap.pop() else {
+                    // Unreachable: peek-then-pop on a single-threaded
+                    // owner cannot lose the entry. Surface defensively
+                    // rather than panic (hot-path safety).
+                    tracing::warn!(
+                        target = "engine::wait",
+                        %execution_id,
+                        "wait heap became empty after peek; aborting wait drain"
+                    );
+                    break;
+                };
+                let still_parked = exec_state
+                    .node_state(node_key.clone())
+                    .is_some_and(|ns| ns.state == NodeState::Waiting);
+                if still_parked {
+                    match exec_state.transition_node(node_key.clone(), NodeState::Completed) {
+                        Ok(()) => {
+                            if let Some(ns) = exec_state.node_states.get_mut(&node_key) {
+                                ns.next_attempt_at = None;
+                                ns.completed_at = Some(Utc::now());
+                            }
+                            // Persist the `Completed` transition and the
+                            // cleared `next_attempt_at` atomically before
+                            // activating downstream — durability precedes
+                            // visibility.
+                            if let Err(e) = self
+                                .checkpoint_node(
+                                    scope,
+                                    execution_id,
+                                    node_key.clone(),
+                                    outputs,
+                                    exec_state,
+                                    repo_version,
+                                    fencing,
+                                )
+                                .await
+                            {
+                                cancel_token.cancel();
+                                return Some((node_key.clone(), e.to_string()));
+                            }
+                            self.emit_event(ExecutionEvent::NodeWaitCompleted {
+                                execution_id,
+                                node_key: node_key.clone(),
+                            });
+                            tracing::info!(
+                                target = "engine::wait",
+                                %execution_id,
+                                %node_key,
+                                "wait condition satisfied (timer); node completed"
+                            );
+                            // Activate downstream edges now that the node is
+                            // `Completed` — this is the point at which the
+                            // downstream gate lifts.
+                            process_outgoing_edges(
+                                node_key.clone(),
+                                None, // no live `ActionResult` for this synthetic completion
+                                None,
+                                graph,
+                                &mut activated_edges,
+                                &mut resolved_edges,
+                                &required_count,
+                                &mut ready_queue,
+                                exec_state,
+                            );
+                        },
+                        Err(err) => {
+                            // `Waiting → Completed` is in the canonical table;
+                            // this branch fires only if the node was concurrently
+                            // cancelled. Surface defensively.
+                            tracing::warn!(
+                                target = "engine::wait",
+                                %execution_id,
+                                %node_key,
+                                %err,
+                                "wait-heap wake: Waiting→Completed rejected; skipping"
+                            );
+                        },
+                    }
+                } else {
+                    tracing::debug!(
+                        target = "engine::wait",
+                        %execution_id,
+                        %node_key,
+                        "wait heap drained but node no longer in Waiting; skipping"
                     );
                 }
             }
@@ -2745,12 +2888,11 @@ impl WorkflowEngine {
                 }
             }
 
-            // Phase 2: Wait for one completion or for the next retry
-            // timer. Exit only when both join_set and retry_heap are
-            // drained — `retry_heap` non-empty with `join_set` empty
-            // is a legal "everything paused for backoff" state per
-            // T5.
-            if join_set.is_empty() && retry_heap.is_empty() {
+            // Phase 2: Wait for one completion or for the next timer.
+            // Exit only when join_set, retry_heap, AND wait_heap are
+            // all drained — a non-empty heap with an empty join_set
+            // is a legal "everything paused for a timer" state.
+            if join_set.is_empty() && retry_heap.is_empty() && wait_heap.is_empty() {
                 break;
             }
 
@@ -2758,19 +2900,17 @@ impl WorkflowEngine {
                 join_set.abort_all();
                 while join_set.join_next_with_id().await.is_some() {}
                 task_nodes.clear();
-                // Tear down parked retries (WaitingRetry → Cancelled)
-                // AND the ready_queue (Ready → Cancelled). The
-                // previous failure already lives in `NodeAttempt`;
-                // the cancel terminates the wait, not the attempt
-                // (operational honesty). Without draining `ready_queue`, a
-                // node Phase 0 already promoted to `Ready` would
-                // stay non-terminal after the loop exits, tripping
-                // the frontier integrity (CAS on version) check. Best-
-                // effort persist is covered by the final-status
-                // checkpoint in the outer caller — failures here
-                // only affect post-mortem log fidelity.
+                // Tear down parked retries (WaitingRetry → Cancelled),
+                // parked wait nodes (Waiting → Cancelled), AND the
+                // ready_queue (Ready → Cancelled). The previous failure
+                // already lives in `NodeAttempt`; the cancel terminates
+                // the wait, not the attempt (operational honesty).
+                // Without draining `ready_queue`, a node Phase 0 already
+                // promoted to `Ready` would stay non-terminal after the
+                // loop exits, tripping the frontier integrity check.
                 drain_pending_to_cancelled(
                     &mut retry_heap,
+                    &mut wait_heap,
                     &mut ready_queue,
                     exec_state,
                     execution_id,
@@ -2811,11 +2951,27 @@ impl WorkflowEngine {
             };
             tokio::pin!(retry_sleep_fut);
 
-            // If join_set is empty but retry_heap has work, we still
-            // need to sleep until the timer (or cancel / wall-clock).
-            // Pre-pin a boxed future per branch so `select!` never has
-            // to enter an `unreachable!()` placeholder — library code
-            // must not panic on hot paths (hot-path safety).
+            // Compute the sleep until the earliest parked-wait timer fires.
+            // This drives Phase 0b drains when `join_set` is otherwise idle.
+            let next_wait_in: Option<Duration> = wait_heap.peek().map(|Reverse((when, _))| {
+                when.signed_duration_since(Utc::now())
+                    .to_std()
+                    .unwrap_or(Duration::ZERO)
+            });
+            let wait_sleep_fut = async {
+                if let Some(d) = next_wait_in {
+                    tokio::time::sleep(d).await;
+                } else {
+                    std::future::pending::<()>().await;
+                }
+            };
+            tokio::pin!(wait_sleep_fut);
+
+            // If join_set is empty but retry_heap or wait_heap has work,
+            // we still need to sleep until the timer (or cancel /
+            // wall-clock). Pre-pin a boxed future per branch so `select!`
+            // never has to enter an `unreachable!()` placeholder — library
+            // code must not panic on hot paths (hot-path safety).
             let join_set_empty = join_set.is_empty();
 
             type JoinedResult = Option<
@@ -2838,6 +2994,7 @@ impl WorkflowEngine {
             enum WakeReason {
                 Joined(JoinedResult),
                 RetryTimer,
+                WaitTimer,
                 WallClock,
                 Cancel,
             }
@@ -2852,6 +3009,7 @@ impl WorkflowEngine {
             let wake = tokio::select! {
                 result = join_next_fut => WakeReason::Joined(result),
                 () = &mut retry_sleep_fut, if next_retry_in.is_some() => WakeReason::RetryTimer,
+                () = &mut wait_sleep_fut, if next_wait_in.is_some() => WakeReason::WaitTimer,
                 () = &mut sleep_fut => WakeReason::WallClock,
                 () = cancel_token.cancelled() => WakeReason::Cancel,
             };
@@ -2860,13 +3018,18 @@ impl WorkflowEngine {
                 WakeReason::Joined(Some(r)) => r,
                 WakeReason::Joined(None) => {
                     // join_set drained mid-iteration — loop back so
-                    // Phase 0 / Phase 1 / exit-condition observe the
-                    // current retry_heap state.
+                    // Phase 0 / Phase 0b / Phase 1 / exit-condition
+                    // observe the current heap state.
                     continue;
                 },
                 WakeReason::RetryTimer => {
                     // Timer fired — loop back so Phase 0 drains due
                     // retries into ready_queue.
+                    continue;
+                },
+                WakeReason::WaitTimer => {
+                    // Timer fired — loop back so Phase 0b drains due
+                    // wait-wakes into completed + downstream edges.
                     continue;
                 },
                 WakeReason::WallClock => {
@@ -2876,6 +3039,7 @@ impl WorkflowEngine {
                     task_nodes.clear();
                     drain_pending_to_cancelled(
                         &mut retry_heap,
+                        &mut wait_heap,
                         &mut ready_queue,
                         exec_state,
                         execution_id,
@@ -2891,6 +3055,7 @@ impl WorkflowEngine {
                     task_nodes.clear();
                     drain_pending_to_cancelled(
                         &mut retry_heap,
+                        &mut wait_heap,
                         &mut ready_queue,
                         exec_state,
                         execution_id,
@@ -2903,6 +3068,216 @@ impl WorkflowEngine {
             match join_result {
                 Ok((task_id, (node_key, Ok(action_result)))) => {
                     task_nodes.remove(&task_id);
+
+                    // Park path: action returned `ActionResult::Wait`.
+                    //
+                    // The `partial_output` was already written into `outputs`
+                    // by `extract_primary_output` in the dispatch future, so
+                    // `checkpoint_node` will commit it alongside the `Waiting`
+                    // state in one atomic write. Downstream edges are NOT
+                    // activated here — they remain gated until Phase 0b
+                    // transitions this node to `Completed` when the timer
+                    // fires.
+                    //
+                    // W-S1 boundary conditions rejected here (both marked
+                    // `WaitConditionNotSupported`):
+                    //   1. Signal-driven conditions (Webhook/Approval/Execution):
+                    //      W-S2 will wire the Resume signal path.
+                    //   2. Timer conditions with an explicit `timeout`: the
+                    //      fail-on-timeout enforcement path is also W-S2.
+                    //      Only `timeout: None` timer waits are supported.
+                    if let ActionResult::Wait {
+                        ref condition,
+                        timeout,
+                        ..
+                    } = action_result
+                    {
+                        // Reject explicit timeouts: the timeout-as-cancellation
+                        // path belongs to W-S2. Silently ignoring a `timeout`
+                        // would mean the node waits the full condition duration
+                        // (up to hours) instead of the declared maximum, which
+                        // is a correctness bug, not a missing optimisation.
+                        if let Some(_timeout_dur) = timeout {
+                            let condition_kind = match condition {
+                                WaitCondition::Until { .. } => "Until with explicit timeout",
+                                WaitCondition::Duration { .. } => "Duration with explicit timeout",
+                                WaitCondition::Webhook { .. } => "Webhook with explicit timeout",
+                                WaitCondition::Approval { .. } => "Approval with explicit timeout",
+                                WaitCondition::Execution { .. } => {
+                                    "Execution with explicit timeout"
+                                },
+                                _ => "Unknown with explicit timeout",
+                            };
+                            let runtime_err =
+                                crate::runtime::error::RuntimeError::WaitConditionNotSupported {
+                                    condition_kind: condition_kind.to_owned(),
+                                };
+                            let engine_err = EngineError::Runtime(runtime_err);
+                            tracing::error!(
+                                target = "engine::wait",
+                                %execution_id,
+                                %node_key,
+                                condition_kind,
+                                error = %engine_err,
+                                "explicit timeout on WaitCondition not supported in W-S1; \
+                                 marking node Failed and returning error"
+                            );
+                            mark_node_failed(exec_state, node_key.clone(), &engine_err);
+                            cancel_token.cancel();
+                            return Some((node_key.clone(), engine_err.to_string()));
+                        }
+
+                        // Compute the timer wake instant for timer-based conditions.
+                        // Signal-driven conditions (Webhook / Approval / Execution)
+                        // require an explicit Resume signal that W-S2 will implement —
+                        // reject them with a typed error rather than parking with no
+                        // timer entry and permanently stalling the execution.
+                        let now = Utc::now();
+                        let wake_at: Option<DateTime<Utc>> = match condition {
+                            WaitCondition::Until { datetime } => Some(*datetime),
+                            WaitCondition::Duration { duration } => {
+                                chrono::Duration::from_std(*duration).ok().map(|d| now + d)
+                            },
+                            other => {
+                                let condition_kind = match other {
+                                    WaitCondition::Webhook { .. } => "Webhook",
+                                    WaitCondition::Approval { .. } => "Approval",
+                                    WaitCondition::Execution { .. } => "Execution",
+                                    _ => "Unknown",
+                                };
+                                let runtime_err =
+                                    crate::runtime::error::RuntimeError::WaitConditionNotSupported {
+                                        condition_kind: condition_kind.to_owned(),
+                                    };
+                                let engine_err = EngineError::Runtime(runtime_err);
+                                tracing::error!(
+                                    target = "engine::wait",
+                                    %execution_id,
+                                    %node_key,
+                                    condition_kind,
+                                    error = %engine_err,
+                                    "signal-driven WaitCondition not supported in W-S1; \
+                                     marking node Failed and returning error"
+                                );
+                                mark_node_failed(exec_state, node_key.clone(), &engine_err);
+                                cancel_token.cancel();
+                                return Some((node_key.clone(), engine_err.to_string()));
+                            },
+                        };
+
+                        // Budget enforcement for the partial output committed at park
+                        // time. The normal success path increments `total_output_bytes`
+                        // AFTER the node completes; Phase 1's `check_budget` catches
+                        // the violation before the next downstream node is dispatched.
+                        // The park path's `continue` skips Phase 3 output accounting
+                        // entirely — so we must enforce the budget HERE, before park,
+                        // or a large `partial_output` bypasses the limit silently.
+                        //
+                        // If the partial output is over-budget, fail the node (do NOT
+                        // park) so the downstream child is never dispatched.
+                        let partial_output_bytes: u64 = outputs
+                            .get(&node_key)
+                            .and_then(|v| serde_json::to_string(v.value()).ok())
+                            .map_or(0, |s| s.len() as u64);
+                        if partial_output_bytes > 0 {
+                            let new_total = total_output_bytes
+                                .fetch_add(partial_output_bytes, Ordering::Relaxed)
+                                + partial_output_bytes;
+                            if let Some(max_bytes) = budget.max_output_bytes
+                                && new_total > max_bytes
+                            {
+                                let budget_err = "execution budget exceeded: max_output_bytes \
+                                                  (partial_output at park time)";
+                                tracing::error!(
+                                    target = "engine::wait",
+                                    %execution_id,
+                                    %node_key,
+                                    partial_output_bytes,
+                                    new_total,
+                                    max_bytes,
+                                    "partial_output at park exceeds max_output_bytes budget; \
+                                     failing node instead of parking"
+                                );
+                                // Restore the counter — the node is being failed, not
+                                // committed, so its bytes should not count against the
+                                // budget for the remaining nodes.
+                                total_output_bytes
+                                    .fetch_sub(partial_output_bytes, Ordering::Relaxed);
+                                mark_node_failed(
+                                    exec_state,
+                                    node_key.clone(),
+                                    &EngineError::BudgetExceeded(budget_err.to_owned()),
+                                );
+                                cancel_token.cancel();
+                                return Some((node_key.clone(), budget_err.to_owned()));
+                            }
+                        }
+
+                        match exec_state.park_node(node_key.clone(), wake_at) {
+                            Ok(()) => {
+                                // Durably commit the `Waiting` state and the
+                                // already-staged `partial_output` before any
+                                // observer sees the node is parked. On
+                                // checkpoint failure, abort: the task slot
+                                // was already removed above and cannot be
+                                // re-dispatched, so abort is the honest path.
+                                if let Err(e) = self
+                                    .checkpoint_node(
+                                        scope,
+                                        execution_id,
+                                        node_key.clone(),
+                                        outputs,
+                                        exec_state,
+                                        repo_version,
+                                        fencing,
+                                    )
+                                    .await
+                                {
+                                    cancel_token.cancel();
+                                    return Some((node_key.clone(), e.to_string()));
+                                }
+                                // Push onto the wait_heap only for timer-driven
+                                // conditions; signal-driven conditions with no
+                                // timeout stay parked indefinitely until a
+                                // Resume arrives.
+                                if let Some(when) = wake_at {
+                                    wait_heap.push(Reverse((when, node_key.clone())));
+                                }
+                                self.emit_event(ExecutionEvent::NodeParked {
+                                    execution_id,
+                                    node_key: node_key.clone(),
+                                    wake_at,
+                                });
+                                tracing::info!(
+                                    target = "engine::wait",
+                                    %execution_id,
+                                    %node_key,
+                                    ?wake_at,
+                                    "node parked for external wait condition"
+                                );
+                                // Skip the normal completion path — downstream
+                                // gate holds until the wait is satisfied.
+                                continue;
+                            },
+                            Err(park_err) => {
+                                // park_node rejected the transition; treat as a
+                                // system failure rather than silently dropping
+                                // the node (the task slot was already removed,
+                                // so the engine cannot re-dispatch it). Surface
+                                // the error through the frontier abort path.
+                                tracing::error!(
+                                    target = "engine::wait",
+                                    %execution_id,
+                                    %node_key,
+                                    error = %park_err,
+                                    "park_node rejected Running→Waiting; aborting frontier"
+                                );
+                                cancel_token.cancel();
+                                return Some((node_key.clone(), park_err.to_string()));
+                            },
+                        }
+                    }
+
                     mark_node_completed(exec_state, node_key.clone());
 
                     // Track output size for budget enforcement.
@@ -3103,6 +3478,7 @@ impl WorkflowEngine {
                             task_nodes.clear();
                             drain_pending_to_cancelled(
                                 &mut retry_heap,
+                                &mut wait_heap,
                                 &mut ready_queue,
                                 exec_state,
                                 execution_id,
@@ -4459,6 +4835,11 @@ fn process_outgoing_edges(
 ///
 /// Rules:
 /// - `Skip` / `Drop` / `Terminate` → no edges activate on any port.
+/// - `Wait` → no edges activate from the `Wait` result; downstream edges
+///   are gated until the node reaches `Completed` (when the wait condition
+///   is satisfied). This is defense-in-depth: the park path in Phase 3
+///   structurally skips `process_outgoing_edges` on `Wait`, so this guard
+///   fires only if that skip is somehow bypassed.
 /// - Failed node → only edges with `from_port == "error"` activate; action authors wire their
 ///   failure path to whichever `ControlAction` fits (typically a `Switch` keyed on error class) or
 ///   to a recovery node.
@@ -4468,7 +4849,7 @@ fn process_outgoing_edges(
 /// - `Route { port }` → activates edges whose effective source port equals `port`.
 /// - `MultiOutput { outputs }` → activates edges whose effective source port is present in
 ///   `outputs`.
-/// - `Continue` / `Break` / `Wait` → engine treats these like `Success` for edge activation (they
+/// - `Continue` / `Break` → engine treats these like `Success` for edge activation (they
 ///   hit the main port); persistent state handling lives outside this routing decision.
 fn evaluate_edge(
     conn: &Connection,
@@ -4479,6 +4860,13 @@ fn evaluate_edge(
 
     // Skip / Drop / Terminate never activate any edge.
     if matches!(result, Some(Skip { .. } | Drop { .. } | Terminate { .. })) {
+        return false;
+    }
+
+    // Wait gates all downstream edges until the wait condition is
+    // satisfied (the park path in Phase 3 structurally skips
+    // `process_outgoing_edges`, so this is defense-in-depth).
+    if matches!(result, Some(Wait { .. })) {
         return false;
     }
 
@@ -4591,6 +4979,7 @@ fn check_budget(
 /// here only affect post-mortem log fidelity.
 fn drain_pending_to_cancelled(
     retry_heap: &mut BinaryHeap<Reverse<(DateTime<Utc>, NodeKey)>>,
+    wait_heap: &mut BinaryHeap<Reverse<(DateTime<Utc>, NodeKey)>>,
     ready_queue: &mut VecDeque<NodeKey>,
     exec_state: &mut ExecutionState,
     execution_id: ExecutionId,
@@ -4605,6 +4994,21 @@ fn drain_pending_to_cancelled(
             %execution_id,
             node_key = %parked,
             "WaitingRetry → Cancelled (cancel observed during backoff)"
+        );
+    }
+    // Drain parked wait nodes — `Waiting → Cancelled` lets a cancelled
+    // execution tear down nodes that were parked for an external
+    // condition without observing a phantom `Completed` step.
+    while let Some(Reverse((_, waiting))) = wait_heap.pop() {
+        let _ = exec_state.transition_node(waiting.clone(), NodeState::Cancelled);
+        if let Some(ns) = exec_state.node_states.get_mut(&waiting) {
+            ns.next_attempt_at = None;
+        }
+        tracing::debug!(
+            target = "engine::wait",
+            %execution_id,
+            node_key = %waiting,
+            "Waiting → Cancelled (cancel observed while parked)"
         );
     }
     while let Some(queued) = ready_queue.pop_front() {

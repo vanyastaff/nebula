@@ -594,6 +594,55 @@ impl ExecutionState {
         Ok(())
     }
 
+    /// Park a node that returned `ActionResult::Wait`.
+    ///
+    /// Promotes `Running → Waiting`, stamps `next_attempt_at` with the
+    /// timer wake instant (or clears it when no timer applies), and
+    /// bumps the execution version. Mirrors [`schedule_node_retry`] for
+    /// the wait-park path.
+    ///
+    /// The caller is responsible for:
+    /// - Persisting the node's `partial_output` through the normal
+    ///   outputs map before calling this method (so `checkpoint_node`
+    ///   commits both the output and the `Waiting` state atomically).
+    /// - Pushing `(wake_at, node_key)` onto the engine's `wait_heap`
+    ///   when `wake_at` is `Some` — that is the source of truth for
+    ///   timer-driven wakes.
+    ///
+    /// On success both the per-node `Running → Waiting` transition and
+    /// the `next_attempt_at` stamp are reflected in `version`. On `Err`
+    /// the state is left untouched.
+    ///
+    /// # Errors
+    /// - [`ExecutionError::NodeNotFound`] if `node_key` is unknown.
+    /// - [`ExecutionError::InvalidTransition`] if the node is not in `Running`
+    ///   (the engine may only call this immediately after dispatching the action).
+    ///
+    /// [`schedule_node_retry`]: Self::schedule_node_retry
+    pub fn park_node(
+        &mut self,
+        node_key: NodeKey,
+        wake_at: Option<DateTime<Utc>>,
+    ) -> Result<(), ExecutionError> {
+        self.transition_node(node_key.clone(), NodeState::Waiting)?;
+        // Stamp or clear the wake instant. `Waiting` with `wake_at ==
+        // None` means the park is signal-driven (webhook/approval/
+        // execution): only an explicit Resume will satisfy the condition.
+        // Stale failure metadata is cleared for the same reason
+        // `schedule_node_retry` clears it — a later `Completed`
+        // transition must not carry contradictory persisted fields.
+        let ns = self
+            .node_states
+            .get_mut(&node_key)
+            .ok_or(ExecutionError::NodeNotFound(node_key))?;
+        ns.next_attempt_at = wake_at;
+        ns.error_message = None;
+        ns.completed_at = None;
+        self.version += 1;
+        self.updated_at = Utc::now();
+        Ok(())
+    }
+
     /// Set a node's execution state directly.
     ///
     /// **This bypasses transition validation and the parent version
