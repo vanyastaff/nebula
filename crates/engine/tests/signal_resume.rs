@@ -24,7 +24,7 @@ use std::{
     collections::HashMap,
     sync::{
         Arc, OnceLock,
-        atomic::{AtomicU32, Ordering},
+        atomic::{AtomicBool, AtomicU32, Ordering},
     },
     time::Duration,
 };
@@ -46,6 +46,7 @@ use nebula_execution::{ExecutionState, ExecutionStatus};
 use nebula_metrics::MetricsRegistry;
 use nebula_storage::{InMemoryExecutionStore, InMemoryWorkflowVersionStore};
 use nebula_storage_port::{
+    FencingToken, Scope, StorageError, TransitionBatch, TransitionOutcome,
     dto::WorkflowVersionRecord,
     store::{ExecutionStore, WorkflowVersionStore},
 };
@@ -1144,5 +1145,280 @@ async fn satisfy_signal_waits_releases_lease_after_commit() {
         harness.downstream_invocations.load(Ordering::SeqCst),
         1,
         "downstream must run exactly once across two dispatch_resume calls"
+    );
+}
+
+// ── Deferred-on-non-landed-satisfy (P2 regression) ───────────────────────────
+
+/// Wraps an [`ExecutionStore`] and intercepts the first `commit()` call after
+/// `arm()` has been called, returning `FencedOut` WITHOUT applying the batch.
+/// All other calls — including `get`, lease operations, and subsequent commits
+/// — delegate transparently to the inner store.
+///
+/// This lets a test verify that `dispatch_resume` returns `Deferred` (and does
+/// not silently ack) when `satisfy_signal_waits` fails to land its CAS while
+/// the execution is still `Paused`.
+#[derive(Debug)]
+struct CommitFenceInterceptor {
+    inner: Arc<InMemoryExecutionStore>,
+    /// When `true`, the next `commit()` call returns `FencedOut` and disarms.
+    armed: AtomicBool,
+}
+
+impl CommitFenceInterceptor {
+    fn new(inner: Arc<InMemoryExecutionStore>) -> Self {
+        Self {
+            inner,
+            armed: AtomicBool::new(false),
+        }
+    }
+
+    /// Arm the interceptor so the NEXT `commit()` call is sabotaged.
+    fn arm(&self) {
+        self.armed.store(true, Ordering::SeqCst);
+    }
+}
+
+#[async_trait::async_trait]
+impl ExecutionStore for CommitFenceInterceptor {
+    async fn create(
+        &self,
+        scope: &Scope,
+        id: &str,
+        workflow_id: &str,
+        initial_state: serde_json::Value,
+    ) -> Result<(), StorageError> {
+        self.inner
+            .create(scope, id, workflow_id, initial_state)
+            .await
+    }
+
+    async fn get(
+        &self,
+        scope: &Scope,
+        id: &str,
+    ) -> Result<Option<nebula_storage_port::dto::ExecutionRecord>, StorageError> {
+        self.inner.get(scope, id).await
+    }
+
+    async fn commit(&self, batch: TransitionBatch) -> Result<TransitionOutcome, StorageError> {
+        // On the first armed commit, return FencedOut without touching the row.
+        if self
+            .armed
+            .compare_exchange(true, false, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            return Ok(TransitionOutcome::FencedOut);
+        }
+        self.inner.commit(batch).await
+    }
+
+    async fn acquire_lease(
+        &self,
+        scope: &Scope,
+        id: &str,
+        holder: &str,
+        ttl: Duration,
+    ) -> Result<Option<FencingToken>, StorageError> {
+        self.inner.acquire_lease(scope, id, holder, ttl).await
+    }
+
+    async fn renew_lease(
+        &self,
+        scope: &Scope,
+        id: &str,
+        token: FencingToken,
+        ttl: Duration,
+    ) -> Result<bool, StorageError> {
+        self.inner.renew_lease(scope, id, token, ttl).await
+    }
+
+    async fn release_lease(
+        &self,
+        scope: &Scope,
+        id: &str,
+        token: FencingToken,
+    ) -> Result<bool, StorageError> {
+        self.inner.release_lease(scope, id, token).await
+    }
+
+    async fn list_running(&self, scope: &Scope) -> Result<Vec<String>, StorageError> {
+        self.inner.list_running(scope).await
+    }
+
+    async fn list_running_for_workflow(
+        &self,
+        scope: &Scope,
+        workflow_id: &str,
+    ) -> Result<Vec<String>, StorageError> {
+        self.inner
+            .list_running_for_workflow(scope, workflow_id)
+            .await
+    }
+
+    async fn count(&self, scope: &Scope, workflow_id: Option<&str>) -> Result<u64, StorageError> {
+        self.inner.count(scope, workflow_id).await
+    }
+}
+
+/// **P2 — dispatch_resume defers when satisfy_signal_waits is FencedOut and
+/// execution is still Paused** (regression guard for the "bounded lost-Resume"
+/// bug class):
+///
+/// When `satisfy_signal_waits` acquires the lease but its `commit()` is
+/// rejected as `FencedOut` (TTL-expired and superseded generation), and the
+/// execution remains `Paused`, `dispatch_resume` MUST return
+/// `ControlDispatchError::Deferred` rather than `Ok(())`.  Returning `Ok(())`
+/// would silently ack the control-queue row, losing the Resume permanently.
+///
+/// Test mechanics:
+/// 1. Park the execution with a real store (`Paused` persisted).
+/// 2. Wire a second engine against a `CommitFenceInterceptor` wrapping the
+///    SAME underlying `InMemoryExecutionStore`, so lease + status reads go
+///    through to the shared row, but the first `commit()` inside
+///    `satisfy_signal_waits` is returned as `FencedOut` without mutating state.
+/// 3. Call `dispatch_resume` on the interceptor-backed dispatch.
+/// 4. Assert `Deferred` is returned.
+/// 5. Assert the execution is still `Paused` (wait node not satisfied).
+/// 6. Assert downstream ran 0 times (gate not unblocked).
+/// 7. Disarm the interceptor and redeliver the Resume — execution must complete.
+///
+/// **Falsifiability**: revert the `Err(e)` arm of `dispatch_resume`'s `Paused`
+/// match to return `Ok(())` unconditionally → step 4 assertion fails → RED.
+#[tokio::test]
+async fn dispatch_resume_defers_when_satisfy_commit_is_fenced_out_and_execution_is_paused() {
+    // ── Phase 1: park with a real store ──────────────────────────────────────
+    let harness = SignalHarness::new().await;
+    let workflow_id = harness.persist_signal_workflow().await;
+    let execution_id = harness.persist_created_execution(workflow_id).await;
+    let scope = nebula_engine::store_seam::single_tenant_scope();
+
+    harness
+        .dispatch
+        .dispatch_start(&scope, execution_id)
+        .await
+        .expect("dispatch_start must park the signal node");
+
+    assert_eq!(
+        harness.persisted_status(execution_id).await,
+        ExecutionStatus::Paused,
+        "execution must be Paused before the FencedOut test"
+    );
+    assert_eq!(
+        harness.downstream_invocations.load(Ordering::SeqCst),
+        0,
+        "downstream must not run before the signal wait is satisfied"
+    );
+
+    // ── Phase 2: wire a second engine with the commit interceptor ────────────
+    //
+    // The interceptor wraps the SAME inner store the harness uses, so:
+    //   - status reads (via `get`) see the real Paused row
+    //   - lease operations go through to the real store
+    //   - the first `commit()` inside `satisfy_signal_waits` returns FencedOut
+    //     without mutating the row → execution stays Paused
+    //
+    // Downstream invocations from this second engine's frontier loop are
+    // captured by the same `downstream_invocations` counter because the
+    // ActionRuntime instance is shared (same Arc).
+    let interceptor = Arc::new(CommitFenceInterceptor::new(Arc::clone(
+        &harness.stores.execution,
+    )));
+    let interceptor_as_store: Arc<dyn ExecutionStore> = Arc::clone(&interceptor) as _;
+
+    let downstream_invocations_2 = Arc::new(AtomicU32::new(0));
+    let registry2 = Arc::new(ActionRegistry::new());
+    registry2.register_stateless_instance(
+        ActionMetadata::new(
+            action_key!("test.signal.webhook_wait"),
+            "WebhookWaitNode",
+            "signal_resume deferred test stub",
+        ),
+        WebhookWaitNode,
+    );
+    registry2.register_stateless_instance(
+        ActionMetadata::new(
+            action_key!("test.signal.counting_echo"),
+            "CountingEchoNode",
+            "signal_resume deferred test stub",
+        ),
+        CountingEchoNode {
+            invocation_count: Arc::clone(&downstream_invocations_2),
+        },
+    );
+    let executor2: ActionExecutor =
+        Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
+    let runner2 = Arc::new(InProcessRunner::new(executor2));
+    let metrics2 = MetricsRegistry::new();
+    let runtime2 = Arc::new(
+        ActionRuntime::try_new(
+            registry2,
+            runner2,
+            DataPassingPolicy::default(),
+            metrics2.clone(),
+        )
+        .unwrap(),
+    );
+
+    let execution_stores_with_interceptor = nebula_engine::ExecutionStores {
+        execution: Arc::clone(&interceptor) as _,
+        journal: harness.stores.journal.clone(),
+        node_results: harness.stores.node_results.clone(),
+        checkpoints: harness.stores.checkpoints.clone(),
+        idempotency: harness.stores.idempotency.clone(),
+    };
+
+    let engine2 = Arc::new(
+        WorkflowEngine::new(runtime2, metrics2)
+            .unwrap()
+            .with_execution_stores(execution_stores_with_interceptor)
+            .with_workflow_stores(harness.stores.workflow_stores()),
+    );
+    // The dispatch must read status via the same raw inner store so the
+    // post-error re-read sees the real (still-Paused) row.
+    let dispatch2 = EngineControlDispatch::new(Arc::clone(&engine2), interceptor_as_store.clone());
+
+    // ── Phase 3: arm the interceptor and call dispatch_resume ─────────────────
+    interceptor.arm();
+
+    let result = dispatch2.dispatch_resume(&scope, execution_id).await;
+    assert!(
+        matches!(result, Err(ControlDispatchError::Deferred(_))),
+        "dispatch_resume must return Deferred when satisfy_signal_waits is FencedOut \
+         and execution is still Paused; got {result:?}"
+    );
+
+    // ── Phase 4: assert no state was mutated ──────────────────────────────────
+    assert_eq!(
+        harness.persisted_status(execution_id).await,
+        ExecutionStatus::Paused,
+        "execution must remain Paused after a FencedOut satisfy (wait not satisfied)"
+    );
+    assert_eq!(
+        downstream_invocations_2.load(Ordering::SeqCst),
+        0,
+        "downstream must not run when the satisfy did not land"
+    );
+
+    // ── Phase 5: redeliver the Resume (interceptor disarmed) → must complete ──
+    //
+    // The interceptor self-disarmed after the first intercept, so this
+    // redelivery goes through to the real store and the wait is properly satisfied.
+    let redeliver_result = dispatch2.dispatch_resume(&scope, execution_id).await;
+    assert!(
+        redeliver_result.is_ok(),
+        "redelivered dispatch_resume must succeed after the interceptor disarms; \
+         got {redeliver_result:?}"
+    );
+
+    assert_eq!(
+        harness.persisted_status(execution_id).await,
+        ExecutionStatus::Completed,
+        "execution must be Completed after the redelivered dispatch_resume satisfies the wait"
+    );
+    assert_eq!(
+        downstream_invocations_2.load(Ordering::SeqCst),
+        1,
+        "downstream must run exactly once — triggered only by the redelivered Resume"
     );
 }

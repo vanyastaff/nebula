@@ -17,12 +17,19 @@
 //! redeliver. Each dispatch method guards against re-delivery through one of
 //! two mechanisms:
 //!
-//! - **Start / Resume / Restart** short-circuit on persisted status. A command arriving for an
+//! - **Start / Restart** short-circuit on persisted status. A command arriving for an
 //!   already-terminal execution is `Ok(())`; a command arriving for a `Running` / `Cancelling`
 //!   execution is `Ok(())` (a sibling runner already owns the dispatch). A race where a second
 //!   dispatcher wins the lease between our read and the engine's own lease acquire surfaces as
-//!   [`EngineError::Leased`], which this impl maps to `Ok(())` so the same execution is not fenced
+//!   [`EngineError::Leased`], which `drive()` maps to `Ok(())` so the same execution is not fenced
 //!   as a consumer failure.
+//!
+//! - **Resume** additionally calls `satisfy_signal_waits` for `Paused` executions before
+//!   re-driving. Because `satisfy_signal_waits` holds the execution lease for its CAS, errors
+//!   split by effect: `Leased` returns `Deferred` (B1 reclaim redelivers); any other error
+//!   (CAS conflict, checkpoint failure) re-reads the persisted status — terminal / `Cancelling`
+//!   → ack; still non-terminal → `Deferred`. This ensures the Resume is never silently dropped
+//!   when the satisfy did not durably land.
 //!
 //! - **Cancel / Terminate** always signal the engine's cancel registry (except for orphan commands,
 //!   which are [`ControlDispatchError::Rejected`]). The underlying
@@ -230,10 +237,15 @@ impl ControlDispatch for EngineControlDispatch {
             //   `ControlDispatchError::Deferred` leaves the row in `Processing` so the
             //   B1 reclaim sweep redelivers it once the lease expires.
             //
-            // - `CasConflict` / other → a concurrent actor completed or cancelled the
-            //   execution between our status read and the CAS. Idempotency applies: ack
-            //   the row (`Ok(())`) because the concurrent actor owns the terminal
-            //   transition and we must not redeliver.
+            // - Any other error (`CasConflict` / `CheckpointFailed` / etc.) → the
+            //   satisfy did NOT durably land.  The correct action depends on the
+            //   *current* persisted status (re-read after the error):
+            //   · terminal / Cancelling → concurrent actor owns the transition → ack.
+            //   · still non-terminal (Paused / Running) → the wait may still be
+            //     pending → `Deferred` so B1 reclaim redelivers the Resume.
+            //   Acking unconditionally here would permanently drop the Resume when a
+            //   lease TTL-expiry causes a FencedOut (surfaced as CasConflict) while
+            //   the execution is still Paused — bounded lost-Resume.
             Some(ExecutionStatus::Paused) => {
                 match self.engine.satisfy_signal_waits(scope, execution_id).await {
                     Ok(SatisfyOutcome::Satisfied(satisfied_count)) => {
@@ -274,24 +286,87 @@ impl ControlDispatch for EngineControlDispatch {
                         )));
                     },
                     Err(e) => {
-                        // CAS conflict or internal error: a concurrent actor
-                        // concurrently resumed or cancelled the execution. The
-                        // idempotency contract treats this as a no-op — the
-                        // concurrent actor owns the terminal transition. Ack the row
-                        // so redelivery does not occur on an already-resolved state.
+                        // CAS conflict / fencing / checkpoint failure: the satisfy
+                        // did NOT durably land. The idempotency rule is:
+                        //   - ack ONLY when a post-error status re-read confirms the
+                        //     execution is now terminal (concurrent actor owns the
+                        //     transition) or Cancelling (cancel already in flight).
+                        //   - Defer otherwise — the wait may still be pending and the
+                        //     Resume must not be lost.
                         //
-                        // Observable: typed `ResumeDeferred` event + `tracing::warn`.
-                        tracing::warn!(
-                            %execution_id,
-                            error = %e,
-                            "dispatch_resume: satisfy_signal_waits rejected by CAS conflict; \
-                             treating as already-satisfied (concurrent actor owns transition)"
-                        );
-                        self.engine.emit_event(ExecutionEvent::ResumeDeferred {
-                            execution_id,
-                            reason: e.to_string(),
-                        });
-                        return Ok(());
+                        // Rationale: if our lease TTL-expires mid-commit, another runner
+                        // acquires the lease, bumps the generation, and our write is
+                        // FencedOut (surfaced here as CasConflict) — the wait node is
+                        // still Waiting and the execution is still Paused.  Acking here
+                        // would permanently drop the Resume (bounded lost-Resume of the
+                        // same class as the P1 bug).
+                        match self.read_status(scope, execution_id).await {
+                            Ok(Some(status))
+                                if status.is_terminal()
+                                    || matches!(status, ExecutionStatus::Cancelling) =>
+                            {
+                                // Concurrent actor drove the execution to a genuine
+                                // terminal or cancelling state — ack is safe here.
+                                tracing::info!(
+                                    %execution_id,
+                                    %status,
+                                    satisfy_error = %e,
+                                    "dispatch_resume: satisfy_signal_waits did not land but \
+                                     execution is now {status}; acking as idempotent"
+                                );
+                                return Ok(());
+                            },
+                            Ok(status) => {
+                                // Execution is not yet terminal (Paused / Running / Created
+                                // or row missing): the wait may still be pending.
+                                // Defer so B1 reclaim redelivers the Resume.
+                                let status_desc = status
+                                    .map(|s| s.to_string())
+                                    .unwrap_or_else(|| "not found".to_owned());
+                                tracing::warn!(
+                                    %execution_id,
+                                    %status_desc,
+                                    satisfy_error = %e,
+                                    "dispatch_resume: satisfy_signal_waits did not land and \
+                                     execution is still non-terminal ({status_desc}); \
+                                     deferring Resume for B1 reclaim"
+                                );
+                                self.engine.emit_event(ExecutionEvent::ResumeDeferred {
+                                    execution_id,
+                                    reason: format!(
+                                        "satisfy did not land ({e}); status={status_desc}"
+                                    ),
+                                });
+                                return Err(ControlDispatchError::Deferred(format!(
+                                    "execution {execution_id}: satisfy_signal_waits did not \
+                                     durably commit ({e}); status={status_desc}; \
+                                     Resume deferred for B1 reclaim"
+                                )));
+                            },
+                            Err(read_err) => {
+                                // Status re-read itself failed — conservative: Defer so
+                                // B1 reclaim redelivers; don't ack an unverified state.
+                                tracing::warn!(
+                                    %execution_id,
+                                    satisfy_error = %e,
+                                    read_error = %read_err,
+                                    "dispatch_resume: satisfy_signal_waits did not land and \
+                                     status re-read also failed; deferring Resume conservatively"
+                                );
+                                self.engine.emit_event(ExecutionEvent::ResumeDeferred {
+                                    execution_id,
+                                    reason: format!(
+                                        "satisfy did not land ({e}); status re-read failed: \
+                                         {read_err}"
+                                    ),
+                                });
+                                return Err(ControlDispatchError::Deferred(format!(
+                                    "execution {execution_id}: satisfy_signal_waits did not land \
+                                     ({e}) and status re-read failed ({read_err}); \
+                                     Resume deferred conservatively for B1 reclaim"
+                                )));
+                            },
+                        }
                     },
                 }
                 self.drive(scope, execution_id).await
