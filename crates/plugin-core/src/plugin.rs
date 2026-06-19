@@ -7,7 +7,9 @@ use nebula_action::factory::{GenericControlFactory, GenericStatelessFactory};
 use nebula_metadata::{ManifestError, PluginManifest};
 use nebula_plugin::Plugin;
 
-use crate::actions::{CoreIf, CoreSwitch, DateTimeAction, Filter, JsonTransform, SetFields};
+use crate::actions::{
+    Aggregate, CoreIf, CoreSwitch, DateTimeAction, Filter, JsonTransform, SetFields,
+};
 
 /// First-party core plugin.
 ///
@@ -50,6 +52,7 @@ impl Plugin for CorePlugin {
 
     fn actions(&self) -> Vec<Arc<dyn ActionFactory>> {
         vec![
+            Arc::new(GenericStatelessFactory::<Aggregate>::new()),
             Arc::new(GenericStatelessFactory::<SetFields>::new()),
             Arc::new(GenericStatelessFactory::<JsonTransform>::new()),
             Arc::new(GenericStatelessFactory::<DateTimeAction>::new()),
@@ -70,6 +73,18 @@ mod tests {
     fn plugin_key_is_core() {
         let plugin = CorePlugin::try_new().expect("CorePlugin::try_new must succeed");
         assert_eq!(plugin.key().as_str(), "core");
+    }
+
+    #[test]
+    fn resolves_aggregate_action() {
+        let resolved =
+            ResolvedPlugin::from(CorePlugin::try_new().expect("CorePlugin::try_new must succeed"))
+                .expect("CorePlugin must resolve without errors");
+        let key = nebula_core::ActionKey::new("core.aggregate").unwrap();
+        assert!(
+            resolved.action(&key).is_some(),
+            "core.aggregate must be registered in the resolved plugin"
+        );
     }
 
     #[test]
