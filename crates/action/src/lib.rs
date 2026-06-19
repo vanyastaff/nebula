@@ -32,6 +32,10 @@
 
 /// Base action trait defining identity and metadata.
 pub mod action;
+/// [`AgentAction`] author trait, [`AgentHandle`] dyn contract, and
+/// [`AgentActionAdapter`] bridging to the engine's turn loop. The
+/// public contract for autonomous multi-turn reasoning nodes.
+pub mod agent;
 /// Capability interfaces injected into contexts (resources, logger, trigger).
 pub mod capability;
 /// Runtime context provided to actions during execution.
@@ -99,6 +103,7 @@ pub mod webhook;
 // ── Public re-exports ───────────────────────────────────────────────────────
 
 pub use action::Action;
+pub use agent::{AgentAction, AgentActionAdapter};
 pub use capability::{ExecutionEmitter, TriggerHealth, TriggerHealthSnapshot, TriggerScheduler};
 pub use context::{
     ActionContext, ActionContextExt, ActionRuntimeContext, CredentialContextExt, HasNodeIdentity,
@@ -109,13 +114,14 @@ pub use error::{
     ActionError, ActionErrorExt, MAX_VALIDATION_DETAIL, RetryHintCode, ValidationReason,
 };
 pub use factory::{
-    ActionFactory, GenericControlFactory, GenericResourceFactory, GenericStatefulFactory,
-    GenericStatelessFactory, GenericStreamFactory, GenericTriggerFactory, InstanceFactory,
+    ActionFactory, GenericAgentFactory, GenericControlFactory, GenericResourceFactory,
+    GenericStatefulFactory, GenericStatelessFactory, GenericStreamFactory, GenericTriggerFactory,
+    InstanceFactory,
 };
 pub use from_workflow_node::FromWorkflowNode;
 pub use handle::{
-    ActionHandle, ControlHandle, ResourceHandle, StatefulHandle, StatelessHandle, StreamHandle,
-    TriggerHandle,
+    ActionHandle, AgentHandle, ControlHandle, ResourceHandle, StatefulHandle, StatelessHandle,
+    StreamHandle, TriggerHandle,
 };
 pub use idempotency::IdempotencyKey;
 pub use metadata::{

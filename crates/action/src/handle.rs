@@ -11,6 +11,7 @@
 //! - [`TriggerHandle`] — start/stop trigger lifecycle.
 //! - [`ResourceHandle`] — graph-scoped resource configure/cleanup.
 //! - [`ControlHandle`] — flow-control nodes desugared to a stateless surface.
+//! - [`AgentHandle`] — multi-turn reasoning loop with budget and per-turn timeout.
 //!
 //! The engine produces an `ActionHandle` per execution via
 //! [`ActionFactory::instantiate`](crate::ActionFactory::instantiate).
@@ -27,6 +28,11 @@ use crate::{
     result::ActionResult,
     trigger::{TriggerEvent, TriggerEventOutcome},
 };
+
+// `AgentHandle` is defined in the `agent` module alongside `AgentAction` and
+// `AgentActionAdapter`. Re-exported here so the engine and callers reach it
+// via `crate::handle::AgentHandle`, consistent with the other XxxHandle types.
+pub use crate::agent::AgentHandle;
 
 // ── Sub-traits ──────────────────────────────────────────────────────────────
 
@@ -226,6 +232,8 @@ pub enum ActionHandle {
     Resource(Box<dyn ResourceHandle>),
     /// Flow-control node (If / Switch / Router / Filter / NoOp / Stop / Fail).
     Control(Box<dyn ControlHandle>),
+    /// Multi-turn reasoning loop with a per-budget and per-turn wall-clock timeout.
+    Agent(Box<dyn AgentHandle>),
 }
 
 impl ActionHandle {
@@ -239,6 +247,7 @@ impl ActionHandle {
             Self::Trigger(h) => h.metadata(),
             Self::Resource(h) => h.metadata(),
             Self::Control(h) => h.metadata(),
+            Self::Agent(h) => h.metadata(),
         }
     }
 
@@ -277,6 +286,12 @@ impl ActionHandle {
     pub fn is_control(&self) -> bool {
         matches!(self, Self::Control(_))
     }
+
+    /// Whether this is an agent action handle.
+    #[must_use]
+    pub fn is_agent(&self) -> bool {
+        matches!(self, Self::Agent(_))
+    }
 }
 
 impl fmt::Debug for ActionHandle {
@@ -288,6 +303,7 @@ impl fmt::Debug for ActionHandle {
             Self::Trigger(h) => ("Trigger", h.metadata().base.key.as_str()),
             Self::Resource(h) => ("Resource", h.metadata().base.key.as_str()),
             Self::Control(h) => ("Control", h.metadata().base.key.as_str()),
+            Self::Agent(h) => ("Agent", h.metadata().base.key.as_str()),
         };
         f.debug_tuple(tag).field(&key).finish()
     }

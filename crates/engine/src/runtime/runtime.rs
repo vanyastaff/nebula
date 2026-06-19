@@ -8,8 +8,8 @@ use std::{sync::Arc, time::Instant};
 use async_trait::async_trait;
 use dashmap::DashMap;
 use nebula_action::{
-    ActionContext, ActionError, ActionFactory, ActionHandle, ActionMetadata, IsolationLevel,
-    StreamHandle,
+    ActionContext, ActionError, ActionFactory, ActionHandle, ActionMetadata, AgentHandle,
+    IsolationLevel, StreamHandle,
     output::{ActionOutput, DataReference},
     result::ActionResult,
 };
@@ -454,6 +454,13 @@ impl ActionRuntime {
                 self.observe_dispatched(started, &r);
                 r
             },
+            ActionHandle::Agent(inner) => {
+                let r = self
+                    .execute_agent_handle(&metadata, inner, input, context)
+                    .await;
+                self.observe_dispatched(started, &r);
+                r
+            },
             ActionHandle::Trigger(_) => {
                 self.observe_rejected(dispatch_reject_reason::TRIGGER_NOT_EXECUTABLE);
                 return Err(RuntimeError::TriggerNotExecutable {
@@ -704,6 +711,151 @@ impl ActionRuntime {
             )));
         }
         Ok(handle.dispatch(input, context).await?)
+    }
+
+    /// Agent dispatch via `Box<dyn AgentHandle>`.
+    ///
+    /// Runs the agent's own turn loop — deliberately NOT a clone of
+    /// `execute_stateful_handle`. Three properties differ by design (ADR-0103 D2):
+    ///
+    /// - **No `StatefulStuck` digest guard** — a turn that leaves `Turn` unchanged
+    ///   is legal; an LLM thinking without mutating state is not a bug.
+    /// - **`max_turns()` budget** — replaces the 10 000-iteration global cap with
+    ///   the author-declared per-agent budget.
+    /// - **Per-turn wall-clock timeout** — each `step` future is individually
+    ///   bounded so a hung provider cannot pin a worker indefinitely.
+    ///
+    /// Turn state is kept as a local `serde_json::Value` variable. There is no
+    /// durable checkpoint: on a worker crash the whole action re-executes from
+    /// scratch with the original input. Mid-loop resume would require wiring a
+    /// checkpoint sink, which is out of scope for this foundational implementation.
+    ///
+    /// # Cancellation
+    ///
+    /// Every turn races against the execution-level cancellation token via
+    /// `tokio::select!`. The per-turn timeout (if any) is composed with
+    /// cancellation so neither can block the other.
+    #[tracing::instrument(
+        name = "runtime.execute_agent_handle",
+        skip_all,
+        fields(
+            action.key = %metadata.base.key.as_str(),
+            action.kind = "agent",
+            max_turns = handle.max_turns(),
+        )
+    )]
+    async fn execute_agent_handle(
+        &self,
+        metadata: &ActionMetadata,
+        handle: Box<dyn AgentHandle>,
+        input: serde_json::Value,
+        context: &dyn ActionContext,
+    ) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
+        if !matches!(metadata.isolation_level, IsolationLevel::None) {
+            return Err(RuntimeError::Internal(
+                "capability-gated agent execution is not yet supported".into(),
+            ));
+        }
+
+        if context.cancellation().is_cancelled() {
+            return Err(ActionError::Cancelled.into());
+        }
+
+        let mut turn_state = handle.init_turn(&input)?;
+        let max_turns = handle.max_turns();
+        let turn_timeout = handle.turn_timeout();
+
+        let mut turn: u32 = 0;
+
+        loop {
+            if turn >= max_turns {
+                return Err(RuntimeError::AgentBudgetExceeded {
+                    key: metadata.base.key.as_str().to_owned(),
+                    max_turns,
+                });
+            }
+
+            if context.cancellation().is_cancelled() {
+                return Err(ActionError::Cancelled.into());
+            }
+
+            let step_result = {
+                let step_future = handle.step(&mut turn_state, context);
+                tokio::pin!(step_future);
+
+                match turn_timeout {
+                    Some(deadline) => {
+                        tokio::select! {
+                            biased;
+                            () = context.cancellation().cancelled() => {
+                                return Err(ActionError::Cancelled.into());
+                            }
+                            timeout_result = tokio::time::timeout(deadline, &mut step_future) => {
+                                match timeout_result {
+                                    Ok(step_outcome) => step_outcome,
+                                    Err(_elapsed) => {
+                                        return Err(RuntimeError::AgentTurnTimeout {
+                                            key: metadata.base.key.as_str().to_owned(),
+                                            turn,
+                                            timeout: deadline,
+                                        });
+                                    },
+                                }
+                            }
+                        }
+                    },
+                    None => {
+                        tokio::select! {
+                            biased;
+                            () = context.cancellation().cancelled() => {
+                                return Err(ActionError::Cancelled.into());
+                            }
+                            step_outcome = &mut step_future => step_outcome,
+                        }
+                    },
+                }
+            };
+
+            let result = step_result?;
+
+            // Log the 0-based turn index before incrementing — consistent with
+            // `AgentTurnTimeout.turn` which also carries the 0-based index.
+            tracing::debug!(
+                action.key = %metadata.base.key.as_str(),
+                turn,
+                max_turns,
+                "agent turn completed"
+            );
+
+            turn = turn.saturating_add(1);
+
+            match result {
+                ActionResult::Continue { delay, .. } => {
+                    if let Some(d) = delay {
+                        tokio::select! {
+                            () = tokio::time::sleep(d) => {}
+                            () = context.cancellation().cancelled() => {
+                                return Err(ActionError::Cancelled.into());
+                            }
+                        }
+                    }
+                    // Loop continues with updated turn_state (already mutated in-place
+                    // by the adapter's `step` implementation).
+                },
+                ActionResult::Wait { .. } => {
+                    // The Wait arm requires the durable park/resume machinery which
+                    // is not yet wired in the engine. Surface an honest error rather
+                    // than silently mishandling the result.
+                    return Err(RuntimeError::AgentWaitNotSupported {
+                        key: metadata.base.key.as_str().to_owned(),
+                    });
+                },
+                terminal => {
+                    // Any other terminal (Break, Success, Skip, Terminate, …) ends the loop.
+                    return Ok(terminal);
+                },
+            }
+        }
     }
 
     /// Observe a dispatched handler execution.
