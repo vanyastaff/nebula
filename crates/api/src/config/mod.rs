@@ -27,9 +27,9 @@ pub use errors::ApiConfigError;
 pub use jwt::JwtSecret;
 pub use oauth::{OAuthEndpoints, OAuthProviderConfig, OAuthProvidersConfig, OIDC_HARDCODED_SCOPES};
 pub use sub::{
-    AuthApiConfig, AuthBackendKind, CookieConfig, CorsConfig, IdempotencyApiConfig,
-    IdempotencyBackend, PaginationConfig, SmtpEmailConfig, SmtpTlsMode, TlsConfig,
-    VersioningConfig, WebhookApiConfig,
+    AuthApiConfig, AuthBackendKind, CookieConfig, CorsConfig, ExecutionBackendKind,
+    ExecutionStoreConfig, IdempotencyApiConfig, IdempotencyBackend, PaginationConfig,
+    SmtpEmailConfig, SmtpTlsMode, TlsConfig, VersioningConfig, WebhookApiConfig,
 };
 
 use std::{net::SocketAddr, sync::OnceLock, time::Duration};
@@ -148,6 +148,16 @@ pub struct ApiConfig {
     #[serde(default)]
     pub webhook: WebhookApiConfig,
 
+    /// Execution-store and control-queue backend configuration.
+    ///
+    /// Drives the composition root's selection between the dev-only
+    /// in-memory adapters (default), file-local SQLite, and shared
+    /// PostgreSQL. The backend selector is bound to
+    /// `API_EXECUTION_BACKEND` (case-insensitive `memory` / `sqlite` /
+    /// `postgres`); the SQLite file path is `API_EXECUTION_DB_PATH`.
+    #[serde(default)]
+    pub execution: ExecutionStoreConfig,
+
     /// Production SMTP transport configuration for the `EmailPort`.
     ///
     /// `None` keeps the composition root on the dev `EchoSink` (the
@@ -181,6 +191,7 @@ impl std::fmt::Debug for ApiConfig {
             .field("pagination", &self.pagination)
             .field("idempotency", &self.idempotency)
             .field("auth", &self.auth)
+            .field("execution", &self.execution)
             .field("smtp", &self.smtp)
             .finish()
     }
@@ -312,6 +323,8 @@ impl ApiConfig {
         );
         let auth = Self::auth_from_env()?;
         tracing::info!(backend = ?auth.backend, "auth: config loaded");
+        let execution = Self::execution_from_env()?;
+        tracing::info!(backend = ?execution.backend, db_path = %execution.db_path, "execution-stores: config loaded");
         let smtp = Self::smtp_from_env()?;
         if let Some(cfg) = smtp.as_ref() {
             tracing::info!(
@@ -347,6 +360,7 @@ impl ApiConfig {
             idempotency,
             auth,
             webhook: Self::webhook_from_env()?,
+            execution,
             smtp,
         })
     }
@@ -419,6 +433,26 @@ impl ApiConfig {
         Ok(WebhookApiConfig {
             bootstrap_from_storage,
         })
+    }
+
+    fn execution_from_env() -> Result<ExecutionStoreConfig, ApiConfigError> {
+        let backend = match std::env::var("API_EXECUTION_BACKEND") {
+            Ok(raw) => match raw.trim().to_ascii_lowercase().as_str() {
+                "memory" => ExecutionBackendKind::Memory,
+                "sqlite" => ExecutionBackendKind::Sqlite,
+                "postgres" => ExecutionBackendKind::Postgres,
+                _ => {
+                    return Err(ApiConfigError::ParseEnum {
+                        var: "EXECUTION_BACKEND",
+                        raw,
+                    });
+                },
+            },
+            Err(_) => ExecutionBackendKind::Memory,
+        };
+        let db_path = std::env::var("API_EXECUTION_DB_PATH")
+            .unwrap_or_else(|_| "nebula-server-execution.db".to_string());
+        Ok(ExecutionStoreConfig { backend, db_path })
     }
 
     /// Load the optional SMTP transport config.
@@ -560,6 +594,7 @@ impl ApiConfig {
             idempotency: IdempotencyApiConfig::default(),
             auth: AuthApiConfig::default(),
             webhook: WebhookApiConfig::default(),
+            execution: ExecutionStoreConfig::default(),
             smtp: None,
         }
     }

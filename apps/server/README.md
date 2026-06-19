@@ -20,6 +20,60 @@ canonical registry is `crates/api/src/config/env.rs`. The composition
 root in `apps/server/src/compose.rs` is the only place those values
 turn into concrete `Arc<dyn …>` ports.
 
+## Execution-store backend
+
+The server's execution engine (workflow execution rows, control queue, journal)
+is backed by one of three selectable stores. Choose based on your deployment needs.
+
+### Behaviour contract
+
+| `API_EXECUTION_BACKEND` | Store | When to use |
+|-------------------------|-------|-------------|
+| **unset** / `memory`    | In-memory (dev default) | Local development. Execution state is lost on restart. Cannot be shared across processes. |
+| `sqlite`                | WAL-mode SQLite file | Single-process production. State survives restarts. Not shareable across hosts or concurrent writers. |
+| `postgres`              | PostgreSQL (build with `--features postgres`) | Multi-process or multi-host production. State is shared across all replicas that point at the same database. |
+
+Without an explicit `API_EXECUTION_BACKEND`, the server uses in-memory adapters
+and emits a `tracing::warn!` at startup when `NEBULA_ENV` is not `dev` / `development`
+/ `local`. This matches the idempotency-store convention.
+
+### Env vars
+
+| Variable | Type | Default | Notes |
+|----------|------|---------|-------|
+| `API_EXECUTION_BACKEND` | enum | `memory` | Case-insensitive: `memory`, `sqlite`, `postgres`. |
+| `API_EXECUTION_DB_PATH` | string | `nebula-server-execution.db` | SQLite only. Path relative to the working directory. |
+| `DATABASE_URL` | string | — | Postgres only. Standard sqlx DSN (`postgres://user:pass@host/db`). Required when `API_EXECUTION_BACKEND=postgres`. |
+
+### NodeResult and Checkpoint stores
+
+`NodeResultStore` and `CheckpointStore` always use in-memory adapters regardless
+of `API_EXECUTION_BACKEND`. These stores hold transient per-execution data (node
+output slots and stateful action checkpoints) that are written and read within a
+single execution lifetime. Durability is provided by the `ExecutionStore` state
+machine (one JSON blob per execution row); on a crash the reclaim sweep re-delivers
+the job and the engine re-executes affected nodes from the last persisted state.
+
+### Example: SQLite single-process production
+
+```bash
+API_EXECUTION_BACKEND=sqlite
+API_EXECUTION_DB_PATH=/var/lib/nebula/execution.db
+```
+
+### Example: Postgres multi-process production
+
+```bash
+API_EXECUTION_BACKEND=postgres
+DATABASE_URL=postgres://nebula:secret@db.internal/nebula_prod
+```
+
+Build with the `postgres` feature:
+
+```bash
+cargo build --release -p nebula-server --features postgres
+```
+
 ## Email delivery (SMTP)
 
 The API needs an `EmailPort` to ship sign-up verification and

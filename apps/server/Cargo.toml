@@ -13,13 +13,15 @@ path = "src/main.rs"
 
 [dependencies]
 nebula-api = { path = "../../crates/api" }
-# The spec-16 port wiring (in-memory adapters behind the `nebula-tenancy`
-# scoping decorators) is encapsulated in `AppState::in_memory`, so the
-# composition root needs neither `nebula-storage-port` nor
-# `nebula-tenancy` directly. `nebula-storage` is still required for the
-# PG-backed idempotency store (`nebula_storage::pg::PgIdempotencyStore`,
-# gated by `feature = "postgres"`).
-nebula-storage = { path = "../../crates/storage", features = ["credential-in-memory"] }
+# In-memory adapters and the SQLite/Postgres execution-store paths live in
+# nebula-storage. The `sqlite` feature enables SqliteConnectOptions/Pool/stores;
+# PG-backed stores are gated behind the `postgres` cargo feature.
+nebula-storage = { path = "../../crates/storage", features = ["credential-in-memory", "sqlite"] }
+# Direct dep: `ExecutionStoreBundle` in compose.rs names the port trait objects
+# (`WorkflowStore`, `ControlQueue`, `TriggerDedupInbox`, …) directly, so the
+# storage-port crate must be a real dependency, not accessed through re-exports.
+# nebula-server is in deny.toml's nebula-storage-port `wrappers` allowlist.
+nebula-storage-port = { path = "../../crates/storage-port" }
 # Composition root wires a process-wide `MetricsRegistry` and attaches the OTLP push
 # pipeline via `TelemetryGuard::attach_metrics_exporter`. Direct dep so the surface stays
 # stable across api re-export refactors.
@@ -38,18 +40,20 @@ secrecy = { workspace = true }
 # of the lettre direct dep (and library consumers of nebula-api do not pull
 # lettre transitively).
 lettre = { workspace = true }
-# Optional — only linked by the PG-backed idempotency path in
-# `compose::build_pg_idempotency_store` (gated by `feature = "postgres"`).
-# Mirrors `crates/api/Cargo.toml` exactly so the verbatim `use sqlx::...`
-# port resolves identically.
-sqlx = { workspace = true, optional = true, features = [
-  "runtime-tokio",
-  "postgres",
-  "tls-rustls-ring-native-roots",
-] }
+# SQLite + Postgres: a single sqlx dep with sqlite always enabled (the durable
+# single-process backend), and postgres + TLS enabled by the `postgres` cargo
+# feature. This mirrors how the worker binary wires sqlx across its two paths.
+sqlx = { workspace = true, features = ["runtime-tokio", "sqlite"] }
 
 [features]
-postgres = ["nebula-api/postgres", "dep:sqlx"]
+postgres = ["nebula-api/postgres", "sqlx/postgres", "sqlx/tls-rustls-ring-native-roots"]
+
+[dev-dependencies]
+tempfile = { workspace = true }
+# Activate the `test-util` feature of nebula-api for tests — exposes
+# `ApiConfig::for_test()`. Cargo unions features from [dependencies] and
+# [dev-dependencies], so this only activates the feature in test builds.
+nebula-api = { path = "../../crates/api", features = ["test-util"] }
 
 [lints]
 workspace = true
