@@ -55,6 +55,7 @@ use crate::{
     WorkflowEngine,
     control_consumer::{ControlDispatch, ControlDispatchError},
     error::EngineError,
+    event::ExecutionEvent,
 };
 
 /// Engine-owned [`ControlDispatch`] implementation.
@@ -198,8 +199,6 @@ impl ControlDispatch for EngineControlDispatch {
         scope: &Scope,
         execution_id: ExecutionId,
     ) -> Result<(), ControlDispatchError> {
-        // `Resume` and `Start` converge on the same engine entry today — see
-        // the `drive` docs. The idempotency read mirrors `dispatch_start`.
         match self.read_status(scope, execution_id).await? {
             None => Err(ControlDispatchError::Rejected(format!(
                 "execution {execution_id} not found — resume command orphaned"
@@ -212,7 +211,47 @@ impl ControlDispatch for EngineControlDispatch {
                 | ExecutionStatus::Cancelled
                 | ExecutionStatus::TimedOut,
             ) => Ok(()),
-            Some(ExecutionStatus::Created | ExecutionStatus::Paused) => {
+            // `Created`: no signal-driven waits exist yet — drive directly.
+            Some(ExecutionStatus::Created) => self.drive(scope, execution_id).await,
+            // `Paused`: the execution is suspended awaiting an external signal.
+            // Satisfy all signal-driven waits (Waiting{next_attempt_at==None}→Completed)
+            // via durable CAS BEFORE re-driving. This is the only code path that
+            // calls `satisfy_signal_waits`; Start / Restart / worker re-drives do not,
+            // so a crashed-and-reclaimed Paused execution re-parks its wait nodes
+            // rather than auto-completing them — the structural discriminator that
+            // prevents an unintended auto-approval on crash recovery.
+            Some(ExecutionStatus::Paused) => {
+                match self.engine.satisfy_signal_waits(scope, execution_id).await {
+                    Ok(satisfied_count) => {
+                        tracing::info!(
+                            %execution_id,
+                            satisfied_count,
+                            "dispatch_resume: signal waits satisfied; driving execution"
+                        );
+                    },
+                    Err(e) => {
+                        // Version conflict or fencing rejection: another runner
+                        // concurrently resumed (or cancelled) the execution. The
+                        // idempotency contract treats this as a no-op — the
+                        // concurrent actor owns the terminal transition.
+                        //
+                        // The drop must be OBSERVABLE (observability-DoD): a typed
+                        // `ResumeDeferred` event + `tracing::warn` let operators
+                        // distinguish transient CAS races (expected; low rate) from
+                        // systematic drops (routing or lease bug; high rate).
+                        tracing::warn!(
+                            %execution_id,
+                            error = %e,
+                            "dispatch_resume: satisfy_signal_waits rejected; \
+                             treating as already-satisfied (idempotent Resume)"
+                        );
+                        self.engine.emit_event(ExecutionEvent::ResumeDeferred {
+                            execution_id,
+                            reason: e.to_string(),
+                        });
+                        return Ok(());
+                    },
+                }
                 self.drive(scope, execution_id).await
             },
         }

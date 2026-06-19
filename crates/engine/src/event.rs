@@ -166,6 +166,29 @@ pub enum ExecutionEvent {
         termination_reason: Option<ExecutionTerminationReason>,
     },
 
+    /// A `dispatch_resume` command's durable `satisfy_signal_waits` CAS was
+    /// rejected by a concurrent actor (version conflict or fencing rejection)
+    /// before the signal-driven wait nodes could be transitioned to `Completed`.
+    ///
+    /// The Resume is treated as a no-op at-least-once semantics: the competing
+    /// actor owns the execution, so this Resume is deferred/dropped safely.
+    /// At-least-once redelivery will retry if the competing actor was a reclaim
+    /// re-drive (re-parks rather than completing); a genuine concurrent Resume
+    /// makes this event vacuous.
+    ///
+    /// # Observability
+    ///
+    /// A `tracing::warn!` fires on the same code path immediately before this
+    /// event is bus-emitted. Together they allow operators to distinguish a
+    /// transient CAS race (expected; low rate) from a systematic drop (unexpected;
+    /// high rate suggests a lease or routing bug).
+    ResumeDeferred {
+        /// Execution whose Resume was deferred due to a CAS conflict.
+        execution_id: ExecutionId,
+        /// Human-readable reason from the `EngineError` that caused the deferral.
+        reason: String,
+    },
+
     /// A scoped resource's `Resource::destroy` future overran its
     /// configured cleanup budget (default
     /// [`crate::scoped_resources::DEFAULT_CLEANUP_TIMEOUT`]).

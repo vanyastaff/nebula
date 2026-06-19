@@ -127,8 +127,8 @@ impl StatelessAction for WaitUntilHandler {
 }
 
 /// Returns `ActionResult::Wait` with `WaitCondition::Webhook` — a
-/// signal-driven condition that W-S1 does not support. Used to verify
-/// `WaitConditionNotSupported` is returned rather than silently parking.
+/// signal-driven condition. Used to verify that the node parks successfully
+/// (execution → `Paused`) and does NOT immediately fail with an error.
 struct WebhookWaitHandler;
 
 /// Returns `ActionResult::Wait` with a timer condition AND an explicit
@@ -616,67 +616,108 @@ async fn cancel_during_wait_drains_heap() {
     );
 }
 
-/// 5) **Signal-driven condition rejected (W-S1 boundary)**:
-/// a node returning `ActionResult::Wait` with `WaitCondition::Webhook`
-/// must fail with a `WaitConditionNotSupported` error rather than parking
-/// without a timer entry and stalling the execution indefinitely.
+/// 5) **Webhook signal-park → `Paused`, downstream gated (W-S2.1 gate test)**:
+/// a two-node workflow `webhook_node → downstream` where `webhook_node` parks
+/// itself via `WaitCondition::Webhook` (no timeout). The test asserts:
 ///
-/// **Falsifiability**: change the park branch to handle `Webhook` the same
-/// as `Duration` (with `wake_at = None`) → the node parks, the frontier
-/// empties with a non-terminal `Waiting` node, and the engine either hangs
-/// (no timer to fire) or triggers `FrontierIntegrityViolation`. Restore the
-/// typed error return → the node fails immediately → `Failed` status → green.
+/// - At the instant `NodeParked` is received, `downstream_calls == 0` — the
+///   downstream edge is gated, not already activated.
+/// - After the frontier exits, `downstream_calls` is still 0 — the execution
+///   parked, not silently ran the edge.
+/// - The execution returns `Paused` (not `Failed`, not `Completed`, not hung).
+///
+/// **Falsifiability (gate assertion)**:
+/// - Re-introduce the W-S1 reject for Webhook → the node fails immediately →
+///   `result.status == Failed` → the `== Paused` assertion fails.
+/// - Remove priority-4a from `determine_final_status` → the engine returns
+///   `Failed+FrontierIntegrityViolation` → `== Paused` assertion fails.
+/// - Remove the `continue` from the park path → downstream runs before park →
+///   `downstream_calls == 1` at `NodeParked` → the `== 0` assertion fails.
 #[tokio::test]
-async fn webhook_wait_condition_returns_unsupported_error() {
+async fn webhook_wait_condition_parks_execution_as_paused() {
+    let downstream_calls = Arc::new(AtomicU32::new(0));
+
     let registry = Arc::new(ActionRegistry::new());
     registry.register_stateless_instance(
         ActionMetadata::new(
             action_key!("webhook_waiter"),
             "WebhookWaiter",
-            "waits for webhook callback",
+            "parks on webhook callback",
         ),
         WebhookWaitHandler,
     );
+    registry.register_stateless_instance(
+        ActionMetadata::new(action_key!("ds_webhook"), "DsWebhook", "downstream echo"),
+        EchoHandler {
+            invocations: Arc::clone(&downstream_calls),
+        },
+    );
 
-    let engine = make_engine(registry);
-    let n = node_key!("webhook_node");
+    let event_bus = nebula_eventbus::EventBus::<ExecutionEvent>::new(64);
+    let mut events_rx = event_bus.subscribe();
+    let engine = Arc::new(make_engine(registry).with_event_bus(event_bus));
+
+    let n1 = node_key!("webhook_node");
+    let n2 = node_key!("ds_node");
     let wf = make_workflow(
-        vec![NodeDefinition::new(n, "webhook_wait_node", "core", "webhook_waiter").unwrap()],
-        vec![],
+        vec![
+            NodeDefinition::new(n1.clone(), "webhook_wait_node", "core", "webhook_waiter").unwrap(),
+            NodeDefinition::new(n2, "ds_node", "core", "ds_webhook").unwrap(),
+        ],
+        vec![Connection::new(n1.clone(), node_key!("ds_node"))],
         WorkflowConfig::default(),
     );
 
-    let result = tokio::time::timeout(
-        Duration::from_secs(5),
-        engine.execute_workflow(
-            &nebula_engine::store_seam::single_tenant_scope(),
-            &wf,
-            serde_json::json!(null),
-            ExecutionBudget::default(),
-        ),
-    )
-    .await
-    .expect("workflow must settle quickly — Webhook condition must be rejected immediately")
-    .unwrap();
+    let engine_h = Arc::clone(&engine);
+    let task = tokio::spawn(async move {
+        engine_h
+            .execute_workflow(
+                &nebula_engine::store_seam::single_tenant_scope(),
+                &wf,
+                serde_json::json!(null),
+                ExecutionBudget::default(),
+            )
+            .await
+    });
 
-    // The workflow must end in Failed (not hung, not Completed, not Cancelled).
+    // Wait for `NodeParked` — webhook_node is now `Waiting`, downstream gated.
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match events_rx.recv().await {
+                Some(ExecutionEvent::NodeParked { node_key, .. }) if node_key == n1 => break,
+                Some(_) => continue,
+                None => panic!("event bus closed before NodeParked"),
+            }
+        }
+    })
+    .await
+    .expect("engine must emit NodeParked for a Webhook wait condition");
+
+    // Mid-park gate assertion: downstream must NOT have run at the instant of park.
     assert_eq!(
-        result.status,
-        ExecutionStatus::Failed,
-        "Webhook WaitCondition must cause a Failed execution, got {:?}",
-        result.status
+        downstream_calls.load(Ordering::SeqCst),
+        0,
+        "downstream must NOT run while webhook_node is Waiting — downstream gate broken"
     );
 
-    // At least one node error must reference the unsupported condition.
-    let all_errors: String = result
-        .node_errors
-        .values()
-        .cloned()
-        .collect::<Vec<_>>()
-        .join("; ");
-    assert!(
-        all_errors.contains("Webhook") || all_errors.contains("not supported"),
-        "node errors must reference 'Webhook' or 'not supported', got: {all_errors}"
+    let result = tokio::time::timeout(Duration::from_secs(5), task)
+        .await
+        .expect("execute_workflow must return promptly once all nodes have parked or finished")
+        .unwrap()
+        .unwrap();
+
+    // Signal-driven park → Paused, not Failed, not Completed, not hung.
+    assert_eq!(
+        result.status,
+        ExecutionStatus::Paused,
+        "a signal-driven Wait must park the execution as Paused, not {:?}",
+        result.status
+    );
+    // Downstream must still be gated after the frontier exits.
+    assert_eq!(
+        downstream_calls.load(Ordering::SeqCst),
+        0,
+        "downstream must NEVER run until a Resume arrives (W-S2.2 responsibility)"
     );
 }
 
