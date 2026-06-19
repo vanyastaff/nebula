@@ -36,7 +36,8 @@ use nebula_metrics::MetricsRegistry;
 use nebula_plugin::{Plugin, PluginError, PluginManifest, ResolvedPlugin};
 use nebula_plugin_core::CorePlugin;
 use nebula_workflow::{
-    CURRENT_SCHEMA_VERSION, NodeDefinition, ParamValue, Version, WorkflowConfig, WorkflowDefinition,
+    CURRENT_SCHEMA_VERSION, Connection, NodeDefinition, ParamValue, Version, WorkflowConfig,
+    WorkflowDefinition,
 };
 
 // ── Engine builder helper ─────────────────────────────────────────────────────
@@ -519,6 +520,208 @@ async fn with_plugin_json_transform_executes_and_transforms() {
         node_output.get("c"),
         None,
         "c must be absent after Pick [a, b]"
+    );
+}
+
+// ── core.if e2e ───────────────────────────────────────────────────────────────
+
+/// Build a 3-node workflow:
+///
+/// ```text
+/// [if_node] --"true"-->  [true_branch]
+///           --"false"--> [false_branch]
+/// ```
+///
+/// Both branches are `core.set_fields` nodes that each add a distinct marker
+/// field so we can tell which one ran. The `condition` and `data` for the IF
+/// node are wired as `ParamValue::literal` parameters.
+///
+/// Returns `(workflow, true_branch_key, false_branch_key)`.
+fn if_branch_workflow(
+    condition_json: serde_json::Value,
+    data_json: serde_json::Value,
+) -> (
+    WorkflowDefinition,
+    nebula_core::NodeKey,
+    nebula_core::NodeKey,
+) {
+    let now = chrono::Utc::now();
+
+    let if_node_key = nebula_core::node_key!("if_step");
+    let true_node_key = nebula_core::node_key!("true_branch");
+    let false_node_key = nebula_core::node_key!("false_branch");
+
+    let if_node = NodeDefinition::new(if_node_key.clone(), "If step", "core", "core.if")
+        .expect("NodeDefinition must build with valid keys")
+        .with_parameter("condition", ParamValue::literal(condition_json))
+        .with_parameter("data", ParamValue::literal(data_json));
+
+    // Both branch nodes use core.set_fields to stamp a unique marker key.
+    let true_node = NodeDefinition::new(
+        true_node_key.clone(),
+        "True branch",
+        "core",
+        "core.set_fields",
+    )
+    .expect("NodeDefinition must build with valid keys")
+    .with_parameter(
+        "assignments",
+        ParamValue::literal(serde_json::json!([{"name": "branch_taken", "value": "true"}])),
+    );
+
+    let false_node = NodeDefinition::new(
+        false_node_key.clone(),
+        "False branch",
+        "core",
+        "core.set_fields",
+    )
+    .expect("NodeDefinition must build with valid keys")
+    .with_parameter(
+        "assignments",
+        ParamValue::literal(serde_json::json!([{"name": "branch_taken", "value": "false"}])),
+    );
+
+    // Wire: if_node["true"] → true_node, if_node["false"] → false_node.
+    let edge_to_true =
+        Connection::new(if_node_key.clone(), true_node_key.clone()).with_from_port("true");
+    let edge_to_false =
+        Connection::new(if_node_key, false_node_key.clone()).with_from_port("false");
+
+    let workflow = WorkflowDefinition {
+        id: nebula_core::WorkflowId::new(),
+        name: "test-core-if-branch".into(),
+        description: None,
+        version: Version::new(0, 1, 0),
+        nodes: vec![if_node, true_node, false_node],
+        connections: vec![edge_to_true, edge_to_false],
+        variables: HashMap::new(),
+        config: WorkflowConfig::default(),
+        trigger_bindings: vec![],
+        tags: vec![],
+        created_at: now,
+        updated_at: now,
+        owner_id: None,
+        ui_metadata: None,
+        schema_version: CURRENT_SCHEMA_VERSION,
+    };
+
+    (workflow, true_node_key, false_node_key)
+}
+
+/// GREEN proof — condition TRUE: engine routes to the `"true"` branch node and
+/// marks the `"false"` branch node as Skipped.
+///
+/// Skipped-node proof: the Skipped node has no entry in `node_outputs` (it
+/// produced no value) AND no entry in `node_errors` (it did not fail). The
+/// selected branch node has an entry in `node_outputs` with the marker value.
+///
+/// RED witness: swap the `"true"` / `"false"` connection ports and the
+/// assertions on `true_branch` and `false_branch` both invert — proving the
+/// test distinguishes which node ran.
+#[tokio::test]
+async fn if_action_true_condition_executes_true_branch_skips_false() {
+    let engine = make_engine()
+        .with_plugin(core_plugin())
+        .expect("with_plugin(CorePlugin) must succeed");
+
+    let (workflow, true_node_key, false_node_key) = if_branch_workflow(
+        serde_json::json!({ "field": "status", "op": "eq", "value": "active" }),
+        serde_json::json!({ "status": "active" }),
+    );
+
+    let result = engine
+        .execute_workflow(
+            &scope(),
+            &workflow,
+            serde_json::json!({}),
+            ExecutionBudget::default(),
+        )
+        .await
+        .expect("execute_workflow must not error");
+
+    assert_eq!(
+        result.status,
+        nebula_execution::ExecutionStatus::Completed,
+        "execution must reach Completed; got {:?} (node_errors: {:?})",
+        result.status,
+        result.node_errors
+    );
+
+    // The true branch must have run and added its marker.
+    let true_output = result
+        .node_outputs
+        .get(&true_node_key)
+        .expect("true_branch node must have output (it ran)");
+    assert_eq!(
+        true_output["branch_taken"],
+        serde_json::json!("true"),
+        "true_branch must have set branch_taken = 'true'"
+    );
+
+    // The false branch must be Skipped: no output and no error entry.
+    assert!(
+        !result.node_outputs.contains_key(&false_node_key),
+        "false_branch must be Skipped (absent from node_outputs)"
+    );
+    assert!(
+        !result.node_errors.contains_key(&false_node_key),
+        "false_branch must be Skipped (absent from node_errors)"
+    );
+}
+
+/// GREEN proof — condition FALSE: engine routes to the `"false"` branch node
+/// and marks the `"true"` branch node as Skipped.
+///
+/// RED witness: the Skipped assertion on `true_node_key` fails if the engine
+/// ran both branches or the wrong one.
+#[tokio::test]
+async fn if_action_false_condition_executes_false_branch_skips_true() {
+    let engine = make_engine()
+        .with_plugin(core_plugin())
+        .expect("with_plugin(CorePlugin) must succeed");
+
+    let (workflow, true_node_key, false_node_key) = if_branch_workflow(
+        serde_json::json!({ "field": "status", "op": "eq", "value": "active" }),
+        serde_json::json!({ "status": "inactive" }),
+    );
+
+    let result = engine
+        .execute_workflow(
+            &scope(),
+            &workflow,
+            serde_json::json!({}),
+            ExecutionBudget::default(),
+        )
+        .await
+        .expect("execute_workflow must not error");
+
+    assert_eq!(
+        result.status,
+        nebula_execution::ExecutionStatus::Completed,
+        "execution must reach Completed; got {:?} (node_errors: {:?})",
+        result.status,
+        result.node_errors
+    );
+
+    // The false branch must have run and added its marker.
+    let false_output = result
+        .node_outputs
+        .get(&false_node_key)
+        .expect("false_branch node must have output (it ran)");
+    assert_eq!(
+        false_output["branch_taken"],
+        serde_json::json!("false"),
+        "false_branch must have set branch_taken = 'false'"
+    );
+
+    // The true branch must be Skipped: no output and no error entry.
+    assert!(
+        !result.node_outputs.contains_key(&true_node_key),
+        "true_branch must be Skipped (absent from node_outputs)"
+    );
+    assert!(
+        !result.node_errors.contains_key(&true_node_key),
+        "true_branch must be Skipped (absent from node_errors)"
     );
 }
 

@@ -9,8 +9,9 @@
 //!
 //! | Key | Description |
 //! |-----|-------------|
-//! | `core.set_fields`      | Merge a list of named field assignments onto a JSON object |
-//! | `core.json_transform`  | Apply pick/omit/rename operations to a JSON object         |
+//! | `core.set_fields`      | Merge a list of named field assignments onto a JSON object      |
+//! | `core.json_transform`  | Apply pick/omit/rename operations to a JSON object             |
+//! | `core.if`              | Binary branch: route to `"true"` or `"false"` port on a field condition |
 //!
 //! ## Usage
 //!

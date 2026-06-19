@@ -3,11 +3,11 @@
 use std::sync::Arc;
 
 use nebula_action::ActionFactory;
-use nebula_action::factory::GenericStatelessFactory;
+use nebula_action::factory::{GenericControlFactory, GenericStatelessFactory};
 use nebula_metadata::{ManifestError, PluginManifest};
 use nebula_plugin::Plugin;
 
-use crate::actions::{JsonTransform, SetFields};
+use crate::actions::{CoreIf, JsonTransform, SetFields};
 
 /// First-party core plugin.
 ///
@@ -52,6 +52,7 @@ impl Plugin for CorePlugin {
         vec![
             Arc::new(GenericStatelessFactory::<SetFields>::new()),
             Arc::new(GenericStatelessFactory::<JsonTransform>::new()),
+            Arc::new(GenericControlFactory::<CoreIf>::new()),
         ]
     }
 }
@@ -89,6 +90,18 @@ mod tests {
         assert!(
             resolved.action(&key).is_some(),
             "core.json_transform must be registered in the resolved plugin"
+        );
+    }
+
+    #[test]
+    fn resolves_if_action() {
+        let resolved =
+            ResolvedPlugin::from(CorePlugin::try_new().expect("CorePlugin::try_new must succeed"))
+                .expect("CorePlugin must resolve without errors");
+        let key = nebula_core::ActionKey::new("core.if").unwrap();
+        assert!(
+            resolved.action(&key).is_some(),
+            "core.if must be registered in the resolved plugin"
         );
     }
 
