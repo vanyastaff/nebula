@@ -189,8 +189,13 @@ impl StatelessAction for Dedupe {
         // ── 3. Iterate in order; keep first-seen key-tuples ───────────────────
         //
         // `seen_key_tuples` tracks serialized identity tuples so duplicates are
-        // detected in O(1) per element. Canonical serde_json serialization
-        // preserves type distinctions (1 ≠ "1" ≠ 1.0).
+        // detected in O(1) per element. serde_json's `Value::Number` stores
+        // integer and float representations separately, so serialization keeps
+        // `1`, `"1"`, and `1.0` distinct. Object key-fields serialize with their
+        // keys in sorted order (serde_json's default `BTreeMap`-backed `Map`; the
+        // `preserve_order` feature is not enabled), so `{"a":1,"b":2}` and
+        // `{"b":2,"a":1}` are the SAME identity; array key-fields keep element
+        // order, so `[1,2]` and `[2,1]` are DISTINCT identities.
         let mut seen_key_tuples: HashSet<String> = HashSet::new();
         let mut kept_elements: Vec<Value> = Vec::new();
 
@@ -292,6 +297,43 @@ mod tests {
         assert!(
             matches!(err, ActionError::Fatal { .. }),
             "expected Fatal for null data; got: {err:?}"
+        );
+    }
+
+    // ── 2b: absent data is Fatal (distinct match path from `Some(Null)`) ──────
+    #[tokio::test]
+    async fn absent_data_is_fatal() {
+        let input = DedupeInput {
+            data: None,
+            keys: vec!["id".into()],
+        };
+        let err = run(input).await.unwrap_err();
+        assert!(
+            matches!(err, ActionError::Fatal { .. }),
+            "expected Fatal for absent data; got: {err:?}"
+        );
+    }
+
+    // ── 2c: composite (array) key value is order-sensitive ────────────────────
+    //
+    // A key field whose value is itself an array is compared by canonical JSON
+    // serialization, which preserves array order — so `["a","b"]` and `["b","a"]`
+    // are DISTINCT identities, while a repeated `["a","b"]` is deduped.
+    #[tokio::test]
+    async fn composite_array_key_is_order_sensitive() {
+        let input = DedupeInput {
+            data: Some(json!([
+                {"tags": ["a", "b"]},
+                {"tags": ["b", "a"]},
+                {"tags": ["a", "b"]}
+            ])),
+            keys: vec!["tags".into()],
+        };
+        let out = extract_output(run(input).await.unwrap());
+        assert_eq!(
+            out,
+            json!([{"tags": ["a", "b"]}, {"tags": ["b", "a"]}]),
+            "array key values are order-sensitive: [a,b] != [b,a]; the repeated [a,b] is dropped"
         );
     }
 
