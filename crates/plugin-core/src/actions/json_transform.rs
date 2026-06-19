@@ -117,6 +117,12 @@ impl HasSchema for JsonTransformInput {
 /// here prevents duplication and ensures both actions have identical per-object
 /// semantics.
 ///
+/// `context` is the calling action's key (e.g. `"json_transform"` / `"map"`);
+/// it prefixes any error so the message names the action that actually faulted.
+///
+/// `Pick` rebuilds the object with keys in the order they appear in its `fields`
+/// list (declaration order), not the source object's original order.
+///
 /// # Errors
 ///
 /// Returns [`ActionError::Fatal`] when a `Rename` operation references a source
@@ -125,6 +131,7 @@ impl HasSchema for JsonTransformInput {
 pub(crate) fn apply_operations(
     target: &mut Map<String, Value>,
     operations: &[TransformOperation],
+    context: &str,
 ) -> Result<(), ActionError> {
     for operation in operations {
         match operation {
@@ -150,7 +157,7 @@ pub(crate) fn apply_operations(
                 }
                 let moved_value = target.remove(from.as_str()).ok_or_else(|| {
                     ActionError::fatal(format!(
-                        "json_transform: rename source key `{from}` not found in object"
+                        "{context}: rename source key `{from}` not found in object"
                     ))
                 })?;
                 target.insert(to.clone(), moved_value);
@@ -243,7 +250,7 @@ impl StatelessAction for JsonTransform {
             },
         };
 
-        apply_operations(&mut working_fields, &input.operations)?;
+        apply_operations(&mut working_fields, &input.operations, "json_transform")?;
 
         Ok(ActionResult::success(Value::Object(working_fields)))
     }

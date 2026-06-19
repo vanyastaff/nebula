@@ -208,31 +208,19 @@ impl StatelessAction for MapAction {
         let mut reshaped: Vec<Value> = Vec::with_capacity(elements.len());
 
         for element in elements {
-            // Guard: every element must be a JSON object.
-            //
-            // `Value::get` on a non-object returns `None` silently, so Pick/Omit
-            // would silently pass through non-objects (empty result) and Rename
-            // would fire a "key not found" Fatal instead of the correct
-            // "non-object element" Fatal. The explicit guard makes rejection
-            // uniform across all operators.
-            if !element.is_object() {
+            // Every element must be a JSON object; destructure to its inner Map
+            // for in-place mutation. `Value::get` on a non-object is silently
+            // None, so Pick/Omit would pass a non-object through and Rename would
+            // fire a misleading "key not found" — validating and extracting in one
+            // step keeps rejection uniform across all operations (no dead branch).
+            let Value::Object(mut fields) = element else {
                 return Err(ActionError::fatal(format!(
                     "map: every array element must be a JSON object, got {}",
                     element.type_name_str()
                 )));
-            }
-
-            // Destructure the Value into its inner Map for in-place mutation.
-            let Value::Object(mut fields) = element else {
-                // Unreachable: the is_object() guard above guarantees this is
-                // an Object variant. The else branch satisfies the exhaustiveness
-                // check; no panic family is used.
-                return Err(ActionError::fatal(
-                    "map: internal invariant violated: element is not an object after guard",
-                ));
             };
 
-            apply_operations(&mut fields, &input.operations)?;
+            apply_operations(&mut fields, &input.operations, "map")?;
             reshaped.push(Value::Object(fields));
         }
 
@@ -493,6 +481,13 @@ mod tests {
         assert!(
             matches!(err, ActionError::Fatal { .. }),
             "expected Fatal when rename source key is absent on an element; got: {err:?}"
+        );
+        // The shared `apply_operations` must name the CALLING action: a rename
+        // failure inside `core.map` must say `map:`, never `json_transform:`.
+        let message = err.to_string();
+        assert!(
+            message.contains("map:") && !message.contains("json_transform"),
+            "rename-missing error must be prefixed `map:`, not `json_transform:`; got: {message}"
         );
     }
 
