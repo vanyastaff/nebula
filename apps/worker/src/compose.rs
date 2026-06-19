@@ -280,6 +280,14 @@ pub enum WorkerConfigError {
          causes a tight busy-loop hammering the job-dispatch store"
     )]
     PollIntervalNotPositive,
+
+    /// `NEBULA_WORKER_DATABASE_URL` is set but its value is not valid UTF-8.
+    ///
+    /// `.ok()` would silently swallow this as `None` and fall back to SQLite —
+    /// a contradiction of the fail-closed contract. This variant ensures a
+    /// set-but-malformed DSN is always a hard startup error.
+    #[error("NEBULA_WORKER_DATABASE_URL is set but not valid UTF-8")]
+    DatabaseUrlNotUnicode,
 }
 
 impl WorkerConfig {
@@ -294,7 +302,7 @@ impl WorkerConfig {
     /// `NEBULA_WORKER_POLL_INTERVAL_MS` at parse time — both would silently
     /// break the claim-loop at runtime.
     pub fn from_env() -> Result<Self, WorkerConfigError> {
-        let database_url = std::env::var("NEBULA_WORKER_DATABASE_URL").ok();
+        let database_url = parse_database_url(std::env::var("NEBULA_WORKER_DATABASE_URL"))?;
 
         let db_path = std::env::var("NEBULA_WORKER_DB_PATH")
             .unwrap_or_else(|_| "nebula-worker.db".to_owned());
@@ -329,6 +337,26 @@ impl WorkerConfig {
             batch_size,
             poll_interval_ms,
         })
+    }
+}
+
+/// Parse the raw result of `std::env::var("NEBULA_WORKER_DATABASE_URL")` into
+/// an `Option<String>`, distinguishing the three meaningful cases:
+///
+/// - `Ok(url)` — variable is set and valid UTF-8 → `Ok(Some(url))`
+/// - `Err(VarError::NotPresent)` — variable is unset → `Ok(None)` (SQLite default)
+/// - `Err(VarError::NotUnicode(_))` — variable is set but not valid UTF-8 →
+///   `Err(WorkerConfigError::DatabaseUrlNotUnicode)` (fail-closed)
+///
+/// Using `.ok()` instead would collapse the `NotUnicode` case into `None`,
+/// silently falling back to SQLite when the operator clearly intended Postgres.
+fn parse_database_url(
+    raw: Result<String, std::env::VarError>,
+) -> Result<Option<String>, WorkerConfigError> {
+    match raw {
+        Ok(url) => Ok(Some(url)),
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(std::env::VarError::NotUnicode(_)) => Err(WorkerConfigError::DatabaseUrlNotUnicode),
     }
 }
 
@@ -482,6 +510,73 @@ mod tests {
         assert!(
             matches!(err, WorkerConfigError::ProcessorIdAscii),
             "expected ProcessorIdAscii for non-ASCII input, got: {err}"
+        );
+    }
+
+    // ── NEBULA_WORKER_DATABASE_URL parsing ───────────────────────────────────
+    //
+    // Tests drive `parse_database_url` directly — no env-var mutation, no
+    // `unsafe`. The helper has real branching across three cases, so each gets
+    // its own test.
+    //
+    // Red-able: replacing the helper with `.ok()` collapses `NotUnicode` into
+    // `None` and makes `database_url_not_unicode_is_fail_closed` fail — it
+    // would receive `Ok(None)` instead of `Err(DatabaseUrlNotUnicode)`.
+
+    #[test]
+    fn database_url_present_passes_through() {
+        let result = parse_database_url(Ok("postgres://localhost/nebula".to_owned()));
+        assert_eq!(
+            result.unwrap(),
+            Some("postgres://localhost/nebula".to_owned()),
+            "a valid DSN must be forwarded as Some so the Postgres arm is selected"
+        );
+    }
+
+    #[test]
+    fn database_url_not_present_yields_none() {
+        let result = parse_database_url(Err(std::env::VarError::NotPresent));
+        assert_eq!(
+            result.unwrap(),
+            None,
+            "an absent variable must yield None, keeping the SQLite default"
+        );
+    }
+
+    /// A set-but-non-UTF-8 variable must fail closed — not silently fall back
+    /// to SQLite. Runs on all platforms: `VarError::NotUnicode` can be
+    /// constructed with any `OsString`; the helper matches on the variant
+    /// discriminant, not the byte content, so a UTF-8-clean `OsString` is
+    /// sufficient to exercise the `NotUnicode` branch cross-platform.
+    ///
+    /// Red-able: with `.ok()` instead of `parse_database_url`, the `NotUnicode`
+    /// case collapses to `None` and this test fails — it receives `Ok(None)`
+    /// where it expects `Err(DatabaseUrlNotUnicode)`.
+    #[test]
+    fn database_url_not_unicode_is_fail_closed() {
+        // `VarError::NotUnicode(OsString)` can be constructed on any platform;
+        // the `OsString` content is irrelevant — the match arm fires on the
+        // variant, not the payload.
+        let os_str = std::ffi::OsString::from("any-value");
+        let result = parse_database_url(Err(std::env::VarError::NotUnicode(os_str)));
+        assert!(
+            matches!(result, Err(WorkerConfigError::DatabaseUrlNotUnicode)),
+            "a set-but-non-UTF-8 variable must yield DatabaseUrlNotUnicode, not Ok(None)"
+        );
+    }
+
+    /// Additional unix-only test: verifies the same branch with a genuinely
+    /// invalid-UTF-8 byte sequence, proving the real-world trigger path also
+    /// reaches `DatabaseUrlNotUnicode` and not a silent `Ok(None)`.
+    #[cfg(unix)]
+    #[test]
+    fn database_url_invalid_utf8_bytes_is_fail_closed() {
+        use std::os::unix::ffi::OsStringExt as _;
+        let not_utf8 = std::ffi::OsString::from_vec(vec![0xFF]);
+        let result = parse_database_url(Err(std::env::VarError::NotUnicode(not_utf8)));
+        assert!(
+            matches!(result, Err(WorkerConfigError::DatabaseUrlNotUnicode)),
+            "invalid-UTF-8 bytes must yield DatabaseUrlNotUnicode, not Ok(None)"
         );
     }
 
