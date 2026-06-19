@@ -966,6 +966,132 @@ async fn switch_action_no_match_routes_to_default_skips_others() {
 
 // ── Duplicate-key unit tests ──────────────────────────────────────────────────
 
+// ── core.if compound-condition e2e ───────────────────────────────────────────
+
+/// GREEN proof — compound `All` condition: a `core.if` node with
+/// `{"all": [{field exists}, {field gt threshold}]}` routes to the `"true"`
+/// branch when BOTH sub-conditions hold, and to `"false"` when either fails.
+///
+/// Uses the same `if_branch_workflow` helper as the simple if e2e tests so
+/// the engine wiring path is identical — only the condition JSON changes.
+///
+/// RED witness: swap the data values (e.g. set score=3) and the first assert
+/// fails — proving the compound condition is actually evaluated.
+#[tokio::test]
+async fn if_action_compound_all_condition_routes_correctly() {
+    let engine = make_engine()
+        .with_plugin(core_plugin())
+        .expect("with_plugin(CorePlugin) must succeed");
+
+    // Compound condition: exists("score") AND gt("score", 5)
+    // data has score=10 → both true → routes "true"
+    let (workflow, true_node_key, false_node_key) = if_branch_workflow(
+        serde_json::json!({
+            "all": [
+                { "field": "score", "op": "exists" },
+                { "field": "score", "op": "gt", "value": 5 }
+            ]
+        }),
+        serde_json::json!({ "score": 10 }),
+    );
+
+    let result = engine
+        .execute_workflow(
+            &scope(),
+            &workflow,
+            serde_json::json!({}),
+            ExecutionBudget::default(),
+        )
+        .await
+        .expect("execute_workflow must not error");
+
+    assert_eq!(
+        result.status,
+        nebula_execution::ExecutionStatus::Completed,
+        "execution must reach Completed; got {:?} (node_errors: {:?})",
+        result.status,
+        result.node_errors
+    );
+
+    // The true branch ran (score=10 passes both conditions).
+    let true_output = result
+        .node_outputs
+        .get(&true_node_key)
+        .expect("true_branch node must have output (it ran)");
+    assert_eq!(
+        true_output["branch_taken"],
+        serde_json::json!("true"),
+        "true_branch must have stamped branch_taken = 'true'"
+    );
+
+    // The false branch must be Skipped.
+    assert!(
+        !result.node_outputs.contains_key(&false_node_key),
+        "false_branch must be Skipped (absent from node_outputs)"
+    );
+    assert!(
+        !result.node_errors.contains_key(&false_node_key),
+        "false_branch must be Skipped (absent from node_errors)"
+    );
+
+    // --- Second assertion: one sub-condition fails → routes "false" ---
+    // score=3 → exists passes, gt(score,5) fails → All=false → "false" branch
+    let engine2 = make_engine()
+        .with_plugin(core_plugin())
+        .expect("with_plugin(CorePlugin) must succeed");
+
+    let (workflow2, true_node_key2, false_node_key2) = if_branch_workflow(
+        serde_json::json!({
+            "all": [
+                { "field": "score", "op": "exists" },
+                { "field": "score", "op": "gt", "value": 5 }
+            ]
+        }),
+        serde_json::json!({ "score": 3 }),
+    );
+
+    let result2 = engine2
+        .execute_workflow(
+            &scope(),
+            &workflow2,
+            serde_json::json!({}),
+            ExecutionBudget::default(),
+        )
+        .await
+        .expect("execute_workflow must not error");
+
+    assert_eq!(
+        result2.status,
+        nebula_execution::ExecutionStatus::Completed,
+        "execution must reach Completed; got {:?} (node_errors: {:?})",
+        result2.status,
+        result2.node_errors
+    );
+
+    // The false branch ran (score=3 fails the gt condition).
+    let false_output = result2
+        .node_outputs
+        .get(&false_node_key2)
+        .expect("false_branch node must have output (it ran)");
+    assert_eq!(
+        false_output["branch_taken"],
+        serde_json::json!("false"),
+        "false_branch must have stamped branch_taken = 'false'"
+    );
+
+    // The true branch must be Skipped.
+    assert!(
+        !result2.node_outputs.contains_key(&true_node_key2),
+        "true_branch must be Skipped (absent from node_outputs)"
+    );
+    assert!(
+        !result2.node_errors.contains_key(&true_node_key2),
+        "true_branch must be Skipped (absent from node_errors)"
+    );
+}
+
+// ── Duplicate-key unit tests ──────────────────────────────────────────────────
+
 /// Pre-registering an action with the same key as a plugin action returns
 /// `PluginWiringError::DuplicateActionKey`.
 #[tokio::test]

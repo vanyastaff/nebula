@@ -138,13 +138,13 @@ impl HasSchema for IfInput {
 /// use nebula_plugin_core::actions::if_action::{Condition, ConditionOp};
 /// use serde_json::json;
 ///
-/// let condition = Condition {
+/// let condition = Condition::Leaf {
 ///     field: "status".into(),
 ///     op: ConditionOp::Eq,
 ///     value: Some(json!("active")),
 /// };
 ///
-/// // Wire shape: the `op` field serializes as snake_case.
+/// // Wire shape: a Leaf serializes to the flat object form — no wrapper key.
 /// let wire = serde_json::to_value(&condition).unwrap();
 /// assert_eq!(wire, json!({ "field": "status", "op": "eq", "value": "active" }));
 ///
