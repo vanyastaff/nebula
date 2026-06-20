@@ -2222,12 +2222,17 @@ async fn armed_signal_wait_is_completed_by_reclaim_drive_not_lost() {
     );
 
     // Resume: satisfy arms (lease #1 succeeds), the drive's lease (#2) fails →
-    // node left armed-but-not-completed.
+    // node left armed-but-not-completed. The post-satisfy drive must DEFER (not
+    // ack) so the Resume is redelivered — acking here would strand the paused
+    // execution when the lease holder is a crashed runner whose TTL has not
+    // expired yet (P1: keep Resume redeliverable after drive lease contention).
     interceptor.arm_to_fail_the_drive();
-    dispatch
-        .dispatch_resume(&scope, execution_id)
-        .await
-        .expect("dispatch_resume returns Ok even when the post-satisfy drive defers on Leased");
+    let deferred = dispatch.dispatch_resume(&scope, execution_id).await;
+    assert!(
+        matches!(deferred, Err(ControlDispatchError::Deferred(_))),
+        "post-satisfy drive that fails to acquire the lease must Defer (keep the Resume \
+         redeliverable), not ack; got {deferred:?}"
+    );
 
     let armed = read_state(&stores, execution_id).await;
     assert_eq!(

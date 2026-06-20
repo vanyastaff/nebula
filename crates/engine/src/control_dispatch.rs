@@ -172,6 +172,74 @@ impl EngineControlDispatch {
             },
         }
     }
+
+    /// Drive an execution whose signal wait `satisfy_signal_waits` has already
+    /// **armed** (`next_attempt_at = Some`), keeping the Resume redeliverable
+    /// until the armed wait is actually completed.
+    ///
+    /// Unlike [`Self::drive`], a drive that cannot run to a durable outcome —
+    /// lease contention (`EngineError::Leased`), a CAS conflict, or any other
+    /// non-terminal error — returns [`ControlDispatchError::Deferred`], NOT
+    /// `Ok`. The wait has been durably armed but not completed; acking the
+    /// control-queue row here would strand the paused execution when the lease
+    /// holder is a crashed/stalled runner whose TTL has not expired yet (it
+    /// never completes the armed wait, and no redelivery remains). Deferring
+    /// leaves the row in `Processing` for the B1 reclaim sweep to redeliver
+    /// once the lease frees, and a later drive completes the armed wait.
+    ///
+    /// The Resume is acked ONLY when a post-error status re-read shows the
+    /// execution is genuinely terminal or `Cancelling` (a concurrent actor owns
+    /// the outcome, so the Resume is moot).
+    async fn drive_armed_resume(
+        &self,
+        scope: &Scope,
+        execution_id: ExecutionId,
+    ) -> Result<(), ControlDispatchError> {
+        match self.engine.resume_execution(scope, execution_id).await {
+            Ok(_) => Ok(()),
+            Err(e) => match self.read_status(scope, execution_id).await {
+                Ok(Some(status))
+                    if status.is_terminal() || matches!(status, ExecutionStatus::Cancelling) =>
+                {
+                    tracing::info!(
+                        %execution_id,
+                        %status,
+                        drive_error = %e,
+                        "dispatch_resume: post-satisfy drive did not complete but execution \
+                         is now {status}; acking as idempotent"
+                    );
+                    Ok(())
+                },
+                other => {
+                    let status_desc = match other {
+                        Ok(s) => s
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| "not found".to_owned()),
+                        Err(read_err) => format!("status re-read failed: {read_err}"),
+                    };
+                    tracing::warn!(
+                        %execution_id,
+                        %status_desc,
+                        drive_error = %e,
+                        "dispatch_resume: post-satisfy drive did not complete and execution is \
+                         not terminal ({status_desc}); deferring Resume (armed wait still \
+                         pending) for B1 reclaim"
+                    );
+                    self.engine.emit_event(ExecutionEvent::ResumeDeferred {
+                        execution_id,
+                        reason: format!(
+                            "post-satisfy drive did not complete ({e}); status={status_desc}; \
+                                 armed wait deferred for B1 reclaim"
+                        ),
+                    });
+                    Err(ControlDispatchError::Deferred(format!(
+                        "execution {execution_id}: post-satisfy drive did not complete ({e}); \
+                             status={status_desc}; armed wait deferred for B1 reclaim"
+                    )))
+                },
+            },
+        }
+    }
 }
 
 #[async_trait]
@@ -384,7 +452,10 @@ impl ControlDispatch for EngineControlDispatch {
                         }
                     },
                 }
-                self.drive(scope, execution_id).await
+                // Post-satisfy drive: keep the Resume redeliverable until the
+                // armed wait is actually completed (a Leased/CAS-conflict drive
+                // must Defer, not ack — see `drive_armed_resume`).
+                self.drive_armed_resume(scope, execution_id).await
             },
         }
     }
