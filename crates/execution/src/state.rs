@@ -808,6 +808,43 @@ impl ExecutionState {
             .collect()
     }
 
+    /// Terminalize every non-terminal node as `Cancelled` (clearing any
+    /// `next_attempt_at`), returning how many nodes were transitioned.
+    ///
+    /// Used when an execution is cancelled with **no live frontier** to tear
+    /// down: the in-loop teardown (`drain_pending_to_cancelled`) only sees nodes
+    /// on its heaps/queues, so a signal-`Waiting{next_attempt_at: None}` node
+    /// (never heap-tracked) — or any node parked while the frontier was alive
+    /// and then exited (a `Paused` execution) — would otherwise remain
+    /// non-terminal under a `Cancelled` execution, violating the
+    /// terminal-execution ⇒ all-nodes-terminal invariant.
+    ///
+    /// Every non-terminal node state has a valid `→ Cancelled` edge (see
+    /// `can_transition_node`), so each transition goes through the checked
+    /// `transition_node` (not a silent field write) and a transition error
+    /// would be a transition-table regression, surfaced not swallowed.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any [`ExecutionError`] from [`Self::transition_node`] (a
+    /// missing node or an unexpected illegal `→ Cancelled` edge).
+    pub fn cancel_nonterminal_nodes(&mut self) -> Result<usize, ExecutionError> {
+        let targets: Vec<NodeKey> = self
+            .node_states
+            .iter()
+            .filter(|(_, ns)| !ns.state.is_terminal())
+            .map(|(id, _)| id.clone())
+            .collect();
+        let count = targets.len();
+        for node_key in targets {
+            self.transition_node(node_key.clone(), NodeState::Cancelled)?;
+            if let Some(ns) = self.node_states.get_mut(&node_key) {
+                ns.next_attempt_at = None;
+            }
+        }
+        Ok(count)
+    }
+
     /// Transition the execution status, validating the transition and bumping the version.
     pub fn transition_status(&mut self, new_status: ExecutionStatus) -> Result<(), ExecutionError> {
         validate_execution_transition(self.status, new_status)?;
@@ -937,6 +974,37 @@ mod tests {
         state.transition_status(ExecutionStatus::Running).unwrap();
         state.transition_status(ExecutionStatus::Completed).unwrap();
         assert!(state.completed_at.is_some());
+    }
+
+    #[test]
+    fn cancel_nonterminal_nodes_terminalizes_all_active_and_is_idempotent() {
+        let (mut state, n1, n2) = make_state();
+        // n1: a parked wait carrying a wake timer; n2: a blocked Pending node.
+        {
+            let ns1 = state.node_states.get_mut(&n1).unwrap();
+            ns1.state = NodeState::Waiting;
+            ns1.next_attempt_at = Some(Utc::now());
+        }
+        // n2 stays Pending (its upstream is the parked wait).
+
+        let count = state.cancel_nonterminal_nodes().unwrap();
+        assert_eq!(count, 2, "both non-terminal nodes must be cancelled");
+        assert!(
+            state.all_nodes_terminal(),
+            "no non-terminal node may survive cancel-of-no-live-runner"
+        );
+        assert_eq!(
+            state.node_state(n1.clone()).unwrap().state,
+            NodeState::Cancelled
+        );
+        assert_eq!(state.node_state(n2).unwrap().state, NodeState::Cancelled);
+        assert!(
+            state.node_state(n1).unwrap().next_attempt_at.is_none(),
+            "the wake timer must be cleared on cancel"
+        );
+
+        // Idempotent: a re-delivered Cancel finds everything terminal.
+        assert_eq!(state.cancel_nonterminal_nodes().unwrap(), 0);
     }
 
     #[test]

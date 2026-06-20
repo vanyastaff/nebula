@@ -96,6 +96,16 @@ pub(crate) enum SatisfyOutcome {
     ExecutionNotResumable,
 }
 
+/// Outcome of [`WorkflowEngine::cancel_dangling_nodes`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CancelDanglingOutcome {
+    /// `n` non-terminal nodes were transitioned to `Cancelled`.
+    Cancelled(usize),
+    /// Nothing to do — the execution is not in a cancel context, or every node
+    /// is already terminal (idempotent re-delivery).
+    NothingToCancel,
+}
+
 /// Default execution-lease TTL.
 ///
 /// Long enough to survive a GC pause or a slow checkpoint write; short
@@ -2674,6 +2684,211 @@ impl WorkflowEngine {
             Err(e) => Err(EngineError::CheckpointFailed {
                 node_key: final_state_node_key(),
                 reason: format!("satisfy_signal_waits: store commit: {e}"),
+            }),
+        }
+    }
+
+    /// Durably terminalize the dangling non-terminal nodes of a cancelled,
+    /// no-live-runner execution (e.g. a signal-`Paused` execution).
+    ///
+    /// The API cancel path writes the execution status `Cancelled` and enqueues
+    /// `Cancel`; `dispatch_cancel` signals the live frontier's `CancellationToken`
+    /// so a running execution tears its nodes down via the loop teardown. But a
+    /// `Paused` (signal-wait) execution has NO live frontier — nothing tears
+    /// down its parked `Waiting` nodes — so a `Cancelled` execution is left with
+    /// non-terminal nodes (terminal-execution ⇒ all-nodes-terminal invariant
+    /// violation). This method closes that gap.
+    ///
+    /// # Lease contract
+    ///
+    /// Acquires the execution lease for the read-modify-write. A live runner
+    /// (in-process or cross-runner) holds the lease, so a held lease means a
+    /// frontier is still driving — we must NOT terminalize nodes it owns;
+    /// returns [`EngineError::Leased`] so the caller defers (the live runner's
+    /// own teardown, or B1 reclaim, completes the cancel). Only acts when the
+    /// execution is itself `Cancelled`/`Cancelling` (the cancel was durably
+    /// recorded); idempotent — a re-delivered Cancel finds all nodes terminal
+    /// and returns [`CancelDanglingOutcome::NothingToCancel`].
+    ///
+    /// # Errors
+    ///
+    /// - [`EngineError::Leased`] if the lease is held by another runner.
+    /// - [`EngineError::PlanningFailed`] if the row cannot be loaded/deserialised.
+    /// - [`EngineError::CasConflict`] / [`EngineError::CheckpointFailed`] on a
+    ///   rejected or failed durable commit.
+    pub(crate) async fn cancel_dangling_nodes(
+        &self,
+        scope: &Scope,
+        execution_id: ExecutionId,
+    ) -> Result<CancelDanglingOutcome, EngineError> {
+        let Some(stores) = &self.stores else {
+            // Library mode (no storage) — no durable row to repair.
+            return Ok(CancelDanglingOutcome::NothingToCancel);
+        };
+
+        let id = execution_id.to_string();
+        let holder = self.instance_id.to_string();
+
+        let lease_token = stores
+            .execution
+            .acquire_lease(scope, &id, &holder, self.lease_ttl)
+            .await
+            .map_err(|e| {
+                EngineError::PlanningFailed(format!(
+                    "cancel_dangling_nodes: acquire lease for {execution_id}: {e}"
+                ))
+            })?;
+        let Some(lease_token) = lease_token else {
+            tracing::warn!(
+                %execution_id,
+                %holder,
+                "cancel_dangling_nodes: execution lease held by another runner; deferring \
+                 (live frontier teardown or B1 reclaim will complete the cancel)"
+            );
+            return Err(EngineError::Leased {
+                execution_id,
+                holder,
+            });
+        };
+
+        let outcome = self
+            .cancel_dangling_nodes_under_lease(stores, scope, execution_id, &id, lease_token)
+            .await;
+
+        if let Err(e) = stores
+            .execution
+            .release_lease(scope, &id, lease_token)
+            .await
+        {
+            tracing::warn!(
+                %execution_id,
+                error = %e,
+                "cancel_dangling_nodes: best-effort lease release failed (will expire at TTL)"
+            );
+        }
+
+        outcome
+    }
+
+    /// Inner read-modify-write under an already-held lease (extracted so the
+    /// lease release in [`Self::cancel_dangling_nodes`] always runs).
+    async fn cancel_dangling_nodes_under_lease(
+        &self,
+        stores: &crate::store_seam::ExecutionStores,
+        scope: &Scope,
+        execution_id: ExecutionId,
+        id: &str,
+        lease_token: nebula_storage_port::FencingToken,
+    ) -> Result<CancelDanglingOutcome, EngineError> {
+        let record = stores
+            .execution
+            .get(scope, id)
+            .await
+            .map_err(|e| {
+                EngineError::PlanningFailed(format!(
+                    "cancel_dangling_nodes: load execution {execution_id}: {e}"
+                ))
+            })?
+            .ok_or_else(|| {
+                EngineError::PlanningFailed(format!(
+                    "cancel_dangling_nodes: execution not found: {execution_id}"
+                ))
+            })?;
+
+        let repo_version = record.version;
+        let state_str = serde_json::to_string(&record.state).map_err(|e| {
+            EngineError::PlanningFailed(format!(
+                "cancel_dangling_nodes: serialise state for {execution_id}: {e}"
+            ))
+        })?;
+        let mut exec_state: ExecutionState = serde_json::from_str(&state_str).map_err(|e| {
+            EngineError::PlanningFailed(format!(
+                "cancel_dangling_nodes: deserialise state for {execution_id}: {e}"
+            ))
+        })?;
+
+        // Only terminalize in a genuine cancel context: the cancel must already
+        // be durably recorded on the execution. A non-cancel status (e.g. a
+        // `Paused` execution that a concurrent Resume re-activated to `Running`)
+        // must be left to its live drive — we are not the owner of those nodes.
+        if !matches!(
+            exec_state.status,
+            ExecutionStatus::Cancelled | ExecutionStatus::Cancelling
+        ) {
+            return Ok(CancelDanglingOutcome::NothingToCancel);
+        }
+
+        // `Waiting → Cancelled` (and every other non-terminal `→ Cancelled`) is
+        // in the node transition table; a transition error here is a table
+        // regression, surfaced not swallowed.
+        let count = exec_state.cancel_nonterminal_nodes().map_err(|e| {
+            EngineError::PlanningFailed(format!(
+                "cancel_dangling_nodes: terminalize nodes for {execution_id}: {e}"
+            ))
+        })?;
+        if count == 0 {
+            // Idempotent: a re-delivered Cancel finds all nodes already terminal.
+            return Ok(CancelDanglingOutcome::NothingToCancel);
+        }
+
+        let state_json =
+            serde_json::to_value(&exec_state).map_err(|e| EngineError::CheckpointFailed {
+                node_key: final_state_node_key(),
+                reason: format!("cancel_dangling_nodes: serialise updated state: {e}"),
+            })?;
+        let batch = nebula_storage_port::TransitionBatch::builder()
+            .scope(scope.clone())
+            .execution_id(id)
+            .expected_version(repo_version)
+            .fencing(lease_token)
+            .new_state(state_json)
+            .build()
+            .map_err(|e| EngineError::CheckpointFailed {
+                node_key: final_state_node_key(),
+                reason: format!("cancel_dangling_nodes: build batch: {e}"),
+            })?;
+
+        match stores.execution.commit(batch).await {
+            Ok(nebula_storage_port::TransitionOutcome::Applied { new_version }) => {
+                tracing::info!(
+                    target = "engine::wait",
+                    %execution_id,
+                    cancelled_count = count,
+                    new_version,
+                    "cancel_dangling_nodes: terminalized parked nodes of a cancelled \
+                     no-live-runner execution"
+                );
+                Ok(CancelDanglingOutcome::Cancelled(count))
+            },
+            Ok(nebula_storage_port::TransitionOutcome::FencedOut) => {
+                tracing::warn!(
+                    %execution_id,
+                    "cancel_dangling_nodes: CAS fenced out under our own lease"
+                );
+                Err(EngineError::CasConflict {
+                    execution_id,
+                    expected_version: repo_version,
+                    observed_version: repo_version,
+                    observed_status: "fenced_out".to_owned(),
+                })
+            },
+            Ok(nebula_storage_port::TransitionOutcome::VersionConflict { actual }) => {
+                tracing::warn!(
+                    %execution_id,
+                    expected_version = repo_version,
+                    actual_version = actual,
+                    "cancel_dangling_nodes: version conflict inside our lease window"
+                );
+                Err(EngineError::CasConflict {
+                    execution_id,
+                    expected_version: repo_version,
+                    observed_version: actual,
+                    observed_status: "version_conflict".to_owned(),
+                })
+            },
+            Err(e) => Err(EngineError::CheckpointFailed {
+                node_key: final_state_node_key(),
+                reason: format!("cancel_dangling_nodes: store commit: {e}"),
             }),
         }
     }

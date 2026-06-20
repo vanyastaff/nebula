@@ -526,12 +526,55 @@ impl ControlDispatch for EngineControlDispatch {
             Some(status) => {
                 let signalled = self.engine.cancel_execution(execution_id);
                 tracing::debug!(
-                                   %execution_id,
-                                   %status,
-                                   signalled,
-                "control-queue: Cancel dispatched — signalled local runner={signalled}"
-                               );
-                Ok(())
+                    %execution_id,
+                    %status,
+                    signalled,
+                    "control-queue: Cancel dispatched — signalled local runner={signalled}"
+                );
+                if signalled {
+                    // A live in-process frontier owns this execution: its loop
+                    // teardown (`drain_pending_to_cancelled`) terminalizes the
+                    // parked/queued nodes. Ack — nothing more to do here.
+                    return Ok(());
+                }
+                // No in-process runner: either a `Paused` (signal-wait)
+                // execution with no live frontier, or a cross-runner live
+                // execution. Durably terminalize any parked nodes so a
+                // `Cancelled` execution never retains a non-terminal node.
+                // Lease-guarded: a held lease means a live frontier (this is the
+                // cross-runner case) is tearing down or another runner owns it →
+                // Defer for B1 reclaim rather than racing its node writes.
+                match self.engine.cancel_dangling_nodes(scope, execution_id).await {
+                    Ok(_) => Ok(()),
+                    Err(EngineError::Leased { ref holder, .. }) => {
+                        tracing::debug!(
+                            %execution_id,
+                            %holder,
+                            "dispatch_cancel: dangling-node cleanup deferred — execution lease \
+                             held by another runner (its teardown or B1 reclaim completes the cancel)"
+                        );
+                        Err(ControlDispatchError::Deferred(format!(
+                            "execution {execution_id} cancel dangling-node cleanup deferred; \
+                             lease held by {holder}"
+                        )))
+                    },
+                    Err(e) => {
+                        // The cleanup did not durably land; the execution is
+                        // already `Cancelled` but its parked nodes are still
+                        // non-terminal. Defer so B1 reclaim retries — never ack a
+                        // cleanup whose effect did not land.
+                        tracing::warn!(
+                            %execution_id,
+                            error = %e,
+                            "dispatch_cancel: dangling-node cleanup did not land; deferring for \
+                             B1 reclaim"
+                        );
+                        Err(ControlDispatchError::Deferred(format!(
+                            "execution {execution_id} cancel dangling-node cleanup did not land \
+                             ({e}); deferred for B1 reclaim"
+                        )))
+                    },
+                }
             },
         }
     }
