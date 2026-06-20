@@ -922,6 +922,8 @@ impl AppState {
             scope: scope.clone(),
             w3c_traceparent: w3c.as_ref().map(|c| c.traceparent().to_owned()),
             reclaim_count: 0,
+            // No targeted-Resume producer yet (W-S3d); enqueue untargeted.
+            resume_target: None,
         };
         queue.enqueue(&msg).await.map_err(|e| {
             use nebula_storage_port::StorageError;
@@ -984,6 +986,8 @@ impl AppState {
             scope: scope.clone(),
             w3c_traceparent: w3c.as_ref().map(|c| c.traceparent().to_owned()),
             reclaim_count: 0,
+            // No targeted-Resume producer yet (W-S3d); enqueue untargeted.
+            resume_target: None,
         };
         let batch = nebula_storage_port::TransitionBatch::builder()
             .scope(scope.clone())

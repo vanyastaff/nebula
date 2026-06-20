@@ -28,7 +28,7 @@ use nebula_storage::{InMemoryControlQueue, InMemoryExecutionStore};
 use nebula_storage_port::store::ControlQueue;
 use nebula_storage_port::{
     Scope,
-    dto::{ControlCommand, ControlMsg},
+    dto::{ControlCommand, ControlMsg, ResumeTarget},
 };
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
@@ -63,6 +63,20 @@ fn port_msg(execution_id: &ExecutionId, command: ControlCommand, row_id: u8) -> 
         scope: nebula_engine::store_seam::single_tenant_scope(),
         w3c_traceparent: None,
         reclaim_count: 0,
+        resume_target: None,
+    }
+}
+
+/// Build a `Resume` control message carrying an explicit `resume_target`, so a
+/// test can assert the consumer threads it through to `dispatch_resume` (W-S3a).
+fn port_resume_msg(
+    execution_id: &ExecutionId,
+    row_id: u8,
+    resume_target: Option<ResumeTarget>,
+) -> ControlMsg {
+    ControlMsg {
+        resume_target,
+        ..port_msg(execution_id, ControlCommand::Resume, row_id)
     }
 }
 
@@ -77,6 +91,11 @@ fn port_msg(execution_id: &ExecutionId, command: ControlCommand, row_id: u8) -> 
 #[derive(Default)]
 struct RecordingDispatch {
     observations: Mutex<Vec<(ControlCommand, ExecutionId, Scope)>>,
+    /// Resume targets observed on `dispatch_resume`, in arrival order. The
+    /// decisive witness that `ControlConsumer` threads `ControlMsg.resume_target`
+    /// through to the dispatch (W-S3a) — a regression that drops or hardcodes the
+    /// target would still leave the command/scope wiring tests green.
+    resume_targets: Mutex<Vec<Option<ResumeTarget>>>,
     notify: Notify,
 }
 
@@ -95,6 +114,10 @@ impl RecordingDispatch {
 
     fn snapshot(&self) -> Vec<(ControlCommand, ExecutionId, Scope)> {
         self.observations.lock().expect("poisoned").clone()
+    }
+
+    fn resume_target_snapshot(&self) -> Vec<Option<ResumeTarget>> {
+        self.resume_targets.lock().expect("poisoned").clone()
     }
 }
 
@@ -131,7 +154,12 @@ impl ControlDispatch for RecordingDispatch {
         &self,
         scope: &Scope,
         execution_id: ExecutionId,
+        resume_target: Option<ResumeTarget>,
     ) -> Result<(), ControlDispatchError> {
+        self.resume_targets
+            .lock()
+            .expect("poisoned")
+            .push(resume_target);
         self.record(ControlCommand::Resume, execution_id, scope.clone());
         Ok(())
     }
@@ -223,6 +251,7 @@ impl ControlDispatch for FlakyDispatch {
         &self,
         _scope: &Scope,
         execution_id: ExecutionId,
+        _resume_target: Option<ResumeTarget>,
     ) -> Result<(), ControlDispatchError> {
         self.maybe_stall(&execution_id).await;
         self.record(ControlCommand::Resume, execution_id);
@@ -375,6 +404,72 @@ async fn consumer_observes_each_command_variant_via_dispatch_trait() {
     assert!(
         leftover.is_empty(),
         "all rows acked — claim_pending sees nothing pending"
+    );
+}
+
+/// **W-S3a — the consumer threads `ControlMsg.resume_target` into
+/// `dispatch_resume`.**
+///
+/// Enqueue two `Resume` rows: one carrying `resume_target = Some(Webhook { "cb"
+/// })` and one untargeted (`None`). The consumer must deliver each row's target
+/// to `dispatch_resume` unchanged. A regression that dropped or hardcoded the
+/// target would still leave the command/scope wiring tests green — so the
+/// observed targets are the decisive witness.
+///
+/// **Falsifiability**: have `handle_entry` pass `None` instead of
+/// `resume_target` (or drop the `ClaimedRow.resume_target` field) → the
+/// `Some(Webhook{..})` observation becomes `None` → the assertion fails → RED.
+#[tokio::test]
+async fn consumer_threads_resume_target_into_dispatch() {
+    let (_store, queue) = port_queue();
+    let recorder = RecordingDispatch::new();
+    let dispatch: Arc<dyn ControlDispatch> = recorder.clone();
+
+    let exec_targeted = ExecutionId::new();
+    let exec_untargeted = ExecutionId::new();
+    let target = ResumeTarget::Webhook {
+        callback_id: "cb".to_owned(),
+    };
+
+    queue
+        .enqueue(&port_resume_msg(&exec_targeted, 0, Some(target.clone())))
+        .await
+        .unwrap();
+    queue
+        .enqueue(&port_resume_msg(&exec_untargeted, 1, None))
+        .await
+        .unwrap();
+
+    let consumer = ControlConsumer::new(queue.clone(), dispatch, proc16(b"test-processor"))
+        .with_batch_size(16)
+        .with_poll_interval(Duration::from_millis(10));
+    let shutdown = CancellationToken::new();
+    let handle = consumer.spawn(shutdown.clone());
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if recorder.resume_target_snapshot().len() >= 2 {
+                break;
+            }
+            recorder.notify.notified().await;
+        }
+    })
+    .await
+    .expect("both Resume commands observed within 2s");
+
+    shutdown.cancel();
+    handle.await.expect("graceful shutdown");
+
+    let targets = recorder.resume_target_snapshot();
+    assert_eq!(targets.len(), 2, "both Resume rows reached dispatch_resume");
+    assert!(
+        targets.contains(&Some(target)),
+        "the targeted Resume must thread Some(Webhook{{callback_id:\"cb\"}}) \
+         into dispatch_resume; observed {targets:?}"
+    );
+    assert!(
+        targets.contains(&None),
+        "the untargeted Resume must thread None into dispatch_resume; observed {targets:?}"
     );
 }
 

@@ -652,6 +652,7 @@ async fn engine_b_cancels_execution_after_runner_a_death_via_reclaim_redeliver()
             scope: nebula_engine::store_seam::single_tenant_scope(),
             w3c_traceparent: None,
             reclaim_count: 0,
+            resume_target: None,
         })
         .await
         .unwrap();

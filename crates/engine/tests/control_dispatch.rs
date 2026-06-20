@@ -450,6 +450,7 @@ async fn dispatch_resume_drives_created_execution_to_completion() {
         .dispatch_resume(
             &nebula_engine::store_seam::single_tenant_scope(),
             execution_id,
+            None,
         )
         .await
         .expect("dispatch_resume succeeds");
@@ -476,6 +477,7 @@ async fn dispatch_resume_is_idempotent_on_completed_execution() {
         .dispatch_resume(
             &nebula_engine::store_seam::single_tenant_scope(),
             execution_id,
+            None,
         )
         .await
         .unwrap();
@@ -486,6 +488,7 @@ async fn dispatch_resume_is_idempotent_on_completed_execution() {
         .dispatch_resume(
             &nebula_engine::store_seam::single_tenant_scope(),
             execution_id,
+            None,
         )
         .await
         .expect("second resume is idempotent");

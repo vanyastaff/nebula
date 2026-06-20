@@ -53,7 +53,10 @@ CREATE TABLE IF NOT EXISTS port_control_queue (
     reclaim_count   INTEGER NOT NULL DEFAULT 0,
     processed_by    BLOB,
     processed_at_ms INTEGER,
-    error_message   TEXT
+    error_message   TEXT,
+    -- ADR-0099 W-S3a: kind-aware resume targeting (serialized ResumeTarget
+    -- JSON; NULL when None). NULL on legacy rows → deserialized as None.
+    resume_target   TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_port_control_queue_pending

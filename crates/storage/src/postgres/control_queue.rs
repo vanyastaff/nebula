@@ -10,7 +10,7 @@
 use std::time::Duration;
 
 use chrono::Utc;
-use nebula_storage_port::dto::{ControlMsg, JournalEntry};
+use nebula_storage_port::dto::{ControlMsg, JournalEntry, ResumeTarget};
 use nebula_storage_port::store::{ControlQueue, ExecutionJournalReader, ReclaimOutcome};
 use nebula_storage_port::{Scope, StorageError};
 use sqlx::{PgPool, Row};
@@ -57,11 +57,17 @@ fn decode_id(bytes: &[u8]) -> Result<[u8; 16], StorageError> {
 #[async_trait::async_trait]
 impl ControlQueue for PgControlQueue {
     async fn enqueue(&self, msg: &ControlMsg) -> Result<(), StorageError> {
+        let resume_target_json = msg
+            .resume_target
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|e| StorageError::Serialization(e.to_string()))?;
         sqlx::query(
             "INSERT INTO port_control_queue \
              (id, execution_id, workspace_id, org_id, command, status, \
-              w3c_traceparent, reclaim_count) \
-             VALUES ($1, $2, $3, $4, $5, 'Pending', $6, $7)",
+              w3c_traceparent, reclaim_count, resume_target) \
+             VALUES ($1, $2, $3, $4, $5, 'Pending', $6, $7, $8)",
         )
         .bind(msg.id.as_slice())
         .bind(&msg.execution_id)
@@ -70,6 +76,7 @@ impl ControlQueue for PgControlQueue {
         .bind(msg.command.as_str())
         .bind(msg.w3c_traceparent.as_deref())
         .bind(i32::try_from(msg.reclaim_count).unwrap_or(i32::MAX))
+        .bind(resume_target_json)
         .execute(&self.pool)
         .await
         .map_err(conn_err)?;
@@ -99,7 +106,7 @@ impl ControlQueue for PgControlQueue {
                  FOR UPDATE SKIP LOCKED \
              ) \
              RETURNING id, execution_id, workspace_id, org_id, command, \
-                       w3c_traceparent, reclaim_count",
+                       w3c_traceparent, reclaim_count, resume_target",
         )
         .bind(processor.as_slice())
         .bind(now_ms)
@@ -110,6 +117,13 @@ impl ControlQueue for PgControlQueue {
         rows.into_iter()
             .map(|row| {
                 let id_bytes: Vec<u8> = row.try_get("id").map_err(conn_err)?;
+                let resume_target: Option<ResumeTarget> = row
+                    .try_get::<Option<String>, _>("resume_target")
+                    .map_err(conn_err)?
+                    .as_deref()
+                    .map(serde_json::from_str)
+                    .transpose()
+                    .map_err(|e| StorageError::Serialization(e.to_string()))?;
                 Ok(ControlMsg {
                     id: decode_id(&id_bytes)?,
                     execution_id: row.try_get("execution_id").map_err(conn_err)?,
@@ -122,6 +136,7 @@ impl ControlQueue for PgControlQueue {
                     ),
                     w3c_traceparent: row.try_get("w3c_traceparent").map_err(conn_err)?,
                     reclaim_count: row.try_get::<i32, _>("reclaim_count").map_err(conn_err)? as u32,
+                    resume_target,
                 })
             })
             .collect()

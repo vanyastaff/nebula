@@ -39,6 +39,7 @@ fn builder_carries_outbox_and_journal() {
         scope: Scope::new("w", "o"),
         w3c_traceparent: None,
         reclaim_count: 0,
+        resume_target: None,
     };
     let je = JournalEntry {
         seq: None,

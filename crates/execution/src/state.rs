@@ -75,6 +75,59 @@ pub enum WaitWake {
     Timeout,
 }
 
+/// The external signal a parked [`NodeState::Waiting`] node is waiting **for**
+/// — the persisted resume-identity of a signal-driven wait.
+///
+/// A signal wait (`Webhook` / `Approval` / `Execution`) is satisfied by an
+/// explicit Resume, not a timer. Before W-S3a the parked node recorded only
+/// *that* it was waiting (via [`next_attempt_at`](NodeExecutionState::next_attempt_at)
+/// / [`wait_wake`](NodeExecutionState::wait_wake)), never *what for*: the
+/// `WaitCondition`'s identity was destructured away at park. That made every
+/// Resume untargeted — it armed every signal-`Waiting` node — and let a Resume
+/// for one wait satisfy an unrelated sibling, or a webhook Resume satisfy an
+/// approval gate (two confused-deputy bugs). `WaitSignal` persists the minimum
+/// identity needed to target the arm: the `callback_id` of a webhook, the
+/// `approver` of an approval gate, or the `execution_id` of an execution wait.
+///
+/// Only the **identity** is persisted — never the approval `message`, a webhook
+/// body, or any payload/schema. Carrying the inbound payload is a later slice
+/// (W-S4); persisting it here would widen the durable surface without a
+/// targeting need.
+///
+/// `WaitSignal` is the kind-aware peer of [`WaitWake`]: `wait_wake` records how
+/// a *timer* wake is read, `wait_signal` records which *external signal* a
+/// non-timer wait awaits. A node parked with a `timeout` carries both; a
+/// signal-only park carries `wait_signal` with no timer; a timer-driven wait
+/// (`Until` / `Duration`) carries neither — see
+/// [`park_node`](ExecutionState::park_node)'s invariant.
+///
+/// Extensible by design (`#[non_exhaustive]`): future wait-bearing kinds may
+/// introduce further signal identities.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub enum WaitSignal {
+    /// Awaiting an inbound HTTP callback identified by `callback_id`.
+    Webhook {
+        /// The author-declared callback label an inbound webhook Resume must
+        /// match. Mirrors `WaitCondition::Webhook::callback_id`.
+        callback_id: String,
+    },
+    /// Awaiting human approval from `approver`.
+    Approval {
+        /// Identifier of the person whose approval Resume must match. Mirrors
+        /// `WaitCondition::Approval::approver`. The approval `message` shown to
+        /// the approver is deliberately NOT persisted here — only the identity
+        /// needed for targeting.
+        approver: String,
+    },
+    /// Awaiting another execution to complete.
+    Execution {
+        /// The execution this wait is gated on. Mirrors
+        /// `WaitCondition::Execution::execution_id`.
+        execution_id: ExecutionId,
+    },
+}
+
 /// The execution state of a single node within a running workflow.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeExecutionState {
@@ -140,6 +193,30 @@ pub struct NodeExecutionState {
     /// [`park_node`]: ExecutionState::park_node
     #[serde(default)]
     pub wait_wake: Option<WaitWake>,
+    /// The external signal this parked node is waiting **for** — the persisted
+    /// resume-identity of a signal-driven wait. See [`WaitSignal`].
+    ///
+    /// `Some(_)` exactly when this node is parked on a SIGNAL `WaitCondition`
+    /// (`Webhook` / `Approval` / `Execution`), independent of
+    /// [`wait_wake`](Self::wait_wake) / [`next_attempt_at`](Self::next_attempt_at):
+    /// a signal-only park carries `wait_signal: Some, wake_at: None,
+    /// wait_wake: None`; a signal+timeout park (W-S2b) carries `wait_signal:
+    /// Some, wake_at: Some, wait_wake: Some(Timeout)`; a timer-driven wait
+    /// (`Until` / `Duration`) carries `wait_signal: None`.
+    /// [`park_node`](ExecutionState::park_node) enforces this signal/timer
+    /// classification as a typed runtime guard.
+    ///
+    /// A targeted Resume arms only the node whose `wait_signal` matches the
+    /// resume target (a webhook target matches only a `Webhook` signal whose
+    /// `callback_id` is equal — never an `Approval` / `Execution`); an
+    /// untargeted Resume keeps the legacy all-signal-waits behavior.
+    ///
+    /// Forward-compat: legacy persisted states that predate this field
+    /// deserialize as `None`. A `None` on a still-`Waiting` signal node is read
+    /// as "untargetable by identity" — only an untargeted Resume arms it, which
+    /// preserves W-S2b behavior for rows written before W-S3a.
+    #[serde(default)]
+    pub wait_signal: Option<WaitSignal>,
 }
 
 impl NodeExecutionState {
@@ -156,6 +233,7 @@ impl NodeExecutionState {
             error_message: None,
             next_attempt_at: None,
             wait_wake: None,
+            wait_signal: None,
         }
     }
 
@@ -244,10 +322,11 @@ impl NodeExecutionState {
         );
     }
 
-    /// Clear a parked wait's timer fields after the wake has been resolved
-    /// (the node completed or timed out): drop both `next_attempt_at` and
-    /// `wait_wake` so a later terminal state carries no contradictory wake
-    /// metadata.
+    /// Clear a parked wait's metadata after the wake has been resolved (the
+    /// node completed or timed out): drop `next_attempt_at`, `wait_wake`, and
+    /// the persisted `wait_signal` resume-identity so a later terminal state
+    /// carries no contradictory wait metadata. Once a wait has resolved, the
+    /// node is no longer arm-targetable, so its `wait_signal` is dropped too.
     ///
     /// Apply this only on the wait-cleanup paths (a resolved `Waiting` node).
     /// It must NOT be used on a `WaitingRetry` node: there `next_attempt_at` is
@@ -256,6 +335,7 @@ impl NodeExecutionState {
     pub fn clear_wait_timer(&mut self) {
         self.next_attempt_at = None;
         self.wait_wake = None;
+        self.wait_signal = None;
         debug_assert_eq!(
             self.next_attempt_at.is_some(),
             self.wait_wake.is_some(),
@@ -696,22 +776,38 @@ impl ExecutionState {
     ///
     /// Promotes `Running → Waiting`, stamps `next_attempt_at` with the
     /// timer wake instant (or clears it when no timer applies), records
-    /// the wake discriminator [`wait_wake`](NodeExecutionState::wait_wake),
+    /// the wake discriminator [`wait_wake`](NodeExecutionState::wait_wake)
+    /// and the resume-identity [`wait_signal`](NodeExecutionState::wait_signal),
     /// and bumps the execution version. Mirrors [`schedule_node_retry`] for
     /// the wait-park path.
     ///
-    /// # Invariant
+    /// # Invariants
     ///
-    /// `wait_wake.is_some() == wake_at.is_some()`. A timer wake (`wake_at`
-    /// `Some`) must declare what the wake means ([`WaitWake::Completion`]
-    /// for a timer-driven or armed-signal wait, [`WaitWake::Timeout`] for a
-    /// signal wait whose `timeout` is the wake), and a signal-only park (no
-    /// timer) must carry `None` (it is satisfied by a Resume, not a timer).
-    /// `park_node` is the sole caller-facing writer of the
-    /// (`next_attempt_at`, `wait_wake`) pair, and it takes both from the
-    /// caller — so the pairing is enforced as a fallible runtime guard (not a
+    /// 1. **Wake pairing** — `wait_wake.is_some() == wake_at.is_some()`. A timer
+    ///    wake (`wake_at` `Some`) must declare what the wake means
+    ///    ([`WaitWake::Completion`] for a timer-driven or armed-signal wait,
+    ///    [`WaitWake::Timeout`] for a signal wait whose `timeout` is the wake),
+    ///    and a wait with no timer must carry `None` (it is satisfied by a
+    ///    Resume, not a timer).
+    /// 2. **Signal/timer classification** — `wait_signal.is_some()` iff the wait
+    ///    is signal-driven, INDEPENDENT of the timer. Concretely a node is a
+    ///    signal wait when `wait_wake != Some(WaitWake::Completion)` (i.e. a
+    ///    signal-only park, `wait_wake == None`, or a signal+timeout park,
+    ///    `wait_wake == Some(Timeout)`), and a timer wait when
+    ///    `wait_wake == Some(WaitWake::Completion)`. So `wait_signal` MUST be
+    ///    `Some` for the former and `None` for the latter. This makes the three
+    ///    legal shapes the only representable ones:
+    ///    - signal-only: `wake_at None, wait_wake None, wait_signal Some`
+    ///    - signal+timeout: `wake_at Some, wait_wake Some(Timeout), wait_signal Some`
+    ///    - timer: `wake_at Some, wait_wake Some(Completion), wait_signal None`
+    ///
+    /// `park_node` is the sole caller-facing writer of the (`next_attempt_at`,
+    /// `wait_wake`, `wait_signal`) triple, and it takes all three from the
+    /// caller — so both invariants are enforced as fallible runtime guards (not
     /// `debug_assert!`): a `Some(wake_at), None` desync would turn a timeout
-    /// into a completion, which is load-bearing rather than a debug-only check.
+    /// into a completion, and a signal wait with no persisted identity (or a
+    /// timer wait with one) would mis-target a Resume — both load-bearing rather
+    /// than debug-only checks.
     ///
     /// The caller is responsible for:
     /// - Persisting the node's `partial_output` through the normal
@@ -722,13 +818,15 @@ impl ExecutionState {
     ///   timer-driven wakes.
     ///
     /// On success the per-node `Running → Waiting` transition, the
-    /// `next_attempt_at` stamp, and the `wait_wake` discriminator are all
-    /// reflected in `version`. On `Err` the state is left untouched.
+    /// `next_attempt_at` stamp, the `wait_wake` discriminator, and the
+    /// `wait_signal` resume-identity are all reflected in `version`. On `Err`
+    /// the state is left untouched.
     ///
     /// # Errors
     /// - [`ExecutionError::InvalidTransition`] if the (`wake_at`, `wait_wake`)
-    ///   pair is not both-`Some` or both-`None` — checked before any mutation,
-    ///   so a desync leaves the state untouched.
+    ///   pair is not both-`Some` or both-`None`, or if the signal/timer
+    ///   classification of (`wait_wake`, `wait_signal`) is inconsistent — both
+    ///   checked before any mutation, so a desync leaves the state untouched.
     /// - [`ExecutionError::NodeNotFound`] if `node_key` is unknown.
     /// - [`ExecutionError::InvalidTransition`] if the node is not in `Running`
     ///   (the engine may only call this immediately after dispatching the action).
@@ -739,6 +837,7 @@ impl ExecutionState {
         node_key: NodeKey,
         wake_at: Option<DateTime<Utc>>,
         wait_wake: Option<WaitWake>,
+        wait_signal: Option<WaitSignal>,
     ) -> Result<(), ExecutionError> {
         // Enforce the wake pairing BEFORE any mutation. A `Some(wake_at),
         // None` (or the inverse) desync would persist a timer wake with no
@@ -755,12 +854,29 @@ impl ExecutionState {
                 to: "Waiting (wait_wake/wake_at must be paired)".to_owned(),
             });
         }
+        // Enforce the signal/timer classification BEFORE any mutation. A signal
+        // wait (`wait_wake != Some(Completion)`) MUST carry a persisted
+        // `wait_signal` identity so a targeted Resume can match it; a timer wait
+        // (`wait_wake == Some(Completion)`) MUST NOT — a persisted signal on a
+        // pure timer would let a webhook/approval Resume mis-satisfy it. Same
+        // release-safe typed-error pattern as the wake-pairing guard above.
+        let is_timer_wait = wait_wake == Some(WaitWake::Completion);
+        if is_timer_wait == wait_signal.is_some() {
+            return Err(ExecutionError::InvalidTransition {
+                from: self
+                    .node_states
+                    .get(&node_key)
+                    .map_or_else(|| NodeState::Running.to_string(), |ns| ns.state.to_string()),
+                to: "Waiting (wait_signal must be Some iff a signal wait)".to_owned(),
+            });
+        }
         self.transition_node(node_key.clone(), NodeState::Waiting)?;
         // Stamp or clear the wake instant. `Waiting` with `wake_at ==
         // None` means the park is signal-driven (webhook/approval/
         // execution) with no timeout: only an explicit Resume will satisfy
         // the condition. `wait_wake` records how a timer wake (if any) is to
-        // be read when it fires. Stale failure metadata is cleared for the
+        // be read when it fires; `wait_signal` records the resume-identity a
+        // targeted Resume matches. Stale failure metadata is cleared for the
         // same reason `schedule_node_retry` clears it — a later `Completed`
         // transition must not carry contradictory persisted fields.
         let ns = self
@@ -769,6 +885,7 @@ impl ExecutionState {
             .ok_or(ExecutionError::NodeNotFound(node_key))?;
         ns.next_attempt_at = wake_at;
         ns.wait_wake = wait_wake;
+        ns.wait_signal = wait_signal;
         ns.error_message = None;
         ns.completed_at = None;
         self.version += 1;
@@ -974,6 +1091,7 @@ impl ExecutionState {
             if let Some(ns) = self.node_states.get_mut(&node_key) {
                 ns.next_attempt_at = None;
                 ns.wait_wake = None;
+                ns.wait_signal = None;
             }
         }
         Ok(count)
@@ -1821,8 +1939,17 @@ mod tests {
         state.start_node_attempt(n1.clone()).unwrap();
 
         let wake_at = Utc::now() + chrono::Duration::seconds(30);
+        // A signal+timeout park: the timer is the Timeout deadline and the wait
+        // carries its resume-identity (a webhook callback_id).
         state
-            .park_node(n1.clone(), Some(wake_at), Some(WaitWake::Timeout))
+            .park_node(
+                n1.clone(),
+                Some(wake_at),
+                Some(WaitWake::Timeout),
+                Some(WaitSignal::Webhook {
+                    callback_id: "cb-timeout".to_owned(),
+                }),
+            )
             .expect("Running → Waiting park must succeed");
 
         let ns = state.node_state(n1).unwrap();
@@ -1844,7 +1971,14 @@ mod tests {
         state.start_node_attempt(n1.clone()).unwrap();
 
         state
-            .park_node(n1.clone(), None, None)
+            .park_node(
+                n1.clone(),
+                None,
+                None,
+                Some(WaitSignal::Webhook {
+                    callback_id: "cb-signal-only".to_owned(),
+                }),
+            )
             .expect("Running → Waiting signal-only park must succeed");
 
         let ns = state.node_state(n1).unwrap();
@@ -1853,6 +1987,13 @@ mod tests {
         assert!(
             ns.wait_wake.is_none(),
             "a signal-only park must not carry a wake discriminator"
+        );
+        assert_eq!(
+            ns.wait_signal,
+            Some(WaitSignal::Webhook {
+                callback_id: "cb-signal-only".to_owned(),
+            }),
+            "a signal-only park must persist its resume-identity"
         );
     }
 
@@ -1874,7 +2015,7 @@ mod tests {
 
         // wake_at without a wait_wake meaning is a desync — must be rejected.
         let err = state
-            .park_node(n1.clone(), Some(wake_at), None)
+            .park_node(n1.clone(), Some(wake_at), None, None)
             .expect_err("a Some(wake_at), None park must be rejected");
         assert!(
             matches!(err, ExecutionError::InvalidTransition { .. }),
@@ -1883,7 +2024,7 @@ mod tests {
 
         // The inverse desync (wait_wake without a timer) is equally rejected.
         let err = state
-            .park_node(n1.clone(), None, Some(WaitWake::Timeout))
+            .park_node(n1.clone(), None, Some(WaitWake::Timeout), None)
             .expect_err("a None, Some(wait_wake) park must be rejected");
         assert!(matches!(err, ExecutionError::InvalidTransition { .. }));
 
@@ -1985,6 +2126,164 @@ mod tests {
             ns.wait_wake.is_some(),
             "cleared pair must satisfy the next_attempt_at/wait_wake invariant"
         );
+    }
+
+    /// W-S3a — `wait_signal` round-trips through serde across all three
+    /// variants, and a legacy `NodeExecutionState` JSON that predates the field
+    /// deserializes as `None` (read by the engine as untargetable-by-identity,
+    /// only an untargeted Resume arms it — preserving W-S2b behavior).
+    ///
+    /// **Falsifiability**: drop `#[serde(default)]` from `wait_signal` → the
+    /// legacy-JSON `from_value` errors (missing field) → the test panics.
+    #[test]
+    fn wait_signal_serde_roundtrip_and_legacy_default() {
+        let roundtrip = |signal: WaitSignal| {
+            let mut ns = NodeExecutionState::new();
+            ns.wait_signal = Some(signal.clone());
+            let json = serde_json::to_string(&ns).unwrap();
+            let back: NodeExecutionState = serde_json::from_str(&json).unwrap();
+            assert_eq!(
+                back.wait_signal,
+                Some(signal),
+                "wait_signal must survive a serde roundtrip"
+            );
+        };
+        roundtrip(WaitSignal::Webhook {
+            callback_id: "cb-1".to_owned(),
+        });
+        roundtrip(WaitSignal::Approval {
+            approver: "boss".to_owned(),
+        });
+        roundtrip(WaitSignal::Execution {
+            execution_id: ExecutionId::new(),
+        });
+
+        // Legacy JSON without the field deserializes as `None`.
+        let legacy = serde_json::json!({
+            "state": "waiting",
+            "attempts": [],
+        });
+        let ns: NodeExecutionState = serde_json::from_value(legacy).unwrap();
+        assert!(
+            ns.wait_signal.is_none(),
+            "legacy rows without wait_signal must deserialize as None"
+        );
+    }
+
+    /// W-S3a — `park_node` persists the resume-identity for a signal wait so a
+    /// later targeted Resume can match it. Covers the signal-only shape
+    /// (`Approval`) here; the signal+timeout shape is covered by
+    /// `park_node_sets_wait_wake`.
+    ///
+    /// **Falsifiability**: drop the `wait_signal` field write from `park_node`
+    /// → `back.wait_signal` is `None` not `Some(Approval{..})` → the assert
+    /// fails.
+    #[test]
+    fn park_node_sets_wait_signal_for_signal_conditions() {
+        let (mut state, n1, _n2) = make_state();
+        state.start_node_attempt(n1.clone()).unwrap();
+
+        state
+            .park_node(
+                n1.clone(),
+                None,
+                None,
+                Some(WaitSignal::Approval {
+                    approver: "boss".to_owned(),
+                }),
+            )
+            .expect("Running → Waiting signal park must succeed");
+
+        let ns = state.node_state(n1).unwrap();
+        assert_eq!(ns.state, NodeState::Waiting);
+        assert_eq!(
+            ns.wait_signal,
+            Some(WaitSignal::Approval {
+                approver: "boss".to_owned(),
+            }),
+            "park_node must persist the Approval resume-identity"
+        );
+    }
+
+    /// W-S3a — a timer-driven wait (`Until` / `Duration`) carries NO
+    /// `wait_signal` (it is satisfied by a timer, never a Resume identity).
+    /// `park_node` records the timer + `Completion` discriminator and leaves
+    /// `wait_signal` `None`.
+    ///
+    /// **Falsifiability**: have `park_node` stamp a `wait_signal` on the timer
+    /// path → the `is_none()` assert fails; or relax the classification guard
+    /// so a `Completion` wake with a `Some(wait_signal)` is accepted → the
+    /// rejection test below stops catching it.
+    #[test]
+    fn park_node_no_wait_signal_for_timer() {
+        let (mut state, n1, _n2) = make_state();
+        state.start_node_attempt(n1.clone()).unwrap();
+        let wake_at = Utc::now() + chrono::Duration::seconds(30);
+
+        state
+            .park_node(n1.clone(), Some(wake_at), Some(WaitWake::Completion), None)
+            .expect("Running → Waiting timer park must succeed");
+
+        let ns = state.node_state(n1).unwrap();
+        assert_eq!(ns.state, NodeState::Waiting);
+        assert_eq!(ns.next_attempt_at, Some(wake_at));
+        assert_eq!(ns.wait_wake, Some(WaitWake::Completion));
+        assert!(
+            ns.wait_signal.is_none(),
+            "a timer wait must not carry a resume-identity"
+        );
+    }
+
+    /// W-S3a — `park_node` REJECTS an inconsistent signal/timer classification
+    /// with a typed error and leaves the node untouched. A signal wait
+    /// (`wait_wake != Some(Completion)`) with no persisted identity would be
+    /// untargetable; a timer wait (`wait_wake == Some(Completion)`) with a
+    /// persisted identity would let a webhook/approval Resume mis-satisfy a
+    /// pure timer. Both are load-bearing guards, not debug-only asserts.
+    ///
+    /// **Falsifiability**: drop the classification guard from `park_node` →
+    /// both `park_node` calls return `Ok`, the node becomes `Waiting` with an
+    /// inconsistent (`wait_wake`, `wait_signal`) shape → both `expect_err`
+    /// flip → RED.
+    #[test]
+    fn park_node_rejects_signal_classification_desync() {
+        let (mut state, n1, _n2) = make_state();
+        state.start_node_attempt(n1.clone()).unwrap();
+        let wake_at = Utc::now() + chrono::Duration::seconds(30);
+
+        // Signal-only park (wait_wake None) with NO identity — must be rejected.
+        let err = state
+            .park_node(n1.clone(), None, None, None)
+            .expect_err("a signal park with no wait_signal must be rejected");
+        assert!(
+            matches!(err, ExecutionError::InvalidTransition { .. }),
+            "the classification desync must surface as a typed InvalidTransition, got {err:?}"
+        );
+
+        // Timer park (wait_wake Completion) WITH an identity — must be rejected.
+        let err = state
+            .park_node(
+                n1.clone(),
+                Some(wake_at),
+                Some(WaitWake::Completion),
+                Some(WaitSignal::Webhook {
+                    callback_id: "cb".to_owned(),
+                }),
+            )
+            .expect_err("a timer park with a wait_signal must be rejected");
+        assert!(matches!(err, ExecutionError::InvalidTransition { .. }));
+
+        // The guard ran before any mutation: the node is still Running, never
+        // parked, and carries no stale wait metadata.
+        let ns = state.node_state(n1).unwrap();
+        assert_eq!(
+            ns.state,
+            NodeState::Running,
+            "a rejected park must leave the node untouched (still Running)"
+        );
+        assert!(ns.next_attempt_at.is_none());
+        assert!(ns.wait_wake.is_none());
+        assert!(ns.wait_signal.is_none());
     }
 
     /// `total_retries` round-trips and starts

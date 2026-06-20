@@ -9,7 +9,7 @@
 
 use std::time::Duration;
 
-use nebula_storage_port::dto::{ControlMsg, JournalEntry};
+use nebula_storage_port::dto::{ControlMsg, JournalEntry, ResumeTarget};
 use nebula_storage_port::store::{ControlQueue, ExecutionJournalReader, ReclaimOutcome};
 use nebula_storage_port::{Scope, StorageError};
 use sqlx::{Row, SqlitePool};
@@ -56,11 +56,17 @@ fn decode_id(bytes: &[u8]) -> Result<[u8; 16], StorageError> {
 #[async_trait::async_trait]
 impl ControlQueue for SqliteControlQueue {
     async fn enqueue(&self, msg: &ControlMsg) -> Result<(), StorageError> {
+        let resume_target_json = msg
+            .resume_target
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|e| StorageError::Serialization(e.to_string()))?;
         sqlx::query(
             "INSERT INTO port_control_queue \
              (id, execution_id, workspace_id, org_id, command, status, \
-              w3c_traceparent, reclaim_count) \
-             VALUES (?, ?, ?, ?, ?, 'Pending', ?, ?)",
+              w3c_traceparent, reclaim_count, resume_target) \
+             VALUES (?, ?, ?, ?, ?, 'Pending', ?, ?, ?)",
         )
         .bind(msg.id.as_slice())
         .bind(&msg.execution_id)
@@ -69,6 +75,7 @@ impl ControlQueue for SqliteControlQueue {
         .bind(msg.command.as_str())
         .bind(msg.w3c_traceparent.as_deref())
         .bind(i64::from(msg.reclaim_count))
+        .bind(resume_target_json)
         .execute(&self.pool)
         .await
         .map_err(conn_err)?;
@@ -83,7 +90,7 @@ impl ControlQueue for SqliteControlQueue {
         let mut tx = self.pool.begin().await.map_err(conn_err)?;
         let rows = sqlx::query(
             "SELECT id, execution_id, workspace_id, org_id, command, \
-                    w3c_traceparent, reclaim_count \
+                    w3c_traceparent, reclaim_count, resume_target \
              FROM port_control_queue WHERE status = 'Pending' \
              ORDER BY id LIMIT ?",
         )
@@ -120,6 +127,13 @@ impl ControlQueue for SqliteControlQueue {
             if !won {
                 continue;
             }
+            let resume_target: Option<ResumeTarget> = row
+                .try_get::<Option<String>, _>("resume_target")
+                .map_err(conn_err)?
+                .as_deref()
+                .map(serde_json::from_str)
+                .transpose()
+                .map_err(|e| StorageError::Serialization(e.to_string()))?;
             claimed.push(ControlMsg {
                 id,
                 execution_id: row.try_get("execution_id").map_err(conn_err)?,
@@ -130,6 +144,7 @@ impl ControlQueue for SqliteControlQueue {
                 ),
                 w3c_traceparent: row.try_get("w3c_traceparent").map_err(conn_err)?,
                 reclaim_count: row.try_get::<i64, _>("reclaim_count").map_err(conn_err)? as u32,
+                resume_target,
             });
         }
         tx.commit().await.map_err(conn_err)?;
