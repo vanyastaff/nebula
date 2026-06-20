@@ -166,6 +166,37 @@ pub enum ExecutionEvent {
         termination_reason: Option<ExecutionTerminationReason>,
     },
 
+    /// A `dispatch_resume` command could not durably complete and is being
+    /// redelivered (NOT dropped). Emitted on two paths, both leaving the
+    /// control-queue row unacked for at-least-once (B1 reclaim) redelivery:
+    ///
+    /// 1. **Satisfy did not arm** — `satisfy_signal_waits` could not land
+    ///    (the execution lease was held by another runner, or the CAS was
+    ///    rejected by a concurrent actor): the signal waits were NOT armed.
+    /// 2. **Armed, but the drive deferred** — `satisfy_signal_waits` DID
+    ///    durably arm the wait (`next_attempt_at = Some`), but the follow-up
+    ///    `drive_armed_resume` could not acquire the lease (e.g. a
+    ///    crashed/stalled holder whose TTL has not expired) or hit a CAS
+    ///    conflict, so the armed wait is not yet completed.
+    ///
+    /// In both cases the redelivery converges: a reclaim re-drive re-parks an
+    /// un-armed wait (the redelivered Resume re-arms it); an already-armed wait
+    /// is completed by the next drive once the lease frees; a wait already
+    /// completed makes the redelivery a no-op via the status short-circuit.
+    ///
+    /// # Observability
+    ///
+    /// A `tracing::warn!` fires on the same code path immediately before this
+    /// event is bus-emitted. Together they allow operators to distinguish a
+    /// transient CAS race (expected; low rate) from a systematic drop (unexpected;
+    /// high rate suggests a lease or routing bug).
+    ResumeDeferred {
+        /// Execution whose Resume was deferred due to a CAS conflict.
+        execution_id: ExecutionId,
+        /// Human-readable reason from the `EngineError` that caused the deferral.
+        reason: String,
+    },
+
     /// A scoped resource's `Resource::destroy` future overran its
     /// configured cleanup budget (default
     /// [`crate::scoped_resources::DEFAULT_CLEANUP_TIMEOUT`]).

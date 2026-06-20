@@ -103,6 +103,20 @@ pub enum ControlDispatchError {
     /// legitimate domain-level reject. Also recorded via `mark_failed`.
     #[error("control dispatch failed: {0}")]
     Internal(String),
+
+    /// A retriable dispatch condition prevented a safe ack/fail decision — the
+    /// control-queue row should be left in `Processing` so the B1 reclaim sweep
+    /// redelivers it once the condition clears or the state can be re-checked.
+    ///
+    /// Unlike `Rejected` and `Internal` (which call `mark_failed`), this
+    /// variant causes the consumer to call neither `mark_completed` nor
+    /// `mark_failed`, relying on the reclaim sweep to move the row back to
+    /// `Pending`. Use only when at-least-once redelivery is the correct recovery
+    /// path — e.g. lease contention, or a `dispatch_resume` whose `satisfy`
+    /// write did not durably land (and must not be acked while the wait may
+    /// still be pending) — never for permanent failures.
+    #[error("control dispatch deferred (transient contention): {0}")]
+    Deferred(String),
 }
 
 /// Engine-owned dispatch surface for control commands.
@@ -682,6 +696,20 @@ impl ControlConsumer {
 
         match dispatch_result {
             Ok(()) => self.ack_completed(&row_id).await,
+            Err(ControlDispatchError::Deferred(ref reason)) => {
+                // Transient contention: leave the row in `Processing` so the
+                // B1 reclaim sweep moves it back to `Pending` for redelivery.
+                // Calling `mark_failed` here would permanently record the row as
+                // failed — redelivery under B1 is only for `Processing` rows.
+                tracing::warn!(
+                    id = %hex_display(&row_id),
+                    %execution_id,
+                    command = command.as_str(),
+                    reason = %reason,
+                    "control-queue dispatch deferred (transient contention); \
+                     leaving row in Processing for B1 reclaim"
+                );
+            },
             Err(e) => {
                 tracing::error!(
                                    id = %hex_display(&row_id),

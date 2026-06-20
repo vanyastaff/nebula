@@ -76,6 +76,43 @@ type EventBus = nebula_eventbus::EventBus<ExecutionEvent>;
 /// the workspace-standard fan-out primitive.
 pub const DEFAULT_EVENT_CHANNEL_CAPACITY: usize = 1024;
 
+/// Outcome of [`WorkflowEngine::satisfy_signal_waits`].
+///
+/// Distinguishes "signal waits armed for completion" from "nothing to do"
+/// so callers can log counts accurately without treating zero as an error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SatisfyOutcome {
+    /// `n` signal-driven `Waiting` nodes were armed for completion (their
+    /// `next_attempt_at` was set so the follow-up drive's Phase-0b completes
+    /// them on the main port).
+    Satisfied(usize),
+    /// No signal-driven `Waiting` nodes existed — execution was already
+    /// satisfied, cancelled, or never had wait nodes.
+    NothingToSatisfy,
+    /// The execution left the `Paused` state (terminal or `Cancelling`) between
+    /// the caller's pre-lease status read and the under-lease reload — a
+    /// concurrent Cancel/Terminate won the race. No nodes were touched; the
+    /// Resume is moot and the caller should ack it without driving.
+    ExecutionNotResumable,
+}
+
+/// Outcome of [`WorkflowEngine::cancel_dangling_nodes`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CancelDanglingOutcome {
+    /// `n` non-terminal nodes were transitioned to `Cancelled`.
+    Cancelled(usize),
+    /// Nothing to do — every node is already terminal (idempotent re-delivery),
+    /// or the execution reached a non-cancel terminal outcome before the cancel
+    /// landed. The caller may ack.
+    NothingToCancel,
+    /// The cancel is NOT yet durably recorded on the execution (status is still
+    /// non-terminal and not `Cancelling`). The API writes `Cancelled` before
+    /// enqueuing `Cancel`, so this is a producer-ordering anomaly — the caller
+    /// must DEFER (not ack), so B1 reclaim redelivers until the status reflects
+    /// the cancel and the node cleanup can run, rather than silently dropping it.
+    StatusNotCancelled,
+}
+
 /// Default execution-lease TTL.
 ///
 /// Long enough to survive a GC pause or a slow checkpoint write; short
@@ -1058,7 +1095,7 @@ impl WorkflowEngine {
     /// a dead or backed-up subscriber surfaces as a drop in its
     /// `EventBusStats::dropped_count`, never as back-pressure on the
     /// engine itself.
-    fn emit_event(&self, event: ExecutionEvent) {
+    pub(crate) fn emit_event(&self, event: ExecutionEvent) {
         if let Some(bus) = &self.event_bus {
             let _ = bus.emit(event);
         }
@@ -2349,6 +2386,554 @@ impl WorkflowEngine {
         })
     }
 
+    /// Durably satisfy all signal-driven waits on a `Paused` execution.
+    ///
+    /// A signal-driven wait is a node in `Waiting` state with `next_attempt_at == None`
+    /// (no timer). The node was parked by a `Webhook` / `Approval` / `Execution`
+    /// `WaitCondition` and released its worker; the execution sits at `Paused` waiting
+    /// for an external Resume signal.
+    ///
+    /// This method *arms* every such node for completion by setting its
+    /// `next_attempt_at = now` while LEAVING it `Waiting`, persisted via the
+    /// spec-16 `ExecutionStore` with a version-CAS + fencing batch (the same
+    /// durability contract as `checkpoint_node`). The subsequent `drive`
+    /// re-seeds the armed node into the frontier `wait_heap` and Phase-0b
+    /// transitions it `Waiting → Completed` and activates its downstream edges
+    /// through the **port-aware** `process_outgoing_edges` — exactly the path a
+    /// timer wait takes. Completing the node here instead would route its edges
+    /// through `resume_execution`'s port-blind rebuild, which activates *every*
+    /// outgoing edge (so a multi-port wait would fire its `error`/custom branch
+    /// on a normal Resume). The CAS serialises concurrent Resume calls: a
+    /// second caller sees the node already armed (`next_attempt_at == Some`) or
+    /// `Completed` and returns `NothingToSatisfy`, and the status short-circuit
+    /// in `dispatch_resume` makes a post-completion duplicate a no-op.
+    ///
+    /// A signal-driven wait is satisfied ONLY by this method — it is the sole
+    /// writer of `next_attempt_at` on a signal-`Waiting{None}` node. A reclaim
+    /// re-drive (`dispatch_start`, `dispatch_restart`, worker `EngineExecutionSink`)
+    /// enters `resume_execution` without calling this method first, so the node
+    /// stays `Waiting{next_attempt_at == None}`, is never wait-heap-seeded, and
+    /// the execution returns to `Paused` unchanged. That structural
+    /// discriminator prevents a crashed Paused execution from auto-completing
+    /// its wait on reclaim (data-corruption / security class bug).
+    ///
+    /// # Lease contract
+    ///
+    /// This method acquires the execution lease for the duration of the
+    /// read-modify-write cycle so that the CAS token is always fresh and
+    /// authoritative. Acquiring a lease prevents concurrent runners from
+    /// modifying the execution row between our read and our commit:
+    ///
+    /// - If the lease is held elsewhere, returns [`EngineError::Leased`] —
+    ///   the caller must defer and let the current lease holder finish.
+    /// - On success, the lease is released (best-effort) after the commit.
+    ///
+    /// # Returns
+    ///
+    /// [`SatisfyOutcome::Satisfied(n)`] when `n` signal-driven waiting nodes
+    /// were armed for completion, or [`SatisfyOutcome::NothingToSatisfy`] when
+    /// none exist.
+    ///
+    /// # Errors
+    ///
+    /// - [`EngineError::Leased`] if the lease is held by another runner —
+    ///   callers should defer (redeliver) rather than treating this as a
+    ///   permanent failure.
+    /// - [`EngineError::PlanningFailed`] if the execution row cannot be loaded or
+    ///   its state cannot be deserialised.
+    /// - [`EngineError::CasConflict`] if the durable write is rejected by a
+    ///   concurrent transition (version or fencing mismatch after our lease was
+    ///   released by another path — should not happen under normal flow).
+    /// - [`EngineError::CheckpointFailed`] on serialisation or store errors.
+    pub(crate) async fn satisfy_signal_waits(
+        &self,
+        scope: &Scope,
+        execution_id: ExecutionId,
+    ) -> Result<SatisfyOutcome, EngineError> {
+        let Some(stores) = &self.stores else {
+            // Library mode (no storage) — signal-park resume is a no-op.
+            return Ok(SatisfyOutcome::NothingToSatisfy);
+        };
+
+        let id = execution_id.to_string();
+        let holder = self.instance_id.to_string();
+
+        // Acquire the execution lease before the read-modify-write. This
+        // ensures the fencing token we commit with is the authoritative
+        // current generation — no stale token from a previous runner can
+        // slip through under concurrent lease acquisition.
+        //
+        // A live lease held elsewhere means another runner is already driving
+        // this execution. Return `Leased` so the caller defers the Resume
+        // rather than racing the CAS and potentially dropping the signal.
+        let lease_token = stores
+            .execution
+            .acquire_lease(scope, &id, &holder, self.lease_ttl)
+            .await
+            .map_err(|e| {
+                EngineError::PlanningFailed(format!(
+                    "satisfy_signal_waits: acquire lease for {execution_id}: {e}"
+                ))
+            })?;
+        let Some(lease_token) = lease_token else {
+            tracing::warn!(
+                %execution_id,
+                %holder,
+                "satisfy_signal_waits: execution lease held by another runner; \
+                 deferring Resume (will redeliver)"
+            );
+            return Err(EngineError::Leased {
+                execution_id,
+                holder,
+            });
+        };
+
+        // Lease acquired — proceed under mutual exclusion.
+        let outcome = self
+            .satisfy_signal_waits_under_lease(stores, scope, execution_id, &id, lease_token)
+            .await;
+
+        // Release the lease best-effort. The commit already wrote the new
+        // fencing generation, so a release failure leaves the lease to expire
+        // at TTL — the correct fail-safe behaviour (another runner can then
+        // re-acquire after TTL rather than being blocked indefinitely).
+        if let Err(e) = stores
+            .execution
+            .release_lease(scope, &id, lease_token)
+            .await
+        {
+            tracing::warn!(
+                %execution_id,
+                error = %e,
+                "satisfy_signal_waits: best-effort lease release failed (will expire at TTL)"
+            );
+        }
+
+        outcome
+    }
+
+    /// Inner read-modify-write under an already-held lease.
+    ///
+    /// Extracted so the lease release in `satisfy_signal_waits` is guaranteed
+    /// to run even when this inner path errors.
+    async fn satisfy_signal_waits_under_lease(
+        &self,
+        stores: &crate::store_seam::ExecutionStores,
+        scope: &Scope,
+        execution_id: ExecutionId,
+        id: &str,
+        lease_token: nebula_storage_port::FencingToken,
+    ) -> Result<SatisfyOutcome, EngineError> {
+        let record = stores
+            .execution
+            .get(scope, id)
+            .await
+            .map_err(|e| {
+                EngineError::PlanningFailed(format!(
+                    "satisfy_signal_waits: load execution {execution_id}: {e}"
+                ))
+            })?
+            .ok_or_else(|| {
+                EngineError::PlanningFailed(format!(
+                    "satisfy_signal_waits: execution not found: {execution_id}"
+                ))
+            })?;
+
+        let repo_version = record.version;
+
+        let state_str = serde_json::to_string(&record.state).map_err(|e| {
+            EngineError::PlanningFailed(format!(
+                "satisfy_signal_waits: serialise state for {execution_id}: {e}"
+            ))
+        })?;
+        let mut exec_state: ExecutionState = serde_json::from_str(&state_str).map_err(|e| {
+            EngineError::PlanningFailed(format!(
+                "satisfy_signal_waits: deserialise state for {execution_id}: {e}"
+            ))
+        })?;
+
+        // Re-check the execution status under the lease before satisfying any
+        // node. `dispatch_resume` read `Paused` BEFORE acquiring the lease; a
+        // concurrent Cancel/Terminate may have committed a terminal (or
+        // `Cancelling`) status in that window. The per-node `Waiting → Completed`
+        // CAS below guards only the node version, not the execution status, so
+        // without this gate we would flip — and durably commit — a wait node on
+        // an already-cancelled execution, corrupting its terminal audit state.
+        // Treat it as an idempotent no-op; the caller acks the Resume.
+        if exec_state.status.is_terminal() || exec_state.status == ExecutionStatus::Cancelling {
+            tracing::info!(
+                %execution_id,
+                status = %exec_state.status,
+                "satisfy_signal_waits: execution left Paused before the under-lease reload \
+                 (concurrent cancel/terminate); skipping satisfy as idempotent no-op"
+            );
+            return Ok(SatisfyOutcome::ExecutionNotResumable);
+        }
+
+        // Collect nodes that are signal-driven waits. We identify them by
+        // `state == Waiting` AND `next_attempt_at == None` (no timer wake).
+        // Timer-driven waits (`next_attempt_at == Some(_)`) are already on
+        // `wait_heap` and will be handled by Phase-0b when the frontier
+        // resumes — satisfying them here would duplicate the completion.
+        let signal_waiting_nodes: Vec<NodeKey> = exec_state
+            .node_states
+            .iter()
+            .filter(|(_, ns)| ns.state == NodeState::Waiting && ns.next_attempt_at.is_none())
+            .map(|(id, _)| id.clone())
+            .collect();
+
+        if signal_waiting_nodes.is_empty() {
+            return Ok(SatisfyOutcome::NothingToSatisfy);
+        }
+
+        let satisfied_count = signal_waiting_nodes.len();
+        let now = Utc::now();
+
+        for node_key in &signal_waiting_nodes {
+            // Arm the node for Phase-0b completion: set the wake instant to
+            // `now` and LEAVE the node `Waiting`. The subsequent `drive`
+            // re-seeds it into the frontier `wait_heap` (its `next_attempt_at`
+            // is now `Some`) and Phase-0b transitions it `Waiting → Completed`
+            // and activates downstream through the PORT-AWARE
+            // `process_outgoing_edges` — the same path a timer wait takes.
+            // Transitioning to `Completed` HERE would instead route the node's
+            // edges through `resume_execution`'s port-blind rebuild, which
+            // activates every outgoing edge (a multi-port wait would fire its
+            // `error`/custom branch on a normal Resume).
+            if let Some(ns) = exec_state.node_states.get_mut(node_key) {
+                ns.next_attempt_at = Some(now);
+            }
+        }
+
+        // Persist the satisfy-CAS. This is the single discriminator between
+        // a genuine Resume and a reclaim re-drive: only this code path arms
+        // `next_attempt_at` on a signal-`Waiting{None}` node before `drive`
+        // runs. A reclaim that re-enters `resume_execution` without calling
+        // this method first sees the node still `Waiting{next_attempt_at ==
+        // None}`, never wait-heap-seeds it, and re-parks — returning the
+        // execution to `Paused` without completing the wait.
+        //
+        // We use the freshly-acquired lease token — not the stale generation
+        // read from the row — so the CAS is always guarded by the
+        // authoritative current generation. A concurrent runner that acquired
+        // the lease between our read and this write would be blocked because
+        // we hold the lease here.
+        let state_json =
+            serde_json::to_value(&exec_state).map_err(|e| EngineError::CheckpointFailed {
+                node_key: final_state_node_key(),
+                reason: format!("satisfy_signal_waits: serialise updated state: {e}"),
+            })?;
+
+        let batch = nebula_storage_port::TransitionBatch::builder()
+            .scope(scope.clone())
+            .execution_id(id)
+            .expected_version(repo_version)
+            .fencing(lease_token)
+            .new_state(state_json)
+            .build()
+            .map_err(|e| EngineError::CheckpointFailed {
+                node_key: final_state_node_key(),
+                reason: format!("satisfy_signal_waits: build batch: {e}"),
+            })?;
+
+        match stores.execution.commit(batch).await {
+            Ok(nebula_storage_port::TransitionOutcome::Applied { new_version }) => {
+                tracing::info!(
+                    target = "engine::wait",
+                    %execution_id,
+                    satisfied_count,
+                    new_version,
+                    "satisfy_signal_waits: armed signal waits for Phase-0b completion — \
+                     drive will complete them and activate downstream on the main port"
+                );
+                // No `NodeWaitCompleted` is emitted here: the node is still
+                // `Waiting`. Phase-0b emits that event when it transitions the
+                // node `Waiting → Completed` (the single completion site shared
+                // with timer waits), so observers never see a completion for a
+                // node that is not yet durably `Completed`.
+                Ok(SatisfyOutcome::Satisfied(satisfied_count))
+            },
+            Ok(nebula_storage_port::TransitionOutcome::FencedOut) => {
+                // We hold the lease, so FencedOut should not occur in normal
+                // flow — it would mean the store rejected our own lease token.
+                // Surface as a CAS conflict so the caller can redeliver.
+                tracing::warn!(
+                    %execution_id,
+                    "satisfy_signal_waits: CAS fenced out under our own lease — \
+                     store inconsistency or lease TTL expired during commit"
+                );
+                Err(EngineError::CasConflict {
+                    execution_id,
+                    expected_version: repo_version,
+                    observed_version: repo_version,
+                    observed_status: "fenced_out".to_owned(),
+                })
+            },
+            Ok(nebula_storage_port::TransitionOutcome::VersionConflict { actual }) => {
+                // The row version advanced between our read and the commit —
+                // a concurrent transition (outside our lease window) beat us.
+                // Surface as a CAS conflict; the caller decides whether to
+                // redeliver or treat as already-satisfied.
+                tracing::warn!(
+                    %execution_id,
+                    expected_version = repo_version,
+                    actual_version = actual,
+                    "satisfy_signal_waits: version conflict — concurrent transition \
+                     occurred inside our lease window"
+                );
+                Err(EngineError::CasConflict {
+                    execution_id,
+                    expected_version: repo_version,
+                    observed_version: actual,
+                    observed_status: "version_conflict".to_owned(),
+                })
+            },
+            Err(e) => Err(EngineError::CheckpointFailed {
+                node_key: final_state_node_key(),
+                reason: format!("satisfy_signal_waits: store commit: {e}"),
+            }),
+        }
+    }
+
+    /// Durably terminalize the dangling non-terminal nodes of a cancelled,
+    /// no-live-runner execution (e.g. a signal-`Paused` execution).
+    ///
+    /// The API cancel path writes the execution status `Cancelled` and enqueues
+    /// `Cancel`; `dispatch_cancel` signals the live frontier's `CancellationToken`
+    /// so a running execution tears its nodes down via the loop teardown. But a
+    /// `Paused` (signal-wait) execution has NO live frontier — nothing tears
+    /// down its parked `Waiting` nodes — so a `Cancelled` execution is left with
+    /// non-terminal nodes (terminal-execution ⇒ all-nodes-terminal invariant
+    /// violation). This method closes that gap.
+    ///
+    /// # Lease contract
+    ///
+    /// Acquires the execution lease for the read-modify-write. A live runner
+    /// (in-process or cross-runner) holds the lease, so a held lease means a
+    /// frontier is still driving — we must NOT terminalize nodes it owns;
+    /// returns [`EngineError::Leased`] so the caller defers (the live runner's
+    /// own teardown, or B1 reclaim, completes the cancel). Only acts when the
+    /// execution is itself `Cancelled`/`Cancelling` (the cancel was durably
+    /// recorded); idempotent — a re-delivered Cancel finds all nodes terminal
+    /// and returns [`CancelDanglingOutcome::NothingToCancel`].
+    ///
+    /// # Errors
+    ///
+    /// - [`EngineError::Leased`] if the lease is held by another runner.
+    /// - [`EngineError::PlanningFailed`] if the row cannot be loaded/deserialised.
+    /// - [`EngineError::CasConflict`] / [`EngineError::CheckpointFailed`] on a
+    ///   rejected or failed durable commit.
+    pub(crate) async fn cancel_dangling_nodes(
+        &self,
+        scope: &Scope,
+        execution_id: ExecutionId,
+    ) -> Result<CancelDanglingOutcome, EngineError> {
+        let Some(stores) = &self.stores else {
+            // Library mode (no storage) — no durable row to repair.
+            return Ok(CancelDanglingOutcome::NothingToCancel);
+        };
+
+        let id = execution_id.to_string();
+        let holder = self.instance_id.to_string();
+
+        let lease_token = stores
+            .execution
+            .acquire_lease(scope, &id, &holder, self.lease_ttl)
+            .await
+            .map_err(|e| {
+                EngineError::PlanningFailed(format!(
+                    "cancel_dangling_nodes: acquire lease for {execution_id}: {e}"
+                ))
+            })?;
+        let Some(lease_token) = lease_token else {
+            tracing::warn!(
+                %execution_id,
+                %holder,
+                "cancel_dangling_nodes: execution lease held by another runner; deferring \
+                 (live frontier teardown or B1 reclaim will complete the cancel)"
+            );
+            return Err(EngineError::Leased {
+                execution_id,
+                holder,
+            });
+        };
+
+        let outcome = self
+            .cancel_dangling_nodes_under_lease(stores, scope, execution_id, &id, lease_token)
+            .await;
+
+        if let Err(e) = stores
+            .execution
+            .release_lease(scope, &id, lease_token)
+            .await
+        {
+            tracing::warn!(
+                %execution_id,
+                error = %e,
+                "cancel_dangling_nodes: best-effort lease release failed (will expire at TTL)"
+            );
+        }
+
+        outcome
+    }
+
+    /// Inner read-modify-write under an already-held lease (extracted so the
+    /// lease release in [`Self::cancel_dangling_nodes`] always runs).
+    async fn cancel_dangling_nodes_under_lease(
+        &self,
+        stores: &crate::store_seam::ExecutionStores,
+        scope: &Scope,
+        execution_id: ExecutionId,
+        id: &str,
+        lease_token: nebula_storage_port::FencingToken,
+    ) -> Result<CancelDanglingOutcome, EngineError> {
+        let record = stores
+            .execution
+            .get(scope, id)
+            .await
+            .map_err(|e| {
+                EngineError::PlanningFailed(format!(
+                    "cancel_dangling_nodes: load execution {execution_id}: {e}"
+                ))
+            })?
+            .ok_or_else(|| {
+                EngineError::PlanningFailed(format!(
+                    "cancel_dangling_nodes: execution not found: {execution_id}"
+                ))
+            })?;
+
+        let repo_version = record.version;
+        let state_str = serde_json::to_string(&record.state).map_err(|e| {
+            EngineError::PlanningFailed(format!(
+                "cancel_dangling_nodes: serialise state for {execution_id}: {e}"
+            ))
+        })?;
+        let mut exec_state: ExecutionState = serde_json::from_str(&state_str).map_err(|e| {
+            EngineError::PlanningFailed(format!(
+                "cancel_dangling_nodes: deserialise state for {execution_id}: {e}"
+            ))
+        })?;
+
+        // Nothing to clean: every node is already terminal — idempotent
+        // re-delivery, OR a `Created` cold-start execution (empty `node_states`,
+        // vacuously all-terminal) that a cross-runner / early Cancel reached
+        // before any node was parked. Ack; there are no dangling nodes to
+        // terminalize regardless of status.
+        if exec_state.all_nodes_terminal() {
+            return Ok(CancelDanglingOutcome::NothingToCancel);
+        }
+
+        // Dangling non-terminal nodes exist. Act only in a genuine cancel
+        // context — three cases on the persisted status (read under the lease):
+        //   - `Cancelled` / `Cancelling`: the cancel is durably recorded —
+        //     proceed to terminalize the parked nodes (below).
+        //   - any OTHER terminal status (`Completed` / `Failed` / `TimedOut`):
+        //     the execution finished on a non-cancel path — anomalous with
+        //     dangling nodes, but the run is over; ack.
+        //   - a non-terminal, non-`Cancelling` status (`Paused` / `Running`):
+        //     the cancel is NOT yet durably recorded. The API writes `Cancelled`
+        //     before enqueuing `Cancel`, so a `Cancel` reaching here with parked
+        //     nodes but no recorded cancel is a transient producer-ordering
+        //     window — DEFER (not ack-and-silently-drop) so B1 reclaim
+        //     redelivers until the status reflects the cancel.
+        if !matches!(
+            exec_state.status,
+            ExecutionStatus::Cancelled | ExecutionStatus::Cancelling
+        ) {
+            if exec_state.status.is_terminal() {
+                return Ok(CancelDanglingOutcome::NothingToCancel);
+            }
+            return Ok(CancelDanglingOutcome::StatusNotCancelled);
+        }
+
+        // `Waiting → Cancelled` (and every other non-terminal `→ Cancelled`) is
+        // in the node transition table; a transition error here is a table
+        // regression, surfaced not swallowed. `count > 0` (the all-terminal
+        // early-return above ruled out zero).
+        let count = exec_state.cancel_nonterminal_nodes().map_err(|e| {
+            EngineError::PlanningFailed(format!(
+                "cancel_dangling_nodes: terminalize nodes for {execution_id}: {e}"
+            ))
+        })?;
+
+        // If the execution was mid-cancel (`Cancelling`), finalize it to the
+        // terminal `Cancelled` in the SAME commit as the node cleanup —
+        // otherwise a no-live-runner repair would ack while the execution stayed
+        // non-terminal `Cancelling` forever (`Cancelling → Cancelled` is in the
+        // execution transition table).
+        if exec_state.status == ExecutionStatus::Cancelling {
+            exec_state
+                .transition_status(ExecutionStatus::Cancelled)
+                .map_err(|e| {
+                    EngineError::PlanningFailed(format!(
+                        "cancel_dangling_nodes: finalize Cancelling→Cancelled for \
+                         {execution_id}: {e}"
+                    ))
+                })?;
+        }
+
+        let state_json =
+            serde_json::to_value(&exec_state).map_err(|e| EngineError::CheckpointFailed {
+                node_key: final_state_node_key(),
+                reason: format!("cancel_dangling_nodes: serialise updated state: {e}"),
+            })?;
+        let batch = nebula_storage_port::TransitionBatch::builder()
+            .scope(scope.clone())
+            .execution_id(id)
+            .expected_version(repo_version)
+            .fencing(lease_token)
+            .new_state(state_json)
+            .build()
+            .map_err(|e| EngineError::CheckpointFailed {
+                node_key: final_state_node_key(),
+                reason: format!("cancel_dangling_nodes: build batch: {e}"),
+            })?;
+
+        match stores.execution.commit(batch).await {
+            Ok(nebula_storage_port::TransitionOutcome::Applied { new_version }) => {
+                tracing::info!(
+                    target = "engine::wait",
+                    %execution_id,
+                    cancelled_count = count,
+                    new_version,
+                    "cancel_dangling_nodes: terminalized parked nodes of a cancelled \
+                     no-live-runner execution"
+                );
+                Ok(CancelDanglingOutcome::Cancelled(count))
+            },
+            Ok(nebula_storage_port::TransitionOutcome::FencedOut) => {
+                tracing::warn!(
+                    %execution_id,
+                    "cancel_dangling_nodes: CAS fenced out under our own lease"
+                );
+                Err(EngineError::CasConflict {
+                    execution_id,
+                    expected_version: repo_version,
+                    observed_version: repo_version,
+                    observed_status: "fenced_out".to_owned(),
+                })
+            },
+            Ok(nebula_storage_port::TransitionOutcome::VersionConflict { actual }) => {
+                tracing::warn!(
+                    %execution_id,
+                    expected_version = repo_version,
+                    actual_version = actual,
+                    "cancel_dangling_nodes: version conflict inside our lease window"
+                );
+                Err(EngineError::CasConflict {
+                    execution_id,
+                    expected_version: repo_version,
+                    observed_version: actual,
+                    observed_status: "version_conflict".to_owned(),
+                })
+            },
+            Err(e) => Err(EngineError::CheckpointFailed {
+                node_key: final_state_node_key(),
+                reason: format!("cancel_dangling_nodes: store commit: {e}"),
+            }),
+        }
+    }
+
     /// Execute all reachable nodes using a frontier-based approach.
     ///
     /// Nodes are spawned as soon as all their incoming edges have been resolved
@@ -2888,26 +3473,30 @@ impl WorkflowEngine {
                 }
             }
 
-            // Phase 2: Wait for one completion or for the next timer.
-            // Exit only when join_set, retry_heap, AND wait_heap are
-            // all drained — a non-empty heap with an empty join_set
-            // is a legal "everything paused for a timer" state.
-            if join_set.is_empty() && retry_heap.is_empty() && wait_heap.is_empty() {
-                break;
-            }
-
+            // Phase 2: tear-down / exit.
+            //
+            // The cancel check MUST run BEFORE the empty-heap exit: a
+            // signal-parked execution has all heaps empty and an empty
+            // join_set, so the empty-heap exit would fire first and skip
+            // the cancel teardown — leaving the signal-`Waiting{None}` node
+            // non-terminal under a `Cancelled` execution. Checking cancel
+            // first routes a cancel-during-signal-park through
+            // `drain_pending_to_cancelled` (which also cancels signal waits
+            // that are not on any heap). A clean (non-cancelled) finish
+            // still exits via the empty-heap break below.
             if cancel_token.is_cancelled() {
                 join_set.abort_all();
                 while join_set.join_next_with_id().await.is_some() {}
                 task_nodes.clear();
                 // Tear down parked retries (WaitingRetry → Cancelled),
-                // parked wait nodes (Waiting → Cancelled), AND the
-                // ready_queue (Ready → Cancelled). The previous failure
-                // already lives in `NodeAttempt`; the cancel terminates
-                // the wait, not the attempt (operational honesty).
-                // Without draining `ready_queue`, a node Phase 0 already
-                // promoted to `Ready` would stay non-terminal after the
-                // loop exits, tripping the frontier integrity check.
+                // parked wait nodes (Waiting → Cancelled, incl. signal
+                // waits not on `wait_heap`), AND the ready_queue
+                // (Ready → Cancelled). The previous failure already lives
+                // in `NodeAttempt`; the cancel terminates the wait, not the
+                // attempt (operational honesty). Without draining
+                // `ready_queue`, a node Phase 0 already promoted to `Ready`
+                // would stay non-terminal after the loop exits, tripping
+                // the frontier integrity check.
                 drain_pending_to_cancelled(
                     &mut retry_heap,
                     &mut wait_heap,
@@ -2915,6 +3504,13 @@ impl WorkflowEngine {
                     exec_state,
                     execution_id,
                 );
+                break;
+            }
+
+            // Exit only when join_set, retry_heap, AND wait_heap are
+            // all drained — a non-empty heap with an empty join_set
+            // is a legal "everything paused for a timer" state.
+            if join_set.is_empty() && retry_heap.is_empty() && wait_heap.is_empty() {
                 break;
             }
 
@@ -3075,17 +3671,21 @@ impl WorkflowEngine {
                     // by `extract_primary_output` in the dispatch future, so
                     // `checkpoint_node` will commit it alongside the `Waiting`
                     // state in one atomic write. Downstream edges are NOT
-                    // activated here — they remain gated until Phase 0b
-                    // transitions this node to `Completed` when the timer
-                    // fires.
+                    // activated here — they remain gated until the wait
+                    // condition is satisfied.
                     //
-                    // W-S1 boundary conditions rejected here (both marked
-                    // `WaitConditionNotSupported`):
-                    //   1. Signal-driven conditions (Webhook/Approval/Execution):
-                    //      W-S2 will wire the Resume signal path.
-                    //   2. Timer conditions with an explicit `timeout`: the
-                    //      fail-on-timeout enforcement path is also W-S2.
-                    //      Only `timeout: None` timer waits are supported.
+                    // Conditions supported by this path:
+                    //   Timer: `Until` / `Duration` — push onto `wait_heap`;
+                    //     Phase-0b drains to `Completed` when the timer fires.
+                    //   Signal: `Webhook` / `Approval` / `Execution` (timeout:None) —
+                    //     `wake_at = None`, no heap entry; execution parks at `Paused`
+                    //     until a `Resume` command's durable satisfy-CAS arms it
+                    //     (sets `next_attempt_at`) for Phase-0b completion.
+                    //
+                    // Not yet supported — still rejected:
+                    //   Any condition with `timeout: Some(..)`: the
+                    //   timeout-as-cancellation path requires a live-frontier
+                    //   resume channel that is not yet implemented.
                     if let ActionResult::Wait {
                         ref condition,
                         timeout,
@@ -3128,36 +3728,86 @@ impl WorkflowEngine {
                         }
 
                         // Compute the timer wake instant for timer-based conditions.
-                        // Signal-driven conditions (Webhook / Approval / Execution)
-                        // require an explicit Resume signal that W-S2 will implement —
-                        // reject them with a typed error rather than parking with no
-                        // timer entry and permanently stalling the execution.
+                        // Signal-driven conditions (Webhook / Approval / Execution) park
+                        // with `wake_at = None`: they hold no timer heap entry and remain
+                        // suspended until an explicit Resume command delivers the signal.
+                        // The frontier exits with all heaps empty while those nodes are
+                        // still `Waiting{next_attempt_at == None}`; `determine_final_status`
+                        // priority-4a recognises that as `Paused`, not a frontier bug.
                         let now = Utc::now();
                         let wake_at: Option<DateTime<Utc>> = match condition {
                             WaitCondition::Until { datetime } => Some(*datetime),
                             WaitCondition::Duration { duration } => {
-                                chrono::Duration::from_std(*duration).ok().map(|d| now + d)
-                            },
-                            other => {
-                                let condition_kind = match other {
-                                    WaitCondition::Webhook { .. } => "Webhook",
-                                    WaitCondition::Approval { .. } => "Approval",
-                                    WaitCondition::Execution { .. } => "Execution",
-                                    _ => "Unknown",
+                                // FAIL CLOSED on an unrepresentable / overflowing timer
+                                // Duration. Mapping the error to `None` would silently
+                                // turn a TIMER wait into a signal-driven indefinite park
+                                // that a generic `Resume` could satisfy — wrong semantics.
+                                let fail_unschedulable =
+                                    |exec_state: &mut ExecutionState, reason: String| {
+                                        let engine_err = EngineError::Runtime(
+                                            crate::runtime::error::RuntimeError::WaitConditionNotSupported {
+                                                condition_kind: reason,
+                                            },
+                                        );
+                                        tracing::error!(
+                                            target = "engine::wait",
+                                            %execution_id,
+                                            %node_key,
+                                            error = %engine_err,
+                                            "Duration WaitCondition cannot be scheduled; marking \
+                                             node Failed (fail-closed)"
+                                        );
+                                        mark_node_failed(exec_state, node_key.clone(), &engine_err);
+                                        cancel_token.cancel();
+                                        engine_err.to_string()
+                                    };
+                                let Ok(chrono_dur) = chrono::Duration::from_std(*duration) else {
+                                    let msg = fail_unschedulable(
+                                        exec_state,
+                                        format!("Duration wait not representable: {duration:?}"),
+                                    );
+                                    return Some((node_key.clone(), msg));
                                 };
+                                let Some(when) = now.checked_add_signed(chrono_dur) else {
+                                    let msg = fail_unschedulable(
+                                        exec_state,
+                                        "Duration wait overflows the scheduler timestamp"
+                                            .to_owned(),
+                                    );
+                                    return Some((node_key.clone(), msg));
+                                };
+                                Some(when)
+                            },
+                            // Signal-driven conditions: no timer wake — the park is
+                            // indefinite until a Resume command's durable satisfy-CAS
+                            // arms the node (sets `next_attempt_at`) for Phase-0b
+                            // completion. `wake_at = None` means the node is never
+                            // pushed onto `wait_heap` until a Resume arms it.
+                            WaitCondition::Webhook { .. }
+                            | WaitCondition::Approval { .. }
+                            | WaitCondition::Execution { .. } => None,
+                            _ => {
+                                // Unknown WaitCondition variant — FAIL CLOSED.
+                                // Parking with `wake_at = None` would let a generic
+                                // execution-level Resume satisfy a wait whose semantics
+                                // this engine cannot classify (a signal vs timer vs
+                                // something else). Until a variant is explicitly added
+                                // to the signal/timer arms above, reject it on the same
+                                // `WaitConditionNotSupported` path as an explicit timeout
+                                // rather than parking it.
                                 let runtime_err =
                                     crate::runtime::error::RuntimeError::WaitConditionNotSupported {
-                                        condition_kind: condition_kind.to_owned(),
+                                        condition_kind: "unrecognised WaitCondition variant"
+                                            .to_owned(),
                                     };
                                 let engine_err = EngineError::Runtime(runtime_err);
                                 tracing::error!(
                                     target = "engine::wait",
                                     %execution_id,
                                     %node_key,
-                                    condition_kind,
                                     error = %engine_err,
-                                    "signal-driven WaitCondition not supported in W-S1; \
-                                     marking node Failed and returning error"
+                                    "unrecognised WaitCondition variant; marking node Failed \
+                                     (fail-closed — a Resume must not satisfy an unclassified wait)"
                                 );
                                 mark_node_failed(exec_state, node_key.clone(), &engine_err);
                                 cancel_token.cancel();
@@ -3215,6 +3865,28 @@ impl WorkflowEngine {
 
                         match exec_state.park_node(node_key.clone(), wake_at) {
                             Ok(()) => {
+                                // Signal park (no timer) that leaves NO other active
+                                // frontier work fully suspends the execution: persist
+                                // `Paused` atomically in this park checkpoint batch
+                                // (`checkpoint_node` serialises `exec_state`, status
+                                // included). Otherwise the row would sit durably
+                                // `Running` + `Waiting{next_attempt_at: None}` until the
+                                // frontier exit's `persist_final_state` writes `Paused`;
+                                // a crash in that window is unrecoverable because
+                                // `dispatch_start`/`dispatch_resume` short-circuit on
+                                // `Running`. The exit's `transition_status(Paused)` is a
+                                // no-op once we set it here (`Paused→Paused` is rejected
+                                // and ignored). The general crashed-`Running` recovery
+                                // gap (e.g. a sibling completing last) is tracked
+                                // separately.
+                                if wake_at.is_none()
+                                    && join_set.is_empty()
+                                    && ready_queue.is_empty()
+                                    && retry_heap.is_empty()
+                                    && wait_heap.is_empty()
+                                {
+                                    let _ = exec_state.transition_status(ExecutionStatus::Paused);
+                                }
                                 // Durably commit the `Waiting` state and the
                                 // already-staged `partial_output` before any
                                 // observer sees the node is parked. On
@@ -3236,10 +3908,11 @@ impl WorkflowEngine {
                                     cancel_token.cancel();
                                     return Some((node_key.clone(), e.to_string()));
                                 }
-                                // Push onto the wait_heap only for timer-driven
-                                // conditions; signal-driven conditions with no
-                                // timeout stay parked indefinitely until a
-                                // Resume arrives.
+                                // Push onto the wait_heap for timer-driven conditions only.
+                                // Signal-driven conditions (`wake_at == None`) are never
+                                // pushed here; their node stays `Waiting` until a Resume
+                                // command's durable satisfy-CAS arms it (sets
+                                // `next_attempt_at`) for Phase-0b completion.
                                 if let Some(when) = wake_at {
                                     wait_heap.push(Reverse((when, node_key.clone())));
                                 }
@@ -5011,6 +5684,32 @@ fn drain_pending_to_cancelled(
             "Waiting → Cancelled (cancel observed while parked)"
         );
     }
+    // Signal-driven waits (`next_attempt_at == None`) AND their blocked
+    // downstream `Pending` nodes are intentionally NOT represented in the timer
+    // heaps or the ready_queue, so the drains above never visit them. Scan
+    // `node_states` for ANY remaining non-terminal node and cancel it —
+    // otherwise a cancel observed while a signal wait is parked would leave the
+    // wait node and/or its blocked downstream non-terminal under a `Cancelled`
+    // execution (a state-machine leak). Nodes already cancelled above (heaps /
+    // ready_queue) are terminal and skipped.
+    let stranded_non_terminal: Vec<NodeKey> = exec_state
+        .node_states
+        .iter()
+        .filter(|(_, ns)| !ns.state.is_terminal())
+        .map(|(id, _)| id.clone())
+        .collect();
+    for node_key in stranded_non_terminal {
+        let _ = exec_state.transition_node(node_key.clone(), NodeState::Cancelled);
+        if let Some(ns) = exec_state.node_states.get_mut(&node_key) {
+            ns.next_attempt_at = None;
+        }
+        tracing::debug!(
+            target = "engine::wait",
+            %execution_id,
+            %node_key,
+            "stranded non-terminal node → Cancelled (cancel teardown; not on heap/queue)"
+        );
+    }
     while let Some(queued) = ready_queue.pop_front() {
         // `Ready → Cancelled` is in the canonical transition table.
         // Pending nodes that landed here straight from the seed
@@ -5641,6 +6340,74 @@ fn determine_final_status(
             termination_reason: Some(ExecutionTerminationReason::Cancelled),
             integrity_violation: None,
         };
+    }
+
+    // Priority 4a — at least one signal-driven `Waiting` node exists and no
+    // non-terminal node is actively in-flight (`Running` / `WaitingRetry`).
+    //
+    // A signal-driven wait has `next_attempt_at == None`; the node holds no
+    // worker and will not be driven by the timer arm. The frontier exits
+    // naturally (all heaps empty, join-set empty) with these nodes still
+    // non-terminal — which the old Priority-4 arm would falsely report as a
+    // `FrontierIntegrityViolation`. The correct status is `Paused`: the
+    // execution is durably suspended awaiting an external signal, not broken.
+    //
+    // Guards that must BOTH hold:
+    //   1. `!non_terminal_signal_waits.is_empty()` — an all-terminal run
+    //      must still fall through to Priority-5 `Completed`, never `Paused`.
+    //   2. No non-terminal node is `Running`, `Ready`, or `WaitingRetry` —
+    //      those states indicate a genuine frontier bug, not a benign park:
+    //        - `Running`: the frontier exited while a worker was still live.
+    //        - `Ready`: the node was activated and queued for dispatch but the
+    //          frontier exited without spawning it — runnable work was
+    //          stranded. (A node merely *blocked behind* a signal wait stays
+    //          `Pending`: its wait predecessor is non-terminal, so it is never
+    //          activated/enqueued and never reaches `Ready`.)
+    //        - `WaitingRetry`: the frontier exit condition requires
+    //          `retry_heap.is_empty()`; a `WaitingRetry` node present at
+    //          exit means its heap entry was lost — an anomaly that must
+    //          surface as a `FrontierIntegrityViolation`, not be masked as
+    //          `Paused`.
+    //        - timer `Waiting{next_attempt_at: Some(_)}`: the loop only exits
+    //          once `wait_heap.is_empty()`, and every timer wait is drained to
+    //          `Completed` by Phase-0b before that. A timer wait still present
+    //          at exit means its `wait_heap` entry was lost — same lost-entry
+    //          anomaly as `WaitingRetry`.
+    //      Only genuinely-blocked `Pending` nodes are expected alongside a
+    //      signal wait (they activate once the wait is satisfied via
+    //      `dispatch_resume`).
+    {
+        let non_terminal_signal_waits: Vec<NodeKey> = exec_state
+            .node_states
+            .iter()
+            .filter(|(_, ns)| !ns.state.is_terminal())
+            .filter(|(_, ns)| ns.state == NodeState::Waiting && ns.next_attempt_at.is_none())
+            .map(|(id, _)| id.clone())
+            .collect();
+        let has_non_benign_non_terminal_node = exec_state
+            .node_states
+            .values()
+            .filter(|ns| !ns.state.is_terminal())
+            .any(|ns| {
+                matches!(
+                    ns.state,
+                    NodeState::Running | NodeState::Ready | NodeState::WaitingRetry
+                ) || (ns.state == NodeState::Waiting && ns.next_attempt_at.is_some())
+            });
+        if !non_terminal_signal_waits.is_empty() && !has_non_benign_non_terminal_node {
+            tracing::info!(
+                target = "engine::final_status",
+                execution_id = %exec_state.execution_id,
+                parked_node_count = non_terminal_signal_waits.len(),
+                "final_status_decided (priority 4a: signal-driven waits present, \
+                 no in-flight nodes — execution paused awaiting external signal)"
+            );
+            return FinalStatusDecision {
+                status: ExecutionStatus::Paused,
+                termination_reason: None,
+                integrity_violation: None,
+            };
+        }
     }
 
     // Priority 4 — frontier integrity violation (frontier integrity (CAS on version)).
@@ -10684,4 +11451,360 @@ mod tests {
     // structurally impossible now that the engine has a single dispatch spine.
     // The surviving guarantee — factory dispatch is the sole execution path — is
     // covered by `workflow_node_dispatches_through_factory_path`.
+
+    // ── determine_final_status priority-4a unit tests ─────────────────────
+
+    // `determine_final_status` is a pure function — these unit tests construct
+    // the `ExecutionState` by direct field override, bypassing the FSM transition
+    // table. This is the same pattern the `final_status_*` tests above use for
+    // constructing terminal states. `park_node` requires `Running` as a
+    // precondition (the engine-level invariant), which we don't need to enforce
+    // in a pure-function test. We set `.state` and `.next_attempt_at` directly.
+
+    /// **Priority-4a: single `Waiting{next_attempt_at:None}` → `Paused`.**
+    ///
+    /// The frontier exits with one signal-driven waiting node (no timer wake).
+    /// Priority-4a must fire before priority-4 and return `Paused`, not
+    /// `Failed+FrontierIntegrityViolation`.
+    ///
+    /// **Falsifiability (red-on-revert)**: remove priority-4a (or rename it
+    /// to emit `FrontierIntegrityViolation`) → the old priority-4 fires →
+    /// `decision.status == Failed` → the `== Paused` assertion fails.
+    #[test]
+    fn final_status_signal_waiting_node_returns_paused() {
+        use nebula_core::id::WorkflowId;
+        use nebula_core::node_key;
+
+        let exec_id = ExecutionId::new();
+        let wf_id = WorkflowId::new();
+        let n1 = node_key!("n1");
+
+        let mut exec_state = ExecutionState::new(exec_id, wf_id, std::slice::from_ref(&n1));
+        // Direct override — `next_attempt_at` defaults to None, so only the
+        // state field needs to be set to model a signal-driven Waiting node.
+        exec_state.node_states.get_mut(&n1).unwrap().state = NodeState::Waiting;
+
+        let cancel_token = CancellationToken::new();
+        let decision = determine_final_status(&None, &cancel_token, &exec_state);
+
+        assert_eq!(
+            decision.status,
+            ExecutionStatus::Paused,
+            "a single signal-driven Waiting node must yield Paused, not Failed or Completed"
+        );
+        assert!(
+            decision.integrity_violation.is_none(),
+            "priority-4a must not populate integrity_violation — that is only for real bugs"
+        );
+        assert!(
+            decision.termination_reason.is_none(),
+            "Paused awaiting signal carries no engine-attributed termination reason"
+        );
+    }
+
+    /// **Priority-4a guard 1: all-terminal run must NOT become `Paused`.**
+    ///
+    /// If every node is terminal the frontier reached natural completion.
+    /// Priority-4a requires `!non_terminal_signal_waits.is_empty()`, so an
+    /// all-terminal state must fall through to priority-5 `Completed`.
+    #[test]
+    fn final_status_all_terminal_does_not_become_paused() {
+        use nebula_core::id::WorkflowId;
+        use nebula_core::node_key;
+
+        let exec_id = ExecutionId::new();
+        let wf_id = WorkflowId::new();
+        let n1 = node_key!("n1");
+
+        let mut exec_state = ExecutionState::new(exec_id, wf_id, std::slice::from_ref(&n1));
+        // Manually set terminal state — bypass normal transition rules so we can
+        // construct the all-terminal scenario for a pure function test.
+        exec_state.node_states.get_mut(&n1).unwrap().state = NodeState::Completed;
+
+        let cancel_token = CancellationToken::new();
+        let decision = determine_final_status(&None, &cancel_token, &exec_state);
+
+        assert_eq!(
+            decision.status,
+            ExecutionStatus::Completed,
+            "an all-terminal run must reach Completed, never Paused (guard 1)"
+        );
+    }
+
+    /// **Priority-4a guard 2: `Waiting{None} + Running` falls through to integrity violation.**
+    ///
+    /// One `Waiting{next_attempt_at:None}` node PLUS one `Running` node is a
+    /// mixed set that indicates a real frontier bug (the loop exited while a
+    /// node was still dispatched). Priority-4a must NOT fire — the integrity
+    /// violation arm (priority-4) must catch it.
+    ///
+    /// **Falsifiability**: remove the `has_active_non_signal_node` guard →
+    /// priority-4a fires on the mixed set → `decision.status == Paused` →
+    /// `!= Failed` assertion fails.
+    #[test]
+    fn final_status_mixed_waiting_and_running_triggers_integrity_violation() {
+        use nebula_core::id::WorkflowId;
+        use nebula_core::node_key;
+
+        let exec_id = ExecutionId::new();
+        let wf_id = WorkflowId::new();
+        let waiting_node = node_key!("waiting");
+        let running_node = node_key!("running");
+
+        let mut exec_state = ExecutionState::new(
+            exec_id,
+            wf_id,
+            &[waiting_node.clone(), running_node.clone()],
+        );
+        // Override both nodes — bypassing the FSM to construct the impossible-at-
+        // runtime (frontier exited with a live Running node) bug scenario.
+        exec_state.node_states.get_mut(&waiting_node).unwrap().state = NodeState::Waiting;
+        exec_state.node_states.get_mut(&running_node).unwrap().state = NodeState::Running;
+
+        let cancel_token = CancellationToken::new();
+        let decision = determine_final_status(&None, &cancel_token, &exec_state);
+
+        assert_eq!(
+            decision.status,
+            ExecutionStatus::Failed,
+            "a mixed Waiting+Running frontier must trigger the integrity violation (guard 2)"
+        );
+        assert!(
+            decision.integrity_violation.is_some(),
+            "integrity_violation must be populated for the mixed-frontier bug"
+        );
+    }
+
+    /// **Priority-4a guard 2: `Waiting{None} + Pending` returns `Paused`.**
+    ///
+    /// A `Pending` downstream node that hasn't been activated yet (because its
+    /// upstream dependency is parked) is NOT a frontier bug — it is the normal
+    /// blocked-downstream state. Priority-4a must fire and return `Paused`
+    /// even when `Pending` nodes are present alongside signal-driven `Waiting`
+    /// nodes.
+    ///
+    /// **Falsifiability**: revert guard-2 to the old `len == count` check →
+    /// the `Pending` node inflates `non_terminal_count` → `1 != 2` → guard-2
+    /// fails → priority-4 fires → `decision.status == Failed` → `!= Paused`
+    /// assertion fails.
+    #[test]
+    fn final_status_waiting_plus_pending_returns_paused() {
+        use nebula_core::id::WorkflowId;
+        use nebula_core::node_key;
+
+        let exec_id = ExecutionId::new();
+        let wf_id = WorkflowId::new();
+        let webhook_node = node_key!("webhook");
+        let downstream_node = node_key!("downstream");
+
+        let mut exec_state =
+            ExecutionState::new(exec_id, wf_id, &[webhook_node.clone(), downstream_node]);
+        // Upstream is a signal-driven Waiting node; downstream stays Pending
+        // (never activated because its upstream dependency is still waiting).
+        exec_state.node_states.get_mut(&webhook_node).unwrap().state = NodeState::Waiting;
+
+        let cancel_token = CancellationToken::new();
+        let decision = determine_final_status(&None, &cancel_token, &exec_state);
+
+        assert_eq!(
+            decision.status,
+            ExecutionStatus::Paused,
+            "Waiting{{None}} + Pending downstream must be Paused, not a frontier violation"
+        );
+        assert!(
+            decision.integrity_violation.is_none(),
+            "no integrity violation expected when the only non-wait nodes are Pending"
+        );
+    }
+
+    /// **Priority-4a guard 2: `Waiting{None} + WaitingRetry` triggers integrity violation.**
+    ///
+    /// A `WaitingRetry` node at frontier-exit is ANOMALOUS, not a benign park.
+    /// The frontier's exit condition requires `retry_heap.is_empty()`: a
+    /// `WaitingRetry` node present when the loop exits means its heap entry
+    /// was lost — a genuine frontier bug. Priority-4a MUST NOT mask this by
+    /// returning `Paused`; the integrity violation arm (priority-4) must catch it.
+    ///
+    /// **Falsifiability**: narrow the `has_active_non_signal_node` check to
+    /// `Running`-only (drop `WaitingRetry`) → priority-4a fires on the mixed
+    /// set → `decision.status == Paused` → `!= Failed` assertion fails → RED.
+    #[test]
+    fn final_status_waiting_plus_waiting_retry_triggers_integrity_violation() {
+        use nebula_core::id::WorkflowId;
+        use nebula_core::node_key;
+
+        let exec_id = ExecutionId::new();
+        let wf_id = WorkflowId::new();
+        let signal_node = node_key!("signal");
+        let retry_node = node_key!("retry");
+
+        let mut exec_state =
+            ExecutionState::new(exec_id, wf_id, &[signal_node.clone(), retry_node.clone()]);
+        // Override both nodes — bypassing the FSM to construct the impossible-at-
+        // runtime (retry_heap lost its entry) anomaly scenario.
+        exec_state.node_states.get_mut(&signal_node).unwrap().state = NodeState::Waiting;
+        exec_state.node_states.get_mut(&retry_node).unwrap().state = NodeState::WaitingRetry;
+
+        let cancel_token = CancellationToken::new();
+        let decision = determine_final_status(&None, &cancel_token, &exec_state);
+
+        assert_eq!(
+            decision.status,
+            ExecutionStatus::Failed,
+            "Waiting{{None}} + WaitingRetry is a lost heap-entry anomaly — must be an \
+             integrity violation, not masked as Paused"
+        );
+        assert!(
+            decision.integrity_violation.is_some(),
+            "integrity_violation must be populated: WaitingRetry at frontier-exit is a bug"
+        );
+    }
+
+    /// **Priority-4a guard 2: `Waiting{None} + Ready` triggers integrity violation.**
+    ///
+    /// A `Ready` node at frontier-exit means the node was activated and queued
+    /// for dispatch but the frontier exited without spawning it — runnable work
+    /// was stranded. (A node merely *blocked behind* a signal wait stays
+    /// `Pending`; it never reaches `Ready` because its wait predecessor is
+    /// non-terminal and so never activates it.) Priority-4a MUST NOT mask this
+    /// stranded-work bug as `Paused`.
+    ///
+    /// **Falsifiability**: drop `NodeState::Ready` from `has_non_benign_non_terminal_node`
+    /// → priority-4a fires on the mixed set → `decision.status == Paused` →
+    /// `!= Failed` assertion fails → RED.
+    #[test]
+    fn final_status_waiting_plus_ready_triggers_integrity_violation() {
+        use nebula_core::id::WorkflowId;
+        use nebula_core::node_key;
+
+        let exec_id = ExecutionId::new();
+        let wf_id = WorkflowId::new();
+        let signal_node = node_key!("signal");
+        let ready_node = node_key!("ready");
+
+        let mut exec_state =
+            ExecutionState::new(exec_id, wf_id, &[signal_node.clone(), ready_node.clone()]);
+        // Override both nodes — bypassing the FSM to construct the impossible-at-
+        // runtime (frontier exited leaving a Ready node unspawned) anomaly.
+        exec_state.node_states.get_mut(&signal_node).unwrap().state = NodeState::Waiting;
+        exec_state.node_states.get_mut(&ready_node).unwrap().state = NodeState::Ready;
+
+        let cancel_token = CancellationToken::new();
+        let decision = determine_final_status(&None, &cancel_token, &exec_state);
+
+        assert_eq!(
+            decision.status,
+            ExecutionStatus::Failed,
+            "Waiting{{None}} + Ready is stranded runnable work — must be an integrity \
+             violation, not masked as Paused"
+        );
+        assert!(
+            decision.integrity_violation.is_some(),
+            "integrity_violation must be populated: a Ready node at frontier-exit is a bug"
+        );
+    }
+
+    /// **Priority-4a guard 2: `Waiting{None} + timer Waiting{Some}` triggers integrity
+    /// violation.**
+    ///
+    /// The frontier loop only exits once `wait_heap.is_empty()`, and Phase-0b
+    /// drains every due timer wait to `Completed` before that. A timer wait
+    /// (`next_attempt_at == Some`) still present at frontier-exit therefore means
+    /// its `wait_heap` entry was lost — the same lost-entry anomaly as
+    /// `WaitingRetry`. Priority-4a MUST NOT mask it as a benign signal `Paused`.
+    ///
+    /// **Falsifiability**: drop the `Waiting && next_attempt_at.is_some()` clause
+    /// from `has_non_benign_non_terminal_node` → priority-4a fires → `decision.status
+    /// == Paused` → `!= Failed` assertion fails → RED.
+    #[test]
+    fn final_status_signal_wait_plus_timer_wait_triggers_integrity_violation() {
+        use nebula_core::id::WorkflowId;
+        use nebula_core::node_key;
+
+        let exec_id = ExecutionId::new();
+        let wf_id = WorkflowId::new();
+        let signal_node = node_key!("signal");
+        let timer_node = node_key!("timer");
+
+        let mut exec_state =
+            ExecutionState::new(exec_id, wf_id, &[signal_node.clone(), timer_node.clone()]);
+        // signal wait: Waiting{next_attempt_at: None}; timer wait: Waiting{Some}.
+        // A timer wait left at frontier-exit is a lost wait_heap entry (the loop
+        // only exits when wait_heap is empty).
+        exec_state.node_states.get_mut(&signal_node).unwrap().state = NodeState::Waiting;
+        {
+            let timer_ns = exec_state.node_states.get_mut(&timer_node).unwrap();
+            timer_ns.state = NodeState::Waiting;
+            timer_ns.next_attempt_at = Some(Utc::now());
+        }
+
+        let cancel_token = CancellationToken::new();
+        let decision = determine_final_status(&None, &cancel_token, &exec_state);
+
+        assert_eq!(
+            decision.status,
+            ExecutionStatus::Failed,
+            "a timer Waiting{{Some}} node at frontier-exit is a lost wait_heap entry — must be \
+             an integrity violation, not masked as Paused by the co-present signal wait"
+        );
+        assert!(
+            decision.integrity_violation.is_some(),
+            "integrity_violation must be populated: a timer wait at frontier-exit is a bug"
+        );
+    }
+
+    /// **Cancel teardown cancels signal waits that are not on `wait_heap`.**
+    ///
+    /// Signal-driven waits (`next_attempt_at == None`) are intentionally not
+    /// heap-tracked, so the `wait_heap` drain in `drain_pending_to_cancelled`
+    /// never visits them. The added `node_states` scan must still transition
+    /// them `Waiting → Cancelled`, otherwise a cancel observed while a signal
+    /// wait is parked leaves the node non-terminal under a `Cancelled`
+    /// execution (a state-machine leak).
+    ///
+    /// **Falsifiability**: remove the signal-wait scan from
+    /// `drain_pending_to_cancelled` → the node stays `Waiting` → the
+    /// `== Cancelled` assertion fails → RED.
+    #[test]
+    fn drain_pending_to_cancelled_cancels_signal_waits_not_on_heap() {
+        use std::cmp::Reverse;
+        use std::collections::{BinaryHeap, VecDeque};
+
+        use nebula_core::id::WorkflowId;
+        use nebula_core::node_key;
+
+        let exec_id = ExecutionId::new();
+        let wf_id = WorkflowId::new();
+        let signal_node = node_key!("signal");
+
+        let mut exec_state =
+            ExecutionState::new(exec_id, wf_id, std::slice::from_ref(&signal_node));
+        // Signal wait: `Waiting{next_attempt_at: None}`, NOT on any heap.
+        {
+            let ns = exec_state.node_states.get_mut(&signal_node).unwrap();
+            ns.state = NodeState::Waiting;
+            ns.next_attempt_at = None;
+        }
+
+        // All heaps + ready_queue empty — the signal node is reachable only via
+        // the node_states scan, not the heap drains.
+        let mut retry_heap: BinaryHeap<Reverse<(DateTime<Utc>, NodeKey)>> = BinaryHeap::new();
+        let mut wait_heap: BinaryHeap<Reverse<(DateTime<Utc>, NodeKey)>> = BinaryHeap::new();
+        let mut ready_queue: VecDeque<NodeKey> = VecDeque::new();
+
+        drain_pending_to_cancelled(
+            &mut retry_heap,
+            &mut wait_heap,
+            &mut ready_queue,
+            &mut exec_state,
+            exec_id,
+        );
+
+        assert_eq!(
+            exec_state.node_states.get(&signal_node).unwrap().state,
+            NodeState::Cancelled,
+            "a signal Waiting{{None}} node (not on wait_heap) must be cancelled by the \
+             teardown scan"
+        );
+    }
 }
