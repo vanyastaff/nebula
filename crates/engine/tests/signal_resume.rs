@@ -2648,3 +2648,129 @@ async fn cancel_of_paused_signal_execution_terminalizes_parked_nodes() {
         "the parked signal node must have been transitioned to Cancelled"
     );
 }
+
+/// **C1 — `dispatch_cancel` DEFERS (does not silently ack) when the cancel is
+/// not yet durably recorded** (concurrency-hardening for the cancel-of-paused
+/// fix): the API writes `status = Cancelled` BEFORE enqueuing `Cancel`, so by
+/// drain time the status is `Cancelled`. If a producer-ordering regression ever
+/// delivered the `Cancel` while the execution were still `Paused`,
+/// `cancel_dangling_nodes` must return `StatusNotCancelled` and `dispatch_cancel`
+/// must `Deferred` (so B1 reclaim redelivers) rather than ack-and-drop the node
+/// cleanup.
+///
+/// **Falsifiability**: make `cancel_dangling_nodes` return `NothingToCancel`
+/// (ack) for a non-terminal non-cancel status → `dispatch_cancel` returns `Ok`
+/// → the `Deferred` assertion fails → RED.
+#[tokio::test]
+async fn dispatch_cancel_defers_when_cancel_not_yet_recorded() {
+    let harness = SignalHarness::new().await;
+    let workflow_id = harness.persist_signal_workflow().await;
+    let execution_id = harness.persist_created_execution(workflow_id).await;
+    let scope = nebula_engine::store_seam::single_tenant_scope();
+
+    harness
+        .dispatch
+        .dispatch_start(&scope, execution_id)
+        .await
+        .expect("dispatch_start must park the signal node");
+    assert_eq!(
+        harness.persisted_status(execution_id).await,
+        ExecutionStatus::Paused
+    );
+
+    // NOTE: deliberately do NOT call `force_cancelled` — the status is still
+    // `Paused` (the cancel has not been durably recorded).
+    let result = harness.dispatch.dispatch_cancel(&scope, execution_id).await;
+    assert!(
+        matches!(result, Err(ControlDispatchError::Deferred(_))),
+        "dispatch_cancel must Defer when the cancel is not yet durably recorded; got {result:?}"
+    );
+    // No node cleanup happened — the wait node is still Waiting, execution Paused.
+    assert_eq!(
+        harness.persisted_status(execution_id).await,
+        ExecutionStatus::Paused
+    );
+}
+
+/// **Lease contention — `dispatch_cancel` DEFERS when the execution lease is
+/// held** (cancel-vs-resume / cross-runner serialization): with the lease held
+/// externally, `cancel_dangling_nodes` returns `Leased`; `dispatch_cancel` must
+/// `Deferred` (B1 reclaim) and mutate no node state. Releasing the lease and
+/// redelivering then terminalizes the parked nodes.
+#[tokio::test]
+async fn dispatch_cancel_defers_when_lease_held_then_completes_on_redeliver() {
+    let harness = SignalHarness::new().await;
+    let workflow_id = harness.persist_signal_workflow().await;
+    let execution_id = harness.persist_created_execution(workflow_id).await;
+    let scope = nebula_engine::store_seam::single_tenant_scope();
+
+    harness
+        .dispatch
+        .dispatch_start(&scope, execution_id)
+        .await
+        .expect("dispatch_start must park the signal node");
+    // The API cancel path records the terminal status.
+    harness.force_cancelled(execution_id).await;
+
+    // A concurrent runner holds the execution lease.
+    let blocker = harness
+        .stores
+        .execution
+        .acquire_lease(
+            &scope,
+            &execution_id.to_string(),
+            "foreign-runner",
+            Duration::from_secs(30),
+        )
+        .await
+        .unwrap()
+        .expect("lease must be free before the contention test");
+
+    let result = harness.dispatch.dispatch_cancel(&scope, execution_id).await;
+    assert!(
+        matches!(result, Err(ControlDispatchError::Deferred(_))),
+        "dispatch_cancel must Defer when the execution lease is held; got {result:?}"
+    );
+
+    // Nodes not yet terminalized (cleanup deferred).
+    let record = harness
+        .stores
+        .execution
+        .get(&scope, &execution_id.to_string())
+        .await
+        .unwrap()
+        .unwrap();
+    let state: ExecutionState =
+        serde_json::from_str(&serde_json::to_string(&record.state).unwrap()).unwrap();
+    assert!(
+        state.node_states.values().any(|ns| ns.state.is_waiting()),
+        "the parked node must still be Waiting while the cleanup is deferred"
+    );
+
+    // Release the lease and redeliver → cleanup completes.
+    harness
+        .stores
+        .execution
+        .release_lease(&scope, &execution_id.to_string(), blocker)
+        .await
+        .unwrap();
+    harness
+        .dispatch
+        .dispatch_cancel(&scope, execution_id)
+        .await
+        .expect("redelivered dispatch_cancel must complete the node cleanup");
+
+    let record2 = harness
+        .stores
+        .execution
+        .get(&scope, &execution_id.to_string())
+        .await
+        .unwrap()
+        .unwrap();
+    let state2: ExecutionState =
+        serde_json::from_str(&serde_json::to_string(&record2.state).unwrap()).unwrap();
+    assert!(
+        state2.node_states.values().all(|ns| ns.state.is_terminal()),
+        "after the lease frees and the Cancel redelivers, every node must be terminal"
+    );
+}

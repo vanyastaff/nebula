@@ -61,7 +61,7 @@ use nebula_storage_port::{Scope, store::ExecutionStore};
 use crate::{
     WorkflowEngine,
     control_consumer::{ControlDispatch, ControlDispatchError},
-    engine::SatisfyOutcome,
+    engine::{CancelDanglingOutcome, SatisfyOutcome},
     error::EngineError,
     event::ExecutionEvent,
 };
@@ -545,7 +545,26 @@ impl ControlDispatch for EngineControlDispatch {
                 // cross-runner case) is tearing down or another runner owns it →
                 // Defer for B1 reclaim rather than racing its node writes.
                 match self.engine.cancel_dangling_nodes(scope, execution_id).await {
-                    Ok(_) => Ok(()),
+                    Ok(
+                        CancelDanglingOutcome::Cancelled(_)
+                        | CancelDanglingOutcome::NothingToCancel,
+                    ) => Ok(()),
+                    Ok(CancelDanglingOutcome::StatusNotCancelled) => {
+                        // The cancel is not yet durably recorded on the execution
+                        // (the API writes `Cancelled` before enqueuing `Cancel`,
+                        // so this is a producer-ordering anomaly). Defer rather
+                        // than ack-and-drop the node cleanup — B1 reclaim
+                        // redelivers until the status reflects the cancel.
+                        tracing::warn!(
+                            %execution_id,
+                            "dispatch_cancel: cancel not yet durably recorded on the execution; \
+                             deferring node cleanup for B1 reclaim"
+                        );
+                        Err(ControlDispatchError::Deferred(format!(
+                            "execution {execution_id} cancel not yet durably recorded; node \
+                             cleanup deferred for B1 reclaim"
+                        )))
+                    },
                     Err(EngineError::Leased { ref holder, .. }) => {
                         tracing::debug!(
                             %execution_id,

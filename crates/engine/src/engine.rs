@@ -101,9 +101,16 @@ pub(crate) enum SatisfyOutcome {
 pub(crate) enum CancelDanglingOutcome {
     /// `n` non-terminal nodes were transitioned to `Cancelled`.
     Cancelled(usize),
-    /// Nothing to do — the execution is not in a cancel context, or every node
-    /// is already terminal (idempotent re-delivery).
+    /// Nothing to do — every node is already terminal (idempotent re-delivery),
+    /// or the execution reached a non-cancel terminal outcome before the cancel
+    /// landed. The caller may ack.
     NothingToCancel,
+    /// The cancel is NOT yet durably recorded on the execution (status is still
+    /// non-terminal and not `Cancelling`). The API writes `Cancelled` before
+    /// enqueuing `Cancel`, so this is a producer-ordering anomaly — the caller
+    /// must DEFER (not ack), so B1 reclaim redelivers until the status reflects
+    /// the cancel and the node cleanup can run, rather than silently dropping it.
+    StatusNotCancelled,
 }
 
 /// Default execution-lease TTL.
@@ -2807,29 +2814,47 @@ impl WorkflowEngine {
             ))
         })?;
 
-        // Only terminalize in a genuine cancel context: the cancel must already
-        // be durably recorded on the execution. A non-cancel status (e.g. a
-        // `Paused` execution that a concurrent Resume re-activated to `Running`)
-        // must be left to its live drive — we are not the owner of those nodes.
+        // Nothing to clean: every node is already terminal — idempotent
+        // re-delivery, OR a `Created` cold-start execution (empty `node_states`,
+        // vacuously all-terminal) that a cross-runner / early Cancel reached
+        // before any node was parked. Ack; there are no dangling nodes to
+        // terminalize regardless of status.
+        if exec_state.all_nodes_terminal() {
+            return Ok(CancelDanglingOutcome::NothingToCancel);
+        }
+
+        // Dangling non-terminal nodes exist. Act only in a genuine cancel
+        // context — three cases on the persisted status (read under the lease):
+        //   - `Cancelled` / `Cancelling`: the cancel is durably recorded —
+        //     proceed to terminalize the parked nodes (below).
+        //   - any OTHER terminal status (`Completed` / `Failed` / `TimedOut`):
+        //     the execution finished on a non-cancel path — anomalous with
+        //     dangling nodes, but the run is over; ack.
+        //   - a non-terminal, non-`Cancelling` status (`Paused` / `Running`):
+        //     the cancel is NOT yet durably recorded. The API writes `Cancelled`
+        //     before enqueuing `Cancel`, so a `Cancel` reaching here with parked
+        //     nodes but no recorded cancel is a transient producer-ordering
+        //     window — DEFER (not ack-and-silently-drop) so B1 reclaim
+        //     redelivers until the status reflects the cancel.
         if !matches!(
             exec_state.status,
             ExecutionStatus::Cancelled | ExecutionStatus::Cancelling
         ) {
-            return Ok(CancelDanglingOutcome::NothingToCancel);
+            if exec_state.status.is_terminal() {
+                return Ok(CancelDanglingOutcome::NothingToCancel);
+            }
+            return Ok(CancelDanglingOutcome::StatusNotCancelled);
         }
 
         // `Waiting → Cancelled` (and every other non-terminal `→ Cancelled`) is
         // in the node transition table; a transition error here is a table
-        // regression, surfaced not swallowed.
+        // regression, surfaced not swallowed. `count > 0` (the all-terminal
+        // early-return above ruled out zero).
         let count = exec_state.cancel_nonterminal_nodes().map_err(|e| {
             EngineError::PlanningFailed(format!(
                 "cancel_dangling_nodes: terminalize nodes for {execution_id}: {e}"
             ))
         })?;
-        if count == 0 {
-            // Idempotent: a re-delivered Cancel finds all nodes already terminal.
-            return Ok(CancelDanglingOutcome::NothingToCancel);
-        }
 
         let state_json =
             serde_json::to_value(&exec_state).map_err(|e| EngineError::CheckpointFailed {
