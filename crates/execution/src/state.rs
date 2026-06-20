@@ -46,6 +46,35 @@ pub enum AttemptOutcome {
     },
 }
 
+/// How a parked [`NodeState::Waiting`] node's timer wake should be
+/// interpreted when it fires.
+///
+/// A `Waiting` node carries an optional `next_attempt_at` timer (see
+/// [`NodeExecutionState::next_attempt_at`]). The timer alone cannot say
+/// *what the wake means*: a timer-driven wait (`Until` / `Duration`) and a
+/// satisfied signal wait both wake to **complete** the node, whereas a
+/// signal wait that was parked with an explicit `timeout` wakes to **fail**
+/// the node (the external signal never arrived in time). This enum is that
+/// missing discriminator, persisted alongside the timer so the wake's
+/// meaning survives a crash + recovery.
+///
+/// Extensible by design (not a `bool`): future wait-bearing kinds
+/// (Interactive / Delay / Agent-HITL) reuse the same park/resume machinery
+/// and may introduce further wake semantics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WaitWake {
+    /// The timer wake completes the node (`Waiting → Completed`) and
+    /// activates its `main`-port downstream edges. Used by timer-driven
+    /// waits (`Until` / `Duration`) and by a signal wait that an explicit
+    /// Resume has armed for completion.
+    Completion,
+    /// The timer wake fails the node (`Waiting → Failed` with
+    /// `RuntimeError::WaitTimedOut`) and routes its outgoing edges through
+    /// the failure path. Used by a signal wait parked with an explicit
+    /// `timeout` whose deadline elapsed before a Resume arrived.
+    Timeout,
+}
+
 /// The execution state of a single node within a running workflow.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeExecutionState {
@@ -90,6 +119,27 @@ pub struct NodeExecutionState {
     /// retry-exhausted policy).
     #[serde(default)]
     pub next_attempt_at: Option<DateTime<Utc>>,
+    /// How this node's parked-wait timer wake should be interpreted when it
+    /// fires — see [`WaitWake`].
+    ///
+    /// Paired with [`next_attempt_at`](Self::next_attempt_at): `wait_wake`
+    /// is `Some(_)` exactly when the node is parked with a timer wake
+    /// (`next_attempt_at.is_some()`), and `None` for a signal-only park (no
+    /// timer) or any non-`Waiting` state. [`park_node`] enforces the
+    /// `wait_wake.is_some() == wake_at.is_some()` invariant.
+    ///
+    /// `Completion` (or legacy `None` on an armed timer wait) drives the
+    /// wake through the completion path; `Timeout` drives it through the
+    /// failure path (a signal wait whose `timeout` elapsed).
+    ///
+    /// Forward-compat: legacy persisted states that predate this field
+    /// deserialize as `None`. A `None` on a still-`Waiting{Some}` timer node
+    /// is read as `Completion` — preserving W-S1 timer-wake semantics for
+    /// rows written before W-S2b.
+    ///
+    /// [`park_node`]: ExecutionState::park_node
+    #[serde(default)]
+    pub wait_wake: Option<WaitWake>,
 }
 
 impl NodeExecutionState {
@@ -105,6 +155,7 @@ impl NodeExecutionState {
             completed_at: None,
             error_message: None,
             next_attempt_at: None,
+            wait_wake: None,
         }
     }
 
@@ -163,6 +214,53 @@ impl NodeExecutionState {
                 to: NodeState::Running.to_string(),
             }),
         }
+    }
+
+    /// Arm a parked signal wait for **completion**: stamp the timer wake at
+    /// `when` and record [`WaitWake::Completion`] so the next Phase-0b drain
+    /// transitions the node `Waiting → Completed` on its main port.
+    ///
+    /// Writes the (`next_attempt_at`, `wait_wake`) pair together so the
+    /// `next_attempt_at.is_some() == wait_wake.is_some()` invariant cannot
+    /// drift — the same invariant [`ExecutionState::park_node`] asserts on the
+    /// park path. The node state and version are NOT touched here; the caller
+    /// leaves the node `Waiting` and bumps the execution version through the
+    /// checkpoint that commits the arm.
+    ///
+    /// The two fields cannot be merged into one to make desync structurally
+    /// impossible because `next_attempt_at` is also the retry-wake instant for
+    /// a `WaitingRetry` node (where no `wait_wake` applies). Pairing every write
+    /// behind this method is the next-best guard.
+    ///
+    /// [`WaitWake::Completion`]: WaitWake::Completion
+    /// [`ExecutionState::park_node`]: ExecutionState::park_node
+    pub fn arm_wait_completion(&mut self, when: DateTime<Utc>) {
+        self.next_attempt_at = Some(when);
+        self.wait_wake = Some(WaitWake::Completion);
+        debug_assert_eq!(
+            self.next_attempt_at.is_some(),
+            self.wait_wake.is_some(),
+            "arm_wait_completion must leave next_attempt_at and wait_wake both Some"
+        );
+    }
+
+    /// Clear a parked wait's timer fields after the wake has been resolved
+    /// (the node completed or timed out): drop both `next_attempt_at` and
+    /// `wait_wake` so a later terminal state carries no contradictory wake
+    /// metadata.
+    ///
+    /// Apply this only on the wait-cleanup paths (a resolved `Waiting` node).
+    /// It must NOT be used on a `WaitingRetry` node: there `next_attempt_at` is
+    /// the retry-wake instant and `wait_wake` is legitimately `None`, so
+    /// clearing the pair here would assert and would erase a live retry timer.
+    pub fn clear_wait_timer(&mut self) {
+        self.next_attempt_at = None;
+        self.wait_wake = None;
+        debug_assert_eq!(
+            self.next_attempt_at.is_some(),
+            self.wait_wake.is_some(),
+            "clear_wait_timer must leave next_attempt_at and wait_wake both None"
+        );
     }
 }
 
@@ -597,9 +695,23 @@ impl ExecutionState {
     /// Park a node that returned `ActionResult::Wait`.
     ///
     /// Promotes `Running → Waiting`, stamps `next_attempt_at` with the
-    /// timer wake instant (or clears it when no timer applies), and
-    /// bumps the execution version. Mirrors [`schedule_node_retry`] for
+    /// timer wake instant (or clears it when no timer applies), records
+    /// the wake discriminator [`wait_wake`](NodeExecutionState::wait_wake),
+    /// and bumps the execution version. Mirrors [`schedule_node_retry`] for
     /// the wait-park path.
+    ///
+    /// # Invariant
+    ///
+    /// `wait_wake.is_some() == wake_at.is_some()`. A timer wake (`wake_at`
+    /// `Some`) must declare what the wake means ([`WaitWake::Completion`]
+    /// for a timer-driven or armed-signal wait, [`WaitWake::Timeout`] for a
+    /// signal wait whose `timeout` is the wake), and a signal-only park (no
+    /// timer) must carry `None` (it is satisfied by a Resume, not a timer).
+    /// `park_node` is the sole caller-facing writer of the
+    /// (`next_attempt_at`, `wait_wake`) pair, and it takes both from the
+    /// caller — so the pairing is enforced as a fallible runtime guard (not a
+    /// `debug_assert!`): a `Some(wake_at), None` desync would turn a timeout
+    /// into a completion, which is load-bearing rather than a debug-only check.
     ///
     /// The caller is responsible for:
     /// - Persisting the node's `partial_output` through the normal
@@ -609,11 +721,14 @@ impl ExecutionState {
     ///   when `wake_at` is `Some` — that is the source of truth for
     ///   timer-driven wakes.
     ///
-    /// On success both the per-node `Running → Waiting` transition and
-    /// the `next_attempt_at` stamp are reflected in `version`. On `Err`
-    /// the state is left untouched.
+    /// On success the per-node `Running → Waiting` transition, the
+    /// `next_attempt_at` stamp, and the `wait_wake` discriminator are all
+    /// reflected in `version`. On `Err` the state is left untouched.
     ///
     /// # Errors
+    /// - [`ExecutionError::InvalidTransition`] if the (`wake_at`, `wait_wake`)
+    ///   pair is not both-`Some` or both-`None` — checked before any mutation,
+    ///   so a desync leaves the state untouched.
     /// - [`ExecutionError::NodeNotFound`] if `node_key` is unknown.
     /// - [`ExecutionError::InvalidTransition`] if the node is not in `Running`
     ///   (the engine may only call this immediately after dispatching the action).
@@ -623,19 +738,37 @@ impl ExecutionState {
         &mut self,
         node_key: NodeKey,
         wake_at: Option<DateTime<Utc>>,
+        wait_wake: Option<WaitWake>,
     ) -> Result<(), ExecutionError> {
+        // Enforce the wake pairing BEFORE any mutation. A `Some(wake_at),
+        // None` (or the inverse) desync would persist a timer wake with no
+        // declared meaning — silently turning a timeout into a completion (or
+        // a completion into a timer with no deadline). The caller supplies
+        // both fields, so this is a real input-validation guard, not a
+        // surrounding-code invariant a `debug_assert!` may elide in release.
+        if wait_wake.is_some() != wake_at.is_some() {
+            return Err(ExecutionError::InvalidTransition {
+                from: self
+                    .node_states
+                    .get(&node_key)
+                    .map_or_else(|| NodeState::Running.to_string(), |ns| ns.state.to_string()),
+                to: "Waiting (wait_wake/wake_at must be paired)".to_owned(),
+            });
+        }
         self.transition_node(node_key.clone(), NodeState::Waiting)?;
         // Stamp or clear the wake instant. `Waiting` with `wake_at ==
         // None` means the park is signal-driven (webhook/approval/
-        // execution): only an explicit Resume will satisfy the condition.
-        // Stale failure metadata is cleared for the same reason
-        // `schedule_node_retry` clears it — a later `Completed`
+        // execution) with no timeout: only an explicit Resume will satisfy
+        // the condition. `wait_wake` records how a timer wake (if any) is to
+        // be read when it fires. Stale failure metadata is cleared for the
+        // same reason `schedule_node_retry` clears it — a later `Completed`
         // transition must not carry contradictory persisted fields.
         let ns = self
             .node_states
             .get_mut(&node_key)
             .ok_or(ExecutionError::NodeNotFound(node_key))?;
         ns.next_attempt_at = wake_at;
+        ns.wait_wake = wait_wake;
         ns.error_message = None;
         ns.completed_at = None;
         self.version += 1;
@@ -840,6 +973,7 @@ impl ExecutionState {
             self.transition_node(node_key.clone(), NodeState::Cancelled)?;
             if let Some(ns) = self.node_states.get_mut(&node_key) {
                 ns.next_attempt_at = None;
+                ns.wait_wake = None;
             }
         }
         Ok(count)
@@ -1671,6 +1805,186 @@ mod tests {
         });
         let ns: NodeExecutionState = serde_json::from_value(legacy).unwrap();
         assert!(ns.next_attempt_at.is_none());
+    }
+
+    /// W-S2b — `park_node` stamps the (`next_attempt_at`, `wait_wake`) pair
+    /// together. A timer wake parked with `WaitWake::Timeout` records both
+    /// the deadline and the timeout discriminator so a post-crash recovery
+    /// reads the wake as a failure, not a completion.
+    ///
+    /// **Falsifiability**: drop the `wait_wake` field write from `park_node`
+    /// → `back.wait_wake` is `None` not `Some(Timeout)` → the assert fails.
+    #[test]
+    fn park_node_sets_wait_wake() {
+        let (mut state, n1, _n2) = make_state();
+        // Drive n1 to Running so the `Running → Waiting` park edge is legal.
+        state.start_node_attempt(n1.clone()).unwrap();
+
+        let wake_at = Utc::now() + chrono::Duration::seconds(30);
+        state
+            .park_node(n1.clone(), Some(wake_at), Some(WaitWake::Timeout))
+            .expect("Running → Waiting park must succeed");
+
+        let ns = state.node_state(n1).unwrap();
+        assert_eq!(ns.state, NodeState::Waiting);
+        assert_eq!(ns.next_attempt_at, Some(wake_at));
+        assert_eq!(
+            ns.wait_wake,
+            Some(WaitWake::Timeout),
+            "park_node must record the Timeout wake discriminator alongside the timer"
+        );
+    }
+
+    /// W-S2b — a signal-only park (no timer) carries neither a wake instant
+    /// nor a `wait_wake` discriminator. This is the case-a path: the node is
+    /// satisfied by an explicit Resume, never by a timer.
+    #[test]
+    fn park_node_signal_only_has_no_wait_wake() {
+        let (mut state, n1, _n2) = make_state();
+        state.start_node_attempt(n1.clone()).unwrap();
+
+        state
+            .park_node(n1.clone(), None, None)
+            .expect("Running → Waiting signal-only park must succeed");
+
+        let ns = state.node_state(n1).unwrap();
+        assert_eq!(ns.state, NodeState::Waiting);
+        assert!(ns.next_attempt_at.is_none());
+        assert!(
+            ns.wait_wake.is_none(),
+            "a signal-only park must not carry a wake discriminator"
+        );
+    }
+
+    /// W-S2b — `park_node` REJECTS a desynced (`wake_at`, `wait_wake`) pair
+    /// with a typed error and leaves the node untouched. A `Some(wake_at),
+    /// None` (or the inverse) would persist a timer wake with no declared
+    /// meaning — silently turning a timeout into a completion — so the pairing
+    /// is a load-bearing runtime guard, not a debug-only assert.
+    ///
+    /// **Falsifiability**: replace the runtime guard with the old
+    /// `debug_assert_eq!` → in a release/`cargo test --release` build the
+    /// desync slips through, `park_node` returns `Ok`, the node becomes
+    /// `Waiting` with a `Some(wake_at), None` desync → both asserts flip.
+    #[test]
+    fn park_node_rejects_wake_pairing_desync() {
+        let (mut state, n1, _n2) = make_state();
+        state.start_node_attempt(n1.clone()).unwrap();
+        let wake_at = Utc::now() + chrono::Duration::seconds(30);
+
+        // wake_at without a wait_wake meaning is a desync — must be rejected.
+        let err = state
+            .park_node(n1.clone(), Some(wake_at), None)
+            .expect_err("a Some(wake_at), None park must be rejected");
+        assert!(
+            matches!(err, ExecutionError::InvalidTransition { .. }),
+            "the desync must surface as a typed InvalidTransition, got {err:?}"
+        );
+
+        // The inverse desync (wait_wake without a timer) is equally rejected.
+        let err = state
+            .park_node(n1.clone(), None, Some(WaitWake::Timeout))
+            .expect_err("a None, Some(wait_wake) park must be rejected");
+        assert!(matches!(err, ExecutionError::InvalidTransition { .. }));
+
+        // The guard ran before any mutation: the node is still Running, never
+        // parked, and carries no stale wake metadata.
+        let ns = state.node_state(n1).unwrap();
+        assert_eq!(
+            ns.state,
+            NodeState::Running,
+            "a rejected park must leave the node untouched (still Running)"
+        );
+        assert!(ns.next_attempt_at.is_none());
+        assert!(ns.wait_wake.is_none());
+    }
+
+    /// W-S2b — `wait_wake` round-trips through serde, and a legacy
+    /// `NodeExecutionState` JSON that predates the field deserializes as
+    /// `None` (read by the engine as `Completion` for an armed timer wait,
+    /// preserving W-S1 timer-wake semantics).
+    ///
+    /// **Falsifiability**: drop `#[serde(default)]` from `wait_wake` → the
+    /// legacy-JSON `from_value` errors (missing field) → the test panics.
+    #[test]
+    fn wait_wake_serde_roundtrip_and_legacy_default() {
+        // Round-trip a `Some(Timeout)`.
+        let mut ns = NodeExecutionState::new();
+        ns.wait_wake = Some(WaitWake::Timeout);
+        let json = serde_json::to_string(&ns).unwrap();
+        let back: NodeExecutionState = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            back.wait_wake,
+            Some(WaitWake::Timeout),
+            "wait_wake must survive a serde roundtrip"
+        );
+
+        // Round-trip a `Some(Completion)`.
+        ns.wait_wake = Some(WaitWake::Completion);
+        let json = serde_json::to_string(&ns).unwrap();
+        let back: NodeExecutionState = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.wait_wake, Some(WaitWake::Completion));
+
+        // Legacy JSON without the field deserializes as `None`.
+        let legacy = serde_json::json!({
+            "state": "waiting",
+            "attempts": [],
+            "next_attempt_at": Utc::now(),
+        });
+        let ns: NodeExecutionState = serde_json::from_value(legacy).unwrap();
+        assert!(
+            ns.wait_wake.is_none(),
+            "legacy rows without wait_wake must deserialize as None"
+        );
+    }
+
+    /// W-S2b — `arm_wait_completion` and `clear_wait_timer` write the
+    /// (`next_attempt_at`, `wait_wake`) pair together, keeping the
+    /// `next_attempt_at.is_some() == wait_wake.is_some()` invariant the engine's
+    /// signal-wait routing relies on. These methods are the single paired-write
+    /// entry points the engine calls instead of touching the two fields raw, so
+    /// a future edit cannot desync them.
+    ///
+    /// **Falsifiability**: drop the `wait_wake` write from `arm_wait_completion`
+    /// → the `wait_wake == Some(Completion)` assert fails; drop the
+    /// `next_attempt_at` clear from `clear_wait_timer` → the `is_none` assert
+    /// fails.
+    #[test]
+    fn arm_and_clear_wait_timer_write_the_pair_together() {
+        let when = Utc::now();
+        let mut ns = NodeExecutionState::new();
+
+        ns.arm_wait_completion(when);
+        assert_eq!(
+            ns.next_attempt_at,
+            Some(when),
+            "arm must stamp the wake instant"
+        );
+        assert_eq!(
+            ns.wait_wake,
+            Some(WaitWake::Completion),
+            "arm must record the Completion discriminator"
+        );
+        assert_eq!(
+            ns.next_attempt_at.is_some(),
+            ns.wait_wake.is_some(),
+            "armed pair must satisfy the next_attempt_at/wait_wake invariant"
+        );
+
+        ns.clear_wait_timer();
+        assert!(
+            ns.next_attempt_at.is_none(),
+            "clear must drop the wake instant"
+        );
+        assert!(
+            ns.wait_wake.is_none(),
+            "clear must drop the wake discriminator"
+        );
+        assert_eq!(
+            ns.next_attempt_at.is_some(),
+            ns.wait_wake.is_some(),
+            "cleared pair must satisfy the next_attempt_at/wait_wake invariant"
+        );
     }
 
     /// `total_retries` round-trips and starts

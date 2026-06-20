@@ -80,6 +80,33 @@ pub enum ExecutionEvent {
         node_key: NodeKey,
     },
 
+    /// A signal-driven parked node (`Webhook` / `Approval` / `Execution`)
+    /// was parked with an explicit `timeout` and that deadline elapsed
+    /// before a Resume arrived. The engine has transitioned the node
+    /// `Waiting → Failed` (with `RuntimeError::WaitTimedOut`) and routed its
+    /// outgoing edges through the failure path (OnError / Skip / FailFast).
+    ///
+    /// The matched-pair partner of [`ExecutionEvent::NodeParked`] on the
+    /// timeout branch (where [`ExecutionEvent::NodeWaitCompleted`] is the
+    /// success-branch partner): `Parked` gates downstream, `WaitTimedOut`
+    /// fails the node and routes the failure edges.
+    NodeWaitTimedOut {
+        /// Execution this node belongs to.
+        execution_id: ExecutionId,
+        /// The node whose wait timed out.
+        node_key: NodeKey,
+        /// The parked signal-wait kind. Currently always the literal
+        /// `"signal"`: the parked node does not persist the exact
+        /// `WaitCondition` variant (`Webhook` / `Approval` / `Execution`), so
+        /// once the timer fires only the generic discriminator is recoverable.
+        /// Per-variant detail will arrive with persisted resume targeting.
+        condition_kind: String,
+        /// Timeout duration reported for observability, in milliseconds.
+        /// Reconstructed from the persisted wait deadline and node
+        /// `started_at`, so it may slightly exceed the author-declared timeout.
+        timeout_ms: u64,
+    },
+
     /// A node attempt failed but the engine scheduled a retry per
     /// (Layer 2 — engine-level retry). The node has
     /// transitioned to `WaitingRetry` and will be re-dispatched at

@@ -73,6 +73,8 @@ zeroize = { version = "1.8.2", features = ["zeroize_derive"] }
 # so the resolver exercises the same CAS path as production. `sqlite` is enough;
 # the nebula test-util feature was removed from nebula-storage (ADR-0092 step 8).
 nebula-storage = { path = "../storage", features = ["sqlite"] }
+# Used by the W-S2b ack-gating tests' fault-injecting `ExecutionStore` wrapper.
+async-trait = { workspace = true }
 chrono = { workspace = true }
 futures = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
