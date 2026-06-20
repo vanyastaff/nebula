@@ -544,9 +544,16 @@ impl ControlDispatch for EngineControlDispatch {
                 // execution with no live frontier, or a cross-runner live
                 // execution. Durably terminalize any parked nodes so a
                 // `Cancelled` execution never retains a non-terminal node.
-                // Lease-guarded: a held lease means a live frontier (this is the
-                // cross-runner case) is tearing down or another runner owns it →
-                // Defer for B1 reclaim rather than racing its node writes.
+                // Lease-guarded: a held lease (acquire fails ⇒ TTL not expired)
+                // means another runner is alive and owns this execution. That
+                // owner observes the API's durable `Cancelled` write via its next
+                // checkpoint CAS and tears its own frontier down — so we ACK
+                // (below) rather than Defer. Deferring would churn the
+                // control-queue row through untargeted, budget-capped B1 reclaim
+                // (which cannot route to the lease holder) until it is marked
+                // failed, while never delivering anything to the owner. A
+                // genuinely no-live-runner Paused execution has a FREE lease, so
+                // `cancel_dangling_nodes` acquires it and terminalizes there.
                 match self.engine.cancel_dangling_nodes(scope, execution_id).await {
                     Ok(
                         CancelDanglingOutcome::Cancelled(_)
@@ -569,16 +576,24 @@ impl ControlDispatch for EngineControlDispatch {
                         )))
                     },
                     Err(EngineError::Leased { ref holder, .. }) => {
+                        // A live owner holds the lease — it will observe the
+                        // durable `Cancelled` status on its next checkpoint CAS
+                        // and tear its own frontier down. ACK: there is no
+                        // targeted cross-runner cancel delivery, so churning the
+                        // row through reclaim would only burn the budget and mark
+                        // it failed without ever reaching the owner. (Prompt
+                        // cross-process cancel delivery — and recovery of a holder
+                        // that crashed before its TTL — is the general
+                        // crashed-runner / multi-runner follow-up, tracked
+                        // separately.)
                         tracing::debug!(
                             %execution_id,
                             %holder,
-                            "dispatch_cancel: dangling-node cleanup deferred — execution lease \
-                             held by another runner (its teardown or B1 reclaim completes the cancel)"
+                            "dispatch_cancel: execution lease held by a live owner; acking — the \
+                             owner tears down via its checkpoint CAS against the durable Cancelled \
+                             status"
                         );
-                        Err(ControlDispatchError::Deferred(format!(
-                            "execution {execution_id} cancel dangling-node cleanup deferred; \
-                             lease held by {holder}"
-                        )))
+                        Ok(())
                     },
                     Err(e) => {
                         // The cleanup did not durably land; the execution is

@@ -2694,13 +2694,22 @@ async fn dispatch_cancel_defers_when_cancel_not_yet_recorded() {
     );
 }
 
-/// **Lease contention — `dispatch_cancel` DEFERS when the execution lease is
-/// held** (cancel-vs-resume / cross-runner serialization): with the lease held
-/// externally, `cancel_dangling_nodes` returns `Leased`; `dispatch_cancel` must
-/// `Deferred` (B1 reclaim) and mutate no node state. Releasing the lease and
-/// redelivering then terminalizes the parked nodes.
+/// **Lease held by a live owner — `dispatch_cancel` ACKS (does not churn) and
+/// the owner cleans up; once the lease frees, a Cancel terminalizes the parked
+/// nodes.** A held lease (acquire fails ⇒ TTL not expired) means a live runner
+/// owns the execution: it observes the durable `Cancelled` status via its next
+/// checkpoint CAS and tears its own frontier down. `dispatch_cancel` must ACK
+/// rather than Defer — there is no targeted cross-runner cancel delivery, so
+/// deferring would only churn the row through budget-capped reclaim and mark it
+/// failed without reaching the owner. A genuinely no-live-runner Paused
+/// execution has a FREE lease, so `cancel_dangling_nodes` acquires it and
+/// terminalizes (proven by the second half + by
+/// `cancel_of_paused_signal_execution_terminalizes_parked_nodes`).
+///
+/// **Falsifiability**: revert the `Leased` arm to `Deferred` → the held-lease
+/// `dispatch_cancel` returns `Err(Deferred)` → the `Ok` assertion fails → RED.
 #[tokio::test]
-async fn dispatch_cancel_defers_when_lease_held_then_completes_on_redeliver() {
+async fn dispatch_cancel_acks_when_lease_held_then_terminalizes_once_free() {
     let harness = SignalHarness::new().await;
     let workflow_id = harness.persist_signal_workflow().await;
     let execution_id = harness.persist_created_execution(workflow_id).await;
@@ -2716,27 +2725,30 @@ async fn dispatch_cancel_defers_when_lease_held_then_completes_on_redeliver() {
         .force_status(execution_id, ExecutionStatus::Cancelled)
         .await;
 
-    // A concurrent runner holds the execution lease.
+    // A live owner holds the execution lease.
     let blocker = harness
         .stores
         .execution
         .acquire_lease(
             &scope,
             &execution_id.to_string(),
-            "foreign-runner",
+            "live-owner-runner",
             Duration::from_secs(30),
         )
         .await
         .unwrap()
         .expect("lease must be free before the contention test");
 
-    let result = harness.dispatch.dispatch_cancel(&scope, execution_id).await;
-    assert!(
-        matches!(result, Err(ControlDispatchError::Deferred(_))),
-        "dispatch_cancel must Defer when the execution lease is held; got {result:?}"
-    );
+    // dispatch_cancel must ACK (the live owner handles its own teardown), NOT
+    // churn the row through reclaim.
+    harness
+        .dispatch
+        .dispatch_cancel(&scope, execution_id)
+        .await
+        .expect("dispatch_cancel must ACK when a live owner holds the lease (no reclaim churn)");
 
-    // Nodes not yet terminalized (cleanup deferred).
+    // This dispatcher did not touch node state (the owner owns cleanup) — the
+    // wait node is still Waiting from its perspective.
     let record = harness
         .stores
         .execution
@@ -2748,10 +2760,11 @@ async fn dispatch_cancel_defers_when_lease_held_then_completes_on_redeliver() {
         serde_json::from_str(&serde_json::to_string(&record.state).unwrap()).unwrap();
     assert!(
         state.node_states.values().any(|ns| ns.state.is_waiting()),
-        "the parked node must still be Waiting while the cleanup is deferred"
+        "the non-owner dispatcher must not have mutated node state while the owner holds the lease"
     );
 
-    // Release the lease and redeliver → cleanup completes.
+    // Once the lease frees (the owner is gone / done), a Cancel terminalizes the
+    // parked nodes via the lease-free `cancel_dangling_nodes` path.
     harness
         .stores
         .execution
@@ -2762,7 +2775,7 @@ async fn dispatch_cancel_defers_when_lease_held_then_completes_on_redeliver() {
         .dispatch
         .dispatch_cancel(&scope, execution_id)
         .await
-        .expect("redelivered dispatch_cancel must complete the node cleanup");
+        .expect("dispatch_cancel must terminalize the parked nodes once the lease is free");
 
     let record2 = harness
         .stores
@@ -2775,7 +2788,7 @@ async fn dispatch_cancel_defers_when_lease_held_then_completes_on_redeliver() {
         serde_json::from_str(&serde_json::to_string(&record2.state).unwrap()).unwrap();
     assert!(
         state2.node_states.values().all(|ns| ns.state.is_terminal()),
-        "after the lease frees and the Cancel redelivers, every node must be terminal"
+        "once the lease is free, the Cancel must terminalize every node"
     );
 }
 
