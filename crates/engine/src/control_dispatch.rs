@@ -290,8 +290,11 @@ impl ControlDispatch for EngineControlDispatch {
             // `Created`: no signal-driven waits exist yet — drive directly.
             Some(ExecutionStatus::Created) => self.drive(scope, execution_id).await,
             // `Paused`: the execution is suspended awaiting an external signal.
-            // Satisfy all signal-driven waits (Waiting{next_attempt_at==None}→Completed)
-            // via durable CAS BEFORE re-driving. This is the only code path that
+            // Arm all signal-driven waits (Waiting{next_attempt_at == None}
+            // → Waiting{next_attempt_at = now}) via durable CAS BEFORE re-driving;
+            // Phase-0b then completes each armed wait through PORT-AWARE edge
+            // routing (completing it here would route port-blind). This is the
+            // only code path that
             // calls `satisfy_signal_waits`; Start / Restart / worker re-drives do not,
             // so a crashed-and-reclaimed Paused execution re-parks its wait nodes
             // rather than auto-completing them — the structural discriminator that

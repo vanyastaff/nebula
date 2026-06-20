@@ -385,12 +385,12 @@ impl SignalHarness {
         serde_json::from_value(record.state.get("status").cloned().unwrap()).unwrap()
     }
 
-    /// Force the persisted execution status to `Cancelled`, mirroring how the
-    /// API `cancel_execution` handler writes the terminal status (a raw-JSON
-    /// `status` write committed under a fencing token) before the `Cancel`
-    /// control command is drained. The node states are left untouched — exactly
-    /// the state the engine's `cancel_dangling_nodes` must repair.
-    async fn force_cancelled(&self, execution_id: ExecutionId) {
+    /// Force the persisted execution `status`, mirroring how the API
+    /// `cancel_execution` handler writes a raw-JSON `status` under a fencing
+    /// token before the `Cancel` control command is drained. The node states are
+    /// left untouched — exactly the state the engine's `cancel_dangling_nodes`
+    /// must repair.
+    async fn force_status(&self, execution_id: ExecutionId, status: ExecutionStatus) {
         let scope = nebula_engine::store_seam::single_tenant_scope();
         let id = execution_id.to_string();
         let token = self
@@ -408,10 +408,10 @@ impl SignalHarness {
             .unwrap()
             .expect("execution row must exist");
         let mut state = record.state;
-        state.as_object_mut().unwrap().insert(
-            "status".to_owned(),
-            serde_json::json!(ExecutionStatus::Cancelled.to_string()),
-        );
+        state
+            .as_object_mut()
+            .unwrap()
+            .insert("status".to_owned(), serde_json::json!(status.to_string()));
         let batch = TransitionBatch::builder()
             .scope(scope.clone())
             .execution_id(&id)
@@ -2610,7 +2610,9 @@ async fn cancel_of_paused_signal_execution_terminalizes_parked_nodes() {
     );
 
     // The API cancel path writes the terminal status (but not the node states).
-    harness.force_cancelled(execution_id).await;
+    harness
+        .force_status(execution_id, ExecutionStatus::Cancelled)
+        .await;
 
     // Drain the Cancel command. No live runner → engine terminalizes the parked
     // nodes under the lease.
@@ -2710,7 +2712,9 @@ async fn dispatch_cancel_defers_when_lease_held_then_completes_on_redeliver() {
         .await
         .expect("dispatch_start must park the signal node");
     // The API cancel path records the terminal status.
-    harness.force_cancelled(execution_id).await;
+    harness
+        .force_status(execution_id, ExecutionStatus::Cancelled)
+        .await;
 
     // A concurrent runner holds the execution lease.
     let blocker = harness
@@ -2772,5 +2776,60 @@ async fn dispatch_cancel_defers_when_lease_held_then_completes_on_redeliver() {
     assert!(
         state2.node_states.values().all(|ns| ns.state.is_terminal()),
         "after the lease frees and the Cancel redelivers, every node must be terminal"
+    );
+}
+
+/// **CodeRabbit — a `Cancelling` no-live-runner execution is FINALIZED to
+/// `Cancelled`** (not left non-terminal): a runner that began a cancel
+/// (`Running → Cancelling`) and then crashed leaves the execution `Cancelling`
+/// with no live frontier. A redelivered `Cancel` must terminalize the parked
+/// nodes AND move the execution `Cancelling → Cancelled` in the same cleanup
+/// commit, or the execution stays non-terminal `Cancelling` forever.
+///
+/// **Falsifiability**: drop the `Cancelling → Cancelled` finalize from
+/// `cancel_dangling_nodes` → the execution stays `Cancelling` → the
+/// `== Cancelled` assertion fails → RED.
+#[tokio::test]
+async fn cancel_of_cancelling_no_live_runner_finalizes_to_cancelled() {
+    let harness = SignalHarness::new().await;
+    let workflow_id = harness.persist_signal_workflow().await;
+    let execution_id = harness.persist_created_execution(workflow_id).await;
+    let scope = nebula_engine::store_seam::single_tenant_scope();
+
+    harness
+        .dispatch
+        .dispatch_start(&scope, execution_id)
+        .await
+        .expect("dispatch_start must park the signal node");
+
+    // Simulate a runner that began the cancel then crashed: status `Cancelling`,
+    // parked Waiting node intact, no live frontier.
+    harness
+        .force_status(execution_id, ExecutionStatus::Cancelling)
+        .await;
+
+    harness
+        .dispatch
+        .dispatch_cancel(&scope, execution_id)
+        .await
+        .expect("dispatch_cancel must finalize a Cancelling no-live-runner execution");
+
+    let record = harness
+        .stores
+        .execution
+        .get(&scope, &execution_id.to_string())
+        .await
+        .unwrap()
+        .unwrap();
+    let state: ExecutionState =
+        serde_json::from_str(&serde_json::to_string(&record.state).unwrap()).unwrap();
+    assert_eq!(
+        state.status,
+        ExecutionStatus::Cancelled,
+        "a Cancelling no-live-runner execution must be finalized to Cancelled"
+    );
+    assert!(
+        state.node_states.values().all(|ns| ns.state.is_terminal()),
+        "all parked nodes must be terminal after the cancel finalization"
     );
 }

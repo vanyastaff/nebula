@@ -166,16 +166,23 @@ pub enum ExecutionEvent {
         termination_reason: Option<ExecutionTerminationReason>,
     },
 
-    /// A `dispatch_resume` command's durable `satisfy_signal_waits` step could
-    /// not land — the execution lease was held by another runner, or the CAS was
-    /// rejected by a concurrent actor (version conflict or fencing rejection) —
-    /// so the signal-driven wait nodes were not armed for completion.
+    /// A `dispatch_resume` command could not durably complete and is being
+    /// redelivered (NOT dropped). Emitted on two paths, both leaving the
+    /// control-queue row unacked for at-least-once (B1 reclaim) redelivery:
     ///
-    /// The Resume is NOT dropped: the control-queue row is left unacked so
-    /// at-least-once redelivery (B1 reclaim) retries it once the competing actor
-    /// releases the lease. If that actor was a reclaim re-drive it re-parks
-    /// (leaving the wait for the redelivered Resume to arm); if it was a genuine
-    /// concurrent Resume that already armed the wait, the redelivery is a no-op.
+    /// 1. **Satisfy did not arm** — `satisfy_signal_waits` could not land
+    ///    (the execution lease was held by another runner, or the CAS was
+    ///    rejected by a concurrent actor): the signal waits were NOT armed.
+    /// 2. **Armed, but the drive deferred** — `satisfy_signal_waits` DID
+    ///    durably arm the wait (`next_attempt_at = Some`), but the follow-up
+    ///    `drive_armed_resume` could not acquire the lease (e.g. a
+    ///    crashed/stalled holder whose TTL has not expired) or hit a CAS
+    ///    conflict, so the armed wait is not yet completed.
+    ///
+    /// In both cases the redelivery converges: a reclaim re-drive re-parks an
+    /// un-armed wait (the redelivered Resume re-arms it); an already-armed wait
+    /// is completed by the next drive once the lease frees; a wait already
+    /// completed makes the redelivery a no-op via the status short-circuit.
     ///
     /// # Observability
     ///

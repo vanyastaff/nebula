@@ -2856,6 +2856,22 @@ impl WorkflowEngine {
             ))
         })?;
 
+        // If the execution was mid-cancel (`Cancelling`), finalize it to the
+        // terminal `Cancelled` in the SAME commit as the node cleanup —
+        // otherwise a no-live-runner repair would ack while the execution stayed
+        // non-terminal `Cancelling` forever (`Cancelling → Cancelled` is in the
+        // execution transition table).
+        if exec_state.status == ExecutionStatus::Cancelling {
+            exec_state
+                .transition_status(ExecutionStatus::Cancelled)
+                .map_err(|e| {
+                    EngineError::PlanningFailed(format!(
+                        "cancel_dangling_nodes: finalize Cancelling→Cancelled for \
+                         {execution_id}: {e}"
+                    ))
+                })?;
+        }
+
         let state_json =
             serde_json::to_value(&exec_state).map_err(|e| EngineError::CheckpointFailed {
                 node_key: final_state_node_key(),
@@ -3722,7 +3738,45 @@ impl WorkflowEngine {
                         let wake_at: Option<DateTime<Utc>> = match condition {
                             WaitCondition::Until { datetime } => Some(*datetime),
                             WaitCondition::Duration { duration } => {
-                                chrono::Duration::from_std(*duration).ok().map(|d| now + d)
+                                // FAIL CLOSED on an unrepresentable / overflowing timer
+                                // Duration. Mapping the error to `None` would silently
+                                // turn a TIMER wait into a signal-driven indefinite park
+                                // that a generic `Resume` could satisfy — wrong semantics.
+                                let fail_unschedulable =
+                                    |exec_state: &mut ExecutionState, reason: String| {
+                                        let engine_err = EngineError::Runtime(
+                                            crate::runtime::error::RuntimeError::WaitConditionNotSupported {
+                                                condition_kind: reason,
+                                            },
+                                        );
+                                        tracing::error!(
+                                            target = "engine::wait",
+                                            %execution_id,
+                                            %node_key,
+                                            error = %engine_err,
+                                            "Duration WaitCondition cannot be scheduled; marking \
+                                             node Failed (fail-closed)"
+                                        );
+                                        mark_node_failed(exec_state, node_key.clone(), &engine_err);
+                                        cancel_token.cancel();
+                                        engine_err.to_string()
+                                    };
+                                let Ok(chrono_dur) = chrono::Duration::from_std(*duration) else {
+                                    let msg = fail_unschedulable(
+                                        exec_state,
+                                        format!("Duration wait not representable: {duration:?}"),
+                                    );
+                                    return Some((node_key.clone(), msg));
+                                };
+                                let Some(when) = now.checked_add_signed(chrono_dur) else {
+                                    let msg = fail_unschedulable(
+                                        exec_state,
+                                        "Duration wait overflows the scheduler timestamp"
+                                            .to_owned(),
+                                    );
+                                    return Some((node_key.clone(), msg));
+                                };
+                                Some(when)
                             },
                             // Signal-driven conditions: no timer wake — the park is
                             // indefinite until a Resume command's durable satisfy-CAS
@@ -5630,28 +5684,30 @@ fn drain_pending_to_cancelled(
             "Waiting → Cancelled (cancel observed while parked)"
         );
     }
-    // Signal-driven waits (`next_attempt_at == None`) are intentionally NOT on
-    // `wait_heap`, so the heap drain above never visits them. Scan `node_states`
-    // for any node still `Waiting` and cancel it too — otherwise a cancel
-    // observed while a signal wait is parked would leave the node non-terminal
-    // under a `Cancelled` execution (a state-machine leak). Timer waits already
-    // cancelled by the heap drain are skipped (no longer `Waiting`).
-    let stranded_signal_waits: Vec<NodeKey> = exec_state
+    // Signal-driven waits (`next_attempt_at == None`) AND their blocked
+    // downstream `Pending` nodes are intentionally NOT represented in the timer
+    // heaps or the ready_queue, so the drains above never visit them. Scan
+    // `node_states` for ANY remaining non-terminal node and cancel it —
+    // otherwise a cancel observed while a signal wait is parked would leave the
+    // wait node and/or its blocked downstream non-terminal under a `Cancelled`
+    // execution (a state-machine leak). Nodes already cancelled above (heaps /
+    // ready_queue) are terminal and skipped.
+    let stranded_non_terminal: Vec<NodeKey> = exec_state
         .node_states
         .iter()
-        .filter(|(_, ns)| ns.state == NodeState::Waiting)
+        .filter(|(_, ns)| !ns.state.is_terminal())
         .map(|(id, _)| id.clone())
         .collect();
-    for waiting in stranded_signal_waits {
-        let _ = exec_state.transition_node(waiting.clone(), NodeState::Cancelled);
-        if let Some(ns) = exec_state.node_states.get_mut(&waiting) {
+    for node_key in stranded_non_terminal {
+        let _ = exec_state.transition_node(node_key.clone(), NodeState::Cancelled);
+        if let Some(ns) = exec_state.node_states.get_mut(&node_key) {
             ns.next_attempt_at = None;
         }
         tracing::debug!(
             target = "engine::wait",
             %execution_id,
-            node_key = %waiting,
-            "signal Waiting → Cancelled (cancel observed while parked; not on wait_heap)"
+            %node_key,
+            "stranded non-terminal node → Cancelled (cancel teardown; not on heap/queue)"
         );
     }
     while let Some(queued) = ready_queue.pop_front() {
