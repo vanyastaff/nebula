@@ -79,6 +79,23 @@ use crate::{
     event::ExecutionEvent,
 };
 
+/// Three-way discriminant returned by [`EngineControlDispatch::read_status_discriminated`].
+///
+/// Separates the two PERMANENT outcomes (no row, corrupt row) from a transient
+/// backend read error so callers can ack-drop permanent states and defer
+/// (redeliver) on transient store failures instead of silently losing a valid
+/// command.
+#[derive(Debug)]
+enum StatusRead {
+    /// The execution row exists and its `status` field deserialised cleanly.
+    Present(ExecutionStatus),
+    /// No row was found for this `execution_id` in this `scope` (permanent).
+    Absent,
+    /// The row exists but its state is unreadable: the `status` field is
+    /// missing or failed to deserialise (permanent corruption).
+    Corrupt,
+}
+
 /// Engine-owned [`ControlDispatch`] implementation.
 ///
 /// Holds a shared [`WorkflowEngine`] plus a scoped [`ExecutionStore`]
@@ -146,6 +163,50 @@ impl EngineControlDispatch {
                     "execution {execution_id}: persisted state has no `status` field"
                 ))),
             },
+        }
+    }
+
+    /// Like [`Self::read_status`] but returns a [`StatusRead`] discriminant
+    /// instead of collapsing all failures into `Err`.
+    ///
+    /// The returned `Err` means a **transient** backend failure: the
+    /// `ExecutionStore::get` call itself returned an error (network blip,
+    /// lock timeout, connection pool exhausted, etc.). The caller MUST NOT
+    /// ack-drop on `Err`; it should defer the command so B1 reclaim can
+    /// redeliver once the store recovers.
+    ///
+    /// `Ok(StatusRead::Absent)` and `Ok(StatusRead::Corrupt)` are PERMANENT:
+    /// no amount of redelivery will change the outcome. Ack-dropping them is
+    /// safe (and correct — it prevents forever-redelivery on a moot command).
+    ///
+    /// This is intentionally NOT used by `dispatch_start` / `dispatch_restart`
+    /// / `dispatch_cancel`, which propagate the read error via `?` so a
+    /// transient store failure on those paths surfaces in the consumer's
+    /// `mark_failed` (the right outcome for a non-Resume orphan or restart).
+    /// Only the Resume path (where the command is attacker-facing and an
+    /// absent/corrupt id must not be retried forever) uses this discriminant.
+    async fn read_status_discriminated(
+        &self,
+        scope: &Scope,
+        execution_id: ExecutionId,
+    ) -> Result<StatusRead, ControlDispatchError> {
+        let record = match self.execution.get(scope, &execution_id.to_string()).await {
+            Ok(Some(r)) => r,
+            Ok(None) => return Ok(StatusRead::Absent),
+            Err(e) => {
+                // Transient backend error — the caller must Defer, not ack-drop.
+                return Err(ControlDispatchError::Deferred(format!(
+                    "execution {execution_id}: transient store read error during Resume dispatch: \
+                     {e}"
+                )));
+            },
+        };
+        match record.state.get("status") {
+            Some(s) => match serde_json::from_value::<ExecutionStatus>(s.clone()) {
+                Ok(status) => Ok(StatusRead::Present(status)),
+                Err(_) => Ok(StatusRead::Corrupt),
+            },
+            None => Ok(StatusRead::Corrupt),
         }
     }
 
@@ -383,12 +444,12 @@ impl EngineControlDispatch {
                      {holder}; Resume deferred for B1 reclaim"
                 )))
             },
-            Err(e) => match self.read_status(scope, execution_id).await {
+            Err(e) => match self.read_status_discriminated(scope, execution_id).await {
                 // Row missing: a forged / garbage / corrupt id, or a row deleted
                 // mid-recovery. Ack-DROP (not Deferred) so the row is consumed
                 // rather than redelivered forever against a non-existent
                 // execution — the only forever-redeliver leak this path closes.
-                Ok(None) => {
+                Ok(StatusRead::Absent) => {
                     tracing::warn!(
                         %execution_id,
                         recovery_error = %e,
@@ -398,7 +459,7 @@ impl EngineControlDispatch {
                     );
                     Ok(())
                 },
-                Ok(Some(status))
+                Ok(StatusRead::Present(status))
                     if status.is_terminal() || matches!(status, ExecutionStatus::Cancelling) =>
                 {
                     tracing::info!(
@@ -410,7 +471,7 @@ impl EngineControlDispatch {
                     );
                     Ok(())
                 },
-                Ok(Some(status)) => {
+                Ok(StatusRead::Present(status)) => {
                     // Same distinct target as the live-owner defer above: a
                     // sustained rate here flags a non-resolving Resume that the
                     // reclaim budget no longer terminalizes.
@@ -431,20 +492,43 @@ impl EngineControlDispatch {
                          status={status}; Resume deferred for B1 reclaim"
                     )))
                 },
-                // Status unreadable / unparseable: a corrupt row can never be
-                // recovered, so ack-DROP rather than churn it through reclaim
-                // forever (same forever-redeliver-leak closure as the missing-row
-                // arm).
-                Err(read_err) => {
+                // Permanent corruption — ack-DROP to close the forever-redeliver
+                // leak (same as the `Absent` arm above: a corrupt row can never
+                // be recovered).
+                Ok(StatusRead::Corrupt) => {
                     tracing::warn!(
                         %execution_id,
                         recovery_error = %e,
-                        read_error = %read_err,
                         "dispatch_resume: no-live-owner recovery failed and the status re-read \
                          is unreadable/unparseable (corrupt row); ack-dropping the Resume to \
                          avoid forever-redelivery"
                     );
                     Ok(())
+                },
+                // Transient backend read error on the re-read — the execution may
+                // still be valid and non-terminal. Defer so B1 reclaim redelivers
+                // once the store recovers; do NOT ack-drop a valid Resume.
+                Err(deferred) => {
+                    tracing::warn!(
+                        target: "engine::wait::resume_recovery",
+                        %execution_id,
+                        recovery_error = %e,
+                        re_read_error = %deferred,
+                        "dispatch_resume: no-live-owner recovery failed and the status re-read \
+                         also hit a transient store error; deferring Resume conservatively for \
+                         B1 reclaim"
+                    );
+                    self.engine.emit_event(ExecutionEvent::ResumeDeferred {
+                        execution_id,
+                        reason: format!(
+                            "recovery did not land ({e}); re-read transient error: {deferred}"
+                        ),
+                    });
+                    Err(ControlDispatchError::Deferred(format!(
+                        "execution {execution_id} no-live-owner recovery did not land ({e}); \
+                         status re-read transient error ({deferred}); Resume deferred \
+                         conservatively for B1 reclaim"
+                    )))
                 },
             },
         }
@@ -493,9 +577,14 @@ impl ControlDispatch for EngineControlDispatch {
         // consumed) rather than `Rejected` (which would record a noisy Failed
         // row) or any error that redelivers — this closes the only
         // forever-redeliver leak on the Resume path (ADR-0099 W-S3b).
-        let status = match self.read_status(scope, execution_id).await {
-            Ok(Some(status)) => status,
-            Ok(None) => {
+        //
+        // IMPORTANT: only `StatusRead::Absent` (no row) and `StatusRead::Corrupt`
+        // (permanent bad state) are ack-dropped. A transient backend read error
+        // (`Err`) propagates as `Deferred` — a store blip during a VALID Resume
+        // must never be silently discarded (Codex P2, ADR-0099 W-S3b).
+        let status = match self.read_status_discriminated(scope, execution_id).await {
+            Ok(StatusRead::Present(status)) => status,
+            Ok(StatusRead::Absent) => {
                 tracing::warn!(
                     %execution_id,
                     "dispatch_resume: execution not found (forged/garbage id or pruned row); \
@@ -503,14 +592,28 @@ impl ControlDispatch for EngineControlDispatch {
                 );
                 return Ok(());
             },
-            Err(read_err) => {
+            Ok(StatusRead::Corrupt) => {
                 tracing::warn!(
                     %execution_id,
-                    read_error = %read_err,
                     "dispatch_resume: execution status unreadable/unparseable (corrupt row); \
                      ack-dropping the moot Resume to avoid forever-redelivery"
                 );
                 return Ok(());
+            },
+            Err(deferred) => {
+                // Transient backend read error — the execution may be VALID.
+                // Defer so B1 reclaim redelivers once the store recovers.
+                tracing::warn!(
+                    %execution_id,
+                    deferred_reason = %deferred,
+                    "dispatch_resume: transient store error reading execution status; \
+                     deferring Resume for B1 reclaim (not ack-dropping — may be a valid Resume)"
+                );
+                self.engine.emit_event(ExecutionEvent::ResumeDeferred {
+                    execution_id,
+                    reason: format!("transient store read error: {deferred}"),
+                });
+                return Err(deferred);
             },
         };
         match status {

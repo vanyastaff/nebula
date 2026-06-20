@@ -35,7 +35,7 @@ use std::{
     collections::HashMap,
     sync::{
         Arc, OnceLock,
-        atomic::{AtomicU32, Ordering},
+        atomic::{AtomicBool, AtomicU32, Ordering},
     },
     time::Duration,
 };
@@ -56,12 +56,106 @@ use nebula_execution::{ExecutionState, ExecutionStatus};
 use nebula_metrics::MetricsRegistry;
 use nebula_storage::{InMemoryExecutionStore, InMemoryWorkflowVersionStore};
 use nebula_storage_port::{
-    dto::{ResumeTarget, WorkflowVersionRecord},
+    FencingToken, Scope, StorageError, TransitionBatch, TransitionOutcome,
+    dto::{ExecutionRecord, ResumeTarget, WorkflowVersionRecord},
     store::{ExecutionStore, WorkflowVersionStore},
 };
 use nebula_workflow::{
     CURRENT_SCHEMA_VERSION, Connection, NodeDefinition, Version, WorkflowConfig, WorkflowDefinition,
 };
+
+// ── Fault-injecting ExecutionStore wrapper (Codex P2 red test) ───────────────
+
+/// Wraps a real `ExecutionStore` and injects a `StorageError::Connection` on
+/// `get` calls when `fail_reads` is set. All other methods delegate
+/// transparently, so the engine's write-path and lease management remain
+/// functional.
+///
+/// Used in `transient_store_error_during_resume_defers_not_drops` to prove that
+/// a transient backend blip during the idempotency read does NOT silently drop a
+/// valid `Resume` (Codex P2, ADR-0099 W-S3b).
+#[derive(Debug)]
+struct FaultInjectingExecutionStore {
+    inner: Arc<InMemoryExecutionStore>,
+    /// When `true`, `get` returns `StorageError::Connection` instead of
+    /// forwarding to `inner`.
+    fail_reads: Arc<AtomicBool>,
+}
+
+#[async_trait::async_trait]
+impl ExecutionStore for FaultInjectingExecutionStore {
+    async fn create(
+        &self,
+        scope: &Scope,
+        id: &str,
+        workflow_id: &str,
+        initial_state: serde_json::Value,
+    ) -> Result<(), StorageError> {
+        self.inner
+            .create(scope, id, workflow_id, initial_state)
+            .await
+    }
+
+    async fn get(&self, scope: &Scope, id: &str) -> Result<Option<ExecutionRecord>, StorageError> {
+        if self.fail_reads.load(Ordering::SeqCst) {
+            return Err(StorageError::Connection(
+                "injected transient store read failure (Codex P2 test)".to_owned(),
+            ));
+        }
+        self.inner.get(scope, id).await
+    }
+
+    async fn commit(&self, batch: TransitionBatch) -> Result<TransitionOutcome, StorageError> {
+        self.inner.commit(batch).await
+    }
+
+    async fn acquire_lease(
+        &self,
+        scope: &Scope,
+        id: &str,
+        holder: &str,
+        ttl: Duration,
+    ) -> Result<Option<FencingToken>, StorageError> {
+        self.inner.acquire_lease(scope, id, holder, ttl).await
+    }
+
+    async fn renew_lease(
+        &self,
+        scope: &Scope,
+        id: &str,
+        token: FencingToken,
+        ttl: Duration,
+    ) -> Result<bool, StorageError> {
+        self.inner.renew_lease(scope, id, token, ttl).await
+    }
+
+    async fn release_lease(
+        &self,
+        scope: &Scope,
+        id: &str,
+        token: FencingToken,
+    ) -> Result<bool, StorageError> {
+        self.inner.release_lease(scope, id, token).await
+    }
+
+    async fn list_running(&self, scope: &Scope) -> Result<Vec<String>, StorageError> {
+        self.inner.list_running(scope).await
+    }
+
+    async fn list_running_for_workflow(
+        &self,
+        scope: &Scope,
+        workflow_id: &str,
+    ) -> Result<Vec<String>, StorageError> {
+        self.inner
+            .list_running_for_workflow(scope, workflow_id)
+            .await
+    }
+
+    async fn count(&self, scope: &Scope, workflow_id: Option<&str>) -> Result<u64, StorageError> {
+        self.inner.count(scope, workflow_id).await
+    }
+}
 
 // ── Action stubs ──────────────────────────────────────────────────────────────
 
@@ -971,4 +1065,148 @@ async fn crash_recovery_redrive_without_resume_does_not_satisfy() {
     // never fires within the test).
     task_b.abort();
     let _ = task_b.await;
+}
+
+/// **W-S3b (Codex P2) — a TRANSIENT store read error during `dispatch_resume`
+/// returns `Deferred`, NOT `Ok(())` (ack-drop).**
+///
+/// `dispatch_resume` must distinguish between:
+/// - `StatusRead::Absent` (no row): PERMANENT → ack-drop is correct
+/// - `StatusRead::Corrupt` (bad state): PERMANENT → ack-drop is correct
+/// - backend `get` fails (transient): NOT permanent → must `Deferred` so B1
+///   reclaim redelivers after the store recovers; silently dropping a valid
+///   Resume here is data loss.
+///
+/// The test wires a `FaultInjectingExecutionStore` that injects a
+/// `StorageError::Connection` on `get` calls. Before the fault is injected,
+/// a real execution is parked and crashed (so the status would be `Running`
+/// on a healthy read). With the fault active, `dispatch_resume` MUST return
+/// `Err(Deferred)`, not `Ok(())`.
+///
+/// **Falsifiability**: revert `read_status_discriminated` to `read_status`
+/// (which collapses transient `Err` into ack-drop in the caller) → the test
+/// asserts `is_err()` but gets `Ok(())` → RED.
+#[tokio::test]
+async fn transient_store_error_during_resume_defers_not_drops() {
+    let downstream = Arc::new(AtomicU32::new(0));
+    let timeout = Duration::from_hours(1);
+    let lease_ttl = Duration::from_secs(1);
+    let heartbeat = Duration::from_millis(300);
+
+    // Use the real in-memory store for the engine's own internals, then wrap it
+    // for the dispatch's idempotency-read so we can inject faults on `get` alone.
+    let inner_execution = Arc::new(InMemoryExecutionStore::new());
+    let fail_reads = Arc::new(AtomicBool::new(false));
+    let fault_store: Arc<dyn ExecutionStore> = Arc::new(FaultInjectingExecutionStore {
+        inner: Arc::clone(&inner_execution),
+        fail_reads: Arc::clone(&fail_reads),
+    });
+
+    // Build a RecoveryStores bundle that shares the same inner execution store
+    // with the fault-injecting wrapper, so engine writes are real but dispatch
+    // reads go through the fault wrapper.
+    let journal = Arc::new(nebula_storage::InMemoryJournalReader::new(&inner_execution));
+    let versions = InMemoryWorkflowVersionStore::new();
+    let workflow = nebula_storage::InMemoryWorkflowStore::new_with_versions(&versions);
+    let stores = RecoveryStores {
+        execution: Arc::clone(&inner_execution),
+        journal,
+        node_results: Arc::new(nebula_storage::InMemoryNodeResultStore::new()),
+        checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new()),
+        idempotency: Arc::new(nebula_storage::InMemoryIdempotencyGuard::new()),
+        workflow: Arc::new(workflow),
+        versions: Arc::new(versions),
+    };
+
+    let wf = make_single_workflow();
+    stores.save_workflow(&wf).await;
+
+    let event_bus = nebula_eventbus::EventBus::<ExecutionEvent>::new(64);
+    let mut events_rx = event_bus.subscribe();
+    let engine_a = Arc::new(
+        stores
+            .attach(
+                make_engine(build_single_registry("cb-fault", timeout, &downstream))
+                    .with_event_bus(event_bus),
+            )
+            .with_lease_ttl(lease_ttl)
+            .with_lease_heartbeat_interval(heartbeat),
+    );
+
+    // Park under runner A, then crash it (the lease will expire after TTL).
+    let execution_id = park_then_crash_owner(&stores, &engine_a, wf.id, &mut events_rx).await;
+    assert_eq!(
+        stores.persisted_status(execution_id).await,
+        ExecutionStatus::Running,
+        "parking must keep the execution Running"
+    );
+
+    // Wait out the lease TTL so the recovering runner could acquire the dead
+    // lease (we want to confirm the fault fires BEFORE we get that far).
+    tokio::time::sleep(lease_ttl + Duration::from_millis(300)).await;
+
+    // Build runner B and give it the FAULT-INJECTING store for its dispatch's
+    // idempotency read. The engine itself still uses the real inner store so
+    // its internals (lease, commit) work normally — we only break the
+    // `get`-for-status path.
+    let engine_b = Arc::new(
+        stores
+            .attach(make_engine(build_single_registry(
+                "cb-fault",
+                timeout,
+                &downstream,
+            )))
+            .with_lease_ttl(lease_ttl)
+            .with_lease_heartbeat_interval(heartbeat),
+    );
+    // Wire the fault store into the dispatch (not the engine). The engine's
+    // internal store is clean; only `read_status_discriminated` inside the
+    // dispatch sees the fault.
+    let dispatch_b = EngineControlDispatch::new(Arc::clone(&engine_b), Arc::clone(&fault_store));
+
+    // Activate the fault AFTER setup so none of the park/persist calls are
+    // affected, then deliver the Resume.
+    fail_reads.store(true, Ordering::SeqCst);
+
+    let scope = nebula_engine::store_seam::single_tenant_scope();
+    let result = dispatch_b.dispatch_resume(&scope, execution_id, None).await;
+
+    // The transient store error MUST Defer — not silently drop the Resume.
+    assert!(
+        matches!(result, Err(ControlDispatchError::Deferred(_))),
+        "a transient store read error during dispatch_resume must return Deferred (redeliverable), \
+         not Ok (ack-drop); got: {result:?}"
+    );
+
+    // Downstream must stay gated — the Resume was not delivered.
+    assert_eq!(
+        downstream.load(Ordering::SeqCst),
+        0,
+        "downstream must NOT run when the Resume is Deferred due to a transient store error"
+    );
+
+    // Lift the fault and confirm that a healthy re-delivery (B1 reclaim redeliver)
+    // now succeeds — proving the row was not consumed.
+    fail_reads.store(false, Ordering::SeqCst);
+    let recovery_result = tokio::time::timeout(
+        Duration::from_secs(10),
+        dispatch_b.dispatch_resume(&scope, execution_id, None),
+    )
+    .await
+    .expect("re-delivery must settle within 10s");
+
+    assert!(
+        recovery_result.is_ok(),
+        "a re-delivered Resume after the store recovers must succeed; got: {recovery_result:?}"
+    );
+    assert_eq!(
+        stores.persisted_status(execution_id).await,
+        ExecutionStatus::Completed,
+        "the execution must complete on successful re-delivery"
+    );
+    assert_eq!(
+        downstream.load(Ordering::SeqCst),
+        1,
+        "downstream must run exactly once after the successful re-delivery"
+    );
 }
