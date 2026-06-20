@@ -28,10 +28,10 @@ use harness::{
     assert_idempotency_store_first_writer, assert_job_dispatch_fencing,
     assert_job_dispatch_routes_by_plugin, assert_job_dispatch_routes_by_plugin_superset,
     assert_journal_visibility_and_scope, assert_live_lease_blocks_acquire,
-    assert_save_with_published_version_is_atomic, assert_stale_fencing_is_fenced_out,
-    assert_trigger_dedup_first_writer, assert_trigger_dedup_is_scoped,
-    assert_webhook_activation_and_scope, assert_webhook_system_surface,
-    assert_workflow_store_contract, skip_reason,
+    assert_resume_target_survives_queue_round_trip, assert_save_with_published_version_is_atomic,
+    assert_stale_fencing_is_fenced_out, assert_trigger_dedup_first_writer,
+    assert_trigger_dedup_is_scoped, assert_webhook_activation_and_scope,
+    assert_webhook_system_surface, assert_workflow_store_contract, skip_reason,
 };
 use rstest::rstest;
 use std::future::Future;
@@ -95,6 +95,10 @@ matrix!(
 matrix!(
     control_queue_outbox_and_fencing,
     assert_control_queue_outbox_and_fencing
+);
+matrix!(
+    resume_target_survives_queue_round_trip,
+    assert_resume_target_survives_queue_round_trip
 );
 matrix!(
     journal_visibility_and_scope,

@@ -24,8 +24,8 @@ use std::sync::Arc;
 use nebula_core::PluginKey;
 use nebula_storage_port::dto::{
     CachedRecord, ControlCommand, ControlMsg, DispatchKind, JobDispatchMsg, JournalEntry,
-    NewExecution, TriggerDedupRow, WebhookActivationRecord, WebhookMode, WorkflowRecord,
-    WorkflowVersionRecord,
+    NewExecution, ResumeTarget, TriggerDedupRow, WebhookActivationRecord, WebhookMode,
+    WorkflowRecord, WorkflowVersionRecord,
 };
 use nebula_storage_port::store::{
     ControlQueue, ExecutionJournalReader, ExecutionStore, IdempotencyGuard, IdempotencyStore,
@@ -1281,6 +1281,129 @@ pub async fn assert_control_queue_outbox_and_fencing(backend: &dyn Backend) {
         .mark_completed(&[42u8; 16], &runner_a)
         .await
         .expect("mark_completed (claimant)");
+}
+
+/// A `ControlMsg` whose `resume_target` is `Some(ResumeTarget::Webhook{..})`
+/// survives an enqueue→claim round-trip through the durable queue intact.
+///
+/// This is the structural fix for ADR-0099 W-S3a: closing the confused-deputy
+/// bug on the durable path requires the column to exist on both enqueue and
+/// claim. A `None` target also round-trips correctly (backward compatibility
+/// with legacy rows).
+///
+/// **Falsifiability**: before the `resume_target TEXT` column was added to
+/// `port_control_queue`, `claim_pending` hardcoded `resume_target: None` and
+/// the `Some(target)` assertion failed → RED.
+pub async fn assert_resume_target_survives_queue_round_trip(backend: &dyn Backend) {
+    let store = backend.execution_store().await;
+    let queue = backend.control_queue().await;
+    let s = scope_a();
+    store
+        .create(&s, "exe_rt", "wf_rt", serde_json::json!({}))
+        .await
+        .expect("create execution for resume-target round-trip");
+    let token = store
+        .acquire_lease(&s, "exe_rt", "holder", std::time::Duration::from_secs(30))
+        .await
+        .expect("acquire_lease")
+        .unwrap_or_else(|| panic!("[{}] lease for resume-target test", backend.name()));
+
+    let webhook_target = ResumeTarget::Webhook {
+        callback_id: "cb-round-trip".to_owned(),
+    };
+    let resume_msg = ControlMsg {
+        id: [77u8; 16],
+        execution_id: "exe_rt".into(),
+        command: ControlCommand::Resume,
+        scope: s.clone(),
+        w3c_traceparent: None,
+        reclaim_count: 0,
+        resume_target: Some(webhook_target.clone()),
+    };
+    let batch = TransitionBatch::builder()
+        .scope(s.clone())
+        .execution_id("exe_rt")
+        .expected_version(0)
+        .fencing(token)
+        .new_state(serde_json::json!({"s": "waiting"}))
+        .outbox(vec![resume_msg])
+        .build()
+        .expect("batch for resume-target round-trip");
+    store
+        .commit(batch)
+        .await
+        .expect("commit for resume-target round-trip");
+
+    let runner = [9u8; 16];
+    let claimed = queue
+        .claim_pending(&runner, 16)
+        .await
+        .expect("claim_pending for resume-target round-trip");
+    assert_eq!(
+        claimed.len(),
+        1,
+        "[{}] the outbox Resume must be claimable",
+        backend.name()
+    );
+    assert_eq!(
+        claimed[0].resume_target,
+        Some(webhook_target),
+        "[{}] resume_target must survive the enqueue→claim round-trip intact \
+         (kind + identity both preserved)",
+        backend.name()
+    );
+
+    // A second message with no target must also round-trip correctly
+    // (backward-compatibility: legacy rows and non-Resume commands have NULL).
+    store
+        .create(&s, "exe_rt2", "wf_rt", serde_json::json!({}))
+        .await
+        .expect("create second execution");
+    let token2 = store
+        .acquire_lease(&s, "exe_rt2", "holder", std::time::Duration::from_secs(30))
+        .await
+        .expect("acquire_lease 2")
+        .unwrap_or_else(|| panic!("[{}] lease 2 for resume-target test", backend.name()));
+    let null_msg = ControlMsg {
+        id: [78u8; 16],
+        execution_id: "exe_rt2".into(),
+        command: ControlCommand::Cancel,
+        scope: s.clone(),
+        w3c_traceparent: None,
+        reclaim_count: 0,
+        resume_target: None,
+    };
+    let batch2 = TransitionBatch::builder()
+        .scope(s.clone())
+        .execution_id("exe_rt2")
+        .expected_version(0)
+        .fencing(token2)
+        .new_state(serde_json::json!({"s": "cancelling"}))
+        .outbox(vec![null_msg])
+        .build()
+        .expect("batch 2");
+    store.commit(batch2).await.expect("commit 2");
+    // First, drain the already-claimed row above to avoid re-claiming it.
+    queue
+        .mark_completed(&[77u8; 16], &runner)
+        .await
+        .expect("mark_completed first row");
+    let claimed2 = queue
+        .claim_pending(&runner, 16)
+        .await
+        .expect("claim_pending 2");
+    assert_eq!(
+        claimed2.len(),
+        1,
+        "[{}] the null-target message must be claimable",
+        backend.name()
+    );
+    assert_eq!(
+        claimed2[0].resume_target,
+        None,
+        "[{}] a None resume_target must round-trip as None (legacy compat)",
+        backend.name()
+    );
 }
 
 /// Journal entries appended by a `commit` are readable in order, and a

@@ -239,11 +239,17 @@ impl ExecutionStore for SqliteExecutionStore {
 
         // Outbox append: raw 16-byte ULID id (no UTF-8-of-ULID hack).
         for msg in batch.outbox() {
+            let resume_target_json: Option<String> = msg
+                .resume_target
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose()
+                .map_err(|e| StorageError::Serialization(e.to_string()))?;
             sqlx::query(
                 "INSERT INTO port_control_queue \
                  (id, execution_id, workspace_id, org_id, command, status, \
-                  w3c_traceparent, reclaim_count) \
-                 VALUES (?, ?, ?, ?, ?, 'Pending', ?, ?)",
+                  w3c_traceparent, reclaim_count, resume_target) \
+                 VALUES (?, ?, ?, ?, ?, 'Pending', ?, ?, ?)",
             )
             .bind(msg.id.as_slice())
             .bind(&msg.execution_id)
@@ -252,6 +258,7 @@ impl ExecutionStore for SqliteExecutionStore {
             .bind(msg.command.as_str())
             .bind(msg.w3c_traceparent.as_deref())
             .bind(i64::from(msg.reclaim_count))
+            .bind(resume_target_json)
             .execute(&mut *tx)
             .await
             .map_err(conn_err)?;
