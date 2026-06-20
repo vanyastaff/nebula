@@ -2738,6 +2738,131 @@ impl WorkflowEngine {
         outcome
     }
 
+    /// Recover a no-live-owner **`Running`** execution by arming its signal
+    /// waits under a freshly-acquired lease — the structural sibling of
+    /// [`Self::satisfy_signal_waits`] for the crash-recovery path (ADR-0099
+    /// W-S3b).
+    ///
+    /// A signal wait parked WITH a timeout keeps its execution `Running` (the
+    /// timeout timer lives on the parking runner's `wait_heap`). When that
+    /// runner crashes, its in-process frontier loop is gone but the durable row
+    /// stays `Running` with the wait node still parked. A `Resume` for such an
+    /// execution reaches [`WorkflowEngine::resume_live`] with no live
+    /// `RunningEntry` on this runner ([`ResumeDelivery::NoLiveEntry`]) — either
+    /// the parking runner crashed with a now-TTL-expired lease, or the Resume
+    /// landed on a different runner than the (possibly still live) owner. This
+    /// method distinguishes the two and recovers only the genuinely no-live case.
+    ///
+    /// The lease IS the dead-vs-live oracle, exactly as in `satisfy_signal_waits`:
+    ///
+    /// - [`EngineError::Leased`] — the lease is still LIVE elsewhere, so a real
+    ///   owner is actively driving this execution. We must NOT touch the row;
+    ///   the caller defers (B1 reclaim redelivers once the lease frees, or the
+    ///   live owner's own resume channel handles it). This is the cross-runner /
+    ///   not-yet-crashed case.
+    /// - lease acquired (free, or TTL-expired ⇒ the parking runner crashed and
+    ///   no owner remains) — proceed. We arm the matching signal wait(s) under
+    ///   the owned lease via the SAME [`Self::satisfy_signal_waits_under_lease`]
+    ///   inner the `Paused` path uses, so the version-CAS + fencing commit and
+    ///   the kind-aware [`arm_signal_waits_under_lease`] targeting are identical.
+    ///   A targeted recovery (`Some(resume_target)`) arms ONLY the matching
+    ///   node; an untargeted one arms every signal wait. The caller then
+    ///   re-drives via `drive_armed_resume`, whose Phase-0b completes the armed
+    ///   wait on the main port.
+    ///
+    /// The own-the-lease-before-read-modify-write invariant (#856) is preserved:
+    /// the lease is held across the whole inner commit and released best-effort
+    /// only afterwards (mirroring `satisfy_signal_waits`), so a stale token can
+    /// never be manufactured from persisted metadata.
+    ///
+    /// # Security
+    ///
+    /// Only a genuine `Resume` calls this method — `dispatch_resume`'s
+    /// `NoLiveEntry` arm. A plain crash-recovery re-drive (the worker sink /
+    /// `dispatch_start` / `dispatch_restart`) re-enters `resume_execution`
+    /// WITHOUT arming, so it re-parks the wait rather than auto-completing it.
+    /// That is the same structural discriminator `satisfy_signal_waits`
+    /// enforces for the `Paused` case, extended to the `Running` case here.
+    ///
+    /// # Returns / Errors
+    ///
+    /// Same [`SatisfyOutcome`] / [`EngineError`] contract as
+    /// [`Self::satisfy_signal_waits`] (it shares the inner): `Satisfied(n)` /
+    /// `NothingToSatisfy` / `ExecutionNotResumable` on success; `Leased` (live
+    /// owner — defer) / `PlanningFailed` / `CasConflict` / `CheckpointFailed`
+    /// on error.
+    pub(crate) async fn satisfy_running_signal_waits(
+        &self,
+        scope: &Scope,
+        execution_id: ExecutionId,
+        resume_target: Option<&ResumeTarget>,
+    ) -> Result<SatisfyOutcome, EngineError> {
+        let Some(stores) = &self.stores else {
+            // Library mode (no storage) — signal-park recovery is a no-op.
+            return Ok(SatisfyOutcome::NothingToSatisfy);
+        };
+
+        let id = execution_id.to_string();
+        let holder = self.instance_id.to_string();
+
+        // Acquire the execution lease before the read-modify-write — the
+        // dead-vs-live oracle. A free or TTL-expired lease (the parking runner
+        // crashed) is acquirable here; a lease still LIVE elsewhere returns
+        // `None` ⇒ `Leased`, so the caller defers and lets the real owner drive.
+        let lease_token = stores
+            .execution
+            .acquire_lease(scope, &id, &holder, self.lease_ttl)
+            .await
+            .map_err(|e| {
+                EngineError::PlanningFailed(format!(
+                    "satisfy_running_signal_waits: acquire lease for {execution_id}: {e}"
+                ))
+            })?;
+        let Some(lease_token) = lease_token else {
+            tracing::warn!(
+                %execution_id,
+                %holder,
+                "satisfy_running_signal_waits: execution lease held by another runner \
+                 (live owner elsewhere); deferring Resume recovery (will redeliver)"
+            );
+            return Err(EngineError::Leased {
+                execution_id,
+                holder,
+            });
+        };
+
+        // Lease acquired (crashed owner / no live frontier) — recover under
+        // mutual exclusion through the SAME inner the Paused path uses.
+        let outcome = self
+            .satisfy_signal_waits_under_lease(
+                stores,
+                scope,
+                execution_id,
+                &id,
+                lease_token,
+                resume_target,
+            )
+            .await;
+
+        // Release the lease best-effort (mirror `satisfy_signal_waits`): the
+        // commit already wrote the new fencing generation, so a release failure
+        // leaves the lease to expire at TTL (the correct fail-safe).
+        if let Err(e) = stores
+            .execution
+            .release_lease(scope, &id, lease_token)
+            .await
+        {
+            tracing::warn!(
+                %execution_id,
+                error = %e,
+                "satisfy_running_signal_waits: best-effort lease release failed \
+                 (will expire at TTL)"
+            );
+        }
+
+        outcome
+    }
+
     /// Inner read-modify-write under an already-held lease.
     ///
     /// Extracted so the lease release in `satisfy_signal_waits` is guaranteed

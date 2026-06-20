@@ -1406,6 +1406,193 @@ pub async fn assert_resume_target_survives_queue_round_trip(backend: &dyn Backen
     );
 }
 
+/// Enqueue a single control row of `command` and drive its `reclaim_count`
+/// up to `target_count` by repeated claim → reclaim cycles, leaving it
+/// `Processing` (just-claimed) at `reclaim_count == target_count`.
+///
+/// Each cycle claims the (Pending) row, then sweeps with a budget above the
+/// current count so the REDELIVER branch fires (`Processing → Pending`,
+/// `reclaim_count += 1`). The cutoff is wall-clock (`chrono`), so — like the
+/// `refresh_claim_*` reclaim tests for this same layer — a short real sleep
+/// makes the just-claimed row reliably stale; `tokio::time::pause` cannot drive
+/// the SQL backends' `chrono::Utc::now()` cutoff. Returns the row id so the
+/// caller can keep claiming it.
+async fn enqueue_and_climb_reclaim_count(
+    backend: &dyn Backend,
+    command: ControlCommand,
+    target_count: u32,
+) -> [u8; 16] {
+    let queue = backend.control_queue().await;
+    let s = scope_a();
+    let row_id = [
+        0xC1,
+        0xA1,
+        0x33,
+        0x44,
+        0x55,
+        0x66,
+        0x77,
+        0x88,
+        command as u8,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+    ];
+    let msg = ControlMsg {
+        id: row_id,
+        execution_id: "exe_reclaim".into(),
+        command,
+        scope: s.clone(),
+        w3c_traceparent: None,
+        reclaim_count: 0,
+        resume_target: None,
+    };
+    queue.enqueue(&msg).await.expect("enqueue reclaim row");
+
+    let runner = [0xCC_u8; 16];
+    for cycle in 0..target_count {
+        let claimed = queue
+            .claim_pending(&runner, 16)
+            .await
+            .expect("claim during climb");
+        assert!(
+            claimed.iter().any(|m| m.id == row_id),
+            "[{}] the reclaim row must be claimable on climb cycle {cycle}",
+            backend.name()
+        );
+        // Make the just-claimed row stale against the wall-clock cutoff.
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        // Budget strictly above the current count so this row REDELIVERS
+        // (Processing → Pending, reclaim_count += 1) rather than exhausting.
+        queue
+            .reclaim_stuck(std::time::Duration::ZERO, target_count + 1)
+            .await
+            .expect("reclaim during climb");
+    }
+    // Re-claim so the assertion sweep sees it `Processing` at the target count.
+    let claimed = queue
+        .claim_pending(&runner, 16)
+        .await
+        .expect("final claim at target count");
+    let row = claimed
+        .iter()
+        .find(|m| m.id == row_id)
+        .unwrap_or_else(|| panic!("[{}] reclaim row must be re-claimable", backend.name()));
+    assert_eq!(
+        row.reclaim_count,
+        target_count,
+        "[{}] the row must reach reclaim_count == {target_count} before the assertion sweep",
+        backend.name()
+    );
+    row_id
+}
+
+/// **ADR-0099 W-S3b** — a `command = 'Resume'` row at `reclaim_count == max`,
+/// past `reclaim_after`, is EXEMPT from the reclaim budget: the exhaust sweep
+/// must NOT Fail it; it stays redeliverable (`Processing → Pending`) so a later
+/// claim still delivers it. Engine liveness + the wait's own timeout are the
+/// only terminal authorities for a parked Resume.
+///
+/// Observable through the trait alone: after the assertion sweep, a fresh
+/// `claim_pending` still returns the Resume row (a Failed row is terminal and
+/// would never be claimable again).
+///
+/// **Falsifiability**: revert the `command <> 'Resume'` exhaust guard (and its
+/// `OR command = 'Resume'` redeliver complement) → the row at `reclaim_count >=
+/// max` is force-Failed → the post-sweep `claim_pending` finds nothing → the
+/// "still claimable" assertion fails → RED.
+pub async fn assert_resume_row_exempt_from_reclaim_budget(backend: &dyn Backend) {
+    let max_reclaim_count = 2;
+    let row_id =
+        enqueue_and_climb_reclaim_count(backend, ControlCommand::Resume, max_reclaim_count).await;
+    let queue = backend.control_queue().await;
+
+    // The assertion sweep: the Resume row is now `Processing` at
+    // `reclaim_count == max`, past `reclaim_after`. The budget would normally
+    // exhaust it (→ Failed); the exemption must redeliver it instead.
+    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    let outcome = queue
+        .reclaim_stuck(std::time::Duration::ZERO, max_reclaim_count)
+        .await
+        .expect("assertion reclaim sweep");
+    assert_eq!(
+        outcome.exhausted,
+        0,
+        "[{}] a Resume row at reclaim_count == max must NOT be exhausted (Failed); \
+         it is budget-exempt",
+        backend.name()
+    );
+
+    // The exempt Resume stays redeliverable: a fresh claim still delivers it.
+    let runner = [0xAB; 16];
+    let claimed = queue
+        .claim_pending(&runner, 16)
+        .await
+        .expect("claim after the assertion sweep");
+    let row = claimed.iter().find(|m| m.id == row_id);
+    assert!(
+        row.is_some(),
+        "[{}] a budget-exempt Resume row must stay redeliverable after the exhaust \
+         sweep (still claimable), not be Failed",
+        backend.name()
+    );
+    assert!(
+        row.is_some_and(|m| m.reclaim_count > max_reclaim_count),
+        "[{}] the redelivered Resume row's reclaim_count must keep climbing past max \
+         (observable stuck-Resume signal), got {:?}",
+        backend.name(),
+        row.map(|m| m.reclaim_count)
+    );
+}
+
+/// **ADR-0099 W-S3b** — the exemption is Resume-ONLY: a non-Resume row
+/// (`Start` / `Cancel`) at `reclaim_count >= max`, past `reclaim_after`, still
+/// EXHAUSTS to `Failed` (the budget remains the terminal authority for rows that
+/// do real work and can poison-loop).
+///
+/// Observable through the trait alone: after the assertion sweep, a fresh
+/// `claim_pending` finds nothing (a Failed row is terminal, never re-claimable).
+///
+/// **Falsifiability**: widen the exemption to cover non-Resume commands → the
+/// `Start` row at `reclaim_count >= max` redelivers instead of failing → the
+/// post-sweep `claim_pending` returns it → the "must be Failed (not claimable)"
+/// assertion fails → RED.
+pub async fn assert_non_resume_row_still_exhausts(backend: &dyn Backend) {
+    let max_reclaim_count = 2;
+    let row_id =
+        enqueue_and_climb_reclaim_count(backend, ControlCommand::Start, max_reclaim_count).await;
+    let queue = backend.control_queue().await;
+
+    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    let outcome = queue
+        .reclaim_stuck(std::time::Duration::ZERO, max_reclaim_count)
+        .await
+        .expect("assertion reclaim sweep");
+    assert_eq!(
+        outcome.exhausted,
+        1,
+        "[{}] a non-Resume row at reclaim_count >= max must be exhausted (Failed) — \
+         the exemption is Resume-only",
+        backend.name()
+    );
+
+    // A Failed row is terminal: it must NOT be claimable again.
+    let runner = [0xCD; 16];
+    let claimed = queue
+        .claim_pending(&runner, 16)
+        .await
+        .expect("claim after the assertion sweep");
+    assert!(
+        claimed.iter().all(|m| m.id != row_id),
+        "[{}] an exhausted non-Resume row must be Failed (terminal), never re-claimable",
+        backend.name()
+    );
+}
+
 /// Journal entries appended by a `commit` are readable in order, and a
 /// cross-tenant read yields an empty journal (never another tenant's
 /// entries).

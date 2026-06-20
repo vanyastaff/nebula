@@ -35,9 +35,14 @@
 //!   loop's resume channel via `WorkflowEngine::resume_live` (W-S2b) and gates the ack on the
 //!   loop's DURABLE self-arm (P1#1): the loop checkpoints the arm under its own lease and replies
 //!   with the outcome. The row is acked only when the arm durably landed (`Armed`) or there was
-//!   nothing to arm (`NothingToArm`); a failed arm checkpoint, a gone loop, an ack timeout, or no
-//!   live entry (cross-runner / just-paused) → `Deferred` for B1 reclaim, each with a distinct
-//!   `ResumeDeferred` reason. Redelivery is idempotent.
+//!   nothing to arm (`NothingToArm`); a failed arm checkpoint, a gone loop, or an ack timeout →
+//!   `Deferred` for B1 reclaim, each with a distinct `ResumeDeferred` reason. No live entry on
+//!   this runner (`NoLiveEntry` — a crashed parking runner with a TTL-expired lease, or
+//!   cross-runner) is RECOVERED via `recover_running_resume` (W-S3b): the execution lease is the
+//!   dead-vs-live oracle — `satisfy_running_signal_waits` arms the matching wait under a
+//!   free/expired lease and re-drives, or `Deferred`s when a live owner holds the lease elsewhere;
+//!   a recovery against an absent/corrupt row is ack-dropped (no forever-redelivery). Redelivery
+//!   is idempotent.
 //!
 //! - **Cancel / Terminate** always signal the engine's cancel registry (except for orphan commands,
 //!   which are [`ControlDispatchError::Rejected`]). The underlying
@@ -276,6 +281,174 @@ impl EngineControlDispatch {
             },
         }
     }
+
+    /// Recover a no-live-owner `Running` execution whose `Resume` reached
+    /// [`Self::dispatch_resume`]'s `NoLiveEntry` arm (ADR-0099 W-S3b).
+    ///
+    /// `NoLiveEntry` means the live-frontier resume channel found no
+    /// `RunningEntry` on this runner — either the parking runner crashed with a
+    /// now-TTL-expired lease, or the Resume landed on a different runner than
+    /// the (possibly still live) owner. [`WorkflowEngine::satisfy_running_signal_waits`]
+    /// uses the execution lease as the dead-vs-live oracle: it acquires the
+    /// lease (free / TTL-expired ⇒ crashed, no owner) and arms the matching
+    /// signal wait(s) under it, or returns [`EngineError::Leased`] (a real owner
+    /// is alive elsewhere ⇒ defer). On a successful arm we re-drive via
+    /// [`Self::drive_armed_resume`], whose Phase-0b completes the armed wait and
+    /// which itself Defers on a non-terminal drive (keeping the Resume
+    /// redeliverable when the lease holder is a still-crashed runner).
+    ///
+    /// Outcome → control-queue ack mapping:
+    ///
+    /// - `Satisfied` (recovered) → `drive_armed_resume` (ack on terminal,
+    ///   `Deferred` on a non-terminal drive).
+    /// - `NothingToSatisfy` → ack: no matching parked wait to recover (already
+    ///   armed / completed / a different node) — an idempotent no-op.
+    /// - `ExecutionNotResumable` → ack: a concurrent cancel/terminate moved the
+    ///   execution off a resumable status under the lease; the Resume is moot.
+    /// - `Leased` → `Deferred`: a live owner elsewhere — B1 reclaim redelivers.
+    /// - any other error → re-read the persisted status:
+    ///   - row missing (`Ok(None)`) → **ack-drop**: a forged / garbage / corrupt
+    ///     id, or a row deleted mid-recovery, is moot. Acking (not `Deferred`)
+    ///     closes the only forever-redeliver leak (the row would otherwise cycle
+    ///     through B1 reclaim forever against a non-existent execution).
+    ///   - status unreadable / unparseable (`Err`) → **ack-drop** for the same
+    ///     reason: a corrupt row can never be recovered, so redelivering it
+    ///     forever is pure churn.
+    ///   - terminal / `Cancelling` → ack: a concurrent actor owns the outcome.
+    ///   - still non-terminal → `Deferred`: the wait may still be pending; B1
+    ///     reclaim redelivers.
+    async fn recover_running_resume(
+        &self,
+        scope: &Scope,
+        execution_id: ExecutionId,
+        resume_target: Option<ResumeTarget>,
+    ) -> Result<(), ControlDispatchError> {
+        match self
+            .engine
+            .satisfy_running_signal_waits(scope, execution_id, resume_target.as_ref())
+            .await
+        {
+            Ok(SatisfyOutcome::Satisfied(recovered_count)) => {
+                tracing::info!(
+                    %execution_id,
+                    recovered_count,
+                    "dispatch_resume: no-live-owner recovery armed the signal wait(s) under a \
+                     dead/expired lease; driving the recovered execution"
+                );
+                // Phase-0b completes the armed wait; a non-terminal drive Defers
+                // (keeps the Resume redeliverable for B1 reclaim).
+                self.drive_armed_resume(scope, execution_id).await
+            },
+            Ok(SatisfyOutcome::NothingToSatisfy) => {
+                tracing::info!(
+                    %execution_id,
+                    "dispatch_resume: no-live-owner recovery found no matching parked signal \
+                     wait to arm (already armed / completed / different node); acking as \
+                     idempotent no-op"
+                );
+                Ok(())
+            },
+            Ok(SatisfyOutcome::ExecutionNotResumable) => {
+                tracing::info!(
+                    %execution_id,
+                    "dispatch_resume: execution left a resumable status before no-live-owner \
+                     recovery could arm (concurrent cancel/terminate); acking Resume as \
+                     idempotent no-op"
+                );
+                Ok(())
+            },
+            Err(EngineError::Leased { ref holder, .. }) => {
+                // A live owner holds the lease elsewhere — this is NOT a crashed
+                // runner. Do not double-drive; defer so B1 reclaim redelivers
+                // once the lease frees (or the owner's own resume channel
+                // handles it). Mirrors the `Paused` Leased arm.
+                // Distinct, machine-greppable target so an operator can alert on
+                // a HIGH RATE of recovery deferrals for one `execution_id` — the
+                // budget-blind, non-resolving Resume the reclaim exemption made
+                // invisible to the bulk sweep counts (ADR-0099 W-S3b
+                // observability).
+                tracing::warn!(
+                    target: "engine::wait::resume_recovery",
+                    %execution_id,
+                    %holder,
+                    "dispatch_resume: no-live-owner recovery deferred — execution lease held \
+                     by a live owner elsewhere; leaving control-queue row for B1 reclaim"
+                );
+                self.engine.emit_event(ExecutionEvent::ResumeDeferred {
+                    execution_id,
+                    reason: format!("recovery deferred: lease held by live owner {holder}"),
+                });
+                Err(ControlDispatchError::Deferred(format!(
+                    "execution {execution_id} no-live-owner recovery: lease held by live owner \
+                     {holder}; Resume deferred for B1 reclaim"
+                )))
+            },
+            Err(e) => match self.read_status(scope, execution_id).await {
+                // Row missing: a forged / garbage / corrupt id, or a row deleted
+                // mid-recovery. Ack-DROP (not Deferred) so the row is consumed
+                // rather than redelivered forever against a non-existent
+                // execution — the only forever-redeliver leak this path closes.
+                Ok(None) => {
+                    tracing::warn!(
+                        %execution_id,
+                        recovery_error = %e,
+                        "dispatch_resume: no-live-owner recovery failed and the execution row \
+                         is absent (forged/garbage id or deleted mid-recovery); ack-dropping \
+                         the Resume to avoid forever-redelivery"
+                    );
+                    Ok(())
+                },
+                Ok(Some(status))
+                    if status.is_terminal() || matches!(status, ExecutionStatus::Cancelling) =>
+                {
+                    tracing::info!(
+                        %execution_id,
+                        %status,
+                        recovery_error = %e,
+                        "dispatch_resume: no-live-owner recovery did not land but execution is \
+                         now {status}; acking as idempotent"
+                    );
+                    Ok(())
+                },
+                Ok(Some(status)) => {
+                    // Same distinct target as the live-owner defer above: a
+                    // sustained rate here flags a non-resolving Resume that the
+                    // reclaim budget no longer terminalizes.
+                    tracing::warn!(
+                        target: "engine::wait::resume_recovery",
+                        %execution_id,
+                        %status,
+                        recovery_error = %e,
+                        "dispatch_resume: no-live-owner recovery did not land and execution is \
+                         still non-terminal ({status}); deferring Resume for B1 reclaim"
+                    );
+                    self.engine.emit_event(ExecutionEvent::ResumeDeferred {
+                        execution_id,
+                        reason: format!("recovery did not land ({e}); status={status}"),
+                    });
+                    Err(ControlDispatchError::Deferred(format!(
+                        "execution {execution_id} no-live-owner recovery did not land ({e}); \
+                         status={status}; Resume deferred for B1 reclaim"
+                    )))
+                },
+                // Status unreadable / unparseable: a corrupt row can never be
+                // recovered, so ack-DROP rather than churn it through reclaim
+                // forever (same forever-redeliver-leak closure as the missing-row
+                // arm).
+                Err(read_err) => {
+                    tracing::warn!(
+                        %execution_id,
+                        recovery_error = %e,
+                        read_error = %read_err,
+                        "dispatch_resume: no-live-owner recovery failed and the status re-read \
+                         is unreadable/unparseable (corrupt row); ack-dropping the Resume to \
+                         avoid forever-redelivery"
+                    );
+                    Ok(())
+                },
+            },
+        }
+    }
 }
 
 #[async_trait]
@@ -312,10 +485,35 @@ impl ControlDispatch for EngineControlDispatch {
         execution_id: ExecutionId,
         resume_target: Option<ResumeTarget>,
     ) -> Result<(), ControlDispatchError> {
-        match self.read_status(scope, execution_id).await? {
-            None => Err(ControlDispatchError::Rejected(format!(
-                "execution {execution_id} not found — resume command orphaned"
-            ))),
+        // A Resume is attacker-facing (a webhook/approval callback) and does no
+        // work of its own. Unlike Start/Cancel/Restart — whose orphan is a
+        // producer bug surfaced as `Rejected` (→ Failed) — a Resume to an
+        // unknown / unreadable execution is MOOT: a forged, garbage, or corrupt
+        // id can never resume anything. Ack-DROP it (`Ok(())`, the row is
+        // consumed) rather than `Rejected` (which would record a noisy Failed
+        // row) or any error that redelivers — this closes the only
+        // forever-redeliver leak on the Resume path (ADR-0099 W-S3b).
+        let status = match self.read_status(scope, execution_id).await {
+            Ok(Some(status)) => status,
+            Ok(None) => {
+                tracing::warn!(
+                    %execution_id,
+                    "dispatch_resume: execution not found (forged/garbage id or pruned row); \
+                     ack-dropping the moot Resume"
+                );
+                return Ok(());
+            },
+            Err(read_err) => {
+                tracing::warn!(
+                    %execution_id,
+                    read_error = %read_err,
+                    "dispatch_resume: execution status unreadable/unparseable (corrupt row); \
+                     ack-dropping the moot Resume to avoid forever-redelivery"
+                );
+                return Ok(());
+            },
+        };
+        match status {
             // `Running`: a signal wait parked with a `timeout` keeps the row
             // `Running` with a LIVE frontier loop on the timeout timer (W-S2b).
             // The durable satisfy-CAS path cannot be used here — it would
@@ -334,11 +532,22 @@ impl ControlDispatch for EngineControlDispatch {
             // `ResumeDeferred` reason so the cause is observable. Deferring is
             // always safe: Resume redelivery is idempotent.
             //
-            // No-live-owner recovery (`NoLiveEntry`) keeps today's behavior:
-            // defer for B1 reclaim. Recovering a `Running` execution that has no
-            // live loop on ANY runner is a future (W-S3) slice.
-            Some(ExecutionStatus::Running) => {
-                match self.engine.resume_live(execution_id, resume_target).await {
+            // No-live-owner recovery (`NoLiveEntry`): a `Running` execution
+            // with no live loop on THIS runner is recovered via
+            // `recover_running_resume` — the execution lease is the
+            // dead-vs-live oracle (a free/TTL-expired lease ⇒ the parking
+            // runner crashed ⇒ arm under the dead lease and re-drive; a live
+            // lease elsewhere ⇒ a real owner is driving ⇒ defer). Only a
+            // genuine Resume reaches this arm and recovers; a plain
+            // crash-recovery re-drive (worker sink / `dispatch_start` /
+            // `dispatch_restart`) re-enters `resume_execution` WITHOUT arming,
+            // so it re-parks rather than auto-completing (ADR-0099 W-S3b).
+            ExecutionStatus::Running => {
+                match self
+                    .engine
+                    .resume_live(execution_id, resume_target.clone())
+                    .await
+                {
                     ResumeDelivery::Acked(ResumeOutcome::Armed { count }) => {
                         tracing::info!(
                             %execution_id,
@@ -370,22 +579,23 @@ impl ControlDispatch for EngineControlDispatch {
                         execution_id,
                         "live frontier did not confirm the self-arm within the ack timeout",
                     ),
-                    ResumeDelivery::NoLiveEntry => Self::defer_running_resume(
-                        &self.engine,
-                        execution_id,
-                        "Running with no live frontier on this runner (cross-runner or just-paused)",
-                    ),
+                    ResumeDelivery::NoLiveEntry => {
+                        // No live loop on this runner. Recover via the lease
+                        // dead-vs-live oracle (crashed parking runner with a
+                        // TTL-expired lease, OR cross-runner) instead of an
+                        // unconditional defer (ADR-0099 W-S3b).
+                        self.recover_running_resume(scope, execution_id, resume_target)
+                            .await
+                    },
                 }
             },
-            Some(
-                ExecutionStatus::Cancelling
-                | ExecutionStatus::Completed
-                | ExecutionStatus::Failed
-                | ExecutionStatus::Cancelled
-                | ExecutionStatus::TimedOut,
-            ) => Ok(()),
+            ExecutionStatus::Cancelling
+            | ExecutionStatus::Completed
+            | ExecutionStatus::Failed
+            | ExecutionStatus::Cancelled
+            | ExecutionStatus::TimedOut => Ok(()),
             // `Created`: no signal-driven waits exist yet — drive directly.
-            Some(ExecutionStatus::Created) => self.drive(scope, execution_id).await,
+            ExecutionStatus::Created => self.drive(scope, execution_id).await,
             // `Paused`: the execution is suspended awaiting an external signal.
             // Arm all signal-driven waits (Waiting{next_attempt_at == None}
             // → Waiting{next_attempt_at = now}) via durable CAS BEFORE re-driving;
@@ -414,7 +624,7 @@ impl ControlDispatch for EngineControlDispatch {
             //   Acking unconditionally here would permanently drop the Resume when a
             //   lease TTL-expiry causes a FencedOut (surfaced as CasConflict) while
             //   the execution is still Paused — bounded lost-Resume.
-            Some(ExecutionStatus::Paused) => {
+            ExecutionStatus::Paused => {
                 match self
                     .engine
                     .satisfy_signal_waits(scope, execution_id, resume_target.as_ref())

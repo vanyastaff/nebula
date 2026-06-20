@@ -222,7 +222,15 @@ impl ControlQueue for InMemoryControlQueue {
             if !stale {
                 continue;
             }
-            if q.reclaim_count >= max_reclaim_count {
+            // A `Resume` row is EXEMPT from the exhaust budget (ADR-0099 W-S3b):
+            // a Resume does no work of its own and cannot poison-loop, so the
+            // budget must never force-Fail it — engine liveness (`acquire_lease`)
+            // and the wait's own timeout are the only terminal authorities. It
+            // keeps redelivering past `reclaim_count >= max` (mirrors the SQL
+            // backends' `command <> 'Resume'` exhaust guard + `OR command =
+            // 'Resume'` redeliver widening) rather than wedging in `Processing`.
+            let is_resume = q.msg.command == nebula_storage_port::dto::ControlCommand::Resume;
+            if q.reclaim_count >= max_reclaim_count && !is_resume {
                 q.status = "Failed".to_string();
                 q.error_message = Some(format!(
                     "reclaim exhausted: presumed dead after {} reclaims",
