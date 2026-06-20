@@ -439,6 +439,7 @@ async fn cross_tenant_control_enqueue_is_stamped_with_bound_scope() {
         scope: scope_b(), // forged target tenant
         w3c_traceparent: None,
         reclaim_count: 0,
+        resume_target: None,
     };
     tenant_a.enqueue(&attack).await.expect("A enqueue");
 

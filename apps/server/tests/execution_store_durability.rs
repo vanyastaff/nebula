@@ -73,6 +73,7 @@ async fn enqueue_and_close(db_path: &str) -> String {
         scope: test_scope(),
         w3c_traceparent: None,
         reclaim_count: 0,
+        resume_target: None,
     };
     control_queue
         .enqueue(&msg)
@@ -165,6 +166,7 @@ async fn in_memory_control_queue_does_not_survive_recreation() {
         scope: test_scope(),
         w3c_traceparent: None,
         reclaim_count: 0,
+        resume_target: None,
     };
     queue_1
         .enqueue(&msg)

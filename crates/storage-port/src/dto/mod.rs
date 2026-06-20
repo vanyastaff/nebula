@@ -16,7 +16,7 @@ mod trigger_dedup;
 mod webhook;
 mod workflow;
 
-pub use control::{ControlCommand, ControlMsg};
+pub use control::{ControlCommand, ControlMsg, ResumeTarget};
 pub use execution::{ExecutionRecord, NewExecution};
 pub use idempotency::CachedRecord;
 pub use identity::{

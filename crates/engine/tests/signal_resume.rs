@@ -481,6 +481,7 @@ async fn dispatch_resume_satisfies_signal_wait_and_drives_to_completed() {
         .dispatch_resume(
             &nebula_engine::store_seam::single_tenant_scope(),
             execution_id,
+            None,
         )
         .await
         .expect("dispatch_resume must satisfy the signal wait and drive to completion");
@@ -570,6 +571,7 @@ async fn dispatch_start_redelivery_does_not_satisfy_signal_wait() {
         .dispatch_resume(
             &nebula_engine::store_seam::single_tenant_scope(),
             execution_id,
+            None,
         )
         .await
         .expect("genuine dispatch_resume must satisfy the wait and complete the execution");
@@ -620,6 +622,7 @@ async fn dispatch_resume_is_idempotent_after_signal_wait_satisfied() {
         .dispatch_resume(
             &nebula_engine::store_seam::single_tenant_scope(),
             execution_id,
+            None,
         )
         .await
         .expect("first dispatch_resume must satisfy the wait");
@@ -635,6 +638,7 @@ async fn dispatch_resume_is_idempotent_after_signal_wait_satisfied() {
         .dispatch_resume(
             &nebula_engine::store_seam::single_tenant_scope(),
             execution_id,
+            None,
         )
         .await
         .expect("second dispatch_resume on a Completed execution must be idempotent");
@@ -821,6 +825,7 @@ async fn dispatch_resume_satisfies_all_signal_waits_in_one_pass() {
         .dispatch_resume(
             &nebula_engine::store_seam::single_tenant_scope(),
             execution_id,
+            None,
         )
         .await
         .expect("dispatch_resume must satisfy all signal waits in one pass");
@@ -878,6 +883,7 @@ async fn dispatch_resume_on_created_execution_still_completes() {
         .dispatch_resume(
             &nebula_engine::store_seam::single_tenant_scope(),
             execution_id,
+            None,
         )
         .await
         .expect("dispatch_resume on a Created execution must not error");
@@ -962,6 +968,7 @@ async fn dispatch_restart_does_not_satisfy_signal_wait() {
         .dispatch_resume(
             &nebula_engine::store_seam::single_tenant_scope(),
             execution_id,
+            None,
         )
         .await
         .expect("genuine dispatch_resume must satisfy the wait and complete the execution");
@@ -1019,6 +1026,7 @@ async fn two_sequential_resumes_produce_exactly_one_downstream_run() {
         .dispatch_resume(
             &nebula_engine::store_seam::single_tenant_scope(),
             execution_id,
+            None,
         )
         .await
         .expect("first Resume must satisfy the wait");
@@ -1030,6 +1038,7 @@ async fn two_sequential_resumes_produce_exactly_one_downstream_run() {
         .dispatch_resume(
             &nebula_engine::store_seam::single_tenant_scope(),
             execution_id,
+            None,
         )
         .await
         .expect("second Resume must be idempotent");
@@ -1106,7 +1115,10 @@ async fn dispatch_resume_defers_when_execution_lease_is_held() {
     // `satisfy_signal_waits` will find the lease busy and return `Leased`.
     // `dispatch_resume` must propagate this as `ControlDispatchError::Deferred`
     // so the consumer leaves the control-queue row in `Processing` for B1 reclaim.
-    let result = harness.dispatch.dispatch_resume(&scope, execution_id).await;
+    let result = harness
+        .dispatch
+        .dispatch_resume(&scope, execution_id, None)
+        .await;
     assert!(
         matches!(result, Err(ControlDispatchError::Deferred(_))),
         "dispatch_resume must return Deferred when the execution lease is held; got {result:?}"
@@ -1136,7 +1148,7 @@ async fn dispatch_resume_defers_when_execution_lease_is_held() {
     // The B1 reclaim path would redeliver the Resume command.  Simulate redelivery.
     harness
         .dispatch
-        .dispatch_resume(&scope, execution_id)
+        .dispatch_resume(&scope, execution_id, None)
         .await
         .expect("redelivered dispatch_resume must succeed after the lease is released");
 
@@ -1197,7 +1209,7 @@ async fn satisfy_signal_waits_releases_lease_after_commit() {
     // lease, drives (Phase-0b completes the node).
     harness
         .dispatch
-        .dispatch_resume(&scope, execution_id)
+        .dispatch_resume(&scope, execution_id, None)
         .await
         .expect("first dispatch_resume must succeed");
     assert_eq!(
@@ -1210,7 +1222,7 @@ async fn satisfy_signal_waits_releases_lease_after_commit() {
     // return Deferred — it returns Ok(()) proving the lease was released.
     harness
         .dispatch
-        .dispatch_resume(&scope, execution_id)
+        .dispatch_resume(&scope, execution_id, None)
         .await
         .expect("duplicate dispatch_resume on Completed must be a no-op, not Deferred");
 
@@ -1454,7 +1466,7 @@ async fn dispatch_resume_defers_when_satisfy_commit_is_fenced_out_and_execution_
     // ── Phase 3: arm the interceptor and call dispatch_resume ─────────────────
     interceptor.arm();
 
-    let result = dispatch2.dispatch_resume(&scope, execution_id).await;
+    let result = dispatch2.dispatch_resume(&scope, execution_id, None).await;
     assert!(
         matches!(result, Err(ControlDispatchError::Deferred(_))),
         "dispatch_resume must return Deferred when satisfy_signal_waits is FencedOut \
@@ -1477,7 +1489,7 @@ async fn dispatch_resume_defers_when_satisfy_commit_is_fenced_out_and_execution_
     //
     // The interceptor self-disarmed after the first intercept, so this
     // redelivery goes through to the real store and the wait is properly satisfied.
-    let redeliver_result = dispatch2.dispatch_resume(&scope, execution_id).await;
+    let redeliver_result = dispatch2.dispatch_resume(&scope, execution_id, None).await;
     assert!(
         redeliver_result.is_ok(),
         "redelivered dispatch_resume must succeed after the interceptor disarms; \
@@ -1742,7 +1754,7 @@ async fn satisfy_signal_waits_skips_when_execution_cancelled_under_lease() {
     // ── Phase 3: arm the injection and call dispatch_resume ───────────────────
     interceptor.arm();
 
-    let result = dispatch2.dispatch_resume(&scope, execution_id).await;
+    let result = dispatch2.dispatch_resume(&scope, execution_id, None).await;
     assert!(
         result.is_ok(),
         "dispatch_resume must ack (Ok) when the execution was cancelled before satisfy; \
@@ -1947,7 +1959,7 @@ async fn satisfied_signal_wait_activates_main_port_only_not_error_branch() {
 
     // Resume: satisfy arms the wait, Phase-0b completes it on the main port.
     dispatch
-        .dispatch_resume(&scope, execution_id)
+        .dispatch_resume(&scope, execution_id, None)
         .await
         .expect("dispatch_resume must succeed");
 
@@ -2273,7 +2285,7 @@ async fn armed_signal_wait_is_completed_by_reclaim_drive_not_lost() {
     // execution when the lease holder is a crashed runner whose TTL has not
     // expired yet (P1: keep Resume redeliverable after drive lease contention).
     interceptor.arm_to_fail_the_drive();
-    let deferred = dispatch.dispatch_resume(&scope, execution_id).await;
+    let deferred = dispatch.dispatch_resume(&scope, execution_id, None).await;
     assert!(
         matches!(deferred, Err(ControlDispatchError::Deferred(_))),
         "post-satisfy drive that fails to acquire the lease must Defer (keep the Resume \

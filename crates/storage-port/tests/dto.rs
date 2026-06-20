@@ -43,11 +43,13 @@ fn control_msg_roundtrips_with_typed_16_byte_id() {
         scope: Scope::new("ws_1", "org_1"),
         w3c_traceparent: None,
         reclaim_count: 0,
+        resume_target: None,
     };
     let s = serde_json::to_string(&msg).expect("serialize");
     let back: ControlMsg = serde_json::from_str(&s).expect("deserialize");
     assert_eq!(back.id, [7u8; 16]);
     assert_eq!(back.command, ControlCommand::Cancel);
+    assert_eq!(back.resume_target, None);
 }
 
 #[test]

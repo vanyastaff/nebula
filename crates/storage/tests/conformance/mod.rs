@@ -701,6 +701,7 @@ pub async fn assert_atomic_triple(backend: &dyn Backend) {
         scope: s.clone(),
         w3c_traceparent: None,
         reclaim_count: 0,
+        resume_target: None,
     };
     let je = JournalEntry {
         seq: None,
@@ -1222,6 +1223,7 @@ pub async fn assert_control_queue_outbox_and_fencing(backend: &dyn Backend) {
         scope: s.clone(),
         w3c_traceparent: None,
         reclaim_count: 0,
+        resume_target: None,
     };
     let batch = TransitionBatch::builder()
         .scope(s.clone())

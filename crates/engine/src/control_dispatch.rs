@@ -64,7 +64,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use nebula_core::id::ExecutionId;
 use nebula_execution::ExecutionStatus;
-use nebula_storage_port::{Scope, store::ExecutionStore};
+use nebula_storage_port::{Scope, dto::ResumeTarget, store::ExecutionStore};
 
 use crate::{
     WorkflowEngine,
@@ -310,6 +310,7 @@ impl ControlDispatch for EngineControlDispatch {
         &self,
         scope: &Scope,
         execution_id: ExecutionId,
+        resume_target: Option<ResumeTarget>,
     ) -> Result<(), ControlDispatchError> {
         match self.read_status(scope, execution_id).await? {
             None => Err(ControlDispatchError::Rejected(format!(
@@ -336,43 +337,45 @@ impl ControlDispatch for EngineControlDispatch {
             // No-live-owner recovery (`NoLiveEntry`) keeps today's behavior:
             // defer for B1 reclaim. Recovering a `Running` execution that has no
             // live loop on ANY runner is a future (W-S3) slice.
-            Some(ExecutionStatus::Running) => match self.engine.resume_live(execution_id).await {
-                ResumeDelivery::Acked(ResumeOutcome::Armed { count }) => {
-                    tracing::info!(
-                        %execution_id,
-                        armed_count = count,
-                        "dispatch_resume: live frontier durably armed the signal wait(s)"
-                    );
-                    Ok(())
-                },
-                ResumeDelivery::Acked(ResumeOutcome::NothingToArm) => {
-                    tracing::info!(
-                        %execution_id,
-                        "dispatch_resume: live frontier had no signal-Waiting node to arm \
-                         (already armed / none parked); acking as idempotent no-op"
-                    );
-                    Ok(())
-                },
-                ResumeDelivery::Acked(ResumeOutcome::ArmFailed) => Self::defer_running_resume(
-                    &self.engine,
-                    execution_id,
-                    "live frontier self-arm checkpoint failed (lease lost mid-iteration)",
-                ),
-                ResumeDelivery::LoopGone => Self::defer_running_resume(
-                    &self.engine,
-                    execution_id,
-                    "live frontier loop exited before confirming the self-arm",
-                ),
-                ResumeDelivery::AckTimeout => Self::defer_running_resume(
-                    &self.engine,
-                    execution_id,
-                    "live frontier did not confirm the self-arm within the ack timeout",
-                ),
-                ResumeDelivery::NoLiveEntry => Self::defer_running_resume(
-                    &self.engine,
-                    execution_id,
-                    "Running with no live frontier on this runner (cross-runner or just-paused)",
-                ),
+            Some(ExecutionStatus::Running) => {
+                match self.engine.resume_live(execution_id, resume_target).await {
+                    ResumeDelivery::Acked(ResumeOutcome::Armed { count }) => {
+                        tracing::info!(
+                            %execution_id,
+                            armed_count = count,
+                            "dispatch_resume: live frontier durably armed the signal wait(s)"
+                        );
+                        Ok(())
+                    },
+                    ResumeDelivery::Acked(ResumeOutcome::NothingToArm) => {
+                        tracing::info!(
+                            %execution_id,
+                            "dispatch_resume: live frontier had no signal-Waiting node to arm \
+                             (already armed / none parked); acking as idempotent no-op"
+                        );
+                        Ok(())
+                    },
+                    ResumeDelivery::Acked(ResumeOutcome::ArmFailed) => Self::defer_running_resume(
+                        &self.engine,
+                        execution_id,
+                        "live frontier self-arm checkpoint failed (lease lost mid-iteration)",
+                    ),
+                    ResumeDelivery::LoopGone => Self::defer_running_resume(
+                        &self.engine,
+                        execution_id,
+                        "live frontier loop exited before confirming the self-arm",
+                    ),
+                    ResumeDelivery::AckTimeout => Self::defer_running_resume(
+                        &self.engine,
+                        execution_id,
+                        "live frontier did not confirm the self-arm within the ack timeout",
+                    ),
+                    ResumeDelivery::NoLiveEntry => Self::defer_running_resume(
+                        &self.engine,
+                        execution_id,
+                        "Running with no live frontier on this runner (cross-runner or just-paused)",
+                    ),
+                }
             },
             Some(
                 ExecutionStatus::Cancelling
@@ -412,7 +415,11 @@ impl ControlDispatch for EngineControlDispatch {
             //   lease TTL-expiry causes a FencedOut (surfaced as CasConflict) while
             //   the execution is still Paused — bounded lost-Resume.
             Some(ExecutionStatus::Paused) => {
-                match self.engine.satisfy_signal_waits(scope, execution_id).await {
+                match self
+                    .engine
+                    .satisfy_signal_waits(scope, execution_id, resume_target.as_ref())
+                    .await
+                {
                     Ok(SatisfyOutcome::Satisfied(satisfied_count)) => {
                         tracing::info!(
                             %execution_id,

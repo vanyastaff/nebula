@@ -36,7 +36,7 @@ use nebula_execution::{
     ExecutionStatus,
     context::ExecutionBudget,
     plan::ExecutionPlan,
-    state::{AttemptOutcome, ExecutionState, WaitWake},
+    state::{AttemptOutcome, ExecutionState, WaitSignal, WaitWake},
     status::ExecutionTerminationReason,
 };
 use nebula_expression::ExpressionEngine;
@@ -55,6 +55,7 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 use nebula_storage_port::Scope;
+use nebula_storage_port::dto::ResumeTarget;
 
 use crate::{
     credential_accessor::EngineCredentialAccessor, error::EngineError, event::ExecutionEvent,
@@ -366,15 +367,18 @@ static NEXT_REGISTRATION_ID: AtomicU64 = AtomicU64::new(1);
 /// completion (ADR-0099 W-S2b, P1#1).
 ///
 /// Carries a one-shot `ack` channel the loop fires AFTER it durably
-/// checkpoints the self-arm (or learns the arm failed). The request itself
-/// carries no node targeting — a Resume arms every signal wait (per-callback
-/// targeting is W-S3) — so the payload is purely the reply path.
+/// checkpoints the self-arm (or learns the arm failed), plus the
+/// `resume_target` that selects which parked signal wait(s) to arm (W-S3a).
 struct ResumeRequest {
     /// The loop sends exactly one [`ResumeOutcome`] here once the self-arm
     /// has durably landed or failed. A dropped sender (the loop exited
     /// before replying) resolves the awaiting receiver to `Err`, which
     /// [`WorkflowEngine::resume_live`] maps to [`ResumeDelivery::LoopGone`].
     ack: oneshot::Sender<ResumeOutcome>,
+    /// Which parked signal wait this Resume targets (W-S3a). `Some(target)`
+    /// arms only the kind+identity match; `None` arms every signal wait (the
+    /// W-S2b untargeted behavior).
+    resume_target: Option<ResumeTarget>,
 }
 
 /// The durable result of a live loop processing a [`ResumeRequest`].
@@ -595,7 +599,11 @@ impl WorkflowEngine {
     /// No-live-owner recovery (a `Running` execution with no live loop on ANY
     /// runner) and cross-runner Resume routing/affinity remain a future
     /// (W-S3) slice: today a `NoLiveEntry` simply defers for B1 reclaim.
-    pub(crate) async fn resume_live(&self, execution_id: ExecutionId) -> ResumeDelivery {
+    pub(crate) async fn resume_live(
+        &self,
+        execution_id: ExecutionId,
+        resume_target: Option<ResumeTarget>,
+    ) -> ResumeDelivery {
         // Build the reply channel, then drop the `running` map guard BEFORE
         // awaiting the ack — holding a `DashMap` ref across `.await` could
         // block other shards' access to the same bucket.
@@ -613,7 +621,10 @@ impl WorkflowEngine {
             if entry
                 .value()
                 .resume_tx
-                .try_send(ResumeRequest { ack: ack_tx })
+                .try_send(ResumeRequest {
+                    ack: ack_tx,
+                    resume_target,
+                })
                 .is_err()
             {
                 return ResumeDelivery::NoLiveEntry;
@@ -2625,11 +2636,19 @@ impl WorkflowEngine {
     ///   the caller must defer and let the current lease holder finish.
     /// - On success, the lease is released (best-effort) after the commit.
     ///
+    /// # Targeting (W-S3a)
+    ///
+    /// `resume_target` selects which parked signal wait this Resume arms:
+    /// `Some(target)` arms only the node whose persisted [`WaitSignal`] matches
+    /// the target by kind + identity (a webhook target never satisfies an
+    /// approval gate — the kind-confusion safety rule); `None` arms every
+    /// signal-driven wait (the W-S2b untargeted behavior).
+    ///
     /// # Returns
     ///
     /// [`SatisfyOutcome::Satisfied(n)`] when `n` signal-driven waiting nodes
     /// were armed for completion, or [`SatisfyOutcome::NothingToSatisfy`] when
-    /// none exist.
+    /// none match.
     ///
     /// # Errors
     ///
@@ -2642,10 +2661,13 @@ impl WorkflowEngine {
     ///   concurrent transition (version or fencing mismatch after our lease was
     ///   released by another path — should not happen under normal flow).
     /// - [`EngineError::CheckpointFailed`] on serialisation or store errors.
+    ///
+    /// [`WaitSignal`]: nebula_execution::state::WaitSignal
     pub(crate) async fn satisfy_signal_waits(
         &self,
         scope: &Scope,
         execution_id: ExecutionId,
+        resume_target: Option<&ResumeTarget>,
     ) -> Result<SatisfyOutcome, EngineError> {
         let Some(stores) = &self.stores else {
             // Library mode (no storage) — signal-park resume is a no-op.
@@ -2687,7 +2709,14 @@ impl WorkflowEngine {
 
         // Lease acquired — proceed under mutual exclusion.
         let outcome = self
-            .satisfy_signal_waits_under_lease(stores, scope, execution_id, &id, lease_token)
+            .satisfy_signal_waits_under_lease(
+                stores,
+                scope,
+                execution_id,
+                &id,
+                lease_token,
+                resume_target,
+            )
             .await;
 
         // Release the lease best-effort. The commit already wrote the new
@@ -2720,6 +2749,7 @@ impl WorkflowEngine {
         execution_id: ExecutionId,
         id: &str,
         lease_token: nebula_storage_port::FencingToken,
+        resume_target: Option<&ResumeTarget>,
     ) -> Result<SatisfyOutcome, EngineError> {
         let record = stores
             .execution
@@ -2767,45 +2797,29 @@ impl WorkflowEngine {
             return Ok(SatisfyOutcome::ExecutionNotResumable);
         }
 
-        // Collect nodes that are signal-driven waits. We identify them by
-        // `state == Waiting` AND `next_attempt_at == None` (no timer wake).
-        // Timer-driven waits (`next_attempt_at == Some(_)`) are already on
-        // `wait_heap` and will be handled by Phase-0b when the frontier
-        // resumes — satisfying them here would duplicate the completion.
-        let signal_waiting_nodes: Vec<NodeKey> = exec_state
-            .node_states
-            .iter()
-            .filter(|(_, ns)| ns.state == NodeState::Waiting && ns.next_attempt_at.is_none())
-            .map(|(id, _)| id.clone())
-            .collect();
+        // Arm the signal-driven waits selected by `resume_target` for Phase-0b
+        // completion: set each match's wake instant to `now` and LEAVE it
+        // `Waiting`. The subsequent `drive` re-seeds it into the frontier
+        // `wait_heap` (its `next_attempt_at` is now `Some`) and Phase-0b
+        // transitions it `Waiting → Completed` and activates downstream through
+        // the PORT-AWARE `process_outgoing_edges` — the same path a timer wait
+        // takes. Transitioning to `Completed` HERE would instead route the
+        // node's edges through `resume_execution`'s port-blind rebuild, which
+        // activates every outgoing edge (a multi-port wait would fire its
+        // `error`/custom branch on a normal Resume).
+        //
+        // `arm_signal_waits_under_lease` is the shared armer: a `Some(target)`
+        // Resume arms only the kind+identity match; a `None` Resume arms every
+        // signal wait (W-S2b behavior). It runs under the lease we hold, so the
+        // own-the-lease-before-RMW invariant (#856) is preserved.
+        let now = Utc::now();
+        let armed = arm_signal_waits_under_lease(&mut exec_state, resume_target, now);
 
-        if signal_waiting_nodes.is_empty() {
+        if armed.is_empty() {
             return Ok(SatisfyOutcome::NothingToSatisfy);
         }
 
-        let satisfied_count = signal_waiting_nodes.len();
-        let now = Utc::now();
-
-        for node_key in &signal_waiting_nodes {
-            // Arm the node for Phase-0b completion: set the wake instant to
-            // `now` and LEAVE the node `Waiting`. The subsequent `drive`
-            // re-seeds it into the frontier `wait_heap` (its `next_attempt_at`
-            // is now `Some`) and Phase-0b transitions it `Waiting → Completed`
-            // and activates downstream through the PORT-AWARE
-            // `process_outgoing_edges` — the same path a timer wait takes.
-            // Transitioning to `Completed` HERE would instead route the node's
-            // edges through `resume_execution`'s port-blind rebuild, which
-            // activates every outgoing edge (a multi-port wait would fire its
-            // `error`/custom branch on a normal Resume).
-            if let Some(ns) = exec_state.node_states.get_mut(node_key) {
-                // Arm for COMPLETION: a satisfied signal wait wakes to
-                // complete the node (`Waiting → Completed`), never to fail.
-                // (case-a made explicit by W-S2b's `wait_wake` discriminator.)
-                // The paired write keeps the next_attempt_at/wait_wake
-                // invariant intact.
-                ns.arm_wait_completion(now);
-            }
-        }
+        let satisfied_count = armed.len();
 
         // Mirror `ExecutionState::transition_node`: direct field mutation must
         // still advance `version`/`updated_at` so the serialized blob's
@@ -4022,52 +4036,40 @@ impl WorkflowEngine {
                     // loop exits before sending) resolves the caller's receiver
                     // to `Err` → `LoopGone` → Deferred — a free fail-safe.
                     //
-                    // Untargeted in v1 (mirrors case-a fork-2): a Resume arms
-                    // every signal wait. Per-callback_id targeting is W-S3
-                    // (carried in the durable CAS, not this volatile wake).
+                    // Targeted in W-S3a: `req.resume_target` selects which signal
+                    // wait(s) to arm — `Some(target)` arms only the kind+identity
+                    // match, `None` arms every signal wait (W-S2b behavior). The
+                    // shared `arm_signal_waits_under_lease` runs under THIS loop's
+                    // own lease (it is the sole writer of its own row), preserving
+                    // the own-the-lease-before-RMW invariant.
                     //
                     // A LIVE (`Running`) execution's signal waits are the
                     // timeout-bearing ones: parked with `wait_wake == Timeout`
                     // and a future `next_attempt_at` deadline. (A signal-only
                     // wait, `next_attempt_at == None`, would have driven the row
                     // to `Paused` — case-a, satisfied by the durable CAS, not
-                    // this channel.) We arm BOTH shapes defensively: re-stamp
+                    // this channel.) `arm_wait_completion` re-stamps
                     // `next_attempt_at = now` (overriding any future timeout
-                    // deadline so Phase-0b completes immediately) and flip
+                    // deadline so Phase-0b completes immediately) and flips
                     // `wait_wake = Completion` (a Resume completes, never times
                     // out). The stale future `(deadline, key)` heap entry pops
                     // later, finds the node non-`Waiting`, and is skipped — the
                     // race-safety the Phase-0b state re-read guarantees.
                     let now = Utc::now();
-                    let to_arm: Vec<NodeKey> = exec_state
-                        .node_states
-                        .iter()
-                        .filter(|(_, ns)| ns.state == NodeState::Waiting && is_signal_wait(ns))
-                        .map(|(id, _)| id.clone())
-                        .collect();
+                    let to_arm =
+                        arm_signal_waits_under_lease(exec_state, req.resume_target.as_ref(), now);
                     if to_arm.is_empty() {
-                        // Spurious or already-armed wake — nothing to do. Ack as
-                        // `NothingToArm` (the caller may ack the row; a duplicate
-                        // Resume to an already-armed node is idempotent), then
+                        // Spurious, already-armed, or no-match wake — nothing to
+                        // do. Ack as `NothingToArm` (the caller may ack the row; a
+                        // duplicate or non-matching Resume is idempotent), then
                         // loop back; the exit-condition / timers re-evaluate.
                         let _ = req.ack.send(ResumeOutcome::NothingToArm);
                         tracing::debug!(
                             target = "engine::wait",
                             %execution_id,
-                            "resume signalled but no signal-Waiting node to arm; ignoring"
+                            "resume signalled but no matching signal-Waiting node to arm; ignoring"
                         );
                         continue;
-                    }
-                    for node_key in &to_arm {
-                        if let Some(ns) = exec_state.node_states.get_mut(node_key) {
-                            // Arm for Phase-0b completion. The execution version
-                            // is bumped by the checkpoint below (this is a direct
-                            // field write on the loop's own in-memory state, the
-                            // same shape as `satisfy_signal_waits_under_lease`).
-                            // The paired write keeps the
-                            // next_attempt_at/wait_wake invariant intact.
-                            ns.arm_wait_completion(now);
-                        }
                     }
                     // Bump the version once so the checkpoint CAS advances and
                     // any reader observes the arm. (`set_node_state`/direct field
@@ -4406,6 +4408,39 @@ impl WorkflowEngine {
                         };
                         let (wake_at, wait_wake) = wake_plan;
 
+                        // Capture the resume-IDENTITY of a signal wait so a later
+                        // targeted Resume can match it (W-S3a). A signal condition
+                        // (Webhook / Approval / Execution) persists the minimum
+                        // identity needed for targeting — the callback_id /
+                        // approver / execution_id — never the Approval `message` or
+                        // any inbound payload (that is W-S4). A timer condition
+                        // (Until / Duration) carries no identity. This classifies
+                        // independently of the timer: `park_node` enforces that
+                        // `wait_signal.is_some()` iff the wait is signal-driven.
+                        let wait_signal: Option<WaitSignal> = match condition {
+                            WaitCondition::Webhook { callback_id } => Some(WaitSignal::Webhook {
+                                callback_id: callback_id.clone(),
+                            }),
+                            WaitCondition::Approval { approver, .. } => {
+                                Some(WaitSignal::Approval {
+                                    approver: approver.clone(),
+                                })
+                            },
+                            WaitCondition::Execution { execution_id } => {
+                                Some(WaitSignal::Execution {
+                                    execution_id: *execution_id,
+                                })
+                            },
+                            WaitCondition::Until { .. } | WaitCondition::Duration { .. } => None,
+                            // Any unclassified variant fails closed above (the
+                            // wake_plan `_` arm marks the node Failed and returns),
+                            // so this arm is unreachable at park time. Persisting
+                            // `None` here would be wrong (it would not match the
+                            // signal classification of an unknown variant), but the
+                            // node never reaches `park_node` in that case.
+                            _ => None,
+                        };
+
                         // Budget enforcement for the partial output committed at park
                         // time. The normal success path increments `total_output_bytes`
                         // AFTER the node completes; Phase 1's `check_budget` catches
@@ -4454,7 +4489,12 @@ impl WorkflowEngine {
                             }
                         }
 
-                        match exec_state.park_node(node_key.clone(), wake_at, wait_wake) {
+                        match exec_state.park_node(
+                            node_key.clone(),
+                            wake_at,
+                            wait_wake,
+                            wait_signal,
+                        ) {
                             Ok(()) => {
                                 // Signal park (no timer) that leaves NO other active
                                 // frontier work fully suspends the execution: persist
@@ -6712,6 +6752,100 @@ fn deserialize_stored_result(
 /// signal wait and a Resume must never re-arm it.
 fn is_signal_wait(ns: &nebula_execution::state::NodeExecutionState) -> bool {
     ns.next_attempt_at.is_none() || ns.wait_wake == Some(WaitWake::Timeout)
+}
+
+/// Whether a parked node's persisted [`WaitSignal`] identity matches a Resume's
+/// [`ResumeTarget`] — the KIND-AWARE targeting rule (ADR-0099 W-S3a).
+///
+/// A target matches ONLY a same-kind signal with an equal identity: a
+/// `Webhook` target matches a `WaitSignal::Webhook` whose `callback_id` is
+/// equal, and NEVER an `Approval` or `Execution` wait. This is the structural
+/// safety control that closes the kind-confusion confused-deputy bug — a
+/// webhook Resume can never satisfy an approval gate, regardless of string
+/// collisions.
+///
+/// A node with no persisted `wait_signal` (a legacy row, or a timer wait) never
+/// matches a target — only an untargeted Resume (no `ResumeTarget`) arms it.
+fn matches_resume_target(
+    ns: &nebula_execution::state::NodeExecutionState,
+    target: &ResumeTarget,
+) -> bool {
+    match (ns.wait_signal.as_ref(), target) {
+        (
+            Some(WaitSignal::Webhook { callback_id }),
+            ResumeTarget::Webhook { callback_id: want },
+        ) => callback_id == want,
+        (Some(WaitSignal::Approval { approver }), ResumeTarget::Approval { approver: want }) => {
+            approver == want
+        },
+        (
+            Some(WaitSignal::Execution { execution_id }),
+            ResumeTarget::Execution { execution_id: want },
+        ) => {
+            // Compare typed-to-typed: parse the target's opaque string form into
+            // an `ExecutionId` (no allocation on the persisted side) and match by
+            // value. A malformed target string simply never matches.
+            want.parse::<ExecutionId>()
+                .is_ok_and(|want_id| *execution_id == want_id)
+        },
+        // Any cross-kind pair, or a node with no persisted identity, never
+        // matches a target — the kind-confusion safety rule.
+        _ => false,
+    }
+}
+
+/// Arm — for Phase-0b completion — every signal-`Waiting` node selected by
+/// `resume_target`, returning the armed node keys (ADR-0099 W-S3a).
+///
+/// Shared by the two Resume arm sites — the `Paused` no-live-runner satisfy-CAS
+/// (under the freshly-acquired lease) and the live-frontier `ResumeSignalled`
+/// self-arm (under the loop's own lease). A node is selected when it is
+/// `Waiting`, [`is_signal_wait`] (a signal-only OR signal+timeout wait, never a
+/// timer-driven completion wait), AND matched by the target:
+///
+/// - `Some(target)` → KIND-AWARE match via [`matches_resume_target`]: arms only
+///   the node whose persisted [`WaitSignal`] equals the target by kind +
+///   identity. This is the structural close of both confused-deputy bugs (one
+///   Resume satisfying a sibling wait; a webhook Resume satisfying an approval
+///   gate).
+/// - `None` → the legacy untargeted Resume: arms every signal-`Waiting` node
+///   (preserves the W-S2b behavior).
+///
+/// Mutates only the in-memory `exec_state` (via [`arm_wait_completion`], the
+/// paired `next_attempt_at`/`wait_wake` write); the CALLER owns the lease and
+/// the durable checkpoint that commits the arm, preserving the
+/// own-the-lease-before-RMW invariant (#856). Does NOT bump the version — the
+/// caller does (mirroring each existing site's single bump).
+///
+/// [`arm_wait_completion`]: nebula_execution::state::NodeExecutionState::arm_wait_completion
+/// [`WaitSignal`]: nebula_execution::state::WaitSignal
+fn arm_signal_waits_under_lease(
+    exec_state: &mut ExecutionState,
+    resume_target: Option<&ResumeTarget>,
+    now: DateTime<Utc>,
+) -> Vec<NodeKey> {
+    let to_arm: Vec<NodeKey> = exec_state
+        .node_states
+        .iter()
+        .filter(|(_, ns)| {
+            ns.state == NodeState::Waiting
+                && is_signal_wait(ns)
+                && match resume_target {
+                    Some(target) => matches_resume_target(ns, target),
+                    None => true,
+                }
+        })
+        .map(|(id, _)| id.clone())
+        .collect();
+    for node_key in &to_arm {
+        if let Some(ns) = exec_state.node_states.get_mut(node_key) {
+            // Arm for COMPLETION: a satisfied signal wait wakes to complete the
+            // node (`Waiting → Completed`), never to fail. The paired write
+            // keeps the next_attempt_at/wait_wake invariant intact.
+            ns.arm_wait_completion(now);
+        }
+    }
+    to_arm
 }
 
 /// Mark a node as failed in the execution state.
@@ -12465,7 +12599,7 @@ mod tests {
     #[tokio::test]
     async fn resume_live_no_live_entry_when_absent() {
         let (engine, _) = make_engine(Arc::new(ActionRegistry::new()));
-        let outcome = engine.resume_live(ExecutionId::new()).await;
+        let outcome = engine.resume_live(ExecutionId::new(), None).await;
         assert!(
             matches!(outcome, ResumeDelivery::NoLiveEntry),
             "an absent execution must yield NoLiveEntry, got {outcome:?}"
@@ -12491,7 +12625,7 @@ mod tests {
             drop(req);
         });
 
-        let outcome = engine.resume_live(execution_id).await;
+        let outcome = engine.resume_live(execution_id, None).await;
         loop_side.await.unwrap();
         assert!(
             matches!(outcome, ResumeDelivery::LoopGone),
@@ -12512,7 +12646,7 @@ mod tests {
         let (_resume_rx, _guard) = publish_running_entry(&engine, execution_id);
 
         let engine_h = Arc::clone(&engine);
-        let resume = tokio::spawn(async move { engine_h.resume_live(execution_id).await });
+        let resume = tokio::spawn(async move { engine_h.resume_live(execution_id, None).await });
         // Advance past the ack timeout under paused time.
         tokio::time::advance(RESUME_ACK_TIMEOUT + Duration::from_secs(1)).await;
         let outcome = resume.await.unwrap();

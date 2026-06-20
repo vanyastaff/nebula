@@ -847,6 +847,7 @@ async fn resume_before_timeout_completes_main_port_and_cancels_timer() {
         .dispatch_resume(
             &nebula_engine::store_seam::single_tenant_scope(),
             execution_id,
+            None,
         )
         .await
         .expect("dispatch_resume on a live Running execution must succeed");
@@ -921,6 +922,7 @@ async fn resume_to_running_execution_reaches_live_loop() {
         .dispatch_resume(
             &nebula_engine::store_seam::single_tenant_scope(),
             execution_id,
+            None,
         )
         .await
         .expect("dispatch_resume to a Running execution must be Ok (delivered to live loop)");
@@ -1268,6 +1270,7 @@ async fn resume_and_timeout_race_reaches_single_terminal_outcome() {
         .dispatch_resume(
             &nebula_engine::store_seam::single_tenant_scope(),
             execution_id,
+            None,
         )
         .await
         .expect("dispatch_resume must deliver to the live loop");
@@ -1547,6 +1550,7 @@ async fn one_resume_arms_multiple_parallel_signal_timeout_waits() {
         .dispatch_resume(
             &nebula_engine::store_seam::single_tenant_scope(),
             execution_id,
+            None,
         )
         .await
         .expect("dispatch_resume on the live Running execution must succeed");
@@ -1624,6 +1628,7 @@ async fn resume_acks_only_after_successful_checkpoint() {
         .dispatch_resume(
             &nebula_engine::store_seam::single_tenant_scope(),
             execution_id,
+            None,
         )
         .await
         .expect("dispatch_resume on a live Running execution must succeed");
@@ -1769,7 +1774,7 @@ async fn fenced_out_self_arm_sends_arm_failed_then_deferred() {
     // FencedOut. The park checkpoint already landed before `NodeParked`.
     fenced.arm_fence();
 
-    let dispatch_outcome = dispatch.dispatch_resume(&scope, execution_id).await;
+    let dispatch_outcome = dispatch.dispatch_resume(&scope, execution_id, None).await;
     assert!(
         matches!(
             dispatch_outcome,
@@ -1848,6 +1853,7 @@ async fn duplicate_resume_to_armed_node_is_noop() {
                 .dispatch_resume(
                     &nebula_engine::store_seam::single_tenant_scope(),
                     execution_id,
+                    None,
                 )
                 .await
         },
@@ -1856,6 +1862,7 @@ async fn duplicate_resume_to_armed_node_is_noop() {
                 .dispatch_resume(
                     &nebula_engine::store_seam::single_tenant_scope(),
                     execution_id,
+                    None,
                 )
                 .await
         },

@@ -122,6 +122,9 @@ impl ControlQueue for PgControlQueue {
                     ),
                     w3c_traceparent: row.try_get("w3c_traceparent").map_err(conn_err)?,
                     reclaim_count: row.try_get::<i32, _>("reclaim_count").map_err(conn_err)? as u32,
+                    // No durable column for the resume target yet (W-S3a threads
+                    // it in-memory from the control consumer; durable = W-S3c).
+                    resume_target: None,
                 })
             })
             .collect()

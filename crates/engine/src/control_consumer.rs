@@ -38,7 +38,7 @@ use nebula_metrics::{
     naming::{NEBULA_ENGINE_CONTROL_RECLAIM_TOTAL, control_reclaim_outcome},
 };
 use nebula_storage_port::Scope;
-use nebula_storage_port::dto::ControlCommand;
+use nebula_storage_port::dto::{ControlCommand, ResumeTarget};
 use nebula_storage_port::store::ControlQueue;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -208,6 +208,10 @@ pub trait ControlDispatch: Send + Sync {
     /// Deliver a `Resume` command to a suspended execution.
     ///
     /// `scope` is the per-message tenant scope from `ControlMsg.scope`.
+    /// `resume_target` is the per-message resume target from
+    /// `ControlMsg.resume_target` (W-S3a): `Some(target)` arms only the parked
+    /// signal wait whose persisted identity matches the target by kind +
+    /// identity; `None` arms every signal wait (the untargeted W-S2b behavior).
     ///
     /// A2 wired the canonical body in
     /// [`crate::control_dispatch::EngineControlDispatch`].
@@ -220,6 +224,7 @@ pub trait ControlDispatch: Send + Sync {
         &self,
         scope: &Scope,
         execution_id: ExecutionId,
+        resume_target: Option<ResumeTarget>,
     ) -> Result<(), ControlDispatchError>;
 
     /// Deliver a `Restart` command to an execution.
@@ -271,6 +276,10 @@ struct ClaimedRow {
     scope: Scope,
     /// W3C `traceparent` carrier captured at enqueue, if any.
     w3c: Option<nebula_core::W3cTraceContext>,
+    /// Which parked signal wait a `Resume` targets (W-S3a). Threaded into
+    /// `dispatch_resume` so the engine arms only the matching wait; `None` is an
+    /// untargeted Resume. Ignored for non-`Resume` commands.
+    resume_target: Option<ResumeTarget>,
 }
 
 impl RawClaimed {
@@ -322,6 +331,7 @@ impl RawClaimed {
             command: m.command,
             scope: m.scope,
             w3c,
+            resume_target: m.resume_target,
         })
     }
 }
@@ -635,6 +645,7 @@ impl ControlConsumer {
             command,
             scope,
             w3c: w3c_opt,
+            resume_target,
         } = match raw.normalize() {
             Ok(row) => row,
             Err(reason) => {
@@ -683,7 +694,9 @@ impl ControlConsumer {
                 },
                 ControlCommand::Resume => {
                     tracing::debug!(%execution_id, "control-queue: dispatching Resume (A2)");
-                    dispatch.dispatch_resume(&scope, execution_id).await
+                    dispatch
+                        .dispatch_resume(&scope, execution_id, resume_target)
+                        .await
                 },
                 ControlCommand::Restart => {
                     tracing::debug!(%execution_id, "control-queue: dispatching Restart (A2)");
