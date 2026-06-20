@@ -36,7 +36,7 @@ use nebula_execution::{
     ExecutionStatus,
     context::ExecutionBudget,
     plan::ExecutionPlan,
-    state::{AttemptOutcome, ExecutionState},
+    state::{AttemptOutcome, ExecutionState, WaitWake},
     status::ExecutionTerminationReason,
 };
 use nebula_expression::ExpressionEngine;
@@ -48,7 +48,10 @@ use nebula_metrics::naming::{
 use nebula_metrics::{Counter, Histogram, MetricsRegistry};
 use nebula_plugin::PluginRegistry;
 use nebula_workflow::{Connection, DependencyGraph, NodeState, WorkflowDefinition};
-use tokio::{sync::Semaphore, task::JoinSet};
+use tokio::{
+    sync::{Notify, Semaphore},
+    task::JoinSet,
+};
 use tokio_util::sync::CancellationToken;
 
 use nebula_storage_port::Scope;
@@ -342,9 +345,22 @@ static NEXT_REGISTRATION_ID: AtomicU64 = AtomicU64::new(1);
 /// [`CancellationToken`] with the [`RunningRegistrationId`] nonce so the
 /// drop guard can use [`DashMap::remove_if`] instead of unconditional
 /// `remove`.
+///
+/// `resume_notify` is the live-frontier resume channel (ADR-0099 W-S2b): a
+/// payload-less [`Notify`] the running loop selects on. A `Resume` command
+/// for a still-`Running` execution (a signal wait parked with a `timeout`,
+/// so the row never reached `Paused`) cannot use the durable satisfy-CAS —
+/// that path acquires the lease the live loop already holds (two-writers-
+/// one-row). Instead [`WorkflowEngine::resume_live`] notifies this channel;
+/// the loop wakes, self-arms the parked signal node under its OWN lease, and
+/// completes it through Phase-0b. The notify carries no payload — the
+/// durable row remains the sole source of truth, so a lost notification on
+/// crash costs nothing (the armed node survives and a redelivered Resume
+/// re-wakes it).
 struct RunningEntry {
     registration_id: RunningRegistrationId,
     token: CancellationToken,
+    resume_notify: Arc<Notify>,
 }
 
 /// RAII guard that removes an execution from the [`WorkflowEngine::running`]
@@ -450,6 +466,50 @@ impl WorkflowEngine {
         match self.running.get(&execution_id) {
             Some(entry) => {
                 entry.value().token.cancel();
+                true
+            },
+            None => false,
+        }
+    }
+
+    /// Deliver a `Resume` to a LIVE frontier loop owned by THIS runner
+    /// (ADR-0099 W-S2b).
+    ///
+    /// Returns `true` if a live `RunningEntry` for `execution_id` was found
+    /// on this runner and its [`Notify`] was signalled; the loop wakes,
+    /// self-arms its signal-`Waiting{next_attempt_at: None}` node(s) under
+    /// its OWN lease, and completes them through Phase-0b. Returns `false`
+    /// when no live entry exists on this runner — the execution is either
+    /// driven by a different runner or has just transitioned to `Paused`
+    /// (no live frontier), in which case the caller must defer to the
+    /// durable satisfy-CAS path (case-a) / B1 reclaim.
+    ///
+    /// Notifying (rather than writing the row) is load-bearing: a `Running`
+    /// execution's lease is held by its own loop, so the durable satisfy-CAS
+    /// would deadlock/race that owner (two-writers-one-row). The live loop
+    /// remains the sole writer of its own row.
+    ///
+    /// `true` means the resume notification was DELIVERED to the live loop's
+    /// channel — NOT that the Resume has been durably applied. The loop may
+    /// still drop the wake: a timeout for the same node already being processed
+    /// in the same loop iteration can win the race, in which case the node
+    /// fails on its deadline and the notification is a no-op.
+    ///
+    /// Durable-ack caveat for a future inbound-resume transport: a `true`
+    /// return acks the control-queue row BEFORE the live loop's self-arm
+    /// checkpoint is durable. A real Resume producer wired onto this channel
+    /// must therefore gate the control-queue ack on the durable arm (ack only
+    /// after the loop confirms the self-arm checkpoint landed) — otherwise a
+    /// crash between the ack and the checkpoint loses an acked-but-not-landed
+    /// Resume. The path has no production Resume producer today, so the gap is
+    /// currently unreachable.
+    ///
+    /// [`Notify`]: tokio::sync::Notify
+    #[must_use]
+    pub fn resume_live(&self, execution_id: ExecutionId) -> bool {
+        match self.running.get(&execution_id) {
+            Some(entry) => {
+                entry.value().resume_notify.notify_one();
                 true
             },
             None => false,
@@ -1245,6 +1305,10 @@ impl WorkflowEngine {
 
         let semaphore = Arc::new(Semaphore::new(budget.max_concurrent_nodes));
         let cancel_token = CancellationToken::new();
+        // Replay is lease-less and not published into the `running` registry,
+        // so no `Resume` can target it — a local, never-signalled `Notify`
+        // satisfies `run_frontier`'s contract (the resume arm never fires).
+        let resume_notify = Arc::new(Notify::new());
         let mut repo_version = 0u64;
 
         // Determine seed nodes: nodes in rerun set whose predecessors are all pinned.
@@ -1272,6 +1336,7 @@ impl WorkflowEngine {
                 &outputs,
                 &semaphore,
                 &cancel_token,
+                &resume_notify,
                 &mut exec_state,
                 execution_id,
                 workflow.id,
@@ -1684,11 +1749,16 @@ impl WorkflowEngine {
         // clobbering a winner's registration if a losing attempt ever
         // slips through.
         let registration_id = NEXT_REGISTRATION_ID.fetch_add(1, Ordering::Relaxed);
+        // Live-frontier resume channel (W-S2b): published alongside the
+        // cancel token so a `Resume` for this still-`Running` execution
+        // (a signal wait parked with a timeout) reaches the live loop.
+        let resume_notify = Arc::new(Notify::new());
         self.running.insert(
             execution_id,
             RunningEntry {
                 registration_id,
                 token: cancel_token.clone(),
+                resume_notify: Arc::clone(&resume_notify),
             },
         );
         let _cancel_registration = RunningRegistration {
@@ -1720,6 +1790,7 @@ impl WorkflowEngine {
                 &outputs,
                 &semaphore,
                 &cancel_token,
+                &resume_notify,
                 &mut exec_state,
                 execution_id,
                 workflow.id,
@@ -2189,11 +2260,15 @@ impl WorkflowEngine {
         // `execute_workflow` — see its comment for the full rationale
         // and the #482 Copilot review context.
         let registration_id = NEXT_REGISTRATION_ID.fetch_add(1, Ordering::Relaxed);
+        // Live-frontier resume channel (W-S2b) — symmetric to
+        // `execute_workflow`; see its comment for the rationale.
+        let resume_notify = Arc::new(Notify::new());
         self.running.insert(
             execution_id,
             RunningEntry {
                 registration_id,
                 token: cancel_token.clone(),
+                resume_notify: Arc::clone(&resume_notify),
             },
         );
         let _cancel_registration = RunningRegistration {
@@ -2229,6 +2304,7 @@ impl WorkflowEngine {
                 &outputs,
                 &semaphore,
                 &cancel_token,
+                &resume_notify,
                 &mut exec_state,
                 execution_id,
                 workflow_id,
@@ -2601,7 +2677,12 @@ impl WorkflowEngine {
             // activates every outgoing edge (a multi-port wait would fire its
             // `error`/custom branch on a normal Resume).
             if let Some(ns) = exec_state.node_states.get_mut(node_key) {
-                ns.next_attempt_at = Some(now);
+                // Arm for COMPLETION: a satisfied signal wait wakes to
+                // complete the node (`Waiting → Completed`), never to fail.
+                // (case-a made explicit by W-S2b's `wait_wake` discriminator.)
+                // The paired write keeps the next_attempt_at/wait_wake
+                // invariant intact.
+                ns.arm_wait_completion(now);
             }
         }
 
@@ -2959,6 +3040,7 @@ impl WorkflowEngine {
         outputs: &Arc<DashMap<NodeKey, serde_json::Value>>,
         semaphore: &Arc<Semaphore>,
         cancel_token: &CancellationToken,
+        resume_notify: &Arc<Notify>,
         exec_state: &mut ExecutionState,
         execution_id: ExecutionId,
         workflow_id: WorkflowId,
@@ -3116,17 +3198,27 @@ impl WorkflowEngine {
             // Phase 0b: Drain due timer-wakes from `wait_heap`.
             //
             // A `Waiting` node whose `next_attempt_at` has passed has its
-            // wait condition satisfied: the engine transitions it directly
-            // to `Completed` (the action's `partial_output` was already
-            // committed to the outputs map when the node was parked) and
-            // activates its downstream edges. This mirrors Phase 0 for
-            // retries but targets `Completed` instead of `Ready`.
+            // timer wake due. What the wake MEANS is read from the persisted
+            // `wait_wake` discriminator (W-S2b), re-read here under the
+            // single-threaded loop owner AFTER the pop — never acted on from
+            // the popped heap tuple alone, so a Resume-then-timeout race
+            // (which self-arms the node `Completion`) cannot be double-routed:
+            //   - `Completion` / legacy `None`: complete the node
+            //     (`Waiting → Completed`), activate `main`-port downstream.
+            //     The `partial_output` was committed at park time.
+            //   - `Timeout`: the signal wait's deadline elapsed with no
+            //     Resume — FAIL the node (`Waiting → Failed` with
+            //     `RuntimeError::WaitTimedOut`) and route its outgoing edges
+            //     through the failure path (OnError / Skip / FailFast).
             let now_wait_drain = Utc::now();
             while let Some(Reverse((when, _))) = wait_heap.peek() {
                 if *when > now_wait_drain {
                     break;
                 }
-                let Some(Reverse((_, node_key))) = wait_heap.pop() else {
+                // Capture the deadline from the POPPED tuple (owned), not the
+                // peek reference, so we may mutate `wait_heap` again below
+                // while still using it for the timeout-ms reconstruction.
+                let Some(Reverse((deadline, node_key))) = wait_heap.pop() else {
                     // Unreachable: peek-then-pop on a single-threaded
                     // owner cannot lose the entry. Surface defensively
                     // rather than panic (hot-path safety).
@@ -3137,80 +3229,202 @@ impl WorkflowEngine {
                     );
                     break;
                 };
-                let still_parked = exec_state
+                // Race-safe re-read (R2): both the state AND the wake
+                // discriminator come from the live `exec_state` AFTER the pop,
+                // so a stale `(deadline, key)` entry for a node a Resume
+                // already re-armed `Completion` is read as a completion, not a
+                // timeout — never double-routed.
+                let parked_wake = exec_state
                     .node_state(node_key.clone())
-                    .is_some_and(|ns| ns.state == NodeState::Waiting);
-                if still_parked {
-                    match exec_state.transition_node(node_key.clone(), NodeState::Completed) {
-                        Ok(()) => {
-                            if let Some(ns) = exec_state.node_states.get_mut(&node_key) {
-                                ns.next_attempt_at = None;
-                                ns.completed_at = Some(Utc::now());
-                            }
-                            // Persist the `Completed` transition and the
-                            // cleared `next_attempt_at` atomically before
-                            // activating downstream — durability precedes
-                            // visibility.
-                            if let Err(e) = self
-                                .checkpoint_node(
-                                    scope,
-                                    execution_id,
-                                    node_key.clone(),
-                                    outputs,
-                                    exec_state,
-                                    repo_version,
-                                    fencing,
-                                )
-                                .await
-                            {
-                                cancel_token.cancel();
-                                return Some((node_key.clone(), e.to_string()));
-                            }
-                            self.emit_event(ExecutionEvent::NodeWaitCompleted {
-                                execution_id,
-                                node_key: node_key.clone(),
-                            });
-                            tracing::info!(
-                                target = "engine::wait",
-                                %execution_id,
-                                %node_key,
-                                "wait condition satisfied (timer); node completed"
-                            );
-                            // Activate downstream edges now that the node is
-                            // `Completed` — this is the point at which the
-                            // downstream gate lifts.
-                            process_outgoing_edges(
-                                node_key.clone(),
-                                None, // no live `ActionResult` for this synthetic completion
-                                None,
-                                graph,
-                                &mut activated_edges,
-                                &mut resolved_edges,
-                                &required_count,
-                                &mut ready_queue,
-                                exec_state,
-                            );
-                        },
-                        Err(err) => {
-                            // `Waiting → Completed` is in the canonical table;
-                            // this branch fires only if the node was concurrently
-                            // cancelled. Surface defensively.
-                            tracing::warn!(
-                                target = "engine::wait",
-                                %execution_id,
-                                %node_key,
-                                %err,
-                                "wait-heap wake: Waiting→Completed rejected; skipping"
-                            );
-                        },
-                    }
-                } else {
+                    .filter(|ns| ns.state == NodeState::Waiting)
+                    .map(|ns| ns.wait_wake);
+                let Some(wait_wake) = parked_wake else {
                     tracing::debug!(
                         target = "engine::wait",
                         %execution_id,
                         %node_key,
                         "wait heap drained but node no longer in Waiting; skipping"
                     );
+                    continue;
+                };
+                // Legacy `None` on an armed timer wait reads as `Completion`
+                // (preserves W-S1 timer-wake semantics for pre-W-S2b rows).
+                if matches!(wait_wake, Some(WaitWake::Timeout)) {
+                    // ── Timeout fail path ──
+                    //
+                    // The `WaitCondition` variant is not persisted on the node
+                    // (only `next_attempt_at` + `wait_wake` are) — so the exact
+                    // signal kind (`Webhook` / `Approval` / `Execution`) is not
+                    // recoverable here, especially after a crash + recovery.
+                    // Report the honest discriminator we DO have: a signal
+                    // wait. (Per-variant detail returns with W-S3's persisted
+                    // resume targeting.)
+                    let condition_kind = "signal".to_owned();
+                    // Best-effort declared-timeout reconstruction: the absolute
+                    // deadline `when` (== `next_attempt_at`) minus the node's
+                    // `started_at` (stamped just before it parked) approximates
+                    // the original `timeout` duration. It survives crash +
+                    // recovery (both fields are persisted) and is an
+                    // observability value, not a control input — a small
+                    // over-estimate (the node's pre-park run time) is acceptable.
+                    let timeout_ms = exec_state
+                        .node_state(node_key.clone())
+                        .and_then(|ns| ns.started_at)
+                        .map(|started| {
+                            deadline
+                                .signed_duration_since(started)
+                                .num_milliseconds()
+                                .max(0) as u64
+                        })
+                        .unwrap_or(0);
+                    let timed_out = crate::runtime::error::RuntimeError::WaitTimedOut {
+                        condition_kind: condition_kind.clone(),
+                        timeout_ms,
+                    };
+                    let engine_err = EngineError::Runtime(timed_out);
+                    let err_str = engine_err.to_string();
+                    // `Waiting → Failed` is the W-S2b timeout edge. A
+                    // WaitTimedOut is terminal and bypasses the retry decision
+                    // entirely (it never counts against the retry budget).
+                    mark_node_failed(exec_state, node_key.clone(), &engine_err);
+                    if let Some(ns) = exec_state.node_states.get_mut(&node_key) {
+                        // Resolved wait: drop the timer pair so the now-`Failed`
+                        // node carries no stale wake metadata.
+                        ns.clear_wait_timer();
+                    }
+                    // Route outgoing edges through the failure path BEFORE the
+                    // checkpoint so an OnError handler's input payload is
+                    // durably captured (reuse — same contract as the Phase-3
+                    // finalize path). `Fail` (not `Recover`): OnError handlers,
+                    // if wired, activate; otherwise dependents are Skipped and
+                    // FailFast aborts the frontier.
+                    //
+                    // `Fail` is deliberate even under an `ErrorStrategy::
+                    // IgnoreErrors` node strategy: a wait timeout is a real
+                    // negative outcome (a missed approval/signal), not a
+                    // swallowable transient fault. It must surface as a failure
+                    // rather than be coerced to `Completed` with a null output.
+                    let abort = route_failure_edges(
+                        FailureOutcome::Fail,
+                        node_key.clone(),
+                        &err_str,
+                        error_strategy,
+                        graph,
+                        outputs,
+                        &mut activated_edges,
+                        &mut resolved_edges,
+                        &required_count,
+                        &mut ready_queue,
+                        exec_state,
+                    );
+                    // Durably commit the `Failed` transition (+ any OnError
+                    // payload routing already staged) before any observer sees
+                    // the timeout.
+                    if let Err(e) = self
+                        .checkpoint_node(
+                            scope,
+                            execution_id,
+                            node_key.clone(),
+                            outputs,
+                            exec_state,
+                            repo_version,
+                            fencing,
+                        )
+                        .await
+                    {
+                        cancel_token.cancel();
+                        return Some((node_key.clone(), e.to_string()));
+                    }
+                    self.emit_event(ExecutionEvent::NodeWaitTimedOut {
+                        execution_id,
+                        node_key: node_key.clone(),
+                        condition_kind,
+                        timeout_ms,
+                    });
+                    tracing::info!(
+                        target = "engine::wait",
+                        %execution_id,
+                        %node_key,
+                        timeout_ms,
+                        "signal wait timed out; node failed and failure edges routed"
+                    );
+                    if let Some(err_msg) = abort {
+                        // FailFast (no OnError handler): abort the frontier and
+                        // surface the timeout as the `failed_node` so
+                        // `determine_final_status` priority-2 marks the
+                        // execution `Failed`.
+                        cancel_token.cancel();
+                        return Some((node_key.clone(), err_msg));
+                    }
+                    // OnError-handled / ContinueOnError: the failure was routed
+                    // to the error branch / dependents Skipped — the loop
+                    // continues so the error subtree runs.
+                    continue;
+                }
+                // ── Completion path (Completion / legacy None) ──
+                match exec_state.transition_node(node_key.clone(), NodeState::Completed) {
+                    Ok(()) => {
+                        if let Some(ns) = exec_state.node_states.get_mut(&node_key) {
+                            // Resolved wait: drop the timer pair on the now-
+                            // `Completed` node.
+                            ns.clear_wait_timer();
+                            ns.completed_at = Some(Utc::now());
+                        }
+                        // Persist the `Completed` transition and the cleared
+                        // timer fields atomically before activating downstream —
+                        // durability precedes visibility.
+                        if let Err(e) = self
+                            .checkpoint_node(
+                                scope,
+                                execution_id,
+                                node_key.clone(),
+                                outputs,
+                                exec_state,
+                                repo_version,
+                                fencing,
+                            )
+                            .await
+                        {
+                            cancel_token.cancel();
+                            return Some((node_key.clone(), e.to_string()));
+                        }
+                        self.emit_event(ExecutionEvent::NodeWaitCompleted {
+                            execution_id,
+                            node_key: node_key.clone(),
+                        });
+                        tracing::info!(
+                            target = "engine::wait",
+                            %execution_id,
+                            %node_key,
+                            "wait condition satisfied (timer); node completed"
+                        );
+                        // Activate downstream edges now that the node is
+                        // `Completed` — this is the point at which the
+                        // downstream gate lifts.
+                        process_outgoing_edges(
+                            node_key.clone(),
+                            None, // no live `ActionResult` for this synthetic completion
+                            None,
+                            graph,
+                            &mut activated_edges,
+                            &mut resolved_edges,
+                            &required_count,
+                            &mut ready_queue,
+                            exec_state,
+                        );
+                    },
+                    Err(err) => {
+                        // `Waiting → Completed` is in the canonical table;
+                        // this branch fires only if the node was concurrently
+                        // cancelled. Surface defensively.
+                        tracing::warn!(
+                            target = "engine::wait",
+                            %execution_id,
+                            %node_key,
+                            %err,
+                            "wait-heap wake: Waiting→Completed rejected; skipping"
+                        );
+                    },
                 }
             }
 
@@ -3593,6 +3807,7 @@ impl WorkflowEngine {
                 WaitTimer,
                 WallClock,
                 Cancel,
+                ResumeSignalled,
             }
 
             let join_next_fut: Pin<Box<dyn Future<Output = JoinedResult> + Send + '_>> =
@@ -3602,12 +3817,18 @@ impl WorkflowEngine {
                     Box::pin(join_set.join_next_with_id())
                 };
 
+            // `Notify::notified()` is cancellation-safe in this `select!`: a
+            // `notify_one()` that races the loop body (fired while we are not
+            // awaiting) stores a single permit, which the next iteration's
+            // fresh `notified()` consumes immediately — the Resume is never
+            // lost between iterations.
             let wake = tokio::select! {
                 result = join_next_fut => WakeReason::Joined(result),
                 () = &mut retry_sleep_fut, if next_retry_in.is_some() => WakeReason::RetryTimer,
                 () = &mut wait_sleep_fut, if next_wait_in.is_some() => WakeReason::WaitTimer,
                 () = &mut sleep_fut => WakeReason::WallClock,
                 () = cancel_token.cancelled() => WakeReason::Cancel,
+                () = resume_notify.notified() => WakeReason::ResumeSignalled,
             };
 
             let join_result = match wake {
@@ -3626,6 +3847,126 @@ impl WorkflowEngine {
                 WakeReason::WaitTimer => {
                     // Timer fired — loop back so Phase 0b drains due
                     // wait-wakes into completed + downstream edges.
+                    continue;
+                },
+                WakeReason::ResumeSignalled => {
+                    // A `Resume` command targeted this LIVE execution (W-S2b).
+                    // The row stayed `Running` (a signal wait was parked with a
+                    // `timeout`, so the loop holds the lease on the timeout
+                    // timer). The durable satisfy-CAS path cannot be used here —
+                    // it acquires the lease this loop already holds (two-writers-
+                    // one-row). Instead the live loop is the SOLE writer of its
+                    // own row: self-arm each signal-`Waiting{next_attempt_at:
+                    // None}` node for completion under the loop's OWN lease, then
+                    // loop back so Phase-0b completes it through the main port.
+                    //
+                    // Untargeted in v1 (mirrors case-a fork-2): a Resume arms
+                    // every signal wait. Per-callback_id targeting is W-S3
+                    // (carried in the durable CAS, not this volatile wake).
+                    //
+                    // A LIVE (`Running`) execution's signal waits are the
+                    // timeout-bearing ones: parked with `wait_wake == Timeout`
+                    // and a future `next_attempt_at` deadline. (A signal-only
+                    // wait, `next_attempt_at == None`, would have driven the row
+                    // to `Paused` — case-a, satisfied by the durable CAS, not
+                    // this channel.) We arm BOTH shapes defensively: re-stamp
+                    // `next_attempt_at = now` (overriding any future timeout
+                    // deadline so Phase-0b completes immediately) and flip
+                    // `wait_wake = Completion` (a Resume completes, never times
+                    // out). The stale future `(deadline, key)` heap entry pops
+                    // later, finds the node non-`Waiting`, and is skipped — the
+                    // race-safety the Phase-0b state re-read guarantees.
+                    let now = Utc::now();
+                    let to_arm: Vec<NodeKey> = exec_state
+                        .node_states
+                        .iter()
+                        .filter(|(_, ns)| ns.state == NodeState::Waiting && is_signal_wait(ns))
+                        .map(|(id, _)| id.clone())
+                        .collect();
+                    if to_arm.is_empty() {
+                        // Spurious or already-armed wake — nothing to do. Loop
+                        // back; the exit-condition / timers re-evaluate.
+                        tracing::debug!(
+                            target = "engine::wait",
+                            %execution_id,
+                            "resume signalled but no signal-Waiting node to arm; ignoring"
+                        );
+                        continue;
+                    }
+                    for node_key in &to_arm {
+                        if let Some(ns) = exec_state.node_states.get_mut(node_key) {
+                            // Arm for Phase-0b completion. The execution version
+                            // is bumped by the checkpoint below (this is a direct
+                            // field write on the loop's own in-memory state, the
+                            // same shape as `satisfy_signal_waits_under_lease`).
+                            // The paired write keeps the
+                            // next_attempt_at/wait_wake invariant intact.
+                            ns.arm_wait_completion(now);
+                        }
+                    }
+                    // Bump the version once so the checkpoint CAS advances and
+                    // any reader observes the arm. (`set_node_state`/direct field
+                    // writes do not bump; mirror the satisfy path's single bump.)
+                    exec_state.version += 1;
+                    exec_state.updated_at = Utc::now();
+                    // The single checkpoint below carries ALL armed nodes but is
+                    // attributed to `to_arm[0]` (a checkpoint takes one key).
+                    // Log the full armed set so a checkpoint failure with N>1
+                    // armed nodes is not misread as touching only the first key.
+                    tracing::debug!(
+                        target = "engine::wait",
+                        %execution_id,
+                        armed = ?to_arm,
+                        armed_count = to_arm.len(),
+                        "live-frontier resume: arming signal waits for Phase-0b completion"
+                    );
+                    // Durably commit the arm under the loop's OWN lease before
+                    // Phase-0b acts on it. On checkpoint failure, abort the
+                    // frontier rather than completing a wait whose arm did not
+                    // land.
+                    if let Err(e) = self
+                        .checkpoint_node(
+                            scope,
+                            execution_id,
+                            // No single node owns this multi-node arm; reuse the
+                            // first armed node as the checkpoint's attribution key.
+                            to_arm[0].clone(),
+                            outputs,
+                            exec_state,
+                            repo_version,
+                            fencing,
+                        )
+                        .await
+                    {
+                        cancel_token.cancel();
+                        return Some((to_arm[0].clone(), e.to_string()));
+                    }
+                    // Purge any stale future heap entry for the re-armed nodes
+                    // (e.g. a signal+timeout wait's original timeout deadline)
+                    // and replace it with a now-due entry, so Phase-0b completes
+                    // immediately and the loop does not idle until the old
+                    // deadline. `BinaryHeap` has no keyed remove, so rebuild it
+                    // without the re-armed keys (the heap is small — one entry
+                    // per parked node). Correctness does not depend on this
+                    // (the stale entry would pop later and be skipped via the
+                    // state re-read); it removes a spurious wait until the old
+                    // deadline.
+                    let armed: HashSet<&NodeKey> = to_arm.iter().collect();
+                    let retained: Vec<_> = std::mem::take(&mut wait_heap)
+                        .into_iter()
+                        .filter(|Reverse((_, key))| !armed.contains(key))
+                        .collect();
+                    wait_heap.extend(retained);
+                    for node_key in to_arm {
+                        wait_heap.push(Reverse((now, node_key.clone())));
+                        tracing::info!(
+                            target = "engine::wait",
+                            %execution_id,
+                            %node_key,
+                            "live-frontier resume: armed signal wait for Phase-0b completion"
+                        );
+                    }
+                    // Loop back so Phase-0b drains the armed waits → main port.
                     continue;
                 },
                 WakeReason::WallClock => {
@@ -3675,69 +4016,69 @@ impl WorkflowEngine {
                     // condition is satisfied.
                     //
                     // Conditions supported by this path:
-                    //   Timer: `Until` / `Duration` — push onto `wait_heap`;
-                    //     Phase-0b drains to `Completed` when the timer fires.
-                    //   Signal: `Webhook` / `Approval` / `Execution` (timeout:None) —
-                    //     `wake_at = None`, no heap entry; execution parks at `Paused`
-                    //     until a `Resume` command's durable satisfy-CAS arms it
-                    //     (sets `next_attempt_at`) for Phase-0b completion.
+                    //   Timer: `Until` / `Duration` (timeout:None) — `wake_at` is
+                    //     the condition's instant, `wait_wake = Completion`; pushed
+                    //     onto `wait_heap`; Phase-0b drains to `Completed`.
+                    //   Signal (timeout:None): `Webhook` / `Approval` / `Execution` —
+                    //     `wake_at = None`, `wait_wake = None`, no heap entry;
+                    //     execution parks at `Paused` until a `Resume` command's
+                    //     durable satisfy-CAS arms it for Phase-0b completion (case-a).
+                    //   Signal (timeout:Some(dur)): `Webhook` / `Approval` /
+                    //     `Execution` with a deadline — `wake_at = now + dur`,
+                    //     `wait_wake = Timeout`; pushed onto `wait_heap`; the row
+                    //     stays `Running` (a live loop on the timeout timer). A
+                    //     `Resume` reaches it through the live-frontier resume channel
+                    //     (W-S2b), NOT the Paused satisfy-CAS. If the timer fires
+                    //     first, Phase-0b FAILS the node (`WaitTimedOut`).
                     //
-                    // Not yet supported — still rejected:
-                    //   Any condition with `timeout: Some(..)`: the
-                    //   timeout-as-cancellation path requires a live-frontier
-                    //   resume channel that is not yet implemented.
+                    // Still rejected:
+                    //   Timer (`Until` / `Duration`) WITH `timeout:Some(..)`: two
+                    //     competing timers is ambiguous; silently honouring one and
+                    //     discarding the other is a correctness bug (W-S1 P2). A
+                    //     timeout on a timer wait stays an explicit error.
                     if let ActionResult::Wait {
                         ref condition,
                         timeout,
                         ..
                     } = action_result
                     {
-                        // Reject explicit timeouts: the timeout-as-cancellation
-                        // path belongs to W-S2. Silently ignoring a `timeout`
-                        // would mean the node waits the full condition duration
-                        // (up to hours) instead of the declared maximum, which
-                        // is a correctness bug, not a missing optimisation.
-                        if let Some(_timeout_dur) = timeout {
-                            let condition_kind = match condition {
-                                WaitCondition::Until { .. } => "Until with explicit timeout",
-                                WaitCondition::Duration { .. } => "Duration with explicit timeout",
-                                WaitCondition::Webhook { .. } => "Webhook with explicit timeout",
-                                WaitCondition::Approval { .. } => "Approval with explicit timeout",
-                                WaitCondition::Execution { .. } => {
-                                    "Execution with explicit timeout"
-                                },
-                                _ => "Unknown with explicit timeout",
-                            };
-                            let runtime_err =
-                                crate::runtime::error::RuntimeError::WaitConditionNotSupported {
-                                    condition_kind: condition_kind.to_owned(),
-                                };
-                            let engine_err = EngineError::Runtime(runtime_err);
-                            tracing::error!(
-                                target = "engine::wait",
-                                %execution_id,
-                                %node_key,
-                                condition_kind,
-                                error = %engine_err,
-                                "explicit timeout on WaitCondition not supported in W-S1; \
-                                 marking node Failed and returning error"
-                            );
-                            mark_node_failed(exec_state, node_key.clone(), &engine_err);
-                            cancel_token.cancel();
-                            return Some((node_key.clone(), engine_err.to_string()));
-                        }
-
-                        // Compute the timer wake instant for timer-based conditions.
-                        // Signal-driven conditions (Webhook / Approval / Execution) park
-                        // with `wake_at = None`: they hold no timer heap entry and remain
-                        // suspended until an explicit Resume command delivers the signal.
-                        // The frontier exits with all heaps empty while those nodes are
-                        // still `Waiting{next_attempt_at == None}`; `determine_final_status`
-                        // priority-4a recognises that as `Paused`, not a frontier bug.
                         let now = Utc::now();
-                        let wake_at: Option<DateTime<Utc>> = match condition {
-                            WaitCondition::Until { datetime } => Some(*datetime),
-                            WaitCondition::Duration { duration } => {
+                        // Compute the (wake_at, wait_wake) pair. `wait_wake` records
+                        // how a timer wake is to be read when it fires: `Completion`
+                        // for a timer-driven wait, `Timeout` for a signal wait whose
+                        // declared `timeout` is the wake. A signal-only park carries
+                        // neither (satisfied by an explicit Resume, not a timer); its
+                        // node stays `Waiting{None}` and `determine_final_status`
+                        // priority-4a recognises that as `Paused`, not a frontier bug.
+                        let wake_plan: (Option<DateTime<Utc>>, Option<WaitWake>) = match condition {
+                            WaitCondition::Until { .. } | WaitCondition::Duration { .. } => {
+                                // Timer wait. An explicit `timeout` on a timer is two
+                                // competing deadlines — reject (W-S1 P2 invariant).
+                                if timeout.is_some() {
+                                    let condition_kind = match condition {
+                                        WaitCondition::Until { .. } => {
+                                            "Until with explicit timeout"
+                                        },
+                                        _ => "Duration with explicit timeout",
+                                    };
+                                    let engine_err = EngineError::Runtime(
+                                        crate::runtime::error::RuntimeError::WaitConditionNotSupported {
+                                            condition_kind: condition_kind.to_owned(),
+                                        },
+                                    );
+                                    tracing::error!(
+                                        target = "engine::wait",
+                                        %execution_id,
+                                        %node_key,
+                                        condition_kind,
+                                        error = %engine_err,
+                                        "explicit timeout on a TIMER WaitCondition is ambiguous \
+                                         (two competing deadlines); marking node Failed"
+                                    );
+                                    mark_node_failed(exec_state, node_key.clone(), &engine_err);
+                                    cancel_token.cancel();
+                                    return Some((node_key.clone(), engine_err.to_string()));
+                                }
                                 // FAIL CLOSED on an unrepresentable / overflowing timer
                                 // Duration. Mapping the error to `None` would silently
                                 // turn a TIMER wait into a signal-driven indefinite park
@@ -3754,38 +4095,98 @@ impl WorkflowEngine {
                                             %execution_id,
                                             %node_key,
                                             error = %engine_err,
-                                            "Duration WaitCondition cannot be scheduled; marking \
+                                            "timer WaitCondition cannot be scheduled; marking \
                                              node Failed (fail-closed)"
                                         );
                                         mark_node_failed(exec_state, node_key.clone(), &engine_err);
                                         cancel_token.cancel();
                                         engine_err.to_string()
                                     };
-                                let Ok(chrono_dur) = chrono::Duration::from_std(*duration) else {
-                                    let msg = fail_unschedulable(
-                                        exec_state,
-                                        format!("Duration wait not representable: {duration:?}"),
-                                    );
-                                    return Some((node_key.clone(), msg));
+                                let when = match condition {
+                                    WaitCondition::Until { datetime } => *datetime,
+                                    WaitCondition::Duration { duration } => {
+                                        let Ok(chrono_dur) = chrono::Duration::from_std(*duration)
+                                        else {
+                                            let msg = fail_unschedulable(
+                                                exec_state,
+                                                format!(
+                                                    "Duration wait not representable: {duration:?}"
+                                                ),
+                                            );
+                                            return Some((node_key.clone(), msg));
+                                        };
+                                        let Some(when) = now.checked_add_signed(chrono_dur) else {
+                                            let msg = fail_unschedulable(
+                                                exec_state,
+                                                "Duration wait overflows the scheduler timestamp"
+                                                    .to_owned(),
+                                            );
+                                            return Some((node_key.clone(), msg));
+                                        };
+                                        when
+                                    },
+                                    // Unreachable: outer arm is Until|Duration only.
+                                    _ => unreachable!("timer arm matched a non-timer condition"),
                                 };
-                                let Some(when) = now.checked_add_signed(chrono_dur) else {
-                                    let msg = fail_unschedulable(
-                                        exec_state,
-                                        "Duration wait overflows the scheduler timestamp"
-                                            .to_owned(),
-                                    );
-                                    return Some((node_key.clone(), msg));
-                                };
-                                Some(when)
+                                (Some(when), Some(WaitWake::Completion))
                             },
-                            // Signal-driven conditions: no timer wake — the park is
-                            // indefinite until a Resume command's durable satisfy-CAS
-                            // arms the node (sets `next_attempt_at`) for Phase-0b
-                            // completion. `wake_at = None` means the node is never
-                            // pushed onto `wait_heap` until a Resume arms it.
+                            // Signal-driven conditions.
                             WaitCondition::Webhook { .. }
                             | WaitCondition::Approval { .. }
-                            | WaitCondition::Execution { .. } => None,
+                            | WaitCondition::Execution { .. } => {
+                                match timeout {
+                                    // Signal + timeout (W-S2b): park with a timeout
+                                    // timer, `wait_wake = Timeout`. The row stays
+                                    // `Running`; Phase-0b FAILS the node if the timer
+                                    // fires before a Resume arrives.
+                                    Some(dur) => {
+                                        let Ok(chrono_dur) = chrono::Duration::from_std(dur) else {
+                                            let engine_err = EngineError::Runtime(
+                                                crate::runtime::error::RuntimeError::WaitConditionNotSupported {
+                                                    condition_kind: format!(
+                                                        "signal wait timeout not representable: \
+                                                         {dur:?}"
+                                                    ),
+                                                },
+                                            );
+                                            mark_node_failed(
+                                                exec_state,
+                                                node_key.clone(),
+                                                &engine_err,
+                                            );
+                                            cancel_token.cancel();
+                                            return Some((
+                                                node_key.clone(),
+                                                engine_err.to_string(),
+                                            ));
+                                        };
+                                        let Some(deadline) = now.checked_add_signed(chrono_dur)
+                                        else {
+                                            let engine_err = EngineError::Runtime(
+                                                crate::runtime::error::RuntimeError::WaitConditionNotSupported {
+                                                    condition_kind:
+                                                        "signal wait timeout overflows the \
+                                                         scheduler timestamp"
+                                                            .to_owned(),
+                                                },
+                                            );
+                                            mark_node_failed(
+                                                exec_state,
+                                                node_key.clone(),
+                                                &engine_err,
+                                            );
+                                            cancel_token.cancel();
+                                            return Some((
+                                                node_key.clone(),
+                                                engine_err.to_string(),
+                                            ));
+                                        };
+                                        (Some(deadline), Some(WaitWake::Timeout))
+                                    },
+                                    // Signal only (case-a): no timer, parks at Paused.
+                                    None => (None, None),
+                                }
+                            },
                             _ => {
                                 // Unknown WaitCondition variant — FAIL CLOSED.
                                 // Parking with `wake_at = None` would let a generic
@@ -3793,8 +4194,7 @@ impl WorkflowEngine {
                                 // this engine cannot classify (a signal vs timer vs
                                 // something else). Until a variant is explicitly added
                                 // to the signal/timer arms above, reject it on the same
-                                // `WaitConditionNotSupported` path as an explicit timeout
-                                // rather than parking it.
+                                // `WaitConditionNotSupported` path rather than parking it.
                                 let runtime_err =
                                     crate::runtime::error::RuntimeError::WaitConditionNotSupported {
                                         condition_kind: "unrecognised WaitCondition variant"
@@ -3814,6 +4214,7 @@ impl WorkflowEngine {
                                 return Some((node_key.clone(), engine_err.to_string()));
                             },
                         };
+                        let (wake_at, wait_wake) = wake_plan;
 
                         // Budget enforcement for the partial output committed at park
                         // time. The normal success path increments `total_output_bytes`
@@ -3863,7 +4264,7 @@ impl WorkflowEngine {
                             }
                         }
 
-                        match exec_state.park_node(node_key.clone(), wake_at) {
+                        match exec_state.park_node(node_key.clone(), wake_at, wait_wake) {
                             Ok(()) => {
                                 // Signal park (no timer) that leaves NO other active
                                 // frontier work fully suspends the execution: persist
@@ -3879,6 +4280,11 @@ impl WorkflowEngine {
                                 // and ignored). The general crashed-`Running` recovery
                                 // gap (e.g. a sibling completing last) is tracked
                                 // separately.
+                                //
+                                // A signal + timeout park has `wake_at = Some(_)`, so it
+                                // is NOT covered here: the row stays `Running` with a
+                                // live loop on the timeout timer (W-S2b). Its Resume
+                                // arrives through the live-frontier resume channel.
                                 if wake_at.is_none()
                                     && join_set.is_empty()
                                     && ready_queue.is_empty()
@@ -3908,11 +4314,12 @@ impl WorkflowEngine {
                                     cancel_token.cancel();
                                     return Some((node_key.clone(), e.to_string()));
                                 }
-                                // Push onto the wait_heap for timer-driven conditions only.
-                                // Signal-driven conditions (`wake_at == None`) are never
-                                // pushed here; their node stays `Waiting` until a Resume
-                                // command's durable satisfy-CAS arms it (sets
-                                // `next_attempt_at`) for Phase-0b completion.
+                                // Push onto the wait_heap whenever there is a timer
+                                // (`wake_at == Some`): a timer-driven completion wait
+                                // (`Completion`) OR a signal+timeout wait
+                                // (`Timeout`). Signal-only conditions (`wake_at ==
+                                // None`) are never pushed; their node stays `Waiting`
+                                // until a Resume command's durable satisfy-CAS arms it.
                                 if let Some(when) = wake_at {
                                     wait_heap.push(Reverse((when, node_key.clone())));
                                 }
@@ -5675,7 +6082,13 @@ fn drain_pending_to_cancelled(
     while let Some(Reverse((_, waiting))) = wait_heap.pop() {
         let _ = exec_state.transition_node(waiting.clone(), NodeState::Cancelled);
         if let Some(ns) = exec_state.node_states.get_mut(&waiting) {
-            ns.next_attempt_at = None;
+            // Clear both timer fields together: a signal+timeout wait carries
+            // `wait_wake = Some(..)` as well as `next_attempt_at`, and the
+            // next_attempt_at/wait_wake invariant must hold even on a terminal
+            // Cancelled node. `clear_wait_timer` is safe here — wait_heap nodes
+            // are `Waiting` (not WaitingRetry), so `next_attempt_at` is a park
+            // timer, not a retry timer.
+            ns.clear_wait_timer();
         }
         tracing::debug!(
             target = "engine::wait",
@@ -6094,6 +6507,21 @@ fn deserialize_stored_result(
             None
         },
     }
+}
+
+/// Whether a parked [`NodeState::Waiting`] node is a **signal** wait — one a
+/// `Resume` can satisfy, as opposed to a pure timer wait that only a timer can.
+///
+/// Two shapes:
+/// - signal-only: `next_attempt_at == None` (case-a; the row went `Paused`).
+/// - signal + timeout: `wait_wake == Some(Timeout)` (W-S2b; the row stays
+///   `Running` with the timeout deadline in `next_attempt_at`).
+///
+/// A timer-driven completion wait (`Until` / `Duration`) carries
+/// `wait_wake == Some(Completion)` with a `next_attempt_at` — that is NOT a
+/// signal wait and a Resume must never re-arm it.
+fn is_signal_wait(ns: &nebula_execution::state::NodeExecutionState) -> bool {
+    ns.next_attempt_at.is_none() || ns.wait_wake == Some(WaitWake::Timeout)
 }
 
 /// Mark a node as failed in the execution state.

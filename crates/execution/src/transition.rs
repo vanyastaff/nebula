@@ -62,13 +62,17 @@ pub fn validate_execution_transition(
 /// attempt's failure is already recorded in `NodeAttempt`.
 ///
 /// The wait-park edges (`Running → Waiting`, `Waiting → Completed`,
-/// `Waiting → Cancelled`) implement the durable park path: when an
-/// action returns `ActionResult::Wait`, the engine parks the node
-/// (`Running → Waiting`), releasing the worker and gating downstream
-/// edges until the wait condition is satisfied. Once the condition
-/// fires the engine transitions directly to `Completed` (`Waiting →
-/// Completed`) and activates downstream. A shutdown/cancel during the
-/// wait goes to `Cancelled` (`Waiting → Cancelled`).
+/// `Waiting → Failed`, `Waiting → Cancelled`) implement the durable park
+/// path: when an action returns `ActionResult::Wait`, the engine parks the
+/// node (`Running → Waiting`), releasing the worker and gating downstream
+/// edges until the wait condition is satisfied. Once the condition fires
+/// the engine transitions directly to `Completed` (`Waiting → Completed`)
+/// and activates downstream. A signal wait parked with an explicit
+/// `timeout` whose deadline elapses fails the node (`Waiting → Failed` with
+/// `RuntimeError::WaitTimedOut`) and routes its outgoing edges through the
+/// failure path — the explicit failure reason the `Waiting → Failed` edge
+/// requires (ADR-0099 W-S2b addendum). A shutdown/cancel during the wait
+/// goes to `Cancelled` (`Waiting → Cancelled`).
 #[must_use]
 pub fn can_transition_node(from: NodeState, to: NodeState) -> bool {
     matches!(
@@ -90,7 +94,7 @@ pub fn can_transition_node(from: NodeState, to: NodeState) -> bool {
             NodeState::Ready | NodeState::Cancelled
         ) | (
             NodeState::Waiting,
-            NodeState::Completed | NodeState::Cancelled
+            NodeState::Completed | NodeState::Failed | NodeState::Cancelled
         )
     )
 }
@@ -383,12 +387,17 @@ mod tests {
     }
 
     /// Illegal edges from `Waiting` must be rejected: the engine
-    /// must not be able to re-run a parked node (`Waiting → Running`)
-    /// or collapse it to `Failed` without an explicit failure reason.
+    /// must not be able to re-run a parked node (`Waiting → Running`),
+    /// re-queue it (`Waiting → Ready`), or push it onto the retry heap
+    /// (`Waiting → WaitingRetry`).
+    ///
+    /// Note: `Waiting → Failed` is now a **legal** edge (ADR-0099 W-S2b —
+    /// signal-wait timeout-as-failure supplies the explicit failure reason
+    /// the previous rejection demanded). See
+    /// [`waiting_can_transition_to_failed_on_timeout`].
     #[test]
     fn waiting_cannot_transition_to_illegal_states() {
         assert!(!can_transition_node(NodeState::Waiting, NodeState::Running));
-        assert!(!can_transition_node(NodeState::Waiting, NodeState::Failed));
         assert!(!can_transition_node(NodeState::Waiting, NodeState::Ready));
         assert!(!can_transition_node(
             NodeState::Waiting,
@@ -396,6 +405,17 @@ mod tests {
         ));
         // Self-loop is not a valid transition.
         assert!(!can_transition_node(NodeState::Waiting, NodeState::Waiting));
+    }
+
+    /// `Waiting → Failed` is the timeout-as-failure edge (ADR-0099 W-S2b):
+    /// a signal wait parked with an explicit `timeout` whose deadline
+    /// elapses fails the node with `RuntimeError::WaitTimedOut` — the
+    /// explicit failure reason that reverses the prior `Waiting → Failed`
+    /// rejection. The engine then routes the node's outgoing edges through
+    /// the failure path (OnError / Skip / FailFast).
+    #[test]
+    fn waiting_can_transition_to_failed_on_timeout() {
+        assert!(can_transition_node(NodeState::Waiting, NodeState::Failed));
     }
 
     /// `Completed → Waiting` must be rejected — a completed node

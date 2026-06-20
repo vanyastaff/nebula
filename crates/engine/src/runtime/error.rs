@@ -228,6 +228,38 @@ pub enum RuntimeError {
         condition_kind: String,
     },
 
+    /// A signal-driven `ActionResult::Wait` (`Webhook` / `Approval` /
+    /// `Execution`) was parked with an explicit `timeout` and that deadline
+    /// elapsed before a Resume arrived. The engine fails the node and routes
+    /// its outgoing edges through the failure path (OnError / Skip /
+    /// FailFast) — the timeout is the declared maximum the author asked the
+    /// engine to enforce (ADR-0099 W-S2b).
+    ///
+    /// Terminal and **not** retryable: a wait timeout is a deliberate
+    /// deadline, not a transient fault. The engine bypasses the retry
+    /// decision entirely for this error (it does not count against the
+    /// per-node or per-execution retry budget).
+    #[classify(
+        category = "exhausted",
+        code = "RUNTIME:WAIT_TIMED_OUT",
+        retryable = false
+    )]
+    #[error("ActionResult::Wait signal condition timed out after {timeout_ms}ms without a Resume")]
+    WaitTimedOut {
+        /// The parked signal-wait kind. Currently always the literal
+        /// `"signal"`: the parked node does not persist the exact
+        /// `WaitCondition` variant (`Webhook` / `Approval` / `Execution`), so
+        /// after the timer fires — and especially after a crash + recovery —
+        /// only the generic discriminator is recoverable. Per-variant detail
+        /// will arrive with persisted resume targeting. The field is retained
+        /// for that forward-compatible use and is emitted on the
+        /// `NodeWaitTimedOut` event; it is intentionally not interpolated into
+        /// the `Display` message while it is a constant.
+        condition_kind: String,
+        /// The declared `timeout` that elapsed, in milliseconds.
+        timeout_ms: u64,
+    },
+
     /// Internal runtime error.
     #[classify(category = "internal", code = "RUNTIME:INTERNAL")]
     #[error("runtime error: {0}")]
@@ -316,5 +348,45 @@ mod tests {
             max_turns: 3,
         };
         assert!(!err.is_retryable());
+    }
+
+    #[test]
+    fn wait_timed_out_not_retryable() {
+        // A wait timeout is a deliberate deadline, not a transient fault:
+        // `is_retryable()` must agree with the `retryable = false` classify
+        // attribute so retry policies never re-park a timed-out wait.
+        let err = RuntimeError::WaitTimedOut {
+            condition_kind: "Webhook".into(),
+            timeout_ms: 5_000,
+        };
+        assert!(!err.is_retryable(), "WaitTimedOut must not be retryable");
+    }
+
+    #[test]
+    fn wait_timed_out_display_carries_timeout_but_not_the_kind() {
+        // `condition_kind` is currently always the constant `"signal"`, so the
+        // Display deliberately does NOT interpolate it (that would render the
+        // tautology "signal condition 'signal' timed out"). The message must
+        // still carry the actionable timeout, and reference the signal
+        // condition in prose.
+        let err = RuntimeError::WaitTimedOut {
+            condition_kind: "signal".into(),
+            timeout_ms: 1_500,
+        };
+        let msg = err.to_string();
+        assert!(
+            msg.contains("1500"),
+            "message must carry the timeout ms: {msg}"
+        );
+        assert!(
+            msg.contains("signal condition"),
+            "message must reference the signal condition: {msg}"
+        );
+        // The raw field value must NOT be echoed as a quoted token — a constant
+        // kind interpolated into the message reads as a tautology.
+        assert!(
+            !msg.contains("'signal'"),
+            "the constant condition_kind must not be interpolated into Display: {msg}"
+        );
     }
 }

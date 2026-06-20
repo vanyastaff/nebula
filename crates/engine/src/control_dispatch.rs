@@ -24,12 +24,16 @@
 //!   [`EngineError::Leased`], which `drive()` maps to `Ok(())` so the same execution is not fenced
 //!   as a consumer failure.
 //!
-//! - **Resume** additionally calls `satisfy_signal_waits` for `Paused` executions before
-//!   re-driving. Because `satisfy_signal_waits` holds the execution lease for its CAS, errors
-//!   split by effect: `Leased` returns `Deferred` (B1 reclaim redelivers); any other error
-//!   (CAS conflict, checkpoint failure) re-reads the persisted status — terminal / `Cancelling`
-//!   → ack; still non-terminal → `Deferred`. This ensures the Resume is never silently dropped
-//!   when the satisfy did not durably land.
+//! - **Resume** splits by persisted status. For a `Paused` execution it calls
+//!   `satisfy_signal_waits` before re-driving (the no-live-runner path). Because
+//!   `satisfy_signal_waits` holds the execution lease for its CAS, errors split by effect:
+//!   `Leased` returns `Deferred` (B1 reclaim redelivers); any other error (CAS conflict,
+//!   checkpoint failure) re-reads the persisted status — terminal / `Cancelling` → ack; still
+//!   non-terminal → `Deferred`. This ensures the Resume is never silently dropped when the
+//!   satisfy did not durably land. For a `Running` execution (a signal wait parked with a
+//!   `timeout`, so the row never reached `Paused`) it delivers the Resume to the live frontier
+//!   loop's resume channel via `WorkflowEngine::resume_live` (W-S2b): a live entry on this
+//!   runner → ack; no live entry (cross-runner / just-paused) → `Deferred` for B1 reclaim.
 //!
 //! - **Cancel / Terminate** always signal the engine's cancel registry (except for orphan commands,
 //!   which are [`ControlDispatchError::Rejected`]). The underlying
@@ -279,9 +283,42 @@ impl ControlDispatch for EngineControlDispatch {
             None => Err(ControlDispatchError::Rejected(format!(
                 "execution {execution_id} not found — resume command orphaned"
             ))),
+            // `Running`: a signal wait parked with a `timeout` keeps the row
+            // `Running` with a LIVE frontier loop on the timeout timer (W-S2b).
+            // The durable satisfy-CAS path cannot be used here — it would
+            // acquire the lease the live loop already holds. Instead deliver
+            // the Resume to the live loop's resume channel; the loop self-arms
+            // its signal wait under its own lease and completes it.
+            //
+            // If no live entry exists on this runner (`resume_live` returns
+            // false), the execution is driven by another runner or has just
+            // transitioned to `Paused` — defer for B1 reclaim, which redelivers
+            // to the owning runner / the durable Paused satisfy-CAS path.
+            Some(ExecutionStatus::Running) => {
+                if self.engine.resume_live(execution_id) {
+                    tracing::info!(
+                        %execution_id,
+                        "dispatch_resume: delivered to live frontier resume channel"
+                    );
+                    Ok(())
+                } else {
+                    tracing::warn!(
+                        %execution_id,
+                        "dispatch_resume: execution is Running but has no live frontier on this \
+                         runner; deferring for B1 reclaim (cross-runner or just-paused)"
+                    );
+                    self.engine.emit_event(ExecutionEvent::ResumeDeferred {
+                        execution_id,
+                        reason: "Running with no live frontier on this runner".to_owned(),
+                    });
+                    Err(ControlDispatchError::Deferred(format!(
+                        "execution {execution_id} is Running but not live on this runner; \
+                         Resume deferred for B1 reclaim"
+                    )))
+                }
+            },
             Some(
-                ExecutionStatus::Running
-                | ExecutionStatus::Cancelling
+                ExecutionStatus::Cancelling
                 | ExecutionStatus::Completed
                 | ExecutionStatus::Failed
                 | ExecutionStatus::Cancelled
