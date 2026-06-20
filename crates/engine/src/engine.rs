@@ -2686,6 +2686,17 @@ impl WorkflowEngine {
             }
         }
 
+        // Mirror `ExecutionState::transition_node`: direct field mutation must
+        // still advance `version`/`updated_at` so the serialized blob's
+        // denormalized version matches the row the store CAS produces. A reader
+        // that reconstructs `ExecutionState` from the blob and keys its own CAS
+        // on `exec_state.version` must not accept a stale snapshot whose version
+        // never moved. (The store CAS below keys on `repo_version`, so the
+        // commit is correct regardless; this keeps the in-blob copy honest —
+        // the same bump the W-S2b live-frontier self-arm performs.)
+        exec_state.version += 1;
+        exec_state.updated_at = now;
+
         // Persist the satisfy-CAS. This is the single discriminator between
         // a genuine Resume and a reclaim re-drive: only this code path arms
         // `next_attempt_at` on a signal-`Waiting{None}` node before `drive`
