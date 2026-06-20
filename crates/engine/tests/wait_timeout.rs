@@ -27,10 +27,10 @@
 //! likewise use the in-mem store's clamp floor (1s) under real time.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{
         Arc, OnceLock,
-        atomic::{AtomicU32, Ordering},
+        atomic::{AtomicBool, AtomicU32, Ordering},
     },
     time::Duration,
 };
@@ -51,8 +51,9 @@ use nebula_execution::{ExecutionState, ExecutionStatus};
 use nebula_metrics::MetricsRegistry;
 use nebula_storage::{InMemoryExecutionStore, InMemoryWorkflowVersionStore};
 use nebula_storage_port::{
-    dto::WorkflowVersionRecord,
-    store::{ExecutionStore, WorkflowVersionStore},
+    FencingToken, Scope, StorageError, TransitionBatch, TransitionOutcome,
+    dto::{ExecutionRecord, WorkflowVersionRecord},
+    store::{ExecutionStore, WorkflowStore, WorkflowVersionStore},
 };
 use nebula_workflow::{
     CURRENT_SCHEMA_VERSION, Connection, NodeDefinition, Version, WorkflowConfig, WorkflowDefinition,
@@ -147,6 +148,38 @@ impl StatelessAction for CountingError {
     ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         self.invocations.fetch_add(1, Ordering::SeqCst);
         Ok(ActionResult::success(input))
+    }
+}
+
+/// Parks itself via `WaitCondition::Duration` (a TIMER wait, not a signal
+/// wait). It is NOT a signal wait per the engine's `is_signal_wait` filter, so
+/// a live-frontier Resume does NOT arm it — it stays parked until its own
+/// duration elapses. Used as a "blocker" that keeps the frontier loop ALIVE
+/// past another node's stale timeout deadline, so a stale timeout-heap entry
+/// actually pops in a live loop (CR#7).
+struct DurationWaitBlocker {
+    duration: Duration,
+}
+
+static_action_impl!(
+    DurationWaitBlocker,
+    action_key!("test.wt.duration_blocker"),
+    "DurationWaitBlocker"
+);
+
+impl StatelessAction for DurationWaitBlocker {
+    async fn execute(
+        &self,
+        _input: <Self as Action>::Input,
+        _ctx: &(impl nebula_action::ActionContext + ?Sized),
+    ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
+        Ok(ActionResult::Wait {
+            condition: WaitCondition::Duration {
+                duration: self.duration,
+            },
+            timeout: None,
+            partial_output: None,
+        })
     }
 }
 
@@ -422,6 +455,75 @@ fn make_two_wait_workflow() -> WorkflowDefinition {
     }
 }
 
+/// Build a registry with the standard signal+timeout / echo nodes PLUS a
+/// `DurationWaitBlocker` parked for `blocker_for`. The blocker keeps the
+/// frontier loop alive past the signal wait's stale timeout deadline (CR#7).
+fn build_registry_with_blocker(
+    timeout: Duration,
+    blocker_for: Duration,
+    main_count: &Arc<AtomicU32>,
+    error_count: &Arc<AtomicU32>,
+) -> Arc<ActionRegistry> {
+    let registry = build_registry(timeout, main_count, error_count);
+    registry.register_stateless_instance(
+        ActionMetadata::new(
+            action_key!("test.wt.duration_blocker"),
+            "DurationWaitBlocker",
+            "wait_timeout stub",
+        ),
+        DurationWaitBlocker {
+            duration: blocker_for,
+        },
+    );
+    registry
+}
+
+/// Build a workflow `wait ──main──> main_node` / `wait ──error──> error_node`
+/// PLUS an independent `blocker` node that parks on a `Duration` wait. The
+/// blocker has no downstream — its sole job is to keep the frontier loop alive
+/// (the row stays `Running` on the blocker's timer) while the signal wait's
+/// stale timeout entry pops and is purged/re-read (CR#7).
+fn make_workflow_with_blocker() -> WorkflowDefinition {
+    let now = chrono::Utc::now();
+    let wait = node_key!("wait_node");
+    let main_node = node_key!("main_node");
+    let error_node = node_key!("error_node");
+    let blocker = node_key!("blocker_node");
+    let nodes = vec![
+        NodeDefinition::new(wait.clone(), "WaitNode", "core", "test.wt.webhook_timeout").unwrap(),
+        NodeDefinition::new(main_node.clone(), "MainNode", "core", "test.wt.main_echo").unwrap(),
+        NodeDefinition::new(
+            error_node.clone(),
+            "ErrorNode",
+            "core",
+            "test.wt.error_echo",
+        )
+        .unwrap(),
+        NodeDefinition::new(blocker, "Blocker", "core", "test.wt.duration_blocker").unwrap(),
+    ];
+    let connections = vec![
+        Connection::new(wait.clone(), main_node),
+        Connection::new(wait, error_node).with_from_port("error"),
+    ];
+    WorkflowDefinition {
+        id: nebula_core::WorkflowId::new(),
+        name: "wait-timeout-blocker-test".into(),
+        description: None,
+        version: Version::new(0, 1, 0),
+        nodes,
+        connections,
+        variables: HashMap::new(),
+        config: WorkflowConfig::default(),
+        trigger_bindings: Vec::new(),
+        tags: Vec::new(),
+        created_at: now,
+        updated_at: now,
+        owner_id: None,
+        ui_metadata: None,
+        schema_version: CURRENT_SCHEMA_VERSION,
+    }
+}
+
 /// Await `NodeParked` for the wait node from a subscribed event stream. Bounds
 /// the wait so a missing park fails fast instead of hanging.
 async fn await_parked(events_rx: &mut nebula_eventbus::Subscriber<ExecutionEvent>) -> ExecutionId {
@@ -438,26 +540,170 @@ async fn await_parked(events_rx: &mut nebula_eventbus::Subscriber<ExecutionEvent
     .expect("engine must emit NodeParked for the signal+timeout wait")
 }
 
-/// Await `expected` distinct `NodeParked` events. Used by the N>1 self-arm test,
-/// where a single Resume must arm MULTIPLE parallel signal+timeout waits — every
-/// wait node must be `Waiting` before the Resume is delivered, otherwise the
-/// single `notify_one()` would arm only the nodes parked so far.
+/// Await `NodeParked` events until `expected` DISTINCT nodes have parked. Used
+/// by the N>1 self-arm test, where a single Resume must arm MULTIPLE parallel
+/// signal+timeout waits — every wait node must be `Waiting` before the Resume is
+/// delivered, otherwise the single delivery would arm only the nodes parked so
+/// far. Keyed on `node_key` so a duplicate `NodeParked` for one node cannot
+/// satisfy the count.
 async fn await_n_parked(
     events_rx: &mut nebula_eventbus::Subscriber<ExecutionEvent>,
     expected: usize,
 ) {
     tokio::time::timeout(Duration::from_secs(5), async {
-        let mut parked = 0usize;
-        while parked < expected {
+        let mut parked: HashSet<nebula_core::NodeKey> = HashSet::new();
+        while parked.len() < expected {
             match events_rx.recv().await {
-                Some(ExecutionEvent::NodeParked { .. }) => parked += 1,
+                Some(ExecutionEvent::NodeParked { node_key, .. }) => {
+                    parked.insert(node_key);
+                },
                 Some(_) => continue,
                 None => panic!("event bus closed before all NodeParked"),
             }
         }
     })
     .await
-    .unwrap_or_else(|_| panic!("engine must emit {expected} NodeParked events"));
+    .unwrap_or_else(|_| panic!("engine must emit {expected} distinct NodeParked events"));
+}
+
+/// Await the `NodeWaitTimedOut` event from a subscribed stream, returning it so
+/// the caller can assert its fields. Bounds the wait so a missing event fails
+/// fast instead of hanging.
+async fn await_wait_timed_out(
+    events_rx: &mut nebula_eventbus::Subscriber<ExecutionEvent>,
+) -> ExecutionEvent {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match events_rx.recv().await {
+                Some(event @ ExecutionEvent::NodeWaitTimedOut { .. }) => break event,
+                Some(_) => continue,
+                None => panic!("event bus closed before NodeWaitTimedOut"),
+            }
+        }
+    })
+    .await
+    .expect("engine must emit NodeWaitTimedOut when a signal+timeout wait elapses")
+}
+
+// ── Fault-injecting execution store (P1#1 fenced-out self-arm) ────────────────
+
+/// Wraps an [`InMemoryExecutionStore`] and forces the NEXT `commit` after
+/// `fence_next` is armed to report [`TransitionOutcome::FencedOut`] — modelling
+/// the live loop losing its lease mid-iteration so the self-arm checkpoint is
+/// fenced. The park checkpoint(s) run with `fence_next == false`; the test arms
+/// the flag after the park and before the Resume, so only the self-arm commit
+/// is fenced. All other methods delegate.
+#[derive(Debug)]
+struct FenceArmStore {
+    inner: Arc<InMemoryExecutionStore>,
+    fence_next: AtomicBool,
+}
+
+impl FenceArmStore {
+    fn new(inner: Arc<InMemoryExecutionStore>) -> Self {
+        Self {
+            inner,
+            fence_next: AtomicBool::new(false),
+        }
+    }
+
+    /// Arm the fence so the next `commit` reports `FencedOut` instead of
+    /// delegating.
+    fn arm_fence(&self) {
+        self.fence_next.store(true, Ordering::SeqCst);
+    }
+}
+
+#[async_trait::async_trait]
+impl ExecutionStore for FenceArmStore {
+    async fn create(
+        &self,
+        scope: &Scope,
+        id: &str,
+        workflow_id: &str,
+        initial_state: serde_json::Value,
+    ) -> Result<(), StorageError> {
+        self.inner
+            .create(scope, id, workflow_id, initial_state)
+            .await
+    }
+
+    async fn get(&self, scope: &Scope, id: &str) -> Result<Option<ExecutionRecord>, StorageError> {
+        self.inner.get(scope, id).await
+    }
+
+    async fn commit(&self, batch: TransitionBatch) -> Result<TransitionOutcome, StorageError> {
+        // Fence exactly one commit (the self-arm checkpoint) once armed.
+        if self.fence_next.swap(false, Ordering::SeqCst) {
+            return Ok(TransitionOutcome::FencedOut);
+        }
+        self.inner.commit(batch).await
+    }
+
+    async fn acquire_lease(
+        &self,
+        scope: &Scope,
+        id: &str,
+        holder: &str,
+        ttl: Duration,
+    ) -> Result<Option<FencingToken>, StorageError> {
+        self.inner.acquire_lease(scope, id, holder, ttl).await
+    }
+
+    async fn renew_lease(
+        &self,
+        scope: &Scope,
+        id: &str,
+        token: FencingToken,
+        ttl: Duration,
+    ) -> Result<bool, StorageError> {
+        self.inner.renew_lease(scope, id, token, ttl).await
+    }
+
+    async fn release_lease(
+        &self,
+        scope: &Scope,
+        id: &str,
+        token: FencingToken,
+    ) -> Result<bool, StorageError> {
+        self.inner.release_lease(scope, id, token).await
+    }
+
+    async fn list_running(&self, scope: &Scope) -> Result<Vec<String>, StorageError> {
+        self.inner.list_running(scope).await
+    }
+
+    async fn list_running_for_workflow(
+        &self,
+        scope: &Scope,
+        workflow_id: &str,
+    ) -> Result<Vec<String>, StorageError> {
+        self.inner
+            .list_running_for_workflow(scope, workflow_id)
+            .await
+    }
+
+    async fn count(&self, scope: &Scope, workflow_id: Option<&str>) -> Result<u64, StorageError> {
+        self.inner.count(scope, workflow_id).await
+    }
+}
+
+/// Await the `ResumeDeferred` event from a subscribed stream, returning its
+/// `reason`. Bounds the wait so a missing event fails fast.
+async fn await_resume_deferred(
+    events_rx: &mut nebula_eventbus::Subscriber<ExecutionEvent>,
+) -> String {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match events_rx.recv().await {
+                Some(ExecutionEvent::ResumeDeferred { reason, .. }) => break reason,
+                Some(_) => continue,
+                None => panic!("event bus closed before ResumeDeferred"),
+            }
+        }
+    })
+    .await
+    .expect("engine must emit ResumeDeferred when a live-frontier Resume does not durably arm")
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -479,7 +725,12 @@ async fn signal_wait_with_timeout_fires_error_port_on_timeout() {
     let timeout = Duration::from_millis(120);
     let registry = build_registry(timeout, &main_count, &error_count);
 
-    let engine = Arc::new(make_engine(registry));
+    // Subscribe to the event stream so the `NodeWaitTimedOut` contract is
+    // asserted, not just the downstream branch counters (CR#9): the engine
+    // could route the error port correctly yet regress the typed event.
+    let event_bus = nebula_eventbus::EventBus::<ExecutionEvent>::new(64);
+    let mut events_rx = event_bus.subscribe();
+    let engine = Arc::new(make_engine(registry).with_event_bus(event_bus));
     let wf = Arc::new(make_workflow(/* with_error_port */ true, timeout));
 
     let engine_h = Arc::clone(&engine);
@@ -522,6 +773,30 @@ async fn signal_wait_with_timeout_fires_error_port_on_timeout() {
             .any(|e| e.contains("timed out") || e.contains("WAIT_TIMED_OUT")),
         "node_errors must reference the wait timeout; got: {:?}",
         result.node_errors
+    );
+
+    // The typed `NodeWaitTimedOut` event must fire with the signal
+    // discriminator and a timeout reconstructed from the persisted deadline.
+    // These tests run under real wall-clock timers (not `tokio::time::pause`),
+    // so `timeout_ms` is reconstructed from `deadline - started_at` and may
+    // slightly exceed the declared timeout — assert `>=`.
+    let timed_out = await_wait_timed_out(&mut events_rx).await;
+    let ExecutionEvent::NodeWaitTimedOut {
+        condition_kind,
+        timeout_ms,
+        ..
+    } = timed_out
+    else {
+        unreachable!("await_wait_timed_out only returns NodeWaitTimedOut")
+    };
+    assert_eq!(
+        condition_kind, "signal",
+        "the timed-out wait must report the signal condition kind"
+    );
+    assert!(
+        timeout_ms >= timeout.as_millis() as u64,
+        "timeout_ms ({timeout_ms}) must be at least the declared timeout ({}ms)",
+        timeout.as_millis()
     );
 }
 
@@ -686,9 +961,11 @@ async fn resume_to_running_execution_reaches_live_loop() {
 async fn crash_mid_wait_with_timeout_recovers_and_can_still_timeout() {
     let main_count = Arc::new(AtomicU32::new(0));
     let error_count = Arc::new(AtomicU32::new(0));
-    // Short timeout so that, by the time runner B recovers (after the lease TTL
-    // floor of ~1s), the deadline has already elapsed.
-    let timeout = Duration::from_millis(200);
+    // A timeout short enough that the deadline has elapsed by the time runner B
+    // recovers (after the ~1s lease TTL floor), but long enough that it cannot
+    // fire in the brief window before we abort runner A — 200ms was fragile
+    // under CI load (CR#6). 400ms is comfortably below the lease-expiry wait.
+    let timeout = Duration::from_millis(400);
     // In-mem store clamps lease TTL to >= 1s.
     let lease_ttl = Duration::from_secs(1);
     let heartbeat = Duration::from_millis(300);
@@ -729,7 +1006,15 @@ async fn crash_mid_wait_with_timeout_recovers_and_can_still_timeout() {
         tokio::spawn(async move { engine_a_h.resume_execution(&scope, execution_id).await });
     await_parked(&mut events_rx).await;
 
-    // Confirm the persisted discriminator survived the park.
+    // Crash runner A IMMEDIATELY after the park event, before its timer can
+    // fire (CR#6): the park checkpoint already landed before `NodeParked` was
+    // emitted, so the durable row is intact and the abort cannot race the
+    // timer. The persisted-state assertion below reads that durable row.
+    task_a.abort();
+    let _ = task_a.await;
+
+    // Confirm the persisted discriminator survived the park (read from the
+    // durable row, unaffected by the abort).
     let parked = stores.load_state(execution_id).await;
     assert!(
         parked
@@ -740,12 +1025,8 @@ async fn crash_mid_wait_with_timeout_recovers_and_can_still_timeout() {
         "the parked node must persist wait_wake = Timeout"
     );
 
-    // Crash runner A before its timer fires (the abort drops its drive future).
-    task_a.abort();
-    let _ = task_a.await;
-
     // Wait out the lease TTL (real time) so runner B can take over. By now the
-    // 200ms wait deadline has long passed.
+    // wait deadline has long passed.
     tokio::time::sleep(lease_ttl + Duration::from_millis(300)).await;
 
     // Runner B resumes: re-seeds the persisted Timeout wait, sees the deadline
@@ -914,15 +1195,24 @@ async fn arm_wait_for_completion(stores: &WtStores, execution_id: ExecutionId) {
         .unwrap();
 }
 
-/// **W-S2b — Resume wins, then the stale timeout timer fires: still exactly one
-/// terminal outcome.**
+/// **W-S2b — Resume wins, then the stale timeout timer fires IN A LIVE LOOP:
+/// still exactly one terminal outcome.**
 ///
-/// The load-bearing R2 race invariant, made deterministic by ordering rather
-/// than relying on a sub-millisecond tie: deliver the Resume first (it completes
-/// the node on the main port), THEN sleep past the original short timeout so the
-/// stale timeout heap entry's timer fires. The Phase-0b state re-read at the pop
-/// must recognise the node is no longer `Waiting` and skip it — the error branch
-/// must NEVER run. Exactly one of (main, error) ran.
+/// The load-bearing R2 race invariant, made deterministic by ordering AND by
+/// keeping the frontier loop alive while the stale entry pops (CR#7). An
+/// independent `blocker` node parks on a long `Duration` wait, so the row stays
+/// `Running` and the loop keeps polling `wait_heap` long after the signal
+/// wait's short timeout deadline. The signal wait's stale `(deadline, key)`
+/// heap entry therefore pops in a LIVE loop; the purge (it should already be
+/// gone) and the Phase-0b state re-read (a non-`Waiting` node is skipped) must
+/// keep the error branch from EVER running. We assert no error routing fired
+/// while the drive is STILL alive, then let the blocker elapse so the drive
+/// settles.
+///
+/// Without the blocker the drive returns the instant the single wait completes,
+/// so the stale entry never pops in a live loop — the test could pass even if
+/// the purge/re-read were broken. The blocker makes the guard genuinely
+/// exercised.
 ///
 /// This is the `Resume-then-timeout` ordering of the race; the
 /// `timeout-then-Resume` ordering is covered by
@@ -930,24 +1220,27 @@ async fn arm_wait_for_completion(stores: &WtStores, execution_id: ExecutionId) {
 /// and [`signal_wait_with_timeout_fires_error_port_on_timeout`] (timeout wins),
 /// proving both orderings reach a single outcome.
 ///
-/// **Falsifiability**: in the single-process path TWO independent guards keep
-/// the stale timeout from re-routing — the resume self-arm PURGES the stale
-/// future heap entry, and the Phase-0b pop RE-READS node state (a non-`Waiting`
-/// node is skipped). Dropping only the re-read leaves the purge, so the stale
-/// entry is already gone and the test can still pass. To turn it RED, drop the
-/// PURGE (the `wait_heap` rebuild that filters out the re-armed keys) — or both
-/// guards — so the stale `(deadline, key)` entry survives, pops after the node
-/// is `Completed`, and routes it through `route_failure_edges` → the error
-/// branch ALSO runs → `main + error == 2` → the `== 1` assert fails → RED.
+/// **Falsifiability**: TWO independent guards keep the stale timeout from
+/// re-routing — the resume self-arm PURGES the stale future heap entry, and the
+/// Phase-0b pop RE-READS node state (a non-`Waiting` node is skipped). To turn
+/// it RED, drop BOTH guards (e.g. the `wait_heap` rebuild that filters out the
+/// re-armed keys AND the pop-time state re-read) → the stale `(deadline, key)`
+/// entry survives, pops while the loop is alive on the blocker, finds the node
+/// `Completed`, and routes it through `route_failure_edges` → the error branch
+/// runs → the `error_count == 0` assert fails → RED.
 #[tokio::test]
 async fn resume_and_timeout_race_reaches_single_terminal_outcome() {
     let main_count = Arc::new(AtomicU32::new(0));
     let error_count = Arc::new(AtomicU32::new(0));
-    // A short timeout: after the Resume completes the node, we deliberately sleep
-    // past this deadline so the STALE timeout heap entry's timer fires. The R2
-    // state re-read must turn that stale wake into a no-op.
+    // A short signal timeout: after the Resume completes the node, its STALE
+    // timeout heap entry fires while the blocker keeps the loop alive. The R2
+    // purge + state re-read must turn that stale wake into a no-op.
     let timeout = Duration::from_millis(120);
-    let registry = build_registry(timeout, &main_count, &error_count);
+    // The blocker outlives the stale-timeout pop window (well past 120ms) so the
+    // loop is genuinely alive when the stale entry fires, then elapses so the
+    // execution can settle within the test bound.
+    let blocker_for = Duration::from_millis(900);
+    let registry = build_registry_with_blocker(timeout, blocker_for, &main_count, &error_count);
 
     let event_bus = nebula_eventbus::EventBus::<ExecutionEvent>::new(64);
     let mut events_rx = event_bus.subscribe();
@@ -955,18 +1248,22 @@ async fn resume_and_timeout_race_reaches_single_terminal_outcome() {
     let engine = Arc::new(stores.attach(make_engine(registry).with_event_bus(event_bus)));
     let dispatch = EngineControlDispatch::new(Arc::clone(&engine), stores.execution.clone());
 
-    let wf = make_workflow(/* with_error_port */ true, timeout);
+    let wf = make_workflow_with_blocker();
     stores.save_workflow(&wf).await;
     let execution_id = stores.persist_created_execution(wf.id).await;
 
     let engine_h = Arc::clone(&engine);
     let scope = nebula_engine::store_seam::single_tenant_scope();
     let task = tokio::spawn(async move { engine_h.resume_execution(&scope, execution_id).await });
-    await_parked(&mut events_rx).await;
 
-    // Resume wins: it self-arms the node for completion and Phase-0b completes it
-    // on the main port. The original (deadline) timeout entry remains on the heap
-    // until purged / re-read.
+    // Both the signal wait and the Duration blocker must be parked before the
+    // Resume — the blocker is a timer wait (not a signal wait), so the Resume
+    // arms only the signal wait, leaving the blocker holding the loop open.
+    await_n_parked(&mut events_rx, 2).await;
+
+    // Resume wins: it self-arms the signal wait for completion and Phase-0b
+    // completes it on the main port. The signal wait's original timeout entry
+    // remains on the heap until purged / re-read.
     dispatch
         .dispatch_resume(
             &nebula_engine::store_seam::single_tenant_scope(),
@@ -975,20 +1272,39 @@ async fn resume_and_timeout_race_reaches_single_terminal_outcome() {
         .await
         .expect("dispatch_resume must deliver to the live loop");
 
+    // Sleep past the signal wait's stale deadline WHILE THE LOOP IS STILL ALIVE
+    // (the blocker is still parked). The stale entry pops in the live loop here.
+    tokio::time::sleep(timeout + Duration::from_millis(80)).await;
+
+    // The drive must still be running (the blocker keeps it alive) — this is
+    // what makes the stale pop happen in a live loop, not after teardown.
+    assert!(
+        !task.is_finished(),
+        "the blocker must keep the frontier loop alive past the stale timeout deadline"
+    );
+    // The stale timeout did NOT re-route the error branch: the main completion
+    // ran exactly once and the error branch never did.
+    assert_eq!(
+        main_count.load(Ordering::SeqCst),
+        1,
+        "the Resume completion must route the MAIN branch exactly once"
+    );
+    assert_eq!(
+        error_count.load(Ordering::SeqCst),
+        0,
+        "the stale timeout must NOT re-route the error branch in the live loop"
+    );
+
+    // Release the loop: let the blocker's Duration elapse so the execution
+    // settles. (No external signal — the blocker completes on its own timer.)
     let result = tokio::time::timeout(Duration::from_secs(5), task)
         .await
-        .expect("execution must complete after the Resume")
+        .expect("execution must settle once the blocker's Duration elapses")
         .unwrap()
         .unwrap();
 
-    // The drive returned because the Resume completed the node. The original
-    // timeout deadline has, by construction, passed (the drive ran longer than
-    // 120ms is not guaranteed, so sleep to be sure the stale wall-clock deadline
-    // is in the past, then confirm no late routing could have fired).
-    tokio::time::sleep(timeout + Duration::from_millis(50)).await;
-
-    // Exactly one branch ran — the main completion; the stale timeout never
-    // re-routed the error branch (R2 state re-read turned it into a no-op).
+    // Final state: exactly one branch ran across the whole run, and the
+    // execution reached a single coherent terminal outcome.
     let main_ran = main_count.load(Ordering::SeqCst);
     let error_ran = error_count.load(Ordering::SeqCst);
     assert_eq!(
@@ -999,8 +1315,7 @@ async fn resume_and_timeout_race_reaches_single_terminal_outcome() {
     );
     assert_eq!(
         main_ran, 1,
-        "the Resume completion routes the MAIN branch; the stale timeout must not \
-         re-route the error branch"
+        "the surviving branch must be the main completion"
     );
     assert_eq!(
         result.status,
@@ -1266,4 +1581,299 @@ async fn one_resume_arms_multiple_parallel_signal_timeout_waits() {
         ExecutionStatus::Completed,
         "the execution must reach a terminal Completed status"
     );
+}
+
+// ── P1#1 ack-gating: dispatch_resume acks only after the durable self-arm ─────
+
+/// **W-S2b P1#1 — `dispatch_resume` acks ONLY after the self-arm checkpoint
+/// durably lands.**
+///
+/// When `dispatch_resume` returns `Ok` for a live `Running` execution, the
+/// self-arm MUST already be durable: a re-read of the persisted row shows the
+/// wait node armed (`wait_wake = Completion`, `next_attempt_at = Some`). The ack
+/// is gated on the loop's durable reply, so the arm cannot still be in flight.
+///
+/// **Falsifiability**: revert to the old notify-then-`Ok` path (ack at notify,
+/// before the loop wakes and checkpoints) → `dispatch_resume` returns `Ok`
+/// before the arm is durable → the immediate re-read finds the node still
+/// `wait_wake = Timeout` (unarmed) → the assertion flips → RED.
+#[tokio::test]
+async fn resume_acks_only_after_successful_checkpoint() {
+    let main_count = Arc::new(AtomicU32::new(0));
+    let error_count = Arc::new(AtomicU32::new(0));
+    // Long timeout: the only way the node arms is the Resume, never a timeout.
+    let timeout = Duration::from_hours(1);
+    let registry = build_registry(timeout, &main_count, &error_count);
+
+    let event_bus = nebula_eventbus::EventBus::<ExecutionEvent>::new(64);
+    let mut events_rx = event_bus.subscribe();
+    let stores = WtStores::new();
+    let engine = Arc::new(stores.attach(make_engine(registry).with_event_bus(event_bus)));
+    let dispatch = EngineControlDispatch::new(Arc::clone(&engine), stores.execution.clone());
+
+    let wf = make_workflow(/* with_error_port */ true, timeout);
+    stores.save_workflow(&wf).await;
+    let execution_id = stores.persist_created_execution(wf.id).await;
+
+    let engine_h = Arc::clone(&engine);
+    let scope = nebula_engine::store_seam::single_tenant_scope();
+    let task = tokio::spawn(async move { engine_h.resume_execution(&scope, execution_id).await });
+    await_parked(&mut events_rx).await;
+
+    dispatch
+        .dispatch_resume(
+            &nebula_engine::store_seam::single_tenant_scope(),
+            execution_id,
+        )
+        .await
+        .expect("dispatch_resume on a live Running execution must succeed");
+
+    // The ack returned — therefore the self-arm checkpoint is DURABLE. Re-read
+    // the persisted row: NO node may still be the UNARMED signal+timeout wait
+    // (`Waiting` with `wait_wake = Timeout`). The arm flipped it to `Completion`
+    // before the ack, and Phase-0b may have already drained it to `Completed`;
+    // both prove the arm was durable when dispatch_resume returned. The old
+    // notify-then-Ok path acked before the loop woke, leaving the node still
+    // `Waiting` / `Timeout` here.
+    let state = stores.load_state(execution_id).await;
+    let still_unarmed = state.node_states.values().any(|ns| {
+        ns.state == nebula_workflow::NodeState::Waiting
+            && ns.wait_wake == Some(nebula_execution::state::WaitWake::Timeout)
+    });
+    assert!(
+        !still_unarmed,
+        "dispatch_resume returned Ok, so no node may still be the unarmed \
+         (Waiting, Timeout) wait — the self-arm must be durable; node_states: {:?}",
+        state
+            .node_states
+            .values()
+            .map(|ns| (ns.state, ns.wait_wake))
+            .collect::<Vec<_>>()
+    );
+    // The wait node must be armed-for-completion or already completed — never
+    // failed (a timeout) and never still unarmed.
+    let arm_durable = state.node_states.values().any(|ns| {
+        (ns.state == nebula_workflow::NodeState::Waiting
+            && ns.wait_wake == Some(nebula_execution::state::WaitWake::Completion))
+            || ns.state == nebula_workflow::NodeState::Completed
+    });
+    assert!(
+        arm_durable,
+        "the wait node must be armed (Waiting/Completion) or already Completed; node_states: {:?}",
+        state
+            .node_states
+            .values()
+            .map(|ns| (ns.state, ns.wait_wake))
+            .collect::<Vec<_>>()
+    );
+
+    // Let the armed wait drain to completion so the execution settles.
+    let result = tokio::time::timeout(Duration::from_secs(5), task)
+        .await
+        .expect("the armed wait must complete the execution")
+        .unwrap()
+        .unwrap();
+    assert_eq!(result.status, ExecutionStatus::Completed);
+    assert_eq!(main_count.load(Ordering::SeqCst), 1);
+    assert_eq!(error_count.load(Ordering::SeqCst), 0);
+}
+
+/// **W-S2b P1#1 — a fenced-out self-arm checkpoint defers (does NOT ack).**
+///
+/// When the live loop's self-arm checkpoint is FENCED (the loop lost its lease
+/// mid-iteration), the loop replies `ArmFailed`; `dispatch_resume` must return
+/// `Deferred` (NOT `Ok`), emit a `ResumeDeferred` event, and the wait node must
+/// NOT complete on the main port — the arm did not durably land, so the Resume
+/// is left for B1 reclaim.
+///
+/// **Falsifiability**: revert to the code that acked regardless of the
+/// checkpoint result → `dispatch_resume` returns `Ok` despite the fenced arm →
+/// the `Deferred` assertion flips → RED.
+#[tokio::test]
+async fn fenced_out_self_arm_sends_arm_failed_then_deferred() {
+    let main_count = Arc::new(AtomicU32::new(0));
+    let error_count = Arc::new(AtomicU32::new(0));
+    let timeout = Duration::from_hours(1);
+    let registry = build_registry(timeout, &main_count, &error_count);
+
+    // Build stores with a fence-injecting execution store. The journal reads the
+    // SAME inner store, so status reads agree across the wrapper.
+    let inner = Arc::new(InMemoryExecutionStore::new());
+    let fenced = Arc::new(FenceArmStore::new(Arc::clone(&inner)));
+    let journal = Arc::new(nebula_storage::InMemoryJournalReader::new(&inner));
+    let versions = Arc::new(InMemoryWorkflowVersionStore::new());
+    let workflow = Arc::new(nebula_storage::InMemoryWorkflowStore::new_with_versions(
+        &versions,
+    ));
+
+    let event_bus = nebula_eventbus::EventBus::<ExecutionEvent>::new(64);
+    let mut events_rx = event_bus.subscribe();
+    let engine = Arc::new(
+        make_engine(registry)
+            .with_event_bus(event_bus)
+            .with_execution_stores(nebula_engine::ExecutionStores {
+                execution: Arc::clone(&fenced) as Arc<dyn ExecutionStore>,
+                journal,
+                node_results: Arc::new(nebula_storage::InMemoryNodeResultStore::new()),
+                checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new()),
+                idempotency: Arc::new(nebula_storage::InMemoryIdempotencyGuard::new()),
+            })
+            .with_workflow_stores(nebula_engine::WorkflowStores {
+                workflow: workflow as Arc<dyn WorkflowStore>,
+                versions: Arc::clone(&versions) as Arc<dyn WorkflowVersionStore>,
+            }),
+    );
+    let dispatch = EngineControlDispatch::new(
+        Arc::clone(&engine),
+        Arc::clone(&fenced) as Arc<dyn ExecutionStore>,
+    );
+
+    // Persist + save the workflow through the same scope the engine reads.
+    let scope = nebula_engine::store_seam::single_tenant_scope();
+    let wf = make_workflow(/* with_error_port */ true, timeout);
+    versions
+        .create(
+            &scope,
+            WorkflowVersionRecord {
+                workflow_id: wf.id.to_string(),
+                number: 0,
+                published: true,
+                pinned: false,
+                definition: serde_json::to_value(&wf).unwrap(),
+            },
+        )
+        .await
+        .unwrap();
+    let execution_id = ExecutionId::new();
+    {
+        let mut exec_state = ExecutionState::new(execution_id, wf.id, &[]);
+        exec_state.set_workflow_input(serde_json::json!(null));
+        fenced
+            .create(
+                &scope,
+                &execution_id.to_string(),
+                &wf.id.to_string(),
+                serde_json::to_value(&exec_state).unwrap(),
+            )
+            .await
+            .unwrap();
+    }
+
+    let engine_h = Arc::clone(&engine);
+    let drive_scope = scope.clone();
+    let task =
+        tokio::spawn(async move { engine_h.resume_execution(&drive_scope, execution_id).await });
+    await_parked(&mut events_rx).await;
+
+    // Arm the fence so the NEXT commit (the self-arm checkpoint) reports
+    // FencedOut. The park checkpoint already landed before `NodeParked`.
+    fenced.arm_fence();
+
+    let dispatch_outcome = dispatch.dispatch_resume(&scope, execution_id).await;
+    assert!(
+        matches!(
+            dispatch_outcome,
+            Err(nebula_engine::ControlDispatchError::Deferred(_))
+        ),
+        "a fenced self-arm must defer the Resume, not ack it; got {dispatch_outcome:?}"
+    );
+
+    // A ResumeDeferred event is emitted with the fenced reason.
+    let reason = await_resume_deferred(&mut events_rx).await;
+    assert!(
+        reason.contains("self-arm") || reason.contains("checkpoint"),
+        "the ResumeDeferred reason must name the failed self-arm; got: {reason}"
+    );
+
+    // The fenced arm aborts the frontier (the loop returns). The wait node never
+    // completed on the main port.
+    let _ = tokio::time::timeout(Duration::from_secs(5), task)
+        .await
+        .expect("the fenced frontier must wind down within 5s");
+    assert_eq!(
+        main_count.load(Ordering::SeqCst),
+        0,
+        "a fenced self-arm must NOT complete the wait on the main port"
+    );
+}
+
+/// **W-S2b P1#1 — two concurrent Resumes to the same parked node: one arms it
+/// (`Armed`), the other finds no signal-Waiting node and returns `NothingToArm`.**
+///
+/// Both dispatches reach the live `ResumeSignalled` arm in the frontier loop while
+/// the execution is `Running`.  The channel is bounded to 8, so both sends land
+/// before the loop consumes them.  The first one the loop processes arms the wait;
+/// the second finds `to_arm.is_empty()` → `NothingToArm` → `Ok(())`.  This is the
+/// genuine idempotent live-loop no-op path — the `ResumeSignalled` arm, not the
+/// terminal short-circuit that fires when the execution has already settled.
+///
+/// **Falsifiability**: make the live loop re-arm an already-armed/absent wait and
+/// route it again → `main_count == 2` → the `== 1` assertion flips → RED.
+#[tokio::test]
+async fn duplicate_resume_to_armed_node_is_noop() {
+    let main_count = Arc::new(AtomicU32::new(0));
+    let error_count = Arc::new(AtomicU32::new(0));
+    let timeout = Duration::from_hours(1);
+    let registry = build_registry(timeout, &main_count, &error_count);
+
+    let event_bus = nebula_eventbus::EventBus::<ExecutionEvent>::new(64);
+    let mut events_rx = event_bus.subscribe();
+    let stores = WtStores::new();
+    let engine = Arc::new(stores.attach(make_engine(registry).with_event_bus(event_bus)));
+    let dispatch = Arc::new(EngineControlDispatch::new(
+        Arc::clone(&engine),
+        stores.execution.clone(),
+    ));
+
+    let wf = make_workflow(/* with_error_port */ true, timeout);
+    stores.save_workflow(&wf).await;
+    let execution_id = stores.persist_created_execution(wf.id).await;
+
+    let engine_h = Arc::clone(&engine);
+    let scope = nebula_engine::store_seam::single_tenant_scope();
+    let task = tokio::spawn(async move { engine_h.resume_execution(&scope, execution_id).await });
+    await_parked(&mut events_rx).await;
+
+    // Issue two Resumes CONCURRENTLY while the execution is live and parked.
+    // Both sends land in the channel (capacity 8) before the loop processes
+    // either.  The first one the loop picks up arms the wait; the second finds
+    // `to_arm.is_empty()` (the node is no longer signal-Waiting) → `NothingToArm`
+    // → `Ok(())`.  Both return `Ok`: the first as `Armed`, the second as the
+    // idempotent live-loop no-op.
+    let dispatch_a = Arc::clone(&dispatch);
+    let dispatch_b = Arc::clone(&dispatch);
+    let (out_a, out_b) = tokio::join!(
+        async move {
+            dispatch_a
+                .dispatch_resume(
+                    &nebula_engine::store_seam::single_tenant_scope(),
+                    execution_id,
+                )
+                .await
+        },
+        async move {
+            dispatch_b
+                .dispatch_resume(
+                    &nebula_engine::store_seam::single_tenant_scope(),
+                    execution_id,
+                )
+                .await
+        },
+    );
+    out_a.expect("first concurrent dispatch_resume must succeed");
+    out_b.expect("second concurrent dispatch_resume must succeed (NothingToArm)");
+
+    // Now let the frontier run to completion.
+    let result = tokio::time::timeout(Duration::from_secs(5), task)
+        .await
+        .expect("the armed wait must complete the execution")
+        .unwrap()
+        .unwrap();
+    assert_eq!(result.status, ExecutionStatus::Completed);
+    assert_eq!(
+        main_count.load(Ordering::SeqCst),
+        1,
+        "two concurrent Resumes must not double-route the downstream — main runs exactly once"
+    );
+    let _ = events_rx;
 }

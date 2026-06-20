@@ -49,7 +49,7 @@ use nebula_metrics::{Counter, Histogram, MetricsRegistry};
 use nebula_plugin::PluginRegistry;
 use nebula_workflow::{Connection, DependencyGraph, NodeState, WorkflowDefinition};
 use tokio::{
-    sync::{Notify, Semaphore},
+    sync::{Semaphore, mpsc, oneshot},
     task::JoinSet,
 };
 use tokio_util::sync::CancellationToken;
@@ -129,6 +129,27 @@ pub const DEFAULT_EXECUTION_LEASE_TTL: Duration = Duration::from_secs(30);
 /// heartbeat misses still leave the lease valid for at least another TTL
 /// cycle before acquire-on-expiry can kick in. See ADR 0008.
 pub const DEFAULT_EXECUTION_LEASE_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
+
+/// How long [`WorkflowEngine::resume_live`] waits for the live frontier loop
+/// to confirm a durable self-arm checkpoint before treating the Resume as
+/// undelivered (ADR-0099 W-S2b, P1#1).
+///
+/// Generously larger than the live loop's longest non-`await` span between two
+/// `recv()` polls (one frontier iteration), so a healthy loop always acks
+/// inside the window; well under [`DEFAULT_EXECUTION_LEASE_TTL`], so a runner
+/// that is genuinely wedged times out here long before its lease expires and
+/// B1 reclaim takes over. A timeout resolves to a `Deferred` control-queue
+/// outcome, which is safe because Resume redelivery is idempotent — the arm
+/// either has not landed (redelivery re-arms) or has landed and a duplicate
+/// Resume is a no-op on the already-armed node.
+const RESUME_ACK_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Bounded capacity of a live frontier loop's resume channel (ADR-0099
+/// W-S2b, P1#1). A Resume is rare relative to a loop iteration, so the loop
+/// drains each request well before another arrives; the small buffer absorbs
+/// a brief burst, and a full channel is treated by [`WorkflowEngine::resume_live`]
+/// as no-delivery (defer for B1 reclaim) rather than a blocking send.
+const RESUME_CHANNEL_CAPACITY: usize = 8;
 
 /// Type alias for the boxed async credential-refresh function stored on the engine.
 ///
@@ -341,26 +362,90 @@ type RunningRegistrationId = u64;
 /// Process-wide monotonic counter for registration nonces.
 static NEXT_REGISTRATION_ID: AtomicU64 = AtomicU64::new(1);
 
+/// A request to a live frontier loop to self-arm its parked signal waits for
+/// completion (ADR-0099 W-S2b, P1#1).
+///
+/// Carries a one-shot `ack` channel the loop fires AFTER it durably
+/// checkpoints the self-arm (or learns the arm failed). The request itself
+/// carries no node targeting — a Resume arms every signal wait (per-callback
+/// targeting is W-S3) — so the payload is purely the reply path.
+struct ResumeRequest {
+    /// The loop sends exactly one [`ResumeOutcome`] here once the self-arm
+    /// has durably landed or failed. A dropped sender (the loop exited
+    /// before replying) resolves the awaiting receiver to `Err`, which
+    /// [`WorkflowEngine::resume_live`] maps to [`ResumeDelivery::LoopGone`].
+    ack: oneshot::Sender<ResumeOutcome>,
+}
+
+/// The durable result of a live loop processing a [`ResumeRequest`].
+///
+/// Sent on the request's `ack` channel STRICTLY after the self-arm
+/// checkpoint resolves, so an `Armed` outcome is a durability guarantee, not
+/// a "the loop woke up" signal.
+#[derive(Debug)]
+pub(crate) enum ResumeOutcome {
+    /// The loop armed `count` signal waits and the arm checkpoint landed
+    /// durably. The control-queue row may be acked.
+    Armed {
+        /// Number of signal-`Waiting` nodes armed in this pass.
+        count: usize,
+    },
+    /// The loop woke but found no signal-`Waiting` node to arm (spurious or
+    /// already-armed wake). Nothing to do; the row may be acked.
+    NothingToArm,
+    /// The self-arm checkpoint failed (e.g. the loop lost its lease
+    /// mid-iteration: `FencedOut` / `CasConflict`). The arm did NOT land; the
+    /// row must NOT be acked.
+    ArmFailed,
+}
+
+/// The outcome of [`WorkflowEngine::resume_live`] delivering a Resume to a
+/// live frontier loop.
+///
+/// Distinguishes the durable-ack cases (`Acked`) from the no-delivery cases
+/// (`NoLiveEntry` / `LoopGone` / `AckTimeout`) so `dispatch_resume` can ack
+/// only when the arm is durable and otherwise defer for B1 reclaim.
+#[derive(Debug)]
+pub(crate) enum ResumeDelivery {
+    /// The live loop received the request and replied with a durable
+    /// [`ResumeOutcome`].
+    Acked(ResumeOutcome),
+    /// No live `RunningEntry` exists on this runner (cross-runner or
+    /// just-paused), or its resume channel is closed/full — treated as
+    /// no-delivery so the Resume defers rather than blocks.
+    NoLiveEntry,
+    /// A live entry existed and the request was sent, but the loop dropped
+    /// the `ack` sender before replying (it exited / panicked) — the arm did
+    /// not durably land.
+    LoopGone,
+    /// The loop did not reply within [`RESUME_ACK_TIMEOUT`] — it is wedged or
+    /// far behind. Treated as no-delivery (defer); redelivery is idempotent.
+    AckTimeout,
+}
+
 /// Value stored in [`WorkflowEngine::running`]. Pairs the live
 /// [`CancellationToken`] with the [`RunningRegistrationId`] nonce so the
 /// drop guard can use [`DashMap::remove_if`] instead of unconditional
 /// `remove`.
 ///
-/// `resume_notify` is the live-frontier resume channel (ADR-0099 W-S2b): a
-/// payload-less [`Notify`] the running loop selects on. A `Resume` command
-/// for a still-`Running` execution (a signal wait parked with a `timeout`,
-/// so the row never reached `Paused`) cannot use the durable satisfy-CAS —
-/// that path acquires the lease the live loop already holds (two-writers-
-/// one-row). Instead [`WorkflowEngine::resume_live`] notifies this channel;
-/// the loop wakes, self-arms the parked signal node under its OWN lease, and
-/// completes it through Phase-0b. The notify carries no payload — the
-/// durable row remains the sole source of truth, so a lost notification on
-/// crash costs nothing (the armed node survives and a redelivered Resume
-/// re-wakes it).
+/// `resume_tx` is the live-frontier resume channel (ADR-0099 W-S2b): a
+/// bounded [`mpsc::Sender<ResumeRequest>`] the running loop selects on. A
+/// `Resume` command for a still-`Running` execution (a signal wait parked
+/// with a `timeout`, so the row never reached `Paused`) cannot use the
+/// durable satisfy-CAS — that path acquires the lease the live loop already
+/// holds (two-writers-one-row). Instead [`WorkflowEngine::resume_live`] sends
+/// a [`ResumeRequest`] here; the loop wakes, self-arms the parked signal
+/// node(s) under its OWN lease, durably checkpoints the arm, then replies on
+/// the request's `ack` channel. The control-queue ack is gated on that
+/// durable reply (P1#1), so a crash between the notify and the checkpoint
+/// can no longer drop an acked-but-not-landed Resume — the durable row
+/// remains the sole source of truth and an un-acked Resume is redelivered.
+///
+/// [`mpsc::Sender<ResumeRequest>`]: tokio::sync::mpsc::Sender
 struct RunningEntry {
     registration_id: RunningRegistrationId,
     token: CancellationToken,
-    resume_notify: Arc<Notify>,
+    resume_tx: mpsc::Sender<ResumeRequest>,
 }
 
 /// RAII guard that removes an execution from the [`WorkflowEngine::running`]
@@ -472,47 +557,75 @@ impl WorkflowEngine {
         }
     }
 
-    /// Deliver a `Resume` to a LIVE frontier loop owned by THIS runner
-    /// (ADR-0099 W-S2b).
+    /// Deliver a `Resume` to a LIVE frontier loop owned by THIS runner and
+    /// wait for the loop's durable self-arm result (ADR-0099 W-S2b, P1#1).
     ///
-    /// Returns `true` if a live `RunningEntry` for `execution_id` was found
-    /// on this runner and its [`Notify`] was signalled; the loop wakes,
-    /// self-arms its signal-`Waiting{next_attempt_at: None}` node(s) under
-    /// its OWN lease, and completes them through Phase-0b. Returns `false`
-    /// when no live entry exists on this runner — the execution is either
-    /// driven by a different runner or has just transitioned to `Paused`
-    /// (no live frontier), in which case the caller must defer to the
-    /// durable satisfy-CAS path (case-a) / B1 reclaim.
+    /// Sends a [`ResumeRequest`] to the live `RunningEntry` for
+    /// `execution_id`; the loop wakes, self-arms its signal-`Waiting` node(s)
+    /// under its OWN lease, durably checkpoints the arm, then replies on the
+    /// request's `ack` channel. The returned [`ResumeDelivery`] reports
+    /// whether that durable arm landed:
     ///
-    /// Notifying (rather than writing the row) is load-bearing: a `Running`
-    /// execution's lease is held by its own loop, so the durable satisfy-CAS
-    /// would deadlock/race that owner (two-writers-one-row). The live loop
-    /// remains the sole writer of its own row.
+    /// - [`ResumeDelivery::Acked`] — the loop replied; the inner
+    ///   [`ResumeOutcome`] says whether the arm landed (`Armed` /
+    ///   `NothingToArm` — durably resolved, may ack) or failed (`ArmFailed` —
+    ///   the loop lost its lease mid-iteration; must defer).
+    /// - [`ResumeDelivery::NoLiveEntry`] — no live loop on this runner
+    ///   (cross-runner / just-paused), or the channel is closed/full. A full
+    ///   channel is treated as no-delivery (defer) rather than a blocking
+    ///   send, so a backed-up loop never stalls the control consumer.
+    /// - [`ResumeDelivery::LoopGone`] — the loop dropped the `ack` sender
+    ///   before replying (it exited / panicked); the arm did not land.
+    /// - [`ResumeDelivery::AckTimeout`] — no reply within
+    ///   [`RESUME_ACK_TIMEOUT`]; the loop is wedged or far behind.
     ///
-    /// `true` means the resume notification was DELIVERED to the live loop's
-    /// channel — NOT that the Resume has been durably applied. The loop may
-    /// still drop the wake: a timeout for the same node already being processed
-    /// in the same loop iteration can win the race, in which case the node
-    /// fails on its deadline and the notification is a no-op.
+    /// Routing the Resume through the live loop (rather than writing the row
+    /// directly) is load-bearing: a `Running` execution's lease is held by its
+    /// own loop, so the durable satisfy-CAS would deadlock/race that owner
+    /// (two-writers-one-row). The live loop remains the sole writer of its own
+    /// row.
     ///
-    /// Durable-ack caveat for a future inbound-resume transport: a `true`
-    /// return acks the control-queue row BEFORE the live loop's self-arm
-    /// checkpoint is durable. A real Resume producer wired onto this channel
-    /// must therefore gate the control-queue ack on the durable arm (ack only
-    /// after the loop confirms the self-arm checkpoint landed) — otherwise a
-    /// crash between the ack and the checkpoint loses an acked-but-not-landed
-    /// Resume. The path has no production Resume producer today, so the gap is
-    /// currently unreachable.
+    /// `Acked(Armed)` is returned ONLY after the live loop durably
+    /// checkpointed the arm; every other variant means the arm is not durable,
+    /// so the caller must defer (the control-queue row stays un-acked for B1
+    /// reclaim). Deferring is always safe: Resume redelivery is idempotent — a
+    /// duplicate Resume to an already-armed node is a [`ResumeOutcome::NothingToArm`]
+    /// no-op.
     ///
-    /// [`Notify`]: tokio::sync::Notify
-    #[must_use]
-    pub fn resume_live(&self, execution_id: ExecutionId) -> bool {
-        match self.running.get(&execution_id) {
-            Some(entry) => {
-                entry.value().resume_notify.notify_one();
-                true
-            },
-            None => false,
+    /// No-live-owner recovery (a `Running` execution with no live loop on ANY
+    /// runner) and cross-runner Resume routing/affinity remain a future
+    /// (W-S3) slice: today a `NoLiveEntry` simply defers for B1 reclaim.
+    pub(crate) async fn resume_live(&self, execution_id: ExecutionId) -> ResumeDelivery {
+        // Build the reply channel, then drop the `running` map guard BEFORE
+        // awaiting the ack — holding a `DashMap` ref across `.await` could
+        // block other shards' access to the same bucket.
+        let ack_rx = {
+            let (ack_tx, ack_rx) = oneshot::channel();
+            let Some(entry) = self.running.get(&execution_id) else {
+                return ResumeDelivery::NoLiveEntry;
+            };
+            // `try_send` (not `send().await`): a full or closed channel is a
+            // no-delivery signal, not something to block the control consumer
+            // on. Capacity is small (a Resume is rare relative to a loop
+            // iteration); a full channel means a prior Resume is still
+            // un-drained, so deferring this one and letting B1 redeliver is
+            // both safe and idempotent.
+            if entry
+                .value()
+                .resume_tx
+                .try_send(ResumeRequest { ack: ack_tx })
+                .is_err()
+            {
+                return ResumeDelivery::NoLiveEntry;
+            }
+            ack_rx
+        };
+        match tokio::time::timeout(RESUME_ACK_TIMEOUT, ack_rx).await {
+            Ok(Ok(outcome)) => ResumeDelivery::Acked(outcome),
+            // The loop dropped the `ack` sender before replying (exited /
+            // panicked) — the self-arm checkpoint did not land.
+            Ok(Err(_)) => ResumeDelivery::LoopGone,
+            Err(_) => ResumeDelivery::AckTimeout,
         }
     }
 
@@ -1306,9 +1419,14 @@ impl WorkflowEngine {
         let semaphore = Arc::new(Semaphore::new(budget.max_concurrent_nodes));
         let cancel_token = CancellationToken::new();
         // Replay is lease-less and not published into the `running` registry,
-        // so no `Resume` can target it — a local, never-signalled `Notify`
-        // satisfies `run_frontier`'s contract (the resume arm never fires).
-        let resume_notify = Arc::new(Notify::new());
+        // so no `Resume` can target it. Drop the Sender immediately: the
+        // receiver's first `recv()` then yields `None` (the
+        // `ResumeChannelClosed` no-op arm), satisfying `run_frontier`'s
+        // contract without ever delivering a Resume.
+        let mut resume_rx = {
+            let (_resume_tx, resume_rx) = mpsc::channel::<ResumeRequest>(1);
+            resume_rx
+        };
         let mut repo_version = 0u64;
 
         // Determine seed nodes: nodes in rerun set whose predecessors are all pinned.
@@ -1336,7 +1454,7 @@ impl WorkflowEngine {
                 &outputs,
                 &semaphore,
                 &cancel_token,
-                &resume_notify,
+                &mut resume_rx,
                 &mut exec_state,
                 execution_id,
                 workflow.id,
@@ -1749,16 +1867,19 @@ impl WorkflowEngine {
         // clobbering a winner's registration if a losing attempt ever
         // slips through.
         let registration_id = NEXT_REGISTRATION_ID.fetch_add(1, Ordering::Relaxed);
-        // Live-frontier resume channel (W-S2b): published alongside the
-        // cancel token so a `Resume` for this still-`Running` execution
-        // (a signal wait parked with a timeout) reaches the live loop.
-        let resume_notify = Arc::new(Notify::new());
+        // Live-frontier resume channel (W-S2b): the Sender is published on the
+        // `RunningEntry` alongside the cancel token so a `Resume` for this
+        // still-`Running` execution (a signal wait parked with a timeout)
+        // reaches the live loop; the Receiver is owned by `run_frontier`. The
+        // ack on each `ResumeRequest` gates the control-queue ack on the
+        // durable self-arm checkpoint (P1#1).
+        let (resume_tx, mut resume_rx) = mpsc::channel::<ResumeRequest>(RESUME_CHANNEL_CAPACITY);
         self.running.insert(
             execution_id,
             RunningEntry {
                 registration_id,
                 token: cancel_token.clone(),
-                resume_notify: Arc::clone(&resume_notify),
+                resume_tx,
             },
         );
         let _cancel_registration = RunningRegistration {
@@ -1790,7 +1911,7 @@ impl WorkflowEngine {
                 &outputs,
                 &semaphore,
                 &cancel_token,
-                &resume_notify,
+                &mut resume_rx,
                 &mut exec_state,
                 execution_id,
                 workflow.id,
@@ -2262,13 +2383,13 @@ impl WorkflowEngine {
         let registration_id = NEXT_REGISTRATION_ID.fetch_add(1, Ordering::Relaxed);
         // Live-frontier resume channel (W-S2b) — symmetric to
         // `execute_workflow`; see its comment for the rationale.
-        let resume_notify = Arc::new(Notify::new());
+        let (resume_tx, mut resume_rx) = mpsc::channel::<ResumeRequest>(RESUME_CHANNEL_CAPACITY);
         self.running.insert(
             execution_id,
             RunningEntry {
                 registration_id,
                 token: cancel_token.clone(),
-                resume_notify: Arc::clone(&resume_notify),
+                resume_tx,
             },
         );
         let _cancel_registration = RunningRegistration {
@@ -2304,7 +2425,7 @@ impl WorkflowEngine {
                 &outputs,
                 &semaphore,
                 &cancel_token,
-                &resume_notify,
+                &mut resume_rx,
                 &mut exec_state,
                 execution_id,
                 workflow_id,
@@ -3051,7 +3172,7 @@ impl WorkflowEngine {
         outputs: &Arc<DashMap<NodeKey, serde_json::Value>>,
         semaphore: &Arc<Semaphore>,
         cancel_token: &CancellationToken,
-        resume_notify: &Arc<Notify>,
+        resume_rx: &mut mpsc::Receiver<ResumeRequest>,
         exec_state: &mut ExecutionState,
         execution_id: ExecutionId,
         workflow_id: WorkflowId,
@@ -3135,6 +3256,14 @@ impl WorkflowEngine {
             Result<ActionResult<serde_json::Value>, EngineError>,
         )> = JoinSet::new();
         let mut task_nodes: HashMap<tokio::task::Id, NodeKey> = HashMap::new();
+
+        // Disarms the `resume_rx.recv()` select! arm after the first `None`
+        // (channel closed). Without this guard the arm would poll `Ready(None)`
+        // on every iteration — a busy-spin for the full run duration. This
+        // fires immediately on the replay path (the Sender is dropped at the
+        // `RunningEntry` construction site) and also defends against any
+        // premature drop of the Running registration in the execute path.
+        let mut resume_rx_closed = false;
 
         // Main frontier loop
         loop {
@@ -3818,7 +3947,8 @@ impl WorkflowEngine {
                 WaitTimer,
                 WallClock,
                 Cancel,
-                ResumeSignalled,
+                ResumeSignalled(ResumeRequest),
+                ResumeChannelClosed,
             }
 
             let join_next_fut: Pin<Box<dyn Future<Output = JoinedResult> + Send + '_>> =
@@ -3828,18 +3958,31 @@ impl WorkflowEngine {
                     Box::pin(join_set.join_next_with_id())
                 };
 
-            // `Notify::notified()` is cancellation-safe in this `select!`: a
-            // `notify_one()` that races the loop body (fired while we are not
-            // awaiting) stores a single permit, which the next iteration's
-            // fresh `notified()` consumes immediately — the Resume is never
-            // lost between iterations.
+            // `mpsc::Receiver::recv()` is cancellation-safe in this `select!`:
+            // a `ResumeRequest` that is sent while another arm wins this
+            // iteration is NOT consumed — it stays buffered in the channel and
+            // the next iteration's fresh `recv()` delivers it. This is strictly
+            // better than the prior `Notify` permit-latch: the request (and its
+            // `ack` reply channel) is never dropped between iterations, so the
+            // caller's ack-await always resolves to a durable outcome.
+            //
+            // The `if !resume_rx_closed` guard is REQUIRED: once the channel is
+            // closed, `recv()` returns `Ready(None)` synchronously on every
+            // poll. Without the guard the closed arm would win the select! on
+            // every iteration regardless of wall-clock sleep — a busy-spin for
+            // the full run duration. After exactly one `None` the flag is set
+            // and the arm becomes permanently `Pending` (disabled), letting the
+            // other arms run at their natural pace.
             let wake = tokio::select! {
                 result = join_next_fut => WakeReason::Joined(result),
                 () = &mut retry_sleep_fut, if next_retry_in.is_some() => WakeReason::RetryTimer,
                 () = &mut wait_sleep_fut, if next_wait_in.is_some() => WakeReason::WaitTimer,
                 () = &mut sleep_fut => WakeReason::WallClock,
                 () = cancel_token.cancelled() => WakeReason::Cancel,
-                () = resume_notify.notified() => WakeReason::ResumeSignalled,
+                maybe_req = resume_rx.recv(), if !resume_rx_closed => match maybe_req {
+                    Some(req) => WakeReason::ResumeSignalled(req),
+                    None => WakeReason::ResumeChannelClosed,
+                },
             };
 
             let join_result = match wake {
@@ -3860,7 +4003,7 @@ impl WorkflowEngine {
                     // wait-wakes into completed + downstream edges.
                     continue;
                 },
-                WakeReason::ResumeSignalled => {
+                WakeReason::ResumeSignalled(req) => {
                     // A `Resume` command targeted this LIVE execution (W-S2b).
                     // The row stayed `Running` (a signal wait was parked with a
                     // `timeout`, so the loop holds the lease on the timeout
@@ -3870,6 +4013,14 @@ impl WorkflowEngine {
                     // own row: self-arm each signal-`Waiting{next_attempt_at:
                     // None}` node for completion under the loop's OWN lease, then
                     // loop back so Phase-0b completes it through the main port.
+                    //
+                    // P1#1 ack-gating: the caller's control-queue ack is gated
+                    // on the durable result we send on `req.ack`. The contract
+                    // is exactly one `send` per request, and `Armed` is sent
+                    // ONLY after the self-arm checkpoint lands `Ok` (strictly
+                    // after the version advances). A dropped `ack` Sender (this
+                    // loop exits before sending) resolves the caller's receiver
+                    // to `Err` → `LoopGone` → Deferred — a free fail-safe.
                     //
                     // Untargeted in v1 (mirrors case-a fork-2): a Resume arms
                     // every signal wait. Per-callback_id targeting is W-S3
@@ -3895,8 +4046,11 @@ impl WorkflowEngine {
                         .map(|(id, _)| id.clone())
                         .collect();
                     if to_arm.is_empty() {
-                        // Spurious or already-armed wake — nothing to do. Loop
-                        // back; the exit-condition / timers re-evaluate.
+                        // Spurious or already-armed wake — nothing to do. Ack as
+                        // `NothingToArm` (the caller may ack the row; a duplicate
+                        // Resume to an already-armed node is idempotent), then
+                        // loop back; the exit-condition / timers re-evaluate.
+                        let _ = req.ack.send(ResumeOutcome::NothingToArm);
                         tracing::debug!(
                             target = "engine::wait",
                             %execution_id,
@@ -3932,9 +4086,10 @@ impl WorkflowEngine {
                         "live-frontier resume: arming signal waits for Phase-0b completion"
                     );
                     // Durably commit the arm under the loop's OWN lease before
-                    // Phase-0b acts on it. On checkpoint failure, abort the
-                    // frontier rather than completing a wait whose arm did not
-                    // land.
+                    // Phase-0b acts on it. On checkpoint failure (incl.
+                    // FencedOut / CasConflict — the loop lost its lease
+                    // mid-iteration), ack `ArmFailed` BEFORE aborting so the
+                    // caller defers the Resume; NEVER `Armed` on a failed arm.
                     if let Err(e) = self
                         .checkpoint_node(
                             scope,
@@ -3949,9 +4104,16 @@ impl WorkflowEngine {
                         )
                         .await
                     {
+                        let _ = req.ack.send(ResumeOutcome::ArmFailed);
                         cancel_token.cancel();
                         return Some((to_arm[0].clone(), e.to_string()));
                     }
+                    // The arm is durable: ack `Armed` (the caller may now ack
+                    // the control-queue row), strictly after the version
+                    // advanced and the checkpoint landed `Ok`.
+                    let _ = req.ack.send(ResumeOutcome::Armed {
+                        count: to_arm.len(),
+                    });
                     // Purge any stale future heap entry for the re-armed nodes
                     // (e.g. a signal+timeout wait's original timeout deadline)
                     // and replace it with a now-due entry, so Phase-0b completes
@@ -3978,6 +4140,23 @@ impl WorkflowEngine {
                         );
                     }
                     // Loop back so Phase-0b drains the armed waits → main port.
+                    continue;
+                },
+                WakeReason::ResumeChannelClosed => {
+                    // Every `resume_tx` Sender has been dropped (the published
+                    // `RunningEntry` was removed / never published, as on the
+                    // lease-less replay path). No further Resume can arrive on
+                    // this channel. Set the guard flag so the `recv()` arm is
+                    // permanently disabled and the select! does not busy-spin on
+                    // the `Ready(None)` that a closed channel returns every poll.
+                    // Loop back so the other arms keep driving the frontier.
+                    // No `ack` to honor — `recv()` returned `None`, not a request.
+                    resume_rx_closed = true;
+                    tracing::trace!(
+                        target = "engine::wait",
+                        %execution_id,
+                        "resume channel closed; no live Resume producer remains — arm disarmed"
+                    );
                     continue;
                 },
                 WakeReason::WallClock => {
@@ -12244,6 +12423,102 @@ mod tests {
             NodeState::Cancelled,
             "a signal Waiting{{None}} node (not on wait_heap) must be cancelled by the \
              teardown scan"
+        );
+    }
+
+    // ── P1#1 resume_live channel mechanics (ADR-0099 W-S2b) ──────────────────
+    //
+    // These exercise `resume_live`'s request/reply channel directly, without a
+    // live frontier loop, so each not-durable outcome is fully deterministic.
+    // The loop-integration side (ack-after-checkpoint, fenced-out-arm,
+    // duplicate-resume) lives in `tests/wait_timeout.rs`.
+
+    /// Publish a `RunningEntry` for `execution_id` whose `resume_tx` is wired to
+    /// the returned receiver, so a test can simulate the loop side of the
+    /// channel. Returns the receiver and the registration guard (the entry is
+    /// removed when the guard drops).
+    fn publish_running_entry(
+        engine: &WorkflowEngine,
+        execution_id: ExecutionId,
+    ) -> (mpsc::Receiver<ResumeRequest>, RunningRegistration) {
+        let registration_id = NEXT_REGISTRATION_ID.fetch_add(1, Ordering::Relaxed);
+        let (resume_tx, resume_rx) = mpsc::channel::<ResumeRequest>(RESUME_CHANNEL_CAPACITY);
+        engine.running.insert(
+            execution_id,
+            RunningEntry {
+                registration_id,
+                token: CancellationToken::new(),
+                resume_tx,
+            },
+        );
+        let guard = RunningRegistration {
+            running: Arc::clone(&engine.running),
+            execution_id,
+            registration_id,
+        };
+        (resume_rx, guard)
+    }
+
+    /// `resume_live` returns `NoLiveEntry` when no `RunningEntry` exists for the
+    /// execution (the cross-runner / just-paused case). This is the preserved
+    /// no-live behavior the P1#1 channel rewrite must not regress.
+    #[tokio::test]
+    async fn resume_live_no_live_entry_when_absent() {
+        let (engine, _) = make_engine(Arc::new(ActionRegistry::new()));
+        let outcome = engine.resume_live(ExecutionId::new()).await;
+        assert!(
+            matches!(outcome, ResumeDelivery::NoLiveEntry),
+            "an absent execution must yield NoLiveEntry, got {outcome:?}"
+        );
+    }
+
+    /// `resume_live` returns `LoopGone` when the live loop receives the request
+    /// but drops the `ack` sender before replying (it exited / panicked). The
+    /// dropped sender resolves the awaiting receiver to `Err` — a free
+    /// fail-safe: a not-durable arm defers rather than acks.
+    #[tokio::test]
+    async fn resume_live_loop_gone_when_ack_dropped() {
+        let (engine, _) = make_engine(Arc::new(ActionRegistry::new()));
+        let engine = Arc::new(engine);
+        let execution_id = ExecutionId::new();
+        let (mut resume_rx, _guard) = publish_running_entry(&engine, execution_id);
+
+        // Simulate a loop that takes the request then dies before replying.
+        let loop_side = tokio::spawn(async move {
+            let req = resume_rx.recv().await.expect("request must arrive");
+            // Drop `req` (and its ack sender) without sending — models the loop
+            // exiting mid-iteration.
+            drop(req);
+        });
+
+        let outcome = engine.resume_live(execution_id).await;
+        loop_side.await.unwrap();
+        assert!(
+            matches!(outcome, ResumeDelivery::LoopGone),
+            "a dropped ack sender must yield LoopGone, got {outcome:?}"
+        );
+    }
+
+    /// `resume_live` returns `AckTimeout` when the loop never replies within
+    /// `RESUME_ACK_TIMEOUT`. Driven under paused time so the test is instant and
+    /// deterministic. A wedged loop defers rather than acks.
+    #[tokio::test(start_paused = true)]
+    async fn resume_live_ack_timeout_when_loop_silent() {
+        let (engine, _) = make_engine(Arc::new(ActionRegistry::new()));
+        let engine = Arc::new(engine);
+        let execution_id = ExecutionId::new();
+        // Keep the receiver alive but NEVER reply, so the request is delivered
+        // (channel open) yet the ack never resolves.
+        let (_resume_rx, _guard) = publish_running_entry(&engine, execution_id);
+
+        let engine_h = Arc::clone(&engine);
+        let resume = tokio::spawn(async move { engine_h.resume_live(execution_id).await });
+        // Advance past the ack timeout under paused time.
+        tokio::time::advance(RESUME_ACK_TIMEOUT + Duration::from_secs(1)).await;
+        let outcome = resume.await.unwrap();
+        assert!(
+            matches!(outcome, ResumeDelivery::AckTimeout),
+            "a silent loop must yield AckTimeout, got {outcome:?}"
         );
     }
 }

@@ -101,7 +101,9 @@ pub enum ExecutionEvent {
         /// once the timer fires only the generic discriminator is recoverable.
         /// Per-variant detail will arrive with persisted resume targeting.
         condition_kind: String,
-        /// The declared `timeout` that elapsed, in milliseconds.
+        /// Timeout duration reported for observability, in milliseconds.
+        /// Reconstructed from the persisted wait deadline and node
+        /// `started_at`, so it may slightly exceed the author-declared timeout.
         timeout_ms: u64,
     },
 

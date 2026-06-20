@@ -32,8 +32,12 @@
 //!   non-terminal → `Deferred`. This ensures the Resume is never silently dropped when the
 //!   satisfy did not durably land. For a `Running` execution (a signal wait parked with a
 //!   `timeout`, so the row never reached `Paused`) it delivers the Resume to the live frontier
-//!   loop's resume channel via `WorkflowEngine::resume_live` (W-S2b): a live entry on this
-//!   runner → ack; no live entry (cross-runner / just-paused) → `Deferred` for B1 reclaim.
+//!   loop's resume channel via `WorkflowEngine::resume_live` (W-S2b) and gates the ack on the
+//!   loop's DURABLE self-arm (P1#1): the loop checkpoints the arm under its own lease and replies
+//!   with the outcome. The row is acked only when the arm durably landed (`Armed`) or there was
+//!   nothing to arm (`NothingToArm`); a failed arm checkpoint, a gone loop, an ack timeout, or no
+//!   live entry (cross-runner / just-paused) → `Deferred` for B1 reclaim, each with a distinct
+//!   `ResumeDeferred` reason. Redelivery is idempotent.
 //!
 //! - **Cancel / Terminate** always signal the engine's cancel registry (except for orphan commands,
 //!   which are [`ControlDispatchError::Rejected`]). The underlying
@@ -65,7 +69,7 @@ use nebula_storage_port::{Scope, store::ExecutionStore};
 use crate::{
     WorkflowEngine,
     control_consumer::{ControlDispatch, ControlDispatchError},
-    engine::{CancelDanglingOutcome, SatisfyOutcome},
+    engine::{CancelDanglingOutcome, ResumeDelivery, ResumeOutcome, SatisfyOutcome},
     error::EngineError,
     event::ExecutionEvent,
 };
@@ -138,6 +142,34 @@ impl EngineControlDispatch {
                 ))),
             },
         }
+    }
+
+    /// Emit a typed [`ExecutionEvent::ResumeDeferred`], log a warning, and
+    /// return [`ControlDispatchError::Deferred`] for a `Running` execution
+    /// whose live-frontier Resume did not durably arm.
+    ///
+    /// Centralises the not-durable arm of [`Self::dispatch_resume`]'s
+    /// `Running` branch so each cause (arm-checkpoint failed, loop gone, ack
+    /// timeout, no live entry) carries a distinct, observable `reason` while
+    /// the row stays un-acked in `Processing` for B1 reclaim. Deferring is
+    /// always safe: Resume redelivery is idempotent.
+    fn defer_running_resume(
+        engine: &WorkflowEngine,
+        execution_id: ExecutionId,
+        reason: &str,
+    ) -> Result<(), ControlDispatchError> {
+        tracing::warn!(
+            %execution_id,
+            reason,
+            "dispatch_resume: live-frontier Resume not durably armed; deferring for B1 reclaim"
+        );
+        engine.emit_event(ExecutionEvent::ResumeDeferred {
+            execution_id,
+            reason: reason.to_owned(),
+        });
+        Err(ControlDispatchError::Deferred(format!(
+            "execution {execution_id} Resume deferred for B1 reclaim: {reason}"
+        )))
     }
 
     /// Drive an execution that is `Created` or `Paused` through the engine's
@@ -288,34 +320,59 @@ impl ControlDispatch for EngineControlDispatch {
             // The durable satisfy-CAS path cannot be used here — it would
             // acquire the lease the live loop already holds. Instead deliver
             // the Resume to the live loop's resume channel; the loop self-arms
-            // its signal wait under its own lease and completes it.
+            // its signal wait under its own lease, DURABLY checkpoints the arm,
+            // and replies with the outcome.
             //
-            // If no live entry exists on this runner (`resume_live` returns
-            // false), the execution is driven by another runner or has just
-            // transitioned to `Paused` — defer for B1 reclaim, which redelivers
-            // to the owning runner / the durable Paused satisfy-CAS path.
-            Some(ExecutionStatus::Running) => {
-                if self.engine.resume_live(execution_id) {
+            // P1#1 ack-gating: the control-queue row is acked ONLY when the
+            // self-arm checkpoint durably landed (`Armed`) or there was nothing
+            // to arm (`NothingToArm` — an idempotent duplicate). Every
+            // not-durable outcome — the arm checkpoint failed (the loop lost its
+            // lease mid-iteration), the loop exited before replying, the ack
+            // timed out, or no live loop exists on this runner — leaves the row
+            // un-acked (`Deferred`) for B1 reclaim, with a distinct
+            // `ResumeDeferred` reason so the cause is observable. Deferring is
+            // always safe: Resume redelivery is idempotent.
+            //
+            // No-live-owner recovery (`NoLiveEntry`) keeps today's behavior:
+            // defer for B1 reclaim. Recovering a `Running` execution that has no
+            // live loop on ANY runner is a future (W-S3) slice.
+            Some(ExecutionStatus::Running) => match self.engine.resume_live(execution_id).await {
+                ResumeDelivery::Acked(ResumeOutcome::Armed { count }) => {
                     tracing::info!(
                         %execution_id,
-                        "dispatch_resume: delivered to live frontier resume channel"
+                        armed_count = count,
+                        "dispatch_resume: live frontier durably armed the signal wait(s)"
                     );
                     Ok(())
-                } else {
-                    tracing::warn!(
+                },
+                ResumeDelivery::Acked(ResumeOutcome::NothingToArm) => {
+                    tracing::info!(
                         %execution_id,
-                        "dispatch_resume: execution is Running but has no live frontier on this \
-                         runner; deferring for B1 reclaim (cross-runner or just-paused)"
+                        "dispatch_resume: live frontier had no signal-Waiting node to arm \
+                         (already armed / none parked); acking as idempotent no-op"
                     );
-                    self.engine.emit_event(ExecutionEvent::ResumeDeferred {
-                        execution_id,
-                        reason: "Running with no live frontier on this runner".to_owned(),
-                    });
-                    Err(ControlDispatchError::Deferred(format!(
-                        "execution {execution_id} is Running but not live on this runner; \
-                         Resume deferred for B1 reclaim"
-                    )))
-                }
+                    Ok(())
+                },
+                ResumeDelivery::Acked(ResumeOutcome::ArmFailed) => Self::defer_running_resume(
+                    &self.engine,
+                    execution_id,
+                    "live frontier self-arm checkpoint failed (lease lost mid-iteration)",
+                ),
+                ResumeDelivery::LoopGone => Self::defer_running_resume(
+                    &self.engine,
+                    execution_id,
+                    "live frontier loop exited before confirming the self-arm",
+                ),
+                ResumeDelivery::AckTimeout => Self::defer_running_resume(
+                    &self.engine,
+                    execution_id,
+                    "live frontier did not confirm the self-arm within the ack timeout",
+                ),
+                ResumeDelivery::NoLiveEntry => Self::defer_running_resume(
+                    &self.engine,
+                    execution_id,
+                    "Running with no live frontier on this runner (cross-runner or just-paused)",
+                ),
             },
             Some(
                 ExecutionStatus::Cancelling

@@ -707,8 +707,11 @@ impl ExecutionState {
     /// for a timer-driven or armed-signal wait, [`WaitWake::Timeout`] for a
     /// signal wait whose `timeout` is the wake), and a signal-only park (no
     /// timer) must carry `None` (it is satisfied by a Resume, not a timer).
-    /// Enforced by a `debug_assert!`; callers within this crate are the sole
-    /// writers of the (`next_attempt_at`, `wait_wake`) pair.
+    /// `park_node` is the sole caller-facing writer of the
+    /// (`next_attempt_at`, `wait_wake`) pair, and it takes both from the
+    /// caller — so the pairing is enforced as a fallible runtime guard (not a
+    /// `debug_assert!`): a `Some(wake_at), None` desync would turn a timeout
+    /// into a completion, which is load-bearing rather than a debug-only check.
     ///
     /// The caller is responsible for:
     /// - Persisting the node's `partial_output` through the normal
@@ -723,6 +726,9 @@ impl ExecutionState {
     /// reflected in `version`. On `Err` the state is left untouched.
     ///
     /// # Errors
+    /// - [`ExecutionError::InvalidTransition`] if the (`wake_at`, `wait_wake`)
+    ///   pair is not both-`Some` or both-`None` — checked before any mutation,
+    ///   so a desync leaves the state untouched.
     /// - [`ExecutionError::NodeNotFound`] if `node_key` is unknown.
     /// - [`ExecutionError::InvalidTransition`] if the node is not in `Running`
     ///   (the engine may only call this immediately after dispatching the action).
@@ -734,12 +740,21 @@ impl ExecutionState {
         wake_at: Option<DateTime<Utc>>,
         wait_wake: Option<WaitWake>,
     ) -> Result<(), ExecutionError> {
-        debug_assert_eq!(
-            wait_wake.is_some(),
-            wake_at.is_some(),
-            "park_node invariant: wait_wake must be Some iff a timer wake_at is present \
-             (timer waits declare a wake meaning; signal-only parks carry neither)"
-        );
+        // Enforce the wake pairing BEFORE any mutation. A `Some(wake_at),
+        // None` (or the inverse) desync would persist a timer wake with no
+        // declared meaning — silently turning a timeout into a completion (or
+        // a completion into a timer with no deadline). The caller supplies
+        // both fields, so this is a real input-validation guard, not a
+        // surrounding-code invariant a `debug_assert!` may elide in release.
+        if wait_wake.is_some() != wake_at.is_some() {
+            return Err(ExecutionError::InvalidTransition {
+                from: self
+                    .node_states
+                    .get(&node_key)
+                    .map_or_else(|| NodeState::Running.to_string(), |ns| ns.state.to_string()),
+                to: "Waiting (wait_wake/wake_at must be paired)".to_owned(),
+            });
+        }
         self.transition_node(node_key.clone(), NodeState::Waiting)?;
         // Stamp or clear the wake instant. `Waiting` with `wake_at ==
         // None` means the park is signal-driven (webhook/approval/
@@ -1839,6 +1854,49 @@ mod tests {
             ns.wait_wake.is_none(),
             "a signal-only park must not carry a wake discriminator"
         );
+    }
+
+    /// W-S2b — `park_node` REJECTS a desynced (`wake_at`, `wait_wake`) pair
+    /// with a typed error and leaves the node untouched. A `Some(wake_at),
+    /// None` (or the inverse) would persist a timer wake with no declared
+    /// meaning — silently turning a timeout into a completion — so the pairing
+    /// is a load-bearing runtime guard, not a debug-only assert.
+    ///
+    /// **Falsifiability**: replace the runtime guard with the old
+    /// `debug_assert_eq!` → in a release/`cargo test --release` build the
+    /// desync slips through, `park_node` returns `Ok`, the node becomes
+    /// `Waiting` with a `Some(wake_at), None` desync → both asserts flip.
+    #[test]
+    fn park_node_rejects_wake_pairing_desync() {
+        let (mut state, n1, _n2) = make_state();
+        state.start_node_attempt(n1.clone()).unwrap();
+        let wake_at = Utc::now() + chrono::Duration::seconds(30);
+
+        // wake_at without a wait_wake meaning is a desync — must be rejected.
+        let err = state
+            .park_node(n1.clone(), Some(wake_at), None)
+            .expect_err("a Some(wake_at), None park must be rejected");
+        assert!(
+            matches!(err, ExecutionError::InvalidTransition { .. }),
+            "the desync must surface as a typed InvalidTransition, got {err:?}"
+        );
+
+        // The inverse desync (wait_wake without a timer) is equally rejected.
+        let err = state
+            .park_node(n1.clone(), None, Some(WaitWake::Timeout))
+            .expect_err("a None, Some(wait_wake) park must be rejected");
+        assert!(matches!(err, ExecutionError::InvalidTransition { .. }));
+
+        // The guard ran before any mutation: the node is still Running, never
+        // parked, and carries no stale wake metadata.
+        let ns = state.node_state(n1).unwrap();
+        assert_eq!(
+            ns.state,
+            NodeState::Running,
+            "a rejected park must leave the node untouched (still Running)"
+        );
+        assert!(ns.next_attempt_at.is_none());
+        assert!(ns.wait_wake.is_none());
     }
 
     /// W-S2b — `wait_wake` round-trips through serde, and a legacy
