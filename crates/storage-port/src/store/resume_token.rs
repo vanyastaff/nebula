@@ -12,11 +12,12 @@
 //!
 //! [`ResumeTokenStore::revoke_on_terminal`] is the cleanup primitive for
 //! the un-consumed tokens a terminal execution leaves behind (e.g. it was
-//! cancelled while a node was parked on a signal). It is NOT yet wired into
-//! the engine's terminal path — that lands in W-S3e; until then the
-//! `ON DELETE CASCADE` from `port_executions` is the live cleanup.
+//! cancelled while a node was parked on a signal). The engine calls it,
+//! best-effort, at its terminal sinks (W-S3e) so dead tokens are purged
+//! proactively; the `ON DELETE CASCADE` from `port_executions` remains the
+//! backstop for the crash window between the terminal commit and the revoke.
 //!
-//! See ADR-0099 W-S3c.
+//! See ADR-0099 W-S3c (this trait) and W-S3e (the engine wiring).
 use crate::Scope;
 use crate::dto::resume_token::{ResumeTokenRow, TokenHash};
 use crate::error::StorageError;
@@ -53,13 +54,15 @@ pub trait ResumeTokenStore: Send + Sync + std::fmt::Debug {
 
     /// Revoke all tokens minted for `execution_id` within `scope`.
     ///
-    /// **Cleanup primitive — not yet wired in the engine (W-S3e scope).**
-    /// The engine will call this on every terminal transition (Completed /
-    /// Failed / Cancelled) to clean up tokens that were never consumed (e.g.
-    /// the execution was cancelled while a node was parked).  Until W-S3e
-    /// lands, the `ON DELETE CASCADE` constraint on `port_resume_tokens`
-    /// (firing when the `port_executions` row is deleted) is the only live
-    /// automatic cleanup.
+    /// **Cleanup primitive (wired in the engine — W-S3e).** The engine calls
+    /// this, best-effort and post-commit, at its terminal sinks (the
+    /// consolidated final-state persist and the no-live-runner
+    /// cancel-of-parked cleanup) to clean up tokens that were never consumed
+    /// (e.g. the execution was cancelled while a node was parked). The revoke
+    /// is intentionally NOT atomic with the terminal transition; the
+    /// `ON DELETE CASCADE` constraint on `port_resume_tokens` (firing when the
+    /// `port_executions` row is deleted) backstops the crash window between
+    /// the terminal commit and the revoke.
     ///
     /// The caller must already hold scope authority for the execution (owns
     /// the lease), so a `scope` parameter is correct here.

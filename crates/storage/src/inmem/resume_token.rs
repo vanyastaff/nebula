@@ -73,6 +73,26 @@ impl InMemoryResumeTokenStore {
         let key = row.token_hash.as_bytes().to_vec();
         self.inner.lock().resume_tokens.insert(key, row);
     }
+
+    /// Count the un-consumed token rows for `execution_id` within `scope`.
+    ///
+    /// Non-destructive peek: unlike [`ResumeTokenStore::revoke_on_terminal`],
+    /// this leaves the rows in place. Test-only probe so integration tests can
+    /// assert a token is present before a terminal transition and gone after,
+    /// without the probe itself performing the revoke under test.
+    ///
+    /// Same `pub`-on-a-dev-only-adapter rationale as [`Self::seed_for_test`]:
+    /// not `cfg(test)`-gated so it is reachable from sibling-crate integration
+    /// tests.
+    #[must_use]
+    pub fn token_count_for_test(&self, scope: &Scope, execution_id: &str) -> usize {
+        self.inner
+            .lock()
+            .resume_tokens
+            .values()
+            .filter(|row| row.execution_id == execution_id && row.scope == *scope)
+            .count()
+    }
 }
 
 #[async_trait::async_trait]
