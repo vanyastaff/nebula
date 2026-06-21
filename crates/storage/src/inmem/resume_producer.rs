@@ -59,6 +59,15 @@ impl ResumeProducer for InMemoryResumeProducer {
         token_hash: &TokenHash,
         resume_msg: &ControlMsg,
     ) -> Result<bool, StorageError> {
+        // Fail-closed at the boundary: this producer enqueues ONLY `Resume`.
+        // Checked BEFORE taking the lock or mutating, and release-enforced
+        // (unlike a `debug_assert!`), so a misused command can never burn a token.
+        if resume_msg.command != ControlCommand::Resume {
+            return Err(StorageError::Internal(
+                "ResumeProducer requires a Resume command".to_owned(),
+            ));
+        }
+
         let mut guard = self.inner.lock();
         let target = token_hash.as_bytes();
         let matching_key: Option<Vec<u8>> = guard
@@ -86,11 +95,6 @@ impl ResumeProducer for InMemoryResumeProducer {
                 reclaim_count: 0,
                 error_message: None,
             },
-        );
-        debug_assert_eq!(
-            resume_msg.command,
-            ControlCommand::Resume,
-            "ResumeProducer must only enqueue Resume commands"
         );
         Ok(true)
     }

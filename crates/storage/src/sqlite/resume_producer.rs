@@ -99,6 +99,15 @@ impl ResumeProducer for SqliteResumeProducer {
         token_hash: &TokenHash,
         resume_msg: &ControlMsg,
     ) -> Result<bool, StorageError> {
+        // Fail-closed at the boundary: this producer enqueues ONLY `Resume`.
+        // Checked BEFORE any mutation and release-enforced (unlike a
+        // `debug_assert!`), so a misused command can never burn a token.
+        if resume_msg.command != ControlCommand::Resume {
+            return Err(StorageError::Internal(
+                "ResumeProducer requires a Resume command".to_owned(),
+            ));
+        }
+
         // BEGIN IMMEDIATE takes the write lock up front so the DELETE + INSERT
         // pair is atomic against the single writer (spec §5 SQLite contract;
         // mirrors `SqliteExecutionStore::commit`).
@@ -150,11 +159,6 @@ impl ResumeProducer for SqliteResumeProducer {
         .map_err(conn_err)?;
 
         tx.commit().await.map_err(conn_err)?;
-        debug_assert_eq!(
-            resume_msg.command,
-            ControlCommand::Resume,
-            "ResumeProducer must only enqueue Resume commands"
-        );
         Ok(true)
     }
 }

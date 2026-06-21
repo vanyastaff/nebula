@@ -265,3 +265,49 @@ async fn producer_over_separate_state_sees_no_foreign_tokens() {
         "a producer must not see tokens minted on a different execution store"
     );
 }
+
+/// Test 6 — a non-`Resume` command is rejected at the boundary BEFORE any
+/// mutation: the call errors, the token is NOT burned, and nothing is enqueued.
+///
+/// This is the release-enforced structural guard (replacing the prior debug-only
+/// `debug_assert!` that ran *after* the mutation): the resume producer must only
+/// ever enqueue `Resume`, and a misuse must never burn a token.
+#[tokio::test]
+async fn non_resume_command_rejected_without_burning_token() {
+    let exec_store = InMemoryExecutionStore::new();
+    let control_queue = InMemoryControlQueue::new(&exec_store);
+    let producer = exec_store.resume_producer();
+    let scope = test_scope();
+    let hash = fill_hash(0xF6);
+    seed_token(
+        &exec_store,
+        &scope,
+        "exe-guard",
+        webhook_token_row(hash.clone(), "exe-guard", "cb-guard"),
+    )
+    .await;
+
+    // A `ControlMsg` carrying a non-`Resume` command.
+    let mut wrong = resume_msg("exe-guard", "cb-guard");
+    wrong.command = ControlCommand::Cancel;
+
+    let result = producer.consume_and_enqueue_resume(&hash, &wrong).await;
+    assert!(
+        result.is_err(),
+        "a non-Resume command must be rejected, not enqueued; got {result:?}"
+    );
+
+    // Boundary check fires BEFORE mutation: the token must survive.
+    assert!(
+        producer
+            .peek(&hash)
+            .await
+            .expect("peek must not error")
+            .is_some(),
+        "the token must NOT be burned when the command is rejected"
+    );
+    assert!(
+        control_queue.snapshot().is_empty(),
+        "nothing may be enqueued when the command is rejected"
+    );
+}

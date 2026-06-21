@@ -103,6 +103,15 @@ impl ResumeProducer for PgResumeProducer {
         token_hash: &TokenHash,
         resume_msg: &ControlMsg,
     ) -> Result<bool, StorageError> {
+        // Fail-closed at the boundary: this producer enqueues ONLY `Resume`.
+        // Checked BEFORE any mutation and release-enforced (unlike a
+        // `debug_assert!`), so a misused command can never burn a token.
+        if resume_msg.command != ControlCommand::Resume {
+            return Err(StorageError::Internal(
+                "ResumeProducer requires a Resume command".to_owned(),
+            ));
+        }
+
         let mut tx = self.pool.begin().await.map_err(conn_err)?;
 
         // `DELETE … RETURNING` (rows-affected == 1) IS the single-use replay
@@ -150,11 +159,6 @@ impl ResumeProducer for PgResumeProducer {
         .map_err(conn_err)?;
 
         tx.commit().await.map_err(conn_err)?;
-        debug_assert_eq!(
-            resume_msg.command,
-            ControlCommand::Resume,
-            "ResumeProducer must only enqueue Resume commands"
-        );
         Ok(true)
     }
 }
