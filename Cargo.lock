@@ -3606,7 +3606,6 @@ dependencies = [
  "nebula-execution",
  "nebula-expression",
  "nebula-metrics",
- "nebula-plugin",
  "nebula-plugin-core",
  "nebula-resource",
  "nebula-schema",

@@ -45,13 +45,13 @@ use std::{collections::HashMap, sync::Arc};
 
 use anyhow::Context as _;
 use nebula_action::ActionResult;
+use nebula_engine::ResolvedPlugin;
 use nebula_engine::{
     ActionExecutor, ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner,
     WorkflowEngine,
 };
 use nebula_execution::{ExecutionStatus, context::ExecutionBudget};
 use nebula_metrics::MetricsRegistry;
-use nebula_plugin::ResolvedPlugin;
 use nebula_plugin_core::CorePlugin;
 use nebula_workflow::{
     CURRENT_SCHEMA_VERSION, Connection, NodeDefinition, ParamValue, Version, WorkflowConfig,
@@ -96,13 +96,24 @@ async fn main() -> anyhow::Result<()> {
     println!("\n=== Output: per-region summary of shipped orders ===");
     println!("{}", pretty(summary));
 
-    // Asserting the exact result turns this example into a smoke test: the
-    // filter drops the cancelled/pending orders, the sort orders the shipped
-    // survivors by amount (descending), and the aggregate groups them by region
-    // in first-seen order — west (seen first at amount 100), then east.
+    // Strong-witness assertion — each step must have done the right thing:
+    //
+    // filter: drops the cancelled (999) and pending (200) orders, leaving
+    //   5 shipped rows (west:100, east:80, west:40, east:15, west:20).
+    //
+    // sort by amount desc: 100, 80, 40, 20, 15
+    //   → west:100, east:80, west:40, west:20, east:15
+    //
+    // aggregate, group_by region (first-seen order: west, then east):
+    //   west: count=3, sum(100+40+20)=160
+    //   east: count=2, sum(80+15)=95
+    //
+    // The two regions produce DIFFERENT order_count (3 vs 2) AND different
+    // total_amount (160 vs 95), so a region-swap, a filter leak, or a mis-sum
+    // in either region each cause a distinct failure.
     let expected = json!([
-        { "region": "west", "order_count": 2, "total_amount": 130 },
-        { "region": "east", "order_count": 2, "total_amount": 130 },
+        { "region": "west", "order_count": 3, "total_amount": 160 },
+        { "region": "east", "order_count": 2, "total_amount": 95  },
     ]);
     anyhow::ensure!(
         *summary == expected,
@@ -158,15 +169,24 @@ fn build_engine() -> anyhow::Result<WorkflowEngine> {
         .context("wiring CorePlugin into the engine")
 }
 
-/// The concrete input: six order records across two regions and three statuses.
+/// The concrete input: seven order records across two regions and three statuses.
+///
+/// After the pipeline runs:
+///   - `cancelled` and `pending` orders are filtered out (asserting filter works).
+///   - `west` ends up with 3 shipped orders (amounts 100, 40, 20 → total 160),
+///     `east` with 2 (amounts 80, 15 → total 95).
+///   - The two regions produce DISTINCT `order_count` (3 vs 2) AND `total_amount`
+///     (160 vs 95), making the final assertion a strong witness: a region-swap bug,
+///     a mis-sum in either region, or a filter leak all cause distinct failures.
 fn sample_orders() -> Value {
     json!([
         { "region": "west", "status": "shipped",   "amount": 100 },
-        { "region": "east", "status": "shipped",   "amount": 50  },
-        { "region": "west", "status": "cancelled", "amount": 999 },
-        { "region": "west", "status": "shipped",   "amount": 30  },
-        { "region": "east", "status": "pending",   "amount": 200 },
         { "region": "east", "status": "shipped",   "amount": 80  },
+        { "region": "west", "status": "cancelled", "amount": 999 },
+        { "region": "west", "status": "shipped",   "amount": 40  },
+        { "region": "east", "status": "pending",   "amount": 200 },
+        { "region": "east", "status": "shipped",   "amount": 15  },
+        { "region": "west", "status": "shipped",   "amount": 20  },
     ])
 }
 

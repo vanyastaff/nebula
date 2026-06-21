@@ -25,7 +25,6 @@ nebula-api = { path = "../crates/api" }
 nebula-storage = { path = "../crates/storage", features = ["credential-in-memory"] }
 nebula-engine = { path = "../crates/engine" }
 nebula-workflow = { path = "../crates/workflow" }
-nebula-plugin = { path = "../crates/plugin" }
 nebula-plugin-core = { path = "../crates/plugin-core" }
 nebula-action = { path = "../crates/action" }
 nebula-execution = { path = "../crates/execution" }
