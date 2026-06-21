@@ -68,6 +68,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Number, Value};
 use tracing::instrument;
 
+use crate::condition::compare_ordered;
 use crate::util::ValueTypeNameStr;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -262,10 +263,12 @@ enum Accumulator {
         contributing_count: u64,
     },
     Min {
-        current_min: Option<(f64, Value)>,
+        // The original `Value` (not a cached f64): min/max are decided by exact
+        // comparison so large 64-bit integers don't collapse via f64.
+        current_min: Option<Value>,
     },
     Max {
-        current_max: Option<(f64, Value)>,
+        current_max: Option<Value>,
     },
     Collect {
         collected_values: Vec<Value>,
@@ -450,14 +453,16 @@ impl Accumulator {
             // MIN
             (Accumulator::Min { current_min }, Aggregation::Min { field, out }) => {
                 match element.get(field.as_str()) {
+                    // `as_f64_strict` is the numeric-type guard only; the actual
+                    // min is decided by exact comparison so large integers survive.
                     Some(field_value) => match as_f64_strict(field_value) {
-                        Some(candidate_f64) => {
-                            let is_new_minimum = current_min
-                                .as_ref()
-                                .is_none_or(|(prior_f64, _)| candidate_f64 < *prior_f64);
+                        Some(_) => {
+                            let is_new_minimum = match current_min.as_ref() {
+                                None => true,
+                                Some(prior) => compare_ordered(field_value, prior)?.is_lt(),
+                            };
                             if is_new_minimum {
-                                // Preserve the original Value so integer types survive.
-                                *current_min = Some((candidate_f64, field_value.clone()));
+                                *current_min = Some(field_value.clone());
                             }
                         },
                         None if field_value.is_null() => {
@@ -486,13 +491,16 @@ impl Accumulator {
             // MAX
             (Accumulator::Max { current_max }, Aggregation::Max { field, out }) => {
                 match element.get(field.as_str()) {
+                    // `as_f64_strict` is the numeric-type guard only; the actual
+                    // max is decided by exact comparison so large integers survive.
                     Some(field_value) => match as_f64_strict(field_value) {
-                        Some(candidate_f64) => {
-                            let is_new_maximum = current_max
-                                .as_ref()
-                                .is_none_or(|(prior_f64, _)| candidate_f64 > *prior_f64);
+                        Some(_) => {
+                            let is_new_maximum = match current_max.as_ref() {
+                                None => true,
+                                Some(prior) => compare_ordered(field_value, prior)?.is_gt(),
+                            };
                             if is_new_maximum {
-                                *current_max = Some((candidate_f64, field_value.clone()));
+                                *current_max = Some(field_value.clone());
                             }
                         },
                         None if field_value.is_null() => {
@@ -591,12 +599,8 @@ impl Accumulator {
                     ActionError::fatal("aggregate: avg overflow (non-finite result)")
                 })?))
             },
-            Accumulator::Min { current_min } => Ok(current_min
-                .map(|(_, original_value)| original_value)
-                .unwrap_or(Value::Null)),
-            Accumulator::Max { current_max } => Ok(current_max
-                .map(|(_, original_value)| original_value)
-                .unwrap_or(Value::Null)),
+            Accumulator::Min { current_min } => Ok(current_min.unwrap_or(Value::Null)),
+            Accumulator::Max { current_max } => Ok(current_max.unwrap_or(Value::Null)),
             Accumulator::Collect { collected_values } => Ok(Value::Array(collected_values)),
             Accumulator::Join {
                 joined_parts,
@@ -1092,6 +1096,46 @@ mod tests {
         let output = extract_output(run(input).await.unwrap());
         assert_eq!(output[0]["lo"].as_i64(), Some(1), "min must be integer 1");
         assert_eq!(output[0]["hi"].as_i64(), Some(3), "max must be integer 3");
+    }
+
+    // ── 8b: min/max over large 64-bit IDs use EXACT comparison ────────────────
+    //
+    // 2^53, 2^53+1, 2^53+2 are distinct i64 but collapse to (near-)equal f64.
+    // RED witness: the old f64 comparison treated them as Equal and kept the
+    // first-seen value, so min == max == 2^53+1 (the first element) — both
+    // asserts below fail.
+    #[tokio::test]
+    async fn min_max_large_integers_exact() {
+        let input = AggregateInput {
+            data: Some(json!([
+                {"v": 9_007_199_254_740_993_i64},
+                {"v": 9_007_199_254_740_994_i64},
+                {"v": 9_007_199_254_740_992_i64},
+            ])),
+            group_by: vec![],
+            aggregations: vec![
+                Aggregation::Min {
+                    field: "v".into(),
+                    out: "lo".into(),
+                },
+                Aggregation::Max {
+                    field: "v".into(),
+                    out: "hi".into(),
+                },
+            ],
+            on_error: OnError::Fail,
+        };
+        let output = extract_output(run(input).await.unwrap());
+        assert_eq!(
+            output[0]["lo"].as_i64(),
+            Some(9_007_199_254_740_992),
+            "min must be the exact smallest large integer"
+        );
+        assert_eq!(
+            output[0]["hi"].as_i64(),
+            Some(9_007_199_254_740_994),
+            "max must be the exact largest large integer"
+        );
     }
 
     // ── 9: group_by produces one row per key in first-seen order ─────────────
