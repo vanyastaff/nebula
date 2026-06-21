@@ -101,5 +101,9 @@ path = "examples/workflow_conditional_routing.rs"
 name = "workflow_switch_router"
 path = "examples/workflow_switch_router.rs"
 
+[[example]]
+name = "workflow_json_reshape"
+path = "examples/workflow_json_reshape.rs"
+
 [lints]
 workspace = true
