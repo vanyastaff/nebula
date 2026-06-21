@@ -97,5 +97,9 @@ path = "examples/workflow_datetime_schedule.rs"
 name = "workflow_conditional_routing"
 path = "examples/workflow_conditional_routing.rs"
 
+[[example]]
+name = "workflow_switch_router"
+path = "examples/workflow_switch_router.rs"
+
 [lints]
 workspace = true
