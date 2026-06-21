@@ -136,7 +136,9 @@ pub enum DateTimeOp {
     /// Advance `input` by `amount` × `unit`.
     ///
     /// `amount` must be ≥ 0; the direction is encoded in the op name.
-    /// Duration overflow (e.g. adding i64::MAX seconds) is Fatal.
+    /// Duration overflow (e.g. adding i64::MAX milliseconds) is Fatal.
+    /// Sub-second results (from the `milliseconds` unit) are preserved in the
+    /// output; whole-second results render without a fractional part.
     Add {
         /// Offset-aware RFC3339 timestamp.
         input: String,
@@ -149,7 +151,9 @@ pub enum DateTimeOp {
     /// Retreat `input` by `amount` × `unit`.
     ///
     /// `amount` must be ≥ 0; the direction is encoded in the op name.
-    /// Duration overflow is Fatal.
+    /// Duration overflow is Fatal. Sub-second results (from the `milliseconds`
+    /// unit) are preserved in the output; whole-second results render without a
+    /// fractional part.
     Subtract {
         /// Offset-aware RFC3339 timestamp.
         input: String,
@@ -352,7 +356,10 @@ impl StatelessAction for DateTimeAction {
                 let result = dt.to_utc().checked_add_signed(dur).ok_or_else(|| {
                     ActionError::fatal("core.datetime: duration overflow".to_string())
                 })?;
-                Value::String(result.to_rfc3339_opts(SecondsFormat::Secs, true))
+                // `AutoSi` keeps whole-second results byte-identical (no `.0`
+                // suffix) but preserves sub-second precision from the
+                // `milliseconds` unit instead of truncating it away.
+                Value::String(result.to_rfc3339_opts(SecondsFormat::AutoSi, true))
             },
 
             DateTimeOp::Subtract {
@@ -365,7 +372,9 @@ impl StatelessAction for DateTimeAction {
                 let result = dt.to_utc().checked_sub_signed(dur).ok_or_else(|| {
                     ActionError::fatal("core.datetime: duration overflow".to_string())
                 })?;
-                Value::String(result.to_rfc3339_opts(SecondsFormat::Secs, true))
+                // `AutoSi`: preserve sub-second precision; whole seconds stay
+                // byte-identical (see the `Add` arm).
+                Value::String(result.to_rfc3339_opts(SecondsFormat::AutoSi, true))
             },
 
             DateTimeOp::Diff { from, to, unit } => {
@@ -574,10 +583,9 @@ mod tests {
     }
 
     /// Add milliseconds: 1 000 ms advances exactly one second. Proves the
-    /// `Milliseconds` unit drives `chrono::Duration` on the millisecond base.
-    ///
-    /// (Output stays whole-second precision per the module's documented
-    /// invariant; this asserts the arithmetic, not sub-second rendering.)
+    /// `Milliseconds` unit drives `chrono::Duration` on the millisecond base,
+    /// and that a whole-second result renders with no fractional part (byte
+    /// identical to the seconds base — `AutoSi` adds no `.0` suffix).
     #[tokio::test]
     async fn add_milliseconds_whole_second() {
         let out = extract_output(
@@ -590,6 +598,25 @@ mod tests {
             .unwrap(),
         );
         assert_eq!(out, json!("2026-06-19T00:00:01Z"));
+    }
+
+    /// Sub-second add: 250 ms is preserved in the output (not truncated to a
+    /// whole second).
+    ///
+    /// RED witness: with `SecondsFormat::Secs` the `.250` was silently dropped
+    /// and this returned `2026-06-19T00:00:00Z`.
+    #[tokio::test]
+    async fn add_milliseconds_sub_second_is_preserved() {
+        let out = extract_output(
+            run(add_input(
+                "2026-06-19T00:00:00Z",
+                250,
+                DurationUnit::Milliseconds,
+            ))
+            .await
+            .unwrap(),
+        );
+        assert_eq!(out, json!("2026-06-19T00:00:00.250Z"));
     }
 
     // ── Subtract ─────────────────────────────────────────────────────────────
@@ -613,6 +640,22 @@ mod tests {
                 .unwrap(),
         );
         assert_eq!(out, json!("2026-06-18T23:00:00Z"));
+    }
+
+    /// Sub-second subtract: 250 ms is preserved in the output. Crossing a second
+    /// boundary downward yields a fractional second (`...01` − 250 ms = `...00.750`).
+    #[tokio::test]
+    async fn subtract_milliseconds_sub_second_is_preserved() {
+        let out = extract_output(
+            run(sub_input(
+                "2026-06-19T00:00:01Z",
+                250,
+                DurationUnit::Milliseconds,
+            ))
+            .await
+            .unwrap(),
+        );
+        assert_eq!(out, json!("2026-06-19T00:00:00.750Z"));
     }
 
     // ── Diff ─────────────────────────────────────────────────────────────────
