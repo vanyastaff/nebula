@@ -56,33 +56,38 @@ use crate::util::ValueTypeNameStr;
 
 /// Unit of duration for arithmetic and diff operations.
 ///
-/// `Days` and `Weeks` are defined in terms of fixed seconds (86 400 and
-/// 604 800 respectively) — not calendar days. `Months` and `Years` are
-/// excluded because their length varies and would require calendar awareness.
+/// The base unit is the **millisecond**, so sub-second durations are
+/// representable. `Days` and `Weeks` are defined in terms of fixed milliseconds
+/// (86 400 000 and 604 800 000 respectively) — not calendar days. `Months` and
+/// `Years` are excluded because their length varies and would require calendar
+/// awareness.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DurationUnit {
-    /// 1 second.
+    /// 1 millisecond — the finest representable unit.
+    Milliseconds,
+    /// 1 000 milliseconds.
     Seconds,
-    /// 60 seconds.
+    /// 60 000 milliseconds.
     Minutes,
-    /// 3 600 seconds.
+    /// 3 600 000 milliseconds.
     Hours,
-    /// 86 400 seconds (not a calendar day).
+    /// 86 400 000 milliseconds (not a calendar day).
     Days,
-    /// 604 800 seconds (not a calendar week).
+    /// 604 800 000 milliseconds (not a calendar week).
     Weeks,
 }
 
 impl DurationUnit {
-    /// Returns the number of seconds in one unit.
-    pub(crate) fn seconds_per_unit(self) -> i64 {
+    /// Returns the number of milliseconds in one unit.
+    pub(crate) fn millis_per_unit(self) -> i64 {
         match self {
-            DurationUnit::Seconds => 1,
-            DurationUnit::Minutes => 60,
-            DurationUnit::Hours => 3_600,
-            DurationUnit::Days => 86_400,
-            DurationUnit::Weeks => 604_800,
+            DurationUnit::Milliseconds => 1,
+            DurationUnit::Seconds => 1_000,
+            DurationUnit::Minutes => 60_000,
+            DurationUnit::Hours => 3_600_000,
+            DurationUnit::Days => 86_400_000,
+            DurationUnit::Weeks => 604_800_000,
         }
     }
 }
@@ -216,15 +221,15 @@ fn build_duration(amount: i64, unit: DurationUnit) -> Result<Duration, ActionErr
              use the opposite op to go backwards"
         )));
     }
-    let secs_per = unit.seconds_per_unit();
-    let total_secs = amount.checked_mul(secs_per).ok_or_else(|| {
+    let millis_per = unit.millis_per_unit();
+    let total_millis = amount.checked_mul(millis_per).ok_or_else(|| {
         ActionError::fatal(format!(
-            "core.datetime: duration overflow computing {amount} × {secs_per} seconds"
+            "core.datetime: duration overflow computing {amount} × {millis_per} milliseconds"
         ))
     })?;
-    Duration::try_seconds(total_secs).ok_or_else(|| {
+    Duration::try_milliseconds(total_millis).ok_or_else(|| {
         ActionError::fatal(format!(
-            "core.datetime: duration overflow: {total_secs} seconds is out of range"
+            "core.datetime: duration overflow: {total_millis} milliseconds is out of range"
         ))
     })
 }
@@ -367,10 +372,10 @@ impl StatelessAction for DateTimeAction {
                 let from_dt = parse_rfc3339("from", &from)?;
                 let to_dt = parse_rfc3339("to", &to)?;
                 let delta: Duration = to_dt.to_utc() - from_dt.to_utc();
-                let total_secs = delta.num_seconds();
-                let secs_per = unit.seconds_per_unit();
+                let total_millis = delta.num_milliseconds();
+                let millis_per = unit.millis_per_unit();
                 // Integer division truncates toward zero — matches the spec.
-                let count = total_secs / secs_per;
+                let count = total_millis / millis_per;
                 Value::Number(count.into())
             },
         };
@@ -568,6 +573,25 @@ mod tests {
         assert_eq!(out, json!("2026-06-20T01:00:00Z"));
     }
 
+    /// Add milliseconds: 1 000 ms advances exactly one second. Proves the
+    /// `Milliseconds` unit drives `chrono::Duration` on the millisecond base.
+    ///
+    /// (Output stays whole-second precision per the module's documented
+    /// invariant; this asserts the arithmetic, not sub-second rendering.)
+    #[tokio::test]
+    async fn add_milliseconds_whole_second() {
+        let out = extract_output(
+            run(add_input(
+                "2026-06-19T00:00:00Z",
+                1_000,
+                DurationUnit::Milliseconds,
+            ))
+            .await
+            .unwrap(),
+        );
+        assert_eq!(out, json!("2026-06-19T00:00:01Z"));
+    }
+
     // ── Subtract ─────────────────────────────────────────────────────────────
 
     #[tokio::test]
@@ -702,6 +726,24 @@ mod tests {
             .unwrap(),
         );
         assert_eq!(out, json!(90_i64), "90-minute gap must equal 90 minutes");
+    }
+
+    /// Diff with Milliseconds unit: a 1-second gap returns 1 000.
+    ///
+    /// RED witness: on the old seconds base there was no `Milliseconds` unit, so
+    /// sub-second-resolution diffs could not be requested.
+    #[tokio::test]
+    async fn diff_milliseconds() {
+        let out = extract_output(
+            run(diff_input(
+                "2026-06-19T00:00:00Z",
+                "2026-06-19T00:00:01Z",
+                DurationUnit::Milliseconds,
+            ))
+            .await
+            .unwrap(),
+        );
+        assert_eq!(out, json!(1_000_i64), "1-second gap must equal 1000 ms");
     }
 
     // ── Error paths (RED witnesses) ───────────────────────────────────────────
@@ -860,6 +902,24 @@ mod tests {
         let json = serde_json::to_string(&unit).unwrap();
         let back: DurationUnit = serde_json::from_str(&json).unwrap();
         assert_eq!(back, unit);
+    }
+
+    /// New `milliseconds` wire value serializes to `"milliseconds"` and round-trips.
+    #[test]
+    fn serde_roundtrip_duration_unit_milliseconds() {
+        let unit = DurationUnit::Milliseconds;
+        let json = serde_json::to_string(&unit).unwrap();
+        assert_eq!(json, "\"milliseconds\"");
+        let back: DurationUnit = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, unit);
+    }
+
+    /// Backward-compatibility: the pre-existing `seconds` wire value still
+    /// deserializes unchanged after the millisecond-base rework.
+    #[test]
+    fn deserialize_legacy_seconds_unit_unchanged() {
+        let back: DurationUnit = serde_json::from_str("\"seconds\"").unwrap();
+        assert_eq!(back, DurationUnit::Seconds);
     }
 
     // ── Metadata ──────────────────────────────────────────────────────────────

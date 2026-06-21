@@ -17,7 +17,7 @@
 //!   workflow input (a small JSON payload)
 //!        │
 //!        ▼
-//!   [delay]   core.delay  — park 1s on a timer (mode=for), pass `data` through
+//!   [delay]   core.delay  — park 250ms on a timer (mode=for), pass `data` through
 //!        │
 //!        ▼  (gated until the timer fires)
 //!   [resumed] core.set_fields — stamp `resumed_after_delay = true`
@@ -31,11 +31,10 @@
 //!
 //! The wait-state scheduler runs on its own task inside `execute_workflow`, so a
 //! `start_paused` virtual clock cannot drive it (the example cannot advance the
-//! scheduler's time). The delay is a real `for` span of 1 second — the smallest
-//! unit `core.delay` exposes on its public surface (`DurationUnit::Seconds`) —
-//! bounded by a generous `tokio::time::timeout` backstop, so a regression fails
-//! fast instead of hanging. The printed elapsed wall-clock time shows the real
-//! park happened.
+//! scheduler's time). The delay is a real, sub-second `for` span of 250 ms —
+//! `core.delay`'s finest unit is `DurationUnit::Milliseconds` — bounded by a
+//! generous `tokio::time::timeout` backstop, so a regression fails fast instead
+//! of hanging. The printed elapsed wall-clock time shows the real park happened.
 //!
 //! ## Run it
 //!
@@ -43,7 +42,7 @@
 //! cargo run -p nebula-examples --example workflow_delay_resume
 //! ```
 //!
-//! It completes in roughly one second (the real timer span) plus engine overhead.
+//! It completes in a fraction of a second (the real timer span) plus engine overhead.
 
 use std::{collections::HashMap, sync::Arc, time::Duration, time::Instant};
 
@@ -63,10 +62,10 @@ use nebula_workflow::{
 };
 use serde_json::{Value, json};
 
-/// How long the delay node parks, in seconds. One second is the smallest delay
-/// `core.delay` exposes (`DurationUnit::Seconds` is its finest unit), and it is
+/// How long the delay node parks, in milliseconds. 250 ms is comfortably
+/// sub-second — `core.delay`'s finest unit is `DurationUnit::Milliseconds` — yet
 /// long enough that the park is observably real (not instantaneous).
-const DELAY_SECS: u64 = 1;
+const DELAY_MILLIS: u64 = 250;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -75,7 +74,7 @@ async fn main() -> anyhow::Result<()> {
     let payload = json!({ "order_id": "A-1001", "note": "carried through the park" });
     println!("=== Input payload (passed through the delay node) ===");
     println!("{}", pretty(&payload));
-    println!("\nBuilding a `delay → set_fields` workflow with a {DELAY_SECS}s timer park.\n");
+    println!("\nBuilding a `delay → set_fields` workflow with a {DELAY_MILLIS}ms timer park.\n");
 
     let delay_key = nebula_core::node_key!("delay");
     let resumed_key = nebula_core::node_key!("resumed");
@@ -134,7 +133,7 @@ async fn main() -> anyhow::Result<()> {
 
     let wake_at = wake_at.context("a timer (for) delay must carry a concrete wake_at")?;
     println!(
-        "⏸  node `delay` parked — waiting {DELAY_SECS}s for the timer (wake_at = {})",
+        "⏸  node `delay` parked — waiting {DELAY_MILLIS}ms for the timer (wake_at = {})",
         wake_at.to_rfc3339()
     );
 
@@ -204,8 +203,8 @@ async fn main() -> anyhow::Result<()> {
 
     // The park was real: wall-clock elapsed must cover the timer span.
     anyhow::ensure!(
-        elapsed >= Duration::from_secs(DELAY_SECS),
-        "wall-clock elapsed ({elapsed:?}) must be at least the {DELAY_SECS}s timer span — \
+        elapsed >= Duration::from_millis(DELAY_MILLIS),
+        "wall-clock elapsed ({elapsed:?}) must be at least the {DELAY_MILLIS}ms timer span — \
          a near-instant run means the node did not actually park",
     );
 
@@ -214,7 +213,7 @@ async fn main() -> anyhow::Result<()> {
     let elapsed_secs = elapsed.as_secs_f64();
     println!(
         "\nCompleted in {elapsed_secs:.3}s of real wall-clock time \
-         ({DELAY_SECS}s timer park + engine overhead).",
+         ({DELAY_MILLIS}ms timer park + engine overhead).",
     );
     println!("Park → timer → resume → complete: the durable wait-state worked end to end.");
     Ok(())
@@ -264,7 +263,7 @@ fn build_engine() -> anyhow::Result<WorkflowEngine> {
 
 /// Build the two-node `delay → set_fields` workflow.
 ///
-/// - `delay` is a `core.delay` node in `for` mode (1s). It carries the given
+/// - `delay` is a `core.delay` node in `for` mode (250 ms). It carries the given
 ///   `payload` as its `data`, which the engine echoes downstream on resume.
 /// - `resumed` is a `core.set_fields` node that stamps `resumed_after_delay` so
 ///   the output proves it ran after — and only after — the timer fired.
@@ -274,13 +273,13 @@ fn build_delay_workflow(
     payload: &Value,
 ) -> WorkflowDefinition {
     // Wire shape verified against `DelaySpec::For { amount, unit }` /
-    // `DurationUnit::Seconds`: {"mode":"for","amount":1,"unit":"seconds"}.
+    // `DurationUnit::Milliseconds`: {"mode":"for","amount":250,"unit":"milliseconds"}.
     let delay_node =
         NodeDefinition::new(delay_key.clone(), "Park on a timer", "core", "core.delay")
             .expect("delay NodeDefinition has valid keys")
             .with_parameter("mode", ParamValue::literal(json!("for")))
-            .with_parameter("amount", ParamValue::literal(json!(DELAY_SECS)))
-            .with_parameter("unit", ParamValue::literal(json!("seconds")))
+            .with_parameter("amount", ParamValue::literal(json!(DELAY_MILLIS)))
+            .with_parameter("unit", ParamValue::literal(json!("milliseconds")))
             .with_parameter("data", ParamValue::literal(payload.clone()));
 
     let resumed_node = NodeDefinition::new(
