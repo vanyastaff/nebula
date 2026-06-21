@@ -11,7 +11,8 @@
 //! ## A real timer is used deliberately
 //!
 //! These tests drive the engine's timer-wake scheduler with a real 1-second
-//! `for` delay (the smallest unit `core.delay` exposes on its public surface).
+//! `for` delay — long enough that the park is observably real through the engine's
+//! event stream (`core.delay` itself can park for sub-second `milliseconds` spans).
 //! The wait *deterministically* fires, so the test is not flaky — a `start_paused`
 //! virtual clock cannot be used because `execute_workflow` runs the park
 //! scheduler on its own task and the test cannot advance its time. The 1-second

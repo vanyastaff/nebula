@@ -21,7 +21,11 @@
 //! ```json
 //! { "data": { /* optional pass-through payload */ }, "mode": "for", "amount": 30, "unit": "seconds" }
 //! ```
-//! or
+//! Sub-second parks use the `milliseconds` unit:
+//! ```json
+//! { "data": null, "mode": "for", "amount": 250, "unit": "milliseconds" }
+//! ```
+//! or park until an absolute instant:
 //! ```json
 //! { "data": null, "mode": "until", "datetime": "2026-06-19T00:00:00Z" }
 //! ```
@@ -30,7 +34,7 @@
 //!
 //! - `for`: `amount` must be `> 0` (a zero delay is no Delay node; negative is
 //!   nonsensical) and `amount × unit` must not overflow. The computed wait is
-//!   clamped to a 24-hour ceiling ([`MAX_DELAY_SECS`]).
+//!   clamped to a 24-hour ceiling ([`MAX_DELAY_MILLIS`]).
 //! - `until`: the timestamp must be offset-aware RFC3339 (naive strings are
 //!   rejected). A timestamp in the past is **not** an error — the engine wakes
 //!   the node on the next scheduler tick.
@@ -55,13 +59,13 @@ use tracing::instrument;
 
 use crate::actions::datetime::DurationUnit;
 
-/// Maximum duration `core.delay` will park for: 24 hours, in seconds.
+/// Maximum duration `core.delay` will park for: 24 hours, in milliseconds.
 ///
 /// A `for` delay whose computed duration exceeds this ceiling is clamped to it
 /// (with a `warn`). This bounds a single timer-park so a mis-specified workflow
 /// cannot pin a node in `Waiting` for an unbounded span. It is the wait ceiling
 /// for this action specifically — unrelated to any storage TTL constant.
-pub const MAX_DELAY_SECS: u64 = 86_400;
+pub const MAX_DELAY_MILLIS: u64 = 86_400_000;
 
 // ── Config types ──────────────────────────────────────────────────────────────
 
@@ -76,7 +80,7 @@ pub enum DelaySpec {
     /// Park for `amount × unit`.
     ///
     /// `amount` must be `> 0`. The computed wait is clamped to
-    /// [`MAX_DELAY_SECS`].
+    /// [`MAX_DELAY_MILLIS`].
     For {
         /// Number of `unit`s to wait. Must be strictly positive.
         amount: i64,
@@ -118,9 +122,9 @@ impl HasSchema for DelayInput {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/// Build the wait duration for a `for` spec, applying validation and the 24h
-/// clamp.
-fn build_delay_secs(amount: i64, unit: DurationUnit) -> Result<u64, ActionError> {
+/// Build the wait duration (in milliseconds) for a `for` spec, applying
+/// validation and the 24h clamp.
+fn build_delay_millis(amount: i64, unit: DurationUnit) -> Result<u64, ActionError> {
     if amount < 0 {
         return Err(ActionError::fatal(format!(
             "core.delay: `amount` must be positive (got {amount})"
@@ -132,28 +136,28 @@ fn build_delay_secs(amount: i64, unit: DurationUnit) -> Result<u64, ActionError>
                 .to_owned(),
         ));
     }
-    let secs_per = unit.seconds_per_unit();
-    let total_secs = amount.checked_mul(secs_per).ok_or_else(|| {
+    let millis_per = unit.millis_per_unit();
+    let total_millis = amount.checked_mul(millis_per).ok_or_else(|| {
         ActionError::fatal(format!(
-            "core.delay: duration overflow computing {amount} × {secs_per} seconds"
+            "core.delay: duration overflow computing {amount} × {millis_per} milliseconds"
         ))
     })?;
-    // `total_secs > 0` here (amount > 0, secs_per ≥ 1), so the cast is safe.
-    let requested_secs = u64::try_from(total_secs).map_err(|_| {
+    // `total_millis > 0` here (amount > 0, millis_per ≥ 1), so the cast is safe.
+    let requested_millis = u64::try_from(total_millis).map_err(|_| {
         ActionError::fatal(format!(
-            "core.delay: duration overflow: {total_secs} seconds is out of range"
+            "core.delay: duration overflow: {total_millis} milliseconds is out of range"
         ))
     })?;
-    if requested_secs > MAX_DELAY_SECS {
+    if requested_millis > MAX_DELAY_MILLIS {
         tracing::warn!(
             target = "core.delay",
-            requested_secs,
-            clamped_to = MAX_DELAY_SECS,
+            requested_millis,
+            clamped_to = MAX_DELAY_MILLIS,
             "delay exceeds 24h ceiling; clamping"
         );
-        return Ok(MAX_DELAY_SECS);
+        return Ok(MAX_DELAY_MILLIS);
     }
-    Ok(requested_secs)
+    Ok(requested_millis)
 }
 
 /// Parse an offset-aware RFC3339 string into UTC; reject naive strings.
@@ -235,9 +239,9 @@ impl StatelessAction for CoreDelay {
 
         let condition = match input.spec {
             DelaySpec::For { amount, unit } => {
-                let secs = build_delay_secs(amount, unit)?;
+                let millis = build_delay_millis(amount, unit)?;
                 WaitCondition::Duration {
-                    duration: StdDuration::from_secs(secs),
+                    duration: StdDuration::from_millis(millis),
                 }
             },
             DelaySpec::Until { datetime } => {
@@ -345,16 +349,36 @@ mod tests {
         assert_eq!(out, Value::Null);
     }
 
-    /// > 24h clamps to the 86 400 s ceiling.
+    /// Sub-second `for` delay: 250 ms parks for exactly `Duration::from_millis(250)`.
     ///
-    /// RED witness: drop the clamp branch in `build_delay_secs` → the duration
-    /// would be 172 800 s and this assertion would fail.
+    /// RED witness: before the millisecond base, `DurationUnit` had no
+    /// `Milliseconds` variant and the finest representable wait was 1 s — a
+    /// 250 ms delay could not be expressed at all.
+    #[tokio::test]
+    async fn for_milliseconds_parks_sub_second() {
+        let (condition, _) = expect_wait(
+            run(for_input(250, DurationUnit::Milliseconds))
+                .await
+                .unwrap(),
+        );
+        match condition {
+            WaitCondition::Duration { duration } => {
+                assert_eq!(duration, StdDuration::from_millis(250));
+            },
+            other => panic!("expected Duration(250ms), got: {other:?}"),
+        }
+    }
+
+    /// > 24h clamps to the 86 400 000 ms ceiling.
+    ///
+    /// RED witness: drop the clamp branch in `build_delay_millis` → the duration
+    /// would be 172 800 000 ms and this assertion would fail.
     #[tokio::test]
     async fn for_over_24h_clamps_to_ceiling() {
         let (condition, _) = expect_wait(run(for_input(2, DurationUnit::Days)).await.unwrap());
         match condition {
             WaitCondition::Duration { duration } => {
-                assert_eq!(duration, StdDuration::from_secs(MAX_DELAY_SECS));
+                assert_eq!(duration, StdDuration::from_millis(MAX_DELAY_MILLIS));
             },
             other => panic!("expected clamped Duration, got: {other:?}"),
         }
@@ -366,9 +390,60 @@ mod tests {
         let (condition, _) = expect_wait(run(for_input(24, DurationUnit::Hours)).await.unwrap());
         match condition {
             WaitCondition::Duration { duration } => {
-                assert_eq!(duration, StdDuration::from_secs(MAX_DELAY_SECS));
+                assert_eq!(duration, StdDuration::from_millis(MAX_DELAY_MILLIS));
             },
             other => panic!("expected Duration(24h), got: {other:?}"),
+        }
+    }
+
+    /// Just over the ceiling expressed in ms clamps down to it.
+    ///
+    /// RED witness: `MAX_DELAY_MILLIS + 1` ms must clamp; without the clamp the
+    /// duration would be 86 400 001 ms.
+    #[tokio::test]
+    async fn for_just_over_ceiling_millis_clamps() {
+        let over = i64::try_from(MAX_DELAY_MILLIS + 1).expect("ceiling+1 fits in i64");
+        let (condition, _) = expect_wait(
+            run(for_input(over, DurationUnit::Milliseconds))
+                .await
+                .unwrap(),
+        );
+        match condition {
+            WaitCondition::Duration { duration } => {
+                assert_eq!(duration, StdDuration::from_millis(MAX_DELAY_MILLIS));
+            },
+            other => panic!("expected clamped Duration, got: {other:?}"),
+        }
+    }
+
+    /// Exactly the ceiling expressed in ms is NOT clamped.
+    #[tokio::test]
+    async fn for_exactly_ceiling_millis_is_not_clamped() {
+        let at = i64::try_from(MAX_DELAY_MILLIS).expect("ceiling fits in i64");
+        let (condition, _) = expect_wait(
+            run(for_input(at, DurationUnit::Milliseconds))
+                .await
+                .unwrap(),
+        );
+        match condition {
+            WaitCondition::Duration { duration } => {
+                assert_eq!(duration, StdDuration::from_millis(MAX_DELAY_MILLIS));
+            },
+            other => panic!("expected Duration at ceiling, got: {other:?}"),
+        }
+    }
+
+    /// An existing `seconds` delay computes the identical wall-clock on the ms
+    /// base: 5 Seconds × 1 000 = 5 000 ms = exactly `from_secs(5)`. Guards against
+    /// a base-conversion regression.
+    #[tokio::test]
+    async fn for_seconds_same_wallclock() {
+        let (condition, _) = expect_wait(run(for_input(5, DurationUnit::Seconds)).await.unwrap());
+        match condition {
+            WaitCondition::Duration { duration } => {
+                assert_eq!(duration, StdDuration::from_secs(5));
+            },
+            other => panic!("expected Duration(5s), got: {other:?}"),
         }
     }
 
@@ -491,6 +566,38 @@ mod tests {
         assert!(input.data.is_none());
         assert_eq!(
             input.spec,
+            DelaySpec::For {
+                amount: 30,
+                unit: DurationUnit::Seconds,
+            }
+        );
+    }
+
+    /// New `milliseconds` wire value round-trips to `DurationUnit::Milliseconds`.
+    #[test]
+    fn serde_roundtrip_for_milliseconds() {
+        let spec = DelaySpec::For {
+            amount: 250,
+            unit: DurationUnit::Milliseconds,
+        };
+        // Wire shape: {"mode":"for","amount":250,"unit":"milliseconds"}
+        let wire = serde_json::to_value(&spec).unwrap();
+        assert_eq!(wire["mode"], json!("for"));
+        assert_eq!(wire["amount"], json!(250));
+        assert_eq!(wire["unit"], json!("milliseconds"));
+        let back: DelaySpec = serde_json::from_value(wire).unwrap();
+        assert_eq!(back, spec);
+    }
+
+    /// Backward-compatibility: the pre-existing `seconds` wire value still
+    /// deserializes unchanged after the millisecond-base rework.
+    #[test]
+    fn deserialize_legacy_seconds_wire_unchanged() {
+        let spec: DelaySpec =
+            serde_json::from_value(json!({ "mode": "for", "amount": 30, "unit": "seconds" }))
+                .unwrap();
+        assert_eq!(
+            spec,
             DelaySpec::For {
                 amount: 30,
                 unit: DurationUnit::Seconds,
