@@ -3260,6 +3260,17 @@ impl WorkflowEngine {
                     "cancel_dangling_nodes: terminalized parked nodes of a cancelled \
                      no-live-runner execution"
                 );
+                // W-S3e — the no-live-runner cancel-of-parked path: this is the
+                // most likely sink to hold live un-consumed tokens (a signal-parked
+                // node minted one at park, then the execution was cancelled). The
+                // commit above made the execution durably `Cancelled` (terminal), so
+                // revoke its leftover resume tokens. POST-commit and best-effort by
+                // design (same rationale as `persist_final_state_port`): mint rides
+                // the batch atomically, revoke is a separate call; the crash window
+                // leaves only dead rows backstopped by the FK `ON DELETE CASCADE`
+                // and no-op-resume (see `nebula_storage_port::store::resume_token`
+                // module docs), so a revoke failure must not fail the cancel.
+                revoke_resume_tokens_best_effort(stores, scope, id).await;
                 Ok(CancelDanglingOutcome::Cancelled(count))
             },
             Ok(nebula_storage_port::TransitionOutcome::FencedOut) => {
@@ -5978,6 +5989,19 @@ impl WorkflowEngine {
         match outcome {
             nebula_storage_port::TransitionOutcome::Applied { new_version } => {
                 *repo_version = new_version;
+                // W-S3e — proactively revoke any un-consumed resume tokens once
+                // the execution is durably terminal. Deliberately POST-commit and
+                // non-atomic: mint-on-park rides the `TransitionBatch` atomically,
+                // but revoke is a separate best-effort call. A crash in the window
+                // (terminal committed, revoke not yet run) leaves only un-reachable
+                // dead token rows — backstopped by the `port_resume_tokens`
+                // `ON DELETE CASCADE` FK and the no-op-resume against a terminal
+                // execution (see `nebula_storage_port::store::resume_token` module
+                // docs). So a revoke failure must NOT fail the already-terminal
+                // transition.
+                if exec_state.status.is_terminal() {
+                    revoke_resume_tokens_best_effort(stores, scope, &id).await;
+                }
                 Ok(None)
             },
             nebula_storage_port::TransitionOutcome::FencedOut => Err(EngineError::CasConflict {
@@ -7479,6 +7503,52 @@ fn determine_final_status(
 /// failure in logs.
 fn final_state_node_key() -> NodeKey {
     NodeKey::new("final_execution_state").expect("sentinel node key is always valid")
+}
+
+/// W-S3e — best-effort cleanup of un-consumed resume tokens after an execution
+/// reaches a terminal state.
+///
+/// Called POST-commit from the engine's terminal sinks (the consolidated final
+/// state persist and the no-live-runner cancel-of-parked cleanup). The revoke is
+/// deliberately NOT atomic with the terminal transition: mint-on-park rides the
+/// `TransitionBatch` so state and token can't diverge on a crash, but the
+/// terminal-side cleanup is a separate call. A crash in the window leaves only
+/// un-reachable dead token rows, backstopped by the `port_resume_tokens`
+/// `ON DELETE CASCADE` FK and the no-op of a resume targeting a terminal
+/// execution (see the `nebula_storage_port::store::resume_token` module docs).
+///
+/// Because the execution is already durably terminal, a revoke failure must
+/// never propagate — it is logged at `warn!` (error + `execution_id` only, no
+/// token or hash material) and swallowed. A successful revoke logs the count at
+/// `debug!` so the cleanup path is observable.
+async fn revoke_resume_tokens_best_effort(
+    stores: &crate::store_seam::ExecutionStores,
+    scope: &Scope,
+    execution_id: &str,
+) {
+    match stores
+        .resume_tokens
+        .revoke_on_terminal(scope, execution_id)
+        .await
+    {
+        Ok(tokens_revoked) => {
+            tracing::debug!(
+                target = "engine::wait",
+                execution_id,
+                tokens_revoked,
+                "revoke_on_terminal: purged un-consumed resume tokens on terminal transition"
+            );
+        },
+        Err(error) => {
+            tracing::warn!(
+                target = "engine::wait",
+                execution_id,
+                %error,
+                "revoke_on_terminal: best-effort resume-token cleanup failed; the execution is \
+                 already terminal — the FK ON DELETE CASCADE backstop will reclaim the dead rows"
+            );
+        },
+    }
 }
 
 /// Extract the `status` field from a persisted execution-state JSON
