@@ -23,9 +23,16 @@ nebula-resource = { path = "../crates/resource" }
 nebula-schema = { path = "../crates/schema" }
 nebula-api = { path = "../crates/api" }
 nebula-storage = { path = "../crates/storage", features = ["credential-in-memory"] }
+nebula-engine = { path = "../crates/engine" }
+nebula-workflow = { path = "../crates/workflow" }
+nebula-plugin-core = { path = "../crates/plugin-core" }
+nebula-action = { path = "../crates/action" }
+nebula-execution = { path = "../crates/execution" }
+nebula-metrics = { path = "../crates/metrics" }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
+chrono = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
@@ -72,6 +79,10 @@ path = "examples/resource_pooled_http_prelude.rs"
 [[example]]
 name = "credential_plugin_scheme_family"
 path = "examples/credential_plugin_scheme_family.rs"
+
+[[example]]
+name = "workflow_data_pipeline"
+path = "examples/workflow_data_pipeline.rs"
 
 [lints]
 workspace = true
