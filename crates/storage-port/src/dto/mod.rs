@@ -12,6 +12,7 @@ mod identity;
 mod job_dispatch;
 mod journal;
 mod node_result;
+pub mod resume_token;
 mod trigger_dedup;
 mod webhook;
 mod workflow;
@@ -26,6 +27,7 @@ pub use identity::{
 pub use job_dispatch::{DispatchKind, DispatchOutcome, JobDispatchMsg};
 pub use journal::JournalEntry;
 pub use node_result::{MAX_SUPPORTED_RESULT_SCHEMA_VERSION, NodeResultRecord};
+pub use resume_token::{ResumeTokenRow, ResumeTokenWaitKind, TokenHash, TokenHashLengthError};
 pub use trigger_dedup::TriggerDedupRow;
 pub use webhook::{WebhookActivationRecord, WebhookMode};
 pub use workflow::{WorkflowRecord, WorkflowVersionRecord};

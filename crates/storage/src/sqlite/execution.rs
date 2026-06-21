@@ -264,12 +264,45 @@ impl ExecutionStore for SqliteExecutionStore {
             .map_err(conn_err)?;
         }
 
+        // W-S3c: insert resume-token rows in the same transaction as the
+        // state/outbox/journal writes.  ON CONFLICT(execution_id, node_key)
+        // DO NOTHING ensures a crash re-drive that re-parks the same node
+        // does NOT mint a duplicate live token.
+        for token_row in batch.resume_tokens() {
+            let wait_kind_str = serde_json::to_value(&token_row.wait_kind)
+                .map_err(|e| StorageError::Serialization(e.to_string()))?
+                .as_str()
+                .ok_or_else(|| {
+                    StorageError::Serialization("wait_kind serialized to non-string".into())
+                })?
+                .to_owned();
+            sqlx::query(
+                "INSERT INTO port_resume_tokens \
+                 (token_hash, workspace_id, org_id, execution_id, node_key, \
+                  wait_kind, callback_label, created_at, expires_at) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) \
+                 ON CONFLICT(execution_id, node_key) DO NOTHING",
+            )
+            .bind(token_row.token_hash.as_bytes())
+            .bind(&token_row.scope.workspace_id)
+            .bind(&token_row.scope.org_id)
+            .bind(&token_row.execution_id)
+            .bind(&token_row.node_key)
+            .bind(&wait_kind_str)
+            .bind(&token_row.callback_label)
+            .bind(&token_row.created_at)
+            .bind(token_row.expires_at.as_deref())
+            .execute(&mut *tx)
+            .await
+            .map_err(conn_err)?;
+        }
+
         tx.commit().await.map_err(conn_err)?;
         tracing::debug!(
             target: "nebula_storage::sqlite",
             execution_id = %id,
             new_version,
-            "commit applied (state + outbox + journal in one tx)"
+            "commit applied (state + outbox + journal + resume_tokens in one tx)"
         );
         Ok(TransitionOutcome::Applied { new_version })
     }

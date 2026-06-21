@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use nebula_storage::sqlite::{
     SqliteExecutionStore, SqliteIdempotencyGuard, SqliteJobDispatchQueue, SqliteJournalReader,
-    SqliteWorkflowStore, SqliteWorkflowVersionStore, init_schema,
+    SqliteResumeTokenStore, SqliteWorkflowStore, SqliteWorkflowVersionStore, init_schema,
 };
 use nebula_storage::{InMemoryCheckpointStore, InMemoryNodeResultStore};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
@@ -152,6 +152,7 @@ async fn build_stores(
              authoritative execution state is the SQLite execution row"
         );
         let idempotency = Arc::new(SqliteIdempotencyGuard::new(pool.clone()));
+        let resume_tokens = Arc::new(SqliteResumeTokenStore::new(pool.clone()));
         let workflow_store = Arc::new(SqliteWorkflowStore::new(pool.clone()));
         let versions_store = Arc::new(SqliteWorkflowVersionStore::new(pool.clone()));
         let queue = Arc::new(SqliteJobDispatchQueue::new(pool));
@@ -162,6 +163,7 @@ async fn build_stores(
             node_results,
             checkpoints,
             idempotency,
+            resume_tokens,
         };
         let workflow_stores = WorkflowStores {
             workflow: workflow_store,
@@ -198,8 +200,8 @@ async fn build_pg_stores(
     dsn: &str,
 ) -> Result<(ExecutionStores, WorkflowStores, Arc<dyn JobDispatchQueue>), WorkerRunError> {
     use nebula_storage::postgres::{
-        PgExecutionStore, PgIdempotencyGuard, PgJobDispatchQueue, PgJournalReader, PgWorkflowStore,
-        PgWorkflowVersionStore, init_schema as pg_init_schema,
+        PgExecutionStore, PgIdempotencyGuard, PgJobDispatchQueue, PgJournalReader,
+        PgResumeTokenStore, PgWorkflowStore, PgWorkflowVersionStore, init_schema as pg_init_schema,
     };
     use sqlx::postgres::PgPoolOptions;
 
@@ -229,6 +231,7 @@ async fn build_pg_stores(
          authoritative execution state is the Postgres execution row"
     );
     let idempotency = Arc::new(PgIdempotencyGuard::new(pool.clone()));
+    let resume_tokens = Arc::new(PgResumeTokenStore::new(pool.clone()));
     let workflow_store = Arc::new(PgWorkflowStore::new(pool.clone()));
     let versions_store = Arc::new(PgWorkflowVersionStore::new(pool.clone()));
     let queue = Arc::new(PgJobDispatchQueue::new(pool));
@@ -239,6 +242,7 @@ async fn build_pg_stores(
         node_results,
         checkpoints,
         idempotency,
+        resume_tokens,
     };
     let workflow_stores = WorkflowStores {
         workflow: workflow_store,

@@ -25,6 +25,7 @@ mod scope;
 pub mod store;
 
 pub use batch::{TransitionBatch, TransitionBatchBuilder, TransitionOutcome};
+pub use dto::resume_token::{ResumeTokenRow, ResumeTokenWaitKind, TokenHash, TokenHashLengthError};
 pub use error::StorageError;
 pub use ids::FencingToken;
 pub use scope::Scope;

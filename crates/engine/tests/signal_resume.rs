@@ -212,6 +212,7 @@ impl SignalStores {
             node_results: self.node_results.clone(),
             checkpoints: self.checkpoints.clone(),
             idempotency: self.idempotency.clone(),
+            resume_tokens: Arc::new(self.execution.resume_token_store()),
         }
     }
 
@@ -1451,6 +1452,7 @@ async fn dispatch_resume_defers_when_satisfy_commit_is_fenced_out_and_execution_
         node_results: harness.stores.node_results.clone(),
         checkpoints: harness.stores.checkpoints.clone(),
         idempotency: harness.stores.idempotency.clone(),
+        resume_tokens: Arc::new(harness.stores.execution.resume_token_store()),
     };
 
     let engine2 = Arc::new(
@@ -1741,6 +1743,7 @@ async fn satisfy_signal_waits_skips_when_execution_cancelled_under_lease() {
         node_results: harness.stores.node_results.clone(),
         checkpoints: harness.stores.checkpoints.clone(),
         idempotency: harness.stores.idempotency.clone(),
+        resume_tokens: Arc::new(harness.stores.execution.resume_token_store()),
     };
 
     let engine2 = Arc::new(
@@ -2188,6 +2191,7 @@ async fn armed_signal_wait_is_completed_by_reclaim_drive_not_lost() {
         node_results: stores.node_results.clone(),
         checkpoints: stores.checkpoints.clone(),
         idempotency: stores.idempotency.clone(),
+        resume_tokens: Arc::new(stores.execution.resume_token_store()),
     };
     let engine = Arc::new(
         WorkflowEngine::new(runtime, metrics)
@@ -2502,6 +2506,7 @@ async fn signal_park_persists_paused_atomically_no_running_waiting_window() {
         node_results: stores.node_results.clone(),
         checkpoints: stores.checkpoints.clone(),
         idempotency: stores.idempotency.clone(),
+        resume_tokens: Arc::new(stores.execution.resume_token_store()),
     };
     let engine = Arc::new(
         WorkflowEngine::new(runtime, metrics)

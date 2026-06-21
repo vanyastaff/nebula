@@ -31,7 +31,7 @@ use std::sync::Arc;
 use nebula_storage_port::dto::NodeResultRecord;
 use nebula_storage_port::store::{
     CheckpointStore, ExecutionJournalReader, ExecutionStore, IdempotencyGuard, NodeResultStore,
-    WorkflowStore, WorkflowVersionStore,
+    ResumeTokenStore, WorkflowStore, WorkflowVersionStore,
 };
 use nebula_storage_port::{FencingToken, Scope, StorageError};
 
@@ -111,7 +111,8 @@ pub fn single_tenant_scope() -> Scope {
 }
 
 /// The engine's bundle of the storage-port traits it consumes for execution
-/// state, leases, the journal, node results, idempotency, and checkpoints.
+/// state, leases, the journal, node results, idempotency, checkpoints, and
+/// resume tokens.
 ///
 /// Constructed at the composition root from already-scoped (decorated)
 /// handles. Every field is an independent port trait; the engine calls them
@@ -128,6 +129,9 @@ pub struct ExecutionStores {
     pub checkpoints: Arc<dyn CheckpointStore>,
     /// Per-attempt idempotency guard.
     pub idempotency: Arc<dyn IdempotencyGuard>,
+    /// Mint-on-park resume tokens: atomic insert at park time (W-S3c),
+    /// consume at resume time (W-S3d), revoke on terminal (W-S3e).
+    pub resume_tokens: Arc<dyn ResumeTokenStore>,
 }
 
 impl std::fmt::Debug for ExecutionStores {

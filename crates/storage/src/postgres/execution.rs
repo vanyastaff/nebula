@@ -259,12 +259,58 @@ impl ExecutionStore for PgExecutionStore {
             .map_err(conn_err)?;
         }
 
+        // W-S3c: insert resume-token rows in the same transaction as the
+        // state/outbox/journal writes.  ON CONFLICT(execution_id, node_key)
+        // DO NOTHING ensures a crash re-drive that re-parks the same node
+        // does NOT mint a duplicate live token.
+        for token_row in batch.resume_tokens() {
+            let wait_kind_str = serde_json::to_value(&token_row.wait_kind)
+                .map_err(|e| StorageError::Serialization(e.to_string()))?
+                .as_str()
+                .ok_or_else(|| {
+                    StorageError::Serialization("wait_kind serialized to non-string".into())
+                })?
+                .to_owned();
+            // Postgres TIMESTAMPTZ: parse the RFC 3339 string the engine
+            // produced and bind as a typed DateTime<Utc>.
+            let created_at = DateTime::parse_from_rfc3339(&token_row.created_at)
+                .map(|dt| dt.with_timezone(&Utc))
+                .map_err(|e| StorageError::Serialization(format!("created_at parse error: {e}")))?;
+            let expires_at = token_row
+                .expires_at
+                .as_deref()
+                .map(DateTime::parse_from_rfc3339)
+                .transpose()
+                .map_err(|e| StorageError::Serialization(format!("expires_at parse error: {e}")))?
+                .map(|dt| dt.with_timezone(&Utc));
+
+            sqlx::query(
+                "INSERT INTO port_resume_tokens \
+                 (token_hash, workspace_id, org_id, execution_id, node_key, \
+                  wait_kind, callback_label, created_at, expires_at) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
+                 ON CONFLICT (execution_id, node_key) DO NOTHING",
+            )
+            .bind(token_row.token_hash.as_bytes())
+            .bind(&token_row.scope.workspace_id)
+            .bind(&token_row.scope.org_id)
+            .bind(&token_row.execution_id)
+            .bind(&token_row.node_key)
+            .bind(&wait_kind_str)
+            .bind(&token_row.callback_label)
+            .bind(created_at)
+            .bind(expires_at)
+            .execute(&mut *tx)
+            .await
+            .map_err(conn_err)?;
+        }
+
         tx.commit().await.map_err(conn_err)?;
         tracing::debug!(
             target: "nebula_storage::postgres",
             execution_id = %id,
             new_version,
-            "commit applied (state + outbox + journal in one tx)"
+            "commit applied (state + outbox + journal + resume_tokens in one tx)"
         );
         Ok(TransitionOutcome::Applied { new_version })
     }
