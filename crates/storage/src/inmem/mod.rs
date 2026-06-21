@@ -15,6 +15,7 @@ mod identity;
 mod job_dispatch;
 mod journal;
 mod node_result;
+mod resume_producer;
 mod resume_token;
 mod workflow;
 
@@ -29,5 +30,6 @@ pub use identity::{
 pub use job_dispatch::{InMemoryJobDispatchQueue, InMemoryTriggerDedupInbox};
 pub use journal::InMemoryJournalReader;
 pub use node_result::{InMemoryCheckpointStore, InMemoryNodeResultStore};
+pub use resume_producer::InMemoryResumeProducer;
 pub use resume_token::InMemoryResumeTokenStore;
 pub use workflow::{InMemoryWorkflowStore, InMemoryWorkflowVersionStore};

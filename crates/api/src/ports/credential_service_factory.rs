@@ -338,7 +338,7 @@ pub async fn with_memory_store_parts(
 }
 
 /// Build a [`CredentialService`] over an in-memory store but with an **external
-/// [`StateSource`]** backed by `provider`, whose resolution bridge (ADR-0051) is
+/// `StateSource`** backed by `provider`, whose resolution bridge (ADR-0051) is
 /// not yet wired — every resolution path then fails closed with
 /// `ExternalSourceNotWired`. The test fixture for the wrong-source guard.
 ///

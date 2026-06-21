@@ -104,6 +104,6 @@ pub use format::StorageFormat;
 pub use inmem::{
     InMemoryCheckpointStore, InMemoryControlQueue, InMemoryExecutionStore,
     InMemoryIdempotencyGuard, InMemoryIdempotencyStore, InMemoryJournalReader,
-    InMemoryNodeResultStore, InMemoryResumeTokenStore, InMemoryWebhookActivationStore,
-    InMemoryWorkflowStore, InMemoryWorkflowVersionStore,
+    InMemoryNodeResultStore, InMemoryResumeProducer, InMemoryResumeTokenStore,
+    InMemoryWebhookActivationStore, InMemoryWorkflowStore, InMemoryWorkflowVersionStore,
 };

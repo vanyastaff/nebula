@@ -169,6 +169,11 @@ wiremock = { workspace = true }
 # Dev-only: `tests/wiremock_smoke.rs` — HTTP client + mock server (no full `App` required).
 reqwest = { workspace = true, default-features = false, features = ["json", "rustls"] }
 serde_json = { workspace = true }
+# Dev-only: SQLite round-trip test (test 15) needs a pool directly.
+# The `sqlite` feature is already transitively compiled via `nebula-storage/sqlite`;
+# the explicit dev-dep makes `sqlx::sqlite::SqlitePoolOptions` and `sqlx::query`
+# directly nameable in test code.
+sqlx = { workspace = true, features = ["runtime-tokio", "sqlite"] }
 
 [features]
 default = []

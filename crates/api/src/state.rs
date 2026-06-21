@@ -469,6 +469,50 @@ pub struct AppState {
     /// production from the same `nebula_resource::Manager` the engine is
     /// built with.
     pub resource_status: Option<Arc<dyn nebula_engine::EngineResourceStatus>>,
+
+    /// Resume-token store for the W-S3d webhook→Resume producer
+    /// (`POST /resume`).
+    ///
+    /// The **undecorated** (global) store — `consume` is a hash-keyed
+    /// atomic delete with no tenant parameter; scope is read FROM the
+    /// returned row (confused-deputy boundary is the absence of any
+    /// tenant extractor on the resume handler).  Setting a
+    /// `ScopedResumeTokenStore` here would be incorrect: the decorator
+    /// adds per-scope filtering that the consume primitive intentionally
+    /// lacks (`ResumeTokenStore` doc: "no `scope` parameter by design").
+    ///
+    /// When `None`, `POST /resume` returns `503 Service Unavailable`.
+    /// Set via [`AppState::with_resume_token_store`].
+    pub resume_token_store: Option<Arc<dyn nebula_storage_port::store::ResumeTokenStore>>,
+
+    /// Resume producer for the W-S3d webhook→Resume path (`POST /resume`).
+    ///
+    /// `peek` is a read-only lookup (reject wrong-kind / expired tokens, surface
+    /// storage faults as `503`); `consume_and_enqueue_resume` burns the token
+    /// and enqueues the `Resume` in ONE transaction, closing the consume-then-
+    /// enqueue durability gap (a failed enqueue rolls back, leaving the token
+    /// live for retry).
+    ///
+    /// Like `resume_token_store`, this is the **undecorated** (global) store —
+    /// the lookup is hash-keyed with no tenant parameter; scope is read FROM the
+    /// row (confused-deputy boundary = the absence of any tenant extractor on
+    /// the resume handler).
+    ///
+    /// When `None`, `POST /resume` returns `503 Service Unavailable`.
+    /// Set via [`AppState::with_resume_producer`].
+    pub resume_producer: Option<Arc<dyn nebula_storage_port::store::ResumeProducer>>,
+
+    /// Rate limiters + clock for the W-S3d `POST /resume` handler.
+    ///
+    /// Bundled as [`crate::transport::webhook::resume::ResumeHandlerComponents`]
+    /// so the three `WebhookRateLimiter` instances (IP / global / tenant)
+    /// and the injectable clock are wired at the composition root rather
+    /// than constructed per-request.  When `None`, `POST /resume` returns
+    /// `503 Service Unavailable` (same fail-closed convention as
+    /// `resume_token_store`).  Set via
+    /// [`AppState::with_resume_handler_components`].
+    pub resume_handler_components:
+        Option<crate::transport::webhook::resume::ResumeHandlerComponents>,
 }
 
 impl AppState {
@@ -530,6 +574,9 @@ impl AppState {
             resource_repo: None,
             resource_registrars: None,
             resource_status: None,
+            resume_token_store: None,
+            resume_producer: None,
+            resume_handler_components: None,
         }
     }
 
@@ -922,7 +969,9 @@ impl AppState {
             scope: scope.clone(),
             w3c_traceparent: w3c.as_ref().map(|c| c.traceparent().to_owned()),
             reclaim_count: 0,
-            // No targeted-Resume producer yet (W-S3d); enqueue untargeted.
+            // Untargeted Resume — the W-S3d targeted `/resume` producer builds
+            // its own targeted `ControlMsg` via
+            // `ResumeProducer::consume_and_enqueue_resume` instead.
             resume_target: None,
         };
         queue.enqueue(&msg).await.map_err(|e| {
@@ -1354,6 +1403,50 @@ impl AppState {
         status: Arc<dyn nebula_engine::EngineResourceStatus>,
     ) -> Self {
         self.resource_status = Some(status);
+        self
+    }
+
+    /// Attach the resume-token store for the W-S3d webhook→Resume
+    /// producer (`POST /resume`).
+    ///
+    /// Must be the **undecorated** (global) store — consume is
+    /// hash-keyed with no tenant parameter; scope comes FROM the row.
+    /// When `None`, `POST /resume` returns `503 Service Unavailable`.
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_resume_token_store(
+        mut self,
+        store: Arc<dyn nebula_storage_port::store::ResumeTokenStore>,
+    ) -> Self {
+        self.resume_token_store = Some(store);
+        self
+    }
+
+    /// Attach the resume producer for the W-S3d webhook→Resume path
+    /// (`POST /resume`) — the atomic consume+enqueue seam (ADR-0099 Option B1).
+    ///
+    /// Must be the **undecorated** (global) producer backed by the SAME pool /
+    /// shared state as the execution store and control queue, so the token
+    /// DELETE and the `Resume` INSERT commit in one transaction. When `None`,
+    /// `POST /resume` returns `503 Service Unavailable`.
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_resume_producer(
+        mut self,
+        producer: Arc<dyn nebula_storage_port::store::ResumeProducer>,
+    ) -> Self {
+        self.resume_producer = Some(producer);
+        self
+    }
+
+    /// Attach rate-limiters + clock for the W-S3d `POST /resume` handler.
+    ///
+    /// When `None`, `POST /resume` returns `503 Service Unavailable`.
+    /// Wire at the composition root alongside `with_resume_token_store`.
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_resume_handler_components(
+        mut self,
+        components: crate::transport::webhook::resume::ResumeHandlerComponents,
+    ) -> Self {
+        self.resume_handler_components = Some(components);
         self
     }
 }

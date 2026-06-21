@@ -15,6 +15,7 @@ mod job_dispatch;
 mod journal;
 mod node_result;
 mod refresh_claim;
+mod resume_producer;
 mod resume_token;
 mod trigger_dedup;
 mod webhook;
@@ -35,6 +36,7 @@ pub use refresh_claim::{
     ClaimAttempt, ClaimToken, HeartbeatError, ReclaimedClaim, RefreshClaim, RefreshClaimError,
     RefreshClaimStore, ReplicaId, SentinelState,
 };
+pub use resume_producer::ResumeProducer;
 pub use resume_token::ResumeTokenStore;
 pub use trigger_dedup::TriggerDedupInbox;
 pub use webhook::WebhookActivationStore;

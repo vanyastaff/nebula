@@ -17,6 +17,7 @@ mod execution;
 mod idempotency_store;
 mod identity;
 mod job_dispatch;
+mod resume_producer;
 mod resume_token;
 mod workflow;
 
@@ -28,6 +29,7 @@ pub use identity::{
     SqliteResourceStore, SqliteTriggerStore, SqliteUserStore, SqliteWorkspaceStore,
 };
 pub use job_dispatch::{SqliteJobDispatchQueue, SqliteTriggerDedupInbox};
+pub use resume_producer::SqliteResumeProducer;
 pub use resume_token::SqliteResumeTokenStore;
 pub use workflow::{SqliteWorkflowStore, SqliteWorkflowVersionStore};
 

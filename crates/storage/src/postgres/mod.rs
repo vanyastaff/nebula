@@ -16,6 +16,7 @@ mod execution;
 mod idempotency_store;
 mod identity;
 mod job_dispatch;
+mod resume_producer;
 mod resume_token;
 mod workflow;
 
@@ -27,6 +28,7 @@ pub use identity::{
     PgTriggerStore, PgUserStore, PgWorkspaceStore,
 };
 pub use job_dispatch::{PgJobDispatchQueue, PgTriggerDedupInbox};
+pub use resume_producer::PgResumeProducer;
 pub use resume_token::PgResumeTokenStore;
 pub use workflow::{PgWorkflowStore, PgWorkflowVersionStore};
 
