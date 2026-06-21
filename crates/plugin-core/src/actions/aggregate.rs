@@ -54,7 +54,9 @@
 //!   missing, null, or non-numeric field value → **Fatal**.  A `Skip` policy
 //!   ignores that single value instead.
 //! - `count` always counts the row regardless of `on_error`.
-//! - `count_distinct` and `collect`/`join` silently skip null/missing values.
+//! - `count_distinct` and `collect` silently skip null/missing values.
+//! - `join` silently skips null/missing; a non-null, non-string value is a dirty
+//!   value subject to `on_error` (Fatal under `fail`, skipped under `skip`).
 //!
 //! The action is **pure** — no I/O, no credentials, no resources.
 
@@ -195,8 +197,9 @@ pub enum Aggregation {
         /// Output key written into each summary row.
         out: String,
     },
-    /// Join non-null string values of `field` with `sep`. Null/missing
-    /// values are silently skipped. `sep` defaults to `","`.
+    /// Join the string values of `field` with `sep` (defaults to `","`).
+    /// Null/missing values are silently skipped; a non-null, non-string value
+    /// is a dirty value subject to `on_error` (numbers are not coerced).
     Join {
         /// Source field whose string values are joined.
         field: String,
@@ -535,12 +538,24 @@ impl Accumulator {
                 }
             },
 
-            // JOIN — skip null/missing; only join string-typed values.
-            (Accumulator::Join { joined_parts, .. }, Aggregation::Join { field, .. }) => {
-                if let Some(field_value) = element.get(field.as_str())
-                    && let Some(string_value) = field_value.as_str()
-                {
-                    joined_parts.push(string_value.to_owned());
+            // JOIN — skip null/missing (documented). A non-null, non-string
+            // value is a *dirty value* subject to `on_error` (Fatal under
+            // `fail`, skipped under `skip`), exactly like the numeric
+            // aggregations — it is NOT silently dropped, and numbers are NOT
+            // coerced to strings (that would be a hidden type mutation; see
+            // `as_f64_strict`).
+            (Accumulator::Join { joined_parts, .. }, Aggregation::Join { field, out, .. }) => {
+                match element.get(field.as_str()) {
+                    None | Some(Value::Null) => {},
+                    Some(Value::String(string_value)) => joined_parts.push(string_value.clone()),
+                    Some(other) => {
+                        return apply_dirty_value_policy(
+                            field,
+                            out,
+                            other.type_name_str(),
+                            dirty_value_policy,
+                        );
+                    },
                 }
             },
 
@@ -1338,6 +1353,71 @@ mod tests {
             output[0]["tags"],
             json!("a|b|a"),
             "join must concatenate tag values with '|'"
+        );
+    }
+
+    // ── 15b: join with a non-string value under Fail is Fatal ─────────────────
+    //
+    // RED witness: the old join arm silently dropped non-string values, so this
+    // returned Ok with "a,b" instead of failing — `unwrap_err()` would panic.
+    #[tokio::test]
+    async fn join_non_string_under_fail_is_fatal() {
+        let input = AggregateInput {
+            data: Some(json!([{"x": "a"}, {"x": 1}, {"x": "b"}])),
+            group_by: vec![],
+            aggregations: vec![Aggregation::Join {
+                field: "x".into(),
+                out: "j".into(),
+                sep: ",".into(),
+            }],
+            on_error: OnError::Fail,
+        };
+        let err = run(input).await.unwrap_err();
+        assert!(
+            matches!(err, ActionError::Fatal { .. }),
+            "join over a non-string value under Fail must be Fatal; got: {err:?}"
+        );
+    }
+
+    // ── 15c: join with a non-string value under Skip drops that value ─────────
+    #[tokio::test]
+    async fn join_non_string_under_skip_drops_value() {
+        let input = AggregateInput {
+            data: Some(json!([{"x": "a"}, {"x": 1}, {"x": "b"}])),
+            group_by: vec![],
+            aggregations: vec![Aggregation::Join {
+                field: "x".into(),
+                out: "j".into(),
+                sep: ",".into(),
+            }],
+            on_error: OnError::Skip,
+        };
+        let output = extract_output(run(input).await.unwrap());
+        assert_eq!(
+            output[0]["j"],
+            json!("a,b"),
+            "under Skip, join must drop the non-string value and join the rest"
+        );
+    }
+
+    // ── 15d: join still silently skips null/missing even under Fail ───────────
+    #[tokio::test]
+    async fn join_null_and_missing_skipped_under_fail() {
+        let input = AggregateInput {
+            data: Some(json!([{"x": "a"}, {"x": null}, {"other": 1}, {"x": "b"}])),
+            group_by: vec![],
+            aggregations: vec![Aggregation::Join {
+                field: "x".into(),
+                out: "j".into(),
+                sep: ",".into(),
+            }],
+            on_error: OnError::Fail,
+        };
+        let output = extract_output(run(input).await.unwrap());
+        assert_eq!(
+            output[0]["j"],
+            json!("a,b"),
+            "null/missing are silently skipped (documented), even under Fail"
         );
     }
 
