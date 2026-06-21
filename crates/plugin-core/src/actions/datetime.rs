@@ -123,8 +123,9 @@ pub enum DateTimeOp {
     /// Normalise an offset-aware RFC3339 timestamp to canonical UTC form.
     ///
     /// In v1 the optional `format` field is reserved and unused. The canonical
-    /// output uses whole-second precision with a `Z` suffix
-    /// (e.g. `"2026-06-19T00:00:00Z"`).
+    /// output carries a `Z` suffix and whole-second instants render without a
+    /// fractional part (e.g. `"2026-06-19T00:00:00Z"`); any sub-second component
+    /// in the input is preserved (e.g. `"...00.250Z"`), not truncated.
     Parse {
         /// Offset-aware RFC3339 string to normalise.
         input: String,
@@ -212,9 +213,12 @@ fn parse_rfc3339(field: &str, s: &str) -> Result<DateTime<FixedOffset>, ActionEr
     })
 }
 
-/// Canonical UTC RFC3339 with whole-second precision and `Z` suffix.
+/// Canonical UTC RFC3339 with a `Z` suffix. Uses `AutoSi`: whole-second
+/// instants render without a fractional part (byte-identical to second
+/// precision), while any sub-second component present in the input is preserved
+/// rather than truncated away.
 fn to_utc_rfc3339(dt: DateTime<FixedOffset>) -> String {
-    dt.to_utc().to_rfc3339_opts(SecondsFormat::Secs, true)
+    dt.to_utc().to_rfc3339_opts(SecondsFormat::AutoSi, true)
 }
 
 /// Build a `chrono::Duration` from `amount` (≥ 0) × `unit`, guarding overflow.
@@ -544,6 +548,22 @@ mod tests {
     async fn parse_round_trip_utc() {
         let out = extract_output(run(parse_input("2026-06-19T00:00:00Z")).await.unwrap());
         assert_eq!(out, json!("2026-06-19T00:00:00Z"));
+    }
+
+    /// Parse preserves a sub-second component while normalising the offset to UTC.
+    ///
+    /// 2026-06-19T11:30:00.250+05:30 = 2026-06-19T06:00:00.250Z.
+    ///
+    /// RED witness: with `SecondsFormat::Secs` the `.250` was truncated and this
+    /// returned `2026-06-19T06:00:00Z`.
+    #[tokio::test]
+    async fn parse_preserves_sub_second() {
+        let out = extract_output(
+            run(parse_input("2026-06-19T11:30:00.250+05:30"))
+                .await
+                .unwrap(),
+        );
+        assert_eq!(out, json!("2026-06-19T06:00:00.250Z"));
     }
 
     // ── Add ───────────────────────────────────────────────────────────────────
