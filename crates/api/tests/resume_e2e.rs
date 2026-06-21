@@ -820,27 +820,26 @@ async fn no_token_in_url_path_route_exists() {
 
     let resp = harness.app.oneshot(get_with_path_param).await.unwrap();
 
-    // Assert the token is NOT in the URL path by proving no successful
-    // response is returned.  The specific error code is intentionally
-    // not pinned to 404: in axum 0.8 the `internal_auth_middleware`
-    // layer wrapping the `/internal/v1/...` sub-router runs even for
-    // unmatched paths (the layer fires before axum's global 404 fallback),
-    // producing 503 "internal auth not configured" for any path that
-    // reaches that middleware without a match.  What matters for the
-    // oracle-free security property is that the response is NEVER
-    // 200 OK or 202 Accepted — there is no `/resume/{token}` route
-    // that could echo the token back to the caller or signal existence.
-    assert_ne!(
+    // The only `/resume` route is an exact-path `POST` (no path parameter), so
+    // `GET /resume/{token}` matches NOTHING.  It falls through to the merged
+    // `/internal/v1` sub-router's `internal_auth_middleware`, which — with no
+    // internal shared token configured in `ApiConfig::for_test` — deterministically
+    // returns `503 SERVICE_UNAVAILABLE` for any unmatched path that reaches it
+    // (`domain::internal::router` layers the middleware over its routes; axum 0.8
+    // applies that layer to the merged fallback).
+    //
+    // We pin the EXACT status rather than a bare `assert_ne!(200)`: the security
+    // property is that `/resume/{token}` matches NO route, and the only proof of
+    // "no match" is that the request lands on the unmatched-path fallback.  If a
+    // `/resume/{token}` route were ever added it would return that route's status
+    // instead (2xx on success — or even a 4xx/5xx of its own, which a bare
+    // `assert_ne!(200)` would silently accept while the URL-borne-token oracle is
+    // live).  Pinning 503 makes any such regression fail this assertion.
+    assert_eq!(
         resp.status(),
-        StatusCode::OK,
-        "GET /resume/{{token}} must not return 200 — no path-parameter route exists that \
-         would echo or signal the token's existence"
-    );
-    assert_ne!(
-        resp.status(),
-        StatusCode::ACCEPTED,
-        "GET /resume/{{token}} must not return 202 — no path-parameter route exists that \
-         would accept the token from the URL path"
+        StatusCode::SERVICE_UNAVAILABLE,
+        "GET /resume/{{token}} must hit the unmatched-path fallback (503), proving no \
+         path-parameter route exists that could echo or accept a URL-borne token"
     );
 }
 
