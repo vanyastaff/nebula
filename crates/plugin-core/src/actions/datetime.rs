@@ -76,7 +76,7 @@ pub enum DurationUnit {
 
 impl DurationUnit {
     /// Returns the number of seconds in one unit.
-    fn seconds_per_unit(self) -> i64 {
+    pub(crate) fn seconds_per_unit(self) -> i64 {
         match self {
             DurationUnit::Seconds => 1,
             DurationUnit::Minutes => 60,

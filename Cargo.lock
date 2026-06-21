@@ -3784,6 +3784,7 @@ dependencies = [
  "nebula-action",
  "nebula-core",
  "nebula-engine",
+ "nebula-eventbus",
  "nebula-execution",
  "nebula-metadata",
  "nebula-metrics",

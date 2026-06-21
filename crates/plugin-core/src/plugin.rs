@@ -8,8 +8,8 @@ use nebula_metadata::{ManifestError, PluginManifest};
 use nebula_plugin::Plugin;
 
 use crate::actions::{
-    Aggregate, CoreIf, CoreSwitch, DateTimeAction, Dedupe, Filter, JsonTransform, MapAction,
-    SetFields, Sort,
+    Aggregate, CoreDelay, CoreIf, CoreSwitch, DateTimeAction, Dedupe, Filter, JsonTransform,
+    MapAction, SetFields, Sort,
 };
 
 /// First-party core plugin.
@@ -57,6 +57,7 @@ impl Plugin for CorePlugin {
             Arc::new(GenericStatelessFactory::<SetFields>::new()),
             Arc::new(GenericStatelessFactory::<JsonTransform>::new()),
             Arc::new(GenericStatelessFactory::<DateTimeAction>::new()),
+            Arc::new(GenericStatelessFactory::<CoreDelay>::new()),
             Arc::new(GenericStatelessFactory::<Dedupe>::new()),
             Arc::new(GenericStatelessFactory::<Filter>::new()),
             Arc::new(GenericStatelessFactory::<MapAction>::new()),
@@ -124,6 +125,39 @@ mod tests {
         assert!(
             resolved.action(&key).is_some(),
             "core.datetime must be registered in the resolved plugin"
+        );
+    }
+
+    #[test]
+    fn resolves_delay_action() {
+        let resolved =
+            ResolvedPlugin::from(CorePlugin::try_new().expect("CorePlugin::try_new must succeed"))
+                .expect("CorePlugin must resolve without errors");
+        let key = nebula_core::ActionKey::new("core.delay").unwrap();
+        assert!(
+            resolved.action(&key).is_some(),
+            "core.delay must be registered in the resolved plugin"
+        );
+    }
+
+    /// The factory must stamp `ActionKind::Stateless` onto `core.delay`'s
+    /// metadata — Delay's timer-park capability is orthogonal to its kind. This
+    /// proves the dispatch spine carries the stamped kind through resolution.
+    #[test]
+    fn delay_kind_is_stateless() {
+        use nebula_action::metadata::ActionKind;
+
+        let resolved =
+            ResolvedPlugin::from(CorePlugin::try_new().expect("CorePlugin::try_new must succeed"))
+                .expect("CorePlugin must resolve without errors");
+        let key = nebula_core::ActionKey::new("core.delay").unwrap();
+        let factory = resolved
+            .action(&key)
+            .expect("core.delay must be registered");
+        assert_eq!(
+            factory.metadata().kind,
+            ActionKind::Stateless,
+            "core.delay must be stamped ActionKind::Stateless"
         );
     }
 
