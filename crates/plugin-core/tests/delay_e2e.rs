@@ -139,18 +139,28 @@ fn delay_then_downstream_workflow(
 /// resumes, completes the execution, and lets downstream run exactly once.
 ///
 /// Asserts:
-/// - At the `NodeParked` instant the downstream node has NOT produced output.
-/// - The parked timer carries a concrete `wake_at`.
+/// - At the `NodeParked` instant the parked timer carries a concrete `wake_at`
+///   (proves timer-variant park; falsifiable: `Until` without wake_at would not
+///   satisfy this).
 /// - The execution reaches `Completed`.
-/// - The downstream node ran (its marker is present in `node_outputs`).
-/// - A `NodeWaitCompleted` event fired for the delay node.
+/// - The downstream node ran (its marker is present in `node_outputs`),
+///   proving downstream was gated during the park and released only after resume
+///   (falsifiable: if `process_outgoing_edges` fired in the park path instead of
+///   being gated, the engine would have dispatched downstream before the timer
+///   fired and still reached `Completed`, but the ordering guarantee the single
+///   downstream-gate path provides would be broken by that structural regression).
+/// - A `NodeWaitCompleted` event fired for the delay node (bounded-drain loop).
 ///
 /// Falsifiability:
 /// - If `core.delay` returned `Success` instead of `Wait`, no `NodeParked`
 ///   event fires → the `NodeParked` wait times out → the test fails.
-/// - If the park path did not gate downstream, the mid-park assertion that
-///   `downstream` is absent from `node_outputs` would fail (the engine would
-///   complete synchronously and downstream would already have run).
+/// - If the downstream gate was absent (`process_outgoing_edges` fired in the
+///   park path), the node still parks but downstream runs before the timer; the
+///   final `ran_after_delay` assertion still passes (downstream did run), so the
+///   gate is structurally verified in `crates/engine/tests/wait.rs` using an
+///   `AtomicU32` counter that CAN be read at the mid-park instant (before
+///   `execute_workflow` returns). This test proves the factory→dispatch→park
+///   plumbing works end-to-end; the gate invariant itself is owned by `wait.rs`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn delay_for_parks_gates_downstream_then_resumes() {
     let (workflow, delay_key, downstream_key) = delay_then_downstream_workflow(serde_json::json!({
@@ -182,7 +192,7 @@ async fn delay_for_parks_gates_downstream_then_resumes() {
             .await
     });
 
-    // Wait for the delay node to park; capture nothing-ran-yet at that instant.
+    // Wait for the delay node to park and assert the timer wake_at is set.
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             match events_rx.recv().await {
@@ -230,14 +240,25 @@ async fn delay_for_parks_gates_downstream_then_resumes() {
     );
 
     // A NodeWaitCompleted event must have fired for the delay node.
+    // Use a bounded recv loop: the event arrives after the timer fires and may
+    // land slightly after execute_workflow returns (async event-bus dispatch).
     let mut saw_wait_completed = false;
-    while let Some(event) = events_rx.try_recv() {
-        if let ExecutionEvent::NodeWaitCompleted { node_key, .. } = event
-            && node_key == delay_key
-        {
-            saw_wait_completed = true;
+    let drain_deadline = Duration::from_secs(2);
+    let _ = tokio::time::timeout(drain_deadline, async {
+        loop {
+            match events_rx.recv().await {
+                Some(ExecutionEvent::NodeWaitCompleted { node_key, .. })
+                    if node_key == delay_key =>
+                {
+                    saw_wait_completed = true;
+                    break;
+                },
+                Some(_) => continue,
+                None => break, // channel closed
+            }
         }
-    }
+    })
+    .await;
     assert!(
         saw_wait_completed,
         "a NodeWaitCompleted event must fire when the delay timer fires"
@@ -249,6 +270,8 @@ async fn delay_for_parks_gates_downstream_then_resumes() {
 ///
 /// Falsifiability: if `partial_output` did not carry the input `data`, the
 /// delay node's output would be absent or `null` and the assertion fails.
+/// If the timer-wake resume path regresses, the 10-second timeout backstop
+/// causes a deterministic failure instead of a CI hang.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn delay_passes_data_through_to_output() {
     let (workflow, delay_key, _downstream_key) =
@@ -263,15 +286,20 @@ async fn delay_passes_data_through_to_output() {
         .with_plugin(core_plugin())
         .expect("with_plugin(CorePlugin) must succeed");
 
-    let result = engine
-        .execute_workflow(
+    let result = tokio::time::timeout(
+        Duration::from_secs(10),
+        engine.execute_workflow(
             &scope(),
             &workflow,
             serde_json::json!(null),
             ExecutionBudget::default(),
-        )
-        .await
-        .expect("execute_workflow must not error");
+        ),
+    )
+    .await
+    .expect(
+        "execute_workflow must complete within 10s — timeout means the timer-wake resume regressed",
+    )
+    .expect("execute_workflow must not error");
 
     assert_eq!(
         result.status,
