@@ -10,10 +10,11 @@
 //! deletes and returns the row for a given hash, so a second call with
 //! the same hash returns `None` (single-use by construction).
 //!
-//! [`ResumeTokenStore::revoke_on_terminal`] is called by the engine when
-//! an execution reaches a terminal state to clean up any un-consumed
-//! tokens that will never be used (e.g. the execution was cancelled while
-//! a node was parked on a signal).
+//! [`ResumeTokenStore::revoke_on_terminal`] is the cleanup primitive for
+//! the un-consumed tokens a terminal execution leaves behind (e.g. it was
+//! cancelled while a node was parked on a signal). It is NOT yet wired into
+//! the engine's terminal path — that lands in W-S3e; until then the
+//! `ON DELETE CASCADE` from `port_executions` is the live cleanup.
 //!
 //! See ADR-0099 W-S3c.
 use crate::Scope;
