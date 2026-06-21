@@ -1,6 +1,7 @@
 //! Actions provided by the `core` plugin.
 
 pub mod aggregate;
+pub mod array;
 pub mod datetime;
 pub mod dedupe;
 pub mod delay;
@@ -13,6 +14,7 @@ pub mod sort;
 pub mod switch_action;
 
 pub use aggregate::Aggregate;
+pub use array::ArrayAction;
 pub use datetime::DateTimeAction;
 pub use dedupe::Dedupe;
 pub use delay::CoreDelay;

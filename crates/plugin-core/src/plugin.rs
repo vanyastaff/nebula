@@ -8,8 +8,8 @@ use nebula_metadata::{ManifestError, PluginManifest};
 use nebula_plugin::Plugin;
 
 use crate::actions::{
-    Aggregate, CoreDelay, CoreIf, CoreSwitch, DateTimeAction, Dedupe, Filter, JsonTransform,
-    MapAction, SetFields, Sort,
+    Aggregate, ArrayAction, CoreDelay, CoreIf, CoreSwitch, DateTimeAction, Dedupe, Filter,
+    JsonTransform, MapAction, SetFields, Sort,
 };
 
 /// First-party core plugin.
@@ -54,6 +54,7 @@ impl Plugin for CorePlugin {
     fn actions(&self) -> Vec<Arc<dyn ActionFactory>> {
         vec![
             Arc::new(GenericStatelessFactory::<Aggregate>::new()),
+            Arc::new(GenericStatelessFactory::<ArrayAction>::new()),
             Arc::new(GenericStatelessFactory::<SetFields>::new()),
             Arc::new(GenericStatelessFactory::<JsonTransform>::new()),
             Arc::new(GenericStatelessFactory::<DateTimeAction>::new()),
@@ -89,6 +90,39 @@ mod tests {
         assert!(
             resolved.action(&key).is_some(),
             "core.aggregate must be registered in the resolved plugin"
+        );
+    }
+
+    #[test]
+    fn resolves_array_action() {
+        let resolved =
+            ResolvedPlugin::from(CorePlugin::try_new().expect("CorePlugin::try_new must succeed"))
+                .expect("CorePlugin must resolve without errors");
+        let key = nebula_core::ActionKey::new("core.array").unwrap();
+        assert!(
+            resolved.action(&key).is_some(),
+            "core.array must be registered in the resolved plugin"
+        );
+    }
+
+    /// The factory must stamp `ActionKind::Stateless` onto `core.array`'s
+    /// metadata, proving the dispatch spine carries the stamped kind through
+    /// resolution for this pure transform action.
+    #[test]
+    fn array_kind_is_stateless() {
+        use nebula_action::metadata::ActionKind;
+
+        let resolved =
+            ResolvedPlugin::from(CorePlugin::try_new().expect("CorePlugin::try_new must succeed"))
+                .expect("CorePlugin must resolve without errors");
+        let key = nebula_core::ActionKey::new("core.array").unwrap();
+        let factory = resolved
+            .action(&key)
+            .expect("core.array must be registered");
+        assert_eq!(
+            factory.metadata().kind,
+            ActionKind::Stateless,
+            "core.array must be stamped ActionKind::Stateless"
         );
     }
 
