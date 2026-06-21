@@ -969,6 +969,10 @@ impl AppState {
     /// a freshly-bound `ScopedControlQueue`.  The caller MUST NOT supply a
     /// request-derived scope — the only accepted source is the consumed row.
     ///
+    /// `w3c_traceparent` carries the inbound W3C trace context so the engine's
+    /// downstream span can be linked to the caller's distributed trace.  Pass
+    /// `None` when the request carried no valid `traceparent` header.
+    ///
     /// Rationale for a separate method (not reusing `enqueue_control_scoped`):
     /// `enqueue_control_scoped` hard-codes `resume_target: None` and is typed
     /// around `ExecutionId`; this method carries the `ResumeTarget` and uses
@@ -978,6 +982,7 @@ impl AppState {
         &self,
         row: &nebula_storage_port::dto::resume_token::ResumeTokenRow,
         target: nebula_storage_port::dto::ResumeTarget,
+        w3c_traceparent: Option<String>,
     ) -> Result<(), ApiError> {
         let queue = ScopedControlQueue::new(Arc::clone(&self.control_queue), row.scope.clone());
         let msg = nebula_storage_port::dto::ControlMsg {
@@ -985,7 +990,7 @@ impl AppState {
             execution_id: row.execution_id.clone(),
             command: nebula_storage_port::dto::ControlCommand::Resume,
             scope: row.scope.clone(),
-            w3c_traceparent: None,
+            w3c_traceparent,
             reclaim_count: 0,
             resume_target: Some(target),
         };

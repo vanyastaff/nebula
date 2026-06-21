@@ -25,10 +25,12 @@
 //!    - `Err` → 503 + `Retry-After` (token unconsumed; abuse-case 15)
 //!    - `Ok(None)` → uniform 404
 //!    - `Ok(Some(row))` → continue
-//! 6. Per-tenant rate-limit (key = `row.scope.credential_owner_id()`) → 429;
+//! 6. Kind-match: `Webhook` → `ResumeTarget::Webhook{callback_id}`; `_` → 404
+//!    (before per-tenant RL: wrong-kind/expired tokens must not 429 on an exhausted tenant)
+//! 7. Expiry check via injectable clock; expired or malformed → 404, no enqueue
+//!    (before per-tenant RL: same oracle-avoidance rationale as step 6)
+//! 8. Per-tenant rate-limit (key = `row.scope.credential_owner_id()`) → 429;
 //!    token is already burned (accepted, documented)
-//! 7. Kind-match: `Webhook` → `ResumeTarget::Webhook{callback_id}`; `_` → 404
-//! 8. Expiry check via injectable clock; expired or malformed → 404, no enqueue
 //! 9. Enqueue `ControlCommand::Resume` via `enqueue_resume_from_row` → 202 / 503
 
 use std::net::SocketAddr;
@@ -36,7 +38,7 @@ use std::sync::Arc;
 
 use axum::{
     body::Bytes,
-    extract::{ConnectInfo, State},
+    extract::{ConnectInfo, Extension, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
@@ -48,14 +50,23 @@ use tracing::{debug, warn};
 use super::ratelimit::WebhookRateLimiter;
 use super::token::token_hash;
 use crate::error::ApiError;
+use crate::middleware::InboundW3cTraceContext;
 use crate::state::AppState;
 
 /// Small body cap for `POST /resume`.
 ///
-/// v1 has no meaningful request body — the resume intent is fully carried
-/// by the bearer token.  Any body beyond this limit is rejected 413; the
-/// cap prevents a large body from consuming read buffers.
-const RESUME_BODY_LIMIT_BYTES: usize = 4 * 1024; // 4 KiB
+/// v1 has no meaningful request body — the resume intent is fully carried by the
+/// bearer token.  Any body beyond this limit is rejected at two layers:
+///
+/// 1. The `axum::extract::DefaultBodyLimit::max` tower layer on the `/resume`
+///    sub-router (enforced by axum BEFORE the body is buffered — prevents
+///    large-body DoS from ever reaching the handler).
+/// 2. The in-handler `body.len() > RESUME_BODY_LIMIT_BYTES` check (defense-in-depth
+///    for callers that bypass the tower layer, e.g. `oneshot` tests that inject a
+///    pre-built `Bytes` directly).
+///
+/// `pub(crate)` so `app.rs` can reference it when installing the layer.
+pub(crate) const RESUME_BODY_LIMIT_BYTES: usize = 4 * 1024; // 4 KiB
 
 /// Rate-limit defaults for the three `POST /resume` tiers.
 ///
@@ -83,8 +94,8 @@ pub struct ResumeHandlerComponents {
     /// anti-enumeration backstop (step 4).
     pub global_rate_limiter: WebhookRateLimiter,
     /// Per-tenant rate limiter — keyed on `Scope::credential_owner_id()`,
-    /// checked post-consume (step 6).  Token is already burned at this
-    /// point; see W-S3d spec note.
+    /// checked post-consume after kind-match and expiry (step 8).  Token is
+    /// already burned at this point; see W-S3d spec note.
     pub tenant_rate_limiter: WebhookRateLimiter,
     /// Injectable clock — used for expiry comparison (step 8).
     pub clock: Arc<dyn Clock>,
@@ -136,9 +147,14 @@ impl ResumeHandlerComponents {
 /// - No tenant extractor — scope comes from the consumed row only.
 /// - Bearer token is hashed immediately; the plaintext never escapes this fn.
 /// - All failure paths that could reveal token existence produce uniform 404.
+/// - `traceparent` is forwarded to the `ControlMsg` for distributed trace
+///   continuity; the bearer token is NEVER included in trace fields.
 pub(crate) async fn resume_handler(
     State(state): State<AppState>,
     ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
+    // `Option<Extension<_>>` because `trace_context_middleware` may not be
+    // present in all test harnesses (oneshot without the full middleware stack).
+    w3c_trace: Option<Extension<InboundW3cTraceContext>>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
@@ -226,22 +242,16 @@ pub(crate) async fn resume_handler(
         Ok(Some(row)) => row,
     };
 
-    // Step 6 — per-tenant rate-limit (post-consume; token already burned).
-    let tenant_key = consumed_row.scope.credential_owner_id();
-    if let Err(exceeded) = components.tenant_rate_limiter.check(&tenant_key).await {
-        debug!(
-            tenant_id = %tenant_key,
-            retry_after = exceeded.retry_after_secs,
-            "resume: per-tenant rate limit exceeded (token consumed)"
-        );
-        return rate_limit_429(exceeded.retry_after_secs);
-    }
-
-    // Step 7 — kind-match (fail-closed).
+    // Step 6 — kind-match (fail-closed, before per-tenant RL).
     // `ResumeTokenWaitKind` is `#[non_exhaustive]`; equality to `Webhook` is
     // the only admissible kind at this endpoint.  All other variants — Approval,
     // and any future variant added to the non-exhaustive enum without recompiling
     // this crate — fall to the `else` branch and return a uniform 404.
+    //
+    // Ordering invariant: kind-match fires BEFORE per-tenant rate-limit.  A wrong-kind
+    // or expired token on an exhausted tenant must return 404, not 429 — returning 429
+    // would reveal that the token was structurally valid (existence oracle) and would
+    // inconsistently 429 on tokens the tenant cannot resume.
     let resume_target = if consumed_row.wait_kind == ResumeTokenWaitKind::Webhook {
         ResumeTarget::Webhook {
             callback_id: consumed_row.callback_label.clone(),
@@ -255,7 +265,8 @@ pub(crate) async fn resume_handler(
         return uniform_not_found();
     };
 
-    // Step 8 — expiry check via injectable clock (fail-closed on parse failure).
+    // Step 7 — expiry check via injectable clock (fail-closed on parse failure).
+    // Fires BEFORE per-tenant RL for the same oracle-avoidance reason as step 6.
     if let Some(expires_at_str) = consumed_row.expires_at.as_deref() {
         if let Ok(expiry) = parse_rfc3339_as_system_time(expires_at_str) {
             let now = components.clock.now();
@@ -278,17 +289,38 @@ pub(crate) async fn resume_handler(
         }
     }
 
-    // Step 9 — enqueue.
+    // Step 8 — per-tenant rate-limit (post-consume, post-kind-match, post-expiry).
+    // Token is already burned at this point; see W-S3d spec note for why this is
+    // accepted behavior (the alternative — pre-consume per-tenant RL — requires a
+    // tenant lookup before the consume atomic, adding a second DB round-trip and a
+    // TOCTOU window).
+    let tenant_key = consumed_row.scope.credential_owner_id();
+    if let Err(exceeded) = components.tenant_rate_limiter.check(&tenant_key).await {
+        debug!(
+            tenant_id = %tenant_key,
+            retry_after = exceeded.retry_after_secs,
+            "resume: per-tenant rate limit exceeded (token consumed)"
+        );
+        return rate_limit_429(exceeded.retry_after_secs);
+    }
+
+    // Step 9 — enqueue (ControlCommand::Resume via scoped queue).
     // Log only non-secret fields; bearer/hash never appear here.
+    //
+    // Extract the inbound W3C traceparent (set by `trace_context_middleware`
+    // into request extensions) so the engine can link its downstream span to
+    // the caller's distributed trace.  The bearer token NEVER appears here.
+    let traceparent = w3c_trace.map(|Extension(ctx)| ctx.0.traceparent().to_owned());
     debug!(
         execution_id = %consumed_row.execution_id,
         scope = ?consumed_row.scope,
+        has_traceparent = traceparent.is_some(),
         wait_kind = "Webhook",
         "resume: enqueuing ControlCommand::Resume"
     );
 
     match state
-        .enqueue_resume_from_row(&consumed_row, resume_target)
+        .enqueue_resume_from_row(&consumed_row, resume_target, traceparent)
         .await
     {
         Ok(()) => (StatusCode::ACCEPTED, "").into_response(),

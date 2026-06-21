@@ -24,7 +24,7 @@ use crate::{
         security_headers::security_headers_middleware,
     },
     state::AppState,
-    transport::webhook::resume::resume_handler,
+    transport::webhook::resume::{RESUME_BODY_LIMIT_BYTES, resume_handler},
 };
 
 /// Build the main application router with middleware
@@ -139,9 +139,18 @@ pub fn build_app(state: AppState, config: &ApiConfig) -> Router {
     // scope is derived from the consumed token row, not the request.
     // Uses `AppState` as router state so it can access `resume_token_store`
     // and `resume_handler_components`.
+    //
+    // `DefaultBodyLimit::max` is applied as a tower layer on this sub-router so
+    // axum enforces the cap BEFORE buffering the body — preventing a large-body DoS
+    // from reaching the handler.  The handler also checks the cap after buffering
+    // (defense-in-depth for test paths that bypass the layer).
     let routes = routes.merge(
         Router::new()
-            .route("/resume", axum::routing::post(resume_handler))
+            .route(
+                "/resume",
+                axum::routing::post(resume_handler)
+                    .layer(DefaultBodyLimit::max(RESUME_BODY_LIMIT_BYTES)),
+            )
             .with_state(state.clone()),
     );
 

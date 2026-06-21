@@ -219,6 +219,12 @@ pub(crate) struct ExecutionStoreBundle {
     journal_reader: Arc<dyn nebula_storage_port::store::ExecutionJournalReader>,
     control_queue: Arc<dyn nebula_storage_port::store::ControlQueue>,
     trigger_dedup_inbox: Option<Arc<dyn nebula_storage_port::store::TriggerDedupInbox>>,
+    /// Resume-token store — must share the same backend pool as `execution_store`
+    /// so that tokens minted by the engine (via `TransitionBatch`) are visible to
+    /// the `POST /resume` handler's `consume` call.  Using an independent
+    /// in-memory store on a durable backend silently breaks the round-trip:
+    /// the engine writes to the pool; the producer reads from a different empty store.
+    resume_token_store: Arc<dyn nebula_storage_port::store::ResumeTokenStore>,
 }
 
 /// Build the execution-store bundle for the configured backend.
@@ -275,6 +281,9 @@ fn build_memory_execution_stores() -> Result<ExecutionStoreBundle, TransportInit
     // control queue and journal — `new(&exec_store)` must be called BEFORE
     // `Arc::new(exec_store)` moves ownership.
     let trigger_dedup_inbox = InMemoryTriggerDedupInbox::new(&exec_store);
+    // Resume-token store shares the same SharedState as the exec_store so that
+    // tokens committed via TransitionBatch are visible to the POST /resume handler.
+    let resume_token_store = exec_store.resume_token_store();
     let node_results = InMemoryNodeResultStore::new();
     let workflow_versions = InMemoryWorkflowVersionStore::new();
     let workflow_store = InMemoryWorkflowStore::new_with_versions(&workflow_versions);
@@ -291,6 +300,7 @@ fn build_memory_execution_stores() -> Result<ExecutionStoreBundle, TransportInit
         journal_reader: Arc::new(journal),
         control_queue: Arc::new(control_queue),
         trigger_dedup_inbox: Some(Arc::new(trigger_dedup_inbox)),
+        resume_token_store: Arc::new(resume_token_store),
     })
 }
 
@@ -306,8 +316,8 @@ async fn build_sqlite_execution_stores(
 ) -> Result<ExecutionStoreBundle, TransportInitError> {
     use nebula_storage::InMemoryNodeResultStore;
     use nebula_storage::sqlite::{
-        SqliteControlQueue, SqliteExecutionStore, SqliteJournalReader, SqliteTriggerDedupInbox,
-        SqliteWorkflowStore, SqliteWorkflowVersionStore, init_schema,
+        SqliteControlQueue, SqliteExecutionStore, SqliteJournalReader, SqliteResumeTokenStore,
+        SqliteTriggerDedupInbox, SqliteWorkflowStore, SqliteWorkflowVersionStore, init_schema,
     };
     use sqlx::sqlite::{
         SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous,
@@ -363,7 +373,10 @@ async fn build_sqlite_execution_stores(
         // Without this `Some`, the `if let Some(dedup)` guard in prepare_state is never
         // taken and webhook rows are spawned without the durable dedup fence — exactly
         // backwards for a durable backend.
-        trigger_dedup_inbox: Some(Arc::new(SqliteTriggerDedupInbox::new(pool))),
+        trigger_dedup_inbox: Some(Arc::new(SqliteTriggerDedupInbox::new(pool.clone()))),
+        // Same pool as the execution store: tokens minted by TransitionBatch must be
+        // readable by the POST /resume handler's consume call on the same pool.
+        resume_token_store: Arc::new(SqliteResumeTokenStore::new(pool)),
     })
 }
 
@@ -375,8 +388,8 @@ async fn build_pg_execution_stores(
 ) -> Result<ExecutionStoreBundle, TransportInitError> {
     use nebula_storage::InMemoryNodeResultStore;
     use nebula_storage::postgres::{
-        PgControlQueue, PgExecutionStore, PgJournalReader, PgTriggerDedupInbox, PgWorkflowStore,
-        PgWorkflowVersionStore, init_schema as pg_init_schema,
+        PgControlQueue, PgExecutionStore, PgJournalReader, PgResumeTokenStore, PgTriggerDedupInbox,
+        PgWorkflowStore, PgWorkflowVersionStore, init_schema as pg_init_schema,
     };
     use sqlx::postgres::PgPoolOptions;
 
@@ -421,7 +434,9 @@ async fn build_pg_execution_stores(
         control_queue: Arc::new(PgControlQueue::new(pool.clone())),
         // Same rationale as the SQLite arm: durable dispatch in
         // `WebhookIngressTransport::prepare_state` is only installed when `Some`.
-        trigger_dedup_inbox: Some(Arc::new(PgTriggerDedupInbox::new(pool))),
+        trigger_dedup_inbox: Some(Arc::new(PgTriggerDedupInbox::new(pool.clone()))),
+        // Same pool as the execution store — see SQLite arm for rationale.
+        resume_token_store: Arc::new(PgResumeTokenStore::new(pool)),
     })
 }
 
@@ -667,6 +682,7 @@ pub(crate) fn default_state(
         journal_reader,
         control_queue,
         trigger_dedup_inbox,
+        resume_token_store,
     } = execution_bundle;
 
     let mut state = AppState::new(
@@ -695,16 +711,15 @@ pub(crate) fn default_state(
 
     // W-S3d: wire the resume-token store and rate-limiter components.
     //
-    // `standalone()` provides a self-contained in-memory store for the
-    // Memory backend.  The SQLite and Postgres backends add real
-    // implementations in their respective `init_schema` / pool paths;
-    // until those are wired the standalone store serves as a safe
-    // dev-mode default (tokens are process-local, lost on restart —
-    // acceptable for the non-durable execution backend).
+    // The store is taken from `execution_bundle` — constructed from the same backend
+    // pool (SQLite/Postgres) or shared in-memory state (Memory) as the execution store.
+    // This ensures tokens minted by the engine's TransitionBatch on the durable pool
+    // are readable by this process's POST /resume handler.  A standalone in-memory store
+    // here would be a silent breakage: the engine writes to the pool, the handler reads
+    // from an empty process-local store, and every valid resume 404s.
     //
-    // `SystemClock` is the production clock; tests inject a `MockClock`
-    // at the handler-components level via `with_resume_handler_components`.
-    let resume_token_store = Arc::new(nebula_storage::InMemoryResumeTokenStore::standalone());
+    // `SystemClock` is the production clock; tests inject a `MockClock` via
+    // `with_resume_handler_components`.
     let resume_components =
         nebula_api::transport::webhook::ResumeHandlerComponents::with_defaults();
     state = state

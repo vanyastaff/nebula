@@ -820,10 +820,27 @@ async fn no_token_in_url_path_route_exists() {
 
     let resp = harness.app.oneshot(get_with_path_param).await.unwrap();
 
+    // Assert the token is NOT in the URL path by proving no successful
+    // response is returned.  The specific error code is intentionally
+    // not pinned to 404: in axum 0.8 the `internal_auth_middleware`
+    // layer wrapping the `/internal/v1/...` sub-router runs even for
+    // unmatched paths (the layer fires before axum's global 404 fallback),
+    // producing 503 "internal auth not configured" for any path that
+    // reaches that middleware without a match.  What matters for the
+    // oracle-free security property is that the response is NEVER
+    // 200 OK or 202 Accepted — there is no `/resume/{token}` route
+    // that could echo the token back to the caller or signal existence.
     assert_ne!(
         resp.status(),
         StatusCode::OK,
-        "GET /resume/{{token}} must not return 200 — no path-parameter route must exist"
+        "GET /resume/{{token}} must not return 200 — no path-parameter route exists that \
+         would echo or signal the token's existence"
+    );
+    assert_ne!(
+        resp.status(),
+        StatusCode::ACCEPTED,
+        "GET /resume/{{token}} must not return 202 — no path-parameter route exists that \
+         would accept the token from the URL path"
     );
 }
 
@@ -980,5 +997,187 @@ async fn bearer_extraction_uniformity_all_variants_return_404() {
     assert!(
         harness.control_queue.snapshot().is_empty(),
         "no ControlMsg must be enqueued from bearer-extraction failures"
+    );
+}
+
+// ── FIX-1 regression: SQLite backend round-trip ───────────────────────────────
+
+/// Test 15 — SQLite backend round-trip: token minted into `SqliteResumeTokenStore`
+/// is consumable by a producer wired to the SAME pool.
+///
+/// This test proves the P1 correctness fix (FIX 1): on durable backends the
+/// `resume_token_store` wired into `AppState` must share the same pool as the
+/// execution store that mints tokens.  A standalone in-memory store would silently
+/// serve empty lookups while the engine persists to the pool.
+///
+/// The test bypasses `TransitionBatch` by inserting the token row directly via
+/// `sqlx::query` — this is intentional: we want to test the store + producer
+/// integration without needing a full execution store + engine path.
+#[tokio::test]
+async fn sqlite_backend_round_trip_durable_token_is_consumable() {
+    use nebula_storage::inmem::{
+        InMemoryControlQueue, InMemoryExecutionStore, InMemoryJournalReader,
+        InMemoryNodeResultStore, InMemoryWorkflowStore, InMemoryWorkflowVersionStore,
+    };
+    use nebula_storage::sqlite::{SqliteResumeTokenStore, init_schema};
+
+    // ── 1. Build a shared in-memory SQLite pool + apply schema ────────────────
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("in-memory SQLite pool must open");
+
+    init_schema(&pool)
+        .await
+        .expect("init_schema must succeed on in-memory SQLite");
+
+    // ── 2. Mint a token row directly into `port_resume_tokens` ───────────────
+    // Using sqlx directly mirrors how the engine's `TransitionBatch` commit
+    // inserts rows.  `port_resume_tokens` has a FK on `execution_id →
+    // port_executions(id)` (with CASCADE delete), so we must insert a
+    // parent execution row first.
+    let bearer = "resume-bearer-t15-sqlite-round-trip";
+    let token_hash_bytes = {
+        use sha2::{Digest, Sha256};
+        let digest = Sha256::digest(bearer.as_bytes());
+        digest.to_vec()
+    };
+    let scope = test_scope();
+
+    // Parent execution row — minimal valid row satisfying NOT NULL constraints.
+    sqlx::query(
+        "INSERT INTO port_executions \
+         (id, workspace_id, org_id, workflow_id, status, state, version, \
+          created_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind("exe-t15-sqlite")
+    .bind(&scope.workspace_id)
+    .bind(&scope.org_id)
+    .bind("wf-t15")
+    .bind("Running")
+    .bind("{}")
+    .bind(0_i64)
+    .bind("2026-06-21T00:00:00Z")
+    .bind("2026-06-21T00:00:00Z")
+    .execute(&pool)
+    .await
+    .expect("parent execution row insert must succeed");
+
+    sqlx::query(
+        "INSERT INTO port_resume_tokens \
+         (token_hash, workspace_id, org_id, execution_id, node_key, \
+          wait_kind, callback_label, created_at, expires_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)",
+    )
+    .bind(&token_hash_bytes)
+    .bind(&scope.workspace_id)
+    .bind(&scope.org_id)
+    .bind("exe-t15-sqlite")
+    .bind("node_step_t15")
+    .bind("webhook")
+    .bind("cb-t15")
+    .bind("2026-06-21T00:00:00Z")
+    .execute(&pool)
+    .await
+    .expect("direct token insert must succeed");
+
+    // ── 3. Build AppState wired to the SAME pool via SqliteResumeTokenStore ──
+    let exec_store = InMemoryExecutionStore::new();
+    let control_queue = InMemoryControlQueue::new(&exec_store);
+    let journal = InMemoryJournalReader::new(&exec_store);
+    let node_results = InMemoryNodeResultStore::new();
+    let workflow_versions = InMemoryWorkflowVersionStore::new();
+    let workflow_store = InMemoryWorkflowStore::new_with_versions(&workflow_versions);
+
+    // The durable resume-token store is wired from the SAME pool the token was
+    // minted into — this is the invariant FIX 1 enforces in compose.rs.
+    let durable_token_store = Arc::new(SqliteResumeTokenStore::new(pool.clone()));
+
+    let clock = Arc::new(MockClock::at_now());
+    let components = components_with_clock(clock);
+
+    let api_config = ApiConfig::for_test();
+    let state = AppState::new(
+        Arc::new(workflow_store),
+        Arc::new(workflow_versions),
+        Arc::new(exec_store),
+        Arc::new(node_results),
+        Arc::new(journal),
+        Arc::new(control_queue.clone()),
+        api_config.jwt_secret.clone(),
+    )
+    .with_org_resolver(Arc::new(common::TestOrgResolver))
+    .with_workspace_resolver(Arc::new(common::TestWorkspaceResolver))
+    .with_insecure_tenant_rbac_bypass_for_tests()
+    .with_resume_token_store(durable_token_store)
+    .with_resume_handler_components(components);
+
+    let app = app::build_app(state, &api_config);
+
+    // ── 4. POST /resume — must return 202 and enqueue one Resume ─────────────
+    let resp = app
+        .oneshot(resume_post(bearer, PEER_A))
+        .await
+        .expect("oneshot must not fail");
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::ACCEPTED,
+        "SQLite round-trip: token minted into durable pool must be consumable by the wired producer"
+    );
+
+    let queued = control_queue.snapshot();
+    assert_eq!(
+        queued.len(),
+        1,
+        "SQLite round-trip: exactly one Resume ControlMsg must be enqueued"
+    );
+    let (msg, _status) = &queued[0];
+    assert_eq!(msg.execution_id, "exe-t15-sqlite");
+    assert_eq!(msg.scope, test_scope());
+    assert_eq!(
+        msg.resume_target,
+        Some(ResumeTarget::Webhook {
+            callback_id: "cb-t15".to_owned()
+        })
+    );
+
+    // ── 5. Second call with same bearer must return 404 (token consumed) ──────
+    // Re-assemble the app since `oneshot` consumes it.
+    let durable_token_store_2 = Arc::new(SqliteResumeTokenStore::new(pool));
+    let exec_store_2 = InMemoryExecutionStore::new();
+    let control_queue_2 = InMemoryControlQueue::new(&exec_store_2);
+    let journal_2 = InMemoryJournalReader::new(&exec_store_2);
+    let node_results_2 = InMemoryNodeResultStore::new();
+    let workflow_versions_2 = InMemoryWorkflowVersionStore::new();
+    let workflow_store_2 = InMemoryWorkflowStore::new_with_versions(&workflow_versions_2);
+    let clock_2 = Arc::new(MockClock::at_now());
+    let state_2 = AppState::new(
+        Arc::new(workflow_store_2),
+        Arc::new(workflow_versions_2),
+        Arc::new(exec_store_2),
+        Arc::new(node_results_2),
+        Arc::new(journal_2),
+        Arc::new(control_queue_2),
+        api_config.jwt_secret.clone(),
+    )
+    .with_org_resolver(Arc::new(common::TestOrgResolver))
+    .with_workspace_resolver(Arc::new(common::TestWorkspaceResolver))
+    .with_insecure_tenant_rbac_bypass_for_tests()
+    .with_resume_token_store(durable_token_store_2)
+    .with_resume_handler_components(components_with_clock(clock_2));
+
+    let app_2 = app::build_app(state_2, &api_config);
+    let resp_2 = app_2
+        .oneshot(resume_post(bearer, PEER_A))
+        .await
+        .expect("second oneshot must not fail");
+
+    assert_eq!(
+        resp_2.status(),
+        StatusCode::NOT_FOUND,
+        "SQLite round-trip: second call with same bearer must return 404 (token already consumed)"
     );
 }
