@@ -57,6 +57,20 @@ impl ScopedExecutionStore {
                 m
             })
             .collect();
+        // Re-scope every resume-token row to the bound tenant — same
+        // rationale as the outbox re-scope: the engine builds the batch for
+        // the resolved tenant, but a confused caller cannot override it.
+        // Dropping `resume_tokens` here would silently discard the minted
+        // token on every production park (W-S3a silent-drop class).
+        let resume_tokens = batch
+            .resume_tokens()
+            .iter()
+            .map(|row| {
+                let mut row = row.clone();
+                row.scope = self.bound.clone();
+                row
+            })
+            .collect();
         TransitionBatch::builder()
             .scope(self.bound.clone())
             .execution_id(batch.execution_id())
@@ -65,6 +79,7 @@ impl ScopedExecutionStore {
             .new_state(batch.new_state().clone())
             .outbox(outbox)
             .journal(batch.journal().to_vec())
+            .resume_tokens(resume_tokens)
             .build()
     }
 }

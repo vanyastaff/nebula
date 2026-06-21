@@ -56,6 +56,15 @@ use tokio_util::sync::CancellationToken;
 
 use nebula_storage_port::Scope;
 use nebula_storage_port::dto::ResumeTarget;
+use nebula_storage_port::dto::resume_token::{ResumeTokenRow, ResumeTokenWaitKind, TokenHash};
+
+// W-S3c: token minting — SHA-256 hash-at-rest, base64 bearer, zeroizing plaintext.
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use rand::Rng as _;
+use secrecy::SecretString;
+use sha2::{Digest, Sha256};
+use zeroize::Zeroizing;
 
 use crate::{
     credential_accessor::EngineCredentialAccessor, error::EngineError, event::ExecutionEvent,
@@ -3608,6 +3617,7 @@ impl WorkflowEngine {
                             exec_state,
                             repo_version,
                             fencing,
+                            vec![],
                         )
                         .await
                     {
@@ -3661,6 +3671,7 @@ impl WorkflowEngine {
                                 exec_state,
                                 repo_version,
                                 fencing,
+                                vec![],
                             )
                             .await
                         {
@@ -3876,6 +3887,7 @@ impl WorkflowEngine {
                                 exec_state,
                                 repo_version,
                                 fencing,
+                                vec![],
                             )
                             .await
                         {
@@ -3942,6 +3954,7 @@ impl WorkflowEngine {
                         exec_state,
                         repo_version,
                         fencing,
+                        vec![],
                     )
                     .await
                 {
@@ -4228,6 +4241,7 @@ impl WorkflowEngine {
                             exec_state,
                             repo_version,
                             fencing,
+                            vec![],
                         )
                         .await
                     {
@@ -4614,6 +4628,40 @@ impl WorkflowEngine {
                             }
                         }
 
+                        // W-S3c: mint a resume token for signal-park conditions
+                        // that expect an external caller (Webhook, Approval).
+                        // `Execution` waits are internal and must NOT mint.
+                        // `#[non_exhaustive]` — unknown future variants get no
+                        // token (safe default: caller must use a different path).
+                        //
+                        // Must be done BEFORE `park_node` moves `wait_signal`
+                        // into the execution state.  The `SecretString` bearer
+                        // is dropped at the end of the `Ok(())` arm — W-S3d
+                        // will route it to the waiting caller when that slice
+                        // lands; for now it is deliberately unused.
+                        let park_token_result: Option<
+                            Result<(ResumeTokenRow, SecretString), EngineError>,
+                        > = match &wait_signal {
+                            Some(WaitSignal::Webhook { callback_id }) => Some(mint_park_token(
+                                scope,
+                                execution_id,
+                                &node_key,
+                                ResumeTokenWaitKind::Webhook,
+                                callback_id.clone(),
+                                wake_at,
+                            )),
+                            Some(WaitSignal::Approval { approver }) => Some(mint_park_token(
+                                scope,
+                                execution_id,
+                                &node_key,
+                                ResumeTokenWaitKind::Approval,
+                                approver.clone(),
+                                wake_at,
+                            )),
+                            // Execution waits are internal — no external bearer.
+                            Some(WaitSignal::Execution { .. } | _) | None => None,
+                        };
+
                         match exec_state.park_node(
                             node_key.clone(),
                             wake_at,
@@ -4648,6 +4696,25 @@ impl WorkflowEngine {
                                 {
                                     let _ = exec_state.transition_status(ExecutionStatus::Paused);
                                 }
+
+                                // Resolve the minted token (if any) or propagate
+                                // the mint error as a checkpoint failure.
+                                let (park_token_row, _plaintext_bearer) = match park_token_result {
+                                    Some(Ok(pair)) => (Some(pair.0), Some(pair.1)),
+                                    Some(Err(mint_err)) => {
+                                        cancel_token.cancel();
+                                        return Some((node_key.clone(), mint_err.to_string()));
+                                    },
+                                    None => (None, None),
+                                };
+                                // `_plaintext_bearer` is dropped here (W-S3c):
+                                // the SecretString zeroizes on drop.  W-S3d
+                                // will route it to the API caller when that
+                                // slice ships.
+
+                                let resume_tokens: Vec<ResumeTokenRow> =
+                                    park_token_row.into_iter().collect();
+
                                 // Durably commit the `Waiting` state and the
                                 // already-staged `partial_output` before any
                                 // observer sees the node is parked. On
@@ -4663,6 +4730,7 @@ impl WorkflowEngine {
                                         exec_state,
                                         repo_version,
                                         fencing,
+                                        resume_tokens,
                                     )
                                     .await
                                 {
@@ -4763,6 +4831,7 @@ impl WorkflowEngine {
                             exec_state,
                             repo_version,
                             fencing,
+                            vec![],
                         )
                         .await
                     {
@@ -5031,6 +5100,7 @@ impl WorkflowEngine {
                                         exec_state,
                                         repo_version,
                                         fencing,
+                                        vec![],
                                     )
                                     .await
                                 {
@@ -5108,6 +5178,7 @@ impl WorkflowEngine {
                             exec_state,
                             repo_version,
                             fencing,
+                            vec![],
                         )
                         .await
                     {
@@ -5604,6 +5675,7 @@ impl WorkflowEngine {
                 exec_state,
                 repo_version,
                 fencing,
+                vec![],
             )
             .await;
         if let Err(e) = checkpoint_result {
@@ -5636,6 +5708,7 @@ impl WorkflowEngine {
         exec_state: &ExecutionState,
         repo_version: &mut u64,
         fencing: Option<nebula_storage_port::FencingToken>,
+        resume_tokens: Vec<ResumeTokenRow>,
     ) -> Result<(), EngineError> {
         // No store bundle ⇒ single-process library mode: nothing to
         // checkpoint.
@@ -5665,6 +5738,7 @@ impl WorkflowEngine {
             exec_state,
             repo_version,
             token,
+            resume_tokens,
         )
         .await
     }
@@ -5676,6 +5750,10 @@ impl WorkflowEngine {
     /// token yields [`EngineError::CasConflict`] (the new holder owns the
     /// canonical state — ADR 0008, ); a CAS version mismatch follows
     /// the same #333 refetch-and-abort contract as the legacy path.
+    ///
+    /// `resume_tokens` is non-empty only on signal-park commits (W-S3c);
+    /// the batch builder defaults to empty so non-park checkpoints are
+    /// unaffected.
     #[allow(clippy::too_many_arguments)]
     async fn checkpoint_node_port(
         &self,
@@ -5687,6 +5765,7 @@ impl WorkflowEngine {
         exec_state: &ExecutionState,
         repo_version: &mut u64,
         token: nebula_storage_port::FencingToken,
+        resume_tokens: Vec<ResumeTokenRow>,
     ) -> Result<(), EngineError> {
         let id = execution_id.to_string();
 
@@ -5716,6 +5795,7 @@ impl WorkflowEngine {
             .expected_version(*repo_version)
             .fencing(token)
             .new_state(state_json)
+            .resume_tokens(resume_tokens)
             .build()
             .map_err(|e| EngineError::CheckpointFailed {
                 node_key: node_key.clone(),
@@ -6981,6 +7061,74 @@ fn mark_node_failed(exec_state: &mut ExecutionState, node_key: NodeKey, err: &En
     }
 }
 
+/// Mint a single-use resume token for a signal-park and return the minted row
+/// plus the plaintext bearer `SecretString`.
+///
+/// ## Security invariants
+///
+/// - The 32-byte raw secret is generated with `rand::rng().fill_bytes` (OS
+///   CSPRNG).  It is never copied into a `String` or `Vec<u8>` outside of
+///   the stack frame.
+/// - The **plaintext bearer** is `BASE64_STANDARD.encode(raw)` wrapped
+///   directly into `SecretString::new` — no intermediate `String` binding.
+///   `SecretString` zeroizes the heap allocation on drop.
+/// - The **hash stored at rest** is SHA-256(raw bytes).  The preimage is the
+///   32 raw bytes, NOT the base64 encoding, so the stored hash reveals nothing
+///   about the bearer.
+/// - The `SecretString` is returned to the caller and dropped there; it is
+///   NEVER logged, traced, or formatted.
+///
+/// ## Idempotency
+///
+/// Backends insert with `ON CONFLICT(execution_id, node_key) DO NOTHING`.
+/// A crash-and-redelivery that re-parks the same node sees the conflict and
+/// skips the insert; the existing live token is preserved.
+fn mint_park_token(
+    scope: &Scope,
+    execution_id: ExecutionId,
+    node_key: &NodeKey,
+    wait_kind: ResumeTokenWaitKind,
+    callback_label: String,
+    wake_at: Option<DateTime<Utc>>,
+) -> Result<(ResumeTokenRow, SecretString), EngineError> {
+    // Wrap the raw preimage in `Zeroizing` so it is wiped on drop — the
+    // 32 raw bytes are the actual secret (the base64 bearer is derived from
+    // them), so they must not linger on the stack after this function returns.
+    let mut raw = Zeroizing::new([0u8; 32]);
+    rand::rng().fill_bytes(raw.as_mut());
+
+    // Hash BEFORE encoding — preimage is 32 raw bytes, hash reveals nothing
+    // about the base64 bearer.
+    let hash_bytes = Sha256::digest(raw.as_ref());
+    let token_hash = TokenHash::try_from_bytes(hash_bytes.to_vec()).map_err(|e| {
+        EngineError::CheckpointFailed {
+            node_key: node_key.clone(),
+            reason: format!("SHA-256 output length mismatch: {e}"),
+        }
+    })?;
+
+    // Plaintext bearer: base64-encoded raw bytes, wrapped directly into
+    // SecretString — no intermediate String allocation stays alive.
+    let plaintext_bearer = SecretString::new(BASE64_STANDARD.encode(raw.as_ref()).into());
+
+    // Mirror the wait's timeout deadline so W-S3d can reject a token
+    // presented after the node's own timeout fired.
+    let expires_at = wake_at.map(|dt| dt.to_rfc3339());
+
+    let row = ResumeTokenRow::new(
+        token_hash,
+        scope.clone(),
+        execution_id.to_string(),
+        node_key.to_string(),
+        wait_kind,
+        callback_label,
+        Utc::now().to_rfc3339(),
+        expires_at,
+    );
+
+    Ok((row, plaintext_bearer))
+}
+
 /// Outcome of the final-status decision at the end of a frontier loop.
 ///
 /// Combines the chosen [`ExecutionStatus`] with optional integrity-violation
@@ -7736,6 +7884,7 @@ mod tests {
                 node_results: self.node_results.clone(),
                 checkpoints: self.checkpoints.clone(),
                 idempotency: self.idempotency.clone(),
+                resume_tokens: Arc::new(self.execution.resume_token_store()),
             }
         }
 
@@ -9429,6 +9578,7 @@ mod tests {
             node_results: stores.node_results.clone(),
             checkpoints: stores.checkpoints.clone(),
             idempotency: stores.idempotency.clone(),
+            resume_tokens: Arc::new(nebula_storage::InMemoryResumeTokenStore::standalone()),
         };
 
         let (engine, _) = make_engine(registry);
@@ -9604,6 +9754,7 @@ mod tests {
             node_results: stores.node_results.clone(),
             checkpoints: stores.checkpoints.clone(),
             idempotency: stores.idempotency.clone(),
+            resume_tokens: Arc::new(nebula_storage::InMemoryResumeTokenStore::standalone()),
         };
 
         let (engine, _) = make_engine(registry);
@@ -11518,6 +11669,7 @@ mod tests {
             node_results: stores.node_results.clone(),
             checkpoints: stores.checkpoints.clone(),
             idempotency: stores.idempotency.clone(),
+            resume_tokens: Arc::new(inner.resume_token_store()),
         };
 
         let (engine, _) = make_engine(registry);
@@ -11606,6 +11758,7 @@ mod tests {
             node_results: stores.node_results.clone(),
             checkpoints: stores.checkpoints.clone(),
             idempotency: stores.idempotency.clone(),
+            resume_tokens: Arc::new(inner.resume_token_store()),
         };
 
         let (engine, _) = make_engine(registry);

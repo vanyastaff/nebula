@@ -40,6 +40,9 @@ tracing = { workspace = true }
 # loading (zeroize). Cache layer uses moka::future.
 base64 = { workspace = true }
 sha2 = { workspace = true }
+# Constant-time byte comparison for the in-memory ResumeTokenStore
+# (defence-in-depth against timing side-channels on hash comparisons).
+subtle = { workspace = true }
 zeroize = { version = "1.8.2", features = ["zeroize_derive"] }
 moka = { workspace = true, features = ["future"] }
 

@@ -13,6 +13,7 @@ fn _assert_object_safe(
     _i: &dyn ControlQueue,
     _j: &dyn WebhookActivationStore,
     _k: &dyn RefreshClaimStore,
+    _l: &dyn ResumeTokenStore,
 ) {
 }
 

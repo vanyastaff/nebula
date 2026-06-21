@@ -74,6 +74,7 @@ impl DispatchStores {
             node_results: self.node_results.clone(),
             checkpoints: self.checkpoints.clone(),
             idempotency: self.idempotency.clone(),
+            resume_tokens: Arc::new(self.execution.resume_token_store()),
         }
     }
 

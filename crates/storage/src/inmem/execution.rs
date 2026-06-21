@@ -16,6 +16,7 @@ use std::time::Duration;
 // cost — the contract the prior in-memory adapter guaranteed.
 use tokio::time::Instant;
 
+use nebula_storage_port::dto::resume_token::ResumeTokenRow;
 use nebula_storage_port::dto::{ControlMsg, ExecutionRecord};
 use nebula_storage_port::store::{ExecutionStore, IdempotencyGuard};
 use nebula_storage_port::{FencingToken, Scope, StorageError, TransitionBatch, TransitionOutcome};
@@ -78,6 +79,10 @@ pub(super) struct State {
     /// winner execution_id.  The value enables Duplicate read-back without a
     /// separate store lookup.
     pub(super) dedup: HashMap<(String, String, String, String), String>,
+    /// Resume-token store (W-S3c): keyed by raw 32-byte hash.
+    /// Held in the same `State` so `commit` can INSERT token rows
+    /// atomically with the state snapshot under one lock.
+    pub(super) resume_tokens: HashMap<Vec<u8>, ResumeTokenRow>,
 }
 
 /// Shared mutable core. One mutex guards the whole store so a `commit`
@@ -103,6 +108,14 @@ impl InMemoryExecutionStore {
     #[must_use]
     pub(super) fn shared(&self) -> SharedState {
         Arc::clone(&self.inner)
+    }
+
+    /// Build a [`super::resume_token::InMemoryResumeTokenStore`] backed by
+    /// this store's shared state so `commit` and `consume` operate on the
+    /// same mutex-guarded map (W-S3c atomicity invariant).
+    #[must_use]
+    pub fn resume_token_store(&self) -> super::resume_token::InMemoryResumeTokenStore {
+        super::resume_token::InMemoryResumeTokenStore::new(Arc::clone(&self.inner))
     }
 }
 
@@ -265,11 +278,31 @@ impl ExecutionStore for InMemoryExecutionStore {
                 },
             );
         }
+        // W-S3c: insert resume-token rows atomically in the same lock scope
+        // as the state/outbox/journal writes above.  ON CONFLICT DO NOTHING
+        // semantics: if a row with the same (execution_id, node_key) already
+        // exists, the new row is silently discarded (crash-re-drive safety).
+        for token_row in batch.resume_tokens() {
+            // Mirror the SQL schema: PRIMARY KEY (token_hash) and
+            // UNIQUE (execution_id, node_key) are both first-writer-wins.
+            // Check both invariants: skip the insert if the PK hash is already
+            // present (idempotent re-park with a different bearer) OR if the
+            // (execution_id, node_key) pair is already live (crash re-drive).
+            let hash_key = token_row.token_hash.as_bytes().to_vec();
+            let hash_already_present = st.resume_tokens.contains_key(&hash_key);
+            let node_already_present = st.resume_tokens.values().any(|existing| {
+                existing.execution_id == token_row.execution_id
+                    && existing.node_key == token_row.node_key
+            });
+            if !hash_already_present && !node_already_present {
+                st.resume_tokens.insert(hash_key, token_row.clone());
+            }
+        }
         tracing::debug!(
             target: "nebula_storage::inmem",
             execution_id = %id,
             new_version,
-            "commit applied (state + outbox + journal)"
+            "commit applied (state + outbox + journal + resume_tokens)"
         );
         Ok(TransitionOutcome::Applied { new_version })
     }

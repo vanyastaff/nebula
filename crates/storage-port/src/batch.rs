@@ -4,11 +4,18 @@
 //! fields are private and it has no public constructor other than
 //! [`TransitionBatch::builder`], so a caller structurally cannot transition
 //! without declaring the scope, the expected CAS version, and the lease
-//! [`FencingToken`]. `commit` writes `new_state` + `outbox` + `journal` in
-//! one transaction (or one mutex-guarded mutation for InMemory), gated by the
-//! version CAS *and* the fencing token. This makes a split between durable
-//! state and outbox/journal impossible by construction: there is exactly one call site and one
-//! transaction for the triple.
+//! [`FencingToken`]. `commit` writes `new_state` + `outbox` + `journal` +
+//! `resume_tokens` in one transaction (or one mutex-guarded mutation for
+//! InMemory), gated by the version CAS *and* the fencing token. This makes
+//! a split between durable state and outbox/journal/resume-tokens impossible
+//! by construction: there is exactly one call site and one transaction for
+//! the four.
+//!
+//! The `resume_tokens` field carries at most one [`ResumeTokenRow`] per
+//! signal-park: the engine mints the token and pushes the row here so
+//! backends insert it atomically with the `Waiting` state snapshot.  See
+//! ADR-0099 W-S3c.
+use crate::dto::resume_token::ResumeTokenRow;
 use crate::dto::{ControlMsg, JournalEntry};
 use crate::error::StorageError;
 use crate::ids::FencingToken;
@@ -24,6 +31,11 @@ pub struct TransitionBatch {
     new_state: serde_json::Value,
     outbox: Vec<ControlMsg>,
     journal: Vec<JournalEntry>,
+    /// Resume-token rows to INSERT in the same transaction as the state
+    /// snapshot.  Empty on non-signal-park commits.  The INSERT uses
+    /// `ON CONFLICT(execution_id, node_key) DO NOTHING` so a crash
+    /// re-drive that re-parks the same node does NOT mint a second token.
+    resume_tokens: Vec<ResumeTokenRow>,
 }
 
 impl TransitionBatch {
@@ -77,6 +89,17 @@ impl TransitionBatch {
     pub fn journal(&self) -> &[JournalEntry] {
         &self.journal
     }
+
+    /// Resume-token rows to INSERT in the same transaction (W-S3c).
+    ///
+    /// Empty on all non-signal-park commits.  Each backend must INSERT
+    /// these rows using `ON CONFLICT(execution_id, node_key) DO NOTHING`
+    /// so a crash re-drive that re-parks the same node does not mint a
+    /// duplicate live token.
+    #[must_use]
+    pub fn resume_tokens(&self) -> &[ResumeTokenRow] {
+        &self.resume_tokens
+    }
 }
 
 /// Typed builder for [`TransitionBatch`]. A missing required field makes
@@ -91,6 +114,7 @@ pub struct TransitionBatchBuilder {
     new_state: Option<serde_json::Value>,
     outbox: Vec<ControlMsg>,
     journal: Vec<JournalEntry>,
+    resume_tokens: Vec<ResumeTokenRow>,
 }
 
 impl TransitionBatchBuilder {
@@ -143,6 +167,18 @@ impl TransitionBatchBuilder {
         self
     }
 
+    /// Set the resume-token rows to INSERT atomically (W-S3c).
+    ///
+    /// Optional — default is empty.  The engine sets this to a
+    /// single-element vec on signal-park commits.  Backends must use
+    /// `ON CONFLICT(execution_id, node_key) DO NOTHING` so a crash
+    /// re-drive does not produce a duplicate live token.
+    #[must_use]
+    pub fn resume_tokens(mut self, tokens: Vec<ResumeTokenRow>) -> Self {
+        self.resume_tokens = tokens;
+        self
+    }
+
     /// Finalize the batch. Fails closed if any required field is missing.
     pub fn build(self) -> Result<TransitionBatch, StorageError> {
         let scope = self
@@ -168,6 +204,7 @@ impl TransitionBatchBuilder {
             new_state,
             outbox: self.outbox,
             journal: self.journal,
+            resume_tokens: self.resume_tokens,
         })
     }
 }

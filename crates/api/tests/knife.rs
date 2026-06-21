@@ -560,6 +560,7 @@ async fn knife_step3_engine_dispatches_start_end_to_end() {
                 )),
                 checkpoints: Arc::new(nebula_storage::inmem::InMemoryCheckpointStore::new()),
                 idempotency: Arc::new(nebula_storage::inmem::InMemoryIdempotencyGuard::new()),
+                resume_tokens: Arc::new(nebula_storage::InMemoryResumeTokenStore::standalone()),
             })
             .with_workflow_stores(WorkflowStores {
                 workflow: Arc::new(nebula_tenancy::ScopedWorkflowStore::new(

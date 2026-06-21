@@ -220,6 +220,7 @@ impl WtStores {
             node_results: self.node_results.clone(),
             checkpoints: self.checkpoints.clone(),
             idempotency: self.idempotency.clone(),
+            resume_tokens: Arc::new(self.execution.resume_token_store()),
         }
     }
 
@@ -1722,6 +1723,7 @@ async fn fenced_out_self_arm_sends_arm_failed_then_deferred() {
                 node_results: Arc::new(nebula_storage::InMemoryNodeResultStore::new()),
                 checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new()),
                 idempotency: Arc::new(nebula_storage::InMemoryIdempotencyGuard::new()),
+                resume_tokens: Arc::new(inner.resume_token_store()),
             })
             .with_workflow_stores(nebula_engine::WorkflowStores {
                 workflow: workflow as Arc<dyn WorkflowStore>,
