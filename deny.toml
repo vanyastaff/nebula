@@ -99,6 +99,10 @@ deny = [
     # The core-flavor worker binary wires the engine directly via compose.rs
     # (WorkflowEngine::new + with_plugin + ExecutionStores/WorkflowStores).
     "nebula-worker-bin",
+    # examples/ member hosts the workflow_data_pipeline demo, which wires the
+    # engine + CorePlugin to run a multi-node workflow end-to-end (same
+    # composition-root pattern as nebula-worker-bin).
+    "nebula-examples",
   ], reason = "Engine is exec-layer orchestration; business/core crates must not depend on it" },
   { crate = "nebula-storage", wrappers = [
     "nebula-engine",
