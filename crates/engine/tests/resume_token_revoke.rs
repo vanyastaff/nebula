@@ -31,7 +31,7 @@
 use std::{
     collections::HashMap,
     sync::{
-        Arc, OnceLock,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicBool, Ordering},
     },
     time::Duration,
@@ -79,17 +79,31 @@ use nebula_workflow::{
 ///
 /// The intercepted commit leaves the inner storage row unmodified — the real
 /// row keeps its original version, so the engine's reconcile `get` refetch
-/// observes the actual row and the retry `commit` succeeds.
+/// observes the actual row and (when no `get` override is set) the retry
+/// commit succeeds.
 ///
-/// ONLY `commit` is intercepted (once after arming); all other methods
-/// delegate unconditionally.
+/// # Optional `get` override after intercept
+///
+/// Call [`ArmableConflictStore::arm_with_terminal_get`] to also override the
+/// `get` response that follows the `VersionConflict`. When the override is set,
+/// the first `get` call AFTER the interceptor fires returns a row whose
+/// `"status"` field is replaced by the supplied snake_case status string
+/// (e.g. `"cancelled"`). This drives the engine into the
+/// `observed-terminal → honor external` branch (§11.5, #333 line ~6051)
+/// rather than the retry branch.
 #[derive(Debug)]
 struct ArmableConflictStore {
     inner: Arc<InMemoryExecutionStore>,
-    /// `true` once armed; the next `commit` fires the interception.
+    /// `true` once armed; the next matching `commit` fires the interception.
     armed: AtomicBool,
     /// `true` once the interception has fired (i.e. armed + commit consumed).
     fired: AtomicBool,
+    /// If `Some`, the first `get` after `fired` returns a row with `"status"`
+    /// overridden to this value, directing the engine to the honor-external-
+    /// terminal branch. `None` = delegate to the inner store (retry branch).
+    get_status_override: Mutex<Option<String>>,
+    /// `true` once the `get` override has been consumed (single-use).
+    get_override_consumed: AtomicBool,
 }
 
 impl ArmableConflictStore {
@@ -98,11 +112,24 @@ impl ArmableConflictStore {
             inner,
             armed: AtomicBool::new(false),
             fired: AtomicBool::new(false),
+            get_status_override: Mutex::new(None),
+            get_override_consumed: AtomicBool::new(false),
         }
     }
 
-    /// Arm the interceptor: the next `commit` call returns `VersionConflict`.
+    /// Arm the interceptor: the next terminal-status `commit` returns
+    /// `VersionConflict`. The subsequent `get` delegates to the real store
+    /// (engine takes the CAS-retry branch).
     fn arm(&self) {
+        self.armed.store(true, Ordering::Release);
+    }
+
+    /// Arm the interceptor AND configure the post-fire `get` to return a row
+    /// with `status` overridden to `terminal_status` (snake_case, e.g.
+    /// `"cancelled"`). The engine observes a terminal external state and takes
+    /// the honor-external branch (~line 6051) rather than the retry branch.
+    fn arm_with_terminal_get(&self, terminal_status: impl Into<String>) {
+        *self.get_status_override.lock().unwrap() = Some(terminal_status.into());
         self.armed.store(true, Ordering::Release);
     }
 
@@ -127,6 +154,37 @@ impl ExecutionStore for ArmableConflictStore {
     }
 
     async fn get(&self, scope: &Scope, id: &str) -> Result<Option<ExecutionRecord>, StorageError> {
+        // If the interceptor has fired and a get-status override is configured,
+        // apply it on the first `get` call after the fire (single-use).
+        // Single-use `get` override: after the interceptor fires, the FIRST get
+        // returns the real row with `"status"` patched to the configured terminal
+        // value, steering the engine into the honor-external-terminal branch.
+        // The `compare_exchange` is the actual single-use gate; the load-before is
+        // an optimistic fast-path skip to avoid taking the mutex when not needed.
+        let should_override = self.fired.load(Ordering::Acquire)
+            && !self.get_override_consumed.load(Ordering::Acquire)
+            && self.get_status_override.lock().unwrap().is_some()
+            && self
+                .get_override_consumed
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok();
+        if should_override {
+            let status = self
+                .get_status_override
+                .lock()
+                .unwrap()
+                .clone()
+                .expect("checked is_some above");
+            return match self.inner.get(scope, id).await? {
+                None => Ok(None),
+                Some(mut rec) => {
+                    if let Some(obj) = rec.state.as_object_mut() {
+                        obj.insert("status".to_owned(), serde_json::Value::String(status));
+                    }
+                    Ok(Some(rec))
+                },
+            };
+        }
         self.inner.get(scope, id).await
     }
 
@@ -875,5 +933,91 @@ async fn cas_retry_terminal_path_revokes_token() {
         harness.token_store().token_count_for_test(&scope, &exec),
         0,
         "the resume token must be revoked on the CAS-retry terminal path (SINK 1 retry arm)"
+    );
+}
+
+// ── SINK 1 honor-external-terminal path — API-cancel writer gap (CodeRabbit Major) ─
+
+/// **W-S3e SINK 1 honor-external path (CodeRabbit Major, engine.rs:6057)**: when
+/// `persist_final_state_port` hits a `VersionConflict`, refetches, and observes a
+/// TERMINAL external state (§11.5/#333 line ~6051), it honors the external terminal
+/// without re-committing. Before the fix, this path had NO revoke — the fix in this
+/// session calls `revoke_resume_tokens_best_effort` there. This test exercises that
+/// exact path.
+///
+/// **Why this gap matters**: the external writer on this path may be a NON-engine path
+/// (e.g. the API `cancel_execution` handler, which writes `Cancelled` directly without
+/// calling `revoke_on_terminal`). Engine sinks (persist_final_state_port Applied /
+/// cancel_dangling_nodes_under_lease Applied) DO revoke, but a non-engine writer does
+/// not. The engine observing that external terminal was the only remaining revoke gap.
+///
+/// Flow:
+/// 1. Park → token minted.
+/// 2. Arm with a terminal-get override (`"cancelled"`) — after the interceptor fires,
+///    the reconcile `get` returns a row with status patched to `"cancelled"`.
+/// 3. `dispatch_resume` → engine runs `persist_final_state_port` → first commit hits
+///    the armed interceptor → `VersionConflict` returned (inner store unchanged) →
+///    engine reconcile `get` returns the patched-terminal row → engine calls
+///    `revoke_resume_tokens_best_effort` THEN `return Ok(observed_status_enum)`.
+/// 4. Assert token count == 0 (the honor-external path revoked).
+///
+/// **Falsifiability**: remove the `revoke_resume_tokens_best_effort` call from the
+/// honor-external branch (~line 6051) → the token count stays 1 after the honor-
+/// external `Ok(observed_status_enum)` return → the `== 0` assertion fails → RED.
+///
+/// **Test correctness guard**: `interceptor.has_fired()` ensures the interceptor
+/// actually triggered (i.e. the test DID exercise the honor-external path, not a
+/// different code path). If the interceptor does NOT fire, `dispatch_resume` would
+/// complete via the normal first-Applied arm — and the test would pass for the wrong
+/// reason (that arm already had the revoke from the original W-S3e PR).
+#[tokio::test]
+async fn honor_external_terminal_path_revokes_token() {
+    let (harness, interceptor) = RevokeHarness::new_with_cas_interceptor().await;
+    let workflow_id = harness.persist_workflow().await;
+    let execution_id = harness.persist_created_execution(workflow_id).await;
+    let scope = nebula_engine::store_seam::single_tenant_scope();
+    let exec = execution_id.to_string();
+
+    // Park: mints a resume token. The interceptor is NOT yet armed.
+    harness
+        .dispatch
+        .dispatch_start(&scope, execution_id)
+        .await
+        .expect("dispatch_start must park the webhook node");
+    assert_eq!(
+        harness.token_store().token_count_for_test(&scope, &exec),
+        1,
+        "a resume token must be minted by the park"
+    );
+
+    // Arm the interceptor with a terminal-get override. On the NEXT commit that
+    // carries a terminal status, the interceptor returns `VersionConflict`, and the
+    // subsequent `get` (reconcile refetch) returns a row with status `"cancelled"`.
+    // This drives the engine into the honor-external-terminal branch (~line 6051).
+    interceptor.arm_with_terminal_get("cancelled");
+
+    // Resume: `persist_final_state_port` will hit `VersionConflict` → refetch →
+    // observe `"cancelled"` (terminal) → revoke tokens → honor external.
+    // `dispatch_resume` completes `Ok(())` because `execute_workflow` treats the
+    // honored external_status as a valid terminal outcome.
+    harness
+        .dispatch
+        .dispatch_resume(&scope, execution_id, None)
+        .await
+        .expect("dispatch_resume must complete Ok even when honoring external terminal");
+
+    // Validity guard: the interceptor must have fired; if it did NOT, the engine
+    // took the first-Applied arm (which already revoked) and the test proves nothing.
+    assert!(
+        interceptor.has_fired(),
+        "the CAS-conflict interceptor must have fired so the test exercises the \
+         honor-external-terminal branch, not the first-Applied branch"
+    );
+
+    // The token is revoked by the honor-external branch — the gap fixed in this session.
+    assert_eq!(
+        harness.token_store().token_count_for_test(&scope, &exec),
+        0,
+        "the resume token must be revoked on the honor-external-terminal path (CodeRabbit Major)"
     );
 }

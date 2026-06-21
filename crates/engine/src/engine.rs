@@ -6048,13 +6048,18 @@ impl WorkflowEngine {
                         "final state CAS mismatch: external transition is terminal — \
                          honoring external status instead of overwriting (§11.5, #333)"
                     );
-                    // W-S3e note: no revoke here — the external terminal-maker
-                    // (whichever runner wrote the terminal state this runner just
-                    // observed) will have gone through its own persist_final_state_port
-                    // or cancel_dangling_nodes_under_lease Applied arm, both of which
-                    // already call revoke_resume_tokens_best_effort. This runner no
-                    // longer owns the execution; calling revoke again would be a
-                    // spurious double-revoke on another runner's execution.
+                    // W-S3e — revoke un-consumed tokens before honoring the
+                    // external terminal state. The external writer may be a
+                    // non-engine path (e.g. the API `cancel_execution` handler,
+                    // which writes `Cancelled` directly without calling
+                    // `revoke_on_terminal`). Engine sinks (persist_final_state_port
+                    // / cancel_dangling_nodes_under_lease) do revoke, but we
+                    // cannot know which writer produced the observed terminal here.
+                    // `revoke_on_terminal` is idempotent and scope-bound: revoking
+                    // here is safe even if an engine sink already revoked (it just
+                    // deletes 0 rows). Best-effort: a revoke failure must NOT
+                    // prevent honoring the external terminal.
+                    revoke_resume_tokens_best_effort(stores, scope, &id).await;
                     return Ok(observed_status_enum);
                 }
 
