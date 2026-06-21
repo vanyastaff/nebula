@@ -93,5 +93,9 @@ path = "examples/workflow_delay_resume.rs"
 name = "workflow_datetime_schedule"
 path = "examples/workflow_datetime_schedule.rs"
 
+[[example]]
+name = "workflow_conditional_routing"
+path = "examples/workflow_conditional_routing.rs"
+
 [lints]
 workspace = true
