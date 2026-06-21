@@ -137,8 +137,8 @@ pub fn build_app(state: AppState, config: &ApiConfig) -> Router {
     // W-S3d: `POST /resume` — attacker-reachable wait-state surface.
     // Mounted BEFORE tenancy middleware (no TenantContext extractor);
     // scope is derived from the consumed token row, not the request.
-    // Uses `AppState` as router state so it can access `resume_token_store`
-    // and `resume_handler_components`.
+    // Uses `AppState` as router state so it can access `resume_producer`
+    // (the atomic consume+enqueue seam) and `resume_handler_components`.
     //
     // `DefaultBodyLimit::max` is applied as a tower layer on this sub-router so
     // axum enforces the cap BEFORE buffering the body — preventing a large-body DoS

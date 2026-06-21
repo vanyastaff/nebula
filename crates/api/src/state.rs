@@ -485,6 +485,23 @@ pub struct AppState {
     /// Set via [`AppState::with_resume_token_store`].
     pub resume_token_store: Option<Arc<dyn nebula_storage_port::store::ResumeTokenStore>>,
 
+    /// Resume producer for the W-S3d webhook→Resume path (`POST /resume`).
+    ///
+    /// `peek` is a read-only lookup (reject wrong-kind / expired tokens, surface
+    /// storage faults as `503`); `consume_and_enqueue_resume` burns the token
+    /// and enqueues the `Resume` in ONE transaction, closing the consume-then-
+    /// enqueue durability gap (a failed enqueue rolls back, leaving the token
+    /// live for retry).
+    ///
+    /// Like `resume_token_store`, this is the **undecorated** (global) store —
+    /// the lookup is hash-keyed with no tenant parameter; scope is read FROM the
+    /// row (confused-deputy boundary = the absence of any tenant extractor on
+    /// the resume handler).
+    ///
+    /// When `None`, `POST /resume` returns `503 Service Unavailable`.
+    /// Set via [`AppState::with_resume_producer`].
+    pub resume_producer: Option<Arc<dyn nebula_storage_port::store::ResumeProducer>>,
+
     /// Rate limiters + clock for the W-S3d `POST /resume` handler.
     ///
     /// Bundled as [`crate::transport::webhook::resume::ResumeHandlerComponents`]
@@ -558,6 +575,7 @@ impl AppState {
             resource_registrars: None,
             resource_status: None,
             resume_token_store: None,
+            resume_producer: None,
             resume_handler_components: None,
         }
     }
@@ -959,58 +977,6 @@ impl AppState {
             use nebula_storage_port::StorageError;
             let unavailable = matches!(e, StorageError::Internal(_) | StorageError::Connection(_));
             to_api_err(unavailable, e.to_string())
-        })
-    }
-
-    /// Enqueue a targeted `ControlCommand::Resume` derived from a
-    /// `ResumeTokenRow` (W-S3d).
-    ///
-    /// Scope-from-row: the enqueued message is stamped with `row.scope` via
-    /// a freshly-bound `ScopedControlQueue`.  The caller MUST NOT supply a
-    /// request-derived scope — the only accepted source is the consumed row.
-    ///
-    /// `w3c_traceparent` carries the inbound W3C trace context so the engine's
-    /// downstream span can be linked to the caller's distributed trace.  Pass
-    /// `None` when the request carried no valid `traceparent` header.
-    ///
-    /// Rationale for a separate method (not reusing `enqueue_control_scoped`):
-    /// `enqueue_control_scoped` hard-codes `resume_target: None` and is typed
-    /// around `ExecutionId`; this method carries the `ResumeTarget` and uses
-    /// the row's string execution id, keeping the two paths structurally
-    /// distinct.
-    pub(crate) async fn enqueue_resume_from_row(
-        &self,
-        row: &nebula_storage_port::dto::resume_token::ResumeTokenRow,
-        target: nebula_storage_port::dto::ResumeTarget,
-        w3c_traceparent: Option<String>,
-    ) -> Result<(), ApiError> {
-        let queue = ScopedControlQueue::new(Arc::clone(&self.control_queue), row.scope.clone());
-        let msg = nebula_storage_port::dto::ControlMsg {
-            id: *uuid::Uuid::new_v4().as_bytes(),
-            execution_id: row.execution_id.clone(),
-            command: nebula_storage_port::dto::ControlCommand::Resume,
-            scope: row.scope.clone(),
-            w3c_traceparent,
-            reclaim_count: 0,
-            resume_target: Some(target),
-        };
-        queue.enqueue(&msg).await.map_err(|e| {
-            use nebula_storage_port::StorageError;
-            // Infrastructure faults → 503 (transient; caller should retry);
-            // other write failures → 500 (logic or schema bug).
-            match e {
-                StorageError::Internal(_) | StorageError::Connection(_) => {
-                    ApiError::ServiceUnavailable(format!(
-                        "control-queue backend unavailable while enqueuing Resume \
-                         for execution {}: {e}",
-                        row.execution_id
-                    ))
-                },
-                other => ApiError::Internal(format!(
-                    "failed to enqueue Resume for execution {}: {other}",
-                    row.execution_id
-                )),
-            }
         })
     }
 
@@ -1451,6 +1417,22 @@ impl AppState {
         store: Arc<dyn nebula_storage_port::store::ResumeTokenStore>,
     ) -> Self {
         self.resume_token_store = Some(store);
+        self
+    }
+
+    /// Attach the resume producer for the W-S3d webhook→Resume path
+    /// (`POST /resume`) — the atomic consume+enqueue seam (ADR-0099 Option B1).
+    ///
+    /// Must be the **undecorated** (global) producer backed by the SAME pool /
+    /// shared state as the execution store and control queue, so the token
+    /// DELETE and the `Resume` INSERT commit in one transaction. When `None`,
+    /// `POST /resume` returns `503 Service Unavailable`.
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_resume_producer(
+        mut self,
+        producer: Arc<dyn nebula_storage_port::store::ResumeProducer>,
+    ) -> Self {
+        self.resume_producer = Some(producer);
         self
     }
 

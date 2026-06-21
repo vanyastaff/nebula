@@ -51,10 +51,10 @@ use nebula_storage::{
 use nebula_storage_port::{
     Scope, StorageError,
     dto::{
-        ControlCommand, ResumeTarget,
+        ControlCommand, ControlMsg, ResumeTarget,
         resume_token::{ResumeTokenRow, ResumeTokenWaitKind, TokenHash},
     },
-    store::ResumeTokenStore,
+    store::{ResumeProducer, ResumeTokenStore},
 };
 use tower::ServiceExt;
 
@@ -196,9 +196,10 @@ struct ResumeHarness {
 
 /// Build the standard resume test harness with the given rate-limit components.
 ///
-/// Wires an `InMemoryResumeTokenStore` and `InMemoryControlQueue` whose `Arc`s
-/// are shared with `AppState` so `seed_for_test` writes are visible through
-/// the handler, and `snapshot()` reflects every enqueued `ControlMsg`.
+/// The resume-token store, resume producer, and control queue all share the
+/// `exec_store`'s `SharedState`, so `seed_for_test` writes on `token_store` are
+/// visible to the producer's `peek` / `consume_and_enqueue_resume`, and
+/// `control_queue.snapshot()` reflects every `Resume` the producer enqueues.
 async fn build_resume_harness(components: ResumeHandlerComponents) -> ResumeHarness {
     use nebula_storage::inmem::{
         InMemoryJournalReader, InMemoryNodeResultStore, InMemoryWorkflowStore,
@@ -211,7 +212,10 @@ async fn build_resume_harness(components: ResumeHandlerComponents) -> ResumeHarn
     let node_results = InMemoryNodeResultStore::new();
     let workflow_versions = InMemoryWorkflowVersionStore::new();
     let workflow_store = InMemoryWorkflowStore::new_with_versions(&workflow_versions);
-    let token_store = InMemoryResumeTokenStore::standalone();
+    // Token store + producer over the SAME shared state as the control queue —
+    // built before `exec_store` is moved into the `Arc`.
+    let token_store = exec_store.resume_token_store();
+    let resume_producer = exec_store.resume_producer();
 
     let api_config = ApiConfig::for_test();
     let state = AppState::new(
@@ -227,6 +231,7 @@ async fn build_resume_harness(components: ResumeHandlerComponents) -> ResumeHarn
     .with_workspace_resolver(Arc::new(common::TestWorkspaceResolver))
     .with_insecure_tenant_rbac_bypass_for_tests()
     .with_resume_token_store(Arc::new(token_store.clone()))
+    .with_resume_producer(Arc::new(resume_producer))
     .with_resume_handler_components(components);
 
     let app = app::build_app(state, &api_config);
@@ -238,31 +243,35 @@ async fn build_resume_harness(components: ResumeHandlerComponents) -> ResumeHarn
     }
 }
 
-/// A `ResumeTokenStore` port whose `consume` always returns a storage error.
+/// A `ResumeProducer` port whose `peek` always returns a storage error.
 ///
-/// Used to assert abuse-case 15: storage transient fault → 503, token unconsumed,
-/// no `ControlMsg` enqueued.
+/// Used to assert abuse-case 15: a transient storage fault on the read-only
+/// `peek` → 503, token NOT burned, no `ControlMsg` enqueued. `consume_and_
+/// enqueue_resume` is never reached on this path; it returns the same error
+/// for completeness.
 #[derive(Debug)]
-struct AlwaysFailTokenStore;
+struct AlwaysFailResumeProducer;
 
 #[async_trait::async_trait]
-impl ResumeTokenStore for AlwaysFailTokenStore {
-    async fn consume(&self, _hash: &TokenHash) -> Result<Option<ResumeTokenRow>, StorageError> {
+impl ResumeProducer for AlwaysFailResumeProducer {
+    async fn peek(&self, _hash: &TokenHash) -> Result<Option<ResumeTokenRow>, StorageError> {
         Err(StorageError::Connection(
             "simulated transient storage failure".to_owned(),
         ))
     }
 
-    async fn revoke_on_terminal(
+    async fn consume_and_enqueue_resume(
         &self,
-        _scope: &Scope,
-        _execution_id: &str,
-    ) -> Result<u64, StorageError> {
-        Ok(0)
+        _hash: &TokenHash,
+        _resume_msg: &ControlMsg,
+    ) -> Result<bool, StorageError> {
+        Err(StorageError::Connection(
+            "simulated transient storage failure".to_owned(),
+        ))
     }
 }
 
-/// Build a harness whose token store always returns a storage error on `consume`.
+/// Build a harness whose resume producer always returns a storage error on `peek`.
 async fn build_failing_store_harness(components: ResumeHandlerComponents) -> ResumeHarness {
     use nebula_storage::inmem::{
         InMemoryJournalReader, InMemoryNodeResultStore, InMemoryWorkflowStore,
@@ -276,7 +285,7 @@ async fn build_failing_store_harness(components: ResumeHandlerComponents) -> Res
     let workflow_versions = InMemoryWorkflowVersionStore::new();
     let workflow_store = InMemoryWorkflowStore::new_with_versions(&workflow_versions);
     // A standalone store is returned in `token_store` for the field but is
-    // never wired into AppState — `AlwaysFailTokenStore` is wired instead.
+    // never wired into AppState — `AlwaysFailResumeProducer` is wired instead.
     let token_store_placeholder = InMemoryResumeTokenStore::standalone();
 
     let api_config = ApiConfig::for_test();
@@ -292,7 +301,7 @@ async fn build_failing_store_harness(components: ResumeHandlerComponents) -> Res
     .with_org_resolver(Arc::new(common::TestOrgResolver))
     .with_workspace_resolver(Arc::new(common::TestWorkspaceResolver))
     .with_insecure_tenant_rbac_bypass_for_tests()
-    .with_resume_token_store(Arc::new(AlwaysFailTokenStore))
+    .with_resume_producer(Arc::new(AlwaysFailResumeProducer))
     .with_resume_handler_components(components);
 
     let app = app::build_app(state, &api_config);
@@ -498,12 +507,13 @@ async fn forged_bearer_returns_404_no_enqueue() {
     );
 }
 
-/// Test 4 — Expired token (clock past expiry): consumed, 404, no enqueue.
+/// Test 4 — Expired token (clock past expiry): 404, no enqueue, NO BURN.
 ///
-/// Token expiry is checked AFTER consume (step 8 in the pipeline).  The
-/// token is burned but no `ControlMsg` is emitted, and the caller sees 404.
+/// Expiry is checked at step 8 on the read-only `peek` row, BEFORE the consume.
+/// The token is NOT burned (wart fix): the caller sees 404 and the token row
+/// survives, so a subsequent `consume` still returns it.
 #[tokio::test]
-async fn expired_token_consumed_returns_404_no_enqueue() {
+async fn expired_token_returns_404_no_enqueue_no_burn() {
     // Clock at epoch 1001; token expired at epoch 1000.
     let clock = Arc::new(MockClock::at_unix_secs(1_001));
     let harness = build_resume_harness(components_with_clock(clock)).await;
@@ -534,14 +544,25 @@ async fn expired_token_consumed_returns_404_no_enqueue() {
         harness.control_queue.snapshot().is_empty(),
         "expired token must not produce a ControlMsg enqueue"
     );
+    // Wart fix: the token survived (NOT burned). A direct consume still finds it.
+    let survived = harness
+        .token_store
+        .consume(&token_hash_of(bearer))
+        .await
+        .expect("consume must not error");
+    assert!(
+        survived.is_some(),
+        "expired token must NOT be burned by the 404 path (wart fix)"
+    );
 }
 
-/// Test 5 — Malformed `expires_at`: fail-closed → consumed, 404, no enqueue.
+/// Test 5 — Malformed `expires_at`: fail-closed → 404, no enqueue, NO BURN.
 ///
 /// A row with an unparseable `expires_at` string is treated as expired
-/// (fail-closed): the handler returns 404 and does not enqueue a Resume.
+/// (fail-closed): the handler returns 404 and does not enqueue a Resume — and
+/// does not burn the token (checked on the read-only `peek` row, before consume).
 #[tokio::test]
-async fn malformed_expires_at_fails_closed_404_no_enqueue() {
+async fn malformed_expires_at_fails_closed_404_no_enqueue_no_burn() {
     let clock = Arc::new(MockClock::at_now());
     let harness = build_resume_harness(components_with_clock(clock)).await;
 
@@ -570,14 +591,25 @@ async fn malformed_expires_at_fails_closed_404_no_enqueue() {
         harness.control_queue.snapshot().is_empty(),
         "malformed expires_at must not produce a ControlMsg enqueue"
     );
+    let survived = harness
+        .token_store
+        .consume(&token_hash_of(bearer))
+        .await
+        .expect("consume must not error");
+    assert!(
+        survived.is_some(),
+        "malformed-expiry token must NOT be burned by the 404 path (wart fix)"
+    );
 }
 
-/// Test 6 — Kind-confusion: `Approval`-kind row at `POST /resume` → 404, no enqueue.
+/// Test 6 — Kind-confusion: `Approval`-kind row at `POST /resume` → 404, no
+/// enqueue, NO BURN.
 ///
 /// The Webhook endpoint must not resolve an Approval wait.  The `_` arm on the
-/// kind-match in the handler is the structural fail-closed gate.
+/// kind-match in the handler is the structural fail-closed gate, and it fires on
+/// the read-only `peek` row so the token is NOT burned (wart fix).
 #[tokio::test]
-async fn approval_kind_row_at_webhook_endpoint_returns_404_no_enqueue() {
+async fn approval_kind_row_at_webhook_endpoint_returns_404_no_enqueue_no_burn() {
     let clock = Arc::new(MockClock::at_now());
     let harness = build_resume_harness(components_with_clock(clock)).await;
 
@@ -600,6 +632,15 @@ async fn approval_kind_row_at_webhook_endpoint_returns_404_no_enqueue() {
     assert!(
         harness.control_queue.snapshot().is_empty(),
         "Approval-kind token must never enqueue a Resume at the Webhook endpoint"
+    );
+    let survived = harness
+        .token_store
+        .consume(&token_hash_of(bearer))
+        .await
+        .expect("consume must not error");
+    assert!(
+        survived.is_some(),
+        "wrong-kind token must NOT be burned by the 404 path (wart fix)"
     );
 }
 
@@ -746,14 +787,16 @@ async fn global_rate_limit_429_before_db_hit() {
     );
 }
 
-/// Test 10 — Per-tenant rate-limit fires AFTER consume (token already burned).
+/// Test 10 — Per-tenant 429 is single-shot per token (fires post-burn).
 ///
-/// This is documented behavior: once `store.consume()` succeeds and the row
-/// is deleted, the token cannot be "un-burned" even if per-tenant RL fires.
-/// The test asserts the 429 + `Retry-After` and that only ONE Resume was
-/// enqueued (from the first request that passed the tenant RL).
+/// The per-tenant rate-limit fires at step 11, on the atomic consume+enqueue
+/// WINNER — so a 429 is observable only on a request that ALSO burned its token
+/// (and already enqueued its Resume in the same transaction). The token is now
+/// burned: a replay of the same bearer yields 404, not a repeatable 429. This is
+/// the oracle-avoidance property — a 429 can never be replayed against a still-
+/// valid token (which would leak "valid token + throttled tenant").
 #[tokio::test]
-async fn per_tenant_rate_limit_429_post_consume_token_burned() {
+async fn per_tenant_429_still_single_shot() {
     let clock = Arc::new(MockClock::at_now());
     let harness = build_resume_harness(components_tight_tenant_rate_limit(clock)).await;
 
@@ -780,24 +823,46 @@ async fn per_tenant_rate_limit_429_post_consume_token_burned() {
         "first request must pass tenant RL"
     );
 
-    // Second request from a different peer but same tenant is rate-limited post-consume.
+    // Second request, same tenant: wins the atomic burn+enqueue, THEN the tenant
+    // RL fires → 429. The token is burned in the same transaction.
     let resp_second = harness
         .app
+        .clone()
         .oneshot(resume_post(bearer_b, PEER_B))
         .await
         .unwrap();
     assert_eq!(
         resp_second.status(),
         StatusCode::TOO_MANY_REQUESTS,
-        "second same-tenant request must be 429 (post-consume)"
+        "second same-tenant request must be 429 (post-burn)"
     );
     assert!(
         resp_second.headers().contains_key("retry-after"),
         "tenant 429 must include Retry-After header"
     );
 
-    // The first request's Resume was enqueued; the second was blocked after consume.
-    assert_eq!(harness.control_queue.snapshot().len(), 1);
+    // The 429 is single-shot: bearer_b is now burned, so a replay is 404 — a
+    // repeatable 429 against a live token (the throttle oracle) is impossible.
+    let burned = harness
+        .token_store
+        .consume(&token_hash_of(bearer_b))
+        .await
+        .expect("consume must not error");
+    assert!(
+        burned.is_none(),
+        "a 429'd request that won the atomic delete must have burned its token \
+         (single-shot — no repeatable 429 oracle on a still-valid token)"
+    );
+
+    // Both atomic winners enqueued their Resume (the burn and the enqueue are one
+    // transaction — a 429 cannot retroactively un-enqueue an already-committed
+    // Resume). This is strictly safer than the prior post-burn-RL handler, which
+    // burned the token but dropped the Resume — the very gap this seam closes.
+    assert_eq!(
+        harness.control_queue.snapshot().len(),
+        2,
+        "both atomic winners enqueued a Resume (burn+enqueue are one tx)"
+    );
 }
 
 /// Test 11 — No token-in-URL route: `GET /resume/{token}` must not return 200.
@@ -843,11 +908,11 @@ async fn no_token_in_url_path_route_exists() {
     );
 }
 
-/// Test 12 — Storage error on `consume` → 503 + `Retry-After`, ZERO enqueues.
+/// Test 12 — Storage error on `peek` → 503 + `Retry-After`, ZERO enqueues.
 ///
-/// When the token store returns `Err` on `consume`, the token was NOT consumed
-/// (the store never deleted it), so the caller can retry.  The handler must
-/// return 503 with `Retry-After` and must not enqueue anything.
+/// When the producer returns `Err` on the read-only `peek`, no token is burned
+/// (peek never deletes), so the caller can retry.  The handler must return 503
+/// with `Retry-After` and must not enqueue anything.
 #[tokio::test]
 async fn storage_error_returns_503_retry_after_no_enqueue() {
     let clock = Arc::new(MockClock::at_now());
@@ -999,68 +1064,37 @@ async fn bearer_extraction_uniformity_all_variants_return_404() {
     );
 }
 
-// ── FIX-1 regression: SQLite backend round-trip ───────────────────────────────
+// ── Option B1 (W-S3d) — atomic ResumeProducer round-trip + durability gate ────────
 
-/// Test 15 — SQLite backend round-trip: token minted into `SqliteResumeTokenStore`
-/// is consumable by a producer wired to the SAME pool.
-///
-/// This test proves the P1 correctness fix (FIX 1): on durable backends the
-/// `resume_token_store` wired into `AppState` must share the same pool as the
-/// execution store that mints tokens.  A standalone in-memory store would silently
-/// serve empty lookups while the engine persists to the pool.
-///
-/// The test bypasses `TransitionBatch` by inserting the token row directly via
-/// `sqlx::query` — this is intentional: we want to test the store + producer
-/// integration without needing a full execution store + engine path.
-#[tokio::test]
-async fn sqlite_backend_round_trip_durable_token_is_consumable() {
-    use nebula_storage::inmem::{
-        InMemoryControlQueue, InMemoryExecutionStore, InMemoryJournalReader,
-        InMemoryNodeResultStore, InMemoryWorkflowStore, InMemoryWorkflowVersionStore,
-    };
-    use nebula_storage::sqlite::{SqliteResumeTokenStore, init_schema};
-
-    // ── 1. Build a shared in-memory SQLite pool + apply schema ────────────────
-    let pool = sqlx::sqlite::SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect("sqlite::memory:")
-        .await
-        .expect("in-memory SQLite pool must open");
-
-    init_schema(&pool)
-        .await
-        .expect("init_schema must succeed on in-memory SQLite");
-
-    // ── 2. Mint a token row directly into `port_resume_tokens` ───────────────
-    // Using sqlx directly mirrors how the engine's `TransitionBatch` commit
-    // inserts rows.  `port_resume_tokens` has a FK on `execution_id →
-    // port_executions(id)` (with CASCADE delete), so we must insert a
-    // parent execution row first.
-    let bearer = "resume-bearer-t15-sqlite-round-trip";
+/// Insert the minimal parent execution row + a webhook token row directly into a
+/// SQLite pool, mirroring what the engine's `TransitionBatch` commit writes.
+async fn seed_sqlite_webhook_token(
+    pool: &sqlx::SqlitePool,
+    bearer: &str,
+    execution_id: &str,
+    callback_label: &str,
+    scope: &Scope,
+) {
     let token_hash_bytes = {
         use sha2::{Digest, Sha256};
-        let digest = Sha256::digest(bearer.as_bytes());
-        digest.to_vec()
+        Sha256::digest(bearer.as_bytes()).to_vec()
     };
-    let scope = test_scope();
-
-    // Parent execution row — minimal valid row satisfying NOT NULL constraints.
     sqlx::query(
         "INSERT INTO port_executions \
          (id, workspace_id, org_id, workflow_id, status, state, version, \
           created_at, updated_at) \
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
-    .bind("exe-t15-sqlite")
+    .bind(execution_id)
     .bind(&scope.workspace_id)
     .bind(&scope.org_id)
-    .bind("wf-t15")
+    .bind("wf-resume-producer")
     .bind("Running")
     .bind("{}")
     .bind(0_i64)
     .bind("2026-06-21T00:00:00Z")
     .bind("2026-06-21T00:00:00Z")
-    .execute(&pool)
+    .execute(pool)
     .await
     .expect("parent execution row insert must succeed");
 
@@ -1073,16 +1107,40 @@ async fn sqlite_backend_round_trip_durable_token_is_consumable() {
     .bind(&token_hash_bytes)
     .bind(&scope.workspace_id)
     .bind(&scope.org_id)
-    .bind("exe-t15-sqlite")
-    .bind("node_step_t15")
+    .bind(execution_id)
+    .bind("node_resume_producer")
     .bind("webhook")
-    .bind("cb-t15")
+    .bind(callback_label)
     .bind("2026-06-21T00:00:00Z")
-    .execute(&pool)
+    .execute(pool)
     .await
     .expect("direct token insert must succeed");
+}
 
-    // ── 3. Build AppState wired to the SAME pool via SqliteResumeTokenStore ──
+/// Count `Resume` rows in the SQLite `port_control_queue`.
+async fn sqlite_resume_count(pool: &sqlx::SqlitePool) -> i64 {
+    use sqlx::Row;
+    sqlx::query("SELECT COUNT(*) AS n FROM port_control_queue WHERE command = 'Resume'")
+        .fetch_one(pool)
+        .await
+        .expect("count query must succeed")
+        .try_get::<i64, _>("n")
+        .expect("count column must decode")
+}
+
+/// Build an `AppState` whose `POST /resume` is wired to a `SqliteResumeProducer`
+/// over `pool` (the atomic consume+enqueue seam), with a controllable clock.
+fn build_sqlite_resume_app(
+    pool: &sqlx::SqlitePool,
+    api_config: &ApiConfig,
+    clock: Arc<dyn nebula_action::Clock>,
+) -> axum::Router {
+    use nebula_storage::inmem::{
+        InMemoryControlQueue, InMemoryExecutionStore, InMemoryJournalReader,
+        InMemoryNodeResultStore, InMemoryWorkflowStore, InMemoryWorkflowVersionStore,
+    };
+    use nebula_storage::sqlite::SqliteResumeProducer;
+
     let exec_store = InMemoryExecutionStore::new();
     let control_queue = InMemoryControlQueue::new(&exec_store);
     let journal = InMemoryJournalReader::new(&exec_store);
@@ -1090,93 +1148,297 @@ async fn sqlite_backend_round_trip_durable_token_is_consumable() {
     let workflow_versions = InMemoryWorkflowVersionStore::new();
     let workflow_store = InMemoryWorkflowStore::new_with_versions(&workflow_versions);
 
-    // The durable resume-token store is wired from the SAME pool the token was
-    // minted into — this is the invariant FIX 1 enforces in compose.rs.
-    let durable_token_store = Arc::new(SqliteResumeTokenStore::new(pool.clone()));
-
-    let clock = Arc::new(MockClock::at_now());
-    let components = components_with_clock(clock);
-
-    let api_config = ApiConfig::for_test();
     let state = AppState::new(
         Arc::new(workflow_store),
         Arc::new(workflow_versions),
         Arc::new(exec_store),
         Arc::new(node_results),
         Arc::new(journal),
-        Arc::new(control_queue.clone()),
+        Arc::new(control_queue),
         api_config.jwt_secret.clone(),
     )
     .with_org_resolver(Arc::new(common::TestOrgResolver))
     .with_workspace_resolver(Arc::new(common::TestWorkspaceResolver))
     .with_insecure_tenant_rbac_bypass_for_tests()
-    .with_resume_token_store(durable_token_store)
-    .with_resume_handler_components(components);
+    .with_resume_producer(Arc::new(SqliteResumeProducer::new(pool.clone())))
+    .with_resume_handler_components(components_with_clock(clock));
 
-    let app = app::build_app(state, &api_config);
+    app::build_app(state, api_config)
+}
 
-    // ── 4. POST /resume — must return 202 and enqueue one Resume ─────────────
+/// Open an in-memory SQLite pool (one shared connection) with the port schema.
+async fn open_sqlite_pool() -> sqlx::SqlitePool {
+    use nebula_storage::sqlite::init_schema;
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("in-memory SQLite pool must open");
+    init_schema(&pool)
+        .await
+        .expect("init_schema must succeed on in-memory SQLite");
+    pool
+}
+
+/// **MERGE GATE (red to green).** `burn_iff_enqueued` — a failed enqueue must
+/// NOT burn the token.
+///
+/// A real `SqliteResumeProducer` consumes the token and enqueues the `Resume`
+/// in ONE transaction. We force the control-queue INSERT to fail INSIDE that
+/// transaction by dropping `port_control_queue` first, so the `DELETE` of the
+/// token is rolled back with it. The handler returns 503, and:
+/// - (a) the token row STILL exists (peek-able) — it survived the rolled-back tx;
+/// - (b) NO `Resume` was enqueued;
+/// - (c) after the table is restored, a retry succeeds (202) and enqueues
+///   EXACTLY ONE `Resume`.
+///
+/// This FAILS on the prior burn-then-enqueue handler (the token would be gone
+/// after the 503, the retry would 404, and a `timeout: None` webhook wait would
+/// park forever) and PASSES on the atomic seam.
+#[tokio::test]
+async fn burn_iff_enqueued_resume_survives_failed_enqueue() {
+    use nebula_storage::sqlite::{SqliteResumeProducer, init_schema};
+    use nebula_storage_port::store::ResumeProducer;
+
+    let pool = open_sqlite_pool().await;
+    let api_config = ApiConfig::for_test();
+    let scope = test_scope();
+    let bearer = "resume-bearer-burn-iff-enqueued";
+    seed_sqlite_webhook_token(&pool, bearer, "exe-burn-iff", "cb-burn-iff", &scope).await;
+
+    // Force the control-queue INSERT (inside the producer's tx) to fail by
+    // removing the target table. The token DELETE must roll back with it.
+    sqlx::query("DROP TABLE port_control_queue")
+        .execute(&pool)
+        .await
+        .expect("drop port_control_queue must succeed");
+
+    let clock = Arc::new(MockClock::at_now());
+    let app = build_sqlite_resume_app(&pool, &api_config, clock);
+
     let resp = app
         .oneshot(resume_post(bearer, PEER_A))
         .await
         .expect("oneshot must not fail");
+    assert_eq!(
+        resp.status(),
+        StatusCode::SERVICE_UNAVAILABLE,
+        "a failed enqueue inside the tx must surface as 503 (token NOT burned)"
+    );
 
+    // (a) The token row survived the rolled-back transaction.
+    let probe = SqliteResumeProducer::new(pool.clone());
+    let survived = probe
+        .peek(&token_hash_of(bearer))
+        .await
+        .expect("peek must not error");
+    assert!(
+        survived.is_some(),
+        "the token MUST survive a rolled-back enqueue — burning it here is the P1 bug \
+         (a timeout-less webhook wait would park Paused forever)"
+    );
+
+    // Restore the control-queue table so the retry can enqueue.
+    init_schema(&pool)
+        .await
+        .expect("re-applying schema must restore port_control_queue");
+
+    // (b) Before the retry, there is no Resume.
+    assert_eq!(
+        sqlite_resume_count(&pool).await,
+        0,
+        "the failed attempt must not have enqueued any Resume"
+    );
+
+    // (c) A retry now succeeds and enqueues exactly one Resume.
+    let app_retry = build_sqlite_resume_app(&pool, &api_config, Arc::new(MockClock::at_now()));
+    let resp_retry = app_retry
+        .oneshot(resume_post(bearer, PEER_A))
+        .await
+        .expect("retry oneshot must not fail");
+    assert_eq!(
+        resp_retry.status(),
+        StatusCode::ACCEPTED,
+        "after the transient fault clears, the retry must succeed (token was still live)"
+    );
+    assert_eq!(
+        sqlite_resume_count(&pool).await,
+        1,
+        "the successful retry must enqueue exactly one Resume"
+    );
+
+    // The token is now burned — a second peek is empty (single-use).
+    let survived_after = probe
+        .peek(&token_hash_of(bearer))
+        .await
+        .expect("peek must not error");
+    assert!(
+        survived_after.is_none(),
+        "after the successful consume the token must be burned"
+    );
+}
+
+/// Happy path on the atomic seam: 202 + exactly one Resume with scope/target
+/// from the row; the token is no longer peek-able afterward.
+#[tokio::test]
+async fn happy_path_atomic_round_trip() {
+    use nebula_storage::sqlite::SqliteResumeProducer;
+    use nebula_storage_port::store::ResumeProducer;
+
+    let pool = open_sqlite_pool().await;
+    let api_config = ApiConfig::for_test();
+    let scope = test_scope();
+    let bearer = "resume-bearer-happy-atomic";
+    seed_sqlite_webhook_token(&pool, bearer, "exe-happy-atomic", "cb-happy", &scope).await;
+
+    let app = build_sqlite_resume_app(&pool, &api_config, Arc::new(MockClock::at_now()));
+    let resp = app
+        .oneshot(resume_post(bearer, PEER_A))
+        .await
+        .expect("oneshot must not fail");
     assert_eq!(
         resp.status(),
         StatusCode::ACCEPTED,
-        "SQLite round-trip: token minted into durable pool must be consumable by the wired producer"
+        "happy path must be 202"
     );
 
-    let queued = control_queue.snapshot();
-    assert_eq!(
-        queued.len(),
-        1,
-        "SQLite round-trip: exactly one Resume ControlMsg must be enqueued"
-    );
-    let (msg, _status) = &queued[0];
-    assert_eq!(msg.execution_id, "exe-t15-sqlite");
-    assert_eq!(msg.scope, test_scope());
-    assert_eq!(
-        msg.resume_target,
-        Some(ResumeTarget::Webhook {
-            callback_id: "cb-t15".to_owned()
-        })
-    );
-
-    // ── 5. Second call with same bearer must return 404 (token consumed) ──────
-    // Re-assemble the app since `oneshot` consumes it.
-    let durable_token_store_2 = Arc::new(SqliteResumeTokenStore::new(pool));
-    let exec_store_2 = InMemoryExecutionStore::new();
-    let control_queue_2 = InMemoryControlQueue::new(&exec_store_2);
-    let journal_2 = InMemoryJournalReader::new(&exec_store_2);
-    let node_results_2 = InMemoryNodeResultStore::new();
-    let workflow_versions_2 = InMemoryWorkflowVersionStore::new();
-    let workflow_store_2 = InMemoryWorkflowStore::new_with_versions(&workflow_versions_2);
-    let clock_2 = Arc::new(MockClock::at_now());
-    let state_2 = AppState::new(
-        Arc::new(workflow_store_2),
-        Arc::new(workflow_versions_2),
-        Arc::new(exec_store_2),
-        Arc::new(node_results_2),
-        Arc::new(journal_2),
-        Arc::new(control_queue_2),
-        api_config.jwt_secret.clone(),
+    // Exactly one Resume, with the row's scope + callback as the target.
+    use sqlx::Row;
+    let rows = sqlx::query(
+        "SELECT execution_id, workspace_id, org_id, command, resume_target \
+         FROM port_control_queue",
     )
-    .with_org_resolver(Arc::new(common::TestOrgResolver))
-    .with_workspace_resolver(Arc::new(common::TestWorkspaceResolver))
-    .with_insecure_tenant_rbac_bypass_for_tests()
-    .with_resume_token_store(durable_token_store_2)
-    .with_resume_handler_components(components_with_clock(clock_2));
+    .fetch_all(&pool)
+    .await
+    .expect("control-queue query must succeed");
+    assert_eq!(
+        rows.len(),
+        1,
+        "exactly one control message must be enqueued"
+    );
+    let row = &rows[0];
+    assert_eq!(
+        row.try_get::<String, _>("execution_id").unwrap(),
+        "exe-happy-atomic"
+    );
+    assert_eq!(row.try_get::<String, _>("command").unwrap(), "Resume");
+    assert_eq!(
+        row.try_get::<String, _>("workspace_id").unwrap(),
+        scope.workspace_id
+    );
+    assert_eq!(row.try_get::<String, _>("org_id").unwrap(), scope.org_id);
+    let target_json: String = row.try_get("resume_target").unwrap();
+    let target: ResumeTarget = serde_json::from_str(&target_json).unwrap();
+    assert_eq!(
+        target,
+        ResumeTarget::Webhook {
+            callback_id: "cb-happy".to_owned()
+        }
+    );
 
-    let app_2 = app::build_app(state_2, &api_config);
-    let resp_2 = app_2
+    // Token is burned — no longer peek-able.
+    let probe = SqliteResumeProducer::new(pool.clone());
+    assert!(
+        probe
+            .peek(&token_hash_of(bearer))
+            .await
+            .expect("peek must not error")
+            .is_none(),
+        "the consumed token must no longer be peek-able"
+    );
+}
+
+/// Single-use replay on the atomic seam: first 202, replay 404; exactly one Resume.
+#[tokio::test]
+async fn single_use_replay_still_404s() {
+    let pool = open_sqlite_pool().await;
+    let api_config = ApiConfig::for_test();
+    let scope = test_scope();
+    let bearer = "resume-bearer-replay-atomic";
+    seed_sqlite_webhook_token(&pool, bearer, "exe-replay-atomic", "cb-replay", &scope).await;
+
+    let app1 = build_sqlite_resume_app(&pool, &api_config, Arc::new(MockClock::at_now()));
+    let resp1 = app1
+        .oneshot(resume_post(bearer, PEER_A))
+        .await
+        .expect("first oneshot must not fail");
+    assert_eq!(resp1.status(), StatusCode::ACCEPTED, "first call is 202");
+
+    let app2 = build_sqlite_resume_app(&pool, &api_config, Arc::new(MockClock::at_now()));
+    let resp2 = app2
         .oneshot(resume_post(bearer, PEER_A))
         .await
         .expect("second oneshot must not fail");
+    assert_eq!(
+        resp2.status(),
+        StatusCode::NOT_FOUND,
+        "replay of a consumed token must 404"
+    );
 
     assert_eq!(
-        resp_2.status(),
-        StatusCode::NOT_FOUND,
-        "SQLite round-trip: second call with same bearer must return 404 (token already consumed)"
+        sqlite_resume_count(&pool).await,
+        1,
+        "a replay must NOT produce a second Resume"
+    );
+}
+
+/// Concurrent replay: two simultaneous POSTs with the same bearer → exactly one
+/// 202 and one non-2xx; the `DELETE … RETURNING` row lock makes exactly one win,
+/// so exactly one Resume is enqueued.
+#[tokio::test]
+async fn concurrent_replay_enqueues_once() {
+    let pool = open_sqlite_pool().await;
+    let api_config = ApiConfig::for_test();
+    let scope = test_scope();
+    let bearer = "resume-bearer-concurrent-atomic";
+    seed_sqlite_webhook_token(&pool, bearer, "exe-concurrent", "cb-concurrent", &scope).await;
+
+    let app_a = build_sqlite_resume_app(&pool, &api_config, Arc::new(MockClock::at_now()));
+    let app_b = build_sqlite_resume_app(&pool, &api_config, Arc::new(MockClock::at_now()));
+
+    let (resp_a, resp_b) = tokio::join!(
+        app_a.oneshot(resume_post(bearer, PEER_A)),
+        app_b.oneshot(resume_post(bearer, PEER_B)),
+    );
+    let status_a = resp_a.expect("a oneshot must not fail").status();
+    let status_b = resp_b.expect("b oneshot must not fail").status();
+
+    let accepted = [status_a, status_b]
+        .iter()
+        .filter(|s| **s == StatusCode::ACCEPTED)
+        .count();
+    assert_eq!(
+        accepted, 1,
+        "exactly one of two concurrent replays may win the atomic delete \
+         (got {status_a} / {status_b})"
+    );
+    assert_eq!(
+        sqlite_resume_count(&pool).await,
+        1,
+        "concurrent replays must enqueue exactly one Resume"
+    );
+}
+
+/// Storage error on the read-only `peek` → 503 + `Retry-After`, token left live.
+/// Proves the 503-on-peek path on the real producer trait at the HTTP boundary
+/// (mirrors test 12: `AlwaysFailResumeProducer.peek` returns `Err`).
+#[tokio::test]
+async fn peek_storage_error_is_503_token_live() {
+    let harness =
+        build_failing_store_harness(components_with_clock(Arc::new(MockClock::at_now()))).await;
+
+    let resp = harness
+        .app
+        .oneshot(resume_post("bearer-peek-error", PEER_A))
+        .await
+        .expect("oneshot must not fail");
+    assert_eq!(
+        resp.status(),
+        StatusCode::SERVICE_UNAVAILABLE,
+        "a peek storage error must surface as 503"
+    );
+    assert!(
+        resp.headers().contains_key("retry-after"),
+        "503 on peek error must include Retry-After"
     );
 }

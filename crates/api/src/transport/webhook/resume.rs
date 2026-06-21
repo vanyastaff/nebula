@@ -16,22 +16,38 @@
 //!
 //! ## Pipeline order (mirrors `dispatch_inner` ordering in `dispatch.rs`)
 //!
+//! The burn (token DELETE) and the `Resume` enqueue happen in ONE transaction
+//! ([`nebula_storage_port::store::ResumeProducer::consume_and_enqueue_resume`])
+//! at step 10. Everything before it is non-destructive: a read-only `peek`
+//! (step 6) supplies the row for the kind / expiry checks, so a wrong-kind or
+//! expired token returns 404 WITHOUT burning the token (the prior
+//! consume-first handler burned it first, then 404'd — a wart this fixes).
+//!
 //! 1. Body cap → 413
 //! 2. Extract bearer from `Authorization: Bearer <token>` → uniform 404 on
 //!    missing/wrong-scheme/empty (NOT 401 — do not reveal auth was attempted)
 //! 3. Per-IP rate-limit → 429 + `Retry-After` (BEFORE any store hit)
 //! 4. Global rate-limit → 429 (BEFORE any store hit)
-//! 5. Hash bearer; `store.consume(hash)`:
-//!    - `Err` → 503 + `Retry-After` (token unconsumed; abuse-case 15)
-//!    - `Ok(None)` → uniform 404
-//!    - `Ok(Some(row))` → continue
-//! 6. Kind-match: `Webhook` → `ResumeTarget::Webhook{callback_id}`; `_` → 404
-//!    (before per-tenant RL: wrong-kind/expired tokens must not 429 on an exhausted tenant)
-//! 7. Expiry check via injectable clock; expired or malformed → 404, no enqueue
-//!    (before per-tenant RL: same oracle-avoidance rationale as step 6)
-//! 8. Per-tenant rate-limit (key = `row.scope.credential_owner_id()`) → 429;
-//!    token is already burned (accepted, documented)
-//! 9. Enqueue `ControlCommand::Resume` via `enqueue_resume_from_row` → 202 / 503
+//! 5. Hash bearer → `TokenHash` (bearer dropped here — never logged or stored)
+//! 6. `producer.peek(hash)` (read-only, NO burn):
+//!    - `Err` → 503 + `Retry-After` (token NOT burned; abuse-case 15)
+//!    - `None` → uniform 404
+//!    - `Some(row)` → continue
+//! 7. Kind-match: `Webhook` → `ResumeTarget::Webhook{callback_id}`; `_` → 404
+//!    (NO burn — wart fixed)
+//! 8. Expiry check via injectable clock; expired or malformed → 404 (NO burn)
+//! 9. Build the `ControlMsg` (scope FROM the row, never the request; command
+//!    `Resume`; traceparent from request extensions)
+//! 10. `producer.consume_and_enqueue_resume(hash, &msg)` — atomic burn+enqueue:
+//!     - `Err` → 503 + `Retry-After` (tx rolled back; token LIVE; gap CLOSED)
+//!     - `Ok(false)` → uniform 404 (raced / replayed)
+//!     - `Ok(true)` → continue
+//! 11. Per-tenant rate-limit (key = `row.scope.credential_owner_id()`) — fires
+//!     ONLY on the atomic-delete winner, so a 429 is observable only on a
+//!     request that ALSO burned the token (single-shot per token). Running it on
+//!     the un-burned `peek` row would expose a repeatable 429 = "valid token +
+//!     throttled tenant" oracle the consume-first model never did. → 429 (token
+//!     already burned + `Resume` already enqueued) or 202.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -94,8 +110,9 @@ pub struct ResumeHandlerComponents {
     /// anti-enumeration backstop (step 4).
     pub global_rate_limiter: WebhookRateLimiter,
     /// Per-tenant rate limiter — keyed on `Scope::credential_owner_id()`,
-    /// checked post-consume after kind-match and expiry (step 8).  Token is
-    /// already burned at this point; see W-S3d spec note.
+    /// checked at step 11 ONLY on the atomic consume+enqueue winner.  Token is
+    /// already burned at this point (and the `Resume` already enqueued); see the
+    /// module doc for why this fires post-burn (oracle avoidance).
     pub tenant_rate_limiter: WebhookRateLimiter,
     /// Injectable clock — used for expiry comparison (step 8).
     pub clock: Arc<dyn Clock>,
@@ -165,8 +182,8 @@ pub(crate) async fn resume_handler(
         warn!("resume_handler called without ResumeHandlerComponents wired — composition-root bug");
         return (StatusCode::SERVICE_UNAVAILABLE, "").into_response();
     };
-    let Some(token_store) = state.resume_token_store.as_ref() else {
-        warn!("resume_handler called without resume_token_store wired — composition-root bug");
+    let Some(resume_producer) = state.resume_producer.as_ref() else {
+        warn!("resume_handler called without resume_producer wired — composition-root bug");
         return (StatusCode::SERVICE_UNAVAILABLE, "").into_response();
     };
 
@@ -214,7 +231,7 @@ pub(crate) async fn resume_handler(
         return rate_limit_429(exceeded.retry_after_secs);
     }
 
-    // Step 5 — hash and consume.
+    // Step 5 — hash the bearer.
     // bearer_token / hash deliberately excluded from all log fields.
     let raw_hash = token_hash(&bearer_token);
     // bearer_token is dropped here — never logged or stored past this point.
@@ -227,13 +244,16 @@ pub(crate) async fn resume_handler(
         return (StatusCode::INTERNAL_SERVER_ERROR, "").into_response();
     };
 
-    let consumed_row = match token_store.consume(&token_hash_value).await {
-        // Storage error → 503 so the caller can retry; the token is
-        // unconsumed on a transient storage fault (abuse-case 15).
+    // Step 6 — read-only `peek` (NO burn). The row drives the kind / expiry
+    // checks below; the token is consumed only at step 10, atomically with the
+    // enqueue.
+    let token_row = match resume_producer.peek(&token_hash_value).await {
+        // Storage error → 503 so the caller can retry; the token is NOT burned
+        // on a transient storage fault (abuse-case 15).
         Err(storage_err) => {
             warn!(
                 error = %storage_err,
-                "resume: storage error on consume — returning 503 (token unconsumed)"
+                "resume: storage error on peek — returning 503 (token not burned)"
             );
             return service_unavailable_with_retry_after();
         },
@@ -242,100 +262,114 @@ pub(crate) async fn resume_handler(
         Ok(Some(row)) => row,
     };
 
-    // Step 6 — kind-match (fail-closed, before per-tenant RL).
+    // Step 7 — kind-match (fail-closed, NO burn — wart fixed).
     // `ResumeTokenWaitKind` is `#[non_exhaustive]`; equality to `Webhook` is
     // the only admissible kind at this endpoint.  All other variants — Approval,
     // and any future variant added to the non-exhaustive enum without recompiling
-    // this crate — fall to the `else` branch and return a uniform 404.
+    // this crate — fall to the `else` branch and return a uniform 404 WITHOUT
+    // consuming the token (the prior consume-first handler burned it first).
     //
-    // Ordering invariant: kind-match fires BEFORE per-tenant rate-limit.  A wrong-kind
-    // or expired token on an exhausted tenant must return 404, not 429 — returning 429
-    // would reveal that the token was structurally valid (existence oracle) and would
-    // inconsistently 429 on tokens the tenant cannot resume.
-    let resume_target = if consumed_row.wait_kind == ResumeTokenWaitKind::Webhook {
+    // Ordering invariant: kind-match fires BEFORE the consume.  A wrong-kind or
+    // expired token must return 404, never 429 — returning 429 would reveal that
+    // the token was structurally valid (existence oracle).
+    let resume_target = if token_row.wait_kind == ResumeTokenWaitKind::Webhook {
         ResumeTarget::Webhook {
-            callback_id: consumed_row.callback_label.clone(),
+            callback_id: token_row.callback_label.clone(),
         }
     } else {
         debug!(
-            execution_id = %consumed_row.execution_id,
-            wait_kind = ?consumed_row.wait_kind,
-            "resume: token wait_kind does not match Webhook; returning 404 (fail-closed)"
+            execution_id = %token_row.execution_id,
+            wait_kind = ?token_row.wait_kind,
+            "resume: token wait_kind does not match Webhook; returning 404 (fail-closed, no burn)"
         );
         return uniform_not_found();
     };
 
-    // Step 7 — expiry check via injectable clock (fail-closed on parse failure).
-    // Fires BEFORE per-tenant RL for the same oracle-avoidance reason as step 6.
-    if let Some(expires_at_str) = consumed_row.expires_at.as_deref() {
+    // Step 8 — expiry check via injectable clock (fail-closed on parse failure).
+    // Fires BEFORE the consume; expired / malformed → 404 WITHOUT burning.
+    if let Some(expires_at_str) = token_row.expires_at.as_deref() {
         if let Ok(expiry) = parse_rfc3339_as_system_time(expires_at_str) {
             let now = components.clock.now();
             if now >= expiry {
                 debug!(
-                    execution_id = %consumed_row.execution_id,
+                    execution_id = %token_row.execution_id,
                     expires_at = %expires_at_str,
-                    "resume: token expired (consumed, no enqueue)"
+                    "resume: token expired (no burn, no enqueue)"
                 );
                 return uniform_not_found();
             }
         } else {
-            // Malformed RFC-3339 — fail-closed; token is already consumed.
+            // Malformed RFC-3339 — fail-closed WITHOUT burning the token.
             warn!(
-                execution_id = %consumed_row.execution_id,
+                execution_id = %token_row.execution_id,
                 expires_at = %expires_at_str,
-                "resume: malformed expires_at — fail-closed (token consumed, no enqueue)"
+                "resume: malformed expires_at — fail-closed (no burn, no enqueue)"
             );
             return uniform_not_found();
         }
     }
 
-    // Step 8 — per-tenant rate-limit (post-consume, post-kind-match, post-expiry).
-    // Token is already burned at this point; see W-S3d spec note for why this is
-    // accepted behavior (the alternative — pre-consume per-tenant RL — requires a
-    // tenant lookup before the consume atomic, adding a second DB round-trip and a
-    // TOCTOU window).
-    let tenant_key = consumed_row.scope.credential_owner_id();
+    // Step 9 — build the `Resume` control message.
+    // Scope comes FROM the row (never the request); `traceparent` from the
+    // inbound W3C context (set by `trace_context_middleware` into request
+    // extensions). The bearer token NEVER appears here.
+    let traceparent = w3c_trace.map(|Extension(ctx)| ctx.0.traceparent().to_owned());
+    let resume_msg = nebula_storage_port::dto::ControlMsg {
+        id: *uuid::Uuid::new_v4().as_bytes(),
+        execution_id: token_row.execution_id.clone(),
+        command: nebula_storage_port::dto::ControlCommand::Resume,
+        scope: token_row.scope.clone(),
+        w3c_traceparent: traceparent,
+        reclaim_count: 0,
+        resume_target: Some(resume_target),
+    };
+    debug!(
+        execution_id = %token_row.execution_id,
+        scope = ?token_row.scope,
+        has_traceparent = resume_msg.w3c_traceparent.is_some(),
+        wait_kind = "Webhook",
+        "resume: consuming token + enqueuing ControlCommand::Resume (atomic)"
+    );
+
+    // Step 10 — atomic burn + enqueue in ONE transaction. A transient fault
+    // rolls back: the token stays live and no Resume is enqueued, so a retry
+    // succeeds (the durability gap the consume-then-enqueue handler had).
+    match resume_producer
+        .consume_and_enqueue_resume(&token_hash_value, &resume_msg)
+        .await
+    {
+        // Storage error → 503 (tx rolled back; token LIVE; caller retries).
+        Err(storage_err) => {
+            warn!(
+                execution_id = %token_row.execution_id,
+                error = %storage_err,
+                "resume: storage error on consume_and_enqueue — 503 (tx rolled back; token live)"
+            );
+            return service_unavailable_with_retry_after();
+        },
+        // Zero rows deleted — raced or replayed between peek and consume.
+        Ok(false) => return uniform_not_found(),
+        // Won the atomic delete: token burned AND Resume enqueued.
+        Ok(true) => {},
+    }
+
+    // Step 11 — per-tenant rate-limit, fired ONLY on the atomic-delete winner.
+    // The token is already burned and the Resume already enqueued; a 429 is thus
+    // observable only on a request that ALSO burned the token (single-shot per
+    // token) — byte-identical to the prior post-burn semantics. Running this on
+    // the un-burned `peek` row (step 6) would expose a repeatable 429 oracle
+    // ("valid token + throttled tenant"); see the module doc.
+    let tenant_key = token_row.scope.credential_owner_id();
     if let Err(exceeded) = components.tenant_rate_limiter.check(&tenant_key).await {
         debug!(
             tenant_id = %tenant_key,
             retry_after = exceeded.retry_after_secs,
-            "resume: per-tenant rate limit exceeded (token consumed)"
+            "resume: per-tenant rate limit exceeded (token already burned + enqueued)"
         );
         return rate_limit_429(exceeded.retry_after_secs);
     }
 
-    // Step 9 — enqueue (ControlCommand::Resume via scoped queue).
-    // Log only non-secret fields; bearer/hash never appear here.
-    //
-    // Extract the inbound W3C traceparent (set by `trace_context_middleware`
-    // into request extensions) so the engine can link its downstream span to
-    // the caller's distributed trace.  The bearer token NEVER appears here.
-    let traceparent = w3c_trace.map(|Extension(ctx)| ctx.0.traceparent().to_owned());
-    debug!(
-        execution_id = %consumed_row.execution_id,
-        scope = ?consumed_row.scope,
-        has_traceparent = traceparent.is_some(),
-        wait_kind = "Webhook",
-        "resume: enqueuing ControlCommand::Resume"
-    );
-
-    match state
-        .enqueue_resume_from_row(&consumed_row, resume_target, traceparent)
-        .await
-    {
-        Ok(()) => (StatusCode::ACCEPTED, "").into_response(),
-        Err(api_err) => {
-            warn!(
-                execution_id = %consumed_row.execution_id,
-                error = %api_err,
-                "resume: failed to enqueue ControlCommand::Resume"
-            );
-            match api_err {
-                ApiError::ServiceUnavailable(_) => service_unavailable_with_retry_after(),
-                _ => (StatusCode::INTERNAL_SERVER_ERROR, "").into_response(),
-            }
-        },
-    }
+    (StatusCode::ACCEPTED, "").into_response()
 }
 
 // ── Private helpers ───────────────────────────────────────────────────────────

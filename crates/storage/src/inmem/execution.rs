@@ -117,6 +117,15 @@ impl InMemoryExecutionStore {
     pub fn resume_token_store(&self) -> super::resume_token::InMemoryResumeTokenStore {
         super::resume_token::InMemoryResumeTokenStore::new(Arc::clone(&self.inner))
     }
+
+    /// Build a [`super::resume_producer::InMemoryResumeProducer`] backed by
+    /// this store's shared state so the token DELETE and the control-queue
+    /// INSERT in `consume_and_enqueue_resume` happen under the same mutex
+    /// (W-S3d single-lock atomicity invariant).
+    #[must_use]
+    pub fn resume_producer(&self) -> super::resume_producer::InMemoryResumeProducer {
+        super::resume_producer::InMemoryResumeProducer::new(Arc::clone(&self.inner))
+    }
 }
 
 /// Clamp the lease TTL to a sane range (mirrors the legacy repo: ≥1s,
