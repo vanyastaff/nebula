@@ -6,11 +6,11 @@
 //! inserted atomically — there is no window where a committed token is
 //! invisible to the read path.
 //!
-//! `consume` uses `subtle::ConstantTimeEq` for defence-in-depth timing
-//! equality before the map remove.  An attacker that cannot enumerate
-//! map keys derives no timing signal from the linear scan, but the
-//! constant-time comparison costs nothing here and prevents any potential
-//! shortcut path.
+//! `consume` uses `subtle::ConstantTimeEq` for defence-in-depth.  This
+//! is an in-process, single-binary store so network-level timing attacks
+//! are not in scope; the constant-time comparison is best-effort
+//! protection against any future refactor that introduces an early-exit
+//! path, and costs nothing here.
 
 use nebula_storage_port::Scope;
 use nebula_storage_port::StorageError;
@@ -70,6 +70,8 @@ impl ResumeTokenStore for InMemoryResumeTokenStore {
         let target = token_hash.as_bytes();
         // Constant-time equality scan for defence-in-depth; the map remove
         // by key is the correctness primitive.
+        // Best-effort constant-time equality (defence-in-depth; see module doc).
+        // The map remove by key is the correctness primitive.
         let matching_key: Option<Vec<u8>> = guard
             .resume_tokens
             .keys()

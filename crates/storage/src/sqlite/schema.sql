@@ -370,7 +370,8 @@ CREATE TABLE IF NOT EXISTS port_resume_tokens (
     UNIQUE (execution_id, node_key),
     FOREIGN KEY (execution_id)
         REFERENCES port_executions (id)
-        ON DELETE CASCADE
+        ON DELETE CASCADE,
+    CHECK (wait_kind IN ('webhook', 'approval'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_port_resume_tokens_execution

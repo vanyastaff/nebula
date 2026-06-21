@@ -35,16 +35,16 @@ fn fill_hash(byte: u8) -> TokenHash {
 }
 
 fn minimal_token_row(hash: TokenHash, execution_id: &str, node_key: &str) -> ResumeTokenRow {
-    ResumeTokenRow {
-        token_hash: hash,
-        scope: test_scope(),
-        execution_id: execution_id.to_owned(),
-        node_key: node_key.to_owned(),
-        wait_kind: ResumeTokenWaitKind::Webhook,
-        callback_label: "cb-label".to_owned(),
-        created_at: "2026-06-21T00:00:00Z".to_owned(),
-        expires_at: None,
-    }
+    ResumeTokenRow::new(
+        hash,
+        test_scope(),
+        execution_id.to_owned(),
+        node_key.to_owned(),
+        ResumeTokenWaitKind::Webhook,
+        "cb-label".to_owned(),
+        "2026-06-21T00:00:00Z".to_owned(),
+        None,
+    )
 }
 
 /// Create a fresh execution row (when `expected_version == 0`) then commit a
@@ -214,16 +214,16 @@ async fn revoke_on_terminal_removes_all_tokens_for_execution() {
     .await;
 
     let hash_node_b = fill_hash(0x02);
-    let node_b_row = ResumeTokenRow {
-        token_hash: hash_node_b.clone(),
-        scope: scope.clone(),
-        execution_id: "exe-t4".to_owned(),
-        node_key: "node-b".to_owned(),
-        wait_kind: ResumeTokenWaitKind::Approval,
-        callback_label: "approver@example.com".to_owned(),
-        created_at: "2026-06-21T00:00:01Z".to_owned(),
-        expires_at: None,
-    };
+    let node_b_row = ResumeTokenRow::new(
+        hash_node_b.clone(),
+        scope.clone(),
+        "exe-t4".to_owned(),
+        "node-b".to_owned(),
+        ResumeTokenWaitKind::Approval,
+        "approver@example.com".to_owned(),
+        "2026-06-21T00:00:01Z".to_owned(),
+        None,
+    );
     seed_token(&exec_store, &scope, "exe-t4", 1, node_b_row).await;
 
     token_store

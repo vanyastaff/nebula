@@ -26,13 +26,14 @@ use std::sync::Arc;
 
 use nebula_storage_port::store::{
     ControlQueue, ExecutionJournalReader, ExecutionStore, IdempotencyStore, NodeResultStore,
-    ResourceStore, TriggerStore, WebhookActivationStore, WorkflowStore, WorkflowVersionStore,
+    ResourceStore, ResumeTokenStore, TriggerStore, WebhookActivationStore, WorkflowStore,
+    WorkflowVersionStore,
 };
 use nebula_storage_port::{Scope, StorageError};
 use nebula_tenancy::{
     ScopedControlQueue, ScopedExecutionJournalReader, ScopedExecutionStore, ScopedIdempotencyStore,
-    ScopedNodeResultStore, ScopedResourceStore, ScopedTriggerStore, ScopedWebhookActivationStore,
-    ScopedWorkflowStore, ScopedWorkflowVersionStore,
+    ScopedNodeResultStore, ScopedResourceStore, ScopedResumeTokenStore, ScopedTriggerStore,
+    ScopedWebhookActivationStore, ScopedWorkflowStore, ScopedWorkflowVersionStore,
 };
 
 /// Compile-time proof that `D` is a scope-substituting decorator for the
@@ -90,6 +91,7 @@ scope_decorator!(ScopedControlQueue, ControlQueue);
 scope_decorator!(ScopedExecutionJournalReader, ExecutionJournalReader);
 scope_decorator!(ScopedWebhookActivationStore, WebhookActivationStore);
 scope_decorator!(ScopedResourceStore, ResourceStore);
+scope_decorator!(ScopedResumeTokenStore, ResumeTokenStore);
 scope_decorator!(ScopedTriggerStore, TriggerStore);
 
 /// Static enumeration of **every** `&Scope`-keyed port trait. Each line
@@ -116,6 +118,9 @@ fn every_scope_keyed_port_has_a_decorator() {
     // Identity zoo, workspace-scoped (the BOLA/IDOR class this guards):
     assert_scoped::<ScopedResourceStore, dyn ResourceStore>();
     assert_scoped::<ScopedTriggerStore, dyn TriggerStore>();
+    // Resume-token revocation is scope-keyed (`revoke_on_terminal` takes
+    // `&Scope`); consume has no scope parameter by design (hash = only key).
+    assert_scoped::<ScopedResumeTokenStore, dyn ResumeTokenStore>();
 }
 
 /// Decision record for the identity-zoo traits that are **not**

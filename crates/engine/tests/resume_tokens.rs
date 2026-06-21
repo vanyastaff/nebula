@@ -268,9 +268,26 @@ async fn webhook_park_mints_token_visible_in_resume_token_store() {
         .await
         .expect("revoke_on_terminal must not error after park");
 
-    assert!(
-        minted_token_count >= 1,
-        "engine must mint at least one resume token when a Webhook-wait node parks; \
+    // Exact count: exactly one token per parked node (no over-mint).
+    assert_eq!(
+        minted_token_count, 1,
+        "engine must mint exactly one resume token for a single Webhook-wait park; \
          got count = {minted_token_count}"
     );
+
+    // Idempotency: a second `revoke_on_terminal` on the same execution
+    // returns 0 — the store has no remaining tokens (revoke is destructive).
+    let second_revoke_count = token_store
+        .revoke_on_terminal(&scope, &execution_id.to_string())
+        .await
+        .expect("second revoke_on_terminal must not error");
+    assert_eq!(
+        second_revoke_count, 0,
+        "revoke_on_terminal is destructive: a second call on the same execution \
+         must return 0 (no tokens remain)"
+    );
+    // Note: direct field-value assertion via `consume` is deferred to W-S3d
+    // because `mint_park_token` drops the `SecretString` bearer inside the
+    // engine frontier — the hash is not observable from outside the engine
+    // until W-S3d routes the bearer to the API caller.
 }

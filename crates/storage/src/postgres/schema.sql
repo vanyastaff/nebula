@@ -379,9 +379,14 @@ CREATE TABLE IF NOT EXISTS port_resume_tokens (
     created_at      TIMESTAMPTZ NOT NULL,
     expires_at      TIMESTAMPTZ,
     UNIQUE (execution_id, node_key),
-    FOREIGN KEY (workspace_id, org_id, execution_id)
-        REFERENCES port_executions (workspace_id, org_id, id)
-        ON DELETE CASCADE
+    -- Single-column FK: port_executions PK is `id TEXT` alone; there is no
+    -- UNIQUE constraint on (workspace_id, org_id, id), so a composite FK
+    -- would be SQLSTATE 42830.  workspace_id / org_id are kept as data
+    -- columns (used by the revoke_on_terminal sweep index below).
+    FOREIGN KEY (execution_id)
+        REFERENCES port_executions (id)
+        ON DELETE CASCADE,
+    CHECK (wait_kind IN ('webhook', 'approval'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_port_resume_tokens_execution

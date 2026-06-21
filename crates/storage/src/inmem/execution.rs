@@ -283,13 +283,19 @@ impl ExecutionStore for InMemoryExecutionStore {
         // semantics: if a row with the same (execution_id, node_key) already
         // exists, the new row is silently discarded (crash-re-drive safety).
         for token_row in batch.resume_tokens() {
-            let already_present = st.resume_tokens.values().any(|existing| {
+            // Mirror the SQL schema: PRIMARY KEY (token_hash) and
+            // UNIQUE (execution_id, node_key) are both first-writer-wins.
+            // Check both invariants: skip the insert if the PK hash is already
+            // present (idempotent re-park with a different bearer) OR if the
+            // (execution_id, node_key) pair is already live (crash re-drive).
+            let hash_key = token_row.token_hash.as_bytes().to_vec();
+            let hash_already_present = st.resume_tokens.contains_key(&hash_key);
+            let node_already_present = st.resume_tokens.values().any(|existing| {
                 existing.execution_id == token_row.execution_id
                     && existing.node_key == token_row.node_key
             });
-            if !already_present {
-                st.resume_tokens
-                    .insert(token_row.token_hash.as_bytes().to_vec(), token_row.clone());
+            if !hash_already_present && !node_already_present {
+                st.resume_tokens.insert(hash_key, token_row.clone());
             }
         }
         tracing::debug!(

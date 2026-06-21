@@ -63,16 +63,16 @@ fn fill_hash(byte: u8) -> TokenHash {
 }
 
 fn token_row_for(hash: TokenHash, execution_id: &str, node_key: &str) -> ResumeTokenRow {
-    ResumeTokenRow {
-        token_hash: hash,
-        scope: test_scope(),
-        execution_id: execution_id.to_owned(),
-        node_key: node_key.to_owned(),
-        wait_kind: ResumeTokenWaitKind::Webhook,
-        callback_label: "sqlite-cb-label".to_owned(),
-        created_at: "2026-06-21T00:00:00Z".to_owned(),
-        expires_at: None,
-    }
+    ResumeTokenRow::new(
+        hash,
+        test_scope(),
+        execution_id.to_owned(),
+        node_key.to_owned(),
+        ResumeTokenWaitKind::Webhook,
+        "sqlite-cb-label".to_owned(),
+        "2026-06-21T00:00:00Z".to_owned(),
+        None,
+    )
 }
 
 /// Create an execution row and commit a batch carrying `token_row`.
@@ -194,16 +194,16 @@ async fn sqlite_duplicate_park_is_idempotent_via_on_conflict_do_nothing() {
     // Second park of the same (execution_id, node_key) at version 1 → 2.
     // The INSERT must silently do nothing (no error, no second row).
     let hash_second = fill_hash(0xCC); // different hash to prove no row was replaced
-    let row_second = ResumeTokenRow {
-        token_hash: hash_second.clone(),
-        scope: scope.clone(),
-        execution_id: "exe-sqlite-2".to_owned(),
-        node_key: "node-b".to_owned(), // same node_key as the first park
-        wait_kind: ResumeTokenWaitKind::Webhook,
-        callback_label: "cb-second".to_owned(),
-        created_at: "2026-06-21T00:00:02Z".to_owned(),
-        expires_at: None,
-    };
+    let row_second = ResumeTokenRow::new(
+        hash_second.clone(),
+        scope.clone(),
+        "exe-sqlite-2".to_owned(),
+        "node-b".to_owned(), // same node_key as the first park
+        ResumeTokenWaitKind::Webhook,
+        "cb-second".to_owned(),
+        "2026-06-21T00:00:02Z".to_owned(),
+        None,
+    );
     seed_token(&exec_store, &scope, "exe-sqlite-2", 1, row_second).await;
 
     // The original token must still be consumable (the second INSERT did nothing).

@@ -79,7 +79,12 @@ pub enum ResumeTokenWaitKind {
 /// `approver` identifier — an internal routing label, never a secret.
 /// The plaintext bearer token that was hashed into `token_hash` is
 /// NEVER stored here.
+///
+/// `#[non_exhaustive]` — future fields (e.g. retry metadata) can be
+/// added without a breaking change.  Use [`ResumeTokenRow::new`] to
+/// construct cross-crate.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ResumeTokenRow {
     /// SHA-256 of the plaintext token (primary key, 32 bytes).
     pub token_hash: TokenHash,
@@ -95,7 +100,39 @@ pub struct ResumeTokenRow {
     pub callback_label: String,
     /// Row creation timestamp (RFC 3339).
     pub created_at: String,
-    /// Optional expiry timestamp (RFC 3339); matches the wait's `wake_at`
+    /// Optional expiry timestamp (RFC 3339); mirrors the wait's `wake_at`
     /// when both a signal and a timeout are active simultaneously.
+    /// `None` for signal-only waits (no timeout).  Used by W-S3d to reject
+    /// a token presented after the node's own timeout fired.
     pub expires_at: Option<String>,
+}
+
+impl ResumeTokenRow {
+    /// Construct a `ResumeTokenRow`.
+    ///
+    /// The only public constructor — needed cross-crate because
+    /// `#[non_exhaustive]` makes struct-literal syntax unavailable outside
+    /// the defining crate.
+    #[allow(clippy::too_many_arguments)] // flat DTO; a builder would obscure the schema
+    pub fn new(
+        token_hash: TokenHash,
+        scope: Scope,
+        execution_id: String,
+        node_key: String,
+        wait_kind: ResumeTokenWaitKind,
+        callback_label: String,
+        created_at: String,
+        expires_at: Option<String>,
+    ) -> Self {
+        Self {
+            token_hash,
+            scope,
+            execution_id,
+            node_key,
+            wait_kind,
+            callback_label,
+            created_at,
+            expires_at,
+        }
+    }
 }

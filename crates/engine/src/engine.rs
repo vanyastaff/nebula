@@ -64,6 +64,7 @@ use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use rand::Rng as _;
 use secrecy::SecretString;
 use sha2::{Digest, Sha256};
+use zeroize::Zeroizing;
 
 use crate::{
     credential_accessor::EngineCredentialAccessor, error::EngineError, event::ExecutionEvent,
@@ -4647,6 +4648,7 @@ impl WorkflowEngine {
                                 &node_key,
                                 ResumeTokenWaitKind::Webhook,
                                 callback_id.clone(),
+                                wake_at,
                             )),
                             Some(WaitSignal::Approval { approver }) => Some(mint_park_token(
                                 scope,
@@ -4654,6 +4656,7 @@ impl WorkflowEngine {
                                 &node_key,
                                 ResumeTokenWaitKind::Approval,
                                 approver.clone(),
+                                wake_at,
                             )),
                             // Execution waits are internal — no external bearer.
                             Some(WaitSignal::Execution { .. } | _) | None => None,
@@ -7086,13 +7089,17 @@ fn mint_park_token(
     node_key: &NodeKey,
     wait_kind: ResumeTokenWaitKind,
     callback_label: String,
+    wake_at: Option<DateTime<Utc>>,
 ) -> Result<(ResumeTokenRow, SecretString), EngineError> {
-    let mut raw = [0u8; 32];
-    rand::rng().fill_bytes(&mut raw);
+    // Wrap the raw preimage in `Zeroizing` so it is wiped on drop — the
+    // 32 raw bytes are the actual secret (the base64 bearer is derived from
+    // them), so they must not linger on the stack after this function returns.
+    let mut raw = Zeroizing::new([0u8; 32]);
+    rand::rng().fill_bytes(raw.as_mut());
 
     // Hash BEFORE encoding — preimage is 32 raw bytes, hash reveals nothing
     // about the base64 bearer.
-    let hash_bytes = Sha256::digest(raw);
+    let hash_bytes = Sha256::digest(raw.as_ref());
     let token_hash = TokenHash::try_from_bytes(hash_bytes.to_vec()).map_err(|e| {
         EngineError::CheckpointFailed {
             node_key: node_key.clone(),
@@ -7102,18 +7109,22 @@ fn mint_park_token(
 
     // Plaintext bearer: base64-encoded raw bytes, wrapped directly into
     // SecretString — no intermediate String allocation stays alive.
-    let plaintext_bearer = SecretString::new(BASE64_STANDARD.encode(raw).into());
+    let plaintext_bearer = SecretString::new(BASE64_STANDARD.encode(raw.as_ref()).into());
 
-    let row = ResumeTokenRow {
+    // Mirror the wait's timeout deadline so W-S3d can reject a token
+    // presented after the node's own timeout fired.
+    let expires_at = wake_at.map(|dt| dt.to_rfc3339());
+
+    let row = ResumeTokenRow::new(
         token_hash,
-        scope: scope.clone(),
-        execution_id: execution_id.to_string(),
-        node_key: node_key.to_string(),
+        scope.clone(),
+        execution_id.to_string(),
+        node_key.to_string(),
         wait_kind,
         callback_label,
-        created_at: Utc::now().to_rfc3339(),
-        expires_at: None,
-    };
+        Utc::now().to_rfc3339(),
+        expires_at,
+    );
 
     Ok((row, plaintext_bearer))
 }

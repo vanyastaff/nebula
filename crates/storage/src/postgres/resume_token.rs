@@ -78,19 +78,20 @@ impl ResumeTokenStore for PgResumeTokenStore {
         let created_at: DateTime<Utc> = row.try_get("created_at").map_err(conn_err)?;
         let expires_at: Option<DateTime<Utc>> = row.try_get("expires_at").map_err(conn_err)?;
 
-        Ok(Some(ResumeTokenRow {
-            token_hash: hash,
-            scope: Scope {
-                workspace_id: row.try_get("workspace_id").map_err(conn_err)?,
-                org_id: row.try_get("org_id").map_err(conn_err)?,
-            },
-            execution_id: row.try_get("execution_id").map_err(conn_err)?,
-            node_key: row.try_get("node_key").map_err(conn_err)?,
+        let scope = Scope {
+            workspace_id: row.try_get("workspace_id").map_err(conn_err)?,
+            org_id: row.try_get("org_id").map_err(conn_err)?,
+        };
+        Ok(Some(ResumeTokenRow::new(
+            hash,
+            scope,
+            row.try_get("execution_id").map_err(conn_err)?,
+            row.try_get("node_key").map_err(conn_err)?,
             wait_kind,
-            callback_label: row.try_get("callback_label").map_err(conn_err)?,
-            created_at: created_at.to_rfc3339(),
-            expires_at: expires_at.map(|dt| dt.to_rfc3339()),
-        }))
+            row.try_get("callback_label").map_err(conn_err)?,
+            created_at.to_rfc3339(),
+            expires_at.map(|dt| dt.to_rfc3339()),
+        )))
     }
 
     async fn revoke_on_terminal(

@@ -52,12 +52,16 @@ pub trait ResumeTokenStore: Send + Sync + std::fmt::Debug {
 
     /// Revoke all tokens minted for `execution_id` within `scope`.
     ///
-    /// Called by the engine when an execution reaches a terminal state
-    /// (Completed / Failed / Cancelled) so that any tokens that were never
-    /// consumed (e.g. the execution was cancelled while a node was parked)
-    /// are cleaned up.  The caller already holds scope authority for the
-    /// execution (it owns the lease), so a `scope` parameter is correct
-    /// here.
+    /// **Cleanup primitive — not yet wired in the engine (W-S3e scope).**
+    /// The engine will call this on every terminal transition (Completed /
+    /// Failed / Cancelled) to clean up tokens that were never consumed (e.g.
+    /// the execution was cancelled while a node was parked).  Until W-S3e
+    /// lands, the `ON DELETE CASCADE` constraint on `port_resume_tokens`
+    /// (firing when the `port_executions` row is deleted) is the only live
+    /// automatic cleanup.
+    ///
+    /// The caller must already hold scope authority for the execution (owns
+    /// the lease), so a `scope` parameter is correct here.
     ///
     /// Returns the count of rows deleted (zero is not an error).
     ///

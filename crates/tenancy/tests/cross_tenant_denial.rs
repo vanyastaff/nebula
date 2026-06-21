@@ -26,6 +26,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use nebula_storage_port::dto::resume_token::{ResumeTokenRow, ResumeTokenWaitKind, TokenHash};
 use nebula_storage_port::dto::{
     CachedRecord, ControlCommand, ControlMsg, ExecutionRecord, ResourceRow, TriggerRow,
 };
@@ -888,5 +889,174 @@ async fn cross_tenant_trigger_is_fully_isolated() {
     assert_eq!(
         persisted.display_name, "renamed-in-tenant",
         "the in-tenant trigger update payload must otherwise be applied"
+    );
+}
+
+// ── Abuse case 6: rebind must carry resume_tokens (W-S3a silent-drop guard) ──
+//
+// `ScopedExecutionStore::rebind` rebuilds the `TransitionBatch` with the
+// bound scope. A missing `.resume_tokens(...)` call in `rebind` silently
+// drops every minted resume token before commit — the production park path
+// would emit `Waiting` state with no associated token, making resume
+// impossible. This test is the static regression guard for that silent-drop
+// class (W-S3a lesson).
+//
+// The mock store below captures the raw `resume_tokens` slice from the
+// committed batch so the test can inspect what actually reached the backend.
+
+#[derive(Default)]
+struct TokenCapturingExecStore {
+    /// `resume_token` rows from the most recent `commit` call.
+    committed_tokens: Mutex<Vec<ResumeTokenRow>>,
+    /// `version` counter for the single test execution.
+    version: Mutex<u64>,
+}
+
+impl std::fmt::Debug for TokenCapturingExecStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("TokenCapturingExecStore")
+    }
+}
+
+#[async_trait::async_trait]
+impl ExecutionStore for TokenCapturingExecStore {
+    async fn create(
+        &self,
+        _scope: &Scope,
+        _id: &str,
+        _workflow_id: &str,
+        _initial_state: serde_json::Value,
+    ) -> Result<(), StorageError> {
+        Ok(())
+    }
+
+    async fn get(
+        &self,
+        _scope: &Scope,
+        _id: &str,
+    ) -> Result<Option<ExecutionRecord>, StorageError> {
+        Ok(None)
+    }
+
+    async fn commit(&self, batch: TransitionBatch) -> Result<TransitionOutcome, StorageError> {
+        // Record the resume-token rows exactly as the decorator passed them.
+        *self.committed_tokens.lock().expect("mock lock") = batch.resume_tokens().to_vec();
+        let mut v = self.version.lock().expect("mock lock");
+        *v += 1;
+        Ok(TransitionOutcome::Applied { new_version: *v })
+    }
+
+    async fn acquire_lease(
+        &self,
+        _scope: &Scope,
+        _id: &str,
+        _holder: &str,
+        _ttl: Duration,
+    ) -> Result<Option<FencingToken>, StorageError> {
+        Ok(Some(FencingToken::from_generation(1)))
+    }
+
+    async fn renew_lease(
+        &self,
+        _scope: &Scope,
+        _id: &str,
+        _token: FencingToken,
+        _ttl: Duration,
+    ) -> Result<bool, StorageError> {
+        Ok(true)
+    }
+
+    async fn release_lease(
+        &self,
+        _scope: &Scope,
+        _id: &str,
+        _token: FencingToken,
+    ) -> Result<bool, StorageError> {
+        Ok(true)
+    }
+
+    async fn list_running(&self, _scope: &Scope) -> Result<Vec<String>, StorageError> {
+        Ok(vec![])
+    }
+
+    async fn list_running_for_workflow(
+        &self,
+        _scope: &Scope,
+        _workflow_id: &str,
+    ) -> Result<Vec<String>, StorageError> {
+        Ok(vec![])
+    }
+
+    async fn count(&self, _scope: &Scope, _workflow_id: Option<&str>) -> Result<u64, StorageError> {
+        Ok(0)
+    }
+}
+
+/// `ScopedExecutionStore::rebind` must forward `resume_tokens` from the
+/// caller's batch to the inner store.  Before the fix, `rebind` rebuilt the
+/// `TransitionBatch` without the `resume_tokens` field — the minted token
+/// was silently dropped and the execution was left permanently parked with
+/// no consumable token (W-S3a silent-drop class).
+///
+/// **Red → green proof:** remove the `.resume_tokens(resume_tokens)` line
+/// from `ScopedExecutionStore::rebind` in
+/// `crates/tenancy/src/decorator/execution.rs` — this test fails with
+/// `committed_tokens.is_empty()`.  Re-add it — the test passes.
+#[tokio::test]
+async fn scoped_execution_store_rebind_carries_resume_tokens() {
+    let mock = Arc::new(TokenCapturingExecStore::default());
+    let scoped = ScopedExecutionStore::new(mock.clone(), scope_a());
+
+    let token_hash = TokenHash::try_from_bytes(vec![0xABu8; 32])
+        .expect("32 identical bytes must be a valid hash");
+    let token_row = ResumeTokenRow::new(
+        token_hash.clone(),
+        // Deliberately build with scope_b to prove rebind re-scopes to scope_a.
+        scope_b(),
+        "exe-rebind-test".to_owned(),
+        "node-park".to_owned(),
+        ResumeTokenWaitKind::Webhook,
+        "cb-rebind".to_owned(),
+        "2026-06-21T00:00:00Z".to_owned(),
+        None,
+    );
+
+    let batch = TransitionBatch::builder()
+        .scope(scope_b()) // caller's scope — ignored by decorator
+        .execution_id("exe-rebind-test")
+        .expected_version(0)
+        .fencing(FencingToken::from_generation(1))
+        .new_state(serde_json::json!({"s": "waiting"}))
+        .resume_tokens(vec![token_row])
+        .build()
+        .expect("well-formed batch must build");
+
+    let outcome = scoped.commit(batch).await.expect("commit must not error");
+    assert!(
+        matches!(outcome, TransitionOutcome::Applied { .. }),
+        "decorated commit must apply; got {outcome:?}"
+    );
+
+    let committed_tokens = mock.committed_tokens.lock().expect("mock lock").clone();
+
+    // Primary assertion: the token was NOT silently dropped by rebind.
+    assert_eq!(
+        committed_tokens.len(),
+        1,
+        "rebind must carry resume_tokens to the inner store; \
+         got {} tokens (W-S3a silent-drop regression)",
+        committed_tokens.len()
+    );
+
+    // Secondary: rebind re-scoped the token row to the decorator's bound
+    // scope (scope_a), not the original scope_b the caller supplied.
+    assert_eq!(
+        committed_tokens[0].scope,
+        scope_a(),
+        "rebind must re-scope token rows to the bound tenant, not the caller-supplied scope"
+    );
+    assert_eq!(
+        committed_tokens[0].token_hash, token_hash,
+        "rebind must not alter the token hash"
     );
 }
