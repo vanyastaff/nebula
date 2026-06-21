@@ -3603,6 +3603,7 @@ dependencies = [
  "nebula-api",
  "nebula-core",
  "nebula-engine",
+ "nebula-eventbus",
  "nebula-execution",
  "nebula-expression",
  "nebula-metrics",
