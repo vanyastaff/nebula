@@ -969,8 +969,9 @@ impl AppState {
             scope: scope.clone(),
             w3c_traceparent: w3c.as_ref().map(|c| c.traceparent().to_owned()),
             reclaim_count: 0,
-            // Untargeted Resume — the W-S3d targeted producer uses
-            // `enqueue_resume_from_row` instead.
+            // Untargeted Resume — the W-S3d targeted `/resume` producer builds
+            // its own targeted `ControlMsg` via
+            // `ResumeProducer::consume_and_enqueue_resume` instead.
             resume_target: None,
         };
         queue.enqueue(&msg).await.map_err(|e| {
