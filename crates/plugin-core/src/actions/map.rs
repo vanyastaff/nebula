@@ -7,9 +7,11 @@
 //!
 //! ## Scope
 //!
-//! All operations act on **top-level keys only** of each element. The operation
-//! vocabulary is identical to `core.json_transform` — `pick`, `omit`, and
-//! `rename`. See [`TransformOperation`] for per-operation semantics.
+//! The operation vocabulary is identical to `core.json_transform` — `pick`,
+//! `omit`, `rename`, and `flatten` — applied to each element. `pick`/`omit`/
+//! `rename` act on the element's top-level keys; `flatten` collapses an element's
+//! nested objects into dotted top-level keys. See [`TransformOperation`] for
+//! per-operation semantics.
 //!
 //! ## Input
 //!
@@ -141,7 +143,8 @@ impl nebula_action::action::Action for MapAction {
         ActionMetadata::new(
             action_key!("core.map"),
             "Map",
-            "Reshape each element of a JSON array of objects (per-element pick/omit/rename)",
+            "Reshape each element of a JSON array of objects (per-element \
+             pick/omit/rename/flatten)",
         )
     }
 

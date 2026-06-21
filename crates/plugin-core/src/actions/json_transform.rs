@@ -7,9 +7,14 @@
 //!
 //! ## Scope
 //!
-//! All operations act on **top-level keys only**. Dot characters in key names are literal
-//! characters, not path separators — `"a.b"` refers to a single key named `"a.b"`, not a
-//! nested path. Deep-path operations are deferred to a future `Flatten` variant.
+//! `pick`, `omit`, and `rename` act on **top-level keys only**: for them, dot characters in
+//! key names are literal characters, not path separators — `"a.b"` refers to a single key
+//! named `"a.b"`, not a nested path.
+//!
+//! `flatten` reaches deeper: it collapses nested objects into dotted top-level keys
+//! (`{"a":{"b":1}}` → `{"a.b":1}`). A `flatten` placed before a `pick`/`omit`/`rename`
+//! therefore lets those top-level operations address the now-flattened keys (e.g. pick
+//! `"a.b"` after a `flatten`). See [`TransformOperation::Flatten`] for the full contract.
 //!
 //! ## Input
 //!
@@ -17,9 +22,10 @@
 //! {
 //!   "data":       { /* optional base object */ },
 //!   "operations": [
-//!     { "op": "pick",   "fields": ["a", "b"] },
-//!     { "op": "omit",   "fields": ["secret"] },
-//!     { "op": "rename", "from": "old_name", "to": "new_name" }
+//!     { "op": "pick",    "fields": ["a", "b"] },
+//!     { "op": "omit",    "fields": ["secret"] },
+//!     { "op": "rename",  "from": "old_name", "to": "new_name" },
+//!     { "op": "flatten", "separator": "." }
 //!   ]
 //! }
 //! ```
@@ -42,6 +48,11 @@ use tracing::instrument;
 use crate::util::ValueTypeNameStr;
 
 // ── Config types ──────────────────────────────────────────────────────────────
+
+/// Default key separator for `Flatten` when `separator` is omitted: a single dot.
+fn default_separator() -> String {
+    ".".to_owned()
+}
 
 /// A single transform step applied to the running JSON object.
 ///
@@ -80,6 +91,36 @@ pub enum TransformOperation {
         from: String,
         /// Destination key that receives the value.
         to: String,
+    },
+
+    /// Collapse nested objects into dotted top-level keys.
+    ///
+    /// Each leaf value's full path is joined by `separator` into a single
+    /// top-level key: `{"a":{"b":{"c":1}}}` with `"."` → `{"a.b.c":1}`.
+    /// After a `Flatten`, a following `pick`/`omit`/`rename` addresses the
+    /// flattened keys (e.g. `pick(["a.b"])`) — that composition is the point.
+    ///
+    /// ## What counts as a leaf
+    ///
+    /// - **Scalars** (null, bool, number, string) are leaves: `{"a":1}` → `{"a":1}`.
+    /// - **Arrays are leaves** — they are *not* descended into and never produce
+    ///   index keys: `{"a":[1,2]}` → `{"a":[1,2]}`, never `{"a.0":1,"a.1":2}`.
+    /// - **Empty objects are leaves** — an object with no keys has no descendable
+    ///   path, so its key is preserved mapping to `{}`: `{"a":{}}` → `{"a":{}}`.
+    ///
+    /// ## Key collisions
+    ///
+    /// When two source paths flatten to the same dotted key (e.g.
+    /// `{"a":{"b":1},"a.b":2}` both target `"a.b"`), the operation is total: it
+    /// does not error. Last-writer-wins, matching `serde_json` object-insert
+    /// semantics — the value written last into the rebuilt map survives. A path
+    /// descended from a nested object is written after sibling literal-dotted
+    /// keys, so for `{"a":{"b":1},"a.b":2}` the descended `1` wins.
+    Flatten {
+        /// String joining nested path segments into a single top-level key.
+        /// Defaults to `"."`.
+        #[serde(default = "default_separator")]
+        separator: String,
     },
 }
 
@@ -121,13 +162,14 @@ impl HasSchema for JsonTransformInput {
 /// it prefixes any error so the message names the action that actually faulted.
 ///
 /// `Pick` rebuilds the object with keys in the order they appear in its `fields`
-/// list (declaration order), not the source object's original order.
+/// list (declaration order), not the source object's original order. `Flatten`
+/// rebuilds the object with dotted leaf keys (see [`flatten_object`]).
 ///
 /// # Errors
 ///
 /// Returns [`ActionError::Fatal`] when a `Rename` operation references a source
 /// key that is absent from `target`. `Pick` and `Omit` missing keys are silent
-/// no-ops per the documented contract.
+/// no-ops per the documented contract. `Flatten` never errors — it is total.
 pub(crate) fn apply_operations(
     target: &mut Map<String, Value>,
     operations: &[TransformOperation],
@@ -162,9 +204,53 @@ pub(crate) fn apply_operations(
                 })?;
                 target.insert(to.clone(), moved_value);
             },
+            TransformOperation::Flatten { separator } => {
+                *target = flatten_object(std::mem::take(target), separator);
+            },
         }
     }
     Ok(())
+}
+
+/// Collapse a JSON object's nested objects into dotted top-level keys.
+///
+/// Uses an explicit stack worklist rather than recursion so that pathologically
+/// deep input cannot overflow the call stack — depth is bounded only by the
+/// nesting `serde_json` already parsed, but the iterative form makes that
+/// independence explicit and total.
+///
+/// Leaf classification (a leaf is emitted at its accumulated dotted prefix):
+/// scalars, arrays, and *empty* objects are leaves; only non-empty objects are
+/// descended into. On a dotted-key collision the later write wins, matching
+/// `serde_json` object-insert semantics.
+fn flatten_object(source: Map<String, Value>, separator: &str) -> Map<String, Value> {
+    let mut flattened = Map::new();
+    // Worklist of (accumulated-prefix, value-to-place), walked with an advancing
+    // cursor. Seed with the top-level entries; descending a non-empty object
+    // appends its children (prefix extended by `separator`) to the back, so deep
+    // paths are inserted after shallower siblings — giving the documented
+    // last-writer-wins on a dotted-key collision.
+    let mut work: Vec<(String, Value)> = source.into_iter().collect();
+    let mut index = 0;
+    while index < work.len() {
+        // Take ownership of this entry's value without shifting the vec; the
+        // placeholder is never revisited because the cursor only moves forward.
+        let (prefix, value) = std::mem::replace(&mut work[index], (String::new(), Value::Null));
+        index += 1;
+        match value {
+            Value::Object(inner) if !inner.is_empty() => {
+                for (child_key, child_value) in inner {
+                    let child_prefix = format!("{prefix}{separator}{child_key}");
+                    work.push((child_prefix, child_value));
+                }
+            },
+            // Leaf: scalar, array, or empty object — place at the accumulated key.
+            leaf => {
+                flattened.insert(prefix, leaf);
+            },
+        }
+    }
+    flattened
 }
 
 // ── Action ────────────────────────────────────────────────────────────────────
@@ -207,7 +293,7 @@ impl nebula_action::action::Action for JsonTransform {
         ActionMetadata::new(
             action_key!("core.json_transform"),
             "JSON Transform",
-            "Applies a sequence of pick/omit/rename operations to a JSON object",
+            "Applies a sequence of pick/omit/rename/flatten operations to a JSON object",
         )
     }
 
@@ -291,6 +377,12 @@ mod tests {
         TransformOperation::Rename {
             from: from.to_string(),
             to: to.to_string(),
+        }
+    }
+
+    fn flatten(separator: &str) -> TransformOperation {
+        TransformOperation::Flatten {
+            separator: separator.to_string(),
         }
     }
 
@@ -487,6 +579,195 @@ mod tests {
         );
     }
 
+    // ── Flatten: 1/2/3 levels deep collapse to dotted keys ────────────────────
+
+    #[tokio::test]
+    async fn flatten_one_level() {
+        let input = JsonTransformInput {
+            data: Some(json!({"a": {"b": 1}})),
+            operations: vec![flatten(".")],
+        };
+        let out = extract_output(run(input).await.unwrap());
+        assert_eq!(out, json!({"a.b": 1}));
+    }
+
+    #[tokio::test]
+    async fn flatten_two_levels() {
+        let input = JsonTransformInput {
+            data: Some(json!({"a": {"b": {"c": 2}}})),
+            operations: vec![flatten(".")],
+        };
+        let out = extract_output(run(input).await.unwrap());
+        assert_eq!(out, json!({"a.b.c": 2}));
+    }
+
+    #[tokio::test]
+    async fn flatten_three_levels_and_mixed_siblings() {
+        let input = JsonTransformInput {
+            data: Some(json!({
+                "a": {"b": {"c": {"d": 3}}},
+                "x": {"y": 9},
+                "top": 7
+            })),
+            operations: vec![flatten(".")],
+        };
+        let out = extract_output(run(input).await.unwrap());
+        assert_eq!(out, json!({"a.b.c.d": 3, "x.y": 9, "top": 7}));
+    }
+
+    // ── Flatten: custom separator joins the segments ──────────────────────────
+
+    #[tokio::test]
+    async fn flatten_custom_separator() {
+        let input = JsonTransformInput {
+            data: Some(json!({"a": {"b": 1}})),
+            operations: vec![flatten("_")],
+        };
+        let out = extract_output(run(input).await.unwrap());
+        assert_eq!(out, json!({"a_b": 1}));
+    }
+
+    // ── Flatten: arrays are leaves, never descended into ──────────────────────
+    //
+    // RED witness: an index-based flatten would emit {"a.0":1,"a.1":2}; the
+    // array-as-leaf contract requires the array value to pass through verbatim.
+
+    #[tokio::test]
+    async fn flatten_array_is_a_leaf() {
+        let input = JsonTransformInput {
+            data: Some(json!({"a": [1, 2]})),
+            operations: vec![flatten(".")],
+        };
+        let out = extract_output(run(input).await.unwrap());
+        assert_eq!(out, json!({"a": [1, 2]}));
+        assert_eq!(out.get("a.0"), None, "array must not be flattened by index");
+    }
+
+    // ── Flatten: a nested object containing an array stops at the array ───────
+
+    #[tokio::test]
+    async fn flatten_descends_objects_but_not_arrays_within() {
+        let input = JsonTransformInput {
+            data: Some(json!({"a": {"b": [1, 2], "c": 3}})),
+            operations: vec![flatten(".")],
+        };
+        let out = extract_output(run(input).await.unwrap());
+        assert_eq!(out, json!({"a.b": [1, 2], "a.c": 3}));
+    }
+
+    // ── Flatten: top-level scalars are unchanged ──────────────────────────────
+
+    #[tokio::test]
+    async fn flatten_top_level_scalars_unchanged() {
+        let input = JsonTransformInput {
+            data: Some(json!({"a": 1, "b": "two", "c": true, "d": null})),
+            operations: vec![flatten(".")],
+        };
+        let out = extract_output(run(input).await.unwrap());
+        assert_eq!(out, json!({"a": 1, "b": "two", "c": true, "d": null}));
+    }
+
+    // ── Flatten: an empty nested object is preserved as a leaf ────────────────
+    //
+    // Documented choice: an empty object has no descendable path, so its key is
+    // preserved mapping to `{}` rather than silently dropped.
+
+    #[tokio::test]
+    async fn flatten_empty_nested_object_is_preserved() {
+        let input = JsonTransformInput {
+            data: Some(json!({"a": {}, "b": {"c": {}}})),
+            operations: vec![flatten(".")],
+        };
+        let out = extract_output(run(input).await.unwrap());
+        assert_eq!(
+            out,
+            json!({"a": {}, "b.c": {}}),
+            "empty nested objects are leaves preserved at their accumulated key"
+        );
+    }
+
+    // ── Flatten: key collision is total and last-writer-wins ──────────────────
+    //
+    // Both the nested `a.b` (from {"a":{"b":1}}) and the literal-dotted "a.b":2
+    // target the same key. The op must NOT error; the descended `1` is written
+    // last and survives. RED witness: an erroring impl would make this panic on
+    // the unwrap of an Err.
+
+    #[tokio::test]
+    async fn flatten_key_collision_last_writer_wins() {
+        let input = JsonTransformInput {
+            data: Some(json!({"a": {"b": 1}, "a.b": 2})),
+            operations: vec![flatten(".")],
+        };
+        let out = extract_output(run(input).await.unwrap());
+        assert_eq!(
+            out,
+            json!({"a.b": 1}),
+            "collision is total; the descended nested value wins (written last)"
+        );
+    }
+
+    // ── Flatten composition: a following pick selects the flattened key ───────
+    //
+    // RED witness: if flatten produced index/literal keys instead of "a.b", the
+    // pick of "a.b" would find nothing and the output would be empty.
+
+    #[tokio::test]
+    async fn flatten_then_pick_selects_flattened_key() {
+        let input = JsonTransformInput {
+            data: Some(json!({"a": {"b": 1, "c": 2}, "keep": {"me": 3}})),
+            operations: vec![flatten("."), pick(&["a.b"])],
+        };
+        let out = extract_output(run(input).await.unwrap());
+        assert_eq!(
+            out,
+            json!({"a.b": 1}),
+            "pick after flatten must address the flattened dotted key"
+        );
+    }
+
+    // ── Flatten composition: a following omit drops the flattened key ─────────
+
+    #[tokio::test]
+    async fn flatten_then_omit_drops_flattened_key() {
+        let input = JsonTransformInput {
+            data: Some(json!({"a": {"b": 1, "c": 2}})),
+            operations: vec![flatten("."), omit(&["a.b"])],
+        };
+        let out = extract_output(run(input).await.unwrap());
+        assert_eq!(
+            out,
+            json!({"a.c": 2}),
+            "omit after flatten must drop the flattened dotted key"
+        );
+    }
+
+    // ── Flatten: deeply-nested input flattens without panicking (depth-safe) ──
+    //
+    // Builds a 10-level-deep chain l0.l1.…l9 and asserts the single dotted leaf.
+    // The iterative worklist guarantees no call-stack growth with depth.
+
+    #[tokio::test]
+    async fn flatten_deeply_nested_is_depth_safe() {
+        const DEPTH: usize = 10;
+        // Build {"l0":{"l1":{…{"l9":"leaf"}…}}} from the inside out.
+        let mut value = json!("leaf");
+        for level in (0..DEPTH).rev() {
+            value = json!({ format!("l{level}"): value });
+        }
+        let expected_key = (0..DEPTH)
+            .map(|level| format!("l{level}"))
+            .collect::<Vec<_>>()
+            .join(".");
+
+        let input = JsonTransformInput {
+            data: Some(value),
+            operations: vec![flatten(".")],
+        };
+        let out = extract_output(run(input).await.unwrap());
+        assert_eq!(out, json!({ expected_key: "leaf" }));
+    }
+
     // ── 14: Action key is "core.json_transform" ───────────────────────────────
 
     #[test]
@@ -529,5 +810,38 @@ mod tests {
         let json = serde_json::to_string(&op).unwrap();
         let deserialized: TransformOperation = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized, op);
+    }
+
+    #[test]
+    fn serde_roundtrip_flatten() {
+        let op = TransformOperation::Flatten {
+            separator: "_".into(),
+        };
+        let json = serde_json::to_string(&op).unwrap();
+        let deserialized: TransformOperation = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized, op);
+    }
+
+    // The wire shape carries the explicit separator.
+    #[test]
+    fn serde_flatten_wire_shape_with_separator() {
+        let op = TransformOperation::Flatten {
+            separator: "_".into(),
+        };
+        let wire = serde_json::to_value(&op).unwrap();
+        assert_eq!(wire, json!({"op": "flatten", "separator": "_"}));
+    }
+
+    // `separator` is optional on the wire and defaults to ".".
+    #[test]
+    fn serde_flatten_default_separator_when_omitted() {
+        let op: TransformOperation = serde_json::from_value(json!({"op": "flatten"})).unwrap();
+        assert_eq!(
+            op,
+            TransformOperation::Flatten {
+                separator: ".".into()
+            },
+            "omitted separator must default to \".\""
+        );
     }
 }
