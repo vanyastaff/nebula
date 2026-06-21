@@ -190,12 +190,19 @@ impl ControlQueue for PgControlQueue {
         let cutoff_ms = Utc::now()
             .timestamp_millis()
             .saturating_sub(reclaim_after.as_millis() as i64);
+        // A `command = 'Resume'` row is EXEMPT from the exhaust budget
+        // (ADR-0099 W-S3b): a Resume does no work of its own and cannot
+        // poison-loop, so the budget must never force-Fail it. Engine liveness
+        // (`acquire_lease`) and the wait's own timeout are the only terminal
+        // authorities for a parked Resume. The REDELIVER branch widens to keep
+        // an exempt Resume redelivering (observably) past `reclaim_count >= max`
+        // rather than wedging in `Processing`.
         let exhausted = sqlx::query(
             "UPDATE port_control_queue \
              SET status = 'Failed', \
                  error_message = 'reclaim exhausted: presumed dead' \
              WHERE status = 'Processing' AND processed_at_ms < $1 \
-               AND reclaim_count >= $2",
+               AND reclaim_count >= $2 AND command <> 'Resume'",
         )
         .bind(cutoff_ms)
         .bind(i32::try_from(max_reclaim_count).unwrap_or(i32::MAX))
@@ -203,12 +210,16 @@ impl ControlQueue for PgControlQueue {
         .await
         .map_err(conn_err)?
         .rows_affected();
+        // `OR command = 'Resume'` is the budget-exemption complement of the
+        // exhaust branch (ADR-0099 W-S3b): an exempt Resume at
+        // `reclaim_count >= max` would otherwise match neither branch and stay
+        // stuck `Processing` forever; this keeps it redeliverable.
         let reclaimed = sqlx::query(
             "UPDATE port_control_queue \
              SET status = 'Pending', reclaim_count = reclaim_count + 1, \
                  processed_by = NULL, processed_at_ms = NULL \
              WHERE status = 'Processing' AND processed_at_ms < $1 \
-               AND reclaim_count < $2",
+               AND (reclaim_count < $2 OR command = 'Resume')",
         )
         .bind(cutoff_ms)
         .bind(i32::try_from(max_reclaim_count).unwrap_or(i32::MAX))

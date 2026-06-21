@@ -28,6 +28,7 @@ use harness::{
     assert_idempotency_store_first_writer, assert_job_dispatch_fencing,
     assert_job_dispatch_routes_by_plugin, assert_job_dispatch_routes_by_plugin_superset,
     assert_journal_visibility_and_scope, assert_live_lease_blocks_acquire,
+    assert_non_resume_row_still_exhausts, assert_resume_row_exempt_from_reclaim_budget,
     assert_resume_target_survives_queue_round_trip, assert_save_with_published_version_is_atomic,
     assert_stale_fencing_is_fenced_out, assert_trigger_dedup_first_writer,
     assert_trigger_dedup_is_scoped, assert_webhook_activation_and_scope,
@@ -99,6 +100,14 @@ matrix!(
 matrix!(
     resume_target_survives_queue_round_trip,
     assert_resume_target_survives_queue_round_trip
+);
+matrix!(
+    resume_row_exempt_from_reclaim_budget,
+    assert_resume_row_exempt_from_reclaim_budget
+);
+matrix!(
+    non_resume_row_still_exhausts,
+    assert_non_resume_row_still_exhausts
 );
 matrix!(
     journal_visibility_and_scope,

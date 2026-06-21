@@ -199,12 +199,20 @@ impl ControlQueue for SqliteControlQueue {
             - i64::try_from(reclaim_after.as_millis()).unwrap_or(i64::MAX);
         let mut tx = self.pool.begin().await.map_err(conn_err)?;
         // Exhausted rows (past the reclaim budget) → Failed.
+        //
+        // A `command = 'Resume'` row is EXEMPT (ADR-0099 W-S3b): a Resume does
+        // no work of its own and cannot poison-loop, so the reclaim budget must
+        // never force-Fail it. Engine liveness (`acquire_lease`'s dead-vs-live
+        // oracle) and the wait's own timeout are the only terminal authorities
+        // for a parked Resume. The paired REDELIVER branch widens to catch the
+        // exempt Resume at `reclaim_count >= max`, so it keeps redelivering
+        // (observably) rather than wedging in `Processing`.
         let exhausted = sqlx::query(
             "UPDATE port_control_queue \
              SET status = 'Failed', \
                  error_message = 'reclaim exhausted: presumed dead' \
              WHERE status = 'Processing' AND processed_at_ms < ? \
-               AND reclaim_count >= ?",
+               AND reclaim_count >= ? AND command <> 'Resume'",
         )
         .bind(cutoff)
         .bind(i64::from(max_reclaim_count))
@@ -212,13 +220,18 @@ impl ControlQueue for SqliteControlQueue {
         .await
         .map_err(conn_err)?
         .rows_affected();
-        // Remaining stale rows → back to Pending, bump reclaim_count.
+        // Remaining stale rows → back to Pending, bump reclaim_count. A
+        // `command = 'Resume'` row redelivers regardless of `reclaim_count`
+        // (the `OR command = 'Resume'` clause), the budget-exemption complement
+        // of the exhaust branch above (ADR-0099 W-S3b) — without it an exempt
+        // Resume at `reclaim_count >= max` would match neither branch and stay
+        // stuck `Processing` forever.
         let reclaimed = sqlx::query(
             "UPDATE port_control_queue \
              SET status = 'Pending', reclaim_count = reclaim_count + 1, \
                  processed_by = NULL, processed_at_ms = NULL \
              WHERE status = 'Processing' AND processed_at_ms < ? \
-               AND reclaim_count < ?",
+               AND (reclaim_count < ? OR command = 'Resume')",
         )
         .bind(cutoff)
         .bind(i64::from(max_reclaim_count))
