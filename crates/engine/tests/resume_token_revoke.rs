@@ -30,7 +30,10 @@
 
 use std::{
     collections::HashMap,
-    sync::{Arc, OnceLock},
+    sync::{
+        Arc, OnceLock,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
@@ -54,13 +57,162 @@ use nebula_storage::{
     InMemoryExecutionStore, InMemoryResumeTokenStore, InMemoryWorkflowVersionStore,
 };
 use nebula_storage_port::{
-    Scope, StorageError, TransitionBatch, TransitionOutcome,
-    dto::{WorkflowVersionRecord, resume_token::ResumeTokenRow},
+    FencingToken, Scope, StorageError, TransitionBatch, TransitionOutcome,
+    dto::{ExecutionRecord, WorkflowVersionRecord, resume_token::ResumeTokenRow},
     store::{ExecutionStore, ResumeTokenStore, WorkflowVersionStore},
 };
 use nebula_workflow::{
     CURRENT_SCHEMA_VERSION, Connection, NodeDefinition, Version, WorkflowConfig, WorkflowDefinition,
 };
+
+// ── CAS-retry interceptor ─────────────────────────────────────────────────────
+
+/// Wraps an [`ExecutionStore`] and returns [`TransitionOutcome::VersionConflict`]
+/// on the **next** `commit` call after [`ArmableConflictStore::arm`] is called,
+/// then delegates all subsequent calls to the inner store unchanged.
+///
+/// The arm/disarm design lets the test control WHICH commit is intercepted.
+/// The park commit (inside `dispatch_start`) is NOT intercepted because the
+/// test only arms the store AFTER `dispatch_start` returns. The final-state
+/// commit (inside `dispatch_resume`'s `persist_final_state_port`) is the
+/// next commit after arming, so that one returns a `VersionConflict`.
+///
+/// The intercepted commit leaves the inner storage row unmodified — the real
+/// row keeps its original version, so the engine's reconcile `get` refetch
+/// observes the actual row and the retry `commit` succeeds.
+///
+/// ONLY `commit` is intercepted (once after arming); all other methods
+/// delegate unconditionally.
+#[derive(Debug)]
+struct ArmableConflictStore {
+    inner: Arc<InMemoryExecutionStore>,
+    /// `true` once armed; the next `commit` fires the interception.
+    armed: AtomicBool,
+    /// `true` once the interception has fired (i.e. armed + commit consumed).
+    fired: AtomicBool,
+}
+
+impl ArmableConflictStore {
+    fn new(inner: Arc<InMemoryExecutionStore>) -> Self {
+        Self {
+            inner,
+            armed: AtomicBool::new(false),
+            fired: AtomicBool::new(false),
+        }
+    }
+
+    /// Arm the interceptor: the next `commit` call returns `VersionConflict`.
+    fn arm(&self) {
+        self.armed.store(true, Ordering::Release);
+    }
+
+    /// Whether the interception has fired at least once.
+    fn has_fired(&self) -> bool {
+        self.fired.load(Ordering::Acquire)
+    }
+}
+
+#[async_trait]
+impl ExecutionStore for ArmableConflictStore {
+    async fn create(
+        &self,
+        scope: &Scope,
+        id: &str,
+        workflow_id: &str,
+        initial_state: serde_json::Value,
+    ) -> Result<(), StorageError> {
+        self.inner
+            .create(scope, id, workflow_id, initial_state)
+            .await
+    }
+
+    async fn get(&self, scope: &Scope, id: &str) -> Result<Option<ExecutionRecord>, StorageError> {
+        self.inner.get(scope, id).await
+    }
+
+    async fn commit(&self, batch: TransitionBatch) -> Result<TransitionOutcome, StorageError> {
+        // Intercept only when armed AND the commit carries a terminal new state.
+        // This skips intermediate commits (e.g., `satisfy_signal_waits`) and
+        // fires exclusively on `persist_final_state_port`'s terminal write.
+        // The status field in the batch JSON mirrors `ExecutionStatus::to_string()`.
+        if self.armed.load(Ordering::Acquire) {
+            let new_status = batch
+                .new_state()
+                .get("status")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            // `ExecutionStatus` serializes with `#[serde(rename_all = "snake_case")]`.
+            let is_terminal_state = matches!(
+                new_status,
+                "completed" | "failed" | "cancelled" | "timed_out"
+            );
+            if is_terminal_state
+                && self
+                    .armed
+                    .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok()
+            {
+                self.fired.store(true, Ordering::Release);
+                // Return a VersionConflict as if an external writer bumped the
+                // version between the engine's read and this commit. The inner
+                // store is untouched — the real row keeps its original version so
+                // the engine's reconcile `get` refetch will observe it and succeed.
+                let fabricated_conflict_version = batch.expected_version().saturating_add(1);
+                return Ok(TransitionOutcome::VersionConflict {
+                    actual: fabricated_conflict_version,
+                });
+            }
+        }
+        self.inner.commit(batch).await
+    }
+
+    async fn acquire_lease(
+        &self,
+        scope: &Scope,
+        id: &str,
+        holder: &str,
+        ttl: Duration,
+    ) -> Result<Option<FencingToken>, StorageError> {
+        self.inner.acquire_lease(scope, id, holder, ttl).await
+    }
+
+    async fn renew_lease(
+        &self,
+        scope: &Scope,
+        id: &str,
+        token: FencingToken,
+        ttl: Duration,
+    ) -> Result<bool, StorageError> {
+        self.inner.renew_lease(scope, id, token, ttl).await
+    }
+
+    async fn release_lease(
+        &self,
+        scope: &Scope,
+        id: &str,
+        token: FencingToken,
+    ) -> Result<bool, StorageError> {
+        self.inner.release_lease(scope, id, token).await
+    }
+
+    async fn list_running(&self, scope: &Scope) -> Result<Vec<String>, StorageError> {
+        self.inner.list_running(scope).await
+    }
+
+    async fn list_running_for_workflow(
+        &self,
+        scope: &Scope,
+        workflow_id: &str,
+    ) -> Result<Vec<String>, StorageError> {
+        self.inner
+            .list_running_for_workflow(scope, workflow_id)
+            .await
+    }
+
+    async fn count(&self, scope: &Scope, workflow_id: Option<&str>) -> Result<u64, StorageError> {
+        self.inner.count(scope, workflow_id).await
+    }
+}
 
 // ── Action stubs ──────────────────────────────────────────────────────────────
 
@@ -245,6 +397,90 @@ impl RevokeHarness {
             execution,
             versions,
         }
+    }
+
+    /// Build a harness that injects an [`ArmableConflictStore`] as the
+    /// `ExecutionStore` seen by the engine, while retaining the underlying
+    /// `InMemoryExecutionStore` for the token-store probe. The returned
+    /// `Arc<ArmableConflictStore>` lets the test arm the interceptor between
+    /// `dispatch_start` and `dispatch_resume`.
+    async fn new_with_cas_interceptor() -> (Self, Arc<ArmableConflictStore>) {
+        let registry = Arc::new(ActionRegistry::new());
+        registry.register_stateless_instance(
+            ActionMetadata::new(
+                action_key!("test.w_s3e.webhook_park"),
+                "WebhookParkNode",
+                "W-S3e revoke-on-terminal integration test stub",
+            ),
+            WebhookParkNode,
+        );
+        registry.register_stateless_instance(
+            ActionMetadata::new(
+                action_key!("test.w_s3e.echo"),
+                "EchoNode",
+                "W-S3e downstream echo stub",
+            ),
+            EchoNode,
+        );
+
+        let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
+            Box::pin(async move { Ok(ActionResult::success(input)) })
+        });
+        let runner = Arc::new(InProcessRunner::new(executor));
+        let metrics = MetricsRegistry::new();
+        let runtime = Arc::new(
+            ActionRuntime::try_new(
+                registry,
+                runner,
+                DataPassingPolicy::default(),
+                metrics.clone(),
+            )
+            .unwrap(),
+        );
+
+        let execution = Arc::new(InMemoryExecutionStore::new());
+        let journal = Arc::new(nebula_storage::InMemoryJournalReader::new(&execution));
+        let versions = Arc::new(InMemoryWorkflowVersionStore::new());
+        let workflow = Arc::new(nebula_storage::InMemoryWorkflowStore::new_with_versions(
+            &versions,
+        ));
+
+        let interceptor = Arc::new(ArmableConflictStore::new(Arc::clone(&execution)));
+        let resume_tokens = Arc::new(execution.resume_token_store());
+
+        let execution_stores = nebula_engine::ExecutionStores {
+            // The engine sees the interceptor; the harness holds the real store.
+            execution: Arc::clone(&interceptor) as Arc<dyn ExecutionStore>,
+            journal,
+            node_results: Arc::new(nebula_storage::InMemoryNodeResultStore::new()),
+            checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new()),
+            idempotency: Arc::new(nebula_storage::InMemoryIdempotencyGuard::new()),
+            resume_tokens,
+        };
+        let workflow_stores = nebula_engine::WorkflowStores {
+            workflow,
+            versions: versions.clone(),
+        };
+
+        let engine = Arc::new(
+            WorkflowEngine::new(runtime, metrics)
+                .unwrap()
+                .with_execution_stores(execution_stores)
+                .with_workflow_stores(workflow_stores),
+        );
+        // EngineControlDispatch reads status from the interceptor so it sees the
+        // same row version the engine CAS'd against.
+        let dispatch = EngineControlDispatch::new(
+            Arc::clone(&engine),
+            Arc::clone(&interceptor) as Arc<dyn ExecutionStore>,
+        );
+
+        let harness = Self {
+            dispatch,
+            execution,
+            versions,
+        };
+        (harness, interceptor)
     }
 
     /// The shared in-memory token store (same `SharedState` the engine writes to).
@@ -551,5 +787,93 @@ async fn revoke_failure_does_not_fail_terminal_transition() {
         harness.persisted_status(execution_id).await,
         ExecutionStatus::Completed,
         "execution must be Completed even when revoke_on_terminal errors"
+    );
+}
+
+// ── SINK 1 retry arm — CAS-reconcile path revokes (P2 gap fix) ─────────────────
+
+/// **W-S3e SINK 1 retry path (Codex P2)**: the `persist_final_state_port`
+/// function has a §11.5/#333 CAS-reconcile retry — if the first `commit` sees a
+/// `VersionConflict` with a non-terminal observed row, the engine refetches and
+/// retries. The terminal state ACTUALLY lands in the RETRY `Applied` arm on that
+/// path. This test proves the revoke fires there too.
+///
+/// Flow:
+/// 1. Park → token minted.
+/// 2. Arm the interceptor (after park returns, before resume is called).
+/// 3. `dispatch_resume` → engine runs `persist_final_state_port` → first commit
+///    hits the armed interceptor → `VersionConflict` returned (inner store
+///    unchanged) → engine reconciles, refetches (non-terminal), retries → retry
+///    `Applied` arm fires → `revoke_resume_tokens_best_effort` is called there.
+/// 4. Assert token count == 0 (the retry arm revoked).
+///
+/// **Falsifiability**: remove the `revoke_on_terminal` call from only the RETRY
+/// `Applied` arm (leave the first arm) → the interceptor causes the engine to
+/// land on the retry arm exclusively → the `== 0` assertion fails (token stays
+/// 1) → RED.
+///
+/// **Why `ArmableConflictStore` rather than racing goroutines**: the inner
+/// `InMemoryExecutionStore::commit` holds its mutex for the full duration of the
+/// call — there is no async yield point between the engine's `get` and `commit`
+/// inside the reconcile path. An out-of-band concurrent bump cannot physically
+/// race into that window. The interceptor is the only clean way to inject a
+/// `VersionConflict` without invasive test-only hooks in production code.
+#[tokio::test]
+async fn cas_retry_terminal_path_revokes_token() {
+    let (harness, interceptor) = RevokeHarness::new_with_cas_interceptor().await;
+    let workflow_id = harness.persist_workflow().await;
+    let execution_id = harness.persist_created_execution(workflow_id).await;
+    let scope = nebula_engine::store_seam::single_tenant_scope();
+    let exec = execution_id.to_string();
+
+    // Park: the frontier drives `WebhookParkNode`, which parks, minting a token.
+    // The interceptor is NOT yet armed, so this commit goes straight through.
+    harness
+        .dispatch
+        .dispatch_start(&scope, execution_id)
+        .await
+        .expect("dispatch_start must park the webhook node");
+    assert_eq!(
+        harness.persisted_status(execution_id).await,
+        ExecutionStatus::Paused,
+        "execution must be Paused after the park"
+    );
+    assert_eq!(
+        harness.token_store().token_count_for_test(&scope, &exec),
+        1,
+        "a resume token must be minted by the park"
+    );
+
+    // Arm the interceptor NOW — the next `commit` call (from `dispatch_resume`'s
+    // `persist_final_state_port`) will return `VersionConflict`, driving the
+    // engine into the CAS-reconcile retry path.
+    interceptor.arm();
+
+    // Resume: drives to Completed via the CAS-reconcile retry path.
+    harness
+        .dispatch
+        .dispatch_resume(&scope, execution_id, None)
+        .await
+        .expect("dispatch_resume must succeed via the CAS-retry path");
+
+    // Confirm the interceptor actually fired (validates test correctness — if
+    // it did NOT fire, the test would pass for the wrong reason because the
+    // first Applied arm revoked instead).
+    assert!(
+        interceptor.has_fired(),
+        "the CAS-conflict interceptor must have fired during dispatch_resume"
+    );
+
+    assert_eq!(
+        harness.persisted_status(execution_id).await,
+        ExecutionStatus::Completed,
+        "execution must reach Completed via the retry path"
+    );
+
+    // The token must be gone — revoked by the RETRY Applied arm (not the first).
+    assert_eq!(
+        harness.token_store().token_count_for_test(&scope, &exec),
+        0,
+        "the resume token must be revoked on the CAS-retry terminal path (SINK 1 retry arm)"
     );
 }

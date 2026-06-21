@@ -6048,6 +6048,13 @@ impl WorkflowEngine {
                         "final state CAS mismatch: external transition is terminal — \
                          honoring external status instead of overwriting (§11.5, #333)"
                     );
+                    // W-S3e note: no revoke here — the external terminal-maker
+                    // (whichever runner wrote the terminal state this runner just
+                    // observed) will have gone through its own persist_final_state_port
+                    // or cancel_dangling_nodes_under_lease Applied arm, both of which
+                    // already call revoke_resume_tokens_best_effort. This runner no
+                    // longer owns the execution; calling revoke again would be a
+                    // spurious double-revoke on another runner's execution.
                     return Ok(observed_status_enum);
                 }
 
@@ -6073,6 +6080,15 @@ impl WorkflowEngine {
                             "final state CAS retry succeeded after external bump (§11.5, #333)"
                         );
                         *repo_version = new_version;
+                        // W-S3e — same terminal cleanup as the first Applied arm:
+                        // the retry is where the terminal state lands on the
+                        // CAS-reconcile path (external non-terminal bump → we
+                        // refetched, observed non-terminal, retried). Only call
+                        // after `new_version` is stored so the FK-guarded revoke
+                        // sees the committed terminal row.
+                        if exec_state.status.is_terminal() {
+                            revoke_resume_tokens_best_effort(stores, scope, &id).await;
+                        }
                         Ok(None)
                     },
                     Ok(nebula_storage_port::TransitionOutcome::FencedOut) => {
