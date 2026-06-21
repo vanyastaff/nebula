@@ -693,6 +693,24 @@ pub(crate) fn default_state(
         state = state.with_trigger_dedup_inbox(inbox);
     }
 
+    // W-S3d: wire the resume-token store and rate-limiter components.
+    //
+    // `standalone()` provides a self-contained in-memory store for the
+    // Memory backend.  The SQLite and Postgres backends add real
+    // implementations in their respective `init_schema` / pool paths;
+    // until those are wired the standalone store serves as a safe
+    // dev-mode default (tokens are process-local, lost on restart —
+    // acceptable for the non-durable execution backend).
+    //
+    // `SystemClock` is the production clock; tests inject a `MockClock`
+    // at the handler-components level via `with_resume_handler_components`.
+    let resume_token_store = Arc::new(nebula_storage::InMemoryResumeTokenStore::standalone());
+    let resume_components =
+        nebula_api::transport::webhook::ResumeHandlerComponents::with_defaults();
+    state = state
+        .with_resume_token_store(resume_token_store)
+        .with_resume_handler_components(resume_components);
+
     Ok(state)
 }
 

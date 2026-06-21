@@ -469,6 +469,33 @@ pub struct AppState {
     /// production from the same `nebula_resource::Manager` the engine is
     /// built with.
     pub resource_status: Option<Arc<dyn nebula_engine::EngineResourceStatus>>,
+
+    /// Resume-token store for the W-S3d webhook→Resume producer
+    /// (`POST /resume`).
+    ///
+    /// The **undecorated** (global) store — `consume` is a hash-keyed
+    /// atomic delete with no tenant parameter; scope is read FROM the
+    /// returned row (confused-deputy boundary is the absence of any
+    /// tenant extractor on the resume handler).  Setting a
+    /// `ScopedResumeTokenStore` here would be incorrect: the decorator
+    /// adds per-scope filtering that the consume primitive intentionally
+    /// lacks (`ResumeTokenStore` doc: "no `scope` parameter by design").
+    ///
+    /// When `None`, `POST /resume` returns `503 Service Unavailable`.
+    /// Set via [`AppState::with_resume_token_store`].
+    pub resume_token_store: Option<Arc<dyn nebula_storage_port::store::ResumeTokenStore>>,
+
+    /// Rate limiters + clock for the W-S3d `POST /resume` handler.
+    ///
+    /// Bundled as [`crate::transport::webhook::resume::ResumeHandlerComponents`]
+    /// so the three `WebhookRateLimiter` instances (IP / global / tenant)
+    /// and the injectable clock are wired at the composition root rather
+    /// than constructed per-request.  When `None`, `POST /resume` returns
+    /// `503 Service Unavailable` (same fail-closed convention as
+    /// `resume_token_store`).  Set via
+    /// [`AppState::with_resume_handler_components`].
+    pub resume_handler_components:
+        Option<crate::transport::webhook::resume::ResumeHandlerComponents>,
 }
 
 impl AppState {
@@ -530,6 +557,8 @@ impl AppState {
             resource_repo: None,
             resource_registrars: None,
             resource_status: None,
+            resume_token_store: None,
+            resume_handler_components: None,
         }
     }
 
@@ -922,13 +951,61 @@ impl AppState {
             scope: scope.clone(),
             w3c_traceparent: w3c.as_ref().map(|c| c.traceparent().to_owned()),
             reclaim_count: 0,
-            // No targeted-Resume producer yet (W-S3d); enqueue untargeted.
+            // Untargeted Resume — the W-S3d targeted producer uses
+            // `enqueue_resume_from_row` instead.
             resume_target: None,
         };
         queue.enqueue(&msg).await.map_err(|e| {
             use nebula_storage_port::StorageError;
             let unavailable = matches!(e, StorageError::Internal(_) | StorageError::Connection(_));
             to_api_err(unavailable, e.to_string())
+        })
+    }
+
+    /// Enqueue a targeted `ControlCommand::Resume` derived from a
+    /// `ResumeTokenRow` (W-S3d).
+    ///
+    /// Scope-from-row: the enqueued message is stamped with `row.scope` via
+    /// a freshly-bound `ScopedControlQueue`.  The caller MUST NOT supply a
+    /// request-derived scope — the only accepted source is the consumed row.
+    ///
+    /// Rationale for a separate method (not reusing `enqueue_control_scoped`):
+    /// `enqueue_control_scoped` hard-codes `resume_target: None` and is typed
+    /// around `ExecutionId`; this method carries the `ResumeTarget` and uses
+    /// the row's string execution id, keeping the two paths structurally
+    /// distinct.
+    pub(crate) async fn enqueue_resume_from_row(
+        &self,
+        row: &nebula_storage_port::dto::resume_token::ResumeTokenRow,
+        target: nebula_storage_port::dto::ResumeTarget,
+    ) -> Result<(), ApiError> {
+        let queue = ScopedControlQueue::new(Arc::clone(&self.control_queue), row.scope.clone());
+        let msg = nebula_storage_port::dto::ControlMsg {
+            id: *uuid::Uuid::new_v4().as_bytes(),
+            execution_id: row.execution_id.clone(),
+            command: nebula_storage_port::dto::ControlCommand::Resume,
+            scope: row.scope.clone(),
+            w3c_traceparent: None,
+            reclaim_count: 0,
+            resume_target: Some(target),
+        };
+        queue.enqueue(&msg).await.map_err(|e| {
+            use nebula_storage_port::StorageError;
+            // Infrastructure faults → 503 (transient; caller should retry);
+            // other write failures → 500 (logic or schema bug).
+            match e {
+                StorageError::Internal(_) | StorageError::Connection(_) => {
+                    ApiError::ServiceUnavailable(format!(
+                        "control-queue backend unavailable while enqueuing Resume \
+                         for execution {}: {e}",
+                        row.execution_id
+                    ))
+                },
+                other => ApiError::Internal(format!(
+                    "failed to enqueue Resume for execution {}: {other}",
+                    row.execution_id
+                )),
+            }
         })
     }
 
@@ -1354,6 +1431,34 @@ impl AppState {
         status: Arc<dyn nebula_engine::EngineResourceStatus>,
     ) -> Self {
         self.resource_status = Some(status);
+        self
+    }
+
+    /// Attach the resume-token store for the W-S3d webhook→Resume
+    /// producer (`POST /resume`).
+    ///
+    /// Must be the **undecorated** (global) store — consume is
+    /// hash-keyed with no tenant parameter; scope comes FROM the row.
+    /// When `None`, `POST /resume` returns `503 Service Unavailable`.
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_resume_token_store(
+        mut self,
+        store: Arc<dyn nebula_storage_port::store::ResumeTokenStore>,
+    ) -> Self {
+        self.resume_token_store = Some(store);
+        self
+    }
+
+    /// Attach rate-limiters + clock for the W-S3d `POST /resume` handler.
+    ///
+    /// When `None`, `POST /resume` returns `503 Service Unavailable`.
+    /// Wire at the composition root alongside `with_resume_token_store`.
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_resume_handler_components(
+        mut self,
+        components: crate::transport::webhook::resume::ResumeHandlerComponents,
+    ) -> Self {
+        self.resume_handler_components = Some(components);
         self
     }
 }

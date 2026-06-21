@@ -58,6 +58,21 @@ impl InMemoryResumeTokenStore {
             inner: Arc::new(Mutex::new(State::default())),
         }
     }
+
+    /// Insert a row directly into the token map.
+    ///
+    /// Test-only seeding helper: bypasses the `TransitionBatch` path so
+    /// integration tests can seed token rows without wiring a full
+    /// `InMemoryExecutionStore` + `commit` cycle.  The row is inserted
+    /// under its `token_hash` key, exactly as production `commit` does.
+    ///
+    /// Mirrors the spirit of [`super::control_queue::InMemoryControlQueue::snapshot`]
+    /// (always `pub` on a dev-only adapter) — not gated by `cfg(test)` so
+    /// it is reachable from integration tests in sibling crates.
+    pub fn seed_for_test(&self, row: ResumeTokenRow) {
+        let key = row.token_hash.as_bytes().to_vec();
+        self.inner.lock().resume_tokens.insert(key, row);
+    }
 }
 
 #[async_trait::async_trait]

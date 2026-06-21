@@ -24,6 +24,7 @@ use crate::{
         security_headers::security_headers_middleware,
     },
     state::AppState,
+    transport::webhook::resume::resume_handler,
 };
 
 /// Build the main application router with middleware
@@ -132,6 +133,17 @@ pub fn build_app(state: AppState, config: &ApiConfig) -> Router {
         Some(transport) => api_routes.merge(transport.router()),
         None => api_routes,
     };
+
+    // W-S3d: `POST /resume` — attacker-reachable wait-state surface.
+    // Mounted BEFORE tenancy middleware (no TenantContext extractor);
+    // scope is derived from the consumed token row, not the request.
+    // Uses `AppState` as router state so it can access `resume_token_store`
+    // and `resume_handler_components`.
+    let routes = routes.merge(
+        Router::new()
+            .route("/resume", axum::routing::post(resume_handler))
+            .with_state(state.clone()),
+    );
 
     // Internal routes (webhook activation — E3): /internal/v1/...
     // Mounted on the plain axum `Router` so they never appear in
