@@ -89,5 +89,9 @@ path = "examples/workflow_data_pipeline.rs"
 name = "workflow_delay_resume"
 path = "examples/workflow_delay_resume.rs"
 
+[[example]]
+name = "workflow_datetime_schedule"
+path = "examples/workflow_datetime_schedule.rs"
+
 [lints]
 workspace = true
