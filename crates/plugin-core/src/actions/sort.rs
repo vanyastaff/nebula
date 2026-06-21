@@ -36,11 +36,18 @@
 //!
 //! ## Null / missing field semantics
 //!
-//! A field value that is absent or `null` sorts as GREATEST: in ascending
-//! order it appears last; in descending order it appears first. If both
-//! elements are missing or null for a key, they are treated as `Equal` for
-//! that key and the next key is consulted (or original order preserved for
+//! By default a field value that is absent or `null` sorts as GREATEST: in
+//! ascending order it appears last; in descending order it appears first. Each
+//! key can override this with `nulls`: `"first"` or `"last"` place null/missing
+//! at an **absolute** position regardless of `order` (`"greatest"` is the
+//! default). If both elements are missing or null for a key, they are `Equal`
+//! for that key and the next key is consulted (or original order preserved for
 //! stability).
+//!
+//! ## Case-insensitive strings
+//!
+//! Set `case_insensitive: true` on a key to compare string values without
+//! regard to case (Unicode-aware). It has no effect on non-string values.
 //!
 //! ## Error semantics
 //!
@@ -80,15 +87,35 @@ pub enum SortOrder {
     Desc,
 }
 
-/// A single field-based sort key, with an optional direction.
+/// Where null/missing field values sort for a key.
+///
+/// `Greatest` (the default) treats null as the greatest *value*, so it
+/// participates in the direction: last in `asc`, first in `desc`. `First` and
+/// `Last` are **absolute** positions, independent of `order`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NullsOrder {
+    /// Null/missing sorts as the greatest value (default): last in `asc`,
+    /// first in `desc`.
+    #[default]
+    Greatest,
+    /// Null/missing always sorts first, regardless of `order`.
+    First,
+    /// Null/missing always sorts last, regardless of `order`.
+    Last,
+}
+
+/// A single field-based sort key, with optional direction, null placement, and
+/// case-insensitive string comparison.
 ///
 /// ## Wire shape
 ///
 /// ```json
-/// { "field": "score", "order": "desc" }
+/// { "field": "name", "order": "asc", "nulls": "last", "case_insensitive": true }
 /// ```
 ///
-/// `order` defaults to `"asc"` when omitted.
+/// `order` defaults to `"asc"`, `nulls` to `"greatest"`, and `case_insensitive`
+/// to `false` when omitted.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SortKey {
     /// Top-level field name to sort by.
@@ -96,6 +123,13 @@ pub struct SortKey {
     /// Sort direction. Defaults to ascending.
     #[serde(default)]
     pub order: SortOrder,
+    /// Where null/missing values sort. Defaults to `Greatest`.
+    #[serde(default)]
+    pub nulls: NullsOrder,
+    /// Compare string values case-insensitively (Unicode-aware). Defaults to
+    /// `false`. Has no effect on non-string values.
+    #[serde(default)]
+    pub case_insensitive: bool,
 }
 
 /// Input for `core.sort`.
@@ -265,36 +299,37 @@ impl StatelessAction for Sort {
                 let field_a = elem_a.get(sort_key.field.as_str());
                 let field_b = elem_b.get(sort_key.field.as_str());
 
-                // Null/missing fields sort as GREATEST: `Greater` is returned BEFORE
-                // the Desc reversal below, so Desc naturally moves them to the front.
-                // Matching the `Option<&Value>` tuple directly binds the present,
-                // non-null values without an `expect` (arms 1-3 consume every
-                // null/missing case, so arm 4 only ever sees two non-null values).
-                let key_ordering = match (field_a, field_b) {
+                // Each arm yields the FINAL, direction-applied ordering for this
+                // key. Value-vs-value comparisons and `nulls = Greatest` flow
+                // through the `order` reversal; `nulls = First`/`Last` are
+                // absolute positions independent of `order` (see
+                // `null_directed_ordering`). Matching the `Option<&Value>` tuple
+                // directly binds the present, non-null values without an `expect`.
+                let directed_ordering = match (field_a, field_b) {
                     // Both null/missing — Equal for this key; consult the next key.
                     (None | Some(Value::Null), None | Some(Value::Null)) => Ordering::Equal,
 
-                    // Only a is null/missing — a sorts as GREATEST (goes last in
-                    // Asc, first in Desc).
-                    (None | Some(Value::Null), _) => Ordering::Greater,
+                    // Only a is null/missing.
+                    (None | Some(Value::Null), _) => null_directed_ordering(sort_key, true),
 
-                    // Only b is null/missing — b sorts as GREATEST, so a < b.
-                    (_, None | Some(Value::Null)) => Ordering::Less,
+                    // Only b is null/missing.
+                    (_, None | Some(Value::Null)) => null_directed_ordering(sort_key, false),
 
-                    // Both present and non-null — delegate to compare_ordered.
-                    (Some(val_a), Some(val_b)) => match compare_ordered(val_a, val_b) {
-                        Ok(ord) => ord,
-                        Err(err) => {
-                            latched_sort_error = Some(err);
-                            return Ordering::Equal;
-                        },
+                    // Both present and non-null — compare (case-insensitive for
+                    // strings when requested), then apply the direction.
+                    (Some(val_a), Some(val_b)) => {
+                        let base = match compare_values(val_a, val_b, sort_key.case_insensitive) {
+                            Ok(ord) => ord,
+                            Err(err) => {
+                                latched_sort_error = Some(err);
+                                return Ordering::Equal;
+                            },
+                        };
+                        match sort_key.order {
+                            SortOrder::Asc => base,
+                            SortOrder::Desc => base.reverse(),
+                        }
                     },
-                };
-
-                // For this key, apply the direction (Desc reverses the ordering).
-                let directed_ordering = match sort_key.order {
-                    SortOrder::Asc => key_ordering,
-                    SortOrder::Desc => key_ordering.reverse(),
                 };
 
                 // If this key produced a non-Equal result, we are done.
@@ -317,6 +352,60 @@ impl StatelessAction for Sort {
     }
 }
 
+// ── Comparison helpers ──────────────────────────────────────────────────────────
+
+/// The final, direction-applied ordering of `a` vs `b` for a key where exactly
+/// one side is null/missing. `a_is_null` selects which side.
+///
+/// `Greatest` treats null as the greatest value, so it participates in the
+/// direction (last in `asc`, first in `desc`). `First`/`Last` are absolute and
+/// ignore `order`.
+fn null_directed_ordering(key: &SortKey, a_is_null: bool) -> Ordering {
+    match key.nulls {
+        NullsOrder::Greatest => {
+            let base = if a_is_null {
+                Ordering::Greater
+            } else {
+                Ordering::Less
+            };
+            match key.order {
+                SortOrder::Asc => base,
+                SortOrder::Desc => base.reverse(),
+            }
+        },
+        NullsOrder::First => {
+            if a_is_null {
+                Ordering::Less
+            } else {
+                Ordering::Greater
+            }
+        },
+        NullsOrder::Last => {
+            if a_is_null {
+                Ordering::Greater
+            } else {
+                Ordering::Less
+            }
+        },
+    }
+}
+
+/// Compare two non-null values, optionally case-insensitively for strings.
+///
+/// Case-insensitive comparison is Unicode-aware and allocation-free: it folds
+/// each side to lowercase lazily (`char::to_lowercase`) and compares the
+/// resulting char streams. Non-string values ignore `case_insensitive` and fall
+/// through to [`compare_ordered`].
+fn compare_values(a: &Value, b: &Value, case_insensitive: bool) -> Result<Ordering, ActionError> {
+    if case_insensitive && let (Value::String(lhs), Value::String(rhs)) = (a, b) {
+        return Ok(lhs
+            .chars()
+            .flat_map(char::to_lowercase)
+            .cmp(rhs.chars().flat_map(char::to_lowercase)));
+    }
+    compare_ordered(a, b)
+}
+
 // ── Unit tests ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -327,7 +416,7 @@ mod tests {
     use nebula_action::{ActionError, ActionResult, StatelessAction};
     use serde_json::{Value, json};
 
-    use super::{Sort, SortInput, SortKey, SortOrder};
+    use super::{NullsOrder, Sort, SortInput, SortKey, SortOrder};
 
     fn run(input: SortInput) -> impl Future<Output = Result<ActionResult<Value>, ActionError>> {
         let action = Sort;
@@ -346,6 +435,8 @@ mod tests {
         SortKey {
             field: field.into(),
             order: SortOrder::Asc,
+            nulls: NullsOrder::Greatest,
+            case_insensitive: false,
         }
     }
 
@@ -353,6 +444,28 @@ mod tests {
         SortKey {
             field: field.into(),
             order: SortOrder::Desc,
+            nulls: NullsOrder::Greatest,
+            case_insensitive: false,
+        }
+    }
+
+    /// A key with explicit `nulls` placement (ascending).
+    fn asc_nulls(field: &str, nulls: NullsOrder) -> SortKey {
+        SortKey {
+            field: field.into(),
+            order: SortOrder::Asc,
+            nulls,
+            case_insensitive: false,
+        }
+    }
+
+    /// A case-insensitive ascending key.
+    fn asc_ci(field: &str) -> SortKey {
+        SortKey {
+            field: field.into(),
+            order: SortOrder::Asc,
+            nulls: NullsOrder::Greatest,
+            case_insensitive: true,
         }
     }
 
@@ -498,6 +611,99 @@ mod tests {
             out,
             json!([{"s": "apple"}, {"s": "banana"}, {"s": "cherry"}]),
             "string sort must be lexicographic ascending"
+        );
+    }
+
+    // ── 7b: case-insensitive string sort ──────────────────────────────────────
+    //
+    // Byte-order (case-sensitive) would put the capitalized "Cherry" (C=0x43)
+    // before the lowercase "apple"/"banana" → ["Cherry","apple","banana"].
+    // Case-insensitive folds case first → ["apple","banana","Cherry"]. The two
+    // assertions together prove the flag actually changes the ordering.
+    #[tokio::test]
+    async fn sort_case_insensitive_strings() {
+        let data = json!([{"s": "banana"}, {"s": "apple"}, {"s": "Cherry"}]);
+
+        let ci = extract_output(
+            run(SortInput {
+                data: Some(data.clone()),
+                keys: vec![asc_ci("s")],
+            })
+            .await
+            .unwrap(),
+        );
+        assert_eq!(
+            ci,
+            json!([{"s": "apple"}, {"s": "banana"}, {"s": "Cherry"}]),
+            "case-insensitive sort must order apple < banana < Cherry"
+        );
+
+        // Case-sensitive (default) puts the capitalized value first by byte order.
+        let cs = extract_output(
+            run(SortInput {
+                data: Some(data),
+                keys: vec![asc("s")],
+            })
+            .await
+            .unwrap(),
+        );
+        assert_eq!(
+            cs,
+            json!([{"s": "Cherry"}, {"s": "apple"}, {"s": "banana"}]),
+            "case-sensitive byte order puts 'Cherry' first"
+        );
+    }
+
+    // ── 7c: nulls = First places null/missing first regardless of value ───────
+    #[tokio::test]
+    async fn sort_nulls_first_ascending() {
+        let input = SortInput {
+            data: Some(json!([{"n": 2}, {"x": "no n here"}, {"n": 1}])),
+            keys: vec![asc_nulls("n", NullsOrder::First)],
+        };
+        let out = extract_output(run(input).await.unwrap());
+        assert_eq!(
+            out,
+            json!([{"x": "no n here"}, {"n": 1}, {"n": 2}]),
+            "nulls=First must put the missing-field row first, then 1, 2"
+        );
+    }
+
+    // ── 7d: nulls = Last is ABSOLUTE — last even in descending order ──────────
+    //
+    // Default (`Greatest`) in desc would put null FIRST (null = greatest value,
+    // reversed). `Last` overrides that: null stays last regardless of direction.
+    #[tokio::test]
+    async fn sort_nulls_last_is_absolute_in_desc() {
+        let input = SortInput {
+            data: Some(json!([{"n": 2}, {"n": null}, {"n": 1}])),
+            keys: vec![SortKey {
+                field: "n".into(),
+                order: SortOrder::Desc,
+                nulls: NullsOrder::Last,
+                case_insensitive: false,
+            }],
+        };
+        let out = extract_output(run(input).await.unwrap());
+        assert_eq!(
+            out,
+            json!([{"n": 2}, {"n": 1}, {"n": null}]),
+            "nulls=Last must keep null last even when sorting descending"
+        );
+    }
+
+    // ── 7e: default nulls = Greatest is unchanged (null last in asc) ──────────
+    #[tokio::test]
+    async fn sort_nulls_default_greatest_last_in_asc() {
+        let input = SortInput {
+            data: Some(json!([{"n": 2}, {"n": null}, {"n": 1}])),
+            keys: vec![asc("n")],
+        };
+        let out = extract_output(run(input).await.unwrap());
+        assert_eq!(
+            out,
+            json!([{"n": 1}, {"n": 2}, {"n": null}]),
+            "default (Greatest) must keep null last in ascending order"
         );
     }
 
