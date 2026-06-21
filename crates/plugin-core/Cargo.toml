@@ -27,12 +27,13 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 nebula-engine = { path = "../engine" }
+nebula-eventbus = { path = "../eventbus" }
 nebula-execution = { path = "../execution" }
 nebula-metrics = { path = "../metrics" }
 nebula-storage-port = { path = "../storage-port" }
 
 serde_json = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt"] }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "time", "sync"] }
 
 [lints]
 workspace = true
