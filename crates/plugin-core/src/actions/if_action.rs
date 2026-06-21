@@ -31,9 +31,8 @@
 //!
 //! ### `gt` / `gte` / `lt` / `lte`
 //! - Missing field → **Fatal** (ordered comparison requires a value).
-//! - Both numbers → compare via `f64`. Precision note: f64 loses precision
-//!   on integers larger than 2⁵³; exact large-integer comparison is deferred
-//!   to a future v2 operator.
+//! - Both numbers → integers compared **exactly** (large 64-bit IDs do not lose
+//!   precision); only genuine floats compare via `f64`.
 //! - Both strings → lexicographic byte-order comparison.
 //! - Type mismatch (e.g. number vs string) → **Fatal** with a message naming
 //!   both types.

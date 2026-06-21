@@ -444,6 +444,33 @@ mod tests {
         );
     }
 
+    // ── 5b: sort by large 64-bit integer IDs (beyond f64 precision) ───────────
+    //
+    // 2^53, 2^53+1, 2^53+2 are distinct i64 but all round to (at most two) f64
+    // values. RED witness: with the old f64 comparison they compared Equal and
+    // the stable sort left them in input order [+1, +2, +0] — this assert fails.
+    #[tokio::test]
+    async fn sort_large_integer_ids_exact() {
+        let input = SortInput {
+            data: Some(json!([
+                { "id": 9_007_199_254_740_993_i64 },
+                { "id": 9_007_199_254_740_994_i64 },
+                { "id": 9_007_199_254_740_992_i64 },
+            ])),
+            keys: vec![asc("id")],
+        };
+        let out = extract_output(run(input).await.unwrap());
+        assert_eq!(
+            out,
+            json!([
+                { "id": 9_007_199_254_740_992_i64 },
+                { "id": 9_007_199_254_740_993_i64 },
+                { "id": 9_007_199_254_740_994_i64 },
+            ]),
+            "large integer IDs must sort by exact value, not collapse via f64"
+        );
+    }
+
     // ── 6: sort single key descending (numeric) ───────────────────────────────
     #[tokio::test]
     async fn sort_single_key_descending() {

@@ -384,39 +384,51 @@ pub(crate) fn evaluate_condition(
 
 /// Compare two JSON values for order.
 ///
-/// Both values must be the same JSON kind: both numbers (compared via f64) or
-/// both strings (lexicographic byte order). Any other combination — including
-/// a number vs. a string — is a Fatal error that names both types.
+/// Both values must be the same JSON kind: both numbers or both strings
+/// (lexicographic byte order). Any other combination — including a number vs. a
+/// string — is a Fatal error that names both types.
 ///
-/// serde_json `Number` values are always finite (they are parsed from valid
-/// JSON text, which cannot represent NaN or Infinity). However, `as_f64()`
-/// returns `None` for very large `u64` values that do not fit in an f64
-/// mantissa without loss, so we still guard the conversion with `ok_or_else`
-/// rather than assuming `as_f64()` can never fail. In the vanishingly rare
-/// case that `f64::partial_cmp` returns `None` (two NaN-like values) we map
-/// it to Fatal rather than panicking.
+/// Integer pairs are compared **exactly** (as `i64`, or as `u64` when both
+/// exceed `i64::MAX`): f64 loses precision past 2^53, which would collapse
+/// distinct large IDs to Equal. Only when an operand is a genuine float, or the
+/// pair straddles the i64/u64 boundary (mixed sign), does the comparison fall
+/// back to f64 — and there the magnitudes are far enough apart that f64 still
+/// orders them correctly.
+///
+/// serde_json `Number` values are always finite (parsed from valid JSON text,
+/// which cannot represent NaN or Infinity), so the f64 fallback still guards
+/// `as_f64()` and `partial_cmp` with `ok_or_else` and maps the impossible
+/// `None` to Fatal rather than panicking.
 pub(crate) fn compare_ordered(a: &Value, b: &Value) -> Result<std::cmp::Ordering, ActionError> {
     match (a, b) {
         (Value::Number(lhs), Value::Number(rhs)) => {
-            // f64 is the common numeric type in serde_json; precision loss on
-            // integers larger than 2^53 is a known limitation (documented in
-            // the core.if module doc; exact large-integer ops deferred to v2).
-            let lhs_f64 = lhs.as_f64().ok_or_else(|| {
-                ActionError::fatal(format!(
-                    "could not represent left-hand number `{lhs}` as f64"
-                ))
-            })?;
-            let rhs_f64 = rhs.as_f64().ok_or_else(|| {
-                ActionError::fatal(format!(
-                    "could not represent right-hand number `{rhs}` as f64"
-                ))
-            })?;
-            // serde_json numbers are always finite, but we handle None defensively.
-            lhs_f64.partial_cmp(&rhs_f64).ok_or_else(|| {
-                ActionError::fatal(format!(
-                    "cannot compare non-finite numbers `{lhs_f64}` and `{rhs_f64}`"
-                ))
-            })
+            // Compare integers exactly: f64 silently loses precision past 2^53,
+            // which collapses distinct large IDs (e.g. Snowflake / 64-bit DB
+            // keys) to Equal. Only fall back to f64 when an operand is a genuine
+            // float or the pair straddles the i64/u64 boundary (mixed sign), a
+            // case f64 still orders correctly.
+            if let (Some(lhs_i64), Some(rhs_i64)) = (lhs.as_i64(), rhs.as_i64()) {
+                Ok(lhs_i64.cmp(&rhs_i64))
+            } else if let (Some(lhs_u64), Some(rhs_u64)) = (lhs.as_u64(), rhs.as_u64()) {
+                Ok(lhs_u64.cmp(&rhs_u64))
+            } else {
+                let lhs_f64 = lhs.as_f64().ok_or_else(|| {
+                    ActionError::fatal(format!(
+                        "could not represent left-hand number `{lhs}` as f64"
+                    ))
+                })?;
+                let rhs_f64 = rhs.as_f64().ok_or_else(|| {
+                    ActionError::fatal(format!(
+                        "could not represent right-hand number `{rhs}` as f64"
+                    ))
+                })?;
+                // serde_json numbers are always finite, but we handle None defensively.
+                lhs_f64.partial_cmp(&rhs_f64).ok_or_else(|| {
+                    ActionError::fatal(format!(
+                        "cannot compare non-finite numbers `{lhs_f64}` and `{rhs_f64}`"
+                    ))
+                })
+            }
         },
         (Value::String(lhs), Value::String(rhs)) => Ok(lhs.as_str().cmp(rhs.as_str())),
         (lhs_val, rhs_val) => Err(ActionError::fatal(format!(
@@ -696,6 +708,43 @@ mod tests {
             value: Some(json!(5)),
         };
         assert!(!evaluate_condition(&data, &cond).unwrap());
+    }
+
+    /// Large integers (> 2^53) compare EXACTLY — they must not collapse to
+    /// Equal via an f64 round-trip (Snowflake / 64-bit DB IDs).
+    ///
+    /// RED witness: with the old f64-only path both values became the same f64,
+    /// so `compare_ordered` returned `Equal` and this `gt` was false.
+    #[test]
+    fn gt_large_integers_beyond_f64_precision() {
+        // 2^53 and 2^53 + 1 are distinct i64 but round to the SAME f64.
+        let data = json!({ "id": 9_007_199_254_740_993_i64 });
+        let cond = Condition::Leaf {
+            field: "id".into(),
+            op: ConditionOp::Gt,
+            value: Some(json!(9_007_199_254_740_992_i64)),
+        };
+        assert!(
+            evaluate_condition(&data, &cond).unwrap(),
+            "2^53+1 must be strictly greater than 2^53"
+        );
+    }
+
+    #[test]
+    fn compare_ordered_large_integers_exact() {
+        use std::cmp::Ordering;
+        let bigger = json!(9_007_199_254_740_993_i64);
+        let smaller = json!(9_007_199_254_740_992_i64);
+        assert_eq!(
+            compare_ordered(&bigger, &smaller).unwrap(),
+            Ordering::Greater
+        );
+        assert_eq!(compare_ordered(&smaller, &bigger).unwrap(), Ordering::Less);
+        // Genuine floats still compare via f64.
+        assert_eq!(
+            compare_ordered(&json!(1.5), &json!(2.5)).unwrap(),
+            Ordering::Less
+        );
     }
 
     // RED witness: type mismatch must Fatal, not silently return false.
