@@ -105,5 +105,9 @@ path = "examples/workflow_switch_router.rs"
 name = "workflow_json_reshape"
 path = "examples/workflow_json_reshape.rs"
 
+[[example]]
+name = "workflow_batch_etl"
+path = "examples/workflow_batch_etl.rs"
+
 [lints]
 workspace = true
