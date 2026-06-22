@@ -772,3 +772,37 @@ fn max_preserves_integer_type() {
     assert_eq!(eval("max(3, 5)"), json!(5));
     assert_eq!(eval("min(3, 5)"), json!(3));
 }
+
+// ──────────────────────────────────────────────
+// Array: slice negative indices (consistent with arr[-1])
+// ──────────────────────────────────────────────
+
+/// RED witness: a negative `start` was cast straight to a huge `usize`, so the
+/// range was empty and `slice` returned `[]` — inconsistent with `arr[-2]`,
+/// which counts from the end.
+#[test]
+fn slice_negative_start_counts_from_end() {
+    assert_eq!(eval("slice([1,2,3,4,5], -2)"), json!([4, 5]));
+}
+
+/// A negative `end` also counts from the end: `slice(arr, 1, -1)` drops the last.
+#[test]
+fn slice_negative_end_counts_from_end() {
+    assert_eq!(eval("slice([1,2,3,4,5], 1, -1)"), json!([2, 3, 4]));
+}
+
+/// Positive in-range bounds are unchanged.
+#[test]
+fn slice_positive_bounds_unchanged() {
+    assert_eq!(eval("slice([1,2,3,4,5], 1, 3)"), json!([2, 3]));
+}
+
+/// Out-of-range bounds clamp (never panic): start beyond the end is empty, an end
+/// past the length is the whole tail.
+#[test]
+fn slice_out_of_range_clamps() {
+    assert_eq!(eval("slice([1,2,3], 1, 100)"), json!([2, 3]));
+    assert_eq!(eval("slice([1,2,3], 100)"), json!([]));
+    // A negative start beyond the start clamps to 0 (whole array).
+    assert_eq!(eval("slice([1,2,3], -100)"), json!([1, 2, 3]));
+}

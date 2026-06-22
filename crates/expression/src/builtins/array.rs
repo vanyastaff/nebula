@@ -153,6 +153,15 @@ pub fn join(
     Ok(Value::String(result))
 }
 
+/// Resolve a slice bound: a negative index counts from the end (like `arr[-1]`),
+/// then the result is clamped to `[0, len]` (slice semantics never go
+/// out of bounds — unlike indexing, which errors).
+fn resolve_slice_bound(index: i64, len: usize) -> usize {
+    let len_i64 = len as i64;
+    let resolved = if index < 0 { len_i64 + index } else { index };
+    resolved.clamp(0, len_i64) as usize
+}
+
 /// Slice an array
 pub fn slice(
     args: &[Value],
@@ -161,26 +170,32 @@ pub fn slice(
 ) -> ExpressionResult<Value> {
     check_min_arg_count("slice", args, 2)?;
     let arr = get_array_arg("slice", args, 0, "array")?;
-    let start = args[1].as_i64().ok_or_else(|| {
+    let start_index = args[1].as_i64().ok_or_else(|| {
         ExpressionError::expression_type_error(
             "integer",
             crate::value_utils::value_type_name(&args[1]),
         )
-    })? as usize;
-    let end = if args.len() > 2 {
+    })?;
+    let end_index = if args.len() > 2 {
         args[2].as_i64().ok_or_else(|| {
             ExpressionError::expression_type_error(
                 "integer",
                 crate::value_utils::value_type_name(&args[2]),
             )
-        })? as usize
+        })?
     } else {
-        arr.len()
+        arr.len() as i64
     };
 
-    let result: Vec<_> = (start..end.min(arr.len()))
-        .filter_map(|i| arr.get(i).cloned())
-        .collect();
+    // Negative bounds count from the end and match the `arr[-1]` index operator;
+    // both bounds clamp to the array, so an out-of-range slice is empty, never a
+    // panic. `get(start..end)` is `None` when `start > end`, also yielding empty.
+    let start = resolve_slice_bound(start_index, arr.len());
+    let end = resolve_slice_bound(end_index, arr.len());
+    let result = arr
+        .get(start..end)
+        .map(<[Value]>::to_vec)
+        .unwrap_or_default();
     Ok(Value::Array(result))
 }
 
