@@ -1,0 +1,5 @@
+error: #[derive(EnumSelect)]: variants `HttpGet` and `HTTPGet` both map to the option value `http_get` — rename one variant so its catalog value is unique
+ --> tests/compile_fail/derive_enum_value_collision.rs:9:5
+  |
+9 |     HTTPGet,
+  |     ^^^^^^^

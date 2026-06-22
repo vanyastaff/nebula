@@ -7,19 +7,23 @@
 //!
 //! # Value encoding
 //!
-//! Each variant's stored value is `snake_case(variant_name)` — this is
-//! **hardcoded** and does not read `serde` attributes. If an enum also
-//! derives `Serialize` / `Deserialize` and intends the catalog options
-//! to round-trip back into the enum, the enum author must pin
-//! `#[serde(rename_all = "snake_case")]` (or `#[serde(rename = "...")]`
-//! per variant) to match. Reading serde attrs here is tracked for a
-//! follow-up — at this point in the lifecycle the only consumers of
-//! `EnumSelect` are not also `Serialize`-derivers, so hardcoding the
-//! safe default is the simplest honest implementation.
+//! Each variant's stored value is its name in `snake_case`, computed with
+//! [`heck`] so acronym runs split correctly (`HTTPProxy` → `http_proxy`, not
+//! `httpproxy`). Two variants that collapse to the same value are a spanned
+//! compile error rather than a silent collision.
+//!
+//! This does **not** yet read `serde` rename attributes. An enum that also
+//! derives `Serialize` / `Deserialize` and wants its catalog options to
+//! round-trip must keep an explicit `#[serde(rename_all = "snake_case")]` (or
+//! per-variant `#[serde(rename = "...")]`) aligned with this default. Honoring
+//! serde attributes is the keystone of the schema↔wire key-alignment follow-up.
 
+use std::collections::HashMap;
+
+use heck::ToSnakeCase;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
-use syn::{Data, DataEnum, DeriveInput, Fields};
+use syn::{Data, DataEnum, DeriveInput, Fields, ext::IdentExt};
 
 use crate::attrs::FieldAttrs;
 
@@ -40,6 +44,7 @@ pub(crate) fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
     };
 
     let mut option_exprs = Vec::with_capacity(variants.len());
+    let mut seen_values = HashMap::with_capacity(variants.len());
     for variant in variants {
         if !matches!(variant.fields, Fields::Unit) {
             return Err(syn::Error::new_spanned(
@@ -48,9 +53,22 @@ pub(crate) fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
             ));
         }
         let variant_name = &variant.ident;
-        let value = snake_case(&variant_name.to_string());
+        // Strip the raw-identifier prefix (`r#Type` → `Type`), then split on
+        // case/acronym boundaries via `heck` so `HTTPProxy` → `http_proxy`.
+        let value = variant_name.unraw().to_string().to_snake_case();
+        if let Some(previous) = seen_values.insert(value.clone(), variant_name.clone()) {
+            return Err(syn::Error::new_spanned(
+                variant_name,
+                format!(
+                    "#[derive(EnumSelect)]: variants `{previous}` and `{variant_name}` both map to \
+                     the option value `{value}` — rename one variant so its catalog value is unique",
+                ),
+            ));
+        }
         let field_attr = FieldAttrs::from_attrs(&variant.attrs)?;
-        let label = field_attr.label.unwrap_or_else(|| variant_name.to_string());
+        let label = field_attr
+            .label
+            .unwrap_or_else(|| variant_name.unraw().to_string());
         let description = field_attr.description;
         let mut expr = quote! {
             #crate_path::SelectOption::new(
@@ -74,23 +92,4 @@ pub(crate) fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
             }
         }
     })
-}
-
-/// Convert a `CamelCase` identifier to `snake_case`.
-fn snake_case(ident: &str) -> String {
-    let mut out = String::with_capacity(ident.len() + 4);
-    let mut prev_lower = false;
-    for (i, ch) in ident.chars().enumerate() {
-        if ch.is_ascii_uppercase() {
-            if i > 0 && prev_lower {
-                out.push('_');
-            }
-            out.push(ch.to_ascii_lowercase());
-            prev_lower = false;
-        } else {
-            out.push(ch);
-            prev_lower = ch.is_ascii_lowercase() || ch.is_ascii_digit();
-        }
-    }
-    out
 }

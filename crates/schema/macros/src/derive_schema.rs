@@ -3,9 +3,9 @@
 //! Generates `impl HasSchema for T { fn schema() -> ValidSchema { ... } }`
 //! where the schema is computed once and cached behind a `OnceLock`.
 
-use proc_macro2::TokenStream as TokenStream2;
+use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::quote;
-use syn::{Data, DataStruct, DeriveInput, Fields, Ident};
+use syn::{Data, DataStruct, DeriveInput, Fields, Ident, ext::IdentExt};
 
 use crate::{
     attrs::{DefaultLit, FieldAttrs, SchemaStructAttrs, ValidateAttrs},
@@ -110,6 +110,31 @@ pub(crate) fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
     })
 }
 
+/// Derive the schema key for a struct field: strip the raw-identifier prefix
+/// (`r#type` → `type`, matching serde's own raw-ident handling) and validate it
+/// against the `FieldKey` rules at expansion, so an invalid key surfaces as a
+/// spanned compile error instead of a runtime `.expect()` panic in the
+/// consuming crate.
+fn ident_to_field_key(ident: &Ident) -> syn::Result<String> {
+    let key = ident.unraw().to_string();
+    check_field_key(&key, ident.span())?;
+    Ok(key)
+}
+
+/// Validate a generated schema-key string against the shared `FieldKey` rules
+/// (`crate::validate_field_key`) and report a violation as a spanned error.
+fn check_field_key(key: &str, span: Span) -> syn::Result<()> {
+    crate::validate_field_key(key).map_err(|reason| {
+        syn::Error::new(
+            span,
+            format!(
+                "`{key}` is not a valid schema field key ({reason}); rename the field so its \
+                 key is a non-empty ASCII identifier of at most 64 characters"
+            ),
+        )
+    })
+}
+
 /// Build the token-stream expression that produces a `Field` for one struct field.
 fn build_field_expr(
     field_name: &Ident,
@@ -118,13 +143,13 @@ fn build_field_expr(
     validate: &ValidateAttrs,
     crate_path: &TokenStream2,
 ) -> syn::Result<TokenStream2> {
-    let key_str = field_name.to_string();
-    // Wrap as FieldKey via fallible constructor + expect (Rust idents are
-    // always valid FieldKey strings — `.expect()` is unreachable in practice
-    // and is the derive-codegen equivalent of `unreachable!`).
+    let key_str = ident_to_field_key(field_name)?;
+    // `key_str` was validated against the `FieldKey` rules at expansion (see
+    // `ident_to_field_key`), so the runtime constructor cannot fail — the
+    // `.expect()` is the codegen equivalent of `unreachable!`.
     let key = quote! {
         #crate_path::FieldKey::new(#key_str)
-            .expect("#[derive(Schema)] field name is a valid FieldKey")
+            .expect("#[derive(Schema)] field key validated at macro expansion")
     };
     let optional = kind.is_optional();
     let inner = kind.inner();
@@ -353,15 +378,18 @@ fn list_field_expr(
     item_kind: &FieldKind,
     crate_path: &TokenStream2,
 ) -> syn::Result<TokenStream2> {
-    let key_str = field_name.to_string();
+    let key_str = ident_to_field_key(field_name)?;
     let item_key_str = format!("{key_str}_item");
+    // The item key derives from an already-valid field key; re-check it because
+    // the `_item` suffix can push a near-limit key past the 64-char bound.
+    check_field_key(&item_key_str, field_name.span())?;
     let key = quote! {
         #crate_path::FieldKey::new(#key_str)
-            .expect("#[derive(Schema)] field name is a valid FieldKey")
+            .expect("#[derive(Schema)] field key validated at macro expansion")
     };
     let item_key = quote! {
         #crate_path::FieldKey::new(#item_key_str)
-            .expect("#[derive(Schema)] list item key is a valid FieldKey")
+            .expect("#[derive(Schema)] list item key validated at macro expansion")
     };
     let item_expr = match item_kind {
         FieldKind::String => quote! { #crate_path::Field::string(#item_key) },
