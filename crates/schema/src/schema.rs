@@ -534,6 +534,7 @@ impl SchemaBuilder {
         build_index(&fields, &mut index, &mut flags);
 
         Ok(ValidSchema::from_inner(ValidSchemaInner {
+            kind: crate::SchemaKind::Record,
             fields,
             index,
             flags,

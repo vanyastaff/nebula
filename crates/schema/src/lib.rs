@@ -238,7 +238,7 @@ pub use schema::{Schema, SchemaBuilder};
 pub use secret::{SECRET_REDACTED, SecretBytes, SecretString, SecretValue, SecretWire};
 pub use transformer::Transformer;
 pub use validated::{
-    FieldHandle, ResolvedLookup, ResolvedValues, SchemaFlags, ValidSchema, ValidValues,
+    FieldHandle, ResolvedLookup, ResolvedValues, SchemaFlags, SchemaKind, ValidSchema, ValidValues,
 };
 pub use value::{EXPRESSION_KEY, FieldValue, FieldValues};
 pub use widget::{

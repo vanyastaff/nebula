@@ -46,14 +46,31 @@ pub trait HasSelectOptions {
     fn select_options() -> Vec<SelectOption>;
 }
 
-/// Shared empty schema — delegates to [`ValidSchema::empty`].
+/// Shared empty-record schema — delegates to [`ValidSchema::empty`].
+///
+/// This is a [`SchemaKind::Record`](crate::SchemaKind::Record) with zero fields:
+/// the type genuinely has no inputs. Distinct from [`any_schema`], which is the
+/// gradual-typing `Any` for types whose shape is unknown.
 fn empty_schema() -> ValidSchema {
     ValidSchema::empty()
+}
+
+/// Shared gradual-typing `Any` schema — delegates to [`ValidSchema::any`].
+///
+/// Used for types that carry data of an unknown record shape (`serde_json::Value`,
+/// [`FieldValues`], primitive stubs). Unlike [`empty_schema`] it is *not* an
+/// empty record — it is the lattice `Any`, so it stays distinct from `()` and
+/// does not falsely claim to produce or consume zero fields.
+fn any_schema() -> ValidSchema {
+    ValidSchema::any()
 }
 
 /// Baseline `HasSchema` impl for the unit type — actions / credentials /
 /// resources that have no user-configurable parameters can use `()` as their
 /// `Input` / `Config` without forcing authors to implement the trait.
+///
+/// `()` is an empty *record* (`SchemaKind::Record`): it genuinely has no inputs,
+/// as opposed to the untyped `Any` of `serde_json::Value`.
 impl HasSchema for () {
     fn schema() -> ValidSchema {
         empty_schema()
@@ -61,34 +78,37 @@ impl HasSchema for () {
 }
 
 /// Baseline `HasSchema` impl for dynamic JSON values — authors using untyped
-/// `serde_json::Value` as their `Input` advertise an empty schema. They remain
-/// responsible for documenting the expected shape out-of-band. Use a concrete
-/// typed struct with `#[derive(Schema)]` to get a real schema.
+/// `serde_json::Value` as their `Input` advertise the gradual-typing `Any`: the
+/// shape is unknown, not empty. They remain responsible for documenting the
+/// expected shape out-of-band. Use a concrete typed struct with
+/// `#[derive(Schema)]` to get a real schema.
 impl HasSchema for serde_json::Value {
     fn schema() -> ValidSchema {
-        empty_schema()
+        any_schema()
     }
 }
 
-/// Baseline `HasSchema` impl for [`FieldValues`] — legacy code paths that
-/// still treat the raw value bag as the input type advertise an empty schema.
+/// Baseline `HasSchema` impl for [`FieldValues`] — legacy code paths that still
+/// treat the raw value bag as the input type advertise the gradual-typing `Any`
+/// (unknown shape), not an empty record.
 impl HasSchema for FieldValues {
     fn schema() -> ValidSchema {
-        empty_schema()
+        any_schema()
     }
 }
 
 /// Baseline `HasSchema` impls for common primitives — useful when a trait
 /// (e.g. [`ResourceConfig`](nebula_resource::ResourceConfig)) requires a
 /// `HasSchema` bound and the implementer is using a primitive as a stub.
-/// Any production usage should wrap the primitive in a struct with
-/// `#[derive(Schema)]` instead.
+/// A bare scalar carries data of no record shape, so it advertises the
+/// gradual-typing `Any` rather than an empty record. Any production usage
+/// should wrap the primitive in a struct with `#[derive(Schema)]` instead.
 macro_rules! empty_has_schema_for {
     ($($t:ty),* $(,)?) => {
         $(
             impl HasSchema for $t {
                 fn schema() -> ValidSchema {
-                    empty_schema()
+                    any_schema()
                 }
             }
         )*
@@ -174,26 +194,60 @@ mod tests {
     }
 
     #[test]
-    fn unit_has_empty_schema() {
-        assert_eq!(<() as HasSchema>::schema().fields().len(), 0);
+    fn unit_has_empty_record_schema() {
+        let schema = <() as HasSchema>::schema();
+        assert_eq!(schema.fields().len(), 0);
+        assert_eq!(
+            schema.kind(),
+            crate::SchemaKind::Record,
+            "`()` is a genuine empty record, not the gradual `Any`"
+        );
     }
 
     #[test]
-    fn json_value_has_empty_schema() {
-        assert_eq!(<serde_json::Value as HasSchema>::schema().fields().len(), 0);
+    fn json_value_has_any_schema() {
+        let schema = <serde_json::Value as HasSchema>::schema();
+        assert_eq!(schema.fields().len(), 0);
+        assert_eq!(
+            schema.kind(),
+            crate::SchemaKind::Any,
+            "untyped JSON advertises the gradual `Any`, not an empty record"
+        );
     }
 
     #[test]
-    fn field_values_has_empty_schema() {
-        assert_eq!(<FieldValues as HasSchema>::schema().fields().len(), 0);
+    fn field_values_has_any_schema() {
+        let schema = <FieldValues as HasSchema>::schema();
+        assert_eq!(schema.fields().len(), 0);
+        assert_eq!(schema.kind(), crate::SchemaKind::Any);
     }
 
     #[test]
-    fn empty_schema_is_cached() {
-        let a = <() as HasSchema>::schema();
-        let b = <serde_json::Value as HasSchema>::schema();
-        // Same Arc — shared cache entry.
-        assert_eq!(a, b);
+    fn primitive_stub_has_any_schema() {
+        assert_eq!(<i32 as HasSchema>::schema().kind(), crate::SchemaKind::Any);
+        assert_eq!(
+            <String as HasSchema>::schema().kind(),
+            crate::SchemaKind::Any
+        );
+    }
+
+    #[test]
+    fn unit_and_any_are_distinct_but_each_cached() {
+        let unit_a = <() as HasSchema>::schema();
+        let unit_b = <() as HasSchema>::schema();
+        let any_a = <serde_json::Value as HasSchema>::schema();
+        let any_b = <FieldValues as HasSchema>::schema();
+
+        // Each constructor returns a shared, cached `Arc`.
+        assert!(unit_a.ptr_eq(&unit_b), "`()` schema is cached");
+        assert!(any_a.ptr_eq(&any_b), "the `Any` schema is shared");
+
+        // But the empty record and the gradual `Any` are NOT the same schema:
+        // distinguishing them is the whole point of the Top/Bottom split.
+        assert_ne!(
+            unit_a, any_a,
+            "an empty record must not compare equal to the gradual `Any`"
+        );
     }
 
     #[test]
