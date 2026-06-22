@@ -131,6 +131,22 @@ pub enum WorkflowError {
     #[error("port schema incompatible: {0}")]
     PortSchemaIncompatible(Box<PortSchemaIncompatDetails>),
 
+    /// The producer→consumer edge is **not statically decidable** under
+    /// [`SchemaCheckMode::Strict`](crate::validate::SchemaCheckMode) (ADR-0100
+    /// TypeDAG): the assignability verdict was
+    /// [`nebula_schema::Assignability::Unknown`] — a loader-backed `Dynamic`
+    /// field, an opaque `Any` producer, `Mode` sum-type variance, or a float→int
+    /// narrowing — so compatibility could be neither proven nor refuted.
+    ///
+    /// Never emitted under
+    /// [`SchemaCheckMode::Gradual`](crate::validate::SchemaCheckMode), which
+    /// passes undecidable edges (the default, preserving untyped
+    /// `serde_json::Value` workflows). Boxed for the same `result_large_err`
+    /// reason as [`Self::PortSchemaIncompatible`].
+    #[classify(category = "validation", code = "WORKFLOW:PORT_SCHEMA_UNDECIDABLE")]
+    #[error("port schema undecidable: {0}")]
+    PortSchemaUndecidable(Box<PortSchemaUndecidableDetails>),
+
     /// A `RetryConfig` (per-node or workflow-default) violates the validity
     /// rules: `max_attempts == 0`, `max_delay_ms < initial_delay_ms`,
     /// `backoff_multiplier <= 0` or non-finite, or `initial_delay_ms == 0`
@@ -181,6 +197,38 @@ impl std::fmt::Display for PortSchemaIncompatDetails {
             f,
             "{}.{} \u{2192} {}.{}: {}",
             self.from_node, from_port, self.to_node, to_port, self.reason
+        )
+    }
+}
+
+/// Payload for [`WorkflowError::PortSchemaUndecidable`].
+///
+/// Kept separate and `Box`ed on the enum for the same `clippy::result_large_err`
+/// reason as [`PortSchemaIncompatDetails`].
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct PortSchemaUndecidableDetails {
+    /// The producer (source) node key.
+    pub from_node: NodeKey,
+    /// The consumer (target) node key.
+    pub to_node: NodeKey,
+    /// The source output port, if named (`None` = default `"main"`).
+    pub from_port: Option<String>,
+    /// The target input port, if named (`None` = default flow input).
+    pub to_port: Option<String>,
+    /// Human-readable list of why the edge is undecidable (from
+    /// [`nebula_schema::UnknownReason`]'s `Display`, joined with `; `).
+    pub reasons: String,
+}
+
+impl std::fmt::Display for PortSchemaUndecidableDetails {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let from_port = self.from_port.as_deref().unwrap_or("main");
+        let to_port = self.to_port.as_deref().unwrap_or("default");
+        write!(
+            f,
+            "{}.{} \u{2192} {}.{}: {}",
+            self.from_node, from_port, self.to_node, to_port, self.reasons
         )
     }
 }

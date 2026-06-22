@@ -141,12 +141,13 @@ pub enum SchemaIncompat {
 /// - **`File` and `Select` cardinality** — the `multiple` flag (scalar vs.
 ///   array) is checked for equality; a mismatch returns
 ///   [`SchemaIncompat::CardinalityMismatch`].
-/// - **`Mode` fields** — `Mode`-vs-`Mode` is treated as compatible regardless
-///   of variant payloads (lenient, never false-rejects). Real union-variance
-///   compatibility is deferred to an ADR-0100 addendum.
-/// - **`Number` integer vs. float** — both carry `type_name() == "number"` and
-///   are treated as compatible. Numeric-widening subtyping is deferred to an
-///   ADR-0100 addendum.
+/// - **`Mode` fields** — `Mode`-vs-`Mode` passes the binary check (never
+///   false-rejects), but [`explain_assignable`] reports it as
+///   [`UnknownReason::ModeVariance`]: sum-type variance is not modeled.
+/// - **`Number` integer vs. float** — both carry `type_name() == "number"`.
+///   int→float is provably compatible; float→int passes the binary check but is
+///   [`UnknownReason::NumberWidening`] in [`explain_assignable`] (possible
+///   precision loss).
 ///
 /// # Errors
 ///
@@ -166,36 +167,185 @@ pub fn is_assignable_schema(
     producer: &ValidSchema,
     consumer: &ValidSchema,
 ) -> Result<(), SchemaIncompat> {
-    // Gradual `Any` on either side is the escape hatch.
-    if producer.kind() == SchemaKind::Any || consumer.kind() == SchemaKind::Any {
-        return Ok(());
+    // Binary view of the ternary verdict: `Yes` and `Unknown` (not statically
+    // refuted) both pass — this keeps the gradual escape (untyped producers,
+    // Dynamic/Mode/Number leniencies) green. Only a definite `No` is an error,
+    // surfaced as its first incompatibility (depth-first, consumer-field order).
+    match explain_assignable(producer, consumer) {
+        Assignability::Yes | Assignability::Unknown(_) => Ok(()),
+        Assignability::No(incompats) => match incompats.into_iter().next() {
+            Some(first) => Err(first),
+            None => Ok(()),
+        },
     }
-    // Both are concrete records: strict width-subtyping, no empty-producer escape.
-    fields_assignable(producer.fields(), consumer.fields(), true)
+}
+
+/// The three-valued (Cue/GraphQL-style) assignability verdict: a producer
+/// schema is provably assignable, provably not, or **not statically decidable**.
+///
+/// Unlike [`is_assignable_schema`] — which collapses to a binary `Ok`/`Err` and
+/// returns only the *first* incompatibility — this verdict separates "not
+/// provable" ([`Unknown`](Assignability::Unknown)) from "provably wrong"
+/// ([`No`](Assignability::No)) and collects **every** finding, so a strict
+/// validator can block on unprovable edges while a gradual one passes them. The
+/// `No`/`Unknown` lists are non-empty in their respective variants.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Assignability {
+    /// The producer is provably assignable to the consumer.
+    Yes,
+    /// The producer is provably **not** assignable; carries every incompatibility
+    /// found (depth-first, consumer-field order), not just the first.
+    No(Vec<SchemaIncompat>),
+    /// Assignability cannot be decided statically (e.g. a loader-backed
+    /// `Dynamic` field, an opaque `Any` producer, sum-type `Mode` variance, or
+    /// a float→int narrowing). **Not** fail-open: a strict policy treats this as
+    /// a blocked edge; a gradual policy passes it.
+    Unknown(Vec<UnknownReason>),
+}
+
+/// Why an edge's assignability is [`Unknown`](Assignability::Unknown) — each
+/// case is a place where the type system cannot currently *prove* compatibility
+/// nor refute it.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UnknownReason {
+    /// The producer schema is the gradual `Any` ([`SchemaKind::Any`]): it may
+    /// emit anything, so it is not provably compatible with a typed consumer.
+    OpaqueProducer,
+    /// A matched field is `Dynamic`/`Computed` (loader- or expression-backed),
+    /// so its concrete shape is unknown until runtime.
+    DynamicLoaderBacked {
+        /// Key of the dynamic field.
+        key: FieldKey,
+    },
+    /// A matched `Mode` (sum-type) pair: variant-level variance is not modeled,
+    /// so neither compatibility nor a conflict is proven.
+    ModeVariance {
+        /// Key of the `Mode` field.
+        key: FieldKey,
+    },
+    /// A matched `Number` pair narrows float→int: the producer may emit a
+    /// non-integral value the consumer cannot represent, but a static check
+    /// cannot tell whether it ever will.
+    NumberWidening {
+        /// Key of the number field.
+        key: FieldKey,
+    },
+}
+
+impl core::fmt::Display for UnknownReason {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::OpaqueProducer => {
+                write!(f, "producer schema is an opaque `Any` (shape unknown)")
+            },
+            Self::DynamicLoaderBacked { key } => {
+                write!(f, "field `{key}` is dynamic/computed (resolved at runtime)")
+            },
+            Self::ModeVariance { key } => {
+                write!(
+                    f,
+                    "field `{key}` is a `Mode` sum type (variance not modeled)"
+                )
+            },
+            Self::NumberWidening { key } => {
+                write!(
+                    f,
+                    "field `{key}` narrows float to integer (possible precision loss)"
+                )
+            },
+        }
+    }
+}
+
+/// Full three-valued assignability: collects **all** incompatibilities and all
+/// "not decidable" reasons rather than stopping at the first.
+///
+/// Honors the [`SchemaKind`] Top/Bottom split like [`is_assignable_schema`]: an
+/// `Any` consumer accepts anything ([`Yes`](Assignability::Yes)); an `Any`
+/// producer is [`Unknown(OpaqueProducer)`](UnknownReason::OpaqueProducer); two
+/// concrete records run strict width-subtyping. The verdict precedence is
+/// `No` (any provable incompatibility) ▸ `Unknown` (any undecidable field) ▸
+/// `Yes`.
+///
+/// The leniencies that [`is_assignable_schema`] silently passes are surfaced
+/// here as [`Unknown`](Assignability::Unknown) instead of being hidden in `Ok`,
+/// so a strict workflow validator can block them. See [`UnknownReason`].
+#[must_use]
+pub fn explain_assignable(producer: &ValidSchema, consumer: &ValidSchema) -> Assignability {
+    // An `Any` consumer accepts anything — provably compatible.
+    if consumer.kind() == SchemaKind::Any {
+        return Assignability::Yes;
+    }
+    // An `Any` producer may emit anything: not refuted, but not provable either.
+    if producer.kind() == SchemaKind::Any {
+        return Assignability::Unknown(vec![UnknownReason::OpaqueProducer]);
+    }
+    let mut acc = Explain::default();
+    collect_fields(producer.fields(), consumer.fields(), true, &mut acc);
+    acc.into_verdict()
 }
 
 // ── Private core ─────────────────────────────────────────────────────────────
 
-/// Core field-slice assignability loop, shared between the top-level entry
-/// point and recursive `Object`/`List` descent.
-///
-/// Keeping this as a separate private function avoids constructing throwaway
-/// `Schema` values for nested object/list fields during recursion.
-fn fields_assignable(
+/// Accumulator for the collect-all traversal: every provable incompatibility
+/// and every undecidable reason, in depth-first / consumer-field order.
+#[derive(Default)]
+struct Explain {
+    incompat: Vec<SchemaIncompat>,
+    unknown: Vec<UnknownReason>,
+}
+
+impl Explain {
+    /// Collapse to a verdict: `No` if any incompatibility (a provable conflict
+    /// dominates), else `Unknown` if any undecidable field, else `Yes`.
+    fn into_verdict(self) -> Assignability {
+        if !self.incompat.is_empty() {
+            Assignability::No(self.incompat)
+        } else if !self.unknown.is_empty() {
+            Assignability::Unknown(self.unknown)
+        } else {
+            Assignability::Yes
+        }
+    }
+}
+
+impl Explain {
+    /// Fold a nested sub-traversal's findings into this accumulator, wrapping
+    /// each nested incompatibility in [`SchemaIncompat::NestedIncompat`] under
+    /// `key`. Unknown reasons already carry their own field key, so they are
+    /// lifted unwrapped.
+    fn wrap_nested(&mut self, key: &FieldKey, sub: Explain) {
+        for inner in sub.incompat {
+            self.incompat.push(SchemaIncompat::NestedIncompat {
+                key: key.clone(),
+                inner: Box::new(inner),
+            });
+        }
+        self.unknown.extend(sub.unknown);
+    }
+}
+
+/// Collect-all field-slice traversal, shared by [`explain_assignable`] (strict)
+/// and the test-only gradual slice check. Pushes every incompatibility and every
+/// undecidable reason into `acc` in depth-first, consumer-field order; it never
+/// early-returns, so the caller always sees the full picture.
+fn collect_fields(
     producer_fields: &[Field],
     consumer_fields: &[Field],
     strict: bool,
-) -> Result<(), SchemaIncompat> {
-    // An empty consumer requires nothing — always satisfiable, both modes.
+    acc: &mut Explain,
+) {
+    // An empty consumer requires nothing.
     if consumer_fields.is_empty() {
-        return Ok(());
+        return;
     }
-    // Gradual mode: an empty producer is the untyped/opaque `Any` escape. In
-    // strict mode the producer is a concrete record that emits exactly these
-    // fields, so an empty producer must face the per-field required check below
-    // (and will fail any hard-required consumer field).
+    // Gradual mode: an empty producer is the untyped/opaque `Any` escape. Strict
+    // mode (the kind-aware path) gives it no escape — an empty record emits no
+    // fields and must face the per-field required check below.
     if !strict && producer_fields.is_empty() {
-        return Ok(());
+        return;
     }
 
     for consumer_field in consumer_fields {
@@ -209,113 +359,111 @@ fn fields_assignable(
 
         match producer_fields.iter().find(|pf| pf.key() == consumer_key) {
             None if is_hard_required => {
-                return Err(SchemaIncompat::MissingRequiredField {
+                acc.incompat.push(SchemaIncompat::MissingRequiredField {
                     key: consumer_key.clone(),
                 });
             },
-            None => {
-                // Optional consumer field absent from producer — fine under
-                // width subtyping.
-                continue;
-            },
+            // Optional consumer field absent from producer — fine under width subtyping.
+            None => {},
             Some(producer_field) => {
-                field_pair_assignable(consumer_key, producer_field, consumer_field, strict)?;
+                collect_pair(consumer_key, producer_field, consumer_field, strict, acc);
             },
         }
     }
-
-    Ok(())
 }
 
-/// Check a matched field pair (same key, both present).
+/// Classify a matched field pair (same key, both present), pushing into `acc`.
 ///
-/// - `Dynamic`/`Computed` on either side → Any escape → `Ok`.
-/// - `File`/`File` and `Select`/`Select` → check `multiple` equality →
-///   [`SchemaIncompat::CardinalityMismatch`] if they differ.
-/// - Same structural variant with nested fields → recurse; wrap inner error in
-///   [`SchemaIncompat::NestedIncompat`].
-/// - Different structural variants (different `type_name`) →
-///   [`SchemaIncompat::FieldTypeMismatch`].
-/// - Same primitive variant → `Ok`.
-///
-/// ## Mode fields
-///
-/// `Mode`-vs-`Mode` falls through to `type_name()` equality → always `Ok`
-/// regardless of variant payloads.
-/// NOTE: `Mode` is a sum type; sum-type variance (contravariant on the
-/// argument side) is the opposite of record width-subtyping and is deferred to
-/// an ADR-0100 addendum. This arm is intentionally lenient — it never
-/// false-rejects a `Mode` pair.
-fn field_pair_assignable(
+/// Provable conflicts (cardinality, type mismatch, nested) become
+/// [`SchemaIncompat`]; the leniencies the binary check silently passes —
+/// `Dynamic`/`Computed`, `Mode` variance, and float→int narrowing — become
+/// [`UnknownReason`] so a strict policy can see them. `Number` int→float
+/// widening and equal primitive variants are provably compatible (nothing
+/// pushed).
+fn collect_pair(
     key: &FieldKey,
     producer_field: &Field,
     consumer_field: &Field,
     strict: bool,
-) -> Result<(), SchemaIncompat> {
-    // Any escape: Dynamic or Computed on either side matches anything. This
-    // per-field gradual escape holds in both modes — a `Dynamic`/`Computed`
-    // field is explicitly `Any`-typed regardless of the enclosing record's kind.
+    acc: &mut Explain,
+) {
+    // Dynamic/Computed on either side: loader/expression-backed, concrete shape
+    // unknown until runtime — not statically provable in either direction.
     if matches!(producer_field, Field::Dynamic(_) | Field::Computed(_))
         || matches!(consumer_field, Field::Dynamic(_) | Field::Computed(_))
     {
-        return Ok(());
+        acc.unknown
+            .push(UnknownReason::DynamicLoaderBacked { key: key.clone() });
+        return;
     }
 
     match (producer_field, consumer_field) {
         (Field::File(p), Field::File(c)) => {
             if p.multiple != c.multiple {
-                return Err(SchemaIncompat::CardinalityMismatch {
+                acc.incompat.push(SchemaIncompat::CardinalityMismatch {
                     key: key.clone(),
                     producer_multiple: p.multiple,
                     consumer_multiple: c.multiple,
                 });
             }
-            Ok(())
         },
         (Field::Select(p), Field::Select(c)) => {
             if p.multiple != c.multiple {
-                return Err(SchemaIncompat::CardinalityMismatch {
+                acc.incompat.push(SchemaIncompat::CardinalityMismatch {
                     key: key.clone(),
                     producer_multiple: p.multiple,
                     consumer_multiple: c.multiple,
                 });
             }
-            Ok(())
         },
         (Field::Object(producer_obj), Field::Object(consumer_obj)) => {
-            fields_assignable(&producer_obj.fields, &consumer_obj.fields, strict).map_err(|inner| {
-                SchemaIncompat::NestedIncompat {
-                    key: key.clone(),
-                    inner: Box::new(inner),
-                }
-            })
+            let mut sub = Explain::default();
+            collect_fields(&producer_obj.fields, &consumer_obj.fields, strict, &mut sub);
+            acc.wrap_nested(key, sub);
         },
         (Field::List(producer_list), Field::List(consumer_list)) => {
             match (&producer_list.item, &consumer_list.item) {
-                // Either side has no typed item schema — Any escape.
-                (None, _) | (_, None) => Ok(()),
+                // Either side has no typed item schema — Any escape (provably Yes).
+                (None, _) | (_, None) => {},
                 (Some(producer_item), Some(consumer_item)) => {
-                    field_pair_assignable(key, producer_item, consumer_item, strict).map_err(
-                        |inner| SchemaIncompat::NestedIncompat {
-                            key: key.clone(),
-                            inner: Box::new(inner),
-                        },
-                    )
+                    // The nested context is the list field `key`, but the inner
+                    // incompatibility is labeled with the *item's* key (not the
+                    // list key — that conflation was the old list-item-key bug).
+                    let mut sub = Explain::default();
+                    collect_pair(
+                        consumer_item.key(),
+                        producer_item,
+                        consumer_item,
+                        strict,
+                        &mut sub,
+                    );
+                    acc.wrap_nested(key, sub);
                 },
             }
         },
-        // For all other variant pairs: same type_name = compatible.
-        // Note: Mode-vs-Mode is intentionally lenient — see fn-level NOTE above.
-        // Note: Number integer-vs-float both have type_name "number" — deferred to ADR-0100 addendum.
+        (Field::Number(p), Field::Number(c)) => {
+            // int→float widening is safe (provably Yes). float→int narrowing may
+            // lose precision — but a float producer could still only ever emit
+            // integral values, so it is not provably wrong: Unknown, not No.
+            if !p.integer && c.integer {
+                acc.unknown
+                    .push(UnknownReason::NumberWidening { key: key.clone() });
+            }
+        },
+        (Field::Mode(_), Field::Mode(_)) => {
+            // Sum-type variance is not modeled (it runs opposite to record
+            // width-subtyping) — neither proven compatible nor refuted.
+            acc.unknown
+                .push(UnknownReason::ModeVariance { key: key.clone() });
+        },
+        // All other pairs: same type_name = compatible; different = type mismatch.
         _ => {
-            if producer_field.type_name() == consumer_field.type_name() {
-                Ok(())
-            } else {
-                Err(SchemaIncompat::FieldTypeMismatch {
+            if producer_field.type_name() != consumer_field.type_name() {
+                acc.incompat.push(SchemaIncompat::FieldTypeMismatch {
                     key: key.clone(),
                     producer: producer_field.type_name(),
                     consumer: consumer_field.type_name(),
-                })
+                });
             }
         },
     }
@@ -337,9 +485,23 @@ mod tests {
     /// [`is_assignable_schema`], which honors the `SchemaKind` Top/Bottom split.
     /// Retained here to exercise the shared per-field matching logic (type
     /// mismatch, cardinality, nesting) and the gradual empty-producer escape
-    /// directly on `&[Field]` without building a `ValidSchema` per case.
+    /// directly on `&[Field]` without building a `ValidSchema` per case. Mirrors
+    /// the binary mapping: `Yes`/`Unknown` ⇒ `Ok`, `No` ⇒ first incompatibility.
     fn is_assignable(producer: &[Field], consumer: &[Field]) -> Result<(), SchemaIncompat> {
-        fields_assignable(producer, consumer, false)
+        match explain_slice(producer, consumer, false) {
+            Assignability::Yes | Assignability::Unknown(_) => Ok(()),
+            Assignability::No(incompats) => match incompats.into_iter().next() {
+                Some(first) => Err(first),
+                None => Ok(()),
+            },
+        }
+    }
+
+    /// Test-only collect-all over raw slices, with explicit `strict` control.
+    fn explain_slice(producer: &[Field], consumer: &[Field], strict: bool) -> Assignability {
+        let mut acc = Explain::default();
+        collect_fields(producer, consumer, strict, &mut acc);
+        acc.into_verdict()
     }
 
     // ── Compatible: producer has all required consumer fields + extra ──────
@@ -504,12 +666,14 @@ mod tests {
             .item(Field::number(fk("item")))
             .required()
             .into()];
+        // Outer NestedIncompat is keyed by the list field (`values`); the inner
+        // mismatch is keyed by the *item* (`item`), not the list key.
         assert_eq!(
             is_assignable(&producer, &consumer),
             Err(SchemaIncompat::NestedIncompat {
                 key: fk("values"),
                 inner: Box::new(SchemaIncompat::FieldTypeMismatch {
-                    key: fk("values"),
+                    key: fk("item"),
                     producer: "string",
                     consumer: "number",
                 }),
@@ -706,10 +870,9 @@ mod tests {
     }
 
     // ── Strict-mode recursion: `strict` must reach nested Object / List leaves ──
-    // These drive the private core directly (the public `is_assignable_schema`
-    // delegates record subtyping to `fields_assignable(.., strict = true)`), and
-    // contrast strict vs gradual at depth so a dropped `strict` argument in the
-    // Object/List recursion arms goes RED.
+    // These drive the collect-all core via `explain_slice` and contrast strict
+    // vs gradual at depth, so a dropped `strict` argument in the Object/List
+    // recursion arms goes RED.
 
     /// An empty nested-object producer does NOT satisfy a consumer whose nested
     /// object hard-requires a field — under strict mode, one level deep. Gradual
@@ -722,23 +885,24 @@ mod tests {
             .into()];
 
         assert_eq!(
-            fields_assignable(&producer, &consumer, true),
-            Err(SchemaIncompat::NestedIncompat {
+            explain_slice(&producer, &consumer, true),
+            Assignability::No(vec![SchemaIncompat::NestedIncompat {
                 key: fk("config"),
                 inner: Box::new(SchemaIncompat::MissingRequiredField { key: fk("host") }),
-            }),
+            }]),
             "strict mode must recurse into the empty producer object and fail the required field"
         );
         assert_eq!(
-            fields_assignable(&producer, &consumer, false),
-            Ok(()),
+            explain_slice(&producer, &consumer, false),
+            Assignability::Yes,
             "gradual mode escapes the empty nested producer — confirms the strict flag is what bites"
         );
     }
 
     /// A list whose item is an empty object does NOT satisfy a consumer list
     /// whose item object hard-requires a field — strict propagates List → item →
-    /// Object. Gradual mode escapes it.
+    /// Object. Gradual mode escapes it. The inner context key is the *item*
+    /// (`item`), the outer is the list (`items`).
     #[test]
     fn strict_rejects_empty_nested_list_item_producer() {
         let producer = [Field::list(fk("items"))
@@ -749,20 +913,138 @@ mod tests {
             .into()];
 
         assert_eq!(
-            fields_assignable(&producer, &consumer, true),
-            Err(SchemaIncompat::NestedIncompat {
+            explain_slice(&producer, &consumer, true),
+            Assignability::No(vec![SchemaIncompat::NestedIncompat {
                 key: fk("items"),
                 inner: Box::new(SchemaIncompat::NestedIncompat {
-                    key: fk("items"),
+                    key: fk("item"),
                     inner: Box::new(SchemaIncompat::MissingRequiredField { key: fk("id") }),
                 }),
-            }),
+            }]),
             "strict mode must recurse List -> item -> Object and fail the required field"
         );
         assert_eq!(
-            fields_assignable(&producer, &consumer, false),
-            Ok(()),
+            explain_slice(&producer, &consumer, false),
+            Assignability::Yes,
             "gradual mode escapes the empty list-item object — confirms strict propagation"
         );
+    }
+
+    // ── Ternary `explain_assignable`: Yes / No(all) / Unknown(reasons) ─────────
+
+    /// `explain_assignable` collects ALL incompatibilities, not just the first —
+    /// the property that makes it a CI/diagnostics channel rather than a gate.
+    #[test]
+    fn explain_collects_all_incompatibilities() {
+        let producer = required_record("present");
+        let consumer = crate::Schema::builder()
+            .add(Field::string(fk("missing_a")).required())
+            .add(Field::string(fk("missing_b")).required())
+            .build()
+            .unwrap();
+        match explain_assignable(&producer, &consumer) {
+            Assignability::No(incompats) => {
+                assert_eq!(
+                    incompats.len(),
+                    2,
+                    "both missing required fields are reported"
+                );
+                assert!(incompats.contains(&SchemaIncompat::MissingRequiredField {
+                    key: fk("missing_a")
+                }));
+                assert!(incompats.contains(&SchemaIncompat::MissingRequiredField {
+                    key: fk("missing_b")
+                }));
+            },
+            other => panic!("expected No(2), got {other:?}"),
+        }
+    }
+
+    /// An `Any` producer is `Unknown(OpaqueProducer)` — not provable — even
+    /// though the binary check passes it (gradual escape).
+    #[test]
+    fn explain_any_producer_is_unknown_opaque() {
+        let consumer = required_record("name");
+        assert_eq!(
+            explain_assignable(&ValidSchema::any(), &consumer),
+            Assignability::Unknown(vec![UnknownReason::OpaqueProducer]),
+        );
+        // The binary view still passes it.
+        assert!(is_assignable_schema(&ValidSchema::any(), &consumer).is_ok());
+    }
+
+    /// An `Any` consumer is provably `Yes` (it accepts anything).
+    #[test]
+    fn explain_any_consumer_is_yes() {
+        let producer = required_record("name");
+        assert_eq!(
+            explain_assignable(&producer, &ValidSchema::any()),
+            Assignability::Yes,
+        );
+    }
+
+    /// A `Dynamic` producer field is `Unknown(DynamicLoaderBacked)` in explain,
+    /// yet `Ok` in the binary check (the lofty per-field gradual escape).
+    #[test]
+    fn explain_dynamic_field_is_unknown_not_ok() {
+        let producer = crate::Schema::builder()
+            .add(Field::dynamic(fk("name")))
+            .build()
+            .unwrap();
+        let consumer = required_record("name");
+        assert_eq!(
+            explain_assignable(&producer, &consumer),
+            Assignability::Unknown(vec![UnknownReason::DynamicLoaderBacked { key: fk("name") }]),
+        );
+        assert!(is_assignable_schema(&producer, &consumer).is_ok());
+    }
+
+    /// Number int→float widens (provably `Yes`); float→int narrows
+    /// (`Unknown(NumberWidening)`, not a hard `No`).
+    #[test]
+    fn explain_number_widening_is_directional() {
+        let int_producer = crate::Schema::builder()
+            .add(Field::number(fk("n")).integer())
+            .build()
+            .unwrap();
+        let float_consumer = crate::Schema::builder()
+            .add(Field::number(fk("n")))
+            .build()
+            .unwrap();
+        // int -> float: safe widening.
+        assert_eq!(
+            explain_assignable(&int_producer, &float_consumer),
+            Assignability::Yes,
+        );
+        // float -> int: possible precision loss, undecidable.
+        assert_eq!(
+            explain_assignable(&float_consumer, &int_producer),
+            Assignability::Unknown(vec![UnknownReason::NumberWidening { key: fk("n") }]),
+        );
+        // Both pass the binary check (Unknown ⇒ Ok).
+        assert!(is_assignable_schema(&float_consumer, &int_producer).is_ok());
+    }
+
+    /// A definite incompatibility dominates an undecidable one: `No` ▸ `Unknown`.
+    #[test]
+    fn explain_no_dominates_unknown() {
+        let producer = crate::Schema::builder()
+            .add(Field::dynamic(fk("d")))
+            .build()
+            .unwrap();
+        let consumer = crate::Schema::builder()
+            .add(Field::dynamic(fk("d")))
+            .add(Field::string(fk("required_missing")).required())
+            .build()
+            .unwrap();
+        match explain_assignable(&producer, &consumer) {
+            Assignability::No(v) => assert_eq!(
+                v,
+                vec![SchemaIncompat::MissingRequiredField {
+                    key: fk("required_missing")
+                }]
+            ),
+            other => panic!("a provable incompatibility must dominate Unknown, got {other:?}"),
+        }
     }
 }

@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 
-use nebula_schema::is_assignable_schema;
+use nebula_schema::{Assignability, explain_assignable};
 
 use crate::{
     definition::{CURRENT_SCHEMA_VERSION, RetryConfig, WorkflowDefinition},
@@ -183,12 +183,48 @@ pub fn validate_workflow(definition: &WorkflowDefinition) -> Vec<WorkflowError> 
     errors
 }
 
+/// Policy for how the TypeDAG per-edge schema check treats an **undecidable**
+/// assignability verdict ([`nebula_schema::Assignability::Unknown`] — a
+/// loader-backed `Dynamic` field, an opaque `Any` producer, `Mode` sum-type
+/// variance, or a float→int narrowing).
+///
+/// A provable incompatibility ([`No`](nebula_schema::Assignability::No)) is
+/// always reported regardless of mode; this only governs the `Unknown` middle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum SchemaCheckMode {
+    /// Undecidable edges **pass** (warn-and-pass). The default — preserves
+    /// untyped `serde_json::Value` / `Dynamic` workflows. Behaves exactly like
+    /// the binary [`nebula_schema::is_assignable_schema`].
+    #[default]
+    Gradual,
+    /// Undecidable edges are **blocked** with
+    /// [`WorkflowError::PortSchemaUndecidable`] carrying the reasons. Use when a
+    /// workflow must be provably well-typed before activation.
+    Strict,
+}
+
+/// Validate a workflow definition and run the TypeDAG per-edge schema check in
+/// [`SchemaCheckMode::Gradual`] (the back-compatible default — undecidable edges
+/// pass). See [`validate_workflow_with_resolver_mode`] to choose the mode.
+#[must_use]
+pub fn validate_workflow_with_resolver(
+    definition: &WorkflowDefinition,
+    resolver: &dyn NodeSchemaResolver,
+) -> Vec<WorkflowError> {
+    validate_workflow_with_resolver_mode(definition, resolver, SchemaCheckMode::Gradual)
+}
+
 /// Validate a workflow definition and run the TypeDAG per-edge schema check.
 ///
 /// Runs every structural check that [`validate_workflow`] performs, then for
 /// each [`Connection`](crate::Connection) whose **both** endpoints can be
-/// resolved by `resolver`, calls
-/// `nebula_schema::is_assignable_schema(producer.output, consumer.input)`.
+/// resolved by `resolver`, computes
+/// `nebula_schema::explain_assignable(producer.output, consumer.input)` and
+/// reports per `mode`: a [`No`](nebula_schema::Assignability::No) verdict is
+/// always a [`WorkflowError::PortSchemaIncompatible`]; an
+/// [`Unknown`](nebula_schema::Assignability::Unknown) verdict is a
+/// [`WorkflowError::PortSchemaUndecidable`] only in [`SchemaCheckMode::Strict`].
 ///
 /// An edge is **skipped** (fail-open, ADR-0100 T3.2) when **any** of the
 /// following hold:
@@ -213,16 +249,19 @@ pub fn validate_workflow(definition: &WorkflowDefinition) -> Vec<WorkflowError> 
 /// - `definition` — the workflow to validate.
 /// - `resolver` — a `dyn NodeSchemaResolver` supplied by the caller; the
 ///   workflow crate never imports `ActionRegistry` directly.
+/// - `mode` — how undecidable edges are treated (see [`SchemaCheckMode`]).
 ///
 /// # Returns
 ///
 /// All [`WorkflowError`]s collected (structural + schema), in encounter order:
 /// structural errors come first (from [`validate_workflow`]), followed by any
-/// [`WorkflowError::PortSchemaIncompatible`] variants in connection order.
+/// [`WorkflowError::PortSchemaIncompatible`] / [`WorkflowError::PortSchemaUndecidable`]
+/// variants in connection order.
 #[must_use]
-pub fn validate_workflow_with_resolver(
+pub fn validate_workflow_with_resolver_mode(
     definition: &WorkflowDefinition,
     resolver: &dyn NodeSchemaResolver,
+    mode: SchemaCheckMode,
 ) -> Vec<WorkflowError> {
     let mut errors = validate_workflow(definition);
 
@@ -274,22 +313,48 @@ pub fn validate_workflow_with_resolver(
         };
 
         // Run the directional, kind-aware assignability check: producer output
-        // ⊆ consumer input. `is_assignable_schema` honors the `SchemaKind`
-        // Top/Bottom split, so a producer whose `Output = ()` (an empty record)
-        // does not satisfy a consumer that hard-requires a field, while an
-        // untyped `serde_json::Value` (`Any`) producer still passes.
-        if let Err(incompat) =
-            is_assignable_schema(&producer_schemas.output, &consumer_schemas.input)
-        {
-            errors.push(WorkflowError::PortSchemaIncompatible(Box::new(
-                crate::error::PortSchemaIncompatDetails {
-                    from_node: conn.from_node.clone(),
-                    to_node: conn.to_node.clone(),
-                    from_port: conn.from_port.clone(),
-                    to_port: conn.to_port.clone(),
-                    reason: incompat.to_string(),
-                },
-            )));
+        // ⊆ consumer input. `explain_assignable` honors the `SchemaKind`
+        // Top/Bottom split (an `Output = ()` empty record does not satisfy a
+        // consumer that hard-requires a field; an untyped `Any` producer is
+        // `Unknown`, not a hard error).
+        match explain_assignable(&producer_schemas.output, &consumer_schemas.input) {
+            // Provably incompatible: always a hard error, with every finding.
+            Assignability::No(incompats) => {
+                let reason = incompats
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                errors.push(WorkflowError::PortSchemaIncompatible(Box::new(
+                    crate::error::PortSchemaIncompatDetails {
+                        from_node: conn.from_node.clone(),
+                        to_node: conn.to_node.clone(),
+                        from_port: conn.from_port.clone(),
+                        to_port: conn.to_port.clone(),
+                        reason,
+                    },
+                )));
+            },
+            // Undecidable: blocked only in Strict mode; Gradual warns-and-passes.
+            Assignability::Unknown(reasons) if mode == SchemaCheckMode::Strict => {
+                let reasons = reasons
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                errors.push(WorkflowError::PortSchemaUndecidable(Box::new(
+                    crate::error::PortSchemaUndecidableDetails {
+                        from_node: conn.from_node.clone(),
+                        to_node: conn.to_node.clone(),
+                        from_port: conn.from_port.clone(),
+                        to_port: conn.to_port.clone(),
+                        reasons,
+                    },
+                )));
+            },
+            // `Yes`, an `Unknown` in Gradual mode, or any future verdict variant
+            // (the enum is `#[non_exhaustive]`): pass the edge.
+            _ => {},
         }
     }
 
@@ -357,7 +422,23 @@ impl ValidatedWorkflow {
         definition: WorkflowDefinition,
         resolver: &dyn NodeSchemaResolver,
     ) -> Result<Self, Vec<WorkflowError>> {
-        let errors = validate_workflow_with_resolver(&definition, resolver);
+        Self::validate_with_resolver_mode(definition, resolver, SchemaCheckMode::Gradual)
+    }
+
+    /// Like [`Self::validate_with_resolver`] but with an explicit
+    /// [`SchemaCheckMode`]. [`SchemaCheckMode::Strict`] additionally rejects
+    /// undecidable edges ([`WorkflowError::PortSchemaUndecidable`]), so the
+    /// resulting witness is provably well-typed, not merely not-refuted.
+    ///
+    /// # Errors
+    ///
+    /// Returns every [`WorkflowError`] collected (structural + schema).
+    pub fn validate_with_resolver_mode(
+        definition: WorkflowDefinition,
+        resolver: &dyn NodeSchemaResolver,
+        mode: SchemaCheckMode,
+    ) -> Result<Self, Vec<WorkflowError>> {
+        let errors = validate_workflow_with_resolver_mode(&definition, resolver, mode);
         if errors.is_empty() {
             Ok(Self(definition))
         } else {
@@ -1278,6 +1359,149 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e, WorkflowError::PortSchemaIncompatible(_))),
             "expected PortSchemaIncompatible in errors; got: {errors:?}"
+        );
+    }
+
+    // ── SchemaCheckMode: Gradual vs Strict on undecidable edges ───────────────
+
+    /// Build a producer schema whose single field is `Dynamic` (loader-backed) —
+    /// an output that yields an `Unknown` verdict against a typed consumer.
+    fn dynamic_field_schema(key: &str) -> ValidSchema {
+        Schema::builder()
+            .add(Field::dynamic(FieldKey::new(key).unwrap()))
+            .build()
+            .unwrap()
+    }
+
+    /// Build the producer-dynamic / consumer-required edge used by the mode tests.
+    fn undecidable_edge_schemas() -> HashMap<String, NodeIoSchemas> {
+        let mut schemas = HashMap::new();
+        schemas.insert(
+            "producer.action".to_owned(),
+            NodeIoSchemas {
+                input: ValidSchema::empty(),
+                output: dynamic_field_schema("data"),
+            },
+        );
+        schemas.insert(
+            "consumer.action".to_owned(),
+            NodeIoSchemas {
+                input: single_field_schema("data", true),
+                output: ValidSchema::empty(),
+            },
+        );
+        schemas
+    }
+
+    /// Gradual mode (the default) warns-and-passes an undecidable edge: a
+    /// `Dynamic` producer output feeding a required consumer input yields no
+    /// schema error — untyped/dynamic workflows keep working.
+    #[test]
+    fn gradual_mode_passes_undecidable_dynamic_edge() {
+        let (def, _, _) = two_node_def();
+        let resolver = MapResolver(undecidable_edge_schemas());
+
+        let errors = validate_workflow_with_resolver(&def, &resolver);
+        assert!(
+            !errors.iter().any(|e| matches!(
+                e,
+                WorkflowError::PortSchemaUndecidable(_) | WorkflowError::PortSchemaIncompatible(_)
+            )),
+            "gradual mode must pass an undecidable (Dynamic) edge; got: {errors:?}"
+        );
+    }
+
+    /// Strict mode blocks the same undecidable edge with exactly one
+    /// `PortSchemaUndecidable` (and no `PortSchemaIncompatible`, since it is not
+    /// a provable conflict).
+    #[test]
+    fn strict_mode_blocks_undecidable_dynamic_edge() {
+        let (def, a, b) = two_node_def();
+        let resolver = MapResolver(undecidable_edge_schemas());
+
+        let errors = validate_workflow_with_resolver_mode(&def, &resolver, SchemaCheckMode::Strict);
+
+        let undecidable: Vec<_> = errors
+            .iter()
+            .filter(|e| matches!(e, WorkflowError::PortSchemaUndecidable(_)))
+            .collect();
+        assert_eq!(
+            undecidable.len(),
+            1,
+            "strict mode must block the undecidable edge; got: {errors:?}"
+        );
+        assert!(
+            !errors
+                .iter()
+                .any(|e| matches!(e, WorkflowError::PortSchemaIncompatible(_))),
+            "an undecidable edge is not a hard incompatibility; got: {errors:?}"
+        );
+        let Some(WorkflowError::PortSchemaUndecidable(details)) = undecidable.first().copied()
+        else {
+            panic!("expected PortSchemaUndecidable; got: {errors:?}");
+        };
+        assert_eq!(details.from_node, a);
+        assert_eq!(details.to_node, b);
+    }
+
+    /// Strict mode does NOT reclassify a provable conflict: a genuinely
+    /// incompatible edge is still `PortSchemaIncompatible`, never
+    /// `PortSchemaUndecidable`.
+    #[test]
+    fn strict_mode_still_reports_hard_incompatible_as_incompatible() {
+        let (def, _, _) = two_node_def();
+        let mut schemas = HashMap::new();
+        schemas.insert(
+            "producer.action".to_owned(),
+            NodeIoSchemas {
+                input: ValidSchema::empty(),
+                output: single_field_schema("a", true),
+            },
+        );
+        schemas.insert(
+            "consumer.action".to_owned(),
+            NodeIoSchemas {
+                input: single_field_schema("b", true), // requires `b`, absent
+                output: ValidSchema::empty(),
+            },
+        );
+        let resolver = MapResolver(schemas);
+
+        let errors = validate_workflow_with_resolver_mode(&def, &resolver, SchemaCheckMode::Strict);
+        assert!(
+            errors
+                .iter()
+                .any(|e| matches!(e, WorkflowError::PortSchemaIncompatible(_))),
+            "a provable conflict stays PortSchemaIncompatible in strict mode; got: {errors:?}"
+        );
+        assert!(
+            !errors
+                .iter()
+                .any(|e| matches!(e, WorkflowError::PortSchemaUndecidable(_))),
+            "a provable conflict must not be reported as undecidable; got: {errors:?}"
+        );
+    }
+
+    /// `ValidatedWorkflow::validate_with_resolver_mode(Strict)` rejects an
+    /// undecidable graph, while the gradual witness accepts it.
+    #[test]
+    fn validated_workflow_strict_rejects_undecidable_gradual_accepts() {
+        let (def, _, _) = two_node_def();
+        let resolver = MapResolver(undecidable_edge_schemas());
+
+        assert!(
+            ValidatedWorkflow::validate_with_resolver(def.clone(), &resolver).is_ok(),
+            "gradual witness accepts an undecidable edge"
+        );
+
+        let errors =
+            ValidatedWorkflow::validate_with_resolver_mode(def, &resolver, SchemaCheckMode::Strict)
+                .expect_err("strict witness must reject an undecidable edge");
+        assert!(
+            errors
+                .iter()
+                .any(|e| matches!(e, WorkflowError::PortSchemaUndecidable(_))),
+            "expected PortSchemaUndecidable; got: {errors:?}"
         );
     }
 }

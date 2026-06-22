@@ -175,7 +175,9 @@ pub use builder::{
     BooleanBuilder, CodeBuilder, FieldCollector, GroupBuilder, ListBuilder, NumberBuilder,
     ObjectBuilder, SecretBuilder, SelectBuilder, StringBuilder,
 };
-pub use compat::{SchemaIncompat, is_assignable_schema};
+pub use compat::{
+    Assignability, SchemaIncompat, UnknownReason, explain_assignable, is_assignable_schema,
+};
 pub use error::{
     STANDARD_CODES, Severity, ValidationError, ValidationErrorBuilder, ValidationReport,
 };
