@@ -9,14 +9,16 @@
 //!
 //! A variant's catalog value follows serde so options round-trip back into the
 //! enum: an explicit `#[serde(rename = "..")]` wins, otherwise the enum's
-//! `#[serde(rename_all = ..)]` is applied, otherwise the variant name in
-//! `snake_case` (computed with [`heck`], so acronym runs split correctly:
-//! `HTTPProxy` → `http_proxy`). A variant marked `#[serde(skip)]` is omitted.
-//! Two variants that collapse to the same value are a spanned compile error.
+//! `#[serde(rename_all = ..)]` is applied via serde's *exact* variant algorithm
+//! (so `rename_all = "snake_case"` turns `HTTPProxy` into `h_t_t_p_proxy`, as
+//! serde does). A variant marked `#[serde(skip)]` is omitted; two variants that
+//! collapse to the same value are a spanned compile error.
 //!
-//! The `snake_case` default matches serde only when the enum also sets
-//! `#[serde(rename_all = "snake_case")]` (the usual choice for serde enums); the
-//! `EnumSelect` convention prefers `snake_case` catalog values regardless.
+//! With no `#[serde(rename_all)]` the value defaults to the variant in
+//! `snake_case` via [`heck`] (`HTTPProxy` → `http_proxy`) — an `EnumSelect` UI
+//! convention, not serde's own default (which is the variant name as-is). Set
+//! `#[serde(rename_all = "snake_case")]` to align catalog values with serde's
+//! wire names exactly.
 
 use std::collections::HashMap;
 
@@ -113,7 +115,7 @@ fn resolve_variant_value(
     }
     let base = variant_name.unraw().to_string();
     match container_rename_all {
-        Some(rule) => rule.apply(&base),
+        Some(rule) => rule.apply_to_variant(&base),
         None => base.to_snake_case(),
     }
 }

@@ -146,7 +146,7 @@ fn resolve_field_key(
     } else {
         let base = field_name.unraw().to_string();
         match container_rename_all {
-            Some(rule) => rule.apply(&base),
+            Some(rule) => rule.apply_to_field(&base),
             None => base,
         }
     };

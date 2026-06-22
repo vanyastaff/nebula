@@ -355,3 +355,20 @@ fn derive_enum_select_honors_serde_rename_all() {
     assert_eq!(options[0].value, json!("GET_THING"));
     assert_eq!(options[1].value, json!("PUT_THING"));
 }
+
+#[derive(EnumSelect, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+enum AcronymRenamed {
+    HTTPProxy,
+}
+
+#[test]
+fn derive_enum_select_value_matches_serde_for_acronym_rename_all() {
+    // serde's variant `snake_case` is naive — `_` before every capital — so
+    // `HTTPProxy` becomes `h_t_t_p_proxy`, NOT heck's `http_proxy`. The catalog
+    // value must equal serde's wire name exactly or the option cannot round-trip.
+    let catalog = AcronymRenamed::select_options()[0].value.clone();
+    let wire = serde_json::to_value(AcronymRenamed::HTTPProxy).expect("serializes");
+    assert_eq!(catalog, wire);
+    assert_eq!(catalog, json!("h_t_t_p_proxy"));
+}

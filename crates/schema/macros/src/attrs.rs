@@ -15,10 +15,6 @@
 //! semantics: unknown keys inside a namespace produce a compile error at
 //! the offending token, not a silent skip.
 
-use heck::{
-    ToKebabCase, ToLowerCamelCase, ToShoutyKebabCase, ToShoutySnakeCase, ToSnakeCase,
-    ToUpperCamelCase,
-};
 use proc_macro2::Span;
 use syn::{
     Attribute, Expr, ExprLit, Lit, LitInt, LitStr, Meta, Token,
@@ -443,12 +439,14 @@ impl Parse for SchemaEntry {
 // ── serde-attribute alignment (#[serde(rename / rename_all / skip / flatten)]) ──
 //
 // The schema key MUST equal the serde wire key, otherwise the validator checks a
-// field the deserializer never produces. The derives therefore read the relevant
-// `#[serde(...)]` attributes directly. `rename_all` rules map onto `heck`, which
-// is built to match serde's own case conventions; `lowercase` / `UPPERCASE` are
-// plain `to_lowercase` / `to_uppercase`, identical to serde. A round-trip
-// invariant test pins this parity. Unsupported rules are a compile error, never a
-// silent guess.
+// field the deserializer never produces. The derives read the relevant
+// `#[serde(...)]` attributes directly. `rename_all` reproduces serde_derive's own
+// case algorithm EXACTLY — `apply_to_field` for struct fields and the separate,
+// naive `apply_to_variant` for enum variants (the two genuinely differ: serde's
+// `snake_case` for a variant inserts `_` before every capital, so `HTTPProxy`
+// becomes `h_t_t_p_proxy`, not `http_proxy`). Only an exact copy round-trips; a
+// round-trip invariant test pins this. Unsupported rules are a compile error,
+// never a silent guess.
 
 /// serde `rename_all` case rule, restricted to serde's documented set.
 #[derive(Clone, Copy, Debug)]
@@ -487,18 +485,74 @@ impl RenameRule {
         })
     }
 
-    /// Apply the rule to an identifier (the caller strips any raw-ident prefix).
-    pub(crate) fn apply(self, ident: &str) -> String {
+    /// Apply the rule to a struct **field** name, exactly as serde_derive does
+    /// (`serde_derive_internals::case::RenameRule::apply_to_field`). The caller
+    /// strips any raw-ident prefix first.
+    pub(crate) fn apply_to_field(self, field: &str) -> String {
         match self {
-            Self::Lower => ident.to_lowercase(),
-            Self::Upper => ident.to_uppercase(),
-            Self::Pascal => ident.to_upper_camel_case(),
-            Self::Camel => ident.to_lower_camel_case(),
-            Self::Snake => ident.to_snake_case(),
-            Self::ScreamingSnake => ident.to_shouty_snake_case(),
-            Self::Kebab => ident.to_kebab_case(),
-            Self::ScreamingKebab => ident.to_shouty_kebab_case(),
+            // Fields are already lowercase snake_case, so serde leaves these as-is.
+            Self::Lower | Self::Snake => field.to_owned(),
+            Self::Upper | Self::ScreamingSnake => field.to_ascii_uppercase(),
+            Self::Pascal => {
+                let mut pascal = String::new();
+                let mut capitalize = true;
+                for ch in field.chars() {
+                    if ch == '_' {
+                        capitalize = true;
+                    } else if capitalize {
+                        pascal.push(ch.to_ascii_uppercase());
+                        capitalize = false;
+                    } else {
+                        pascal.push(ch);
+                    }
+                }
+                pascal
+            },
+            Self::Camel => lower_first(&Self::Pascal.apply_to_field(field)),
+            Self::Kebab => field.replace('_', "-"),
+            Self::ScreamingKebab => Self::ScreamingSnake.apply_to_field(field).replace('_', "-"),
         }
+    }
+
+    /// Apply the rule to an enum **variant** name, exactly as serde_derive does
+    /// (`serde_derive_internals::case::RenameRule::apply_to_variant`). This is NOT
+    /// the same as [`Self::apply_to_field`]: serde's `snake_case` for a variant
+    /// inserts an underscore before *every* uppercase letter (no acronym
+    /// grouping), so `HTTPProxy` becomes `h_t_t_p_proxy`. The caller strips any
+    /// raw-ident prefix first.
+    pub(crate) fn apply_to_variant(self, variant: &str) -> String {
+        match self {
+            Self::Pascal => variant.to_owned(),
+            Self::Lower => variant.to_ascii_lowercase(),
+            Self::Upper => variant.to_ascii_uppercase(),
+            Self::Camel => lower_first(variant),
+            Self::Snake => {
+                let mut snake = String::new();
+                for (i, ch) in variant.char_indices() {
+                    if i > 0 && ch.is_uppercase() {
+                        snake.push('_');
+                    }
+                    snake.push(ch.to_ascii_lowercase());
+                }
+                snake
+            },
+            Self::ScreamingSnake => Self::Snake.apply_to_variant(variant).to_ascii_uppercase(),
+            Self::Kebab => Self::Snake.apply_to_variant(variant).replace('_', "-"),
+            Self::ScreamingKebab => Self::ScreamingSnake
+                .apply_to_variant(variant)
+                .replace('_', "-"),
+        }
+    }
+}
+
+/// Lowercase only the first character (`UserName` → `userName`), char-boundary
+/// safe — mirrors serde's `camelCase` first-letter lowering without its byte
+/// slicing (which would panic on a non-ASCII leading char).
+fn lower_first(value: &str) -> String {
+    let mut chars = value.chars();
+    match chars.next() {
+        Some(first) => first.to_ascii_lowercase().to_string() + chars.as_str(),
+        None => String::new(),
     }
 }
 
@@ -542,6 +596,14 @@ impl SerdeAttrs {
                             l,
                             "#[serde(rename(serialize = .., deserialize = ..))] split names are not \
                              yet honored by the schema derive; use a single `#[serde(rename = \"..\")]`",
+                        ));
+                    },
+                    Meta::List(l) if l.path.is_ident("rename_all") => {
+                        return Err(syn::Error::new_spanned(
+                            l,
+                            "#[serde(rename_all(serialize = .., deserialize = ..))] split rules are \
+                             not yet honored by the schema derive; use a single \
+                             `#[serde(rename_all = \"..\")]`",
                         ));
                     },
                     // Every other serde attribute is irrelevant to the schema key.
