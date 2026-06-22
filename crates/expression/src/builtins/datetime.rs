@@ -155,6 +155,33 @@ pub fn parse_date(
     Ok(Value::Number(dt.timestamp().into()))
 }
 
+/// Build a `chrono::Duration` for a unit string and an (untrusted) `amount`,
+/// rejecting an unknown unit or an out-of-range magnitude with a typed error.
+///
+/// Uses the non-panicking `try_*` constructors: `Duration::weeks`/`days`/… panic
+/// on overflow, and `amount` comes from workflow/template input.
+fn duration_for_unit(fn_name: &str, unit: &str, amount: i64) -> ExpressionResult<chrono::Duration> {
+    let duration = match unit.to_lowercase().as_str() {
+        "seconds" | "second" | "s" => chrono::Duration::try_seconds(amount),
+        "minutes" | "minute" | "m" => chrono::Duration::try_minutes(amount),
+        "hours" | "hour" | "h" => chrono::Duration::try_hours(amount),
+        "days" | "day" | "d" => chrono::Duration::try_days(amount),
+        "weeks" | "week" | "w" => chrono::Duration::try_weeks(amount),
+        _ => {
+            return Err(ExpressionError::expression_invalid_argument(
+                fn_name,
+                format!("Invalid unit: {unit}"),
+            ));
+        },
+    };
+    duration.ok_or_else(|| {
+        ExpressionError::expression_invalid_argument(
+            fn_name,
+            format!("duration {amount} {unit} is out of range"),
+        )
+    })
+}
+
 /// Add duration to a date
 pub fn date_add(
     args: &[Value],
@@ -174,19 +201,13 @@ pub fn date_add(
         )
     })?;
 
-    let new_dt = match unit.to_lowercase().as_str() {
-        "seconds" | "second" | "s" => dt + chrono::Duration::seconds(amount),
-        "minutes" | "minute" | "m" => dt + chrono::Duration::minutes(amount),
-        "hours" | "hour" | "h" => dt + chrono::Duration::hours(amount),
-        "days" | "day" | "d" => dt + chrono::Duration::days(amount),
-        "weeks" | "week" | "w" => dt + chrono::Duration::weeks(amount),
-        _ => {
-            return Err(ExpressionError::expression_invalid_argument(
-                "date_add",
-                format!("Invalid unit: {unit}"),
-            ));
-        },
-    };
+    let duration = duration_for_unit("date_add", unit, amount)?;
+    let new_dt = dt.checked_add_signed(duration).ok_or_else(|| {
+        ExpressionError::expression_invalid_argument(
+            "date_add",
+            format!("adding {amount} {unit} overflows the representable date range"),
+        )
+    })?;
 
     Ok(Value::Number(new_dt.timestamp().into()))
 }
@@ -210,19 +231,13 @@ pub fn date_subtract(
         )
     })?;
 
-    let new_dt = match unit.to_lowercase().as_str() {
-        "seconds" | "second" | "s" => dt - chrono::Duration::seconds(amount),
-        "minutes" | "minute" | "m" => dt - chrono::Duration::minutes(amount),
-        "hours" | "hour" | "h" => dt - chrono::Duration::hours(amount),
-        "days" | "day" | "d" => dt - chrono::Duration::days(amount),
-        "weeks" | "week" | "w" => dt - chrono::Duration::weeks(amount),
-        _ => {
-            return Err(ExpressionError::expression_invalid_argument(
-                "date_subtract",
-                format!("Invalid unit: {unit}"),
-            ));
-        },
-    };
+    let duration = duration_for_unit("date_subtract", unit, amount)?;
+    let new_dt = dt.checked_sub_signed(duration).ok_or_else(|| {
+        ExpressionError::expression_invalid_argument(
+            "date_subtract",
+            format!("subtracting {amount} {unit} overflows the representable date range"),
+        )
+    })?;
 
     Ok(Value::Number(new_dt.timestamp().into()))
 }

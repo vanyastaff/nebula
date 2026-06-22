@@ -668,3 +668,42 @@ fn parse_date_with_tz_ignores_explicit_offset() {
         eval(r#"parse_date("2024-01-01T00:00:00+03:00")"#)
     );
 }
+
+// ──────────────────────────────────────────────
+// DateTime: date_add / date_subtract overflow (no panic)
+// ──────────────────────────────────────────────
+
+#[test]
+fn date_add_normal_still_works() {
+    // epoch 0 + 1 day = 86_400 seconds.
+    assert_eq!(eval(r#"date_add(0, 1, "days")"#), json!(86_400));
+}
+
+#[test]
+fn date_subtract_normal_still_works() {
+    assert_eq!(eval(r#"date_subtract(86400, 1, "days")"#), json!(0));
+}
+
+/// A huge `amount` must return a typed error, not panic.
+///
+/// RED witness: `chrono::Duration::weeks(i64::MAX)` panics, so the old
+/// `dt + Duration::weeks(amount)` aborted the whole evaluation instead of
+/// returning an error.
+#[test]
+fn date_add_overflow_amount_is_error_not_panic() {
+    let err = eval_err(r#"date_add(0, 9223372036854775807, "weeks")"#);
+    assert!(
+        err.contains("out of range") || err.contains("overflow"),
+        "date_add with i64::MAX weeks must be a typed error; got: {err}"
+    );
+}
+
+/// `date_subtract` has the same guard.
+#[test]
+fn date_subtract_overflow_amount_is_error_not_panic() {
+    let err = eval_err(r#"date_subtract(0, 9223372036854775807, "days")"#);
+    assert!(
+        err.contains("out of range") || err.contains("overflow"),
+        "date_subtract with i64::MAX days must be a typed error; got: {err}"
+    );
+}
