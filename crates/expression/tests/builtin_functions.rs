@@ -707,3 +707,68 @@ fn date_subtract_overflow_amount_is_error_not_panic() {
         "date_subtract with i64::MAX days must be a typed error; got: {err}"
     );
 }
+
+// ──────────────────────────────────────────────
+// Math: finite guards (no silent null) + exact min/max
+// ──────────────────────────────────────────────
+
+/// RED witness: `pow(2, 1024)` overflows to `inf`, and `json!(inf)` is silent
+/// `null`; the `**` operator already errors, so the function form must too.
+#[test]
+fn pow_overflow_is_error_not_null() {
+    let err = eval_err("pow(2, 1024)");
+    assert!(
+        err.contains("finite"),
+        "pow overflow must be a typed error; got: {err}"
+    );
+}
+
+/// `pow(-1, 0.5)` is `NaN` → must error, not silent null.
+#[test]
+fn pow_nan_is_error_not_null() {
+    let err = eval_err("pow(-1, 0.5)");
+    assert!(
+        err.contains("finite"),
+        "pow NaN must be a typed error; got: {err}"
+    );
+}
+
+/// RED witness: a huge `decimals` makes the multiplier `inf` → `NaN` → silent null.
+#[test]
+fn round_huge_decimals_is_error_not_null() {
+    let err = eval_err("round(3.14159, 1000000000)");
+    assert!(
+        err.contains("finite"),
+        "round with huge decimals must be a typed error; got: {err}"
+    );
+}
+
+/// `max` must pick the larger value **exactly** even past f64 precision, and
+/// even when the larger argument comes second.
+///
+/// RED witness: the old f64 running-max saw both as the same f64, kept the first
+/// (smaller) argument, and returned it as `9007199254740992.0`.
+#[test]
+fn max_large_integers_exact() {
+    assert_eq!(
+        eval("max(9007199254740992, 9007199254740993)"),
+        json!(9_007_199_254_740_993_i64),
+    );
+}
+
+/// `min` likewise picks the smaller exactly when it comes second.
+#[test]
+fn min_large_integers_exact() {
+    assert_eq!(
+        eval("min(9007199254740994, 9007199254740993)"),
+        json!(9_007_199_254_740_993_i64),
+    );
+}
+
+/// `min`/`max` select an argument, so an integer input returns an integer (not a
+/// spurious float). RED witness: the old code returned `5.0`.
+#[test]
+fn max_preserves_integer_type() {
+    assert_eq!(eval("max(3, 5)"), json!(5));
+    assert_eq!(eval("min(3, 5)"), json!(3));
+}
