@@ -8,7 +8,7 @@ use quote::quote;
 use syn::{Data, DataStruct, DeriveInput, Fields, Ident, ext::IdentExt};
 
 use crate::{
-    attrs::{DefaultLit, FieldAttrs, SchemaStructAttrs, ValidateAttrs},
+    attrs::{DefaultLit, FieldAttrs, RenameRule, SchemaStructAttrs, SerdeAttrs, ValidateAttrs},
     type_infer::{FieldKind, classify},
 };
 
@@ -38,6 +38,7 @@ pub(crate) fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
     };
 
     let schema_attrs = SchemaStructAttrs::from_attrs(&input.attrs)?;
+    let container_serde = SerdeAttrs::from_attrs(&input.attrs)?;
     let root_rule_tokens: Vec<TokenStream2> = schema_attrs
         .custom
         .iter()
@@ -55,12 +56,29 @@ pub(crate) fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
             .as_ref()
             .ok_or_else(|| syn::Error::new_spanned(f, "anonymous struct field"))?;
         let field_attr = FieldAttrs::from_attrs(&f.attrs)?;
-        if field_attr.skip {
+        let serde = SerdeAttrs::from_attrs(&f.attrs)?;
+        if let Some(flatten_span) = serde.flatten_span {
+            return Err(syn::Error::new(
+                flatten_span,
+                "#[serde(flatten)] is not yet supported by #[derive(Schema)] — inline the nested \
+                 fields directly, or build the schema manually until flatten splicing lands",
+            ));
+        }
+        // A field serde skips never reaches the wire, so it has no schema entry.
+        if field_attr.skip || serde.skip {
             continue;
         }
         let validate = ValidateAttrs::from_attrs(&f.attrs)?;
         let kind = classify(&f.ty);
-        let expr = build_field_expr(field_name, &kind, &field_attr, &validate, &crate_path)?;
+        let key_str = resolve_field_key(field_name, &serde, container_serde.rename_all)?;
+        let expr = build_field_expr(
+            field_name,
+            &key_str,
+            &kind,
+            &field_attr,
+            &validate,
+            &crate_path,
+        )?;
         field_exprs.push(expr);
     }
 
@@ -110,14 +128,29 @@ pub(crate) fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
     })
 }
 
-/// Derive the schema key for a struct field: strip the raw-identifier prefix
-/// (`r#type` → `type`, matching serde's own raw-ident handling) and validate it
-/// against the `FieldKey` rules at expansion, so an invalid key surfaces as a
-/// spanned compile error instead of a runtime `.expect()` panic in the
+/// Resolve a struct field's schema key, honoring serde so the key always matches
+/// the wire key: an explicit `#[serde(rename = "..")]` wins, otherwise the
+/// container's `#[serde(rename_all = ..)]` is applied to the raw-stripped ident
+/// (`r#type` → `type`, as serde does), otherwise the ident itself (also serde's
+/// default). The result is validated against the `FieldKey` rules at expansion,
+/// so an invalid key — e.g. a `kebab-case` rename, which `FieldKey` forbids — is
+/// a spanned compile error instead of a runtime `.expect()` panic in the
 /// consuming crate.
-fn ident_to_field_key(ident: &Ident) -> syn::Result<String> {
-    let key = ident.unraw().to_string();
-    check_field_key(&key, ident.span())?;
+fn resolve_field_key(
+    field_name: &Ident,
+    serde: &SerdeAttrs,
+    container_rename_all: Option<RenameRule>,
+) -> syn::Result<String> {
+    let key = if let Some(rename) = &serde.rename {
+        rename.clone()
+    } else {
+        let base = field_name.unraw().to_string();
+        match container_rename_all {
+            Some(rule) => rule.apply_to_field(&base),
+            None => base,
+        }
+    };
+    check_field_key(&key, field_name.span())?;
     Ok(key)
 }
 
@@ -138,14 +171,14 @@ fn check_field_key(key: &str, span: Span) -> syn::Result<()> {
 /// Build the token-stream expression that produces a `Field` for one struct field.
 fn build_field_expr(
     field_name: &Ident,
+    key_str: &str,
     kind: &FieldKind,
     field_attr: &FieldAttrs,
     validate: &ValidateAttrs,
     crate_path: &TokenStream2,
 ) -> syn::Result<TokenStream2> {
-    let key_str = ident_to_field_key(field_name)?;
-    // `key_str` was validated against the `FieldKey` rules at expansion (see
-    // `ident_to_field_key`), so the runtime constructor cannot fail — the
+    // `key_str` was resolved and validated against the `FieldKey` rules in
+    // `resolve_field_key`, so the runtime constructor cannot fail — the
     // `.expect()` is the codegen equivalent of `unreachable!`.
     let key = quote! {
         #crate_path::FieldKey::new(#key_str)
@@ -220,7 +253,7 @@ fn build_field_expr(
         FieldKind::FloatNumber => quote! {
             #crate_path::Field::number(#key)
         },
-        FieldKind::List(item_kind) => list_field_expr(field_name, item_kind, crate_path)?,
+        FieldKind::List(item_kind) => list_field_expr(field_name, key_str, item_kind, crate_path)?,
         FieldKind::Optional(_) => {
             // Cannot nest `Option<Option<T>>`; classify already flattened one layer.
             return Err(syn::Error::new_spanned(
@@ -375,10 +408,10 @@ fn ensure_enum_select_validate_attrs(
 
 fn list_field_expr(
     field_name: &Ident,
+    key_str: &str,
     item_kind: &FieldKind,
     crate_path: &TokenStream2,
 ) -> syn::Result<TokenStream2> {
-    let key_str = ident_to_field_key(field_name)?;
     let item_key_str = format!("{key_str}_item");
     // The item key derives from an already-valid field key; re-check it because
     // the `_item` suffix can push a near-limit key past the 64-char bound.

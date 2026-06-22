@@ -67,6 +67,9 @@ pub fn field_key(input: TokenStream) -> TokenStream {
 /// - `#[validate(...)]` — required/length(min,max)/range(min..=max)/ pattern/url/email.
 /// - `#[schema(...)]` — struct-level options; today: `custom = "..."` → the validator's
 ///   `Rule::custom` on the built schema (deferred wire hook).
+/// - `#[serde(...)]` — read for key alignment so the schema key equals the wire
+///   key: `rename` / `rename_all` rename the field, `skip` / `skip_deserializing`
+///   drop it. `#[serde(flatten)]` is rejected (splicing is a follow-up).
 #[proc_macro_derive(Schema, attributes(field, validate, schema))]
 pub fn derive_schema(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -76,7 +79,8 @@ pub fn derive_schema(input: TokenStream) -> TokenStream {
 }
 
 /// Derive `HasSelectOptions` (from `nebula-schema`) for a unit-only enum.
-/// Variant names snake_case into stored values; use
+/// Variant names become catalog values following serde (`rename` / `rename_all`,
+/// else `snake_case`); `#[serde(skip)]` drops a variant. Use
 /// `#[field(label = "...")]` to override the display label.
 #[proc_macro_derive(EnumSelect, attributes(field))]
 pub fn derive_enum_select(input: TokenStream) -> TokenStream {

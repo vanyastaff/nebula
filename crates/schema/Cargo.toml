@@ -38,6 +38,10 @@ subtle = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }
+# Derive in tests so `#[derive(Schema, Serialize/Deserialize)]` + `#[serde(...)]`
+# exercises the schema↔wire key-alignment invariant (the `serde` helper attribute
+# is only registered when a serde derive is present).
+serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt"] }
 trybuild = "1"

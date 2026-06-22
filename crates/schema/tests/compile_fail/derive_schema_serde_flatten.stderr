@@ -1,0 +1,5 @@
+error: #[serde(flatten)] is not yet supported by #[derive(Schema)] — inline the nested fields directly, or build the schema manually until flatten splicing lands
+  --> tests/compile_fail/derive_schema_serde_flatten.rs:12:13
+   |
+12 |     #[serde(flatten)]
+   |             ^^^^^^^
