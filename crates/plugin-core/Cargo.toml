@@ -5,11 +5,12 @@ edition.workspace = true
 rust-version.workspace = true
 keywords.workspace = true
 authors.workspace = true
-description = "First-party core plugin for Nebula (SetFields and other utility actions)"
+description = "First-party `core` plugin for Nebula: pure actions for filter/sort/aggregate, reshaping, branching, datetime, and a durable delay"
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 documentation.workspace = true
+readme = "README.md"
 
 [dependencies]
 nebula-action = { path = "../action" }
