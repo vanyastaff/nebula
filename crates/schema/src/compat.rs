@@ -173,10 +173,9 @@ pub fn is_assignable_schema(
     // surfaced as its first incompatibility (depth-first, consumer-field order).
     match explain_assignable(producer, consumer) {
         Assignability::Yes | Assignability::Unknown(_) => Ok(()),
-        Assignability::No(incompats) => match incompats.into_iter().next() {
-            Some(first) => Err(first),
-            None => Ok(()),
-        },
+        // `into_verdict` only builds `No` from a non-empty list, so `next()` is
+        // always `Some`; `map_or` keeps this total without a panic path.
+        Assignability::No(incompats) => incompats.into_iter().next().map_or(Ok(()), Err),
     }
 }
 
@@ -228,9 +227,25 @@ pub enum UnknownReason {
     /// A matched `Number` pair narrows float→int: the producer may emit a
     /// non-integral value the consumer cannot represent, but a static check
     /// cannot tell whether it ever will.
+    ///
+    /// This is deliberately `Unknown`, not a hard `No` (contrast the
+    /// empty-record producer, which *provably* emits nothing and so is `No`):
+    /// the schema layer has no integral-domain refinement, so a `float` producer
+    /// is not *provably* non-integral. A future numeric-refinement type could
+    /// promote this to `Yes` or `No`; until then it is genuinely undecidable.
     NumberWidening {
         /// Key of the number field.
         key: FieldKey,
+    },
+    /// An undecidable reason found inside a nested `Object` or `List` field,
+    /// carrying the enclosing field `key` so the path is not lost (mirrors
+    /// [`SchemaIncompat::NestedIncompat`]). Nesting composes: an `Object` two
+    /// levels deep yields `NestedUnknown { a, NestedUnknown { b, .. } }`.
+    NestedUnknown {
+        /// Key of the enclosing container field.
+        key: FieldKey,
+        /// The undecidable reason found inside the container.
+        inner: Box<UnknownReason>,
     },
 }
 
@@ -255,6 +270,7 @@ impl core::fmt::Display for UnknownReason {
                     "field `{key}` narrows float to integer (possible precision loss)"
                 )
             },
+            Self::NestedUnknown { key, inner } => write!(f, "in field `{key}`: {inner}"),
         }
     }
 }
@@ -312,10 +328,11 @@ impl Explain {
 }
 
 impl Explain {
-    /// Fold a nested sub-traversal's findings into this accumulator, wrapping
-    /// each nested incompatibility in [`SchemaIncompat::NestedIncompat`] under
-    /// `key`. Unknown reasons already carry their own field key, so they are
-    /// lifted unwrapped.
+    /// Fold a nested sub-traversal's findings into this accumulator under `key`,
+    /// wrapping each nested incompatibility in [`SchemaIncompat::NestedIncompat`]
+    /// and each undecidable reason in [`UnknownReason::NestedUnknown`] — so both
+    /// channels keep the enclosing-field path (e.g. `config.token` rather than a
+    /// bare `token` that two sibling objects could both produce).
     fn wrap_nested(&mut self, key: &FieldKey, sub: Explain) {
         for inner in sub.incompat {
             self.incompat.push(SchemaIncompat::NestedIncompat {
@@ -323,12 +340,18 @@ impl Explain {
                 inner: Box::new(inner),
             });
         }
-        self.unknown.extend(sub.unknown);
+        for inner in sub.unknown {
+            self.unknown.push(UnknownReason::NestedUnknown {
+                key: key.clone(),
+                inner: Box::new(inner),
+            });
+        }
     }
 }
 
-/// Collect-all field-slice traversal, shared by [`explain_assignable`] (strict)
-/// and the test-only gradual slice check. Pushes every incompatibility and every
+/// Collect-all field-slice traversal, shared by [`explain_assignable`] (which
+/// passes `strict = true`) and the test-only `explain_slice` helper (which
+/// controls `strict` explicitly). Pushes every incompatibility and every
 /// undecidable reason into `acc` in depth-first, consumer-field order; it never
 /// early-returns, so the caller always sees the full picture.
 fn collect_fields(
@@ -1046,5 +1069,125 @@ mod tests {
             ),
             other => panic!("a provable incompatibility must dominate Unknown, got {other:?}"),
         }
+    }
+
+    /// A `Mode`-vs-`Mode` pair is `Unknown(ModeVariance)` (sum-type variance is
+    /// not modeled) yet passes the binary check. The one reclassified leniency
+    /// otherwise lacking an oracle.
+    #[test]
+    fn explain_mode_variance_is_unknown() {
+        let mode_schema = || {
+            crate::Schema::builder()
+                .add(Field::mode(fk("m")).variant("v", "V", Field::string(fk("x"))))
+                .build()
+                .unwrap()
+        };
+        let producer = mode_schema();
+        let consumer = mode_schema();
+        assert_eq!(
+            explain_assignable(&producer, &consumer),
+            Assignability::Unknown(vec![UnknownReason::ModeVariance { key: fk("m") }]),
+        );
+        assert!(is_assignable_schema(&producer, &consumer).is_ok());
+    }
+
+    /// An undecidable field nested inside an `Object` keeps its path: the reason
+    /// is `NestedUnknown { config, DynamicLoaderBacked { d } }`, not a bare
+    /// `DynamicLoaderBacked { d }` that a sibling object's `d` could alias.
+    #[test]
+    fn explain_nested_object_unknown_preserves_path() {
+        let producer = crate::Schema::builder()
+            .add(Field::object(fk("config")).add(Field::dynamic(fk("d"))))
+            .build()
+            .unwrap();
+        // Consumer's nested `d` is optional, so the only finding is the Unknown
+        // (no MissingRequiredField to dominate it).
+        let consumer = crate::Schema::builder()
+            .add(Field::object(fk("config")).add(Field::string(fk("d"))))
+            .build()
+            .unwrap();
+        assert_eq!(
+            explain_assignable(&producer, &consumer),
+            Assignability::Unknown(vec![UnknownReason::NestedUnknown {
+                key: fk("config"),
+                inner: Box::new(UnknownReason::DynamicLoaderBacked { key: fk("d") }),
+            }]),
+        );
+    }
+
+    /// An undecidable field nested inside a `List` item keeps both the list key
+    /// and the item key: `NestedUnknown { items, NestedUnknown { item, .. } }`.
+    #[test]
+    fn explain_nested_list_unknown_preserves_path() {
+        let producer = crate::Schema::builder()
+            .add(
+                Field::list(fk("items"))
+                    .item(Field::object(fk("item")).add(Field::dynamic(fk("d")))),
+            )
+            .build()
+            .unwrap();
+        let consumer = crate::Schema::builder()
+            .add(
+                Field::list(fk("items"))
+                    .item(Field::object(fk("item")).add(Field::string(fk("d")))),
+            )
+            .build()
+            .unwrap();
+        assert_eq!(
+            explain_assignable(&producer, &consumer),
+            Assignability::Unknown(vec![UnknownReason::NestedUnknown {
+                key: fk("items"),
+                inner: Box::new(UnknownReason::NestedUnknown {
+                    key: fk("item"),
+                    inner: Box::new(UnknownReason::DynamicLoaderBacked { key: fk("d") }),
+                }),
+            }]),
+        );
+    }
+
+    /// `No` dominates `Unknown` even when they arise in DIFFERENT nested
+    /// containers: a missing-required in object `a` wins over a dynamic field in
+    /// sibling object `b`, and the `Unknown` is dropped.
+    #[test]
+    fn explain_no_dominates_unknown_across_containers() {
+        let producer = crate::Schema::builder()
+            .add(Field::object(fk("a"))) // empty — can't satisfy a's required child
+            .add(Field::object(fk("b")).add(Field::dynamic(fk("d"))))
+            .build()
+            .unwrap();
+        let consumer = crate::Schema::builder()
+            .add(Field::object(fk("a")).add(Field::string(fk("need")).required()))
+            .add(Field::object(fk("b")).add(Field::string(fk("d"))))
+            .build()
+            .unwrap();
+        assert_eq!(
+            explain_assignable(&producer, &consumer),
+            Assignability::No(vec![SchemaIncompat::NestedIncompat {
+                key: fk("a"),
+                inner: Box::new(SchemaIncompat::MissingRequiredField { key: fk("need") }),
+            }]),
+            "No dominates across containers; the sibling Unknown is dropped"
+        );
+    }
+
+    #[test]
+    fn unknown_reason_display_is_human_readable() {
+        assert_eq!(
+            UnknownReason::OpaqueProducer.to_string(),
+            "producer schema is an opaque `Any` (shape unknown)"
+        );
+        assert_eq!(
+            UnknownReason::DynamicLoaderBacked { key: fk("tok") }.to_string(),
+            "field `tok` is dynamic/computed (resolved at runtime)"
+        );
+        // Nested reasons render their path prefix.
+        assert_eq!(
+            UnknownReason::NestedUnknown {
+                key: fk("cfg"),
+                inner: Box::new(UnknownReason::ModeVariance { key: fk("m") }),
+            }
+            .to_string(),
+            "in field `cfg`: field `m` is a `Mode` sum type (variance not modeled)"
+        );
     }
 }

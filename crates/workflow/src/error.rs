@@ -118,15 +118,17 @@ pub enum WorkflowError {
     /// The producer node's output schema is not assignable to the consumer
     /// node's input schema on this connection (ADR-0100 TypeDAG T3).
     ///
-    /// Emitted by [`crate::validate::validate_workflow_with_resolver`] when
-    /// both endpoints resolve and `nebula_schema::is_assignable_schema` returns
-    /// an incompatibility. Structural errors (unknown nodes, cycles, …) are
-    /// reported first; this error only fires when both nodes are structurally
-    /// valid and both schemas are resolvable from the catalog.
+    /// Emitted by [`crate::validate::validate_workflow_with_resolver`] when both
+    /// endpoints resolve and `nebula_schema::explain_assignable` returns
+    /// [`Assignability::No`](nebula_schema::Assignability::No) — a provable
+    /// incompatibility. (An undecidable [`Unknown`](nebula_schema::Assignability::Unknown)
+    /// verdict is [`Self::PortSchemaUndecidable`] in Strict mode, not this.)
+    /// Structural errors (unknown nodes, cycles, …) are reported first; this
+    /// error only fires when both nodes are structurally valid and both schemas
+    /// are resolvable from the catalog.
     ///
-    /// The payload is `Box`ed because the struct is large (two `NodeKey`s,
-    /// two `Option<String>`s, one `String`) and boxing keeps the `WorkflowError`
-    /// enum small enough to satisfy `clippy::result_large_err`.
+    /// The payload is `Box`ed to keep the `WorkflowError` enum small enough to
+    /// satisfy `clippy::result_large_err`.
     #[classify(category = "validation", code = "WORKFLOW:PORT_SCHEMA_INCOMPATIBLE")]
     #[error("port schema incompatible: {0}")]
     PortSchemaIncompatible(Box<PortSchemaIncompatDetails>),
@@ -168,11 +170,19 @@ pub enum WorkflowError {
     },
 }
 
+/// Join a slice of `Display` items with `"; "` (shared by the two payload
+/// `Display` impls below).
+fn join_display<T: std::fmt::Display>(items: &[T]) -> String {
+    items
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
 /// Payload for [`WorkflowError::PortSchemaIncompatible`].
 ///
-/// Kept separate and `Box`ed on the enum to satisfy `clippy::result_large_err`
-/// — the combined size of two `NodeKey`s, two `Option<String>`s, and one
-/// `String` exceeds the 128-byte threshold for the `result_large_err` lint.
+/// Kept separate and `Box`ed on the enum to satisfy `clippy::result_large_err`.
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct PortSchemaIncompatDetails {
@@ -184,9 +194,10 @@ pub struct PortSchemaIncompatDetails {
     pub from_port: Option<String>,
     /// The target input port, if named (`None` = default flow input).
     pub to_port: Option<String>,
-    /// Human-readable description of the first incompatibility found
-    /// (from [`nebula_schema::SchemaIncompat`]'s `Display` impl).
-    pub reason: String,
+    /// Every incompatibility found on this edge (depth-first, consumer-field
+    /// order), structured for programmatic inspection. The `Display` impl joins
+    /// their [`nebula_schema::SchemaIncompat`] descriptions with `"; "`.
+    pub incompatibilities: Vec<nebula_schema::SchemaIncompat>,
 }
 
 impl std::fmt::Display for PortSchemaIncompatDetails {
@@ -196,7 +207,11 @@ impl std::fmt::Display for PortSchemaIncompatDetails {
         write!(
             f,
             "{}.{} \u{2192} {}.{}: {}",
-            self.from_node, from_port, self.to_node, to_port, self.reason
+            self.from_node,
+            from_port,
+            self.to_node,
+            to_port,
+            join_display(&self.incompatibilities)
         )
     }
 }
@@ -216,9 +231,11 @@ pub struct PortSchemaUndecidableDetails {
     pub from_port: Option<String>,
     /// The target input port, if named (`None` = default flow input).
     pub to_port: Option<String>,
-    /// Human-readable list of why the edge is undecidable (from
-    /// [`nebula_schema::UnknownReason`]'s `Display`, joined with `; `).
-    pub reasons: String,
+    /// Every reason the edge is undecidable, structured so a policy can route on
+    /// them (e.g. suppress [`OpaqueProducer`](nebula_schema::UnknownReason::OpaqueProducer)
+    /// while blocking [`ModeVariance`](nebula_schema::UnknownReason::ModeVariance))
+    /// without string-parsing. The `Display` impl joins their descriptions with `"; "`.
+    pub reasons: Vec<nebula_schema::UnknownReason>,
 }
 
 impl std::fmt::Display for PortSchemaUndecidableDetails {
@@ -228,7 +245,11 @@ impl std::fmt::Display for PortSchemaUndecidableDetails {
         write!(
             f,
             "{}.{} \u{2192} {}.{}: {}",
-            self.from_node, from_port, self.to_node, to_port, self.reasons
+            self.from_node,
+            from_port,
+            self.to_node,
+            to_port,
+            join_display(&self.reasons)
         )
     }
 }

@@ -318,30 +318,20 @@ pub fn validate_workflow_with_resolver_mode(
         // consumer that hard-requires a field; an untyped `Any` producer is
         // `Unknown`, not a hard error).
         match explain_assignable(&producer_schemas.output, &consumer_schemas.input) {
-            // Provably incompatible: always a hard error, with every finding.
-            Assignability::No(incompats) => {
-                let reason = incompats
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join("; ");
+            // Provably incompatible: always a hard error, carrying every finding.
+            Assignability::No(incompatibilities) => {
                 errors.push(WorkflowError::PortSchemaIncompatible(Box::new(
                     crate::error::PortSchemaIncompatDetails {
                         from_node: conn.from_node.clone(),
                         to_node: conn.to_node.clone(),
                         from_port: conn.from_port.clone(),
                         to_port: conn.to_port.clone(),
-                        reason,
+                        incompatibilities,
                     },
                 )));
             },
             // Undecidable: blocked only in Strict mode; Gradual warns-and-passes.
             Assignability::Unknown(reasons) if mode == SchemaCheckMode::Strict => {
-                let reasons = reasons
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join("; ");
                 errors.push(WorkflowError::PortSchemaUndecidable(Box::new(
                     crate::error::PortSchemaUndecidableDetails {
                         from_node: conn.from_node.clone(),
@@ -403,12 +393,16 @@ impl ValidatedWorkflow {
     }
 
     /// Validate `definition` with both structural checks and the TypeDAG
-    /// per-edge schema check, then wrap it as a dispatch witness on success.
+    /// per-edge schema check in [`SchemaCheckMode::Gradual`], then wrap it as a
+    /// dispatch witness on success.
     ///
-    /// Runs [`validate_workflow_with_resolver`], which collects all structural
-    /// errors (identical to [`Self::validate`]) plus per-edge
+    /// A `Gradual`-hardcoded convenience over
+    /// [`Self::validate_with_resolver_mode`]: collects all structural errors
+    /// (identical to [`Self::validate`]) plus per-edge
     /// [`WorkflowError::PortSchemaIncompatible`] errors when both endpoint
-    /// schemas can be resolved from `resolver`.
+    /// schemas resolve. Undecidable edges pass; use
+    /// [`Self::validate_with_resolver_mode`] with [`SchemaCheckMode::Strict`] to
+    /// reject them ([`WorkflowError::PortSchemaUndecidable`]).
     ///
     /// An edge whose producer or consumer returns `None` from `resolver` is
     /// silently skipped (fail-open — ADR-0100 T3.2). Passing a resolver that
@@ -1442,6 +1436,67 @@ mod tests {
         };
         assert_eq!(details.from_node, a);
         assert_eq!(details.to_node, b);
+        // The structured reason is the producer's `Dynamic` output field `data`.
+        assert_eq!(
+            details.reasons,
+            vec![nebula_schema::UnknownReason::DynamicLoaderBacked {
+                key: FieldKey::new("data").unwrap()
+            }],
+            "reasons carries the structured UnknownReason, not just a string"
+        );
+        assert!(
+            details.to_string().contains("dynamic"),
+            "Display renders the reason; got: {details}"
+        );
+    }
+
+    /// A provably-incompatible edge with TWO missing required fields carries
+    /// BOTH in `incompatibilities` (the collect-all behavior) — guards against a
+    /// regression to first-error-only.
+    #[test]
+    fn incompatible_edge_carries_all_findings() {
+        let (def, _, _) = two_node_def();
+        let consumer_input = Schema::builder()
+            .add(Field::string(FieldKey::new("a").unwrap()).required())
+            .add(Field::string(FieldKey::new("b").unwrap()).required())
+            .build()
+            .unwrap();
+        let mut schemas = HashMap::new();
+        schemas.insert(
+            "producer.action".to_owned(),
+            NodeIoSchemas {
+                input: ValidSchema::empty(),
+                output: ValidSchema::empty(), // empty record — supplies neither `a` nor `b`
+            },
+        );
+        schemas.insert(
+            "consumer.action".to_owned(),
+            NodeIoSchemas {
+                input: consumer_input,
+                output: ValidSchema::empty(),
+            },
+        );
+        let resolver = MapResolver(schemas);
+
+        let errors = validate_workflow_with_resolver(&def, &resolver);
+        let incompat: Vec<_> = errors
+            .iter()
+            .filter_map(|e| match e {
+                WorkflowError::PortSchemaIncompatible(d) => Some(d),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(incompat.len(), 1, "one edge, one error; got: {errors:?}");
+        assert_eq!(
+            incompat[0].incompatibilities.len(),
+            2,
+            "both missing required fields are reported, not just the first"
+        );
+        let rendered = incompat[0].to_string();
+        assert!(
+            rendered.contains('a') && rendered.contains('b'),
+            "Display joins all findings; got: {rendered}"
+        );
     }
 
     /// Strict mode does NOT reclassify a provable conflict: a genuinely
