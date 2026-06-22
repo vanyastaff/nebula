@@ -121,7 +121,7 @@ clap = { version = "4", features = ["derive"] }
 http = "1.4"
 reqwest = { version = "0.13", features = ["json"], default-features = false }
 axum = { version = "0.8", features = ["json"] }
-tower-http = { version = "0.6", features = ["trace", "cors", "compression-gzip"] }
+tower-http = { version = "0.7", features = ["trace", "cors", "compression-gzip"] }
 
 # Database — optional storage backends. The version is pinned here so the
 # three consumers (the `nebula-storage` adapter, `nebula-api`'s
