@@ -450,15 +450,14 @@ impl ActionMetadata {
 
         // TypeDAG output-schema assignability: the NEW output is the producer;
         // the OLD output is the consumer (downstream nodes were typed against it).
-        // If `is_assignable` returns Err the new output dropped or changed a field
-        // that old consumers required — that is a silent breaking change on a
-        // same-major upgrade. A major version bump is required.
+        // If `is_assignable_schema` returns Err the new output dropped or changed
+        // a field that old consumers required — that is a silent breaking change
+        // on a same-major upgrade. A major version bump is required. The
+        // kind-aware check also catches a new output collapsing to an empty
+        // record (`Output = ()`), which an untyped `Any` would have masked.
         if same_major
-            && nebula_schema::is_assignable(
-                self.output_schema.fields(),
-                previous.output_schema.fields(),
-            )
-            .is_err()
+            && nebula_schema::is_assignable_schema(&self.output_schema, &previous.output_schema)
+                .is_err()
         {
             return Err(MetadataCompatibilityError::OutputSchemaNarrowedWithoutMajorBump);
         }

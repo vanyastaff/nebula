@@ -155,8 +155,17 @@ impl<'de> Deserialize<'de> for ValidSchema {
             root_rules: Vec<nebula_validator::Rule>,
         }
         let repr = ValidSchemaRepr::deserialize(deserializer)?;
-        // `Any` carries no fields or rules — return the shared `any()` instance.
         if repr.kind == SchemaKind::Any {
+            // Fail closed: an `Any` schema carries no constraints. A payload
+            // tagged `Any` that also lists `fields`/`root_rules` is malformed
+            // (mistagged, or from a mixed-version producer); silently returning
+            // the unconstrained `any()` would drop every constraint and make
+            // validation fully permissive. Reject it instead.
+            if !repr.fields.is_empty() || !repr.root_rules.is_empty() {
+                return Err(serde::de::Error::custom(
+                    "schema tagged `kind: \"any\"` must not carry `fields` or `root_rules`",
+                ));
+            }
             return Ok(Self::any());
         }
         let mut b = repr.fields.into_iter().fold(
@@ -2108,6 +2117,58 @@ mod tests {
         let back: ValidSchema = serde_json::from_value(wire).unwrap();
         assert_eq!(schema.root_rules(), back.root_rules());
         assert_eq!(schema.fields().len(), back.fields().len());
+    }
+
+    #[test]
+    fn deserialize_bare_any_is_accepted() {
+        use serde_json::json;
+
+        let decoded: ValidSchema = serde_json::from_value(json!({"kind": "any"})).unwrap();
+        assert_eq!(decoded.kind(), SchemaKind::Any);
+        assert!(decoded.fields().is_empty());
+    }
+
+    #[test]
+    fn deserialize_any_carrying_fields_is_rejected() {
+        use serde_json::json;
+
+        // Build a real typed schema, then mistag it as `Any` while keeping its
+        // `fields`. Accepting this would silently drop every field constraint.
+        let typed = Schema::builder()
+            .add(Field::string(field_key!("x")).required())
+            .build()
+            .unwrap();
+        let mut wire = serde_json::to_value(&typed).unwrap();
+        wire["kind"] = json!("any");
+
+        let result: Result<ValidSchema, _> = serde_json::from_value(wire);
+        assert!(
+            result.is_err(),
+            "a schema tagged `kind: any` that still carries fields must be rejected, not \
+             silently coerced to the unconstrained `Any`"
+        );
+    }
+
+    #[test]
+    fn deserialize_any_carrying_root_rules_is_rejected() {
+        use nebula_validator::{Predicate, Rule};
+        use serde_json::json;
+
+        let with_rules = Schema::builder()
+            .add(Field::string(field_key!("x")))
+            .root_rule(Rule::predicate(Predicate::eq("x", json!("a")).unwrap()))
+            .build()
+            .unwrap();
+        let mut wire = serde_json::to_value(&with_rules).unwrap();
+        wire["kind"] = json!("any");
+        // Drop fields so only `root_rules` remains to prove the rule branch fires.
+        wire["fields"] = json!([]);
+
+        let result: Result<ValidSchema, _> = serde_json::from_value(wire);
+        assert!(
+            result.is_err(),
+            "a schema tagged `kind: any` that still carries root_rules must be rejected"
+        );
     }
 
     #[test]

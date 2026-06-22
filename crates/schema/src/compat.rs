@@ -8,7 +8,7 @@
 //! [`ValidSchema::fields`](crate::ValidSchema::fields) return `&[Field]`, so
 //! callers with either type call `is_assignable(producer.fields(), consumer.fields())`.
 
-use crate::{Field, FieldKey, RequiredMode};
+use crate::{Field, FieldKey, RequiredMode, SchemaKind, ValidSchema};
 
 // ── Public types ─────────────────────────────────────────────────────────────
 
@@ -111,6 +111,11 @@ pub enum SchemaIncompat {
 ///   `Computed` field on either side is treated as `Any`, so today's
 ///   `serde_json::Value` (⇒ empty schema) workflows continue to pass. The
 ///   check only bites when both endpoints carry non-trivial typed schemas.
+///   This slice-level entry point is **gradual**: it cannot tell an empty
+///   *record* (`()`) from the gradual `Any`, so it treats every empty producer
+///   as `Any`. To enforce the Top/Bottom split — an empty record produces no
+///   fields and must *not* satisfy a required consumer — use
+///   [`is_assignable_schema`], which inspects [`SchemaKind`].
 /// - **`Notice` fields** are display-only and are ignored on the consumer side.
 /// - Only [`RequiredMode::Always`] consumer fields are hard requirements;
 ///   [`RequiredMode::When`] and the default optional mode are not enforced
@@ -141,7 +146,49 @@ pub enum SchemaIncompat {
 ///   present on both sides but the `multiple` flag differs.
 #[must_use = "check the Result — an Err means the producer is not assignable to the consumer"]
 pub fn is_assignable(producer: &[Field], consumer: &[Field]) -> Result<(), SchemaIncompat> {
-    fields_assignable(producer, consumer)
+    // Gradual mode: an empty producer slice is the `Any` escape (see the
+    // `strict = false` short-circuit in `fields_assignable`).
+    fields_assignable(producer, consumer, false)
+}
+
+/// Kind-aware structural assignability: are producer values assignable where
+/// consumer values are expected, honoring the [`SchemaKind`] Top/Bottom split?
+///
+/// Unlike [`is_assignable`], which sees only `&[Field]` and therefore treats
+/// *every* empty schema as the gradual `Any`, this entry point distinguishes
+/// the gradual `Any` ([`SchemaKind::Any`] — `serde_json::Value`) from an empty
+/// *record* ([`SchemaKind::Record`] with no fields — `()`):
+///
+/// - **Gradual `Any` escape** — if either side is [`SchemaKind::Any`], the
+///   producer may emit anything (satisfies any consumer) and the consumer
+///   accepts anything, so the check passes. This preserves untyped
+///   `serde_json::Value` interop.
+/// - **Strict record subtyping** — when **both** sides are concrete records,
+///   width-subtyping is enforced *without* the empty-producer `Any` escape: an
+///   empty record produces no fields, so it does **not** satisfy a consumer
+///   that hard-requires any (it returns [`SchemaIncompat::MissingRequiredField`]).
+///   An empty record *consumer* still accepts everything (it requires nothing).
+///
+/// This is the entry point the workflow per-edge validator and the action
+/// output-evolution check use, so the Top/Bottom split is actually enforced on
+/// real producer→consumer edges rather than only at the type/serde level.
+///
+/// # Errors
+///
+/// Returns the same [`SchemaIncompat`] taxonomy as [`is_assignable`] (the first
+/// incompatibility found, depth-first, consumer-field order) when both sides are
+/// concrete records and the strict check fails.
+#[must_use = "check the Result — an Err means the producer is not assignable to the consumer"]
+pub fn is_assignable_schema(
+    producer: &ValidSchema,
+    consumer: &ValidSchema,
+) -> Result<(), SchemaIncompat> {
+    // Gradual `Any` on either side is the escape hatch.
+    if producer.kind() == SchemaKind::Any || consumer.kind() == SchemaKind::Any {
+        return Ok(());
+    }
+    // Both are concrete records: strict width-subtyping, no empty-producer escape.
+    fields_assignable(producer.fields(), consumer.fields(), true)
 }
 
 // ── Private core ─────────────────────────────────────────────────────────────
@@ -154,10 +201,17 @@ pub fn is_assignable(producer: &[Field], consumer: &[Field]) -> Result<(), Schem
 fn fields_assignable(
     producer_fields: &[Field],
     consumer_fields: &[Field],
+    strict: bool,
 ) -> Result<(), SchemaIncompat> {
-    // Any escape: empty producer = untyped/opaque output (gradual-typing `Any`);
-    // empty consumer = accepts everything.
-    if producer_fields.is_empty() || consumer_fields.is_empty() {
+    // An empty consumer requires nothing — always satisfiable, both modes.
+    if consumer_fields.is_empty() {
+        return Ok(());
+    }
+    // Gradual mode: an empty producer is the untyped/opaque `Any` escape. In
+    // strict mode the producer is a concrete record that emits exactly these
+    // fields, so an empty producer must face the per-field required check below
+    // (and will fail any hard-required consumer field).
+    if !strict && producer_fields.is_empty() {
         return Ok(());
     }
 
@@ -182,7 +236,7 @@ fn fields_assignable(
                 continue;
             },
             Some(producer_field) => {
-                field_pair_assignable(consumer_key, producer_field, consumer_field)?;
+                field_pair_assignable(consumer_key, producer_field, consumer_field, strict)?;
             },
         }
     }
@@ -213,8 +267,11 @@ fn field_pair_assignable(
     key: &FieldKey,
     producer_field: &Field,
     consumer_field: &Field,
+    strict: bool,
 ) -> Result<(), SchemaIncompat> {
-    // Any escape: Dynamic or Computed on either side matches anything.
+    // Any escape: Dynamic or Computed on either side matches anything. This
+    // per-field gradual escape holds in both modes — a `Dynamic`/`Computed`
+    // field is explicitly `Any`-typed regardless of the enclosing record's kind.
     if matches!(producer_field, Field::Dynamic(_) | Field::Computed(_))
         || matches!(consumer_field, Field::Dynamic(_) | Field::Computed(_))
     {
@@ -243,7 +300,7 @@ fn field_pair_assignable(
             Ok(())
         },
         (Field::Object(producer_obj), Field::Object(consumer_obj)) => {
-            fields_assignable(&producer_obj.fields, &consumer_obj.fields).map_err(|inner| {
+            fields_assignable(&producer_obj.fields, &consumer_obj.fields, strict).map_err(|inner| {
                 SchemaIncompat::NestedIncompat {
                     key: key.clone(),
                     inner: Box::new(inner),
@@ -255,12 +312,12 @@ fn field_pair_assignable(
                 // Either side has no typed item schema — Any escape.
                 (None, _) | (_, None) => Ok(()),
                 (Some(producer_item), Some(consumer_item)) => {
-                    field_pair_assignable(key, producer_item, consumer_item).map_err(|inner| {
-                        SchemaIncompat::NestedIncompat {
+                    field_pair_assignable(key, producer_item, consumer_item, strict).map_err(
+                        |inner| SchemaIncompat::NestedIncompat {
                             key: key.clone(),
                             inner: Box::new(inner),
-                        }
-                    })
+                        },
+                    )
                 },
             }
         },
@@ -567,5 +624,79 @@ mod tests {
         let producer = [Field::select(fk("tags")).multiple().required().into()];
         let consumer = [Field::select(fk("tags")).multiple().required().into()];
         assert_eq!(is_assignable(&producer, &consumer), Ok(()));
+    }
+
+    // ── Kind-aware entry point (`is_assignable_schema`): Top/Bottom split ──────
+
+    /// Build a single-required-field record `ValidSchema`.
+    fn required_record(key: &str) -> ValidSchema {
+        crate::Schema::builder()
+            .add(Field::string(fk(key)).required())
+            .build()
+            .unwrap()
+    }
+
+    /// The defining fix: an empty **record** producer (`()`) does NOT satisfy a
+    /// consumer that hard-requires a field — unlike the gradual `Any`, an empty
+    /// record provably emits nothing.
+    #[test]
+    fn empty_record_producer_does_not_satisfy_required_consumer() {
+        let producer = ValidSchema::empty(); // Record, zero fields
+        let consumer = required_record("name");
+        assert_eq!(
+            is_assignable_schema(&producer, &consumer),
+            Err(SchemaIncompat::MissingRequiredField { key: fk("name") }),
+        );
+    }
+
+    /// Contrast: a gradual `Any` producer DOES satisfy the same required
+    /// consumer — the escape hatch the slice-level check could not distinguish.
+    #[test]
+    fn any_producer_satisfies_required_consumer() {
+        let producer = ValidSchema::any();
+        let consumer = required_record("name");
+        assert_eq!(is_assignable_schema(&producer, &consumer), Ok(()));
+    }
+
+    /// An `Any` consumer accepts any producer (it requires nothing).
+    #[test]
+    fn typed_producer_satisfies_any_consumer() {
+        let producer = required_record("name");
+        let consumer = ValidSchema::any();
+        assert_eq!(is_assignable_schema(&producer, &consumer), Ok(()));
+    }
+
+    /// An empty **record** consumer accepts any producer (requires nothing) —
+    /// the consumer-side escape is preserved in strict mode.
+    #[test]
+    fn empty_record_consumer_accepts_typed_producer() {
+        let producer = required_record("name");
+        let consumer = ValidSchema::empty();
+        assert_eq!(is_assignable_schema(&producer, &consumer), Ok(()));
+    }
+
+    /// Two compatible concrete records pass through the kind-aware entry point,
+    /// matching the slice-level result (no behavior drift on the typed path).
+    #[test]
+    fn compatible_records_via_schema_entry_is_ok() {
+        let producer = crate::Schema::builder()
+            .add(Field::string(fk("name")).required())
+            .add(Field::number(fk("extra")))
+            .build()
+            .unwrap();
+        let consumer = required_record("name");
+        assert_eq!(is_assignable_schema(&producer, &consumer), Ok(()));
+    }
+
+    /// Two incompatible concrete records still produce the same first
+    /// incompatibility through the kind-aware entry point.
+    #[test]
+    fn incompatible_records_via_schema_entry_returns_error() {
+        let producer = required_record("name");
+        let consumer = required_record("other");
+        assert_eq!(
+            is_assignable_schema(&producer, &consumer),
+            Err(SchemaIncompat::MissingRequiredField { key: fk("other") }),
+        );
     }
 }
