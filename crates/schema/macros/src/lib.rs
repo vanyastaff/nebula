@@ -44,7 +44,7 @@ pub fn field_key(input: TokenStream) -> TokenStream {
     let lit = parse_macro_input!(input as LitStr);
     let value = lit.value();
 
-    if let Err(msg) = validate(&value) {
+    if let Err(msg) = validate_field_key(&value) {
         return syn::Error::new(lit.span(), format!("invalid FieldKey literal: {msg}"))
             .to_compile_error()
             .into();
@@ -86,7 +86,12 @@ pub fn derive_enum_select(input: TokenStream) -> TokenStream {
         .into()
 }
 
-fn validate(value: &str) -> Result<(), &'static str> {
+/// Validate a candidate schema field key against the `FieldKey` rules
+/// (non-empty, ≤64 chars, leading ASCII letter or `_`, then ASCII alphanumerics
+/// or `_`). Shared by the `field_key!` macro and the `Schema` / `EnumSelect`
+/// derives so the rules live in exactly one place (mirror of
+/// `nebula_schema::FieldKey::new`).
+pub(crate) fn validate_field_key(value: &str) -> Result<(), &'static str> {
     if value.is_empty() {
         return Err("key cannot be empty");
     }

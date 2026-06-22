@@ -18,6 +18,10 @@ syn = { version = "2", features = ["full", "extra-traits"] }
 quote = "1"
 proc-macro2 = "1"
 proc-macro-crate = "3"
+# Case conversion for `#[derive(EnumSelect)]` option values — `heck` splits
+# acronym runs correctly (`HTTPProxy` → `http_proxy`) where a hand-rolled pass
+# does not. Small, maintained, the de-facto standard (used by serde/clap).
+heck = "0.5"
 
 [lints]
 workspace = true

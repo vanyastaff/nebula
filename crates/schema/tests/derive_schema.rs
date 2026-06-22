@@ -244,3 +244,40 @@ fn sanity_build_many_fields_via_derive() {
         .expect("derived fields build into a new Schema");
     assert_eq!(s.fields().len(), 1);
 }
+
+// ── raw identifiers (keywords as field names) ──────────────────────────────
+
+#[derive(Schema)]
+#[expect(dead_code, reason = "fields exercised via HasSchema::schema")]
+struct RawIdentFields {
+    // `r#type` / `r#async` use Rust keywords as field names. The derive must
+    // strip the raw-identifier prefix to the schema keys `type` / `async`
+    // (matching serde) instead of panicking at runtime on the `#` in `r#type`.
+    r#type: String,
+    r#async: bool,
+}
+
+#[test]
+fn derive_schema_strips_raw_identifier_prefix() {
+    let schema = RawIdentFields::schema();
+    let keys: Vec<&str> = schema.fields().iter().map(|f| f.key().as_str()).collect();
+    assert_eq!(keys, ["type", "async"]);
+}
+
+// ── acronym-aware snake_case for enum option values ────────────────────────
+
+#[derive(EnumSelect, Clone, Copy)]
+#[expect(dead_code, reason = "variants exercised via derive")]
+enum AcronymMethod {
+    HTTPProxy,
+    PostBody,
+}
+
+#[test]
+fn derive_enum_select_uses_heck_for_acronyms() {
+    let options = AcronymMethod::select_options();
+    // `heck` splits the leading acronym run: `HTTPProxy` → `http_proxy`
+    // (the previous hand-rolled pass produced `httpproxy`).
+    assert_eq!(options[0].value, json!("http_proxy"));
+    assert_eq!(options[1].value, json!("post_body"));
+}

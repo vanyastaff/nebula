@@ -3913,6 +3913,7 @@ dependencies = [
 name = "nebula-schema-macros"
 version = "0.1.0"
 dependencies = [
+ "heck",
  "proc-macro-crate",
  "proc-macro2",
  "quote",
