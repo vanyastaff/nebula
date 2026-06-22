@@ -1065,6 +1065,63 @@ mod tests {
     }
 
     #[test]
+    fn output_schema_collapsed_to_empty_record_same_major_is_rejected() {
+        // v1.0 produces a typed record; v1.1 collapses output to `()` (an empty
+        // record — `ValidSchema::empty()`), emitting nothing. Downstream
+        // consumers that required any field break. The kind-aware check catches
+        // this collapse; the old gradual slice check masked it as `Any`.
+        use nebula_schema::{FieldCollector, Schema, StringBuilder, ValidSchema, field_key};
+        let typed = Schema::builder()
+            .string(field_key!("result"), StringBuilder::required)
+            .string(field_key!("status"), StringBuilder::required)
+            .build()
+            .unwrap();
+
+        let prev = ActionMetadata::new(action_key!("svc.action"), "A", "d")
+            .with_version(1, 0)
+            .with_output_schema(typed);
+        let next = ActionMetadata::new(action_key!("svc.action"), "A", "d")
+            .with_version(1, 1)
+            .with_output_schema(ValidSchema::empty());
+
+        let err = next
+            .validate_compatibility(&prev)
+            .expect_err("collapsing output to an empty record on same major must be rejected");
+        assert_eq!(
+            err,
+            MetadataCompatibilityError::OutputSchemaNarrowedWithoutMajorBump,
+            "expected OutputSchemaNarrowedWithoutMajorBump for the `()` collapse"
+        );
+    }
+
+    #[test]
+    fn output_schema_collapsed_to_any_same_major_is_allowed() {
+        // Contrast with the empty-record collapse: v1.1 makes output the gradual
+        // `Any` (`serde_json::Value` -> `ValidSchema::any()`). An `Any` producer
+        // may still emit the old fields, so the break cannot be proven and the
+        // check passes — locking the gradual escape and proving the sibling
+        // rejection above is not tautological.
+        use nebula_schema::{FieldCollector, Schema, StringBuilder, ValidSchema, field_key};
+        let typed = Schema::builder()
+            .string(field_key!("result"), StringBuilder::required)
+            .string(field_key!("status"), StringBuilder::required)
+            .build()
+            .unwrap();
+
+        let prev = ActionMetadata::new(action_key!("svc.action"), "A", "d")
+            .with_version(1, 0)
+            .with_output_schema(typed);
+        let next = ActionMetadata::new(action_key!("svc.action"), "A", "d")
+            .with_version(1, 1)
+            .with_output_schema(ValidSchema::any());
+
+        assert!(
+            next.validate_compatibility(&prev).is_ok(),
+            "collapsing output to the gradual `Any` cannot be proven breaking — must be allowed"
+        );
+    }
+
+    #[test]
     fn output_schema_narrowed_with_major_bump_is_allowed() {
         // A major version bump signals a breaking contract change — narrowing
         // the output is permitted regardless of what fields disappear.

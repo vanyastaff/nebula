@@ -81,7 +81,13 @@ pub enum SchemaKind {
 }
 
 /// Shared interior of a `ValidSchema`.
+///
+/// An implementation detail: the only constructor is the crate-private
+/// `ValidSchema::from_inner`, so this struct is never built or matched outside
+/// `nebula-schema`. `#[non_exhaustive]` records that intent and lets new fields
+/// (like `kind`) be added without it being an external breaking change.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct ValidSchemaInner {
     /// Whether this is a concrete record or the gradual-typing `Any`.
     pub kind: SchemaKind,
@@ -101,10 +107,15 @@ pub struct ValidSchemaInner {
 ///
 /// Cheap to clone — backed by `Arc`.
 ///
-/// Serde: serializes as `{"fields": [...]}` when there are no root rules, or
-/// `{"fields": [...], "root_rules": [...]}` when [`ValidSchemaInner::root_rules`]
-/// is non-empty. Deserialization rebuilds through [`SchemaBuilder`](crate::schema::SchemaBuilder);
-/// invalid wire data returns a [`serde::de::Error`] (lint failures are not panics).
+/// Serde: a [`SchemaKind::Record`] serializes as `{"fields": [...]}` (plus
+/// `"root_rules": [...]` when [`ValidSchemaInner::root_rules`] is non-empty) —
+/// no `kind` tag, so the wire shape is identical to before `kind` existed and a
+/// payload with a missing `kind` deserializes back as a record. A
+/// [`SchemaKind::Any`] serializes as `{"kind": "any", "fields": []}`.
+/// Deserialization rebuilds a record through [`SchemaBuilder`](crate::schema::SchemaBuilder)
+/// (invalid wire data returns a [`serde::de::Error`]; lint failures are not
+/// panics), and **fails closed** if a payload tagged `kind: "any"` carries any
+/// `fields`/`root_rules` instead of silently dropping those constraints.
 #[derive(Debug, Clone)]
 pub struct ValidSchema(pub(crate) Arc<ValidSchemaInner>);
 

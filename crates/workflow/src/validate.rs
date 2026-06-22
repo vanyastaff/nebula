@@ -1017,8 +1017,8 @@ mod tests {
 
     /// Top/Bottom split enforced on a real edge: a producer whose `Output = ()`
     /// (an empty *record*, not the gradual `Any`) does NOT satisfy a consumer
-    /// that hard-requires a field. This is exactly the scenario the slice-level
-    /// `is_assignable` missed — it treated the empty output as `Any` and passed.
+    /// that hard-requires a field. This is exactly the scenario the old
+    /// kind-blind slice check missed — it treated the empty output as `Any`.
     #[test]
     fn empty_record_output_does_not_satisfy_required_input() {
         let (def, a, b) = two_node_def();

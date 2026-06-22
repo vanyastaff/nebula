@@ -4,9 +4,10 @@
 //! per-edge validator (T3) to decide whether a producer node's `Output` schema
 //! is assignable where a consumer node's `Input` schema is expected.
 //!
-//! Both [`Schema::fields`](crate::Schema::fields) and
-//! [`ValidSchema::fields`](crate::ValidSchema::fields) return `&[Field]`, so
-//! callers with either type call `is_assignable(producer.fields(), consumer.fields())`.
+//! The public entry point is [`is_assignable_schema`], which takes two
+//! [`ValidSchema`] values so it can honor the [`SchemaKind`] Top/Bottom split:
+//! `is_assignable_schema(&producer.output, &consumer.input)`. (An internal,
+//! kind-blind slice form is used only by this module's tests.)
 
 use crate::{Field, FieldKey, RequiredMode, SchemaKind, ValidSchema};
 
@@ -14,9 +15,9 @@ use crate::{Field, FieldKey, RequiredMode, SchemaKind, ValidSchema};
 
 /// Why a producer schema is not assignable to a consumer schema.
 ///
-/// Returned by [`is_assignable`] when the structural width-subtyping check
-/// fails. Carries the first incompatibility found (depth-first, consumer-field
-/// order).
+/// Returned by [`is_assignable_schema`] when the structural width-subtyping
+/// check fails. Carries the first incompatibility found (depth-first,
+/// consumer-field order).
 ///
 /// This enum is `#[non_exhaustive]` — new incompatibility kinds (e.g. semantic
 /// type constraints) may be added in future minor versions without breaking
@@ -79,62 +80,78 @@ pub enum SchemaIncompat {
 
 // ── Public entry point ───────────────────────────────────────────────────────
 
-/// Structural width-subtyping: are producer fields assignable where consumer
-/// fields are expected? (`Output <: Input`, Liskov.)
+/// Kind-aware structural width-subtyping: are producer values assignable where
+/// consumer values are expected? (`Output <: Input`, Liskov.)
 ///
-/// Accepts raw field slices so both [`Schema::fields`](crate::Schema::fields)
-/// and [`ValidSchema::fields`](crate::ValidSchema::fields) can be passed
-/// directly without constructing a wrapper type:
+/// This is **the** public assignability check (ADR-0100 T1). The workflow
+/// per-edge validator (T3) and the action output-evolution check both call it,
+/// so the [`SchemaKind`] Top/Bottom split is enforced on real producer→consumer
+/// edges, not merely at the type/serde level.
 ///
 /// ```rust
-/// use nebula_schema::{Field, Schema, field_key, is_assignable};
+/// use nebula_schema::{Field, Schema, ValidSchema, field_key, is_assignable_schema};
 ///
 /// let producer = Schema::builder()
 ///     .add(Field::string(field_key!("name")).required())
 ///     .add(Field::number(field_key!("extra")))
 ///     .build()
 ///     .unwrap();
-///
 /// let consumer = Schema::builder()
 ///     .add(Field::string(field_key!("name")).required())
 ///     .build()
 ///     .unwrap();
+/// // Width subtyping: the producer has every required consumer field (+ extras).
+/// assert!(is_assignable_schema(&producer, &consumer).is_ok());
 ///
-/// assert!(is_assignable(producer.fields(), consumer.fields()).is_ok());
+/// // An empty *record* producer (`()`) provably emits nothing, so it does NOT
+/// // satisfy a consumer that hard-requires a field …
+/// assert!(is_assignable_schema(&ValidSchema::empty(), &consumer).is_err());
+/// // … whereas the gradual `Any` (`serde_json::Value`) still passes.
+/// assert!(is_assignable_schema(&ValidSchema::any(), &consumer).is_ok());
 /// ```
 ///
-/// Implements ADR-0100 §L1/L2:
+/// # Kinds (Top/Bottom split)
+///
+/// - **Gradual `Any` escape** — if either side is [`SchemaKind::Any`] (e.g.
+///   `serde_json::Value`), the producer may emit anything and the consumer
+///   accepts anything, so the check passes; untyped interop is preserved.
+/// - **Strict record subtyping** — when **both** sides are concrete records,
+///   width-subtyping is enforced *without* the empty-producer escape: an empty
+///   record produces no fields, so it does **not** satisfy a consumer that
+///   hard-requires any (it returns [`SchemaIncompat::MissingRequiredField`]). An
+///   empty record *consumer* still accepts everything (it requires nothing).
+///
+/// Strict mode removes only the empty-*record*-producer escape. The per-field
+/// gradual escapes below (`Dynamic`/`Computed` fields, and `List` fields with no
+/// typed item) still pass in **both** modes by construction. A primitive or
+/// `serde_json::Value` output is [`SchemaKind::Any`], so a bare-scalar producer
+/// can never be statically rejected against a record consumer — gradual typing
+/// at the leaf (wrap the value in a `#[derive(Schema)]` struct for strict typing).
+///
+/// # Record subtyping rules (ADR-0100 §L1/L2)
+///
 /// - **Width subtyping** — the consumer's required fields must be a subset of
-///   the producer's fields with type-compatible matches on the overlap. The
-///   producer may emit extra fields; they are ignored.
-/// - **`Any` escape (gradual typing)** — an empty slice or a `Dynamic` /
-///   `Computed` field on either side is treated as `Any`, so today's
-///   `serde_json::Value` (⇒ empty schema) workflows continue to pass. The
-///   check only bites when both endpoints carry non-trivial typed schemas.
-///   This slice-level entry point is **gradual**: it cannot tell an empty
-///   *record* (`()`) from the gradual `Any`, so it treats every empty producer
-///   as `Any`. To enforce the Top/Bottom split — an empty record produces no
-///   fields and must *not* satisfy a required consumer — use
-///   [`is_assignable_schema`], which inspects [`SchemaKind`].
-/// - **`Notice` fields** are display-only and are ignored on the consumer side.
+///   the producer's fields with type-compatible matches on the overlap. Extra
+///   producer fields are ignored.
+/// - **`Dynamic`/`Computed` fields** are treated as `Any` on either side.
+/// - **`Notice` fields** are display-only and ignored on the consumer side.
 /// - Only [`RequiredMode::Always`] consumer fields are hard requirements;
 ///   [`RequiredMode::When`] and the default optional mode are not enforced
 ///   statically (the runtime condition cannot be proved at validation time).
 /// - **`File` and `Select` cardinality** — the `multiple` flag (scalar vs.
-///   array) is checked for equality. A scalar producer paired with an array
-///   consumer (or vice versa) is a wire-shape mismatch and returns
+///   array) is checked for equality; a mismatch returns
 ///   [`SchemaIncompat::CardinalityMismatch`].
 /// - **`Mode` fields** — `Mode`-vs-`Mode` is treated as compatible regardless
 ///   of variant payloads (lenient, never false-rejects). Real union-variance
-///   compatibility (sum-type variance has opposite direction from record
-///   width-subtyping) is deferred to an ADR-0100 addendum.
+///   compatibility is deferred to an ADR-0100 addendum.
 /// - **`Number` integer vs. float** — both carry `type_name() == "number"` and
 ///   are treated as compatible. Numeric-widening subtyping is deferred to an
 ///   ADR-0100 addendum.
 ///
 /// # Errors
 ///
-/// Returns the first [`SchemaIncompat`] found (depth-first, consumer-field order):
+/// When both sides are concrete records and the strict check fails, returns the
+/// first [`SchemaIncompat`] found (depth-first, consumer-field order):
 /// - [`SchemaIncompat::MissingRequiredField`] — a hard-required consumer field
 ///   has no counterpart in the producer.
 /// - [`SchemaIncompat::FieldTypeMismatch`] — a field present on both sides
@@ -144,40 +161,6 @@ pub enum SchemaIncompat {
 ///   fields are incompatible; wraps the inner [`SchemaIncompat`].
 /// - [`SchemaIncompat::CardinalityMismatch`] — a `File` or `Select` field is
 ///   present on both sides but the `multiple` flag differs.
-#[must_use = "check the Result — an Err means the producer is not assignable to the consumer"]
-pub fn is_assignable(producer: &[Field], consumer: &[Field]) -> Result<(), SchemaIncompat> {
-    // Gradual mode: an empty producer slice is the `Any` escape (see the
-    // `strict = false` short-circuit in `fields_assignable`).
-    fields_assignable(producer, consumer, false)
-}
-
-/// Kind-aware structural assignability: are producer values assignable where
-/// consumer values are expected, honoring the [`SchemaKind`] Top/Bottom split?
-///
-/// Unlike [`is_assignable`], which sees only `&[Field]` and therefore treats
-/// *every* empty schema as the gradual `Any`, this entry point distinguishes
-/// the gradual `Any` ([`SchemaKind::Any`] — `serde_json::Value`) from an empty
-/// *record* ([`SchemaKind::Record`] with no fields — `()`):
-///
-/// - **Gradual `Any` escape** — if either side is [`SchemaKind::Any`], the
-///   producer may emit anything (satisfies any consumer) and the consumer
-///   accepts anything, so the check passes. This preserves untyped
-///   `serde_json::Value` interop.
-/// - **Strict record subtyping** — when **both** sides are concrete records,
-///   width-subtyping is enforced *without* the empty-producer `Any` escape: an
-///   empty record produces no fields, so it does **not** satisfy a consumer
-///   that hard-requires any (it returns [`SchemaIncompat::MissingRequiredField`]).
-///   An empty record *consumer* still accepts everything (it requires nothing).
-///
-/// This is the entry point the workflow per-edge validator and the action
-/// output-evolution check use, so the Top/Bottom split is actually enforced on
-/// real producer→consumer edges rather than only at the type/serde level.
-///
-/// # Errors
-///
-/// Returns the same [`SchemaIncompat`] taxonomy as [`is_assignable`] (the first
-/// incompatibility found, depth-first, consumer-field order) when both sides are
-/// concrete records and the strict check fails.
 #[must_use = "check the Result — an Err means the producer is not assignable to the consumer"]
 pub fn is_assignable_schema(
     producer: &ValidSchema,
@@ -347,6 +330,16 @@ mod tests {
 
     fn fk(s: &str) -> FieldKey {
         FieldKey::new(s).unwrap()
+    }
+
+    /// Gradual, kind-blind slice check: an empty producer slice is the `Any`
+    /// escape. This is **test-only** — production code calls
+    /// [`is_assignable_schema`], which honors the `SchemaKind` Top/Bottom split.
+    /// Retained here to exercise the shared per-field matching logic (type
+    /// mismatch, cardinality, nesting) and the gradual empty-producer escape
+    /// directly on `&[Field]` without building a `ValidSchema` per case.
+    fn is_assignable(producer: &[Field], consumer: &[Field]) -> Result<(), SchemaIncompat> {
+        fields_assignable(producer, consumer, false)
     }
 
     // ── Compatible: producer has all required consumer fields + extra ──────
@@ -697,6 +690,79 @@ mod tests {
         assert_eq!(
             is_assignable_schema(&producer, &consumer),
             Err(SchemaIncompat::MissingRequiredField { key: fk("other") }),
+        );
+    }
+
+    /// Both sides `Any` short-circuits to `Ok` via the leading `||` term. Guards
+    /// against the condition being mistyped as `&&` (which would fall through to
+    /// the strict record path — masked here only because both field slices are
+    /// empty, so this test pins the intended both-`Any` contract explicitly).
+    #[test]
+    fn both_any_schemas_are_compatible() {
+        assert_eq!(
+            is_assignable_schema(&ValidSchema::any(), &ValidSchema::any()),
+            Ok(()),
+        );
+    }
+
+    // ── Strict-mode recursion: `strict` must reach nested Object / List leaves ──
+    // These drive the private core directly (the public `is_assignable_schema`
+    // delegates record subtyping to `fields_assignable(.., strict = true)`), and
+    // contrast strict vs gradual at depth so a dropped `strict` argument in the
+    // Object/List recursion arms goes RED.
+
+    /// An empty nested-object producer does NOT satisfy a consumer whose nested
+    /// object hard-requires a field — under strict mode, one level deep. Gradual
+    /// mode escapes it, proving the assertion is `strict`-specific.
+    #[test]
+    fn strict_rejects_empty_nested_object_producer() {
+        let producer = [Field::object(fk("config")).into()]; // empty inner object
+        let consumer = [Field::object(fk("config"))
+            .add(Field::string(fk("host")).required())
+            .into()];
+
+        assert_eq!(
+            fields_assignable(&producer, &consumer, true),
+            Err(SchemaIncompat::NestedIncompat {
+                key: fk("config"),
+                inner: Box::new(SchemaIncompat::MissingRequiredField { key: fk("host") }),
+            }),
+            "strict mode must recurse into the empty producer object and fail the required field"
+        );
+        assert_eq!(
+            fields_assignable(&producer, &consumer, false),
+            Ok(()),
+            "gradual mode escapes the empty nested producer — confirms the strict flag is what bites"
+        );
+    }
+
+    /// A list whose item is an empty object does NOT satisfy a consumer list
+    /// whose item object hard-requires a field — strict propagates List → item →
+    /// Object. Gradual mode escapes it.
+    #[test]
+    fn strict_rejects_empty_nested_list_item_producer() {
+        let producer = [Field::list(fk("items"))
+            .item(Field::object(fk("item")))
+            .into()];
+        let consumer = [Field::list(fk("items"))
+            .item(Field::object(fk("item")).add(Field::string(fk("id")).required()))
+            .into()];
+
+        assert_eq!(
+            fields_assignable(&producer, &consumer, true),
+            Err(SchemaIncompat::NestedIncompat {
+                key: fk("items"),
+                inner: Box::new(SchemaIncompat::NestedIncompat {
+                    key: fk("items"),
+                    inner: Box::new(SchemaIncompat::MissingRequiredField { key: fk("id") }),
+                }),
+            }),
+            "strict mode must recurse List -> item -> Object and fail the required field"
+        );
+        assert_eq!(
+            fields_assignable(&producer, &consumer, false),
+            Ok(()),
+            "gradual mode escapes the empty list-item object — confirms strict propagation"
         );
     }
 }

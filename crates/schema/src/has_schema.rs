@@ -125,6 +125,14 @@ empty_has_schema_for!(
 /// Suitable for test fixtures / legacy types that don't yet declare a real
 /// schema. In production code, prefer `#[derive(Schema)]` so the
 /// schema matches the actual struct shape.
+///
+/// The emitted schema is an empty **record** (`SchemaKind::Record`), not the
+/// gradual `Any`. Used as an action `Output`, it is the genuine "no fields"
+/// case: under [`is_assignable_schema`](crate::is_assignable_schema) it will
+/// **fail** the strict check against a consumer that hard-requires a field. If
+/// gradual typing (an `Any` that satisfies any consumer) is what you want, do
+/// not declare an empty record — use an untyped `serde_json::Value` input, or
+/// implement [`HasSchema`] returning [`ValidSchema::any`](crate::ValidSchema::any).
 #[macro_export]
 macro_rules! impl_empty_has_schema {
     ($($t:ty),* $(,)?) => {
