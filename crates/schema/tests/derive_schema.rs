@@ -281,3 +281,77 @@ fn derive_enum_select_uses_heck_for_acronyms() {
     assert_eq!(options[0].value, json!("http_proxy"));
     assert_eq!(options[1].value, json!("post_body"));
 }
+
+// ── serde key alignment (C1 keystone) ──────────────────────────────────────
+
+#[derive(Schema, serde::Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct CamelConfig {
+    user_name: String,
+    api_key_id: String,
+}
+
+#[test]
+fn derive_schema_honors_serde_rename_all_matching_wire() {
+    // The schema key MUST equal serde's wire key, otherwise the validator checks a
+    // field the deserializer never produces. Before this fix the keys stayed
+    // `user_name` / `api_key_id` while serde emitted `userName` / `apiKeyId`.
+    let schema = CamelConfig::schema();
+    let schema_keys: Vec<&str> = schema.fields().iter().map(|f| f.key().as_str()).collect();
+    assert_eq!(schema_keys, ["userName", "apiKeyId"]);
+
+    // Parity guard: every schema key is an actual serde wire key (order-independent
+    // because serde_json sorts object keys without `preserve_order`).
+    let wire = serde_json::to_value(CamelConfig::default()).expect("serializes");
+    let wire_obj = wire.as_object().expect("struct serializes to an object");
+    assert_eq!(schema_keys.len(), wire_obj.len());
+    for key in &schema_keys {
+        assert!(
+            wire_obj.contains_key(*key),
+            "schema key `{key}` is not a serde wire key; wire = {wire_obj:?}"
+        );
+    }
+}
+
+#[derive(Schema, serde::Deserialize)]
+#[expect(dead_code, reason = "exercised via HasSchema::schema")]
+struct RenamedField {
+    #[serde(rename = "apiKey")]
+    api_key: String,
+}
+
+#[test]
+fn derive_schema_honors_serde_field_rename() {
+    let schema = RenamedField::schema();
+    assert_eq!(schema.fields()[0].key().as_str(), "apiKey");
+}
+
+#[derive(Schema, serde::Deserialize)]
+#[expect(dead_code, reason = "exercised via HasSchema::schema")]
+struct WithSkipped {
+    kept: String,
+    #[serde(skip)]
+    internal: String,
+}
+
+#[test]
+fn derive_schema_drops_serde_skipped_field() {
+    let schema = WithSkipped::schema();
+    let keys: Vec<&str> = schema.fields().iter().map(|f| f.key().as_str()).collect();
+    assert_eq!(keys, ["kept"]);
+}
+
+#[derive(EnumSelect, Clone, Copy, serde::Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+#[expect(dead_code, reason = "variants exercised via derive")]
+enum ScreamingMethod {
+    GetThing,
+    PutThing,
+}
+
+#[test]
+fn derive_enum_select_honors_serde_rename_all() {
+    let options = ScreamingMethod::select_options();
+    assert_eq!(options[0].value, json!("GET_THING"));
+    assert_eq!(options[1].value, json!("PUT_THING"));
+}

@@ -7,25 +7,25 @@
 //!
 //! # Value encoding
 //!
-//! Each variant's stored value is its name in `snake_case`, computed with
-//! [`heck`] so acronym runs split correctly (`HTTPProxy` → `http_proxy`, not
-//! `httpproxy`). Two variants that collapse to the same value are a spanned
-//! compile error rather than a silent collision.
+//! A variant's catalog value follows serde so options round-trip back into the
+//! enum: an explicit `#[serde(rename = "..")]` wins, otherwise the enum's
+//! `#[serde(rename_all = ..)]` is applied, otherwise the variant name in
+//! `snake_case` (computed with [`heck`], so acronym runs split correctly:
+//! `HTTPProxy` → `http_proxy`). A variant marked `#[serde(skip)]` is omitted.
+//! Two variants that collapse to the same value are a spanned compile error.
 //!
-//! This does **not** yet read `serde` rename attributes. An enum that also
-//! derives `Serialize` / `Deserialize` and wants its catalog options to
-//! round-trip must keep an explicit `#[serde(rename_all = "snake_case")]` (or
-//! per-variant `#[serde(rename = "...")]`) aligned with this default. Honoring
-//! serde attributes is the keystone of the schema↔wire key-alignment follow-up.
+//! The `snake_case` default matches serde only when the enum also sets
+//! `#[serde(rename_all = "snake_case")]` (the usual choice for serde enums); the
+//! `EnumSelect` convention prefers `snake_case` catalog values regardless.
 
 use std::collections::HashMap;
 
 use heck::ToSnakeCase;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
-use syn::{Data, DataEnum, DeriveInput, Fields, ext::IdentExt};
+use syn::{Data, DataEnum, DeriveInput, Fields, Ident, ext::IdentExt};
 
-use crate::attrs::FieldAttrs;
+use crate::attrs::{FieldAttrs, RenameRule, SerdeAttrs};
 
 pub(crate) fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
     let crate_path = crate::crate_path();
@@ -43,6 +43,7 @@ pub(crate) fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
         },
     };
 
+    let container_serde = SerdeAttrs::from_attrs(&input.attrs)?;
     let mut option_exprs = Vec::with_capacity(variants.len());
     let mut seen_values = HashMap::with_capacity(variants.len());
     for variant in variants {
@@ -53,9 +54,12 @@ pub(crate) fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
             ));
         }
         let variant_name = &variant.ident;
-        // Strip the raw-identifier prefix (`r#Type` → `Type`), then split on
-        // case/acronym boundaries via `heck` so `HTTPProxy` → `http_proxy`.
-        let value = variant_name.unraw().to_string().to_snake_case();
+        let serde = SerdeAttrs::from_attrs(&variant.attrs)?;
+        // A variant serde skips can never round-trip, so it is not a catalog option.
+        if serde.skip {
+            continue;
+        }
+        let value = resolve_variant_value(variant_name, &serde, container_serde.rename_all);
         if let Some(previous) = seen_values.insert(value.clone(), variant_name.clone()) {
             return Err(syn::Error::new_spanned(
                 variant_name,
@@ -92,4 +96,24 @@ pub(crate) fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
             }
         }
     })
+}
+
+/// Resolve an enum variant's catalog (option) value, honoring serde: an explicit
+/// `#[serde(rename = "..")]` wins, otherwise `#[serde(rename_all = ..)]` is
+/// applied to the raw-stripped variant, otherwise the variant in `snake_case`
+/// (the `EnumSelect` convention — this matches serde only when the enum also sets
+/// `#[serde(rename_all = "snake_case")]`).
+fn resolve_variant_value(
+    variant_name: &Ident,
+    serde: &SerdeAttrs,
+    container_rename_all: Option<RenameRule>,
+) -> String {
+    if let Some(rename) = &serde.rename {
+        return rename.clone();
+    }
+    let base = variant_name.unraw().to_string();
+    match container_rename_all {
+        Some(rule) => rule.apply(&base),
+        None => base.to_snake_case(),
+    }
 }

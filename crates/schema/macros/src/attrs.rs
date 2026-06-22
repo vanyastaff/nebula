@@ -15,10 +15,16 @@
 //! semantics: unknown keys inside a namespace produce a compile error at
 //! the offending token, not a silent skip.
 
+use heck::{
+    ToKebabCase, ToLowerCamelCase, ToShoutyKebabCase, ToShoutySnakeCase, ToSnakeCase,
+    ToUpperCamelCase,
+};
+use proc_macro2::Span;
 use syn::{
-    Attribute, Expr, ExprLit, Lit, LitInt, LitStr, Token,
+    Attribute, Expr, ExprLit, Lit, LitInt, LitStr, Meta, Token,
     parse::{Parse, ParseStream},
     punctuated::Punctuated,
+    spanned::Spanned,
 };
 
 /// Options gathered from `#[field(...)]` on a struct field or enum variant.
@@ -431,5 +437,133 @@ impl Parse for SchemaEntry {
                 format!("unknown #[schema(..)] option `{other}`"),
             )),
         }
+    }
+}
+
+// ── serde-attribute alignment (#[serde(rename / rename_all / skip / flatten)]) ──
+//
+// The schema key MUST equal the serde wire key, otherwise the validator checks a
+// field the deserializer never produces. The derives therefore read the relevant
+// `#[serde(...)]` attributes directly. `rename_all` rules map onto `heck`, which
+// is built to match serde's own case conventions; `lowercase` / `UPPERCASE` are
+// plain `to_lowercase` / `to_uppercase`, identical to serde. A round-trip
+// invariant test pins this parity. Unsupported rules are a compile error, never a
+// silent guess.
+
+/// serde `rename_all` case rule, restricted to serde's documented set.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum RenameRule {
+    Lower,
+    Upper,
+    Pascal,
+    Camel,
+    Snake,
+    ScreamingSnake,
+    Kebab,
+    ScreamingKebab,
+}
+
+impl RenameRule {
+    fn parse(value: &str, span: Span) -> syn::Result<Self> {
+        Ok(match value {
+            "lowercase" => Self::Lower,
+            "UPPERCASE" => Self::Upper,
+            "PascalCase" => Self::Pascal,
+            "camelCase" => Self::Camel,
+            "snake_case" => Self::Snake,
+            "SCREAMING_SNAKE_CASE" => Self::ScreamingSnake,
+            "kebab-case" => Self::Kebab,
+            "SCREAMING-KEBAB-CASE" => Self::ScreamingKebab,
+            other => {
+                return Err(syn::Error::new(
+                    span,
+                    format!(
+                        "#[serde(rename_all = \"{other}\")] is not supported by the schema derive; \
+                         supported: lowercase, UPPERCASE, PascalCase, camelCase, snake_case, \
+                         SCREAMING_SNAKE_CASE, kebab-case, SCREAMING-KEBAB-CASE"
+                    ),
+                ));
+            },
+        })
+    }
+
+    /// Apply the rule to an identifier (the caller strips any raw-ident prefix).
+    pub(crate) fn apply(self, ident: &str) -> String {
+        match self {
+            Self::Lower => ident.to_lowercase(),
+            Self::Upper => ident.to_uppercase(),
+            Self::Pascal => ident.to_upper_camel_case(),
+            Self::Camel => ident.to_lower_camel_case(),
+            Self::Snake => ident.to_snake_case(),
+            Self::ScreamingSnake => ident.to_shouty_snake_case(),
+            Self::Kebab => ident.to_kebab_case(),
+            Self::ScreamingKebab => ident.to_shouty_kebab_case(),
+        }
+    }
+}
+
+/// The subset of `#[serde(...)]` attributes that affect the schema key, read from
+/// a container (`rename_all`) or a field / variant (`rename`, `skip`, `flatten`).
+#[derive(Default)]
+pub(crate) struct SerdeAttrs {
+    pub rename_all: Option<RenameRule>,
+    pub rename: Option<String>,
+    pub skip: bool,
+    /// `Some(span)` when `#[serde(flatten)]` is present — used to anchor the
+    /// "flatten not yet supported" compile error at the attribute.
+    pub flatten_span: Option<Span>,
+}
+
+impl SerdeAttrs {
+    pub(crate) fn from_attrs(attrs: &[Attribute]) -> syn::Result<Self> {
+        let mut out = Self::default();
+        for attr in attrs.iter().filter(|a| a.path().is_ident("serde")) {
+            let metas: Punctuated<Meta, Token![,]> =
+                attr.parse_args_with(Punctuated::parse_terminated)?;
+            for meta in &metas {
+                match meta {
+                    Meta::NameValue(nv) if nv.path.is_ident("rename_all") => {
+                        out.rename_all = Some(RenameRule::parse(
+                            &expr_str(&nv.value, "rename_all")?,
+                            nv.span(),
+                        )?);
+                    },
+                    Meta::NameValue(nv) if nv.path.is_ident("rename") => {
+                        out.rename = Some(expr_str(&nv.value, "rename")?);
+                    },
+                    Meta::Path(p) if p.is_ident("skip") || p.is_ident("skip_deserializing") => {
+                        out.skip = true;
+                    },
+                    Meta::Path(p) if p.is_ident("flatten") => {
+                        out.flatten_span = Some(p.span());
+                    },
+                    Meta::List(l) if l.path.is_ident("rename") => {
+                        return Err(syn::Error::new_spanned(
+                            l,
+                            "#[serde(rename(serialize = .., deserialize = ..))] split names are not \
+                             yet honored by the schema derive; use a single `#[serde(rename = \"..\")]`",
+                        ));
+                    },
+                    // Every other serde attribute is irrelevant to the schema key.
+                    _ => {},
+                }
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// Extract a string literal from a `name = "value"` serde meta.
+fn expr_str(value: &Expr, attr_name: &str) -> syn::Result<String> {
+    if let Expr::Lit(ExprLit {
+        lit: Lit::Str(s), ..
+    }) = value
+    {
+        Ok(s.value())
+    } else {
+        Err(syn::Error::new_spanned(
+            value,
+            format!("#[serde({attr_name} = ..)] expects a string literal"),
+        ))
     }
 }
