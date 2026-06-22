@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 
-use nebula_schema::is_assignable;
+use nebula_schema::is_assignable_schema;
 
 use crate::{
     definition::{CURRENT_SCHEMA_VERSION, RetryConfig, WorkflowDefinition},
@@ -188,7 +188,7 @@ pub fn validate_workflow(definition: &WorkflowDefinition) -> Vec<WorkflowError> 
 /// Runs every structural check that [`validate_workflow`] performs, then for
 /// each [`Connection`](crate::Connection) whose **both** endpoints can be
 /// resolved by `resolver`, calls
-/// `nebula_schema::is_assignable(producer.output, consumer.input)`.
+/// `nebula_schema::is_assignable_schema(producer.output, consumer.input)`.
 ///
 /// An edge is **skipped** (fail-open, ADR-0100 T3.2) when **any** of the
 /// following hold:
@@ -273,11 +273,14 @@ pub fn validate_workflow_with_resolver(
             continue;
         };
 
-        // Run the directional assignability check: producer output ⊆ consumer input.
-        if let Err(incompat) = is_assignable(
-            producer_schemas.output.fields(),
-            consumer_schemas.input.fields(),
-        ) {
+        // Run the directional, kind-aware assignability check: producer output
+        // ⊆ consumer input. `is_assignable_schema` honors the `SchemaKind`
+        // Top/Bottom split, so a producer whose `Output = ()` (an empty record)
+        // does not satisfy a consumer that hard-requires a field, while an
+        // untyped `serde_json::Value` (`Any`) producer still passes.
+        if let Err(incompat) =
+            is_assignable_schema(&producer_schemas.output, &consumer_schemas.input)
+        {
             errors.push(WorkflowError::PortSchemaIncompatible(Box::new(
                 crate::error::PortSchemaIncompatDetails {
                     from_node: conn.from_node.clone(),
@@ -1010,6 +1013,92 @@ mod tests {
         };
         assert_eq!(details.from_node, a, "from_node must be the producer node");
         assert_eq!(details.to_node, b, "to_node must be the consumer node");
+    }
+
+    /// Top/Bottom split enforced on a real edge: a producer whose `Output = ()`
+    /// (an empty *record*, not the gradual `Any`) does NOT satisfy a consumer
+    /// that hard-requires a field. This is exactly the scenario the old
+    /// kind-blind slice check missed — it treated the empty output as `Any`.
+    #[test]
+    fn empty_record_output_does_not_satisfy_required_input() {
+        let (def, a, b) = two_node_def();
+
+        // Producer emits nothing (`()` → empty record); consumer requires `needed`.
+        let producer_output = ValidSchema::empty();
+        let consumer_input = single_field_schema("needed", true);
+
+        let mut schemas = HashMap::new();
+        schemas.insert(
+            "producer.action".to_owned(),
+            NodeIoSchemas {
+                input: ValidSchema::empty(),
+                output: producer_output,
+            },
+        );
+        schemas.insert(
+            "consumer.action".to_owned(),
+            NodeIoSchemas {
+                input: consumer_input,
+                output: ValidSchema::empty(),
+            },
+        );
+
+        let resolver = MapResolver(schemas);
+        let errors = validate_workflow_with_resolver(&def, &resolver);
+
+        let schema_errors: Vec<_> = errors
+            .iter()
+            .filter(|e| matches!(e, WorkflowError::PortSchemaIncompatible(_)))
+            .collect();
+        assert_eq!(
+            schema_errors.len(),
+            1,
+            "an empty-record output feeding a required input must be rejected; got: {errors:?}"
+        );
+        let Some(WorkflowError::PortSchemaIncompatible(details)) = schema_errors.first().copied()
+        else {
+            panic!("expected PortSchemaIncompatible; got: {errors:?}");
+        };
+        assert_eq!(details.from_node, a);
+        assert_eq!(details.to_node, b);
+    }
+
+    /// Contrast with the empty-record case: an untyped `Any` output
+    /// (`serde_json::Value` → [`ValidSchema::any`]) still satisfies a required
+    /// consumer — gradual typing's escape hatch is preserved, so untyped flows
+    /// are not falsely rejected.
+    #[test]
+    fn any_output_satisfies_required_input() {
+        let (def, _, _) = two_node_def();
+
+        let producer_output = ValidSchema::any();
+        let consumer_input = single_field_schema("needed", true);
+
+        let mut schemas = HashMap::new();
+        schemas.insert(
+            "producer.action".to_owned(),
+            NodeIoSchemas {
+                input: ValidSchema::empty(),
+                output: producer_output,
+            },
+        );
+        schemas.insert(
+            "consumer.action".to_owned(),
+            NodeIoSchemas {
+                input: consumer_input,
+                output: ValidSchema::empty(),
+            },
+        );
+
+        let resolver = MapResolver(schemas);
+        let errors = validate_workflow_with_resolver(&def, &resolver);
+
+        assert!(
+            !errors
+                .iter()
+                .any(|e| matches!(e, WorkflowError::PortSchemaIncompatible(_))),
+            "an `Any` output must still satisfy a required input (gradual escape); got: {errors:?}"
+        );
     }
 
     /// Fail-open: when the resolver returns `None` for one endpoint,

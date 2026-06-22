@@ -58,9 +58,39 @@ pub struct FieldHandle {
     pub depth: u8,
 }
 
+/// Whether a schema describes a concrete record of typed fields, or the
+/// gradual-typing `Any` whose shape is unknown.
+///
+/// `()` and a `#[derive(Schema)]` struct (even one with zero fields) are
+/// [`Record`](SchemaKind::Record); `serde_json::Value` / [`FieldValues`] — inputs
+/// that advertise no fixed shape — are [`Any`](SchemaKind::Any). The two were
+/// previously indistinguishable (both an empty schema), which let an `Any` and an
+/// empty record compare equal and collapse in the type-DAG (the Top/Bottom
+/// collapse). Keeping them apart is the foundation the assignability lattice
+/// builds on: an `Any` producer is gradually permissive, while a `Record`
+/// producer that emits no fields does *not* satisfy a consumer that requires them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum SchemaKind {
+    /// A concrete record of typed fields (a derived struct, an empty struct, `()`).
+    #[default]
+    Record,
+    /// Gradual-typing `Any` — the shape is unknown (`serde_json::Value`).
+    Any,
+}
+
 /// Shared interior of a `ValidSchema`.
+///
+/// An implementation detail: the only constructor is the crate-private
+/// `ValidSchema::from_inner`, so this struct is never built or matched outside
+/// `nebula-schema`. `#[non_exhaustive]` records that intent and lets new fields
+/// (like `kind`) be added without it being an external breaking change.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct ValidSchemaInner {
+    /// Whether this is a concrete record or the gradual-typing `Any`.
+    pub kind: SchemaKind,
     /// Top-level ordered fields.
     pub fields: Vec<Field>,
     /// Flat index from `FieldPath` → `FieldHandle` for O(1) path lookup.
@@ -77,17 +107,24 @@ pub struct ValidSchemaInner {
 ///
 /// Cheap to clone — backed by `Arc`.
 ///
-/// Serde: serializes as `{"fields": [...]}` when there are no root rules, or
-/// `{"fields": [...], "root_rules": [...]}` when [`ValidSchemaInner::root_rules`]
-/// is non-empty. Deserialization rebuilds through [`SchemaBuilder`](crate::schema::SchemaBuilder);
-/// invalid wire data returns a [`serde::de::Error`] (lint failures are not panics).
+/// Serde: a [`SchemaKind::Record`] serializes as `{"fields": [...]}` (plus
+/// `"root_rules": [...]` when [`ValidSchemaInner::root_rules`] is non-empty) —
+/// no `kind` tag, so the wire shape is identical to before `kind` existed and a
+/// payload with a missing `kind` deserializes back as a record. A
+/// [`SchemaKind::Any`] serializes as `{"kind": "any", "fields": []}`.
+/// Deserialization rebuilds a record through [`SchemaBuilder`](crate::schema::SchemaBuilder)
+/// (invalid wire data returns a [`serde::de::Error`]; lint failures are not
+/// panics), and **fails closed** if a payload tagged `kind: "any"` carries any
+/// `fields`/`root_rules` instead of silently dropping those constraints.
 #[derive(Debug, Clone)]
 pub struct ValidSchema(pub(crate) Arc<ValidSchemaInner>);
 
 impl PartialEq for ValidSchema {
     fn eq(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.0, &other.0)
-            || (self.0.fields == other.0.fields && self.0.root_rules == other.0.root_rules)
+            || (self.0.kind == other.0.kind
+                && self.0.fields == other.0.fields
+                && self.0.root_rules == other.0.root_rules)
     }
 }
 
@@ -96,16 +133,21 @@ impl Eq for ValidSchema {}
 impl Serialize for ValidSchema {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
-        if self.0.root_rules.is_empty() {
-            let mut s = serializer.serialize_struct("ValidSchema", 1)?;
-            s.serialize_field("fields", &self.0.fields)?;
-            s.end()
-        } else {
-            let mut s = serializer.serialize_struct("ValidSchema", 2)?;
-            s.serialize_field("fields", &self.0.fields)?;
-            s.serialize_field("root_rules", &self.0.root_rules)?;
-            s.end()
+        // `kind` is emitted only for `Any` (the non-default), so every existing
+        // `Record` schema keeps its `{"fields": [...]}` wire shape and a reader
+        // that pre-dates `kind` still round-trips it as a record.
+        let emit_kind = self.0.kind != SchemaKind::Record;
+        let has_rules = !self.0.root_rules.is_empty();
+        let len = 1 + usize::from(emit_kind) + usize::from(has_rules);
+        let mut s = serializer.serialize_struct("ValidSchema", len)?;
+        if emit_kind {
+            s.serialize_field("kind", &self.0.kind)?;
         }
+        s.serialize_field("fields", &self.0.fields)?;
+        if has_rules {
+            s.serialize_field("root_rules", &self.0.root_rules)?;
+        }
+        s.end()
     }
 }
 
@@ -114,12 +156,29 @@ impl<'de> Deserialize<'de> for ValidSchema {
         /// Transparent wrapper that mirrors `Schema`'s serde representation.
         #[derive(Deserialize)]
         struct ValidSchemaRepr {
+            /// Defaults to [`SchemaKind::Record`], so wire data that pre-dates
+            /// `kind` (`{"fields": [...]}`) round-trips as a record.
+            #[serde(default)]
+            kind: SchemaKind,
             #[serde(default)]
             fields: Vec<Field>,
             #[serde(default)]
             root_rules: Vec<nebula_validator::Rule>,
         }
         let repr = ValidSchemaRepr::deserialize(deserializer)?;
+        if repr.kind == SchemaKind::Any {
+            // Fail closed: an `Any` schema carries no constraints. A payload
+            // tagged `Any` that also lists `fields`/`root_rules` is malformed
+            // (mistagged, or from a mixed-version producer); silently returning
+            // the unconstrained `any()` would drop every constraint and make
+            // validation fully permissive. Reject it instead.
+            if !repr.fields.is_empty() || !repr.root_rules.is_empty() {
+                return Err(serde::de::Error::custom(
+                    "schema tagged `kind: \"any\"` must not carry `fields` or `root_rules`",
+                ));
+            }
+            return Ok(Self::any());
+        }
         let mut b = repr.fields.into_iter().fold(
             crate::schema::SchemaBuilder::default(),
             super::schema::SchemaBuilder::add,
@@ -152,6 +211,7 @@ impl ValidSchema {
         EMPTY
             .get_or_init(|| {
                 Self::from_inner(ValidSchemaInner {
+                    kind: SchemaKind::Record,
                     fields: Vec::new(),
                     index: IndexMap::new(),
                     flags: SchemaFlags::default(),
@@ -159,6 +219,36 @@ impl ValidSchema {
                 })
             })
             .clone()
+    }
+
+    /// Shared gradual-typing `Any` `ValidSchema` — cheap `Arc` clone.
+    ///
+    /// Use this for inputs whose shape is unknown at the type level
+    /// (`serde_json::Value`, [`FieldValues`], primitives that carry no record
+    /// structure). It is field-less like [`empty`](Self::empty),
+    /// but its [`kind`](Self::kind) is [`SchemaKind::Any`], so the assignability
+    /// lattice treats it as the gradual `Any` rather than an empty record —
+    /// keeping the two from collapsing into one another in the type-DAG.
+    pub fn any() -> Self {
+        use std::sync::OnceLock;
+        static ANY: OnceLock<ValidSchema> = OnceLock::new();
+        ANY.get_or_init(|| {
+            Self::from_inner(ValidSchemaInner {
+                kind: SchemaKind::Any,
+                fields: Vec::new(),
+                index: IndexMap::new(),
+                flags: SchemaFlags::default(),
+                root_rules: Vec::new(),
+            })
+        })
+        .clone()
+    }
+
+    /// Whether this schema is a concrete [`Record`](SchemaKind::Record) or the
+    /// gradual-typing [`Any`](SchemaKind::Any).
+    #[must_use]
+    pub fn kind(&self) -> SchemaKind {
+        self.0.kind
     }
 
     /// Return `true` when two `ValidSchema` values share the same backing
@@ -2038,6 +2128,58 @@ mod tests {
         let back: ValidSchema = serde_json::from_value(wire).unwrap();
         assert_eq!(schema.root_rules(), back.root_rules());
         assert_eq!(schema.fields().len(), back.fields().len());
+    }
+
+    #[test]
+    fn deserialize_bare_any_is_accepted() {
+        use serde_json::json;
+
+        let decoded: ValidSchema = serde_json::from_value(json!({"kind": "any"})).unwrap();
+        assert_eq!(decoded.kind(), SchemaKind::Any);
+        assert!(decoded.fields().is_empty());
+    }
+
+    #[test]
+    fn deserialize_any_carrying_fields_is_rejected() {
+        use serde_json::json;
+
+        // Build a real typed schema, then mistag it as `Any` while keeping its
+        // `fields`. Accepting this would silently drop every field constraint.
+        let typed = Schema::builder()
+            .add(Field::string(field_key!("x")).required())
+            .build()
+            .unwrap();
+        let mut wire = serde_json::to_value(&typed).unwrap();
+        wire["kind"] = json!("any");
+
+        let result: Result<ValidSchema, _> = serde_json::from_value(wire);
+        assert!(
+            result.is_err(),
+            "a schema tagged `kind: any` that still carries fields must be rejected, not \
+             silently coerced to the unconstrained `Any`"
+        );
+    }
+
+    #[test]
+    fn deserialize_any_carrying_root_rules_is_rejected() {
+        use nebula_validator::{Predicate, Rule};
+        use serde_json::json;
+
+        let with_rules = Schema::builder()
+            .add(Field::string(field_key!("x")))
+            .root_rule(Rule::predicate(Predicate::eq("x", json!("a")).unwrap()))
+            .build()
+            .unwrap();
+        let mut wire = serde_json::to_value(&with_rules).unwrap();
+        wire["kind"] = json!("any");
+        // Drop fields so only `root_rules` remains to prove the rule branch fires.
+        wire["fields"] = json!([]);
+
+        let result: Result<ValidSchema, _> = serde_json::from_value(wire);
+        assert!(
+            result.is_err(),
+            "a schema tagged `kind: any` that still carries root_rules must be rejected"
+        );
     }
 
     #[test]

@@ -119,8 +119,8 @@ pub enum WorkflowError {
     /// node's input schema on this connection (ADR-0100 TypeDAG T3).
     ///
     /// Emitted by [`crate::validate::validate_workflow_with_resolver`] when
-    /// both endpoints resolve and `nebula_schema::is_assignable` returns an
-    /// incompatibility. Structural errors (unknown nodes, cycles, …) are
+    /// both endpoints resolve and `nebula_schema::is_assignable_schema` returns
+    /// an incompatibility. Structural errors (unknown nodes, cycles, …) are
     /// reported first; this error only fires when both nodes are structurally
     /// valid and both schemas are resolvable from the catalog.
     ///

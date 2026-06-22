@@ -175,7 +175,7 @@ pub use builder::{
     BooleanBuilder, CodeBuilder, FieldCollector, GroupBuilder, ListBuilder, NumberBuilder,
     ObjectBuilder, SecretBuilder, SelectBuilder, StringBuilder,
 };
-pub use compat::{SchemaIncompat, is_assignable};
+pub use compat::{SchemaIncompat, is_assignable_schema};
 pub use error::{
     STANDARD_CODES, Severity, ValidationError, ValidationErrorBuilder, ValidationReport,
 };
@@ -238,7 +238,7 @@ pub use schema::{Schema, SchemaBuilder};
 pub use secret::{SECRET_REDACTED, SecretBytes, SecretString, SecretValue, SecretWire};
 pub use transformer::Transformer;
 pub use validated::{
-    FieldHandle, ResolvedLookup, ResolvedValues, SchemaFlags, ValidSchema, ValidValues,
+    FieldHandle, ResolvedLookup, ResolvedValues, SchemaFlags, SchemaKind, ValidSchema, ValidValues,
 };
 pub use value::{EXPRESSION_KEY, FieldValue, FieldValues};
 pub use widget::{
