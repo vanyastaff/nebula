@@ -98,13 +98,7 @@ fn schema_for_fields(
         Value::Object(properties_for_fields(fields)),
     );
 
-    let required = required_for_fields(fields);
-    if !required.is_empty() {
-        root.insert(
-            "required".to_owned(),
-            Value::Array(required.into_iter().map(Value::String).collect()),
-        );
-    }
+    apply_required_constraints(fields, &mut root);
     if !root_rules.is_empty() {
         let mut serialized = Vec::with_capacity(root_rules.len());
         for (index, rule) in root_rules.iter().enumerate() {
@@ -122,17 +116,71 @@ fn schema_for_fields(
 fn properties_for_fields(fields: &[Field]) -> Map<String, Value> {
     let mut out = Map::with_capacity(fields.len());
     for field in fields {
-        out.insert(field.key().as_str().to_owned(), field_schema_value(field));
+        let value = field_schema_value(field);
+        // Read-aliases are accepted input keys (folded to the canonical key at
+        // ingest), so expose each as a property too — otherwise the sibling
+        // `additionalProperties: false` would reject a valid alias-keyed
+        // submission that `validate` accepts. Aliases are lint-guaranteed
+        // disjoint from canonical keys and from each other, so this never
+        // collides. The value schema is shared (the alias carries the same
+        // contract as the canonical key).
+        for alias in field.read_aliases() {
+            out.insert(alias.as_str().to_owned(), value.clone());
+        }
+        out.insert(field.key().as_str().to_owned(), value);
     }
     out
 }
 
-fn required_for_fields(fields: &[Field]) -> Vec<String> {
-    fields
-        .iter()
-        .filter(|field| matches!(field.required(), RequiredMode::Always))
-        .map(|field| field.key().as_str().to_owned())
-        .collect()
+/// Emit `required` (and, for required fields with read-aliases, an `allOf` of
+/// `anyOf`-required clauses) into `target`.
+///
+/// A required field with no aliases is a flat `required` entry. A required field
+/// satisfiable via a read-alias instead becomes
+/// `anyOf: [{required:[canonical]}, {required:[alias]}, …]`, because a flat
+/// `required: [canonical]` would reject an alias-only submission that `validate`
+/// accepts (it canonicalizes the alias before the required check). The exported
+/// schema must never reject input `validate` would accept.
+fn apply_required_constraints(fields: &[Field], target: &mut Map<String, Value>) {
+    let mut flat_required: Vec<Value> = Vec::new();
+    let mut any_of_clauses: Vec<Value> = Vec::new();
+
+    for field in fields {
+        if !matches!(field.required(), RequiredMode::Always) {
+            continue;
+        }
+        let aliases = field.read_aliases();
+        if aliases.is_empty() {
+            flat_required.push(Value::String(field.key().as_str().to_owned()));
+            continue;
+        }
+        let mut clauses = Vec::with_capacity(aliases.len() + 1);
+        clauses.push(Value::Object(required_clause(field.key().as_str())));
+        clauses.extend(
+            aliases
+                .iter()
+                .map(|a| Value::Object(required_clause(a.as_str()))),
+        );
+        let mut any_of = Map::new();
+        any_of.insert("anyOf".to_owned(), Value::Array(clauses));
+        any_of_clauses.push(Value::Object(any_of));
+    }
+
+    if !flat_required.is_empty() {
+        target.insert("required".to_owned(), Value::Array(flat_required));
+    }
+    if !any_of_clauses.is_empty() {
+        target.insert("allOf".to_owned(), Value::Array(any_of_clauses));
+    }
+}
+
+fn required_clause(key: &str) -> Map<String, Value> {
+    let mut clause = Map::new();
+    clause.insert(
+        "required".to_owned(),
+        Value::Array(vec![Value::String(key.to_owned())]),
+    );
+    clause
 }
 
 fn field_schema_value(field: &Field) -> Value {
@@ -185,7 +233,39 @@ fn field_schema_value(field: &Field) -> Value {
     let mut schema = apply_expression_mode(core_schema, *field.expression());
     apply_common_keywords(field, &mut schema);
     apply_contract_keywords(field, &mut schema);
+    apply_alias_keywords(field, &mut schema);
     Value::Object(schema)
+}
+
+/// Emit alias metadata for a field.
+///
+/// - `x-nebula-read-aliases`: extra input keys accepted at ingest (folded onto
+///   the canonical key). They are ALSO surfaced as accepted properties by
+///   [`properties_for_fields`] so `additionalProperties: false` does not reject a
+///   valid alias-keyed submission.
+/// - `x-nebula-write-alias`: the key this field is emitted under by `project` /
+///   `to_wire_json`. The exported document is an INPUT schema keyed on canonical
+///   names, so the write-alias is metadata only — an output validator reads this
+///   to learn the projected key without the input contract misrepresenting it.
+fn apply_alias_keywords(field: &Field, schema: &mut Map<String, Value>) {
+    let read_aliases = field.read_aliases();
+    if !read_aliases.is_empty() {
+        schema.insert(
+            "x-nebula-read-aliases".to_owned(),
+            Value::Array(
+                read_aliases
+                    .iter()
+                    .map(|alias| Value::String(alias.as_str().to_owned()))
+                    .collect(),
+            ),
+        );
+    }
+    if let Some(write_alias) = field.write_alias() {
+        schema.insert(
+            "x-nebula-write-alias".to_owned(),
+            Value::String(write_alias.as_str().to_owned()),
+        );
+    }
 }
 
 fn apply_common_keywords(field: &Field, schema: &mut Map<String, Value>) {
@@ -283,13 +363,7 @@ fn object_schema(field: &ObjectField) -> Map<String, Value> {
         "properties".to_owned(),
         Value::Object(properties_for_fields(&field.fields)),
     );
-    let required = required_for_fields(&field.fields);
-    if !required.is_empty() {
-        out.insert(
-            "required".to_owned(),
-            Value::Array(required.into_iter().map(Value::String).collect()),
-        );
-    }
+    apply_required_constraints(&field.fields, &mut out);
     out.insert("additionalProperties".to_owned(), Value::Bool(false));
     out
 }
@@ -734,5 +808,98 @@ mod tests {
             json!("boolean"),
             "Forbidden-mode fields must still expose x-nebula-resolved-value-schema"
         );
+    }
+
+    #[test]
+    fn read_alias_is_an_accepted_property_with_metadata() {
+        let schema = Schema::builder()
+            .add(
+                Field::string(FieldKey::new("internal_id").expect("static key"))
+                    .read_alias("externalId")
+                    .expect("valid alias"),
+            )
+            .build()
+            .expect("valid schema");
+
+        let json = schema.json_schema().expect("json schema export").to_value();
+        // Canonical property present, and the read-alias is ALSO an accepted
+        // property so `additionalProperties: false` does not reject a valid
+        // alias-keyed submission.
+        assert!(json["properties"]["internal_id"].is_object());
+        assert!(
+            json["properties"]["externalId"].is_object(),
+            "read-alias must be an accepted input property"
+        );
+        assert_eq!(
+            json["properties"]["internal_id"]["x-nebula-read-aliases"],
+            json!(["externalId"])
+        );
+        assert_eq!(json["additionalProperties"], json!(false));
+    }
+
+    #[test]
+    fn write_alias_is_metadata_only_input_property_stays_canonical() {
+        let schema = Schema::builder()
+            .add(
+                Field::string(FieldKey::new("internal_id").expect("static key"))
+                    .write_alias("externalId")
+                    .expect("valid alias"),
+            )
+            .build()
+            .expect("valid schema");
+
+        let json = schema.json_schema().expect("json schema export").to_value();
+        // The input property stays canonical — write-alias is output-only.
+        assert!(json["properties"]["internal_id"].is_object());
+        assert!(
+            json["properties"].get("externalId").is_none(),
+            "write-alias must not become an input property"
+        );
+        // The projected output key is exposed as metadata for output validators.
+        assert_eq!(
+            json["properties"]["internal_id"]["x-nebula-write-alias"],
+            json!("externalId")
+        );
+    }
+
+    #[test]
+    fn required_field_with_read_alias_uses_any_of_not_flat_required() {
+        let schema = Schema::builder()
+            .add(
+                Field::string(FieldKey::new("email").expect("static key"))
+                    .required()
+                    .read_alias("emailAddress")
+                    .expect("valid alias"),
+            )
+            .build()
+            .expect("valid schema");
+
+        let json = schema.json_schema().expect("json schema export").to_value();
+        // A flat `required: [email]` would reject an alias-only submission that
+        // `validate` accepts, so the constraint is an anyOf of required clauses.
+        assert!(
+            json.get("required").is_none(),
+            "an alias-bearing required field must not be a flat required entry"
+        );
+        let all_of = json["allOf"].as_array().expect("allOf array");
+        let any_of = all_of[0]["anyOf"].as_array().expect("anyOf array");
+        let required_keys: Vec<&str> = any_of
+            .iter()
+            .map(|clause| clause["required"][0].as_str().expect("required key string"))
+            .collect();
+        assert!(required_keys.contains(&"email"));
+        assert!(required_keys.contains(&"emailAddress"));
+    }
+
+    #[test]
+    fn required_field_without_alias_stays_flat_required() {
+        let schema = Schema::builder()
+            .add(Field::string(FieldKey::new("name").expect("static key")).required())
+            .build()
+            .expect("valid schema");
+
+        let json = schema.json_schema().expect("json schema export").to_value();
+        assert_eq!(json["required"], json!(["name"]));
+        assert!(json.get("allOf").is_none());
     }
 }
