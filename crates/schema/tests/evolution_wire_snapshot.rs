@@ -12,7 +12,10 @@
 //!   (an old reader must not be required to match them exhaustively);
 //! - new struct fields must be `Option` / `#[serde(default)]` with
 //!   `skip_serializing_if`, so a document written by an older version still
-//!   deserializes and a document written by a newer version still round-trips.
+//!   deserializes and a document written by a newer version still round-trips;
+//! - a `type` an old reader does not recognize deserializes to `Field::Unknown`
+//!   and is preserved key-for-key (see `unknown_field_type_preserved`), so a
+//!   newer writer's field kind never fails to read on an older deployment.
 
 use nebula_schema::{
     Field, FieldValue, FieldValues, Predicate, Rule, Schema, VisibilityMode, field_key,
@@ -91,6 +94,32 @@ fn field_values_wire_format() {
     }))
     .unwrap();
     insta::assert_json_snapshot!(values);
+}
+
+/// Forward compatibility: a field whose `type` this version does not know
+/// deserializes to `Field::Unknown` and re-serializes with every key and value
+/// preserved, including novel keys (`toolbar`). The snapshot freezes this
+/// preservation so a future change that *drops or renames* a preserved key diffs
+/// here and fails CI. (Key *order* is normalized by serde_json — the snapshot is
+/// alphabetized — so a reorder is intentionally not asserted.)
+#[test]
+fn unknown_field_type_preserved() {
+    let future_field = json!({
+        "type": "richtext",
+        "key": "bio",
+        "label": "Biography",
+        "visible": { "kind": "never" },
+        "toolbar": ["bold", "italic"]
+    });
+    let field: Field =
+        serde_json::from_value(future_field.clone()).expect("unknown type deserializes");
+    assert!(matches!(field, Field::Unknown(_)));
+    assert_eq!(
+        serde_json::to_value(&field).unwrap(),
+        future_field,
+        "every key and value of an unknown field must round-trip"
+    );
+    insta::assert_json_snapshot!(field);
 }
 
 /// The typed `FieldValue::Mode` serialization branch. `from_json` parses a
