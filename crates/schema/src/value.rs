@@ -251,6 +251,10 @@ impl FieldValue {
     /// domain separator and [`VALUE_CANON_VERSION`], so bumping the version
     /// re-keys every hash.
     ///
+    /// Canonical equality is therefore **coarser** than `FieldValue: PartialEq`:
+    /// `Literal(1)` and `Literal(1.0)` are *not* `==` (distinct `serde_json::Number`s)
+    /// yet share a canon / [`ContentId`]. Do not assume equal ids imply `==`.
+    ///
     /// # Errors
     ///
     /// Returns `secret.not_hashable` if the value contains a
@@ -304,18 +308,7 @@ impl FieldValue {
                 out.push(TAG_EXPRESSION);
                 write_lp(out, expr.source().as_bytes());
             },
-            Self::Object(map) => {
-                out.push(TAG_OBJECT);
-                let mut entries: Vec<(&FieldKey, &Self)> = map.iter().collect();
-                entries.sort_unstable_by(|(a, _), (b, _)| {
-                    a.as_str().as_bytes().cmp(b.as_str().as_bytes())
-                });
-                write_varint(out, entries.len() as u64);
-                for (key, value) in entries {
-                    write_lp(out, key.as_str().as_bytes());
-                    value.write_canonical(out)?;
-                }
-            },
+            Self::Object(map) => write_canon_object(map, out)?,
             Self::List(items) => {
                 out.push(TAG_LIST);
                 write_varint(out, items.len() as u64);
@@ -369,7 +362,11 @@ const TAG_LIST: u8 = 0x06;
 const TAG_OBJECT: u8 = 0x07;
 const TAG_EXPRESSION: u8 = 0x08;
 const TAG_MODE: u8 = 0x09;
-// 0x0A is reserved for an opt-in secret commitment (keyed blake3), deferred.
+// 0x0A is reserved for an opt-in secret commitment, deferred. When implemented
+// it MUST use a keyed / domain-separated hash (e.g. `blake3::keyed_hash` with an
+// ephemeral per-process key), never the unkeyed `blake3::hash` used for content
+// ids — an unkeyed hash of a low-entropy secret is a brute-forceable oracle,
+// the exact property `secret.not_hashable` exists to prevent.
 const TAG_JSON_ARRAY: u8 = 0x0B;
 const TAG_JSON_OBJECT: u8 = 0x0C;
 
@@ -428,6 +425,28 @@ fn write_varint(out: &mut Vec<u8>, mut value: u64) {
             break;
         }
     }
+}
+
+/// Canonicalize a typed object body (`TAG_OBJECT` + sorted entries). Shared by
+/// [`FieldValue::Object`]'s arm and [`FieldValues::canonical_bytes`] so the two
+/// content-address identically *by construction*, not by a single example test.
+#[expect(
+    clippy::result_large_err,
+    reason = "ValidationError is intentionally large; callers are on the validation path"
+)]
+fn write_canon_object(
+    map: &IndexMap<FieldKey, FieldValue>,
+    out: &mut Vec<u8>,
+) -> Result<(), crate::error::ValidationError> {
+    out.push(TAG_OBJECT);
+    let mut entries: Vec<(&FieldKey, &FieldValue)> = map.iter().collect();
+    entries.sort_unstable_by(|(a, _), (b, _)| a.as_str().as_bytes().cmp(b.as_str().as_bytes()));
+    write_varint(out, entries.len() as u64);
+    for (key, value) in entries {
+        write_lp(out, key.as_str().as_bytes());
+        value.write_canonical(out)?;
+    }
+    Ok(())
 }
 
 /// Canonicalize a raw `serde_json::Value` (used for `FieldValue::Literal`).
@@ -494,14 +513,19 @@ fn write_canon_number(
     if !float.is_finite() {
         return Err(non_canonical_float());
     }
-    // Integral float in the exact-integer range normalizes to the integer
-    // encoding (so `1.0` ≡ `1`, and `-0.0` ≡ `0`).
-    const MAX_EXACT_INT_F64: f64 = 9_007_199_254_740_992.0; // 2^53
-    if float.fract() == 0.0 && float.abs() < MAX_EXACT_INT_F64 {
+    // An integral float that fits in `i128` normalizes to the integer encoding,
+    // so the same integer hashes identically however JSON spelled it (`5` ≡ `5.0`,
+    // `-0.0` ≡ `0`). The bound must cover the whole `i64`/`u64` range (not just
+    // 2^53), or an integer near 2^63 would diverge from its own float spelling:
+    // `5e18 as i64` takes the integer path while `5e18_f64` would take the float
+    // path. 2^127 is the `i128` limit; a larger integral float has no `i64`/`u64`
+    // counterpart, so it stays a float (no spelling ambiguity to resolve).
+    let i128_bound = 2.0_f64.powi(127);
+    if float.fract() == 0.0 && float.abs() < i128_bound {
         out.push(TAG_INT);
         #[expect(
             clippy::cast_possible_truncation,
-            reason = "float is integral and |float| < 2^53, so the cast is exact"
+            reason = "float is integral and |float| < 2^127 (the i128 bound), so the cast is exact"
         )]
         let as_int = float as i128;
         out.extend_from_slice(&as_int.to_be_bytes());
@@ -833,14 +857,7 @@ impl FieldValues {
         let mut out = Vec::new();
         out.extend_from_slice(CANON_DOMAIN);
         out.extend_from_slice(&VALUE_CANON_VERSION.to_be_bytes());
-        out.push(TAG_OBJECT);
-        let mut entries: Vec<(&FieldKey, &FieldValue)> = self.0.iter().collect();
-        entries.sort_unstable_by(|(a, _), (b, _)| a.as_str().as_bytes().cmp(b.as_str().as_bytes()));
-        write_varint(&mut out, entries.len() as u64);
-        for (key, value) in entries {
-            write_lp(&mut out, key.as_str().as_bytes());
-            value.write_canonical(&mut out)?;
-        }
+        write_canon_object(&self.0, &mut out)?;
         Ok(out)
     }
 
@@ -1325,6 +1342,162 @@ mod tests {
             values.canonical_bytes().unwrap(),
             canon(&object),
             "a value store and the equivalent object share a canon"
+        );
+    }
+
+    /// The normalization invariant must hold across the WHOLE i64/u64 range, not
+    /// only |x| < 2^53: an integer near 2^63 spelled as int vs as float must
+    /// still share a canon. (Guards against the off-by-`<` at the 2^53 bound.)
+    #[test]
+    fn canon_normalizes_large_integers() {
+        for n in [
+            9_007_199_254_740_992_i64,     // 2^53 (the old boundary, exclusive)
+            9_007_199_254_740_994_i64,     // 2^53 + 2 (next exact f64 integer above 2^53)
+            4_503_599_627_370_497_i64,     // odd, within 2^53
+            1_152_921_504_606_846_976_i64, // 2^60
+        ] {
+            // Only test values that round-trip exactly through f64 (so the float
+            // spelling denotes the same integer).
+            #[expect(clippy::cast_precision_loss, reason = "checked exact below")]
+            let as_float = n as f64;
+            #[expect(clippy::cast_possible_truncation, reason = "checked exact below")]
+            let back = as_float as i64;
+            if back != n {
+                continue;
+            }
+            let int = FieldValue::Literal(json!(n));
+            let float = FieldValue::Literal(Value::from(as_float));
+            assert_eq!(
+                canon(&int),
+                canon(&float),
+                "{n} as int and as float must share a canon"
+            );
+        }
+    }
+
+    /// A secret nested inside a container still rejects (recursion propagates it).
+    #[test]
+    fn canon_rejects_nested_secret() {
+        let secret = || {
+            FieldValue::SecretLiteral(SecretValue::String(crate::secret::SecretString::new(
+                "s".to_owned(),
+            )))
+        };
+        let in_list = FieldValue::List(vec![FieldValue::Literal(json!(1)), secret()]);
+        let mut map = IndexMap::new();
+        map.insert(fk("k"), secret());
+        let in_object = FieldValue::Object(map);
+        let in_mode = FieldValue::Mode {
+            mode: fk("m"),
+            value: Some(Box::new(secret())),
+        };
+        for value in [in_list, in_object, in_mode] {
+            assert_eq!(
+                value
+                    .canonical_bytes()
+                    .expect_err("nested secret rejects")
+                    .code,
+                "secret.not_hashable"
+            );
+        }
+    }
+
+    /// `Mode` discriminator: `None`, `Some`, and a different mode key are all
+    /// distinct (the presence byte 0/1 and the mode key matter).
+    #[test]
+    fn canon_mode_variants_are_distinct() {
+        let none = FieldValue::Mode {
+            mode: fk("m"),
+            value: None,
+        };
+        let some = FieldValue::Mode {
+            mode: fk("m"),
+            value: Some(Box::new(FieldValue::Literal(json!(0)))),
+        };
+        let other_key = FieldValue::Mode {
+            mode: fk("n"),
+            value: None,
+        };
+        assert_ne!(canon(&none), canon(&some));
+        assert_ne!(canon(&none), canon(&other_key));
+        assert_ne!(canon(&some), canon(&other_key));
+    }
+
+    /// Empty string, list, and object are mutually distinct and non-degenerate.
+    #[test]
+    fn canon_empty_containers_are_distinct() {
+        let empty_string = FieldValue::Literal(json!(""));
+        let empty_list = FieldValue::List(vec![]);
+        let empty_object = FieldValue::Object(IndexMap::new());
+        let canons = [
+            canon(&empty_string),
+            canon(&empty_list),
+            canon(&empty_object),
+        ];
+        for (i, a) in canons.iter().enumerate() {
+            for b in &canons[i + 1..] {
+                assert_ne!(a, b, "empty containers must not alias");
+            }
+        }
+    }
+
+    /// A `Literal(JSON array)` (invalid-key path) must not collide with a typed
+    /// `List` of the same items (`TAG_JSON_ARRAY` != `TAG_LIST`).
+    #[test]
+    fn canon_literal_array_distinct_from_typed_list() {
+        let literal = FieldValue::Literal(json!([1, 2]));
+        let typed = FieldValue::List(vec![
+            FieldValue::Literal(json!(1)),
+            FieldValue::Literal(json!(2)),
+        ]);
+        assert_ne!(canon(&literal), canon(&typed));
+    }
+
+    #[test]
+    fn content_id_separates_distinct_values() {
+        let a = FieldValues::from_json(json!({"n": 1})).unwrap();
+        let b = FieldValues::from_json(json!({"n": 2})).unwrap();
+        assert_ne!(
+            a.content_id().unwrap(),
+            b.content_id().unwrap(),
+            "distinct values must have distinct content ids"
+        );
+    }
+
+    /// Multi-byte varint: a 200-element string length encodes as LEB128
+    /// `[0xC8, 0x01]` (200 = 0x48 | continuation, then 1).
+    #[test]
+    fn canon_varint_is_multibyte_for_large_lengths() {
+        let long = "a".repeat(200);
+        let bytes = canon(&FieldValue::Literal(json!(long)));
+        // After domain (16) + version (2) + TAG_STRING (1) comes the varint length.
+        assert_eq!(
+            &bytes[19..21],
+            &[0xC8, 0x01],
+            "200 encodes as a 2-byte varint"
+        );
+    }
+
+    /// Golden bytes — freeze the exact on-the-wire content-address format so any
+    /// silent re-keying (tag value, framing order, version) is a loud failure.
+    #[test]
+    fn canon_golden_bytes() {
+        let value = FieldValues::from_json(json!({"a": 1})).unwrap();
+        let bytes = value.canonical_bytes().unwrap();
+
+        let mut expected = b"nbschema-value-v".to_vec();
+        expected.extend_from_slice(&[0x00, 0x01]); // VALUE_CANON_VERSION = 1
+        expected.push(0x07); // TAG_OBJECT
+        expected.push(0x01); // entry count (varint 1)
+        expected.extend_from_slice(&[0x01, b'a']); // key "a" (len 1 + bytes)
+        expected.push(0x03); // TAG_INT
+        expected.extend_from_slice(&1_i128.to_be_bytes()); // value 1 (i128 BE)
+
+        assert_eq!(bytes, expected, "canonical format must not drift");
+        assert_eq!(
+            &bytes[16..18],
+            &VALUE_CANON_VERSION.to_be_bytes(),
+            "the version prefix is pinned"
         );
     }
 }

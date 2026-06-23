@@ -29,13 +29,28 @@ fn json_strategy() -> impl Strategy<Value = Value> {
 }
 
 proptest! {
-    /// `canonical_bytes` is a pure function of the value: cloning never changes it.
+    /// `canonical_bytes` is a pure, **succeeding** function over the secret-free,
+    /// finite-float domain, prefixed with the domain separator + version.
     #[test]
     fn canon_is_deterministic(v in json_strategy()) {
         let fv = FieldValue::from_json(v);
-        let once = fv.canonical_bytes();
-        let twice = fv.canonical_bytes();
-        prop_assert_eq!(once.ok(), twice.ok());
+        let once = fv.canonical_bytes().expect("json_strategy is secret-free and finite");
+        let twice = fv.canonical_bytes().expect("deterministic");
+        prop_assert_eq!(&once, &twice);
+        prop_assert!(once.starts_with(b"nbschema-value-v"), "carries the domain separator");
+        prop_assert_eq!(&once[16..18], &[0x00, 0x01], "carries VALUE_CANON_VERSION = 1");
+    }
+
+    /// Cross-shape injectivity over random content: a single-element list and a
+    /// single-key object wrapping the SAME value never collide (distinct tags).
+    #[test]
+    fn canon_distinguishes_list_from_object(v in json_strategy()) {
+        let as_list = FieldValue::from_json(json!([v]));
+        let as_object = FieldValue::from_json(json!({ "k": v }));
+        prop_assert_ne!(
+            as_list.canonical_bytes().unwrap(),
+            as_object.canonical_bytes().unwrap()
+        );
     }
 
     /// Object key insertion order does not affect the canon: a value built from a
