@@ -317,6 +317,15 @@ impl std::error::Error for ValidationReport {}
 /// A test in the schema crate guarantees every entry here is emittable from
 /// an integration test (see `tests/flow/all_error_codes.rs`).
 pub const STANDARD_CODES: &[&str] = &[
+    // alias subsystem
+    "alias.duplicate",
+    "alias.invalid_key",
+    "alias.scope_collision",
+    "alias.scope_duplicate",
+    "alias.self_collision",
+    "alias.write_collision",
+    "alias.write_on_secret",
+    "alias.write_scope_duplicate",
     // value validation — schema-owned structural code
     "required",
     "type_mismatch",

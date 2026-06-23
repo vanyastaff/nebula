@@ -791,6 +791,24 @@ impl FieldValues {
         &self.0
     }
 
+    /// Construct a `FieldValues` from a pre-built ordered map.
+    ///
+    /// Used by alias canonicalization in `validated.rs`.
+    #[inline]
+    #[must_use]
+    pub(crate) fn from_map(map: IndexMap<FieldKey, FieldValue>) -> Self {
+        Self(map)
+    }
+
+    /// Consume into the underlying ordered map.
+    ///
+    /// Used by alias canonicalization to move nested maps back into place.
+    #[inline]
+    #[must_use]
+    pub(crate) fn into_map(self) -> IndexMap<FieldKey, FieldValue> {
+        self.0
+    }
+
     /// Mutably borrow a value by key.
     #[inline]
     pub fn get_mut(&mut self, key: &FieldKey) -> Option<&mut FieldValue> {

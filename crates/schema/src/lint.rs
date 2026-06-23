@@ -113,6 +113,7 @@ fn lint_fields_new(
     report: &mut ValidationReport,
 ) {
     lint_duplicate_keys_in_scope(fields, prefix, report);
+    lint_alias_collisions_in_scope(fields, prefix, report);
     let local_keys: HashSet<&str> = fields.iter().map(|f| f.key().as_str()).collect();
     for field in fields {
         let path = prefix.clone().join(field.key().clone());
@@ -288,6 +289,146 @@ fn lint_duplicate_keys_in_scope(
                 .message(format!("duplicate field key `{key}`"))
                 .build(),
         );
+    }
+}
+
+/// Emit `alias.write_on_secret` if a `Field::Secret` carries a write-alias.
+///
+/// A secret's projected output is always omitted, so a write-alias on it is
+/// always a mistake. This is a per-field (unary) check, so it is enforced
+/// wherever a `Field` appears — a scope member, a bare list item, or a
+/// mode-variant payload — not only at the top scope level. A no-op for any
+/// non-secret field.
+fn lint_secret_write_alias(field: &Field, path: &FieldPath, report: &mut ValidationReport) {
+    if matches!(field, Field::Secret(_)) && field.write_alias().is_some() {
+        report.push(
+            ValidationError::builder("alias.write_on_secret")
+                .at(path.clone())
+                .message(format!(
+                    "secret field `{}` must not have a write_alias; secret output is always redacted",
+                    field.key().as_str()
+                ))
+                .build(),
+        );
+    }
+}
+
+/// Validate alias constraints within a single field-scope level.
+///
+/// Five scope-relative collision kinds plus the unary write-on-secret check:
+/// - `alias.self_collision`: a read-alias equals the field's own canonical key.
+/// - `alias.scope_collision`: a read-alias collides with another field's canonical key in scope
+///   (confused-deputy guard — prevents aliasing another field's identity).
+/// - `alias.scope_duplicate`: two fields share the same read-alias.
+/// - `alias.write_collision`: a write-alias equals any field's canonical key in scope.
+/// - `alias.write_scope_duplicate`: two fields share the same write-alias.
+/// - `alias.write_on_secret`: a `Field::Secret` has a write-alias set (forbidden) —
+///   via `lint_secret_write_alias`, also enforced on bare list items / mode payloads.
+///
+/// Checks a single field-scope only; `lint_fields_new` drives the descent into
+/// every nested Object / List item / Mode-variant scope (calling this once per
+/// scope), exactly as it does for `lint_duplicate_keys_in_scope`. The traversal
+/// must reach every scope `canonicalize_aliases` folds, or a collision at depth
+/// would silently mis-route a value at ingest with no build-time guard.
+fn lint_alias_collisions_in_scope(
+    fields: &[Field],
+    prefix: &FieldPath,
+    report: &mut ValidationReport,
+) {
+    // Collect all canonical keys in this scope for collision checks.
+    let canonical_keys: HashSet<&str> = fields.iter().map(|f| f.key().as_str()).collect();
+
+    // Track which read-aliases and write-aliases have been seen across this scope.
+    let mut seen_read_aliases: HashMap<&str, &str> = HashMap::new();
+    let mut seen_write_aliases: HashMap<&str, &str> = HashMap::new();
+
+    for field in fields {
+        let field_key_str = field.key().as_str();
+        let field_path = prefix.clone().join(field.key().clone());
+
+        // alias.write_on_secret: Field::Secret must not carry a write-alias.
+        lint_secret_write_alias(field, &field_path, report);
+
+        // Read-alias collision checks.
+        for alias_key in field.read_aliases() {
+            let alias_str = alias_key.as_str();
+
+            // alias.self_collision: alias equals the field's own canonical key.
+            if alias_str == field_key_str {
+                report.push(
+                    ValidationError::builder("alias.self_collision")
+                        .at(field_path.clone())
+                        .param("alias", alias_str.to_owned())
+                        .message(format!(
+                            "field `{field_key_str}` has read-alias `{alias_str}` that equals its own canonical key"
+                        ))
+                        .build(),
+                );
+                continue;
+            }
+
+            // alias.scope_collision: alias collides with another field's canonical key.
+            if canonical_keys.contains(alias_str) {
+                report.push(
+                    ValidationError::builder("alias.scope_collision")
+                        .at(field_path.clone())
+                        .param("alias", alias_str.to_owned())
+                        .param("collides_with", alias_str.to_owned())
+                        .message(format!(
+                            "field `{field_key_str}` has read-alias `{alias_str}` that collides with another field's canonical key in this scope"
+                        ))
+                        .build(),
+                );
+                continue;
+            }
+
+            // alias.scope_duplicate: two fields share a read-alias.
+            if let Some(prior_field_key) = seen_read_aliases.insert(alias_str, field_key_str) {
+                report.push(
+                    ValidationError::builder("alias.scope_duplicate")
+                        .at(field_path.clone())
+                        .param("alias", alias_str.to_owned())
+                        .param("also_on_field", prior_field_key.to_owned())
+                        .message(format!(
+                            "field `{field_key_str}` has read-alias `{alias_str}` already used by field `{prior_field_key}` in this scope"
+                        ))
+                        .build(),
+                );
+            }
+        }
+
+        // Write-alias collision checks.
+        if let Some(write_alias_key) = field.write_alias() {
+            let write_alias_str = write_alias_key.as_str();
+
+            // alias.write_collision: write-alias equals any canonical key in scope.
+            if canonical_keys.contains(write_alias_str) {
+                report.push(
+                    ValidationError::builder("alias.write_collision")
+                        .at(field_path.clone())
+                        .param("write_alias", write_alias_str.to_owned())
+                        .message(format!(
+                            "field `{field_key_str}` has write_alias `{write_alias_str}` that collides with a canonical field key in this scope"
+                        ))
+                        .build(),
+                );
+            }
+
+            // alias.write_scope_duplicate: two fields share a write-alias.
+            if let Some(prior_field_key) = seen_write_aliases.insert(write_alias_str, field_key_str)
+            {
+                report.push(
+                    ValidationError::builder("alias.write_scope_duplicate")
+                        .at(field_path.clone())
+                        .param("write_alias", write_alias_str.to_owned())
+                        .param("also_on_field", prior_field_key.to_owned())
+                        .message(format!(
+                            "field `{field_key_str}` has write_alias `{write_alias_str}` already used by field `{prior_field_key}` in this scope"
+                        ))
+                        .build(),
+                );
+            }
+        }
     }
 }
 
@@ -491,8 +632,20 @@ fn lint_list_new(
         );
         return;
     }
-    if let Some(Field::Object(obj)) = list.item.as_deref() {
-        lint_fields_new(&obj.fields, path, root_keys, report);
+    // Descend into the item schema for ANY item kind, not only a direct Object,
+    // so nested scopes (list-of-list, list-of-mode, …) are linted to the same
+    // depth `canonicalize_aliases` folds. From-json keys a list under its own
+    // path, so nested scopes share `path`.
+    if let Some(item_field) = list.item.as_deref() {
+        // A bare secret list item is not a member of any scope, so the scope
+        // collision pass never sees it — check write_on_secret on it directly.
+        lint_secret_write_alias(item_field, path, report);
+    }
+    match list.item.as_deref() {
+        Some(Field::Object(obj)) => lint_fields_new(&obj.fields, path, root_keys, report),
+        Some(Field::List(inner)) => lint_list_new(inner, path, root_keys, report),
+        Some(Field::Mode(inner)) => lint_mode_new(inner, path, root_keys, report),
+        _ => {},
     }
 }
 
@@ -554,12 +707,20 @@ fn lint_mode_new(
                 );
             }
         }
-        // Recurse into variant payload.
-        if let Field::Object(obj) = variant.field.as_ref()
-            && let Some(vk) = variant_key
-        {
+        // Recurse into the variant payload for ANY payload kind, not only a
+        // direct Object, so nested scopes (mode-of-list, mode-of-mode, …) are
+        // linted to the same depth `canonicalize_aliases` folds.
+        if let Some(vk) = variant_key {
             let vpath = path.clone().join(vk);
-            lint_fields_new(&obj.fields, &vpath, root_keys, report);
+            // A bare secret variant payload is not a scope member, so check
+            // write_on_secret on it directly (no-op for non-secret payloads).
+            lint_secret_write_alias(variant.field.as_ref(), &vpath, report);
+            match variant.field.as_ref() {
+                Field::Object(obj) => lint_fields_new(&obj.fields, &vpath, root_keys, report),
+                Field::List(inner) => lint_list_new(inner, &vpath, root_keys, report),
+                Field::Mode(inner) => lint_mode_new(inner, &vpath, root_keys, report),
+                _ => {},
+            }
         }
     }
 }
