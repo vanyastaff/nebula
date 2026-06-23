@@ -932,16 +932,23 @@ impl Field {
 
 impl Serialize for Field {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::Error as _;
+
         match self {
             // An unknown field re-emits its preserved raw object as-is: it
             // already carries the `type` discriminator and every key/value.
             // (Object key order is normalized by the wire backend, not retained.)
             Self::Unknown(f) => f.raw.serialize(serializer),
             // Known variants serialize exactly as the derived tagged mirror.
-            known => known
-                .to_known()
-                .expect("a non-Unknown variant always maps to KnownField")
-                .serialize(serializer),
+            // `to_known()` is `None` only for `Unknown` (handled above), so this
+            // arm always maps — but surface a serde error rather than panicking if
+            // a future variant is ever added without a mirror entry.
+            known => match known.to_known() {
+                Some(mirror) => mirror.serialize(serializer),
+                None => Err(S::Error::custom(
+                    "Field variant has no KnownField serialization mapping",
+                )),
+            },
         }
     }
 }
