@@ -14,7 +14,9 @@
 //!   `skip_serializing_if`, so a document written by an older version still
 //!   deserializes and a document written by a newer version still round-trips.
 
-use nebula_schema::{Field, FieldValues, Schema, field_key};
+use nebula_schema::{
+    Field, FieldValue, FieldValues, Predicate, Rule, Schema, VisibilityMode, field_key,
+};
 use serde_json::json;
 
 /// Every `Field` variant's wire shape (the `type` tag + each struct's
@@ -22,7 +24,19 @@ use serde_json::json;
 #[test]
 fn field_variants_wire_format() {
     let variants: Vec<Field> = vec![
-        Field::string(field_key!("s")).required().into(),
+        // A fully-decorated field freezes the SHARED serde keys that are skipped
+        // when default (`label`/`description`/`placeholder`/`default`/`group`/
+        // `visible`/`rules`), so renaming any of them also diffs this snapshot.
+        Field::string(field_key!("s"))
+            .label("Display Name")
+            .description("A fully-described field")
+            .placeholder("type here")
+            .group("contact")
+            .default(json!("default-value"))
+            .visible(VisibilityMode::Never)
+            .with_rule(Rule::predicate(Predicate::eq("s", json!("x")).unwrap()))
+            .required()
+            .into(),
         Field::secret(field_key!("sec")).into(),
         Field::number(field_key!("n")).integer().into(),
         Field::boolean(field_key!("b")).into(),
@@ -77,4 +91,16 @@ fn field_values_wire_format() {
     }))
     .unwrap();
     insta::assert_json_snapshot!(values);
+}
+
+/// The typed `FieldValue::Mode` serialization branch. `from_json` parses a
+/// `{"mode": …, "value": …}` object as an ordinary `Object`, so the `Mode`
+/// variant's wire output is only reachable by constructing it directly.
+#[test]
+fn field_value_mode_wire_format() {
+    let mode = FieldValue::Mode {
+        mode: field_key!("oauth2"),
+        value: Some(Box::new(FieldValue::from_json(json!({"scope": "read"})))),
+    };
+    insta::assert_json_snapshot!(mode);
 }

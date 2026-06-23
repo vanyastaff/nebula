@@ -6,9 +6,25 @@ expression: variants
   {
     "type": "string",
     "key": "s",
+    "label": "Display Name",
+    "description": "A fully-described field",
+    "placeholder": "type here",
+    "default": "default-value",
+    "visible": {
+      "kind": "never"
+    },
     "required": {
       "kind": "always"
     },
+    "group": "contact",
+    "rules": [
+      {
+        "eq": [
+          "/s",
+          "x"
+        ]
+      }
+    ],
     "hint": "text",
     "widget": "plain"
   },
