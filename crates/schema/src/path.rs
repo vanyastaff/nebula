@@ -77,14 +77,20 @@ impl FieldPath {
                 rest = after;
             }
 
-            let end = rest.find(['.', '[']).unwrap_or(rest.len());
-            if end == 0 {
-                return Err(Self::err(s, "missing key"));
+            // A leading `[` (an index-first path like `[0]` or `[0].foo`) has no
+            // key segment at this position — fall through to the bracket loop.
+            // Otherwise extract the key up to the next `.`/`[`.
+            if !rest.starts_with('[') {
+                let end = rest.find(['.', '[']).unwrap_or(rest.len());
+                if end == 0 {
+                    return Err(Self::err(s, "missing key"));
+                }
+                let key_lit = &rest[..end];
+                let key =
+                    FieldKey::new(key_lit).map_err(|_| Self::err(s, "invalid key in path"))?;
+                segments.push(PathSegment::Key(key));
+                rest = &rest[end..];
             }
-            let key_lit = &rest[..end];
-            let key = FieldKey::new(key_lit).map_err(|_| Self::err(s, "invalid key in path"))?;
-            segments.push(PathSegment::Key(key));
-            rest = &rest[end..];
 
             while let Some(after_open) = rest.strip_prefix('[') {
                 let close = after_open
@@ -188,6 +194,12 @@ impl Serialize for FieldPath {
 impl<'de> Deserialize<'de> for FieldPath {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let raw = String::deserialize(d)?;
+        // The root path `Display`s as the empty string; round-trip it back to
+        // root here. (The public `parse` deliberately rejects `""` as a malformed
+        // user-supplied path — that contract is separate from this wire seam.)
+        if raw.is_empty() {
+            return Ok(Self::root());
+        }
         Self::parse(&raw).map_err(serde::de::Error::custom)
     }
 }
@@ -252,5 +264,53 @@ mod tests {
         let p = FieldPath::parse("a.b.c").unwrap();
         assert_eq!(p.parent().unwrap().to_string(), "a.b");
         assert!(FieldPath::root().parent().is_none());
+    }
+
+    #[test]
+    fn root_path_serde_round_trips() {
+        // The root path Displays as "" and must deserialize back to root — the
+        // public `parse` rejects "", but the serde seam round-trips it.
+        let root = FieldPath::root();
+        let wire = serde_json::to_value(&root).expect("serialize");
+        assert_eq!(wire, serde_json::Value::String(String::new()));
+        let restored: FieldPath = serde_json::from_value(wire).expect("deserialize");
+        assert!(restored.is_root());
+        assert_eq!(restored, root);
+    }
+
+    #[test]
+    fn nested_path_serde_round_trips() {
+        let nested = FieldPath::parse("a.b[0].c").unwrap();
+        let restored: FieldPath =
+            serde_json::from_value(serde_json::to_value(&nested).unwrap()).unwrap();
+        assert_eq!(restored, nested);
+    }
+
+    #[test]
+    fn parses_index_leading_path() {
+        // A top-level array target produces an index-first path (`root().join(idx)`).
+        let p = FieldPath::parse("[0]").unwrap();
+        assert_eq!(p.segments(), &[PathSegment::Index(0)]);
+        assert_eq!(p.to_string(), "[0]");
+
+        let nested = FieldPath::parse("[0].foo").unwrap();
+        assert_eq!(
+            nested.segments(),
+            &[
+                PathSegment::Index(0),
+                PathSegment::Key(FieldKey::new("foo").unwrap())
+            ]
+        );
+        assert_eq!(nested.to_string(), "[0].foo");
+    }
+
+    #[test]
+    fn index_leading_path_serde_round_trips() {
+        // Regression: an index-first path Displays as `[0]` and must deserialize
+        // back (previously `parse` required a key before any bracket).
+        let idx = FieldPath::root().join(PathSegment::Index(2));
+        let restored: FieldPath =
+            serde_json::from_value(serde_json::to_value(&idx).unwrap()).expect("round-trip");
+        assert_eq!(restored, idx);
     }
 }
