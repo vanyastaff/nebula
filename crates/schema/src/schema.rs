@@ -602,6 +602,9 @@ fn normalize_field_for_runtime(field: &mut Field) {
         Field::Notice(notice) => {
             dedupe_rules_and_transformers(&mut notice.rules, &mut notice.transformers);
         },
+        // An `Unknown` field's rules/transformers live untyped inside `raw`;
+        // nothing to normalize.
+        Field::Unknown { .. } => {},
     }
 }
 

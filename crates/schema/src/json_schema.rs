@@ -177,6 +177,9 @@ fn field_schema_value(field: &Field) -> Value {
             s.insert("readOnly".to_owned(), Value::Bool(true));
             s
         },
+        // Forward-compat field of an unknown future kind; this version cannot
+        // describe its value contract, so emit a permissive (empty) schema.
+        Field::Unknown { .. } => Map::new(),
     };
 
     let mut schema = apply_expression_mode(core_schema, *field.expression());
@@ -200,6 +203,9 @@ fn apply_common_keywords(field: &Field, schema: &mut Map<String, Value>) {
         Field::Computed(f) => (&f.label, &f.description, &f.default),
         Field::Dynamic(f) => (&f.label, &f.description, &f.default),
         Field::Notice(f) => (&f.label, &f.description, &f.default),
+        // An unknown future field has no typed label/description/default slots;
+        // its decorations (if any) live opaquely in `raw`. Skip common keywords.
+        Field::Unknown { .. } => return,
     };
 
     if let Some(title) = label {

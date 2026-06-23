@@ -785,8 +785,7 @@ pub enum NoticeSeverity {
 /// - Date-like: use `Field::string(k).hint(InputHint::Date)` etc.
 /// - Hidden: use `.visible(VisibilityMode::Never)` on any field.
 #[non_exhaustive]
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Field {
     /// String field (replaces Date/DateTime/Time/Color via `hint`).
     String(StringField),
@@ -814,10 +813,171 @@ pub enum Field {
     Dynamic(DynamicField),
     /// Notice/info field (display-only).
     Notice(NoticeField),
+    /// A field whose `type` discriminator is not known to this version —
+    /// preserved verbatim for **forward compatibility**.
+    ///
+    /// A `Field`'s wire format is internally tagged by `type` and is persisted /
+    /// exported as an external contract; without this variant an older reader
+    /// would fail to deserialize a document a newer writer produced with a new
+    /// field kind.
+    /// Instead the raw object is kept (`raw`) so it round-trips unchanged, and
+    /// the shared fields (`key`/`visible`/`required`) are recovered so the
+    /// editor can still place and toggle it. Validation/lint/export **skip** an
+    /// `Unknown` field: this version cannot reason about its rules.
+    Unknown {
+        /// The unrecognized `type` discriminator.
+        unknown_type: String,
+        /// The recovered field key.
+        key: FieldKey,
+        /// Recovered visibility (defaulted if the raw object omitted it).
+        visible: VisibilityMode,
+        /// Recovered required mode (defaulted if the raw object omitted it).
+        required: RequiredMode,
+        /// The full raw JSON object, preserved for lossless round-tripping.
+        raw: serde_json::Map<String, Value>,
+    },
 }
 
 const REQUIRED_EXPRESSION_MODE: ExpressionMode = ExpressionMode::Required;
 const FORBIDDEN_EXPRESSION_MODE: ExpressionMode = ExpressionMode::Forbidden;
+
+/// The known `type` discriminators — routes deserialization between a known
+/// variant and the forward-compat [`Field::Unknown`] preservation path.
+const KNOWN_FIELD_TYPES: [&str; 13] = [
+    "string", "secret", "number", "boolean", "select", "object", "list", "mode", "code", "file",
+    "computed", "dynamic", "notice",
+];
+
+/// Private mirror of the *known* [`Field`] variants carrying the derived
+/// `#[serde(tag = "type")]` wire format, so [`Field`]'s custom serde reproduces
+/// the exact derived shape for known variants and only adds the `Unknown` path.
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum KnownField {
+    String(StringField),
+    Secret(SecretField),
+    Number(NumberField),
+    Boolean(BooleanField),
+    Select(SelectField),
+    Object(ObjectField),
+    List(ListField),
+    Mode(ModeField),
+    Code(CodeField),
+    File(FileField),
+    Computed(ComputedField),
+    Dynamic(DynamicField),
+    Notice(NoticeField),
+}
+
+impl From<KnownField> for Field {
+    fn from(known: KnownField) -> Self {
+        match known {
+            KnownField::String(f) => Self::String(f),
+            KnownField::Secret(f) => Self::Secret(f),
+            KnownField::Number(f) => Self::Number(f),
+            KnownField::Boolean(f) => Self::Boolean(f),
+            KnownField::Select(f) => Self::Select(f),
+            KnownField::Object(f) => Self::Object(f),
+            KnownField::List(f) => Self::List(f),
+            KnownField::Mode(f) => Self::Mode(f),
+            KnownField::Code(f) => Self::Code(f),
+            KnownField::File(f) => Self::File(f),
+            KnownField::Computed(f) => Self::Computed(f),
+            KnownField::Dynamic(f) => Self::Dynamic(f),
+            KnownField::Notice(f) => Self::Notice(f),
+        }
+    }
+}
+
+impl Field {
+    /// Convert a *known* `Field` into its serde mirror (clones the inner struct —
+    /// schema serialization is not a hot path). `None` for [`Field::Unknown`].
+    fn to_known(&self) -> Option<KnownField> {
+        Some(match self {
+            Self::String(f) => KnownField::String(f.clone()),
+            Self::Secret(f) => KnownField::Secret(f.clone()),
+            Self::Number(f) => KnownField::Number(f.clone()),
+            Self::Boolean(f) => KnownField::Boolean(f.clone()),
+            Self::Select(f) => KnownField::Select(f.clone()),
+            Self::Object(f) => KnownField::Object(f.clone()),
+            Self::List(f) => KnownField::List(f.clone()),
+            Self::Mode(f) => KnownField::Mode(f.clone()),
+            Self::Code(f) => KnownField::Code(f.clone()),
+            Self::File(f) => KnownField::File(f.clone()),
+            Self::Computed(f) => KnownField::Computed(f.clone()),
+            Self::Dynamic(f) => KnownField::Dynamic(f.clone()),
+            Self::Notice(f) => KnownField::Notice(f.clone()),
+            Self::Unknown { .. } => return None,
+        })
+    }
+}
+
+impl Serialize for Field {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            // An unknown field round-trips byte-for-byte: its raw object already
+            // carries the `type` discriminator and every field.
+            Self::Unknown { raw, .. } => raw.serialize(serializer),
+            // Known variants serialize exactly as the derived tagged mirror.
+            known => known
+                .to_known()
+                .expect("a non-Unknown variant always maps to KnownField")
+                .serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Field {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error as _;
+        let value = Value::deserialize(deserializer)?;
+        let type_tag = value
+            .get("type")
+            .and_then(Value::as_str)
+            .ok_or_else(|| D::Error::missing_field("type"))?;
+        if KNOWN_FIELD_TYPES.contains(&type_tag) {
+            // A known type with a malformed payload is a hard error, not preserved.
+            return KnownField::deserialize(&value)
+                .map(Field::from)
+                .map_err(D::Error::custom);
+        }
+        // Forward compatibility: an unrecognized `type` is preserved verbatim,
+        // with the shared fields recovered so the editor can still place it.
+        let unknown_type = type_tag.to_owned();
+        let key = value
+            .get("key")
+            .and_then(Value::as_str)
+            .and_then(|raw_key| FieldKey::new(raw_key).ok())
+            .ok_or_else(|| {
+                D::Error::custom(format!(
+                    "unknown field type `{unknown_type}` is missing a valid `key`"
+                ))
+            })?;
+        // `visible`/`required` are recovered best-effort so the editor can place
+        // and toggle the field. Unlike `key`, a malformed/absent value defaults
+        // rather than erroring: the true value still round-trips losslessly via
+        // `raw`, and refusing to default would defeat the whole point of `Unknown`
+        // (never failing to read a document a newer writer produced).
+        let visible = value
+            .get("visible")
+            .cloned()
+            .and_then(|raw_visible| serde_json::from_value(raw_visible).ok())
+            .unwrap_or_default();
+        let required = value
+            .get("required")
+            .cloned()
+            .and_then(|raw_required| serde_json::from_value(raw_required).ok())
+            .unwrap_or_default();
+        let raw = value.as_object().cloned().unwrap_or_default();
+        Ok(Field::Unknown {
+            unknown_type,
+            key,
+            visible,
+            required,
+            raw,
+        })
+    }
+}
 
 // ── Factory methods ───────────────────────────────────────────────────────────
 
@@ -1126,6 +1286,7 @@ impl Field {
             Self::Computed(f) => &f.key,
             Self::Dynamic(f) => &f.key,
             Self::Notice(f) => &f.key,
+            Self::Unknown { key, .. } => key,
         }
     }
 
@@ -1147,6 +1308,7 @@ impl Field {
             Self::Computed(f) => &f.visible,
             Self::Dynamic(f) => &f.visible,
             Self::Notice(f) => &f.visible,
+            Self::Unknown { visible, .. } => visible,
         }
     }
 
@@ -1168,6 +1330,7 @@ impl Field {
             Self::Computed(f) => &f.required,
             Self::Dynamic(f) => &f.required,
             Self::Notice(f) => &f.required,
+            Self::Unknown { required, .. } => required,
         }
     }
 
@@ -1189,6 +1352,8 @@ impl Field {
             Self::Computed(_) => &REQUIRED_EXPRESSION_MODE,
             Self::Dynamic(f) => &f.expression,
             Self::Notice(_) => &FORBIDDEN_EXPRESSION_MODE,
+            // An unknown field is opaque: this version cannot evaluate expressions in it.
+            Self::Unknown { .. } => &FORBIDDEN_EXPRESSION_MODE,
         }
     }
 
@@ -1210,6 +1375,8 @@ impl Field {
             Self::Computed(f) => f.rules.as_slice(),
             Self::Dynamic(f) => f.rules.as_slice(),
             Self::Notice(f) => f.rules.as_slice(),
+            // Rules of an unknown field are not understood by this version.
+            Self::Unknown { .. } => &[],
         }
     }
 
@@ -1231,6 +1398,7 @@ impl Field {
             Self::Computed(f) => f.transformers.as_slice(),
             Self::Dynamic(f) => f.transformers.as_slice(),
             Self::Notice(f) => f.transformers.as_slice(),
+            Self::Unknown { .. } => &[],
         }
     }
 
@@ -1252,6 +1420,7 @@ impl Field {
             Self::Computed(f) => f.default.as_ref(),
             Self::Dynamic(f) => f.default.as_ref(),
             Self::Notice(f) => f.default.as_ref(),
+            Self::Unknown { .. } => None,
         }
     }
 
@@ -1273,6 +1442,9 @@ impl Field {
             Self::Computed(_) => "computed",
             Self::Dynamic(_) => "dynamic",
             Self::Notice(_) => "notice",
+            // The real (future) discriminator lives in the `unknown_type` field;
+            // this opaque label is only for diagnostics and type-mismatch checks.
+            Self::Unknown { .. } => "unknown",
         }
     }
 }

@@ -1841,7 +1841,9 @@ fn validate_literal_value(
 
             run_value_rules(field.rules(), &transformed, path, report);
         },
-        Field::Computed(_) | Field::Dynamic(_) | Field::Notice(_) => {
+        // `Unknown` is opaque: `rules()` is empty, so this type-checks nothing
+        // and accepts the value (this version cannot validate a future field kind).
+        Field::Computed(_) | Field::Dynamic(_) | Field::Notice(_) | Field::Unknown { .. } => {
             run_value_rules(field.rules(), &value.to_json(), path, report);
         },
     }

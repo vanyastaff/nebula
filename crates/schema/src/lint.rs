@@ -249,8 +249,13 @@ fn lint_default_type(field: &Field, path: &FieldPath, report: &mut ValidationRep
                 false
             }
         },
-        // File, Computed, Dynamic, Notice: skip default type validation
-        Field::File(_) | Field::Computed(_) | Field::Dynamic(_) | Field::Notice(_) => return,
+        // File, Computed, Dynamic, Notice, Unknown: skip default type validation
+        // (`Unknown` is opaque — this version cannot type-check its default).
+        Field::File(_)
+        | Field::Computed(_)
+        | Field::Dynamic(_)
+        | Field::Notice(_)
+        | Field::Unknown { .. } => return,
     };
 
     if !ok {

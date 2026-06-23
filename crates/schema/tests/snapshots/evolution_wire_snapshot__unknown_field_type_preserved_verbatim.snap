@@ -1,0 +1,16 @@
+---
+source: crates/schema/tests/evolution_wire_snapshot.rs
+expression: field
+---
+{
+  "key": "bio",
+  "label": "Biography",
+  "toolbar": [
+    "bold",
+    "italic"
+  ],
+  "type": "richtext",
+  "visible": {
+    "kind": "never"
+  }
+}

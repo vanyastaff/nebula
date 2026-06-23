@@ -1,6 +1,6 @@
 use nebula_schema::{
-    BooleanWidget, Field, FieldValues, NumberWidget, RequiredMode, Schema, SecretWidget,
-    SelectWidget, StringWidget, Transformer, VisibilityMode, field_key,
+    BooleanWidget, ExpressionMode, Field, FieldValues, NumberWidget, RequiredMode, Schema,
+    SecretWidget, SelectWidget, StringWidget, Transformer, VisibilityMode, field_key,
 };
 use serde_json::json;
 
@@ -290,4 +290,119 @@ fn serde_roundtrip_supports_all_field_variants() {
     assert_eq!(decoded.len(), 18);
     assert!(decoded.find("computed").is_some());
     assert!(decoded.find("notice").is_some());
+}
+
+// ── Forward-compatible `Field::Unknown` preservation ─────────────────────────
+//
+// A field document a *newer* writer produced may carry a `type` this version
+// does not know. Rather than failing the whole read, the unrecognized field is
+// preserved verbatim as `Field::Unknown` so it round-trips losslessly, while the
+// shared `key`/`visible`/`required` are recovered so the editor can still place it.
+
+/// A field of a future kind (`richtext`) with a novel `toolbar` key this version
+/// has never seen. `visible`/`required` use the real internally-tagged wire shape.
+fn future_field_json() -> serde_json::Value {
+    json!({
+        "type": "richtext",
+        "key": "bio",
+        "label": "Biography",
+        "visible": { "kind": "never" },
+        "required": { "kind": "always" },
+        "toolbar": ["bold", "italic"]
+    })
+}
+
+#[test]
+fn unknown_field_type_round_trips_byte_for_byte() {
+    let original = future_field_json();
+    let field: Field =
+        serde_json::from_value(original.clone()).expect("an unrecognized type deserializes");
+    assert!(
+        matches!(field, Field::Unknown { .. }),
+        "an unrecognized `type` must deserialize to Field::Unknown, got {field:?}"
+    );
+
+    let reserialized = serde_json::to_value(&field).expect("Unknown re-serializes");
+    assert_eq!(
+        reserialized, original,
+        "the raw object (incl. the novel `toolbar` key) must round-trip unchanged"
+    );
+}
+
+#[test]
+fn unknown_field_recovers_shared_fields_and_is_opaque() {
+    let field: Field = serde_json::from_value(future_field_json()).expect("deserializes");
+
+    // Recovered so the editor can place and toggle the field.
+    assert_eq!(field.key().as_str(), "bio");
+    assert!(matches!(field.visible(), VisibilityMode::Never));
+    assert!(matches!(field.required(), RequiredMode::Always));
+
+    // Opaque: this version understands none of its value contract.
+    assert_eq!(field.type_name(), "unknown");
+    assert!(field.rules().is_empty(), "no rules are understood");
+    assert!(
+        field.transformers().is_empty(),
+        "no transformers are understood"
+    );
+    assert!(field.default().is_none(), "no default is recovered");
+    assert!(
+        matches!(field.expression(), ExpressionMode::Forbidden),
+        "expressions cannot be evaluated in an opaque field"
+    );
+}
+
+#[test]
+fn unknown_field_without_valid_key_is_a_hard_error() {
+    // The key is the field's identity; without it the schema's keyed map would be
+    // corrupt and the editor could not place the field — so a missing/invalid key
+    // is a hard error even on the forward-compat path.
+    let missing_key = json!({ "type": "richtext", "label": "no key" });
+    let err = serde_json::from_value::<Field>(missing_key).expect_err("missing key must error");
+    assert!(
+        err.to_string().contains("key"),
+        "the error should name the missing key, got: {err}"
+    );
+
+    let invalid_key = json!({ "type": "richtext", "key": "not a valid key" });
+    assert!(
+        serde_json::from_value::<Field>(invalid_key).is_err(),
+        "a syntactically invalid key must error"
+    );
+}
+
+#[test]
+fn unknown_field_defaults_unreadable_shared_fields_yet_preserves_raw() {
+    // A future `visible` shape this version cannot parse must NOT fail the read:
+    // the recovered mode falls back to the default, while the true value still
+    // round-trips losslessly through `raw`.
+    let original = json!({
+        "type": "richtext",
+        "key": "bio",
+        "visible": { "kind": "some_future_mode", "threshold": 3 }
+    });
+    let field: Field = serde_json::from_value(original.clone())
+        .expect("an unparseable `visible` must not fail the read");
+
+    assert!(
+        matches!(field.visible(), VisibilityMode::Always),
+        "an unparseable `visible` falls back to the default mode"
+    );
+    let reserialized = serde_json::to_value(&field).expect("re-serializes");
+    assert_eq!(
+        reserialized, original,
+        "the true `visible` value is still preserved verbatim via raw"
+    );
+}
+
+#[test]
+fn known_field_type_with_bad_payload_errors_instead_of_degrading_to_unknown() {
+    // A *recognized* type with a malformed body is corruption, not forward-compat;
+    // it must error rather than silently become an opaque Unknown that hides the bug.
+    let bad_string = json!({ "type": "string", "key": "name", "rules": "not-an-array" });
+    let result = serde_json::from_value::<Field>(bad_string);
+    assert!(
+        result.is_err(),
+        "a known type with a bad payload must error, not preserve as Unknown: {result:?}"
+    );
 }
