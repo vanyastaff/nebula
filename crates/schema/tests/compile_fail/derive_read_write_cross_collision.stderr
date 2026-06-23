@@ -1,0 +1,18 @@
+error: write-alias `wire` collides with the read-alias on field `b` — a wire round-trip would move data between the two fields
+ --> tests/compile_fail/derive_read_write_cross_collision.rs:9:5
+  |
+9 |     a: String,
+  |     ^
+
+error[E0599]: no associated function or constant named `schema` found for struct `Bad` in the current scope
+  --> tests/compile_fail/derive_read_write_cross_collision.rs:15:18
+   |
+ 7 | struct Bad {
+   | ---------- associated function or constant `schema` not found for this struct
+...
+15 |     let _ = Bad::schema();
+   |                  ^^^^^^ associated function or constant not found in `Bad`
+   |
+   = help: items from traits can only be used if the trait is implemented and in scope
+   = note: the following trait defines an item `schema`, perhaps you need to implement it:
+           candidate #1: `HasSchema`

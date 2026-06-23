@@ -12,6 +12,16 @@ use crate::{
     type_infer::{FieldKind, classify},
 };
 
+/// One alias use (a read- or write-alias) tagged with the canonical key of the
+/// field that declares it, so compile-time collision checks can distinguish a
+/// same-field read+write reuse (allowed) from a cross-field collision (rejected),
+/// mirroring the runtime `lint_alias_collisions_in_scope`.
+struct AliasUse {
+    value: String,
+    owner_key: String,
+    span: Span,
+}
+
 pub(crate) fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
     let crate_path = crate::crate_path();
     let ty_name = &input.ident;
@@ -51,10 +61,13 @@ pub(crate) fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
 
     let mut field_exprs = Vec::with_capacity(fields.len());
     let mut field_keys: Vec<(String, Span)> = Vec::with_capacity(fields.len());
-    // Serde aliases are alternative wire keys serde still deserializes into the
-    // field, so a reserved key must reject them too — collected separately so the
-    // collision diagnostic can name the alias as the culprit.
-    let mut field_aliases: Vec<(String, Span)> = Vec::new();
+    // Read-aliases (from `#[serde(alias)]`) and write-aliases (from
+    // `#[field(write_alias)]`), each tagged with the owning field's canonical key
+    // so the collision checks can mirror the runtime `lint_alias_collisions_in_scope`
+    // (same-field read+write reuse stays allowed) and so a reserved-key collision
+    // can name the alias as the culprit.
+    let mut read_aliases: Vec<AliasUse> = Vec::new();
+    let mut write_aliases: Vec<AliasUse> = Vec::new();
     for f in fields {
         let field_name = f
             .ident
@@ -77,8 +90,27 @@ pub(crate) fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
         let kind = classify(&f.ty);
         let key_str = resolve_field_key(field_name, &serde, container_serde.rename_all)?;
         field_keys.push((key_str.clone(), field_name.span()));
+        // Read-aliases are exactly the `#[serde(alias)]` keys — serde deserializes
+        // them into this field, so the schema accepting them keeps schema and wire
+        // in sync. (A schema-only alias serde would not deserialize is the very
+        // desync the serde-aware derive exists to prevent, so there is no
+        // `#[field(read_alias)]`.) Each is validated as a `FieldKey` here so an
+        // invalid alias is a spanned compile error, not a runtime panic.
         for alias in &serde.aliases {
-            field_aliases.push((alias.clone(), field_name.span()));
+            check_field_key(alias, field_name.span())?;
+            read_aliases.push(AliasUse {
+                value: alias.clone(),
+                owner_key: key_str.clone(),
+                span: field_name.span(),
+            });
+        }
+        if let Some(write_alias) = &field_attr.write_alias {
+            check_field_key(write_alias, field_name.span())?;
+            write_aliases.push(AliasUse {
+                value: write_alias.clone(),
+                owner_key: key_str.clone(),
+                span: field_name.span(),
+            });
         }
         let expr = build_field_expr(
             field_name,
@@ -86,12 +118,19 @@ pub(crate) fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
             &kind,
             &field_attr,
             &validate,
+            &serde.aliases,
             &crate_path,
         )?;
         field_exprs.push(expr);
     }
 
-    enforce_reserved_keys(&schema_attrs.reserved, &field_keys, &field_aliases)?;
+    enforce_reserved_keys(
+        &schema_attrs.reserved,
+        &field_keys,
+        &read_aliases,
+        &write_aliases,
+    )?;
+    enforce_alias_constraints(&field_keys, &read_aliases, &write_aliases)?;
 
     let ty_name_str = ty_name.to_string();
     Ok(quote! {
@@ -193,7 +232,8 @@ fn check_field_key(key: &str, span: Span) -> syn::Result<()> {
 fn enforce_reserved_keys(
     reserved: &[syn::LitStr],
     field_keys: &[(String, Span)],
-    field_aliases: &[(String, Span)],
+    read_aliases: &[AliasUse],
+    write_aliases: &[AliasUse],
 ) -> syn::Result<()> {
     let mut seen = std::collections::HashSet::with_capacity(reserved.len());
     for lit in reserved {
@@ -222,12 +262,9 @@ fn enforce_reserved_keys(
                 ),
             ));
         }
-        if let Some((_, field_span)) = field_aliases
-            .iter()
-            .find(|(alias, _)| *alias == reserved_key)
-        {
+        if let Some(alias) = read_aliases.iter().find(|a| a.value == reserved_key) {
             return Err(syn::Error::new(
-                *field_span,
+                alias.span,
                 format!(
                     "key `{reserved_key}` is reserved by `#[schema(reserved(..))]` but a \
                      `#[serde(alias = \"{reserved_key}\")]` still deserializes it into this field \
@@ -235,7 +272,127 @@ fn enforce_reserved_keys(
                 ),
             ));
         }
+        // A write-alias re-emits the reserved key on output — reusing a reserved
+        // wire key for a different field's projected value is the output-side
+        // mirror of the input misread the reservation guards against.
+        if let Some(alias) = write_aliases.iter().find(|a| a.value == reserved_key) {
+            return Err(syn::Error::new(
+                alias.span,
+                format!(
+                    "key `{reserved_key}` is reserved by `#[schema(reserved(..))]` but a \
+                     `#[field(write_alias = \"{reserved_key}\")]` emits it on projection output \
+                     — remove the write_alias or the reservation"
+                ),
+            ));
+        }
     }
+    Ok(())
+}
+
+/// Mirror the runtime `lint_alias_collisions_in_scope` at macro-expansion time so
+/// alias mistakes are spanned compile errors instead of a runtime panic when
+/// `schema()` first builds. The runtime lint remains the authoritative backstop
+/// (and covers nested scopes the derive flattens via `HasSchema`); this only
+/// covers the struct's own field scope, where a clear compile error is far better
+/// DX. Same-field read+write reuse is allowed (round-trip stable), matching the
+/// runtime.
+fn enforce_alias_constraints(
+    field_keys: &[(String, Span)],
+    read_aliases: &[AliasUse],
+    write_aliases: &[AliasUse],
+) -> syn::Result<()> {
+    let key_set: std::collections::HashSet<&str> =
+        field_keys.iter().map(|(k, _)| k.as_str()).collect();
+
+    // alias.self_collision / alias.scope_collision: a read-alias equals a field's
+    // canonical key (its own or another's).
+    for alias in read_aliases {
+        if alias.value == alias.owner_key {
+            return Err(syn::Error::new(
+                alias.span,
+                format!(
+                    "read-alias `{}` equals the field's own canonical key — an alias must differ \
+                     from the key it aliases",
+                    alias.value
+                ),
+            ));
+        }
+        if key_set.contains(alias.value.as_str()) {
+            return Err(syn::Error::new(
+                alias.span,
+                format!(
+                    "read-alias `{}` collides with another field's canonical key — it would steal \
+                     that field's identity on input",
+                    alias.value
+                ),
+            ));
+        }
+    }
+
+    // alias.scope_duplicate: two fields share a read-alias.
+    let mut seen_read: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+    for alias in read_aliases {
+        if let Some(prior) = seen_read.insert(&alias.value, &alias.owner_key)
+            && prior != alias.owner_key
+        {
+            return Err(syn::Error::new(
+                alias.span,
+                format!(
+                    "read-alias `{}` is already used by field `{prior}` — two fields cannot share \
+                     a read-alias",
+                    alias.value
+                ),
+            ));
+        }
+    }
+
+    // alias.write_collision: a write-alias equals a field's canonical key.
+    // alias.write_scope_duplicate: two fields share a write-alias.
+    let mut seen_write: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+    for alias in write_aliases {
+        if key_set.contains(alias.value.as_str()) {
+            return Err(syn::Error::new(
+                alias.span,
+                format!(
+                    "write-alias `{}` collides with a canonical field key — two fields would emit \
+                     under the same output key",
+                    alias.value
+                ),
+            ));
+        }
+        if let Some(prior) = seen_write.insert(&alias.value, &alias.owner_key)
+            && prior != alias.owner_key
+        {
+            return Err(syn::Error::new(
+                alias.span,
+                format!(
+                    "write-alias `{}` is already used by field `{prior}` — two fields cannot emit \
+                     under the same output key",
+                    alias.value
+                ),
+            ));
+        }
+    }
+
+    // alias.read_write_collision: one field's read-alias equals another field's
+    // write-alias — a wire round-trip would move data between the two fields.
+    // Same-field reuse (read + write under one key) is round-trip stable, allowed.
+    for write in write_aliases {
+        if let Some(read) = read_aliases
+            .iter()
+            .find(|r| r.value == write.value && r.owner_key != write.owner_key)
+        {
+            return Err(syn::Error::new(
+                write.span,
+                format!(
+                    "write-alias `{}` collides with the read-alias on field `{}` — a wire \
+                     round-trip would move data between the two fields",
+                    write.value, read.owner_key
+                ),
+            ));
+        }
+    }
+
     Ok(())
 }
 
@@ -246,6 +403,7 @@ fn build_field_expr(
     kind: &FieldKind,
     field_attr: &FieldAttrs,
     validate: &ValidateAttrs,
+    read_aliases: &[String],
     crate_path: &TokenStream2,
 ) -> syn::Result<TokenStream2> {
     // `key_str` was resolved and validated against the `FieldKey` rules in
@@ -283,6 +441,13 @@ fn build_field_expr(
             field_name,
             "`#[field(default = ..)]` on a secret field hard-codes plaintext into the schema; \
              configure the value via the credential setup form instead",
+        ));
+    }
+    if field_attr.secret && field_attr.write_alias.is_some() {
+        return Err(syn::Error::new_spanned(
+            field_name,
+            "`#[field(write_alias = ..)]` cannot be set on a secret field — a secret is never \
+             emitted on projection output, so a write-alias for it would never apply",
         ));
     }
     if field_attr.enum_select && matches!(kind, FieldKind::List(_)) {
@@ -449,6 +614,24 @@ fn build_field_expr(
     }
     if validate.email && matches!(inner, FieldKind::String) {
         expr = quote! { #expr.email() };
+    }
+
+    // Aliases. Each string was validated as a `FieldKey` in `expand()` before this
+    // call, so the runtime `Result` is always `Ok` — the `.expect()` is the codegen
+    // equivalent of `unreachable!`, mirroring the field-key constructor above.
+    for alias in read_aliases {
+        expr = quote! {
+            #expr
+                .read_alias(#alias)
+                .expect("#[derive(Schema)] read-alias validated at macro expansion")
+        };
+    }
+    if let Some(write_alias) = &field_attr.write_alias {
+        expr = quote! {
+            #expr
+                .write_alias(#write_alias)
+                .expect("#[derive(Schema)] write-alias validated at macro expansion")
+        };
     }
 
     Ok(quote! { #expr.into_field() })

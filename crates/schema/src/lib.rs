@@ -123,6 +123,36 @@
 //!     name: String, // error: field key `name` is reserved
 //! }
 //! ```
+//!
+//! # Field aliases
+//!
+//! `#[serde(alias = "..")]` keys become **read-aliases**: serde deserializes them
+//! and the schema accepts them as input, folding each onto the canonical key (so
+//! schema and wire stay in sync — there is no schema-only `read_alias` attribute,
+//! which would accept a key serde rejects). `#[field(write_alias = "..")]` remaps a
+//! field's **output** key on projection. A write-alias on a secret field, an invalid
+//! key, or an alias colliding with another field's key/alias is a compile error.
+//!
+//! ```rust
+//! use nebula_schema::{FieldValues, HasSchema, Schema};
+//! use serde::Deserialize;
+//! use serde_json::json;
+//!
+//! #[derive(Schema, Deserialize)]
+//! struct Payload {
+//!     #[serde(alias = "userName")]
+//!     #[field(write_alias = "user_name_out")]
+//!     user_name: String,
+//! }
+//!
+//! let schema = Payload::schema();
+//! // Accepted under the serde alias, folded onto the canonical key.
+//! let valid = schema
+//!     .validate(&FieldValues::from_json(json!({"userName": "alice"})).unwrap())
+//!     .unwrap();
+//! // Emitted under the write-alias on projection.
+//! assert_eq!(valid.to_wire_json()["user_name_out"], json!("alice"));
+//! ```
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]

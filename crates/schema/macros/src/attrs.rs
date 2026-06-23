@@ -43,6 +43,10 @@ pub(crate) struct FieldAttrs {
     pub enum_select: bool,
     pub group: Option<String>,
     pub skip: bool,
+    /// `#[field(write_alias = "..")]` — the key this field is emitted under on
+    /// projection output (`to_wire_json`). Read-aliases come from `#[serde(alias)]`
+    /// instead (so serde and the schema stay in sync on accepted input keys).
+    pub write_alias: Option<String>,
 }
 
 /// Typed literal carried by `#[field(default = ...)]`.
@@ -138,6 +142,7 @@ impl FieldEntry {
                     },
                     "hint" => out.hint = Some(string_lit(&value, "hint")?),
                     "group" => out.group = Some(string_lit(&value, "group")?),
+                    "write_alias" => out.write_alias = Some(string_lit(&value, "write_alias")?),
                     other => {
                         return Err(syn::Error::new(
                             name.span(),

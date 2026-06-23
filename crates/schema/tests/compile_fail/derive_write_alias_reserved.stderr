@@ -1,0 +1,18 @@
+error: key `old_out` is reserved by `#[schema(reserved(..))]` but a `#[field(write_alias = "old_out")]` emits it on projection output — remove the write_alias or the reservation
+  --> tests/compile_fail/derive_write_alias_reserved.rs:10:5
+   |
+10 |     current: String,
+   |     ^^^^^^^
+
+error[E0599]: no associated function or constant named `schema` found for struct `Bad` in the current scope
+  --> tests/compile_fail/derive_write_alias_reserved.rs:14:18
+   |
+ 8 | struct Bad {
+   | ---------- associated function or constant `schema` not found for this struct
+...
+14 |     let _ = Bad::schema();
+   |                  ^^^^^^ associated function or constant not found in `Bad`
+   |
+   = help: items from traits can only be used if the trait is implemented and in scope
+   = note: the following trait defines an item `schema`, perhaps you need to implement it:
+           candidate #1: `HasSchema`

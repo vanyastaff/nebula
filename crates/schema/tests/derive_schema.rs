@@ -1,9 +1,14 @@
 //! Integration tests for `#[derive(Schema)]` and `#[derive(EnumSelect)]`.
 
 use nebula_schema::{
-    EnumSelect, Field, HasSchema, HasSelectOptions, InputHint, RequiredMode, Schema, StringWidget,
+    EnumSelect, Field, FieldKey, FieldValues, HasSchema, HasSelectOptions, InputHint, RequiredMode,
+    Schema, StringWidget,
 };
 use serde_json::json;
+
+fn fk(s: &str) -> FieldKey {
+    FieldKey::new(s).expect("valid field key")
+}
 
 // ── #[derive(Schema)] ──────────────────────────────────────────────────────
 
@@ -429,4 +434,71 @@ fn derive_enum_select_value_matches_serde_for_acronym_rename_all() {
     let wire = serde_json::to_value(AcronymRenamed::HTTPProxy).expect("serializes");
     assert_eq!(catalog, wire);
     assert_eq!(catalog, json!("h_t_t_p_proxy"));
+}
+
+// ── field aliases (Step 12b) ────────────────────────────────────────────────
+
+#[derive(Schema, serde::Deserialize)]
+#[expect(dead_code, reason = "exercised via HasSchema::schema")]
+struct AliasedInput {
+    #[serde(alias = "display_name", alias = "displayName")]
+    name: String,
+}
+
+#[test]
+fn derive_serde_alias_becomes_read_alias() {
+    // `#[serde(alias)]` keys become read-aliases — serde deserializes them AND the
+    // schema accepts them, keeping wire and schema in sync.
+    let schema = AliasedInput::schema();
+    let aliases: Vec<&str> = schema.fields()[0]
+        .read_aliases()
+        .iter()
+        .map(FieldKey::as_str)
+        .collect();
+    assert_eq!(aliases, ["display_name", "displayName"]);
+
+    // Input under an alias is accepted and folded onto the canonical key.
+    let valid = schema
+        .validate(&FieldValues::from_json(json!({"displayName": "Alice"})).unwrap())
+        .expect("alias-keyed input must be accepted");
+    assert_eq!(valid.raw().get_string(&fk("name")), Some("Alice"));
+}
+
+#[derive(Schema)]
+#[expect(dead_code, reason = "exercised via HasSchema::schema")]
+struct RemappedOutput {
+    #[field(write_alias = "externalId")]
+    internal_id: String,
+}
+
+#[test]
+fn derive_field_write_alias_emits_on_projection() {
+    let schema = RemappedOutput::schema();
+    assert_eq!(
+        schema.fields()[0].write_alias().map(FieldKey::as_str),
+        Some("externalId")
+    );
+
+    // Projection emits the field under the write-alias key, not the canonical key.
+    let projected = schema.project(&FieldValues::from_json(json!({"internal_id": "x1"})).unwrap());
+    assert_eq!(projected["externalId"], json!("x1"));
+    assert!(projected.get("internal_id").is_none());
+}
+
+#[derive(Schema, serde::Deserialize)]
+#[expect(dead_code, reason = "exercised via HasSchema::schema")]
+struct RoundTripField {
+    #[serde(alias = "wire")]
+    #[field(write_alias = "wire")]
+    internal: String,
+}
+
+#[test]
+fn derive_same_field_read_and_write_alias_reuse_builds() {
+    // Reading from and writing to the SAME wire key on one field is round-trip
+    // stable, so it must build (cross-field reuse would be rejected at compile time).
+    let schema = RoundTripField::schema();
+    let field = &schema.fields()[0];
+    assert_eq!(field.read_aliases()[0].as_str(), "wire");
+    assert_eq!(field.write_alias().map(FieldKey::as_str), Some("wire"));
 }
