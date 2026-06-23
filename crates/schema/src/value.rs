@@ -182,7 +182,11 @@ impl FieldValue {
         }
     }
 
-    /// Encode into canonical JSON wire format.
+    /// Encode into the JSON **wire** format (round-trips through serde).
+    ///
+    /// This is *not* a canonical / injective encoding — object key order is the
+    /// insertion order and numbers keep their JSON spelling. For a stable
+    /// content hash / dedup key use [`Self::canonical_bytes`].
     pub fn to_json(&self) -> Value {
         match self {
             Self::Literal(v) => v.clone(),
@@ -232,6 +236,280 @@ impl FieldValue {
     pub const fn is_expression(&self) -> bool {
         matches!(self, Self::Expression(_))
     }
+
+    /// Injective canonical byte encoding of this value (content-addressing /
+    /// dedup / idempotency key — **not** a wire format; see [`Self::to_json`]).
+    ///
+    /// Two values produce identical bytes **iff** they are canonically equal,
+    /// independent of insertion order: object keys are emitted sorted, every
+    /// variant carries a leading 1-byte tag (so a list and an object, or an
+    /// expression and a string, can never collide), strings/bytes are
+    /// length-prefixed (so `"a" + "b"` cannot alias `"ab"`), and counts are
+    /// varint-framed. Numbers are normalized: an integral value is emitted as an
+    /// integer regardless of JSON spelling, so `1`, `1.0`, and `-0.0` share one
+    /// encoding (the `"1"`-vs-`"1.0"` dedup fix). The output is prefixed with a
+    /// domain separator and [`VALUE_CANON_VERSION`], so bumping the version
+    /// re-keys every hash.
+    ///
+    /// # Errors
+    ///
+    /// Returns `secret.not_hashable` if the value contains a
+    /// [`SecretLiteral`](Self::SecretLiteral): secrets must never enter a
+    /// content hash / dedup key (a deterministic hash of a low-entropy secret is
+    /// a confirmation oracle, and a `<redacted>` placeholder would collide
+    /// distinct secrets). Returns `value.non_canonical_float` for a non-finite
+    /// float (defensive: `serde_json::Number` is always finite today).
+    #[expect(
+        clippy::result_large_err,
+        reason = "ValidationError is intentionally large; callers are on the validation path"
+    )]
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>, crate::error::ValidationError> {
+        let mut out = Vec::new();
+        out.extend_from_slice(CANON_DOMAIN);
+        out.extend_from_slice(&VALUE_CANON_VERSION.to_be_bytes());
+        self.write_canonical(&mut out)?;
+        Ok(out)
+    }
+
+    /// Content identifier — `blake3` over [`canonical_bytes`](Self::canonical_bytes).
+    ///
+    /// Equal structures yield equal ids automatically (Unison-style), so dedup /
+    /// cache keys / versions need no name or semver. Field *names* still enter
+    /// the id (object keys are part of the canon), unlike a pure structural hash.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`canonical_bytes`](Self::canonical_bytes) — a secret-bearing
+    /// value has no content id by design.
+    #[expect(
+        clippy::result_large_err,
+        reason = "ValidationError is intentionally large; callers are on the validation path"
+    )]
+    pub fn content_id(&self) -> Result<ContentId, crate::error::ValidationError> {
+        Ok(ContentId(blake3::hash(&self.canonical_bytes()?).into()))
+    }
+
+    /// Recursive canonical writer for a [`FieldValue`].
+    #[expect(
+        clippy::result_large_err,
+        reason = "ValidationError is intentionally large; callers are on the validation path"
+    )]
+    fn write_canonical(&self, out: &mut Vec<u8>) -> Result<(), crate::error::ValidationError> {
+        match self {
+            // A `Literal` carries a raw JSON value (including `Array`/`Object`
+            // when keys were not valid `FieldKey`s — `from_json` preserves them),
+            // canonicalized by the JSON writer below.
+            Self::Literal(value) => write_canon_json(value, out)?,
+            Self::Expression(expr) => {
+                out.push(TAG_EXPRESSION);
+                write_lp(out, expr.source().as_bytes());
+            },
+            Self::Object(map) => {
+                out.push(TAG_OBJECT);
+                let mut entries: Vec<(&FieldKey, &Self)> = map.iter().collect();
+                entries.sort_unstable_by(|(a, _), (b, _)| {
+                    a.as_str().as_bytes().cmp(b.as_str().as_bytes())
+                });
+                write_varint(out, entries.len() as u64);
+                for (key, value) in entries {
+                    write_lp(out, key.as_str().as_bytes());
+                    value.write_canonical(out)?;
+                }
+            },
+            Self::List(items) => {
+                out.push(TAG_LIST);
+                write_varint(out, items.len() as u64);
+                for item in items {
+                    item.write_canonical(out)?;
+                }
+            },
+            Self::Mode { mode, value } => {
+                out.push(TAG_MODE);
+                write_lp(out, mode.as_str().as_bytes());
+                match value {
+                    Some(inner) => {
+                        out.push(1);
+                        inner.write_canonical(out)?;
+                    },
+                    None => out.push(0),
+                }
+            },
+            // Secrets never enter a content hash (see `canonical_bytes` docs).
+            Self::SecretLiteral(_) => return Err(secret_not_hashable()),
+        }
+        Ok(())
+    }
+}
+
+// Note: `FieldValue` is intentionally `PartialEq` but not `Eq` here. Its derived
+// `PartialEq` *is* a total equivalence (`serde_json::Number` is always finite, so
+// no `NaN`), so `impl Eq` would be sound — but adding it ripples
+// `clippy::derive_partial_eq_without_eq` onto every `PartialEq`-deriving type that
+// transitively contains a `FieldValue`. That additive `Eq` rollout is a separate
+// focused pass; content-addressing here keys off `canonical_bytes` / `ContentId`,
+// not `FieldValue: Eq`.
+
+/// Domain separator prepended to every [`FieldValue::canonical_bytes`] output,
+/// so a value canon can never be confused with bytes from another protocol.
+const CANON_DOMAIN: &[u8] = b"nbschema-value-v";
+
+/// Version of the value-canonicalization format. **Separate** from the schema
+/// wire version — a bump here re-keys every content hash / dedup bucket.
+pub const VALUE_CANON_VERSION: u16 = 1;
+
+// 1-byte variant tags, emitted before content so variants are non-confusable.
+// `Literal` scalars reuse the JSON scalar tags; `Literal(Array/Object)` get
+// JSON-container tags distinct from the typed `List`/`Object` tags.
+const TAG_NULL: u8 = 0x01;
+const TAG_BOOL: u8 = 0x02;
+const TAG_INT: u8 = 0x03;
+const TAG_FLOAT: u8 = 0x04;
+const TAG_STRING: u8 = 0x05;
+const TAG_LIST: u8 = 0x06;
+const TAG_OBJECT: u8 = 0x07;
+const TAG_EXPRESSION: u8 = 0x08;
+const TAG_MODE: u8 = 0x09;
+// 0x0A is reserved for an opt-in secret commitment (keyed blake3), deferred.
+const TAG_JSON_ARRAY: u8 = 0x0B;
+const TAG_JSON_OBJECT: u8 = 0x0C;
+
+/// A 32-byte content identifier (`blake3` of a canonical encoding).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ContentId([u8; 32]);
+
+impl ContentId {
+    /// Borrow the raw 32-byte digest.
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for ContentId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for byte in &self.0 {
+            write!(f, "{byte:02x}")?;
+        }
+        Ok(())
+    }
+}
+
+/// `secret.not_hashable` — a secret cannot enter a content hash / dedup key.
+fn secret_not_hashable() -> crate::error::ValidationError {
+    crate::error::ValidationError::builder("secret.not_hashable")
+        .message("secret values must not enter a content hash or dedup key")
+        .build()
+}
+
+/// `value.non_canonical_float` — a non-finite float has no canonical encoding.
+fn non_canonical_float() -> crate::error::ValidationError {
+    crate::error::ValidationError::builder("value.non_canonical_float")
+        .message("non-finite floats (NaN / ±Inf) have no canonical encoding")
+        .build()
+}
+
+/// Append a length-prefixed byte string (varint length + bytes) — prevents
+/// `"a" + "b"` from aliasing `"ab"`.
+fn write_lp(out: &mut Vec<u8>, bytes: &[u8]) {
+    write_varint(out, bytes.len() as u64);
+    out.extend_from_slice(bytes);
+}
+
+/// Append an unsigned LEB128 varint.
+fn write_varint(out: &mut Vec<u8>, mut value: u64) {
+    loop {
+        let mut byte = (value & 0x7f) as u8;
+        value >>= 7;
+        if value != 0 {
+            byte |= 0x80;
+        }
+        out.push(byte);
+        if value == 0 {
+            break;
+        }
+    }
+}
+
+/// Canonicalize a raw `serde_json::Value` (used for `FieldValue::Literal`).
+#[expect(
+    clippy::result_large_err,
+    reason = "ValidationError is intentionally large; callers are on the validation path"
+)]
+fn write_canon_json(value: &Value, out: &mut Vec<u8>) -> Result<(), crate::error::ValidationError> {
+    match value {
+        Value::Null => out.push(TAG_NULL),
+        Value::Bool(b) => {
+            out.push(TAG_BOOL);
+            out.push(u8::from(*b));
+        },
+        Value::Number(number) => write_canon_number(number, out)?,
+        Value::String(string) => {
+            out.push(TAG_STRING);
+            write_lp(out, string.as_bytes());
+        },
+        Value::Array(items) => {
+            out.push(TAG_JSON_ARRAY);
+            write_varint(out, items.len() as u64);
+            for item in items {
+                write_canon_json(item, out)?;
+            }
+        },
+        Value::Object(map) => {
+            out.push(TAG_JSON_OBJECT);
+            let mut entries: Vec<(&String, &Value)> = map.iter().collect();
+            entries.sort_unstable_by(|(a, _), (b, _)| a.as_bytes().cmp(b.as_bytes()));
+            write_varint(out, entries.len() as u64);
+            for (key, child) in entries {
+                write_lp(out, key.as_bytes());
+                write_canon_json(child, out)?;
+            }
+        },
+    }
+    Ok(())
+}
+
+/// Canonicalize a number: integers and integral floats normalize to one
+/// `i128`-BE integer encoding (`1` ≡ `1.0` ≡ `-0.0`); other finite floats use
+/// their IEEE-754 big-endian bits; non-finite floats are rejected.
+#[expect(
+    clippy::result_large_err,
+    reason = "ValidationError is intentionally large; callers are on the validation path"
+)]
+fn write_canon_number(
+    number: &serde_json::Number,
+    out: &mut Vec<u8>,
+) -> Result<(), crate::error::ValidationError> {
+    if let Some(int) = number.as_i64() {
+        out.push(TAG_INT);
+        out.extend_from_slice(&i128::from(int).to_be_bytes());
+        return Ok(());
+    }
+    if let Some(uint) = number.as_u64() {
+        out.push(TAG_INT);
+        out.extend_from_slice(&i128::from(uint).to_be_bytes());
+        return Ok(());
+    }
+    // Float (serde_json::Number is always finite, but guard defensively).
+    let float = number.as_f64().ok_or_else(non_canonical_float)?;
+    if !float.is_finite() {
+        return Err(non_canonical_float());
+    }
+    // Integral float in the exact-integer range normalizes to the integer
+    // encoding (so `1.0` ≡ `1`, and `-0.0` ≡ `0`).
+    const MAX_EXACT_INT_F64: f64 = 9_007_199_254_740_992.0; // 2^53
+    if float.fract() == 0.0 && float.abs() < MAX_EXACT_INT_F64 {
+        out.push(TAG_INT);
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "float is integral and |float| < 2^53, so the cast is exact"
+        )]
+        let as_int = float as i128;
+        out.extend_from_slice(&as_int.to_be_bytes());
+        return Ok(());
+    }
+    out.push(TAG_FLOAT);
+    out.extend_from_slice(&float.to_be_bytes());
+    Ok(())
 }
 
 impl Serialize for FieldValue {
@@ -536,6 +814,47 @@ impl FieldValues {
             FieldValue::Literal(v) => v.as_f64(),
             _ => None,
         }
+    }
+
+    /// Injective canonical byte encoding of this value store (insertion-order
+    /// independent). Identical to the canon of the equivalent
+    /// [`FieldValue::Object`], so the two content-address the same. See
+    /// [`FieldValue::canonical_bytes`].
+    ///
+    /// # Errors
+    ///
+    /// Returns `secret.not_hashable` for a secret-bearing value, or
+    /// `value.non_canonical_float` for a non-finite float.
+    #[expect(
+        clippy::result_large_err,
+        reason = "ValidationError is intentionally large; callers are on the validation path"
+    )]
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>, crate::error::ValidationError> {
+        let mut out = Vec::new();
+        out.extend_from_slice(CANON_DOMAIN);
+        out.extend_from_slice(&VALUE_CANON_VERSION.to_be_bytes());
+        out.push(TAG_OBJECT);
+        let mut entries: Vec<(&FieldKey, &FieldValue)> = self.0.iter().collect();
+        entries.sort_unstable_by(|(a, _), (b, _)| a.as_str().as_bytes().cmp(b.as_str().as_bytes()));
+        write_varint(&mut out, entries.len() as u64);
+        for (key, value) in entries {
+            write_lp(&mut out, key.as_str().as_bytes());
+            value.write_canonical(&mut out)?;
+        }
+        Ok(out)
+    }
+
+    /// Content identifier — `blake3` over [`canonical_bytes`](Self::canonical_bytes).
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`canonical_bytes`](Self::canonical_bytes).
+    #[expect(
+        clippy::result_large_err,
+        reason = "ValidationError is intentionally large; callers are on the validation path"
+    )]
+    pub fn content_id(&self) -> Result<ContentId, crate::error::ValidationError> {
+        Ok(ContentId(blake3::hash(&self.canonical_bytes()?).into()))
     }
 }
 
@@ -879,5 +1198,133 @@ mod tests {
         let parsed = FieldValue::from_json(src.clone());
         let back = parsed.to_json();
         assert_eq!(back, src);
+    }
+
+    // ── canonical_bytes / ContentId ──────────────────────────────────────────
+
+    fn canon(value: &FieldValue) -> Vec<u8> {
+        value.canonical_bytes().expect("canonicalizable")
+    }
+
+    fn fk(s: &str) -> FieldKey {
+        FieldKey::new(s).unwrap()
+    }
+
+    /// Integers and integral floats share one encoding (`1` ≡ `1.0` ≡ `-0.0`),
+    /// but a non-integral float is distinct. This is the `"1"`-vs-`"1.0"` dedup fix.
+    #[test]
+    fn canon_normalizes_integral_numbers() {
+        let int = FieldValue::Literal(json!(1));
+        let float = FieldValue::Literal(json!(1.0));
+        let neg_zero = FieldValue::Literal(Value::from(-0.0_f64));
+        let zero = FieldValue::Literal(json!(0));
+        assert_eq!(canon(&int), canon(&float), "1 and 1.0 share a canon");
+        assert_eq!(canon(&neg_zero), canon(&zero), "-0.0 and 0 share a canon");
+
+        let frac = FieldValue::Literal(json!(1.5));
+        assert_ne!(canon(&int), canon(&frac), "1 and 1.5 differ");
+    }
+
+    /// Length-prefixing prevents `["a","b"]` from aliasing `["ab"]`, and the
+    /// per-variant tags keep a typed `List`/`Object` distinct from a JSON one.
+    #[test]
+    fn canon_is_injective_across_shapes() {
+        let ab = FieldValue::List(vec![
+            FieldValue::Literal(json!("a")),
+            FieldValue::Literal(json!("b")),
+        ]);
+        let concat = FieldValue::List(vec![FieldValue::Literal(json!("ab"))]);
+        assert_ne!(
+            canon(&ab),
+            canon(&concat),
+            "length-prefix blocks concatenation alias"
+        );
+
+        let empty_list = FieldValue::List(vec![]);
+        let empty_obj = FieldValue::Object(IndexMap::new());
+        assert_ne!(
+            canon(&empty_list),
+            canon(&empty_obj),
+            "list tag != object tag"
+        );
+
+        // A `Literal(json object)` (invalid-key path) is distinct from a typed
+        // `Object`, even with the same logical content.
+        let literal_obj = FieldValue::Literal(json!({"k": 1}));
+        let mut typed = IndexMap::new();
+        typed.insert(fk("k"), FieldValue::Literal(json!(1)));
+        let typed_obj = FieldValue::Object(typed);
+        assert_ne!(
+            canon(&literal_obj),
+            canon(&typed_obj),
+            "JSON object tag != typed object tag"
+        );
+    }
+
+    /// Object canon is independent of key insertion order.
+    #[test]
+    fn canon_object_key_order_invariant() {
+        let mut forward = IndexMap::new();
+        forward.insert(fk("alpha"), FieldValue::Literal(json!(1)));
+        forward.insert(fk("beta"), FieldValue::Literal(json!(2)));
+        forward.insert(fk("gamma"), FieldValue::Literal(json!(3)));
+
+        let mut reversed = IndexMap::new();
+        reversed.insert(fk("gamma"), FieldValue::Literal(json!(3)));
+        reversed.insert(fk("beta"), FieldValue::Literal(json!(2)));
+        reversed.insert(fk("alpha"), FieldValue::Literal(json!(1)));
+
+        assert_eq!(
+            canon(&FieldValue::Object(forward)),
+            canon(&FieldValue::Object(reversed)),
+            "key order must not affect the canon"
+        );
+    }
+
+    /// A secret value has no canonical form — it must not enter a content hash.
+    #[test]
+    fn canon_rejects_secret() {
+        let secret = FieldValue::SecretLiteral(SecretValue::String(
+            crate::secret::SecretString::new("hunter2".to_owned()),
+        ));
+        let err = secret
+            .canonical_bytes()
+            .expect_err("secrets are not hashable");
+        assert_eq!(err.code, "secret.not_hashable");
+        assert!(
+            secret.content_id().is_err(),
+            "content_id propagates the rejection"
+        );
+    }
+
+    #[test]
+    fn content_id_is_deterministic_and_hex() {
+        let value = FieldValue::Object({
+            let mut map = IndexMap::new();
+            map.insert(fk("k"), FieldValue::Literal(json!("v")));
+            map
+        });
+        let id_a = value.content_id().unwrap();
+        let id_b = value.content_id().unwrap();
+        assert_eq!(id_a, id_b, "same value, same id");
+        let hex = id_a.to_string();
+        assert_eq!(hex.len(), 64, "32 bytes render as 64 hex chars");
+        assert!(hex.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    /// A `FieldValues` store canonicalizes identically to the equivalent typed
+    /// `FieldValue::Object`.
+    #[test]
+    fn field_values_canon_matches_equivalent_object() {
+        let values = FieldValues::from_json(json!({"a": 1, "b": "x"})).unwrap();
+        let mut map = IndexMap::new();
+        map.insert(fk("a"), FieldValue::Literal(json!(1)));
+        map.insert(fk("b"), FieldValue::Literal(json!("x")));
+        let object = FieldValue::Object(map);
+        assert_eq!(
+            values.canonical_bytes().unwrap(),
+            canon(&object),
+            "a value store and the equivalent object share a canon"
+        );
     }
 }
