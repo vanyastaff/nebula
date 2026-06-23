@@ -209,8 +209,11 @@ pub enum Assignability {
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UnknownReason {
-    /// The producer schema is the gradual `Any` ([`SchemaKind::Any`]): it may
-    /// emit anything, so it is not provably compatible with a typed consumer.
+    /// The producer side is opaque, so it cannot be *proven* to match a typed
+    /// consumer: either the producer schema is the gradual `Any`
+    /// ([`SchemaKind::Any`]), or a matched `List` field's producer item carries
+    /// no item schema while the consumer's item is typed (wrapped in a
+    /// [`NestedUnknown`](Self::NestedUnknown) under the list key).
     OpaqueProducer,
     /// A matched field is `Dynamic`/`Computed` (loader- or expression-backed),
     /// so its concrete shape is unknown until runtime.
@@ -253,7 +256,7 @@ impl core::fmt::Display for UnknownReason {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::OpaqueProducer => {
-                write!(f, "producer schema is an opaque `Any` (shape unknown)")
+                write!(f, "producer side is opaque (shape unknown)")
             },
             Self::DynamicLoaderBacked { key } => {
                 write!(f, "field `{key}` is dynamic/computed (resolved at runtime)")
@@ -292,6 +295,13 @@ impl core::fmt::Display for UnknownReason {
 pub fn explain_assignable(producer: &ValidSchema, consumer: &ValidSchema) -> Assignability {
     // An `Any` consumer accepts anything — provably compatible.
     if consumer.kind() == SchemaKind::Any {
+        return Assignability::Yes;
+    }
+    // An empty-record consumer requires nothing, so it accepts *any* producer —
+    // including an opaque `Any`. Decide this before the producer-`Any` check, or
+    // an untyped producer feeding a no-input downstream node (`Input = ()`) would
+    // be falsely flagged `Unknown`/`PortSchemaUndecidable` in Strict mode.
+    if consumer.fields().is_empty() {
         return Assignability::Yes;
     }
     // An `Any` producer may emit anything: not refuted, but not provable either.
@@ -446,7 +456,19 @@ fn collect_pair(
         },
         (Field::List(producer_list), Field::List(consumer_list)) => {
             match (&producer_list.item, &consumer_list.item) {
-                // Either side has no typed item schema — Any escape (provably Yes).
+                // Producer item untyped but consumer item typed: in the strict
+                // (kind-aware) path this is an opaque producer that cannot be
+                // *proven* to match the typed item — surface it as Unknown
+                // (mirrors the record-level empty-producer rule). The gradual
+                // slice path keeps the old producer-side Any escape.
+                (None, Some(_)) if strict => {
+                    acc.unknown.push(UnknownReason::NestedUnknown {
+                        key: key.clone(),
+                        inner: Box::new(UnknownReason::OpaqueProducer),
+                    });
+                },
+                // An untyped consumer item accepts any producer item (provably
+                // Yes); a gradual untyped producer item also escapes.
                 (None, _) | (_, None) => {},
                 (Some(producer_item), Some(consumer_item)) => {
                     // The nested context is the list field `key`, but the inner
@@ -1006,6 +1028,44 @@ mod tests {
         );
     }
 
+    /// An `Any` producer feeding a no-input (empty-record) consumer is provably
+    /// `Yes`, NOT `Unknown` — the empty consumer requires nothing, so a strict
+    /// validator must not flag a `serde_json::Value` → order-only edge.
+    #[test]
+    fn explain_any_producer_into_empty_record_consumer_is_yes() {
+        assert_eq!(
+            explain_assignable(&ValidSchema::any(), &ValidSchema::empty()),
+            Assignability::Yes,
+        );
+    }
+
+    /// An untyped producer list item against a *typed* consumer item is opaque:
+    /// strict ⇒ `Unknown(NestedUnknown { items, OpaqueProducer })`, gradual ⇒
+    /// `Yes` (producer-side escape preserved).
+    ///
+    /// Driven via `explain_slice` on raw `Field`s, not `explain_assignable`: a
+    /// built `ValidSchema` can never carry an item-less list (the builder lint
+    /// rejects it — `lint.rs` `missing_item_schema`), so this case is
+    /// unreachable through the public `ValidSchema` API. The `collect_pair` core
+    /// is kept total/correct for it regardless (mirrors the record-level
+    /// empty-producer rule), and the gradual slice form does reach it.
+    #[test]
+    fn explain_untyped_producer_list_item_is_unknown_for_typed_consumer() {
+        let p = [Field::list(fk("items")).into()];
+        let c = [Field::list(fk("items"))
+            .item(Field::string(fk("item")))
+            .into()];
+
+        assert_eq!(
+            explain_slice(&p, &c, true),
+            Assignability::Unknown(vec![UnknownReason::NestedUnknown {
+                key: fk("items"),
+                inner: Box::new(UnknownReason::OpaqueProducer),
+            }]),
+        );
+        assert_eq!(explain_slice(&p, &c, false), Assignability::Yes);
+    }
+
     /// A `Dynamic` producer field is `Unknown(DynamicLoaderBacked)` in explain,
     /// yet `Ok` in the binary check (the lofty per-field gradual escape).
     #[test]
@@ -1174,7 +1234,7 @@ mod tests {
     fn unknown_reason_display_is_human_readable() {
         assert_eq!(
             UnknownReason::OpaqueProducer.to_string(),
-            "producer schema is an opaque `Any` (shape unknown)"
+            "producer side is opaque (shape unknown)"
         );
         assert_eq!(
             UnknownReason::DynamicLoaderBacked { key: fk("tok") }.to_string(),
