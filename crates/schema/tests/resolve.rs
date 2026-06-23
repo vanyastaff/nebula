@@ -517,3 +517,43 @@ async fn resolve_promotes_mode_object_envelope_secrets_via_default_variant() {
         Some(&json!("<redacted>"))
     );
 }
+
+#[tokio::test]
+async fn resolved_expression_structured_value_with_noncanonical_keys_is_rejected() {
+    // Defense-by-construction for the alias subsystem: a resolved expression is
+    // stored as `FieldValue::Literal` (never a structured `Object/List/Mode`
+    // tree), and `resolve` introduces no new map keys. So an alias-keyed secret
+    // can never appear in a resolved structured tree for secret-promotion to
+    // miss — a structured field whose expression resolves to a literal-wrapped
+    // shape is rejected at the post-resolve revalidate as a type mismatch.
+    let schema = Schema::builder()
+        .add(
+            Field::object(field_key!("creds"))
+                .expression_mode(ExpressionMode::Allowed)
+                .add(
+                    Field::secret(field_key!("api_key"))
+                        .read_alias("token_alias")
+                        .unwrap(),
+                ),
+        )
+        .build()
+        .unwrap();
+
+    let values = FieldValues::from_json(json!({"creds": {"$expr": "{{ $resolve }}"}})).unwrap();
+    let valid = schema.validate(&values).unwrap();
+
+    // The expression "resolves" to an object keyed by the read-alias — but it is
+    // stored as a Literal, so the object field rejects it instead of letting an
+    // alias-keyed secret slip past secret promotion.
+    let report = valid
+        .resolve(&ConstCtx(json!({"token_alias": "PLAINTEXT_SECRET"})))
+        .await
+        .unwrap_err();
+    assert!(
+        report
+            .errors()
+            .any(|e| e.code == "expression.type_mismatch"),
+        "structured field with a literal-resolved expression must be rejected, got: {:?}",
+        report.errors().map(|e| &e.code).collect::<Vec<_>>()
+    );
+}

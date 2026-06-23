@@ -14,7 +14,7 @@ use smallvec::SmallVec;
 use crate::{
     error::{Severity, ValidationError, ValidationReport},
     expression::ExpressionContext,
-    field::{Field, ListField, NumberField, ObjectField},
+    field::{Field, ListField, ModeField, NumberField, ObjectField},
     key::FieldKey,
     loader::{LoaderContext, LoaderRegistry, LoaderResult},
     mode::ExpressionMode,
@@ -422,11 +422,18 @@ impl ValidSchema {
 
         let mut report = ValidationReport::new();
 
+        // SECURITY: canonicalize alias-keyed entries before ANY validation,
+        // secret-strip, or predicate-context build.  A value submitted under a
+        // read-alias key must live under the canonical FieldKey before those
+        // passes run — otherwise an alias-keyed secret bypasses the secret-strip
+        // in context.rs and the loader redaction in loader.rs.
+        let canonicalized: FieldValues = canonicalize_aliases(values, &self.0.fields);
+
         // One whole-tree predicate context. Built once and shared across all
         // nesting levels: a nested field's `When` may reference a sibling at
         // any depth via an absolute RFC-6901 pointer, so per-level rebuilds
         // would make cross-level predicates fail open.
-        let ctx = predicate_context_for(&self.0.fields, values);
+        let ctx = predicate_context_for(&self.0.fields, &canonicalized);
 
         // Top-level fields are the first field-set level. Visibility/required
         // for every level (this one and each nested object/list/mode level)
@@ -440,7 +447,7 @@ impl ValidSchema {
                 let validator_path = validator_path_from_schema_path(&schema_path);
                 LevelEntry {
                     field,
-                    raw: values.get(field.key()),
+                    raw: resolve_field_value(field, &canonicalized),
                     schema_path,
                     validator_path,
                 }
@@ -448,13 +455,14 @@ impl ValidSchema {
             .collect();
         gate_and_validate_level(&entries, &ctx, &mut report);
 
-        // Schema-level rules run against the full submission
-        // (`values.to_json()`), but the predicate context is the
-        // secret-scrubbed `root_predicate_context_for`: a value-comparing root
-        // predicate can never read a `Field::Secret` plaintext, while legal
-        // non-secret nested predicates still resolve (no fail-open).
+        // Schema-level rules run against the canonicalized submission
+        // (`canonicalized.to_json()` — alias keys already folded onto their
+        // canonical field key), but the predicate context is the
+        // secret-scrubbed `root_predicate_context_from_json`: a value-comparing
+        // root predicate can never read a `Field::Secret` plaintext, while
+        // legal non-secret nested predicates still resolve (no fail-open).
         if !self.0.root_rules.is_empty() {
-            let json = values.to_json();
+            let json = canonicalized.to_json();
             let pred_ctx = crate::context::root_predicate_context_from_json(&self.0.fields, &json);
             if let Err(errs) = nebula_validator::validate_rules_with_ctx(
                 &json,
@@ -482,10 +490,332 @@ impl ValidSchema {
             .collect();
         Ok(ValidValues {
             schema: self.clone(),
-            values: values.clone(),
+            values: canonicalized,
             warnings,
         })
     }
+
+    /// Project `values` to a JSON object applying write-aliases.
+    ///
+    /// - Fields with a `write_alias` emit under that key instead of the canonical key.
+    /// - Fields without a `write_alias` emit under their canonical key (today's behaviour).
+    /// - `Field::Secret` subtrees are **never** emitted at any depth (defense-in-depth:
+    ///   secrets can only be accessed via `ResolvedValues::get_secret`). This holds for a
+    ///   secret nested in an object, a list item, or a mode-variant payload.
+    /// - Extra keys that do not match any field pass through under their own key, but a
+    ///   declared field always wins: an extra key cannot overwrite a field's projected
+    ///   value nor shadow a `write_alias` output key.
+    /// - Recurse into object children, list items, and the active mode-variant payload so
+    ///   nested write-aliases are applied and nested secrets are dropped.
+    ///
+    /// `values` is canonicalized first (read-alias keys folded onto their canonical
+    /// FieldKey), so a secret submitted under a read-alias is caught by the secret-skip
+    /// even when this is called on raw, never-validated values.
+    #[must_use]
+    pub fn project(&self, values: &FieldValues) -> serde_json::Value {
+        // Canonicalize first: fold any read-alias-keyed value (a secret submitted under
+        // its read-alias included) onto its canonical FieldKey so the secret-skip — keyed
+        // on the canonical `Field::Secret` — catches it. `to_wire_json` passes already
+        // canonical `raw()`, for which this is an idempotent no-op; a direct caller that
+        // passes raw values is made safe by construction rather than by precondition.
+        let canonical = canonicalize_aliases(values, &self.0.fields);
+        project_level(&self.0.fields, canonical.as_map())
+    }
+}
+
+/// Project one field-scope level: schema-declared fields (write-aliases applied,
+/// secrets dropped) plus extra pass-through keys that no declared field claims.
+fn project_level(
+    fields: &[Field],
+    value_map: &IndexMap<FieldKey, FieldValue>,
+) -> serde_json::Value {
+    use serde_json::Value;
+
+    let mut out = serde_json::Map::new();
+
+    // An input key equal to a declared field's canonical key is that field's
+    // value (consumed in the first loop), never a pass-through extra.
+    let canonical_key_strs: HashSet<&str> = fields.iter().map(|f| f.key().as_str()).collect();
+    // Every write-aliased field reserves its output name UNCONDITIONALLY — even
+    // when the field is absent this submission or its value is dropped (a secret
+    // or a shape-mismatched blob) — so a pass-through extra can never occupy a
+    // schema-owned output slot (integrity/spoofing guard). Write-alias output
+    // names are disjoint from canonical keys and unique among themselves
+    // (enforced by the alias.write_collision / alias.write_scope_duplicate lints),
+    // so reserving them cannot suppress a legitimate canonical key or pass-through.
+    let write_alias_strs: HashSet<&str> = fields
+        .iter()
+        .filter_map(|f| f.write_alias().map(FieldKey::as_str))
+        .collect();
+
+    // Emit schema-declared fields.
+    for field in fields {
+        let Some(value) = value_map.get(field.key()) else {
+            continue;
+        };
+
+        // Secrets (at any depth) and shape-mismatched secret-bearing blobs are dropped.
+        let Some(projected_value) = project_value(field, value) else {
+            continue;
+        };
+
+        // Output key: write-alias overrides the canonical key.
+        let output_key = field
+            .write_alias()
+            .map(FieldKey::as_str)
+            .unwrap_or_else(|| field.key().as_str())
+            .to_owned();
+
+        out.insert(output_key, projected_value);
+    }
+
+    // Pass extra (non-schema) keys through unchanged — but never into a reserved
+    // schema-owned output slot (a canonical key or a write-alias output name).
+    for (key, value) in value_map {
+        let k = key.as_str();
+        if !canonical_key_strs.contains(k) && !write_alias_strs.contains(k) {
+            out.insert(k.to_owned(), value.to_json());
+        }
+    }
+
+    Value::Object(out)
+}
+
+/// Project a single field's value, applying nested write-aliases and dropping
+/// `Field::Secret` subtrees.
+///
+/// Returns `None` when the whole value must be omitted: it *is* a secret, or it
+/// is a secret-bearing structured field whose value shape does not match (a blob
+/// that could smuggle a nested secret's plaintext via the unvalidated setter).
+/// Mirrors `context::strip_secret_value` on the projection side, so the wire
+/// output never carries secret material the way the predicate/loader paths never do.
+fn project_value(field: &Field, value: &FieldValue) -> Option<serde_json::Value> {
+    use serde_json::Value;
+
+    if matches!(field, Field::Secret(_)) {
+        return None;
+    }
+    match (field, value) {
+        (Field::Object(obj), FieldValue::Object(map)) => Some(project_level(&obj.fields, map)),
+        (Field::List(list), FieldValue::List(items)) => match list.item.as_deref() {
+            Some(item_field) => Some(Value::Array(
+                items
+                    .iter()
+                    .filter_map(|item| project_value(item_field, item))
+                    .collect(),
+            )),
+            None => Some(value.to_json()),
+        },
+        (Field::Mode(mode), FieldValue::Object(map)) => Some(project_mode_object(mode, map)),
+        (
+            Field::Mode(mode),
+            FieldValue::Mode {
+                mode: mode_key,
+                value: payload,
+            },
+        ) => Some(project_mode_typed(mode, mode_key, payload.as_deref())),
+        // A secret-bearing structured field whose value is the wrong shape (e.g. a
+        // `Literal` blob set via the unvalidated bypass): drop it.
+        _ if crate::context::field_subtree_has_secret(field) => None,
+        _ => Some(value.to_json()),
+    }
+}
+
+/// Project a `Field::Mode` whose value arrived as the wire `{mode,value}` object
+/// envelope (the shape `from_json` produces). The selector is kept verbatim; the
+/// payload is projected against the active variant (explicit `mode`, else default).
+fn project_mode_object(
+    mode: &ModeField,
+    map: &IndexMap<FieldKey, FieldValue>,
+) -> serde_json::Value {
+    use serde_json::Value;
+
+    let mut out = serde_json::Map::new();
+
+    // Keep the variant selector verbatim (a string, never secret material).
+    if let Some(selector) = map.get(&*MODE_SELECTOR_KEY) {
+        out.insert(MODE_SELECTOR_KEY.as_str().to_owned(), selector.to_json());
+    }
+
+    // Resolve the active variant the same way the rest of the crate does.
+    let selected: Option<&str> = match map.get(&*MODE_SELECTOR_KEY) {
+        Some(FieldValue::Literal(Value::String(mode_key))) => Some(mode_key.as_str()),
+        Some(_) => None,
+        None => mode.default_variant.as_deref(),
+    };
+    if let Some(payload) = map.get(&*MODE_PAYLOAD_KEY)
+        && let Some(key) = selected
+        && let Some(variant) = mode.variants.iter().find(|v| v.key.as_str() == key)
+        && let Some(projected) = project_value(variant.field.as_ref(), payload)
+    {
+        out.insert(MODE_PAYLOAD_KEY.as_str().to_owned(), projected);
+    }
+
+    Value::Object(out)
+}
+
+/// Project a `Field::Mode` whose value is the programmatic `FieldValue::Mode`
+/// shape (constructed directly, not via `from_json`).
+fn project_mode_typed(
+    mode: &ModeField,
+    mode_key: &FieldKey,
+    payload: Option<&FieldValue>,
+) -> serde_json::Value {
+    use serde_json::Value;
+
+    let mut out = serde_json::Map::new();
+    out.insert(
+        MODE_SELECTOR_KEY.as_str().to_owned(),
+        Value::String(mode_key.as_str().to_owned()),
+    );
+    if let Some(payload) = payload
+        && let Some(variant) = mode
+            .variants
+            .iter()
+            .find(|v| v.key.as_str() == mode_key.as_str())
+        && let Some(projected) = project_value(variant.field.as_ref(), payload)
+    {
+        out.insert(MODE_PAYLOAD_KEY.as_str().to_owned(), projected);
+    }
+
+    Value::Object(out)
+}
+
+/// Canonicalize alias-keyed values to their canonical field key.
+///
+/// For each field with read-aliases: if the canonical key is absent but an
+/// alias key is present, move the alias-keyed value to the canonical key.
+/// If both canonical and alias are present, canonical wins (silent — matches
+/// serde's own `#[serde(alias)]` semantics).
+///
+/// After this pass the canonical lookup `values.get(field.key())` is
+/// sufficient; alias-keyed entries have been moved or discarded.
+///
+/// Recurse into Object children, List items, and the active Mode variant
+/// payload so nested alias keys are canonicalized at every level before
+/// validation — the same container shape the secret-strip / loader / projection
+/// walks descend, so an alias-keyed secret can never escape the fold at depth.
+fn canonicalize_aliases(values: &FieldValues, fields: &[Field]) -> FieldValues {
+    // Clone once: we need an owned map to mutate.
+    let mut map: IndexMap<FieldKey, FieldValue> = values.as_map().clone();
+
+    for field in fields {
+        let aliases = field.read_aliases();
+        if aliases.is_empty() {
+            // Fast path: no aliases → descend into containers but no top-level move.
+            if let Some(value) = map.get_mut(field.key()) {
+                canonicalize_nested_value(field, value);
+            }
+            continue;
+        }
+
+        // Find the first alias-keyed value present (canonical is preferred).
+        let alias_value: Option<(FieldKey, FieldValue)> = if map.contains_key(field.key()) {
+            // Canonical already present — remove all alias keys, canonical wins.
+            for alias_key in aliases {
+                map.shift_remove(alias_key);
+            }
+            None
+        } else {
+            // Canonical absent — promote the first alias found (insertion-order priority).
+            let mut found: Option<(FieldKey, FieldValue)> = None;
+            for alias_key in aliases {
+                if let Some(v) = map.shift_remove(alias_key) {
+                    found = Some((alias_key.clone(), v));
+                    break;
+                }
+            }
+            // Remove any remaining alias keys that weren't promoted.
+            if found.is_some() {
+                for alias_key in aliases {
+                    map.shift_remove(alias_key);
+                }
+            }
+            found
+        };
+
+        if let Some((_alias_key_from, promoted_value)) = alias_value {
+            // Insert under canonical key.
+            map.insert(field.key().clone(), promoted_value);
+        }
+
+        // Recurse into the (now canonically-keyed) nested container.
+        if let Some(value) = map.get_mut(field.key()) {
+            canonicalize_nested_value(field, value);
+        }
+    }
+
+    FieldValues::from_map(map)
+}
+
+/// Recurse into nested containers to canonicalize aliases at deeper levels.
+fn canonicalize_nested_value(field: &Field, value: &mut FieldValue) {
+    match (field, &mut *value) {
+        (Field::Object(obj), FieldValue::Object(nested_map)) => {
+            // Build a scratch FieldValues to recursively canonicalize.
+            let scratch = FieldValues::from_map(nested_map.clone());
+            let canonicalized = canonicalize_aliases(&scratch, &obj.fields);
+            *nested_map = canonicalized.into_map();
+        },
+        (Field::List(list), FieldValue::List(items)) => {
+            if let Some(item_field) = list.item.as_deref() {
+                for item_value in items.iter_mut() {
+                    canonicalize_nested_value(item_field, item_value);
+                }
+            }
+        },
+        (
+            Field::Mode(mode_field),
+            FieldValue::Mode {
+                mode: mode_key,
+                value: Some(payload),
+            },
+        ) => {
+            if let Some(variant) = mode_field
+                .variants
+                .iter()
+                .find(|v| v.key == mode_key.as_str())
+            {
+                canonicalize_nested_value(&variant.field, payload.as_mut());
+            }
+        },
+        (Field::Mode(mode_field), FieldValue::Object(map)) => {
+            // SECURITY: wire ingest parses a `{"mode","value"}` envelope into a
+            // `FieldValue::Object`, NEVER a `FieldValue::Mode` (see
+            // `value::FieldValue::from_json_limited`), so the typed arm above is
+            // dead for `from_json` input. Resolve the active variant exactly as
+            // `promote_secrets_in_value` / loader / context do — an explicit
+            // string `mode`, else `default_variant` — and recurse into the
+            // payload so alias keys inside the variant fold onto their canonical
+            // FieldKey BEFORE secret-strip, loader redaction, and projection
+            // run. Without this arm an alias-keyed secret in a mode payload
+            // escapes canonicalization and leaks plaintext.
+            let resolved_key = match map.get(&*MODE_SELECTOR_KEY) {
+                Some(FieldValue::Literal(serde_json::Value::String(mode_key))) => {
+                    Some(mode_key.clone())
+                },
+                Some(_) => None,
+                None => mode_field.default_variant.clone(),
+            };
+            if let Some(variant) = resolved_key
+                .as_deref()
+                .and_then(|mode_key| mode_field.variants.iter().find(|v| v.key == mode_key))
+                && let Some(payload) = map.get_mut(&*MODE_PAYLOAD_KEY)
+            {
+                canonicalize_nested_value(variant.field.as_ref(), payload);
+            }
+        },
+        _ => {},
+    }
+}
+
+/// Resolve a field's value from canonicalized values.
+///
+/// After `canonicalize_aliases` runs, the canonical key lookup is always
+/// sufficient. This helper makes the intent explicit and provides a single
+/// point to extend with fallback logic if needed.
+fn resolve_field_value<'v>(field: &Field, values: &'v FieldValues) -> Option<&'v FieldValue> {
+    values.get(field.key())
 }
 
 /// Validated values — tied to a specific `ValidSchema`.
@@ -539,6 +869,15 @@ impl ValidValues {
     #[must_use]
     pub fn get_path(&self, path: &FieldPath) -> Option<&FieldValue> {
         self.values.get_path(path)
+    }
+
+    /// Project the validated values to a JSON object, applying write-aliases.
+    ///
+    /// Equivalent to `self.schema().project(self.raw())`. Fields with a
+    /// `write_alias` emit under the alias key. Secret fields are never emitted.
+    #[must_use]
+    pub fn to_wire_json(&self) -> serde_json::Value {
+        self.schema.project(self.raw())
     }
 
     /// Resolve all `FieldValue::Expression` entries by evaluating them through

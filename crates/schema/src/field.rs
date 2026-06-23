@@ -57,6 +57,12 @@ macro_rules! define_field {
             /// Optional grouping name.
             #[serde(default, skip_serializing_if = "Option::is_none")]
             pub group: Option<String>,
+            /// Extra keys accepted on ingest in addition to `key` (additive, like `#[serde(alias)]`).
+            #[serde(default, skip_serializing_if = "crate::alias::FieldAliases::is_empty")]
+            pub read_aliases: crate::alias::FieldAliases,
+            /// Optional alternative key emitted on projection output (write-alias).
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            pub write_alias: Option<FieldKey>,
             /// Validation rules.
             #[serde(default, skip_serializing_if = "Vec::is_empty")]
             pub rules: Vec<Rule>,
@@ -80,6 +86,8 @@ macro_rules! define_field {
                     required: RequiredMode::default(),
                     expression: $expr_dflt,
                     group: None,
+                    read_aliases: crate::alias::FieldAliases::empty(),
+                    write_alias: None,
                     rules: Vec::new(),
                     transformers: Vec::new(),
                     $($extra: $dflt,)*
@@ -238,6 +246,99 @@ macro_rules! define_field {
             #[must_use]
             pub fn with_transformer(mut self, transformer: Transformer) -> Self {
                 self.transformers.push(transformer);
+                self
+            }
+
+            /// Append a single validated read-alias key.
+            ///
+            /// Validates the supplied string as a [`FieldKey`] and appends it to
+            /// [`read_aliases`](Self::read_aliases). Returns `Err` with code
+            /// `alias.invalid_key` when the key fails validation.
+            ///
+            /// # Errors
+            ///
+            /// Returns `alias.invalid_key` when `alias` is not a valid field key.
+            #[must_use = "builder: discard only if the error is intentionally ignored"]
+            #[expect(
+                clippy::result_large_err,
+                reason = "ValidationError is intentionally large; callers are on the validation path"
+            )]
+            pub fn read_alias(
+                mut self,
+                alias: impl AsRef<str>,
+            ) -> Result<Self, crate::error::ValidationError> {
+                let alias_str = alias.as_ref();
+                let key = FieldKey::new(alias_str).map_err(|_| {
+                    crate::error::ValidationError::builder("alias.invalid_key")
+                        .at(crate::path::FieldPath::root())
+                        .param("key", alias_str.to_owned())
+                        .message(format!(
+                            "alias `{alias_str}` is not a valid field key"
+                        ))
+                        .build()
+                })?;
+                self.read_aliases.push_unchecked(key);
+                Ok(self)
+            }
+
+            /// Replace the read-alias set wholesale with `aliases`.
+            #[must_use]
+            pub fn read_aliases(mut self, aliases: crate::alias::FieldAliases) -> Self {
+                self.read_aliases = aliases;
+                self
+            }
+
+            /// Set the write-alias key (the key emitted on projection output).
+            ///
+            /// Validates the supplied string as a [`FieldKey`] and stores it as
+            /// [`write_alias`](Self::write_alias). Returns `Err` with code
+            /// `alias.invalid_key` when the key fails validation.
+            ///
+            /// # Errors
+            ///
+            /// Returns `alias.invalid_key` when `alias` is not a valid field key.
+            #[must_use = "builder: discard only if the error is intentionally ignored"]
+            #[expect(
+                clippy::result_large_err,
+                reason = "ValidationError is intentionally large; callers are on the validation path"
+            )]
+            pub fn write_alias(
+                mut self,
+                alias: impl AsRef<str>,
+            ) -> Result<Self, crate::error::ValidationError> {
+                let alias_str = alias.as_ref();
+                let key = FieldKey::new(alias_str).map_err(|_| {
+                    crate::error::ValidationError::builder("alias.invalid_key")
+                        .at(crate::path::FieldPath::root())
+                        .param("key", alias_str.to_owned())
+                        .message(format!(
+                            "write alias `{alias_str}` is not a valid field key"
+                        ))
+                        .build()
+                })?;
+                self.write_alias = Some(key);
+                Ok(self)
+            }
+
+            /// Append a pre-validated read-alias key without re-checking.
+            ///
+            /// For use by builders and derive-macro code that has already validated
+            /// the key. Callers must ensure uniqueness themselves.
+            #[must_use]
+            #[allow(dead_code)] // used by derive-macro code (not yet generated)
+            pub(crate) fn read_alias_unchecked(mut self, key: FieldKey) -> Self {
+                self.read_aliases.push_unchecked(key);
+                self
+            }
+
+            /// Set a pre-validated write-alias key without re-checking.
+            ///
+            /// For use by builders and derive-macro code that has already validated
+            /// the key.
+            #[must_use]
+            #[allow(dead_code)] // used by derive-macro code (not yet generated)
+            pub(crate) fn write_alias_unchecked(mut self, key: FieldKey) -> Self {
+                self.write_alias = Some(key);
                 self
             }
 
@@ -1442,6 +1543,55 @@ impl Field {
             Self::Computed(f) => f.default.as_ref(),
             Self::Dynamic(f) => f.default.as_ref(),
             Self::Notice(f) => f.default.as_ref(),
+            Self::Unknown(_) => None,
+        }
+    }
+
+    /// Shared read-aliases accessor — extra keys accepted on ingest.
+    ///
+    /// Returns `&[]` for [`Field::Unknown`] (this version cannot enumerate aliases
+    /// of a future field kind).
+    #[inline]
+    #[must_use]
+    pub fn read_aliases(&self) -> &[FieldKey] {
+        match self {
+            Self::String(f) => f.read_aliases.as_slice(),
+            Self::Secret(f) => f.read_aliases.as_slice(),
+            Self::Number(f) => f.read_aliases.as_slice(),
+            Self::Boolean(f) => f.read_aliases.as_slice(),
+            Self::Select(f) => f.read_aliases.as_slice(),
+            Self::Object(f) => f.read_aliases.as_slice(),
+            Self::List(f) => f.read_aliases.as_slice(),
+            Self::Mode(f) => f.read_aliases.as_slice(),
+            Self::Code(f) => f.read_aliases.as_slice(),
+            Self::File(f) => f.read_aliases.as_slice(),
+            Self::Computed(f) => f.read_aliases.as_slice(),
+            Self::Dynamic(f) => f.read_aliases.as_slice(),
+            Self::Notice(f) => f.read_aliases.as_slice(),
+            Self::Unknown(_) => &[],
+        }
+    }
+
+    /// Shared write-alias accessor — alternative key emitted on projection output.
+    ///
+    /// Returns `None` for [`Field::Unknown`].
+    #[inline]
+    #[must_use]
+    pub fn write_alias(&self) -> Option<&FieldKey> {
+        match self {
+            Self::String(f) => f.write_alias.as_ref(),
+            Self::Secret(f) => f.write_alias.as_ref(),
+            Self::Number(f) => f.write_alias.as_ref(),
+            Self::Boolean(f) => f.write_alias.as_ref(),
+            Self::Select(f) => f.write_alias.as_ref(),
+            Self::Object(f) => f.write_alias.as_ref(),
+            Self::List(f) => f.write_alias.as_ref(),
+            Self::Mode(f) => f.write_alias.as_ref(),
+            Self::Code(f) => f.write_alias.as_ref(),
+            Self::File(f) => f.write_alias.as_ref(),
+            Self::Computed(f) => f.write_alias.as_ref(),
+            Self::Dynamic(f) => f.write_alias.as_ref(),
+            Self::Notice(f) => f.write_alias.as_ref(),
             Self::Unknown(_) => None,
         }
     }

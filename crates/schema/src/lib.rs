@@ -138,6 +138,8 @@
 // works from external crates, integration tests, doctests, and lib tests.
 extern crate self as nebula_schema;
 
+/// Field alias container — extra accepted input keys (read-aliases) and optional output key remapping (write-alias).
+pub mod alias;
 /// Typed-closure builder DSL (leaf aliases + Object/List/Group composite builders).
 pub mod builder;
 /// Opt-in keyed commitment of secret material for content-addressing.
@@ -192,6 +194,7 @@ pub mod value;
 /// Typed widget hints by field family.
 pub mod widget;
 
+pub use alias::FieldAliases;
 pub use builder::{
     BooleanBuilder, CodeBuilder, FieldCollector, GroupBuilder, ListBuilder, NumberBuilder,
     ObjectBuilder, SecretBuilder, SelectBuilder, StringBuilder,
