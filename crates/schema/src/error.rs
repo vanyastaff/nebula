@@ -20,16 +20,19 @@ pub enum Severity {
 
 impl<'de> Deserialize<'de> for Severity {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        // Forward-compatible: `Severity` is `#[non_exhaustive]`, so a newer writer
-        // may emit a value this version does not know. Read an unrecognized
-        // severity as `Warning` rather than failing — `ValidationReport` is
-        // `#[serde(transparent)]`, so a derived "unknown variant" error would
-        // poison the *whole* report; and `Warning` never falsely escalates an
-        // unknown issue to a hard error (it still surfaces, never silently drops).
+        // Forward-compatible AND fail-closed. `Severity` is `#[non_exhaustive]`,
+        // so a newer writer may emit a value this version does not know. We do not
+        // fail the parse — `ValidationReport` is `#[serde(transparent)]`, so a
+        // derived "unknown variant" error would poison the *whole* report. But an
+        // unknown severity is read as `Error`, NOT `Warning`: a future severity
+        // could be *more* severe than `Error`, and the validation gate stops on
+        // `has_errors()` — downgrading an unknown (possibly blocking) issue to an
+        // advisory `Warning` would let the gate fail OPEN. Over-blocking on an
+        // unrecognized severity is the safe direction; under-blocking is not.
         let raw = Cow::<str>::deserialize(d)?;
         Ok(match raw.as_ref() {
-            "error" => Self::Error,
-            _ => Self::Warning,
+            "warning" => Self::Warning,
+            _ => Self::Error,
         })
     }
 }
@@ -573,27 +576,31 @@ mod tests {
     }
 
     #[test]
-    fn unknown_severity_deserializes_as_warning() {
-        // Forward compat: a severity a newer writer emits that this version does
-        // not know reads as Warning, never a parse failure.
+    fn unknown_severity_deserializes_as_error_fail_closed() {
+        // Forward compat + fail-closed: a severity a newer writer emits that this
+        // version does not know reads as Error (never a parse failure, never a
+        // silent downgrade), while a known `warning` still reads as Warning.
         assert_eq!(
-            serde_json::from_value::<Severity>(json!("info")).unwrap(),
+            serde_json::from_value::<Severity>(json!("critical")).unwrap(),
+            Severity::Error
+        );
+        assert_eq!(
+            serde_json::from_value::<Severity>(json!("warning")).unwrap(),
             Severity::Warning
         );
 
-        // A transparent report containing an unknown severity still parses — the
-        // recognizable entries are not lost, and the unknown one surfaces as a
-        // warning rather than poisoning the whole payload.
+        // A transparent report with an unknown severity still parses; the unknown
+        // entry surfaces as a hard error so a downstream gate fails closed.
         let wire = json!([
-            {"code": "required", "path": "a", "severity": "error", "params": [], "message": "x"},
-            {"code": "future", "path": "", "severity": "critical", "params": [], "message": "y"},
+            {"code": "notice.x", "path": "", "severity": "warning", "params": [], "message": "w"},
+            {"code": "future", "path": "a", "severity": "critical", "params": [], "message": "y"},
         ]);
         let report: ValidationReport = serde_json::from_value(wire).expect("report parses");
         assert_eq!(report.len(), 2);
-        assert!(report.has_errors(), "the known error survived");
         assert!(
-            report.has_warnings(),
-            "the unknown severity surfaced as a warning"
+            report.has_errors(),
+            "the unknown severity fails closed as an error"
         );
+        assert!(report.has_warnings(), "the known warning is preserved");
     }
 }
