@@ -95,7 +95,8 @@ root-rule metadata, and UI/runtime hints).
 ## Maturity
 
 - API stability: `frontier` — Phase 1 Foundation has landed; Phase 4 JSON-Schema export is in `pragmatic baseline` mode.
-- Core pipeline (lint → validate → resolve) is stable; peripheral APIs (UI hints, expression context adapters) may move.
+- Core pipeline (lint → validate) is stable and exercised in production (e.g. the credential layer validates without resolving).
+- The **resolve** seam (`ValidValues::resolve` / `ExpressionContext` → `ResolvedValues`) is **latent**: structurally complete and test-proven, but has **no production consumer** yet — it becomes load-bearing only when action-input expression evaluation is wired into the engine. Peripheral APIs (UI hints, expression-context adapters) may move.
 - Public API is **strict**: `Field::*::new` requires a pre-validated `FieldKey`; runtime panics have been removed from the public surface (use `Field::try_*` or `field_key!(...)` for compile-time-validated keys).
 
 ## Related
