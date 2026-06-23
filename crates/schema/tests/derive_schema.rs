@@ -171,6 +171,64 @@ fn derive_respects_skip() {
     assert_eq!(s.fields()[0].key().as_str(), "keep");
 }
 
+#[derive(Schema)]
+#[schema(reserved("legacy_token", "v1_secret"))]
+#[allow(dead_code)]
+struct WithReservedKeys {
+    name: String,
+    enabled: bool,
+}
+
+#[test]
+fn derive_reserved_keys_do_not_materialize_or_block_other_fields() {
+    let s = WithReservedKeys::schema();
+    let keys: Vec<&str> = s.fields().iter().map(|f| f.key().as_str()).collect();
+    // The real fields build normally — reserving unrelated keys is a no-op for them.
+    assert_eq!(keys, ["name", "enabled"]);
+    // The reserved keys are guard rails only: they are not materialized as fields.
+    assert!(!keys.contains(&"legacy_token"));
+    assert!(!keys.contains(&"v1_secret"));
+}
+
+#[derive(Schema)]
+#[schema(reserved("dropped"))]
+#[allow(dead_code)]
+struct ReservedMatchesSkippedField {
+    keep: String,
+    // A skipped field has no wire key, so reserving its name is not a collision —
+    // this pins the skip-before-key-collection ordering in the derive.
+    #[field(skip)]
+    dropped: u64,
+}
+
+#[test]
+fn derive_reserved_key_matching_a_skipped_field_is_allowed() {
+    let s = ReservedMatchesSkippedField::schema();
+    let keys: Vec<&str> = s.fields().iter().map(|f| f.key().as_str()).collect();
+    assert_eq!(
+        keys,
+        ["keep"],
+        "the skipped `dropped` field never reaches the schema"
+    );
+}
+
+#[derive(Schema, serde::Deserialize)]
+#[schema(reserved("removed"))]
+#[allow(dead_code)]
+struct AliasDoesNotCollide {
+    // An alias that does NOT match a reserved key is allowed — only a collision
+    // is rejected, aliases are not blanket-forbidden on reserved-key structs.
+    #[serde(alias = "name_old")]
+    name: String,
+}
+
+#[test]
+fn derive_reserved_allows_a_non_colliding_serde_alias() {
+    let s = AliasDoesNotCollide::schema();
+    let keys: Vec<&str> = s.fields().iter().map(|f| f.key().as_str()).collect();
+    assert_eq!(keys, ["name"]);
+}
+
 // ── #[derive(EnumSelect)] ──────────────────────────────────────────────────
 
 #[derive(EnumSelect, Clone, Copy)]

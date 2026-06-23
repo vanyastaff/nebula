@@ -384,6 +384,11 @@ fn lit_to_i64(expr: &Expr) -> syn::Result<i64> {
 pub(crate) struct SchemaStructAttrs {
     /// Wire-level `Rule::Deferred(DeferredRule::Custom(..))` expression strings.
     pub custom: Vec<LitStr>,
+    /// Field keys reserved against reuse (`#[schema(reserved("old_key"))]`). A
+    /// reserved key may not be used by any field of this struct — the derive
+    /// rejects a collision at expansion. Kept as `LitStr` so the span points at
+    /// the offending literal in diagnostics.
+    pub reserved: Vec<LitStr>,
 }
 
 impl SchemaStructAttrs {
@@ -402,6 +407,7 @@ impl SchemaStructAttrs {
 
 enum SchemaEntry {
     Custom { value: LitStr },
+    Reserved { keys: Vec<LitStr> },
 }
 
 impl SchemaEntry {
@@ -411,6 +417,10 @@ impl SchemaEntry {
                 out.custom.push(value);
                 Ok(())
             },
+            Self::Reserved { keys } => {
+                out.reserved.extend(keys);
+                Ok(())
+            },
         }
     }
 }
@@ -418,16 +428,42 @@ impl SchemaEntry {
 impl Parse for SchemaEntry {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let name: syn::Ident = input.parse()?;
+
+        // List-form options: `reserved("a", "b")`.
+        if input.peek(syn::token::Paren) {
+            let content;
+            syn::parenthesized!(content in input);
+            let keys: Punctuated<LitStr, Token![,]> =
+                content.parse_terminated(<LitStr as Parse>::parse, Token![,])?;
+            return match name.to_string().as_str() {
+                "reserved" => Ok(Self::Reserved {
+                    keys: keys.into_iter().collect(),
+                }),
+                other => Err(syn::Error::new(
+                    name.span(),
+                    format!("unknown list-form #[schema(..)] option `{other}`"),
+                )),
+            };
+        }
+
+        // Assignment-form options: `custom = "..."`.
         if !input.peek(Token![=]) {
             return Err(syn::Error::new(
                 name.span(),
-                "expected `#[schema(custom = \"...\")]` — flag-style schema options are not supported",
+                "expected `#[schema(custom = \"...\")]` or `#[schema(reserved(\"...\"))]`",
             ));
         }
         input.parse::<Token![=]>()?;
         let value: LitStr = input.parse()?;
         match name.to_string().as_str() {
             "custom" => Ok(Self::Custom { value }),
+            // `reserved` is a valid option used with the wrong (assignment) form —
+            // point at the list syntax instead of claiming the option is unknown.
+            "reserved" => Err(syn::Error::new(
+                name.span(),
+                "#[schema(reserved)] requires list syntax: write `reserved(\"key\")`, \
+                 not `reserved = \"key\"`",
+            )),
             other => Err(syn::Error::new(
                 name.span(),
                 format!("unknown #[schema(..)] option `{other}`"),
@@ -556,8 +592,10 @@ fn lower_first(value: &str) -> String {
     }
 }
 
-/// The subset of `#[serde(...)]` attributes that affect the schema key, read from
-/// a container (`rename_all`) or a field / variant (`rename`, `skip`, `flatten`).
+/// The subset of `#[serde(...)]` attributes the schema derive reads: the ones
+/// that affect the schema key (`rename_all`, `rename`, `skip`, `flatten`) plus
+/// `alias`, which does not change the key but is an alternative wire key serde
+/// still deserializes into the field — so a reserved key must also reject it.
 #[derive(Default)]
 pub(crate) struct SerdeAttrs {
     pub rename_all: Option<RenameRule>,
@@ -566,6 +604,9 @@ pub(crate) struct SerdeAttrs {
     /// `Some(span)` when `#[serde(flatten)]` is present — used to anchor the
     /// "flatten not yet supported" compile error at the attribute.
     pub flatten_span: Option<Span>,
+    /// `#[serde(alias = "..")]` keys (deserialize-only alternative wire keys).
+    /// Empty unless the field carries one or more aliases.
+    pub aliases: Vec<String>,
 }
 
 impl SerdeAttrs {
@@ -584,6 +625,9 @@ impl SerdeAttrs {
                     },
                     Meta::NameValue(nv) if nv.path.is_ident("rename") => {
                         out.rename = Some(expr_str(&nv.value, "rename")?);
+                    },
+                    Meta::NameValue(nv) if nv.path.is_ident("alias") => {
+                        out.aliases.push(expr_str(&nv.value, "alias")?);
                     },
                     Meta::Path(p) if p.is_ident("skip") || p.is_ident("skip_deserializing") => {
                         out.skip = true;

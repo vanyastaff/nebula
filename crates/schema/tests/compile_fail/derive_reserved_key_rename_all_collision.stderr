@@ -1,0 +1,18 @@
+error: field key `myField` is reserved by `#[schema(reserved(..))]` and cannot be used — reserving a key prevents reusing it for a different field
+  --> tests/compile_fail/derive_reserved_key_rename_all_collision.rs:11:5
+   |
+11 |     my_field: String,
+   |     ^^^^^^^^
+
+error[E0599]: no associated function or constant named `schema` found for struct `Bad` in the current scope
+  --> tests/compile_fail/derive_reserved_key_rename_all_collision.rs:15:18
+   |
+10 | struct Bad {
+   | ---------- associated function or constant `schema` not found for this struct
+...
+15 |     let _ = Bad::schema();
+   |                  ^^^^^^ associated function or constant not found in `Bad`
+   |
+   = help: items from traits can only be used if the trait is implemented and in scope
+   = note: the following trait defines an item `schema`, perhaps you need to implement it:
+           candidate #1: `HasSchema`
