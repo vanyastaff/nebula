@@ -448,17 +448,17 @@ impl ActionMetadata {
             return Err(MetadataCompatibilityError::PortsChangeWithoutMajorBump);
         }
 
-        // TypeDAG output-schema assignability: the NEW output is the producer;
-        // the OLD output is the consumer (downstream nodes were typed against it).
-        // If `is_assignable_schema` returns Err the new output dropped or changed
-        // a field that old consumers required — that is a silent breaking change
-        // on a same-major upgrade. A major version bump is required. The
-        // kind-aware check also catches a new output collapsing to an empty
-        // record (`Output = ()`), which an untyped `Any` would have masked.
-        if same_major
-            && nebula_schema::is_assignable_schema(&self.output_schema, &previous.output_schema)
-                .is_err()
-        {
+        // TypeDAG output-schema evolution: does the NEW output still satisfy
+        // everything consumers typed against the OLD output required? This is an
+        // *output-vs-output* successor check, not a producer→consumer edge, so it
+        // uses `OutputSchema::is_compatible_successor_of` rather than the
+        // direction-typed `is_assignable_schema`. An `Err` means the new output
+        // dropped or narrowed a field old consumers relied on — a silent breaking
+        // change on a same-major upgrade (including a collapse to `Output = ()`,
+        // which an untyped `Any` would have masked).
+        let new_output = nebula_schema::OutputSchema::new(self.output_schema.clone());
+        let old_output = nebula_schema::OutputSchema::new(previous.output_schema.clone());
+        if same_major && new_output.is_compatible_successor_of(&old_output).is_err() {
             return Err(MetadataCompatibilityError::OutputSchemaNarrowedWithoutMajorBump);
         }
 

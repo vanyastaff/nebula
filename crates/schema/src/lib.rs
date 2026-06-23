@@ -127,6 +127,8 @@ pub mod builder;
 pub mod compat;
 /// Builds the validator predicate context (visibility/required) from schema fields + values.
 pub mod context;
+/// Directional schema newtypes (`InputSchema`/`OutputSchema`) — polarity-typed.
+pub mod directed;
 /// Error types for schema operations.
 pub mod error;
 /// Expression wrapper and [`ExpressionContext`] trait.
@@ -178,6 +180,7 @@ pub use builder::{
 pub use compat::{
     Assignability, SchemaIncompat, UnknownReason, explain_assignable, is_assignable_schema,
 };
+pub use directed::{DirectedSchema, Input, InputSchema, Output, OutputSchema, Polarity};
 pub use error::{
     STANDARD_CODES, Severity, ValidationError, ValidationErrorBuilder, ValidationReport,
 };
