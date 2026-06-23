@@ -384,6 +384,11 @@ fn lit_to_i64(expr: &Expr) -> syn::Result<i64> {
 pub(crate) struct SchemaStructAttrs {
     /// Wire-level `Rule::Deferred(DeferredRule::Custom(..))` expression strings.
     pub custom: Vec<LitStr>,
+    /// Field keys reserved against reuse (`#[schema(reserved("old_key"))]`). A
+    /// reserved key may not be used by any field of this struct — the derive
+    /// rejects a collision at expansion. Kept as `LitStr` so the span points at
+    /// the offending literal in diagnostics.
+    pub reserved: Vec<LitStr>,
 }
 
 impl SchemaStructAttrs {
@@ -402,6 +407,7 @@ impl SchemaStructAttrs {
 
 enum SchemaEntry {
     Custom { value: LitStr },
+    Reserved { keys: Vec<LitStr> },
 }
 
 impl SchemaEntry {
@@ -411,6 +417,10 @@ impl SchemaEntry {
                 out.custom.push(value);
                 Ok(())
             },
+            Self::Reserved { keys } => {
+                out.reserved.extend(keys);
+                Ok(())
+            },
         }
     }
 }
@@ -418,10 +428,29 @@ impl SchemaEntry {
 impl Parse for SchemaEntry {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let name: syn::Ident = input.parse()?;
+
+        // List-form options: `reserved("a", "b")`.
+        if input.peek(syn::token::Paren) {
+            let content;
+            syn::parenthesized!(content in input);
+            let keys: Punctuated<LitStr, Token![,]> =
+                content.parse_terminated(<LitStr as Parse>::parse, Token![,])?;
+            return match name.to_string().as_str() {
+                "reserved" => Ok(Self::Reserved {
+                    keys: keys.into_iter().collect(),
+                }),
+                other => Err(syn::Error::new(
+                    name.span(),
+                    format!("unknown list-form #[schema(..)] option `{other}`"),
+                )),
+            };
+        }
+
+        // Assignment-form options: `custom = "..."`.
         if !input.peek(Token![=]) {
             return Err(syn::Error::new(
                 name.span(),
-                "expected `#[schema(custom = \"...\")]` — flag-style schema options are not supported",
+                "expected `#[schema(custom = \"...\")]` or `#[schema(reserved(\"...\"))]`",
             ));
         }
         input.parse::<Token![=]>()?;

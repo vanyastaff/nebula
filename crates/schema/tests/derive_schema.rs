@@ -171,6 +171,25 @@ fn derive_respects_skip() {
     assert_eq!(s.fields()[0].key().as_str(), "keep");
 }
 
+#[derive(Schema)]
+#[schema(reserved("legacy_token", "v1_secret"))]
+#[allow(dead_code)]
+struct WithReservedKeys {
+    name: String,
+    enabled: bool,
+}
+
+#[test]
+fn derive_reserved_keys_do_not_materialize_or_block_other_fields() {
+    let s = WithReservedKeys::schema();
+    let keys: Vec<&str> = s.fields().iter().map(|f| f.key().as_str()).collect();
+    // The real fields build normally — reserving unrelated keys is a no-op for them.
+    assert_eq!(keys, ["name", "enabled"]);
+    // The reserved keys are guard rails only: they are not materialized as fields.
+    assert!(!keys.contains(&"legacy_token"));
+    assert!(!keys.contains(&"v1_secret"));
+}
+
 // ── #[derive(EnumSelect)] ──────────────────────────────────────────────────
 
 #[derive(EnumSelect, Clone, Copy)]

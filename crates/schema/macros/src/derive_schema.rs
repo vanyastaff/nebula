@@ -50,6 +50,7 @@ pub(crate) fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
         .collect();
 
     let mut field_exprs = Vec::with_capacity(fields.len());
+    let mut field_keys: Vec<(String, Span)> = Vec::with_capacity(fields.len());
     for f in fields {
         let field_name = f
             .ident
@@ -71,6 +72,7 @@ pub(crate) fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
         let validate = ValidateAttrs::from_attrs(&f.attrs)?;
         let kind = classify(&f.ty);
         let key_str = resolve_field_key(field_name, &serde, container_serde.rename_all)?;
+        field_keys.push((key_str.clone(), field_name.span()));
         let expr = build_field_expr(
             field_name,
             &key_str,
@@ -81,6 +83,8 @@ pub(crate) fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
         )?;
         field_exprs.push(expr);
     }
+
+    enforce_reserved_keys(&schema_attrs.reserved, &field_keys)?;
 
     let ty_name_str = ty_name.to_string();
     Ok(quote! {
@@ -166,6 +170,41 @@ fn check_field_key(key: &str, span: Span) -> syn::Result<()> {
             ),
         )
     })
+}
+
+/// Reject any field whose resolved schema key collides with a key listed in
+/// `#[schema(reserved(..))]`, and validate each reserved literal is itself a
+/// well-formed `FieldKey`.
+///
+/// Reserving a key prevents a removed field's key from being silently reused for
+/// a *different* field — a document written before the removal still carries the
+/// old key, so reusing it would misread that data (Protobuf-style reservation).
+/// The check runs at expansion, so a collision is a spanned compile error.
+fn enforce_reserved_keys(
+    reserved: &[syn::LitStr],
+    field_keys: &[(String, Span)],
+) -> syn::Result<()> {
+    for lit in reserved {
+        let reserved_key = lit.value();
+        // A reserved key that is not a valid `FieldKey` can never match a real
+        // key, so the reservation would be silently inert — reject the typo.
+        crate::validate_field_key(&reserved_key).map_err(|reason| {
+            syn::Error::new(
+                lit.span(),
+                format!("reserved key `{reserved_key}` is not a valid schema field key ({reason})"),
+            )
+        })?;
+        if let Some((_, field_span)) = field_keys.iter().find(|(key, _)| *key == reserved_key) {
+            return Err(syn::Error::new(
+                *field_span,
+                format!(
+                    "field key `{reserved_key}` is reserved by `#[schema(reserved(..))]` and \
+                     cannot be used — reserving a key prevents reusing it for a different field"
+                ),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Build the token-stream expression that produces a `Field` for one struct field.

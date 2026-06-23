@@ -106,6 +106,20 @@
 //! let values = FieldValues::from_json(json!({"name": "n"})).unwrap();
 //! assert!(schema.validate(&values).is_ok());
 //! ```
+//!
+//! `#[schema(reserved("old_key"))]` forbids any field from using a key — reusing
+//! a removed field's key would misread documents written before the removal
+//! (Protobuf-style reservation). A collision is a compile error:
+//!
+//! ```compile_fail
+//! use nebula_schema::Schema;
+//!
+//! #[derive(Schema)]
+//! #[schema(reserved("name"))]
+//! struct Bad {
+//!     name: String, // error: field key `name` is reserved
+//! }
+//! ```
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
