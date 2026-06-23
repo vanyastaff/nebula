@@ -258,7 +258,6 @@ fn computed_and_notice_expression_modes_are_normalized_after_deserialize() {
             {
                 "type": "computed",
                 "key": "calc",
-                "expression_source": "1 + 1",
                 "returns": "number",
                 "expression": "forbidden"
             },
@@ -274,6 +273,24 @@ fn computed_and_notice_expression_modes_are_normalized_after_deserialize() {
 
     assert_eq!(schema.fields()[0].expression(), &ExpressionMode::Required);
     assert_eq!(schema.fields()[1].expression(), &ExpressionMode::Forbidden);
+}
+
+#[test]
+fn computed_field_ignores_removed_expression_source_key() {
+    // `expression_source` was removed from `ComputedField` (it was a write-only
+    // orphan never read or evaluated). A document written before the removal must
+    // still deserialize — the stale key is ignored, not rejected.
+    let schema: Schema = serde_json::from_value(json!({
+        "fields": [{
+            "type": "computed",
+            "key": "calc",
+            "expression_source": "1 + 1",
+            "returns": "number"
+        }]
+    }))
+    .expect("a legacy computed field carrying expression_source still parses");
+    assert_eq!(schema.fields()[0].key().as_str(), "calc");
+    assert_eq!(schema.fields()[0].expression(), &ExpressionMode::Required);
 }
 
 // ── Type mismatch ────────────────────────────────────────────────────────────
