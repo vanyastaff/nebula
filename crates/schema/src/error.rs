@@ -2,13 +2,15 @@
 
 use std::{borrow::Cow, fmt, sync::Arc};
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::path::FieldPath;
 
 /// Severity of a single issue.
 #[non_exhaustive]
-#[derive(Copy, Clone, PartialEq, Eq, Debug, Hash)]
+#[derive(Copy, Clone, PartialEq, Eq, Debug, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Severity {
     /// A hard error that must be resolved.
     Error,
@@ -17,8 +19,15 @@ pub enum Severity {
 }
 
 /// A single structured validation or schema issue.
+///
+/// Serializable for wire transport (API responses, cross-process error
+/// propagation): `code` is the stable machine-readable vocabulary
+/// ([`STANDARD_CODES`]) and `path`/`severity`/`params`/`message` are the
+/// client-facing payload. The internal `source` cause chain is **not** part of
+/// the wire contract — it is `#[serde(skip)]` (a `dyn Error` has no serialized
+/// form and is debug-only), so a deserialized error has `source: None`.
 #[non_exhaustive]
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ValidationError {
     /// Machine-readable issue code (e.g. `"required"`, `"type_mismatch"`,
     /// or a validator-native rule code such as `"max_length"`).
@@ -31,7 +40,9 @@ pub struct ValidationError {
     pub params: Arc<[(Cow<'static, str>, Value)]>,
     /// Human-readable message describing the issue.
     pub message: Cow<'static, str>,
-    /// Optional underlying cause.
+    /// Optional underlying cause — debug-only, not serialized (a `dyn Error`
+    /// has no wire form; a deserialized error always has `source: None`).
+    #[serde(skip)]
     pub source: Option<Arc<dyn std::error::Error + Send + Sync>>,
 }
 
@@ -147,7 +158,12 @@ impl ValidationErrorBuilder {
 }
 
 /// Accumulates [`ValidationError`] issues produced during schema build, lint, or validation.
-#[derive(Clone, Debug, Default)]
+///
+/// Serializes **transparently** as a flat JSON array of [`ValidationError`] — a
+/// report *is* its list of issues — so a wire payload is `[{…}, {…}]`, not
+/// `{"issues": […]}`.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct ValidationReport {
     issues: Vec<ValidationError>,
 }
@@ -459,5 +475,84 @@ mod tests {
                     .all(|c| c.is_ascii_lowercase() || c == '_' || c == '.')
             );
         }
+    }
+
+    #[test]
+    fn validation_error_serde_round_trips() {
+        let original = ValidationError::builder("length.max")
+            .at(FieldPath::parse("user.email").unwrap())
+            .warn()
+            .message("value too long")
+            .param("max", json!(20))
+            .param("actual", json!(42))
+            .build();
+        let wire = serde_json::to_value(&original).expect("serialize");
+        let restored: ValidationError = serde_json::from_value(wire).expect("deserialize");
+
+        assert_eq!(restored.code, original.code);
+        assert_eq!(restored.path, original.path);
+        assert_eq!(restored.severity, original.severity);
+        assert_eq!(restored.message, original.message);
+        assert_eq!(restored.params.as_ref(), original.params.as_ref());
+        assert!(restored.source.is_none());
+    }
+
+    #[test]
+    fn source_is_not_serialized() {
+        // The internal cause chain is debug-only and has no wire form.
+        let cause = "nan".parse::<i32>().unwrap_err();
+        let err = ValidationError::builder("type_mismatch")
+            .source(cause)
+            .build();
+        assert!(err.source.is_some(), "source is attached in memory");
+
+        let wire = serde_json::to_value(&err).expect("serialize");
+        assert!(
+            wire.get("source").is_none(),
+            "source must not appear on the wire, got: {wire}"
+        );
+        let restored: ValidationError = serde_json::from_value(wire).expect("deserialize");
+        assert!(
+            restored.source.is_none(),
+            "source drops to None across the wire"
+        );
+    }
+
+    #[test]
+    fn report_serializes_as_flat_array() {
+        let mut report = ValidationReport::new();
+        report.push(
+            ValidationError::builder("required")
+                .at(FieldPath::parse("a").unwrap())
+                .build(),
+        );
+        report.push(ValidationError::builder("type_mismatch").warn().build());
+
+        let wire = serde_json::to_value(&report).expect("serialize");
+        assert!(
+            wire.is_array(),
+            "report serializes transparently as an array"
+        );
+        assert_eq!(wire.as_array().map(Vec::len), Some(2));
+
+        let restored: ValidationReport = serde_json::from_value(wire).expect("deserialize");
+        assert_eq!(restored.len(), 2);
+        assert!(restored.has_errors() && restored.has_warnings());
+    }
+
+    #[test]
+    fn severity_serializes_snake_case() {
+        assert_eq!(
+            serde_json::to_value(Severity::Error).unwrap(),
+            json!("error")
+        );
+        assert_eq!(
+            serde_json::to_value(Severity::Warning).unwrap(),
+            json!("warning")
+        );
+        assert_eq!(
+            serde_json::from_value::<Severity>(json!("warning")).unwrap(),
+            Severity::Warning
+        );
     }
 }

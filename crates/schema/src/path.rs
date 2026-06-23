@@ -188,6 +188,12 @@ impl Serialize for FieldPath {
 impl<'de> Deserialize<'de> for FieldPath {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let raw = String::deserialize(d)?;
+        // The root path `Display`s as the empty string; round-trip it back to
+        // root here. (The public `parse` deliberately rejects `""` as a malformed
+        // user-supplied path — that contract is separate from this wire seam.)
+        if raw.is_empty() {
+            return Ok(Self::root());
+        }
         Self::parse(&raw).map_err(serde::de::Error::custom)
     }
 }
@@ -252,5 +258,25 @@ mod tests {
         let p = FieldPath::parse("a.b.c").unwrap();
         assert_eq!(p.parent().unwrap().to_string(), "a.b");
         assert!(FieldPath::root().parent().is_none());
+    }
+
+    #[test]
+    fn root_path_serde_round_trips() {
+        // The root path Displays as "" and must deserialize back to root — the
+        // public `parse` rejects "", but the serde seam round-trips it.
+        let root = FieldPath::root();
+        let wire = serde_json::to_value(&root).expect("serialize");
+        assert_eq!(wire, serde_json::Value::String(String::new()));
+        let restored: FieldPath = serde_json::from_value(wire).expect("deserialize");
+        assert!(restored.is_root());
+        assert_eq!(restored, root);
+    }
+
+    #[test]
+    fn nested_path_serde_round_trips() {
+        let nested = FieldPath::parse("a.b[0].c").unwrap();
+        let restored: FieldPath =
+            serde_json::from_value(serde_json::to_value(&nested).unwrap()).unwrap();
+        assert_eq!(restored, nested);
     }
 }
