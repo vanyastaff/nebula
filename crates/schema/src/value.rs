@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::{
+    commitment::{CommitmentId, CommitmentKey, SecretCommitmentPolicy, write_secret_commitment},
     expression::Expression,
     key::FieldKey,
     path::{FieldPath, PathSegment},
@@ -271,7 +272,36 @@ impl FieldValue {
         let mut out = Vec::new();
         out.extend_from_slice(CANON_DOMAIN);
         out.extend_from_slice(&VALUE_CANON_VERSION.to_be_bytes());
-        self.write_canonical(&mut out, 0)?;
+        self.write_canonical(&mut out, 0, &SecretCommitmentPolicy::Reject)?;
+        Ok(out)
+    }
+
+    /// Canonical bytes with an opt-in **keyed commitment** for secrets.
+    ///
+    /// Identical to [`canonical_bytes`](Self::canonical_bytes) except a
+    /// [`SecretLiteral`](Self::SecretLiteral) is encoded as a `blake3::keyed_hash`
+    /// commitment under `key` (see [`crate::commitment`]) instead of returning
+    /// `secret.not_hashable`. The result is **process-scoped**: it is comparable
+    /// only against other commitments made with the *same* `key`, and is not a
+    /// durable address (see [`content_id_committing`](Self::content_id_committing)).
+    ///
+    /// # Errors
+    ///
+    /// `value.non_canonical_float` for a non-finite float, or `recursion_limit`
+    /// for an over-deep value — but **never** `secret.not_hashable`.
+    #[must_use = "the committing bytes are computed for a dedup/content key; discarding wastes the work"]
+    #[expect(
+        clippy::result_large_err,
+        reason = "ValidationError is intentionally large; callers are on the validation path"
+    )]
+    pub fn canonical_bytes_committing(
+        &self,
+        key: &CommitmentKey,
+    ) -> Result<Vec<u8>, crate::error::ValidationError> {
+        let mut out = Vec::new();
+        out.extend_from_slice(CANON_DOMAIN);
+        out.extend_from_slice(&VALUE_CANON_VERSION.to_be_bytes());
+        self.write_canonical(&mut out, 0, &SecretCommitmentPolicy::Keyed(key))?;
         Ok(out)
     }
 
@@ -293,6 +323,32 @@ impl FieldValue {
         Ok(ContentId(blake3::hash(&self.canonical_bytes()?).into()))
     }
 
+    /// Process-scoped [`CommitmentId`] for a secret-bearing value — the keyed
+    /// analogue of [`content_id`](Self::content_id).
+    ///
+    /// The outer digest is also `blake3::keyed_hash` under `key`, so the id is
+    /// opaque and meaningful only within the key's lifetime. It is a distinct
+    /// type from [`ContentId`] precisely so it cannot be stored where a durable
+    /// content address is expected.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`canonical_bytes_committing`](Self::canonical_bytes_committing).
+    #[must_use = "the commitment id is computed for a dedup key; discarding wastes the work"]
+    #[expect(
+        clippy::result_large_err,
+        reason = "ValidationError is intentionally large; callers are on the validation path"
+    )]
+    pub fn content_id_committing(
+        &self,
+        key: &CommitmentKey,
+    ) -> Result<CommitmentId, crate::error::ValidationError> {
+        let bytes = self.canonical_bytes_committing(key)?;
+        Ok(CommitmentId::from_digest(
+            blake3::keyed_hash(key.raw(), &bytes).into(),
+        ))
+    }
+
     /// Recursive canonical writer for a [`FieldValue`].
     ///
     /// `depth` bounds the recursion at [`MAX_VALUE_DEPTH`] (shared with
@@ -309,6 +365,7 @@ impl FieldValue {
         &self,
         out: &mut Vec<u8>,
         depth: u8,
+        policy: &SecretCommitmentPolicy<'_>,
     ) -> Result<(), crate::error::ValidationError> {
         if depth > MAX_VALUE_DEPTH {
             return Err(canon_recursion_limit());
@@ -316,18 +373,19 @@ impl FieldValue {
         match self {
             // A `Literal` carries a raw JSON value (including `Array`/`Object`
             // when keys were not valid `FieldKey`s — `from_json` preserves them),
-            // canonicalized by the JSON writer below.
+            // canonicalized by the JSON writer below. Raw JSON cannot hold a
+            // secret, so the commitment policy does not reach it.
             Self::Literal(value) => write_canon_json(value, out, depth)?,
             Self::Expression(expr) => {
                 out.push(TAG_EXPRESSION);
                 write_lp(out, expr.source().as_bytes());
             },
-            Self::Object(map) => write_canon_object(map, out, depth)?,
+            Self::Object(map) => write_canon_object(map, out, depth, policy)?,
             Self::List(items) => {
                 out.push(TAG_LIST);
                 write_varint(out, items.len() as u64);
                 for item in items {
-                    item.write_canonical(out, depth.saturating_add(1))?;
+                    item.write_canonical(out, depth.saturating_add(1), policy)?;
                 }
             },
             Self::Mode { mode, value } => {
@@ -336,13 +394,18 @@ impl FieldValue {
                 match value {
                     Some(inner) => {
                         out.push(1);
-                        inner.write_canonical(out, depth.saturating_add(1))?;
+                        inner.write_canonical(out, depth.saturating_add(1), policy)?;
                     },
                     None => out.push(0),
                 }
             },
-            // Secrets never enter a content hash (see `canonical_bytes` docs).
-            Self::SecretLiteral(_) => return Err(secret_not_hashable()),
+            // A secret has no plaintext canonical form. By default it is rejected
+            // (`secret.not_hashable`); the opt-in `Keyed` policy commits it with a
+            // keyed hash instead (see `crate::commitment`).
+            Self::SecretLiteral(secret) => match policy {
+                SecretCommitmentPolicy::Reject => return Err(secret_not_hashable()),
+                SecretCommitmentPolicy::Keyed(key) => write_secret_commitment(secret, key, out),
+            },
         }
         Ok(())
     }
@@ -376,11 +439,11 @@ const TAG_LIST: u8 = 0x06;
 const TAG_OBJECT: u8 = 0x07;
 const TAG_EXPRESSION: u8 = 0x08;
 const TAG_MODE: u8 = 0x09;
-// 0x0A is reserved for an opt-in secret commitment, deferred. When implemented
-// it MUST use a keyed / domain-separated hash (e.g. `blake3::keyed_hash` with an
-// ephemeral per-process key), never the unkeyed `blake3::hash` used for content
-// ids — an unkeyed hash of a low-entropy secret is a brute-forceable oracle,
-// the exact property `secret.not_hashable` exists to prevent.
+// 0x0A is the opt-in secret commitment (`crate::commitment::TAG_SECRET_COMMITMENT`).
+// It uses `blake3::keyed_hash` under an ephemeral per-process `CommitmentKey`,
+// NEVER the unkeyed `blake3::hash` used for content ids — an unkeyed hash of a
+// low-entropy secret is a brute-forceable oracle, the exact property
+// `secret.not_hashable` exists to prevent.
 const TAG_JSON_ARRAY: u8 = 0x0B;
 const TAG_JSON_OBJECT: u8 = 0x0C;
 
@@ -461,6 +524,7 @@ fn write_canon_object(
     map: &IndexMap<FieldKey, FieldValue>,
     out: &mut Vec<u8>,
     depth: u8,
+    policy: &SecretCommitmentPolicy<'_>,
 ) -> Result<(), crate::error::ValidationError> {
     out.push(TAG_OBJECT);
     let mut entries: Vec<(&FieldKey, &FieldValue)> = map.iter().collect();
@@ -468,7 +532,7 @@ fn write_canon_object(
     write_varint(out, entries.len() as u64);
     for (key, value) in entries {
         write_lp(out, key.as_str().as_bytes());
-        value.write_canonical(out, depth.saturating_add(1))?;
+        value.write_canonical(out, depth.saturating_add(1), policy)?;
     }
     Ok(())
 }
@@ -889,7 +953,30 @@ impl FieldValues {
         let mut out = Vec::new();
         out.extend_from_slice(CANON_DOMAIN);
         out.extend_from_slice(&VALUE_CANON_VERSION.to_be_bytes());
-        write_canon_object(&self.0, &mut out, 0)?;
+        write_canon_object(&self.0, &mut out, 0, &SecretCommitmentPolicy::Reject)?;
+        Ok(out)
+    }
+
+    /// Canonical bytes with an opt-in keyed commitment for secrets — the store
+    /// analogue of [`FieldValue::canonical_bytes_committing`]. Process-scoped to
+    /// `key`; see [`crate::commitment`] for the security model.
+    ///
+    /// # Errors
+    ///
+    /// `value.non_canonical_float` or `recursion_limit` — never `secret.not_hashable`.
+    #[must_use = "the committing bytes are computed for a dedup/content key; discarding wastes the work"]
+    #[expect(
+        clippy::result_large_err,
+        reason = "ValidationError is intentionally large; callers are on the validation path"
+    )]
+    pub fn canonical_bytes_committing(
+        &self,
+        key: &CommitmentKey,
+    ) -> Result<Vec<u8>, crate::error::ValidationError> {
+        let mut out = Vec::new();
+        out.extend_from_slice(CANON_DOMAIN);
+        out.extend_from_slice(&VALUE_CANON_VERSION.to_be_bytes());
+        write_canon_object(&self.0, &mut out, 0, &SecretCommitmentPolicy::Keyed(key))?;
         Ok(out)
     }
 
@@ -904,6 +991,27 @@ impl FieldValues {
     )]
     pub fn content_id(&self) -> Result<ContentId, crate::error::ValidationError> {
         Ok(ContentId(blake3::hash(&self.canonical_bytes()?).into()))
+    }
+
+    /// Process-scoped [`CommitmentId`] — the keyed analogue of
+    /// [`content_id`](Self::content_id). See [`crate::commitment`].
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`canonical_bytes_committing`](Self::canonical_bytes_committing).
+    #[must_use = "the commitment id is computed for a dedup key; discarding wastes the work"]
+    #[expect(
+        clippy::result_large_err,
+        reason = "ValidationError is intentionally large; callers are on the validation path"
+    )]
+    pub fn content_id_committing(
+        &self,
+        key: &CommitmentKey,
+    ) -> Result<CommitmentId, crate::error::ValidationError> {
+        let bytes = self.canonical_bytes_committing(key)?;
+        Ok(CommitmentId::from_digest(
+            blake3::keyed_hash(key.raw(), &bytes).into(),
+        ))
     }
 }
 
