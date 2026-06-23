@@ -140,7 +140,7 @@ macro_rules! for_each_field {
             // A forward-compat `Unknown` field has no typed `group` slot and is
             // never produced by the authoring builder (only by deserialization),
             // so group/visibility/required composition is a no-op for it.
-            Field::Unknown { .. } => {},
+            Field::Unknown(_) => {},
         }
     };
 }

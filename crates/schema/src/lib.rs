@@ -222,7 +222,7 @@ pub use field::ModeField;
 pub use field::{
     BooleanField, CodeField, ComputedField, ComputedReturn, DynamicField, Field, FileField,
     ListField, ModeVariant, NoticeField, NoticeSeverity, NumberField, ObjectField, SecretField,
-    SelectField, StringField,
+    SelectField, StringField, UnknownField,
 };
 pub use has_schema::{HasSchema, HasSelectOptions, schema_of};
 pub use input_hint::InputHint;

@@ -179,7 +179,7 @@ fn field_schema_value(field: &Field) -> Value {
         },
         // Forward-compat field of an unknown future kind; this version cannot
         // describe its value contract, so emit a permissive (empty) schema.
-        Field::Unknown { .. } => Map::new(),
+        Field::Unknown(_) => Map::new(),
     };
 
     let mut schema = apply_expression_mode(core_schema, *field.expression());
@@ -205,7 +205,7 @@ fn apply_common_keywords(field: &Field, schema: &mut Map<String, Value>) {
         Field::Notice(f) => (&f.label, &f.description, &f.default),
         // An unknown future field has no typed label/description/default slots;
         // its decorations (if any) live opaquely in `raw`. Skip common keywords.
-        Field::Unknown { .. } => return,
+        Field::Unknown(_) => return,
     };
 
     if let Some(title) = label {
@@ -458,9 +458,12 @@ fn expression_wrapper_schema() -> Map<String, Value> {
 }
 
 fn apply_contract_keywords(field: &Field, schema: &mut Map<String, Value>) {
+    // For an `Unknown` field, `type_name()` collapses to the literal "unknown";
+    // emit the real future discriminator so the exported contract stays accurate.
+    let field_kind = field.unknown_type().unwrap_or_else(|| field.type_name());
     schema.insert(
         "x-nebula-field-kind".to_owned(),
-        Value::String(field.type_name().to_owned()),
+        Value::String(field_kind.to_owned()),
     );
 
     schema.insert(

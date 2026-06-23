@@ -255,7 +255,7 @@ fn lint_default_type(field: &Field, path: &FieldPath, report: &mut ValidationRep
         | Field::Computed(_)
         | Field::Dynamic(_)
         | Field::Notice(_)
-        | Field::Unknown { .. } => return,
+        | Field::Unknown(_) => return,
     };
 
     if !ok {

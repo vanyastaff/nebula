@@ -145,6 +145,9 @@ pub enum SchemaIncompat {
 ///   the producer's fields with type-compatible matches on the overlap. Extra
 ///   producer fields are ignored.
 /// - **`Dynamic`/`Computed` fields** are treated as `Any` on either side.
+/// - **`Unknown` fields** (a kind this version does not recognize) are opaque on
+///   either side: the pair passes the binary check but [`explain_assignable`]
+///   reports [`UnknownReason::OpaqueFieldKind`] — neither proven nor refuted.
 /// - **`Notice` fields** are display-only and ignored on the consumer side.
 /// - Only [`RequiredMode::Always`] consumer fields are hard requirements;
 ///   [`RequiredMode::When`] and the default optional mode are not enforced
@@ -273,6 +276,15 @@ pub enum UnknownReason {
         /// Key of the number field.
         key: FieldKey,
     },
+    /// A matched pair where at least one side is a [`Field::Unknown`] — a field
+    /// kind this version does not recognize. Its value contract is opaque, so
+    /// compatibility can be neither proven nor refuted: an older reader cannot
+    /// reason about a newer writer's field kind. Routed to `Unknown` (a strict
+    /// policy blocks it) rather than a misleading `Yes`/`No`.
+    OpaqueFieldKind {
+        /// Key of the unrecognized field.
+        key: FieldKey,
+    },
     /// An undecidable reason found inside a nested `Object` or `List` field,
     /// carrying the enclosing field `key` so the path is not lost (mirrors
     /// [`SchemaIncompat::NestedIncompat`]). Nesting composes: an `Object` two
@@ -304,6 +316,12 @@ impl core::fmt::Display for UnknownReason {
                 write!(
                     f,
                     "field `{key}` narrows float to integer (possible precision loss)"
+                )
+            },
+            Self::OpaqueFieldKind { key } => {
+                write!(
+                    f,
+                    "field `{key}` is an unrecognized kind (opaque to this version)"
                 )
             },
             Self::NestedUnknown { key, inner } => write!(f, "in field `{key}`: {inner}"),
@@ -464,6 +482,18 @@ fn collect_pair(
         return;
     }
 
+    // `Unknown` on either side: a field kind this version does not recognize.
+    // `type_name()` collapses every `Unknown` to the literal `"unknown"`, so the
+    // generic `_` arm below would compare two distinct future kinds as equal and
+    // emit a misleading `Yes` (or, against a known kind, a hard `No`). The opaque
+    // contract is genuinely undecidable here — route it to `Unknown`, symmetric
+    // with the `Dynamic`/`Computed` guard above.
+    if matches!(producer_field, Field::Unknown(_)) || matches!(consumer_field, Field::Unknown(_)) {
+        acc.unknown
+            .push(UnknownReason::OpaqueFieldKind { key: key.clone() });
+        return;
+    }
+
     match (producer_field, consumer_field) {
         (Field::File(p), Field::File(c)) => {
             if p.multiple != c.multiple {
@@ -552,6 +582,8 @@ fn collect_pair(
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::*;
     use crate::Field;
 
@@ -669,7 +701,6 @@ mod tests {
     fn when_required_absent_is_ok() {
         use crate::Rule;
         use nebula_validator::Predicate;
-        use serde_json::json;
 
         let rule = Rule::predicate(Predicate::eq("mode", json!("advanced")).unwrap());
         let producer = [Field::string(fk("name")).required().into()];
@@ -1135,6 +1166,58 @@ mod tests {
             Assignability::Unknown(vec![UnknownReason::DynamicLoaderBacked { key: fk("name") }]),
         );
         assert!(is_assignable_schema(&producer, &consumer).is_ok());
+    }
+
+    /// A `Field::Unknown` on either side is opaque: even two of the *same* future
+    /// kind are `Unknown(OpaqueFieldKind)`, never a misleading `Yes` — this
+    /// version cannot prove an unrecognized kind's value contract.
+    #[test]
+    fn explain_unknown_field_pair_is_unknown_not_yes() {
+        let producer: ValidSchema =
+            serde_json::from_value(json!({"fields": [{"type": "richtext", "key": "bio"}]}))
+                .expect("Unknown producer schema");
+        let consumer: ValidSchema =
+            serde_json::from_value(json!({"fields": [{"type": "richtext", "key": "bio"}]}))
+                .expect("Unknown consumer schema");
+        assert_eq!(
+            explain_assignable(&producer, &consumer),
+            Assignability::Unknown(vec![UnknownReason::OpaqueFieldKind { key: fk("bio") }]),
+        );
+        assert!(is_assignable_schema(&producer, &consumer).is_ok());
+    }
+
+    /// Two *distinct* unknown kinds at the same key are `Unknown`, not a hard
+    /// `No`/`FieldTypeMismatch`: `type_name()` collapses both to "unknown", but
+    /// the pair is genuinely undecidable, not provably incompatible.
+    #[test]
+    fn explain_distinct_unknown_kinds_are_unknown_not_mismatch() {
+        let producer: ValidSchema =
+            serde_json::from_value(json!({"fields": [{"type": "richtext", "key": "bio"}]}))
+                .expect("Unknown producer schema");
+        let consumer: ValidSchema =
+            serde_json::from_value(json!({"fields": [{"type": "gallery", "key": "bio"}]}))
+                .expect("Unknown consumer schema");
+        assert_eq!(
+            explain_assignable(&producer, &consumer),
+            Assignability::Unknown(vec![UnknownReason::OpaqueFieldKind { key: fk("bio") }]),
+        );
+    }
+
+    /// An `Unknown` against a *known* field is also undecidable — not a hard
+    /// mismatch — because this version cannot reason about the unknown side.
+    #[test]
+    fn explain_unknown_vs_known_field_is_unknown_not_mismatch() {
+        let producer: ValidSchema =
+            serde_json::from_value(json!({"fields": [{"type": "richtext", "key": "bio"}]}))
+                .expect("Unknown producer schema");
+        let consumer = crate::Schema::builder()
+            .add(Field::string(fk("bio")))
+            .build()
+            .unwrap();
+        assert_eq!(
+            explain_assignable(&producer, &consumer),
+            Assignability::Unknown(vec![UnknownReason::OpaqueFieldKind { key: fk("bio") }]),
+        );
     }
 
     /// Number int→float widens (provably `Yes`); float→int narrows

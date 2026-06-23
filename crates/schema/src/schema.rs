@@ -604,7 +604,7 @@ fn normalize_field_for_runtime(field: &mut Field) {
         },
         // An `Unknown` field's rules/transformers live untyped inside `raw`;
         // nothing to normalize.
-        Field::Unknown { .. } => {},
+        Field::Unknown(_) => {},
     }
 }
 
