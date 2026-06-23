@@ -21,6 +21,12 @@ pub type EvalFuture<'a> =
 /// expression engine. The real evaluator lives in `nebula-expression`;
 /// this trait is the integration seam so tests can use a stub.
 ///
+/// > **Status: latent.** No production crate implements this trait yet — only
+/// > test and example stubs do. It is the dormant half of the
+/// > [`ValidValues::resolve`](crate::ValidValues::resolve) seam (see that
+/// > method's status note) and becomes load-bearing once the engine wires a
+/// > real evaluator for action-input expressions.
+///
 /// The trait is dyn-safe: callers receive `&dyn ExpressionContext` from
 /// [`ValidValues::resolve`](crate::ValidValues::resolve). The `evaluate`
 /// method intentionally returns a [`EvalFuture`] (boxed future) instead of

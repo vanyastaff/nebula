@@ -5,7 +5,8 @@
 //! - `Schema` builder with structural lint passes via `Schema::lint`.
 //! - Schema-time validation via `ValidSchema::validate` returning a `ValidValues` proof-token.
 //! - Runtime expression resolution via `ValidValues::resolve` returning a `ResolvedValues`
-//!   proof-token.
+//!   proof-token (a **latent** seam — sound and test-proven, but with no production
+//!   consumer yet; see `ValidValues::resolve`).
 //! - Strongly-typed error and path types.
 //!
 //! # Quick start

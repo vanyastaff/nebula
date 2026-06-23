@@ -545,6 +545,15 @@ impl ValidValues {
     /// `ctx`, then **promote** `Field::Secret` string literals to
     /// `FieldValue::SecretLiteral` before the final schema-validate pass.
     ///
+    /// > **Status: latent.** This seam is structurally complete and test-proven
+    /// > (the proof-token chain `ValidSchema → ValidValues → ResolvedValues` is
+    /// > enforced by the types), but has **no production consumer** in this
+    /// > version: no crate calls `resolve` or implements [`ExpressionContext`]
+    /// > outside tests and examples. It becomes load-bearing only when
+    /// > action-input expressions move from the test pipeline into the engine.
+    /// > Until then its behavior under a real evaluator — performance, error
+    /// > taxonomy, cancellation interplay — is unproven against production load.
+    ///
     /// **Expression fast path:** when `schema.flags().uses_expressions == false`,
     /// expression resolution is skipped; **secret promotion still runs** so
     /// `ResolvedValues` is consistent for secret fields.
@@ -685,6 +694,11 @@ impl ValidValues {
 ///
 /// Produced by `ValidValues::resolve()`. Proof-token that no
 /// expression placeholders remain in the value tree.
+///
+/// > **Status: latent.** Only [`ValidValues::resolve`](crate::ValidValues::resolve)
+/// > constructs this, and that seam has no production consumer yet (see its status
+/// > note) — so this proof-token, while sound, is exercised only by tests and
+/// > examples today.
 ///
 /// Owns an `Arc`-backed clone of the schema so it is freely `Send + 'static`
 /// and safe to persist or hand off to runtime.
