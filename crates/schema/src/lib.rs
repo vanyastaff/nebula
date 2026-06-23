@@ -109,7 +109,9 @@
 //!
 //! `#[schema(reserved("old_key"))]` forbids any field from using a key — reusing
 //! a removed field's key would misread documents written before the removal
-//! (Protobuf-style reservation). A collision is a compile error:
+//! (Protobuf-style reservation). It is enforced at compile time on this struct's
+//! definition (it is not recorded in the built schema). A collision is a compile
+//! error:
 //!
 //! ```compile_fail
 //! use nebula_schema::Schema;

@@ -190,6 +190,28 @@ fn derive_reserved_keys_do_not_materialize_or_block_other_fields() {
     assert!(!keys.contains(&"v1_secret"));
 }
 
+#[derive(Schema)]
+#[schema(reserved("dropped"))]
+#[allow(dead_code)]
+struct ReservedMatchesSkippedField {
+    keep: String,
+    // A skipped field has no wire key, so reserving its name is not a collision —
+    // this pins the skip-before-key-collection ordering in the derive.
+    #[field(skip)]
+    dropped: u64,
+}
+
+#[test]
+fn derive_reserved_key_matching_a_skipped_field_is_allowed() {
+    let s = ReservedMatchesSkippedField::schema();
+    let keys: Vec<&str> = s.fields().iter().map(|f| f.key().as_str()).collect();
+    assert_eq!(
+        keys,
+        ["keep"],
+        "the skipped `dropped` field never reaches the schema"
+    );
+}
+
 // ── #[derive(EnumSelect)] ──────────────────────────────────────────────────
 
 #[derive(EnumSelect, Clone, Copy)]

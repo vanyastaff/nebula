@@ -184,6 +184,7 @@ fn enforce_reserved_keys(
     reserved: &[syn::LitStr],
     field_keys: &[(String, Span)],
 ) -> syn::Result<()> {
+    let mut seen = std::collections::HashSet::with_capacity(reserved.len());
     for lit in reserved {
         let reserved_key = lit.value();
         // A reserved key that is not a valid `FieldKey` can never match a real
@@ -194,6 +195,13 @@ fn enforce_reserved_keys(
                 format!("reserved key `{reserved_key}` is not a valid schema field key ({reason})"),
             )
         })?;
+        // The same key reserved twice is a typo: the duplicate is a dead entry.
+        if !seen.insert(reserved_key.clone()) {
+            return Err(syn::Error::new(
+                lit.span(),
+                format!("key `{reserved_key}` is reserved more than once"),
+            ));
+        }
         if let Some((_, field_span)) = field_keys.iter().find(|(key, _)| *key == reserved_key) {
             return Err(syn::Error::new(
                 *field_span,

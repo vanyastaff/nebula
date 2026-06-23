@@ -457,6 +457,13 @@ impl Parse for SchemaEntry {
         let value: LitStr = input.parse()?;
         match name.to_string().as_str() {
             "custom" => Ok(Self::Custom { value }),
+            // `reserved` is a valid option used with the wrong (assignment) form —
+            // point at the list syntax instead of claiming the option is unknown.
+            "reserved" => Err(syn::Error::new(
+                name.span(),
+                "#[schema(reserved)] requires list syntax: write `reserved(\"key\")`, \
+                 not `reserved = \"key\"`",
+            )),
             other => Err(syn::Error::new(
                 name.span(),
                 format!("unknown #[schema(..)] option `{other}`"),
