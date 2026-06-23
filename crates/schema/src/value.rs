@@ -271,7 +271,7 @@ impl FieldValue {
         let mut out = Vec::new();
         out.extend_from_slice(CANON_DOMAIN);
         out.extend_from_slice(&VALUE_CANON_VERSION.to_be_bytes());
-        self.write_canonical(&mut out)?;
+        self.write_canonical(&mut out, 0)?;
         Ok(out)
     }
 
@@ -294,26 +294,40 @@ impl FieldValue {
     }
 
     /// Recursive canonical writer for a [`FieldValue`].
+    ///
+    /// `depth` bounds the recursion at [`MAX_VALUE_DEPTH`] (shared with
+    /// `write_canon_json` so the FieldValue + raw-JSON nesting is counted
+    /// together): `FieldValue::from_json` preserves over-deep subtrees as a
+    /// `Literal` instead of rejecting them, so an adversarial deeply-nested value
+    /// can reach here — bounding the descent turns a stack overflow into a typed
+    /// `recursion_limit` error.
     #[expect(
         clippy::result_large_err,
         reason = "ValidationError is intentionally large; callers are on the validation path"
     )]
-    fn write_canonical(&self, out: &mut Vec<u8>) -> Result<(), crate::error::ValidationError> {
+    fn write_canonical(
+        &self,
+        out: &mut Vec<u8>,
+        depth: u8,
+    ) -> Result<(), crate::error::ValidationError> {
+        if depth > MAX_VALUE_DEPTH {
+            return Err(canon_recursion_limit());
+        }
         match self {
             // A `Literal` carries a raw JSON value (including `Array`/`Object`
             // when keys were not valid `FieldKey`s — `from_json` preserves them),
             // canonicalized by the JSON writer below.
-            Self::Literal(value) => write_canon_json(value, out)?,
+            Self::Literal(value) => write_canon_json(value, out, depth)?,
             Self::Expression(expr) => {
                 out.push(TAG_EXPRESSION);
                 write_lp(out, expr.source().as_bytes());
             },
-            Self::Object(map) => write_canon_object(map, out)?,
+            Self::Object(map) => write_canon_object(map, out, depth)?,
             Self::List(items) => {
                 out.push(TAG_LIST);
                 write_varint(out, items.len() as u64);
                 for item in items {
-                    item.write_canonical(out)?;
+                    item.write_canonical(out, depth.saturating_add(1))?;
                 }
             },
             Self::Mode { mode, value } => {
@@ -322,7 +336,7 @@ impl FieldValue {
                 match value {
                     Some(inner) => {
                         out.push(1);
-                        inner.write_canonical(out)?;
+                        inner.write_canonical(out, depth.saturating_add(1))?;
                     },
                     None => out.push(0),
                 }
@@ -405,6 +419,15 @@ fn non_canonical_float() -> crate::error::ValidationError {
         .build()
 }
 
+/// `recursion_limit` — value nesting exceeds [`MAX_VALUE_DEPTH`] during
+/// canonicalization (an over-deep value that `from_json` preserved as a
+/// `Literal` is rejected here rather than overflowing the stack).
+fn canon_recursion_limit() -> crate::error::ValidationError {
+    crate::error::ValidationError::builder("recursion_limit")
+        .message("value nesting exceeds the maximum canonicalization depth")
+        .build()
+}
+
 /// Append a length-prefixed byte string (varint length + bytes) — prevents
 /// `"a" + "b"` from aliasing `"ab"`.
 fn write_lp(out: &mut Vec<u8>, bytes: &[u8]) {
@@ -437,6 +460,7 @@ fn write_varint(out: &mut Vec<u8>, mut value: u64) {
 fn write_canon_object(
     map: &IndexMap<FieldKey, FieldValue>,
     out: &mut Vec<u8>,
+    depth: u8,
 ) -> Result<(), crate::error::ValidationError> {
     out.push(TAG_OBJECT);
     let mut entries: Vec<(&FieldKey, &FieldValue)> = map.iter().collect();
@@ -444,17 +468,25 @@ fn write_canon_object(
     write_varint(out, entries.len() as u64);
     for (key, value) in entries {
         write_lp(out, key.as_str().as_bytes());
-        value.write_canonical(out)?;
+        value.write_canonical(out, depth.saturating_add(1))?;
     }
     Ok(())
 }
 
 /// Canonicalize a raw `serde_json::Value` (used for `FieldValue::Literal`).
+/// `depth` continues the shared recursion bound (see `write_canonical`).
 #[expect(
     clippy::result_large_err,
     reason = "ValidationError is intentionally large; callers are on the validation path"
 )]
-fn write_canon_json(value: &Value, out: &mut Vec<u8>) -> Result<(), crate::error::ValidationError> {
+fn write_canon_json(
+    value: &Value,
+    out: &mut Vec<u8>,
+    depth: u8,
+) -> Result<(), crate::error::ValidationError> {
+    if depth > MAX_VALUE_DEPTH {
+        return Err(canon_recursion_limit());
+    }
     match value {
         Value::Null => out.push(TAG_NULL),
         Value::Bool(b) => {
@@ -470,7 +502,7 @@ fn write_canon_json(value: &Value, out: &mut Vec<u8>) -> Result<(), crate::error
             out.push(TAG_JSON_ARRAY);
             write_varint(out, items.len() as u64);
             for item in items {
-                write_canon_json(item, out)?;
+                write_canon_json(item, out, depth.saturating_add(1))?;
             }
         },
         Value::Object(map) => {
@@ -480,7 +512,7 @@ fn write_canon_json(value: &Value, out: &mut Vec<u8>) -> Result<(), crate::error
             write_varint(out, entries.len() as u64);
             for (key, child) in entries {
                 write_lp(out, key.as_bytes());
-                write_canon_json(child, out)?;
+                write_canon_json(child, out, depth.saturating_add(1))?;
             }
         },
     }
@@ -857,7 +889,7 @@ impl FieldValues {
         let mut out = Vec::new();
         out.extend_from_slice(CANON_DOMAIN);
         out.extend_from_slice(&VALUE_CANON_VERSION.to_be_bytes());
-        write_canon_object(&self.0, &mut out)?;
+        write_canon_object(&self.0, &mut out, 0)?;
         Ok(out)
     }
 
@@ -1498,6 +1530,24 @@ mod tests {
             &bytes[16..18],
             &VALUE_CANON_VERSION.to_be_bytes(),
             "the version prefix is pinned"
+        );
+    }
+
+    /// An over-deep value (which `from_json` preserves as a `Literal` rather than
+    /// rejecting) must error with `recursion_limit`, not overflow the stack.
+    #[test]
+    fn canon_rejects_over_deep_value() {
+        let mut deep = Value::Null;
+        for _ in 0..(MAX_VALUE_DEPTH as usize + 5) {
+            deep = Value::Array(vec![deep]);
+        }
+        let value = FieldValue::Literal(deep);
+        assert_eq!(
+            value
+                .canonical_bytes()
+                .expect_err("over-deep value must error, not overflow")
+                .code,
+            "recursion_limit"
         );
     }
 }
