@@ -7,9 +7,21 @@
 //! |------|------|
 //! | `loader.not_registered` | Named loader key not found in registry |
 //! | `loader.failed` | Loader invocation returned an error |
+//! | `loader.result_too_large` | A loader page exceeded `MAX_LOADER_ITEMS` |
 //!
 //! Lint-time warnings (`missing_loader`, `loader_without_dynamic`) are emitted
 //! by the lint pass in `lint.rs`, not here.
+//!
+//! # Resource bounds (what this layer does and does NOT enforce)
+//!
+//! The registry enforces a **result-size** bound (`MAX_LOADER_ITEMS`) — the
+//! one loader DoS vector a runtime-agnostic schema library can own. It does
+//! **not** apply a **timeout**, **rate limit**, or **cache**: those need a
+//! runtime, a clock, and a tenant identity that this crate deliberately has none
+//! of (mirroring its `validator` / `expression` peers). The caller wiring a
+//! loader (e.g. the engine) MUST wrap each call in its runtime's timeout (a hung
+//! loader otherwise blocks validation indefinitely), rate-limit per tenant /
+//! loader key, and cache by `(loader_key, filter, cursor)` as appropriate.
 
 use std::{future::Future, pin::Pin, sync::Arc};
 
@@ -299,6 +311,42 @@ fn field_path_from_err_or(fallback: &FieldPath, err: &ValidationError) -> FieldP
     }
 }
 
+/// Hard ceiling on the number of items a single loader page may return.
+///
+/// A loader returning more than this fails `loader.result_too_large` instead of
+/// flowing an unbounded result into validation, the UI, or serialization — a
+/// misbehaving (or hostile) loader must paginate via [`LoaderResult::next_cursor`].
+/// This is the one loader resource bound the schema layer can enforce itself; the
+/// timeout / rate-limit / cache concerns belong to the caller's runtime (see
+/// [`LoaderRegistry`]).
+pub const MAX_LOADER_ITEMS: usize = 10_000;
+
+/// Reject a loader page whose item count exceeds [`MAX_LOADER_ITEMS`].
+#[expect(
+    clippy::result_large_err,
+    reason = "ValidationError is intentionally large; callers are on the validation path"
+)]
+fn enforce_items_bound<T>(
+    result: LoaderResult<T>,
+    key: &str,
+    path: &FieldPath,
+) -> Result<LoaderResult<T>, ValidationError> {
+    let count = result.items.len();
+    if count > MAX_LOADER_ITEMS {
+        return Err(ValidationError::builder("loader.result_too_large")
+            .at(path.clone())
+            .message(format!(
+                "loader `{key}` returned {count} items, exceeding the \
+                 {MAX_LOADER_ITEMS}-item page limit — paginate via the cursor"
+            ))
+            .param("loader", Value::String(key.to_owned()))
+            .param("count", Value::from(count as u64))
+            .param("limit", Value::from(MAX_LOADER_ITEMS as u64))
+            .build());
+    }
+    Ok(result)
+}
+
 /// Runtime registry for named loader functions.
 #[derive(Debug, Clone, Default)]
 pub struct LoaderRegistry {
@@ -371,7 +419,7 @@ impl LoaderRegistry {
                 .param("loader", Value::String(key.to_owned()))
                 .build());
         };
-        loader.call(context).await.map_err(|e| {
+        let result = loader.call(context).await.map_err(|e| {
             tracing::warn!(
                 target: "nebula_schema::loader",
                 loader_key = %key,
@@ -384,7 +432,8 @@ impl LoaderRegistry {
                 .param("loader", Value::String(key.to_owned()))
                 .source(e)
                 .build()
-        })
+        })?;
+        enforce_items_bound(result, key, &field_path)
     }
 
     /// Resolve and execute record loader by key.
@@ -421,7 +470,7 @@ impl LoaderRegistry {
                 .param("loader", Value::String(key.to_owned()))
                 .build());
         };
-        loader.call(context).await.map_err(|e| {
+        let result = loader.call(context).await.map_err(|e| {
             tracing::warn!(
                 target: "nebula_schema::loader",
                 loader_key = %key,
@@ -434,7 +483,8 @@ impl LoaderRegistry {
                 .param("loader", Value::String(key.to_owned()))
                 .source(e)
                 .build()
-        })
+        })?;
+        enforce_items_bound(result, key, &field_path)
     }
 }
 
@@ -517,6 +567,57 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.code, "loader.failed");
         assert_eq!(err.path.to_string(), "region");
+    }
+
+    #[tokio::test]
+    async fn load_options_rejects_oversized_result() {
+        // A loader page above the item ceiling fails closed (it must paginate).
+        let registry = LoaderRegistry::new().register_option("big", |_ctx| async {
+            let items = (0..=MAX_LOADER_ITEMS)
+                .map(|i| SelectOption::new(json!(i), format!("o{i}")))
+                .collect();
+            Ok(LoaderResult::done(items))
+        });
+        let ctx = LoaderContext::new("region", FieldValues::new());
+        let err = registry.load_options("big", ctx).await.unwrap_err();
+        assert_eq!(err.code, "loader.result_too_large");
+        assert_eq!(
+            err.path.to_string(),
+            "region",
+            "carries the requesting field"
+        );
+        assert!(
+            err.params
+                .iter()
+                .any(|(k, v)| k == "limit" && v.as_u64() == Some(MAX_LOADER_ITEMS as u64)),
+            "reports the limit: {:?}",
+            err.params
+        );
+    }
+
+    #[tokio::test]
+    async fn load_options_accepts_max_items_boundary() {
+        // Exactly the ceiling is allowed; only strictly above it is rejected.
+        let registry = LoaderRegistry::new().register_option("atlimit", |_ctx| async {
+            let items = (0..MAX_LOADER_ITEMS)
+                .map(|i| SelectOption::new(json!(i), format!("o{i}")))
+                .collect();
+            Ok(LoaderResult::done(items))
+        });
+        let ctx = LoaderContext::new("region", FieldValues::new());
+        let result = registry.load_options("atlimit", ctx).await.unwrap();
+        assert_eq!(result.items.len(), MAX_LOADER_ITEMS);
+    }
+
+    #[tokio::test]
+    async fn load_records_rejects_oversized_result() {
+        let registry = LoaderRegistry::new().register_record("big", |_ctx| async {
+            let items = (0..=MAX_LOADER_ITEMS).map(|i| json!({ "i": i })).collect();
+            Ok(LoaderResult::done(items))
+        });
+        let ctx = LoaderContext::new("rows", FieldValues::new());
+        let err = registry.load_records("big", ctx).await.unwrap_err();
+        assert_eq!(err.code, "loader.result_too_large");
     }
 
     #[test]

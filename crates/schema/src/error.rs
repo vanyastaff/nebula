@@ -343,6 +343,7 @@ pub const STANDARD_CODES: &[&str] = &[
     "loader.not_registered",
     "loader.missing_config",
     "loader.failed",
+    "loader.result_too_large",
     // field resolution
     "field.not_found",
     "field.type_mismatch",
