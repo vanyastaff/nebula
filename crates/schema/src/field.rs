@@ -703,7 +703,6 @@ impl FileField {
 }
 
 define_field!(ComputedField {
-    expression_source: String = String::new(),
     returns: ComputedReturn = ComputedReturn::String,
 } expr: ExpressionMode::Required);
 
@@ -721,13 +720,6 @@ pub enum ComputedReturn {
 }
 
 impl ComputedField {
-    /// Set the expression source code.
-    #[must_use]
-    pub fn expression_source(mut self, src: impl Into<String>) -> Self {
-        self.expression_source = src.into();
-        self
-    }
-
     /// Set the return type hint.
     #[must_use]
     pub const fn returns(mut self, r: ComputedReturn) -> Self {

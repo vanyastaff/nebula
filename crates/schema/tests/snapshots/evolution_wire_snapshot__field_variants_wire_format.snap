@@ -126,7 +126,6 @@ expression: variants
     "type": "computed",
     "key": "comp",
     "expression": "required",
-    "expression_source": "",
     "returns": "string"
   },
   {
