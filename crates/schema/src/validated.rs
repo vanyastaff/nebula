@@ -1,7 +1,7 @@
 //! Validated schema handles — proof-tokens.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashSet,
     future::Future,
     pin::Pin,
     sync::{Arc, LazyLock},
@@ -1606,12 +1606,14 @@ fn validate_literal_value(
                 let duplicate_index = items_typed.map_or_else(
                     || {
                         if let FieldValue::Literal(serde_json::Value::Array(arr)) = value {
-                            first_duplicate_index(arr.iter().cloned())
+                            first_duplicate_index(
+                                arr.iter().map(|item| FieldValue::Literal(item.clone())),
+                            )
                         } else {
                             None
                         }
                     },
-                    |items_fv| first_duplicate_index(items_fv.iter().map(FieldValue::to_json)),
+                    |items_fv| first_duplicate_index(items_fv.iter().cloned()),
                 );
                 if let Some(idx) = duplicate_index {
                     report.push(
@@ -1845,22 +1847,25 @@ fn validate_literal_value(
     }
 }
 
-fn first_duplicate_index(values: impl IntoIterator<Item = serde_json::Value>) -> Option<usize> {
-    let mut seen: HashMap<String, Vec<serde_json::Value>> = HashMap::new();
+fn first_duplicate_index(values: impl IntoIterator<Item = FieldValue>) -> Option<usize> {
+    // Bucket by injective `canonical_bytes`, so `1` and `1.0` (and key-permuted
+    // objects) count as equal — fixing the `"1"`-vs-`"1.0"` false negative the
+    // old `serde_json::to_string` bucketing missed.
+    let mut seen_canon: HashSet<Vec<u8>> = HashSet::new();
+    // Secret-bearing items have no canonical form; fall back to structural
+    // `PartialEq` (constant-time inside `SecretValue`) so a unique list that
+    // contains secrets is still validated rather than erroring.
+    let mut seen_opaque: Vec<FieldValue> = Vec::new();
     for (idx, value) in values.into_iter().enumerate() {
-        // serde_json::Value does not implement Hash. Bucket by canonical
-        // string form (`serde_json::to_string` is infallible for `Value`
-        // because all map keys are strings), then confirm equality within
-        // the bucket to preserve exact semantics.
-        let key = serde_json::to_string(&value)
-            .expect("serde_json::Value::to_string is infallible for valid JSON");
-        if let Some(bucket) = seen.get_mut(&key) {
-            if bucket.iter().any(|prior| prior == &value) {
+        if let Ok(canon) = value.canonical_bytes() {
+            if !seen_canon.insert(canon) {
                 return Some(idx);
             }
-            bucket.push(value);
+        } else if seen_opaque.contains(&value) {
+            // No canonical form (e.g. a secret) — fall back to structural PartialEq.
+            return Some(idx);
         } else {
-            seen.insert(key, vec![value]);
+            seen_opaque.push(value);
         }
     }
     None

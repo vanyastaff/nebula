@@ -506,6 +506,28 @@ fn list_unique_distinct_values_ok() {
     assert!(schema.validate(&values).is_ok());
 }
 
+/// `unique` now compares by canonical value, so `1` and `1.0` (the same number
+/// spelled two ways) count as a duplicate — the `"1"`-vs-`"1.0"` dedup fix. The
+/// old `serde_json::to_string` bucketing wrongly accepted this list.
+#[test]
+fn list_unique_treats_int_and_float_as_duplicate() {
+    let schema = Schema::builder()
+        .add(
+            Field::list(fk("items"))
+                .item(Field::number(fk("it")))
+                .unique(),
+        )
+        .build()
+        .unwrap();
+    let values = FieldValues::from_json(json!({"items": [1, 1.0]})).unwrap();
+    let report = schema.validate(&values).unwrap_err();
+    assert!(
+        report.errors().any(|e| e.code == "items.unique"),
+        "1 and 1.0 are the same number; got: {:?}",
+        report.errors().map(|e| &e.code).collect::<Vec<_>>()
+    );
+}
+
 #[test]
 fn required_multi_file_empty_array_emits_required() {
     let schema = Schema::builder()

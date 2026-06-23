@@ -245,7 +245,7 @@ pub use transformer::Transformer;
 pub use validated::{
     FieldHandle, ResolvedLookup, ResolvedValues, SchemaFlags, SchemaKind, ValidSchema, ValidValues,
 };
-pub use value::{EXPRESSION_KEY, FieldValue, FieldValues};
+pub use value::{ContentId, EXPRESSION_KEY, FieldValue, FieldValues, VALUE_CANON_VERSION};
 pub use widget::{
     BooleanWidget, CodeWidget, ListWidget, NumberWidget, ObjectWidget, SecretWidget, SelectWidget,
     StringWidget,

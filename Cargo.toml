@@ -105,6 +105,7 @@ lasso = { version = "0.7", features = ["multi-threaded"] }
 
 # Crypto
 aes-gcm = "0.10"
+blake3 = "1.5"
 sha2 = "0.11"
 hmac = "0.13"
 hex = "0.4"
