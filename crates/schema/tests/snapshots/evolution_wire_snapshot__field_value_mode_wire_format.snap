@@ -1,0 +1,10 @@
+---
+source: crates/schema/tests/evolution_wire_snapshot.rs
+expression: mode
+---
+{
+  "mode": "oauth2",
+  "value": {
+    "scope": "read"
+  }
+}

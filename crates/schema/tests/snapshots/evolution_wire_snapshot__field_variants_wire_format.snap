@@ -1,0 +1,144 @@
+---
+source: crates/schema/tests/evolution_wire_snapshot.rs
+expression: variants
+---
+[
+  {
+    "type": "string",
+    "key": "s",
+    "label": "Display Name",
+    "description": "A fully-described field",
+    "placeholder": "type here",
+    "default": "default-value",
+    "visible": {
+      "kind": "never"
+    },
+    "required": {
+      "kind": "always"
+    },
+    "group": "contact",
+    "rules": [
+      {
+        "eq": [
+          "/s",
+          "x"
+        ]
+      }
+    ],
+    "hint": "text",
+    "widget": "plain"
+  },
+  {
+    "type": "secret",
+    "key": "sec",
+    "widget": "plain",
+    "reveal_last": null
+  },
+  {
+    "type": "number",
+    "key": "n",
+    "integer": true,
+    "widget": "plain",
+    "step": null
+  },
+  {
+    "type": "boolean",
+    "key": "b",
+    "expression": "forbidden",
+    "widget": "toggle"
+  },
+  {
+    "type": "select",
+    "key": "sel",
+    "expression": "forbidden",
+    "options": [
+      {
+        "value": "a",
+        "label": "A"
+      }
+    ],
+    "dynamic": false,
+    "loader": null,
+    "depends_on": [],
+    "multiple": false,
+    "allow_custom": false,
+    "searchable": false,
+    "widget": "dropdown"
+  },
+  {
+    "type": "object",
+    "key": "o",
+    "fields": [
+      {
+        "type": "string",
+        "key": "inner",
+        "hint": "text",
+        "widget": "plain"
+      }
+    ],
+    "widget": "inline"
+  },
+  {
+    "type": "list",
+    "key": "l",
+    "item": {
+      "type": "string",
+      "key": "it",
+      "hint": "text",
+      "widget": "plain"
+    },
+    "min_items": null,
+    "max_items": null,
+    "unique": false,
+    "widget": "plain"
+  },
+  {
+    "type": "mode",
+    "key": "m",
+    "variants": [
+      {
+        "key": "v",
+        "label": "V",
+        "field": {
+          "type": "string",
+          "key": "x",
+          "hint": "text",
+          "widget": "plain"
+        }
+      }
+    ],
+    "default_variant": null
+  },
+  {
+    "type": "code",
+    "key": "c",
+    "language": "plaintext",
+    "widget": "monaco"
+  },
+  {
+    "type": "file",
+    "key": "f",
+    "accept": null,
+    "max_size": null,
+    "multiple": true
+  },
+  {
+    "type": "computed",
+    "key": "comp",
+    "expression": "required",
+    "expression_source": "",
+    "returns": "string"
+  },
+  {
+    "type": "dynamic",
+    "key": "d",
+    "depends_on": [],
+    "loader": null
+  },
+  {
+    "type": "notice",
+    "key": "not",
+    "expression": "forbidden",
+    "severity": "info"
+  }
+]
