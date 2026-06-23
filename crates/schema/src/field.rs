@@ -831,25 +831,29 @@ pub enum Field {
 /// Payload of [`Field::Unknown`] — an unrecognized field kind preserved for
 /// forward compatibility.
 ///
-/// `#[non_exhaustive]` so it is constructible only inside this crate (the sole
-/// producer is `Field`'s `Deserialize` impl): an externally hand-built value
-/// could claim a known `type` or desync `raw` from `key`. Read it via the shared
-/// [`Field`] accessors plus [`Field::unknown_type`] / [`Field::raw_object`].
+/// All fields are **private**: `raw` is the single source of truth that
+/// `Serialize` re-emits, and the recovered `key`/`visible`/`required` are a
+/// read-only derived view of it. Were they writable, an edit would silently
+/// diverge from `raw` (what actually gets serialized) and be lost on the next
+/// read. The sole constructor is `Field`'s `Deserialize` impl, so an external
+/// value can never claim a known `type` or desync `raw` from `key`. Read it via
+/// the shared [`Field`] accessors plus [`Field::unknown_type`] /
+/// [`Field::raw_object`]; `#[non_exhaustive]` reserves room for future fields.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
 pub struct UnknownField {
     /// The unrecognized `type` discriminator (the real future field kind).
-    pub unknown_type: String,
+    unknown_type: String,
     /// The recovered field key (its identity; required even on this opaque path).
-    pub key: FieldKey,
+    key: FieldKey,
     /// Recovered visibility (defaulted if the raw object omitted/mis-shaped it).
-    pub visible: VisibilityMode,
+    visible: VisibilityMode,
     /// Recovered required mode (defaulted if the raw object omitted/mis-shaped it).
-    pub required: RequiredMode,
+    required: RequiredMode,
     /// The full raw JSON object. Every key and value is preserved; object key
     /// order is normalized (the wire backend sorts keys) — see
     /// [`Field::raw_object`].
-    pub raw: serde_json::Map<String, Value>,
+    raw: serde_json::Map<String, Value>,
 }
 
 const REQUIRED_EXPRESSION_MODE: ExpressionMode = ExpressionMode::Required;
