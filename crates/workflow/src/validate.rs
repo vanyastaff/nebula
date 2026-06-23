@@ -219,9 +219,11 @@ pub fn validate_workflow_with_resolver(
 ///
 /// Runs every structural check that [`validate_workflow`] performs, then for
 /// each [`Connection`](crate::Connection) whose **both** endpoints can be
-/// resolved by `resolver`, computes
-/// `nebula_schema::explain_assignable(producer.output, consumer.input)` and
-/// reports per `mode`: a [`No`](nebula_schema::Assignability::No) verdict is
+/// resolved by `resolver`, computes `nebula_schema::explain_assignable` over the
+/// polarity-typed `producer.output` ([`OutputSchema`](nebula_schema::OutputSchema))
+/// and `consumer.input` ([`InputSchema`](nebula_schema::InputSchema)) — the
+/// newtypes make transposing the two a compile error — and reports per `mode`:
+/// a [`No`](nebula_schema::Assignability::No) verdict is
 /// always a [`WorkflowError::PortSchemaIncompatible`]; an
 /// [`Unknown`](nebula_schema::Assignability::Unknown) verdict is a
 /// [`WorkflowError::PortSchemaUndecidable`] only in [`SchemaCheckMode::Strict`].

@@ -382,6 +382,17 @@ impl ActionMetadata {
         &self.output_schema
     }
 
+    /// The output schema tagged with producer polarity (ADR-0100 C15).
+    ///
+    /// A single place to wrap `output_schema` into an
+    /// [`OutputSchema`](nebula_schema::OutputSchema), so callers feeding the
+    /// TypeDAG assignability API need not restate `OutputSchema::new(...)`. When
+    /// the `HasOutputSchema` trait split lands this becomes its impl site.
+    #[must_use]
+    pub fn typed_output_schema(&self) -> nebula_schema::OutputSchema {
+        nebula_schema::OutputSchema::new(self.output_schema.clone())
+    }
+
     /// Set the isolation level for dispatch routing.
     #[must_use = "builder methods must be chained or built"]
     pub fn with_isolation_level(mut self, level: IsolationLevel) -> Self {
@@ -456,9 +467,12 @@ impl ActionMetadata {
         // dropped or narrowed a field old consumers relied on — a silent breaking
         // change on a same-major upgrade (including a collapse to `Output = ()`,
         // which an untyped `Any` would have masked).
-        let new_output = nebula_schema::OutputSchema::new(self.output_schema.clone());
-        let old_output = nebula_schema::OutputSchema::new(previous.output_schema.clone());
-        if same_major && new_output.is_compatible_successor_of(&old_output).is_err() {
+        if same_major
+            && self
+                .typed_output_schema()
+                .is_compatible_successor_of(&previous.typed_output_schema())
+                .is_err()
+        {
             return Err(MetadataCompatibilityError::OutputSchemaNarrowedWithoutMajorBump);
         }
 

@@ -1,0 +1,8 @@
+error[E0308]: mismatched types
+  --> tests/compile_fail/directional_eq_cross_polarity.rs:12:22
+   |
+12 |     let _ = input == output;
+   |                      ^^^^^^ expected `DirectedSchema<Input>`, found `DirectedSchema<Output>`
+   |
+   = note: expected struct `DirectedSchema<Input>`
+              found struct `DirectedSchema<nebula_schema::Output>`

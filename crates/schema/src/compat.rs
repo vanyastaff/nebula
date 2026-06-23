@@ -212,26 +212,6 @@ pub fn explain_assignable(producer: &OutputSchema, consumer: &InputSchema) -> As
     explain_assignable_core(producer.as_schema(), consumer.as_schema())
 }
 
-impl OutputSchema {
-    /// Is `self` a backward-compatible **successor** of `prev` — does the new
-    /// output still satisfy everything consumers typed against the *old* output
-    /// required? An *output-vs-output* width-supertype check, distinct from the
-    /// producer→consumer edge relation, so it does **not** route through the
-    /// [`InputSchema`]-typed [`is_assignable_schema`].
-    ///
-    /// The action catalog's same-major compatibility gate uses this: an `Err`
-    /// means the new output dropped or narrowed a field old consumers relied on.
-    ///
-    /// # Errors
-    ///
-    /// Returns the first [`SchemaIncompat`] (the new output `self` is the
-    /// producer, the old output `prev` the consumer-expectation).
-    #[must_use = "check the Result — an Err means the new output is not a compatible successor"]
-    pub fn is_compatible_successor_of(&self, prev: &OutputSchema) -> Result<(), SchemaIncompat> {
-        is_assignable_core(self.as_schema(), prev.as_schema())
-    }
-}
-
 /// The three-valued (Cue/GraphQL-style) assignability verdict: a producer
 /// schema is provably assignable, provably not, or **not statically decidable**.
 ///
@@ -1352,6 +1332,28 @@ mod tests {
             narrower.is_compatible_successor_of(&prev),
             Err(SchemaIncompat::MissingRequiredField { key: fk("result") }),
             "dropping a field old consumers required is a breaking successor"
+        );
+
+        // Gradual boundary at the relation level (not only via the metadata
+        // integration test): a new output that became the untyped `Any` cannot
+        // be proven breaking → Ok; one that collapsed to an empty record emits
+        // nothing the typed old output required → Err.
+        let any_new = OutputSchema::new(ValidSchema::any());
+        assert!(
+            any_new.is_compatible_successor_of(&prev).is_ok(),
+            "a new `Any` output is not provably breaking"
+        );
+        let empty_new = OutputSchema::new(ValidSchema::empty());
+        assert_eq!(
+            empty_new.is_compatible_successor_of(&prev),
+            Err(SchemaIncompat::MissingRequiredField { key: fk("result") }),
+            "an empty-record new output drops every field old consumers required"
+        );
+        // An `Any` *old* output imposed no constraints → any new output is Ok.
+        let any_prev = OutputSchema::new(ValidSchema::any());
+        assert!(
+            narrower.is_compatible_successor_of(&any_prev).is_ok(),
+            "an `Any` old output constrains nothing"
         );
     }
 }

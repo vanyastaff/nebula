@@ -23,8 +23,12 @@ mod sealed {
     pub trait Sealed {}
 }
 
-/// The dataflow direction of a schema. **Sealed**: only [`Input`] and
-/// [`Output`] implement it, so the set of polarities is closed.
+/// The dataflow direction of a schema.
+///
+/// This trait is **sealed** and cannot be implemented outside `nebula-schema`:
+/// only [`Input`] and [`Output`] implement it, so the set of polarities is
+/// closed. Callers use the [`InputSchema`] / [`OutputSchema`] aliases and never
+/// name this bound directly.
 pub trait Polarity: sealed::Sealed + 'static {
     /// Lowercase label (`"input"` / `"output"`) for diagnostics.
     const LABEL: &'static str;
@@ -69,6 +73,12 @@ pub type OutputSchema = DirectedSchema<Output>;
 
 impl<P: Polarity> DirectedSchema<P> {
     /// Tag a [`ValidSchema`] with polarity `P`.
+    ///
+    /// Infallible. The direction-aware **input-position** lint (rejecting
+    /// `Computed` / unresolved `Dynamic` fields in an [`InputSchema`]) is
+    /// deferred; when it lands it will arrive as an additive fallible
+    /// `TryFrom<ValidSchema>` constructor, leaving this one for schemas already
+    /// known to satisfy the position rules.
     #[must_use]
     pub fn new(schema: ValidSchema) -> Self {
         Self {
@@ -77,13 +87,21 @@ impl<P: Polarity> DirectedSchema<P> {
         }
     }
 
-    /// Borrow the underlying schema (drops the polarity tag).
+    /// Borrow the underlying schema, **discarding the polarity tag**.
+    ///
+    /// For storage / serde / interop. Do **not** feed the result back into an
+    /// assignability check as a `producer`/`consumer` — that round-trips through
+    /// untyped `ValidSchema` and defeats the direction guarantee. Use
+    /// [`is_assignable_schema`](crate::is_assignable_schema) /
+    /// [`explain_assignable`](crate::explain_assignable), which take the typed
+    /// newtypes directly.
     #[must_use]
     pub fn as_schema(&self) -> &ValidSchema {
         &self.schema
     }
 
-    /// Unwrap into the underlying [`ValidSchema`].
+    /// Unwrap into the underlying [`ValidSchema`], **discarding the polarity
+    /// tag** (see the caveat on [`as_schema`](Self::as_schema)).
     #[must_use]
     pub fn into_schema(self) -> ValidSchema {
         self.schema
@@ -107,6 +125,37 @@ impl<P: Polarity> From<ValidSchema> for DirectedSchema<P> {
 impl<P: Polarity> PartialEq for DirectedSchema<P> {
     fn eq(&self, other: &Self) -> bool {
         self.schema == other.schema
+    }
+}
+
+// The polarity phantom is irrelevant to equality and the inner `ValidSchema` is
+// `Eq`, so equality is a total equivalence — `InputSchema`/`OutputSchema` are
+// usable as map keys / in `HashSet`s.
+impl<P: Polarity> Eq for DirectedSchema<P> {}
+
+impl OutputSchema {
+    /// Is `self` a backward-compatible **successor** of `prev` — does the new
+    /// output still satisfy everything consumers typed against the *old* output
+    /// required? An *output-vs-output* width-supertype check, distinct from the
+    /// producer→consumer edge relation, so it does **not** route through the
+    /// [`InputSchema`]-typed [`is_assignable_schema`](crate::is_assignable_schema).
+    ///
+    /// The action catalog's same-major compatibility gate uses this: an `Err`
+    /// means the new output dropped or narrowed a field old consumers relied on.
+    /// An `Any` old output imposes no constraints (always `Ok`); an empty-record
+    /// new output provably satisfies nothing a typed old output required.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first [`SchemaIncompat`](crate::SchemaIncompat) (the new
+    /// output `self` is the producer, the old output `prev` the
+    /// consumer-expectation).
+    #[must_use = "check the Result — an Err means the new output is not a compatible successor"]
+    pub fn is_compatible_successor_of(
+        &self,
+        prev: &OutputSchema,
+    ) -> Result<(), crate::SchemaIncompat> {
+        crate::compat::is_assignable_core(self.as_schema(), prev.as_schema())
     }
 }
 
