@@ -12,6 +12,16 @@ covers the full set of issues raised in the nebula-schema code review.
 
 ### ⚠ Breaking Changes
 
+- **Assignability is direction-typed (ADR-0100 C15).**  `is_assignable_schema`
+  and `explain_assignable` changed signature from `(&ValidSchema, &ValidSchema)`
+  to `(&OutputSchema, &InputSchema)`, so transposing producer and consumer is now
+  a compile error.  Callers wrap a `ValidSchema` with `OutputSchema::new` /
+  `InputSchema::new` (or `.into()`).  Output-vs-output *evolution* moved to the
+  new `OutputSchema::is_compatible_successor_of`.  `NodeIoSchemas` (in
+  `nebula-workflow`) now carries `InputSchema` / `OutputSchema` instead of bare
+  `ValidSchema`.  The newtypes are `#[repr(transparent)]` and serde-transparent —
+  **the wire format is unchanged**.
+
 - **KDF removed from the schema layer.**  `KdfParams`, `KdfError`, the
   `MIN_KDF_*` / `MAX_KDF_*` / `DEFAULT_KDF_OUTPUT_BYTES` constants,
   `KdfParams::hash_password`, and `SecretField::kdf(...)` are deleted, along

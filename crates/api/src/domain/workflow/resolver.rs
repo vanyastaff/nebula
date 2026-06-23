@@ -70,8 +70,10 @@ impl NodeSchemaResolver for CatalogSchemaResolver {
         };
 
         Some(NodeIoSchemas {
-            input: metadata.base.schema.clone(),
-            output: metadata.output_schema,
+            // Tag the catalog schemas with their dataflow polarity (ADR-0100 C15):
+            // a node's declared input is the consumer side, its output the producer.
+            input: metadata.base.schema.clone().into(),
+            output: metadata.output_schema.into(),
         })
     }
 }
@@ -193,16 +195,18 @@ mod tests {
         let schemas = resolver.io_schemas(&action_key, None).unwrap();
 
         assert_eq!(
-            schemas.input, input,
+            schemas.input.as_schema(),
+            &input,
             "input schema must match caller-supplied base.schema"
         );
         assert_eq!(
-            schemas.output, expected_output,
+            schemas.output.as_schema(),
+            &expected_output,
             "output schema must match TypedOut::schema() (type-stamped by InstanceFactory)"
         );
         // Non-vacuous: the output schema must be non-empty so the assertion is meaningful.
         assert!(
-            !schemas.output.fields().is_empty(),
+            !schemas.output.as_schema().fields().is_empty(),
             "TypedOut schema must be non-empty (test would be vacuous otherwise)"
         );
     }
@@ -250,12 +254,13 @@ mod tests {
             .expect("version 1.0.0 is registered; io_schemas must return Some");
 
         assert_eq!(
-            schemas.input, input,
+            schemas.input.as_schema(),
+            &input,
             "versioned hit: input schema must match caller-supplied base.schema"
         );
         assert_eq!(
-            schemas.output,
-            TypedOut::schema(),
+            schemas.output.as_schema(),
+            &TypedOut::schema(),
             "versioned hit: output schema must match TypedOut::schema()"
         );
     }

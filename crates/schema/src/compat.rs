@@ -9,7 +9,7 @@
 //! `is_assignable_schema(&producer.output, &consumer.input)`. (An internal,
 //! kind-blind slice form is used only by this module's tests.)
 
-use crate::{Field, FieldKey, RequiredMode, SchemaKind, ValidSchema};
+use crate::{Field, FieldKey, InputSchema, OutputSchema, RequiredMode, SchemaKind, ValidSchema};
 
 // ── Public types ─────────────────────────────────────────────────────────────
 
@@ -80,34 +80,45 @@ pub enum SchemaIncompat {
 
 // ── Public entry point ───────────────────────────────────────────────────────
 
-/// Kind-aware structural width-subtyping: are producer values assignable where
-/// consumer values are expected? (`Output <: Input`, Liskov.)
+/// Kind-aware, **direction-typed** structural width-subtyping: is a producer's
+/// [`OutputSchema`] assignable where a consumer's [`InputSchema`] is expected?
+/// (`Output <: Input`, Liskov.)
 ///
-/// This is **the** public assignability check (ADR-0100 T1). The workflow
-/// per-edge validator (T3) and the action output-evolution check both call it,
-/// so the [`SchemaKind`] Top/Bottom split is enforced on real producer→consumer
-/// edges, not merely at the type/serde level.
+/// This is **the** public assignability check (ADR-0100 T1/C15). The workflow
+/// per-edge validator (T3) calls it, so the [`SchemaKind`] Top/Bottom split is
+/// enforced on real producer→consumer edges, not merely at the type/serde level
+/// — and the [`OutputSchema`]/[`InputSchema`] newtypes make swapping the two a
+/// compile error. (Output-vs-output *evolution* uses
+/// [`OutputSchema::is_compatible_successor_of`] instead.)
 ///
 /// ```rust
-/// use nebula_schema::{Field, Schema, ValidSchema, field_key, is_assignable_schema};
+/// use nebula_schema::{
+///     Field, InputSchema, OutputSchema, Schema, ValidSchema, field_key, is_assignable_schema,
+/// };
 ///
-/// let producer = Schema::builder()
-///     .add(Field::string(field_key!("name")).required())
-///     .add(Field::number(field_key!("extra")))
-///     .build()
-///     .unwrap();
-/// let consumer = Schema::builder()
-///     .add(Field::string(field_key!("name")).required())
-///     .build()
-///     .unwrap();
+/// let producer = OutputSchema::new(
+///     Schema::builder()
+///         .add(Field::string(field_key!("name")).required())
+///         .add(Field::number(field_key!("extra")))
+///         .build()
+///         .unwrap(),
+/// );
+/// let consumer = InputSchema::new(
+///     Schema::builder()
+///         .add(Field::string(field_key!("name")).required())
+///         .build()
+///         .unwrap(),
+/// );
 /// // Width subtyping: the producer has every required consumer field (+ extras).
 /// assert!(is_assignable_schema(&producer, &consumer).is_ok());
+/// // Swapping the arguments — `is_assignable_schema(&consumer, &producer)` —
+/// // would not compile: the polarity types enforce direction.
 ///
-/// // An empty *record* producer (`()`) provably emits nothing, so it does NOT
+/// // An empty *record* output (`()`) provably emits nothing, so it does NOT
 /// // satisfy a consumer that hard-requires a field …
-/// assert!(is_assignable_schema(&ValidSchema::empty(), &consumer).is_err());
+/// assert!(is_assignable_schema(&OutputSchema::new(ValidSchema::empty()), &consumer).is_err());
 /// // … whereas the gradual `Any` (`serde_json::Value`) still passes.
-/// assert!(is_assignable_schema(&ValidSchema::any(), &consumer).is_ok());
+/// assert!(is_assignable_schema(&OutputSchema::new(ValidSchema::any()), &consumer).is_ok());
 /// ```
 ///
 /// # Kinds (Top/Bottom split)
@@ -164,19 +175,41 @@ pub enum SchemaIncompat {
 ///   present on both sides but the `multiple` flag differs.
 #[must_use = "check the Result — an Err means the producer is not assignable to the consumer"]
 pub fn is_assignable_schema(
+    producer: &OutputSchema,
+    consumer: &InputSchema,
+) -> Result<(), SchemaIncompat> {
+    is_assignable_core(producer.as_schema(), consumer.as_schema())
+}
+
+/// Polarity-erased binary assignability core: `Yes`/`Unknown` ⇒ `Ok`, a definite
+/// `No` ⇒ its first incompatibility (depth-first, consumer-field order). Keeps
+/// the gradual escape (untyped producers, Dynamic/Mode/Number leniencies) green.
+/// Shared by the direction-typed [`is_assignable_schema`] (producer→consumer
+/// edges) and [`OutputSchema::is_compatible_successor_of`] (output-vs-output
+/// evolution).
+pub(crate) fn is_assignable_core(
     producer: &ValidSchema,
     consumer: &ValidSchema,
 ) -> Result<(), SchemaIncompat> {
-    // Binary view of the ternary verdict: `Yes` and `Unknown` (not statically
-    // refuted) both pass — this keeps the gradual escape (untyped producers,
-    // Dynamic/Mode/Number leniencies) green. Only a definite `No` is an error,
-    // surfaced as its first incompatibility (depth-first, consumer-field order).
-    match explain_assignable(producer, consumer) {
+    match explain_assignable_core(producer, consumer) {
         Assignability::Yes | Assignability::Unknown(_) => Ok(()),
         // `into_verdict` only builds `No` from a non-empty list, so `next()` is
         // always `Some`; `map_or` keeps this total without a panic path.
         Assignability::No(incompats) => incompats.into_iter().next().map_or(Ok(()), Err),
     }
+}
+
+/// Direction-typed ternary assignability: the full [`Assignability`] verdict for
+/// a producer's [`OutputSchema`] against a consumer's [`InputSchema`].
+///
+/// The direction-typed wrapper over the polarity-erased core: taking the two
+/// distinct polarity newtypes means swapping producer and consumer is a compile
+/// error (ADR-0100 C15). See [`is_assignable_schema`] for the full rule set;
+/// this returns every finding plus the [`Unknown`](Assignability::Unknown)
+/// reasons a strict validator can block on.
+#[must_use]
+pub fn explain_assignable(producer: &OutputSchema, consumer: &InputSchema) -> Assignability {
+    explain_assignable_core(producer.as_schema(), consumer.as_schema())
 }
 
 /// The three-valued (Cue/GraphQL-style) assignability verdict: a producer
@@ -278,21 +311,22 @@ impl core::fmt::Display for UnknownReason {
     }
 }
 
-/// Full three-valued assignability: collects **all** incompatibilities and all
-/// "not decidable" reasons rather than stopping at the first.
+/// Polarity-erased ternary assignability core: collects **all** incompatibilities
+/// and all "not decidable" reasons rather than stopping at the first. Shared by
+/// the public, direction-typed [`explain_assignable`] and the binary
+/// [`is_assignable_core`] (and, through it, the directional
+/// [`is_assignable_schema`] and [`OutputSchema::is_compatible_successor_of`]).
 ///
-/// Honors the [`SchemaKind`] Top/Bottom split like [`is_assignable_schema`]: an
-/// `Any` consumer accepts anything ([`Yes`](Assignability::Yes)); an `Any`
-/// producer is [`Unknown(OpaqueProducer)`](UnknownReason::OpaqueProducer); two
-/// concrete records run strict width-subtyping. The verdict precedence is
-/// `No` (any provable incompatibility) ▸ `Unknown` (any undecidable field) ▸
-/// `Yes`.
-///
-/// The leniencies that [`is_assignable_schema`] silently passes are surfaced
-/// here as [`Unknown`](Assignability::Unknown) instead of being hidden in `Ok`,
-/// so a strict workflow validator can block them. See [`UnknownReason`].
+/// Honors the [`SchemaKind`] Top/Bottom split: an `Any` (or empty-record)
+/// consumer accepts anything ([`Yes`](Assignability::Yes)); an `Any` producer is
+/// [`Unknown(OpaqueProducer)`](UnknownReason::OpaqueProducer); two concrete
+/// records run strict width-subtyping. Verdict precedence: `No` (any provable
+/// incompatibility) ▸ `Unknown` (any undecidable field) ▸ `Yes`.
 #[must_use]
-pub fn explain_assignable(producer: &ValidSchema, consumer: &ValidSchema) -> Assignability {
+pub(crate) fn explain_assignable_core(
+    producer: &ValidSchema,
+    consumer: &ValidSchema,
+) -> Assignability {
     // An `Any` consumer accepts anything — provably compatible.
     if consumer.kind() == SchemaKind::Any {
         return Assignability::Yes;
@@ -547,6 +581,27 @@ mod tests {
         let mut acc = Explain::default();
         collect_fields(producer, consumer, strict, &mut acc);
         acc.into_verdict()
+    }
+
+    // Thin `ValidSchema`-taking wrappers that tag polarity, so the kind-aware
+    // tests below exercise the real direction-typed entry points without
+    // restating `OutputSchema::new`/`InputSchema::new` at every call site. They
+    // shadow the crate functions of the same name within this test module.
+    fn is_assignable_schema(
+        producer: &ValidSchema,
+        consumer: &ValidSchema,
+    ) -> Result<(), SchemaIncompat> {
+        super::is_assignable_schema(
+            &OutputSchema::new(producer.clone()),
+            &InputSchema::new(consumer.clone()),
+        )
+    }
+
+    fn explain_assignable(producer: &ValidSchema, consumer: &ValidSchema) -> Assignability {
+        super::explain_assignable(
+            &OutputSchema::new(producer.clone()),
+            &InputSchema::new(consumer.clone()),
+        )
     }
 
     // ── Compatible: producer has all required consumer fields + extra ──────
@@ -1248,6 +1303,57 @@ mod tests {
             }
             .to_string(),
             "in field `cfg`: field `m` is a `Mode` sum type (variance not modeled)"
+        );
+    }
+
+    // ── Directional types: `OutputSchema::is_compatible_successor_of` ─────────
+
+    /// Output-vs-output evolution: a new output that keeps every field old
+    /// consumers required (and adds more) is a compatible successor; one that
+    /// drops a required field is not. The new output is the producer, the old
+    /// output the consumer-expectation.
+    #[test]
+    fn output_schema_compatible_successor() {
+        let prev = OutputSchema::new(required_record("result"));
+        let wider = OutputSchema::new(
+            crate::Schema::builder()
+                .add(Field::string(fk("result")).required())
+                .add(Field::string(fk("extra")).required())
+                .build()
+                .unwrap(),
+        );
+        assert!(
+            wider.is_compatible_successor_of(&prev).is_ok(),
+            "adding fields keeps old consumers satisfied"
+        );
+
+        let narrower = OutputSchema::new(required_record("other"));
+        assert_eq!(
+            narrower.is_compatible_successor_of(&prev),
+            Err(SchemaIncompat::MissingRequiredField { key: fk("result") }),
+            "dropping a field old consumers required is a breaking successor"
+        );
+
+        // Gradual boundary at the relation level (not only via the metadata
+        // integration test): a new output that became the untyped `Any` cannot
+        // be proven breaking → Ok; one that collapsed to an empty record emits
+        // nothing the typed old output required → Err.
+        let any_new = OutputSchema::new(ValidSchema::any());
+        assert!(
+            any_new.is_compatible_successor_of(&prev).is_ok(),
+            "a new `Any` output is not provably breaking"
+        );
+        let empty_new = OutputSchema::new(ValidSchema::empty());
+        assert_eq!(
+            empty_new.is_compatible_successor_of(&prev),
+            Err(SchemaIncompat::MissingRequiredField { key: fk("result") }),
+            "an empty-record new output drops every field old consumers required"
+        );
+        // An `Any` *old* output imposed no constraints → any new output is Ok.
+        let any_prev = OutputSchema::new(ValidSchema::any());
+        assert!(
+            narrower.is_compatible_successor_of(&any_prev).is_ok(),
+            "an `Any` old output constrains nothing"
         );
     }
 }

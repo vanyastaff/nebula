@@ -219,9 +219,11 @@ pub fn validate_workflow_with_resolver(
 ///
 /// Runs every structural check that [`validate_workflow`] performs, then for
 /// each [`Connection`](crate::Connection) whose **both** endpoints can be
-/// resolved by `resolver`, computes
-/// `nebula_schema::explain_assignable(producer.output, consumer.input)` and
-/// reports per `mode`: a [`No`](nebula_schema::Assignability::No) verdict is
+/// resolved by `resolver`, computes `nebula_schema::explain_assignable` over the
+/// polarity-typed `producer.output` ([`OutputSchema`](nebula_schema::OutputSchema))
+/// and `consumer.input` ([`InputSchema`](nebula_schema::InputSchema)) — the
+/// newtypes make transposing the two a compile error — and reports per `mode`:
+/// a [`No`](nebula_schema::Assignability::No) verdict is
 /// always a [`WorkflowError::PortSchemaIncompatible`]; an
 /// [`Unknown`](nebula_schema::Assignability::Unknown) verdict is a
 /// [`WorkflowError::PortSchemaUndecidable`] only in [`SchemaCheckMode::Strict`].
@@ -1015,15 +1017,15 @@ mod tests {
         schemas.insert(
             "producer.action".to_owned(),
             NodeIoSchemas {
-                input: ValidSchema::empty(),
-                output: producer_output,
+                input: ValidSchema::empty().into(),
+                output: producer_output.into(),
             },
         );
         schemas.insert(
             "consumer.action".to_owned(),
             NodeIoSchemas {
-                input: consumer_input,
-                output: ValidSchema::empty(),
+                input: consumer_input.into(),
+                output: ValidSchema::empty().into(),
             },
         );
 
@@ -1055,15 +1057,15 @@ mod tests {
         schemas.insert(
             "producer.action".to_owned(),
             NodeIoSchemas {
-                input: ValidSchema::empty(),
-                output: producer_output,
+                input: ValidSchema::empty().into(),
+                output: producer_output.into(),
             },
         );
         schemas.insert(
             "consumer.action".to_owned(),
             NodeIoSchemas {
-                input: consumer_input,
-                output: ValidSchema::empty(),
+                input: consumer_input.into(),
+                output: ValidSchema::empty().into(),
             },
         );
 
@@ -1106,15 +1108,15 @@ mod tests {
         schemas.insert(
             "producer.action".to_owned(),
             NodeIoSchemas {
-                input: ValidSchema::empty(),
-                output: producer_output,
+                input: ValidSchema::empty().into(),
+                output: producer_output.into(),
             },
         );
         schemas.insert(
             "consumer.action".to_owned(),
             NodeIoSchemas {
-                input: consumer_input,
-                output: ValidSchema::empty(),
+                input: consumer_input.into(),
+                output: ValidSchema::empty().into(),
             },
         );
 
@@ -1153,15 +1155,15 @@ mod tests {
         schemas.insert(
             "producer.action".to_owned(),
             NodeIoSchemas {
-                input: ValidSchema::empty(),
-                output: producer_output,
+                input: ValidSchema::empty().into(),
+                output: producer_output.into(),
             },
         );
         schemas.insert(
             "consumer.action".to_owned(),
             NodeIoSchemas {
-                input: consumer_input,
-                output: ValidSchema::empty(),
+                input: consumer_input.into(),
+                output: ValidSchema::empty().into(),
             },
         );
 
@@ -1192,8 +1194,8 @@ mod tests {
         schemas.insert(
             "consumer.action".to_owned(),
             NodeIoSchemas {
-                input: consumer_input,
-                output: ValidSchema::empty(),
+                input: consumer_input.into(),
+                output: ValidSchema::empty().into(),
             },
         );
 
@@ -1247,15 +1249,15 @@ mod tests {
         schemas.insert(
             "producer.action".to_owned(),
             NodeIoSchemas {
-                input: ValidSchema::empty(),
-                output: producer_output,
+                input: ValidSchema::empty().into(),
+                output: producer_output.into(),
             },
         );
         schemas.insert(
             "consumer.action".to_owned(),
             NodeIoSchemas {
-                input: consumer_input,
-                output: ValidSchema::empty(),
+                input: consumer_input.into(),
+                output: ValidSchema::empty().into(),
             },
         );
 
@@ -1299,15 +1301,15 @@ mod tests {
         schemas.insert(
             "producer.action".to_owned(),
             NodeIoSchemas {
-                input: ValidSchema::empty(),
-                output,
+                input: ValidSchema::empty().into(),
+                output: output.into(),
             },
         );
         schemas.insert(
             "consumer.action".to_owned(),
             NodeIoSchemas {
-                input,
-                output: ValidSchema::empty(),
+                input: input.into(),
+                output: ValidSchema::empty().into(),
             },
         );
 
@@ -1332,15 +1334,15 @@ mod tests {
         schemas.insert(
             "producer.action".to_owned(),
             NodeIoSchemas {
-                input: ValidSchema::empty(),
-                output,
+                input: ValidSchema::empty().into(),
+                output: output.into(),
             },
         );
         schemas.insert(
             "consumer.action".to_owned(),
             NodeIoSchemas {
-                input,
-                output: ValidSchema::empty(),
+                input: input.into(),
+                output: ValidSchema::empty().into(),
             },
         );
 
@@ -1373,15 +1375,15 @@ mod tests {
         schemas.insert(
             "producer.action".to_owned(),
             NodeIoSchemas {
-                input: ValidSchema::empty(),
-                output: dynamic_field_schema("data"),
+                input: ValidSchema::empty().into(),
+                output: dynamic_field_schema("data").into(),
             },
         );
         schemas.insert(
             "consumer.action".to_owned(),
             NodeIoSchemas {
-                input: single_field_schema("data", true),
-                output: ValidSchema::empty(),
+                input: single_field_schema("data", true).into(),
+                output: ValidSchema::empty().into(),
             },
         );
         schemas
@@ -1465,15 +1467,15 @@ mod tests {
         schemas.insert(
             "producer.action".to_owned(),
             NodeIoSchemas {
-                input: ValidSchema::empty(),
-                output: ValidSchema::empty(), // empty record — supplies neither `a` nor `b`
+                input: ValidSchema::empty().into(),
+                output: ValidSchema::empty().into(), // empty record — supplies neither `a` nor `b`
             },
         );
         schemas.insert(
             "consumer.action".to_owned(),
             NodeIoSchemas {
-                input: consumer_input,
-                output: ValidSchema::empty(),
+                input: consumer_input.into(),
+                output: ValidSchema::empty().into(),
             },
         );
         let resolver = MapResolver(schemas);
@@ -1509,15 +1511,15 @@ mod tests {
         schemas.insert(
             "producer.action".to_owned(),
             NodeIoSchemas {
-                input: ValidSchema::empty(),
-                output: single_field_schema("a", true),
+                input: ValidSchema::empty().into(),
+                output: single_field_schema("a", true).into(),
             },
         );
         schemas.insert(
             "consumer.action".to_owned(),
             NodeIoSchemas {
-                input: single_field_schema("b", true), // requires `b`, absent
-                output: ValidSchema::empty(),
+                input: single_field_schema("b", true).into(), // requires `b`, absent
+                output: ValidSchema::empty().into(),
             },
         );
         let resolver = MapResolver(schemas);

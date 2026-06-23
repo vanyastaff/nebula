@@ -1,0 +1,18 @@
+error[E0308]: arguments to this function are incorrect
+  --> tests/compile_fail/directional_assignable_swap.rs:13:13
+   |
+13 |     let _ = is_assignable_schema(&input, &output);
+   |             ^^^^^^^^^^^^^^^^^^^^ ------  ------- expected `&DirectedSchema<Input>`, found `&DirectedSchema<nebula_schema::Output>`
+   |                                  |
+   |                                  expected `&DirectedSchema<nebula_schema::Output>`, found `&DirectedSchema<Input>`
+   |
+note: function defined here
+  --> src/compat.rs
+   |
+   | pub fn is_assignable_schema(
+   |        ^^^^^^^^^^^^^^^^^^^^
+help: swap these arguments
+   |
+13 -     let _ = is_assignable_schema(&input, &output);
+13 +     let _ = is_assignable_schema(&output, &input);
+   |

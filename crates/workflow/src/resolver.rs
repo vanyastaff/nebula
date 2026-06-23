@@ -7,21 +7,23 @@
 //! `DefinitionRoutingResolver` precedent from ADR-0095 D1.
 
 use nebula_core::ActionKey;
-use nebula_schema::ValidSchema;
+use nebula_schema::{InputSchema, OutputSchema};
 use semver::Version;
 
 /// Input and output schemas for one workflow node, resolved from the action catalog.
 ///
-/// Both schemas are [`ValidSchema`] (cheap `Arc`-backed clones). An empty
-/// schema on either side acts as the `Any` escape hatch (ADR-0100 L2): a
-/// node that has not declared a typed schema is treated as untyped and
-/// compatible with any neighbour.
+/// Direction-typed (ADR-0100 C15): the input is an [`InputSchema`] (consumer)
+/// and the output an [`OutputSchema`] (producer), both cheap `Arc`-backed
+/// newtypes over `ValidSchema`, so the per-edge check
+/// `is_assignable_schema(&producer.output, &consumer.input)` cannot transpose
+/// the two. An empty/`Any` schema on either side still acts as the gradual
+/// escape (ADR-0100 L2): an untyped node is compatible with any neighbour.
 #[derive(Debug, Clone)]
 pub struct NodeIoSchemas {
     /// The schema describing this node's input (what it consumes).
-    pub input: ValidSchema,
+    pub input: InputSchema,
     /// The schema describing this node's output (what it produces).
-    pub output: ValidSchema,
+    pub output: OutputSchema,
 }
 
 /// Resolver that maps a workflow node's action identity to its I/O schemas.
@@ -62,7 +64,7 @@ pub trait NodeSchemaResolver: Send + Sync {
 
 #[cfg(test)]
 mod tests {
-    use nebula_schema::{Field, FieldKey, Schema};
+    use nebula_schema::{Field, FieldKey, Schema, ValidSchema};
 
     use super::*;
 
@@ -78,8 +80,8 @@ mod tests {
     }
 
     struct StubResolver {
-        input: ValidSchema,
-        output: ValidSchema,
+        input: InputSchema,
+        output: OutputSchema,
     }
 
     impl NodeSchemaResolver for StubResolver {
@@ -100,12 +102,12 @@ mod tests {
         let input = schema_with_field("x", true);
         let output = schema_with_field("y", false);
         let schemas = NodeIoSchemas {
-            input: input.clone(),
-            output: output.clone(),
+            input: InputSchema::new(input.clone()),
+            output: OutputSchema::new(output.clone()),
         };
-        // Verify the Arc-backed cheap-clone invariant holds.
-        assert!(schemas.input.ptr_eq(&input));
-        assert!(schemas.output.ptr_eq(&output));
+        // Verify the Arc-backed cheap-clone invariant holds (through the newtype).
+        assert!(schemas.input.as_schema().ptr_eq(&input));
+        assert!(schemas.output.as_schema().ptr_eq(&output));
     }
 
     #[test]
@@ -114,11 +116,11 @@ mod tests {
         let input = schema_with_field("in_field", true);
         let output = schema_with_field("out_field", false);
         let resolver = StubResolver {
-            input: input.clone(),
-            output: output.clone(),
+            input: InputSchema::new(input.clone()),
+            output: OutputSchema::new(output.clone()),
         };
         let result = resolver.io_schemas(&action_key, None).unwrap();
-        assert!(result.input.ptr_eq(&input));
-        assert!(result.output.ptr_eq(&output));
+        assert!(result.input.as_schema().ptr_eq(&input));
+        assert!(result.output.as_schema().ptr_eq(&output));
     }
 }
