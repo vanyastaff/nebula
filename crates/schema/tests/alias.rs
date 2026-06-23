@@ -447,6 +447,59 @@ fn lint_shared_write_alias_across_sibling_fields_emits_write_scope_duplicate() {
     );
 }
 
+#[test]
+fn lint_read_alias_colliding_with_sibling_write_alias_emits_read_write_collision() {
+    // `b.read_alias("wire")` collides with `a.write_alias("wire")`: project emits
+    // `a` under "wire", and a later validate folds "wire" into `b` — a wire
+    // round-trip silently moves data between the two fields.
+    let report = Schema::builder()
+        .add(Field::string(fk("a")).write_alias("wire").unwrap())
+        .add(Field::string(fk("b")).read_alias("wire").unwrap())
+        .build()
+        .unwrap_err();
+    assert!(
+        has_error_code(&report, "alias.read_write_collision"),
+        "expected alias.read_write_collision, got: {:?}",
+        report.errors().map(|e| &e.code).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn lint_read_write_collision_caught_regardless_of_declaration_order() {
+    // Reverse declaration order: the read-alias field comes before the write one.
+    let report = Schema::builder()
+        .add(Field::string(fk("b")).read_alias("wire").unwrap())
+        .add(Field::string(fk("a")).write_alias("wire").unwrap())
+        .build()
+        .unwrap_err();
+    assert!(
+        has_error_code(&report, "alias.read_write_collision"),
+        "expected alias.read_write_collision regardless of order, got: {:?}",
+        report.errors().map(|e| &e.code).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn lint_same_field_read_and_write_alias_reuse_is_allowed() {
+    // A field may read AND write under the same key — round-trip stable, allowed.
+    let result = Schema::builder()
+        .add(
+            Field::string(fk("internal"))
+                .read_alias("wire")
+                .unwrap()
+                .write_alias("wire")
+                .unwrap(),
+        )
+        .build();
+    assert!(
+        result.is_ok(),
+        "same-field read+write alias reuse must build, got: {:?}",
+        result
+            .err()
+            .map(|r| r.errors().map(|e| e.code.clone()).collect::<Vec<_>>())
+    );
+}
+
 // ── No-alias path stays wire-identical ───────────────────────────────────────
 
 #[test]

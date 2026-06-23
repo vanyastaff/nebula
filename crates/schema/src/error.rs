@@ -320,6 +320,7 @@ pub const STANDARD_CODES: &[&str] = &[
     // alias subsystem
     "alias.duplicate",
     "alias.invalid_key",
+    "alias.read_write_collision",
     "alias.scope_collision",
     "alias.scope_duplicate",
     "alias.self_collision",

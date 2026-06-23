@@ -315,13 +315,15 @@ fn lint_secret_write_alias(field: &Field, path: &FieldPath, report: &mut Validat
 
 /// Validate alias constraints within a single field-scope level.
 ///
-/// Five scope-relative collision kinds plus the unary write-on-secret check:
+/// Six scope-relative collision kinds plus the unary write-on-secret check:
 /// - `alias.self_collision`: a read-alias equals the field's own canonical key.
 /// - `alias.scope_collision`: a read-alias collides with another field's canonical key in scope
 ///   (confused-deputy guard — prevents aliasing another field's identity).
 /// - `alias.scope_duplicate`: two fields share the same read-alias.
 /// - `alias.write_collision`: a write-alias equals any field's canonical key in scope.
 /// - `alias.write_scope_duplicate`: two fields share the same write-alias.
+/// - `alias.read_write_collision`: one field's read-alias equals another field's write-alias —
+///   a wire round-trip would move data between the two fields (same-field reuse is allowed).
 /// - `alias.write_on_secret`: a `Field::Secret` has a write-alias set (forbidden) —
 ///   via `lint_secret_write_alias`, also enforced on bare list items / mode payloads.
 ///
@@ -382,6 +384,26 @@ fn lint_alias_collisions_in_scope(
                 continue;
             }
 
+            // alias.read_write_collision: this field's read-alias collides with
+            // a write-alias already declared on ANOTHER field in scope. `project`
+            // would emit that other field under the key, and a later `validate`
+            // would fold the key into THIS field — round-trip data movement
+            // between fields. Same-field read+write reuse is stable and allowed.
+            if let Some(&write_owner) = seen_write_aliases.get(alias_str)
+                && write_owner != field_key_str
+            {
+                report.push(
+                    ValidationError::builder("alias.read_write_collision")
+                        .at(field_path.clone())
+                        .param("alias", alias_str.to_owned())
+                        .param("write_alias_on_field", write_owner.to_owned())
+                        .message(format!(
+                            "field `{field_key_str}` has read-alias `{alias_str}` that collides with a write_alias on field `{write_owner}` in this scope"
+                        ))
+                        .build(),
+                );
+            }
+
             // alias.scope_duplicate: two fields share a read-alias.
             if let Some(prior_field_key) = seen_read_aliases.insert(alias_str, field_key_str) {
                 report.push(
@@ -409,6 +431,25 @@ fn lint_alias_collisions_in_scope(
                         .param("write_alias", write_alias_str.to_owned())
                         .message(format!(
                             "field `{field_key_str}` has write_alias `{write_alias_str}` that collides with a canonical field key in this scope"
+                        ))
+                        .build(),
+                );
+            }
+
+            // alias.read_write_collision: this field's write-alias collides with
+            // a read-alias already declared on ANOTHER field in scope (the
+            // mirror of the read-loop check, catching the reverse declaration
+            // order). Same-field read+write reuse is allowed.
+            if let Some(&read_owner) = seen_read_aliases.get(write_alias_str)
+                && read_owner != field_key_str
+            {
+                report.push(
+                    ValidationError::builder("alias.read_write_collision")
+                        .at(field_path.clone())
+                        .param("write_alias", write_alias_str.to_owned())
+                        .param("read_alias_on_field", read_owner.to_owned())
+                        .message(format!(
+                            "field `{field_key_str}` has write_alias `{write_alias_str}` that collides with a read-alias on field `{read_owner}` in this scope"
                         ))
                         .build(),
                 );
