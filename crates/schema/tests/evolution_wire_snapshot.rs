@@ -18,7 +18,8 @@
 //!   newer writer's field kind never fails to read on an older deployment.
 
 use nebula_schema::{
-    Field, FieldValue, FieldValues, Predicate, Rule, Schema, VisibilityMode, field_key,
+    Field, FieldPath, FieldValue, FieldValues, Predicate, Rule, Schema, ValidationError,
+    ValidationReport, VisibilityMode, field_key,
 };
 use serde_json::json;
 
@@ -132,4 +133,29 @@ fn field_value_mode_wire_format() {
         value: Some(Box::new(FieldValue::from_json(json!({"scope": "read"})))),
     };
     insta::assert_json_snapshot!(mode);
+}
+
+/// The serde wire shape of the structured error types. `ValidationError`'s `code`
+/// is the stable machine-readable vocabulary and the type is now sent over the
+/// wire (API responses, cross-process), so a renamed field, a changed `severity`
+/// tag, or a newly serialized field is a silent wire break that diffs here. The
+/// report serializes transparently (a flat array); `source` is never on the wire.
+#[test]
+fn validation_report_wire_format() {
+    let mut report = ValidationReport::new();
+    report.push(
+        ValidationError::builder("length.max")
+            .at(FieldPath::parse("user.tags[0].name").unwrap())
+            .message("value too long")
+            .param("max", json!(20))
+            .param("actual", json!(42))
+            .build(),
+    );
+    report.push(
+        ValidationError::builder("notice.deprecated")
+            .warn()
+            .message("field is deprecated")
+            .build(),
+    );
+    insta::assert_json_snapshot!(report);
 }

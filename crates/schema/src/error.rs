@@ -9,13 +9,29 @@ use crate::path::FieldPath;
 
 /// Severity of a single issue.
 #[non_exhaustive]
-#[derive(Copy, Clone, PartialEq, Eq, Debug, Hash, Serialize, Deserialize)]
+#[derive(Copy, Clone, PartialEq, Eq, Debug, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Severity {
     /// A hard error that must be resolved.
     Error,
     /// A non-fatal advisory warning.
     Warning,
+}
+
+impl<'de> Deserialize<'de> for Severity {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        // Forward-compatible: `Severity` is `#[non_exhaustive]`, so a newer writer
+        // may emit a value this version does not know. Read an unrecognized
+        // severity as `Warning` rather than failing — `ValidationReport` is
+        // `#[serde(transparent)]`, so a derived "unknown variant" error would
+        // poison the *whole* report; and `Warning` never falsely escalates an
+        // unknown issue to a hard error (it still surfaces, never silently drops).
+        let raw = Cow::<str>::deserialize(d)?;
+        Ok(match raw.as_ref() {
+            "error" => Self::Error,
+            _ => Self::Warning,
+        })
+    }
 }
 
 /// A single structured validation or schema issue.
@@ -553,6 +569,31 @@ mod tests {
         assert_eq!(
             serde_json::from_value::<Severity>(json!("warning")).unwrap(),
             Severity::Warning
+        );
+    }
+
+    #[test]
+    fn unknown_severity_deserializes_as_warning() {
+        // Forward compat: a severity a newer writer emits that this version does
+        // not know reads as Warning, never a parse failure.
+        assert_eq!(
+            serde_json::from_value::<Severity>(json!("info")).unwrap(),
+            Severity::Warning
+        );
+
+        // A transparent report containing an unknown severity still parses — the
+        // recognizable entries are not lost, and the unknown one surfaces as a
+        // warning rather than poisoning the whole payload.
+        let wire = json!([
+            {"code": "required", "path": "a", "severity": "error", "params": [], "message": "x"},
+            {"code": "future", "path": "", "severity": "critical", "params": [], "message": "y"},
+        ]);
+        let report: ValidationReport = serde_json::from_value(wire).expect("report parses");
+        assert_eq!(report.len(), 2);
+        assert!(report.has_errors(), "the known error survived");
+        assert!(
+            report.has_warnings(),
+            "the unknown severity surfaced as a warning"
         );
     }
 }
