@@ -3928,6 +3928,7 @@ dependencies = [
  "nebula-validator",
  "pretty_assertions",
  "proptest",
+ "rand 0.10.1",
  "regex",
  "rstest",
  "schemars",

@@ -29,6 +29,7 @@ serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 indexmap = { workspace = true }
 blake3 = { workspace = true }
+rand = { workspace = true }
 smallvec = { workspace = true }
 regex = { workspace = true }
 schemars = { version = "1.0", optional = true }
@@ -70,6 +71,10 @@ path = "tests/proptest/serde_preserves.rs"
 [[test]]
 name = "proptest_canonical_bytes"
 path = "tests/proptest/canonical_bytes.rs"
+
+[[test]]
+name = "proptest_canonical_bytes_committing"
+path = "tests/proptest/canonical_bytes_committing.rs"
 
 [[test]]
 name = "evolution_wire_snapshot"

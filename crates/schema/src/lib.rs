@@ -139,6 +139,8 @@ extern crate self as nebula_schema;
 
 /// Typed-closure builder DSL (leaf aliases + Object/List/Group composite builders).
 pub mod builder;
+/// Opt-in keyed commitment of secret material for content-addressing.
+pub mod commitment;
 /// Schema-compatibility check: structural width-subtyping (TypeDAG T1).
 pub mod compat;
 /// Builds the validator predicate context (visibility/required) from schema fields + values.
@@ -193,6 +195,7 @@ pub use builder::{
     BooleanBuilder, CodeBuilder, FieldCollector, GroupBuilder, ListBuilder, NumberBuilder,
     ObjectBuilder, SecretBuilder, SelectBuilder, StringBuilder,
 };
+pub use commitment::{CommitmentId, CommitmentKey};
 pub use compat::{
     Assignability, SchemaIncompat, UnknownReason, explain_assignable, is_assignable_schema,
 };
