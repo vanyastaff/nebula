@@ -30,6 +30,7 @@
 
 use std::fmt;
 
+use rand::Rng as _;
 use zeroize::Zeroizing;
 
 use crate::secret::SecretValue;
@@ -63,13 +64,24 @@ impl CommitmentKey {
     /// Mint a fresh process-scoped key from the thread CSPRNG. Use in production.
     #[must_use]
     pub fn ephemeral() -> Self {
-        Self(Zeroizing::new(rand::random::<[u8; 32]>()))
+        // Fill in place: minting the key as a by-value temporary would leave an
+        // un-zeroized copy in the return slot. Matches the repo's key-gen idiom.
+        let mut key = Zeroizing::new([0u8; 32]);
+        rand::rng().fill_bytes(key.as_mut());
+        Self(key)
     }
 
-    /// Construct a key from fixed bytes — **tests only**. The name is the
-    /// structural signal: a fixed/persisted key turns every commitment under it
-    /// back into a brute-forceable oracle, so there is deliberately no
-    /// `from_bytes` / `persistent` constructor for production use.
+    /// Construct a key from fixed bytes — **tests only**, and `#[doc(hidden)]` so
+    /// it is not part of the public API surface.
+    ///
+    /// A fixed (let alone hardcoded) key turns every commitment under it back into
+    /// a brute-forceable oracle — the exact failure the default `secret.not_hashable`
+    /// rejection prevents. Production code must use [`CommitmentKey::ephemeral`];
+    /// there is deliberately no `from_bytes` / `persistent` constructor. (A cargo
+    /// `test-util` feature is intentionally not used — it is banned in this
+    /// workspace — and `#[cfg(test)]` would hide this from integration tests that
+    /// legitimately need a deterministic key.)
+    #[doc(hidden)]
     #[must_use]
     pub fn for_testing(key: [u8; 32]) -> Self {
         Self(Zeroizing::new(key))
