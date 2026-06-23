@@ -20,8 +20,14 @@
 //! runtime, a clock, and a tenant identity that this crate deliberately has none
 //! of (mirroring its `validator` / `expression` peers). The caller wiring a
 //! loader (e.g. the engine) MUST wrap each call in its runtime's timeout (a hung
-//! loader otherwise blocks validation indefinitely), rate-limit per tenant /
-//! loader key, and cache by `(loader_key, filter, cursor)` as appropriate.
+//! loader otherwise blocks validation indefinitely) and rate-limit per tenant /
+//! loader key. If it caches, the cache key MUST capture **everything the loader's
+//! output depends on** — the loader key, the **tenant**, and the `LoaderContext`
+//! inputs the loader reads (`values`, `filter`, `cursor`, `metadata`). A loader
+//! whose result depends on runtime `values` (e.g. a team-scoped option list) must
+//! never share a cache entry across tenants or differing contexts; a partial key
+//! such as `(loader_key, filter, cursor)` alone would leak one context's page to
+//! another.
 
 use std::{future::Future, pin::Pin, sync::Arc};
 
