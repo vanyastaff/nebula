@@ -1,0 +1,46 @@
+---
+source: crates/schema/tests/evolution_wire_snapshot.rs
+expression: schema
+---
+{
+  "fields": [
+    {
+      "type": "string",
+      "key": "name",
+      "required": {
+        "kind": "always"
+      },
+      "hint": "text",
+      "widget": "plain"
+    },
+    {
+      "type": "number",
+      "key": "age",
+      "integer": false,
+      "widget": "plain",
+      "step": null
+    },
+    {
+      "type": "object",
+      "key": "address",
+      "fields": [
+        {
+          "type": "string",
+          "key": "city",
+          "hint": "text",
+          "widget": "plain"
+        },
+        {
+          "type": "string",
+          "key": "zip",
+          "required": {
+            "kind": "always"
+          },
+          "hint": "text",
+          "widget": "plain"
+        }
+      ],
+      "widget": "inline"
+    }
+  ]
+}

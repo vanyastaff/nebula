@@ -72,6 +72,10 @@ name = "proptest_canonical_bytes"
 path = "tests/proptest/canonical_bytes.rs"
 
 [[test]]
+name = "evolution_wire_snapshot"
+path = "tests/evolution_wire_snapshot.rs"
+
+[[test]]
 name = "json_schema_smoke"
 path = "tests/json_schema_smoke.rs"
 required-features = ["schemars"]
