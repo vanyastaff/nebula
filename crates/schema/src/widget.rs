@@ -1,6 +1,12 @@
 use serde::{Deserialize, Serialize};
 
-/// Widget hints for `StringField`.
+/// Rendering **mode** for a `StringField` (single- vs multi-line).
+///
+/// The *semantic* kind of a string input (email, URL, date, color, …) lives in
+/// [`InputHint`](crate::InputHint), the single source of that hint — `StringWidget`
+/// carries only the line-mode (symmetric with [`SecretWidget`]). A field's
+/// semantic type and its line-mode are orthogonal: a multi-line markdown editor is
+/// `widget = Multiline` + `hint = InputHint::Markdown`.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -10,22 +16,6 @@ pub enum StringWidget {
     Plain,
     /// Multi-line text input.
     Multiline,
-    /// Email-oriented input.
-    Email,
-    /// URL-oriented input.
-    Url,
-    /// Masked UI input (not a secret store).
-    Password,
-    /// Phone number-oriented input.
-    Phone,
-    /// IP address-oriented input.
-    Ip,
-    /// Regex editor input.
-    Regex,
-    /// Markdown editor input.
-    Markdown,
-    /// Cron expression input.
-    Cron,
 }
 
 /// Widget hints for `SecretField`.
