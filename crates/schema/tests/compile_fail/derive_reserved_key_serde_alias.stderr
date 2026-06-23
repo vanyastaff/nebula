@@ -1,0 +1,18 @@
+error: key `old` is reserved by `#[schema(reserved(..))]` but a `#[serde(alias = "old")]` still deserializes it into this field — remove the alias or the reservation
+  --> tests/compile_fail/derive_reserved_key_serde_alias.rs:11:5
+   |
+11 |     current: String,
+   |     ^^^^^^^
+
+error[E0599]: no associated function or constant named `schema` found for struct `Bad` in the current scope
+  --> tests/compile_fail/derive_reserved_key_serde_alias.rs:15:18
+   |
+ 9 | struct Bad {
+   | ---------- associated function or constant `schema` not found for this struct
+...
+15 |     let _ = Bad::schema();
+   |                  ^^^^^^ associated function or constant not found in `Bad`
+   |
+   = help: items from traits can only be used if the trait is implemented and in scope
+   = note: the following trait defines an item `schema`, perhaps you need to implement it:
+           candidate #1: `HasSchema`

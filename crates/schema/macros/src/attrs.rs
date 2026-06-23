@@ -592,8 +592,10 @@ fn lower_first(value: &str) -> String {
     }
 }
 
-/// The subset of `#[serde(...)]` attributes that affect the schema key, read from
-/// a container (`rename_all`) or a field / variant (`rename`, `skip`, `flatten`).
+/// The subset of `#[serde(...)]` attributes the schema derive reads: the ones
+/// that affect the schema key (`rename_all`, `rename`, `skip`, `flatten`) plus
+/// `alias`, which does not change the key but is an alternative wire key serde
+/// still deserializes into the field — so a reserved key must also reject it.
 #[derive(Default)]
 pub(crate) struct SerdeAttrs {
     pub rename_all: Option<RenameRule>,
@@ -602,6 +604,9 @@ pub(crate) struct SerdeAttrs {
     /// `Some(span)` when `#[serde(flatten)]` is present — used to anchor the
     /// "flatten not yet supported" compile error at the attribute.
     pub flatten_span: Option<Span>,
+    /// `#[serde(alias = "..")]` keys (deserialize-only alternative wire keys).
+    /// Empty unless the field carries one or more aliases.
+    pub aliases: Vec<String>,
 }
 
 impl SerdeAttrs {
@@ -620,6 +625,9 @@ impl SerdeAttrs {
                     },
                     Meta::NameValue(nv) if nv.path.is_ident("rename") => {
                         out.rename = Some(expr_str(&nv.value, "rename")?);
+                    },
+                    Meta::NameValue(nv) if nv.path.is_ident("alias") => {
+                        out.aliases.push(expr_str(&nv.value, "alias")?);
                     },
                     Meta::Path(p) if p.is_ident("skip") || p.is_ident("skip_deserializing") => {
                         out.skip = true;

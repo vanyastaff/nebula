@@ -212,6 +212,23 @@ fn derive_reserved_key_matching_a_skipped_field_is_allowed() {
     );
 }
 
+#[derive(Schema, serde::Deserialize)]
+#[schema(reserved("removed"))]
+#[allow(dead_code)]
+struct AliasDoesNotCollide {
+    // An alias that does NOT match a reserved key is allowed — only a collision
+    // is rejected, aliases are not blanket-forbidden on reserved-key structs.
+    #[serde(alias = "name_old")]
+    name: String,
+}
+
+#[test]
+fn derive_reserved_allows_a_non_colliding_serde_alias() {
+    let s = AliasDoesNotCollide::schema();
+    let keys: Vec<&str> = s.fields().iter().map(|f| f.key().as_str()).collect();
+    assert_eq!(keys, ["name"]);
+}
+
 // ── #[derive(EnumSelect)] ──────────────────────────────────────────────────
 
 #[derive(EnumSelect, Clone, Copy)]

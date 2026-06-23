@@ -51,6 +51,10 @@ pub(crate) fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
 
     let mut field_exprs = Vec::with_capacity(fields.len());
     let mut field_keys: Vec<(String, Span)> = Vec::with_capacity(fields.len());
+    // Serde aliases are alternative wire keys serde still deserializes into the
+    // field, so a reserved key must reject them too — collected separately so the
+    // collision diagnostic can name the alias as the culprit.
+    let mut field_aliases: Vec<(String, Span)> = Vec::new();
     for f in fields {
         let field_name = f
             .ident
@@ -73,6 +77,9 @@ pub(crate) fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
         let kind = classify(&f.ty);
         let key_str = resolve_field_key(field_name, &serde, container_serde.rename_all)?;
         field_keys.push((key_str.clone(), field_name.span()));
+        for alias in &serde.aliases {
+            field_aliases.push((alias.clone(), field_name.span()));
+        }
         let expr = build_field_expr(
             field_name,
             &key_str,
@@ -84,7 +91,7 @@ pub(crate) fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
         field_exprs.push(expr);
     }
 
-    enforce_reserved_keys(&schema_attrs.reserved, &field_keys)?;
+    enforce_reserved_keys(&schema_attrs.reserved, &field_keys, &field_aliases)?;
 
     let ty_name_str = ty_name.to_string();
     Ok(quote! {
@@ -172,17 +179,21 @@ fn check_field_key(key: &str, span: Span) -> syn::Result<()> {
     })
 }
 
-/// Reject any field whose resolved schema key collides with a key listed in
+/// Reject any field whose resolved schema key — or a `#[serde(alias = "..")]`
+/// serde still deserializes into it — collides with a key listed in
 /// `#[schema(reserved(..))]`, and validate each reserved literal is itself a
 /// well-formed `FieldKey`.
 ///
 /// Reserving a key prevents a removed field's key from being silently reused for
 /// a *different* field — a document written before the removal still carries the
 /// old key, so reusing it would misread that data (Protobuf-style reservation).
-/// The check runs at expansion, so a collision is a spanned compile error.
+/// An alias is checked too: it is exactly such an alternative wire key, so an
+/// alias onto a reserved key reintroduces the very misread the reservation guards
+/// against. The check runs at expansion, so a collision is a spanned compile error.
 fn enforce_reserved_keys(
     reserved: &[syn::LitStr],
     field_keys: &[(String, Span)],
+    field_aliases: &[(String, Span)],
 ) -> syn::Result<()> {
     let mut seen = std::collections::HashSet::with_capacity(reserved.len());
     for lit in reserved {
@@ -208,6 +219,19 @@ fn enforce_reserved_keys(
                 format!(
                     "field key `{reserved_key}` is reserved by `#[schema(reserved(..))]` and \
                      cannot be used — reserving a key prevents reusing it for a different field"
+                ),
+            ));
+        }
+        if let Some((_, field_span)) = field_aliases
+            .iter()
+            .find(|(alias, _)| *alias == reserved_key)
+        {
+            return Err(syn::Error::new(
+                *field_span,
+                format!(
+                    "key `{reserved_key}` is reserved by `#[schema(reserved(..))]` but a \
+                     `#[serde(alias = \"{reserved_key}\")]` still deserializes it into this field \
+                     — remove the alias or the reservation"
                 ),
             ));
         }
