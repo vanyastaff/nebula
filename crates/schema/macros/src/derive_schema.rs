@@ -94,10 +94,18 @@ pub(crate) fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
         // them into this field, so the schema accepting them keeps schema and wire
         // in sync. (A schema-only alias serde would not deserialize is the very
         // desync the serde-aware derive exists to prevent, so there is no
-        // `#[field(read_alias)]`.) Each is validated as a `FieldKey` here so an
-        // invalid alias is a spanned compile error, not a runtime panic.
+        // `#[field(read_alias)]`.) serde tolerates the same alias repeated on one
+        // field (`#[serde(alias="x", alias="x")]`), so dedup per field — emitting a
+        // duplicate read-alias would make the runtime `scope_duplicate` lint reject
+        // the generated schema and panic `schema()`. Each is validated as a
+        // `FieldKey` here so an invalid alias is a spanned compile error, not a panic.
+        let mut field_read_aliases: Vec<String> = Vec::with_capacity(serde.aliases.len());
         for alias in &serde.aliases {
+            if field_read_aliases.iter().any(|seen| seen == alias) {
+                continue;
+            }
             check_field_key(alias, field_name.span())?;
+            field_read_aliases.push(alias.clone());
             read_aliases.push(AliasUse {
                 value: alias.clone(),
                 owner_key: key_str.clone(),
@@ -118,7 +126,7 @@ pub(crate) fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
             &kind,
             &field_attr,
             &validate,
-            &serde.aliases,
+            &field_read_aliases,
             &crate_path,
         )?;
         field_exprs.push(expr);
@@ -329,12 +337,11 @@ fn enforce_alias_constraints(
         }
     }
 
-    // alias.scope_duplicate: two fields share a read-alias.
+    // alias.scope_duplicate: two fields share a read-alias. (Per-field duplicate
+    // aliases were deduped in `expand`, so any prior here is a DIFFERENT field.)
     let mut seen_read: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
     for alias in read_aliases {
-        if let Some(prior) = seen_read.insert(&alias.value, &alias.owner_key)
-            && prior != alias.owner_key
-        {
+        if let Some(prior) = seen_read.insert(&alias.value, &alias.owner_key) {
             return Err(syn::Error::new(
                 alias.span,
                 format!(

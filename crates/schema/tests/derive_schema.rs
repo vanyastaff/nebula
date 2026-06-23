@@ -502,3 +502,28 @@ fn derive_same_field_read_and_write_alias_reuse_builds() {
     assert_eq!(field.read_aliases()[0].as_str(), "wire");
     assert_eq!(field.write_alias().map(FieldKey::as_str), Some("wire"));
 }
+
+#[derive(Schema, serde::Deserialize)]
+#[expect(dead_code, reason = "exercised via HasSchema::schema")]
+#[allow(
+    unreachable_patterns,
+    reason = "serde emits a duplicate match arm for the repeated alias"
+)]
+struct DuplicateAlias {
+    #[serde(alias = "alt", alias = "alt")]
+    name: String,
+}
+
+#[test]
+fn derive_duplicate_serde_alias_is_deduped_not_rejected() {
+    // serde tolerates a repeated alias on one field; the derive dedups so the
+    // generated schema has exactly ONE read-alias and builds — without the dedup
+    // the runtime scope_duplicate lint would reject it and panic `schema()`.
+    let schema = DuplicateAlias::schema();
+    let aliases: Vec<&str> = schema.fields()[0]
+        .read_aliases()
+        .iter()
+        .map(FieldKey::as_str)
+        .collect();
+    assert_eq!(aliases, ["alt"]);
+}
