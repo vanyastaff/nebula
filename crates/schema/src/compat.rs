@@ -9,7 +9,10 @@
 //! `is_assignable_schema(&producer.output, &consumer.input)`. (An internal,
 //! kind-blind slice form is used only by this module's tests.)
 
-use crate::{Field, FieldKey, InputSchema, OutputSchema, RequiredMode, SchemaKind, ValidSchema};
+use crate::{
+    Field, FieldKey, InputSchema, OutputSchema, RequiredMode, SchemaKind, SerdeTagging,
+    ValidSchema, field::ModeField,
+};
 
 // ── Public types ─────────────────────────────────────────────────────────────
 
@@ -75,6 +78,46 @@ pub enum SchemaIncompat {
         producer_multiple: bool,
         /// Whether the consumer field expects multiple values.
         consumer_multiple: bool,
+    },
+    /// A `Mode` (tagged-union) field is present on both sides, but the producer
+    /// declares a variant the consumer does not accept. Sum-type subtyping is the
+    /// dual of record width-subtyping: the producer may emit *any* of its
+    /// variants at runtime, so every producer variant must have a counterpart in
+    /// the consumer — otherwise the consumer would receive a case it cannot
+    /// handle. (The reverse is fine: a consumer that accepts *more* variants than
+    /// the producer can emit is still satisfied.)
+    #[error("field `{key}` mode variant `{variant}` is not accepted by the consumer")]
+    UnhandledVariant {
+        /// Key of the `Mode` field.
+        key: FieldKey,
+        /// The producer variant key the consumer does not declare.
+        variant: String,
+    },
+    /// The two schemas have incompatible [`SchemaKind`]s: one is a tagged
+    /// [`Union`](SchemaKind::Union) and the other a plain
+    /// [`Record`](SchemaKind::Record). A union wire value carries a discriminant a
+    /// record cannot guarantee (and vice versa), so neither can stand in for the
+    /// other. (An [`Any`](SchemaKind::Any) on either side is *not* a kind mismatch
+    /// — it routes through the gradual escapes instead.)
+    #[error("schema kind mismatch: producer is {producer:?}, consumer expects {consumer:?}")]
+    KindMismatch {
+        /// The producer schema's kind.
+        producer: SchemaKind,
+        /// The consumer schema's kind.
+        consumer: SchemaKind,
+    },
+    /// Both schemas are tagged [`Union`](SchemaKind::Union)s, but their serde
+    /// tagging differs (e.g. external vs adjacent). The variant keys may match,
+    /// yet the on-the-wire shapes do not (`{"V": payload}` vs
+    /// `{"<tag>": "V", "<content>": payload}`) and are not interconvertible, so the
+    /// consumer cannot deserialize the producer's output. `serde_tagging` is part
+    /// of schema identity (see the `ValidSchema` `PartialEq`).
+    #[error("union serde tagging mismatch: producer {producer:?}, consumer expects {consumer:?}")]
+    UnionTaggingMismatch {
+        /// The producer union's serde tagging (`None` only on a malformed union).
+        producer: Option<SerdeTagging>,
+        /// The consumer union's serde tagging.
+        consumer: Option<SerdeTagging>,
     },
 }
 
@@ -155,9 +198,12 @@ pub enum SchemaIncompat {
 /// - **`File` and `Select` cardinality** — the `multiple` flag (scalar vs.
 ///   array) is checked for equality; a mismatch returns
 ///   [`SchemaIncompat::CardinalityMismatch`].
-/// - **`Mode` fields** — `Mode`-vs-`Mode` passes the binary check (never
-///   false-rejects), but [`explain_assignable`] reports it as
-///   [`UnknownReason::ModeVariance`]: sum-type variance is not modeled.
+/// - **`Mode` fields** — `Mode`-vs-`Mode` uses sum-type subtyping, the dual of
+///   record width-subtyping: every producer variant must be accepted by the
+///   consumer (a producer variant the consumer lacks is a provable
+///   [`SchemaIncompat::UnhandledVariant`]), and each shared variant's payload is
+///   checked covariantly. A consumer that accepts extra variants is still
+///   satisfied.
 /// - **`Number` integer vs. float** — both carry `type_name() == "number"`.
 ///   int→float is provably compatible; float→int passes the binary check but is
 ///   [`UnknownReason::NumberWidening`] in [`explain_assignable`] (possible
@@ -233,9 +279,10 @@ pub enum Assignability {
     /// found (depth-first, consumer-field order), not just the first.
     No(Vec<SchemaIncompat>),
     /// Assignability cannot be decided statically (e.g. a loader-backed
-    /// `Dynamic` field, an opaque `Any` producer, sum-type `Mode` variance, or
-    /// a float→int narrowing). **Not** fail-open: a strict policy treats this as
-    /// a blocked edge; a gradual policy passes it.
+    /// `Dynamic` field, an opaque `Any` producer, or a float→int narrowing).
+    /// **Not** fail-open: a strict policy treats this as a blocked edge; a
+    /// gradual policy passes it. (Sum-type `Mode` variance is *not* here — it is
+    /// decided structurally, yielding `Yes`/`No`.)
     Unknown(Vec<UnknownReason>),
 }
 
@@ -255,12 +302,6 @@ pub enum UnknownReason {
     /// so its concrete shape is unknown until runtime.
     DynamicLoaderBacked {
         /// Key of the dynamic field.
-        key: FieldKey,
-    },
-    /// A matched `Mode` (sum-type) pair: variant-level variance is not modeled,
-    /// so neither compatibility nor a conflict is proven.
-    ModeVariance {
-        /// Key of the `Mode` field.
         key: FieldKey,
     },
     /// A matched `Number` pair narrows float→int: the producer may emit a
@@ -305,12 +346,6 @@ impl core::fmt::Display for UnknownReason {
             },
             Self::DynamicLoaderBacked { key } => {
                 write!(f, "field `{key}` is dynamic/computed (resolved at runtime)")
-            },
-            Self::ModeVariance { key } => {
-                write!(
-                    f,
-                    "field `{key}` is a `Mode` sum type (variance not modeled)"
-                )
             },
             Self::NumberWidening { key } => {
                 write!(
@@ -357,8 +392,20 @@ pub(crate) fn explain_assignable_core(
         return Assignability::Yes;
     }
     // An `Any` producer may emit anything: not refuted, but not provable either.
+    // This MUST precede the union dispatch below so an `Any` producer feeding a
+    // `Union` consumer is `Unknown` (it *might* emit a valid tagged value), not a
+    // hard `KindMismatch`.
     if producer.kind() == SchemaKind::Any {
         return Assignability::Unknown(vec![UnknownReason::OpaqueProducer]);
+    }
+    // Tagged-union dispatch. Placed after all three gradual escapes (Any-consumer,
+    // empty-consumer, Any-producer) so those keep their meaning: a `Union` feeding
+    // an `Any`/no-input consumer is `Yes`, and an `Any` producer is `Unknown`.
+    // Only the concrete Union↔Record/Union cases reach here.
+    let producer_union = producer.kind() == SchemaKind::Union;
+    let consumer_union = consumer.kind() == SchemaKind::Union;
+    if producer_union || consumer_union {
+        return union_assignability(producer, consumer, producer_union, consumer_union);
     }
     let mut acc = Explain::default();
     collect_fields(producer.fields(), consumer.fields(), true, &mut acc);
@@ -459,9 +506,9 @@ fn collect_fields(
 
 /// Classify a matched field pair (same key, both present), pushing into `acc`.
 ///
-/// Provable conflicts (cardinality, type mismatch, nested) become
-/// [`SchemaIncompat`]; the leniencies the binary check silently passes —
-/// `Dynamic`/`Computed`, `Mode` variance, and float→int narrowing — become
+/// Provable conflicts (cardinality, type mismatch, nested, unhandled `Mode`
+/// variant) become [`SchemaIncompat`]; the leniencies the binary check silently
+/// passes — `Dynamic`/`Computed` and float→int narrowing — become
 /// [`UnknownReason`] so a strict policy can see them. `Number` int→float
 /// widening and equal primitive variants are provably compatible (nothing
 /// pushed).
@@ -559,11 +606,8 @@ fn collect_pair(
                     .push(UnknownReason::NumberWidening { key: key.clone() });
             }
         },
-        (Field::Mode(_), Field::Mode(_)) => {
-            // Sum-type variance is not modeled (it runs opposite to record
-            // width-subtyping) — neither proven compatible nor refuted.
-            acc.unknown
-                .push(UnknownReason::ModeVariance { key: key.clone() });
+        (Field::Mode(producer_mode), Field::Mode(consumer_mode)) => {
+            collect_mode_variants(key, producer_mode, consumer_mode, strict, acc);
         },
         // All other pairs: same type_name = compatible; different = type mismatch.
         _ => {
@@ -576,6 +620,113 @@ fn collect_pair(
             }
         },
     }
+}
+
+/// Sum-type (tagged-union) variance for a matched `Mode` field pair — the dual
+/// of record width-subtyping (ADR-0100 §L2 addendum).
+///
+/// A `Mode` producer may emit *any* of its declared variants at runtime, so the
+/// rule is **producer-variant containment**: every producer variant must have a
+/// counterpart in the consumer, otherwise the consumer would face a case it
+/// cannot handle — a provable [`SchemaIncompat::UnhandledVariant`]. The reverse
+/// is sound: a consumer that accepts *more* variants than the producer can emit
+/// is still satisfied (the extra arms are simply never taken). For each variant
+/// present on both sides the payload is checked **covariantly** — producer
+/// payload assignable to consumer payload, the same direction as records — by
+/// recursing through [`collect_pair`]; nested payload findings are wrapped under
+/// the mode field `key`, while an unhandled variant (which already names both the
+/// field and the variant) is reported at the field level.
+///
+/// Unlike the empty-producer / list-item escapes, variant containment is a real
+/// structural check, so it fires in both `strict` and gradual modes; `strict`
+/// only governs the per-payload recursion.
+fn collect_mode_variants(
+    key: &FieldKey,
+    producer: &ModeField,
+    consumer: &ModeField,
+    strict: bool,
+    acc: &mut Explain,
+) {
+    // Push each variant's findings as it is visited (an unhandled variant, or its
+    // wrapped payload findings) so the overall order stays depth-first /
+    // producer-variant order — the first-incompatibility contract `is_assignable`
+    // relies on. (Accumulating all payloads and wrapping once at the end would let
+    // a later unhandled variant precede an earlier payload mismatch.)
+    for producer_variant in &producer.variants {
+        match consumer
+            .variants
+            .iter()
+            .find(|consumer_variant| consumer_variant.key == producer_variant.key)
+        {
+            None => {
+                acc.incompat.push(SchemaIncompat::UnhandledVariant {
+                    key: key.clone(),
+                    variant: producer_variant.key.clone(),
+                });
+            },
+            Some(consumer_variant) => {
+                let mut payload_findings = Explain::default();
+                collect_pair(
+                    consumer_variant.field.key(),
+                    &producer_variant.field,
+                    &consumer_variant.field,
+                    strict,
+                    &mut payload_findings,
+                );
+                acc.wrap_nested(key, payload_findings);
+            },
+        }
+    }
+}
+
+/// Assignability when at least one side is a [`SchemaKind::Union`].
+///
+/// - **Union → Union:** route the two schemas' sole root [`Field::Mode`] (the
+///   marker design's variant carrier) through [`collect_mode_variants`] — the
+///   *same* producer-variant-containment + covariant-payload rule a nested `Mode`
+///   field uses, so there is one declarative sum-type judgment, not two. (Routing
+///   the payloads back through [`explain_assignable_core`] instead would
+///   Top-collapse on its empty-consumer escape and wrongly accept arbitrary
+///   producer payloads for a unit consumer variant.)
+/// - **Union ↔ Record:** a [`SchemaIncompat::KindMismatch`] — a union value
+///   carries a discriminant a record cannot provide, and a record is not one of a
+///   union's variants.
+fn union_assignability(
+    producer: &ValidSchema,
+    consumer: &ValidSchema,
+    producer_union: bool,
+    consumer_union: bool,
+) -> Assignability {
+    if producer_union
+        && consumer_union
+        && let (Some(Field::Mode(producer_mode)), Some(Field::Mode(consumer_mode))) =
+            (producer.fields().first(), consumer.fields().first())
+    {
+        // Serde tagging is part of schema identity: two unions with matching
+        // variant keys but different tagging (external vs adjacent) have different
+        // wire shapes and are NOT interconvertible, so the consumer cannot
+        // deserialize the producer's output. Reject before comparing variants.
+        if producer.serde_tagging() != consumer.serde_tagging() {
+            return Assignability::No(vec![SchemaIncompat::UnionTaggingMismatch {
+                producer: producer.serde_tagging().cloned(),
+                consumer: consumer.serde_tagging().cloned(),
+            }]);
+        }
+        // Label findings by the consumer's root mode key; both roots are the
+        // union's sole field by construction (`ValidSchema::union`).
+        let root_key = consumer.fields()[0].key();
+        let mut acc = Explain::default();
+        collect_mode_variants(root_key, producer_mode, consumer_mode, true, &mut acc);
+        return acc.into_verdict();
+    }
+    // Either exactly one side is a union (Union ↔ Record), or — unreachable for
+    // schemas built by `ValidSchema::union`/its deserialize, which both guarantee
+    // a single root `Field::Mode` — a union whose root field is malformed. Both
+    // are kind mismatches; stay total rather than panic.
+    Assignability::No(vec![SchemaIncompat::KindMismatch {
+        producer: producer.kind(),
+        consumer: consumer.kind(),
+    }])
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -1269,11 +1420,10 @@ mod tests {
         }
     }
 
-    /// A `Mode`-vs-`Mode` pair is `Unknown(ModeVariance)` (sum-type variance is
-    /// not modeled) yet passes the binary check. The one reclassified leniency
-    /// otherwise lacking an oracle.
+    /// Identical `Mode`s are provably assignable (`Yes`): every producer variant
+    /// has a matching consumer variant with a compatible payload.
     #[test]
-    fn explain_mode_variance_is_unknown() {
+    fn explain_mode_identical_is_yes() {
         let mode_schema = || {
             crate::Schema::builder()
                 .add(Field::mode(fk("m")).variant("v", "V", Field::string(fk("x"))))
@@ -1282,11 +1432,111 @@ mod tests {
         };
         let producer = mode_schema();
         let consumer = mode_schema();
+        assert_eq!(explain_assignable(&producer, &consumer), Assignability::Yes);
+        assert!(is_assignable_schema(&producer, &consumer).is_ok());
+    }
+
+    /// Sum-type containment (the dual of records): a producer `Mode` that can emit
+    /// a variant the consumer does not declare is a provable `No` — the consumer
+    /// would face an unhandled case. This is the soundness fix: it was previously a
+    /// blanket `Unknown` that the binary check let through.
+    #[test]
+    fn explain_mode_extra_producer_variant_is_unhandled() {
+        let producer = crate::Schema::builder()
+            .add(
+                Field::mode(fk("auth"))
+                    .variant("api_key", "API key", Field::string(fk("key")))
+                    .variant("oauth", "OAuth", Field::string(fk("token"))),
+            )
+            .build()
+            .unwrap();
+        // Consumer handles only `api_key` — it cannot handle the producer's `oauth`.
+        let consumer = crate::Schema::builder()
+            .add(Field::mode(fk("auth")).variant("api_key", "API key", Field::string(fk("key"))))
+            .build()
+            .unwrap();
         assert_eq!(
             explain_assignable(&producer, &consumer),
-            Assignability::Unknown(vec![UnknownReason::ModeVariance { key: fk("m") }]),
+            Assignability::No(vec![SchemaIncompat::UnhandledVariant {
+                key: fk("auth"),
+                variant: "oauth".to_owned(),
+            }]),
         );
-        assert!(is_assignable_schema(&producer, &consumer).is_ok());
+        // The soundness fix: the binary check now also rejects it (was `Ok`).
+        assert_eq!(
+            is_assignable_schema(&producer, &consumer),
+            Err(SchemaIncompat::UnhandledVariant {
+                key: fk("auth"),
+                variant: "oauth".to_owned(),
+            }),
+        );
+    }
+
+    /// The reverse direction is sound: a consumer that accepts *more* variants
+    /// than the producer can emit is still satisfied — the extra arms are never
+    /// taken.
+    #[test]
+    fn explain_mode_extra_consumer_variant_is_yes() {
+        let producer = crate::Schema::builder()
+            .add(Field::mode(fk("auth")).variant("api_key", "API key", Field::string(fk("key"))))
+            .build()
+            .unwrap();
+        let consumer = crate::Schema::builder()
+            .add(
+                Field::mode(fk("auth"))
+                    .variant("api_key", "API key", Field::string(fk("key")))
+                    .variant("oauth", "OAuth", Field::string(fk("token"))),
+            )
+            .build()
+            .unwrap();
+        assert_eq!(explain_assignable(&producer, &consumer), Assignability::Yes);
+    }
+
+    /// Variant payloads are checked covariantly (producer payload → consumer
+    /// payload): a shared variant whose payload type mismatches is a nested `No`
+    /// keyed by the mode field then the payload field.
+    #[test]
+    fn explain_mode_variant_payload_mismatch_is_nested() {
+        let producer = crate::Schema::builder()
+            .add(Field::mode(fk("m")).variant("v", "V", Field::number(fk("x"))))
+            .build()
+            .unwrap();
+        let consumer = crate::Schema::builder()
+            .add(Field::mode(fk("m")).variant("v", "V", Field::string(fk("x"))))
+            .build()
+            .unwrap();
+        assert_eq!(
+            explain_assignable(&producer, &consumer),
+            Assignability::No(vec![SchemaIncompat::NestedIncompat {
+                key: fk("m"),
+                inner: Box::new(SchemaIncompat::FieldTypeMismatch {
+                    key: fk("x"),
+                    producer: "number",
+                    consumer: "string",
+                }),
+            }]),
+        );
+    }
+
+    /// An undecidable payload (a `Dynamic` variant field) bubbles up as a nested
+    /// `Unknown`, not a blanket Mode `Unknown` — variance itself is decided.
+    #[test]
+    fn explain_mode_dynamic_payload_bubbles_unknown() {
+        let producer = crate::Schema::builder()
+            .add(Field::mode(fk("m")).variant("v", "V", Field::dynamic(fk("x"))))
+            .build()
+            .unwrap();
+        let consumer = crate::Schema::builder()
+            .add(Field::mode(fk("m")).variant("v", "V", Field::string(fk("x"))))
+            .build()
+            .unwrap();
+        assert_eq!(
+            explain_assignable(&producer, &consumer),
+            Assignability::Unknown(vec![UnknownReason::NestedUnknown {
+                key: fk("m"),
+                inner: Box::new(UnknownReason::DynamicLoaderBacked { key: fk("x") }),
+            }]),
+        );
     }
 
     /// An undecidable field nested inside an `Object` keeps its path: the reason
@@ -1382,10 +1632,10 @@ mod tests {
         assert_eq!(
             UnknownReason::NestedUnknown {
                 key: fk("cfg"),
-                inner: Box::new(UnknownReason::ModeVariance { key: fk("m") }),
+                inner: Box::new(UnknownReason::NumberWidening { key: fk("n") }),
             }
             .to_string(),
-            "in field `cfg`: field `m` is a `Mode` sum type (variance not modeled)"
+            "in field `cfg`: field `n` narrows float to integer (possible precision loss)"
         );
     }
 
@@ -1437,6 +1687,220 @@ mod tests {
         assert!(
             narrower.is_compatible_successor_of(&any_prev).is_ok(),
             "an `Any` old output constrains nothing"
+        );
+    }
+
+    // ── Sum-type union (SchemaKind::Union) assignability ───────────────────────
+
+    /// An external-tagged union whose variants each carry a string payload.
+    fn ext_union(variant_keys: &[&str]) -> ValidSchema {
+        let mut mode = Field::mode(fk("u"));
+        for key in variant_keys {
+            mode = mode.variant(*key, *key, Field::string(fk("x")));
+        }
+        ValidSchema::union(mode, SerdeTagging::External).expect("union builds")
+    }
+
+    /// Identical unions are provably assignable.
+    #[test]
+    fn union_identical_is_yes() {
+        let producer = ext_union(&["a", "b"]);
+        let consumer = ext_union(&["a", "b"]);
+        assert_eq!(explain_assignable(&producer, &consumer), Assignability::Yes);
+        assert!(is_assignable_schema(&producer, &consumer).is_ok());
+    }
+
+    /// Sum-type containment via the SAME `collect_mode_variants` rule: a producer
+    /// union that can emit a variant the consumer does not accept is a provable
+    /// `No` (`UnhandledVariant`), keyed by the root mode.
+    #[test]
+    fn union_extra_producer_variant_is_unhandled() {
+        let producer = ext_union(&["a", "b"]);
+        let consumer = ext_union(&["a"]);
+        assert_eq!(
+            explain_assignable(&producer, &consumer),
+            Assignability::No(vec![SchemaIncompat::UnhandledVariant {
+                key: fk("u"),
+                variant: "b".to_owned(),
+            }]),
+        );
+        assert_eq!(
+            is_assignable_schema(&producer, &consumer),
+            Err(SchemaIncompat::UnhandledVariant {
+                key: fk("u"),
+                variant: "b".to_owned(),
+            }),
+        );
+    }
+
+    /// The reverse is sound: a consumer union accepting MORE variants than the
+    /// producer can emit is satisfied.
+    #[test]
+    fn union_extra_consumer_variant_is_yes() {
+        let producer = ext_union(&["a"]);
+        let consumer = ext_union(&["a", "b"]);
+        assert_eq!(explain_assignable(&producer, &consumer), Assignability::Yes);
+    }
+
+    /// Variant payloads are checked covariantly: a shared variant whose payload
+    /// type mismatches is a nested `No` keyed by the root mode then the payload.
+    #[test]
+    fn union_variant_payload_mismatch_is_nested_no() {
+        let producer = ValidSchema::union(
+            Field::mode(fk("u")).variant("a", "a", Field::number(fk("x"))),
+            SerdeTagging::External,
+        )
+        .unwrap();
+        let consumer = ValidSchema::union(
+            Field::mode(fk("u")).variant("a", "a", Field::string(fk("x"))),
+            SerdeTagging::External,
+        )
+        .unwrap();
+        assert_eq!(
+            explain_assignable(&producer, &consumer),
+            Assignability::No(vec![SchemaIncompat::NestedIncompat {
+                key: fk("u"),
+                inner: Box::new(SchemaIncompat::FieldTypeMismatch {
+                    key: fk("x"),
+                    producer: "number",
+                    consumer: "string",
+                }),
+            }]),
+        );
+    }
+
+    /// A union and a plain record are a `KindMismatch` in both directions — a
+    /// union value carries a discriminant a record cannot, and vice versa.
+    #[test]
+    fn union_and_record_are_kind_mismatch() {
+        let union = ext_union(&["a"]);
+        let record = required_record("name");
+        assert_eq!(
+            explain_assignable(&union, &record),
+            Assignability::No(vec![SchemaIncompat::KindMismatch {
+                producer: SchemaKind::Union,
+                consumer: SchemaKind::Record,
+            }]),
+        );
+        assert_eq!(
+            explain_assignable(&record, &union),
+            Assignability::No(vec![SchemaIncompat::KindMismatch {
+                producer: SchemaKind::Record,
+                consumer: SchemaKind::Union,
+            }]),
+        );
+    }
+
+    /// Gradual escapes still win over the union dispatch (the verified ordering):
+    /// an `Any` producer feeding a union consumer is `Unknown` (it *might* emit a
+    /// valid tagged value), NOT a hard `KindMismatch`.
+    #[test]
+    fn any_producer_into_union_consumer_is_unknown() {
+        assert_eq!(
+            explain_assignable(&ValidSchema::any(), &ext_union(&["a"])),
+            Assignability::Unknown(vec![UnknownReason::OpaqueProducer]),
+        );
+    }
+
+    /// A union producer feeding an `Any` consumer — or a no-input (empty-record)
+    /// consumer — is provably `Yes`: the consumer requires nothing.
+    #[test]
+    fn union_producer_into_any_or_empty_consumer_is_yes() {
+        assert_eq!(
+            explain_assignable(&ext_union(&["a"]), &ValidSchema::any()),
+            Assignability::Yes,
+        );
+        assert_eq!(
+            explain_assignable(&ext_union(&["a"]), &ValidSchema::empty()),
+            Assignability::Yes,
+        );
+    }
+
+    /// Two unions with identical variants but DIFFERENT serde tagging are not
+    /// assignable — their wire shapes (`{"a": ..}` vs `{tag, content}`) differ and
+    /// are not interconvertible, so the consumer cannot deserialize the producer.
+    #[test]
+    fn union_tagging_mismatch_is_rejected() {
+        let external = ext_union(&["a"]); // SerdeTagging::External
+        let adjacent = ValidSchema::union(
+            Field::mode(fk("u")).variant("a", "a", Field::string(fk("x"))),
+            SerdeTagging::Adjacent {
+                tag: "t".to_owned(),
+                content: "c".to_owned(),
+            },
+        )
+        .unwrap();
+        match explain_assignable(&external, &adjacent) {
+            Assignability::No(v) => assert!(
+                matches!(v.first(), Some(SchemaIncompat::UnionTaggingMismatch { .. })),
+                "expected a tagging mismatch, got {v:?}"
+            ),
+            other => panic!("expected No(UnionTaggingMismatch), got {other:?}"),
+        }
+    }
+
+    /// Findings keep producer-variant order: an earlier variant's payload mismatch
+    /// precedes a later unhandled variant (the first-incompatibility contract).
+    #[test]
+    fn union_findings_preserve_producer_variant_order() {
+        let producer = ValidSchema::union(
+            Field::mode(fk("u"))
+                .variant("a", "a", Field::number(fk("x")))
+                .variant("b", "b", Field::string(fk("y"))),
+            SerdeTagging::External,
+        )
+        .unwrap();
+        // Consumer handles only `a`, and types its payload as a string (so `a`
+        // mismatches) — `b` is unhandled.
+        let consumer = ext_union(&["a"]);
+        match explain_assignable(&producer, &consumer) {
+            Assignability::No(v) => {
+                assert!(
+                    matches!(v[0], SchemaIncompat::NestedIncompat { .. }),
+                    "earlier variant `a`'s payload mismatch must come first, got {v:?}"
+                );
+                assert!(
+                    matches!(&v[1], SchemaIncompat::UnhandledVariant { variant, .. } if variant == "b"),
+                    "later unhandled variant `b` must come second, got {v:?}"
+                );
+            },
+            other => panic!("expected No, got {other:?}"),
+        }
+    }
+
+    /// Output evolution (sum-type variance): a new output union that ADDS a
+    /// variant is a breaking successor (old consumers can't handle it); one that
+    /// DROPS a variant is compatible (it just emits fewer cases).
+    #[test]
+    fn union_output_successor_variance() {
+        let old = OutputSchema::new(ext_union(&["a", "b"]));
+        let adds = OutputSchema::new(ext_union(&["a", "b", "c"]));
+        let drops = OutputSchema::new(ext_union(&["a"]));
+        assert_eq!(
+            adds.is_compatible_successor_of(&old),
+            Err(SchemaIncompat::UnhandledVariant {
+                key: fk("u"),
+                variant: "c".to_owned(),
+            }),
+            "adding an output variant is breaking — old consumers can't handle it"
+        );
+        assert!(
+            drops.is_compatible_successor_of(&old).is_ok(),
+            "dropping an output variant is compatible — fewer cases emitted"
+        );
+    }
+
+    /// A record output cannot evolve into a union output (or vice versa).
+    #[test]
+    fn record_to_union_successor_is_kind_mismatch() {
+        let old = OutputSchema::new(required_record("result"));
+        let new = OutputSchema::new(ext_union(&["a"]));
+        assert_eq!(
+            new.is_compatible_successor_of(&old),
+            Err(SchemaIncompat::KindMismatch {
+                producer: SchemaKind::Union,
+                consumer: SchemaKind::Record,
+            }),
         );
     }
 }

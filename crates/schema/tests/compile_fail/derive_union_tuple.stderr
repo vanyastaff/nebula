@@ -1,0 +1,5 @@
+error: tuple variants with more than one field are not supported by #[derive(Schema)]; use a struct variant `{ .. }` with named fields
+ --> tests/compile_fail/derive_union_tuple.rs:8:5
+  |
+8 |     A(i64, i64),
+  |     ^^^^^^^^^^^

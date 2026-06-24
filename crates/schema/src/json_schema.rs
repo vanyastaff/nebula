@@ -10,8 +10,13 @@ use std::{error::Error as StdError, fmt};
 use serde_json::{Map, Value};
 
 use crate::{
-    field::{ComputedReturn, Field, ListField, ModeField, NumberField, ObjectField, SelectField},
+    SchemaKind,
+    field::{
+        ComputedReturn, Field, ListField, ModeField, ModeVariant, NumberField, ObjectField,
+        SelectField,
+    },
     mode::{ExpressionMode, RequiredMode, VisibilityMode},
+    validated::SerdeTagging,
 };
 
 /// Canonical draft URI emitted by [`ValidSchema::json_schema`].
@@ -79,7 +84,102 @@ impl crate::validated::ValidSchema {
         )
     )]
     pub fn json_schema(&self) -> Result<schemars::Schema, JsonSchemaExportError> {
-        schema_for_fields(self.fields(), self.root_rules())
+        match self.kind() {
+            // A tagged union exports as a `oneOf` faithful to its serde tagging —
+            // not as a record wrapping the internal `{mode,value}` envelope.
+            SchemaKind::Union => schema_for_union(self),
+            SchemaKind::Record | SchemaKind::Any => {
+                schema_for_fields(self.fields(), self.root_rules())
+            },
+        }
+    }
+}
+
+/// Export a [`SchemaKind::Union`] schema as a JSON Schema `oneOf`, faithful to the
+/// recorded [`SerdeTagging`] so the document matches serde's wire form (the C1
+/// invariant — schema variant key == wire key):
+///
+/// - **External** — a data variant is `{ "<variant>": payload }` and a unit
+///   variant is the bare string `{ "const": "<variant>" }`.
+/// - **Adjacent** `{ tag, content }` — a data variant is
+///   `{ "<tag>": "<variant>", "<content>": payload }`, a unit variant omits the
+///   content key, and a top-level `discriminator: { propertyName: "<tag>" }` is
+///   emitted.
+///
+/// The union's variants live in its sole root [`Field::Mode`] (the marker design);
+/// unit variants are recognized by the [`ModeField::EMPTY_PLACEHOLDER_KEY`] payload
+/// that [`ModeField::variant_empty`] installs.
+fn schema_for_union(
+    schema: &crate::validated::ValidSchema,
+) -> Result<schemars::Schema, JsonSchemaExportError> {
+    let Some(Field::Mode(mode)) = schema.fields().first() else {
+        // Unreachable for schemas built by `ValidSchema::union` / its deserialize
+        // (both guarantee one root `Field::Mode`); fall back to the record export
+        // rather than panic on a malformed value.
+        return schema_for_fields(schema.fields(), schema.root_rules());
+    };
+    let tagging = schema.serde_tagging().unwrap_or(&SerdeTagging::External);
+
+    let branches: Vec<Value> = mode
+        .variants
+        .iter()
+        .map(|variant| union_variant_branch(variant, tagging))
+        .collect();
+
+    let mut root = Map::new();
+    root.insert(
+        "$schema".to_owned(),
+        Value::String(DRAFT_2020_12.to_owned()),
+    );
+    root.insert("oneOf".to_owned(), Value::Array(branches));
+    if let SerdeTagging::Adjacent { tag, .. } = tagging {
+        let mut discriminator = Map::new();
+        discriminator.insert("propertyName".to_owned(), Value::String(tag.clone()));
+        root.insert("discriminator".to_owned(), Value::Object(discriminator));
+    }
+    schemars::Schema::try_from(Value::Object(root)).map_err(JsonSchemaExportError::InvalidSchema)
+}
+
+/// One JSON-Schema `oneOf` branch for a union variant under the given tagging.
+fn union_variant_branch(variant: &ModeVariant, tagging: &SerdeTagging) -> Value {
+    let is_unit = variant.field.key().as_str() == ModeField::EMPTY_PLACEHOLDER_KEY;
+    match tagging {
+        SerdeTagging::External if is_unit => {
+            // serde external unit variant: the bare string `"Variant"`.
+            let mut branch = Map::new();
+            branch.insert("const".to_owned(), Value::String(variant.key.clone()));
+            Value::Object(branch)
+        },
+        SerdeTagging::External => {
+            // serde external data variant: `{ "Variant": payload }`.
+            let mut props = Map::new();
+            props.insert(variant.key.clone(), field_schema_value(&variant.field));
+            let mut branch = primitive_schema("object");
+            branch.insert("properties".to_owned(), Value::Object(props));
+            branch.insert(
+                "required".to_owned(),
+                Value::Array(vec![Value::String(variant.key.clone())]),
+            );
+            branch.insert("additionalProperties".to_owned(), Value::Bool(false));
+            Value::Object(branch)
+        },
+        SerdeTagging::Adjacent { tag, content } => {
+            let mut props = Map::new();
+            let mut tag_const = Map::new();
+            tag_const.insert("const".to_owned(), Value::String(variant.key.clone()));
+            props.insert(tag.clone(), Value::Object(tag_const));
+            let mut required = vec![Value::String(tag.clone())];
+            if !is_unit {
+                // serde emits the content key for every data variant.
+                props.insert(content.clone(), field_schema_value(&variant.field));
+                required.push(Value::String(content.clone()));
+            }
+            let mut branch = primitive_schema("object");
+            branch.insert("properties".to_owned(), Value::Object(props));
+            branch.insert("required".to_owned(), Value::Array(required));
+            branch.insert("additionalProperties".to_owned(), Value::Bool(false));
+            Value::Object(branch)
+        },
     }
 }
 
@@ -610,7 +710,7 @@ fn apply_contract_keywords(field: &Field, schema: &mut Map<String, Value>) {
 mod tests {
     use serde_json::{Value, json};
 
-    use crate::{Field, FieldKey, Schema};
+    use crate::{Field, FieldKey, Schema, SerdeTagging, ValidSchema};
 
     #[test]
     fn exports_basic_object_shape_and_required() {
@@ -889,6 +989,87 @@ mod tests {
             .collect();
         assert!(required_keys.contains(&"email"));
         assert!(required_keys.contains(&"emailAddress"));
+    }
+
+    #[test]
+    fn exports_external_union_as_oneof_with_unit_string_const() {
+        let schema = ValidSchema::union(
+            Field::mode(FieldKey::new("auth").expect("static key"))
+                .variant(
+                    "oauth",
+                    "OAuth",
+                    Field::object(FieldKey::new("oauth").expect("static key"))
+                        .add(Field::secret(FieldKey::new("token").expect("static key")).required()),
+                )
+                .variant_empty("none", "None"),
+            SerdeTagging::External,
+        )
+        .expect("union builds");
+
+        let json = schema.json_schema().expect("json schema export").to_value();
+        let one_of = json["oneOf"].as_array().expect("oneOf array");
+        assert_eq!(one_of.len(), 2);
+
+        // External data variant: { "oauth": <payload> }, required [oauth].
+        let oauth = one_of
+            .iter()
+            .find(|b| b["properties"]["oauth"].is_object())
+            .expect("oauth data branch");
+        assert_eq!(oauth["required"], json!(["oauth"]));
+        assert_eq!(oauth["additionalProperties"], json!(false));
+
+        // External unit variant: the bare string const "none" (C1: serde emits a
+        // bare string for a unit variant, not { "none": {} }).
+        assert!(
+            one_of.iter().any(|b| b["const"] == json!("none")),
+            "external unit variant must export as a bare string const"
+        );
+        assert!(
+            json.get("discriminator").is_none(),
+            "external tagging has no discriminator"
+        );
+    }
+
+    #[test]
+    fn exports_adjacent_union_with_discriminator_and_omitted_unit_content() {
+        let schema = ValidSchema::union(
+            Field::mode(FieldKey::new("event").expect("static key"))
+                .variant(
+                    "click",
+                    "Click",
+                    Field::object(FieldKey::new("click").expect("static key"))
+                        .add(Field::number(FieldKey::new("x").expect("static key")).required()),
+                )
+                .variant_empty("noop", "No-op"),
+            SerdeTagging::Adjacent {
+                tag: "type".to_owned(),
+                content: "data".to_owned(),
+            },
+        )
+        .expect("union builds");
+
+        let json = schema.json_schema().expect("json schema export").to_value();
+        assert_eq!(json["discriminator"]["propertyName"], json!("type"));
+        let one_of = json["oneOf"].as_array().expect("oneOf array");
+
+        // Adjacent data variant: tag const + content, required [type, data].
+        let click = one_of
+            .iter()
+            .find(|b| b["properties"]["type"]["const"] == json!("click"))
+            .expect("click branch");
+        assert!(click["properties"]["data"].is_object());
+        assert_eq!(click["required"], json!(["type", "data"]));
+
+        // Adjacent unit variant: tag const only, content omitted, required [type].
+        let noop = one_of
+            .iter()
+            .find(|b| b["properties"]["type"]["const"] == json!("noop"))
+            .expect("noop branch");
+        assert!(
+            noop["properties"].get("data").is_none(),
+            "adjacent unit variant must omit the content key"
+        );
+        assert_eq!(noop["required"], json!(["type"]));
     }
 
     #[test]

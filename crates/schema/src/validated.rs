@@ -78,6 +78,56 @@ pub enum SchemaKind {
     Record,
     /// Gradual-typing `Any` — the shape is unknown (`serde_json::Value`).
     Any,
+    /// A tagged union (sum type) — the schema is one-of N typed variants
+    /// (a Rust enum with data). This is a **marker**: the variants are not stored
+    /// in a parallel structure but as the schema's sole root [`Field::Mode`],
+    /// whose [`ModeVariant`](crate::field::ModeVariant) keys are the serde wire
+    /// discriminants. Keeping the union as a root `Mode` means every existing
+    /// traversal — [`validate`](ValidSchema::validate), path lookup, projection,
+    /// alias canonicalization, the depth guard, and the assignability lattice's
+    /// `collect_mode_variants` rule — applies by construction, with no fail-open
+    /// gap (a parallel variant store would leave `fields` empty, and `validate`
+    /// iterates `fields` unconditionally). The serde tagging that maps the Rust
+    /// enum's wire shape onto those variant keys lives in
+    /// [`ValidSchemaInner::serde_tagging`].
+    Union,
+}
+
+/// How a Rust enum's wire form maps onto a [`SchemaKind::Union`]'s variant keys.
+///
+/// Recorded on a union schema so the JSON-Schema export can reproduce serde's
+/// exact wire shape — preserving the C1 invariant (schema variant key == serde
+/// wire key). Only the two taggings with a stable, statically-known discriminant
+/// are representable; internally-tagged and untagged enums are rejected at the
+/// derive (they cannot satisfy C1: the former inlines the tag into the payload
+/// namespace, the latter has no discriminant key at all).
+///
+/// # Scope (honest)
+///
+/// Today `serde_tagging` is consumed by the `json_schema` export (feature
+/// `schemars`) and by the assignability lattice. There is **no value-layer
+/// ingress yet** that rewrites serde's external/adjacent wire
+/// (`{"Variant": payload}` / `{tag, content}`) into the internal `{mode, value}`
+/// envelope that [`validate`](ValidSchema::validate) consumes — so a derived union
+/// currently guarantees C1 for *contract export and static type-checking*, not for
+/// runtime value validation of a serialized enum. That ingress adapter lands with
+/// the engine dispatch boundary that needs it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum SerdeTagging {
+    /// serde's default: a data variant is `{"Variant": payload}` and a unit
+    /// variant is the bare string `"Variant"`.
+    External,
+    /// `#[serde(tag = "...", content = "...")]`: a data variant is
+    /// `{"<tag>": "Variant", "<content>": payload}` and a unit variant omits the
+    /// content key (`{"<tag>": "Variant"}`).
+    Adjacent {
+        /// The discriminant key (serde `tag`).
+        tag: String,
+        /// The payload key (serde `content`).
+        content: String,
+    },
 }
 
 /// Shared interior of a `ValidSchema`.
@@ -89,9 +139,16 @@ pub enum SchemaKind {
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct ValidSchemaInner {
-    /// Whether this is a concrete record or the gradual-typing `Any`.
+    /// Whether this is a concrete record, the gradual-typing `Any`, or a tagged
+    /// union ([`SchemaKind::Union`]).
     pub kind: SchemaKind,
-    /// Top-level ordered fields.
+    /// For a [`SchemaKind::Union`], how the Rust enum's wire form maps onto the
+    /// variant keys; `None` for `Record`/`Any`. Part of schema identity (see the
+    /// `PartialEq` impl): an `External` and an `Adjacent` union with otherwise
+    /// identical variants are *not* the same schema.
+    pub serde_tagging: Option<SerdeTagging>,
+    /// Top-level ordered fields. For a [`SchemaKind::Union`] this is exactly one
+    /// required root [`Field::Mode`].
     pub fields: Vec<Field>,
     /// Flat index from `FieldPath` → `FieldHandle` for O(1) path lookup.
     pub index: IndexMap<FieldPath, FieldHandle>,
@@ -123,6 +180,7 @@ impl PartialEq for ValidSchema {
     fn eq(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.0, &other.0)
             || (self.0.kind == other.0.kind
+                && self.0.serde_tagging == other.0.serde_tagging
                 && self.0.fields == other.0.fields
                 && self.0.root_rules == other.0.root_rules)
     }
@@ -137,11 +195,16 @@ impl Serialize for ValidSchema {
         // `Record` schema keeps its `{"fields": [...]}` wire shape and a reader
         // that pre-dates `kind` still round-trips it as a record.
         let emit_kind = self.0.kind != SchemaKind::Record;
+        // `serde_tagging` is `Some` only for a `Union`; it rides next to `kind`.
+        let emit_tagging = self.0.serde_tagging.is_some();
         let has_rules = !self.0.root_rules.is_empty();
-        let len = 1 + usize::from(emit_kind) + usize::from(has_rules);
+        let len = 1 + usize::from(emit_kind) + usize::from(emit_tagging) + usize::from(has_rules);
         let mut s = serializer.serialize_struct("ValidSchema", len)?;
         if emit_kind {
             s.serialize_field("kind", &self.0.kind)?;
+        }
+        if let Some(tagging) = &self.0.serde_tagging {
+            s.serialize_field("serde_tagging", tagging)?;
         }
         s.serialize_field("fields", &self.0.fields)?;
         if has_rules {
@@ -160,12 +223,53 @@ impl<'de> Deserialize<'de> for ValidSchema {
             /// `kind` (`{"fields": [...]}`) round-trips as a record.
             #[serde(default)]
             kind: SchemaKind,
+            /// `Some` only for a [`SchemaKind::Union`]; `None` otherwise.
+            #[serde(default)]
+            serde_tagging: Option<SerdeTagging>,
             #[serde(default)]
             fields: Vec<Field>,
             #[serde(default)]
             root_rules: Vec<nebula_validator::Rule>,
         }
         let repr = ValidSchemaRepr::deserialize(deserializer)?;
+        if repr.kind == SchemaKind::Union {
+            // Fail closed: a union is exactly one required root `Field::Mode`
+            // plus a `serde_tagging`. Reconstruct through `ValidSchema::union`
+            // so the same lint / index / required-root invariants the in-process
+            // constructor enforces also gate wire-loaded unions — a malformed
+            // shape (wrong field count, non-`Mode` root, missing tagging, stray
+            // root rules) is rejected, never silently coerced into a permissive
+            // schema.
+            let Some(tagging) = repr.serde_tagging else {
+                return Err(serde::de::Error::custom(
+                    "schema tagged `kind: \"union\"` must carry `serde_tagging`",
+                ));
+            };
+            if !repr.root_rules.is_empty() {
+                return Err(serde::de::Error::custom(
+                    "schema tagged `kind: \"union\"` must not carry `root_rules`",
+                ));
+            }
+            if repr.fields.len() != 1 {
+                return Err(serde::de::Error::custom(
+                    "union schema must carry exactly one root mode field",
+                ));
+            }
+            let Some(Field::Mode(mode)) = repr.fields.into_iter().next() else {
+                return Err(serde::de::Error::custom(
+                    "union schema's root field must be a mode field",
+                ));
+            };
+            return Self::union(mode, tagging)
+                .map_err(|report| serde::de::Error::custom(format!("invalid union: {report:?}")));
+        }
+        // `serde_tagging` belongs only to a union; a `Record`/`Any` carrying it is
+        // malformed — reject rather than silently drop it.
+        if repr.serde_tagging.is_some() {
+            return Err(serde::de::Error::custom(
+                "only a schema tagged `kind: \"union\"` may carry `serde_tagging`",
+            ));
+        }
         if repr.kind == SchemaKind::Any {
             // Fail closed: an `Any` schema carries no constraints. A payload
             // tagged `Any` that also lists `fields`/`root_rules` is malformed
@@ -212,6 +316,7 @@ impl ValidSchema {
             .get_or_init(|| {
                 Self::from_inner(ValidSchemaInner {
                     kind: SchemaKind::Record,
+                    serde_tagging: None,
                     fields: Vec::new(),
                     index: IndexMap::new(),
                     flags: SchemaFlags::default(),
@@ -235,6 +340,7 @@ impl ValidSchema {
         ANY.get_or_init(|| {
             Self::from_inner(ValidSchemaInner {
                 kind: SchemaKind::Any,
+                serde_tagging: None,
                 fields: Vec::new(),
                 index: IndexMap::new(),
                 flags: SchemaFlags::default(),
@@ -244,11 +350,62 @@ impl ValidSchema {
         .clone()
     }
 
-    /// Whether this schema is a concrete [`Record`](SchemaKind::Record) or the
-    /// gradual-typing [`Any`](SchemaKind::Any).
+    /// Build a tagged-union (sum-type) schema from its variants.
+    ///
+    /// `mode_field` carries the union's variants — one
+    /// [`ModeVariant`](crate::field::ModeVariant) per Rust enum variant, its key
+    /// the serde wire discriminant; `tagging` records how the enum's wire form
+    /// maps onto those keys (see [`SerdeTagging`]). The union is stored as the
+    /// schema's sole **required** root [`Field::Mode`] (see [`SchemaKind::Union`]),
+    /// so it is built through the normal
+    /// [`SchemaBuilder`](crate::schema::SchemaBuilder) — running the same field
+    /// lint (variant-key validity and uniqueness), index build, and depth/fan-out
+    /// guard as any other schema — then retagged as a union. The root mode is
+    /// forced [`RequiredMode::Always`](crate::RequiredMode): a sum-type value is
+    /// never optional, so an absent value must fail rather than validate clean.
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`ValidationReport`] from the builder when a variant key is not
+    /// a valid [`FieldKey`], two variants collide, or the schema otherwise fails a
+    /// build-time lint.
+    pub fn union(mode_field: ModeField, tagging: SerdeTagging) -> Result<Self, ValidationReport> {
+        // A tagged union has no default variant: serde always requires the
+        // discriminant on the wire, and mode validation otherwise falls back to a
+        // `default_variant` when the selector is absent — which would let a value
+        // with no discriminant validate, breaking the tagged-union contract.
+        if mode_field.default_variant.is_some() {
+            return Err(ValidationReport::from(
+                ValidationError::builder("union.default_variant")
+                    .message(
+                        "a tagged union has no default variant — serde always requires the \
+                         discriminant; remove `default_variant` before building the union",
+                    )
+                    .build(),
+            ));
+        }
+        // Build through the normal builder so the union runs the same field lint
+        // (variant-key validity / uniqueness), index, and depth guard; `build_union`
+        // stamps the kind + tagging during construction (no post-build `Arc`
+        // surgery, no panic path).
+        crate::schema::Schema::builder()
+            .add(mode_field.required())
+            .build_union(tagging)
+    }
+
+    /// Whether this schema is a concrete [`Record`](SchemaKind::Record), the
+    /// gradual-typing [`Any`](SchemaKind::Any), or a tagged
+    /// [`Union`](SchemaKind::Union).
     #[must_use]
     pub fn kind(&self) -> SchemaKind {
         self.0.kind
+    }
+
+    /// The serde tagging of a [`Union`](SchemaKind::Union) schema, or `None` for a
+    /// `Record`/`Any`.
+    #[must_use]
+    pub fn serde_tagging(&self) -> Option<&SerdeTagging> {
+        self.0.serde_tagging.as_ref()
     }
 
     /// Return `true` when two `ValidSchema` values share the same backing
@@ -2366,6 +2523,134 @@ mod tests {
             .unwrap();
         assert!(s.find(&FieldKey::new("x").unwrap()).is_some());
         assert!(s.find(&FieldKey::new("y").unwrap()).is_none());
+    }
+
+    // ── Sum-type union (SchemaKind::Union) ─────────────────────────────────────
+
+    fn sample_union(tagging: SerdeTagging) -> ValidSchema {
+        ValidSchema::union(
+            Field::mode(field_key!("auth"))
+                .variant(
+                    "oauth",
+                    "OAuth",
+                    Field::object(field_key!("oauth"))
+                        .add(Field::string(field_key!("token")).required()),
+                )
+                .variant_empty("none", "None"),
+            tagging,
+        )
+        .expect("sample union builds")
+    }
+
+    #[test]
+    fn union_kind_and_tagging_accessors() {
+        let u = sample_union(SerdeTagging::External);
+        assert_eq!(u.kind(), SchemaKind::Union);
+        assert_eq!(u.serde_tagging(), Some(&SerdeTagging::External));
+        // The variants live as the sole root Field::Mode (the marker design),
+        // not in a parallel store.
+        assert_eq!(u.fields().len(), 1);
+        assert!(matches!(u.fields()[0], Field::Mode(_)));
+    }
+
+    #[test]
+    fn union_root_mode_is_required_no_fail_open() {
+        // A sum-type value is never optional: the root mode is RequiredMode::Always,
+        // so an absent value FAILS rather than validating clean (the fail-open the
+        // parallel-Vec design would have allowed).
+        let u = sample_union(SerdeTagging::External);
+        let empty = FieldValues::from_json(serde_json::json!({})).unwrap();
+        assert!(
+            u.validate(&empty).is_err(),
+            "an absent sum-type value must fail the required root mode"
+        );
+    }
+
+    #[test]
+    fn union_roundtrips_external_and_adjacent() {
+        for tagging in [
+            SerdeTagging::External,
+            SerdeTagging::Adjacent {
+                tag: "type".to_owned(),
+                content: "data".to_owned(),
+            },
+        ] {
+            let u = sample_union(tagging);
+            let json = serde_json::to_string(&u).expect("serialize union");
+            let back: ValidSchema = serde_json::from_str(&json).expect("deserialize union");
+            assert_eq!(u, back, "a union must round-trip including its tagging");
+        }
+    }
+
+    #[test]
+    fn union_partial_eq_distinguishes_tagging() {
+        // Same variants, different tagging => different schema. Without serde_tagging
+        // in PartialEq these would falsely compare equal (a type-DAG cache defect).
+        let external = sample_union(SerdeTagging::External);
+        let adjacent = sample_union(SerdeTagging::Adjacent {
+            tag: "type".to_owned(),
+            content: "data".to_owned(),
+        });
+        assert_ne!(external, adjacent);
+    }
+
+    #[test]
+    fn union_rejects_default_variant() {
+        // A tagged union has no default variant — serde always requires the
+        // discriminant, and a default would let mode validation accept a value
+        // with no selector, breaking the tagged-union contract.
+        let mode = Field::mode(field_key!("auth"))
+            .variant(
+                "oauth",
+                "OAuth",
+                Field::object(field_key!("oauth"))
+                    .add(Field::string(field_key!("token")).required()),
+            )
+            .default_variant("oauth");
+        let err = ValidSchema::union(mode, SerdeTagging::External).unwrap_err();
+        assert!(
+            format!("{err:?}").contains("default_variant"),
+            "the union constructor must reject a default variant, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn union_deserialize_fails_closed() {
+        let union_wire = serde_json::to_value(sample_union(SerdeTagging::External)).unwrap();
+        let record_wire = serde_json::to_value(
+            Schema::builder()
+                .add(Field::string(field_key!("x")))
+                .build()
+                .unwrap(),
+        )
+        .unwrap();
+
+        // Missing serde_tagging on a union.
+        let mut missing_tag = union_wire.clone();
+        missing_tag.as_object_mut().unwrap().remove("serde_tagging");
+        assert!(serde_json::from_value::<ValidSchema>(missing_tag).is_err());
+
+        // Root field is not a mode field.
+        let mut not_mode = union_wire.clone();
+        not_mode["fields"] = record_wire["fields"].clone();
+        assert!(serde_json::from_value::<ValidSchema>(not_mode).is_err());
+
+        // More than one root field. (Last use of `union_wire` — move, don't clone.)
+        let mut multi = union_wire;
+        let doubled: Vec<serde_json::Value> = {
+            let mode_fields = multi["fields"].as_array().unwrap();
+            mode_fields.iter().chain(mode_fields).cloned().collect()
+        };
+        multi["fields"] = serde_json::Value::Array(doubled);
+        assert!(serde_json::from_value::<ValidSchema>(multi).is_err());
+
+        // A non-union (Record) must not carry serde_tagging.
+        let mut stray_tag = record_wire;
+        stray_tag
+            .as_object_mut()
+            .unwrap()
+            .insert("serde_tagging".to_owned(), serde_json::json!("external"));
+        assert!(serde_json::from_value::<ValidSchema>(stray_tag).is_err());
     }
 
     #[test]

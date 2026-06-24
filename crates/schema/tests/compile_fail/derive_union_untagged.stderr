@@ -1,0 +1,5 @@
+error: #[serde(untagged)] enums are not supported by #[derive(Schema)] — an untagged union has no discriminant key, so the schema cannot reproduce its wire shape
+  --> tests/compile_fail/derive_union_untagged.rs:13:6
+   |
+13 | enum Bad {
+   |      ^^^

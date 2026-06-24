@@ -296,7 +296,8 @@ pub use schema::{Schema, SchemaBuilder};
 pub use secret::{SECRET_REDACTED, SecretBytes, SecretString, SecretValue, SecretWire};
 pub use transformer::Transformer;
 pub use validated::{
-    FieldHandle, ResolvedLookup, ResolvedValues, SchemaFlags, SchemaKind, ValidSchema, ValidValues,
+    FieldHandle, ResolvedLookup, ResolvedValues, SchemaFlags, SchemaKind, SerdeTagging,
+    ValidSchema, ValidValues,
 };
 pub use value::{ContentId, EXPRESSION_KEY, FieldValue, FieldValues, VALUE_CANON_VERSION};
 pub use widget::{
@@ -318,4 +319,53 @@ pub mod __private {
     //! path — the latter only resolves if the deriving crate happens to have an
     //! unrenamed `serde_json` dependency of its own.
     pub use {serde_json, tracing};
+
+    /// Build a union newtype-variant's payload field from the payload type's
+    /// schema, enforcing that the schema is a
+    /// [`Record`](crate::SchemaKind::Record).
+    ///
+    /// `#[derive(Schema)]` on an enum cannot tell at macro-expansion time whether a
+    /// newtype variant's payload type is a struct (a record) or itself an enum (a
+    /// union) or `serde_json::Value` (the gradual `Any`) — the macro's type
+    /// classification is purely syntactic. Splicing the top-level fields of a
+    /// non-record schema would declare keys serde never emits (a union schema's
+    /// synthetic root key) or a closed empty object (`Any`'s zero fields), breaking
+    /// the schema↔wire-key invariant. This guard fails loud at `schema()`
+    /// construction instead — consistent with the derive's other schema-build
+    /// panics — naming the offending variant.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`ValidationReport`](crate::error::ValidationReport) when
+    /// `payload`'s kind is not [`Record`](crate::SchemaKind::Record) (e.g. a
+    /// newtype over an enum, over `serde_json::Value`, or over any other
+    /// `Any`-typed payload). The derive routes this through the same
+    /// schema-build error path as a failed `ValidSchema::union`, so the failure
+    /// surfaces at `schema()` construction — it does not panic from library code.
+    pub fn union_newtype_payload(
+        wire_key: crate::FieldKey,
+        payload: crate::ValidSchema,
+        enum_name: &str,
+        variant: &str,
+    ) -> ::core::result::Result<crate::Field, crate::error::ValidationReport> {
+        if payload.kind() != crate::SchemaKind::Record {
+            return ::core::result::Result::Err(crate::error::ValidationReport::from(
+                crate::error::ValidationError::builder("union.newtype_not_record")
+                    .message(format!(
+                        "#[derive(Schema)] on enum `{enum_name}`: newtype variant `{variant}` \
+                         wraps a type whose schema is `{:?}`, not a record — a payload that is \
+                         itself a union (another enum), `serde_json::Value`, or otherwise \
+                         shape-unknown cannot be modeled as a variant payload (its keys would not \
+                         match the wire). Wrap the value in a plain `#[derive(Schema)]` struct.",
+                        payload.kind(),
+                    ))
+                    .build(),
+            ));
+        }
+        ::core::result::Result::Ok(
+            crate::Field::object(wire_key)
+                .add_many(payload.fields().iter().cloned())
+                .into(),
+        )
+    }
 }

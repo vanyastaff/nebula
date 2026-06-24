@@ -1,0 +1,5 @@
+error: internally-tagged enums (`#[serde(tag = ..)]` without `content`) are not supported — the tag inlines into the payload's field namespace; add `#[serde(content = ..)]` for adjacent tagging
+ --> tests/compile_fail/derive_union_internal.rs:9:6
+  |
+9 | enum Bad {
+  |      ^^^

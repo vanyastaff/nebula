@@ -1,0 +1,54 @@
+---
+source: crates/schema/tests/evolution_wire_snapshot.rs
+expression: external
+---
+{
+  "kind": "union",
+  "serde_tagging": "external",
+  "fields": [
+    {
+      "type": "mode",
+      "key": "auth",
+      "required": {
+        "kind": "always"
+      },
+      "variants": [
+        {
+          "key": "oauth",
+          "label": "OAuth",
+          "field": {
+            "type": "object",
+            "key": "oauth",
+            "fields": [
+              {
+                "type": "secret",
+                "key": "token",
+                "required": {
+                  "kind": "always"
+                },
+                "widget": "plain",
+                "reveal_last": null
+              }
+            ],
+            "widget": "inline"
+          }
+        },
+        {
+          "key": "none",
+          "label": "None",
+          "field": {
+            "type": "string",
+            "key": "_nebula_mode_empty",
+            "visible": {
+              "kind": "never"
+            },
+            "expression": "forbidden",
+            "hint": "text",
+            "widget": "plain"
+          }
+        }
+      ],
+      "default_variant": null
+    }
+  ]
+}

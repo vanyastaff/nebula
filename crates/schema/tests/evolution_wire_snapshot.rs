@@ -18,8 +18,8 @@
 //!   newer writer's field kind never fails to read on an older deployment.
 
 use nebula_schema::{
-    Field, FieldPath, FieldValue, FieldValues, Predicate, Rule, Schema, ValidationError,
-    ValidationReport, VisibilityMode, field_key,
+    Field, FieldPath, FieldValue, FieldValues, Predicate, Rule, Schema, SerdeTagging, ValidSchema,
+    ValidationError, ValidationReport, VisibilityMode, field_key,
 };
 use serde_json::json;
 
@@ -78,6 +78,42 @@ fn valid_schema_wire_format() {
         .build()
         .unwrap();
     insta::assert_json_snapshot!(schema);
+}
+
+/// A tagged-union (`SchemaKind::Union`) wire shape: `kind: "union"` +
+/// `serde_tagging` + the single root mode field carrying the variants. A change
+/// to the union envelope (or to how a mixed unit+data union is stored) diffs here.
+#[test]
+fn union_schema_wire_format() {
+    let external = ValidSchema::union(
+        Field::mode(field_key!("auth"))
+            .variant(
+                "oauth",
+                "OAuth",
+                Field::object(field_key!("oauth"))
+                    .add(Field::secret(field_key!("token")).required()),
+            )
+            .variant_empty("none", "None"),
+        SerdeTagging::External,
+    )
+    .unwrap();
+    insta::assert_json_snapshot!("union_schema_external_wire_format", external);
+
+    let adjacent = ValidSchema::union(
+        Field::mode(field_key!("event"))
+            .variant(
+                "click",
+                "Click",
+                Field::object(field_key!("click")).add(Field::number(field_key!("x")).required()),
+            )
+            .variant_empty("noop", "No-op"),
+        SerdeTagging::Adjacent {
+            tag: "type".to_owned(),
+            content: "data".to_owned(),
+        },
+    )
+    .unwrap();
+    insta::assert_json_snapshot!("union_schema_adjacent_wire_format", adjacent);
 }
 
 /// A `FieldValues` store covering every runtime-value shape (literal, nested

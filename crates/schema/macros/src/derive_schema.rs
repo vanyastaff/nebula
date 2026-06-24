@@ -28,6 +28,30 @@ pub(crate) fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
     let generics = &input.generics;
     let (impl_g, ty_g, where_g) = generics.split_for_impl();
 
+    // Reject generic type/const parameters (lifetimes are fine — a schema does not
+    // depend on one). The generated `schema()` caches its result in a single
+    // `static OnceLock`, which is shared across ALL monomorphizations of a generic
+    // type: the first-instantiated `T` would populate it and every other `T` would
+    // get that wrong schema (a silent wire-key drift). Refuse to emit an impl we
+    // cannot make correct, rather than ship the footgun. (Covers the enum/union
+    // path too: it is reached from the dispatch below.)
+    if let Some(param) = generics.type_params().next() {
+        return Err(syn::Error::new_spanned(
+            param,
+            "#[derive(Schema)] does not support generic type parameters: the generated `schema()` \
+             caches one `OnceLock` shared across every monomorphization, so all but the first `T` \
+             would get the wrong schema. Implement `HasSchema` by hand for generic types.",
+        ));
+    }
+    if let Some(param) = generics.const_params().next() {
+        return Err(syn::Error::new_spanned(
+            param,
+            "#[derive(Schema)] does not support const generic parameters: the generated `schema()` \
+             caches one `OnceLock` shared across every monomorphization. Implement `HasSchema` by \
+             hand instead.",
+        ));
+    }
+
     let fields = match &input.data {
         Data::Struct(DataStruct {
             fields: Fields::Named(named),
@@ -39,10 +63,17 @@ pub(crate) fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
                 "#[derive(Schema)] only supports structs with named fields",
             ));
         },
-        Data::Enum(_) | Data::Union(_) => {
+        // `#[derive(Schema)]` on an enum means "this enum IS a schema" — a tagged
+        // union (`SchemaKind::Union`), one variant per enum variant. (To embed an
+        // enum as a select *field* inside a struct, use `#[field(enum_select)]` +
+        // `#[derive(EnumSelect)]` instead — that is a `SelectField`, not a union.)
+        // Borrowing `&input` here while the match borrows `&input.data` is fine:
+        // both are shared borrows.
+        Data::Enum(_) => return crate::derive_enum_union::expand(&input),
+        Data::Union(_) => {
             return Err(syn::Error::new_spanned(
                 ty_name,
-                "#[derive(Schema)] only supports structs; use #[derive(EnumSelect)] for enums",
+                "#[derive(Schema)] does not support `union` types",
             ));
         },
     };
@@ -194,7 +225,7 @@ pub(crate) fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
 /// so an invalid key — e.g. a `kebab-case` rename, which `FieldKey` forbids — is
 /// a spanned compile error instead of a runtime `.expect()` panic in the
 /// consuming crate.
-fn resolve_field_key(
+pub(crate) fn resolve_field_key(
     field_name: &Ident,
     serde: &SerdeAttrs,
     container_rename_all: Option<RenameRule>,
@@ -214,7 +245,7 @@ fn resolve_field_key(
 
 /// Validate a generated schema-key string against the shared `FieldKey` rules
 /// (`crate::validate_field_key`) and report a violation as a spanned error.
-fn check_field_key(key: &str, span: Span) -> syn::Result<()> {
+pub(crate) fn check_field_key(key: &str, span: Span) -> syn::Result<()> {
     crate::validate_field_key(key).map_err(|reason| {
         syn::Error::new(
             span,
@@ -404,7 +435,7 @@ fn enforce_alias_constraints(
 }
 
 /// Build the token-stream expression that produces a `Field` for one struct field.
-fn build_field_expr(
+pub(crate) fn build_field_expr(
     field_name: &Ident,
     key_str: &str,
     kind: &FieldKind,

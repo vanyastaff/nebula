@@ -1,0 +1,5 @@
+error: a newtype variant's payload must be a struct that derives `Schema`; primitive, `Vec`, and `Option` newtype payloads are not yet supported — wrap the value in a `#[derive(Schema)]` struct
+ --> tests/compile_fail/derive_union_newtype_primitive.rs:9:7
+  |
+9 |     A(String),
+  |       ^^^^^^

@@ -1,0 +1,5 @@
+error: #[derive(Schema)] does not support generic type parameters: the generated `schema()` caches one `OnceLock` shared across every monomorphization, so all but the first `T` would get the wrong schema. Implement `HasSchema` by hand for generic types.
+ --> tests/compile_fail/derive_union_generic.rs:8:10
+  |
+8 | enum Bad<T> {
+  |          ^

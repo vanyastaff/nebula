@@ -233,7 +233,7 @@ pub struct PortSchemaUndecidableDetails {
     pub to_port: Option<String>,
     /// Every reason the edge is undecidable, structured so a policy can route on
     /// them (e.g. suppress [`OpaqueProducer`](nebula_schema::UnknownReason::OpaqueProducer)
-    /// while blocking [`ModeVariance`](nebula_schema::UnknownReason::ModeVariance))
+    /// while blocking [`DynamicLoaderBacked`](nebula_schema::UnknownReason::DynamicLoaderBacked))
     /// without string-parsing. The `Display` impl joins their descriptions with `"; "`.
     pub reasons: Vec<nebula_schema::UnknownReason>,
 }
