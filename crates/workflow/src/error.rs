@@ -52,6 +52,28 @@ pub enum WorkflowError {
         source_node_key: NodeKey,
     },
 
+    /// A parameter `Reference` pulls a value from a node it has no connection
+    /// edge from. The dependency graph is built from connections only (it never
+    /// reads `parameters`), so a reference with no coincident connection leaves
+    /// the true data dependency invisible to the scheduler — the consumer can be
+    /// ordered before the producer and read stale or absent output. Adding the
+    /// connection makes the dependency visible (and type-checkable).
+    #[classify(
+        category = "validation",
+        code = "WORKFLOW:REFERENCE_WITHOUT_CONNECTION"
+    )]
+    #[error(
+        "node {node_key} references output of {source_node_key} via a parameter but has no \
+         connection edge from it — add a connection from {source_node_key} so the dependency is \
+         visible to the scheduler"
+    )]
+    ReferenceWithoutConnection {
+        /// The node containing the reference.
+        node_key: NodeKey,
+        /// The referenced producer node that is not connected.
+        source_node_key: NodeKey,
+    },
+
     /// Invalid action key format.
     #[classify(category = "validation", code = "WORKFLOW:INVALID_ACTION_KEY")]
     #[error("invalid action key `{key}`: {reason}")]
