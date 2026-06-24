@@ -102,16 +102,18 @@ pub enum SchemaKind {
 /// derive (they cannot satisfy C1: the former inlines the tag into the payload
 /// namespace, the latter has no discriminant key at all).
 ///
-/// # Scope (honest)
+/// # Scope
 ///
-/// Today `serde_tagging` is consumed by the `json_schema` export (feature
-/// `schemars`) and by the assignability lattice. There is **no value-layer
-/// ingress yet** that rewrites serde's external/adjacent wire
-/// (`{"Variant": payload}` / `{tag, content}`) into the internal `{mode, value}`
-/// envelope that [`validate`](ValidSchema::validate) consumes — so a derived union
-/// currently guarantees C1 for *contract export and static type-checking*, not for
-/// runtime value validation of a serialized enum. That ingress adapter lands with
-/// the engine dispatch boundary that needs it.
+/// `serde_tagging` is the single source of truth for a union's wire shape across
+/// all three consumers: the `json_schema` export (feature `schemars`), the
+/// assignability lattice, and the value-layer bridge —
+/// [`ValidSchema::values_from_wire`](ValidSchema::values_from_wire) folds serde's
+/// external/adjacent wire (`{"Variant": payload}` / the bare `"Variant"` /
+/// `{tag, content}`) into the internal `{mode, value}` envelope that
+/// [`validate`](ValidSchema::validate) consumes, and
+/// [`FieldValues::to_typed`](crate::FieldValues::to_typed) reconstructs that wire
+/// for the typed round-trip. So a derived union guarantees C1 for contract export,
+/// static type-checking, *and* runtime value validation of a serialized enum.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
