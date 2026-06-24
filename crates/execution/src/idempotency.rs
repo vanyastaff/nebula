@@ -14,34 +14,70 @@ use serde::{Deserialize, Serialize};
 /// A deterministic key used to ensure exactly-once execution of a node attempt.
 ///
 /// Two composition modes:
-/// - **Stateless / one-shot:** `{execution_id}:{node_key}:{attempt}` — see
-///   [`for_attempt`](Self::for_attempt).
-/// - **Stateful per-iteration:** `{execution_id}:{node_key}:{iteration}:{attempt}` — see
-///   [`for_iteration`](Self::for_iteration). Spec 28 §9.0 makes the iteration counter load-bearing
-///   so a resumed stateful action reuses the same key for the same iteration boundary on retry.
-/// - **Business dedup:** callers may append a `StatefulAction::idempotency_key(state)` via
-///   [`with_business_key`](Self::with_business_key) — e.g. to key payments by invoice ID instead of
-///   attempt number.
+/// - **Stateless / one-shot:** an attempt-tagged frame of `execution_id`,
+///   `node_key`, `attempt` — see [`for_attempt`](Self::for_attempt).
+/// - **Stateful per-iteration:** an iteration-tagged frame additionally carrying
+///   the iteration counter — see [`for_iteration`](Self::for_iteration). Spec 28
+///   §9.0 makes the iteration counter load-bearing so a resumed stateful action
+///   reuses the same key for the same iteration boundary on retry.
+/// - **Business dedup:** callers may append a `StatefulAction::idempotency_key(state)`
+///   via [`with_business_key`](Self::with_business_key) — e.g. to key payments by
+///   invoice ID instead of attempt number.
+///
+/// # Injective encoding
+///
+/// The components are **length-prefixed** (`{byte_len}:{bytes}` per part, plus a
+/// leading kind tag distinguishing attempt- from iteration-frames), not joined by
+/// a bare `:`. A naive `format!("{execution_id}:{node_key}:{attempt}")` is
+/// non-injective the moment a *variable-length* component can contain the
+/// separator: an author business key of `"0:extra"` appended to a stateless
+/// attempt-0 key would collide with a stateful iteration-0 attempt-0 key keyed by
+/// `"extra"` — a false dedup (the classic missed-payment / double-execution bug).
+/// Framing each part by its length makes the key injective regardless of what any
+/// component contains, so callers never have to guarantee a component is
+/// separator-free. (The string is an opaque dedup token; this format is not a
+/// stable wire contract.)
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct IdempotencyKey(String);
 
+/// Append one length-prefixed component (`{byte_len}:{part}`) to `buf`.
+///
+/// The decimal length is itself separator-free, so the `:` after it unambiguously
+/// ends the length, and the length states exactly how many following bytes belong
+/// to `part`. Concatenating parts this way is injective even when a part contains
+/// `:` — the property a bare colon-join lacks.
+fn push_part(buf: &mut String, part: &str) {
+    use std::fmt::Write as _;
+    // Writing to a String is infallible; the Result is discarded deliberately.
+    let _ = write!(buf, "{}:{}", part.len(), part);
+}
+
 impl IdempotencyKey {
-    /// Generate a stateless key — `{execution_id}:{node_key}:{attempt}`.
+    /// Generate a stateless key tagged `"a"` (attempt) over `execution_id`,
+    /// `node_key`, `attempt`.
     ///
     /// Used for `StatelessAction`, `ResourceAction`, and control-flow nodes
     /// that do not iterate. The `attempt` counter advances on retry; a single
     /// attempt dispatches exactly once.
     #[must_use]
     pub fn for_attempt(execution_id: ExecutionId, node_key: NodeKey, attempt: u32) -> Self {
-        Self(format!("{execution_id}:{node_key}:{attempt}"))
+        let mut key = String::new();
+        push_part(&mut key, "a");
+        push_part(&mut key, &execution_id.to_string());
+        push_part(&mut key, node_key.as_str());
+        push_part(&mut key, &attempt.to_string());
+        Self(key)
     }
 
-    /// Generate a stateful per-iteration key — `{execution_id}:{node_key}:{iteration}:{attempt}`.
+    /// Generate a stateful per-iteration key tagged `"i"` (iteration) over
+    /// `execution_id`, `node_key`, `iteration`, `attempt`.
     ///
     /// Called by the runtime before each `StatefulAction::execute` dispatch.
     /// The iteration counter is the same one the runtime uses to enforce
     /// `MAX_ITERATIONS` and for `StatefulCheckpoint::iteration`, so resuming
-    /// after a crash reuses the exact key that was in flight.
+    /// after a crash reuses the exact key that was in flight. The distinct kind
+    /// tag keeps the attempt- and iteration-frames in separate namespaces, so a
+    /// stateless key can never collide with a stateful one.
     #[must_use]
     pub fn for_iteration(
         execution_id: ExecutionId,
@@ -49,21 +85,28 @@ impl IdempotencyKey {
         iteration: u32,
         attempt: u32,
     ) -> Self {
-        Self(format!("{execution_id}:{node_key}:{iteration}:{attempt}"))
+        let mut key = String::new();
+        push_part(&mut key, "i");
+        push_part(&mut key, &execution_id.to_string());
+        push_part(&mut key, node_key.as_str());
+        push_part(&mut key, &iteration.to_string());
+        push_part(&mut key, &attempt.to_string());
+        Self(key)
     }
 
     /// Append an author-supplied business dedup suffix — the value returned by
-    /// `StatefulAction::idempotency_key(&state)`. Format: `{base}:{business}`.
+    /// `StatefulAction::idempotency_key(&state)` — as one length-prefixed part.
     ///
     /// Callers that want external systems (payment gateways, ticketing APIs)
     /// to dedup on their own notion of identity (invoice ID, job ID, ...) pass
-    /// the business key through here. An empty business key leaves the base
+    /// the business key through here. The length-prefixed framing means a
+    /// business key containing `:` (or chaining two business keys) is injective —
+    /// it cannot forge a different key. An empty business key leaves the base
     /// key unchanged.
     #[must_use]
     pub fn with_business_key(mut self, business: &str) -> Self {
         if !business.is_empty() {
-            self.0.push(':');
-            self.0.push_str(business);
+            push_part(&mut self.0, business);
         }
         self
     }
@@ -162,5 +205,34 @@ mod tests {
         let json = serde_json::to_string(&key).expect("serialize");
         let back: IdempotencyKey = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(key, back);
+    }
+
+    /// A single business key `"a:b"` must not equal chaining `"a"` then `"b"`: the
+    /// separator inside one part cannot be confused with a part boundary. Under the
+    /// old bare colon-join both produced `{base}:a:b` — a collision.
+    #[test]
+    fn business_key_with_separator_is_injective() {
+        let exec = ExecutionId::new();
+        let node = node_key!("pay");
+        let one = IdempotencyKey::for_attempt(exec, node.clone(), 0).with_business_key("a:b");
+        let two = IdempotencyKey::for_attempt(exec, node, 0)
+            .with_business_key("a")
+            .with_business_key("b");
+        assert_ne!(one, two, "framing must keep `a:b` distinct from `a`+`b`");
+    }
+
+    /// The attempt- and iteration-frames stay in separate namespaces even when the
+    /// trailing components coincide: a stateless attempt-0 keyed by the business
+    /// string `"5"` must not equal a stateful iteration-0 attempt-5 key. Under the
+    /// old colon-join both flattened to `{exec}:{node}:0:5` — a false dedup across
+    /// two distinct executions (the missed-payment bug).
+    #[test]
+    fn attempt_frame_never_collides_with_iteration_frame() {
+        let exec = ExecutionId::new();
+        let node = node_key!("n");
+        let attempt_framed =
+            IdempotencyKey::for_attempt(exec, node.clone(), 0).with_business_key("5");
+        let iteration_framed = IdempotencyKey::for_iteration(exec, node, 0, 5);
+        assert_ne!(attempt_framed, iteration_framed);
     }
 }
