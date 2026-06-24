@@ -8,6 +8,7 @@ use syn::{DeriveInput, LitStr, parse_macro_input};
 
 mod attrs;
 mod derive_enum;
+mod derive_enum_union;
 mod derive_schema;
 mod type_infer;
 
@@ -59,7 +60,15 @@ pub fn field_key(input: TokenStream) -> TokenStream {
     out.into()
 }
 
-/// Derive `HasSchema` (from `nebula-schema`) for a struct.
+/// Derive `HasSchema` (from `nebula-schema`).
+///
+/// On a **struct** the schema is a record of typed fields. On an **enum** it is a
+/// tagged union (`SchemaKind::Union`) — one variant per enum variant, honoring
+/// serde's enum tagging (external by default, or adjacent via
+/// `#[serde(tag = "..", content = "..")]`); internally-tagged and untagged enums,
+/// and tuple variants with more than one field, are rejected. (To embed an enum as
+/// a select *field* inside a struct, use `#[field(enum_select)]` +
+/// `#[derive(EnumSelect)]` instead.)
 ///
 /// Supported attributes:
 /// - `#[field(...)]` — label/description/placeholder/default/hint/secret/
@@ -71,8 +80,9 @@ pub fn field_key(input: TokenStream) -> TokenStream {
 ///   misread older documents), rejected at expansion if a field's resolved key or
 ///   a `#[serde(alias = ..)]` collides.
 /// - `#[serde(...)]` — read for key alignment so the schema key equals the wire
-///   key: `rename` / `rename_all` rename the field, `skip` / `skip_deserializing`
-///   drop it. `#[serde(flatten)]` is rejected (splicing is a follow-up).
+///   key: `rename` / `rename_all` rename the field or variant, `skip` /
+///   `skip_deserializing` drop it, `tag` / `content` select adjacent enum tagging.
+///   `#[serde(flatten)]` is rejected (splicing is a follow-up).
 #[proc_macro_derive(Schema, attributes(field, validate, schema))]
 pub fn derive_schema(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);

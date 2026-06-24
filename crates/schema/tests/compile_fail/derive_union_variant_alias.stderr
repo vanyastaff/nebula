@@ -1,0 +1,5 @@
+error: #[serde(alias = ..)] on the variant `Primary` cannot be modeled by #[derive(Schema)]: a union records exactly one wire discriminant per variant, so the alias would be a key serde deserializes but schema validation rejects. Remove the alias, or make it the canonical key with #[serde(rename = ..)].
+  --> tests/compile_fail/derive_union_variant_alias.rs:15:5
+   |
+15 |     Primary(Cfg),
+   |     ^^^^^^^

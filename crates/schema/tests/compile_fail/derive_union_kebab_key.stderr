@@ -1,0 +1,5 @@
+error: variant `FooBar` resolves to the wire key `foo-bar`, which is not a valid schema key (key must be ASCII alphanumeric or underscore); rename the variant (or set `#[serde(rename = "..")]`) so its key is a non-empty ASCII identifier — variant keys are used as schema path segments
+  --> tests/compile_fail/derive_union_kebab_key.rs:15:5
+   |
+15 |     FooBar(Cfg),
+   |     ^^^^^^

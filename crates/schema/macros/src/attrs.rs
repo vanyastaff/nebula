@@ -612,6 +612,19 @@ pub(crate) struct SerdeAttrs {
     /// `#[serde(alias = "..")]` keys (deserialize-only alternative wire keys).
     /// Empty unless the field carries one or more aliases.
     pub aliases: Vec<String>,
+    /// `#[serde(tag = "..")]` — the discriminant key. On an enum container this
+    /// selects internally- (no `content`) or adjacently- (`with content`) tagged
+    /// representation; the union derive reads it to record [`SerdeTagging`].
+    pub tag: Option<String>,
+    /// `#[serde(content = "..")]` — the payload key for adjacent tagging.
+    pub content: Option<String>,
+    /// `#[serde(untagged)]` — present on the enum container.
+    pub untagged: bool,
+    /// `Some(span)` when `#[serde(rename_all_fields = ..)]` is present on an enum
+    /// container. The union derive does not yet honor it (it would rename every
+    /// struct-variant field), so it is rejected rather than silently ignored —
+    /// ignoring it would desync the schema key from the wire key (a C1 break).
+    pub rename_all_fields_span: Option<Span>,
 }
 
 impl SerdeAttrs {
@@ -633,6 +646,18 @@ impl SerdeAttrs {
                     },
                     Meta::NameValue(nv) if nv.path.is_ident("alias") => {
                         out.aliases.push(expr_str(&nv.value, "alias")?);
+                    },
+                    Meta::NameValue(nv) if nv.path.is_ident("tag") => {
+                        out.tag = Some(expr_str(&nv.value, "tag")?);
+                    },
+                    Meta::NameValue(nv) if nv.path.is_ident("content") => {
+                        out.content = Some(expr_str(&nv.value, "content")?);
+                    },
+                    Meta::Path(p) if p.is_ident("untagged") => {
+                        out.untagged = true;
+                    },
+                    Meta::NameValue(nv) if nv.path.is_ident("rename_all_fields") => {
+                        out.rename_all_fields_span = Some(nv.span());
                     },
                     Meta::Path(p) if p.is_ident("skip") || p.is_ident("skip_deserializing") => {
                         out.skip = true;

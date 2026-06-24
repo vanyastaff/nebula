@@ -1,0 +1,60 @@
+---
+source: crates/schema/tests/evolution_wire_snapshot.rs
+expression: adjacent
+---
+{
+  "kind": "union",
+  "serde_tagging": {
+    "adjacent": {
+      "tag": "type",
+      "content": "data"
+    }
+  },
+  "fields": [
+    {
+      "type": "mode",
+      "key": "event",
+      "required": {
+        "kind": "always"
+      },
+      "variants": [
+        {
+          "key": "click",
+          "label": "Click",
+          "field": {
+            "type": "object",
+            "key": "click",
+            "fields": [
+              {
+                "type": "number",
+                "key": "x",
+                "required": {
+                  "kind": "always"
+                },
+                "integer": false,
+                "widget": "plain",
+                "step": null
+              }
+            ],
+            "widget": "inline"
+          }
+        },
+        {
+          "key": "noop",
+          "label": "No-op",
+          "field": {
+            "type": "string",
+            "key": "_nebula_mode_empty",
+            "visible": {
+              "kind": "never"
+            },
+            "expression": "forbidden",
+            "hint": "text",
+            "widget": "plain"
+          }
+        }
+      ],
+      "default_variant": null
+    }
+  ]
+}

@@ -535,6 +535,7 @@ impl SchemaBuilder {
 
         Ok(ValidSchema::from_inner(ValidSchemaInner {
             kind: crate::SchemaKind::Record,
+            serde_tagging: None,
             fields,
             index,
             flags,
