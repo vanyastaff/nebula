@@ -589,16 +589,24 @@ where
                 reason: format!("[{}] {}", e.code, e.path),
             }
         })?;
-        schema
-            .validate(&values)
-            .map_err(|report| CredentialServiceError::ValidationFailed {
+        let valid = schema.validate(&values).map_err(|report| {
+            CredentialServiceError::ValidationFailed {
                 reason: report
                     .errors()
                     .map(|e| format!("[{}] {}", e.code, e.path))
                     .collect::<Vec<_>>()
                     .join("; "),
-            })?;
-        serde_json::from_value::<C::Properties>(props.clone()).map_err(|_| {
+            }
+        })?;
+        // Deserialize the CANONICALIZED output — read-aliases already folded onto
+        // their canonical keys — NOT the raw props. validate's key-space must equal
+        // deserialize's key-space: an alias-keyed (or canonical+alias) submission
+        // validates under the canonical key, so the typed round-trip must see the
+        // same keys, otherwise the two passes could disagree on a field's value.
+        // ($expr envelopes survive canonicalization unchanged, so defense-in-depth
+        // #2 — the typed deserialize refusing an expression-bearing secret — still
+        // holds.)
+        serde_json::from_value::<C::Properties>(valid.raw().to_json()).map_err(|_| {
             // The serde error text can echo the offending field value
             // (a secret); deliberately omitted — only the policy reason
             // is surfaced.
