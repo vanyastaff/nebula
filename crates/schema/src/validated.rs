@@ -393,6 +393,251 @@ impl ValidSchema {
             .build_union(tagging)
     }
 
+    /// Ingest an external **serde wire** value into the `{mode, value}` envelope
+    /// that [`validate`](Self::validate) consumes.
+    ///
+    /// For a [`Record`](SchemaKind::Record) or [`Any`](SchemaKind::Any) schema this
+    /// is exactly [`FieldValues::from_json`]: the serde wire already matches the
+    /// validator's key-space. For a [`Union`](SchemaKind::Union) it rewrites serde's
+    /// external/adjacent tagging — `{"Variant": payload}` / the bare string
+    /// `"Variant"` (external) and `{<tag>: "Variant", <content>: payload}` /
+    /// `{<tag>: "Variant"}` (adjacent) — into the internal envelope
+    /// `{<root>: {"mode": "Variant", "value": payload}}` keyed under the union's sole
+    /// root [`Field::Mode`], driven by the stored [`SerdeTagging`]. This closes the
+    /// C1 value-layer gap so a derived union validates the serde wire its
+    /// `#[derive(Serialize)]` actually emits (the inverse direction is
+    /// [`FieldValues::to_typed`]).
+    ///
+    /// Unit variants carry no `value` (they validate against the hidden
+    /// [`ModeField::EMPTY_PLACEHOLDER_KEY`](crate::field::ModeField::EMPTY_PLACEHOLDER_KEY)
+    /// payload); data variants carry their payload under `value`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `union.unknown_variant` when the wire discriminant is not a declared
+    /// variant, `union.malformed_wire` when the wire shape does not match the
+    /// declared tagging (a non-string/non-object external value, an external object
+    /// without exactly one key, an adjacent value missing or mistyping the tag, a
+    /// stray adjacent key, or a data shape for a unit variant and vice-versa), or any
+    /// error [`FieldValues::from_json`] raises on the rewritten value (invalid keys,
+    /// over-deep nesting).
+    #[tracing::instrument(
+        level = "debug",
+        target = "nebula_schema::union_ingress",
+        skip(self, wire),
+        fields(kind = ?self.0.kind)
+    )]
+    #[expect(
+        clippy::result_large_err,
+        reason = "ValidationError is intentionally large; callers are on the validation path"
+    )]
+    pub fn values_from_wire(
+        &self,
+        wire: serde_json::Value,
+    ) -> Result<FieldValues, ValidationError> {
+        match self.0.kind {
+            SchemaKind::Record | SchemaKind::Any => FieldValues::from_json(wire),
+            SchemaKind::Union => FieldValues::from_json(self.rewrite_union_wire(wire)?),
+        }
+    }
+
+    /// Rewrite a serde-tagged union wire value into the `{<root>: {mode, value?}}`
+    /// envelope. Driven entirely by the stored [`SerdeTagging`] + the root mode's
+    /// declared variants, so the schema's `serde_tagging` is the single source of
+    /// truth for the wire shape (no per-consumer divergence).
+    #[expect(
+        clippy::result_large_err,
+        reason = "ValidationError is intentionally large; callers are on the validation path"
+    )]
+    fn rewrite_union_wire(
+        &self,
+        wire: serde_json::Value,
+    ) -> Result<serde_json::Value, ValidationError> {
+        use serde_json::Value;
+
+        let malformed = |message: String| {
+            ValidationError::builder("union.malformed_wire")
+                .message(message)
+                .build()
+        };
+
+        let Some(root_field) = self.0.fields.first() else {
+            return Err(malformed(
+                "union schema is missing its root mode field".to_owned(),
+            ));
+        };
+        let Field::Mode(mode) = root_field else {
+            return Err(malformed(
+                "union schema's root field is not a mode field".to_owned(),
+            ));
+        };
+        let Some(tagging) = self.0.serde_tagging.as_ref() else {
+            return Err(malformed(
+                "union schema is missing its serde tagging".to_owned(),
+            ));
+        };
+
+        // Pull the wire discriminant + optional payload out of serde's tagging.
+        let (variant_key, payload): (String, Option<Value>) = match tagging {
+            SerdeTagging::External => match wire {
+                // serde external unit variant: the bare string `"Variant"`.
+                Value::String(variant) => (variant, None),
+                // serde external data variant: `{"Variant": payload}` — exactly one key.
+                Value::Object(map) => {
+                    let mut entries = map.into_iter();
+                    let (Some((key, payload)), None) = (entries.next(), entries.next()) else {
+                        return Err(malformed(
+                            "external union data variant must be a single-key object `{\"Variant\": payload}`"
+                                .to_owned(),
+                        ));
+                    };
+                    (key, Some(payload))
+                },
+                _ => {
+                    return Err(malformed(
+                        "external union wire must be a string (unit variant) or a single-key \
+                         object (data variant)"
+                            .to_owned(),
+                    ));
+                },
+            },
+            SerdeTagging::Adjacent { tag, content } => {
+                let Value::Object(mut map) = wire else {
+                    return Err(malformed(format!(
+                        "adjacent union wire must be an object carrying the tag `{tag}`"
+                    )));
+                };
+                let Some(Value::String(variant)) = map.remove(tag.as_str()) else {
+                    return Err(malformed(format!(
+                        "adjacent union wire must carry a string discriminant under the tag `{tag}`"
+                    )));
+                };
+                let payload = map.remove(content.as_str());
+                if !map.is_empty() {
+                    return Err(malformed(format!(
+                        "adjacent union wire may only carry the tag `{tag}` and content `{content}` keys"
+                    )));
+                }
+                (variant, payload)
+            },
+        };
+
+        // The discriminant must be one of the union's declared variants.
+        let Some(variant) = mode.variants.iter().find(|v| v.key == variant_key) else {
+            return Err(ValidationError::builder("union.unknown_variant")
+                .param("variant", Value::String(variant_key.clone()))
+                .message(format!(
+                    "`{variant_key}` is not a declared variant of this union"
+                ))
+                .build());
+        };
+
+        // A unit variant carries no payload (the hidden EMPTY_PLACEHOLDER_KEY field);
+        // a data variant must. Cross-check the wire shape against the schema so a
+        // mismatch is a precise error rather than a confusing payload type error.
+        let is_unit = variant.field.key().as_str() == ModeField::EMPTY_PLACEHOLDER_KEY;
+        match (is_unit, &payload) {
+            (true, Some(_)) => {
+                return Err(malformed(format!(
+                    "unit variant `{variant_key}` carries no payload"
+                )));
+            },
+            (false, None) => {
+                return Err(malformed(format!(
+                    "data variant `{variant_key}` requires a payload"
+                )));
+            },
+            _ => {},
+        }
+
+        // Build `{<root>: {"mode": "Variant", "value"?: payload}}`.
+        let mut envelope = serde_json::Map::with_capacity(2);
+        envelope.insert(
+            MODE_SELECTOR_KEY.as_str().to_owned(),
+            Value::String(variant_key),
+        );
+        if let Some(payload) = payload {
+            envelope.insert(MODE_PAYLOAD_KEY.as_str().to_owned(), payload);
+        }
+        let mut out = serde_json::Map::with_capacity(1);
+        out.insert(
+            root_field.key().as_str().to_owned(),
+            Value::Object(envelope),
+        );
+        Ok(Value::Object(out))
+    }
+
+    /// Reconstruct the external **serde wire** value from a union's validated /
+    /// canonicalized values — the inverse of [`rewrite_union_wire`](Self::rewrite_union_wire),
+    /// used by [`FieldValues::to_typed`] to close the typed round-trip.
+    ///
+    /// For a non-union schema this is `values.to_json()`. For a union it rewrites the
+    /// internal `{mode, value}` envelope back into serde's external/adjacent tagging
+    /// so the values deserialize into the Rust enum. Total on well-formed (validated)
+    /// values; a malformed envelope falls back to `values.to_json()` rather than
+    /// panicking (no panics in `crates/schema`).
+    pub(crate) fn raw_values_to_wire(&self, values: &FieldValues) -> serde_json::Value {
+        use serde_json::Value;
+
+        if self.0.kind != SchemaKind::Union {
+            return values.to_json();
+        }
+        let (Some(root_field), Some(tagging)) =
+            (self.0.fields.first(), self.0.serde_tagging.as_ref())
+        else {
+            return values.to_json();
+        };
+        let Field::Mode(mode) = root_field else {
+            return values.to_json();
+        };
+        let Some(envelope) = values.get(root_field.key()) else {
+            return values.to_json();
+        };
+
+        // Extract (variant, payload) from either the `{mode,value}` object envelope
+        // (the `from_json` / validate shape) or the programmatic `FieldValue::Mode`.
+        let (variant_key, payload): (&str, Option<Value>) = match envelope {
+            FieldValue::Object(map) => {
+                let Some(FieldValue::Literal(Value::String(key))) = map.get(&*MODE_SELECTOR_KEY)
+                else {
+                    return values.to_json();
+                };
+                (
+                    key.as_str(),
+                    map.get(&*MODE_PAYLOAD_KEY).map(FieldValue::to_json),
+                )
+            },
+            FieldValue::Mode {
+                mode: key,
+                value: payload,
+            } => (key.as_str(), payload.as_deref().map(FieldValue::to_json)),
+            _ => return values.to_json(),
+        };
+
+        let is_unit = mode
+            .variants
+            .iter()
+            .find(|v| v.key == variant_key)
+            .is_some_and(|v| v.field.key().as_str() == ModeField::EMPTY_PLACEHOLDER_KEY);
+
+        match tagging {
+            SerdeTagging::External if is_unit => Value::String(variant_key.to_owned()),
+            SerdeTagging::External => {
+                let mut map = serde_json::Map::with_capacity(1);
+                map.insert(variant_key.to_owned(), payload.unwrap_or(Value::Null));
+                Value::Object(map)
+            },
+            SerdeTagging::Adjacent { tag, content } => {
+                let mut map = serde_json::Map::with_capacity(2);
+                map.insert(tag.clone(), Value::String(variant_key.to_owned()));
+                if !is_unit && let Some(payload) = payload {
+                    map.insert(content.clone(), payload);
+                }
+                Value::Object(map)
+            },
+        }
+    }
+
     /// Whether this schema is a concrete [`Record`](SchemaKind::Record), the
     /// gradual-typing [`Any`](SchemaKind::Any), or a tagged
     /// [`Union`](SchemaKind::Union).

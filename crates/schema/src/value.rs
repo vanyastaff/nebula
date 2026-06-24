@@ -890,6 +890,51 @@ impl FieldValues {
         self.0
     }
 
+    /// Deserialize these values into the typed `T`, bridging the union envelope.
+    ///
+    /// The typed counterpart of [`ValidSchema::values_from_wire`](crate::ValidSchema::values_from_wire):
+    /// for a [`Record`](crate::SchemaKind::Record)/[`Any`](crate::SchemaKind::Any)
+    /// `T` this is `serde_json::from_value(self.to_json())`; for a
+    /// [`Union`](crate::SchemaKind::Union) `T` (a `#[derive(Schema)]` enum) it first
+    /// reconstructs serde's external/adjacent wire from the internal `{mode, value}`
+    /// envelope — driven by `T`'s stored `serde_tagging` — so the enum deserializes
+    /// from the tagging its `#[derive(Serialize)]` emits. Read aliases already folded
+    /// onto their canonical keys by `validate` / canonicalization survive into the
+    /// reconstructed wire, so a `validate` → `to_typed` round-trip is key-space
+    /// consistent for both records and unions.
+    ///
+    /// Like the JSON the values were ingested from, the reconstructed value carries
+    /// any cleartext a `Field::Secret` held *before* resolution; deserialize it
+    /// inside a scope that does not let the typed value escape with secrets in the
+    /// clear (the credential properties pipeline does exactly this as its `$expr`
+    /// refusal point). This is the pre-resolution sibling of
+    /// [`ResolvedValues::into_typed`](crate::ResolvedValues::into_typed), which
+    /// operates *after* resolution and instead **refuses** any value still carrying
+    /// a [`SecretLiteral`](FieldValue::SecretLiteral) — reach for that one when the
+    /// values have been resolved and the typed value may outlive the call.
+    ///
+    /// # Errors
+    ///
+    /// Returns `type_mismatch` when `serde_json::from_value::<T>` fails (a shape the
+    /// schema did not constrain, or a `{"$expr": …}` envelope where `T` expects a
+    /// concrete value).
+    #[expect(
+        clippy::result_large_err,
+        reason = "ValidationError is intentionally large; callers are on the validation path"
+    )]
+    pub fn to_typed<T>(&self) -> Result<T, crate::error::ValidationError>
+    where
+        T: crate::has_schema::HasSchema + serde::de::DeserializeOwned,
+    {
+        let schema = crate::has_schema::schema_of::<T>();
+        let wire = schema.raw_values_to_wire(self);
+        serde_json::from_value::<T>(wire).map_err(|e| {
+            crate::error::ValidationError::builder("type_mismatch")
+                .message(format!("typed deserialize failed: {e}"))
+                .build()
+        })
+    }
+
     /// Encode all values to a JSON object.
     #[must_use]
     pub fn to_json(&self) -> Value {

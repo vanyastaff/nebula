@@ -300,10 +300,15 @@ impl Manager {
         // structural errors are reported as schema violations rather than
         // confusingly re-routed through serde.
         let schema = <R::Config as nebula_schema::HasSchema>::schema();
-        let field_values =
-            nebula_schema::FieldValues::from_json(config_json.clone()).map_err(|e| {
-                Error::permanent(format!("validate_config_value: invalid field tree: {e}"))
-            })?;
+        // Union-aware ingress: a record `Config` folds via `from_json`; a union
+        // `Config` (a `#[derive(Schema)]` enum) folds serde's external/adjacent wire
+        // into the `{mode, value}` envelope `validate` consumes, so both the schema
+        // pass and the closed-set guard below see the union's declared root key
+        // rather than the raw variant discriminant. The serde wire still
+        // deserializes into `R::Config` directly below (no egress on the read path).
+        let field_values = schema.values_from_wire(config_json.clone()).map_err(|e| {
+            Error::permanent(format!("validate_config_value: invalid field tree: {e}"))
+        })?;
         if let Err(report) = schema.validate(&field_values) {
             return Err(Error::permanent(format!(
                 "validate_config_value: schema validation failed: {report:?}"
@@ -324,6 +329,13 @@ impl Manager {
         // the "schema not yet declared" sentinel (`impl_empty_has_schema!`), and a
         // closed set over zero fields would reject every config — that gate
         // belongs to types that have opted into a real schema.
+        //
+        // For a union `R::Config` the operator-facing fields live one level down in
+        // the active variant payload (ingress nests them under the synthetic
+        // `_nebula_union` root, so the top-level key set is just that root). The
+        // union-payload guard below applies the same closed set to that payload —
+        // the union's top-level-equivalent. Arbitrary deeper nesting (a record with
+        // an `Object` field) is still not swept; that remains a broader hardening.
         let declared = schema.fields();
         if !declared.is_empty()
             && let Some((unknown, _)) = field_values
@@ -334,6 +346,33 @@ impl Manager {
                 "validate_config_value: config field `{unknown}` is not declared by \
                  the `{ty}` schema; secrets must not be inlined into ResourceConfig \
                  — bind them through a typed credential slot instead \
+                 (product credential boundary)",
+                unknown = unknown.as_str(),
+                ty = std::any::type_name::<R::Config>(),
+            )));
+        }
+
+        // Union `R::Config`: the operator's fields are the active variant's payload,
+        // nested under `_nebula_union.value`, so the top-level guard above only saw
+        // the synthetic union root. Apply the same closed set to that payload — an
+        // undeclared key (e.g. an inlined secret) is signalled here rather than
+        // silently dropped by serde's default unknown-field handling. A unit variant
+        // carries no payload, so there is nothing to sweep.
+        if let Some(root @ nebula_schema::Field::Mode(mode)) = declared.first()
+            && let Some(nebula_schema::FieldValue::Object(envelope)) = field_values.get(root.key())
+            && let Some(nebula_schema::FieldValue::Literal(serde_json::Value::String(active))) =
+                envelope.get("mode")
+            && let Some(variant) = mode.variants.iter().find(|v| v.key == *active)
+            && let nebula_schema::Field::Object(obj) = variant.field.as_ref()
+            && let Some(nebula_schema::FieldValue::Object(payload)) = envelope.get("value")
+            && let Some((unknown, _)) = payload
+                .iter()
+                .find(|(k, _)| !obj.fields.iter().any(|f| f.key() == *k))
+        {
+            return Err(Error::permanent(format!(
+                "validate_config_value: union config field `{unknown}` is not declared by \
+                 the active `{active}` variant of `{ty}`; secrets must not be inlined into \
+                 ResourceConfig — bind them through a typed credential slot instead \
                  (product credential boundary)",
                 unknown = unknown.as_str(),
                 ty = std::any::type_name::<R::Config>(),
