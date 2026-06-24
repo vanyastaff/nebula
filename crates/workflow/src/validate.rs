@@ -115,13 +115,33 @@ pub fn validate_workflow(definition: &WorkflowDefinition) -> Vec<WorkflowError> 
         }
     }
 
-    // 5. Check parameter references
+    // 5. Check parameter references.
+    //
+    // A `Reference` must (a) point at a node that exists and (b) have a coincident
+    // connection edge from that node to the consumer. The dependency graph is built
+    // from connections only (`graph.rs` never reads `parameters`), so a reference
+    // with no connection leaves the data dependency invisible to the scheduler — the
+    // producer may be ordered after the consumer, which then reads stale or absent
+    // output. Making the connection mandatory keeps every data dependency visible on
+    // the graph (and type-checkable). Build the (from, to) endpoint set once for O(1)
+    // coincidence checks (O(E) build, O(params) loop — not O(params·E)).
+    let connected_pairs: HashSet<_> = definition
+        .connections
+        .iter()
+        .map(|conn| (&conn.from_node, &conn.to_node))
+        .collect();
     for node in &definition.nodes {
         for param in node.parameters.values() {
-            if let ParamValue::Reference { node_key, .. } = param
-                && !seen_ids.contains(node_key)
-            {
+            let ParamValue::Reference { node_key, .. } = param else {
+                continue;
+            };
+            if !seen_ids.contains(node_key) {
                 errors.push(WorkflowError::InvalidParameterReference {
+                    node_key: node.id.clone(),
+                    source_node_key: node_key.clone(),
+                });
+            } else if !connected_pairs.contains(&(node_key, &node.id)) {
+                errors.push(WorkflowError::ReferenceWithoutConnection {
                     node_key: node.id.clone(),
                     source_node_key: node_key.clone(),
                 });
@@ -575,6 +595,51 @@ mod tests {
             errors
                 .iter()
                 .any(|e| matches!(e, WorkflowError::InvalidParameterReference { .. }))
+        );
+    }
+
+    #[test]
+    fn reference_without_connection_is_rejected() {
+        // `a` pulls `b`'s output via a parameter Reference, but there is no
+        // connection edge b -> a, so the data dependency is invisible to the
+        // scheduler (graph.rs builds edges from connections only).
+        let a = node_key!("a");
+        let b = node_key!("b");
+        let mut consumer = node(a);
+        consumer
+            .parameters
+            .insert("input".into(), ParamValue::reference(b.clone(), "$.data"));
+        let def = make_definition("ref-no-conn", vec![consumer, node(b)], vec![]);
+        let errors = validate_workflow(&def);
+        assert!(
+            errors
+                .iter()
+                .any(|e| matches!(e, WorkflowError::ReferenceWithoutConnection { .. })),
+            "a Reference with no coincident connection must be rejected; got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn reference_with_coincident_connection_passes() {
+        // Same Reference, now backed by a real b -> a connection edge: the
+        // dependency is visible to the scheduler, so it must not be flagged.
+        let a = node_key!("a");
+        let b = node_key!("b");
+        let mut consumer = node(a.clone());
+        consumer
+            .parameters
+            .insert("input".into(), ParamValue::reference(b.clone(), "$.data"));
+        let def = make_definition(
+            "ref-with-conn",
+            vec![consumer, node(b.clone())],
+            vec![Connection::new(b, a)],
+        );
+        let errors = validate_workflow(&def);
+        assert!(
+            !errors
+                .iter()
+                .any(|e| matches!(e, WorkflowError::ReferenceWithoutConnection { .. })),
+            "a Reference WITH a coincident connection must not be flagged; got: {errors:?}"
         );
     }
 
