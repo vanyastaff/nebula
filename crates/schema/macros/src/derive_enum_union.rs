@@ -155,12 +155,22 @@ pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
                     ::std::sync::OnceLock::new();
                 __CACHE
                     .get_or_init(|| {
-                        let __mode = #crate_path::Field::mode(
-                            #crate_path::FieldKey::new(#UNION_ROOT_KEY)
-                                .expect("union root key is a valid FieldKey"),
-                        )
-                        #( #variant_calls )*;
-                        match #crate_path::ValidSchema::union(__mode, #tagging) {
+                        // Build inside a `Result`-returning closure so a non-record
+                        // newtype payload (`union_newtype_payload`) propagates via
+                        // `?` into the single error/log path below — the failure
+                        // surfaces here, not as a panic from library code.
+                        let __build = || -> ::core::result::Result<
+                            #crate_path::ValidSchema,
+                            #crate_path::error::ValidationReport,
+                        > {
+                            let mut __mode = #crate_path::Field::mode(
+                                #crate_path::FieldKey::new(#UNION_ROOT_KEY)
+                                    .expect("union root key is a valid FieldKey"),
+                            );
+                            #( __mode = __mode #variant_calls; )*
+                            #crate_path::ValidSchema::union(__mode, #tagging)
+                        };
+                        match __build() {
                             ::core::result::Result::Ok(s) => s,
                             ::core::result::Result::Err(report) => {
                                 #crate_path::__private::tracing::error!(
@@ -273,7 +283,7 @@ fn build_variant_call(
                             <#payload_ty as #crate_path::HasSchema>::schema(),
                             #enum_name,
                             #wire_key,
-                        )
+                        )?
                     };
                     Ok(quote! { .variant(#wire_key, #label, #payload) })
                 },

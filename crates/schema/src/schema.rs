@@ -503,6 +503,33 @@ impl SchemaBuilder {
     /// Returns a [`ValidationReport`] when structural linting or index-limit
     /// checks fail.
     pub fn build(self) -> Result<ValidSchema, ValidationReport> {
+        self.build_inner(crate::SchemaKind::Record, None)
+    }
+
+    /// Build a [`SchemaKind::Union`] from a builder carrying exactly one root
+    /// `Field::Mode` (the union's variants), recording its serde `tagging`.
+    ///
+    /// Runs the same lint / index / depth checks as [`build`](Self::build), then
+    /// stamps the kind and tagging — so the union goes through one construction
+    /// path (no post-build `Arc` surgery) and a malformed shape is rejected as a
+    /// [`ValidationReport`], never a panic.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`ValidationReport`] when structural linting or index-limit
+    /// checks fail.
+    pub(crate) fn build_union(
+        self,
+        tagging: crate::SerdeTagging,
+    ) -> Result<ValidSchema, ValidationReport> {
+        self.build_inner(crate::SchemaKind::Union, Some(tagging))
+    }
+
+    fn build_inner(
+        self,
+        kind: crate::SchemaKind,
+        serde_tagging: Option<crate::SerdeTagging>,
+    ) -> Result<ValidSchema, ValidationReport> {
         let mut fields = self.fields;
         let mut report = ValidationReport::new();
 
@@ -534,8 +561,8 @@ impl SchemaBuilder {
         build_index(&fields, &mut index, &mut flags);
 
         Ok(ValidSchema::from_inner(ValidSchemaInner {
-            kind: crate::SchemaKind::Record,
-            serde_tagging: None,
+            kind,
+            serde_tagging,
             fields,
             index,
             flags,

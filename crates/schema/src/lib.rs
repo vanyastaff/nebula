@@ -334,29 +334,38 @@ pub mod __private {
     /// construction instead — consistent with the derive's other schema-build
     /// panics — naming the offending variant.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics when `payload`'s kind is not [`Record`](crate::SchemaKind::Record)
-    /// (e.g. a newtype over an enum, over `serde_json::Value`, or over any other
-    /// `Any`-typed payload).
-    #[must_use]
+    /// Returns a [`ValidationReport`](crate::error::ValidationReport) when
+    /// `payload`'s kind is not [`Record`](crate::SchemaKind::Record) (e.g. a
+    /// newtype over an enum, over `serde_json::Value`, or over any other
+    /// `Any`-typed payload). The derive routes this through the same
+    /// schema-build error path as a failed `ValidSchema::union`, so the failure
+    /// surfaces at `schema()` construction — it does not panic from library code.
     pub fn union_newtype_payload(
         wire_key: crate::FieldKey,
         payload: crate::ValidSchema,
         enum_name: &str,
         variant: &str,
-    ) -> crate::Field {
-        assert!(
-            payload.kind() == crate::SchemaKind::Record,
-            "#[derive(Schema)] on enum `{enum_name}`: newtype variant `{variant}` wraps a type \
-             whose schema is `{:?}`, not a record — a payload that is itself a union (another \
-             enum), `serde_json::Value`, or otherwise shape-unknown cannot be modeled as a \
-             variant payload (its keys would not match the wire). Wrap the value in a plain \
-             `#[derive(Schema)]` struct.",
-            payload.kind(),
-        );
-        crate::Field::object(wire_key)
-            .add_many(payload.fields().iter().cloned())
-            .into()
+    ) -> ::core::result::Result<crate::Field, crate::error::ValidationReport> {
+        if payload.kind() != crate::SchemaKind::Record {
+            return ::core::result::Result::Err(crate::error::ValidationReport::from(
+                crate::error::ValidationError::builder("union.newtype_not_record")
+                    .message(format!(
+                        "#[derive(Schema)] on enum `{enum_name}`: newtype variant `{variant}` \
+                         wraps a type whose schema is `{:?}`, not a record — a payload that is \
+                         itself a union (another enum), `serde_json::Value`, or otherwise \
+                         shape-unknown cannot be modeled as a variant payload (its keys would not \
+                         match the wire). Wrap the value in a plain `#[derive(Schema)]` struct.",
+                        payload.kind(),
+                    ))
+                    .build(),
+            ));
+        }
+        ::core::result::Result::Ok(
+            crate::Field::object(wire_key)
+                .add_many(payload.fields().iter().cloned())
+                .into(),
+        )
     }
 }

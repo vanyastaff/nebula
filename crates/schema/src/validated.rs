@@ -370,17 +370,27 @@ impl ValidSchema {
     /// a valid [`FieldKey`], two variants collide, or the schema otherwise fails a
     /// build-time lint.
     pub fn union(mode_field: ModeField, tagging: SerdeTagging) -> Result<Self, ValidationReport> {
-        let built = crate::schema::Schema::builder()
+        // A tagged union has no default variant: serde always requires the
+        // discriminant on the wire, and mode validation otherwise falls back to a
+        // `default_variant` when the selector is absent — which would let a value
+        // with no discriminant validate, breaking the tagged-union contract.
+        if mode_field.default_variant.is_some() {
+            return Err(ValidationReport::from(
+                ValidationError::builder("union.default_variant")
+                    .message(
+                        "a tagged union has no default variant — serde always requires the \
+                         discriminant; remove `default_variant` before building the union",
+                    )
+                    .build(),
+            ));
+        }
+        // Build through the normal builder so the union runs the same field lint
+        // (variant-key validity / uniqueness), index, and depth guard; `build_union`
+        // stamps the kind + tagging during construction (no post-build `Arc`
+        // surgery, no panic path).
+        crate::schema::Schema::builder()
             .add(mode_field.required())
-            .build()?;
-        // The builder just allocated this `Arc`, so it is uniquely owned: retag it
-        // in place (the one thing the Record builder path cannot express) instead
-        // of rebuilding the index and flags.
-        let mut inner =
-            Arc::try_unwrap(built.0).expect("a freshly built ValidSchema owns its Arc uniquely");
-        inner.kind = SchemaKind::Union;
-        inner.serde_tagging = Some(tagging);
-        Ok(Self::from_inner(inner))
+            .build_union(tagging)
     }
 
     /// Whether this schema is a concrete [`Record`](SchemaKind::Record), the
@@ -2582,6 +2592,26 @@ mod tests {
             content: "data".to_owned(),
         });
         assert_ne!(external, adjacent);
+    }
+
+    #[test]
+    fn union_rejects_default_variant() {
+        // A tagged union has no default variant — serde always requires the
+        // discriminant, and a default would let mode validation accept a value
+        // with no selector, breaking the tagged-union contract.
+        let mode = Field::mode(field_key!("auth"))
+            .variant(
+                "oauth",
+                "OAuth",
+                Field::object(field_key!("oauth"))
+                    .add(Field::string(field_key!("token")).required()),
+            )
+            .default_variant("oauth");
+        let err = ValidSchema::union(mode, SerdeTagging::External).unwrap_err();
+        assert!(
+            format!("{err:?}").contains("default_variant"),
+            "the union constructor must reject a default variant, got {err:?}"
+        );
     }
 
     #[test]

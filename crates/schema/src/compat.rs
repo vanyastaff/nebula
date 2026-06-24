@@ -10,8 +10,8 @@
 //! kind-blind slice form is used only by this module's tests.)
 
 use crate::{
-    Field, FieldKey, InputSchema, OutputSchema, RequiredMode, SchemaKind, ValidSchema,
-    field::ModeField,
+    Field, FieldKey, InputSchema, OutputSchema, RequiredMode, SchemaKind, SerdeTagging,
+    ValidSchema, field::ModeField,
 };
 
 // ── Public types ─────────────────────────────────────────────────────────────
@@ -105,6 +105,19 @@ pub enum SchemaIncompat {
         producer: SchemaKind,
         /// The consumer schema's kind.
         consumer: SchemaKind,
+    },
+    /// Both schemas are tagged [`Union`](SchemaKind::Union)s, but their serde
+    /// tagging differs (e.g. external vs adjacent). The variant keys may match,
+    /// yet the on-the-wire shapes do not (`{"V": payload}` vs
+    /// `{"<tag>": "V", "<content>": payload}`) and are not interconvertible, so the
+    /// consumer cannot deserialize the producer's output. `serde_tagging` is part
+    /// of schema identity (see the `ValidSchema` `PartialEq`).
+    #[error("union serde tagging mismatch: producer {producer:?}, consumer expects {consumer:?}")]
+    UnionTaggingMismatch {
+        /// The producer union's serde tagging (`None` only on a malformed union).
+        producer: Option<SerdeTagging>,
+        /// The consumer union's serde tagging.
+        consumer: Option<SerdeTagging>,
     },
 }
 
@@ -634,7 +647,11 @@ fn collect_mode_variants(
     strict: bool,
     acc: &mut Explain,
 ) {
-    let mut payload_findings = Explain::default();
+    // Push each variant's findings as it is visited (an unhandled variant, or its
+    // wrapped payload findings) so the overall order stays depth-first /
+    // producer-variant order — the first-incompatibility contract `is_assignable`
+    // relies on. (Accumulating all payloads and wrapping once at the end would let
+    // a later unhandled variant precede an earlier payload mismatch.)
     for producer_variant in &producer.variants {
         match consumer
             .variants
@@ -648,6 +665,7 @@ fn collect_mode_variants(
                 });
             },
             Some(consumer_variant) => {
+                let mut payload_findings = Explain::default();
                 collect_pair(
                     consumer_variant.field.key(),
                     &producer_variant.field,
@@ -655,10 +673,10 @@ fn collect_mode_variants(
                     strict,
                     &mut payload_findings,
                 );
+                acc.wrap_nested(key, payload_findings);
             },
         }
     }
-    acc.wrap_nested(key, payload_findings);
 }
 
 /// Assignability when at least one side is a [`SchemaKind::Union`].
@@ -684,6 +702,16 @@ fn union_assignability(
         && let (Some(Field::Mode(producer_mode)), Some(Field::Mode(consumer_mode))) =
             (producer.fields().first(), consumer.fields().first())
     {
+        // Serde tagging is part of schema identity: two unions with matching
+        // variant keys but different tagging (external vs adjacent) have different
+        // wire shapes and are NOT interconvertible, so the consumer cannot
+        // deserialize the producer's output. Reject before comparing variants.
+        if producer.serde_tagging() != consumer.serde_tagging() {
+            return Assignability::No(vec![SchemaIncompat::UnionTaggingMismatch {
+                producer: producer.serde_tagging().cloned(),
+                consumer: consumer.serde_tagging().cloned(),
+            }]);
+        }
         // Label findings by the consumer's root mode key; both roots are the
         // union's sole field by construction (`ValidSchema::union`).
         let root_key = consumer.fields()[0].key();
@@ -1670,7 +1698,7 @@ mod tests {
         for key in variant_keys {
             mode = mode.variant(*key, *key, Field::string(fk("x")));
         }
-        ValidSchema::union(mode, crate::SerdeTagging::External).expect("union builds")
+        ValidSchema::union(mode, SerdeTagging::External).expect("union builds")
     }
 
     /// Identical unions are provably assignable.
@@ -1720,12 +1748,12 @@ mod tests {
     fn union_variant_payload_mismatch_is_nested_no() {
         let producer = ValidSchema::union(
             Field::mode(fk("u")).variant("a", "a", Field::number(fk("x"))),
-            crate::SerdeTagging::External,
+            SerdeTagging::External,
         )
         .unwrap();
         let consumer = ValidSchema::union(
             Field::mode(fk("u")).variant("a", "a", Field::string(fk("x"))),
-            crate::SerdeTagging::External,
+            SerdeTagging::External,
         )
         .unwrap();
         assert_eq!(
@@ -1786,6 +1814,58 @@ mod tests {
             explain_assignable(&ext_union(&["a"]), &ValidSchema::empty()),
             Assignability::Yes,
         );
+    }
+
+    /// Two unions with identical variants but DIFFERENT serde tagging are not
+    /// assignable — their wire shapes (`{"a": ..}` vs `{tag, content}`) differ and
+    /// are not interconvertible, so the consumer cannot deserialize the producer.
+    #[test]
+    fn union_tagging_mismatch_is_rejected() {
+        let external = ext_union(&["a"]); // SerdeTagging::External
+        let adjacent = ValidSchema::union(
+            Field::mode(fk("u")).variant("a", "a", Field::string(fk("x"))),
+            SerdeTagging::Adjacent {
+                tag: "t".to_owned(),
+                content: "c".to_owned(),
+            },
+        )
+        .unwrap();
+        match explain_assignable(&external, &adjacent) {
+            Assignability::No(v) => assert!(
+                matches!(v.first(), Some(SchemaIncompat::UnionTaggingMismatch { .. })),
+                "expected a tagging mismatch, got {v:?}"
+            ),
+            other => panic!("expected No(UnionTaggingMismatch), got {other:?}"),
+        }
+    }
+
+    /// Findings keep producer-variant order: an earlier variant's payload mismatch
+    /// precedes a later unhandled variant (the first-incompatibility contract).
+    #[test]
+    fn union_findings_preserve_producer_variant_order() {
+        let producer = ValidSchema::union(
+            Field::mode(fk("u"))
+                .variant("a", "a", Field::number(fk("x")))
+                .variant("b", "b", Field::string(fk("y"))),
+            SerdeTagging::External,
+        )
+        .unwrap();
+        // Consumer handles only `a`, and types its payload as a string (so `a`
+        // mismatches) — `b` is unhandled.
+        let consumer = ext_union(&["a"]);
+        match explain_assignable(&producer, &consumer) {
+            Assignability::No(v) => {
+                assert!(
+                    matches!(v[0], SchemaIncompat::NestedIncompat { .. }),
+                    "earlier variant `a`'s payload mismatch must come first, got {v:?}"
+                );
+                assert!(
+                    matches!(&v[1], SchemaIncompat::UnhandledVariant { variant, .. } if variant == "b"),
+                    "later unhandled variant `b` must come second, got {v:?}"
+                );
+            },
+            other => panic!("expected No, got {other:?}"),
+        }
     }
 
     /// Output evolution (sum-type variance): a new output union that ADDS a
