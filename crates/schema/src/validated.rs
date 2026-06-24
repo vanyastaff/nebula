@@ -638,6 +638,26 @@ impl ValidSchema {
         }
     }
 
+    /// The path of the first value key that no field of this schema declares —
+    /// the closed-set query, walked recursively through nested objects, list
+    /// items, and a union's active variant payload (`mode`/`value` are structural
+    /// keys of a [`Field::Mode`] envelope, not flagged). `None` when every key in
+    /// `values` maps onto a declared field.
+    ///
+    /// [`validate`](Self::validate) deliberately *ignores* undeclared keys (an
+    /// open record tolerates extra wire fields); this is the complementary
+    /// closed-set check a consumer applies when undeclared input must be rejected
+    /// rather than silently dropped — e.g. `nebula-resource` rejecting an inlined
+    /// secret-shaped field in a `ResourceConfig` (which must carry no secrets) at
+    /// any depth, not just the top level. For the gradual-typing
+    /// [`Any`](SchemaKind::Any) schema (no declared fields) **every** key is
+    /// "undeclared", so callers that treat an empty schema as "not yet declared"
+    /// must gate this on a non-empty [`fields`](Self::fields).
+    #[must_use]
+    pub fn first_undeclared_path(&self, values: &FieldValues) -> Option<FieldPath> {
+        first_undeclared_in_level(&self.0.fields, values.as_map(), &FieldPath::root(), 0)
+    }
+
     /// Whether this schema is a concrete [`Record`](SchemaKind::Record), the
     /// gradual-typing [`Any`](SchemaKind::Any), or a tagged
     /// [`Union`](SchemaKind::Union).
@@ -1218,6 +1238,93 @@ fn canonicalize_nested_value(field: &Field, value: &mut FieldValue) {
 /// point to extend with fallback logic if needed.
 fn resolve_field_value<'v>(field: &Field, values: &'v FieldValues) -> Option<&'v FieldValue> {
     values.get(field.key())
+}
+
+/// Closed-set walk over one field-scope level: the first value key not declared
+/// by `fields`, else recurse into each declared field's value. See
+/// [`ValidSchema::first_undeclared_path`].
+fn first_undeclared_in_level(
+    fields: &[Field],
+    map: &IndexMap<FieldKey, FieldValue>,
+    path: &FieldPath,
+    depth: u8,
+) -> Option<FieldPath> {
+    for (key, value) in map {
+        let Some(field) = fields.iter().find(|f| f.key() == key) else {
+            return Some(path.clone().join(key.clone()));
+        };
+        if let Some(found) =
+            first_undeclared_in_value(field, value, &path.clone().join(key.clone()), depth)
+        {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// Recurse the closed-set walk into one field's value: nested objects, list
+/// items, and a union/mode field's active-variant payload (the `mode`/`value`
+/// envelope keys are structural and never flagged). Scalar fields and shape
+/// mismatches yield `None` — a type mismatch is [`validate`](ValidSchema::validate)'s
+/// concern, not the closed-set check's. Depth-bounded by [`MAX_VALUE_DEPTH`] so an
+/// adversarial value tree cannot overflow the stack (it is rejected earlier by
+/// `from_json`, but the bound makes this walk panic-free regardless).
+fn first_undeclared_in_value(
+    field: &Field,
+    value: &FieldValue,
+    path: &FieldPath,
+    depth: u8,
+) -> Option<FieldPath> {
+    if depth >= crate::value::MAX_VALUE_DEPTH {
+        return None;
+    }
+    let next = depth.saturating_add(1);
+    match (field, value) {
+        (Field::Object(obj), FieldValue::Object(map)) => {
+            first_undeclared_in_level(&obj.fields, map, path, next)
+        },
+        (Field::Mode(mode), FieldValue::Object(env)) => {
+            // Resolve the active variant exactly as validate / canonicalize do: an
+            // explicit string `mode`, else `default_variant`; then sweep its payload.
+            let resolved = match env.get(&*MODE_SELECTOR_KEY) {
+                Some(FieldValue::Literal(serde_json::Value::String(key))) => Some(key.clone()),
+                Some(_) => None,
+                None => mode.default_variant.clone(),
+            };
+            let variant = resolved
+                .as_deref()
+                .and_then(|key| mode.variants.iter().find(|v| v.key == key))?;
+            let payload = env.get(&*MODE_PAYLOAD_KEY)?;
+            first_undeclared_in_value(
+                &variant.field,
+                payload,
+                &path.clone().join((*MODE_PAYLOAD_KEY).clone()),
+                next,
+            )
+        },
+        (
+            Field::Mode(mode),
+            FieldValue::Mode {
+                mode: mode_key,
+                value: Some(payload),
+            },
+        ) => {
+            let variant = mode.variants.iter().find(|v| v.key == mode_key.as_str())?;
+            first_undeclared_in_value(
+                &variant.field,
+                payload,
+                &path.clone().join((*MODE_PAYLOAD_KEY).clone()),
+                next,
+            )
+        },
+        (Field::List(list), FieldValue::List(items)) => {
+            let item_field = list.item.as_deref()?;
+            items.iter().enumerate().find_map(|(index, item)| {
+                first_undeclared_in_value(item_field, item, &path.clone().join(index), next)
+            })
+        },
+        _ => None,
+    }
 }
 
 /// Validated values — tied to a specific `ValidSchema`.
@@ -2747,6 +2854,8 @@ fn run_value_rules(
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::*;
     use crate::{Field, FieldKey, Schema, field_key};
 
@@ -2796,6 +2905,94 @@ mod tests {
         // not in a parallel store.
         assert_eq!(u.fields().len(), 1);
         assert!(matches!(u.fields()[0], Field::Mode(_)));
+    }
+
+    // ── first_undeclared_path (closed-set walk) ───────────────────────────────
+
+    #[test]
+    fn first_undeclared_none_when_every_key_declared() {
+        let schema = Schema::builder()
+            .add(Field::string(field_key!("host")))
+            .add(Field::number(field_key!("port")))
+            .build()
+            .unwrap();
+        let values = FieldValues::from_json(json!({"host": "h", "port": 5432})).unwrap();
+        assert_eq!(schema.first_undeclared_path(&values), None);
+    }
+
+    #[test]
+    fn first_undeclared_flags_top_level_key() {
+        let schema = Schema::builder()
+            .add(Field::string(field_key!("host")))
+            .build()
+            .unwrap();
+        let values = FieldValues::from_json(json!({"host": "h", "password": "x"})).unwrap();
+        let path = schema
+            .first_undeclared_path(&values)
+            .expect("undeclared top-level key must be reported");
+        assert_eq!(path.to_string(), "password");
+    }
+
+    #[test]
+    fn first_undeclared_recurses_into_nested_object() {
+        let schema = Schema::builder()
+            .add(Field::object(field_key!("tls")).add(Field::string(field_key!("ca"))))
+            .build()
+            .unwrap();
+        // `ca` is declared; `secret_key` inside the nested object is not — serde
+        // would silently drop it, but the closed-set walk must surface it.
+        let values =
+            FieldValues::from_json(json!({"tls": {"ca": "c", "secret_key": "leak"}})).unwrap();
+        let path = schema
+            .first_undeclared_path(&values)
+            .expect("undeclared nested key must be reported");
+        assert!(
+            path.to_string().contains("secret_key"),
+            "path should name the nested key, got: {path}"
+        );
+    }
+
+    #[test]
+    fn first_undeclared_recurses_into_list_items() {
+        let schema = Schema::builder()
+            .add(
+                Field::list(field_key!("hosts"))
+                    .item(Field::object(field_key!("host")).add(Field::string(field_key!("name")))),
+            )
+            .build()
+            .unwrap();
+        let values =
+            FieldValues::from_json(json!({"hosts": [{"name": "a"}, {"name": "b", "bad": 1}]}))
+                .unwrap();
+        let path = schema
+            .first_undeclared_path(&values)
+            .expect("undeclared key inside a list item must be reported");
+        assert!(
+            path.to_string().contains("bad"),
+            "path should name the list-item key, got: {path}"
+        );
+    }
+
+    #[test]
+    fn first_undeclared_recurses_into_union_variant_payload() {
+        // The `oauth` variant declares only `token`; an inlined `leak` in its
+        // payload must be surfaced (the union's deeper-than-top-level case).
+        let union = sample_union(SerdeTagging::External);
+        let values = union
+            .values_from_wire(json!({"oauth": {"token": "t", "leak": "x"}}))
+            .expect("external data-variant wire ingests");
+        let path = union
+            .first_undeclared_path(&values)
+            .expect("undeclared key in a union variant payload must be reported");
+        assert!(
+            path.to_string().contains("leak"),
+            "path should name the variant-payload key, got: {path}"
+        );
+        // A clean payload has nothing undeclared.
+        let clean = union
+            .values_from_wire(json!({"oauth": {"token": "t"}}))
+            .unwrap();
+        assert_eq!(union.first_undeclared_path(&clean), None);
     }
 
     #[test]

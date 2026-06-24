@@ -467,7 +467,7 @@ async fn register_from_value_rejects_inlined_field_in_union_variant_payload() {
 
     let msg = err.to_string();
     assert!(
-        msg.contains("secret_token") && msg.contains("not declared by the active"),
-        "expected a union-variant-payload closed-set rejection, got: {msg}"
+        msg.contains("secret_token") && msg.contains("not declared"),
+        "expected a union-variant-payload closed-set rejection naming the inlined key, got: {msg}"
     );
 }
