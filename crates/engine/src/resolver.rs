@@ -129,12 +129,27 @@ impl ParamResolver {
 
 /// Navigate a JSON value by a dot-separated path.
 ///
-/// Supports object key access and array index access:
+/// Supports object key access and array index access, with an optional JSONPath
+/// root prefix:
 /// - `"data.items"` → `value["data"]["items"]`
+/// - `"$.data.items"` → same (the `$.` root is stripped)
 /// - `"items.0.name"` → `value["items"][0]["name"]`
+/// - `"$"` → the whole value (root)
+///
+/// The public [`ParamValue::reference`](nebula_workflow::ParamValue::reference)
+/// constructor documents `output_path` as JSONPath (`$.data.items`), while this
+/// navigator splits on `.`. Stripping an optional leading `$.` (or a bare `$`)
+/// reconciles the two grammars so both forms resolve to the same location;
+/// without it a `$.`-prefixed path looked up a literal `"$"` key and silently
+/// resolved to `Null`. (A JSON object key literally named `$…` is not
+/// addressable — `$` is reserved for the JSONPath root, as in the standard.)
 ///
 /// Returns `Value::Null` for missing keys or out-of-bounds indices.
 fn navigate_path(value: &serde_json::Value, path: &str) -> serde_json::Value {
+    let path = match path.strip_prefix("$.") {
+        Some(rest) => rest,
+        None => path.strip_prefix('$').unwrap_or(path),
+    };
     if path.is_empty() {
         return value.clone();
     }
@@ -211,6 +226,31 @@ mod tests {
     fn navigate_path_array_with_non_numeric_returns_null() {
         let val = json!([1, 2, 3]);
         assert_eq!(navigate_path(&val, "name"), json!(null));
+    }
+
+    /// The documented JSONPath grammar (`$.data.items`) must resolve to the same
+    /// place as the bare-dotted form. Before the root-prefix reconciliation a
+    /// `$.`-prefixed path looked up a literal `"$"` key and returned `Null`.
+    #[test]
+    fn navigate_path_strips_jsonpath_root_prefix() {
+        let val = json!({"data": {"items": [1, 2, 3]}});
+        assert_eq!(
+            navigate_path(&val, "$.data.items.0"),
+            json!(1),
+            "`$.`-prefixed JSONPath must resolve like the bare-dotted form"
+        );
+        // Both grammars agree.
+        assert_eq!(
+            navigate_path(&val, "$.data.items"),
+            navigate_path(&val, "data.items"),
+        );
+    }
+
+    /// A bare `$` is the JSONPath root — the whole value.
+    #[test]
+    fn navigate_path_bare_root_returns_whole_value() {
+        let val = json!({"a": 1});
+        assert_eq!(navigate_path(&val, "$"), val);
     }
 
     // -- resolve tests --
