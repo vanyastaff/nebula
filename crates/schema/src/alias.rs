@@ -1,5 +1,5 @@
 //! Field alias container — extra accepted input keys (read-aliases) and
-//! optional output key remapping (write-alias).
+//! the optional output key remap (`emit_as`).
 //!
 //! This is a pure storage type; canonicalization is enforced at ingest in
 //! `validated.rs` and collision checks run at lint time in `lint.rs`.

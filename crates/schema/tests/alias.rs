@@ -1,7 +1,7 @@
 //! Integration tests for the field-alias subsystem.
 //!
 //! Covers:
-//! - Builder API (read_alias / write_alias / read_aliases methods)
+//! - Builder API (read_alias / emit_as / read_aliases methods)
 //! - Ingest canonicalization (alias-keyed → canonical-keyed before validation)
 //! - Security: alias-keyed secret is canonicalized, not leaked under the alias key
 //! - Projection via `ValidSchema::project` and `ValidValues::to_wire_json`
@@ -49,22 +49,17 @@ fn builder_read_aliases_bulk_replaces_set() {
 }
 
 #[test]
-fn builder_write_alias_registers_on_field_enum() {
+fn builder_emit_as_registers_on_field_enum() {
     let field = Field::string(fk("internal_name"))
-        .write_alias("displayName")
+        .emit_as("displayName")
         .unwrap()
         .into_field();
-    assert_eq!(
-        field.write_alias().map(FieldKey::as_str),
-        Some("displayName")
-    );
+    assert_eq!(field.emit_as().map(FieldKey::as_str), Some("displayName"));
 }
 
 #[test]
-fn builder_write_alias_rejects_invalid_key() {
-    let err = Field::string(fk("name"))
-        .write_alias("has-dash")
-        .unwrap_err();
+fn builder_emit_as_rejects_invalid_key() {
+    let err = Field::string(fk("name")).emit_as("has-dash").unwrap_err();
     assert_eq!(err.code, "alias.invalid_key");
 }
 
@@ -72,7 +67,7 @@ fn builder_write_alias_rejects_invalid_key() {
 fn field_enum_without_aliases_returns_empty_slice_and_none() {
     let field = Field::string(fk("x")).into_field();
     assert!(field.read_aliases().is_empty());
-    assert!(field.write_alias().is_none());
+    assert!(field.emit_as().is_none());
 }
 
 // ── Ingest canonicalization ───────────────────────────────────────────────────
@@ -252,11 +247,11 @@ fn secret_via_alias_is_canonicalized_not_stored_under_alias_key() {
 // ── Projection: ValidSchema::project ─────────────────────────────────────────
 
 #[test]
-fn project_emits_write_alias_key_instead_of_canonical_key() {
+fn project_emits_emit_as_key_instead_of_canonical_key() {
     let schema = Schema::builder()
         .add(
             Field::string(fk("internal_id"))
-                .write_alias("externalId")
+                .emit_as("externalId")
                 .unwrap(),
         )
         .build()
@@ -268,12 +263,12 @@ fn project_emits_write_alias_key_instead_of_canonical_key() {
     assert_eq!(projected["externalId"], json!("abc123"));
     assert!(
         projected.get("internal_id").is_none(),
-        "canonical key must not appear in projected output when write_alias is set"
+        "canonical key must not appear in projected output when emit_as is set"
     );
 }
 
 #[test]
-fn project_emits_canonical_key_when_no_write_alias() {
+fn project_emits_canonical_key_when_no_emit_as() {
     let schema = Schema::builder()
         .add(Field::string(fk("name")))
         .build()
@@ -318,12 +313,12 @@ fn project_passes_extra_non_schema_keys_through_unchanged() {
 }
 
 #[test]
-fn project_recurses_into_nested_object_write_aliases() {
+fn project_recurses_into_nested_object_emit_as() {
     let schema = Schema::builder()
         .add(
             Field::object(fk("contact")).add(
                 Field::string(fk("phone_number"))
-                    .write_alias("phoneNumber")
+                    .emit_as("phoneNumber")
                     .unwrap(),
             ),
         )
@@ -343,11 +338,11 @@ fn project_recurses_into_nested_object_write_aliases() {
 // ── ValidValues::to_wire_json ─────────────────────────────────────────────────
 
 #[test]
-fn to_wire_json_applies_write_alias_to_validated_output() {
+fn to_wire_json_applies_emit_as_to_validated_output() {
     let schema = Schema::builder()
         .add(
             Field::string(fk("internal_field"))
-                .write_alias("wireField")
+                .emit_as("wireField")
                 .unwrap(),
         )
         .build()
@@ -361,18 +356,80 @@ fn to_wire_json_applies_write_alias_to_validated_output() {
     assert!(wire.get("internal_field").is_none());
 }
 
+// ── Wire round-trip property: emit_as ⟷ read-alias ───────────────────────────
+//
+// The read side is a many-to-one fold (input keys → canonical) and the emit side
+// is a one-to-one remap (canonical → output key). They are independent knobs, so a
+// projected wire payload is re-ingestible ONLY when a field's `emit_as` output key
+// is ALSO a read-alias on that same field — the round-trip-stable shape the derive
+// allows (same-field read+emit reuse).
+
+#[test]
+fn emit_as_with_matching_read_alias_is_wire_round_trip_stable() {
+    let schema = Schema::builder()
+        .add(
+            Field::string(fk("internal"))
+                .read_alias("wire")
+                .unwrap()
+                .emit_as("wire")
+                .unwrap(),
+        )
+        .build()
+        .unwrap();
+
+    let valid = schema
+        .validate(&FieldValues::from_json(json!({"internal": "v"})).unwrap())
+        .unwrap();
+    let wire = valid.to_wire_json();
+    assert_eq!(wire["wire"], json!("v"), "emits under the emit_as key");
+
+    // Feed the projection back through validate: `wire` is a read-alias, so it
+    // folds onto the canonical key — the value survives a full wire round-trip.
+    let revalidated = schema
+        .validate(&FieldValues::from_json(wire).unwrap())
+        .unwrap();
+    assert_eq!(revalidated.raw().get_string(&fk("internal")), Some("v"));
+}
+
+#[test]
+fn emit_as_without_matching_read_alias_is_not_round_trip_stable() {
+    // emit_as alone: the output key is not an accepted input key, so re-validating
+    // the projection leaves the canonical field unset (the emitted key is an extra
+    // pass-through, never folded). This is why round-trip stability REQUIRES the
+    // matching read-alias — the two knobs are independent by design.
+    let schema = Schema::builder()
+        .add(Field::string(fk("internal")).emit_as("ext").unwrap())
+        .build()
+        .unwrap();
+
+    let valid = schema
+        .validate(&FieldValues::from_json(json!({"internal": "v"})).unwrap())
+        .unwrap();
+    let wire = valid.to_wire_json();
+    assert_eq!(wire["ext"], json!("v"));
+
+    let revalidated = schema
+        .validate(&FieldValues::from_json(wire).unwrap())
+        .unwrap();
+    assert_eq!(
+        revalidated.raw().get_string(&fk("internal")),
+        None,
+        "emit_as output key is not an input key — no round-trip without a read-alias"
+    );
+}
+
 // ── Lint: alias.* error codes ─────────────────────────────────────────────────
 
 #[test]
-fn lint_write_on_secret_emits_error() {
-    // Field::Secret with a write_alias is forbidden (exposes secret key on wire).
+fn lint_emit_on_secret_emits_error() {
+    // Field::Secret with an emit_as is forbidden (a secret is never emitted on projection output).
     let report = Schema::builder()
-        .add(Field::secret(fk("api_key")).write_alias("apiKey").unwrap())
+        .add(Field::secret(fk("api_key")).emit_as("apiKey").unwrap())
         .build()
         .unwrap_err();
     assert!(
-        has_error_code(&report, "alias.write_on_secret"),
-        "expected alias.write_on_secret, got: {:?}",
+        has_error_code(&report, "alias.emit_on_secret"),
+        "expected alias.emit_on_secret, got: {:?}",
         report.errors().map(|e| &e.code).collect::<Vec<_>>()
     );
 }
@@ -419,81 +476,81 @@ fn lint_shared_read_alias_across_sibling_fields_emits_scope_duplicate() {
 }
 
 #[test]
-fn lint_write_alias_equal_to_sibling_canonical_key_emits_write_collision() {
-    // write_alias "target" collides with the canonical key of the "target" field.
+fn lint_emit_as_equal_to_sibling_canonical_key_emits_emit_collision() {
+    // emit_as "target" collides with the canonical key of the "target" field.
     let report = Schema::builder()
-        .add(Field::string(fk("source")).write_alias("target").unwrap())
+        .add(Field::string(fk("source")).emit_as("target").unwrap())
         .add(Field::string(fk("target")))
         .build()
         .unwrap_err();
     assert!(
-        has_error_code(&report, "alias.write_collision"),
-        "expected alias.write_collision, got: {:?}",
+        has_error_code(&report, "alias.emit_collision"),
+        "expected alias.emit_collision, got: {:?}",
         report.errors().map(|e| &e.code).collect::<Vec<_>>()
     );
 }
 
 #[test]
-fn lint_shared_write_alias_across_sibling_fields_emits_write_scope_duplicate() {
+fn lint_shared_emit_as_across_sibling_fields_emits_emit_scope_duplicate() {
     let report = Schema::builder()
-        .add(Field::string(fk("a")).write_alias("shared_out").unwrap())
-        .add(Field::string(fk("b")).write_alias("shared_out").unwrap())
+        .add(Field::string(fk("a")).emit_as("shared_out").unwrap())
+        .add(Field::string(fk("b")).emit_as("shared_out").unwrap())
         .build()
         .unwrap_err();
     assert!(
-        has_error_code(&report, "alias.write_scope_duplicate"),
-        "expected alias.write_scope_duplicate, got: {:?}",
+        has_error_code(&report, "alias.emit_scope_duplicate"),
+        "expected alias.emit_scope_duplicate, got: {:?}",
         report.errors().map(|e| &e.code).collect::<Vec<_>>()
     );
 }
 
 #[test]
-fn lint_read_alias_colliding_with_sibling_write_alias_emits_read_write_collision() {
-    // `b.read_alias("wire")` collides with `a.write_alias("wire")`: project emits
+fn lint_read_alias_colliding_with_sibling_emit_as_emits_read_emit_collision() {
+    // `b.read_alias("wire")` collides with `a.emit_as("wire")`: project emits
     // `a` under "wire", and a later validate folds "wire" into `b` — a wire
     // round-trip silently moves data between the two fields.
     let report = Schema::builder()
-        .add(Field::string(fk("a")).write_alias("wire").unwrap())
+        .add(Field::string(fk("a")).emit_as("wire").unwrap())
         .add(Field::string(fk("b")).read_alias("wire").unwrap())
         .build()
         .unwrap_err();
     assert!(
-        has_error_code(&report, "alias.read_write_collision"),
-        "expected alias.read_write_collision, got: {:?}",
+        has_error_code(&report, "alias.read_emit_collision"),
+        "expected alias.read_emit_collision, got: {:?}",
         report.errors().map(|e| &e.code).collect::<Vec<_>>()
     );
 }
 
 #[test]
-fn lint_read_write_collision_caught_regardless_of_declaration_order() {
-    // Reverse declaration order: the read-alias field comes before the write one.
+fn lint_read_emit_collision_caught_regardless_of_declaration_order() {
+    // Reverse declaration order: the read-alias field comes before the emit_as one.
     let report = Schema::builder()
         .add(Field::string(fk("b")).read_alias("wire").unwrap())
-        .add(Field::string(fk("a")).write_alias("wire").unwrap())
+        .add(Field::string(fk("a")).emit_as("wire").unwrap())
         .build()
         .unwrap_err();
     assert!(
-        has_error_code(&report, "alias.read_write_collision"),
-        "expected alias.read_write_collision regardless of order, got: {:?}",
+        has_error_code(&report, "alias.read_emit_collision"),
+        "expected alias.read_emit_collision regardless of order, got: {:?}",
         report.errors().map(|e| &e.code).collect::<Vec<_>>()
     );
 }
 
 #[test]
-fn lint_same_field_read_and_write_alias_reuse_is_allowed() {
-    // A field may read AND write under the same key — round-trip stable, allowed.
+fn lint_same_field_read_and_emit_as_reuse_is_allowed() {
+    // A field may read AND emit under the same key — round-trip stable, allowed.
     let result = Schema::builder()
         .add(
             Field::string(fk("internal"))
                 .read_alias("wire")
                 .unwrap()
-                .write_alias("wire")
+                .emit_as("wire")
                 .unwrap(),
         )
         .build();
     assert!(
         result.is_ok(),
-        "same-field read+write alias reuse must build, got: {:?}",
+        "same-field read+emit_as reuse must build, got: {:?}",
         result
             .err()
             .map(|r| r.errors().map(|e| e.code.clone()).collect::<Vec<_>>())
@@ -505,7 +562,7 @@ fn lint_same_field_read_and_write_alias_reuse_is_allowed() {
 #[test]
 fn field_without_aliases_emits_no_extra_wire_keys() {
     // `read_aliases` must be skipped (`skip_serializing_if = "is_empty"`);
-    // `write_alias` must be skipped (`skip_serializing_if = "Option::is_none"`).
+    // `emit_as` must be skipped (`skip_serializing_if = "Option::is_none"`).
     let field = Field::string(fk("name"))
         .label("Name")
         .required()
@@ -517,8 +574,8 @@ fn field_without_aliases_emits_no_extra_wire_keys() {
         "read_aliases must not appear in wire format when empty"
     );
     assert!(
-        wire.get("write_alias").is_none(),
-        "write_alias must not appear in wire format when None"
+        wire.get("emit_as").is_none(),
+        "emit_as must not appear in wire format when None"
     );
 }
 
@@ -746,13 +803,13 @@ fn project_drops_secret_nested_in_mode_payload() {
 }
 
 #[test]
-fn project_applies_write_alias_inside_list_items() {
+fn project_applies_emit_as_inside_list_items() {
     let schema = Schema::builder()
         .add(
             Field::list(fk("rows")).item(
                 Field::object(fk("row")).add(
                     Field::string(fk("internal_id"))
-                        .write_alias("externalId")
+                        .emit_as("externalId")
                         .unwrap(),
                 ),
             ),
@@ -769,23 +826,20 @@ fn project_applies_write_alias_inside_list_items() {
     assert_eq!(projected["rows"][1]["externalId"], json!("x2"));
     assert!(
         projected["rows"][0].get("internal_id").is_none(),
-        "canonical key must be remapped to the write_alias inside list items"
+        "canonical key must be remapped to the emit_as key inside list items"
     );
 }
 
 #[test]
-fn project_applies_write_alias_inside_mode_payload() {
+fn project_applies_emit_as_inside_mode_payload() {
     let schema = Schema::builder()
         .add(
             Field::mode(fk("auth"))
                 .variant(
                     "token",
                     "Token",
-                    Field::object(fk("payload")).add(
-                        Field::string(fk("client_id"))
-                            .write_alias("clientId")
-                            .unwrap(),
-                    ),
+                    Field::object(fk("payload"))
+                        .add(Field::string(fk("client_id")).emit_as("clientId").unwrap()),
                 )
                 .default_variant("token"),
         )
@@ -802,13 +856,13 @@ fn project_applies_write_alias_inside_mode_payload() {
 }
 
 #[test]
-fn project_extra_key_cannot_clobber_write_alias_output() {
-    // INTEGRITY: an attacker-supplied extra key equal to a field's write_alias
+fn project_extra_key_cannot_clobber_emit_as_output() {
+    // INTEGRITY: an attacker-supplied extra key equal to a field's emit_as
     // output name must not overwrite the field's real projected value.
     let schema = Schema::builder()
         .add(
             Field::string(fk("internal_id"))
-                .write_alias("externalId")
+                .emit_as("externalId")
                 .unwrap(),
         )
         .build()
@@ -829,14 +883,14 @@ fn project_extra_key_cannot_clobber_write_alias_output() {
 }
 
 #[test]
-fn project_extra_key_cannot_occupy_absent_write_alias_output_slot() {
-    // INTEGRITY: a write-aliased field reserves its output slot even when the
+fn project_extra_key_cannot_occupy_absent_emit_as_output_slot() {
+    // INTEGRITY: an emit_as field reserves its output slot even when the
     // field is ABSENT this submission — an attacker-supplied extra key equal to
     // that output name must not occupy the schema-owned slot.
     let schema = Schema::builder()
         .add(
             Field::string(fk("internal_id"))
-                .write_alias("externalId")
+                .emit_as("externalId")
                 .unwrap(),
         )
         .build()
@@ -848,7 +902,7 @@ fn project_extra_key_cannot_occupy_absent_write_alias_output_slot() {
     let projected = schema.project(&values);
     assert!(
         projected.get("externalId").is_none(),
-        "extra key must not occupy an absent write-aliased field's output slot, got: {projected}"
+        "extra key must not occupy an absent emit_as field's output slot, got: {projected}"
     );
     // Same on the validated wire path (validate stores the extra key).
     let valid = schema.validate(&values).expect("validates");
@@ -857,14 +911,14 @@ fn project_extra_key_cannot_occupy_absent_write_alias_output_slot() {
 
 #[test]
 fn project_extra_key_cannot_occupy_dropped_secret_field_output_slot() {
-    // INTEGRITY: a secret-bearing structured field with a write_alias whose value
+    // INTEGRITY: a secret-bearing structured field with an emit_as whose value
     // is dropped (wrong-shape blob → over-redacted to nothing) still reserves its
     // output slot; an extra key must not slip into it.
     let schema = Schema::builder()
         .add(
             Field::object(fk("creds"))
                 .add(Field::secret(fk("password")))
-                .write_alias("credsOut")
+                .emit_as("credsOut")
                 .unwrap(),
         )
         .build()
@@ -881,7 +935,7 @@ fn project_extra_key_cannot_occupy_dropped_secret_field_output_slot() {
     let projected = schema.project(&values);
     assert!(
         projected.get("credsOut").is_none(),
-        "extra key must not occupy a dropped write-aliased field's output slot, got: {projected}"
+        "extra key must not occupy a dropped emit_as field's output slot, got: {projected}"
     );
     assert!(
         !serde_json::to_string(&projected)
@@ -970,23 +1024,20 @@ fn lint_catches_alias_self_collision_at_mode_of_list_depth() {
 }
 
 #[test]
-fn lint_catches_write_on_secret_for_bare_list_item() {
-    // A bare secret list item is not a scope member, so write_on_secret must be
+fn lint_catches_emit_on_secret_for_bare_list_item() {
+    // A bare secret list item is not a scope member, so emit_on_secret must be
     // checked on it directly.
     let report = Schema::builder()
         .add(
-            Field::list(fk("tokens")).item(
-                Field::secret(fk("tok"))
-                    .write_alias("exposedToken")
-                    .unwrap(),
-            ),
+            Field::list(fk("tokens"))
+                .item(Field::secret(fk("tok")).emit_as("exposedToken").unwrap()),
         )
         .build()
         .unwrap_err();
 
     assert!(
-        has_error_code(&report, "alias.write_on_secret"),
-        "expected alias.write_on_secret for a bare secret list item, got: {:?}",
+        has_error_code(&report, "alias.emit_on_secret"),
+        "expected alias.emit_on_secret for a bare secret list item, got: {:?}",
         report.errors().map(|e| &e.code).collect::<Vec<_>>()
     );
 }

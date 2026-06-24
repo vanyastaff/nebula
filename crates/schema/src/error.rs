@@ -319,14 +319,14 @@ impl std::error::Error for ValidationReport {}
 pub const STANDARD_CODES: &[&str] = &[
     // alias subsystem
     "alias.duplicate",
+    "alias.emit_collision",
+    "alias.emit_on_secret",
+    "alias.emit_scope_duplicate",
     "alias.invalid_key",
-    "alias.read_write_collision",
+    "alias.read_emit_collision",
     "alias.scope_collision",
     "alias.scope_duplicate",
     "alias.self_collision",
-    "alias.write_collision",
-    "alias.write_on_secret",
-    "alias.write_scope_duplicate",
     // value validation — schema-owned structural code
     "required",
     "type_mismatch",

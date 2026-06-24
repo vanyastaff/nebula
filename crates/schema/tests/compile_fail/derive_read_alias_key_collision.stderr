@@ -1,0 +1,29 @@
+error: read-alias `email` collides with another field's canonical key — it would steal that field's identity on input
+ --> tests/compile_fail/derive_read_alias_key_collision.rs:9:5
+  |
+9 |     name: String,
+  |     ^^^^
+
+error[E0599]: no associated function or constant named `schema` found for struct `Bad` in the current scope
+  --> tests/compile_fail/derive_read_alias_key_collision.rs:14:18
+   |
+ 7 | struct Bad {
+   | ---------- associated function or constant `schema` not found for this struct
+...
+14 |     let _ = Bad::schema();
+   |                  ^^^^^^ associated function or constant not found in `Bad`
+   |
+   = help: items from traits can only be used if the trait is implemented and in scope
+   = note: the following trait defines an item `schema`, perhaps you need to implement it:
+           candidate #1: `HasSchema`
+
+warning: unreachable pattern
+  --> tests/compile_fail/derive_read_alias_key_collision.rs:10:5
+   |
+ 8 |     #[serde(alias = "email")]
+   |                     ------- matches all the relevant values
+ 9 |     name: String,
+10 |     email: String,
+   |     ^^^^^ no value can reach this
+   |
+   = note: `#[warn(unreachable_patterns)]` (part of `#[warn(unused)]`) on by default
