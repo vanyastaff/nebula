@@ -243,9 +243,9 @@ fn field_schema_value(field: &Field) -> Value {
 ///   the canonical key). They are ALSO surfaced as accepted properties by
 ///   [`properties_for_fields`] so `additionalProperties: false` does not reject a
 ///   valid alias-keyed submission.
-/// - `x-nebula-write-alias`: the key this field is emitted under by `project` /
+/// - `x-nebula-emit-as`: the key this field is emitted under by `project` /
 ///   `to_wire_json`. The exported document is an INPUT schema keyed on canonical
-///   names, so the write-alias is metadata only — an output validator reads this
+///   names, so the `emit_as` key is metadata only — an output validator reads this
 ///   to learn the projected key without the input contract misrepresenting it.
 fn apply_alias_keywords(field: &Field, schema: &mut Map<String, Value>) {
     let read_aliases = field.read_aliases();
@@ -260,10 +260,10 @@ fn apply_alias_keywords(field: &Field, schema: &mut Map<String, Value>) {
             ),
         );
     }
-    if let Some(write_alias) = field.write_alias() {
+    if let Some(emit_as) = field.emit_as() {
         schema.insert(
-            "x-nebula-write-alias".to_owned(),
-            Value::String(write_alias.as_str().to_owned()),
+            "x-nebula-emit-as".to_owned(),
+            Value::String(emit_as.as_str().to_owned()),
         );
     }
 }
@@ -838,26 +838,26 @@ mod tests {
     }
 
     #[test]
-    fn write_alias_is_metadata_only_input_property_stays_canonical() {
+    fn emit_as_is_metadata_only_input_property_stays_canonical() {
         let schema = Schema::builder()
             .add(
                 Field::string(FieldKey::new("internal_id").expect("static key"))
-                    .write_alias("externalId")
-                    .expect("valid alias"),
+                    .emit_as("externalId")
+                    .expect("valid emit_as key"),
             )
             .build()
             .expect("valid schema");
 
         let json = schema.json_schema().expect("json schema export").to_value();
-        // The input property stays canonical — write-alias is output-only.
+        // The input property stays canonical — emit_as is output-only.
         assert!(json["properties"]["internal_id"].is_object());
         assert!(
             json["properties"].get("externalId").is_none(),
-            "write-alias must not become an input property"
+            "emit_as must not become an input property"
         );
         // The projected output key is exposed as metadata for output validators.
         assert_eq!(
-            json["properties"]["internal_id"]["x-nebula-write-alias"],
+            json["properties"]["internal_id"]["x-nebula-emit-as"],
             json!("externalId")
         );
     }

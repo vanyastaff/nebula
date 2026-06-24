@@ -60,9 +60,9 @@ macro_rules! define_field {
             /// Extra keys accepted on ingest in addition to `key` (additive, like `#[serde(alias)]`).
             #[serde(default, skip_serializing_if = "crate::alias::FieldAliases::is_empty")]
             pub read_aliases: crate::alias::FieldAliases,
-            /// Optional alternative key emitted on projection output (write-alias).
+            /// Optional alternative key emitted on projection output (`emit_as`).
             #[serde(default, skip_serializing_if = "Option::is_none")]
-            pub write_alias: Option<FieldKey>,
+            pub emit_as: Option<FieldKey>,
             /// Validation rules.
             #[serde(default, skip_serializing_if = "Vec::is_empty")]
             pub rules: Vec<Rule>,
@@ -87,7 +87,7 @@ macro_rules! define_field {
                     expression: $expr_dflt,
                     group: None,
                     read_aliases: crate::alias::FieldAliases::empty(),
-                    write_alias: None,
+                    emit_as: None,
                     rules: Vec::new(),
                     transformers: Vec::new(),
                     $($extra: $dflt,)*
@@ -288,10 +288,10 @@ macro_rules! define_field {
                 self
             }
 
-            /// Set the write-alias key (the key emitted on projection output).
+            /// Set the output key this field is emitted under on projection (`emit_as`).
             ///
             /// Validates the supplied string as a [`FieldKey`] and stores it as
-            /// [`write_alias`](Self::write_alias). Returns `Err` with code
+            /// [`emit_as`](Self::emit_as). Returns `Err` with code
             /// `alias.invalid_key` when the key fails validation.
             ///
             /// # Errors
@@ -302,7 +302,7 @@ macro_rules! define_field {
                 clippy::result_large_err,
                 reason = "ValidationError is intentionally large; callers are on the validation path"
             )]
-            pub fn write_alias(
+            pub fn emit_as(
                 mut self,
                 alias: impl AsRef<str>,
             ) -> Result<Self, crate::error::ValidationError> {
@@ -312,11 +312,11 @@ macro_rules! define_field {
                         .at(crate::path::FieldPath::root())
                         .param("key", alias_str.to_owned())
                         .message(format!(
-                            "write alias `{alias_str}` is not a valid field key"
+                            "emit_as key `{alias_str}` is not a valid field key"
                         ))
                         .build()
                 })?;
-                self.write_alias = Some(key);
+                self.emit_as = Some(key);
                 Ok(self)
             }
 
@@ -331,14 +331,14 @@ macro_rules! define_field {
                 self
             }
 
-            /// Set a pre-validated write-alias key without re-checking.
+            /// Set a pre-validated `emit_as` key without re-checking.
             ///
             /// For use by builders and derive-macro code that has already validated
             /// the key.
             #[must_use]
             #[allow(dead_code)] // used by derive-macro code (not yet generated)
-            pub(crate) fn write_alias_unchecked(mut self, key: FieldKey) -> Self {
-                self.write_alias = Some(key);
+            pub(crate) fn emit_as_unchecked(mut self, key: FieldKey) -> Self {
+                self.emit_as = Some(key);
                 self
             }
 
@@ -1572,26 +1572,26 @@ impl Field {
         }
     }
 
-    /// Shared write-alias accessor — alternative key emitted on projection output.
+    /// Output key this field is emitted under on projection (`emit_as`).
     ///
-    /// Returns `None` for [`Field::Unknown`].
+    /// Returns `None` when no `emit_as` is set or for [`Field::Unknown`].
     #[inline]
     #[must_use]
-    pub fn write_alias(&self) -> Option<&FieldKey> {
+    pub fn emit_as(&self) -> Option<&FieldKey> {
         match self {
-            Self::String(f) => f.write_alias.as_ref(),
-            Self::Secret(f) => f.write_alias.as_ref(),
-            Self::Number(f) => f.write_alias.as_ref(),
-            Self::Boolean(f) => f.write_alias.as_ref(),
-            Self::Select(f) => f.write_alias.as_ref(),
-            Self::Object(f) => f.write_alias.as_ref(),
-            Self::List(f) => f.write_alias.as_ref(),
-            Self::Mode(f) => f.write_alias.as_ref(),
-            Self::Code(f) => f.write_alias.as_ref(),
-            Self::File(f) => f.write_alias.as_ref(),
-            Self::Computed(f) => f.write_alias.as_ref(),
-            Self::Dynamic(f) => f.write_alias.as_ref(),
-            Self::Notice(f) => f.write_alias.as_ref(),
+            Self::String(f) => f.emit_as.as_ref(),
+            Self::Secret(f) => f.emit_as.as_ref(),
+            Self::Number(f) => f.emit_as.as_ref(),
+            Self::Boolean(f) => f.emit_as.as_ref(),
+            Self::Select(f) => f.emit_as.as_ref(),
+            Self::Object(f) => f.emit_as.as_ref(),
+            Self::List(f) => f.emit_as.as_ref(),
+            Self::Mode(f) => f.emit_as.as_ref(),
+            Self::Code(f) => f.emit_as.as_ref(),
+            Self::File(f) => f.emit_as.as_ref(),
+            Self::Computed(f) => f.emit_as.as_ref(),
+            Self::Dynamic(f) => f.emit_as.as_ref(),
+            Self::Notice(f) => f.emit_as.as_ref(),
             Self::Unknown(_) => None,
         }
     }

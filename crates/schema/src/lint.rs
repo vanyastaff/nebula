@@ -292,20 +292,20 @@ fn lint_duplicate_keys_in_scope(
     }
 }
 
-/// Emit `alias.write_on_secret` if a `Field::Secret` carries a write-alias.
+/// Emit `alias.emit_on_secret` if a `Field::Secret` carries an `emit_as` key.
 ///
-/// A secret's projected output is always omitted, so a write-alias on it is
+/// A secret is never emitted on projection output, so an `emit_as` on it is
 /// always a mistake. This is a per-field (unary) check, so it is enforced
 /// wherever a `Field` appears — a scope member, a bare list item, or a
 /// mode-variant payload — not only at the top scope level. A no-op for any
 /// non-secret field.
-fn lint_secret_write_alias(field: &Field, path: &FieldPath, report: &mut ValidationReport) {
-    if matches!(field, Field::Secret(_)) && field.write_alias().is_some() {
+fn lint_secret_emit_as(field: &Field, path: &FieldPath, report: &mut ValidationReport) {
+    if matches!(field, Field::Secret(_)) && field.emit_as().is_some() {
         report.push(
-            ValidationError::builder("alias.write_on_secret")
+            ValidationError::builder("alias.emit_on_secret")
                 .at(path.clone())
                 .message(format!(
-                    "secret field `{}` must not have a write_alias; secret output is always redacted",
+                    "secret field `{}` must not have an `emit_as` (a secret is never emitted on projection output)",
                     field.key().as_str()
                 ))
                 .build(),
@@ -315,17 +315,17 @@ fn lint_secret_write_alias(field: &Field, path: &FieldPath, report: &mut Validat
 
 /// Validate alias constraints within a single field-scope level.
 ///
-/// Six scope-relative collision kinds plus the unary write-on-secret check:
+/// Six scope-relative collision kinds plus the unary emit-on-secret check:
 /// - `alias.self_collision`: a read-alias equals the field's own canonical key.
 /// - `alias.scope_collision`: a read-alias collides with another field's canonical key in scope
 ///   (confused-deputy guard — prevents aliasing another field's identity).
 /// - `alias.scope_duplicate`: two fields share the same read-alias.
-/// - `alias.write_collision`: a write-alias equals any field's canonical key in scope.
-/// - `alias.write_scope_duplicate`: two fields share the same write-alias.
-/// - `alias.read_write_collision`: one field's read-alias equals another field's write-alias —
+/// - `alias.emit_collision`: an `emit_as` key equals any field's canonical key in scope.
+/// - `alias.emit_scope_duplicate`: two fields share the same `emit_as` key.
+/// - `alias.read_emit_collision`: one field's read-alias equals another field's `emit_as` key —
 ///   a wire round-trip would move data between the two fields (same-field reuse is allowed).
-/// - `alias.write_on_secret`: a `Field::Secret` has a write-alias set (forbidden) —
-///   via `lint_secret_write_alias`, also enforced on bare list items / mode payloads.
+/// - `alias.emit_on_secret`: a `Field::Secret` has an `emit_as` set (forbidden) —
+///   via `lint_secret_emit_as`, also enforced on bare list items / mode payloads.
 ///
 /// Checks a single field-scope only; `lint_fields_new` drives the descent into
 /// every nested Object / List item / Mode-variant scope (calling this once per
@@ -340,16 +340,16 @@ fn lint_alias_collisions_in_scope(
     // Collect all canonical keys in this scope for collision checks.
     let canonical_keys: HashSet<&str> = fields.iter().map(|f| f.key().as_str()).collect();
 
-    // Track which read-aliases and write-aliases have been seen across this scope.
+    // Track which read-aliases and emit_as keys have been seen across this scope.
     let mut seen_read_aliases: HashMap<&str, &str> = HashMap::new();
-    let mut seen_write_aliases: HashMap<&str, &str> = HashMap::new();
+    let mut seen_emit_as: HashMap<&str, &str> = HashMap::new();
 
     for field in fields {
         let field_key_str = field.key().as_str();
         let field_path = prefix.clone().join(field.key().clone());
 
-        // alias.write_on_secret: Field::Secret must not carry a write-alias.
-        lint_secret_write_alias(field, &field_path, report);
+        // alias.emit_on_secret: Field::Secret must not carry an emit_as key.
+        lint_secret_emit_as(field, &field_path, report);
 
         // Read-alias collision checks.
         for alias_key in field.read_aliases() {
@@ -384,21 +384,21 @@ fn lint_alias_collisions_in_scope(
                 continue;
             }
 
-            // alias.read_write_collision: this field's read-alias collides with
-            // a write-alias already declared on ANOTHER field in scope. `project`
+            // alias.read_emit_collision: this field's read-alias collides with
+            // an emit_as key already declared on ANOTHER field in scope. `project`
             // would emit that other field under the key, and a later `validate`
             // would fold the key into THIS field — round-trip data movement
-            // between fields. Same-field read+write reuse is stable and allowed.
-            if let Some(&write_owner) = seen_write_aliases.get(alias_str)
-                && write_owner != field_key_str
+            // between fields. Same-field read+emit_as reuse is stable and allowed.
+            if let Some(&emit_owner) = seen_emit_as.get(alias_str)
+                && emit_owner != field_key_str
             {
                 report.push(
-                    ValidationError::builder("alias.read_write_collision")
+                    ValidationError::builder("alias.read_emit_collision")
                         .at(field_path.clone())
                         .param("alias", alias_str.to_owned())
-                        .param("write_alias_on_field", write_owner.to_owned())
+                        .param("emit_as_on_field", emit_owner.to_owned())
                         .message(format!(
-                            "field `{field_key_str}` has read-alias `{alias_str}` that collides with a write_alias on field `{write_owner}` in this scope"
+                            "field `{field_key_str}` has read-alias `{alias_str}` that collides with an `emit_as` key on field `{emit_owner}` in this scope"
                         ))
                         .build(),
                 );
@@ -419,52 +419,51 @@ fn lint_alias_collisions_in_scope(
             }
         }
 
-        // Write-alias collision checks.
-        if let Some(write_alias_key) = field.write_alias() {
-            let write_alias_str = write_alias_key.as_str();
+        // emit_as collision checks.
+        if let Some(emit_as_key) = field.emit_as() {
+            let emit_as_str = emit_as_key.as_str();
 
-            // alias.write_collision: write-alias equals any canonical key in scope.
-            if canonical_keys.contains(write_alias_str) {
+            // alias.emit_collision: emit_as key equals any canonical key in scope.
+            if canonical_keys.contains(emit_as_str) {
                 report.push(
-                    ValidationError::builder("alias.write_collision")
+                    ValidationError::builder("alias.emit_collision")
                         .at(field_path.clone())
-                        .param("write_alias", write_alias_str.to_owned())
+                        .param("emit_as", emit_as_str.to_owned())
                         .message(format!(
-                            "field `{field_key_str}` has write_alias `{write_alias_str}` that collides with a canonical field key in this scope"
+                            "field `{field_key_str}` has `emit_as` key `{emit_as_str}` that collides with a canonical field key in this scope"
                         ))
                         .build(),
                 );
             }
 
-            // alias.read_write_collision: this field's write-alias collides with
+            // alias.read_emit_collision: this field's emit_as key collides with
             // a read-alias already declared on ANOTHER field in scope (the
             // mirror of the read-loop check, catching the reverse declaration
-            // order). Same-field read+write reuse is allowed.
-            if let Some(&read_owner) = seen_read_aliases.get(write_alias_str)
+            // order). Same-field read+emit_as reuse is allowed.
+            if let Some(&read_owner) = seen_read_aliases.get(emit_as_str)
                 && read_owner != field_key_str
             {
                 report.push(
-                    ValidationError::builder("alias.read_write_collision")
+                    ValidationError::builder("alias.read_emit_collision")
                         .at(field_path.clone())
-                        .param("write_alias", write_alias_str.to_owned())
+                        .param("emit_as", emit_as_str.to_owned())
                         .param("read_alias_on_field", read_owner.to_owned())
                         .message(format!(
-                            "field `{field_key_str}` has write_alias `{write_alias_str}` that collides with a read-alias on field `{read_owner}` in this scope"
+                            "field `{field_key_str}` has `emit_as` key `{emit_as_str}` that collides with a read-alias on field `{read_owner}` in this scope"
                         ))
                         .build(),
                 );
             }
 
-            // alias.write_scope_duplicate: two fields share a write-alias.
-            if let Some(prior_field_key) = seen_write_aliases.insert(write_alias_str, field_key_str)
-            {
+            // alias.emit_scope_duplicate: two fields share an emit_as key.
+            if let Some(prior_field_key) = seen_emit_as.insert(emit_as_str, field_key_str) {
                 report.push(
-                    ValidationError::builder("alias.write_scope_duplicate")
+                    ValidationError::builder("alias.emit_scope_duplicate")
                         .at(field_path.clone())
-                        .param("write_alias", write_alias_str.to_owned())
+                        .param("emit_as", emit_as_str.to_owned())
                         .param("also_on_field", prior_field_key.to_owned())
                         .message(format!(
-                            "field `{field_key_str}` has write_alias `{write_alias_str}` already used by field `{prior_field_key}` in this scope"
+                            "field `{field_key_str}` has `emit_as` key `{emit_as_str}` already used by field `{prior_field_key}` in this scope"
                         ))
                         .build(),
                 );
@@ -680,7 +679,7 @@ fn lint_list_new(
     if let Some(item_field) = list.item.as_deref() {
         // A bare secret list item is not a member of any scope, so the scope
         // collision pass never sees it — check write_on_secret on it directly.
-        lint_secret_write_alias(item_field, path, report);
+        lint_secret_emit_as(item_field, path, report);
     }
     match list.item.as_deref() {
         Some(Field::Object(obj)) => lint_fields_new(&obj.fields, path, root_keys, report),
@@ -755,7 +754,7 @@ fn lint_mode_new(
             let vpath = path.clone().join(vk);
             // A bare secret variant payload is not a scope member, so check
             // write_on_secret on it directly (no-op for non-secret payloads).
-            lint_secret_write_alias(variant.field.as_ref(), &vpath, report);
+            lint_secret_emit_as(variant.field.as_ref(), &vpath, report);
             match variant.field.as_ref() {
                 Field::Object(obj) => lint_fields_new(&obj.fields, &vpath, root_keys, report),
                 Field::List(inner) => lint_list_new(inner, &vpath, root_keys, report),

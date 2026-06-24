@@ -467,19 +467,19 @@ fn derive_serde_alias_becomes_read_alias() {
 #[derive(Schema)]
 #[expect(dead_code, reason = "exercised via HasSchema::schema")]
 struct RemappedOutput {
-    #[field(write_alias = "externalId")]
+    #[field(emit_as = "externalId")]
     internal_id: String,
 }
 
 #[test]
-fn derive_field_write_alias_emits_on_projection() {
+fn derive_field_emit_as_emits_on_projection() {
     let schema = RemappedOutput::schema();
     assert_eq!(
-        schema.fields()[0].write_alias().map(FieldKey::as_str),
+        schema.fields()[0].emit_as().map(FieldKey::as_str),
         Some("externalId")
     );
 
-    // Projection emits the field under the write-alias key, not the canonical key.
+    // Projection emits the field under the emit_as key, not the canonical key.
     let projected = schema.project(&FieldValues::from_json(json!({"internal_id": "x1"})).unwrap());
     assert_eq!(projected["externalId"], json!("x1"));
     assert!(projected.get("internal_id").is_none());
@@ -489,18 +489,18 @@ fn derive_field_write_alias_emits_on_projection() {
 #[expect(dead_code, reason = "exercised via HasSchema::schema")]
 struct RoundTripField {
     #[serde(alias = "wire")]
-    #[field(write_alias = "wire")]
+    #[field(emit_as = "wire")]
     internal: String,
 }
 
 #[test]
-fn derive_same_field_read_and_write_alias_reuse_builds() {
-    // Reading from and writing to the SAME wire key on one field is round-trip
+fn derive_same_field_read_and_emit_as_reuse_builds() {
+    // Reading from and emitting to the SAME wire key on one field is round-trip
     // stable, so it must build (cross-field reuse would be rejected at compile time).
     let schema = RoundTripField::schema();
     let field = &schema.fields()[0];
     assert_eq!(field.read_aliases()[0].as_str(), "wire");
-    assert_eq!(field.write_alias().map(FieldKey::as_str), Some("wire"));
+    assert_eq!(field.emit_as().map(FieldKey::as_str), Some("wire"));
 }
 
 #[derive(Schema, serde::Deserialize)]

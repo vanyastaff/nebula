@@ -1,11 +1,11 @@
-error: write-alias `wire` collides with the read-alias on field `b` — a wire round-trip would move data between the two fields
- --> tests/compile_fail/derive_read_write_cross_collision.rs:9:5
+error: emit_as key `wire` collides with the read-alias on field `b` — a wire round-trip would move data between the two fields
+ --> tests/compile_fail/derive_read_emit_cross_collision.rs:9:5
   |
 9 |     a: String,
   |     ^
 
 error[E0599]: no associated function or constant named `schema` found for struct `Bad` in the current scope
-  --> tests/compile_fail/derive_read_write_cross_collision.rs:15:18
+  --> tests/compile_fail/derive_read_emit_cross_collision.rs:15:18
    |
  7 | struct Bad {
    | ---------- associated function or constant `schema` not found for this struct

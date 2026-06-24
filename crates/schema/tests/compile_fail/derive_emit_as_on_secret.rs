@@ -3,7 +3,7 @@ use nebula_schema::Schema;
 #[derive(Schema)]
 #[allow(dead_code)]
 struct Bad {
-    #[field(secret, write_alias = "exposed")]
+    #[field(secret, emit_as = "exposed")]
     api_key: String,
 }
 

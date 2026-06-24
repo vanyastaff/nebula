@@ -1,13 +1,13 @@
-error: key `old_out` is reserved by `#[schema(reserved(..))]` but a `#[field(write_alias = "old_out")]` emits it on projection output — remove the write_alias or the reservation
-  --> tests/compile_fail/derive_write_alias_reserved.rs:10:5
-   |
-10 |     current: String,
-   |     ^^^^^^^
+error: emit_as key `target` collides with a canonical field key — two fields would emit under the same output key
+ --> tests/compile_fail/derive_emit_as_key_collision.rs:9:5
+  |
+9 |     source: String,
+  |     ^^^^^^
 
 error[E0599]: no associated function or constant named `schema` found for struct `Bad` in the current scope
-  --> tests/compile_fail/derive_write_alias_reserved.rs:14:18
+  --> tests/compile_fail/derive_emit_as_key_collision.rs:14:18
    |
- 8 | struct Bad {
+ 7 | struct Bad {
    | ---------- associated function or constant `schema` not found for this struct
 ...
 14 |     let _ = Bad::schema();

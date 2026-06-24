@@ -495,18 +495,18 @@ impl ValidSchema {
         })
     }
 
-    /// Project `values` to a JSON object applying write-aliases.
+    /// Project `values` to a JSON object applying `emit_as` output-key remaps.
     ///
-    /// - Fields with a `write_alias` emit under that key instead of the canonical key.
-    /// - Fields without a `write_alias` emit under their canonical key (today's behaviour).
+    /// - Fields with an `emit_as` emit under that key instead of the canonical key.
+    /// - Fields without an `emit_as` emit under their canonical key (today's behaviour).
     /// - `Field::Secret` subtrees are **never** emitted at any depth (defense-in-depth:
     ///   secrets can only be accessed via `ResolvedValues::get_secret`). This holds for a
     ///   secret nested in an object, a list item, or a mode-variant payload.
     /// - Extra keys that do not match any field pass through under their own key, but a
     ///   declared field always wins: an extra key cannot overwrite a field's projected
-    ///   value nor shadow a `write_alias` output key.
+    ///   value nor shadow an `emit_as` output key.
     /// - Recurse into object children, list items, and the active mode-variant payload so
-    ///   nested write-aliases are applied and nested secrets are dropped.
+    ///   nested `emit_as` remaps are applied and nested secrets are dropped.
     ///
     /// `values` is canonicalized first (read-alias keys folded onto their canonical
     /// FieldKey), so a secret submitted under a read-alias is caught by the secret-skip
@@ -523,7 +523,7 @@ impl ValidSchema {
     }
 }
 
-/// Project one field-scope level: schema-declared fields (write-aliases applied,
+/// Project one field-scope level: schema-declared fields (`emit_as` remaps applied,
 /// secrets dropped) plus extra pass-through keys that no declared field claims.
 fn project_level(
     fields: &[Field],
@@ -536,16 +536,16 @@ fn project_level(
     // An input key equal to a declared field's canonical key is that field's
     // value (consumed in the first loop), never a pass-through extra.
     let canonical_key_strs: HashSet<&str> = fields.iter().map(|f| f.key().as_str()).collect();
-    // Every write-aliased field reserves its output name UNCONDITIONALLY — even
+    // Every emit_as field reserves its output name UNCONDITIONALLY — even
     // when the field is absent this submission or its value is dropped (a secret
     // or a shape-mismatched blob) — so a pass-through extra can never occupy a
-    // schema-owned output slot (integrity/spoofing guard). Write-alias output
+    // schema-owned output slot (integrity/spoofing guard). emit_as output
     // names are disjoint from canonical keys and unique among themselves
-    // (enforced by the alias.write_collision / alias.write_scope_duplicate lints),
+    // (enforced by the alias.emit_collision / alias.emit_scope_duplicate lints),
     // so reserving them cannot suppress a legitimate canonical key or pass-through.
-    let write_alias_strs: HashSet<&str> = fields
+    let emit_as_strs: HashSet<&str> = fields
         .iter()
-        .filter_map(|f| f.write_alias().map(FieldKey::as_str))
+        .filter_map(|f| f.emit_as().map(FieldKey::as_str))
         .collect();
 
     // Emit schema-declared fields.
@@ -559,9 +559,9 @@ fn project_level(
             continue;
         };
 
-        // Output key: write-alias overrides the canonical key.
+        // Output key: emit_as overrides the canonical key.
         let output_key = field
-            .write_alias()
+            .emit_as()
             .map(FieldKey::as_str)
             .unwrap_or_else(|| field.key().as_str())
             .to_owned();
@@ -570,10 +570,10 @@ fn project_level(
     }
 
     // Pass extra (non-schema) keys through unchanged — but never into a reserved
-    // schema-owned output slot (a canonical key or a write-alias output name).
+    // schema-owned output slot (a canonical key or an emit_as output name).
     for (key, value) in value_map {
         let k = key.as_str();
-        if !canonical_key_strs.contains(k) && !write_alias_strs.contains(k) {
+        if !canonical_key_strs.contains(k) && !emit_as_strs.contains(k) {
             out.insert(k.to_owned(), value.to_json());
         }
     }
@@ -581,7 +581,7 @@ fn project_level(
     Value::Object(out)
 }
 
-/// Project a single field's value, applying nested write-aliases and dropping
+/// Project a single field's value, applying nested `emit_as` remaps and dropping
 /// `Field::Secret` subtrees.
 ///
 /// Returns `None` when the whole value must be omitted: it *is* a secret, or it
@@ -871,10 +871,10 @@ impl ValidValues {
         self.values.get_path(path)
     }
 
-    /// Project the validated values to a JSON object, applying write-aliases.
+    /// Project the validated values to a JSON object, applying `emit_as` remaps.
     ///
-    /// Equivalent to `self.schema().project(self.raw())`. Fields with a
-    /// `write_alias` emit under the alias key. Secret fields are never emitted.
+    /// Equivalent to `self.schema().project(self.raw())`. Fields with an
+    /// `emit_as` emit under that output key. Secret fields are never emitted.
     #[must_use]
     pub fn to_wire_json(&self) -> serde_json::Value {
         self.schema.project(self.raw())

@@ -129,9 +129,9 @@
 //! `#[serde(alias = "..")]` keys become **read-aliases**: serde deserializes them
 //! and the schema accepts them as input, folding each onto the canonical key (so
 //! schema and wire stay in sync — there is no schema-only `read_alias` attribute,
-//! which would accept a key serde rejects). `#[field(write_alias = "..")]` remaps a
-//! field's **output** key on projection. A write-alias on a secret field, an invalid
-//! key, or an alias colliding with another field's key/alias is a compile error.
+//! which would accept a key serde rejects). `#[field(emit_as = "..")]` remaps a
+//! field's **output** key on projection. An `emit_as` on a secret field, an invalid
+//! key, or a key colliding with another field's key/alias is a compile error.
 //!
 //! ```rust
 //! use nebula_schema::{FieldValues, HasSchema, Schema};
@@ -141,7 +141,7 @@
 //! #[derive(Schema, Deserialize)]
 //! struct Payload {
 //!     #[serde(alias = "userName")]
-//!     #[field(write_alias = "user_name_out")]
+//!     #[field(emit_as = "user_name_out")]
 //!     user_name: String,
 //! }
 //!
@@ -150,7 +150,7 @@
 //! let valid = schema
 //!     .validate(&FieldValues::from_json(json!({"userName": "alice"})).unwrap())
 //!     .unwrap();
-//! // Emitted under the write-alias on projection.
+//! // Emitted under the emit_as key on projection.
 //! assert_eq!(valid.to_wire_json()["user_name_out"], json!("alice"));
 //! ```
 
@@ -168,7 +168,7 @@
 // works from external crates, integration tests, doctests, and lib tests.
 extern crate self as nebula_schema;
 
-/// Field alias container — extra accepted input keys (read-aliases) and optional output key remapping (write-alias).
+/// Field alias container — extra accepted input keys (read-aliases) and the optional output key remap (`emit_as`).
 pub mod alias;
 /// Typed-closure builder DSL (leaf aliases + Object/List/Group composite builders).
 pub mod builder;

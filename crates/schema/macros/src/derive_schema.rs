@@ -12,10 +12,10 @@ use crate::{
     type_infer::{FieldKind, classify},
 };
 
-/// One alias use (a read- or write-alias) tagged with the canonical key of the
-/// field that declares it, so compile-time collision checks can distinguish a
-/// same-field read+write reuse (allowed) from a cross-field collision (rejected),
-/// mirroring the runtime `lint_alias_collisions_in_scope`.
+/// One alias use (a read-alias or an `emit_as` output key) tagged with the
+/// canonical key of the field that declares it, so compile-time collision checks
+/// can distinguish a same-field read+emit_as reuse (allowed) from a cross-field
+/// collision (rejected), mirroring the runtime `lint_alias_collisions_in_scope`.
 struct AliasUse {
     value: String,
     owner_key: String,
@@ -61,13 +61,13 @@ pub(crate) fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
 
     let mut field_exprs = Vec::with_capacity(fields.len());
     let mut field_keys: Vec<(String, Span)> = Vec::with_capacity(fields.len());
-    // Read-aliases (from `#[serde(alias)]`) and write-aliases (from
-    // `#[field(write_alias)]`), each tagged with the owning field's canonical key
+    // Read-aliases (from `#[serde(alias)]`) and emit-as output keys (from
+    // `#[field(emit_as)]`), each tagged with the owning field's canonical key
     // so the collision checks can mirror the runtime `lint_alias_collisions_in_scope`
-    // (same-field read+write reuse stays allowed) and so a reserved-key collision
+    // (same-field read+emit_as reuse stays allowed) and so a reserved-key collision
     // can name the alias as the culprit.
     let mut read_aliases: Vec<AliasUse> = Vec::new();
-    let mut write_aliases: Vec<AliasUse> = Vec::new();
+    let mut emit_aliases: Vec<AliasUse> = Vec::new();
     for f in fields {
         let field_name = f
             .ident
@@ -112,10 +112,10 @@ pub(crate) fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
                 span: field_name.span(),
             });
         }
-        if let Some(write_alias) = &field_attr.write_alias {
-            check_field_key(write_alias, field_name.span())?;
-            write_aliases.push(AliasUse {
-                value: write_alias.clone(),
+        if let Some(emit_as) = &field_attr.emit_as {
+            check_field_key(emit_as, field_name.span())?;
+            emit_aliases.push(AliasUse {
+                value: emit_as.clone(),
                 owner_key: key_str.clone(),
                 span: field_name.span(),
             });
@@ -136,9 +136,9 @@ pub(crate) fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
         &schema_attrs.reserved,
         &field_keys,
         &read_aliases,
-        &write_aliases,
+        &emit_aliases,
     )?;
-    enforce_alias_constraints(&field_keys, &read_aliases, &write_aliases)?;
+    enforce_alias_constraints(&field_keys, &read_aliases, &emit_aliases)?;
 
     let ty_name_str = ty_name.to_string();
     Ok(quote! {
@@ -241,7 +241,7 @@ fn enforce_reserved_keys(
     reserved: &[syn::LitStr],
     field_keys: &[(String, Span)],
     read_aliases: &[AliasUse],
-    write_aliases: &[AliasUse],
+    emit_aliases: &[AliasUse],
 ) -> syn::Result<()> {
     let mut seen = std::collections::HashSet::with_capacity(reserved.len());
     for lit in reserved {
@@ -280,16 +280,16 @@ fn enforce_reserved_keys(
                 ),
             ));
         }
-        // A write-alias re-emits the reserved key on output — reusing a reserved
+        // An emit_as re-emits the reserved key on output — reusing a reserved
         // wire key for a different field's projected value is the output-side
         // mirror of the input misread the reservation guards against.
-        if let Some(alias) = write_aliases.iter().find(|a| a.value == reserved_key) {
+        if let Some(alias) = emit_aliases.iter().find(|a| a.value == reserved_key) {
             return Err(syn::Error::new(
                 alias.span,
                 format!(
                     "key `{reserved_key}` is reserved by `#[schema(reserved(..))]` but a \
-                     `#[field(write_alias = \"{reserved_key}\")]` emits it on projection output \
-                     — remove the write_alias or the reservation"
+                     `#[field(emit_as = \"{reserved_key}\")]` emits it on projection output \
+                     — remove the emit_as or the reservation"
                 ),
             ));
         }
@@ -307,7 +307,7 @@ fn enforce_reserved_keys(
 fn enforce_alias_constraints(
     field_keys: &[(String, Span)],
     read_aliases: &[AliasUse],
-    write_aliases: &[AliasUse],
+    emit_aliases: &[AliasUse],
 ) -> syn::Result<()> {
     let key_set: std::collections::HashSet<&str> =
         field_keys.iter().map(|(k, _)| k.as_str()).collect();
@@ -353,27 +353,27 @@ fn enforce_alias_constraints(
         }
     }
 
-    // alias.write_collision: a write-alias equals a field's canonical key.
-    // alias.write_scope_duplicate: two fields share a write-alias.
-    let mut seen_write: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
-    for alias in write_aliases {
+    // alias.emit_collision: an emit_as key equals a field's canonical key.
+    // alias.emit_scope_duplicate: two fields share an emit_as key.
+    let mut seen_emit: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+    for alias in emit_aliases {
         if key_set.contains(alias.value.as_str()) {
             return Err(syn::Error::new(
                 alias.span,
                 format!(
-                    "write-alias `{}` collides with a canonical field key — two fields would emit \
+                    "emit_as key `{}` collides with a canonical field key — two fields would emit \
                      under the same output key",
                     alias.value
                 ),
             ));
         }
-        if let Some(prior) = seen_write.insert(&alias.value, &alias.owner_key)
+        if let Some(prior) = seen_emit.insert(&alias.value, &alias.owner_key)
             && prior != alias.owner_key
         {
             return Err(syn::Error::new(
                 alias.span,
                 format!(
-                    "write-alias `{}` is already used by field `{prior}` — two fields cannot emit \
+                    "emit_as key `{}` is already used by field `{prior}` — two fields cannot emit \
                      under the same output key",
                     alias.value
                 ),
@@ -381,20 +381,20 @@ fn enforce_alias_constraints(
         }
     }
 
-    // alias.read_write_collision: one field's read-alias equals another field's
-    // write-alias — a wire round-trip would move data between the two fields.
-    // Same-field reuse (read + write under one key) is round-trip stable, allowed.
-    for write in write_aliases {
+    // alias.read_emit_collision: one field's read-alias equals another field's
+    // emit_as key — a wire round-trip would move data between the two fields.
+    // Same-field reuse (read + emit_as under one key) is round-trip stable, allowed.
+    for emit in emit_aliases {
         if let Some(read) = read_aliases
             .iter()
-            .find(|r| r.value == write.value && r.owner_key != write.owner_key)
+            .find(|r| r.value == emit.value && r.owner_key != emit.owner_key)
         {
             return Err(syn::Error::new(
-                write.span,
+                emit.span,
                 format!(
-                    "write-alias `{}` collides with the read-alias on field `{}` — a wire \
+                    "emit_as key `{}` collides with the read-alias on field `{}` — a wire \
                      round-trip would move data between the two fields",
-                    write.value, read.owner_key
+                    emit.value, read.owner_key
                 ),
             ));
         }
@@ -450,11 +450,11 @@ fn build_field_expr(
              configure the value via the credential setup form instead",
         ));
     }
-    if field_attr.secret && field_attr.write_alias.is_some() {
+    if field_attr.secret && field_attr.emit_as.is_some() {
         return Err(syn::Error::new_spanned(
             field_name,
-            "`#[field(write_alias = ..)]` cannot be set on a secret field — a secret is never \
-             emitted on projection output, so a write-alias for it would never apply",
+            "`#[field(emit_as = ..)]` cannot be set on a secret field — a secret is never \
+             emitted on projection output, so an `emit_as` for it would never apply",
         ));
     }
     if field_attr.enum_select && matches!(kind, FieldKind::List(_)) {
@@ -633,11 +633,11 @@ fn build_field_expr(
                 .expect("#[derive(Schema)] read-alias validated at macro expansion")
         };
     }
-    if let Some(write_alias) = &field_attr.write_alias {
+    if let Some(emit_as) = &field_attr.emit_as {
         expr = quote! {
             #expr
-                .write_alias(#write_alias)
-                .expect("#[derive(Schema)] write-alias validated at macro expansion")
+                .emit_as(#emit_as)
+                .expect("#[derive(Schema)] emit_as key validated at macro expansion")
         };
     }
 
