@@ -322,59 +322,29 @@ impl Manager {
         // `ResourceConfig` and get no signal — `ResourceConfig` must carry no
         // secrets; secrets reach a resource ONLY via typed credential slots
         // (product credential boundary; slot model; engine credential orchestration redaction; credential isolation
-        // isolation). The error names only the offending KEY, never its value, so
-        // a mis-wired secret can never leak through the rejection message.
+        // isolation). The error names only the offending KEY PATH, never its value,
+        // so a mis-wired secret can never leak through the rejection message.
+        //
+        // `first_undeclared_path` walks the whole value tree against the schema —
+        // top-level fields, nested objects, list items, AND a union's active
+        // variant payload (whose operator-facing fields live one level below the
+        // synthetic `_nebula_union` root) — so an inlined key is signalled at any
+        // depth rather than silently dropped by serde's default unknown-field
+        // handling. The traversal lives in `nebula-schema` (it owns schema↔value
+        // structure); this site only applies the resource policy of rejecting.
         //
         // Skipped when the schema declares no fields: an empty `ValidSchema` is
         // the "schema not yet declared" sentinel (`impl_empty_has_schema!`), and a
         // closed set over zero fields would reject every config — that gate
         // belongs to types that have opted into a real schema.
-        //
-        // For a union `R::Config` the operator-facing fields live one level down in
-        // the active variant payload (ingress nests them under the synthetic
-        // `_nebula_union` root, so the top-level key set is just that root). The
-        // union-payload guard below applies the same closed set to that payload —
-        // the union's top-level-equivalent. Arbitrary deeper nesting (a record with
-        // an `Object` field) is still not swept; that remains a broader hardening.
-        let declared = schema.fields();
-        if !declared.is_empty()
-            && let Some((unknown, _)) = field_values
-                .iter()
-                .find(|(k, _)| !declared.iter().any(|f| f.key() == *k))
+        if !schema.fields().is_empty()
+            && let Some(unknown) = schema.first_undeclared_path(&field_values)
         {
             return Err(Error::permanent(format!(
                 "validate_config_value: config field `{unknown}` is not declared by \
                  the `{ty}` schema; secrets must not be inlined into ResourceConfig \
                  — bind them through a typed credential slot instead \
                  (product credential boundary)",
-                unknown = unknown.as_str(),
-                ty = std::any::type_name::<R::Config>(),
-            )));
-        }
-
-        // Union `R::Config`: the operator's fields are the active variant's payload,
-        // nested under `_nebula_union.value`, so the top-level guard above only saw
-        // the synthetic union root. Apply the same closed set to that payload — an
-        // undeclared key (e.g. an inlined secret) is signalled here rather than
-        // silently dropped by serde's default unknown-field handling. A unit variant
-        // carries no payload, so there is nothing to sweep.
-        if let Some(root @ nebula_schema::Field::Mode(mode)) = declared.first()
-            && let Some(nebula_schema::FieldValue::Object(envelope)) = field_values.get(root.key())
-            && let Some(nebula_schema::FieldValue::Literal(serde_json::Value::String(active))) =
-                envelope.get("mode")
-            && let Some(variant) = mode.variants.iter().find(|v| v.key == *active)
-            && let nebula_schema::Field::Object(obj) = variant.field.as_ref()
-            && let Some(nebula_schema::FieldValue::Object(payload)) = envelope.get("value")
-            && let Some((unknown, _)) = payload
-                .iter()
-                .find(|(k, _)| !obj.fields.iter().any(|f| f.key() == *k))
-        {
-            return Err(Error::permanent(format!(
-                "validate_config_value: union config field `{unknown}` is not declared by \
-                 the active `{active}` variant of `{ty}`; secrets must not be inlined into \
-                 ResourceConfig — bind them through a typed credential slot instead \
-                 (product credential boundary)",
-                unknown = unknown.as_str(),
                 ty = std::any::type_name::<R::Config>(),
             )));
         }
