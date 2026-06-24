@@ -205,6 +205,17 @@ type RevokeFn =
 type ValidateFn =
     Arc<dyn Fn(&serde_json::Value) -> Result<(), CredentialServiceError> + Send + Sync>;
 
+/// Erased property ingest: rewrites inbound serde-wire JSON into the validator's
+/// [`FieldValues`] envelope for the captured concrete `C` via
+/// `schema_of::<C::Properties>().values_from_wire(props)`. For a record
+/// `Properties` this is plain [`FieldValues::from_json`]; for a tagged-union
+/// `Properties` (a `#[derive(Schema)]` enum) it folds serde's external/adjacent
+/// wire into the internal `{mode, value}` envelope so the same downstream
+/// `validate` / `resolve` path the record case takes also accepts a union. The
+/// schema's `serde_tagging` is the single source of truth for that rewrite.
+type IngestFn =
+    Arc<dyn Fn(&serde_json::Value) -> Result<FieldValues, CredentialServiceError> + Send + Sync>;
+
 /// One credential type's erased operation closures.
 ///
 /// `validate` / `resolve` / `acquire` are always present (the base
@@ -216,6 +227,7 @@ type ValidateFn =
 /// `plugin_capability_report`).
 struct OpsEntry<PS> {
     validate: ValidateFn,
+    ingest: IngestFn,
     resolve: ResolveFn<PS>,
     acquire: AcquireFn<PS>,
     test_fn: Option<TestFn>,
@@ -345,6 +357,32 @@ impl<PS: PendingStateStore> DispatchOps<PS> {
                 key: key.to_owned(),
             })?;
         (entry.validate)(props)
+    }
+
+    /// Ingest inbound serde-wire `props` into the validator's [`FieldValues`]
+    /// envelope for the type at `key`, applying the union wire→envelope rewrite
+    /// when `C::Properties` is a tagged union (driven by the schema's
+    /// `serde_tagging`). This is the per-type counterpart of
+    /// [`FieldValues::from_json`] that the type-erased facade must use so a union
+    /// `Properties` resolves through the same envelope `validate` accepts.
+    ///
+    /// # Errors
+    ///
+    /// [`CredentialServiceError::TypeUnknown`] when `key` is absent;
+    /// [`CredentialServiceError::ValidationFailed`] when the wire shape does not
+    /// match the type's schema (carries only `code`/`path`, never raw values).
+    pub(crate) fn ingest(
+        &self,
+        key: &str,
+        props: &serde_json::Value,
+    ) -> Result<FieldValues, CredentialServiceError> {
+        let entry = self
+            .entries
+            .get(key)
+            .ok_or_else(|| CredentialServiceError::TypeUnknown {
+                key: key.to_owned(),
+            })?;
+        (entry.ingest)(props)
     }
 
     /// Drive an acquisition for the type at `key`: same canonical
@@ -578,13 +616,16 @@ where
     );
 
     let validate: ValidateFn = Arc::new(|props: &serde_json::Value| {
-        // Canonical pipeline (mirrors `properties_pipeline.rs`): schema
-        // validate, then a typed `from_value` round-trip. The credential
-        // pipeline never resolves expressions, so a `{"$expr": ..}`
-        // envelope passes schema validation but is refused by the typed
-        // deserialize below (credential secrecy defense-in-depth #2).
+        // Canonical pipeline (mirrors `properties_pipeline.rs`): ingest the serde
+        // wire into the validator's envelope, schema-validate, then a typed
+        // round-trip. `values_from_wire` is `FieldValues::from_json` for a record
+        // `Properties` and the union wire→`{mode,value}` rewrite for a tagged-union
+        // `Properties` (the schema's `serde_tagging` drives it). The credential
+        // pipeline never resolves expressions, so a `{"$expr": ..}` envelope passes
+        // schema validation but is refused by the typed deserialize below
+        // (credential secrecy defense-in-depth #2).
         let schema = nebula_schema::schema_of::<C::Properties>();
-        let values = FieldValues::from_json(props.clone()).map_err(|e| {
+        let values = schema.values_from_wire(props.clone()).map_err(|e| {
             CredentialServiceError::ValidationFailed {
                 reason: format!("[{}] {}", e.code, e.path),
             }
@@ -603,11 +644,13 @@ where
         // deserialize's key-space: an alias-keyed (or canonical+alias) submission
         // validates under the canonical key, so the typed round-trip must see the
         // same keys, otherwise the two passes could disagree on a field's value.
-        // ($expr envelopes survive canonicalization unchanged, so defense-in-depth
-        // #2 — the typed deserialize refusing an expression-bearing secret — still
-        // holds.)
-        serde_json::from_value::<C::Properties>(valid.raw().to_json()).map_err(|_| {
-            // The serde error text can echo the offending field value
+        // `to_typed` is `from_value(raw().to_json())` for a record and the
+        // envelope→serde-wire rebuild for a union, so the typed round-trip closes
+        // for both schema kinds. ($expr envelopes survive canonicalization
+        // unchanged, so defense-in-depth #2 — the typed deserialize refusing an
+        // expression-bearing secret — still holds.)
+        valid.raw().to_typed::<C::Properties>().map_err(|_| {
+            // The deserialize error text can echo the offending field value
             // (a secret); deliberately omitted — only the policy reason
             // is surfaced.
             CredentialServiceError::ValidationFailed {
@@ -619,10 +662,23 @@ where
         Ok(())
     });
 
+    let ingest: IngestFn = Arc::new(|props: &serde_json::Value| {
+        // Per-type ingress: a record `Properties` folds via `FieldValues::from_json`;
+        // a union `Properties` folds serde's external/adjacent wire into the
+        // `{mode, value}` envelope. The type-erased facade calls this so a union
+        // resolves through the same envelope `validate` / `resolve` consume.
+        nebula_schema::schema_of::<C::Properties>()
+            .values_from_wire(props.clone())
+            .map_err(|e| CredentialServiceError::ValidationFailed {
+                reason: format!("property ingest failed: [{}] {}", e.code, e.path),
+            })
+    });
+
     ops.entries.insert(
         key,
         OpsEntry {
             validate,
+            ingest,
             resolve,
             acquire,
             test_fn: None,

@@ -286,3 +286,159 @@ async fn register_from_value_passthrough_no_templates() {
 
     assert!(manager.contains(&Postgres::key()));
 }
+
+// ── Union (enum) resource config: serde tagged wire → registration ───────────
+//
+// A `Provider` whose `Config` is a `#[derive(Schema)]` enum has a tagged-union
+// schema. `validate_config_value` ingests the operator's serde external wire
+// (`{"Variant": payload}`) through `values_from_wire`, so the schema pass and the
+// closed-set guard see the union's declared root key, and the same wire still
+// deserializes into the enum directly. This is the resource half of the value-layer
+// union bridge — a real first-party union consumer through real registration.
+
+#[derive(Clone, Debug, PartialEq, Deserialize, nebula_schema::Schema)]
+enum CacheBackendConfig {
+    Memory { capacity: u64 },
+    Redis { url: String },
+}
+
+impl ResourceConfig for CacheBackendConfig {
+    fn validate(&self) -> Result<(), Error> {
+        match self {
+            Self::Memory { capacity } if *capacity == 0 => {
+                Err(Error::permanent("memory capacity must be non-zero"))
+            },
+            Self::Redis { url } if url.is_empty() => {
+                Err(Error::permanent("redis url must not be empty"))
+            },
+            _ => Ok(()),
+        }
+    }
+
+    fn fingerprint(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        match self {
+            Self::Memory { capacity } => {
+                0u8.hash(&mut h);
+                capacity.hash(&mut h);
+            },
+            Self::Redis { url } => {
+                1u8.hash(&mut h);
+                url.hash(&mut h);
+            },
+        }
+        h.finish()
+    }
+}
+
+#[derive(Clone)]
+struct CacheBackend;
+
+#[async_trait::async_trait]
+impl Provider for CacheBackend {
+    type Config = CacheBackendConfig;
+    type Instance = Arc<()>;
+    type Topology = Resident<Self>;
+
+    fn key() -> ResourceKey {
+        resource_key!("union-cache")
+    }
+
+    async fn create(
+        &self,
+        _config: &CacheBackendConfig,
+        _ctx: &ResourceContext,
+    ) -> Result<Arc<()>, Error> {
+        Ok(Arc::new(()))
+    }
+
+    async fn destroy(
+        &self,
+        _runtime: Arc<()>,
+        _cx: nebula_resource::TeardownCx,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::from_key(&Self::key())
+    }
+}
+
+impl HasCredentialSlots for CacheBackend {
+    fn credential_slot_epoch(&self) -> u64 {
+        0
+    }
+}
+
+#[async_trait::async_trait]
+impl ResidentProvider for CacheBackend {
+    fn is_alive_sync(&self, _runtime: &Arc<()>) -> bool {
+        true
+    }
+}
+
+impl DeclaresDependencies for CacheBackend {
+    fn dependencies() -> Dependencies {
+        Dependencies::new()
+    }
+}
+
+#[tokio::test]
+async fn register_from_value_accepts_union_config_external_wire() {
+    let manager = Manager::new();
+    let engine = ExpressionEngine::new();
+
+    // serde external data-variant wire: `{"Memory": {"capacity": 100}}`. Ingress
+    // folds it into the union envelope, validation passes, and the enum is stored.
+    let config_json = json!({ "Memory": { "capacity": 100 } });
+
+    manager
+        .register_resolved::<CacheBackend>(
+            config_json,
+            &engine,
+            HashMap::new(),
+            CacheBackend,
+            ScopeLevel::Global,
+            Resident::<CacheBackend>::new(ResidentConfig::default()),
+            None,
+        )
+        .await
+        .expect("union config registers via serde external wire");
+
+    let managed = manager
+        .lookup::<CacheBackend>(&ScopeLevel::Global)
+        .expect("registered union-config row must resolve");
+    assert_eq!(
+        *managed.config(),
+        CacheBackendConfig::Memory { capacity: 100 },
+        "the serde external wire must deserialize into the active union variant"
+    );
+}
+
+#[tokio::test]
+async fn register_from_value_rejects_unknown_union_variant() {
+    let manager = Manager::new();
+    let engine = ExpressionEngine::new();
+
+    // `Nope` is not a declared variant — ingress rejects it before validation.
+    let err = manager
+        .register_resolved::<CacheBackend>(
+            json!({ "Nope": {} }),
+            &engine,
+            HashMap::new(),
+            CacheBackend,
+            ScopeLevel::Global,
+            Resident::<CacheBackend>::new(ResidentConfig::default()),
+            None,
+        )
+        .await
+        .expect_err("an unknown union variant must be rejected at registration");
+
+    let msg = err.to_string();
+    assert!(
+        msg.contains("unknown_variant") || msg.contains("Nope"),
+        "expected an unknown-variant rejection, got: {msg}"
+    );
+}

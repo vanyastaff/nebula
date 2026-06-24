@@ -32,7 +32,6 @@ use std::time::Duration;
 
 use nebula_resilience::CallError;
 use nebula_resilience::retry::{BackoffConfig, RetryConfig, retry_with};
-use nebula_schema::FieldValues;
 use serde::Serialize;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
@@ -330,11 +329,10 @@ impl CredentialService {
         // expressions. Monomorphised per type in the ops table.
         self.ops.validate(credential_key, &props)?;
 
-        let values = FieldValues::from_json(props).map_err(|e| {
-            CredentialServiceError::ValidationFailed {
-                reason: format!("property ingest failed: {e}"),
-            }
-        })?;
+        // Union-aware ingress: a record `Properties` folds via `from_json`; a union
+        // folds serde's tagged wire into the `{mode, value}` envelope `resolve`
+        // consumes (per-type, keyed by the registered schema's `serde_tagging`).
+        let values = self.ops.ingest(credential_key, &props)?;
 
         let id = CredentialId::new();
         let ctx = Self::owner_context(scope);
@@ -525,11 +523,7 @@ impl CredentialService {
         let resolved = match props {
             Some(props) => {
                 self.ops.validate(&existing.credential_key, &props)?;
-                let values = FieldValues::from_json(props).map_err(|e| {
-                    CredentialServiceError::ValidationFailed {
-                        reason: format!("property ingest failed: {e}"),
-                    }
-                })?;
+                let values = self.ops.ingest(&existing.credential_key, &props)?;
                 let ctx = Self::owner_context(scope);
                 Some(
                     self.ops
@@ -997,11 +991,7 @@ impl CredentialService {
             });
         }
         self.ops.validate(credential_key, &props)?;
-        let values = FieldValues::from_json(props).map_err(|e| {
-            CredentialServiceError::ValidationFailed {
-                reason: format!("property ingest failed: {e}"),
-            }
-        })?;
+        let values = self.ops.ingest(credential_key, &props)?;
         let ctx = Self::owner_context(scope);
         let outcome = self
             .ops

@@ -300,10 +300,15 @@ impl Manager {
         // structural errors are reported as schema violations rather than
         // confusingly re-routed through serde.
         let schema = <R::Config as nebula_schema::HasSchema>::schema();
-        let field_values =
-            nebula_schema::FieldValues::from_json(config_json.clone()).map_err(|e| {
-                Error::permanent(format!("validate_config_value: invalid field tree: {e}"))
-            })?;
+        // Union-aware ingress: a record `Config` folds via `from_json`; a union
+        // `Config` (a `#[derive(Schema)]` enum) folds serde's external/adjacent wire
+        // into the `{mode, value}` envelope `validate` consumes, so both the schema
+        // pass and the closed-set guard below see the union's declared root key
+        // rather than the raw variant discriminant. The serde wire still
+        // deserializes into `R::Config` directly below (no egress on the read path).
+        let field_values = schema.values_from_wire(config_json.clone()).map_err(|e| {
+            Error::permanent(format!("validate_config_value: invalid field tree: {e}"))
+        })?;
         if let Err(report) = schema.validate(&field_values) {
             return Err(Error::permanent(format!(
                 "validate_config_value: schema validation failed: {report:?}"
@@ -324,6 +329,14 @@ impl Manager {
         // the "schema not yet declared" sentinel (`impl_empty_has_schema!`), and a
         // closed set over zero fields would reject every config — that gate
         // belongs to types that have opted into a real schema.
+        //
+        // Scope: this guard is TOP-LEVEL only — it does not recurse into nested
+        // object fields or, for a union `R::Config`, the active variant payload
+        // (which ingress nests under the union's single declared `_nebula_union`
+        // root, so the top-level key set is just that root). Inlined keys deeper in
+        // the tree are not rejected here; a closed-set sweep over nested/variant
+        // payloads is a broader secret-inlining hardening, not part of the union
+        // value-layer bridge.
         let declared = schema.fields();
         if !declared.is_empty()
             && let Some((unknown, _)) = field_values
