@@ -330,13 +330,12 @@ impl Manager {
         // closed set over zero fields would reject every config — that gate
         // belongs to types that have opted into a real schema.
         //
-        // Scope: this guard is TOP-LEVEL only — it does not recurse into nested
-        // object fields or, for a union `R::Config`, the active variant payload
-        // (which ingress nests under the union's single declared `_nebula_union`
-        // root, so the top-level key set is just that root). Inlined keys deeper in
-        // the tree are not rejected here; a closed-set sweep over nested/variant
-        // payloads is a broader secret-inlining hardening, not part of the union
-        // value-layer bridge.
+        // For a union `R::Config` the operator-facing fields live one level down in
+        // the active variant payload (ingress nests them under the synthetic
+        // `_nebula_union` root, so the top-level key set is just that root). The
+        // union-payload guard below applies the same closed set to that payload —
+        // the union's top-level-equivalent. Arbitrary deeper nesting (a record with
+        // an `Object` field) is still not swept; that remains a broader hardening.
         let declared = schema.fields();
         if !declared.is_empty()
             && let Some((unknown, _)) = field_values
@@ -347,6 +346,33 @@ impl Manager {
                 "validate_config_value: config field `{unknown}` is not declared by \
                  the `{ty}` schema; secrets must not be inlined into ResourceConfig \
                  — bind them through a typed credential slot instead \
+                 (product credential boundary)",
+                unknown = unknown.as_str(),
+                ty = std::any::type_name::<R::Config>(),
+            )));
+        }
+
+        // Union `R::Config`: the operator's fields are the active variant's payload,
+        // nested under `_nebula_union.value`, so the top-level guard above only saw
+        // the synthetic union root. Apply the same closed set to that payload — an
+        // undeclared key (e.g. an inlined secret) is signalled here rather than
+        // silently dropped by serde's default unknown-field handling. A unit variant
+        // carries no payload, so there is nothing to sweep.
+        if let Some(root @ nebula_schema::Field::Mode(mode)) = declared.first()
+            && let Some(nebula_schema::FieldValue::Object(envelope)) = field_values.get(root.key())
+            && let Some(nebula_schema::FieldValue::Literal(serde_json::Value::String(active))) =
+                envelope.get("mode")
+            && let Some(variant) = mode.variants.iter().find(|v| v.key == *active)
+            && let nebula_schema::Field::Object(obj) = variant.field.as_ref()
+            && let Some(nebula_schema::FieldValue::Object(payload)) = envelope.get("value")
+            && let Some((unknown, _)) = payload
+                .iter()
+                .find(|(k, _)| !obj.fields.iter().any(|f| f.key() == *k))
+        {
+            return Err(Error::permanent(format!(
+                "validate_config_value: union config field `{unknown}` is not declared by \
+                 the active `{active}` variant of `{ty}`; secrets must not be inlined into \
+                 ResourceConfig — bind them through a typed credential slot instead \
                  (product credential boundary)",
                 unknown = unknown.as_str(),
                 ty = std::any::type_name::<R::Config>(),

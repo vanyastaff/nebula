@@ -442,3 +442,32 @@ async fn register_from_value_rejects_unknown_union_variant() {
         "expected an unknown-variant rejection, got: {msg}"
     );
 }
+
+#[tokio::test]
+async fn register_from_value_rejects_inlined_field_in_union_variant_payload() {
+    let manager = Manager::new();
+    let engine = ExpressionEngine::new();
+
+    // `capacity` is declared by the `Memory` variant; `secret_token` is not. The
+    // closed-set guard must signal it (serde would otherwise silently drop the
+    // unknown field), so a secret cannot be inlined into a union variant payload —
+    // the union's equivalent of the record top-level closed-set guard.
+    let err = manager
+        .register_resolved::<CacheBackend>(
+            json!({ "Memory": { "capacity": 100, "secret_token": "leak" } }),
+            &engine,
+            HashMap::new(),
+            CacheBackend,
+            ScopeLevel::Global,
+            Resident::<CacheBackend>::new(ResidentConfig::default()),
+            None,
+        )
+        .await
+        .expect_err("an undeclared field in a union variant payload must be rejected");
+
+    let msg = err.to_string();
+    assert!(
+        msg.contains("secret_token") && msg.contains("not declared by the active"),
+        "expected a union-variant-payload closed-set rejection, got: {msg}"
+    );
+}
