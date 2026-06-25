@@ -33,7 +33,7 @@ type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 ///
 /// ```rust,ignore
 /// use nebula_core::CredentialKey;
-/// use nebula_engine::credential::ScopedCredentialAccessor;
+/// use nebula_credential::runtime::ScopedCredentialAccessor;
 ///
 /// let scoped = ScopedCredentialAccessor::new(
 ///     inner_accessor,
