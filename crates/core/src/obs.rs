@@ -6,13 +6,75 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-/// W3C Trace Context trace-id (128-bit).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct TraceId(pub u128);
+/// W3C Trace Context trace-id (128-bit, always non-zero).
+///
+/// The W3C spec forbids an all-zero trace id; this type makes that invariant
+/// unrepresentable by construction. Use [`TraceId::new`] to construct one from
+/// a parsed value, and [`TraceId::get`] to read the raw integer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TraceId(core::num::NonZeroU128);
 
-/// W3C Trace Context parent-id (64-bit).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct SpanId(pub u64);
+impl TraceId {
+    /// Wrap `value` in a `TraceId`. Returns `None` if `value` is zero.
+    #[must_use]
+    pub fn new(value: u128) -> Option<Self> {
+        core::num::NonZeroU128::new(value).map(Self)
+    }
+
+    /// Return the raw 128-bit trace id value (guaranteed non-zero).
+    #[must_use]
+    pub const fn get(&self) -> u128 {
+        self.0.get()
+    }
+}
+
+impl Serialize for TraceId {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.get().serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for TraceId {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = u128::deserialize(deserializer)?;
+        Self::new(raw).ok_or_else(|| serde::de::Error::custom("trace_id must not be all zeros"))
+    }
+}
+
+/// W3C Trace Context parent-id (64-bit, always non-zero).
+///
+/// The W3C spec forbids an all-zero parent id; this type makes that invariant
+/// unrepresentable by construction. Use [`SpanId::new`] to construct one from
+/// a parsed value, and [`SpanId::get`] to read the raw integer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SpanId(core::num::NonZeroU64);
+
+impl SpanId {
+    /// Wrap `value` in a `SpanId`. Returns `None` if `value` is zero.
+    #[must_use]
+    pub fn new(value: u64) -> Option<Self> {
+        core::num::NonZeroU64::new(value).map(Self)
+    }
+
+    /// Return the raw 64-bit span id value (guaranteed non-zero).
+    #[must_use]
+    pub const fn get(&self) -> u64 {
+        self.0.get()
+    }
+}
+
+impl Serialize for SpanId {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.get().serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for SpanId {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = u64::deserialize(deserializer)?;
+        Self::new(raw).ok_or_else(|| serde::de::Error::custom("span_id must not be all zeros"))
+    }
+}
 
 /// Lowercase W3C `traceparent` HTTP header field-name.
 pub const W3C_TRACEPARENT: &str = "traceparent";
@@ -95,25 +157,20 @@ impl W3cTraceContext {
         })
     }
 
-    /// Build from decoded identifiers (version `00` only). Rejects all-zero trace or parent id.
+    /// Build from decoded identifiers (version `00` only).
+    ///
+    /// Both `trace_id` and `parent_span_id` are [`TraceId`] / [`SpanId`] which are
+    /// non-zero by construction, so no runtime rejection is needed here.
     pub fn from_trace_ids(
         trace_id: TraceId,
         parent_span_id: SpanId,
         trace_flags: u8,
     ) -> Result<Self, W3cTraceContextError> {
-        if trace_id.0 == 0 {
-            return Err(W3cTraceContextError::InvalidTraceparent {
-                reason: "trace_id must not be all zeros",
-            });
-        }
-        if parent_span_id.0 == 0 {
-            return Err(W3cTraceContextError::InvalidTraceparent {
-                reason: "parent_id must not be all zeros",
-            });
-        }
         let traceparent = format!(
             "00-{:032x}-{:016x}-{:02x}",
-            trace_id.0, parent_span_id.0, trace_flags
+            trace_id.get(),
+            parent_span_id.get(),
+            trace_flags
         );
         Ok(Self {
             traceparent,
@@ -179,7 +236,9 @@ fn parse_and_canonicalize_traceparent(s: &str) -> Result<String, W3cTraceContext
     let parsed = parse_traceparent_parts(s)?;
     Ok(format!(
         "00-{:032x}-{:016x}-{:02x}",
-        parsed.trace_id.0, parsed.parent_span_id.0, parsed.trace_flags
+        parsed.trace_id.get(),
+        parsed.parent_span_id.get(),
+        parsed.trace_flags
     ))
 }
 
@@ -267,9 +326,16 @@ fn parse_traceparent_parts(s: &str) -> Result<ParsedTraceparent, W3cTraceContext
         }
     })?;
 
+    // Both values were checked for zero above, so `new` is guaranteed to return `Some`.
+    let trace_id = TraceId::new(trace_id).ok_or(W3cTraceContextError::InvalidTraceparent {
+        reason: "trace_id must not be all zeros",
+    })?;
+    let parent_span_id = SpanId::new(parent).ok_or(W3cTraceContextError::InvalidTraceparent {
+        reason: "parent_id must not be all zeros",
+    })?;
     Ok(ParsedTraceparent {
-        trace_id: TraceId(trace_id),
-        parent_span_id: SpanId(parent),
+        trace_id,
+        parent_span_id,
         trace_flags,
     })
 }
@@ -284,8 +350,11 @@ mod tests {
         let ctx = W3cTraceContext::from_traceparent_str(tp).expect("valid");
         assert_eq!(ctx.traceparent(), tp);
         let parsed = parse_traceparent(tp).expect("parse");
-        assert_eq!(parsed.trace_id.0, 0x0af7_6519_16cd_43dd_8448_eb21_1c80_319c);
-        assert_eq!(parsed.parent_span_id.0, 0xb7ad_6b71_6920_3331_u64);
+        assert_eq!(
+            parsed.trace_id.get(),
+            0x0af7_6519_16cd_43dd_8448_eb21_1c80_319c
+        );
+        assert_eq!(parsed.parent_span_id.get(), 0xb7ad_6b71_6920_3331_u64);
         assert_eq!(parsed.trace_flags, 0x01);
     }
 
@@ -325,16 +394,60 @@ mod tests {
 
     #[test]
     fn from_trace_ids_builds_expected_string() {
-        let ctx = W3cTraceContext::from_trace_ids(
-            TraceId(0x0af7_6519_16cd_43dd_8448_eb21_1c80_319c),
-            SpanId(0xb7ad_6b71_6920_3331),
-            1,
-        )
-        .expect("build");
+        let trace_id =
+            TraceId::new(0x0af7_6519_16cd_43dd_8448_eb21_1c80_319c).expect("non-zero trace id");
+        let span_id = SpanId::new(0xb7ad_6b71_6920_3331).expect("non-zero span id");
+        let ctx = W3cTraceContext::from_trace_ids(trace_id, span_id, 1).expect("build");
         assert_eq!(
             ctx.traceparent(),
             "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
         );
+    }
+
+    #[test]
+    fn trace_id_zero_is_unrepresentable() {
+        assert!(
+            TraceId::new(0).is_none(),
+            "all-zero TraceId must be rejected"
+        );
+        assert_eq!(
+            TraceId::new(5).expect("non-zero").get(),
+            5,
+            "TraceId::get must round-trip"
+        );
+    }
+
+    #[test]
+    fn span_id_zero_is_unrepresentable() {
+        assert!(SpanId::new(0).is_none(), "all-zero SpanId must be rejected");
+        assert_eq!(
+            SpanId::new(7).expect("non-zero").get(),
+            7,
+            "SpanId::get must round-trip"
+        );
+    }
+
+    #[test]
+    fn trace_id_serde_round_trip_non_zero() {
+        let original =
+            TraceId::new(0x0af7_6519_16cd_43dd_8448_eb21_1c80_319c).expect("non-zero trace id");
+        let json = serde_json::to_string(&original).expect("serialize");
+        let deserialized: TraceId = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(deserialized, original);
+    }
+
+    #[test]
+    fn trace_id_serde_rejects_zero() {
+        let json = serde_json::to_string(&0_u128).expect("serialize zero");
+        let result: Result<TraceId, _> = serde_json::from_str(&json);
+        assert!(result.is_err(), "deserializing zero as TraceId must fail");
+    }
+
+    #[test]
+    fn span_id_serde_rejects_zero() {
+        let json = serde_json::to_string(&0_u64).expect("serialize zero");
+        let result: Result<SpanId, _> = serde_json::from_str(&json);
+        assert!(result.is_err(), "deserializing zero as SpanId must fail");
     }
 
     #[test]

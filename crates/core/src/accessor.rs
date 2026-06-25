@@ -101,10 +101,14 @@ impl Clock for SystemClock {
 
 /// Single-flight refresh coordination (spec 22).
 pub trait RefreshCoordinator: Send + Sync {
-    /// Acquire a refresh lock.
+    /// Acquire a refresh lock for the given credential.
+    ///
+    /// Takes a typed [`crate::id::CredentialId`] rather than a raw `&str` so the
+    /// compiler enforces that callers pass an actual credential identifier — not an
+    /// arbitrary string — at every call site.
     fn acquire_refresh(
         &self,
-        credential_id: &str,
+        credential_id: &crate::id::CredentialId,
     ) -> BoxFuture<'_, Result<RefreshToken, crate::CoreError>>;
     /// Release a refresh lock.
     fn release_refresh(&self, token: RefreshToken) -> BoxFuture<'_, Result<(), crate::CoreError>>;

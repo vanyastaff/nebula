@@ -30,13 +30,17 @@ impl TenantContext {
                 Some(actual) if actual >= required_ws_role => Ok(()),
                 Some(actual) => Err(PermissionDenied {
                     permission,
-                    required_role: required_ws_role.to_string(),
-                    current_role: actual.to_string(),
+                    denial: PermissionDenial::Workspace {
+                        required: required_ws_role,
+                        current: Some(actual),
+                    },
                 }),
                 None => Err(PermissionDenied {
                     permission,
-                    required_role: required_ws_role.to_string(),
-                    current_role: "none".to_string(),
+                    denial: PermissionDenial::Workspace {
+                        required: required_ws_role,
+                        current: None,
+                    },
                 }),
             }
         } else {
@@ -70,13 +74,17 @@ impl TenantContext {
                 Some(actual) if actual >= required => Ok(()),
                 Some(actual) => Err(PermissionDenied {
                     permission,
-                    required_role: required.to_string(),
-                    current_role: actual.to_string(),
+                    denial: PermissionDenial::Org {
+                        required,
+                        current: Some(actual),
+                    },
                 }),
                 None => Err(PermissionDenied {
                     permission,
-                    required_role: required.to_string(),
-                    current_role: "none".to_string(),
+                    denial: PermissionDenial::Org {
+                        required,
+                        current: None,
+                    },
                 }),
             }
         }
@@ -89,21 +97,62 @@ impl TenantContext {
     }
 }
 
+/// The specific role-level mismatch that caused a permission check to fail.
+///
+/// Carries the required and actual (caller's) role at the level that was checked.
+/// `current` is `None` when the caller has no role at that level at all.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum PermissionDenial {
+    /// A workspace-scoped permission was required but the caller's workspace role was
+    /// absent or below the minimum.
+    Workspace {
+        /// The minimum workspace role required by the permission.
+        required: WorkspaceRole,
+        /// The caller's workspace role, or `None` if no workspace role is present.
+        current: Option<WorkspaceRole>,
+    },
+    /// An org-scoped permission was required but the caller's org role was absent or
+    /// below the minimum.
+    Org {
+        /// The minimum org role required by the permission.
+        required: OrgRole,
+        /// The caller's org role, or `None` if no org role is present.
+        current: Option<OrgRole>,
+    },
+}
+
+impl fmt::Display for PermissionDenial {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Workspace { required, current } => {
+                let current_display = current
+                    .map(|r| r.to_string())
+                    .unwrap_or_else(|| "none".to_owned());
+                write!(f, "{required} required, current role {current_display}")
+            },
+            Self::Org { required, current } => {
+                let current_display = current
+                    .map(|r| r.to_string())
+                    .unwrap_or_else(|| "none".to_owned());
+                write!(f, "{required} required, current role {current_display}")
+            },
+        }
+    }
+}
+
 /// Returned when a permission check fails.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PermissionDenied {
+    /// The permission that was required.
     pub permission: Permission,
-    pub required_role: String,
-    pub current_role: String,
+    /// The role-level mismatch that caused the denial.
+    pub denial: PermissionDenial,
 }
 
 impl fmt::Display for PermissionDenied {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{} required, current role {}",
-            self.required_role, self.current_role
-        )
+        fmt::Display::fmt(&self.denial, f)
     }
 }
 
@@ -155,13 +204,16 @@ mod tests {
             Permission::MemberRemove,
             Permission::ServiceAccountManage,
         ] {
+            let err = ctx
+                .require(permission)
+                .expect_err("OrgMember must be denied");
             assert_eq!(
-                ctx.require(permission)
-                    .map_err(|err| (err.required_role, err.current_role)),
-                Err((
-                    OrgRole::OrgAdmin.to_string(),
-                    OrgRole::OrgMember.to_string()
-                ))
+                err.denial,
+                PermissionDenial::Org {
+                    required: OrgRole::OrgAdmin,
+                    current: Some(OrgRole::OrgMember),
+                },
+                "wrong denial shape for {permission:?}"
             );
         }
     }
@@ -171,11 +223,15 @@ mod tests {
         let admin = context_with_org_role(Some(OrgRole::OrgAdmin));
         let owner = context_with_org_role(Some(OrgRole::OrgOwner));
 
+        let err = admin
+            .require(Permission::OrgDelete)
+            .expect_err("OrgAdmin must be denied OrgDelete");
         assert_eq!(
-            admin
-                .require(Permission::OrgDelete)
-                .map_err(|err| (err.required_role, err.current_role)),
-            Err((OrgRole::OrgOwner.to_string(), OrgRole::OrgAdmin.to_string()))
+            err.denial,
+            PermissionDenial::Org {
+                required: OrgRole::OrgOwner,
+                current: Some(OrgRole::OrgAdmin),
+            }
         );
         assert!(owner.require(Permission::OrgDelete).is_ok());
     }

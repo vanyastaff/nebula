@@ -94,7 +94,7 @@ pub use role::{OrgRole, WorkspaceRole, effective_workspace_role};
 pub use scope::*;
 pub use slug::{Slug, SlugError, SlugKind, is_prefixed_ulid};
 pub use sync::Lazy;
-pub use tenancy::{PermissionDenied, ResolvedIds, TenantContext};
+pub use tenancy::{PermissionDenial, PermissionDenied, ResolvedIds, TenantContext};
 
 /// Named parse-error type for [`PluginKey`] — `<PluginKey as std::str::FromStr>::Err`.
 ///
