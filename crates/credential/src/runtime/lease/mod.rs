@@ -28,7 +28,7 @@
 //!
 //! ```ignore
 //! use std::sync::Arc;
-//! use nebula_engine::credential::lease::{
+//! use nebula_credential::runtime::{
 //!     LeaseLifecycle, LeaseLifecycleConfig,
 //! };
 //! use tokio_util::sync::CancellationToken;

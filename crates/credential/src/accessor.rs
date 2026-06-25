@@ -7,8 +7,8 @@
 //! inject a real accessor.
 //!
 //! The engine-runtime accessor that enforces per-action allowlists lives in
-//! `nebula_engine::credential::ScopedCredentialAccessor` (engine depends on
-//! `nebula-credential`, not the other way around).
+//! `nebula_engine::credential_accessor::EngineCredentialAccessor` (engine
+//! depends on `nebula-credential`, not the other way around).
 
 use std::{future::Future, pin::Pin, sync::Arc};
 

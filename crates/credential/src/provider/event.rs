@@ -1,7 +1,7 @@
 //! Lease lifecycle events for cross-crate signaling.
 //!
-//! Emitted via `EventBus<LeaseEvent>` by the engine's lease lifecycle
-//! subsystem (`nebula_engine::credential::lease`). Subscribers (audit
+//! Emitted via `EventBus<LeaseEvent>` by the lease lifecycle subsystem
+//! (`nebula_credential::runtime::lease`). Subscribers (audit
 //! sinks, metric scrapers, ops dashboards) consume these to track the
 //! health of dynamic-secret grants without reaching into provider
 //! internals.

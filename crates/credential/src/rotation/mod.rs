@@ -25,9 +25,9 @@
 //! Domain types only: rotation events, errors, state-machine enum, IDs,
 //! policy. No orchestration: no `tokio::spawn`, no `tokio::select!`, no
 //! `tokio::time::{sleep, interval, tick}`, no `JoinHandle` ownership.
-//! Background tick loops, blue-green transactions, fan-out drivers,
-//! schedulers, grace-period reapers — all live in
-//! `nebula_engine::credential::rotation::*` instead.
+//! Background tick loops, blue-green transactions, schedulers and
+//! grace-period reapers live in `crate::runtime::rotation`; the resource
+//! fan-out drivers live in `nebula_resource`.
 //!
 //! Note: `error.rs` imports `tokio::time::timeout` solely to enforce the
 //! per-test deadline declared by `TestableCredential::test_timeout()`. This
