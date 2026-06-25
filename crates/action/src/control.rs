@@ -66,9 +66,9 @@
 //!         _ctx: &(impl nebula_action::ActionContext + ?Sized),
 //!     ) -> Result<ControlOutcome, ActionError> {
 //!         let condition = input.get_bool("/condition")?;
-//!         let selected = if condition { "true" } else { "false" };
+//!         let selected = if condition { nebula_action::branch_key!("true") } else { nebula_action::branch_key!("false") };
 //!         Ok(ControlOutcome::Branch {
-//!             selected: selected.into(),
+//!             selected,
 //!             output: input.into_value(),
 //!         })
 //!     }
@@ -81,10 +81,11 @@ use serde_json::Value;
 
 use crate::{
     action::Action,
+    branch_key::BranchKey,
     context::ActionContext,
     error::{ActionError, ValidationReason},
     metadata::{ActionKind, ActionMetadata},
-    port::PortKey,
+    port_key::PortKey,
     result::{ActionResult, TerminationReason},
     stateless::StatelessHandler,
 };
@@ -274,8 +275,8 @@ pub enum ControlOutcome {
     /// first-match mode. `selected` must match a port key declared in
     /// [`ActionMetadata::outputs`].
     Branch {
-        /// Key of the chosen output port.
-        selected: PortKey,
+        /// Key of the chosen branch output port.
+        selected: BranchKey,
         /// Value to emit on the selected port.
         output: Value,
     },
@@ -413,7 +414,7 @@ pub trait ControlAction: Action {
     ///
     /// ```ignore
     /// // Explicit form — use this if you want to spell out bounds
-    /// // or match the existing StatelessAction::execute convention.
+    /// // or match the existing `StatelessAction::execute` convention.
     /// fn evaluate(
     ///     &self,
     ///     input: ControlInput,
@@ -532,7 +533,9 @@ mod tests {
 
     use super::*;
     use crate::{
+        branch_key,
         port::{OutputPort, default_input_ports, default_output_ports},
+        port_key,
         testing::{TestActionContext, TestContextBuilder},
     };
 
@@ -609,7 +612,7 @@ mod tests {
     #[test]
     fn outcome_branch_desugars_to_action_result_branch() {
         let outcome = ControlOutcome::Branch {
-            selected: "true".into(),
+            selected: branch_key!("true"),
             output: serde_json::json!({"v": 1}),
         };
         let result: ActionResult<Value> = outcome.into();
@@ -619,7 +622,7 @@ mod tests {
                 output,
                 alternatives,
             } => {
-                assert_eq!(selected, "true");
+                assert_eq!(selected.as_str(), "true");
                 assert_eq!(output.as_value(), Some(&serde_json::json!({"v": 1})));
                 assert!(alternatives.is_empty());
             },
@@ -631,8 +634,8 @@ mod tests {
     fn outcome_route_desugars_to_multi_output() {
         let outcome = ControlOutcome::Route {
             ports: std::collections::HashMap::from([
-                ("high".into(), serde_json::json!(1)),
-                ("low".into(), serde_json::json!(2)),
+                (port_key!("high"), serde_json::json!(1)),
+                (port_key!("low"), serde_json::json!(2)),
             ]),
         };
         let result: ActionResult<Value> = outcome.into();
@@ -734,7 +737,10 @@ mod tests {
         fn metadata() -> ActionMetadata {
             ActionMetadata::new(action_key!("test.if"), "TestIf", "Binary branch")
                 .with_inputs(default_input_ports())
-                .with_outputs(vec![OutputPort::flow("true"), OutputPort::flow("false")])
+                .with_outputs(vec![
+                    OutputPort::flow(port_key!("true")),
+                    OutputPort::flow(port_key!("false")),
+                ])
         }
         fn dependencies() -> &'static Dependencies {
             static D: OnceLock<Dependencies> = OnceLock::new();
@@ -749,9 +755,13 @@ mod tests {
             _ctx: &(impl ActionContext + ?Sized),
         ) -> Result<ControlOutcome, ActionError> {
             let condition = input.get_bool("/condition")?;
-            let selected = if condition { "true" } else { "false" };
+            let selected = if condition {
+                branch_key!("true")
+            } else {
+                branch_key!("false")
+            };
             Ok(ControlOutcome::Branch {
-                selected: selected.into(),
+                selected,
                 output: input.into_value(),
             })
         }
@@ -845,7 +855,7 @@ mod tests {
             ActionResult::Branch {
                 selected, output, ..
             } => {
-                assert_eq!(selected, "true");
+                assert_eq!(selected.as_str(), "true");
                 assert_eq!(
                     output.as_value(),
                     Some(&serde_json::json!({ "condition": true, "payload": 42 }))
@@ -866,7 +876,7 @@ mod tests {
                 .unwrap();
 
         match result {
-            ActionResult::Branch { selected, .. } => assert_eq!(selected, "false"),
+            ActionResult::Branch { selected, .. } => assert_eq!(selected.as_str(), "false"),
             _ => panic!("expected Branch"),
         }
     }

@@ -13,8 +13,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Type alias for port keys (e.g. `"in"`, `"out"`, `"error"`, `"tools"`).
-pub type PortKey = String;
+use crate::port_key::PortKey;
 
 // ── FlowKind ────────────────────────────────────────────────────────────────
 
@@ -131,21 +130,17 @@ pub enum InputPort {
 impl InputPort {
     /// Create a flow input port.
     #[must_use]
-    pub fn flow(key: impl Into<PortKey>) -> Self {
-        Self::Flow { key: key.into() }
+    pub fn flow(key: PortKey) -> Self {
+        Self::Flow { key }
     }
 
     /// Create a support input port with sensible defaults.
     ///
     /// Defaults: `required = false`, `multi = false`, empty filter.
     #[must_use]
-    pub fn support(
-        key: impl Into<PortKey>,
-        name: impl Into<String>,
-        description: impl Into<String>,
-    ) -> Self {
+    pub fn support(key: PortKey, name: impl Into<String>, description: impl Into<String>) -> Self {
         Self::Support(SupportPort {
-            key: key.into(),
+            key,
             name: name.into(),
             description: description.into(),
             required: false,
@@ -158,8 +153,8 @@ impl InputPort {
     #[must_use]
     pub fn key(&self) -> &str {
         match self {
-            Self::Flow { key } => key,
-            Self::Support(p) => &p.key,
+            Self::Flow { key } => key.as_str(),
+            Self::Support(p) => p.key.as_str(),
         }
     }
 
@@ -197,18 +192,18 @@ pub enum OutputPort {
 impl OutputPort {
     /// Create a main flow output port.
     #[must_use]
-    pub fn flow(key: impl Into<PortKey>) -> Self {
+    pub fn flow(key: PortKey) -> Self {
         Self::Flow {
-            key: key.into(),
+            key,
             kind: FlowKind::Main,
         }
     }
 
     /// Create an error flow output port.
     #[must_use]
-    pub fn error(key: impl Into<PortKey>) -> Self {
+    pub fn error(key: PortKey) -> Self {
         Self::Flow {
-            key: key.into(),
+            key,
             kind: FlowKind::Error,
         }
     }
@@ -217,9 +212,9 @@ impl OutputPort {
     ///
     /// Defaults: no `label_field`, `include_fallback = false`.
     #[must_use]
-    pub fn dynamic(key: impl Into<PortKey>, source_field: impl Into<String>) -> Self {
+    pub fn dynamic(key: PortKey, source_field: impl Into<String>) -> Self {
         Self::Dynamic(DynamicPort {
-            key: key.into(),
+            key,
             source_field: source_field.into(),
             label_field: None,
             include_fallback: false,
@@ -230,8 +225,8 @@ impl OutputPort {
     #[must_use]
     pub fn key(&self) -> &str {
         match self {
-            Self::Flow { key, .. } => key,
-            Self::Dynamic(p) => &p.key,
+            Self::Flow { key, .. } => key.as_str(),
+            Self::Dynamic(p) => p.key.as_str(),
         }
     }
 
@@ -253,19 +248,21 @@ impl OutputPort {
 /// Returns the default input ports: a single flow input `"in"`.
 #[must_use]
 pub fn default_input_ports() -> Vec<InputPort> {
-    vec![InputPort::flow("in")]
+    vec![InputPort::flow(crate::port_key!("in"))]
 }
 
 /// Returns the default output ports: a single main flow output `"out"`.
 #[must_use]
 pub fn default_output_ports() -> Vec<OutputPort> {
-    vec![OutputPort::flow("out")]
+    vec![OutputPort::flow(crate::port_key!("out"))]
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
+    use crate::port_key;
+
     use super::*;
 
     // ── FlowKind ────────────────────────────────────────────────────
@@ -329,7 +326,7 @@ mod tests {
 
     #[test]
     fn input_port_flow_constructor() {
-        let port = InputPort::flow("in");
+        let port = InputPort::flow(port_key!("in"));
         assert_eq!(port.key(), "in");
         assert!(port.is_flow());
         assert!(!port.is_support());
@@ -337,7 +334,7 @@ mod tests {
 
     #[test]
     fn input_port_support_constructor() {
-        let port = InputPort::support("tools", "Tools", "Available tools");
+        let port = InputPort::support(port_key!("tools"), "Tools", "Available tools");
         assert_eq!(port.key(), "tools");
         assert!(!port.is_flow());
         assert!(port.is_support());
@@ -353,8 +350,8 @@ mod tests {
     #[test]
     fn input_port_serde_roundtrip() {
         let ports = [
-            InputPort::flow("in"),
-            InputPort::support("model", "Model", "LLM model"),
+            InputPort::flow(port_key!("in")),
+            InputPort::support(port_key!("model"), "Model", "LLM model"),
         ];
         for port in &ports {
             let json = serde_json::to_string(port).unwrap();
@@ -365,7 +362,7 @@ mod tests {
 
     #[test]
     fn input_port_flow_serde_tagged() {
-        let port = InputPort::flow("in");
+        let port = InputPort::flow(port_key!("in"));
         let json = serde_json::to_value(&port).unwrap();
         assert_eq!(json["type"], "flow");
         assert_eq!(json["key"], "in");
@@ -373,7 +370,7 @@ mod tests {
 
     #[test]
     fn input_port_support_serde_tagged() {
-        let port = InputPort::support("tools", "Tools", "desc");
+        let port = InputPort::support(port_key!("tools"), "Tools", "desc");
         let json = serde_json::to_value(&port).unwrap();
         assert_eq!(json["type"], "support");
         assert_eq!(json["key"], "tools");
@@ -384,7 +381,7 @@ mod tests {
 
     #[test]
     fn output_port_flow_constructor() {
-        let port = OutputPort::flow("out");
+        let port = OutputPort::flow(port_key!("out"));
         assert_eq!(port.key(), "out");
         assert!(port.is_flow());
         assert!(!port.is_dynamic());
@@ -395,7 +392,7 @@ mod tests {
 
     #[test]
     fn output_port_error_constructor() {
-        let port = OutputPort::error("error");
+        let port = OutputPort::error(port_key!("error"));
         assert_eq!(port.key(), "error");
         assert!(port.is_flow());
         if let OutputPort::Flow { kind, .. } = &port {
@@ -405,7 +402,7 @@ mod tests {
 
     #[test]
     fn output_port_dynamic_constructor() {
-        let port = OutputPort::dynamic("rule", "rules");
+        let port = OutputPort::dynamic(port_key!("rule"), "rules");
         assert_eq!(port.key(), "rule");
         assert!(port.is_dynamic());
         assert!(!port.is_flow());
@@ -419,9 +416,9 @@ mod tests {
     #[test]
     fn output_port_serde_roundtrip() {
         let ports = [
-            OutputPort::flow("out"),
-            OutputPort::error("error"),
-            OutputPort::dynamic("rule", "rules"),
+            OutputPort::flow(port_key!("out")),
+            OutputPort::error(port_key!("error")),
+            OutputPort::dynamic(port_key!("rule"), "rules"),
         ];
         for port in &ports {
             let json = serde_json::to_string(port).unwrap();
@@ -432,7 +429,7 @@ mod tests {
 
     #[test]
     fn output_port_flow_serde_tagged() {
-        let port = OutputPort::flow("out");
+        let port = OutputPort::flow(port_key!("out"));
         let json = serde_json::to_value(&port).unwrap();
         assert_eq!(json["type"], "flow");
         assert_eq!(json["key"], "out");
@@ -441,7 +438,7 @@ mod tests {
 
     #[test]
     fn output_port_dynamic_serde_tagged() {
-        let port = OutputPort::dynamic("rule", "rules");
+        let port = OutputPort::dynamic(port_key!("rule"), "rules");
         let json = serde_json::to_value(&port).unwrap();
         assert_eq!(json["type"], "dynamic");
         assert_eq!(json["key"], "rule");
@@ -453,7 +450,7 @@ mod tests {
     #[test]
     fn dynamic_port_with_label_and_fallback() {
         let port = OutputPort::Dynamic(DynamicPort {
-            key: "rule".into(),
+            key: port_key!("rule"),
             source_field: "rules".into(),
             label_field: Some("label".into()),
             include_fallback: true,
@@ -472,7 +469,7 @@ mod tests {
     #[test]
     fn support_port_full_config() {
         let port = InputPort::Support(SupportPort {
-            key: "model".into(),
+            key: port_key!("model"),
             name: "AI Model".into(),
             description: "Language model to use".into(),
             required: true,

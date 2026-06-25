@@ -8,8 +8,8 @@ use std::{collections::HashMap, time::Duration};
 
 use chrono::Utc;
 use nebula_action::{
-    ActionKind, ActionOutput, ActionResult, BreakReason, DynamicPort, FlowKind, InputPort,
-    OutputPort, SupportPort, TerminationReason, WaitCondition,
+    ActionKind, ActionOutput, ActionResult, BranchKey, BreakReason, DynamicPort, FlowKind,
+    InputPort, OutputPort, PortKey, SupportPort, TerminationReason, WaitCondition,
 };
 use nebula_core::id::ExecutionId;
 
@@ -49,7 +49,7 @@ fn flow_kind_serialization_contract() {
 #[test]
 fn support_port_serialization_contract() {
     let port = InputPort::Support(SupportPort {
-        key: "model".to_string(),
+        key: PortKey::new("model").expect("'model' is a valid port key"),
         name: "AI Model".to_string(),
         description: "Primary model input".to_string(),
         required: true,
@@ -68,7 +68,7 @@ fn support_port_serialization_contract() {
 #[test]
 fn dynamic_port_serialization_contract() {
     let port = OutputPort::Dynamic(DynamicPort {
-        key: "rule".to_string(),
+        key: PortKey::new("rule").expect("'rule' is a valid port key"),
         source_field: "rules".to_string(),
         label_field: Some("label".to_string()),
         include_fallback: true,
@@ -114,31 +114,31 @@ fn action_result_serialization_contract_all_variants_roundtrip() {
 
     let mut alternatives = HashMap::new();
     alternatives.insert(
-        "true".to_string(),
+        BranchKey::new("true").expect("'true' is a valid branch key"),
         ActionOutput::Value(serde_json::json!({"v": 1})),
     );
     alternatives.insert(
-        "false".to_string(),
+        BranchKey::new("false").expect("'false' is a valid branch key"),
         ActionOutput::Value(serde_json::json!({"v": 0})),
     );
     assert_result_roundtrip(ActionResult::Branch {
-        selected: "true".to_string(),
+        selected: BranchKey::new("true").expect("'true' is a valid branch key"),
         output: ActionOutput::Value(serde_json::json!({"selected": "true"})),
         alternatives,
     });
 
     assert_result_roundtrip(ActionResult::Route {
-        port: "main".to_string(),
+        port: PortKey::new("main").expect("'main' is a valid port key"),
         data: ActionOutput::Value(serde_json::json!({"routed": true})),
     });
 
     let mut outputs = HashMap::new();
     outputs.insert(
-        "main".to_string(),
+        PortKey::new("main").expect("'main' is a valid port key"),
         ActionOutput::Value(serde_json::json!({"main": true})),
     );
     outputs.insert(
-        "audit".to_string(),
+        PortKey::new("audit").expect("'audit' is a valid port key"),
         ActionOutput::Value(serde_json::json!({"audit": "ok"})),
     );
     assert_result_roundtrip(ActionResult::MultiOutput {

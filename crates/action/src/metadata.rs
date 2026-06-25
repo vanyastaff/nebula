@@ -486,6 +486,7 @@ mod tests {
     use nebula_metadata::BaseCompatError;
 
     use super::*;
+    use crate::port_key;
 
     #[test]
     fn metadata_builder() {
@@ -703,8 +704,8 @@ mod tests {
     fn with_inputs_builder() {
         let meta = ActionMetadata::new(action_key!("ai.agent"), "AI Agent", "Run agent")
             .with_inputs(vec![
-                InputPort::flow("in"),
-                InputPort::support("model", "AI Model", "Language model"),
+                InputPort::flow(port_key!("in")),
+                InputPort::support(port_key!("model"), "AI Model", "Language model"),
             ]);
         assert_eq!(meta.inputs.len(), 2);
         assert!(meta.inputs[0].is_flow());
@@ -717,7 +718,10 @@ mod tests {
         use crate::port::FlowKind;
 
         let meta = ActionMetadata::new(action_key!("http.request"), "HTTP Request", "Make calls")
-            .with_outputs(vec![OutputPort::flow("out"), OutputPort::error("error")]);
+            .with_outputs(vec![
+                OutputPort::flow(port_key!("out")),
+                OutputPort::error(port_key!("error")),
+            ]);
         assert_eq!(meta.outputs.len(), 2);
         if let OutputPort::Flow { kind, .. } = &meta.outputs[0] {
             assert_eq!(*kind, FlowKind::Main);
@@ -730,8 +734,8 @@ mod tests {
     #[test]
     fn with_dynamic_output() {
         let meta = ActionMetadata::new(action_key!("flow.switch"), "Switch", "Route by conditions")
-            .with_inputs(vec![InputPort::flow("in")])
-            .with_outputs(vec![OutputPort::dynamic("rule", "rules")]);
+            .with_inputs(vec![InputPort::flow(port_key!("in"))])
+            .with_outputs(vec![OutputPort::dynamic(port_key!("rule"), "rules")]);
         assert_eq!(meta.outputs.len(), 1);
         assert!(meta.outputs[0].is_dynamic());
         assert_eq!(meta.outputs[0].key(), "rule");
@@ -743,9 +747,9 @@ mod tests {
 
         let meta = ActionMetadata::new(action_key!("ai.agent"), "AI Agent", "Run agent")
             .with_inputs(vec![
-                InputPort::flow("in"),
+                InputPort::flow(port_key!("in")),
                 InputPort::Support(SupportPort {
-                    key: "tools".into(),
+                    key: port_key!("tools"),
                     name: "Tools".into(),
                     description: "Agent tools".into(),
                     required: false,
@@ -768,8 +772,11 @@ mod tests {
     fn builder_chaining_with_ports() {
         let meta = ActionMetadata::new(action_key!("test"), "Test", "desc")
             .with_version(2, 0)
-            .with_inputs(vec![InputPort::flow("in")])
-            .with_outputs(vec![OutputPort::flow("out"), OutputPort::error("error")]);
+            .with_inputs(vec![InputPort::flow(port_key!("in"))])
+            .with_outputs(vec![
+                OutputPort::flow(port_key!("out")),
+                OutputPort::error(port_key!("error")),
+            ]);
 
         assert_eq!(meta.base.version, Version::new(2, 0, 0));
         assert_eq!(meta.inputs.len(), 1);
@@ -780,10 +787,13 @@ mod tests {
     fn ports_change_requires_major_bump() {
         let prev = ActionMetadata::new(action_key!("http.request"), "HTTP Request", "desc")
             .with_version(1, 0)
-            .with_outputs(vec![OutputPort::flow("out")]);
+            .with_outputs(vec![OutputPort::flow(port_key!("out"))]);
         let next = ActionMetadata::new(action_key!("http.request"), "HTTP Request", "desc")
             .with_version(1, 1)
-            .with_outputs(vec![OutputPort::flow("out"), OutputPort::error("error")]);
+            .with_outputs(vec![
+                OutputPort::flow(port_key!("out")),
+                OutputPort::error(port_key!("error")),
+            ]);
 
         let err = next.validate_compatibility(&prev).unwrap_err();
         assert_eq!(err, MetadataCompatibilityError::PortsChangeWithoutMajorBump);
@@ -815,10 +825,13 @@ mod tests {
     fn schema_change_with_major_bump_is_valid() {
         let prev = ActionMetadata::new(action_key!("http.request"), "HTTP Request", "desc")
             .with_version(1, 0)
-            .with_outputs(vec![OutputPort::flow("out")]);
+            .with_outputs(vec![OutputPort::flow(port_key!("out"))]);
         let next = ActionMetadata::new(action_key!("http.request"), "HTTP Request", "desc")
             .with_version(2, 0)
-            .with_outputs(vec![OutputPort::flow("out"), OutputPort::error("error")]);
+            .with_outputs(vec![
+                OutputPort::flow(port_key!("out")),
+                OutputPort::error(port_key!("error")),
+            ]);
 
         assert!(next.validate_compatibility(&prev).is_ok());
     }

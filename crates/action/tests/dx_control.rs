@@ -19,8 +19,9 @@ use std::sync::{Arc, OnceLock};
 
 use nebula_action::{
     Action, ActionError, ActionKind, ActionMetadata, ActionOutput, ActionResult,
-    ActionRuntimeContext, ControlAction, ControlActionAdapter, ControlInput, ControlOutcome,
-    OutputPort, StatelessHandler, TerminationReason, ValidationReason, testing::TestContextBuilder,
+    ActionRuntimeContext, BranchKey, ControlAction, ControlActionAdapter, ControlInput,
+    ControlOutcome, OutputPort, StatelessHandler, TerminationReason, ValidationReason, port_key,
+    testing::TestContextBuilder,
 };
 use nebula_core::{Dependencies, action_key};
 use nebula_schema::{FieldCollector, HasSchema, Schema, StringBuilder, ValidSchema, field_key};
@@ -57,8 +58,10 @@ impl Action for DemoIf {
     type Output = serde_json::Value;
 
     fn metadata() -> ActionMetadata {
-        ActionMetadata::new(action_key!("demo.if"), "If", "Binary branch")
-            .with_outputs(vec![OutputPort::flow("true"), OutputPort::flow("false")])
+        ActionMetadata::new(action_key!("demo.if"), "If", "Binary branch").with_outputs(vec![
+            OutputPort::flow(port_key!("true")),
+            OutputPort::flow(port_key!("false")),
+        ])
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -74,9 +77,14 @@ impl ControlAction for DemoIf {
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ControlOutcome, ActionError> {
         let condition = input.get_bool("/condition")?;
-        let selected = if condition { "true" } else { "false" };
+        let selected = if condition {
+            BranchKey::new("true")
+        } else {
+            BranchKey::new("false")
+        }
+        .expect("'true'/'false' are valid branch key literals");
         Ok(ControlOutcome::Branch {
-            selected: selected.into(),
+            selected,
             output: input.into_value(),
         })
     }
@@ -94,7 +102,7 @@ async fn demo_if_routes_true() {
         ActionResult::Branch {
             selected, output, ..
         } => {
-            assert_eq!(selected, "true");
+            assert_eq!(selected.as_str(), "true");
             assert_eq!(
                 output.as_value(),
                 Some(&serde_json::json!({ "condition": true, "value": 42 }))
@@ -109,7 +117,7 @@ async fn demo_if_routes_false() {
     let adapter = ControlActionAdapter::new(DemoIf);
     let result = run(&adapter, serde_json::json!({ "condition": false })).await;
     match result {
-        ActionResult::Branch { selected, .. } => assert_eq!(selected, "false"),
+        ActionResult::Branch { selected, .. } => assert_eq!(selected.as_str(), "false"),
         _ => panic!("expected Branch"),
     }
 }
@@ -159,10 +167,10 @@ impl Action for DemoSwitch {
             "N-way branch by status field",
         )
         .with_outputs(vec![
-            OutputPort::flow("active"),
-            OutputPort::flow("pending"),
-            OutputPort::flow("archived"),
-            OutputPort::flow("default"),
+            OutputPort::flow(port_key!("active")),
+            OutputPort::flow(port_key!("pending")),
+            OutputPort::flow(port_key!("archived")),
+            OutputPort::flow(port_key!("default")),
         ])
     }
 
@@ -179,12 +187,14 @@ impl ControlAction for DemoSwitch {
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ControlOutcome, ActionError> {
         let status = input.get_str("/status")?;
-        let selected = match status {
+        let branch_name = match status {
             "active" | "pending" | "archived" => status,
             _ => "default",
         };
+        let selected =
+            BranchKey::new(branch_name).expect("switch branch names are valid key literals");
         Ok(ControlOutcome::Branch {
-            selected: selected.into(),
+            selected,
             output: input.into_value(),
         })
     }
@@ -195,7 +205,7 @@ async fn demo_switch_routes_known_case() {
     let adapter = ControlActionAdapter::new(DemoSwitch);
     let result = run(&adapter, serde_json::json!({ "status": "pending" })).await;
     match result {
-        ActionResult::Branch { selected, .. } => assert_eq!(selected, "pending"),
+        ActionResult::Branch { selected, .. } => assert_eq!(selected.as_str(), "pending"),
         _ => panic!("expected Branch"),
     }
 }
@@ -205,7 +215,7 @@ async fn demo_switch_falls_back_to_default() {
     let adapter = ControlActionAdapter::new(DemoSwitch);
     let result = run(&adapter, serde_json::json!({ "status": "unknown" })).await;
     match result {
-        ActionResult::Branch { selected, .. } => assert_eq!(selected, "default"),
+        ActionResult::Branch { selected, .. } => assert_eq!(selected.as_str(), "default"),
         _ => panic!("expected Branch"),
     }
 }
@@ -249,9 +259,9 @@ impl Action for DemoRouter {
     fn metadata() -> ActionMetadata {
         ActionMetadata::new(action_key!("demo.router"), "Router", "Multi-rule routing")
             .with_outputs(vec![
-                OutputPort::flow("high"),
-                OutputPort::flow("medium"),
-                OutputPort::flow("low"),
+                OutputPort::flow(port_key!("high")),
+                OutputPort::flow(port_key!("medium")),
+                OutputPort::flow(port_key!("low")),
             ])
     }
 
@@ -275,8 +285,10 @@ impl ControlAction for DemoRouter {
             }),
             (RouterMode::FirstMatch, _) => {
                 let value = input.into_value();
+                let selected =
+                    BranchKey::new(matches[0]).expect("router branch names are valid key literals");
                 Ok(ControlOutcome::Branch {
-                    selected: matches[0].into(),
+                    selected,
                     output: value,
                 })
             },
@@ -284,7 +296,11 @@ impl ControlAction for DemoRouter {
                 let value = input.into_value();
                 let ports: std::collections::HashMap<_, _> = matches
                     .iter()
-                    .map(|port| ((*port).to_string(), value.clone()))
+                    .map(|port_name| {
+                        let key = nebula_action::PortKey::new(*port_name)
+                            .expect("router port names are valid key literals");
+                        (key, value.clone())
+                    })
                     .collect();
                 Ok(ControlOutcome::Route { ports })
             },
@@ -297,7 +313,7 @@ async fn demo_router_first_match_picks_first_rule() {
     let adapter = ControlActionAdapter::new(DemoRouter::new(RouterMode::FirstMatch));
     let result = run(&adapter, serde_json::json!({ "priority": 150 })).await;
     match result {
-        ActionResult::Branch { selected, .. } => assert_eq!(selected, "high"),
+        ActionResult::Branch { selected, .. } => assert_eq!(selected.as_str(), "high"),
         _ => panic!("expected Branch"),
     }
 }
@@ -336,7 +352,7 @@ impl Action for NeverMatchRouter {
             "NeverMatchRouter",
             "Drops every input — used to test Drop code path",
         )
-        .with_outputs(vec![OutputPort::flow("out")])
+        .with_outputs(vec![OutputPort::flow(port_key!("out"))])
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -381,7 +397,7 @@ impl Action for DemoFilter {
             "Filter",
             "Drop items below threshold",
         )
-        .with_outputs(vec![OutputPort::flow("out")])
+        .with_outputs(vec![OutputPort::flow(port_key!("out"))])
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -794,7 +810,10 @@ impl Action for DemoTypedBranch {
             "TypedBranch",
             "Branch with typed output",
         )
-        .with_outputs(vec![OutputPort::flow("true"), OutputPort::flow("false")])
+        .with_outputs(vec![
+            OutputPort::flow(port_key!("true")),
+            OutputPort::flow(port_key!("false")),
+        ])
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -809,15 +828,17 @@ impl ControlAction for DemoTypedBranch {
         input: ControlInput,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ControlOutcome, ActionError> {
-        let selected = if input.get_bool("/condition").unwrap_or(false) {
+        let branch_name = if input.get_bool("/condition").unwrap_or(false) {
             "true"
         } else {
             "false"
         };
+        let selected =
+            BranchKey::new(branch_name).expect("'true'/'false' are valid branch key literals");
         Ok(ControlOutcome::Branch {
-            selected: selected.into(),
+            selected,
             output: serde_json::to_value(TypedBranchOutput {
-                selected: selected.into(),
+                selected: branch_name.into(),
             })
             .unwrap_or_default(),
         })

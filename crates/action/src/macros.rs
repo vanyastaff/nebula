@@ -52,9 +52,11 @@ macro_rules! assert_branch {
         match &$result {
             Ok($crate::ActionResult::Branch { selected, .. }) => {
                 assert_eq!(
-                    selected, $key,
+                    selected.as_str(),
+                    $key,
                     "expected branch key '{}', got '{}'",
-                    $key, selected
+                    $key,
+                    selected
                 );
             },
             other => panic!("expected ActionResult::Branch, got {:?}", other),

@@ -80,9 +80,10 @@
 use std::sync::OnceLock;
 
 use nebula_action::{
-    ActionContext, ActionError, ActionMetadata,
+    ActionContext, ActionError, ActionMetadata, branch_key,
     control::{ControlAction, ControlInput, ControlOutcome},
     port::{OutputPort, default_input_ports},
+    port_key,
 };
 use nebula_core::action_key;
 use nebula_schema::HasSchema;
@@ -169,7 +170,10 @@ impl nebula_action::action::Action for CoreIf {
             "Routes execution to 'true' or 'false' port based on a field condition",
         )
         .with_inputs(default_input_ports())
-        .with_outputs(vec![OutputPort::flow("true"), OutputPort::flow("false")])
+        .with_outputs(vec![
+            OutputPort::flow(port_key!("true")),
+            OutputPort::flow(port_key!("false")),
+        ])
     }
 
     fn dependencies() -> &'static nebula_action::Dependencies {
@@ -215,10 +219,14 @@ impl ControlAction for CoreIf {
             ActionError::fatal(format!("core.if: {err}"))
         })?;
         let branch_taken = evaluate_condition(&data_object, &condition)?;
-        let selected_port = if branch_taken { "true" } else { "false" }.to_string();
+        let selected = if branch_taken {
+            branch_key!("true")
+        } else {
+            branch_key!("false")
+        };
 
         Ok(ControlOutcome::Branch {
-            selected: selected_port,
+            selected,
             output: data_object,
         })
     }
@@ -254,7 +262,8 @@ mod tests {
         match outcome {
             ControlOutcome::Branch { selected, .. } => {
                 assert_eq!(
-                    selected, expected_port,
+                    selected.as_str(),
+                    expected_port,
                     "expected port `{expected_port}`, got `{selected}`"
                 );
             },

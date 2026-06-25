@@ -104,7 +104,7 @@ pub fn validate_action_package(
             && (port.name.trim().is_empty() || port.description.trim().is_empty())
         {
             errors.push(ActionPackageValidationError::InvalidSupportPort {
-                key: port.key.clone(),
+                key: port.key.to_string(),
             });
         }
     }
@@ -119,7 +119,7 @@ pub fn validate_action_package(
             && port.source_field.trim().is_empty()
         {
             errors.push(ActionPackageValidationError::InvalidDynamicPort {
-                key: port.key.clone(),
+                key: port.key.to_string(),
             });
         }
     }
@@ -136,7 +136,10 @@ mod tests {
     use nebula_core::action_key;
 
     use super::*;
-    use crate::port::{DynamicPort, SupportPort};
+    use crate::{
+        port::{DynamicPort, SupportPort},
+        port_key,
+    };
 
     fn valid_metadata() -> ActionMetadata {
         ActionMetadata::new(action_key!("test.action"), "Test", "desc")
@@ -151,8 +154,14 @@ mod tests {
     #[test]
     fn duplicate_ports_fail_validation() {
         let meta = ActionMetadata::new(action_key!("test.action"), "Test", "desc")
-            .with_inputs(vec![InputPort::flow("in"), InputPort::flow("in")])
-            .with_outputs(vec![OutputPort::flow("out"), OutputPort::error("out")]);
+            .with_inputs(vec![
+                InputPort::flow(port_key!("in")),
+                InputPort::flow(port_key!("in")),
+            ])
+            .with_outputs(vec![
+                OutputPort::flow(port_key!("out")),
+                OutputPort::error(port_key!("out")),
+            ]);
 
         let err = validate_action_package(&meta).unwrap_err();
         assert!(err.errors().iter().any(|e| matches!(
@@ -169,7 +178,7 @@ mod tests {
     fn invalid_support_and_dynamic_ports_fail_validation() {
         let meta = ActionMetadata::new(action_key!("test.action"), "Test", "desc")
             .with_inputs(vec![InputPort::Support(SupportPort {
-                key: "tools".into(),
+                key: port_key!("tools"),
                 name: String::new(),
                 description: String::new(),
                 required: false,
@@ -177,7 +186,7 @@ mod tests {
                 filter: Default::default(),
             })])
             .with_outputs(vec![OutputPort::Dynamic(DynamicPort {
-                key: "rule".into(),
+                key: port_key!("rule"),
                 source_field: String::new(),
                 label_field: None,
                 include_fallback: false,

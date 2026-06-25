@@ -1705,7 +1705,7 @@ mod tests {
     async fn multi_output_fanout_port_respects_reject_limit() {
         use std::collections::HashMap;
 
-        use nebula_action::{PortKey, result::ActionResult as AR};
+        use nebula_action::{PortKey, port_key, result::ActionResult as AR};
 
         struct MultiOutAction;
         impl Action for MultiOutAction {
@@ -1735,7 +1735,7 @@ mod tests {
                 // a byte limit of 16.
                 let mut outputs: HashMap<PortKey, ActionOutput<serde_json::Value>> = HashMap::new();
                 outputs.insert(
-                    PortKey::from("big_port"),
+                    port_key!("big_port"),
                     ActionOutput::Value(serde_json::json!(
                         "this payload is definitely larger than the 16 byte limit"
                     )),
@@ -1814,13 +1814,14 @@ mod tests {
             ) -> Result<AR<<Self as Action>::Output>, ActionError> {
                 let mut alternatives = HashMap::new();
                 alternatives.insert(
-                    "else".to_string(),
+                    nebula_action::BranchKey::new("else").expect("'else' is a valid branch key"),
                     ActionOutput::Value(serde_json::json!(
                         "alternative branch holds way more than 16 bytes of data"
                     )),
                 );
                 Ok(AR::Branch {
-                    selected: "then".to_string(),
+                    selected: nebula_action::BranchKey::new("then")
+                        .expect("'then' is a valid branch key"),
                     output: ActionOutput::Value(serde_json::json!("ok")),
                     alternatives,
                 })
