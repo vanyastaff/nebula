@@ -22,6 +22,7 @@
 use std::sync::Arc;
 
 use nebula_credential::provider::ExternalProvider;
+use nebula_credential::runtime::LeaseLifecycleConfig;
 use nebula_credential::{
     ApiKeyCredential, BasicAuthCredential, CredentialStore, ErasedPendingStore, OAuth2Credential,
     SigningKeyCredential,
@@ -31,7 +32,6 @@ use nebula_credential::{
     NoopObserver, register_interactive_ops, register_refreshable_ops, register_revocable_ops,
     register_runtime_ops, register_testable_ops,
 };
-use nebula_engine::credential::LeaseLifecycleConfig;
 
 use super::credential_builder::CredentialServiceBuilder;
 use nebula_storage::credential::{

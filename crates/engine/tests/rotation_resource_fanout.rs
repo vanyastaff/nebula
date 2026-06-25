@@ -4,9 +4,9 @@
 //! `nebula_resource::Manager` slot ports per resolved registry row, with
 //! per-resource timeout isolation.
 //!
-//! Exercises the public engine surface
-//! (`nebula_engine::credential::rotation::{ResourceFanoutIndex,
-//! RotationOutcome}`) against a real `nebula_resource::Manager` holding
+//! Exercises the public resource fan-out surface
+//! (`nebula_resource::{ResourceFanoutIndex, RotationOutcome}`) against a real
+//! `nebula_resource::Manager` holding
 //! multiple resolved-credential registrations under one `(key, scope)`. The
 //! invariant under test: one slow/wedged resource MUST NOT abort or fail its
 //! siblings — every row's outcome is independent.
@@ -19,13 +19,13 @@ use std::time::Duration;
 
 use nebula_core::{OrgId, ResourceKey, ScopeLevel, resource_key, scope::Scope};
 use nebula_credential::CredentialId;
-use nebula_engine::credential::rotation::{ResourceFanoutIndex, RotationOutcome};
 use nebula_resource::Resident;
 use nebula_resource::{
     AcquireOptions, Manager, Provider, RegistrationSpec, ResidentConfig, ResourceConfig,
     ResourceContext, SlotIdentity, error::Error as ResourceError, resource::ResourceMetadata,
     topology::resident::ResidentProvider,
 };
+use nebula_resource::{ResourceFanoutIndex, RotationOutcome};
 use tokio_util::sync::CancellationToken;
 
 #[derive(Debug)]

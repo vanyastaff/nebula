@@ -31,7 +31,6 @@ use std::time::Duration;
 
 use nebula_core::{OrgId, ResourceKey, ScopeLevel, resource_key, scope::Scope};
 use nebula_credential::{CredentialEvent, CredentialGuard, CredentialId, LeaseEvent};
-use nebula_engine::credential::rotation::{ResourceFanoutDriver, ResourceFanoutIndex};
 use nebula_eventbus::EventBus;
 use nebula_resource::Resident;
 use nebula_resource::{
@@ -39,6 +38,7 @@ use nebula_resource::{
     ResourceContext, SlotCell, SlotIdentity, error::Error as ResourceError,
     resource::ResourceMetadata, topology::resident::ResidentProvider,
 };
+use nebula_resource::{ResourceFanoutDriver, ResourceFanoutIndex};
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::fmt::MakeWriter;
 use zeroize::Zeroize;
