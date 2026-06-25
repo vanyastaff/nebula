@@ -6615,22 +6615,31 @@ fn drain_pending_to_cancelled(
     execution_id: ExecutionId,
 ) {
     while let Some(Reverse((_, parked))) = retry_heap.pop() {
-        let _ = exec_state.transition_node(parked.clone(), NodeState::Cancelled);
+        let cancelled = exec_state.transition_node(parked.clone(), NodeState::Cancelled);
         if let Some(ns) = exec_state.node_states.get_mut(&parked) {
             ns.next_attempt_at = None;
         }
-        tracing::debug!(
-            target = "engine::retry",
-            %execution_id,
-            node_key = %parked,
-            "WaitingRetry → Cancelled (cancel observed during backoff)"
-        );
+        match cancelled {
+            Ok(()) => tracing::debug!(
+                target = "engine::retry",
+                %execution_id,
+                node_key = %parked,
+                "WaitingRetry → Cancelled (cancel observed during backoff)"
+            ),
+            Err(e) => tracing::warn!(
+                target = "engine::retry",
+                %execution_id,
+                node_key = %parked,
+                error = %e,
+                "WaitingRetry → Cancelled rejected during cancel drain"
+            ),
+        }
     }
     // Drain parked wait nodes — `Waiting → Cancelled` lets a cancelled
     // execution tear down nodes that were parked for an external
     // condition without observing a phantom `Completed` step.
     while let Some(Reverse((_, waiting))) = wait_heap.pop() {
-        let _ = exec_state.transition_node(waiting.clone(), NodeState::Cancelled);
+        let cancelled = exec_state.transition_node(waiting.clone(), NodeState::Cancelled);
         if let Some(ns) = exec_state.node_states.get_mut(&waiting) {
             // Clear both timer fields together: a signal+timeout wait carries
             // `wait_wake = Some(..)` as well as `next_attempt_at`, and the
@@ -6640,12 +6649,21 @@ fn drain_pending_to_cancelled(
             // timer, not a retry timer.
             ns.clear_wait_timer();
         }
-        tracing::debug!(
-            target = "engine::wait",
-            %execution_id,
-            node_key = %waiting,
-            "Waiting → Cancelled (cancel observed while parked)"
-        );
+        match cancelled {
+            Ok(()) => tracing::debug!(
+                target = "engine::wait",
+                %execution_id,
+                node_key = %waiting,
+                "Waiting → Cancelled (cancel observed while parked)"
+            ),
+            Err(e) => tracing::warn!(
+                target = "engine::wait",
+                %execution_id,
+                node_key = %waiting,
+                error = %e,
+                "Waiting → Cancelled rejected during cancel drain"
+            ),
+        }
     }
     // Signal-driven waits (`next_attempt_at == None`) AND their blocked
     // downstream `Pending` nodes are intentionally NOT represented in the timer
@@ -6662,28 +6680,45 @@ fn drain_pending_to_cancelled(
         .map(|(id, _)| id.clone())
         .collect();
     for node_key in stranded_non_terminal {
-        let _ = exec_state.transition_node(node_key.clone(), NodeState::Cancelled);
+        let cancelled = exec_state.transition_node(node_key.clone(), NodeState::Cancelled);
         if let Some(ns) = exec_state.node_states.get_mut(&node_key) {
             ns.next_attempt_at = None;
         }
-        tracing::debug!(
-            target = "engine::wait",
-            %execution_id,
-            %node_key,
-            "stranded non-terminal node → Cancelled (cancel teardown; not on heap/queue)"
-        );
+        match cancelled {
+            Ok(()) => tracing::debug!(
+                target = "engine::wait",
+                %execution_id,
+                %node_key,
+                "stranded non-terminal node → Cancelled (cancel teardown; not on heap/queue)"
+            ),
+            Err(e) => tracing::warn!(
+                target = "engine::wait",
+                %execution_id,
+                %node_key,
+                error = %e,
+                "stranded non-terminal node → Cancelled rejected during cancel drain"
+            ),
+        }
     }
     while let Some(queued) = ready_queue.pop_front() {
         // `Ready → Cancelled` is in the canonical transition table.
         // Pending nodes that landed here straight from the seed
         // (no Phase 0 promotion) also accept `Pending → Cancelled`.
-        let _ = exec_state.transition_node(queued.clone(), NodeState::Cancelled);
-        tracing::debug!(
-            target = "engine::retry",
-            %execution_id,
-            node_key = %queued,
-            "ready_queue node cancelled before dispatch"
-        );
+        match exec_state.transition_node(queued.clone(), NodeState::Cancelled) {
+            Ok(()) => tracing::debug!(
+                target = "engine::retry",
+                %execution_id,
+                node_key = %queued,
+                "ready_queue node cancelled before dispatch"
+            ),
+            Err(e) => tracing::warn!(
+                target = "engine::retry",
+                %execution_id,
+                node_key = %queued,
+                error = %e,
+                "ready_queue node → Cancelled rejected before dispatch"
+            ),
+        }
     }
 }
 
@@ -7182,10 +7217,27 @@ fn arm_signal_waits_under_lease(
 }
 
 /// Mark a node as failed in the execution state.
+///
+/// The error message is attached **only if** the node actually transitioned to
+/// `Failed`. A rejected transition (the node was already terminal — e.g.
+/// `Completed` — or the key is unknown) must NOT stamp a failure message onto a
+/// node that did not fail; the rejection is surfaced via `WARN` rather than
+/// silently dropped.
 fn mark_node_failed(exec_state: &mut ExecutionState, node_key: NodeKey, err: &EngineError) {
-    let _ = exec_state.transition_node(node_key.clone(), NodeState::Failed);
-    if let Some(ns) = exec_state.node_states.get_mut(&node_key) {
-        ns.error_message = Some(err.to_string());
+    if exec_state
+        .transition_node(node_key.clone(), NodeState::Failed)
+        .is_ok()
+    {
+        if let Some(ns) = exec_state.node_states.get_mut(&node_key) {
+            ns.error_message = Some(err.to_string());
+        }
+    } else {
+        tracing::warn!(
+            target = "engine",
+            node_key = %node_key,
+            error = %err,
+            "mark_node_failed: transition to Failed rejected; error_message not written"
+        );
     }
 }
 
@@ -13012,6 +13064,40 @@ mod tests {
             NodeState::Cancelled,
             "a signal Waiting{{None}} node (not on wait_heap) must be cancelled by the \
              teardown scan"
+        );
+    }
+
+    #[test]
+    fn mark_node_failed_does_not_stamp_error_on_a_non_failed_node() {
+        use nebula_core::id::WorkflowId;
+        use nebula_core::node_key;
+
+        // A node already terminal in a NON-Failed state (Completed) must not
+        // receive a failure error_message: the transition to Failed is rejected,
+        // so the message write is skipped. Red-on-revert: the prior unconditional
+        // write attached the failure string to the Completed node.
+        let exec_id = ExecutionId::new();
+        let wf_id = WorkflowId::new();
+        let node = node_key!("done");
+
+        let mut exec_state = ExecutionState::new(exec_id, wf_id, std::slice::from_ref(&node));
+        exec_state.node_states.get_mut(&node).unwrap().state = NodeState::Completed;
+
+        mark_node_failed(
+            &mut exec_state,
+            node.clone(),
+            &EngineError::PlanningFailed("boom".into()),
+        );
+
+        let ns = exec_state.node_states.get(&node).unwrap();
+        assert_eq!(
+            ns.state,
+            NodeState::Completed,
+            "the node stays Completed — the Failed transition is rejected for a terminal node"
+        );
+        assert!(
+            ns.error_message.is_none(),
+            "no failure message is stamped onto a node that did not transition to Failed"
         );
     }
 
