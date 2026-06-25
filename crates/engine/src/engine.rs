@@ -363,7 +363,7 @@ pub struct WorkflowEngine {
     running: Arc<DashMap<ExecutionId, RunningEntry>>,
     /// Optional handle for the background credential-refresh reclaim
     /// sweep. When set, dropping the engine aborts the spawned task —
-    /// see [`crate::credential::ReclaimSweepHandle`] (sub-spec
+    /// see [`nebula_credential::runtime::ReclaimSweepHandle`] (sub-spec
     /// , ).
     ///
     /// Wired by the composition root via
@@ -371,7 +371,7 @@ pub struct WorkflowEngine {
     /// durable [`nebula_storage::credential::RefreshClaimRepo`] (Postgres
     /// or SQLite). Single-replica desktop mode without sentinel-event
     /// recording leaves this `None`.
-    credential_reclaim_sweep: Option<crate::credential::ReclaimSweepHandle>,
+    credential_reclaim_sweep: Option<nebula_credential::runtime::ReclaimSweepHandle>,
 }
 
 /// Monotonic per-registration identifier used to fence out-of-order drops
@@ -1134,7 +1134,7 @@ impl WorkflowEngine {
     /// use std::sync::Arc;
     /// use nebula_engine::WorkflowEngine;
     /// use nebula_credential::CredentialAccessError;
-    /// use nebula_engine::credential::CredentialResolver;
+    /// use nebula_credential::runtime::CredentialResolver;
     /// use nebula_storage::credential::SqliteCredentialStore;
     ///
     /// let store = Arc::new(SqliteCredentialStore::connect("sqlite://creds.db").await?);
@@ -1218,18 +1218,18 @@ impl WorkflowEngine {
     /// Per sub-spec + the engine spawns a periodic task that
     /// calls `RefreshClaimRepo::reclaim_stuck`, routes
     /// `RefreshInFlight`-flagged stale claims through
-    /// [`crate::credential::SentinelTrigger`], and publishes
+    /// [`nebula_credential::runtime::SentinelTrigger`], and publishes
     /// `CredentialEvent::ReauthRequired` once the rolling-window
     /// threshold is exceeded.
     ///
     /// The composition root constructs the handle via
-    /// [`crate::credential::ReclaimSweepHandle::spawn`] and
+    /// [`nebula_credential::runtime::ReclaimSweepHandle::spawn`] and
     /// passes it here. Storing the handle on the engine ensures the
     /// task is aborted when the engine drops (clean shutdown).
     #[must_use = "builder methods must be chained or built"]
     pub fn with_credential_reclaim_sweep(
         mut self,
-        handle: crate::credential::ReclaimSweepHandle,
+        handle: nebula_credential::runtime::ReclaimSweepHandle,
     ) -> Self {
         self.credential_reclaim_sweep = Some(handle);
         self

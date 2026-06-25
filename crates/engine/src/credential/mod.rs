@@ -1,33 +1,16 @@
-//! Engine-owned credential orchestration primitives (**Plane B**).
+//! Engine-owned credential composition helper (**Plane B**).
 //!
-//! This module hosts runtime credential resolution used by the execution
-//! engine for **integration credentials** — workflow access to external
-//! systems per [`Credential`](nebula_credential::Credential). It does not
-//! implement platform/operator authentication (**Plane A**).
+//! Runtime credential resolution for **integration credentials** — workflow
+//! access to external systems per [`Credential`](nebula_credential::Credential)
+//! — lives in `nebula_credential::runtime` (ADR-0092); callers import those
+//! types from their canonical home. This module retains only
+//! [`default_in_memory_coordinator`], which constructs `InMemoryRefreshClaimRepo`
+//! from `nebula-storage` — a dependency credential consumers may not link — and
+//! therefore cannot fold into the credential crate.
 //!
-//! `CredentialResolver` and `ResolveError` are re-exported from
-//! `nebula_credential::runtime` (ADR-0092). `default_in_memory_coordinator`
-//! remains here because it constructs `InMemoryRefreshClaimRepo` from
-//! `nebula-storage`, which may not be linked by credential consumers.
+//! It does not implement platform/operator authentication (**Plane A**).
 
-#[cfg(feature = "rotation")]
-pub mod rotation;
-
-// `dispatchers` / `executor` / `scoped_accessor` / `lease` / `refresh` /
-// `resolver` were relocated to `nebula_credential::runtime` (ADR-0092);
-// re-exported here so `nebula_engine::credential::*` consumers keep resolving.
-pub use nebula_credential::runtime::{
-    ConfigError, CredentialResolver, ExecutorError, LeaseLifecycle, LeaseLifecycleConfig,
-    LeaseLifecycleError, LeaseToken, ReclaimSweepHandle, RefreshAttempt, RefreshConfigError,
-    RefreshCoordConfig, RefreshCoordMetrics, RefreshCoordinator, RefreshError, RefreshTransport,
-    RefreshTransportError, RenewalPolicy, ResolveError, ResolveResponse, ScopedCredentialAccessor,
-    SentinelDecision, SentinelThresholdConfig, SentinelTrigger, TokenPostRequest,
-    TokenPostResponse, dispatch_release, dispatch_revoke, dispatch_test, execute_continue,
-    execute_resolve,
-};
-// Re-export TestResult for the dispatchers module to reference, and to give
-// downstream callers a single import surface for the capability dispatch path.
-pub use nebula_credential::resolve::TestResult;
+use nebula_credential::runtime::{ConfigError, RefreshCoordConfig, RefreshCoordinator};
 
 /// Build a default in-memory [`RefreshCoordinator`] backed by
 /// `InMemoryRefreshClaimRepo` for tests and single-replica desktop mode.
@@ -43,8 +26,7 @@ pub use nebula_credential::resolve::TestResult;
 pub fn default_in_memory_coordinator() -> Result<RefreshCoordinator, ConfigError> {
     use std::sync::Arc;
 
-    use nebula_storage_port::store::RefreshClaimStore;
-    use nebula_storage_port::store::ReplicaId;
+    use nebula_storage_port::store::{RefreshClaimStore, ReplicaId};
 
     let repo: Arc<dyn RefreshClaimStore> =
         Arc::new(nebula_storage::credential::InMemoryRefreshClaimRepo::new());

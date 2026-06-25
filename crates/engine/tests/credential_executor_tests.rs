@@ -21,13 +21,13 @@ async fn execute_resolve_static_credential_returns_complete() {
         .expect("test-only known-good key");
 
     let result =
-        nebula_engine::credential::execute_resolve::<ApiKeyCredential, _>(&values, &ctx, &store)
+        nebula_credential::runtime::execute_resolve::<ApiKeyCredential, _>(&values, &ctx, &store)
             .await;
 
     assert!(
         matches!(
             result,
-            Ok(nebula_engine::credential::ResolveResponse::Complete(_))
+            Ok(nebula_credential::runtime::ResolveResponse::Complete(_))
         ),
         "expected Complete, got: {result:?}"
     );
@@ -45,7 +45,7 @@ async fn execute_continue_returns_pending_store_error_for_missing_token() {
     let bogus_token = nebula_credential::PendingToken::generate();
     let input = nebula_credential::resolve::UserInput::Poll;
 
-    let result = nebula_engine::credential::execute_continue::<OAuth2Credential, _>(
+    let result = nebula_credential::runtime::execute_continue::<OAuth2Credential, _>(
         &bogus_token,
         &input,
         &ctx,
@@ -56,7 +56,7 @@ async fn execute_continue_returns_pending_store_error_for_missing_token() {
     assert!(
         matches!(
             result,
-            Err(nebula_engine::credential::ExecutorError::PendingStore(
+            Err(nebula_credential::runtime::ExecutorError::PendingStore(
                 PendingStoreError::NotFound
             ))
         ),
@@ -136,7 +136,7 @@ async fn execute_resolve_rejects_base_resolve_pending() {
     let ctx = CredentialContext::for_owner("user-1").with_session_id("sess-1");
     let values = FieldValues::new();
 
-    let result = nebula_engine::credential::execute_resolve::<BaseResolvePendingCredential, _>(
+    let result = nebula_credential::runtime::execute_resolve::<BaseResolvePendingCredential, _>(
         &values, &ctx, &store,
     )
     .await;
@@ -144,7 +144,7 @@ async fn execute_resolve_rejects_base_resolve_pending() {
     assert!(
         matches!(
             result,
-            Err(nebula_engine::credential::ExecutorError::BaseResolvePending)
+            Err(nebula_credential::runtime::ExecutorError::BaseResolvePending)
         ),
         "expected BaseResolvePending error, got: {result:?}"
     );
@@ -162,7 +162,7 @@ async fn execute_continue_rejects_missing_session_id() {
     let bogus_token = nebula_credential::PendingToken::generate();
     let input = nebula_credential::resolve::UserInput::Poll;
 
-    let result = nebula_engine::credential::execute_continue::<OAuth2Credential, _>(
+    let result = nebula_credential::runtime::execute_continue::<OAuth2Credential, _>(
         &bogus_token,
         &input,
         &ctx,
@@ -173,7 +173,7 @@ async fn execute_continue_rejects_missing_session_id() {
     assert!(
         matches!(
             result,
-            Err(nebula_engine::credential::ExecutorError::MissingSessionId)
+            Err(nebula_credential::runtime::ExecutorError::MissingSessionId)
         ),
         "expected MissingSessionId error, got: {result:?}"
     );

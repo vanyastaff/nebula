@@ -260,7 +260,7 @@ async fn pending_lifecycle_resolve_then_continue() {
     let input = UserInput::Code {
         code: "secret-code-123".into(),
     };
-    let response = nebula_engine::credential::execute_continue::<InteractiveTestCredential, _>(
+    let response = nebula_credential::runtime::execute_continue::<InteractiveTestCredential, _>(
         &token,
         &input,
         &ctx,
@@ -270,7 +270,7 @@ async fn pending_lifecycle_resolve_then_continue() {
     .expect("execute_continue should succeed");
 
     match response {
-        nebula_engine::credential::ResolveResponse::Complete(state) => {
+        nebula_credential::runtime::ResolveResponse::Complete(state) => {
             assert_eq!(state.token, "final-token");
         },
         other => panic!("expected Complete response, got: {other:?}"),
@@ -287,7 +287,7 @@ async fn pending_token_is_single_use() {
     let input = UserInput::Code {
         code: "secret-code-123".into(),
     };
-    let result = nebula_engine::credential::execute_continue::<InteractiveTestCredential, _>(
+    let result = nebula_credential::runtime::execute_continue::<InteractiveTestCredential, _>(
         &token,
         &input,
         &ctx,
@@ -296,7 +296,7 @@ async fn pending_token_is_single_use() {
     .await;
     assert!(result.is_ok(), "first continue should succeed");
 
-    let result = nebula_engine::credential::execute_continue::<InteractiveTestCredential, _>(
+    let result = nebula_credential::runtime::execute_continue::<InteractiveTestCredential, _>(
         &token,
         &input,
         &ctx,
@@ -316,7 +316,7 @@ async fn continue_with_wrong_code_returns_error() {
     let input = UserInput::Code {
         code: "wrong-code".into(),
     };
-    let result = nebula_engine::credential::execute_continue::<InteractiveTestCredential, _>(
+    let result = nebula_credential::runtime::execute_continue::<InteractiveTestCredential, _>(
         &token,
         &input,
         &ctx,
@@ -336,7 +336,7 @@ async fn retry_does_not_consume_pending_token() {
 
     let token = kickoff_test_pending(&pending_store, &ctx, RetryAwareCredential::KEY).await;
 
-    let retry = nebula_engine::credential::execute_continue::<RetryAwareCredential, _>(
+    let retry = nebula_credential::runtime::execute_continue::<RetryAwareCredential, _>(
         &token,
         &UserInput::Poll,
         &ctx,
@@ -345,7 +345,7 @@ async fn retry_does_not_consume_pending_token() {
     .await
     .expect("poll should return Retry");
     let retry_token = match retry {
-        nebula_engine::credential::ResolveResponse::Retry {
+        nebula_credential::runtime::ResolveResponse::Retry {
             after,
             token: Some(token),
         } => {
@@ -355,7 +355,7 @@ async fn retry_does_not_consume_pending_token() {
         other => panic!("expected Retry(after=1s, token), got: {other:?}"),
     };
 
-    let completed = nebula_engine::credential::execute_continue::<RetryAwareCredential, _>(
+    let completed = nebula_credential::runtime::execute_continue::<RetryAwareCredential, _>(
         &retry_token,
         &UserInput::Code {
             code: "secret-code-123".into(),
@@ -368,7 +368,7 @@ async fn retry_does_not_consume_pending_token() {
     assert!(
         matches!(
             completed,
-            nebula_engine::credential::ResolveResponse::Complete(TestInteractiveState { ref token })
+            nebula_credential::runtime::ResolveResponse::Complete(TestInteractiveState { ref token })
                 if token == "final-token"
         ),
         "expected Complete after retry flow, got: {completed:?}"
@@ -383,7 +383,7 @@ async fn retry_path_rejects_mismatched_session() {
 
     let token = kickoff_test_pending(&pending_store, &owner_ctx, RetryAwareCredential::KEY).await;
 
-    let result = nebula_engine::credential::execute_continue::<RetryAwareCredential, _>(
+    let result = nebula_credential::runtime::execute_continue::<RetryAwareCredential, _>(
         &token,
         &UserInput::Poll,
         &attacker_ctx,
@@ -394,7 +394,7 @@ async fn retry_path_rejects_mismatched_session() {
     assert!(
         matches!(
             result,
-            Err(nebula_engine::credential::ExecutorError::PendingStore(
+            Err(nebula_credential::runtime::ExecutorError::PendingStore(
                 PendingStoreError::ValidationFailed { .. }
             ))
         ),

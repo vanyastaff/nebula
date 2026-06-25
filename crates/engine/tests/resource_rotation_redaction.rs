@@ -57,13 +57,13 @@ use std::time::Duration;
 
 use nebula_core::{OrgId, ResourceKey, ScopeLevel, resource_key, scope::Scope};
 use nebula_credential::{CredentialGuard, CredentialId};
-use nebula_engine::credential::rotation::{ResourceFanoutIndex, RotationOutcome};
 use nebula_resource::Resident;
 use nebula_resource::{
     AcquireOptions, Manager, ManagerConfig, Provider, RegistrationSpec, ResidentConfig,
     ResourceConfig, ResourceContext, SlotCell, SlotIdentity, error::Error as ResourceError,
     events::ResourceEvent, resource::ResourceMetadata, topology::resident::ResidentProvider,
 };
+use nebula_resource::{ResourceFanoutIndex, RotationOutcome};
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::fmt::MakeWriter;
 use zeroize::Zeroize;

@@ -21,16 +21,16 @@
 use std::sync::Arc;
 
 use crate::ports::reqwest_transport::ReqwestRefreshTransport;
+use nebula_credential::runtime::{
+    CredentialResolver, LeaseLifecycle, LeaseLifecycleConfig, RefreshCoordinator,
+};
 use nebula_credential::store::CredentialStore;
 use nebula_credential::{
     Capabilities, CredentialObserver, CredentialRegistry, CredentialService,
     CredentialServiceError, DispatchOps, DynCredentialStore, ErasedCredentialStore,
     ErasedPendingStore, StateSource,
 };
-use nebula_engine::credential::{
-    CredentialResolver, LeaseLifecycle, LeaseLifecycleConfig, RefreshCoordinator,
-    default_in_memory_coordinator,
-};
+use nebula_engine::credential::default_in_memory_coordinator;
 use nebula_storage::credential::{
     AuditLayer, AuditSink, CacheConfig, CacheLayer, EncryptionLayer, KeyProvider,
 };

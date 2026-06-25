@@ -20,11 +20,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
+use nebula_credential::runtime::{LeaseLifecycle, LeaseLifecycleConfig};
 use nebula_credential::{
     CredentialId, ExternalProvider, ExternalReference, LeaseHandle, LeasedProvider, ProviderError,
     ProviderFuture, ProviderResolution, SecretString,
 };
-use nebula_engine::credential::{LeaseLifecycle, LeaseLifecycleConfig};
 use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Default)]

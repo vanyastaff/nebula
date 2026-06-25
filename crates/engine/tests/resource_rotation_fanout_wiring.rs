@@ -31,7 +31,6 @@ use nebula_credential::{CredentialEvent, CredentialId, LeaseEvent};
 use nebula_engine::{
     ActionExecutor, ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner,
     WorkflowEngine,
-    credential::rotation::{ResourceFanoutDriver, ResourceFanoutIndex},
 };
 use nebula_eventbus::EventBus;
 use nebula_metrics::MetricsRegistry;
@@ -41,6 +40,7 @@ use nebula_resource::{
     ResourceContext, SlotIdentity, error::Error as ResourceError, resource::ResourceMetadata,
     topology::resident::ResidentProvider,
 };
+use nebula_resource::{ResourceFanoutDriver, ResourceFanoutIndex};
 use tokio_util::sync::CancellationToken;
 
 // ── Test resource recording every rotation/revoke hook delivery ──────

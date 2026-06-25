@@ -87,10 +87,10 @@ pub use control_consumer::{
     DEFAULT_POLL_INTERVAL, MAX_CLAIM_ERROR_BACKOFF,
 };
 pub use control_dispatch::EngineControlDispatch;
-pub use credential::{
-    CredentialResolver, ExecutorError, ResolveError, ResolveResponse, execute_continue,
-    execute_resolve,
-};
+// Credential runtime types (`CredentialResolver`, `ResolveResponse`, …) live in
+// `nebula_credential::runtime` (ADR-0092); consumers import them from there.
+// Only the storage-bound `default_in_memory_coordinator` stays engine-owned,
+// reachable as `nebula_engine::credential::default_in_memory_coordinator`.
 pub use credential_accessor::EngineCredentialAccessor;
 pub use daemon::{
     AnyDaemonHandle, Daemon, DaemonConfig, DaemonError, DaemonRegistry, DaemonRuntime,
