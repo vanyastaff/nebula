@@ -7,9 +7,10 @@
 //! 2. `claim_route_sink_mark_dispatched` — sink Ok once; row terminal-dispatched; counter=1.
 //! 3. `dispatched_row_not_reclaimed` — terminal row is not re-served by a second claim.
 //! 4. `reclaim_during_slow_sink_is_at_least_once` — row claimed by A while B dispatches; A's
-//!    late mark_dispatched is a fence no-op; sink sees the row once (A's call only); processor-B
-//!    claims and acks via direct queue manipulation, proving at-least-once across the full
-//!    dispatch path without a second sink invocation.
+//!    late mark_dispatched returns StorageError::NotFound (fenced — ownership predicate
+//!    satisfied 0 rows) and the error is swallowed; sink sees the row once (A's call only);
+//!    processor-B claims and acks via direct queue manipulation, proving at-least-once across
+//!    the full dispatch path without a second sink invocation.
 //! 5. `sink_failure_marks_failed` — sink Err(Rejected); not re-served; failed counter=1.
 //! 6. `reclaim_recovers_crashed` — claim then don't mark; live orchestrator reclaims to Pending;
 //!    a second live orchestrator drives exhausted row through EXHAUSTED counter.
@@ -495,11 +496,12 @@ async fn dispatched_row_not_reclaimed() {
 ///    simulates a second processor dispatching the row (B's ACK stands).
 /// 4. Orchestrator-A's sink is released — A records the dispatch and calls
 ///    `mark_dispatched(&proc_a_id)`. Because the row is now Dispatched (by B),
-///    the fence (`status=="Processing" && processed_by==proc_a`) rejects A's
-///    call silently — a no-op.
-/// 5. Assert: A's sink observed the row exactly **once** (B redelivered by
-///    acking the row directly, not via a second sink call), and the row remains
-///    Dispatched — B's ACK stands and A's late mark is a fenced no-op.
+///    the fence (`status=="Processing" AND processed_by=proc_a`) matches 0 rows
+///    and returns `StorageError::NotFound`. The orchestrator swallows that error
+///    and continues normally.
+/// 5. Assert: A's sink observed the row exactly **once** (B acked via direct
+///    queue manipulation, not via a second sink call), and the row remains
+///    Dispatched — B's ACK stands and A's fenced mark_dispatched is discarded.
 ///
 /// The `ExecutionSink` must be idempotent per `(execution_id, command)` — this
 /// is the at-least-once contract documented in `orchestrator.rs`.
@@ -574,8 +576,10 @@ async fn reclaim_during_slow_sink_is_at_least_once() {
         .unwrap();
 
     // Step 5: release orchestrator-A's stall. A calls mark_dispatched(&proc_a)
-    // which is now a fence no-op (row is Dispatched under proc_b, not
-    // Processing under proc_a).
+    // which returns StorageError::NotFound (ownership predicate
+    // `status='Processing' AND processed_by=proc_a` matches 0 rows — the row
+    // is now Dispatched under proc_b). The orchestrator swallows the error and
+    // continues; the row stays terminal under B's ACK.
     release.notify_one();
 
     // Shut down and wait for the orchestrator to finish its current batch.

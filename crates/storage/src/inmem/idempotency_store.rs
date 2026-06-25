@@ -16,6 +16,61 @@ use nebula_storage_port::store::{IdempotencyStore, WebhookActivationStore};
 use nebula_storage_port::{Scope, StorageError};
 use parking_lot::Mutex;
 
+#[cfg(test)]
+mod namespaced_collision_tests {
+    //! FIX 2 regression: two (workspace_id, org_id, cache_key) tuples that
+    //! produce the same raw-`:` string must produce DISTINCT keys after the
+    //! length-prefix fix. The classic confused-deputy collision is:
+    //!   ("a:b", "c", "key")  vs  ("a", "b:c", "key")
+    //! which both serialised to "a:b:c:key" under the old scheme.
+
+    use nebula_storage_port::Scope;
+
+    use super::namespaced;
+
+    #[test]
+    fn distinct_scope_tuples_that_collided_with_raw_colon_now_produce_distinct_keys() {
+        let scope_ab_c = Scope::new("a:b", "c");
+        let scope_a_bc = Scope::new("a", "b:c");
+        let cache_key = "my-cache-key";
+
+        let key1 = namespaced(&scope_ab_c, cache_key);
+        let key2 = namespaced(&scope_a_bc, cache_key);
+
+        assert_ne!(
+            key1, key2,
+            "scopes ('a:b','c') and ('a','b:c') must produce distinct namespaced keys \
+             (previously both mapped to 'a:b:c:my-cache-key' under the raw-colon scheme)"
+        );
+    }
+
+    #[test]
+    fn equal_scopes_produce_equal_keys() {
+        let scope1 = Scope::new("ws-123", "org-456");
+        let scope2 = Scope::new("ws-123", "org-456");
+        assert_eq!(namespaced(&scope1, "k"), namespaced(&scope2, "k"));
+    }
+
+    #[test]
+    fn different_cache_keys_on_same_scope_produce_distinct_keys() {
+        let scope = Scope::new("ws", "org");
+        assert_ne!(namespaced(&scope, "key-a"), namespaced(&scope, "key-b"));
+    }
+
+    #[test]
+    fn workspace_id_containing_record_separator_does_not_collide() {
+        // Even if a workspace_id contains the RS sentinel (\x1e), distinctness
+        // must hold because the length pin still prevents boundary ambiguity.
+        let scope_with_rs = Scope::new("ws\x1e", "org");
+        let scope_plain = Scope::new("ws", "\x1eorg");
+        assert_ne!(
+            namespaced(&scope_with_rs, "k"),
+            namespaced(&scope_plain, "k"),
+            "a workspace_id containing the RS sentinel must not collide with a plain scope"
+        );
+    }
+}
+
 /// In-memory durable idempotent-replay cache. First-writer-wins: a `put`
 /// for an existing key is a no-op.
 #[derive(Debug, Default, Clone)]
@@ -41,10 +96,26 @@ fn expires_at_ms(rfc3339: &str) -> i64 {
 }
 
 /// Fold the scope into the cache key so two tenants' keyspaces are
-/// disjoint: `{workspace_id}:{org_id}:{cache_key}`. A raw key from one
-/// tenant can never collide with another's (§6.1 replay-oracle).
+/// disjoint. Uses the same length-prefix scheme as [`Scope::credential_owner_id`]:
+/// `{ws_len}\x1e{workspace_id}\x1e{org_len}\x1e{org_id}\x1e{cache_key}`.
+///
+/// A raw `:` or `/` delimiter is **not safe** because `workspace_id` and
+/// `org_id` are unvalidated free strings (see `scope.rs` doc), so a component
+/// containing the delimiter could forge a different namespace (confused-deputy
+/// cross-tenant collision). Length-prefixing makes the boundary unforgeable:
+/// the leading `{ws_len}` pins exactly where `workspace_id` ends regardless of
+/// its content, and the same applies to `org_id`. The ASCII Record Separator
+/// (`\x1e`) is a readable sentinel between the length and the value; the full
+/// key is an opaque internal lookup value, never wire-exposed.
 fn namespaced(scope: &Scope, cache_key: &str) -> String {
-    format!("{}:{}:{}", scope.workspace_id, scope.org_id, cache_key)
+    format!(
+        "{}\x1e{}\x1e{}\x1e{}\x1e{}",
+        scope.workspace_id.len(),
+        scope.workspace_id,
+        scope.org_id.len(),
+        scope.org_id,
+        cache_key,
+    )
 }
 
 #[async_trait::async_trait]

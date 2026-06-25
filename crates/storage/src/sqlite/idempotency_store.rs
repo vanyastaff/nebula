@@ -1,9 +1,12 @@
 //! SQLite `IdempotencyStore` (durable idempotent-replay cache) +
 //! `WebhookActivationStore` (webhook activation specs) over the port-scoped schema.
 //!
-//! The cache is keyed by `{workspace_id}:{org_id}:{cache_key}` (the store
-//! folds the scope into the key, so tenant A can neither probe nor poison
-//! tenant B's dedup entry; first-writer-wins via INSERT OR IGNORE).
+//! The cache is keyed by a length-prefix encoding of
+//! `{ws_len}\x1e{workspace_id}\x1e{org_len}\x1e{org_id}\x1e{cache_key}` (the
+//! store folds the scope into the key so tenant A can neither probe nor poison
+//! tenant B's dedup entry). Length-prefix encoding is used rather than a raw
+//! delimiter so that values containing `:` cannot collide across tenants
+//! (confused-deputy protection). First-writer-wins via INSERT OR IGNORE.
 //! Webhook activations are keyed by `(workspace, org, slug)` so resolution
 //! never crosses a tenant boundary.
 
@@ -25,11 +28,27 @@ fn expires_at_ms(rfc3339: &str) -> i64 {
         .unwrap_or(i64::MIN)
 }
 
-/// Fold the scope into the cache key (`{workspace_id}:{org_id}:{cache_key}`)
-/// so two tenants' keyspaces are disjoint — a raw key from one tenant can
-/// never collide with another's (§6.1 replay-oracle).
+/// Fold the scope into the cache key so two tenants' keyspaces are
+/// disjoint. Uses the same length-prefix scheme as [`Scope::credential_owner_id`]:
+/// `{ws_len}\x1e{workspace_id}\x1e{org_len}\x1e{org_id}\x1e{cache_key}`.
+///
+/// A raw `:` or `/` delimiter is **not safe** because `workspace_id` and
+/// `org_id` are unvalidated free strings (see `scope.rs` doc), so a component
+/// containing the delimiter could forge a different namespace (confused-deputy
+/// cross-tenant collision). Length-prefixing makes the boundary unforgeable:
+/// the leading `{ws_len}` pins exactly where `workspace_id` ends regardless of
+/// its content, and the same applies to `org_id`. The ASCII Record Separator
+/// (`\x1e`) is a readable sentinel between the length and the value; the full
+/// key is an opaque internal lookup value, never wire-exposed.
 fn namespaced(scope: &Scope, cache_key: &str) -> String {
-    format!("{}:{}:{}", scope.workspace_id, scope.org_id, cache_key)
+    format!(
+        "{}\x1e{}\x1e{}\x1e{}\x1e{}",
+        scope.workspace_id.len(),
+        scope.workspace_id,
+        scope.org_id.len(),
+        scope.org_id,
+        cache_key,
+    )
 }
 
 /// SQLite-backed durable idempotent-replay cache.
@@ -332,5 +351,63 @@ impl WebhookActivationStore for SqliteWebhookActivationStore {
             out.push(rec);
         }
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod namespaced_collision_tests {
+    // The `namespaced` function must be injective across the full
+    // (workspace_id, org_id, cache_key) space. The critical property: two
+    // distinct scope tuples must never produce the same key regardless of what
+    // characters they contain.
+
+    use nebula_storage_port::Scope;
+
+    use super::namespaced;
+
+    fn scope(workspace_id: &str, org_id: &str) -> Scope {
+        Scope {
+            workspace_id: workspace_id.to_owned(),
+            org_id: org_id.to_owned(),
+        }
+    }
+
+    #[test]
+    fn distinct_scope_tuples_that_collided_with_raw_colon_now_produce_distinct_keys() {
+        // With a raw ":" delimiter ("a:b:c:key" == "a:b:c:key") these two
+        // scopes would alias each other. Length-prefix makes them distinct.
+        let key_1 = namespaced(&scope("a:b", "c"), "key");
+        let key_2 = namespaced(&scope("a", "b:c"), "key");
+        assert_ne!(
+            key_1, key_2,
+            "scopes ('a:b','c') and ('a','b:c') must produce distinct cache keys"
+        );
+    }
+
+    #[test]
+    fn equal_scopes_produce_equal_keys() {
+        let key_1 = namespaced(&scope("ws", "org"), "my-key");
+        let key_2 = namespaced(&scope("ws", "org"), "my-key");
+        assert_eq!(key_1, key_2);
+    }
+
+    #[test]
+    fn different_cache_keys_on_same_scope_produce_distinct_keys() {
+        let key_1 = namespaced(&scope("ws", "org"), "key-a");
+        let key_2 = namespaced(&scope("ws", "org"), "key-b");
+        assert_ne!(key_1, key_2);
+    }
+
+    #[test]
+    fn workspace_id_containing_record_separator_does_not_collide() {
+        // Even a workspace_id containing \x1e (the sentinel character used
+        // in the format string) cannot forge the org_id boundary because the
+        // leading length pins the end of workspace_id exactly.
+        let key_1 = namespaced(&scope("a\x1e1", "b"), "key");
+        let key_2 = namespaced(&scope("a", "1\x1eb"), "key");
+        assert_ne!(
+            key_1, key_2,
+            "workspace_id containing \\x1e must not collide with a different scope"
+        );
     }
 }

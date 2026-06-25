@@ -24,6 +24,7 @@
 use std::time::Duration;
 
 use chrono::Utc;
+use hex;
 use nebula_core::PluginKey;
 use nebula_storage_port::dto::{
     DispatchKind, DispatchOutcome, JobDispatchMsg, NewExecution, TriggerDedupRow,
@@ -220,7 +221,11 @@ impl JobDispatchQueue for PgJobDispatchQueue {
         id: &[u8; 16],
         processor: &[u8; 16],
     ) -> Result<(), StorageError> {
-        sqlx::query(
+        // Zero rows_affected means this worker no longer owns the job (reclaimed
+        // by another worker or the job id does not exist). Fail-closed: treat
+        // lost ownership as NotFound — the caller must not assume success when
+        // the ownership predicate (`processed_by = $2`) was not satisfied.
+        let rows_updated = sqlx::query(
             "UPDATE port_job_dispatch_queue SET status = 'Dispatched' \
              WHERE id = $1 AND status = 'Processing' AND processed_by = $2",
         )
@@ -228,7 +233,14 @@ impl JobDispatchQueue for PgJobDispatchQueue {
         .bind(processor.as_slice())
         .execute(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(conn_err)?
+        .rows_affected();
+        if rows_updated == 0 {
+            return Err(StorageError::NotFound {
+                entity: "job_dispatch",
+                id: hex::encode(id),
+            });
+        }
         Ok(())
     }
 
@@ -238,7 +250,10 @@ impl JobDispatchQueue for PgJobDispatchQueue {
         processor: &[u8; 16],
         error: &str,
     ) -> Result<(), StorageError> {
-        sqlx::query(
+        // Zero rows_affected means this worker no longer owns the job (reclaimed
+        // by another worker or the job id does not exist). Fail-closed: same
+        // NotFound semantics as mark_dispatched.
+        let rows_updated = sqlx::query(
             "UPDATE port_job_dispatch_queue \
              SET status = 'Failed', error_message = $1 \
              WHERE id = $2 AND status = 'Processing' AND processed_by = $3",
@@ -248,7 +263,14 @@ impl JobDispatchQueue for PgJobDispatchQueue {
         .bind(processor.as_slice())
         .execute(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(conn_err)?
+        .rows_affected();
+        if rows_updated == 0 {
+            return Err(StorageError::NotFound {
+                entity: "job_dispatch",
+                id: hex::encode(id),
+            });
+        }
         Ok(())
     }
 

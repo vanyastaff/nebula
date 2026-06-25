@@ -2219,38 +2219,82 @@ pub async fn assert_job_dispatch_routes_by_plugin(backend: &dyn Backend) {
     );
 }
 
-/// `mark_dispatched` is fenced by processor id: a stale processor cannot
-/// transition a row it did not claim.
+/// `mark_dispatched` and `mark_failed` are both fenced by processor id: a
+/// stale processor cannot transition a row it did not claim.
 pub async fn assert_job_dispatch_fencing(backend: &dyn Backend) {
     let q = backend.job_dispatch_queue().await;
-    let job = make_job(0x20, "plugin.x", &["plugin.x"]);
-    q.enqueue(&job).await.expect("enqueue");
+    let plugin_tags = &["plugin.x".parse::<PluginKey>().unwrap()];
 
     let runner_a = [1u8; 16];
     let runner_b = [2u8; 16];
+
+    // ── mark_dispatched fencing ───────────────────────────────────────────────
+    let job_d = make_job(0x20, "plugin.x", &["plugin.x"]);
+    q.enqueue(&job_d).await.expect("enqueue job_d");
+
     let claimed = q
-        .claim_pending(&runner_a, 16, &["plugin.x".parse::<PluginKey>().unwrap()])
+        .claim_pending(&runner_a, 16, plugin_tags)
         .await
         .expect("claim");
     assert_eq!(claimed.len(), 1, "[{}] claimed one row", backend.name());
 
-    // Stale runner must NOT transition the row.
-    q.mark_dispatched(&job.id, &runner_b)
-        .await
-        .expect("mark_dispatched (stale)");
+    // Stale runner must be rejected: rows_affected == 0 because processed_by ≠ runner_b.
+    let stale_dispatched = q.mark_dispatched(&job_d.id, &runner_b).await;
+    assert!(
+        matches!(stale_dispatched, Err(StorageError::NotFound { .. })),
+        "[{}] mark_dispatched by a stale processor must return NotFound, got: {:?}",
+        backend.name(),
+        stale_dispatched
+    );
 
-    // The row is still Processing — a re-claim with the REAL runner confirms it.
-    q.mark_dispatched(&job.id, &runner_a)
+    // The row is still Processing (stale call made no change) — the real runner succeeds.
+    q.mark_dispatched(&job_d.id, &runner_a)
         .await
         .expect("mark_dispatched (claimant)");
+
     // After mark_dispatched, a fresh claim should find no pending rows.
-    let after = q
-        .claim_pending(&runner_a, 16, &["plugin.x".parse::<PluginKey>().unwrap()])
+    let after_dispatch = q
+        .claim_pending(&runner_a, 16, plugin_tags)
         .await
         .expect("claim after dispatch");
     assert!(
-        after.is_empty(),
+        after_dispatch.is_empty(),
         "[{}] no pending rows after mark_dispatched",
+        backend.name()
+    );
+
+    // ── mark_failed fencing ───────────────────────────────────────────────────
+    let job_f = make_job(0x21, "plugin.x", &["plugin.x"]);
+    q.enqueue(&job_f).await.expect("enqueue job_f");
+
+    let claimed_f = q
+        .claim_pending(&runner_a, 16, plugin_tags)
+        .await
+        .expect("claim job_f");
+    assert_eq!(claimed_f.len(), 1, "[{}] claimed job_f", backend.name());
+
+    // Stale runner's mark_failed must also be rejected.
+    let stale_failed = q.mark_failed(&job_f.id, &runner_b, "stale error").await;
+    assert!(
+        matches!(stale_failed, Err(StorageError::NotFound { .. })),
+        "[{}] mark_failed by a stale processor must return NotFound, got: {:?}",
+        backend.name(),
+        stale_failed
+    );
+
+    // The row is still Processing — the real runner can still fail it.
+    q.mark_failed(&job_f.id, &runner_a, "real error")
+        .await
+        .expect("mark_failed (claimant)");
+
+    // After mark_failed the row is terminal; fresh claim yields nothing.
+    let after_failed = q
+        .claim_pending(&runner_a, 16, plugin_tags)
+        .await
+        .expect("claim after failed");
+    assert!(
+        after_failed.is_empty(),
+        "[{}] no pending rows after mark_failed",
         backend.name()
     );
 }
