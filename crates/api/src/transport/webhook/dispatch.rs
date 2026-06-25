@@ -848,7 +848,9 @@ mod tests {
         TriggerEventOutcome, TriggerHandler, WebhookAction, WebhookConfig, WebhookRequest,
         WebhookResponse, WebhookTriggerAdapter, hmac_sha256_compute,
     };
-    use nebula_core::{BaseContext, Dependencies, NodeKey, WorkflowId, action_key, node_key};
+    use nebula_core::{
+        BaseContext, Dependencies, NodeKey, WorkflowId, action_key, node_key, scope::Principal,
+    };
     use nebula_storage::inmem::{
         InMemoryExecutionStore, InMemoryTriggerDedupInbox, InMemoryWebhookActivationStore,
         InMemoryWorkflowVersionStore,
@@ -1241,9 +1243,11 @@ mod tests {
     ) -> nebula_action::TriggerRuntimeContext {
         nebula_action::TriggerRuntimeContext::new(
             Arc::new(
-                BaseContext::builder()
+                BaseContext::builder(nebula_core::scope::Scope::default())
+                    .principal(Principal::System)
                     .cancellation(CancellationToken::new())
-                    .build(),
+                    .build()
+                    .expect("scope + principal must produce a valid BaseContext"),
             ),
             workflow_id,
             node_key,

@@ -1218,6 +1218,7 @@ mod tests {
         context::Context,
         id::{ExecutionId, WorkflowId},
         node_key,
+        scope::{Principal, Scope},
     };
 
     use crate::runtime::runner::{ActionExecutor, InProcessRunner};
@@ -1280,7 +1281,12 @@ mod tests {
 
     fn test_context() -> ActionRuntimeContext {
         ActionRuntimeContext::new(
-            Arc::new(BaseContext::builder().build()),
+            Arc::new(
+                BaseContext::builder(Scope::default())
+                    .principal(Principal::System)
+                    .build()
+                    .expect("scope + principal must produce a valid BaseContext"),
+            ),
             ExecutionId::new(),
             node_key!("test"),
             WorkflowId::new(),
@@ -1289,7 +1295,12 @@ mod tests {
 
     fn test_trigger_context() -> TriggerRuntimeContext {
         TriggerRuntimeContext::new(
-            Arc::new(BaseContext::builder().build()),
+            Arc::new(
+                BaseContext::builder(Scope::default())
+                    .principal(Principal::System)
+                    .build()
+                    .expect("scope + principal must produce a valid BaseContext"),
+            ),
             WorkflowId::new(),
             node_key!("test"),
         )
@@ -1353,7 +1364,12 @@ mod tests {
 
         let eid = ExecutionId::new();
         let ctx = ActionRuntimeContext::new(
-            Arc::new(BaseContext::builder().build()),
+            Arc::new(
+                BaseContext::builder(Scope::default())
+                    .principal(Principal::System)
+                    .build()
+                    .expect("scope + principal must produce a valid BaseContext"),
+            ),
             eid,
             node_key!("test"),
             WorkflowId::new(),

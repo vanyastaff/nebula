@@ -82,8 +82,11 @@ type ResolveFn = Arc<
 ///         let resolver = Arc::clone(&resolver);
 ///         let id = id.to_owned();
 ///         Box::pin(async move {
+///             let credential_key = nebula_core::CredentialKey::new(&id)
+///                 .expect("id passed through allowlist must be a valid CredentialKey");
 ///             resolver.resolve_snapshot(&id).await
-///                 .map_err(|e| CoreError::CredentialNotFound { key: e.to_string() })
+///                 .map(|snap| snap)
+///                 .map_err(|_| CoreError::credential_not_found(credential_key))
 ///         })
 ///     }
 /// });
@@ -297,9 +300,9 @@ mod tests {
         let accessor = EngineCredentialAccessor::new(
             allowed_keys,
             |_id: &str| async {
-                Err(CoreError::CredentialNotFound {
-                    key: "resolver reached".to_owned(),
-                })
+                Err(CoreError::credential_not_found(credential_key!(
+                    "resolver_reached"
+                )))
             },
             "test_action".to_owned(),
         );
@@ -347,9 +350,7 @@ mod tests {
     async fn resolver_error_propagates_for_allowed_key() {
         let accessor = make_failing_accessor(
             ["my_key"],
-            CoreError::CredentialNotFound {
-                key: "transient failure".to_owned(),
-            },
+            CoreError::credential_not_found(credential_key!("transient_failure")),
         );
         let result = accessor.resolve_any(&credential_key!("my_key")).await;
         assert!(
@@ -377,9 +378,9 @@ mod tests {
                 let calls = calls_inner.clone();
                 async move {
                     calls.fetch_add(1, AOrdering::Relaxed);
-                    Err(CoreError::CredentialNotFound {
-                        key: "resolver should not be called".to_owned(),
-                    })
+                    Err(CoreError::credential_not_found(credential_key!(
+                        "resolver_not_called"
+                    )))
                 }
             },
             "test_action".to_owned(),

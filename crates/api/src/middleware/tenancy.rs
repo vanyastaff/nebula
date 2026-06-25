@@ -142,10 +142,8 @@ async fn resolve_webhook_path(
         return Ok(None);
     }
 
-    let mut ids = ResolvedIds {
-        org_id: Some(resolve_org(state, segments[3]).await?),
-        ..Default::default()
-    };
+    let mut ids = ResolvedIds::default();
+    ids.org_id = Some(resolve_org(state, segments[3]).await?);
 
     if segments.len() >= 6 {
         let org_id = ids.org_id.expect("org_id just resolved");

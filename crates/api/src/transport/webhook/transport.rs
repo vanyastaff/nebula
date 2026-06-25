@@ -717,7 +717,7 @@ mod tests {
     use std::sync::Arc;
 
     use nebula_action::{TriggerContext, TriggerHandler, WebhookConfig};
-    use nebula_core::BaseContext;
+    use nebula_core::{BaseContext, scope::Principal};
     use nebula_storage::inmem::InMemoryWebhookActivationStore;
     use nebula_storage_port::Scope;
     use nebula_storage_port::dto::WebhookMode;
@@ -759,9 +759,11 @@ mod tests {
     fn ctx_template() -> TriggerRuntimeContext {
         TriggerRuntimeContext::new(
             Arc::new(
-                BaseContext::builder()
+                BaseContext::builder(nebula_core::scope::Scope::default())
+                    .principal(Principal::System)
                     .cancellation(CancellationToken::new())
-                    .build(),
+                    .build()
+                    .expect("scope + principal must produce a valid BaseContext"),
             ),
             nebula_core::WorkflowId::new(),
             nebula_core::node_key!("test"),

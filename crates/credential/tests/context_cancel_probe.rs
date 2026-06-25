@@ -5,7 +5,11 @@
 
 use std::{any::Any, future::Future, pin::Pin, sync::Arc};
 
-use nebula_core::{BaseContext, CoreError, ResourceKey, accessor::ResourceAccessor};
+use nebula_core::{
+    BaseContext, CoreError, ResourceKey,
+    accessor::ResourceAccessor,
+    scope::{Principal, Scope},
+};
 use nebula_credential::{CredentialContextBuilder, NoopCredentialAccessor};
 use tokio_util::sync::CancellationToken;
 
@@ -42,7 +46,10 @@ impl ResourceAccessor for NoopResourceAccessor {
 fn child_token_derivable_and_cascades_from_parent() {
     let parent = CancellationToken::new();
     let ctx = CredentialContextBuilder::new(
-        BaseContext::builder().build(),
+        BaseContext::builder(Scope::default())
+            .principal(Principal::System)
+            .build()
+            .expect("scope + principal must produce a valid BaseContext"),
         Arc::new(NoopCredentialAccessor),
         Arc::new(NoopResourceAccessor),
     )

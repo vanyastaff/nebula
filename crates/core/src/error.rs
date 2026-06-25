@@ -4,6 +4,8 @@ use std::time::Duration;
 
 use thiserror::Error;
 
+use crate::keys::CredentialKey;
+
 /// Core error -- only errors that core vocabulary operations produce.
 #[derive(Error, Debug, Clone)]
 #[non_exhaustive]
@@ -63,8 +65,8 @@ pub enum CoreError {
     /// Credential not found by key.
     #[error("credential not found: {key}")]
     CredentialNotFound {
-        /// The key that was not found.
-        key: String,
+        /// The validated credential key that was not found.
+        key: CredentialKey,
     },
 
     /// Credential access denied (action not authorized for this key).
@@ -133,6 +135,11 @@ impl CoreError {
     /// Create a missing dependency error.
     pub fn dependency_missing(name: &'static str, required_by: &'static str) -> Self {
         Self::DependencyMissing { name, required_by }
+    }
+
+    /// Create a credential-not-found error for the given validated key.
+    pub fn credential_not_found(key: CredentialKey) -> Self {
+        Self::CredentialNotFound { key }
     }
 
     /// Create a resource-acquire failure surfaced through the accessor seam.

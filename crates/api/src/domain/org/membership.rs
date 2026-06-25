@@ -110,6 +110,8 @@ fn principal_key(p: &Principal) -> String {
             None => format!("wf:{workflow_id}"),
         },
         Principal::System => "system".to_owned(),
+        // Non-exhaustive: future principal kinds must be assigned a unique key prefix.
+        _ => "unknown".to_owned(),
     }
 }
 

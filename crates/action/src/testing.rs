@@ -14,6 +14,7 @@ use nebula_core::{
     CoreError, CredentialKey, ResourceKey,
     accessor::{CredentialAccessor, Logger, ResourceAccessor},
     node_key,
+    scope::{Principal, Scope},
 };
 use nebula_credential::CredentialSnapshot;
 use tokio_util::sync::CancellationToken;
@@ -118,9 +119,11 @@ impl TestContextBuilder {
     pub fn build(self) -> crate::context::ActionRuntimeContext {
         use nebula_core::id::{ExecutionId, WorkflowId};
         let base = Arc::new(
-            nebula_core::BaseContext::builder()
+            nebula_core::BaseContext::builder(Scope::default())
+                .principal(Principal::System)
                 .cancellation(CancellationToken::new())
-                .build(),
+                .build()
+                .expect("scope + principal must produce a valid BaseContext"),
         );
         crate::context::ActionRuntimeContext::new(
             base,
@@ -150,9 +153,11 @@ impl TestContextBuilder {
         let emitter = Arc::new(SpyEmitter::new());
         let scheduler = Arc::new(SpyScheduler::new());
         let base = Arc::new(
-            nebula_core::BaseContext::builder()
+            nebula_core::BaseContext::builder(Scope::default())
+                .principal(Principal::System)
                 .cancellation(CancellationToken::new())
-                .build(),
+                .build()
+                .expect("scope + principal must produce a valid BaseContext"),
         );
         let ctx =
             crate::context::TriggerRuntimeContext::new(base, WorkflowId::new(), node_key!("test"))
@@ -286,8 +291,8 @@ impl CredentialAccessor for TestCredentialAccessor {
                 );
             }
         }
-        let key_owned = key_str.to_owned();
-        Box::pin(async move { Err(CoreError::CredentialNotFound { key: key_owned }) })
+        let missing_key = key.clone();
+        Box::pin(async move { Err(CoreError::credential_not_found(missing_key)) })
     }
 
     fn try_resolve_any(

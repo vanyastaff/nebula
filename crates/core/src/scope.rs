@@ -235,7 +235,11 @@ impl Scope {
 }
 
 /// Actor identity within the system.
+///
+/// This enum is `#[non_exhaustive]`: future principal kinds may be added
+/// without a semver break. External `match` arms must include a `_` wildcard.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum Principal {
     /// Human user.
     User(crate::id::UserId),

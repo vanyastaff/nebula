@@ -7,7 +7,7 @@
 
 use std::{fmt, time::Duration};
 
-use nebula_core::ResourceKey;
+use nebula_core::{CredentialKey, ResourceKey};
 
 /// How the framework should handle this error.
 #[non_exhaustive]
@@ -279,7 +279,10 @@ impl Error {
             .unwrap_or_else(|| "resource".to_owned());
         let detail = self.to_string();
         match self.kind() {
-            ErrorKind::NotFound => nebula_core::CoreError::CredentialNotFound { key: detail },
+            ErrorKind::NotFound => nebula_core::CoreError::credential_not_found(
+                CredentialKey::new(&key_label)
+                    .expect("ResourceKey format is CredentialKey-compatible"),
+            ),
             ErrorKind::Ambiguous => nebula_core::CoreError::scope_violation(key_label, detail),
             ErrorKind::Cancelled => {
                 nebula_core::CoreError::resource_unavailable(key_label, detail, false, None)

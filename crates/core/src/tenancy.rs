@@ -160,7 +160,11 @@ impl std::error::Error for PermissionDenied {}
 
 /// IDs resolved by the tenancy middleware from path segments.
 /// Inserted into request extensions so handlers and RBAC middleware can use them.
+///
+/// This struct is `#[non_exhaustive]`: additional resolved IDs may be added
+/// in future versions. External struct literals must use `..Default::default()`.
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct ResolvedIds {
     pub org_id: Option<OrgId>,
     pub workspace_id: Option<WorkspaceId>,

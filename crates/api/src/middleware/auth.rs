@@ -261,6 +261,8 @@ fn principal_user_id(principal: &nebula_core::Principal) -> String {
         nebula_core::Principal::ServiceAccount(sid) => sid.to_string(),
         nebula_core::Principal::Workflow { workflow_id, .. } => workflow_id.to_string(),
         nebula_core::Principal::System => "system".to_string(),
+        // Non-exhaustive: future principal kinds fall back to a "system" sentinel.
+        _ => "system".to_string(),
     }
 }
 

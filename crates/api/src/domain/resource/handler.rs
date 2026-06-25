@@ -438,6 +438,8 @@ fn created_by_bytes(principal: &Principal) -> Vec<u8> {
         Principal::ServiceAccount(sid) => sid.as_bytes().to_vec(),
         Principal::Workflow { .. } => sentinel(CREATED_BY_CLASS_WORKFLOW),
         Principal::System => sentinel(CREATED_BY_CLASS_SYSTEM),
+        // Non-exhaustive: future principal kinds default to the system sentinel.
+        _ => sentinel(CREATED_BY_CLASS_SYSTEM),
     }
 }
 

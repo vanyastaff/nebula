@@ -31,7 +31,7 @@ use std::{
 
 use dashmap::DashMap;
 use nebula_core::{
-    CoreError, NodeKey, ResourceKey,
+    CoreError, CredentialKey, NodeKey, ResourceKey,
     accessor::ResourceAccessor,
     id::{ExecutionId, WorkflowId},
 };
@@ -92,8 +92,11 @@ impl ResourceAccessor for FakeGlobalAccessor {
             self.table
                 .get(&key)
                 .map(|v| Box::new(*v.value()) as Box<dyn std::any::Any + Send + Sync>)
-                .ok_or_else(|| CoreError::CredentialNotFound {
-                    key: key.as_str().to_owned(),
+                .ok_or_else(|| {
+                    CoreError::credential_not_found(
+                        CredentialKey::new(key.as_str())
+                            .expect("ResourceKey format is CredentialKey-compatible"),
+                    )
                 })
         })
     }
