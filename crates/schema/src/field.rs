@@ -143,7 +143,13 @@ macro_rules! define_field {
                 self
             }
 
-            /// Set default JSON value (builder).
+            /// Set a default JSON value for this field.
+            ///
+            /// The default is a **UI / JSON-Schema hint only** — it is not
+            /// injected at validation time. A `required()` field still fails
+            /// validation when absent from submitted values even if a default
+            /// is set. Apply defaults explicitly before calling
+            /// `ValidSchema::validate` if you want fill-in behaviour.
             #[must_use]
             pub fn default(mut self, value: Value) -> Self {
                 self.default = Some(value);
@@ -1526,6 +1532,20 @@ impl Field {
     }
 
     /// Shared default-value accessor.
+    ///
+    /// Returns the field's configured default value, if any.
+    ///
+    /// # Runtime semantics
+    ///
+    /// This default is a **UI / JSON-Schema hint only**. It is surfaced to
+    /// consumers (form renderers, `json_schema` export) but it does **not**
+    /// auto-satisfy a `required` constraint at validation time. A field
+    /// marked `required()` still fails validation when absent from the
+    /// submitted [`FieldValues`](crate::FieldValues), regardless of whether
+    /// a default is set.
+    ///
+    /// Callers that want "fill in the default when absent" behaviour must
+    /// apply it explicitly before calling `ValidSchema::validate`.
     #[inline]
     #[must_use]
     pub const fn default(&self) -> Option<&Value> {

@@ -527,3 +527,78 @@ fn derive_duplicate_serde_alias_is_deduped_not_rejected() {
         .collect();
     assert_eq!(aliases, ["alt"]);
 }
+
+// ── EnumSelect / serde divergence contract ─────────────────────────────────
+//
+// Without `#[serde(rename_all = ...)]` the catalog value produced by
+// `#[derive(EnumSelect)]` defaults to `heck`-based snake_case. This is an
+// explicit UI convention — it diverges from serde's verbatim default (the
+// variant name as written). The tests below pin that contract and prove a
+// caller must opt in to exact serde alignment by adding
+// `#[serde(rename_all = "snake_case")]`.
+
+/// An enum with no `rename_all` annotation: serde keeps variant names verbatim
+/// but EnumSelect converts them to heck snake_case.
+#[derive(EnumSelect, serde::Serialize, Clone, Copy)]
+#[allow(dead_code)] // AnotherOne is exercised only via select_options(), not direct construction
+enum NoPolicyEnum {
+    SimpleVariant,
+    AnotherOne,
+}
+
+#[test]
+fn enum_select_without_rename_all_defaults_to_heck_snake_case() {
+    // Contract: catalog values are heck snake_case, NOT serde verbatim.
+    // This is intentional — callers must set `#[serde(rename_all = "snake_case")]`
+    // to align catalog values with serde's wire names.
+    let options = NoPolicyEnum::select_options();
+    assert_eq!(
+        options[0].value,
+        json!("simple_variant"),
+        "EnumSelect default is heck snake_case, not verbatim"
+    );
+    assert_eq!(options[1].value, json!("another_one"));
+}
+
+#[test]
+fn enum_select_without_rename_all_diverges_from_serde_verbatim() {
+    // Deliberately assert the divergence so any future change to the default
+    // (e.g. switching to verbatim) is caught by a red test, not a silent data-desync.
+    let serde_wire_0 = serde_json::to_value(NoPolicyEnum::SimpleVariant).expect("serializes");
+    let catalog_value_0 = NoPolicyEnum::select_options()[0].value.clone();
+    // serde verbatim = "SimpleVariant"; catalog (heck) = "simple_variant" — they differ.
+    assert_ne!(
+        catalog_value_0, serde_wire_0,
+        "without rename_all, catalog value must diverge from serde verbatim; \
+         if they match the default changed — update the derive_enum.rs doc"
+    );
+}
+
+/// Same enum but with `#[serde(rename_all = "snake_case")]` explicitly set:
+/// catalog values and serde wire names align.
+#[derive(EnumSelect, serde::Serialize, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+enum AlignedWithSerdeEnum {
+    SimpleVariant,
+    AnotherOne,
+}
+
+#[test]
+fn enum_select_with_snake_case_rename_all_matches_serde_wire() {
+    // With explicit `rename_all = "snake_case"` the catalog value equals serde's
+    // wire representation — the round-trip is safe.
+    let options = AlignedWithSerdeEnum::select_options();
+    for (i, variant) in [
+        AlignedWithSerdeEnum::SimpleVariant,
+        AlignedWithSerdeEnum::AnotherOne,
+    ]
+    .iter()
+    .enumerate()
+    {
+        let wire = serde_json::to_value(variant).expect("serializes");
+        assert_eq!(
+            options[i].value, wire,
+            "catalog value must equal serde wire name when rename_all = snake_case is set"
+        );
+    }
+}

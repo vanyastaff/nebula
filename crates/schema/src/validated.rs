@@ -1369,13 +1369,6 @@ impl ValidValues {
         &self.values
     }
 
-    /// Borrow the raw value tree (alias for [`raw`](Self::raw)).
-    #[deprecated(note = "use raw() instead")]
-    #[must_use]
-    pub const fn raw_values(&self) -> &FieldValues {
-        &self.values
-    }
-
     /// Iterate validation warnings that were non-fatal.
     #[must_use]
     pub fn warnings(&self) -> &[ValidationError] {
