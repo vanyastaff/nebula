@@ -37,7 +37,7 @@ pub mod action;
 /// public contract for autonomous multi-turn reasoning nodes.
 pub mod agent;
 /// [`BranchKey`] validated newtype for workflow branch identifiers.
-pub mod branch_key;
+pub(crate) mod branch_key;
 /// Capability interfaces injected into contexts (resources, logger, trigger).
 pub mod capability;
 /// Runtime context provided to actions during execution.
@@ -74,7 +74,7 @@ pub mod poll;
 /// Port definitions describing action input/output connection points.
 pub mod port;
 /// [`PortKey`] validated newtype for action port identifiers.
-pub mod port_key;
+pub(crate) mod port_key;
 /// Convenience re-exports for action authors.
 pub mod prelude;
 /// [`ResourceAction`] DX trait, [`ResourceHandler`] dyn contract, and adapter.

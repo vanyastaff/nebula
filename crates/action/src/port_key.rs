@@ -346,6 +346,53 @@ mod tests {
         );
     }
 
+    // ── ActionResult-level serde rejection — Branch / MultiOutput ────────────
+    //
+    // These tests are RED on the old `pub type PortKey/BranchKey = String`
+    // aliases (invalid strings deserialize Ok) and GREEN after the newtypes
+    // route deserialization through TryFrom<String>.
+
+    #[test]
+    fn branch_with_forged_selected_rejected_via_action_result_serde() {
+        use crate::result::ActionResult;
+        // "bad branch!" contains a space and exclamation mark — always invalid.
+        let result = serde_json::from_str::<ActionResult<serde_json::Value>>(
+            r#"{"type":"Branch","selected":"bad branch!","output":{"type":"Empty"},"alternatives":{}}"#,
+        );
+        assert!(
+            result.is_err(),
+            "ActionResult::Branch with a forged `selected` key must be rejected at the serde boundary"
+        );
+    }
+
+    #[test]
+    fn branch_with_forged_alternatives_key_rejected_via_action_result_serde() {
+        use crate::result::ActionResult;
+        // `selected` is valid but an alternatives map key is forged.
+        // Proves that HashMap<BranchKey, _> key deserialization is also guarded.
+        let result = serde_json::from_str::<ActionResult<serde_json::Value>>(
+            r#"{"type":"Branch","selected":"ok","output":{"type":"Empty"},"alternatives":{"bad key!":{"type":"Empty"}}}"#,
+        );
+        assert!(
+            result.is_err(),
+            "ActionResult::Branch with a forged alternatives map key must be rejected at the serde boundary"
+        );
+    }
+
+    #[test]
+    fn multi_output_with_forged_port_key_rejected_via_action_result_serde() {
+        use crate::result::ActionResult;
+        // `outputs` map key "bad port!" is invalid — must be rejected even though
+        // the outer type tag and main_output are well-formed.
+        let result = serde_json::from_str::<ActionResult<serde_json::Value>>(
+            r#"{"type":"MultiOutput","outputs":{"bad port!":{"type":"Empty"}},"main_output":null}"#,
+        );
+        assert!(
+            result.is_err(),
+            "ActionResult::MultiOutput with a forged port key must be rejected at the serde boundary"
+        );
+    }
+
     // ── TryFrom<&str> ────────────────────────────────────────────────────────
 
     #[test]
