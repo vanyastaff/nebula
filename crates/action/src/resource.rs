@@ -9,7 +9,10 @@ use std::{any::Any, fmt, future::Future};
 
 use serde_json::Value;
 
-use crate::{action::Action, context::ActionContext, error::ActionError, metadata::ActionMetadata};
+use crate::{
+    action::Action, context::ActionContext, error::ActionError, metadata::ActionMetadata,
+    resource_produces::ResourceProduces,
+};
 
 // ── Core trait ──────────────────────────────────────────────────────────────
 
@@ -28,7 +31,14 @@ use crate::{action::Action, context::ActionContext, error::ActionError, metadata
 /// downcast to `Instance`, so any impl where they differed failed at
 /// runtime with `ActionError::Fatal`. Zero production impls ever used
 /// distinct types, so the split was removed rather than patched.
-pub trait ResourceAction: Action {
+///
+/// # Output type constraint
+///
+/// The `Action::Output` associated type is constrained to
+/// `ResourceProduces<Self::Resource>`. This means the compiler enforces
+/// that a `ResourceAction`'s output marker is tied to its own `Resource`
+/// type — mismatches surface at impl time, not at runtime.
+pub trait ResourceAction: Action<Output = ResourceProduces<Self::Resource>> {
     /// Resource produced by `configure`, consumed by `cleanup`.
     type Resource: Send + Sync + 'static;
 
@@ -202,7 +212,9 @@ mod tests {
 
     impl Action for MockResourceAction {
         type Input = Value;
-        type Output = Value;
+        // ResourceAction requires Output = ResourceProduces<Self::Resource>.
+        // MockResourceAction::Resource = String, so Output = ResourceProduces<String>.
+        type Output = ResourceProduces<String>;
 
         fn metadata() -> ActionMetadata {
             ActionMetadata::new(

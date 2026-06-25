@@ -60,7 +60,7 @@ mod field_slots;
 /// )]
 /// pub struct SlackSendAction;
 /// ```
-#[proc_macro_derive(Action, attributes(action, nebula))]
+#[proc_macro_derive(Action, attributes(action, nebula, resource, credential))]
 pub fn derive_action(input: TokenStream) -> TokenStream {
     action::derive(input)
 }

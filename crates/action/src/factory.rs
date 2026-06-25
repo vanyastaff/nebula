@@ -47,7 +47,31 @@ use crate::{
     stateless::StatelessAction,
     stream::StreamAction,
     trigger::{TriggerAction, TriggerEvent, TriggerEventOutcome},
+    validation::validate_action_package,
 };
+
+/// Validate action metadata at the start of `instantiate` — fail-closed.
+///
+/// Called once per dispatch by all `Generic*Factory` instantiate implementations.
+/// Because `ActionFactory::metadata()` is cached via `OnceLock`, the
+/// `validate_action_package` cost (a few allocations and comparisons) is paid
+/// every dispatch. The check is cheap relative to the I/O that follows. If a
+/// factory's action has structurally invalid metadata (empty key, duplicate
+/// ports, invalid support-port declarations) the engine never executes it,
+/// preventing silent data-integrity issues.
+///
+/// Callers that need to suppress validation for tests (e.g., deliberately
+/// invalid metadata fixtures) should call the underlying action directly
+/// rather than going through an `ActionFactory`.
+fn check_metadata_or_fatal(meta: &ActionMetadata) -> Result<(), ActionError> {
+    validate_action_package(meta).map_err(|validation_errors| {
+        ActionError::fatal(format!(
+            "action `{}` has invalid metadata; registration should have been rejected: {}",
+            meta.base.key.as_str(),
+            validation_errors,
+        ))
+    })
+}
 
 /// Object-safe factory trait — engine registry stores `Arc<dyn ActionFactory>`.
 ///
@@ -58,7 +82,8 @@ use crate::{
 ///
 /// # Errors
 ///
-/// Returns [`ActionError::Fatal`] if slot resolution fails or the factory
+/// Returns [`ActionError::Fatal`] if slot resolution fails, if action metadata
+/// validation fails (duplicate ports, empty key, etc.), or the factory
 /// otherwise cannot construct an executable action for this dispatch.
 pub trait ActionFactory: Send + Sync + 'static {
     /// Static metadata describing the action this factory produces.
@@ -119,6 +144,7 @@ where
         ctx: &'a dyn ActionContext,
     ) -> Pin<Box<dyn Future<Output = Result<ActionHandle, ActionError>> + Send + 'a>> {
         Box::pin(async move {
+            check_metadata_or_fatal(self.metadata())?;
             let action = A::from_workflow_node(node, ctx).await?;
             let meta = self.metadata().clone();
             let inner = StatelessHandleImpl::<A>::new(action, meta);
@@ -331,6 +357,7 @@ where
         ctx: &'a dyn ActionContext,
     ) -> Pin<Box<dyn Future<Output = Result<ActionHandle, ActionError>> + Send + 'a>> {
         Box::pin(async move {
+            check_metadata_or_fatal(self.metadata())?;
             let action = A::from_workflow_node(node, ctx).await?;
             let meta = self.metadata().clone();
             let inner = StatefulHandleImpl::<A>::new(action, meta);
@@ -470,6 +497,7 @@ where
         ctx: &'a dyn ActionContext,
     ) -> Pin<Box<dyn Future<Output = Result<ActionHandle, ActionError>> + Send + 'a>> {
         Box::pin(async move {
+            check_metadata_or_fatal(self.metadata())?;
             let action = A::from_workflow_node(node, ctx).await?;
             let meta = self.metadata().clone();
             let inner = TriggerHandleImpl::<A>::new(action, meta);
@@ -577,6 +605,7 @@ where
         ctx: &'a dyn ActionContext,
     ) -> Pin<Box<dyn Future<Output = Result<ActionHandle, ActionError>> + Send + 'a>> {
         Box::pin(async move {
+            check_metadata_or_fatal(self.metadata())?;
             let action = A::from_workflow_node(node, ctx).await?;
             let meta = self.metadata().clone();
             let inner = ResourceHandleImpl::<A>::new(action, meta);
@@ -674,6 +703,7 @@ where
         ctx: &'a dyn ActionContext,
     ) -> Pin<Box<dyn Future<Output = Result<ActionHandle, ActionError>> + Send + 'a>> {
         Box::pin(async move {
+            check_metadata_or_fatal(self.metadata())?;
             let action = A::from_workflow_node(node, ctx).await?;
             let meta = self.metadata().clone();
             let inner = ControlHandleImpl::<A>::new(action, meta);
@@ -766,6 +796,7 @@ where
         ctx: &'a dyn ActionContext,
     ) -> Pin<Box<dyn Future<Output = Result<ActionHandle, ActionError>> + Send + 'a>> {
         Box::pin(async move {
+            check_metadata_or_fatal(self.metadata())?;
             let action = A::from_workflow_node(node, ctx).await?;
             let meta = self.metadata().clone();
             let inner = StreamHandleImpl::<A>::new(action, meta);
@@ -886,10 +917,119 @@ where
         ctx: &'a dyn ActionContext,
     ) -> Pin<Box<dyn Future<Output = Result<ActionHandle, ActionError>> + Send + 'a>> {
         Box::pin(async move {
+            check_metadata_or_fatal(self.metadata())?;
             let action = A::from_workflow_node(node, ctx).await?;
             let meta = self.metadata().clone();
             let adapter = crate::agent::AgentActionAdapter::<A>::new(action, meta);
             Ok(ActionHandle::Agent(Box::new(adapter)))
         })
+    }
+}
+
+// ── Tests ──────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use std::sync::OnceLock;
+
+    use nebula_core::{Dependencies, action_key, node_key};
+    use nebula_workflow::NodeDefinition;
+    use serde_json::Value;
+
+    use super::*;
+    use crate::{
+        StatelessAction, action::Action, metadata::ActionMetadata, result::ActionResult,
+        testing::TestContextBuilder,
+    };
+
+    // ── InvalidMetadataAction ────────────────────────────────────────────────
+    //
+    // A stateless action whose `metadata()` returns deliberately invalid
+    // data (empty name + empty description). The factory must refuse to
+    // instantiate it with `ActionError::Fatal` — fail-closed per FIX 3.
+
+    struct InvalidMetadataAction;
+
+    impl Action for InvalidMetadataAction {
+        type Input = Value;
+        type Output = Value;
+
+        fn metadata() -> ActionMetadata {
+            // Empty name and description trigger `MissingMetadataField`
+            // validation failures in `validate_action_package`.
+            ActionMetadata::new(action_key!("test.invalid_meta"), "", "")
+        }
+
+        fn dependencies() -> &'static Dependencies {
+            static DEPS: OnceLock<Dependencies> = OnceLock::new();
+            DEPS.get_or_init(Dependencies::new)
+        }
+    }
+
+    impl StatelessAction for InvalidMetadataAction {
+        async fn execute(
+            &self,
+            _input: Value,
+            _ctx: &(impl ActionContext + ?Sized),
+        ) -> Result<ActionResult<Value>, ActionError> {
+            Ok(ActionResult::success(Value::Null))
+        }
+    }
+
+    impl FromWorkflowNode for InvalidMetadataAction {
+        type Error = ActionError;
+
+        async fn from_workflow_node(
+            _node: &NodeDefinition,
+            _ctx: &dyn ActionContext,
+        ) -> Result<Self, Self::Error> {
+            Ok(Self)
+        }
+    }
+
+    fn stub_node() -> NodeDefinition {
+        NodeDefinition::new(
+            node_key!("test_node"),
+            "Test Node",
+            "nebula.test",
+            "test.invalid_meta",
+        )
+        .expect("stub node key is valid")
+    }
+
+    /// `instantiate` on a factory whose action has invalid metadata (empty
+    /// name and description) must return `ActionError::Fatal`, not silently
+    /// dispatch with corrupted catalog data (FIX 3 — fail-closed).
+    #[tokio::test]
+    async fn instantiate_fails_fatal_on_invalid_metadata() {
+        let factory = GenericStatelessFactory::<InvalidMetadataAction>::new();
+        let node = stub_node();
+        let ctx = TestContextBuilder::new().build();
+
+        let result = factory.instantiate(&node, &ctx).await;
+
+        assert!(
+            matches!(result, Err(ActionError::Fatal { .. })),
+            "expected Fatal but got {result:?}",
+        );
+    }
+
+    /// The error message must name the invalid action key so operators know
+    /// which registration is broken without digging through logs.
+    #[tokio::test]
+    async fn instantiate_fatal_message_names_action_key() {
+        let factory = GenericStatelessFactory::<InvalidMetadataAction>::new();
+        let node = stub_node();
+        let ctx = TestContextBuilder::new().build();
+
+        let Err(ActionError::Fatal { error, .. }) = factory.instantiate(&node, &ctx).await else {
+            panic!("expected Fatal error");
+        };
+
+        let error_message = error.to_string();
+        assert!(
+            error_message.contains("test.invalid_meta"),
+            "error message should name the action key; got: {error_message}",
+        );
     }
 }

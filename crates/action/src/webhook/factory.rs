@@ -14,11 +14,79 @@
 //! natively. The engine simply maintains a string-keyed map of
 //! factories.
 
-use std::sync::Arc;
+use std::{fmt, sync::Arc};
 
-use serde::{Deserialize, Serialize};
+use zeroize::Zeroize;
 
 use crate::{trigger::TriggerHandler, webhook::WebhookConfig};
+
+// ── HmacSecret ──────────────────────────────────────────────────────────────
+
+/// Redacting wrapper for an HMAC verification secret carried in
+/// [`WebhookActivationSpec`].
+///
+/// # Security guarantees
+///
+/// - `Debug` prints `HmacSecret([REDACTED; N bytes])` — the raw bytes never
+///   appear in logs, tracing output, or structured serialization.
+/// - `Serialize` / `Deserialize` are intentionally **not** derived: the secret
+///   is resolved at runtime from a credential store (not stored inline in the
+///   spec row) and therefore has no place in any serialized envelope. Call
+///   sites that truly need to persist a secret must do so through the
+///   credential subsystem, not through this type.
+/// - The inner `Vec<u8>` is zeroed on drop via [`Zeroize`] so the bytes are
+///   not left dangling in freed heap memory.
+///
+/// # Accessing the bytes
+///
+/// Use [`HmacSecret::reveal`] at the one call site that needs the raw bytes
+/// for HMAC computation — the factory `build` implementations.
+#[derive(Clone)]
+pub struct HmacSecret(Vec<u8>);
+
+impl HmacSecret {
+    /// Wrap raw HMAC secret bytes.
+    #[must_use]
+    pub fn new(bytes: impl Into<Vec<u8>>) -> Self {
+        Self(bytes.into())
+    }
+
+    /// Expose the raw bytes for HMAC computation.
+    ///
+    /// Keep the returned slice as short-lived as possible — pass directly to
+    /// the HMAC primitive without binding to a named `let` that lingers in
+    /// scope.
+    #[must_use]
+    pub fn reveal(&self) -> &[u8] {
+        &self.0
+    }
+
+    /// Number of bytes in the secret (safe to log — reveals length, not content).
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Whether the secret is empty (empty secrets are the fail-closed default).
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl fmt::Debug for HmacSecret {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "HmacSecret([REDACTED; {} bytes])", self.0.len())
+    }
+}
+
+impl Drop for HmacSecret {
+    fn drop(&mut self) {
+        self.0.zeroize();
+    }
+}
+
+// ── WebhookActivationSpec ────────────────────────────────────────────────────
 
 /// Operator-supplied parameters for an activation.
 ///
@@ -30,16 +98,22 @@ use crate::{trigger::TriggerHandler, webhook::WebhookConfig};
 /// interprets — Slack and Stripe use it for nothing today; Generic
 /// uses it for `challenge_token`. Future providers can extend without
 /// adding fields here.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// # Security: `secret` is redacted
+///
+/// The [`HmacSecret`] field does not implement `Serialize` / `Deserialize` and
+/// its `Debug` output is redacted. Call [`WebhookActivationSpec::secret`] to
+/// access a reference, or [`WebhookActivationSpec::into_secret`] to take
+/// ownership (e.g. when passing into a factory builder). The secret bytes are
+/// zeroed on drop.
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct WebhookActivationSpec {
     /// `"slack" | "stripe" | "generic"` — keys the factory registry.
     pub action_kind: String,
-    /// HMAC secret material as raw bytes. Storage layers should
-    /// resolve this from a credential reference rather than store
-    /// raw bytes inline; see for the secret-handling
-    /// rationale.
-    pub secret: Vec<u8>,
+    /// HMAC secret material. Resolved at runtime from the credential store;
+    /// never serialized to disk or logs. Access via [`Self::secret`].
+    secret: HmacSecret,
     /// Replay window in seconds. `None` defers to the provider's
     /// published default (5 min for Slack, Stripe; opt-in for
     /// Generic).
@@ -66,13 +140,31 @@ impl WebhookActivationSpec {
     pub fn new(action_kind: impl Into<String>, secret: impl Into<Vec<u8>>) -> Self {
         Self {
             action_kind: action_kind.into(),
-            secret: secret.into(),
+            secret: HmacSecret::new(secret),
             replay_window_secs: None,
             timestamp_header: None,
             timestamp_format: None,
             provider_config: None,
             rate_limit_per_minute: None,
         }
+    }
+
+    /// Borrow the HMAC secret bytes.
+    ///
+    /// Use only at the HMAC computation call site; do not bind to a
+    /// long-lived variable.
+    #[must_use]
+    pub fn secret(&self) -> &HmacSecret {
+        &self.secret
+    }
+
+    /// Consume the spec, returning the HMAC secret.
+    ///
+    /// Use when the factory needs to take ownership of the secret bytes
+    /// to pass into a provider action constructor (`impl Into<Arc<[u8]>>`).
+    #[must_use]
+    pub fn into_secret(self) -> HmacSecret {
+        self.secret
     }
 
     /// Override the timestamp encoding (Unix seconds / Unix
@@ -109,6 +201,86 @@ impl WebhookActivationSpec {
     pub fn with_rate_limit_per_minute(mut self, rpm: u64) -> Self {
         self.rate_limit_per_minute = Some(rpm);
         self
+    }
+}
+
+// ── Tests ──────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SECRET_BYTES: &[u8] = b"super-secret-hmac-key";
+
+    /// `HmacSecret`'s `Debug` output must never contain the raw secret bytes.
+    /// This is a security invariant: if the type is formatted in a log or span
+    /// field, the key material must not leak (FIX 1).
+    #[test]
+    fn hmac_secret_debug_is_redacted() {
+        let secret = HmacSecret::new(SECRET_BYTES);
+        let debug_output = format!("{secret:?}");
+
+        assert!(
+            !debug_output.contains("super-secret-hmac-key"),
+            "raw secret must not appear in Debug output; got: {debug_output}",
+        );
+        assert!(
+            !debug_output.contains("115"), // 's' in ASCII — numeric form should not appear
+            "Debug must not contain raw byte values; got: {debug_output}",
+        );
+        // Length is safe to reveal (does not expose key material).
+        assert!(
+            debug_output.contains(&SECRET_BYTES.len().to_string()),
+            "Debug should report byte length for observability; got: {debug_output}",
+        );
+    }
+
+    /// `WebhookActivationSpec` formatted via `Debug` must not expose the secret.
+    /// The spec is the envelope carried through factory dispatch — it may appear
+    /// in tracing spans if a caller derives span fields from it.
+    #[test]
+    fn webhook_activation_spec_debug_redacts_secret() {
+        let spec = WebhookActivationSpec::new("slack", SECRET_BYTES);
+        let debug_output = format!("{spec:?}");
+
+        assert!(
+            !debug_output.contains("super-secret-hmac-key"),
+            "raw secret must not appear in spec Debug output; got: {debug_output}",
+        );
+    }
+
+    /// `HmacSecret` must grant access to the raw bytes only via `reveal()`,
+    /// and `reveal()` must return the original bytes unchanged.
+    #[test]
+    fn hmac_secret_reveal_returns_original_bytes() {
+        let secret = HmacSecret::new(SECRET_BYTES);
+        assert_eq!(secret.reveal(), SECRET_BYTES);
+    }
+
+    /// `HmacSecret::len` returns the byte count, not the string length of the
+    /// redacted representation — a caller must not use this to infer key material.
+    #[test]
+    fn hmac_secret_len_matches_byte_count() {
+        let secret = HmacSecret::new(SECRET_BYTES);
+        assert_eq!(secret.len(), SECRET_BYTES.len());
+        assert!(!secret.is_empty());
+    }
+
+    /// An empty `HmacSecret` is considered empty — callers can gate on this.
+    #[test]
+    fn hmac_secret_empty_is_detected() {
+        let secret = HmacSecret::new(Vec::<u8>::new());
+        assert!(secret.is_empty());
+        assert_eq!(secret.len(), 0);
+    }
+
+    /// `WebhookActivationSpec::into_secret` transfers ownership so the caller
+    /// can pass the secret directly to the HMAC primitive without cloning.
+    #[test]
+    fn webhook_activation_spec_into_secret_transfers_bytes() {
+        let spec = WebhookActivationSpec::new("generic", SECRET_BYTES);
+        let secret = spec.into_secret();
+        assert_eq!(secret.reveal(), SECRET_BYTES);
     }
 }
 

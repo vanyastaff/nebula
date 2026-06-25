@@ -298,6 +298,15 @@ pub(crate) fn emit_slot_resolution_block(slots: &[ParsedSlotField]) -> (TokenStr
 
         // Build the per-slot resolution block. Each shape produces a
         // value of the field's declared type.
+        //
+        // Optional-slot discipline: `None` means "binding absent" — no
+        // explicit binding AND the default-id resolution also returned
+        // nothing. A binding that is present but fails resolution (e.g.
+        // the resource/credential id is invalid or inaccessible) is a
+        // hard error and must propagate, not silently become `None`.
+        // The `binding_present` variable captures whether an explicit
+        // binding was configured so the error arm can distinguish the
+        // two cases.
         let stmt = match (optional, lazy) {
             (false, false) => quote! {
                 let #field = {
@@ -317,10 +326,26 @@ pub(crate) fn emit_slot_resolution_block(slots: &[ParsedSlotField]) -> (TokenStr
             },
             (true, false) => quote! {
                 let #field = {
-                    let slot_id = #binding_call.unwrap_or(#slot_key_lit);
+                    let explicit_binding = #binding_call;
+                    let slot_id = explicit_binding.unwrap_or(#slot_key_lit);
                     match #resolve_call {
                         Ok(guard) => Some(guard),
-                        Err(_) => None,
+                        Err(e) => {
+                            if explicit_binding.is_some() {
+                                // Binding was configured but resolution failed —
+                                // propagate as a hard error, not a silent None.
+                                return Err(::nebula_action::ActionError::fatal(
+                                    format!(
+                                        "failed to resolve explicitly-bound {} slot `{}` (id `{}`): {}",
+                                        #kind_word, #slot_key_lit, slot_id, e,
+                                    )
+                                ));
+                            }
+                            // No explicit binding; default-id resolution returned
+                            // nothing — treat as absent.
+                            let _ = e;
+                            None
+                        }
                     }
                 };
             },
@@ -342,10 +367,22 @@ pub(crate) fn emit_slot_resolution_block(slots: &[ParsedSlotField]) -> (TokenStr
             },
             (true, true) => quote! {
                 let #field = {
-                    let slot_id = #binding_call.unwrap_or(#slot_key_lit);
+                    let explicit_binding = #binding_call;
+                    let slot_id = explicit_binding.unwrap_or(#slot_key_lit);
                     match #resolve_call {
                         Ok(guard) => Some(::nebula_core::sync::Lazy::with_value(guard)),
-                        Err(_) => None,
+                        Err(e) => {
+                            if explicit_binding.is_some() {
+                                return Err(::nebula_action::ActionError::fatal(
+                                    format!(
+                                        "failed to resolve explicitly-bound {} slot `{}` (id `{}`): {}",
+                                        #kind_word, #slot_key_lit, slot_id, e,
+                                    )
+                                ));
+                            }
+                            let _ = e;
+                            None
+                        }
                     }
                 };
             },

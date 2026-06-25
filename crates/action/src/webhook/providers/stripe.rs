@@ -285,7 +285,7 @@ impl WebhookActionFactory for StripeWebhookActionFactory {
     }
 
     fn build(&self, spec: &WebhookActivationSpec) -> Result<BuiltWebhookHandler, FactoryError> {
-        let mut action = StripeWebhookAction::new(spec.secret.clone());
+        let mut action = StripeWebhookAction::new(spec.secret().reveal().to_vec());
         if let Some(secs) = spec.replay_window_secs {
             action = action.with_tolerance(Duration::from_secs(secs));
         }
