@@ -966,10 +966,28 @@ impl<S: CredentialStore> CredentialResolver<S> {
 }
 
 fn resolve_error_to_credential_error(err: ResolveError) -> CredentialError {
-    CredentialError::Provider(Box::new(ProviderErrorContext::new(
-        ProviderErrorKind::ServerError,
-        SecretFreeMessage::new(err.to_string()),
-    )))
+    match err {
+        // F3 containment violation is a local policy/configuration defect —
+        // not a remote provider failure, not retriable, not a transient error.
+        // Mapping it to `CredentialError::InvalidInput` (Validation category,
+        // non-retriable) gives callers and metrics the correct signal.
+        ResolveError::RefreshContainmentViolation {
+            credential_id,
+            refresh_kind,
+            family_pattern,
+        } => CredentialError::InvalidInput(format!(
+            "credential {credential_id}: F3 containment violation — \
+             refresh kind {refresh_kind:?} is not permitted by scheme family {family_pattern:?}; \
+             fix the credential's policy() implementation or its AuthScheme::Family declaration"
+        )),
+        // All other resolve errors stem from store/IO, deserialisation, refresh
+        // provider calls, or re-auth requirements — surface as provider errors
+        // so they get the correct retry/observability treatment.
+        other => CredentialError::Provider(Box::new(ProviderErrorContext::new(
+            ProviderErrorKind::ServerError,
+            SecretFreeMessage::new(other.to_string()),
+        ))),
+    }
 }
 
 /// Errors produced by [`CredentialResolver`].
@@ -1169,6 +1187,29 @@ mod tests {
     #[test]
     fn live_row_passes_tombstone_check() {
         assert!(reject_tombstoned("cred_x", &stored_with_owner(Some("alice"))).is_ok());
+    }
+
+    /// F3 containment violation must map to `CredentialError::InvalidInput`
+    /// (Validation, non-retriable), NOT to `Provider(ServerError)` (External,
+    /// retriable). Misclassifying a configuration defect as a retriable provider
+    /// error would cause infinite retry loops and misleading observability.
+    #[test]
+    fn containment_violation_maps_to_invalid_input_not_provider_error() {
+        let resolve_err = ResolveError::RefreshContainmentViolation {
+            credential_id: "cred_abc".to_owned(),
+            refresh_kind: "RefreshToken".to_owned(),
+            family_pattern: "SecretToken".to_owned(),
+        };
+        let mapped = resolve_error_to_credential_error(resolve_err);
+        assert!(
+            matches!(mapped, CredentialError::InvalidInput(_)),
+            "expected InvalidInput (non-retriable, Validation category), got {mapped:?}"
+        );
+        // Confirm it is NOT mapped to a retriable provider error.
+        assert!(
+            !matches!(mapped, CredentialError::Provider(_)),
+            "F3 violation must not be mapped to a provider error (would trigger retries)"
+        );
     }
 }
 

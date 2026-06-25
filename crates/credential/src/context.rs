@@ -402,7 +402,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn for_test_creates_valid_context() {
+    fn for_owner_creates_valid_context() {
         let ctx = CredentialContext::for_owner("user_123");
         assert_eq!(ctx.owner_id(), "user_123");
         assert!(ctx.callback_url().is_none());

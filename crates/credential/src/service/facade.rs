@@ -1223,8 +1223,7 @@ impl CredentialService {
             tracing::warn!(
                 credential.id = id,
                 requested_owner = scope.owner_id(),
-                // Not logged at a field level to keep the actual owner out of
-                // structured log exporters that may be less access-controlled.
+                actual_owner = %owner,
                 "credential binding validation: owner mismatch (cross-tenant probe or misconfigured binding)"
             );
             return Err(super::binding::ValidatedCredentialBindingError::NotFound {
