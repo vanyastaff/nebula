@@ -112,7 +112,7 @@ mod tests {
         values
             .try_set_raw("algorithm", serde_json::Value::String("hmac-sha256".into()))
             .expect("test-only known-good algorithm");
-        let ctx = CredentialContext::for_test("u");
+        let ctx = CredentialContext::for_owner("u");
         let r = SigningKeyCredential::resolve(&values, &ctx)
             .await
             .expect("ok");
@@ -131,7 +131,7 @@ mod tests {
         values
             .try_set_raw("algorithm", serde_json::Value::String("hmac-sha256".into()))
             .expect("test-only known-good algorithm");
-        let ctx = CredentialContext::for_test("u");
+        let ctx = CredentialContext::for_owner("u");
         assert!(SigningKeyCredential::resolve(&values, &ctx).await.is_err());
     }
 }

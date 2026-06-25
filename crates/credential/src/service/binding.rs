@@ -86,23 +86,25 @@ impl TenantFingerprint {
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum ValidatedCredentialBindingError {
-    /// The credential id does not exist in any tenant.
+    /// The credential id does not exist in any tenant visible to the caller.
     ///
-    /// Emitted only after the row is confirmed absent — not used to
-    /// mask cross-tenant rows (that produces [`ScopeMismatch`] instead).
-    ///
-    /// [`ScopeMismatch`]: Self::ScopeMismatch
+    /// Emitted for both a genuinely absent id AND for an id that exists but
+    /// belongs to a different tenant (existence-hiding). The two cases are
+    /// deliberately indistinguishable to callers to prevent cross-tenant
+    /// enumeration oracles. Internal logs record which case occurred.
     #[error("credential `{id}` not found")]
     NotFound {
         /// The credential id that was not found.
         id: String,
     },
 
-    /// The credential exists in a different tenant than the caller's.
+    /// Reserved for future or administrative use.
     ///
-    /// Fail-closes: the binding is rejected and the caller is told which
-    /// tenant mismatch occurred (but not the credential's secret
-    /// material).
+    /// `validate_credential_binding` no longer emits this variant — cross-tenant
+    /// ids are mapped to [`NotFound`](Self::NotFound) (existence-hiding). This
+    /// variant is kept for `#[non_exhaustive]` forward-compatibility and any
+    /// future admin/audit surface that is allowed to name the owning tenant.
+    #[doc(hidden)]
     #[error(
         "credential `{id}` belongs to tenant `{actual}`; caller requested tenant `{requested}`"
     )]

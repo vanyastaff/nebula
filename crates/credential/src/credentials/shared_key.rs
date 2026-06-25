@@ -98,7 +98,7 @@ mod tests {
         values
             .try_set_raw("key", serde_json::Value::String("psk-xyz".into()))
             .expect("test-only known-good key");
-        let ctx = CredentialContext::for_test("u");
+        let ctx = CredentialContext::for_owner("u");
         let r = SharedKeyCredential::resolve(&values, &ctx)
             .await
             .expect("ok");
@@ -112,7 +112,7 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_errors_on_missing_key() {
-        let ctx = CredentialContext::for_test("u");
+        let ctx = CredentialContext::for_owner("u");
         assert!(
             SharedKeyCredential::resolve(&FieldValues::new(), &ctx)
                 .await

@@ -3459,6 +3459,7 @@ dependencies = [
  "bitflags",
  "chrono",
  "compact_str",
+ "dashmap",
  "futures",
  "humantime-serde",
  "insta",

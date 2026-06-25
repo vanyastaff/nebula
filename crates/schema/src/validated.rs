@@ -14,7 +14,7 @@ use smallvec::SmallVec;
 use crate::{
     error::{Severity, ValidationError, ValidationReport},
     expression::ExpressionContext,
-    field::{Field, ListField, ModeField, NumberField, ObjectField},
+    field::{Field, ListField, ModeField, ModeVariant, NumberField, ObjectField},
     key::FieldKey,
     loader::{LoaderContext, LoaderRegistry, LoaderResult},
     mode::ExpressionMode,
@@ -81,7 +81,7 @@ pub enum SchemaKind {
     /// A tagged union (sum type) — the schema is one-of N typed variants
     /// (a Rust enum with data). This is a **marker**: the variants are not stored
     /// in a parallel structure but as the schema's sole root [`Field::Mode`],
-    /// whose [`ModeVariant`](crate::field::ModeVariant) keys are the serde wire
+    /// whose [`ModeVariant`] keys are the serde wire
     /// discriminants. Keeping the union as a root `Mode` means every existing
     /// traversal — [`validate`](ValidSchema::validate), path lookup, projection,
     /// alias canonicalization, the depth guard, and the assignability lattice's
@@ -355,7 +355,7 @@ impl ValidSchema {
     /// Build a tagged-union (sum-type) schema from its variants.
     ///
     /// `mode_field` carries the union's variants — one
-    /// [`ModeVariant`](crate::field::ModeVariant) per Rust enum variant, its key
+    /// [`ModeVariant`] per Rust enum variant, its key
     /// the serde wire discriminant; `tagging` records how the enum's wire form
     /// maps onto those keys (see [`SerdeTagging`]). The union is stored as the
     /// schema's sole **required** root [`Field::Mode`] (see [`SchemaKind::Union`]),
@@ -1045,23 +1045,31 @@ fn project_value(field: &Field, value: &FieldValue) -> Option<serde_json::Value>
     }
 }
 
-/// Resolve the active mode-variant key from a wire `{"mode", "value"}` envelope.
+/// Resolve the active mode variant from a wire `{mode, value}` object map.
 ///
-/// Returns the explicit `"mode"` string if present and a string literal, else
-/// falls back to `mode_field.default_variant`. Returns `None` when the selector
-/// is absent and no default is set, or when the selector is a non-string value.
+/// **SECURITY-load-bearing selector rule.** This is the *single* place the
+/// "which variant is active" rule lives for every wire-`Object` fold —
+/// canonicalize ([`canonicalize_nested_value`]), secret-promote
+/// ([`promote_secrets_in_value`]), and project ([`project_mode_object`]). The
+/// three formerly carried byte-identical copies of this match; any drift
+/// between them re-opens the alias-keyed-secret bypass (a secret nested in a
+/// mode payload that one fold resolves and another skips escapes the
+/// canonicalize/strip walk). Unifying it here makes lockstep structural.
 ///
-/// Used by all four `FieldValue::Object` code-paths so the "explicit selector
-/// else default" rule is defined in exactly one place.
-fn resolve_active_mode_variant_key<'a>(
-    map: &'a IndexMap<FieldKey, FieldValue>,
-    mode_field: &'a ModeField,
-) -> Option<&'a str> {
-    match map.get(&*MODE_SELECTOR_KEY) {
-        Some(FieldValue::Literal(serde_json::Value::String(mode_key))) => Some(mode_key.as_str()),
-        Some(_) => None,
-        None => mode_field.default_variant.as_deref(),
-    }
+/// Rule: an explicit string `mode` selects that variant; a non-string `mode`
+/// selects none; an absent `mode` falls back to `default_variant`. Returns the
+/// matching variant, or `None` when no key resolves or the key names no
+/// declared variant.
+fn active_mode_variant_for_object<'m>(
+    mode: &'m ModeField,
+    map: &IndexMap<FieldKey, FieldValue>,
+) -> Option<&'m ModeVariant> {
+    let key: &str = match map.get(&*MODE_SELECTOR_KEY) {
+        Some(FieldValue::Literal(serde_json::Value::String(mode_key))) => mode_key.as_str(),
+        Some(_) => return None,
+        None => mode.default_variant.as_deref()?,
+    };
+    mode.variants.iter().find(|v| v.key.as_str() == key)
 }
 
 /// Project a `Field::Mode` whose value arrived as the wire `{mode,value}` object
@@ -1080,11 +1088,9 @@ fn project_mode_object(
         out.insert(MODE_SELECTOR_KEY.as_str().to_owned(), selector.to_json());
     }
 
-    // Resolve the active variant the same way the rest of the crate does.
-    let selected = resolve_active_mode_variant_key(map, mode);
+    // Resolve the active variant through the shared selector rule.
     if let Some(payload) = map.get(&*MODE_PAYLOAD_KEY)
-        && let Some(key) = selected
-        && let Some(variant) = mode.variants.iter().find(|v| v.key.as_str() == key)
+        && let Some(variant) = active_mode_variant_for_object(mode, map)
         && let Some(projected) = project_value(variant.field.as_ref(), payload)
     {
         out.insert(MODE_PAYLOAD_KEY.as_str().to_owned(), projected);
@@ -1222,16 +1228,14 @@ fn canonicalize_nested_value(field: &Field, value: &mut FieldValue) {
             // SECURITY: wire ingest parses a `{"mode","value"}` envelope into a
             // `FieldValue::Object`, NEVER a `FieldValue::Mode` (see
             // `value::FieldValue::from_json_limited`), so the typed arm above is
-            // dead for `from_json` input. Resolve the active variant exactly as
-            // `promote_secrets_in_value` / loader / context do — an explicit
-            // string `mode`, else `default_variant` — and recurse into the
-            // payload so alias keys inside the variant fold onto their canonical
-            // FieldKey BEFORE secret-strip, loader redaction, and projection
-            // run. Without this arm an alias-keyed secret in a mode payload
-            // escapes canonicalization and leaks plaintext.
-            let resolved_key = resolve_active_mode_variant_key(map, mode_field);
-            if let Some(variant) = resolved_key
-                .and_then(|mode_key| mode_field.variants.iter().find(|v| v.key == mode_key))
+            // dead for `from_json` input. Resolve the active variant through the
+            // shared `active_mode_variant_for_object` selector rule (identical to
+            // `promote_secrets_in_value` / `project_mode_object`) and recurse into
+            // the payload so alias keys inside the variant fold onto their
+            // canonical FieldKey BEFORE secret-strip, loader redaction, and
+            // projection run. Without this arm an alias-keyed secret in a mode
+            // payload escapes canonicalization and leaks plaintext.
+            if let Some(variant) = active_mode_variant_for_object(mode_field, map)
                 && let Some(payload) = map.get_mut(&*MODE_PAYLOAD_KEY)
             {
                 canonicalize_nested_value(variant.field.as_ref(), payload);
@@ -1296,8 +1300,14 @@ fn first_undeclared_in_value(
         (Field::Mode(mode), FieldValue::Object(env)) => {
             // Resolve the active variant exactly as validate / canonicalize do: an
             // explicit string `mode`, else `default_variant`; then sweep its payload.
-            let resolved = resolve_active_mode_variant_key(env, mode);
-            let variant = resolved.and_then(|key| mode.variants.iter().find(|v| v.key == key))?;
+            let resolved = match env.get(&*MODE_SELECTOR_KEY) {
+                Some(FieldValue::Literal(serde_json::Value::String(key))) => Some(key.clone()),
+                Some(_) => None,
+                None => mode.default_variant.clone(),
+            };
+            let variant = resolved
+                .as_deref()
+                .and_then(|key| mode.variants.iter().find(|v| v.key == key))?;
             let payload = env.get(&*MODE_PAYLOAD_KEY)?;
             first_undeclared_in_value(
                 &variant.field,
@@ -1775,10 +1785,8 @@ fn promote_secrets_in_value(
         },
         (Field::Mode(mode), FieldValue::Object(map)) => {
             let payload_key = &*MODE_PAYLOAD_KEY;
-            let resolved_key = resolve_active_mode_variant_key(map, mode);
-            let Some(var) =
-                resolved_key.and_then(|mode_key| mode.variants.iter().find(|v| v.key == mode_key))
-            else {
+            // Shared selector rule (see `active_mode_variant_for_object`).
+            let Some(var) = active_mode_variant_for_object(mode, map) else {
                 return;
             };
             let Some(mv) = map.get_mut(payload_key) else {

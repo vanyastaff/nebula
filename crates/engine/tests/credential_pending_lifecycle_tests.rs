@@ -253,7 +253,7 @@ async fn kickoff_test_pending(
 #[tokio::test]
 async fn pending_lifecycle_resolve_then_continue() {
     let pending_store = InMemoryPendingStore::new();
-    let ctx = CredentialContext::for_test("test-user").with_session_id("sess-1");
+    let ctx = CredentialContext::for_owner("test-user").with_session_id("sess-1");
 
     let token = kickoff_test_pending(&pending_store, &ctx, InteractiveTestCredential::KEY).await;
 
@@ -280,7 +280,7 @@ async fn pending_lifecycle_resolve_then_continue() {
 #[tokio::test]
 async fn pending_token_is_single_use() {
     let pending_store = InMemoryPendingStore::new();
-    let ctx = CredentialContext::for_test("test-user").with_session_id("sess-1");
+    let ctx = CredentialContext::for_owner("test-user").with_session_id("sess-1");
 
     let token = kickoff_test_pending(&pending_store, &ctx, InteractiveTestCredential::KEY).await;
 
@@ -309,7 +309,7 @@ async fn pending_token_is_single_use() {
 #[tokio::test]
 async fn continue_with_wrong_code_returns_error() {
     let pending_store = InMemoryPendingStore::new();
-    let ctx = CredentialContext::for_test("test-user").with_session_id("sess-1");
+    let ctx = CredentialContext::for_owner("test-user").with_session_id("sess-1");
 
     let token = kickoff_test_pending(&pending_store, &ctx, InteractiveTestCredential::KEY).await;
 
@@ -332,7 +332,7 @@ async fn continue_with_wrong_code_returns_error() {
 #[tokio::test]
 async fn retry_does_not_consume_pending_token() {
     let pending_store = InMemoryPendingStore::new();
-    let ctx = CredentialContext::for_test("test-user").with_session_id("sess-1");
+    let ctx = CredentialContext::for_owner("test-user").with_session_id("sess-1");
 
     let token = kickoff_test_pending(&pending_store, &ctx, RetryAwareCredential::KEY).await;
 
@@ -378,8 +378,8 @@ async fn retry_does_not_consume_pending_token() {
 #[tokio::test]
 async fn retry_path_rejects_mismatched_session() {
     let pending_store = InMemoryPendingStore::new();
-    let owner_ctx = CredentialContext::for_test("test-user").with_session_id("sess-owner");
-    let attacker_ctx = CredentialContext::for_test("test-user").with_session_id("sess-attacker");
+    let owner_ctx = CredentialContext::for_owner("test-user").with_session_id("sess-owner");
+    let attacker_ctx = CredentialContext::for_owner("test-user").with_session_id("sess-attacker");
 
     let token = kickoff_test_pending(&pending_store, &owner_ctx, RetryAwareCredential::KEY).await;
 

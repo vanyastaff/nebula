@@ -212,9 +212,10 @@ async fn webhook_secret_mint_store_resolve_verify_round_trip() {
 /// resolvable under tenant B.
 ///
 /// `validate_credential_binding` enforces the owner check before returning a
-/// `ValidatedCredentialBinding`; the error surfaces as `ScopeMismatch`
-/// (not `NotFound`) so the resolver fails closed and leaks no information
-/// about credential existence in the other tenant's namespace.
+/// `ValidatedCredentialBinding`. A cross-tenant probe surfaces as `NotFound`
+/// (existence-hiding) — the real owner is NOT disclosed to the caller. This
+/// prevents an enumeration oracle where an adversary could distinguish "id
+/// absent" from "id exists but belongs to another tenant".
 #[tokio::test]
 async fn webhook_secret_resolver_rejects_cross_tenant_credential_id() {
     let key_provider =
@@ -242,19 +243,24 @@ async fn webhook_secret_resolver_rejects_cross_tenant_credential_id() {
     let resolver = CredentialBackedWebhookSecretResolver::new(svc);
     let result = resolver.resolve(&scope_b, &head.id).await;
 
-    // Assert: (a) the call fails (binding gate holds), (b) the error identifies
-    // a binding/scope failure, (c) the error message contains no secret material.
+    // Assert: (a) the call fails (binding gate holds), (b) the error is a
+    // binding failure wrapping a NotFound (existence-hiding — no tenant id
+    // leak), (c) the error message contains no secret material.
     let err = result
         .expect_err("cross-tenant resolution must fail; Ok(_) means tenant isolation is broken");
     let err_str = err.to_string();
 
-    // The error must be a binding failure, not a lower-level I/O or decrypt error.
-    // `ResolverError::Binding` wraps `ValidatedCredentialBindingError::ScopeMismatch`
-    // whose Display reads "credential binding validation failed: credential `<id>` belongs
-    // to tenant `<actual>`; caller requested tenant `<requested>`".
+    // `ResolverError::Binding` wraps `ValidatedCredentialBindingError::NotFound`
+    // whose Display reads "credential binding validation failed: credential `<id>`
+    // not found". The actual owning tenant MUST NOT appear in the message.
     assert!(
-        err_str.contains("binding") || err_str.contains("tenant") || err_str.contains("scope"),
-        "error must identify a binding/scope failure; got: {err_str:?}"
+        err_str.contains("binding") || err_str.contains("not found"),
+        "error must identify a binding failure; got: {err_str:?}"
+    );
+    // The real owning tenant id must not leak into the error message.
+    assert!(
+        !err_str.contains("tenant-a"),
+        "error must not disclose the real owning tenant (existence oracle); got: {err_str:?}"
     );
 
     // The error must NOT contain the minted `whsec_` string or any key material.

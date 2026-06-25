@@ -198,14 +198,17 @@
 //!
 //! ## Latent bugs surfaced but out of scope
 //!
-//! - **`reload_config` never drains/rebuilds the live runtime — MED-HIGH**
-//!   ([#712]). `reload_config` swaps the config `ArcSwap` (and the Pool
-//!   fingerprint) but never drains in-flight work or rebuilds the
-//!   caller-supplied live `Arc<R::Instance>` for any topology, so a reload
-//!   that should rotate the running runtime is silently not applied to it.
-//!   Deferred because the reload redesign (drain-then-rebuild + a truthful
-//!   outcome contract) is a separate concern; see the **accepted relabel**
-//!   note below for why this is a preserved no-op, not a regression.
+//! - **`reload_config` live-runtime application — CLOSED** ([#712]). The new
+//!   config is applied to the live runtime lazily on the next acquire across
+//!   *every* topology: Pooled evicts stale-fingerprint idle instances and
+//!   recreates; Resident rebuilds its shared master on a changed config
+//!   fingerprint (`Resident::clone_or_create`); Bounded-Exclusive evicts its
+//!   reused instance via a fingerprint-aware `accept` (`Bounded::accept` /
+//!   `Bounded::set_fingerprint`); Bounded-Capped/Unbounded create a fresh
+//!   instance from the current config on every acquire. The `SwappedImmediately`
+//!   outcome stays accurate (config swapped immediately; live runtime rebuilt
+//!   lazily) — no eager drain-then-rebuild redesign was needed; see the
+//!   **accepted relabel** note below.
 //! - **Pool `CreateGuard` cancel-drop — residual saturation-only leak — LOW**
 //!   ([#713]). The main cancel-drop path is **closed**: `SlotCreateGuard::drop`
 //!   schedules `destroy_within` via the `ReleaseQueue` (see

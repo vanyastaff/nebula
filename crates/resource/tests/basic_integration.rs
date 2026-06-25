@@ -12,14 +12,15 @@ use std::sync::{
 use nebula_core::{ExecutionId, ResourceKey, resource_key};
 use nebula_resource::ResidentConfig;
 use nebula_resource::{
-    AcquireOptions, Manager, ManagerConfig, Pooled, RegistrationSpec, Resident, ResourceContext,
-    ScopeLevel, ShutdownConfig, SlotIdentity, TopologyTag,
+    AcquireOptions, Bounded, Manager, ManagerConfig, Pooled, RegistrationSpec, Resident,
+    ResourceContext, ScopeLevel, ShutdownConfig, SlotIdentity, TopologyTag,
     error::{Error, ErrorKind},
     guard::ResourceGuard,
     recovery::{GateState, RecoveryGate, RecoveryGateConfig},
     release_queue::ReleaseQueue,
     resource::{HasCredentialSlots, Provider, ResourceConfig, ResourceMetadata},
     topology::{
+        bounded::BoundedProvider,
         pooled::{BrokenCheck, PoolProvider, RecycleDecision},
         resident::ResidentProvider,
     },
@@ -1126,6 +1127,61 @@ async fn reload_config_bumps_status_generation() {
     assert_eq!(
         snap.generation, 1,
         "reload_config must bake the new generation into ResourceStatus (#387)",
+    );
+}
+
+#[tokio::test]
+async fn reload_config_rebuilds_resident_master_with_new_config() {
+    // A resident holds ONE shared master and clones it per acquire. Before the
+    // fix, `reload_config` swapped the config but never rebuilt that master, so
+    // an operator's new config never took effect on the live runtime. The
+    // master must be rebuilt — lazily, on the next acquire — when the config
+    // fingerprint changes. `ResidentTestResource::create` returns a fresh
+    // instance carrying a monotonic create-id, so a rebuild is observable as a
+    // changed id. Red-on-revert: without the rebuild, the same master (same id)
+    // is reused after reload.
+    let manager = Manager::new();
+    let resource = ResidentTestResource::new();
+    let resident_rt = Resident::<ResidentTestResource>::new(ResidentConfig::default());
+    manager
+        .register(RegistrationSpec {
+            resource,
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: resident_rt,
+            recovery_gate: None,
+        })
+        .expect("register");
+
+    let ctx = test_ctx();
+    let first = manager
+        .acquire_resident::<ResidentTestResource>(&ctx, &AcquireOptions::default())
+        .await
+        .expect("first acquire");
+    let first_id = first.load(Ordering::Relaxed);
+    drop(first);
+
+    // Reload to a config with a DIFFERENT fingerprint (a different name).
+    manager
+        .reload_config::<ResidentTestResource>(
+            TestConfig {
+                name: "test-v2".into(),
+            },
+            &ScopeLevel::Global,
+        )
+        .expect("reload");
+
+    let second = manager
+        .acquire_resident::<ResidentTestResource>(&ctx, &AcquireOptions::default())
+        .await
+        .expect("second acquire");
+    let second_id = second.load(Ordering::Relaxed);
+
+    assert_ne!(
+        first_id, second_id,
+        "reload_config must rebuild the resident master with the new config \
+         (a changed config fingerprint forces a fresh create on the next acquire)"
     );
 }
 
@@ -3838,6 +3894,114 @@ impl PoolProvider for ReloadPoolResource {
     fn is_broken(&self, _runtime: &Arc<AtomicU64>) -> BrokenCheck {
         BrokenCheck::Healthy
     }
+}
+
+/// Minimal Bounded-Exclusive resource for reload tests — reuses one instance,
+/// reset between leases. `create` carries a monotonic id so a rebuild is
+/// observable.
+#[derive(Clone)]
+struct ReloadExclusiveResource {
+    create_counter: Arc<AtomicU64>,
+}
+
+impl ReloadExclusiveResource {
+    fn new() -> Self {
+        Self {
+            create_counter: Arc::new(AtomicU64::new(0)),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for ReloadExclusiveResource {
+    type Config = ReloadConfig;
+    type Instance = Arc<AtomicU64>;
+    type Topology = Bounded<Self>;
+
+    fn key() -> ResourceKey {
+        resource_key!("test-reload-exclusive")
+    }
+
+    async fn create(
+        &self,
+        _config: &ReloadConfig,
+        _ctx: &ResourceContext,
+    ) -> Result<Arc<AtomicU64>, Error> {
+        let id = self.create_counter.fetch_add(1, Ordering::Relaxed);
+        Ok(Arc::new(AtomicU64::new(id)))
+    }
+
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::from_key(&Self::key())
+    }
+}
+
+impl HasCredentialSlots for ReloadExclusiveResource {
+    fn credential_slot_epoch(&self) -> u64 {
+        0
+    }
+}
+
+impl BoundedProvider for ReloadExclusiveResource {}
+
+#[tokio::test]
+async fn reload_config_rebuilds_bounded_exclusive_instance_with_new_config() {
+    // Bounded-Exclusive reuses ONE instance (reset between leases). Before the
+    // fix, `reload_config` swapped the config but never rebuilt that reused
+    // store-held instance, so an operator's new config never took effect. A
+    // changed config fingerprint must evict-and-rebuild it on the next acquire
+    // — symmetric to Pooled eviction and the Resident master rebuild. The
+    // create-id makes a rebuild observable. Red-on-revert: without the
+    // fingerprint-aware `accept`, the reset instance (same id) is reused.
+    let manager = Arc::new(Manager::new());
+    let resource = ReloadExclusiveResource::new();
+    manager
+        .register(RegistrationSpec {
+            resource,
+            config: ReloadConfig::new(1),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: Bounded::<ReloadExclusiveResource>::exclusive(),
+            recovery_gate: None,
+        })
+        .expect("register");
+
+    let ctx = test_ctx();
+    let key = ReloadExclusiveResource::key();
+    let acquire = || async {
+        let boxed = Manager::acquire_any(
+            Arc::clone(&manager),
+            &key,
+            &ctx,
+            &AcquireOptions::default(),
+            &SlotIdentity::Unbound,
+        )
+        .await
+        .expect("acquire");
+        *boxed
+            .downcast::<ResourceGuard<ReloadExclusiveResource>>()
+            .expect("downcast")
+    };
+
+    let first = acquire().await;
+    let first_id = first.load(Ordering::Relaxed);
+    // Await release so the reset instance is back in the store BEFORE the
+    // reload — otherwise the next acquire would create fresh from an empty
+    // store and not exercise the fingerprint-aware eviction.
+    first.release().await.expect("release returns the instance");
+
+    manager
+        .reload_config::<ReloadExclusiveResource>(ReloadConfig::new(42), &ScopeLevel::Global)
+        .expect("reload");
+
+    let second = acquire().await;
+    let second_id = second.load(Ordering::Relaxed);
+
+    assert_ne!(
+        first_id, second_id,
+        "reload_config must evict-and-rebuild the Bounded-Exclusive instance \
+         with the new config (a changed fingerprint forces a fresh create)"
+    );
 }
 
 #[tokio::test]

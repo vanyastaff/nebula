@@ -113,9 +113,11 @@ impl WebhookSecretResolver for CredentialBackedWebhookSecretResolver {
         let tenant_scope = TenantScope::from_scope(scope);
 
         // Step 1: validate the binding (owner check, tombstone check).
-        // All three failure modes (NotFound / ScopeMismatch / CredentialTombstoned)
-        // are routed through `ResolverError::Binding` so every failure out of
-        // this function is a `ResolverError` behind the box.
+        // All three failure modes (NotFound / CredentialTombstoned / Io) are
+        // routed through `ResolverError::Binding` so every failure out of this
+        // function is a `ResolverError` behind the box.
+        // Note: a cross-tenant id maps to NotFound (existence-hiding) — no
+        // structured tenant mismatch is surfaced to callers.
         let binding = self
             .service
             .validate_credential_binding(&tenant_scope, secret_id)
