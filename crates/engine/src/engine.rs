@@ -501,7 +501,9 @@ mod frontier;
 mod outcome;
 mod persistence;
 mod resume;
+mod timer_scan;
 use outcome::*;
+pub use timer_scan::DEFAULT_TIMER_SCAN_INTERVAL;
 
 impl WorkflowEngine {
     /// Create a new engine with the given components.

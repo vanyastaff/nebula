@@ -98,7 +98,7 @@ pub use daemon::{
     EventSource, EventSourceAdapter, EventSourceConfig, EventSourceRuntime, RestartPolicy,
     RoutingError, RoutingResolver, SLICE_FLAVOR_SHA,
 };
-pub use engine::{DEFAULT_EVENT_CHANNEL_CAPACITY, WorkflowEngine};
+pub use engine::{DEFAULT_EVENT_CHANNEL_CAPACITY, DEFAULT_TIMER_SCAN_INTERVAL, WorkflowEngine};
 pub use error::EngineError;
 pub use event::{ExecutionEvent, NodeFailedDetails};
 pub use nebula_storage_port::dto::ResumeTarget;
