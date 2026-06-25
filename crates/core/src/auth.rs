@@ -37,8 +37,10 @@ use zeroize::ZeroizeOnDrop;
 
 /// Classification of authentication patterns.
 ///
-/// 10 built-in patterns cover common integration auth mechanisms.
-/// `Custom` handles everything else.
+/// 11 variants: `NoAuth`, 9 named auth-mechanism patterns
+/// (secret-token, password, OAuth2, key-pair, certificate, request-signing,
+/// connection-URI, instance-identity, shared-secret), and `Custom` for
+/// plugin-defined patterns not covered by the named set.
 ///
 /// **Pruned 2026-04-24** (zero consumers, Plane-A territory):
 /// `FederatedIdentity` (SAML/JWT → `nebula-auth`, not integration credentials),

@@ -12,7 +12,7 @@
 ## Key files
 - `src/lib.rs` — module wiring, re-exports, `prelude`, compile-time key macros (`plugin_key!` etc.)
 - `src/id/` — prefixed-ULID identifiers (`ExecutionId` `exe_…`, `WorkflowId` `wf_…`, …) via `domain-key`; all `Copy`, `new/nil/parse`, serde
-- `src/keys.rs` — normalized validated string keys; `SecretString` credential wrapper lives here (Debug MUST stay redacted)
+- `src/keys.rs` — normalized validated string keys (no secret material here — credential wrappers live in `nebula-credential`)
 - `src/scope.rs` — `ScopeLevel`/`Scope`/`Principal`/`ScopeResolver` (Global → … → Action)
 - `src/context/` — `Context` trait, `BaseContext(Builder)`, capability traits (`HasCredentials`, `HasResources`, …)
 - `src/auth.rs` — canonical `AuthScheme` trait + `AuthPattern` enum (re-exported by `nebula-credential`)
@@ -23,7 +23,7 @@
 - Identifiers/keys are stable opaque handles ([L1-§3.10]); changing their representation cascades — extend deliberately, never casually rename or re-encode.
 - `SecretString` and credential-related key types must keep `Debug` redacted ([L2-§12.5]) — no secret material in logs or error strings. Use `debug_redacted`/`debug_typed` from `guard`.
 - ID types use `domain-key` (prefixed ULIDs) — never add a direct `uuid` dependency or invent a per-type newtype.
-- `CredentialId`/`CredentialEvent` vocabulary lives in `nebula-credential`; `AuthScheme`/`AuthPattern` are canonical *here* and re-exported there.
+- `CredentialId` is defined in this crate (`src/id/types.rs`); `CredentialEvent` vocabulary lives in `nebula-credential`. `AuthScheme`/`AuthPattern` are canonical *here* and re-exported there.
 - Cross-crate calls go through `nebula-eventbus`, not direct sibling imports.
 - Library code uses typed `thiserror`/`CoreError`; no panicking unwrap/expect/panic in lib code.
 

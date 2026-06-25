@@ -30,8 +30,9 @@ impl Dependencies {
         self
     }
 
-    /// Declare a slot-binding field (`#[resource]` / `#[credential]`) per
-    ///. The default id (the slot key) supplies the binding when
+    /// Declare a slot-binding field (`#[resource]` / `#[credential]`).
+    ///
+    /// The default id (the slot key) supplies the binding when
     /// the workflow node does not override it via `slot_bindings`.
     pub fn slot_field(mut self, field: SlotField) -> Self {
         self.slot_fields.push(field);
@@ -58,13 +59,13 @@ impl Dependencies {
 ///
 /// Slot fields capture the `(slot_key, default_id, kind, required, lazy)`
 /// tuple that `#[derive(Action)]` reads off `#[resource(...)]` /
-/// `#[credential(...)]` field-level attributes (). The
-/// engine uses this declaration to resolve the slot at dispatch time,
-/// applying the workflow's `slot_bindings` override when one
-/// is supplied for `slot_key`, falling back to `default_id` otherwise.
+/// `#[credential(...)]` field-level attributes. The engine uses this
+/// declaration to resolve the slot at dispatch time, applying the
+/// workflow's `slot_bindings` override when one is supplied for
+/// `slot_key`, falling back to `default_id` otherwise.
 #[derive(Debug, Clone)]
 pub struct SlotField {
-    /// The struct-field name (and default binding key, ).
+    /// The struct-field name (also used as the default binding key).
     pub slot_key: &'static str,
     /// Default id used when the workflow node does not override.
     /// By convention this is `slot_key` itself.
