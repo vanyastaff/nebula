@@ -433,7 +433,7 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
                 quote! {
                     .resource(
                         ::nebula_core::ResourceRequirement::new(
-                            #key_str,
+                            ::nebula_core::resource_key!(#key_str),
                             ::std::any::TypeId::of::<#ty>(),
                             #type_name_str,
                         ).purpose(#purpose)
@@ -443,7 +443,7 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
                 quote! {
                     .resource(
                         ::nebula_core::ResourceRequirement::new(
-                            #key_str,
+                            ::nebula_core::resource_key!(#key_str),
                             ::std::any::TypeId::of::<#ty>(),
                             #type_name_str,
                         )

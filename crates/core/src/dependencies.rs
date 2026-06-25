@@ -30,8 +30,9 @@ impl Dependencies {
         self
     }
 
-    /// Declare a slot-binding field (`#[resource]` / `#[credential]`) per
-    ///. The default id (the slot key) supplies the binding when
+    /// Declare a slot-binding field (`#[resource]` / `#[credential]`).
+    ///
+    /// The default id (the slot key) supplies the binding when
     /// the workflow node does not override it via `slot_bindings`.
     pub fn slot_field(mut self, field: SlotField) -> Self {
         self.slot_fields.push(field);
@@ -58,13 +59,13 @@ impl Dependencies {
 ///
 /// Slot fields capture the `(slot_key, default_id, kind, required, lazy)`
 /// tuple that `#[derive(Action)]` reads off `#[resource(...)]` /
-/// `#[credential(...)]` field-level attributes (). The
-/// engine uses this declaration to resolve the slot at dispatch time,
-/// applying the workflow's `slot_bindings` override when one
-/// is supplied for `slot_key`, falling back to `default_id` otherwise.
+/// `#[credential(...)]` field-level attributes. The engine uses this
+/// declaration to resolve the slot at dispatch time, applying the
+/// workflow's `slot_bindings` override when one is supplied for
+/// `slot_key`, falling back to `default_id` otherwise.
 #[derive(Debug, Clone)]
 pub struct SlotField {
-    /// The struct-field name (and default binding key, ).
+    /// The struct-field name (also used as the default binding key).
     pub slot_key: &'static str,
     /// Default id used when the workflow node does not override.
     /// By convention this is `slot_key` itself.
@@ -145,19 +146,37 @@ pub struct ResourceRequirement {
 }
 
 impl ResourceRequirement {
-    /// Create a required resource requirement.
+    /// Create a required resource requirement from a pre-validated [`ResourceKey`].
     ///
-    /// `key` must be a valid [`ResourceKey`] string (lowercase, underscores).
-    /// Panics at runtime if the key is invalid — prefer compile-time
-    /// validated keys when possible.
-    pub fn new(key: &str, type_id: TypeId, type_name: &'static str) -> Self {
+    /// Prefer the compile-time [`resource_key!`](crate::resource_key) macro to
+    /// construct the key argument — that rejects invalid literals at compile time
+    /// and makes this constructor infallible.
+    pub fn new(key: ResourceKey, type_id: TypeId, type_name: &'static str) -> Self {
         Self {
-            key: ResourceKey::new(key).unwrap_or_else(|_| panic!("invalid resource key: {key}")),
+            key,
             type_id,
             type_name,
             required: true,
             purpose: None,
         }
+    }
+
+    /// Create a required resource requirement, validating `key` at runtime.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::CoreError::InvalidKey`] when `key` fails [`ResourceKey`]
+    /// validation (not lowercase-underscore-alphanumeric).  Prefer the compile-time
+    /// [`resource_key!`](crate::resource_key) macro + [`Self::new`] when the key
+    /// is a string literal.
+    pub fn try_from_str(
+        key: &str,
+        type_id: TypeId,
+        type_name: &'static str,
+    ) -> Result<Self, crate::CoreError> {
+        let validated_key =
+            ResourceKey::new(key).map_err(|_| crate::CoreError::invalid_key(key, "resource"))?;
+        Ok(Self::new(validated_key, type_id, type_name))
     }
 
     /// Set the purpose description (builder-style).
@@ -174,20 +193,37 @@ impl ResourceRequirement {
 }
 
 impl CredentialRequirement {
-    /// Create a required credential requirement.
+    /// Create a required credential requirement from a pre-validated [`CredentialKey`].
     ///
-    /// `key` must be a valid [`CredentialKey`] string (lowercase, underscores).
-    /// Panics at runtime if the key is invalid — prefer compile-time
-    /// validated keys when possible.
-    pub fn new(key: &str, type_id: TypeId, type_name: &'static str) -> Self {
+    /// Prefer the compile-time [`credential_key!`](crate::credential_key) macro to
+    /// construct the key argument — that rejects invalid literals at compile time
+    /// and makes this constructor infallible.
+    pub fn new(key: CredentialKey, type_id: TypeId, type_name: &'static str) -> Self {
         Self {
-            key: CredentialKey::new(key)
-                .unwrap_or_else(|_| panic!("invalid credential key: {key}")),
+            key,
             type_id,
             type_name,
             required: true,
             purpose: None,
         }
+    }
+
+    /// Create a required credential requirement, validating `key` at runtime.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::CoreError::InvalidKey`] when `key` fails [`CredentialKey`]
+    /// validation (not lowercase-underscore-alphanumeric).  Prefer the compile-time
+    /// [`credential_key!`](crate::credential_key) macro + [`Self::new`] when the
+    /// key is a string literal.
+    pub fn try_from_str(
+        key: &str,
+        type_id: TypeId,
+        type_name: &'static str,
+    ) -> Result<Self, crate::CoreError> {
+        let validated_key = CredentialKey::new(key)
+            .map_err(|_| crate::CoreError::invalid_key(key, "credential"))?;
+        Ok(Self::new(validated_key, type_id, type_name))
     }
 
     /// Set the purpose description (builder-style).
@@ -252,10 +288,7 @@ impl From<DependencyError> for crate::CoreError {
                 crate::CoreError::DependencyMissing { name, required_by }
             },
             DependencyError::Cycle { path } => crate::CoreError::DependencyCycle { path },
-            DependencyError::RegistryInvariant(msg) => crate::CoreError::DependencyMissing {
-                name: msg,
-                required_by: "registry",
-            },
+            DependencyError::RegistryInvariant(msg) => crate::CoreError::RegistryInvariant(msg),
         }
     }
 }
@@ -263,13 +296,29 @@ impl From<DependencyError> for crate::CoreError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::resource_key;
 
     struct FakeResource;
 
     #[test]
+    fn resource_requirement_try_from_str_rejects_invalid_key() {
+        // Headline acceptance test — must be red before try_from_str exists.
+        let result = ResourceRequirement::try_from_str("bad key!", TypeId::of::<()>(), "X");
+        assert!(
+            result.is_err(),
+            "try_from_str must reject keys with spaces/special chars"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, crate::CoreError::InvalidKey { .. }),
+            "expected InvalidKey, got: {err:?}"
+        );
+    }
+
+    #[test]
     fn resource_requirement_builder() {
         let req = ResourceRequirement::new(
-            "fake_resource",
+            resource_key!("fake_resource"),
             TypeId::of::<FakeResource>(),
             "FakeResource",
         )
@@ -284,8 +333,11 @@ mod tests {
 
     #[test]
     fn resource_requirement_defaults() {
-        let req =
-            ResourceRequirement::new("test_res", TypeId::of::<FakeResource>(), "FakeResource");
+        let req = ResourceRequirement::new(
+            resource_key!("test_res"),
+            TypeId::of::<FakeResource>(),
+            "FakeResource",
+        );
 
         assert!(req.required);
         assert_eq!(req.purpose, None);
@@ -295,7 +347,7 @@ mod tests {
     fn dependencies_builder() {
         let deps = Dependencies::new().resource(
             ResourceRequirement::new(
-                "http_resource",
+                resource_key!("http_resource"),
                 TypeId::of::<FakeResource>(),
                 "HttpResource",
             )
@@ -305,6 +357,20 @@ mod tests {
         assert_eq!(deps.resources().len(), 1);
         assert_eq!(deps.resources()[0].type_name, "HttpResource");
         assert!(deps.credentials().is_empty());
+    }
+
+    #[test]
+    fn credential_requirement_try_from_str_rejects_invalid_key() {
+        let result = CredentialRequirement::try_from_str("bad key!", TypeId::of::<()>(), "X");
+        assert!(
+            result.is_err(),
+            "try_from_str must reject keys with spaces/special chars"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, crate::CoreError::InvalidKey { domain, .. } if domain == "credential"),
+            "expected InvalidKey with domain=credential, got: {err:?}"
+        );
     }
 
     #[test]

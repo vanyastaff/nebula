@@ -761,7 +761,7 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
     };
 
-    use nebula_core::NodeKey;
+    use nebula_core::{CredentialKey, NodeKey};
 
     use super::*;
 
@@ -841,9 +841,10 @@ mod tests {
                     self.hits.fetch_add(1, Ordering::SeqCst);
                     Ok(Box::new(self.payload_marker) as ScopedLookup)
                 } else {
-                    Err(CoreError::CredentialNotFound {
-                        key: key_owned.as_str().to_owned(),
-                    })
+                    Err(CoreError::credential_not_found(
+                        CredentialKey::new(key_owned.as_str())
+                            .expect("ResourceKey format is CredentialKey-compatible"),
+                    ))
                 }
             })
         }

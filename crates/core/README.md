@@ -27,9 +27,9 @@ workspace — extend `nebula-core` deliberately (canon §3.10).
 
 ## Public API
 
-- `ExecutionId`, `WorkflowId`, `NodeId`, `UserId`, `TenantId`, `ProjectId`, `OrganizationId`, `ResourceId`, `RoleId` — prefixed ULID typed identifiers. (`CredentialId` lives in `nebula-credential`.)
+- `ExecutionId`, `WorkflowId`, `WorkflowVersionId`, `OrgId`, `WorkspaceId`, `UserId`, `ServiceAccountId`, `ResourceId`, `CredentialId`, `TriggerId`, `TriggerEventId`, `AttemptId`, `InstanceId`, `SessionId` — prefixed ULID typed identifiers, all defined in this crate.
 - `PluginKey`, `ActionKey`, `CredentialKey`, `ParameterKey`, `ResourceKey`, `NodeKey` — normalized string keys with validation.
-- `ScopeLevel`, `Scope`, `Principal`, `ScopeResolver` — hierarchical scope system (Global → Organization → Project → Workflow → Execution → Action).
+- `ScopeLevel`, `Scope`, `Principal`, `ScopeResolver` — hierarchical scope system (Global → Organization → Workspace → Workflow → Execution).
 - `Context` trait, `BaseContext`, `BaseContextBuilder` — base context with capability traits (`HasCredentials`, `HasResources`, `HasMetrics`, `HasEventBus`, `HasLogger`).
 - `ResourceAccessor`, `CredentialAccessor`, `Logger`, `MetricsEmitter`, `EventEmitter`, `Clock` — capability accessor traits injected through context.
 - `Guard`, `TypedGuard` — RAII guard traits for scoped resource/credential wrappers (module `guard`). Debug helpers: `debug_redacted`, `debug_typed`.
@@ -38,16 +38,16 @@ workspace — extend `nebula-core` deliberately (canon §3.10).
 - `TraceId`, `SpanId` — observability identity types.
 - `CoreError` — typed error for this crate (thiserror, no anyhow).
 - `OrgRole`, `WorkspaceRole`, `effective_workspace_role` — organization and workspace role enums for RBAC (module `role`).
-- `Permission`, `PermissionDenied` — granular permission definitions (module `permission`).
+- `Permission` — granular permission definitions (module `permission`). `PermissionDenied` — access-control error type (module `tenancy`).
 - `TenantContext`, `ResolvedIds` — multi-tenant context and resolved organization/workspace IDs (module `tenancy`).
 - `Slug`, `SlugKind`, `SlugError`, `is_prefixed_ulid()` — validated slug strings for human-readable identifiers (module `slug`).
 
-Credential-specific vocabulary (`CredentialEvent`, `CredentialId`) lives in `nebula-credential`. The `AuthScheme` trait and `AuthPattern` enum are canonical in this crate (module `auth`); `nebula-credential` re-exports them for discoverability.
+Credential-specific vocabulary (`CredentialEvent`) lives in `nebula-credential`. `CredentialId` is defined in this crate (module `id`). The `AuthScheme` trait and `AuthPattern` enum are canonical in this crate (module `auth`); `nebula-credential` re-exports them for discoverability.
 
 ## Contract
 
 - **[L1-§3.10]** Identifiers and keys in this crate are the stable, opaque handles shared by every other crate. Changing their representation cascades across the workspace.
-- **[L2-§12.5]** `SecretString` (credential material wrapper) must keep its `Debug` implementation redacted. No secret material may appear in log output or error strings. Seam: credential-related key types in `crates/core/src/keys.rs`. Test coverage: see `docs/MATURITY.md`.
+- **[L2-§12.5]** No secret material may appear in log output or error strings. Credential material (`SecretString` and related wrappers) lives in `nebula-credential`, not here. Test coverage: see `docs/MATURITY.md`.
 
 ## Non-goals
 
@@ -74,7 +74,7 @@ See `docs/MATURITY.md` row for `nebula-core`.
 
 All ID types use prefixed ULIDs via the `domain-key` crate (no direct `uuid` dependency).
 All ID types are `Copy`, support `new()`, `nil()`, `parse(&str)`, serde, and re-export
-`UuidParseError` for parse error handling.
+`UlidParseError` for parse error handling.
 
 Prefix examples: `ExecutionId` → `exe_01J9…`, `WorkflowId` → `wf_01J9…`.
 

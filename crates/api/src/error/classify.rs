@@ -152,9 +152,30 @@ impl From<ValidationErrors> for ApiError {
 
 impl From<nebula_core::PermissionDenied> for ApiError {
     fn from(pd: nebula_core::PermissionDenied) -> Self {
+        let (required_role, current_role) = match &pd.denial {
+            nebula_core::PermissionDenial::Workspace { required, current } => (
+                required.to_string(),
+                current
+                    .map(|r| r.to_string())
+                    .unwrap_or_else(|| "none".to_owned()),
+            ),
+            nebula_core::PermissionDenial::Org { required, current } => (
+                required.to_string(),
+                current
+                    .map(|r| r.to_string())
+                    .unwrap_or_else(|| "none".to_owned()),
+            ),
+            // `PermissionDenial` is `#[non_exhaustive]`; future variants forward their
+            // human-readable Display output as `required_role`. `current_role` uses
+            // the same string so neither field is silently left blank/half-populated.
+            _ => {
+                let display = pd.denial.to_string();
+                (display.clone(), display)
+            },
+        };
         Self::InsufficientRole {
-            required_role: pd.required_role,
-            current_role: pd.current_role,
+            required_role,
+            current_role,
         }
     }
 }

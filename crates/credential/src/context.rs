@@ -84,7 +84,10 @@ fn default_resource_accessor() -> Arc<dyn ResourceAccessor> {
 /// use nebula_credential::CredentialContextBuilder;
 /// use nebula_core::BaseContext;
 ///
-/// let base = BaseContext::builder().build();
+/// let base = BaseContext::builder(nebula_core::scope::Scope::default())
+///     .principal(nebula_core::scope::Principal::System)
+///     .build()
+///     .expect("scope + principal must produce a valid BaseContext");
 /// let ctx = CredentialContextBuilder::new(base, credentials, resources)
 ///     .callback_url("https://app/callback".to_owned())
 ///     .build();
@@ -245,7 +248,10 @@ impl CredentialContext {
     /// default scope, system clock) and noop accessors. The `owner_id` is
     /// stored as an override for backward-compatible pending-store binding.
     pub fn for_test(owner_id: impl Into<String>) -> Self {
-        let base = BaseContext::builder().build();
+        let base = BaseContext::builder(Scope::default())
+            .principal(Principal::System)
+            .build()
+            .expect("scope + principal must produce a valid BaseContext");
         let cancel = base.cancellation().child_token();
         Self {
             base: Arc::new(base),
@@ -403,7 +409,10 @@ mod tests {
 
     #[test]
     fn builder_creates_context_with_all_fields() {
-        let base = BaseContext::builder().build();
+        let base = BaseContext::builder(Scope::default())
+            .principal(Principal::System)
+            .build()
+            .expect("scope + principal must produce a valid BaseContext");
         let ctx = CredentialContextBuilder::new(
             base,
             default_credential_accessor(),

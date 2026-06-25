@@ -144,8 +144,8 @@ mod tests {
                     Box::new(format!("resolved:{}", key.as_str()));
                 Box::pin(async move { Ok(val) })
             } else {
-                let key_str = key.as_str().to_owned();
-                Box::pin(async move { Err(CoreError::CredentialNotFound { key: key_str }) })
+                let missing_key = key.clone();
+                Box::pin(async move { Err(CoreError::credential_not_found(missing_key)) })
             }
         }
 

@@ -61,8 +61,12 @@ async fn init_api_telemetry_emits_traceparent_on_response() {
 
     let parsed =
         parse_traceparent(traceparent).expect("response traceparent must be structurally valid");
-    assert_ne!(parsed.trace_id.0, 0, "trace_id must not be all-zero");
-    assert_ne!(parsed.parent_span_id.0, 0, "parent_id must not be all-zero");
+    assert_ne!(parsed.trace_id.get(), 0, "trace_id must not be all-zero");
+    assert_ne!(
+        parsed.parent_span_id.get(),
+        0,
+        "parent_id must not be all-zero"
+    );
 }
 
 /// End-to-end: an inbound `traceparent` is extracted, attached as parent of the per-request
@@ -149,7 +153,7 @@ async fn inbound_traceparent_round_trips_with_same_trace_id() {
         .expect("ASCII");
 
     let parsed = parse_traceparent(returned).expect("structurally valid");
-    let returned_trace_id_hex = format!("{:032x}", parsed.trace_id.0);
+    let returned_trace_id_hex = format!("{:032x}", parsed.trace_id.get());
     assert_eq!(
         returned_trace_id_hex, INBOUND_TRACE_ID,
         "response traceparent must carry the inbound trace id — propagation broken (W3C trace propagation)"

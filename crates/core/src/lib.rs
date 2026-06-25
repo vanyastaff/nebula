@@ -13,11 +13,14 @@
 //!
 //! ## Public API
 //!
-//! - **Identifiers** — `ExecutionId` (`exe_…`), `WorkflowId` (`wf_…`), `NodeId`, `UserId`,
-//!   `TenantId`, `ProjectId`, `OrganizationId`, `ResourceId`, `CredentialId` (`cred_…`), `RoleId`.
+//! - **Identifiers** — `ExecutionId` (`exe_…`), `WorkflowId` (`wf_…`), `WorkflowVersionId`
+//!   (`wfv_…`), `OrgId` (`org_…`), `WorkspaceId` (`ws_…`), `UserId` (`usr_…`),
+//!   `ServiceAccountId` (`svc_…`), `ResourceId` (`res_…`), `CredentialId` (`cred_…`),
+//!   `TriggerId` (`trg_…`), `TriggerEventId` (`evt_…`), `AttemptId` (`att_…`),
+//!   `InstanceId` (`nbl_…`), `SessionId` (`sess_…`) — all defined in this crate.
 //! - **Keys** — `PluginKey`, `ActionKey`, `CredentialKey`, `ParameterKey`, `ResourceKey`, `NodeKey`
 //!   — normalized string keys with validation.
-//! - **Scope** — `ScopeLevel`, `Scope`, `Principal`, `ScopeResolver` (Global → … → Action).
+//! - **Scope** — `ScopeLevel`, `Scope`, `Principal`, `ScopeResolver` (Global → Organization → Workspace → Workflow → Execution).
 //! - **Context** — `Context` trait, `BaseContext`, `BaseContextBuilder`, capability traits
 //!   (`HasCredentials`, `HasResources`, `HasMetrics`, `HasEventBus`, `HasLogger`).
 //! - **Accessors** — `ResourceAccessor`, `CredentialAccessor`, `Logger`, `MetricsEmitter`,
@@ -29,7 +32,7 @@
 //! - **Observability** — `TraceId`, `SpanId`, `W3cTraceContext`, W3C trace parsing.
 //! - **Errors** — `CoreError` (typed, thiserror; no anyhow).
 //! - **Roles** — `OrgRole`, `WorkspaceRole`, `effective_workspace_role` (module `role`).
-//! - **Permissions** — `Permission`, `PermissionDenied` (module `permission`).
+//! - **Permissions** — `Permission` (module `permission`). `PermissionDenied` (module `tenancy`).
 //! - **Tenancy** — `TenantContext`, `ResolvedIds` (module `tenancy`).
 //! - **Slugs** — `Slug`, `SlugKind`, `SlugError`, `is_prefixed_ulid()` (module `slug`).
 
@@ -79,7 +82,6 @@ pub use context::{
 pub use dependencies::*;
 pub use error::*;
 pub use guard::{Guard, TypedGuard, debug_redacted, debug_typed};
-#[allow(deprecated)] // OrganizationId re-exported for migration period
 pub use id::*;
 pub use keys::*;
 pub use lifecycle::{LayerLifecycle, ShutdownOutcome};
@@ -92,7 +94,7 @@ pub use role::{OrgRole, WorkspaceRole, effective_workspace_role};
 pub use scope::*;
 pub use slug::{Slug, SlugError, SlugKind, is_prefixed_ulid};
 pub use sync::Lazy;
-pub use tenancy::{PermissionDenied, ResolvedIds, TenantContext};
+pub use tenancy::{PermissionDenial, PermissionDenied, ResolvedIds, TenantContext};
 
 /// Named parse-error type for [`PluginKey`] — `<PluginKey as std::str::FromStr>::Err`.
 ///
@@ -111,11 +113,9 @@ pub mod prelude {
     pub use crate::dependencies::DependencyError;
     pub use crate::error::{CoreError, CoreResult};
     // Identifiers (ULID-backed)
-    #[expect(deprecated, reason = "OrganizationId re-exported for migration period")]
     pub use crate::id::{
-        AttemptId, CredentialId, ExecutionId, InstanceId, OrgId, OrganizationId, ResourceId,
-        ServiceAccountId, SessionId, TriggerEventId, TriggerId, UserId, WorkflowId,
-        WorkflowVersionId, WorkspaceId,
+        AttemptId, CredentialId, ExecutionId, InstanceId, OrgId, ResourceId, ServiceAccountId,
+        SessionId, TriggerEventId, TriggerId, UserId, WorkflowId, WorkflowVersionId, WorkspaceId,
     };
     // Domain keys (normalized string keys)
     pub use crate::keys::{

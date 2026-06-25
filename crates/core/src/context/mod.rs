@@ -46,9 +46,26 @@ pub struct BaseContext {
 }
 
 impl BaseContext {
-    /// Create a builder for BaseContext.
-    pub fn builder() -> BaseContextBuilder {
-        BaseContextBuilder::default()
+    /// Create a builder for `BaseContext`.
+    ///
+    /// `scope` is required at construction time — every context must declare
+    /// the tenancy scope it operates within. Background tasks and system
+    /// operations should pass `Scope::default()` explicitly.
+    ///
+    /// # Required fields
+    ///
+    /// - `scope` — provided here.
+    /// - `principal` — set via [`.principal()`](BaseContextBuilder::principal) before calling
+    ///   [`.build()`](BaseContextBuilder::build). Use [`Principal::System`] for background tasks.
+    pub fn builder(scope: Scope) -> BaseContextBuilder {
+        BaseContextBuilder {
+            scope,
+            principal: None,
+            cancellation: None,
+            clock: None,
+            trace_id: None,
+            span_id: None,
+        }
     }
 }
 
@@ -73,10 +90,14 @@ impl Context for BaseContext {
     }
 }
 
-/// Builder for BaseContext.
-#[derive(Default)]
+/// Builder for [`BaseContext`].
+///
+/// Constructed via [`BaseContext::builder(scope)`](BaseContext::builder).
+/// `scope` is fixed at construction; `principal` must be set before calling
+/// [`build`](Self::build). All other fields are optional with sensible defaults.
+#[must_use = "call .build() to construct the BaseContext"]
 pub struct BaseContextBuilder {
-    scope: Option<Scope>,
+    scope: Scope,
     principal: Option<Principal>,
     cancellation: Option<CancellationToken>,
     clock: Option<Box<dyn Clock>>,
@@ -85,48 +106,123 @@ pub struct BaseContextBuilder {
 }
 
 impl BaseContextBuilder {
-    /// Set the scope.
-    pub fn scope(mut self, scope: Scope) -> Self {
-        self.scope = Some(scope);
-        self
-    }
-    /// Set the principal.
+    /// Set the principal (who is acting).
+    ///
+    /// Required. Use [`Principal::System`] for background / daemon contexts.
     pub fn principal(mut self, p: Principal) -> Self {
         self.principal = Some(p);
         self
     }
+
     /// Set the cancellation token.
+    ///
+    /// Defaults to a fresh [`CancellationToken`] if not provided.
     pub fn cancellation(mut self, t: CancellationToken) -> Self {
         self.cancellation = Some(t);
         self
     }
-    /// Set the clock.
+
+    /// Set the clock implementation.
+    ///
+    /// Defaults to [`SystemClock`](crate::accessor::SystemClock) if not provided.
     pub fn clock(mut self, c: impl Clock + 'static) -> Self {
         self.clock = Some(Box::new(c));
         self
     }
-    /// Set the trace ID.
+
+    /// Set the trace ID for distributed tracing correlation.
     pub fn trace_id(mut self, t: TraceId) -> Self {
         self.trace_id = Some(t);
         self
     }
-    /// Set the span ID.
+
+    /// Set the span ID for distributed tracing correlation.
     pub fn span_id(mut self, s: SpanId) -> Self {
         self.span_id = Some(s);
         self
     }
 
-    /// Build the BaseContext.
-    pub fn build(self) -> BaseContext {
-        BaseContext {
-            scope: self.scope.unwrap_or_default(),
-            principal: self.principal.unwrap_or(Principal::System),
+    /// Build the [`BaseContext`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::error::CoreError::RegistryInvariant`] if `principal` was not set.
+    /// Pass [`Principal::System`] explicitly for background tasks.
+    pub fn build(self) -> Result<BaseContext, crate::error::CoreError> {
+        let principal = self
+            .principal
+            .ok_or(crate::error::CoreError::RegistryInvariant(
+                "BaseContext requires a principal; use Principal::System for background tasks",
+            ))?;
+        Ok(BaseContext {
+            scope: self.scope,
+            principal,
             cancellation: self.cancellation.unwrap_or_default(),
             clock: self
                 .clock
                 .unwrap_or_else(|| Box::new(crate::accessor::SystemClock)),
             trace_id: self.trace_id,
             span_id: self.span_id,
-        }
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{error::CoreError, scope::Principal};
+
+    #[test]
+    fn build_without_principal_returns_registry_invariant_error() {
+        let result = BaseContext::builder(Scope::default()).build();
+        assert!(
+            matches!(result, Err(CoreError::RegistryInvariant(_))),
+            "missing principal must yield RegistryInvariant",
+        );
+    }
+
+    #[test]
+    fn build_with_scope_and_principal_succeeds_and_carries_both() {
+        use crate::id::{OrgId, WorkspaceId};
+
+        let org_id = OrgId::new();
+        let ws_id = WorkspaceId::new();
+        let scope = Scope {
+            org_id: Some(org_id),
+            workspace_id: Some(ws_id),
+            ..Scope::default()
+        };
+
+        let ctx = BaseContext::builder(scope)
+            .principal(Principal::System)
+            .build()
+            .expect("scope + principal must produce a valid BaseContext");
+
+        assert_eq!(ctx.scope().org_id, Some(org_id));
+        assert_eq!(ctx.scope().workspace_id, Some(ws_id));
+        assert_eq!(ctx.principal(), &Principal::System);
+    }
+
+    #[test]
+    fn build_with_user_principal_stores_and_returns_it() {
+        use crate::id::UserId;
+
+        let user_id = UserId::new();
+
+        let ctx = BaseContext::builder(Scope::default())
+            .principal(Principal::User(user_id))
+            .build()
+            .expect("user principal must produce a valid BaseContext");
+
+        assert_eq!(
+            ctx.principal(),
+            &Principal::User(user_id),
+            "stored principal must match the one supplied to the builder"
+        );
+        assert_ne!(
+            ctx.principal(),
+            &Principal::System,
+            "user principal must not compare equal to Principal::System"
+        );
     }
 }

@@ -110,9 +110,11 @@ impl WebhookActivationContextFactory for NoopCtxFactory {
     fn build(&self, _record: &WebhookActivationRecord) -> TriggerRuntimeContext {
         TriggerRuntimeContext::new(
             Arc::new(
-                nebula_core::BaseContext::builder()
+                nebula_core::BaseContext::builder(nebula_core::scope::Scope::default())
+                    .principal(nebula_core::scope::Principal::System)
                     .cancellation(CancellationToken::new())
-                    .build(),
+                    .build()
+                    .expect("scope + principal must produce a valid BaseContext"),
             ),
             nebula_core::WorkflowId::new(),
             nebula_core::node_key!("bootstrap-restart-test"),

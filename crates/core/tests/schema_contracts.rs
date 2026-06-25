@@ -72,6 +72,10 @@ fn core_error_code_stability() {
             CoreError::dependency_missing("x", "y"),
             "CORE:DEPENDENCY_MISSING",
         ),
+        (
+            CoreError::RegistryInvariant("duplicate registration"),
+            "CORE:REGISTRY_INVARIANT",
+        ),
     ];
     for (err, expected_code) in errors {
         assert_eq!(err.code().as_str(), expected_code, "CoreError code changed");

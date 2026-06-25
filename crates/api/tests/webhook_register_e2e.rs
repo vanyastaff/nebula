@@ -158,9 +158,11 @@ impl WebhookActivationContextFactory for NoopCtxFactory {
     fn build(&self, _record: &WebhookActivationRecord) -> TriggerRuntimeContext {
         TriggerRuntimeContext::new(
             Arc::new(
-                nebula_core::BaseContext::builder()
+                nebula_core::BaseContext::builder(nebula_core::scope::Scope::default())
+                    .principal(Principal::System)
                     .cancellation(CancellationToken::new())
-                    .build(),
+                    .build()
+                    .expect("scope + principal must produce a valid BaseContext"),
             ),
             WorkflowId::new(),
             node_key!("webhook-register-e2e"),

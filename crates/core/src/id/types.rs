@@ -20,9 +20,6 @@ define_ulid!(pub ServiceAccountIdDomain => ServiceAccountId, prefix = "svc");
 define_ulid!(pub ResourceIdDomain => ResourceId, prefix = "res");
 define_ulid!(pub CredentialIdDomain => CredentialId, prefix = "cred");
 define_ulid!(pub SessionIdDomain => SessionId, prefix = "sess");
-// OrganizationId duplicates OrgId with the same "org" prefix.
-#[deprecated(note = "Use OrgId instead")]
-pub type OrganizationId = OrgId;
 
 #[cfg(test)]
 mod tests {
@@ -108,10 +105,6 @@ mod tests {
     }
 
     #[test]
-    #[expect(
-        deprecated,
-        reason = "test exercises OrganizationId which is deprecated but still supported"
-    )]
     fn all_id_types_create_successfully() {
         let _ = OrgId::new();
         let _ = WorkspaceId::new();
@@ -127,6 +120,5 @@ mod tests {
         let _ = ResourceId::new();
         let _ = CredentialId::new();
         let _ = SessionId::new();
-        let _ = OrganizationId::new();
     }
 }

@@ -60,12 +60,6 @@ impl Slug {
         Ok(Self(value.to_owned()))
     }
 
-    /// Create without validation (for trusted internal use only).
-    #[must_use]
-    pub fn new_unchecked(value: String) -> Self {
-        Self(value)
-    }
-
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
@@ -182,8 +176,7 @@ fn validate_slug(value: &str, kind: SlugKind) -> Result<(), SlugError> {
 }
 
 /// Check if a slug matches a reserved word.
-/// Uses a hardcoded set of common reserved words.
-/// In production this would load from `reserved_slugs.txt`.
+/// Uses a hardcoded set of reserved words (see `RESERVED_SLUGS` in this module).
 #[must_use]
 pub fn is_reserved(slug: &str) -> bool {
     // Case-insensitive check (slugs are already lowercase, but be safe)
@@ -191,7 +184,7 @@ pub fn is_reserved(slug: &str) -> bool {
     RESERVED_SLUGS.contains(&lower.as_str())
 }
 
-/// Core reserved slugs. Extended list loaded at runtime from `reserved_slugs.txt`.
+/// Reserved slugs that may not be used as org/workspace/workflow slugs.
 const RESERVED_SLUGS: &[&str] = &[
     "admin",
     "api",
@@ -271,4 +264,256 @@ pub fn is_prefixed_ulid(segment: &str) -> bool {
         "res_", "cred_", "sess_", "pat_",
     ];
     PREFIXES.iter().any(|prefix| segment.starts_with(prefix))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Slug::new valid ──────────────────────────────────────────────────────
+
+    #[test]
+    fn slug_new_valid_org() {
+        let slug = Slug::new("my-org", SlugKind::Org).unwrap();
+        assert_eq!(slug.as_str(), "my-org");
+    }
+
+    #[test]
+    fn slug_new_valid_workflow() {
+        let slug = Slug::new("a", SlugKind::Workflow).unwrap();
+        assert_eq!(slug.as_str(), "a");
+    }
+
+    #[test]
+    fn slug_new_valid_digits_and_hyphens() {
+        let slug = Slug::new("abc-123-def", SlugKind::Workflow).unwrap();
+        assert_eq!(slug.as_str(), "abc-123-def");
+    }
+
+    // ── TooShort ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn slug_new_too_short_org() {
+        // Org min is 3; "ab" is only 2 chars.
+        let err = Slug::new("ab", SlugKind::Org).unwrap_err();
+        assert!(
+            matches!(err, SlugError::TooShort { min: 3, actual: 2 }),
+            "unexpected: {err:?}"
+        );
+    }
+
+    #[test]
+    fn slug_new_too_short_service_account() {
+        // ServiceAccount min is 3; "a" is only 1 char.
+        let err = Slug::new("a", SlugKind::ServiceAccount).unwrap_err();
+        assert!(
+            matches!(err, SlugError::TooShort { min: 3, .. }),
+            "unexpected: {err:?}"
+        );
+    }
+
+    // ── TooLong ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn slug_new_too_long_org() {
+        // Org max is 39 chars.
+        let long = "a".repeat(40);
+        let err = Slug::new(&long, SlugKind::Org).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                SlugError::TooLong {
+                    max: 39,
+                    actual: 40
+                }
+            ),
+            "unexpected: {err:?}"
+        );
+    }
+
+    #[test]
+    fn slug_new_too_long_workspace() {
+        // Workspace max is 50 chars.
+        let long = "a".repeat(51);
+        let err = Slug::new(&long, SlugKind::Workspace).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                SlugError::TooLong {
+                    max: 50,
+                    actual: 51
+                }
+            ),
+            "unexpected: {err:?}"
+        );
+    }
+
+    // ── InvalidCharacter ────────────────────────────────────────────────────
+
+    #[test]
+    fn slug_new_invalid_char_uppercase() {
+        // Uppercase at position 0 is caught by the start-character check first,
+        // which produces InvalidStart rather than InvalidCharacter.
+        let err = Slug::new("My-Org", SlugKind::Workflow).unwrap_err();
+        assert!(
+            matches!(err, SlugError::InvalidStart),
+            "unexpected: {err:?}"
+        );
+        // Uppercase at a non-start position reaches the per-char loop.
+        let err2 = Slug::new("my-Org", SlugKind::Workflow).unwrap_err();
+        assert!(
+            matches!(
+                err2,
+                SlugError::InvalidCharacter {
+                    ch: 'O',
+                    position: 3
+                }
+            ),
+            "unexpected: {err2:?}"
+        );
+    }
+
+    #[test]
+    fn slug_new_invalid_char_underscore() {
+        let err = Slug::new("my_org", SlugKind::Workflow).unwrap_err();
+        assert!(
+            matches!(err, SlugError::InvalidCharacter { ch: '_', .. }),
+            "unexpected: {err:?}"
+        );
+    }
+
+    // ── InvalidStart ────────────────────────────────────────────────────────
+
+    #[test]
+    fn slug_new_invalid_start_hyphen() {
+        let err = Slug::new("-my-org", SlugKind::Workflow).unwrap_err();
+        assert!(
+            matches!(err, SlugError::InvalidStart),
+            "unexpected: {err:?}"
+        );
+    }
+
+    // ── InvalidEnd ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn slug_new_invalid_end_hyphen() {
+        let err = Slug::new("my-org-", SlugKind::Workflow).unwrap_err();
+        assert!(matches!(err, SlugError::InvalidEnd), "unexpected: {err:?}");
+    }
+
+    // ── ConsecutiveHyphens ──────────────────────────────────────────────────
+
+    #[test]
+    fn slug_new_consecutive_hyphens() {
+        let err = Slug::new("my--org", SlugKind::Workflow).unwrap_err();
+        assert!(
+            matches!(err, SlugError::ConsecutiveHyphens),
+            "unexpected: {err:?}"
+        );
+    }
+
+    // ── Reserved ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn slug_new_reserved_word() {
+        let err = Slug::new("admin", SlugKind::Workflow).unwrap_err();
+        assert!(matches!(err, SlugError::Reserved), "unexpected: {err:?}");
+    }
+
+    #[test]
+    fn slug_new_reserved_word_api() {
+        let err = Slug::new("api", SlugKind::Org).unwrap_err();
+        assert!(matches!(err, SlugError::Reserved), "unexpected: {err:?}");
+    }
+
+    // ── is_reserved ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn is_reserved_returns_true_for_reserved_word() {
+        assert!(is_reserved("admin"));
+        assert!(is_reserved("api"));
+        assert!(is_reserved("webhook"));
+    }
+
+    #[test]
+    fn is_reserved_returns_false_for_ordinary_slug() {
+        assert!(!is_reserved("my-cool-workflow"));
+        assert!(!is_reserved("acme-corp"));
+    }
+
+    // ── is_prefixed_ulid ────────────────────────────────────────────────────
+
+    #[test]
+    fn is_prefixed_ulid_true_for_each_known_prefix() {
+        // One representative value per recognized prefix — format doesn't matter for the
+        // prefix-existence check (is_prefixed_ulid only checks starts_with).
+        let samples = [
+            "org_01ABC",
+            "ws_01ABC",
+            "wf_01ABC",
+            "wfv_01ABC",
+            "exe_01ABC",
+            "att_01ABC",
+            "nbl_01ABC",
+            "trg_01ABC",
+            "evt_01ABC",
+            "usr_01ABC",
+            "svc_01ABC",
+            "res_01ABC",
+            "cred_01ABC",
+            "sess_01ABC",
+            "pat_01ABC",
+        ];
+        for sample in samples {
+            assert!(
+                is_prefixed_ulid(sample),
+                "expected is_prefixed_ulid({sample:?}) == true"
+            );
+        }
+    }
+
+    #[test]
+    fn is_prefixed_ulid_false_for_plain_slug() {
+        assert!(!is_prefixed_ulid("my-workflow"));
+        assert!(!is_prefixed_ulid("acme-corp"));
+        assert!(!is_prefixed_ulid(""));
+    }
+
+    // ── B6: drift-guard — prefix list matches live ID types ─────────────────
+
+    #[test]
+    fn prefixed_ulid_recognizes_live_id_type_strings() {
+        use crate::id::{
+            AttemptId, CredentialId, ExecutionId, InstanceId, OrgId, ResourceId, ServiceAccountId,
+            SessionId, TriggerEventId, TriggerId, UserId, WorkflowId, WorkflowVersionId,
+            WorkspaceId,
+        };
+
+        macro_rules! assert_recognized {
+            ($id_type:ident) => {{
+                let id = $id_type::new();
+                let as_string = id.to_string();
+                assert!(
+                    is_prefixed_ulid(&as_string),
+                    "is_prefixed_ulid should recognize a freshly-constructed {}: {as_string}",
+                    stringify!($id_type)
+                );
+            }};
+        }
+
+        assert_recognized!(OrgId);
+        assert_recognized!(WorkspaceId);
+        assert_recognized!(WorkflowId);
+        assert_recognized!(WorkflowVersionId);
+        assert_recognized!(ExecutionId);
+        assert_recognized!(AttemptId);
+        assert_recognized!(InstanceId);
+        assert_recognized!(TriggerId);
+        assert_recognized!(TriggerEventId);
+        assert_recognized!(UserId);
+        assert_recognized!(ServiceAccountId);
+        assert_recognized!(ResourceId);
+        assert_recognized!(CredentialId);
+        assert_recognized!(SessionId);
+    }
 }

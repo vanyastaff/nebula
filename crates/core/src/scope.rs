@@ -212,7 +212,17 @@ pub struct Scope {
 impl Scope {
     /// Check whether this scope can access a resource registered at the given level.
     ///
-    /// Strict containment: resource scope must be broader-or-equal to caller scope.
+    /// Exact-match semantics per level:
+    /// - `Global` — always accessible.
+    /// - `Organization(id)` — caller must carry that exact organization ID.
+    /// - `Workspace(id)` — caller must carry that exact workspace ID.
+    /// - `Workflow(id)` — caller must carry that exact workflow ID.
+    /// - `Execution(id)` — caller must carry that exact execution ID.
+    ///
+    /// A caller carrying only a deeper-level ID (e.g. `execution_id` only) does
+    /// **not** thereby gain access to a resource registered at a shallower level
+    /// (e.g. workspace): each level is checked independently against the
+    /// corresponding field of this `Scope`.
     pub fn can_access(&self, registered: &ScopeLevel) -> bool {
         match registered {
             ScopeLevel::Global => true,
@@ -225,7 +235,11 @@ impl Scope {
 }
 
 /// Actor identity within the system.
+///
+/// This enum is `#[non_exhaustive]`: future principal kinds may be added
+/// without a semver break. External `match` arms must include a `_` wildcard.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum Principal {
     /// Human user.
     User(crate::id::UserId),

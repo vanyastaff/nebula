@@ -23,7 +23,7 @@ use nebula_action::{
     ActionError, ActionResult, capability::default_resource_accessor, result::WaitCondition,
 };
 use nebula_core::{
-    ActionKey, NodeKey, ResourceKey,
+    ActionKey, CredentialKey, NodeKey, ResourceKey,
     accessor::{CredentialAccessor, ResourceAccessor},
     id::{ExecutionId, InstanceId, WorkflowId},
     node_key,
@@ -5355,26 +5355,38 @@ impl WorkflowEngine {
             .get(&node_def.action_key)
             .cloned()
             .unwrap_or_default();
-        let credentials: Arc<dyn CredentialAccessor> =
-            if let Some(resolver_fn) = &self.credential_resolver {
-                let resolver_fn = Arc::clone(resolver_fn);
-                Arc::new(EngineCredentialAccessor::new(
-                    allowed_keys,
-                    move |id: &str| {
-                        let resolver_fn = Arc::clone(&resolver_fn);
-                        let id = id.to_owned();
-                        async move {
-                            let snapshot = (resolver_fn)(&id).await.map_err(|e| {
-                                nebula_core::CoreError::CredentialNotFound { key: e.to_string() }
-                            })?;
-                            Ok(Box::new(snapshot) as Box<dyn std::any::Any + Send + Sync>)
-                        }
-                    },
-                    node_def.action_key.as_str().to_owned(),
-                ))
-            } else {
-                default_credential_accessor()
-            };
+        let credentials: Arc<dyn CredentialAccessor> = if let Some(resolver_fn) =
+            &self.credential_resolver
+        {
+            let resolver_fn = Arc::clone(resolver_fn);
+            Arc::new(EngineCredentialAccessor::new(
+                allowed_keys,
+                move |id: &str| {
+                    let resolver_fn = Arc::clone(&resolver_fn);
+                    let credential_key_str = id.to_owned();
+                    async move {
+                        let snapshot = (resolver_fn)(&credential_key_str).await.map_err(|e| {
+                            tracing::debug!(
+                                credential_key = %credential_key_str,
+                                error = %e,
+                                "credential resolution failed"
+                            );
+                            match CredentialKey::new(&credential_key_str) {
+                                Ok(key) => nebula_core::CoreError::credential_not_found(key),
+                                Err(_) => nebula_core::CoreError::invalid_key(
+                                    credential_key_str.clone(),
+                                    "credential",
+                                ),
+                            }
+                        })?;
+                        Ok(Box::new(snapshot) as Box<dyn std::any::Any + Send + Sync>)
+                    }
+                },
+                node_def.action_key.as_str().to_owned(),
+            ))
+        } else {
+            default_credential_accessor()
+        };
 
         // Build resource accessor: wrap the manager-backed global accessor in
         // a LayeredResourceAccessor (M6.1 — Phase 6). Phase 6 plugs in the
@@ -6250,11 +6262,23 @@ impl NodeTask {
             }
         }
 
-        let base = Arc::new(
-            nebula_core::BaseContext::builder()
-                .cancellation(self.cancel.child_token())
-                .build(),
-        );
+        let base = match nebula_core::BaseContext::builder(nebula_core::scope::Scope {
+            execution_id: Some(self.execution_id),
+            workflow_id: Some(self.workflow_id),
+            ..nebula_core::scope::Scope::default()
+        })
+        .principal(nebula_core::scope::Principal::System)
+        .cancellation(self.cancel.child_token())
+        .build()
+        {
+            Ok(ctx) => Arc::new(ctx),
+            Err(e) => {
+                return (
+                    self.node_key,
+                    Err(EngineError::PlanningFailed(e.to_string())),
+                );
+            },
+        };
         let action_ctx = nebula_action::ActionRuntimeContext::new(
             base,
             self.execution_id,
@@ -7747,7 +7771,7 @@ mod tests {
         ActionError, action::Action, context::CredentialContextExt, metadata::ActionMetadata,
         result::ActionResult, stateless::StatelessAction,
     };
-    use nebula_core::{Dependencies, action_key};
+    use nebula_core::{Dependencies, action_key, scope::Principal};
     use nebula_storage_port::StorageError;
     use nebula_storage_port::store::{ExecutionStore, NodeResultStore, WorkflowVersionStore};
     use nebula_workflow::{
@@ -8425,9 +8449,11 @@ mod tests {
     #[tokio::test]
     async fn trigger_context_construction_is_usable_in_engine() {
         let base = Arc::new(
-            nebula_core::BaseContext::builder()
+            nebula_core::BaseContext::builder(nebula_core::scope::Scope::default())
+                .principal(Principal::System)
                 .cancellation(CancellationToken::new())
-                .build(),
+                .build()
+                .expect("scope + principal must produce a valid BaseContext"),
         );
         let ctx =
             nebula_action::TriggerRuntimeContext::new(base, WorkflowId::new(), node_key!("test"));

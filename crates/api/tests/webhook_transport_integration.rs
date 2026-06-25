@@ -197,9 +197,11 @@ async fn register_webhook(
 
     let ctx_template = TriggerRuntimeContext::new(
         Arc::new(
-            nebula_core::BaseContext::builder()
+            nebula_core::BaseContext::builder(nebula_core::scope::Scope::default())
+                .principal(nebula_core::scope::Principal::System)
                 .cancellation(CancellationToken::new())
-                .build(),
+                .build()
+                .expect("scope + principal must produce a valid BaseContext"),
         ),
         nebula_core::WorkflowId::new(),
         nebula_core::node_key!("test"),
@@ -472,9 +474,11 @@ async fn handler_timeout_returns_504() {
     let adapter: Arc<dyn TriggerHandler> = Arc::new(hanging_adapter);
     let ctx_template = TriggerRuntimeContext::new(
         Arc::new(
-            nebula_core::BaseContext::builder()
+            nebula_core::BaseContext::builder(nebula_core::scope::Scope::default())
+                .principal(nebula_core::scope::Principal::System)
                 .cancellation(CancellationToken::new())
-                .build(),
+                .build()
+                .expect("scope + principal must produce a valid BaseContext"),
         ),
         nebula_core::WorkflowId::new(),
         nebula_core::node_key!("test"),
@@ -717,9 +721,11 @@ async fn register_typed<A: WebhookAction>(
     let adapter: Arc<dyn TriggerHandler> = Arc::new(adapter);
     let ctx_template = TriggerRuntimeContext::new(
         Arc::new(
-            nebula_core::BaseContext::builder()
+            nebula_core::BaseContext::builder(nebula_core::scope::Scope::default())
+                .principal(nebula_core::scope::Principal::System)
                 .cancellation(CancellationToken::new())
-                .build(),
+                .build()
+                .expect("scope + principal must produce a valid BaseContext"),
         ),
         nebula_core::WorkflowId::new(),
         nebula_core::node_key!("test"),
@@ -990,9 +996,11 @@ fn test_scope() -> Scope {
 fn noop_ctx_template() -> TriggerRuntimeContext {
     TriggerRuntimeContext::new(
         Arc::new(
-            nebula_core::BaseContext::builder()
+            nebula_core::BaseContext::builder(nebula_core::scope::Scope::default())
+                .principal(nebula_core::scope::Principal::System)
                 .cancellation(CancellationToken::new())
-                .build(),
+                .build()
+                .expect("scope + principal must produce a valid BaseContext"),
         ),
         nebula_core::WorkflowId::new(),
         nebula_core::node_key!("test"),

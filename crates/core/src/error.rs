@@ -4,6 +4,8 @@ use std::time::Duration;
 
 use thiserror::Error;
 
+use crate::keys::CredentialKey;
+
 /// Core error -- only errors that core vocabulary operations produce.
 #[derive(Error, Debug, Clone)]
 #[non_exhaustive]
@@ -63,8 +65,8 @@ pub enum CoreError {
     /// Credential not found by key.
     #[error("credential not found: {key}")]
     CredentialNotFound {
-        /// The key that was not found.
-        key: String,
+        /// The validated credential key that was not found.
+        key: CredentialKey,
     },
 
     /// Credential access denied (action not authorized for this key).
@@ -91,6 +93,13 @@ pub enum CoreError {
         /// Optional retry delay hint from the resource layer.
         retry_after: Option<Duration>,
     },
+
+    /// An internal registry invariant was violated (e.g., duplicate registration
+    /// or a lookup that contradicts a prior guarantee).
+    ///
+    /// This is a programming-error category; it is never retryable.
+    #[error("registry invariant violated: {0}")]
+    RegistryInvariant(&'static str),
 }
 
 impl CoreError {
@@ -128,6 +137,11 @@ impl CoreError {
         Self::DependencyMissing { name, required_by }
     }
 
+    /// Create a credential-not-found error for the given validated key.
+    pub fn credential_not_found(key: CredentialKey) -> Self {
+        Self::CredentialNotFound { key }
+    }
+
     /// Create a resource-acquire failure surfaced through the accessor seam.
     pub fn resource_unavailable(
         key: impl Into<String>,
@@ -161,12 +175,8 @@ impl nebula_error::Classify for CoreError {
                 nebula_error::ErrorCategory::NotFound
             },
             Self::CredentialAccessDenied { .. } => nebula_error::ErrorCategory::Authorization,
-            Self::ResourceUnavailable {
-                retryable: true, ..
-            } => nebula_error::ErrorCategory::Unavailable,
-            Self::ResourceUnavailable {
-                retryable: false, ..
-            } => nebula_error::ErrorCategory::Cancelled,
+            Self::ResourceUnavailable { .. } => nebula_error::ErrorCategory::Unavailable,
+            Self::RegistryInvariant(_) => nebula_error::ErrorCategory::Internal,
         }
     }
 
@@ -181,6 +191,7 @@ impl nebula_error::Classify for CoreError {
             Self::CredentialNotFound { .. } => "CORE:CREDENTIAL_NOT_FOUND",
             Self::CredentialAccessDenied { .. } => "CORE:CREDENTIAL_ACCESS_DENIED",
             Self::ResourceUnavailable { .. } => "CORE:RESOURCE_UNAVAILABLE",
+            Self::RegistryInvariant(_) => "CORE:REGISTRY_INVARIANT",
         })
     }
 
@@ -245,5 +256,46 @@ mod tests {
             CoreError::dependency_missing("dep", "owner"),
             CoreError::DependencyMissing { .. }
         ));
+    }
+
+    #[test]
+    fn registry_invariant_from_dependency_error_maps_correctly() {
+        use crate::dependencies::DependencyError;
+        use nebula_error::Classify;
+
+        let dep_err = DependencyError::RegistryInvariant("duplicate registration");
+        let core_err = CoreError::from(dep_err);
+
+        assert!(
+            matches!(core_err, CoreError::RegistryInvariant(_)),
+            "RegistryInvariant DependencyError must map to CoreError::RegistryInvariant"
+        );
+        assert_eq!(core_err.code().as_str(), "CORE:REGISTRY_INVARIANT");
+        assert_eq!(core_err.category(), nebula_error::ErrorCategory::Internal);
+        assert!(!core_err.is_retryable());
+    }
+
+    #[test]
+    fn resource_unavailable_category_is_unavailable_regardless_of_retryable() {
+        use nebula_error::Classify;
+
+        let retryable = CoreError::resource_unavailable("db", "timeout", true, None);
+        assert_eq!(
+            retryable.category(),
+            nebula_error::ErrorCategory::Unavailable,
+            "retryable=true must be Unavailable"
+        );
+        assert!(retryable.is_retryable(), "retryable=true must be retryable");
+
+        let non_retryable = CoreError::resource_unavailable("db", "gone", false, None);
+        assert_eq!(
+            non_retryable.category(),
+            nebula_error::ErrorCategory::Unavailable,
+            "retryable=false must also be Unavailable"
+        );
+        assert!(
+            !non_retryable.is_retryable(),
+            "retryable=false must not be retryable"
+        );
     }
 }

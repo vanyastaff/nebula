@@ -123,11 +123,12 @@ impl ResourceContext {
     /// Creates a minimal context for cases that only need scope + cancellation
     /// (e.g., daemon loops, warmup). Uses no-op accessors internally.
     pub fn minimal(scope: Scope, cancellation: CancellationToken) -> Self {
-        let base = BaseContext::builder()
-            .scope(scope)
+        let base = BaseContext::builder(scope)
+            .principal(Principal::System)
             .cancellation(cancellation)
             .clock(SystemClock)
-            .build();
+            .build()
+            .expect("scope + principal must produce a valid BaseContext");
         Self {
             base,
             resources: Arc::new(NoopResourceAccessor),
