@@ -3082,44 +3082,63 @@ mod tests {
     // seeded with a random value per process instance — meaning two calls
     // in different processes (or after a Rust upgrade) could return different
     // digests for the same JSON value, causing the stuck-state guard to fire
-    // spuriously on resume. The SHA-256 replacement must produce the same
-    // `u64` for the same `serde_json::Value` every time, regardless of
-    // process state.
+    // spuriously on resume. The SHA-256 replacement MUST produce the same
+    // `u64` for the same `serde_json::Value` every time, including across
+    // processes and after restarts.
+    //
+    // These tests are RED-ON-REVERT: they pin the exact SHA-256-derived u64
+    // so that any reversion to DefaultHasher (whose output is process-seeded)
+    // or any other non-deterministic hasher immediately breaks them. The
+    // constants were computed by running the SHA-256 implementation once and
+    // recording the output.
+
+    /// The expected SHA-256 digest of `serde_json::to_vec(&Value::Null)` (`b"null"`),
+    /// truncated to `u64` little-endian from the first 8 bytes of the hash.
+    const DIGEST_NULL: u64 = 0x8f49_e7af_984e_2374;
+
+    /// The expected SHA-256 digest of the fixed complex JSON object below.
+    /// Value: `{"counter":42,"node_a":"completed","node_b":{"output":[1,2,3]}}`.
+    /// Note: `serde_json` serialises object keys in insertion order; the bytes
+    /// are stable for a fixed input.
+    const DIGEST_COMPLEX: u64 = 0xfe1f_b90a_b268_98a5;
 
     #[test]
-    fn stateful_state_digest_is_cross_instance_deterministic() {
-        // Two independent computations on the same JSON must yield the same u64.
-        // This would fail non-trivially with DefaultHasher because the SipHash
-        // seed is randomized at process start.
+    fn stateful_state_digest_null_equals_pinned_sha256_constant() {
+        // If DefaultHasher were restored, this would return a process-seeded
+        // value that (with overwhelming probability) differs from DIGEST_NULL.
+        assert_eq!(
+            stateful_state_digest(&serde_json::Value::Null),
+            DIGEST_NULL,
+            "digest of null must equal the pinned SHA-256 constant; \
+             a mismatch means the hasher was changed (or reverted to DefaultHasher)"
+        );
+    }
+
+    #[test]
+    fn stateful_state_digest_complex_equals_pinned_sha256_constant() {
         let state = serde_json::json!({
             "node_a": "completed",
             "node_b": { "output": [1, 2, 3] },
             "counter": 42
         });
-
-        let digest_a = stateful_state_digest(&state);
-        let digest_b = stateful_state_digest(&state);
-
         assert_eq!(
-            digest_a, digest_b,
-            "same JSON value must yield the same u64 digest on repeated calls"
-        );
-
-        // A different value must (almost certainly) yield a different digest.
-        let other = serde_json::json!({ "node_a": "failed" });
-        let digest_other = stateful_state_digest(&other);
-        assert_ne!(
-            digest_a, digest_other,
-            "distinct JSON values must produce distinct digests"
+            stateful_state_digest(&state),
+            DIGEST_COMPLEX,
+            "digest of fixed complex JSON must equal the pinned SHA-256 constant; \
+             a mismatch means the hasher was changed (or reverted to DefaultHasher)"
         );
     }
 
     #[test]
-    fn stateful_state_digest_null_is_stable() {
-        // Null is a valid "no stateful context" sentinel; it must not panic
-        // and must return a stable value.
-        let d1 = stateful_state_digest(&serde_json::Value::Null);
-        let d2 = stateful_state_digest(&serde_json::Value::Null);
-        assert_eq!(d1, d2);
+    fn stateful_state_digest_is_cross_instance_deterministic() {
+        // Belt-and-suspenders: repeated calls within the same process also match.
+        // The pinned-constant tests above are the red-on-revert guards;
+        // this test confirms the implementation is at least self-consistent.
+        let state = serde_json::json!({ "node_a": "completed", "counter": 99 });
+        assert_eq!(stateful_state_digest(&state), stateful_state_digest(&state),);
+
+        // Different values must produce different digests.
+        let other = serde_json::json!({ "node_a": "failed" });
+        assert_ne!(stateful_state_digest(&state), stateful_state_digest(&other));
     }
 }

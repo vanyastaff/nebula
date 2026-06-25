@@ -6201,6 +6201,16 @@ impl WorkflowEngine {
         self.workflow_execution_duration_seconds
             .observe(elapsed.as_secs_f64());
     }
+
+    /// Test-only accessor: ask the injected clock for the current time.
+    ///
+    /// Used by tests that call [`with_clock`] with a fake clock to assert
+    /// that the injected clock is actually stored and consulted — without
+    /// needing to drive a full workflow execution.
+    #[cfg(test)]
+    pub(crate) fn clock_now(&self) -> DateTime<Utc> {
+        self.clock.now()
+    }
 }
 
 /// Bundled parameters for a single node execution task.
@@ -10735,11 +10745,11 @@ mod tests {
     /// Verifies:
     ///   1. The action handler is **never** invoked (refresh fails before dispatch).
     ///   2. The execution result is not a success.
-    ///   3. The emitted `NodeFailed` event carries the typed error code
-    ///      `ACTION:CREDENTIAL_REFRESH_FAILED` (visible to downstream consumers via the error
-    ///      string).
-    ///   4. The new `EngineError::Action` carries an `ActionError` that pattern-matches as
-    ///      `CredentialRefreshFailed`.
+    ///   3. The persisted `node_errors` string contains "credential refresh failed"
+    ///      and the original source message, confirming the typed error propagated
+    ///      through to the durable error record visible to downstream consumers.
+    ///   4. The `EngineError::Action(CredentialRefreshFailed)` variant round-trips
+    ///      through pattern-match correctly and is classified as retryable.
     #[tokio::test]
     async fn credential_refresh_failure_surfaces_as_typed_error() {
         use std::sync::atomic::{AtomicU32, Ordering as AOrdering};
@@ -13149,45 +13159,54 @@ mod tests {
         );
     }
 
-    // ── FIX 1: with_clock builder stores the injected clock ──────────────────
+    // ── FIX 1: with_clock builder wires injected clock into engine ───────────
     //
-    // Verifies that `with_clock` is wired end-to-end: a `FakeClock` that records
-    // every `now()` call is injected, and after construction the builder method
-    // returns the same engine (consumed by value). The test is intentionally
-    // structural — it proves the builder method compiles and that `FakeClock`
-    // satisfies the `Clock` bound, so any accidental reversion to calling
-    // `Utc::now()` directly (bypassing the clock field) would be caught by the
-    // free-function tests above.
+    // Verifies that `with_clock` stores the injected clock and that the engine
+    // actually reads from it. Uses `clock_now()` (a `#[cfg(test)]` accessor on
+    // `WorkflowEngine`) to call through to the stored clock without needing to
+    // drive a full workflow execution.
+    //
+    // A reversion to hardcoded `Utc::now()` inside the engine would cause
+    // `clock_now()` to read `SystemClock::now()` instead of the pinned fake,
+    // but the pinned-constant tests on `next_retry_at` cover the free-function
+    // path. This test guards the builder-wiring layer specifically.
 
     #[test]
-    fn with_clock_builder_accepts_custom_clock() {
-        use std::{
-            sync::atomic::{AtomicU32, Ordering},
-            time::Instant,
-        };
+    fn with_clock_builder_wires_injected_clock_into_engine() {
+        use std::time::Instant;
 
+        use chrono::TimeZone;
         use nebula_core::accessor::Clock;
 
-        struct CountingClock {
-            calls: AtomicU32,
+        /// A clock pinned to a fixed instant so `clock_now()` returns exactly
+        /// that instant — not wall time — if (and only if) the engine reads from
+        /// the injected clock rather than calling `Utc::now()` directly.
+        struct PinnedClock {
+            pinned: DateTime<Utc>,
         }
 
-        impl Clock for CountingClock {
+        impl Clock for PinnedClock {
             fn now(&self) -> DateTime<Utc> {
-                self.calls.fetch_add(1, Ordering::Relaxed);
-                Utc::now()
+                self.pinned
             }
             fn monotonic(&self) -> Instant {
                 Instant::now()
             }
         }
 
+        let pinned_instant = Utc.with_ymd_and_hms(2020, 6, 15, 12, 0, 0).unwrap();
         let (engine, _metrics) = make_engine(Arc::new(ActionRegistry::new()));
-        // `with_clock` must accept any `Arc<dyn Clock>` and return `Self`.
-        let clock = Arc::new(CountingClock {
-            calls: AtomicU32::new(0),
-        });
-        let _engine_with_clock = engine.with_clock(clock);
-        // If the line above compiled and did not panic, the builder is wired.
+        let engine = engine.with_clock(Arc::new(PinnedClock {
+            pinned: pinned_instant,
+        }));
+
+        // The engine must consult the injected clock, not real wall time.
+        // If the clock field is not wired, clock_now() would return SystemClock::now()
+        // and this assertion would fail (wall time != 2020-06-15T12:00:00Z).
+        assert_eq!(
+            engine.clock_now(),
+            pinned_instant,
+            "engine must read from the injected PinnedClock, not SystemClock"
+        );
     }
 }
