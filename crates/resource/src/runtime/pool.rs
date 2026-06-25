@@ -82,7 +82,6 @@ impl<R: Provider> std::fmt::Debug for PoolSlot<R> {
         f.debug_struct("PoolSlot")
             .field("fingerprint", &self.fingerprint)
             .field("checkout_count", &self.metrics.checkout_count)
-            .field("error_count", &self.metrics.error_count)
             .field("returned_at", &self.returned_at)
             .finish()
     }
@@ -97,6 +96,7 @@ impl<R: Provider> std::fmt::Debug for PoolSlot<R> {
 /// `idle` and `in_use` are sampled separately and may not add up to `capacity`
 /// precisely due to concurrent activity between reads.
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub struct PoolStats {
     /// Number of instances currently sitting idle in the pool.
     pub idle: usize,
@@ -350,7 +350,6 @@ where
         Ok(PoolSlot {
             instance,
             metrics: InstanceMetrics {
-                error_count: 0,
                 checkout_count: 1,
                 created_at: Instant::now(),
             },
@@ -527,10 +526,22 @@ where
                     .on_credential_revoke(slot, &entry.slot.instance)
                     .await
             };
-            if let Err(e) = res
-                && first_err.is_none()
-            {
-                first_err = Some(e);
+            if let Err(error) = res {
+                // Surface EVERY per-slot hook failure. Returning only the
+                // first would silently hide a partial rotation where some
+                // idle instances refreshed and others did not, leaving them
+                // in an uncertain credential state. The hook error is the
+                // author's, already redacted (never credential material).
+                tracing::warn!(
+                    resource = %R::key(),
+                    slot,
+                    refresh,
+                    %error,
+                    "credential rotation hook failed for an idle pool instance"
+                );
+                if first_err.is_none() {
+                    first_err = Some(error);
+                }
             }
         }
         match first_err {
@@ -711,7 +722,6 @@ mod tests {
             .await
             .expect("create_slot must succeed");
         assert_eq!(slot.metrics.checkout_count, 1);
-        assert_eq!(slot.metrics.error_count, 0);
         assert_eq!(resource.created.load(Ordering::SeqCst), 1);
     }
 

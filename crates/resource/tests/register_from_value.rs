@@ -436,10 +436,20 @@ async fn register_from_value_rejects_unknown_union_variant() {
         .await
         .expect_err("an unknown union variant must be rejected at registration");
 
-    let msg = err.to_string();
+    // The top-level message names the operation; the structured cause (the
+    // unknown-variant detail) is preserved on the source chain via
+    // `.with_source(e)` rather than flattened into the message. Walk the whole
+    // chain so the rejection detail must survive somewhere in it.
+    let mut chain = err.to_string();
+    let mut source = std::error::Error::source(&err);
+    while let Some(cause) = source {
+        chain.push_str(": ");
+        chain.push_str(&cause.to_string());
+        source = cause.source();
+    }
     assert!(
-        msg.contains("unknown_variant") || msg.contains("Nope"),
-        "expected an unknown-variant rejection, got: {msg}"
+        chain.contains("unknown_variant") || chain.contains("Nope"),
+        "expected an unknown-variant rejection in the error chain, got: {chain}"
     );
 }
 

@@ -307,12 +307,13 @@ impl Manager {
         // rather than the raw variant discriminant. The serde wire still
         // deserializes into `R::Config` directly below (no egress on the read path).
         let field_values = schema.values_from_wire(config_json.clone()).map_err(|e| {
-            Error::permanent(format!("validate_config_value: invalid field tree: {e}"))
+            Error::permanent("validate_config_value: invalid field tree").with_source(e)
         })?;
         if let Err(report) = schema.validate(&field_values) {
-            return Err(Error::permanent(format!(
-                "validate_config_value: schema validation failed: {report:?}"
-            )));
+            return Err(
+                Error::permanent("validate_config_value: schema validation failed")
+                    .with_source(report),
+            );
         }
 
         // Closed-set guard: reject any config key the typed `R::Config` schema does
@@ -356,9 +357,10 @@ impl Manager {
         // deserialized exactly once across validation + typed dispatch.
         serde_json::from_value::<R::Config>(config_json).map_err(|e| {
             Error::permanent(format!(
-                "validate_config_value: failed to deserialize {ty} config from JSON: {e}",
+                "validate_config_value: failed to deserialize {ty} config from JSON",
                 ty = std::any::type_name::<R::Config>()
             ))
+            .with_source(e)
         })
     }
 

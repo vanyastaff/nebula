@@ -256,7 +256,7 @@ impl ResourceOpsMetrics {
     /// Incremented by the bounded release path when `release_one` (a
     /// token return / session close / exclusive reset) — or a follow-up
     /// destroy after a failed reset — returns `Err`. The error is observed
-    /// here instead of being `let _ =`-swallowed (R17).
+    /// here instead of being `let _ =`-swallowed.
     pub fn record_release_error(&self) {
         self.release_errors.inc();
     }

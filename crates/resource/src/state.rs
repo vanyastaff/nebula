@@ -3,6 +3,8 @@
 //! [`ResourcePhase`] represents the current lifecycle phase of a resource,
 //! and [`ResourceStatus`] bundles phase with generation and error information.
 
+use crate::error::ErrorKind;
+
 /// Lifecycle phase of a managed resource.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,6 +49,19 @@ impl std::fmt::Display for ResourcePhase {
     }
 }
 
+/// Structured summary of the last error a resource recorded.
+///
+/// Carries the typed [`ErrorKind`] classification alongside the
+/// human-readable message, so status consumers can route on the kind
+/// without parsing strings (the typed-observability definition of done).
+#[derive(Debug, Clone)]
+pub struct ResourceErrorSummary {
+    /// Typed classification of the failure.
+    pub kind: ErrorKind,
+    /// Human-readable, secret-free description of the failure.
+    pub message: String,
+}
+
 /// Snapshot of a resource's current status.
 #[derive(Debug, Clone)]
 pub struct ResourceStatus {
@@ -54,8 +69,8 @@ pub struct ResourceStatus {
     pub phase: ResourcePhase,
     /// Monotonically increasing generation counter (incremented on reload).
     pub generation: u64,
-    /// Human-readable description of the last error, if any.
-    pub last_error: Option<String>,
+    /// Typed summary of the last error, if any.
+    pub last_error: Option<ResourceErrorSummary>,
 }
 
 impl ResourceStatus {

@@ -391,8 +391,32 @@ pub(crate) fn emit_credential_slot_epoch_body(slots: &[ParsedCredentialSlot]) ->
     }
 }
 
+/// Uppercases an ASCII slot key into the suffix of its `SLOT_*` associated
+/// constant, mapping every non-alphanumeric character (`.`/`-`) to `_` so the
+/// result is a valid identifier fragment. Two keys that sanitize to the same
+/// suffix produce a duplicate-const compile error at the call site — a loud
+/// failure, never a silent collision.
+fn slot_const_suffix(key: &str) -> String {
+    key.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_uppercase()
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
 /// Per slot, emit a read accessor over the author-declared
-/// `SlotCell<CredentialGuard<C>>` (or `CredentialSlot<C>`) field.
+/// `SlotCell<CredentialGuard<C>>` (or `CredentialSlot<C>`) field, plus a
+/// `pub const SLOT_<KEY>: &str` naming the slot key.
+///
+/// The associated constant lets authors match the stringly `slot_name`
+/// argument of `on_credential_refresh`/`on_credential_revoke` against
+/// `Self::SLOT_DB` instead of a bare `"db"` literal — a renamed
+/// `#[credential(key = ...)]` field then turns a stale match arm into a
+/// compile error (undefined const) rather than a silent rotation no-op.
 ///
 /// Returns an empty `TokenStream2` when `slots` is empty — the caller skips
 /// emitting an empty `impl` block.
@@ -406,7 +430,17 @@ pub(crate) fn emit_slot_accessors(slots: &[ParsedCredentialSlot]) -> TokenStream
             let field = &slot.field_ident;
             let acc_ident = format_ident!("{}_slot", field);
             let inner = &slot.inner_type;
+            let slot_key = slot.slot_key();
+            let const_ident = format_ident!("SLOT_{}", slot_const_suffix(&slot_key));
+            let const_doc = format!(
+                "The `{slot_key}` credential slot key. Match `slot_name` against \
+                 `Self::{const_ident}` in `on_credential_refresh`/`on_credential_revoke` \
+                 so a renamed slot field becomes a compile error, not a silent no-op."
+            );
             quote! {
+                #[doc = #const_doc]
+                pub const #const_ident: &str = #slot_key;
+
                 /// Resolved credential for this slot, or `None` until the framework binds it.
                 pub fn #acc_ident(&self) -> ::std::option::Option<
                     ::std::sync::Arc<::nebula_credential::CredentialGuard<#inner>>

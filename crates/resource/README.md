@@ -144,11 +144,11 @@ The framework resolves declared `#[credential]` slots **before** invoking `Resou
 - `ReleaseQueue` — background worker pool for async cleanup. Drain on crash is best-effort; see §11.4 canon note.
 - `DrainTimeoutPolicy` — policy controlling drain operation timeout.
 - `ReloadOutcome` — result of `Manager::reload_config` (`NoChange` / `SwappedImmediately`).
-- `Error`, `ErrorKind`, `ErrorScope` — typed error with retry classification.
+- `Error`, `ErrorKind` — typed error with retry classification.
 - `ResourceContext` — execution context with cancellation and capability traits (`HasResources`, `HasCredentials`).
 - `ScopeLevel` — re-exported from `nebula_core::ScopeLevel`.
 - `ResourcePhase`, `ResourceStatus` — lifecycle phase tracking for observability.
-- `ResourceEvent` — lifecycle events (`Registered`, `Removed`, `AcquireSuccess`, `AcquireFailed`, `Released`, `HealthChanged`, `ConfigReloaded`, `RetryAttempt`, `BackpressureDetected`, `RecoveryGateChanged`, `SlotRefreshed`, `SlotRevoked`, `SlotRefreshFailed`, `SlotRevokeFailed`).
+- `ResourceEvent` — lifecycle events (`Registered`, `Removed`, `AcquireSuccess`, `AcquireFailed`, `Released`, `HealthChanged`, `ConfigReloaded`, `RetryAttempt`, `BackpressureDetected`, `RecoveryGateChanged`, `SlotRefreshed`, `SlotRevoked`, `SlotRefreshFailed`, `SlotRevokeFailed`, `MaintenanceEvicted`, `HoldDeadlineExceeded`).
 - `ResourceOpsMetrics`, `ResourceOpsSnapshot` — registry-backed operation counters.
 - `RecoveryGate`, `RecoveryGateConfig`, `RecoveryTicket`, `RecoveryWaiter`, `GateState` — thundering-herd recovery gate.
 - Open `Topology<R>` trait + framework topology structs `Pooled<R>` / `Resident<R>` / `Bounded<R>` (reached monomorphically through `Provider::Topology`; no dispatch enum — the framework owns the acquire loop).

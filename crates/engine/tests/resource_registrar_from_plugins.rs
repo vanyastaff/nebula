@@ -319,8 +319,7 @@ async fn wired_registrar_performs_typed_registration() {
             RegisterRequest {
                 config_json: serde_json::json!({ "label": "wired" }),
                 expr_engine: &expr,
-                slot_bindings: HashMap::new(),
-                credential_ids: HashMap::new(),
+                slot_bindings: Vec::new(),
                 scope: ScopeLevel::Global,
                 recovery_gate: None,
             },

@@ -251,7 +251,13 @@ impl PoolProvider for Postgres {
             );
             return Ok(RecycleDecision::Drop);
         }
-        if metrics.error_count >= 3 {
+        // Bound connection lifetime by checkout count — a real, framework-fed
+        // signal (a long-lived connection is recycled after many leases).
+        if metrics.checkout_count >= 500 {
+            tracing::info!(
+                connection_id = runtime.id,
+                "recycle: drop after checkout budget"
+            );
             return Ok(RecycleDecision::Drop);
         }
         Ok(RecycleDecision::Keep)

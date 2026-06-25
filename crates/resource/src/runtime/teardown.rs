@@ -53,10 +53,16 @@ pub(crate) fn teardown_deadline<R: Provider>(resource: &R, reason: TeardownReaso
 /// Composes the deadline from [`teardown_deadline`], builds the read-only
 /// [`TeardownCx`], and runs [`Provider::destroy`] under
 /// [`tokio::time::timeout_at`]. On timeout the in-flight destroy future is
-/// dropped (abandoned) and a typed [`Error::backpressure`] is returned so the
-/// caller can record the abandoned teardown — the framework never blocks past
-/// the deadline. An author doing graceful work bounds it to the same
-/// `cx.deadline`, so the two deadlines coincide. See ADR-0093.
+/// dropped (abandoned) and a typed [`ErrorKind::Cancelled`](crate::error::ErrorKind::Cancelled)
+/// error is returned so the caller can record the abandoned teardown — the
+/// framework never blocks past the deadline. An author doing graceful work
+/// bounds it to the same `cx.deadline`, so the two deadlines coincide.
+///
+/// Every failure path is observed here with a `WARN` span: most call sites
+/// discard the result (`let _ = destroy_within(...)`) on a best-effort
+/// background path, so logging centrally keeps stale-eviction / fence /
+/// maintenance destroy failures visible without each site re-logging. See
+/// ADR-0093.
 pub(crate) async fn destroy_within<R: Provider>(
     resource: &R,
     instance: R::Instance,
@@ -65,10 +71,30 @@ pub(crate) async fn destroy_within<R: Provider>(
     let deadline = teardown_deadline(resource, reason);
     let cx = TeardownCx::new(deadline, reason);
     match tokio::time::timeout_at(deadline.into(), resource.destroy(instance, cx)).await {
-        Ok(res) => res,
-        Err(_elapsed) => Err(Error::backpressure(format!(
-            "{}: destroy exceeded teardown budget",
-            R::key()
-        ))),
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(error)) => {
+            tracing::warn!(
+                resource = %R::key(),
+                ?reason,
+                %error,
+                "resource destroy failed"
+            );
+            Err(error)
+        },
+        Err(_elapsed) => {
+            // A teardown that exceeds its budget is abandoned (the destroy
+            // future is dropped); that is a cancellation of the teardown, not
+            // a system-overload `Backpressure` condition — classify it as
+            // `Cancelled` so downstream routing is not misled.
+            tracing::warn!(
+                resource = %R::key(),
+                ?reason,
+                "resource destroy abandoned — exceeded teardown budget"
+            );
+            Err(Error::new(
+                crate::error::ErrorKind::Cancelled,
+                format!("{}: destroy abandoned — exceeded teardown budget", R::key()),
+            ))
+        },
     }
 }

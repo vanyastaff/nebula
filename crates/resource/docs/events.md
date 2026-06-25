@@ -45,13 +45,14 @@ ADR-0092; it reports per-resource, so there is no aggregate `CredentialRefreshed
 | `Registered` | A resource is registered | `key` |
 | `Removed` | A resource is removed | `key` |
 | `AcquireSuccess` | A handle is acquired | `key`, `duration: Duration` |
-| `AcquireFailed` | Acquire returns an error | `key`, `error: String` |
+| `AcquireFailed` | Acquire returns an error | `key`, `kind: ErrorKind`, `error: String` |
 | `Released` | A handle is dropped | `key`, `held: Duration`, `tainted: bool` |
 | `HealthChanged` | Health status transitions | `key`, `healthy: bool` |
 | `ConfigReloaded` | Config is hot-reloaded | `key` |
 | `RetryAttempt` | A retry is about to sleep after a transient acquire failure | `key`, `attempt: u32`, `backoff: Duration`, `error: String` |
 | `BackpressureDetected` | Pool backpressure was detected (semaphore full) | `key` |
 | `RecoveryGateChanged` | A recovery gate transitioned | `key`, `state: String` |
+| `HoldDeadlineExceeded` | A lease was still held past `Provider::max_hold_duration` (leak/hang detection, warn-only) | `key`, `held: Duration`, `deadline: Duration` |
 
 ### Slot-rotation variants (4)
 

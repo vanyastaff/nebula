@@ -31,12 +31,9 @@
 //! and the engine accessor's independent acquire-path derive
 //! ([`slot_identities_for_key`]) agrees with the register-path value.
 
-use std::{
-    collections::HashMap,
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
 };
 
 use nebula_core::{
@@ -45,7 +42,7 @@ use nebula_core::{
     resource_key,
 };
 use nebula_engine::{
-    KindActivator, RegisterRequest, ResourceActivatorRegistry,
+    KindActivator, RegisterRequest, ResourceActivatorRegistry, SlotBinding,
     resource_accessor::slot_identities_for_key,
 };
 use nebula_expression::ExpressionEngine;
@@ -192,20 +189,18 @@ fn registrars() -> ResourceActivatorRegistry {
 }
 
 fn request<'a>(expr: &'a ExpressionEngine, bindings: &[(&str, &str)]) -> RegisterRequest<'a> {
-    let slot_bindings: HashMap<String, CredentialKey> = bindings
+    let slot_bindings: Vec<SlotBinding> = bindings
         .iter()
-        .map(|(slot, cred)| {
-            (
-                (*slot).to_owned(),
-                CredentialKey::new(*cred).expect("valid credential key"),
-            )
+        .map(|(slot, cred)| SlotBinding {
+            slot_name: (*slot).to_owned(),
+            credential_key: CredentialKey::new(*cred).expect("valid credential key"),
+            credential_id: None,
         })
         .collect();
     RegisterRequest {
         config_json: serde_json::json!({ "label": "x" }),
         expr_engine: expr,
         slot_bindings,
-        credential_ids: HashMap::new(),
         scope: ScopeLevel::Global,
         recovery_gate: None,
     }

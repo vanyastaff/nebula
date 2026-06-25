@@ -472,6 +472,7 @@ impl<S> CheckedOut<S> {
 
 /// The outcome of [`InstanceStore::return_slot`] / [`InstanceStore::deposit_fresh`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ReturnOutcome<S> {
     /// The slot was returned to the idle queue — it is clean and ready to
     /// be leased again.

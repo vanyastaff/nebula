@@ -34,7 +34,7 @@
 | `ResourceGuard<R>` (RAII Owned/Guarded); `ResourceRef<R>` (lazy-ссылка) | `src/guard.rs:99`; `src/resource_ref.rs:55` |
 | `Registry`, sealed `ManagedHandle`, `LookupOutcome` — type-erased хранилище, scope-aware lookup | `src/registry.rs:391,61,297` |
 | `ReleaseQueue` — best-effort async drain (§11.4); `RecoveryGate`+`RecoveryTicket`/`RecoveryWaiter`/`GateState` — thundering-herd | `src/release_queue.rs:106`; `src/recovery/gate.rs:327` |
-| `Error`/`ErrorKind`/`ErrorScope`; `ResourceEvent`; `ResourceOpsMetrics`/`ResourceOpsSnapshot` | `src/error.rs:15,119,127`; `src/events.rs:20`; `src/metrics.rs:78,370` |
+| `Error`/`ErrorKind`; `ResourceEvent`; `ResourceOpsMetrics`/`ResourceOpsSnapshot` | `src/error.rs:13,113`; `src/events.rs:20`; `src/metrics.rs:78,370` |
 | `ResourceContext` + scope-хелперы; `AcquireOptions`; `ReloadOutcome`; `ResourcePhase`/`ResourceStatus` | `src/context.rs:103,213-246`; `src/options.rs:24`; `src/reload.rs:18`; `src/state.rs:9,52` |
 | feature `rotation`: `ResourceFanoutDriver`, `ResourceFanoutIndex`, `Bind`, `RotationOutcome` | `src/credential_fanout/` |
 | Derive (subcrate `macros/`): `Resource`, `ResourceConfig`, `ClassifyError` | `macros/src/lib.rs` |

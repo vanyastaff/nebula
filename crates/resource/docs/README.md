@@ -267,8 +267,8 @@ crates/resource/
 │   ├── guard.rs            ResourceGuard — RAII acquire lease (Owned / Guarded / Shared)
 │   ├── context.rs          ResourceContext — execution context
 │   ├── dedup.rs            SlotIdentity (Unbound / Structural), DedupKey
-│   ├── error.rs            Error, ErrorKind, ErrorScope
-│   ├── events.rs           ResourceEvent — 14 lifecycle event variants (all emitted)
+│   ├── error.rs            Error, ErrorKind
+│   ├── events.rs           ResourceEvent — lifecycle event variants (all emitted)
 │   ├── options.rs          AcquireOptions (deadline-only)
 │   ├── metrics.rs          ResourceOpsMetrics, ResourceOpsSnapshot
 │   ├── state.rs            ResourcePhase, ResourceStatus

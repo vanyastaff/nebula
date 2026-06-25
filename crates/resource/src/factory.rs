@@ -62,6 +62,34 @@ use crate::{Manager, ScopeLevel, SlotIdentity, recovery::RecoveryGate, resource:
 /// `Manager` bridges share one async-erasure shape.
 pub type BoxFut<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
+/// One resolved credential slot binding the caller threads into a registration.
+///
+/// The slot name, its resolved [`CredentialKey`](nebula_core::CredentialKey),
+/// and (when the credential participates in rotation) its resolved
+/// [`CredentialId`](nebula_credential::CredentialId) travel together as one
+/// unit, rather than as two parallel `HashMap<String, _>` keyed by slot name.
+///
+/// Co-locating them makes a key↔id divergence for the same slot structurally
+/// unrepresentable: the rotation fan-out reverse-index row and the structural
+/// [`SlotIdentity`] are derived from the **same** binding. This closes the
+/// confused-deputy gap where a revoke routed by `CredentialId` (from one map)
+/// could taint a row whose `SlotIdentity` was built from a different
+/// credential (from a divergent second map), and removes the silent
+/// `continue` that dropped a `CredentialId` whose slot was absent from the
+/// other map.
+#[derive(Debug, Clone)]
+pub struct SlotBinding {
+    /// The declared `#[credential(key = ...)]` slot name on the resource.
+    pub slot_name: String,
+    /// The resolved credential key bound to this slot — contributes to the
+    /// structural [`SlotIdentity`].
+    pub credential_key: nebula_core::CredentialKey,
+    /// The resolved `CredentialId` for the rotation fan-out reverse index, or
+    /// `None` when this credential does not participate in rotation (no
+    /// reverse-index row is staged for it).
+    pub credential_id: Option<nebula_credential::CredentialId>,
+}
+
 /// Type-agnostic inputs the *caller* threads into a typed registration.
 ///
 /// Everything here is independent of the concrete resource type `R`; the
@@ -75,15 +103,12 @@ pub struct RegisterRequest<'a> {
     /// Engine-held expression engine used to resolve `{{ … }}` templates in
     /// `config_json`.
     pub expr_engine: &'a nebula_expression::ExpressionEngine,
-    /// Slot-name → resolved-credential-key bindings. The engine resolves
-    /// credentials before calling `register`; this map is asserted against
-    /// the resource's declared slots inside the typed call.
-    pub slot_bindings: HashMap<String, nebula_core::CredentialKey>,
-    /// Slot-name → resolved `CredentialId` for the rotation fan-out reverse
-    /// index. Empty when the caller resolved no credential into a slot, or
-    /// when no fan-out index is available — registration then proceeds with
-    /// no reverse-index row.
-    pub credential_ids: HashMap<String, nebula_credential::CredentialId>,
+    /// Resolved credential slot bindings — each a [`SlotBinding`] carrying the
+    /// slot name, credential key, and optional rotation `CredentialId`
+    /// together. Asserted against the resource's declared slots inside the
+    /// typed call; both the reverse-index row and the structural identity are
+    /// derived from these same bindings, so the two cannot diverge.
+    pub slot_bindings: Vec<SlotBinding>,
     /// Registration scope.
     pub scope: ScopeLevel,
     /// Optional recovery gate shared across a recovery group.
@@ -320,11 +345,20 @@ where
         let resource = (self.resource_factory)();
         let topology = (self.topology_factory)();
         Box::pin(async move {
+            // The typed register validates declared slots and derives the
+            // structural identity from the (slot → credential-key) view; the
+            // rotation `CredentialId` lives on the same bindings and is
+            // consumed by the reverse index in `register_and_bind`.
+            let slot_keys: HashMap<String, nebula_core::CredentialKey> = request
+                .slot_bindings
+                .iter()
+                .map(|binding| (binding.slot_name.clone(), binding.credential_key.clone()))
+                .collect();
             manager
                 .register_resolved::<R>(
                     request.config_json,
                     request.expr_engine,
-                    request.slot_bindings,
+                    slot_keys,
                     resource,
                     request.scope,
                     topology,
@@ -453,31 +487,36 @@ impl ResourceActivatorRegistry {
             request
                 .slot_bindings
                 .iter()
-                .map(|(slot, cred)| (slot.as_str(), cred.as_str())),
+                .map(|binding| (binding.slot_name.as_str(), binding.credential_key.as_str())),
         );
 
         // Stage reverse-index binds BEFORE the typed register makes the
-        // Manager row discoverable.
+        // Manager row discoverable. Each `CredentialId` rides on the SAME
+        // `SlotBinding` whose `credential_key` fed `staged_slot_identity`, so
+        // the index row and the structural identity can never be derived from
+        // different credentials (confused-deputy close), and a slot without a
+        // rotation `CredentialId` is simply skipped — no silent drop of a
+        // mismatched parallel-map entry.
         let mut staged: Vec<(nebula_credential::CredentialId, _)> = Vec::new();
         if let Some(idx) = fanout_index {
-            for (slot_name, cred_id) in &request.credential_ids {
-                if !request.slot_bindings.contains_key(slot_name) {
+            for binding in &request.slot_bindings {
+                let Some(cred_id) = binding.credential_id else {
                     continue;
-                }
+                };
                 let bind = crate::Bind {
                     resource_key: resource_key.clone(),
                     scope: request.scope.clone(),
-                    slot_name: slot_name.clone(),
+                    slot_name: binding.slot_name.clone(),
                     slot_identity: staged_slot_identity.clone(),
                 };
                 idx.bind(
-                    *cred_id,
+                    cred_id,
                     resource_key.clone(),
                     request.scope.clone(),
-                    slot_name.clone(),
+                    binding.slot_name.clone(),
                     staged_slot_identity.clone(),
                 );
-                staged.push((*cred_id, bind));
+                staged.push((cred_id, bind));
             }
         }
 
@@ -667,8 +706,7 @@ mod tests {
         RegisterRequest {
             config_json: serde_json::json!({ "name": "from-factory" }),
             expr_engine,
-            slot_bindings: HashMap::new(),
-            credential_ids: HashMap::new(),
+            slot_bindings: Vec::new(),
             scope: ScopeLevel::Global,
             recovery_gate: None,
         }

@@ -11,5 +11,5 @@
 
 pub use nebula_resource::{
     KindActivator, RegisterRequest, RegistrarError, ResourceActivatorRegistry, ResourceFactory,
-    ResourceRegistrationOutcome,
+    ResourceRegistrationOutcome, SlotBinding,
 };

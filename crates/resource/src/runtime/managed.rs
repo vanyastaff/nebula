@@ -146,11 +146,14 @@ impl<R: Provider> ManagedResource<R> {
     /// resource the manager has already declared bankrupt. Per-resource
     /// `HealthChanged{healthy:false}` event emission is owned by the
     /// manager because it holds the event bus.
-    pub(crate) fn set_failed(&self, error: impl Into<String>) {
+    pub(crate) fn set_failed(&self, kind: crate::error::ErrorKind, message: impl Into<String>) {
         let next = ResourceStatus {
             phase: ResourcePhase::Failed,
             generation: self.generation(),
-            last_error: Some(error.into()),
+            last_error: Some(crate::state::ResourceErrorSummary {
+                kind,
+                message: message.into(),
+            }),
         };
         self.status.store(Arc::new(next));
     }
