@@ -149,7 +149,7 @@ macro_rules! define_field {
             /// injected at validation time. A `required()` field still fails
             /// validation when absent from submitted values even if a default
             /// is set. Apply defaults explicitly before calling
-            /// [`ValidSchema::validate`] if you want fill-in behaviour.
+            /// `ValidSchema::validate` if you want fill-in behaviour.
             #[must_use]
             pub fn default(mut self, value: Value) -> Self {
                 self.default = Some(value);
@@ -1545,7 +1545,7 @@ impl Field {
     /// a default is set.
     ///
     /// Callers that want "fill in the default when absent" behaviour must
-    /// apply it explicitly before calling [`ValidSchema::validate`].
+    /// apply it explicitly before calling `ValidSchema::validate`.
     #[inline]
     #[must_use]
     pub const fn default(&self) -> Option<&Value> {

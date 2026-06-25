@@ -325,7 +325,7 @@ impl std::error::Error for ValidationReport {}
 ///
 /// | Code | Where emitted | Why omitted |
 /// |------|---------------|-------------|
-/// | `union.default_variant` | [`ValidSchema::union`] constructor | Build-time guard; callers see it only when constructing an invalid union, never at runtime. |
+/// | `union.default_variant` | `ValidSchema::union` constructor | Build-time guard; callers see it only when constructing an invalid union, never at runtime. |
 /// | `union.unknown_variant` | (internal union validation path) | Collapsed into `mode.invalid` on the public surface. |
 /// | `union.malformed_wire` | (internal union wire ingress) | Maps to `type_mismatch` at the schema boundary. |
 /// | `secret.not_hashable` | (internal secret-promotion path) | Arises only on non-literal secret values; callers see `type_mismatch`. |
