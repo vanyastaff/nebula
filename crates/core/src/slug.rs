@@ -60,12 +60,6 @@ impl Slug {
         Ok(Self(value.to_owned()))
     }
 
-    /// Create without validation (for trusted internal use only).
-    #[must_use]
-    pub fn new_unchecked(value: String) -> Self {
-        Self(value)
-    }
-
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0

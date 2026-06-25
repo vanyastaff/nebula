@@ -112,8 +112,35 @@ pub trait RefreshCoordinator: Send + Sync {
 
 /// Token returned by [`RefreshCoordinator`].
 ///
-/// The token is an opaque handle. TTL / timeout semantics (e.g., how long
-/// a refresh lock is held before auto-release) are deferred to the concrete
-/// `RefreshCoordinator` implementation.
+/// The token is an opaque handle minted exclusively by a [`RefreshCoordinator`]
+/// implementation.  Callers must pass it back to [`RefreshCoordinator::release_refresh`]
+/// to release the lock.  TTL / timeout semantics are delegated to the concrete
+/// implementation.
 #[derive(Debug)]
-pub struct RefreshToken(pub u64);
+pub struct RefreshToken(u64);
+
+impl RefreshToken {
+    /// Mint a new token from a coordinator-assigned value.
+    #[must_use = "dropping a RefreshToken without calling release_refresh leaks the refresh lock"]
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    /// Return the raw coordinator-assigned value.
+    #[must_use]
+    pub const fn get(&self) -> u64 {
+        self.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RefreshToken;
+
+    #[test]
+    fn refresh_token_round_trips() {
+        assert_eq!(RefreshToken::new(42).get(), 42);
+        assert_eq!(RefreshToken::new(99).get(), 99);
+        assert_ne!(RefreshToken::new(1).get(), RefreshToken::new(2).get());
+    }
+}
