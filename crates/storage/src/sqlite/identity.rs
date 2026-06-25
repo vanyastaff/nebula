@@ -95,7 +95,9 @@ fn user_from_row(r: &sqlx::sqlite::SqliteRow) -> Result<UserRow, StorageError> {
         email: required(r, "email")?,
         display_name: required(r, "display_name")?,
         created_at: required(r, "created_at")?,
-        failed_login_count: required::<i64>(r, "failed_login_count")? as i32,
+        failed_login_count: i32::try_from(required::<i64>(r, "failed_login_count")?).map_err(
+            |e| StorageError::Serialization(format!("failed_login_count out of i32 range: {e}")),
+        )?,
         mfa_enabled: required::<i64>(r, "mfa_enabled")? != 0,
         version: required::<i64>(r, "version")? as u64,
         // Nullable columns — .ok() / Option decode is correct.
@@ -951,8 +953,19 @@ fn quota_from_row(r: &sqlx::sqlite::SqliteRow) -> Result<QuotaRow, StorageError>
         // NOT NULL columns — use `required` to reject SQL NULL (see its doc).
         org_id: required(r, "org_id")?,
         plan: required(r, "plan")?,
-        concurrent_executions_limit: required::<i64>(r, "concurrent_executions_limit")? as i32,
-        concurrent_executions: required::<i64>(r, "concurrent_executions")? as i32,
+        concurrent_executions_limit: i32::try_from(required::<i64>(
+            r,
+            "concurrent_executions_limit",
+        )?)
+        .map_err(|e| {
+            StorageError::Serialization(format!(
+                "concurrent_executions_limit out of i32 range: {e}"
+            ))
+        })?,
+        concurrent_executions: i32::try_from(required::<i64>(r, "concurrent_executions")?)
+            .map_err(|e| {
+                StorageError::Serialization(format!("concurrent_executions out of i32 range: {e}"))
+            })?,
         executions_this_month: required::<i64>(r, "executions_this_month")?,
         month_reset_at: required(r, "month_reset_at")?,
         updated_at: required(r, "updated_at")?,
@@ -963,7 +976,14 @@ fn quota_from_row(r: &sqlx::sqlite::SqliteRow) -> Result<QuotaRow, StorageError>
         active_workflows_limit: r
             .try_get::<Option<i64>, _>("active_workflows_limit")
             .map_err(conn_err)?
-            .map(|v| v as i32),
+            .map(|v| {
+                i32::try_from(v).map_err(|e| {
+                    StorageError::Serialization(format!(
+                        "active_workflows_limit out of i32 range: {e}"
+                    ))
+                })
+            })
+            .transpose()?,
     })
 }
 
@@ -1031,7 +1051,9 @@ impl QuotaStore for SqliteQuotaStore {
             .fetch_one(&self.pool)
             .await
             .map_err(conn_err)?;
-            return Ok(v as i32);
+            return i32::try_from(v).map_err(|e| {
+                StorageError::Serialization(format!("concurrent_executions out of i32 range: {e}"))
+            });
         }
         // Disambiguate: no such org ⇒ NotFound; otherwise the guard
         // rejected a below-zero adjustment ⇒ Conflict.
@@ -1493,6 +1515,81 @@ mod decoder_null_guard_tests {
         assert!(
             result.is_err(),
             "blob_from_row must return Err when the required `storage_mode` column is NULL, got Ok"
+        );
+    }
+
+    #[tokio::test]
+    async fn quota_from_row_i64_outside_i32_range_is_err() {
+        // concurrent_executions_limit is stored as i64 in SQLite but mapped to
+        // i32 in QuotaRow. A value beyond i32::MAX must produce Err, not a
+        // silently wrapped integer.
+        let overflow = (i32::MAX as i64) + 1; // 2_147_483_648 — one past i32::MAX
+        let pool = SqlitePool::connect(":memory:").await.unwrap();
+        sqlx::query(
+            "CREATE TABLE t (org_id TEXT NOT NULL, plan TEXT NOT NULL, \
+             concurrent_executions_limit INTEGER NOT NULL, \
+             concurrent_executions INTEGER NOT NULL DEFAULT 0, \
+             executions_this_month INTEGER NOT NULL DEFAULT 0, \
+             month_reset_at TEXT NOT NULL, updated_at TEXT NOT NULL, \
+             executions_per_month_limit INTEGER, active_workflows_limit INTEGER)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        // Bind the overflow value as a parameter so the query string stays static.
+        sqlx::query(
+            "INSERT INTO t VALUES ('org-1', 'pro', ?, 0, 0, \
+             '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z', NULL, NULL)",
+        )
+        .bind(overflow)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let row = sqlx::query("SELECT * FROM t")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let result = quota_from_row(&row);
+        assert!(
+            result.is_err(),
+            "quota_from_row must return Err when concurrent_executions_limit exceeds i32::MAX, got Ok"
+        );
+    }
+
+    #[tokio::test]
+    async fn user_from_row_failed_login_count_outside_i32_range_is_err() {
+        // failed_login_count is stored as i64 in SQLite but mapped to i32 in
+        // UserRow. A value beyond i32::MAX must produce Err, not wrap.
+        let overflow = (i32::MAX as i64) + 1;
+        let pool = SqlitePool::connect(":memory:").await.unwrap();
+        sqlx::query(
+            "CREATE TABLE t (id TEXT NOT NULL, email TEXT NOT NULL, \
+             display_name TEXT NOT NULL, created_at TEXT NOT NULL, \
+             failed_login_count INTEGER NOT NULL, \
+             mfa_enabled INTEGER NOT NULL DEFAULT 0, \
+             version INTEGER NOT NULL DEFAULT 0, \
+             email_verified_at TEXT, avatar_url TEXT, password_hash TEXT, \
+             last_login_at TEXT, locked_until TEXT, mfa_secret BLOB, deleted_at TEXT)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO t VALUES ('u-1', 'a@b.com', 'Alice', '2024-01-01T00:00:00Z', \
+             ?, 0, 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL)",
+        )
+        .bind(overflow)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let row = sqlx::query("SELECT * FROM t")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let result = user_from_row(&row);
+        assert!(
+            result.is_err(),
+            "user_from_row must return Err when failed_login_count exceeds i32::MAX, got Ok"
         );
     }
 }
