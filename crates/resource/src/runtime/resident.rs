@@ -93,6 +93,19 @@ pub struct Resident<R: Provider> {
     ///
     /// [`dispatch_resident_hook`]: Self::dispatch_resident_hook
     built_epoch: AtomicU64,
+    /// The `R::Config` fingerprint the currently-stored master runtime was
+    /// built against (`0` before the first create). Compared on each acquire
+    /// against the live config snapshot's fingerprint: a mismatch means
+    /// `Manager::reload_config` swapped the config, so the master is rebuilt
+    /// with the new config on the next acquire (lazy rebuild, symmetric to the
+    /// pool's stale-fingerprint eviction). Written only under `create_lock`.
+    ///
+    /// Distinct from [`built_epoch`](Self::built_epoch) (credential rotation)
+    /// and from `Pooled::current_fingerprint` (the pool is seeded with the
+    /// fingerprint at construction; the resident instead derives it from the
+    /// live config the framework threads into every `create_slot`, so no
+    /// constructor or `set_fingerprint` change is needed).
+    built_fingerprint: AtomicU64,
 }
 
 impl<R: Provider + HasCredentialSlots> Resident<R> {
@@ -103,6 +116,7 @@ impl<R: Provider + HasCredentialSlots> Resident<R> {
             config,
             create_lock: Mutex::new(()),
             built_epoch: AtomicU64::new(0),
+            built_fingerprint: AtomicU64::new(0),
         }
     }
 
@@ -236,9 +250,19 @@ where
         resource_config: &R::Config,
         ctx: &ResourceContext,
     ) -> Result<R::Instance, Error> {
-        // Fast path — lock-free load + liveness check.
+        // The `R::Config` fingerprint of the live snapshot the framework
+        // threaded in. `Manager::reload_config` swaps that snapshot, so a
+        // changed fingerprint is the signal to rebuild the master against the
+        // new config (lazy rebuild, symmetric to the pool's stale-fingerprint
+        // eviction). Computed once and reused — `resource_config` is fixed for
+        // this acquire.
+        use crate::resource::ResourceConfig as _;
+        let config_fp = resource_config.fingerprint();
+
+        // Fast path — lock-free load + liveness + config-fingerprint check.
         if let Some(existing) = self.cell.load()
             && resource.is_alive_sync(&existing)
+            && self.built_fingerprint.load(Ordering::Acquire) == config_fp
         {
             return Ok((*existing).clone());
         }
@@ -248,12 +272,18 @@ where
 
         // Double-check: another task may have created while we waited.
         if let Some(existing) = self.cell.load() {
-            if resource.is_alive_sync(&existing) {
+            let alive = resource.is_alive_sync(&existing);
+            let config_unchanged = self.built_fingerprint.load(Ordering::Acquire) == config_fp;
+            if alive && config_unchanged {
                 return Ok((*existing).clone());
             }
 
-            // Still not alive — destroy and recreate if configured.
-            if !self.config.recreate_on_failure {
+            // A live runtime that merely failed its liveness check is recreated
+            // only when the resident opts in via `recreate_on_failure`. A config
+            // reload (fingerprint changed) ALWAYS rebuilds — it is an explicit
+            // operator action, not failure recovery — so it is not gated on
+            // that flag.
+            if config_unchanged && !self.config.recreate_on_failure {
                 return Err(Error::transient("resident runtime is not alive"));
             }
 
@@ -303,6 +333,9 @@ where
         let cloned = runtime.clone();
         self.cell.store(Arc::new(runtime));
         self.built_epoch.store(built_epoch, Ordering::Release);
+        // Stamp the config fingerprint this master was built against so a
+        // later reload (changed fingerprint) triggers a rebuild on next acquire.
+        self.built_fingerprint.store(config_fp, Ordering::Release);
 
         Ok(cloned)
     }

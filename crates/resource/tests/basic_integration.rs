@@ -1130,6 +1130,61 @@ async fn reload_config_bumps_status_generation() {
 }
 
 #[tokio::test]
+async fn reload_config_rebuilds_resident_master_with_new_config() {
+    // A resident holds ONE shared master and clones it per acquire. Before the
+    // fix, `reload_config` swapped the config but never rebuilt that master, so
+    // an operator's new config never took effect on the live runtime. The
+    // master must be rebuilt — lazily, on the next acquire — when the config
+    // fingerprint changes. `ResidentTestResource::create` returns a fresh
+    // instance carrying a monotonic create-id, so a rebuild is observable as a
+    // changed id. Red-on-revert: without the rebuild, the same master (same id)
+    // is reused after reload.
+    let manager = Manager::new();
+    let resource = ResidentTestResource::new();
+    let resident_rt = Resident::<ResidentTestResource>::new(ResidentConfig::default());
+    manager
+        .register(RegistrationSpec {
+            resource,
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: resident_rt,
+            recovery_gate: None,
+        })
+        .expect("register");
+
+    let ctx = test_ctx();
+    let first = manager
+        .acquire_resident::<ResidentTestResource>(&ctx, &AcquireOptions::default())
+        .await
+        .expect("first acquire");
+    let first_id = first.load(Ordering::Relaxed);
+    drop(first);
+
+    // Reload to a config with a DIFFERENT fingerprint (a different name).
+    manager
+        .reload_config::<ResidentTestResource>(
+            TestConfig {
+                name: "test-v2".into(),
+            },
+            &ScopeLevel::Global,
+        )
+        .expect("reload");
+
+    let second = manager
+        .acquire_resident::<ResidentTestResource>(&ctx, &AcquireOptions::default())
+        .await
+        .expect("second acquire");
+    let second_id = second.load(Ordering::Relaxed);
+
+    assert_ne!(
+        first_id, second_id,
+        "reload_config must rebuild the resident master with the new config \
+         (a changed config fingerprint forces a fresh create on the next acquire)"
+    );
+}
+
+#[tokio::test]
 async fn graceful_shutdown_report_marks_registry_cleared() {
     use nebula_resource::manager::ShutdownConfig;
 
