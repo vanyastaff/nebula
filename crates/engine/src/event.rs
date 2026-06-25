@@ -13,6 +13,35 @@ use nebula_workflow::NodeState;
 
 use crate::scoped_resources::BranchId;
 
+/// Structured error summary carried by [`ExecutionEvent::NodeFailed`].
+///
+/// Wraps the node failure information in a form that exposes the engine's
+/// error classification code alongside the display message, giving
+/// eventbus subscribers a stable, typed signal rather than a raw string.
+///
+/// # Durable format note
+///
+/// `NodeFailedDetails` is an **in-process event payload only** — it is NOT
+/// persisted to the durable execution journal. The durable error string lives
+/// on `NodeState::error_message` inside `ExecutionState`; reshaping that
+/// field requires a version-envelope migration (see ADR-TODO: durable
+/// `error_message` sanitization). Sanitization of the durable field is
+/// deferred until that ADR lands.
+#[derive(Debug, Clone)]
+pub struct NodeFailedDetails {
+    /// Engine-assigned classification code for the failure (e.g.
+    /// `"ENGINE:NODE_FAILED"`, `"ENGINE:TASK_PANICKED"`).
+    ///
+    /// Stable across restarts; suitable for alerting rules and dashboards.
+    pub error_code: String,
+    /// Human-readable display message.
+    ///
+    /// Sourced from the action's `Display` implementation; may contain
+    /// operator-facing detail. Subscribers that write to compliance-sensitive
+    /// sinks should apply their own redaction before persisting.
+    pub display_message: String,
+}
+
 /// Events emitted during workflow execution.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
@@ -43,8 +72,12 @@ pub enum ExecutionEvent {
         execution_id: ExecutionId,
         /// The node that failed.
         node_key: NodeKey,
-        /// Error message.
-        error: String,
+        /// Structured error summary (code + display message).
+        ///
+        /// Use `details.error_code` for alerting / routing and
+        /// `details.display_message` for operator diagnostics. See
+        /// [`NodeFailedDetails`] for the durable-format caveat.
+        details: NodeFailedDetails,
     },
 
     /// A node returned `ActionResult::Wait` and has been durably parked

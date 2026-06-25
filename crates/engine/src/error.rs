@@ -2,6 +2,7 @@
 
 use nebula_action::ActionError;
 use nebula_core::{NodeKey, id::ExecutionId};
+use nebula_expression::ExpressionError;
 use nebula_workflow::NodeState;
 
 /// Errors from the engine layer.
@@ -33,14 +34,28 @@ pub enum EngineError {
     Cancelled,
 
     /// Parameter resolution failed (expression eval, reference lookup, etc.)
+    ///
+    /// When the failure originated in the expression engine, `source` carries the
+    /// typed [`ExpressionError`] so `std::error::Error::source()` chains are
+    /// preserved for operator diagnostics. For non-expression failures (e.g. a
+    /// missing predecessor reference) `source` is `None` and the textual
+    /// `error` field carries the message.
     #[error("parameter resolution failed for node {node_key}, param '{param_key}': {error}")]
     ParameterResolution {
         /// The node whose parameter could not be resolved.
         node_key: NodeKey,
         /// The parameter key that failed.
         param_key: String,
-        /// The underlying error.
+        /// Human-readable description of the failure.
         error: String,
+        /// Typed upstream expression-engine error, when the failure originated
+        /// in expression evaluation or template rendering. `None` for reference
+        /// or structural failures that have no typed upstream source.
+        ///
+        /// Boxed to keep `EngineError` variant size within `clippy::result_large_err`
+        /// limits; `ExpressionError` itself carries multiple `String` fields.
+        #[source]
+        source: Option<Box<ExpressionError>>,
     },
 
     /// Parameter validation failed against the action's schema.

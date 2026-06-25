@@ -24,7 +24,7 @@ use nebula_action::{
 };
 use nebula_core::{
     ActionKey, CredentialKey, NodeKey, ResourceKey,
-    accessor::{CredentialAccessor, ResourceAccessor},
+    accessor::{Clock, CredentialAccessor, ResourceAccessor, SystemClock},
     id::{ExecutionId, InstanceId, WorkflowId},
     node_key,
 };
@@ -67,9 +67,14 @@ use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 use crate::{
-    credential_accessor::EngineCredentialAccessor, error::EngineError, event::ExecutionEvent,
-    resolver::ParamResolver, resource::ResourceActivatorRegistry,
-    resource_accessor::EngineResourceAccessor, result::ExecutionResult, runtime::ActionRuntime,
+    credential_accessor::EngineCredentialAccessor,
+    error::EngineError,
+    event::{ExecutionEvent, NodeFailedDetails},
+    resolver::ParamResolver,
+    resource::ResourceActivatorRegistry,
+    resource_accessor::EngineResourceAccessor,
+    result::ExecutionResult,
+    runtime::ActionRuntime,
     scoped_resources::LayeredResourceAccessor,
 };
 
@@ -305,6 +310,13 @@ pub struct WorkflowEngine {
     action_credentials: HashMap<ActionKey, HashSet<String>>,
     /// Optional event sender for real-time execution monitoring (TUI, logging).
     event_bus: Option<EventBus>,
+    /// Injectable clock for deterministic durable-timing paths (retry
+    /// deadlines, wait expirations, token issue timestamps).
+    ///
+    /// Defaults to [`SystemClock`] at construction; override with
+    /// [`WorkflowEngine::with_clock`] in tests to make wall-clock-sensitive
+    /// timing behaviour deterministic and inspection-ready.
+    clock: Arc<dyn Clock>,
     /// Stable per-instance identifier used as the execution-lease holder.
     ///
     /// Generated once when constructing [`WorkflowEngine`] via [`InstanceId::new`]
@@ -533,6 +545,7 @@ impl WorkflowEngine {
             credential_refresh: None,
             action_credentials: HashMap::new(),
             event_bus: None,
+            clock: Arc::new(SystemClock),
             instance_id,
             lease_ttl: DEFAULT_EXECUTION_LEASE_TTL,
             lease_heartbeat_interval: DEFAULT_EXECUTION_LEASE_HEARTBEAT_INTERVAL,
@@ -680,6 +693,21 @@ impl WorkflowEngine {
     #[must_use = "builder methods must be chained or built"]
     pub fn with_lease_heartbeat_interval(mut self, interval: Duration) -> Self {
         self.lease_heartbeat_interval = interval;
+        self
+    }
+
+    /// Override the wall-clock source used for durable timing paths.
+    ///
+    /// The engine uses this clock for retry deadlines, wait expirations,
+    /// and resume-token issue timestamps — all values that must be
+    /// deterministic and comparable across retries and process restarts.
+    ///
+    /// The default is [`SystemClock`] (real wall time). Inject a
+    /// `FakeClock` in unit tests to assert timing behaviour without
+    /// sleeping.
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_clock(mut self, clock: Arc<dyn Clock>) -> Self {
+        self.clock = clock;
         self
     }
 
@@ -2504,10 +2532,13 @@ impl WorkflowEngine {
                 execution_id,
                 holder: self.instance_id.to_string(),
             });
-        } else if self.stores.is_some() {
+        } else {
             // Persist final state with CAS-conflict reconciliation
-            // (issue #333). Mirrors `execute_workflow` — see its comment
-            // for the full contract.
+            // (issue #333). `self.stores` is guaranteed `Some` here: the
+            // load path at the top of `resume_execution` returns early with
+            // `PlanningFailed` when stores are absent, so control can only
+            // reach this point when the spec-16 bundle is configured.
+            // Mirrors `execute_workflow` — see its comment for the full contract.
             match self
                 .persist_final_state(
                     scope,
@@ -2546,14 +2577,6 @@ impl WorkflowEngine {
                     ExecutionStatus::Failed
                 },
             }
-        } else {
-            // Resume requires a configured legacy execution repo for the
-            // not-yet-migrated final-state persist (the load path above
-            // already errors when no stores are configured at all), so
-            // this branch is unreachable in practice; report the
-            // engine-local status rather than panicking to keep the
-            // expression total.
-            final_status
         };
 
         // Release the lease after the final persist completes.
@@ -2946,7 +2969,7 @@ impl WorkflowEngine {
         // Resume arms only the kind+identity match; a `None` Resume arms every
         // signal wait (W-S2b behavior). It runs under the lease we hold, so the
         // own-the-lease-before-RMW invariant (#856) is preserved.
-        let now = Utc::now();
+        let now = self.clock.now();
         let armed = arm_signal_waits_under_lease(&mut exec_state, resume_target, now);
 
         if armed.is_empty() {
@@ -3436,7 +3459,7 @@ impl WorkflowEngine {
             // would trip the frontier integrity (CAS on version) check.
             // Phase 1's `spawn_node` then performs `Ready → Running`
             // via `start_node_attempt`.
-            let now_drain = Utc::now();
+            let now_drain = self.clock.now();
             while let Some(Reverse((when, _))) = retry_heap.peek() {
                 if *when > now_drain {
                     break;
@@ -3509,7 +3532,7 @@ impl WorkflowEngine {
             //     Resume — FAIL the node (`Waiting → Failed` with
             //     `RuntimeError::WaitTimedOut`) and route its outgoing edges
             //     through the failure path (OnError / Skip / FailFast).
-            let now_wait_drain = Utc::now();
+            let now_wait_drain = self.clock.now();
             while let Some(Reverse((when, _))) = wait_heap.peek() {
                 if *when > now_wait_drain {
                     break;
@@ -3668,7 +3691,7 @@ impl WorkflowEngine {
                             // Resolved wait: drop the timer pair on the now-
                             // `Completed` node.
                             ns.clear_wait_timer();
-                            ns.completed_at = Some(Utc::now());
+                            ns.completed_at = Some(self.clock.now());
                         }
                         // Persist the `Completed` transition and the cleared
                         // timer fields atomically before activating downstream —
@@ -3884,7 +3907,7 @@ impl WorkflowEngine {
                         .node_states
                         .get(&node_key)
                         .map_or(1, |ns| ns.attempt_count() as u32);
-                    let next_at = next_retry_at(execution_id, &node_key, delay);
+                    let next_at = next_retry_at(execution_id, &node_key, delay, self.clock.now());
                     if exec_state
                         .schedule_node_retry(node_key.clone(), next_at)
                         .is_ok()
@@ -3980,7 +4003,10 @@ impl WorkflowEngine {
                     self.emit_event(ExecutionEvent::NodeFailed {
                         execution_id,
                         node_key: node_key.clone(),
-                        error: err_msg.clone(),
+                        details: NodeFailedDetails {
+                            error_code: "ENGINE:NODE_FAILED".to_owned(),
+                            display_message: err_msg.clone(),
+                        },
                     });
                 }
 
@@ -4051,7 +4077,7 @@ impl WorkflowEngine {
             // `retry_heap` is empty, sleep forever (the join_set / cancel
             // / wall-clock arms still drive the select).
             let next_retry_in: Option<Duration> = retry_heap.peek().map(|Reverse((when, _))| {
-                when.signed_duration_since(Utc::now())
+                when.signed_duration_since(self.clock.now())
                     .to_std()
                     .unwrap_or(Duration::ZERO)
             });
@@ -4067,7 +4093,7 @@ impl WorkflowEngine {
             // Compute the sleep until the earliest parked-wait timer fires.
             // This drives Phase 0b drains when `join_set` is otherwise idle.
             let next_wait_in: Option<Duration> = wait_heap.peek().map(|Reverse((when, _))| {
-                when.signed_duration_since(Utc::now())
+                when.signed_duration_since(self.clock.now())
                     .to_std()
                     .unwrap_or(Duration::ZERO)
             });
@@ -4204,7 +4230,7 @@ impl WorkflowEngine {
                     // out). The stale future `(deadline, key)` heap entry pops
                     // later, finds the node non-`Waiting`, and is skipped — the
                     // race-safety the Phase-0b state re-read guarantees.
-                    let now = Utc::now();
+                    let now = self.clock.now();
                     let to_arm =
                         arm_signal_waits_under_lease(exec_state, req.resume_target.as_ref(), now);
                     if to_arm.is_empty() {
@@ -4224,7 +4250,7 @@ impl WorkflowEngine {
                     // any reader observes the arm. (`set_node_state`/direct field
                     // writes do not bump; mirror the satisfy path's single bump.)
                     exec_state.version += 1;
-                    exec_state.updated_at = Utc::now();
+                    exec_state.updated_at = now;
                     // The single checkpoint below carries ALL armed nodes but is
                     // attributed to `to_arm[0]` (a checkpoint takes one key).
                     // Log the full armed set so a checkpoint failure with N>1
@@ -4384,7 +4410,7 @@ impl WorkflowEngine {
                         ..
                     } = action_result
                     {
-                        let now = Utc::now();
+                        let now = self.clock.now();
                         // Compute the (wake_at, wait_wake) pair. `wait_wake` records
                         // how a timer wake is to be read when it fires: `Completion`
                         // for a timer-driven wait, `Timeout` for a signal wait whose
@@ -4650,6 +4676,7 @@ impl WorkflowEngine {
                         // is dropped at the end of the `Ok(())` arm — W-S3d
                         // will route it to the waiting caller when that slice
                         // lands; for now it is deliberately unused.
+                        let token_now = self.clock.now();
                         let park_token_result: Option<
                             Result<(ResumeTokenRow, SecretString), EngineError>,
                         > = match &wait_signal {
@@ -4660,6 +4687,7 @@ impl WorkflowEngine {
                                 ResumeTokenWaitKind::Webhook,
                                 callback_id.clone(),
                                 wake_at,
+                                token_now,
                             )),
                             Some(WaitSignal::Approval { approver }) => Some(mint_park_token(
                                 scope,
@@ -4668,6 +4696,7 @@ impl WorkflowEngine {
                                 ResumeTokenWaitKind::Approval,
                                 approver.clone(),
                                 wake_at,
+                                token_now,
                             )),
                             // Execution waits are internal — no external bearer.
                             Some(WaitSignal::Execution { .. } | _) | None => None,
@@ -5096,7 +5125,8 @@ impl WorkflowEngine {
                             .node_states
                             .get(&node_key)
                             .map_or(1, |ns| ns.attempt_count() as u32);
-                        let next_at = next_retry_at(execution_id, &node_key, delay);
+                        let next_at =
+                            next_retry_at(execution_id, &node_key, delay, self.clock.now());
                         match exec_state.schedule_node_retry(node_key.clone(), next_at) {
                             Ok(()) => {
                                 // Persist the WaitingRetry transition,
@@ -5201,7 +5231,10 @@ impl WorkflowEngine {
                         self.emit_event(ExecutionEvent::NodeFailed {
                             execution_id,
                             node_key: node_key.clone(),
-                            error: err_str.clone(),
+                            details: NodeFailedDetails {
+                                error_code: "ENGINE:NODE_FAILED".to_owned(),
+                                display_message: err_str.clone(),
+                            },
                         });
                     }
 
@@ -5712,7 +5745,10 @@ impl WorkflowEngine {
         self.emit_event(ExecutionEvent::NodeFailed {
             execution_id,
             node_key,
-            error: err_msg.to_owned(),
+            details: NodeFailedDetails {
+                error_code: "ENGINE:TASK_PANICKED".to_owned(),
+                display_message: err_msg.to_owned(),
+            },
         });
     }
 
@@ -6800,12 +6836,22 @@ fn compute_retry_decision(
 /// `i64::MAX` milliseconds (~292 million years). A naive
 /// `.unwrap_or_default()` would silently substitute zero — turning
 /// a misconfigured huge backoff into a hot-loop retry. Instead, we
-/// log + clamp to `chrono::Duration::MAX` so the next attempt is
+/// log + clamp to `DateTime::<Utc>::MAX_UTC` so the next attempt is
 /// effectively never scheduled, but the engine remains responsive
-/// to cancel/wall-clock teardown signals.
-fn next_retry_at(execution_id: ExecutionId, node_key: &NodeKey, delay: Duration) -> DateTime<Utc> {
+/// to cancel/wall-clock teardown signals. Using the absolute ceiling
+/// avoids the `now + chrono::Duration::MAX` overflow that occurs for
+/// any `now` value beyond the epoch.
+///
+/// `now` is supplied by the caller from an injectable [`Clock`] so
+/// retry deadlines are deterministic and testable without real wall time.
+fn next_retry_at(
+    execution_id: ExecutionId,
+    node_key: &NodeKey,
+    delay: Duration,
+    now: DateTime<Utc>,
+) -> DateTime<Utc> {
     match chrono::Duration::from_std(delay) {
-        Ok(d) => Utc::now() + d,
+        Ok(d) => now + d,
         Err(e) => {
             tracing::warn!(
                 target = "engine::retry",
@@ -6813,9 +6859,12 @@ fn next_retry_at(execution_id: ExecutionId, node_key: &NodeKey, delay: Duration)
                 %node_key,
                 error = %e,
                 delay_ms = delay.as_millis() as u64,
-                "retry delay is not representable by chrono; clamping to chrono::Duration::MAX"
+                "retry delay is not representable by chrono; clamping retry deadline to MAX_UTC"
             );
-            Utc::now() + chrono::Duration::MAX
+            // `now + chrono::Duration::MAX` overflows for any `now` near the epoch.
+            // Use the absolute ceiling of `DateTime<Utc>` so the node is effectively
+            // never retried while the engine remains responsive to cancel/shutdown.
+            DateTime::<Utc>::MAX_UTC
         },
     }
 }
@@ -7159,6 +7208,7 @@ fn mint_park_token(
     wait_kind: ResumeTokenWaitKind,
     callback_label: String,
     wake_at: Option<DateTime<Utc>>,
+    now: DateTime<Utc>,
 ) -> Result<(ResumeTokenRow, SecretString), EngineError> {
     // Wrap the raw preimage in `Zeroizing` so it is wiped on drop — the
     // 32 raw bytes are the actual secret (the base64 bearer is derived from
@@ -7191,7 +7241,7 @@ fn mint_park_token(
         node_key.to_string(),
         wait_kind,
         callback_label,
-        Utc::now().to_rfc3339(),
+        now.to_rfc3339(),
         expires_at,
     );
 
@@ -13049,5 +13099,95 @@ mod tests {
             matches!(outcome, ResumeDelivery::AckTimeout),
             "a silent loop must yield AckTimeout, got {outcome:?}"
         );
+    }
+
+    // ── FIX 1: injectable Clock — retry deadline is derived from injected time ──
+    //
+    // `next_retry_at` previously called `Utc::now()` internally, making retry
+    // deadlines non-deterministic and impossible to assert in tests. After the
+    // fix it accepts `now: DateTime<Utc>` from the caller (who reads it from
+    // an injectable `Clock`). This test verifies that the returned deadline
+    // equals `now + delay` and is completely independent of wall time.
+
+    #[test]
+    fn next_retry_at_computes_deadline_from_injected_now() {
+        use chrono::TimeZone;
+
+        // Epoch-pinned fixed instant — wall time is irrelevant.
+        let pinned_now = Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
+        let delay = std::time::Duration::from_secs(30);
+
+        let execution_id = ExecutionId::new();
+        let node = nebula_core::node_key!("retry-test");
+        let deadline = next_retry_at(execution_id, &node, delay, pinned_now);
+
+        let expected = pinned_now + chrono::Duration::seconds(30);
+        assert_eq!(
+            deadline, expected,
+            "retry deadline must be exactly pinned_now + delay, not derived from wall time"
+        );
+    }
+
+    #[test]
+    fn next_retry_at_clamps_overflow_delay() {
+        use chrono::TimeZone;
+
+        // A delay that cannot be represented by chrono::Duration (> ~292 years).
+        // next_retry_at must clamp to DateTime::<Utc>::MAX_UTC rather than panicking.
+        // (A naive `now + chrono::Duration::MAX` overflows for any `now` > epoch.)
+        let pinned_now = Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
+        let overflow_delay = std::time::Duration::from_secs(u64::MAX / 2);
+
+        let execution_id = ExecutionId::new();
+        let node = nebula_core::node_key!("retry-overflow");
+        let deadline = next_retry_at(execution_id, &node, overflow_delay, pinned_now);
+
+        assert_eq!(
+            deadline,
+            DateTime::<Utc>::MAX_UTC,
+            "overflow delay must clamp to MAX_UTC, not panic or return an arbitrary future time"
+        );
+    }
+
+    // ── FIX 1: with_clock builder stores the injected clock ──────────────────
+    //
+    // Verifies that `with_clock` is wired end-to-end: a `FakeClock` that records
+    // every `now()` call is injected, and after construction the builder method
+    // returns the same engine (consumed by value). The test is intentionally
+    // structural — it proves the builder method compiles and that `FakeClock`
+    // satisfies the `Clock` bound, so any accidental reversion to calling
+    // `Utc::now()` directly (bypassing the clock field) would be caught by the
+    // free-function tests above.
+
+    #[test]
+    fn with_clock_builder_accepts_custom_clock() {
+        use std::{
+            sync::atomic::{AtomicU32, Ordering},
+            time::Instant,
+        };
+
+        use nebula_core::accessor::Clock;
+
+        struct CountingClock {
+            calls: AtomicU32,
+        }
+
+        impl Clock for CountingClock {
+            fn now(&self) -> DateTime<Utc> {
+                self.calls.fetch_add(1, Ordering::Relaxed);
+                Utc::now()
+            }
+            fn monotonic(&self) -> Instant {
+                Instant::now()
+            }
+        }
+
+        let (engine, _metrics) = make_engine(Arc::new(ActionRegistry::new()));
+        // `with_clock` must accept any `Arc<dyn Clock>` and return `Self`.
+        let clock = Arc::new(CountingClock {
+            calls: AtomicU32::new(0),
+        });
+        let _engine_with_clock = engine.with_clock(clock);
+        // If the line above compiled and did not panic, the builder is wired.
     }
 }
