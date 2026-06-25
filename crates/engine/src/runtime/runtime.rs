@@ -30,21 +30,32 @@ use super::{
     runner::{ActionRunContext, ActionRunner},
 };
 
-/// Compute a digest of the serialized stateful state for stuck-state detection.
+/// Compute a deterministic digest of the serialized stateful state for
+/// stuck-state detection.
 ///
 /// The runtime sees `state` as `serde_json::Value` — not `Hash`, but always
-/// serialisable. We route through `serde_json::to_vec` and hash the bytes.
+/// serialisable. We serialize to canonical JSON bytes and take the first 8
+/// bytes of a SHA-256 hash as a `u64`. SHA-256 is stable across processes,
+/// restarts, and Rust toolchain versions, making the digest cross-run
+/// comparable — a requirement for stuck-state detection across retries.
+///
+/// `std::collections::hash_map::DefaultHasher` (SipHash with a random
+/// per-process seed) was deliberately avoided: its randomization makes
+/// cross-run comparison non-functional.
+///
 /// Errors collapse to `0` so the guard reduces to "assume the iteration
 /// progressed" on unserialisable state — an author who manages to hold an
 /// unserialisable `Value` has bigger problems than stuck detection.
 fn stateful_state_digest(state: &serde_json::Value) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    use sha2::{Digest, Sha256};
     match serde_json::to_vec(state) {
-        Ok(bytes) => bytes.hash(&mut hasher),
-        Err(_) => 0u8.hash(&mut hasher),
+        Ok(bytes) => {
+            let hash = Sha256::digest(&bytes);
+            // Take the first 8 bytes as a little-endian u64.
+            u64::from_le_bytes(hash[..8].try_into().expect("SHA-256 output is 32 bytes"))
+        },
+        Err(_) => 0,
     }
-    hasher.finish()
 }
 
 /// Persisted iteration state for a stateful action.
@@ -3063,5 +3074,71 @@ mod tests {
             },
             other => panic!("expected RuntimeError::IterationCapExceeded, got {other:?}"),
         }
+    }
+
+    // ── FIX 2: SHA-256 state-digest determinism ───────────────────────────
+    //
+    // `stateful_state_digest` previously used `DefaultHasher`, which is
+    // seeded with a random value per process instance — meaning two calls
+    // in different processes (or after a Rust upgrade) could return different
+    // digests for the same JSON value, causing the stuck-state guard to fire
+    // spuriously on resume. The SHA-256 replacement MUST produce the same
+    // `u64` for the same `serde_json::Value` every time, including across
+    // processes and after restarts.
+    //
+    // These tests are RED-ON-REVERT: they pin the exact SHA-256-derived u64
+    // so that any reversion to DefaultHasher (whose output is process-seeded)
+    // or any other non-deterministic hasher immediately breaks them. The
+    // constants were computed by running the SHA-256 implementation once and
+    // recording the output.
+
+    /// The expected SHA-256 digest of `serde_json::to_vec(&Value::Null)` (`b"null"`),
+    /// truncated to `u64` little-endian from the first 8 bytes of the hash.
+    const DIGEST_NULL: u64 = 0x8f49_e7af_984e_2374;
+
+    /// The expected SHA-256 digest of the fixed complex JSON object below.
+    /// Value: `{"counter":42,"node_a":"completed","node_b":{"output":[1,2,3]}}`.
+    /// Note: `serde_json` serialises object keys in insertion order; the bytes
+    /// are stable for a fixed input.
+    const DIGEST_COMPLEX: u64 = 0xfe1f_b90a_b268_98a5;
+
+    #[test]
+    fn stateful_state_digest_null_equals_pinned_sha256_constant() {
+        // If DefaultHasher were restored, this would return a process-seeded
+        // value that (with overwhelming probability) differs from DIGEST_NULL.
+        assert_eq!(
+            stateful_state_digest(&serde_json::Value::Null),
+            DIGEST_NULL,
+            "digest of null must equal the pinned SHA-256 constant; \
+             a mismatch means the hasher was changed (or reverted to DefaultHasher)"
+        );
+    }
+
+    #[test]
+    fn stateful_state_digest_complex_equals_pinned_sha256_constant() {
+        let state = serde_json::json!({
+            "node_a": "completed",
+            "node_b": { "output": [1, 2, 3] },
+            "counter": 42
+        });
+        assert_eq!(
+            stateful_state_digest(&state),
+            DIGEST_COMPLEX,
+            "digest of fixed complex JSON must equal the pinned SHA-256 constant; \
+             a mismatch means the hasher was changed (or reverted to DefaultHasher)"
+        );
+    }
+
+    #[test]
+    fn stateful_state_digest_is_cross_instance_deterministic() {
+        // Belt-and-suspenders: repeated calls within the same process also match.
+        // The pinned-constant tests above are the red-on-revert guards;
+        // this test confirms the implementation is at least self-consistent.
+        let state = serde_json::json!({ "node_a": "completed", "counter": 99 });
+        assert_eq!(stateful_state_digest(&state), stateful_state_digest(&state),);
+
+        // Different values must produce different digests.
+        let other = serde_json::json!({ "node_a": "failed" });
+        assert_ne!(stateful_state_digest(&state), stateful_state_digest(&other));
     }
 }

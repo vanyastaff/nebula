@@ -73,32 +73,33 @@ impl ParamResolver {
             ParamValue::Literal { value } => Ok(value.clone()),
 
             ParamValue::Expression { expr } => {
-                self.expression_engine.evaluate(expr, ctx).map_err(|e| {
-                    EngineError::ParameterResolution {
+                self.expression_engine
+                    .evaluate(expr, ctx)
+                    .map_err(|expression_error| EngineError::ParameterResolution {
                         node_key: node_key.clone(),
                         param_key: key.to_owned(),
-                        error: e.to_string(),
-                    }
-                })
+                        error: expression_error.to_string(),
+                        source: Some(Box::new(expression_error)),
+                    })
             },
 
             ParamValue::Template { template } => {
-                let tmpl = self
-                    .expression_engine
-                    .parse_template(template)
-                    .map_err(|e| EngineError::ParameterResolution {
+                let tmpl = self.expression_engine.parse_template(template).map_err(
+                    |expression_error| EngineError::ParameterResolution {
                         node_key: node_key.clone(),
                         param_key: key.to_owned(),
-                        error: format!("template parse error: {e}"),
-                    })?;
-                let rendered = self
-                    .expression_engine
-                    .render_template(&tmpl, ctx)
-                    .map_err(|e| EngineError::ParameterResolution {
+                        error: format!("template parse error: {expression_error}"),
+                        source: Some(Box::new(expression_error)),
+                    },
+                )?;
+                let rendered = self.expression_engine.render_template(&tmpl, ctx).map_err(
+                    |expression_error| EngineError::ParameterResolution {
                         node_key: node_key.clone(),
                         param_key: key.to_owned(),
-                        error: format!("template render error: {e}"),
-                    })?;
+                        error: format!("template render error: {expression_error}"),
+                        source: Some(Box::new(expression_error)),
+                    },
+                )?;
                 Ok(serde_json::Value::String(rendered))
             },
 
@@ -113,6 +114,7 @@ impl ParamResolver {
                             node_key: node_key.clone(),
                             param_key: key.to_owned(),
                             error: format!("referenced node {ref_node} has no output"),
+                            source: None,
                         })?;
                 let value = navigate_path(output.value(), output_path);
                 Ok(value)
@@ -122,6 +124,7 @@ impl ParamResolver {
                 node_key: node_key.clone(),
                 param_key: key.to_owned(),
                 error: format!("unsupported parameter type for key `{key}`"),
+                source: None,
             }),
         }
     }
@@ -400,5 +403,74 @@ mod tests {
             .resolve(&node_key!("test"), &params, &json!(null), &outputs)
             .unwrap_err();
         assert!(matches!(err, EngineError::ParameterResolution { .. }));
+    }
+
+    // ── FIX 4: ParameterResolution carries a typed #[source] ─────────────────
+    //
+    // Before the fix, `ParameterResolution` was a `{ node_key, param_key,
+    // error: String }` — the upstream `ExpressionError` was stringified and
+    // thrown away, breaking the `std::error::Error` source chain. After the
+    // fix, expression-originated failures carry `source: Some(ExpressionError)`
+    // so callers can inspect or route on the typed upstream error and
+    // `std::error::Error::source()` returns `Some(&ExpressionError)`.
+
+    #[test]
+    fn expression_resolution_error_preserves_typed_source() {
+        use std::error::Error as StdError;
+
+        let resolver = make_resolver();
+        let outputs = DashMap::new();
+        let mut params = HashMap::new();
+        params.insert("bad".to_owned(), ParamValue::expression("$nonexistent.foo"));
+
+        let err = resolver
+            .resolve(&node_key!("test"), &params, &json!(null), &outputs)
+            .unwrap_err();
+
+        // The error must be the ParameterResolution variant with a typed source.
+        let EngineError::ParameterResolution { ref source, .. } = err else {
+            panic!("expected ParameterResolution, got {err:?}");
+        };
+        assert!(
+            source.is_some(),
+            "expression eval failure must carry a typed ExpressionError source, got None"
+        );
+
+        // The std::error::Error source chain must be intact.
+        assert!(
+            (&err as &dyn StdError).source().is_some(),
+            "std::error::Error::source() must return Some(_) for expression failures"
+        );
+    }
+
+    #[test]
+    fn reference_resolution_error_has_no_source() {
+        use std::error::Error as StdError;
+
+        // Reference-to-missing-node is a string-only failure: no typed upstream.
+        // Verify `source: None` and that the chain terminates cleanly.
+        let resolver = make_resolver();
+        let outputs = DashMap::new();
+        let mut params = HashMap::new();
+        params.insert(
+            "data".to_owned(),
+            ParamValue::reference(node_key!("missing"), ""),
+        );
+
+        let err = resolver
+            .resolve(&node_key!("test"), &params, &json!(null), &outputs)
+            .unwrap_err();
+
+        let EngineError::ParameterResolution { ref source, .. } = err else {
+            panic!("expected ParameterResolution, got {err:?}");
+        };
+        assert!(
+            source.is_none(),
+            "reference failures must have source: None (no typed upstream)"
+        );
+        assert!(
+            (&err as &dyn StdError).source().is_none(),
+            "std::error::Error::source() must return None for reference failures"
+        );
     }
 }

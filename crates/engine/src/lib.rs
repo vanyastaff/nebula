@@ -6,7 +6,7 @@
 //! Workflow execution orchestrator. Builds an `ExecutionPlan` from a workflow
 //! DAG, resolves node inputs from predecessor outputs, transitions execution
 //! state through `ExecutionRepo` (CAS on `version`), and
-//! delegates action dispatch to `nebula-engine`.
+//! delegates action dispatch to `nebula-runtime`.
 //!
 //! Canon names this crate as the location of the `execution_control_queue`
 //! consumer (`ControlConsumer`, see [`control_consumer`]). Implementation status:
@@ -79,7 +79,7 @@ pub mod runtime;
 pub mod scoped_resources;
 pub mod store_seam;
 
-// Re-export the absorbed `nebula-engine` public surface at the crate root so
+// Re-export the absorbed `nebula-runtime` public surface at the crate root so
 // every downstream caller can migrate `use crate::runtime::X` → `use
 // nebula_engine::X` without path adjustments deeper than the crate name.
 pub use control_consumer::{
@@ -100,7 +100,7 @@ pub use daemon::{
 };
 pub use engine::{DEFAULT_EVENT_CHANNEL_CAPACITY, WorkflowEngine};
 pub use error::EngineError;
-pub use event::ExecutionEvent;
+pub use event::{ExecutionEvent, NodeFailedDetails};
 pub use nebula_storage_port::dto::ResumeTarget;
 pub use plugin_wiring::PluginWiringError;
 // Re-export plugin types for convenience.
