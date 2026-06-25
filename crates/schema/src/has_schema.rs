@@ -91,6 +91,13 @@ impl HasSchema for serde_json::Value {
 /// Baseline `HasSchema` impl for [`FieldValues`] — legacy code paths that still
 /// treat the raw value bag as the input type advertise the gradual-typing `Any`
 /// (unknown shape), not an empty record.
+///
+/// Hidden from the public docs (`#[doc(hidden)]`): it is a soft escape hatch
+/// that partially undercuts the "`schema_of` is the sole path" invariant. New
+/// code must declare a real `#[derive(Schema)]` type rather than lean on
+/// `FieldValues` advertising `Any`; this impl is slated for removal once every
+/// consumer declares a real schema.
+#[doc(hidden)]
 impl HasSchema for FieldValues {
     fn schema() -> ValidSchema {
         any_schema()
