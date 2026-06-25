@@ -40,7 +40,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use nebula_core::PluginKey;
-use nebula_engine::{EngineExecutionSink, ExecutionStores, WorkflowEngine};
+use nebula_engine::{
+    DEFAULT_TIMER_SCAN_INTERVAL, EngineExecutionSink, ExecutionStores, WorkflowEngine,
+};
 use nebula_metrics::MetricsRegistry;
 use nebula_orchestrator::Orchestrator;
 use nebula_storage_port::store::JobDispatchQueue;
@@ -64,11 +66,14 @@ pub enum WorkerBuildError {
 /// An assembled, ready-to-run worker runtime.
 ///
 /// Holds the [`Orchestrator`] configured with an [`EngineExecutionSink`]
-/// connected to the provided engine and execution store.
+/// connected to the provided engine and execution store, plus the engine
+/// reference needed to spawn the durable-timer wake scanner.
 ///
 /// Obtain via [`WorkerRuntimeBuilder::build`].
 #[must_use = "call .run() or .spawn() to start the pull loop"]
 pub struct WorkerRuntime {
+    engine: Arc<WorkflowEngine>,
+    timer_scan_interval: Duration,
     orchestrator: Orchestrator,
     processor_id: [u8; 16],
     available_plugins_count: usize,
@@ -84,7 +89,11 @@ impl std::fmt::Debug for WorkerRuntime {
 }
 
 impl WorkerRuntime {
-    /// Run the claim-loop on the current task until `shutdown` is cancelled.
+    /// Run the claim-loop and durable-timer scanner on the current task until
+    /// `shutdown` is cancelled.
+    ///
+    /// The timer scanner runs as a sibling background task sharing the same
+    /// shutdown token so it stops when the worker stops.
     ///
     /// Prefer [`spawn`](Self::spawn) unless integrating into a custom task structure.
     ///
@@ -99,21 +108,25 @@ impl WorkerRuntime {
             available_plugins = self.available_plugins_count,
             "worker runtime starting (ADR-0095 D1)"
         );
+        let _scanner = Arc::clone(&self.engine)
+            .spawn_timer_scanner(self.timer_scan_interval, shutdown.clone());
         self.orchestrator.run(shutdown).await;
     }
 
-    /// Spawn the claim-loop as a Tokio task.
+    /// Spawn the claim-loop and durable-timer scanner as a single Tokio task.
     ///
     /// Returns a [`JoinHandle`] that completes when `shutdown` is cancelled.
-    /// The caller owns signal→[`CancellationToken`] wiring; this crate provides
-    /// no `tokio::signal` integration so it composes into any shutdown strategy.
+    /// Both the orchestrator and the timer scanner share the same shutdown token
+    /// so they stop together. The caller owns signal→[`CancellationToken`] wiring;
+    /// this crate provides no `tokio::signal` integration so it composes into any
+    /// shutdown strategy.
     pub fn spawn(self, shutdown: CancellationToken) -> JoinHandle<()> {
         tracing::info!(
             processor = %hex_id(&self.processor_id),
             available_plugins = self.available_plugins_count,
             "worker runtime spawning (ADR-0095 D1)"
         );
-        self.orchestrator.spawn(shutdown)
+        tokio::spawn(async move { self.run(shutdown).await })
     }
 }
 
@@ -135,6 +148,8 @@ pub struct WorkerRuntimeBuilder {
     reclaim_interval: Option<Duration>,
     max_reclaim_count: Option<u32>,
     metrics: Option<MetricsRegistry>,
+    // Optional timer scanner override — None means DEFAULT_TIMER_SCAN_INTERVAL.
+    timer_scan_interval: Option<Duration>,
 }
 
 impl WorkerRuntimeBuilder {
@@ -184,6 +199,7 @@ impl WorkerRuntimeBuilder {
             reclaim_interval: None,
             max_reclaim_count: None,
             metrics: None,
+            timer_scan_interval: None,
         }
     }
 
@@ -226,6 +242,16 @@ impl WorkerRuntimeBuilder {
     /// counters reach the Prometheus scrape endpoint.
     pub fn with_metrics(mut self, m: MetricsRegistry) -> Self {
         self.metrics = Some(m);
+        self
+    }
+
+    /// Override the durable-timer scanner cadence (default:
+    /// [`DEFAULT_TIMER_SCAN_INTERVAL`] = 30 s).
+    ///
+    /// Shorter intervals reduce recovery latency for stranded timers at the
+    /// cost of more storage reads per unit time.
+    pub fn with_timer_scan_interval(mut self, d: Duration) -> Self {
+        self.timer_scan_interval = Some(d);
         self
     }
 
@@ -272,6 +298,10 @@ impl WorkerRuntimeBuilder {
         }
 
         Ok(WorkerRuntime {
+            engine: Arc::clone(&self.engine),
+            timer_scan_interval: self
+                .timer_scan_interval
+                .unwrap_or(DEFAULT_TIMER_SCAN_INTERVAL),
             orchestrator,
             processor_id: self.processor_id,
             available_plugins_count,

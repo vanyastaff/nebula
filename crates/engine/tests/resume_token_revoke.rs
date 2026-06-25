@@ -253,6 +253,10 @@ impl ExecutionStore for ArmableConflictStore {
         self.inner.release_lease(scope, id, token).await
     }
 
+    async fn list_all_running(&self) -> Result<Vec<ExecutionRecord>, StorageError> {
+        self.inner.list_all_running().await
+    }
+
     async fn list_running(&self, scope: &Scope) -> Result<Vec<String>, StorageError> {
         self.inner.list_running(scope).await
     }

@@ -47,7 +47,7 @@ use nebula_metrics::MetricsRegistry;
 use nebula_storage::{InMemoryExecutionStore, InMemoryWorkflowVersionStore};
 use nebula_storage_port::{
     FencingToken, Scope, StorageError, TransitionBatch, TransitionOutcome,
-    dto::WorkflowVersionRecord,
+    dto::{ExecutionRecord, WorkflowVersionRecord},
     store::{ExecutionStore, WorkflowVersionStore},
 };
 use nebula_workflow::{
@@ -1279,11 +1279,7 @@ impl ExecutionStore for CommitFenceInterceptor {
             .await
     }
 
-    async fn get(
-        &self,
-        scope: &Scope,
-        id: &str,
-    ) -> Result<Option<nebula_storage_port::dto::ExecutionRecord>, StorageError> {
+    async fn get(&self, scope: &Scope, id: &str) -> Result<Option<ExecutionRecord>, StorageError> {
         self.inner.get(scope, id).await
     }
 
@@ -1326,6 +1322,10 @@ impl ExecutionStore for CommitFenceInterceptor {
         token: FencingToken,
     ) -> Result<bool, StorageError> {
         self.inner.release_lease(scope, id, token).await
+    }
+
+    async fn list_all_running(&self) -> Result<Vec<ExecutionRecord>, StorageError> {
+        self.inner.list_all_running().await
     }
 
     async fn list_running(&self, scope: &Scope) -> Result<Vec<String>, StorageError> {
@@ -1565,11 +1565,7 @@ impl ExecutionStore for CancelDuringSatisfyInterceptor {
             .await
     }
 
-    async fn get(
-        &self,
-        scope: &Scope,
-        id: &str,
-    ) -> Result<Option<nebula_storage_port::dto::ExecutionRecord>, StorageError> {
+    async fn get(&self, scope: &Scope, id: &str) -> Result<Option<ExecutionRecord>, StorageError> {
         let rec = self.inner.get(scope, id).await?;
         // Inject the concurrent cancel only on the under-lease reload (after
         // acquire_lease), and only once.
@@ -1627,6 +1623,10 @@ impl ExecutionStore for CancelDuringSatisfyInterceptor {
         token: FencingToken,
     ) -> Result<bool, StorageError> {
         self.inner.release_lease(scope, id, token).await
+    }
+
+    async fn list_all_running(&self) -> Result<Vec<ExecutionRecord>, StorageError> {
+        self.inner.list_all_running().await
     }
 
     async fn list_running(&self, scope: &Scope) -> Result<Vec<String>, StorageError> {
@@ -2056,11 +2056,7 @@ impl ExecutionStore for LeaseFailAfterArmInterceptor {
             .await
     }
 
-    async fn get(
-        &self,
-        scope: &Scope,
-        id: &str,
-    ) -> Result<Option<nebula_storage_port::dto::ExecutionRecord>, StorageError> {
+    async fn get(&self, scope: &Scope, id: &str) -> Result<Option<ExecutionRecord>, StorageError> {
         self.inner.get(scope, id).await
     }
 
@@ -2103,6 +2099,10 @@ impl ExecutionStore for LeaseFailAfterArmInterceptor {
         token: FencingToken,
     ) -> Result<bool, StorageError> {
         self.inner.release_lease(scope, id, token).await
+    }
+
+    async fn list_all_running(&self) -> Result<Vec<ExecutionRecord>, StorageError> {
+        self.inner.list_all_running().await
     }
 
     async fn list_running(&self, scope: &Scope) -> Result<Vec<String>, StorageError> {
@@ -2370,11 +2370,7 @@ impl ExecutionStore for CommitStatusRecorder {
             .await
     }
 
-    async fn get(
-        &self,
-        scope: &Scope,
-        id: &str,
-    ) -> Result<Option<nebula_storage_port::dto::ExecutionRecord>, StorageError> {
+    async fn get(&self, scope: &Scope, id: &str) -> Result<Option<ExecutionRecord>, StorageError> {
         self.inner.get(scope, id).await
     }
 
@@ -2431,6 +2427,10 @@ impl ExecutionStore for CommitStatusRecorder {
         token: FencingToken,
     ) -> Result<bool, StorageError> {
         self.inner.release_lease(scope, id, token).await
+    }
+
+    async fn list_all_running(&self) -> Result<Vec<ExecutionRecord>, StorageError> {
+        self.inner.list_all_running().await
     }
 
     async fn list_running(&self, scope: &Scope) -> Result<Vec<String>, StorageError> {

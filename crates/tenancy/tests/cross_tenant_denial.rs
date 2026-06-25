@@ -158,6 +158,10 @@ impl ExecutionStore for MockExecStore {
         Ok(true)
     }
 
+    async fn list_all_running(&self) -> Result<Vec<ExecutionRecord>, StorageError> {
+        Ok(vec![])
+    }
+
     async fn list_running(&self, _scope: &Scope) -> Result<Vec<String>, StorageError> {
         Ok(vec![])
     }
@@ -973,6 +977,10 @@ impl ExecutionStore for TokenCapturingExecStore {
         _token: FencingToken,
     ) -> Result<bool, StorageError> {
         Ok(true)
+    }
+
+    async fn list_all_running(&self) -> Result<Vec<ExecutionRecord>, StorageError> {
+        Ok(vec![])
     }
 
     async fn list_running(&self, _scope: &Scope) -> Result<Vec<String>, StorageError> {

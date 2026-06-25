@@ -136,6 +136,12 @@ impl ExecutionStore for ScopedExecutionStore {
         self.inner.release_lease(&self.bound, id, token).await
     }
 
+    async fn list_all_running(&self) -> Result<Vec<ExecutionRecord>, StorageError> {
+        // No scope filter: cross-tenant scan is the point of this method.
+        // The caller (timer scanner) re-drives each row under its own scope.
+        self.inner.list_all_running().await
+    }
+
     async fn list_running(&self, _scope: &Scope) -> Result<Vec<String>, StorageError> {
         self.inner.list_running(&self.bound).await
     }

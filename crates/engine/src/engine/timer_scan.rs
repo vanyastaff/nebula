@@ -36,8 +36,9 @@ use super::*;
 pub const DEFAULT_TIMER_SCAN_INTERVAL: Duration = Duration::from_secs(30);
 
 impl WorkflowEngine {
-    /// Re-drive every `Running` execution that has an overdue parked timer but
-    /// no live owner, firing the wake the crashed runner would have fired.
+    /// Re-drive every `Running` execution across ALL tenant scopes that has an
+    /// overdue parked timer but no live owner, firing the wake the crashed runner
+    /// would have fired.
     ///
     /// The execution lease is the dead-vs-live oracle: a live owner holds it
     /// (`resume_execution` → [`EngineError::Leased`] → skipped, no double-drive);
@@ -47,32 +48,29 @@ impl WorkflowEngine {
     /// Timeout`) whose deadline is overdue is correctly fired down its timeout
     /// (fail) branch, exactly as a live runner would.
     ///
+    /// Each row is re-driven under its OWN persisted scope so multi-tenant
+    /// workers need no per-scope wiring — a single sweep covers all tenants.
+    ///
     /// Returns the number of executions re-driven. Per-execution errors are
     /// logged and never abort the sweep.
     ///
     /// # Errors
     ///
     /// Returns [`EngineError::PlanningFailed`] only if the initial
-    /// `list_running` storage call fails; individual execution failures are
+    /// `list_all_running` storage call fails; individual execution failures are
     /// absorbed so one bad row cannot wedge the sweep.
-    pub async fn sweep_overdue_timers(&self, scope: &Scope) -> Result<usize, EngineError> {
+    pub async fn sweep_overdue_timers(&self) -> Result<usize, EngineError> {
         let Some(stores) = self.stores.clone() else {
             // No durable store wired (library mode) — nothing to scan.
             return Ok(0);
         };
         let now = self.clock.now();
-        let running =
-            stores.execution.list_running(scope).await.map_err(|e| {
-                EngineError::PlanningFailed(format!("timer-scan list_running: {e}"))
-            })?;
+        let all_records = stores.execution.list_all_running().await.map_err(|e| {
+            EngineError::PlanningFailed(format!("timer-scan list_all_running: {e}"))
+        })?;
 
         let mut redriven = 0usize;
-        for id in running {
-            let Ok(Some(record)) = stores.execution.get(scope, &id).await else {
-                // Storage blip or the row vanished between list and get — the
-                // next sweep retries.
-                continue;
-            };
+        for record in all_records {
             // `from_str` (not `from_value`): `ExecutionState` carries a borrowing
             // field that `serde_json::from_value` cannot deserialize from an owned
             // `Value`, so round-trip through the string form (the same convention
@@ -87,15 +85,15 @@ impl WorkflowEngine {
             if !has_overdue_timer {
                 continue;
             }
-            let Ok(execution_id) = id.parse::<ExecutionId>() else {
+            let Ok(execution_id) = record.id.parse::<ExecutionId>() else {
                 tracing::warn!(
                     target = "engine::timer_scan",
-                    execution_id = %id,
+                    execution_id = %record.id,
                     "unparseable execution id in running set; skipping"
                 );
                 continue;
             };
-            match self.resume_execution(scope, execution_id).await {
+            match self.resume_execution(&record.scope, execution_id).await {
                 Ok(_) => {
                     redriven += 1;
                     tracing::debug!(
@@ -122,14 +120,13 @@ impl WorkflowEngine {
     /// Spawn the durable-timer wake scanner as a background task.
     ///
     /// Ticks every `interval`, calling [`sweep_overdue_timers`](Self::sweep_overdue_timers)
-    /// for `scope`, until `shutdown` is cancelled. Mirrors the control-queue
-    /// reclaim sweep's plain-task model (a missed tick is delayed, not bursted).
-    /// The composition root owns the cadence; [`DEFAULT_TIMER_SCAN_INTERVAL`] is
-    /// a sane default.
+    /// across ALL tenant scopes, until `shutdown` is cancelled. Mirrors the
+    /// control-queue reclaim sweep's plain-task model (a missed tick is delayed,
+    /// not bursted). The composition root owns the cadence;
+    /// [`DEFAULT_TIMER_SCAN_INTERVAL`] is a sane default.
     #[must_use = "the returned JoinHandle owns the scanner task; dropping it detaches the loop"]
     pub fn spawn_timer_scanner(
         self: Arc<Self>,
-        scope: Scope,
         interval: Duration,
         shutdown: CancellationToken,
     ) -> JoinHandle<()> {
@@ -151,7 +148,7 @@ impl WorkflowEngine {
                         return;
                     }
                     _ = ticker.tick() => {
-                        match self.sweep_overdue_timers(&scope).await {
+                        match self.sweep_overdue_timers().await {
                             Ok(n) if n > 0 => tracing::info!(
                                 target = "engine::timer_scan",
                                 redriven = n,
