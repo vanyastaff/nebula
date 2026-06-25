@@ -24,6 +24,9 @@ extend-exclude = [
   "targets",
   # Local agent bundle / vendored patches (not Nebula sources).
   "openswarm",
+  # Multi-model audit-campaign reports — LLM-generated reference prose with
+  # their own vocabulary (abbreviations like `ser-Err`), not production code.
+  "audits",
 ]
 
 [default]
