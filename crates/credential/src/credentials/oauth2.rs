@@ -992,7 +992,7 @@ mod tests {
     #[tokio::test]
     async fn resolve_rejects_missing_client_id() {
         let values = FieldValues::new();
-        let ctx = CredentialContext::for_test("test-user");
+        let ctx = CredentialContext::for_owner("test-user");
         let result = OAuth2Credential::resolve(&values, &ctx).await;
         assert!(result.is_err());
     }
@@ -1006,7 +1006,7 @@ mod tests {
         values
             .try_set_raw("client_secret", serde_json::json!("cs"))
             .expect("test-only known-good key");
-        let ctx = CredentialContext::for_test("test-user");
+        let ctx = CredentialContext::for_owner("test-user");
         let result = OAuth2Credential::resolve(&values, &ctx).await;
         assert!(result.is_err());
     }
@@ -1050,7 +1050,7 @@ mod tests {
             .try_set_raw("grant_type", serde_json::json!("authorization_code"))
             .expect("test-only known-good key");
 
-        let ctx = CredentialContext::for_test("test-user");
+        let ctx = CredentialContext::for_owner("test-user");
         let result = OAuth2Credential::resolve(&values, &ctx).await;
         match result {
             Err(CredentialError::InvalidInput(msg)) => {
@@ -1066,7 +1066,7 @@ mod tests {
     #[tokio::test]
     async fn continue_resolve_rejects_wrong_input_for_auth_code() {
         let pending = auth_code_pending();
-        let ctx = CredentialContext::for_test("test-user");
+        let ctx = CredentialContext::for_owner("test-user");
         let result = OAuth2Credential::continue_resolve(&pending, &UserInput::Poll, &ctx).await;
         assert!(result.is_err());
     }
@@ -1074,7 +1074,7 @@ mod tests {
     #[tokio::test]
     async fn continue_resolve_rejects_callback_without_code() {
         let pending = auth_code_pending();
-        let ctx = CredentialContext::for_test("test-user");
+        let ctx = CredentialContext::for_owner("test-user");
         let input = UserInput::Callback {
             params: HashMap::new(),
         };
@@ -1085,7 +1085,7 @@ mod tests {
     #[tokio::test]
     async fn continue_resolve_rejects_callback_missing_state_param() {
         let pending = auth_code_pending();
-        let ctx = CredentialContext::for_test("test-user");
+        let ctx = CredentialContext::for_owner("test-user");
         let mut params = HashMap::new();
         params.insert("code".to_owned(), "the_code".to_owned());
         let input = UserInput::Callback { params };
@@ -1096,7 +1096,7 @@ mod tests {
     #[tokio::test]
     async fn continue_resolve_rejects_wrong_state() {
         let pending = auth_code_pending();
-        let ctx = CredentialContext::for_test("test-user");
+        let ctx = CredentialContext::for_owner("test-user");
         let mut params = HashMap::new();
         params.insert("code".to_owned(), "the_code".to_owned());
         params.insert("state".to_owned(), "attacker_state".to_owned());
@@ -1109,7 +1109,7 @@ mod tests {
     async fn continue_resolve_rejects_length_mismatched_state() {
         let mut pending = auth_code_pending();
         pending.state = Some("aaa".into());
-        let ctx = CredentialContext::for_test("test-user");
+        let ctx = CredentialContext::for_owner("test-user");
         let mut params = HashMap::new();
         params.insert("code".to_owned(), "c".to_owned());
         params.insert("state".to_owned(), "aaaa".to_owned()); // longer
@@ -1124,7 +1124,7 @@ mod tests {
         pending.state = None;
         pending.pkce_verifier = None;
         pending.redirect_uri = None;
-        let ctx = CredentialContext::for_test("test-user");
+        let ctx = CredentialContext::for_owner("test-user");
         let mut params = HashMap::new();
         params.insert("code".to_owned(), "c".to_owned());
         params.insert("state".to_owned(), "s".to_owned());
@@ -1151,7 +1151,7 @@ mod tests {
             redirect_uri: None,
         };
 
-        let ctx = CredentialContext::for_test("test-user");
+        let ctx = CredentialContext::for_owner("test-user");
         let input = UserInput::Callback {
             params: HashMap::new(),
         };
@@ -1320,7 +1320,7 @@ mod tests {
             auth_style: AuthStyle::default(),
         };
 
-        let ctx = CredentialContext::for_test("test-user");
+        let ctx = CredentialContext::for_owner("test-user");
         let outcome = OAuth2Credential::refresh(&mut state, &ctx).await.unwrap();
         // Locally detected: never spoke to the IdP. Distinct from
         // `ProviderRejected` per wave-2 review (see ReauthReason rustdoc).

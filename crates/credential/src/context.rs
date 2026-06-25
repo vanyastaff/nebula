@@ -93,10 +93,10 @@ fn default_resource_accessor() -> Arc<dyn ResourceAccessor> {
 ///     .build();
 /// ```
 ///
-/// For tests, use the convenience constructor:
+/// For contexts requiring only an owner id, use the convenience constructor:
 ///
 /// ```rust,ignore
-/// let ctx = CredentialContext::for_test("user-123");
+/// let ctx = CredentialContext::for_owner("user-123");
 /// ```
 #[derive(Clone)]
 pub struct CredentialContext {
@@ -230,7 +230,7 @@ impl CredentialContext {
     /// Returns an owner identifier string for pending-store session binding.
     ///
     /// If an explicit `owner_id` was set via [`CredentialContextBuilder::owner_id`]
-    /// or [`CredentialContext::for_test`], that value is returned. Otherwise a
+    /// or [`CredentialContext::for_owner`], that value is returned. Otherwise a
     /// string representation of the [`Principal`] is derived.
     pub fn owner_id(&self) -> &str {
         if let Some(ref id) = self.owner_id_override {
@@ -242,12 +242,15 @@ impl CredentialContext {
         "system"
     }
 
-    /// Convenience constructor for **tests only**.
+    /// Convenience constructor for contexts where only an `owner_id` is
+    /// needed — no real accessors, system principal, default scope, system
+    /// clock, and noop credential/resource accessors.
     ///
-    /// Creates a context with a default [`BaseContext`] (system principal,
-    /// default scope, system clock) and noop accessors. The `owner_id` is
-    /// stored as an override for backward-compatible pending-store binding.
-    pub fn for_test(owner_id: impl Into<String>) -> Self {
+    /// Suitable for both tests and production paths (e.g. an internal
+    /// service-layer call that constructs a context purely from a tenant
+    /// owner id with no incoming request context). For production paths
+    /// that need real accessors use [`CredentialContextBuilder`].
+    pub fn for_owner(owner_id: impl Into<String>) -> Self {
         let base = BaseContext::builder(Scope::default())
             .principal(Principal::System)
             .build()
@@ -400,7 +403,7 @@ mod tests {
 
     #[test]
     fn for_test_creates_valid_context() {
-        let ctx = CredentialContext::for_test("user_123");
+        let ctx = CredentialContext::for_owner("user_123");
         assert_eq!(ctx.owner_id(), "user_123");
         assert!(ctx.callback_url().is_none());
         assert!(ctx.app_url().is_none());
@@ -432,14 +435,14 @@ mod tests {
 
     #[test]
     fn context_is_cloneable() {
-        let ctx1 = CredentialContext::for_test("user_123");
+        let ctx1 = CredentialContext::for_owner("user_123");
         let ctx2 = ctx1.clone();
         assert_eq!(ctx1.owner_id(), ctx2.owner_id());
     }
 
     #[test]
     fn context_delegates_to_base() {
-        let ctx = CredentialContext::for_test("user_123");
+        let ctx = CredentialContext::for_owner("user_123");
         // Should not panic — delegates to BaseContext
         let _ = ctx.scope();
         let _ = ctx.principal();
@@ -450,26 +453,26 @@ mod tests {
 
     #[test]
     fn with_session_id_sets_session() {
-        let ctx = CredentialContext::for_test("user_123").with_session_id("sess-abc");
+        let ctx = CredentialContext::for_owner("user_123").with_session_id("sess-abc");
         assert_eq!(ctx.session_id(), Some("sess-abc"));
     }
 
     #[test]
     fn with_callback_url_sets_url() {
-        let ctx = CredentialContext::for_test("user_123")
+        let ctx = CredentialContext::for_owner("user_123")
             .with_callback_url("https://app.nebula.io/callback");
         assert_eq!(ctx.callback_url(), Some("https://app.nebula.io/callback"));
     }
 
     #[test]
     fn with_app_url_sets_url() {
-        let ctx = CredentialContext::for_test("user_123").with_app_url("https://app.nebula.io");
+        let ctx = CredentialContext::for_owner("user_123").with_app_url("https://app.nebula.io");
         assert_eq!(ctx.app_url(), Some("https://app.nebula.io"));
     }
 
     #[test]
     fn debug_output_does_not_panic() {
-        let ctx = CredentialContext::for_test("user_123");
+        let ctx = CredentialContext::for_owner("user_123");
         let debug = format!("{ctx:?}");
         assert!(debug.contains("CredentialContext"));
     }

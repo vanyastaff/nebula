@@ -882,12 +882,13 @@ where
 ///
 /// `Revocable::revoke` takes `&mut state` and may mutate it (e.g. clear a
 /// server-side handle). Those mutations are intentionally **not**
-/// re-persisted: revocation deletes the stored row
-/// ([`CredentialService::revoke`](crate::CredentialService::revoke) calls
-/// `store.delete` right after this closure returns), so the post-revoke
-/// state has no row to write back to. This is correct-by-design, not a
-/// lost write — unlike `refresh`, which re-persists its `&mut state`
-/// because the row survives.
+/// re-persisted: after this closure returns,
+/// [`CredentialService::revoke`](crate::CredentialService::revoke) writes a
+/// **tombstone** over the row (zeroing the secret bytes), not a delete — so
+/// the id is non-resurrectable and slot bindings still pointing at it surface
+/// a typed `CredentialTombstoned` rather than a bare `NotFound`. This is
+/// correct-by-design, not a lost write — unlike `refresh`, which keeps the
+/// row alive and CAS-persists its mutated state.
 ///
 /// # Errors
 ///
@@ -911,9 +912,11 @@ where
                 ))
             })?;
             // `revoke` may mutate `state`; the mutation is deliberately
-            // dropped here. The service deletes the row immediately after
-            // this returns (revocation = gone), so there is nothing to
-            // re-persist. See this fn's doc comment.
+            // dropped here. After this closure returns, the service writes a
+            // tombstone over the row (zeroing the secret bytes) rather than
+            // deleting it — so the id is non-resurrectable and slot bindings
+            // still pointing at it surface a typed `CredentialTombstoned`
+            // error. See this fn's doc comment and `CredentialService::revoke`.
             dispatch_revoke::<C>(&mut state, ctx).await.map_err(|e| {
                 CredentialServiceError::Provider(format!("credential revoke failed: {e}"))
             })

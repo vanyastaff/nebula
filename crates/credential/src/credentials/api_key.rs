@@ -148,7 +148,7 @@ mod tests {
         values
             .try_set_raw("api_key", serde_json::Value::String("sk-secret-123".into()))
             .expect("test-only known-good key");
-        let ctx = CredentialContext::for_test("test-user");
+        let ctx = CredentialContext::for_owner("test-user");
         let result = ApiKeyCredential::resolve(&values, &ctx).await.unwrap();
         match result {
             ResolveResult::Complete(token) => {
@@ -162,7 +162,7 @@ mod tests {
     #[tokio::test]
     async fn resolve_returns_error_on_missing_field() {
         let values = FieldValues::new();
-        let ctx = CredentialContext::for_test("test-user");
+        let ctx = CredentialContext::for_owner("test-user");
         let result = ApiKeyCredential::resolve(&values, &ctx).await;
         assert!(result.is_err());
     }

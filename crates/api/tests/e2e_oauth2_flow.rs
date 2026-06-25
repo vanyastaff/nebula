@@ -303,7 +303,7 @@ async fn e2e_oauth2_flow_persists_exchanged_credential_state() {
         coord,
         transport,
     );
-    let ctx = CredentialContext::for_test("test-user");
+    let ctx = CredentialContext::for_owner("test-user");
     let handle = resolver
         .resolve_with_refresh::<OAuth2Credential>(credential_id, &ctx)
         .await
