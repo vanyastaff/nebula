@@ -23,14 +23,18 @@
 pub trait TriggerSource: Send + Sync + 'static {
     /// Concrete event type this source delivers to the trigger handler.
     ///
-    /// `Send + Sync + 'static` matches the dyn boundary's
+    /// `Any + Send + Sync + 'static` matches the dyn boundary's
     /// [`TriggerEvent`](crate::trigger::TriggerEvent) payload requirement
     /// (`Box<dyn Any + Send + Sync>` + `downcast::<T>` requiring
-    /// `T: Any + Send + Sync + 'static`). Tightening the bound here means
+    /// `T: Any + Send + Sync + 'static`). The `Any` bound is load-bearing:
+    /// [`TriggerEvent::new`](crate::trigger::TriggerEvent::new) and
+    /// [`TriggerEvent::downcast`](crate::trigger::TriggerEvent::downcast)
+    /// both require it, so omitting it would compile the trigger definition
+    /// but panic at the downcast site. Tightening the bound here means
     /// downstream registries / adapters never need to repeat it.
     ///
     /// Examples: `WebhookSource::Event = WebhookRequest`,
     /// `PollSource::Event = ()` (poll triggers self-drive their cycle and
     /// never receive pushed events — see [`crate::poll::PollSource`]).
-    type Event: Send + Sync + 'static;
+    type Event: std::any::Any + Send + Sync + 'static;
 }

@@ -279,7 +279,7 @@ impl WebhookActionFactory for GenericWebhookActionFactory {
     }
 
     fn build(&self, spec: &WebhookActivationSpec) -> Result<BuiltWebhookHandler, FactoryError> {
-        let mut action = GenericWebhookAction::new(spec.secret.clone());
+        let mut action = GenericWebhookAction::new(spec.secret().reveal().to_vec());
         if let Some(secs) = spec.replay_window_secs {
             action = action.with_replay_window(std::time::Duration::from_secs(secs));
         }

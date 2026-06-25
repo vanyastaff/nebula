@@ -63,7 +63,9 @@ use std::{
 };
 
 pub use clock::{Clock, MockClock, SystemClock};
-pub use factory::{BuiltWebhookHandler, FactoryError, WebhookActionFactory, WebhookActivationSpec};
+pub use factory::{
+    BuiltWebhookHandler, FactoryError, HmacSecret, WebhookActionFactory, WebhookActivationSpec,
+};
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use bytes::Bytes;

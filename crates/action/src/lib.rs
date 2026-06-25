@@ -170,8 +170,8 @@ pub use validation::{
     ActionPackageValidationError, ActionPackageValidationErrors, validate_action_package,
 };
 pub use webhook::{
-    BuiltWebhookHandler, Clock, DEFAULT_MAX_BODY_BYTES, FactoryError, MAX_HEADER_COUNT, MockClock,
-    PreHandleOutcome, RequiredPolicy, SignatureError, SignatureOutcome, SignaturePolicy,
+    BuiltWebhookHandler, Clock, DEFAULT_MAX_BODY_BYTES, FactoryError, HmacSecret, MAX_HEADER_COUNT,
+    MockClock, PreHandleOutcome, RequiredPolicy, SignatureError, SignatureOutcome, SignaturePolicy,
     SignatureScheme, SystemClock, TimestampFormat, WebhookAction, WebhookActionFactory,
     WebhookActivationSpec, WebhookConfig, WebhookEndpointProvider, WebhookHttpResponse,
     WebhookProvider, WebhookRequest, WebhookResponse, WebhookSource, WebhookTriggerAdapter,

@@ -2181,7 +2181,7 @@ mod tests {
 
     #[tokio::test]
     async fn resource_rejection_does_not_increment_execution_metrics() {
-        use nebula_action::{FromWorkflowNode, ResourceAction};
+        use nebula_action::{FromWorkflowNode, ResourceAction, ResourceProduces};
 
         // Minimal ResourceAction fixture — never invoked, only its ActionHandle
         // variant matters for the rejection test.
@@ -2189,7 +2189,8 @@ mod tests {
 
         impl Action for FakeResource {
             type Input = serde_json::Value;
-            type Output = serde_json::Value;
+            // ResourceAction requires Output = ResourceProduces<Self::Resource>.
+            type Output = ResourceProduces<serde_json::Value>;
 
             fn metadata() -> ActionMetadata {
                 ActionMetadata::new(

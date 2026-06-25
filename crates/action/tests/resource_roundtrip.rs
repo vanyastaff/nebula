@@ -12,7 +12,7 @@ use std::sync::{
 
 use nebula_action::{
     Action, ActionError, ActionMetadata, ActionRuntimeContext, ResourceAction,
-    ResourceActionAdapter, ResourceHandler, TestContextBuilder,
+    ResourceActionAdapter, ResourceHandler, ResourceProduces, TestContextBuilder,
 };
 use nebula_core::Dependencies;
 
@@ -37,7 +37,8 @@ struct PoolAction {
 
 impl Action for PoolAction {
     type Input = serde_json::Value;
-    type Output = serde_json::Value;
+    // ResourceAction requires Output = ResourceProduces<Self::Resource>.
+    type Output = ResourceProduces<PoolHandle>;
 
     fn metadata() -> ActionMetadata {
         ActionMetadata::new(

@@ -108,6 +108,35 @@ impl<R: ?Sized> fmt::Debug for ResourceProduces<R> {
     }
 }
 
+// ── Trait impls required by `Action::Output` bounds ─────────────────────────
+
+/// `Serialize` impl for the `Action::Output` bound.
+///
+/// `ResourceProduces<R>` is a graph-topology marker — it carries no workflow
+/// payload. Serialises to a small JSON object carrying the topology tag so
+/// the engine can log/inspect the marker without needing reflection.
+impl<R: ?Sized> serde::Serialize for ResourceProduces<R> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct as _;
+        let mut state = serializer.serialize_struct("ResourceProduces", 1)?;
+        // TopologyTag has no Serialize impl; its string form is stable and safe to log.
+        state.serialize_field("topology", self.topology.as_str())?;
+        state.end()
+    }
+}
+
+/// `HasSchema` impl for the `Action::Output` bound.
+///
+/// The schema is empty (`SchemaKind::Record` with no fields): `ResourceProduces<R>`
+/// is a graph-topology marker that produces no user-visible output fields. The
+/// engine and catalog read the topology tag directly from the value, not from
+/// the schema.
+impl<R: ?Sized> nebula_schema::HasSchema for ResourceProduces<R> {
+    fn schema() -> nebula_schema::ValidSchema {
+        nebula_schema::ValidSchema::empty()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
