@@ -560,9 +560,19 @@ impl Manager {
     /// Hot-reloads the configuration for a registered resource.
     ///
     /// Validates the new config, swaps it into the [`ArcSwap`](arc_swap::ArcSwap),
-    /// increments the generation counter, and — for pool topologies — updates the
-    /// fingerprint so idle instances with stale configs are evicted on next
-    /// acquire or release.
+    /// and increments the generation counter. The new config is applied to the
+    /// live runtime **lazily, on the next acquire**, per topology:
+    ///
+    /// - **Pooled** — the fingerprint is updated so idle instances with stale
+    ///   configs are evicted on the next acquire / sweep and recreated.
+    /// - **Resident** — the shared master is rebuilt on the next acquire when
+    ///   its built-against config fingerprint no longer matches (see
+    ///   `Resident::clone_or_create`).
+    /// - **Bounded (Capped / Unbounded)** — every acquire already creates a
+    ///   fresh instance from the current config, so the reload is immediate.
+    /// - **Bounded (Exclusive)** — the single reused instance is **not** yet
+    ///   rebuilt on reload (tracked residual; needs a fingerprint-aware
+    ///   `accept`, since the store-held slot carries no config fingerprint).
     ///
     /// # Errors
     ///
@@ -619,13 +629,14 @@ impl Manager {
 
         self.emit(ResourceEvent::ConfigReloaded { key: R::key() });
 
-        // Reload outcome. `reload_config` swaps the config `ArcSwap`
-        // without rebuilding the caller-supplied live `Arc<R::Instance>` for
-        // *any* topology — only the Pool fingerprint is updated, above. So
-        // the honest outcome is `SwappedImmediately` for every variant: the
-        // config is swapped, the live runtime is not rebuilt. The genuine
-        // "drain + rebuild the live runtime on reload" behavior is the
-        // separately-tracked deferred `reload_config` redesign ([#712]).
+        // Reload outcome. The config `ArcSwap` is swapped immediately; the
+        // live runtime is rebuilt LAZILY on the next acquire (Pooled evicts
+        // stale-fingerprint idle instances; Resident rebuilds its master on a
+        // changed config fingerprint; Bounded-Capped/Unbounded create fresh
+        // per acquire). `SwappedImmediately` is therefore accurate: the config
+        // takes effect on the next acquire without an eager drain-then-rebuild.
+        // Residual: Bounded-Exclusive's single reused instance is not yet
+        // rebuilt on reload ([#712]).
         let outcome = ReloadOutcome::SwappedImmediately;
 
         tracing::info!(key = %R::key(), ?outcome, "resource config reloaded");
