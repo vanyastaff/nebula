@@ -527,14 +527,10 @@ async fn durable_timer_scanner_recovers_crashed_timer_without_resume() {
             .with_lease_ttl(LEASE_TTL)
             .with_lease_heartbeat_interval(HEARTBEAT),
     );
-    let scope = nebula_engine::store_seam::single_tenant_scope();
-    let redriven = tokio::time::timeout(
-        Duration::from_secs(10),
-        engine_b.sweep_overdue_timers(&scope),
-    )
-    .await
-    .expect("the scanner must settle within 10s")
-    .expect("the scanner sweep must not error");
+    let redriven = tokio::time::timeout(Duration::from_secs(10), engine_b.sweep_overdue_timers())
+        .await
+        .expect("the scanner must settle within 10s")
+        .expect("the scanner sweep must not error");
 
     assert_eq!(
         redriven, 1,

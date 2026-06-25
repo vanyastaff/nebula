@@ -401,6 +401,26 @@ impl ExecutionStore for InMemoryExecutionStore {
         Ok(true)
     }
 
+    async fn list_all_running(&self) -> Result<Vec<ExecutionRecord>, StorageError> {
+        let st = self.inner.lock();
+        Ok(st
+            .rows
+            .iter()
+            .map(|(id, row)| ExecutionRecord {
+                id: id.clone(),
+                workflow_id: row.workflow_id.clone(),
+                scope: row.scope.clone(),
+                version: row.version,
+                status: row.status.clone(),
+                state: row.state.clone(),
+                lease_holder: row.lease_holder.clone(),
+                fencing: Some(row.fencing_generation),
+                created_at: String::new(),
+                updated_at: String::new(),
+            })
+            .collect())
+    }
+
     async fn list_running(&self, scope: &Scope) -> Result<Vec<String>, StorageError> {
         let st = self.inner.lock();
         Ok(st

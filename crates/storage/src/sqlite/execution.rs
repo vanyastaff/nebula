@@ -427,6 +427,41 @@ impl ExecutionStore for SqliteExecutionStore {
         Ok(res.rows_affected() == 1)
     }
 
+    async fn list_all_running(&self) -> Result<Vec<ExecutionRecord>, StorageError> {
+        let rows = sqlx::query(
+            "SELECT id, workspace_id, org_id, workflow_id, status, state, version, \
+                    lease_holder, fencing_generation, created_at, updated_at \
+             FROM port_executions",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(conn_err)?;
+        rows.into_iter()
+            .map(|row| {
+                let state_str: String = row.try_get("state").map_err(conn_err)?;
+                let state: serde_json::Value = serde_json::from_str(&state_str)?;
+                Ok(ExecutionRecord {
+                    id: row.try_get("id").map_err(conn_err)?,
+                    workflow_id: row.try_get("workflow_id").map_err(conn_err)?,
+                    scope: Scope::new(
+                        row.try_get::<String, _>("workspace_id").map_err(conn_err)?,
+                        row.try_get::<String, _>("org_id").map_err(conn_err)?,
+                    ),
+                    version: row.try_get::<i64, _>("version").map_err(conn_err)? as u64,
+                    status: row.try_get("status").map_err(conn_err)?,
+                    state,
+                    lease_holder: row.try_get("lease_holder").map_err(conn_err)?,
+                    fencing: Some(
+                        row.try_get::<i64, _>("fencing_generation")
+                            .map_err(conn_err)? as u64,
+                    ),
+                    created_at: row.try_get("created_at").map_err(conn_err)?,
+                    updated_at: row.try_get("updated_at").map_err(conn_err)?,
+                })
+            })
+            .collect()
+    }
+
     async fn list_running(&self, scope: &Scope) -> Result<Vec<String>, StorageError> {
         let rows =
             sqlx::query("SELECT id FROM port_executions WHERE workspace_id = ? AND org_id = ?")
