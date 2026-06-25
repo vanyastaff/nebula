@@ -162,6 +162,15 @@ fn parse_expression_source(source: &str) -> Result<(), String> {
     nebula_expression::parse_expression(source).map_err(|e| e.to_string())
 }
 
+/// Equality is by **source string**, not by parsed AST.
+///
+/// Two `Expression` values are equal when their source text is identical —
+/// syntactically equivalent but textually different expressions compare
+/// unequal. This matches the content-addressing contract: the nebula-schema
+/// content-identity key is derived from canonical bytes of the source, so
+/// deduplication by `PartialEq` is correct for identical sources and safe
+/// for distinct sources (they produce distinct content hashes). Callers must
+/// not rely on `PartialEq` to detect semantic/AST equivalence.
 impl PartialEq for Expression {
     fn eq(&self, other: &Self) -> bool {
         self.source == other.source

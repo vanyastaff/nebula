@@ -372,7 +372,7 @@ fn valid_values_exposes_warnings_empty_by_default() {
 }
 
 #[test]
-fn valid_values_raw_values_matches_input() {
+fn valid_values_raw_matches_input() {
     let schema = Schema::builder()
         .add(Field::string(fk("x")))
         .build()

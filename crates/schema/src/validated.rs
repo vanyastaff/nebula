@@ -1045,6 +1045,25 @@ fn project_value(field: &Field, value: &FieldValue) -> Option<serde_json::Value>
     }
 }
 
+/// Resolve the active mode-variant key from a wire `{"mode", "value"}` envelope.
+///
+/// Returns the explicit `"mode"` string if present and a string literal, else
+/// falls back to `mode_field.default_variant`. Returns `None` when the selector
+/// is absent and no default is set, or when the selector is a non-string value.
+///
+/// Used by all four `FieldValue::Object` code-paths so the "explicit selector
+/// else default" rule is defined in exactly one place.
+fn resolve_active_mode_variant_key<'a>(
+    map: &'a IndexMap<FieldKey, FieldValue>,
+    mode_field: &'a ModeField,
+) -> Option<&'a str> {
+    match map.get(&*MODE_SELECTOR_KEY) {
+        Some(FieldValue::Literal(serde_json::Value::String(mode_key))) => Some(mode_key.as_str()),
+        Some(_) => None,
+        None => mode_field.default_variant.as_deref(),
+    }
+}
+
 /// Project a `Field::Mode` whose value arrived as the wire `{mode,value}` object
 /// envelope (the shape `from_json` produces). The selector is kept verbatim; the
 /// payload is projected against the active variant (explicit `mode`, else default).
@@ -1062,11 +1081,7 @@ fn project_mode_object(
     }
 
     // Resolve the active variant the same way the rest of the crate does.
-    let selected: Option<&str> = match map.get(&*MODE_SELECTOR_KEY) {
-        Some(FieldValue::Literal(Value::String(mode_key))) => Some(mode_key.as_str()),
-        Some(_) => None,
-        None => mode.default_variant.as_deref(),
-    };
+    let selected = resolve_active_mode_variant_key(map, mode);
     if let Some(payload) = map.get(&*MODE_PAYLOAD_KEY)
         && let Some(key) = selected
         && let Some(variant) = mode.variants.iter().find(|v| v.key.as_str() == key)
@@ -1214,15 +1229,8 @@ fn canonicalize_nested_value(field: &Field, value: &mut FieldValue) {
             // FieldKey BEFORE secret-strip, loader redaction, and projection
             // run. Without this arm an alias-keyed secret in a mode payload
             // escapes canonicalization and leaks plaintext.
-            let resolved_key = match map.get(&*MODE_SELECTOR_KEY) {
-                Some(FieldValue::Literal(serde_json::Value::String(mode_key))) => {
-                    Some(mode_key.clone())
-                },
-                Some(_) => None,
-                None => mode_field.default_variant.clone(),
-            };
+            let resolved_key = resolve_active_mode_variant_key(map, mode_field);
             if let Some(variant) = resolved_key
-                .as_deref()
                 .and_then(|mode_key| mode_field.variants.iter().find(|v| v.key == mode_key))
                 && let Some(payload) = map.get_mut(&*MODE_PAYLOAD_KEY)
             {
@@ -1288,14 +1296,8 @@ fn first_undeclared_in_value(
         (Field::Mode(mode), FieldValue::Object(env)) => {
             // Resolve the active variant exactly as validate / canonicalize do: an
             // explicit string `mode`, else `default_variant`; then sweep its payload.
-            let resolved = match env.get(&*MODE_SELECTOR_KEY) {
-                Some(FieldValue::Literal(serde_json::Value::String(key))) => Some(key.clone()),
-                Some(_) => None,
-                None => mode.default_variant.clone(),
-            };
-            let variant = resolved
-                .as_deref()
-                .and_then(|key| mode.variants.iter().find(|v| v.key == key))?;
+            let resolved = resolve_active_mode_variant_key(env, mode);
+            let variant = resolved.and_then(|key| mode.variants.iter().find(|v| v.key == key))?;
             let payload = env.get(&*MODE_PAYLOAD_KEY)?;
             first_undeclared_in_value(
                 &variant.field,
@@ -1354,13 +1356,6 @@ impl ValidValues {
     /// Borrow the raw value tree.
     #[must_use]
     pub const fn raw(&self) -> &FieldValues {
-        &self.values
-    }
-
-    /// Borrow the raw value tree (alias for [`raw`](Self::raw)).
-    #[deprecated(note = "use raw() instead")]
-    #[must_use]
-    pub const fn raw_values(&self) -> &FieldValues {
         &self.values
     }
 
@@ -1779,18 +1774,10 @@ fn promote_secrets_in_value(
             promote_secrets_in_value(&var.field, mv.as_mut(), &p, report);
         },
         (Field::Mode(mode), FieldValue::Object(map)) => {
-            let mode_selector_key = &*MODE_SELECTOR_KEY;
             let payload_key = &*MODE_PAYLOAD_KEY;
-            let resolved_key = match map.get(mode_selector_key) {
-                Some(FieldValue::Literal(serde_json::Value::String(mode_key))) => {
-                    Some(mode_key.clone())
-                },
-                Some(_) => None,
-                None => mode.default_variant.clone(),
-            };
-            let Some(var) = resolved_key
-                .as_deref()
-                .and_then(|mode_key| mode.variants.iter().find(|v| v.key == mode_key))
+            let resolved_key = resolve_active_mode_variant_key(map, mode);
+            let Some(var) =
+                resolved_key.and_then(|mode_key| mode.variants.iter().find(|v| v.key == mode_key))
             else {
                 return;
             };

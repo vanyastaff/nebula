@@ -316,6 +316,20 @@ impl std::error::Error for ValidationReport {}
 /// Plugins may add their own under a namespace prefix (e.g. `my_plugin.foo`).
 /// A test in the schema crate guarantees every entry here is emittable from
 /// an integration test (see `tests/flow/all_error_codes.rs`).
+///
+/// # Intentionally omitted codes
+///
+/// The following codes are used internally by the crate but are **not**
+/// registered here because they are implementation details of specific
+/// subsystems, not stable public contracts. Callers should not match on them.
+///
+/// | Code | Where emitted | Why omitted |
+/// |------|---------------|-------------|
+/// | `union.default_variant` | [`ValidSchema::union`] constructor | Build-time guard; callers see it only when constructing an invalid union, never at runtime. |
+/// | `union.unknown_variant` | (internal union validation path) | Collapsed into `mode.invalid` on the public surface. |
+/// | `union.malformed_wire` | (internal union wire ingress) | Maps to `type_mismatch` at the schema boundary. |
+/// | `secret.not_hashable` | (internal secret-promotion path) | Arises only on non-literal secret values; callers see `type_mismatch`. |
+/// | `value.non_canonical_float` | (internal value normalisation) | Normalised silently; never reaches a `ValidationReport`. |
 pub const STANDARD_CODES: &[&str] = &[
     // alias subsystem
     "alias.duplicate",

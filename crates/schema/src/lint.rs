@@ -1190,10 +1190,14 @@ fn dfs_cycle_edge(
 }
 
 fn find_cycle_edge(adj: &HashMap<FieldPath, Vec<FieldPath>>) -> Option<(FieldPath, FieldPath)> {
-    // 0 = white, 1 = gray, 2 = black
+    // 0 = white, 1 = gray, 2 = black.
+    // Sort keys so the reported edge is deterministic across HashMap iterations.
+    // `FieldPath` has no `Ord`, so sort by the display string.
     let mut color: HashMap<FieldPath, u8> = HashMap::new();
+    let mut starts: Vec<&FieldPath> = adj.keys().collect();
+    starts.sort_by_key(ToString::to_string);
 
-    for start in adj.keys() {
+    for start in starts {
         if color.get(start).copied().unwrap_or(0) == 0
             && let Some(cycle) = dfs_cycle_edge(start, adj, &mut color)
         {
