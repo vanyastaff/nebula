@@ -26,7 +26,6 @@
 - No KDF/hashing here (removed as a weaker dup of nebula-credential's Argon2id); do not re-add.
 - Public surface is strict: `Field::*::new` needs a pre-validated `FieldKey`; use `field_key!(...)` or `Field::try_*` — no panic-on-bad-key helpers (`set_raw` removed; use `try_set_raw`).
 - `#[deny(clippy::disallowed_macros)]` bans `#[async_trait]`; use the crate's `EvalFuture` (BoxFuture) alias for object-safe async.
-- Cross-crate calls go through `nebula-eventbus`, not direct sibling imports.
 - Library code uses typed `thiserror`/`NebulaError`; no panicking unwrap/expect/panic in lib code.
 
 ## See also
