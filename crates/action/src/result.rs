@@ -4,15 +4,9 @@ use chrono::{DateTime, Utc};
 use nebula_core::id::ExecutionId;
 use serde::{Deserialize, Serialize};
 
+use crate::branch_key::BranchKey;
 use crate::output::{ActionOutput, BinaryData, DataReference, DeferredOutput};
-
-/// Type alias for workflow branch keys (e.g. `"true"`, `"false"`, `"case_1"`).
-pub type BranchKey = String;
-
-/// Type alias for action output port keys (e.g. `"main"`, `"error"`, `"filtered"`).
-///
-/// Canonical definition lives in [`crate::port`]; re-exported here for convenience.
-pub use crate::port::PortKey;
+use crate::port_key::PortKey;
 
 /// Result of an action execution, carrying both data and flow-control intent.
 ///
@@ -754,6 +748,8 @@ impl<T> ActionResult<T> {
 
 #[cfg(test)]
 mod tests {
+    use crate::{branch_key, port_key};
+
     use super::*;
 
     #[test]
@@ -817,10 +813,10 @@ mod tests {
     #[test]
     fn branch_result() {
         let mut alts = HashMap::new();
-        alts.insert("true".into(), ActionOutput::Value("yes"));
-        alts.insert("false".into(), ActionOutput::Value("no"));
+        alts.insert(branch_key!("true"), ActionOutput::Value("yes"));
+        alts.insert(branch_key!("false"), ActionOutput::Value("no"));
         let result = ActionResult::Branch {
-            selected: "true".into(),
+            selected: branch_key!("true"),
             output: ActionOutput::Value("yes"),
             alternatives: alts,
         };
@@ -830,7 +826,7 @@ mod tests {
                 alternatives,
                 ..
             } => {
-                assert_eq!(selected, "true");
+                assert_eq!(selected.as_str(), "true");
                 assert_eq!(alternatives.len(), 2);
             },
             _ => panic!("expected Branch"),
@@ -840,7 +836,7 @@ mod tests {
     #[test]
     fn route_result() {
         let result = ActionResult::Route {
-            port: "error".into(),
+            port: port_key!("error"),
             data: ActionOutput::Value("something failed"),
         };
         assert!(!result.is_success());
@@ -849,8 +845,8 @@ mod tests {
     #[test]
     fn multi_output_result() {
         let mut outputs = HashMap::new();
-        outputs.insert("main".into(), ActionOutput::Value(1));
-        outputs.insert("audit".into(), ActionOutput::Value(2));
+        outputs.insert(port_key!("main"), ActionOutput::Value(1));
+        outputs.insert(port_key!("audit"), ActionOutput::Value(2));
         let result = ActionResult::MultiOutput {
             outputs,
             main_output: Some(ActionOutput::Value(1)),
@@ -956,10 +952,10 @@ mod tests {
     #[test]
     fn map_output_branch() {
         let mut alts = HashMap::new();
-        alts.insert("a".into(), ActionOutput::Value(1));
-        alts.insert("b".into(), ActionOutput::Value(2));
+        alts.insert(branch_key!("a"), ActionOutput::Value(1));
+        alts.insert(branch_key!("b"), ActionOutput::Value(2));
         let r = ActionResult::Branch {
-            selected: "a".into(),
+            selected: branch_key!("a"),
             output: ActionOutput::Value(10),
             alternatives: alts,
         };
@@ -970,7 +966,7 @@ mod tests {
                 output,
                 alternatives,
             } => {
-                assert_eq!(selected, "a");
+                assert_eq!(selected.as_str(), "a");
                 assert_eq!(output.into_value(), Some(100));
                 assert_eq!(alternatives.get("a").unwrap().as_value(), Some(&10));
                 assert_eq!(alternatives.get("b").unwrap().as_value(), Some(&20));
@@ -982,13 +978,13 @@ mod tests {
     #[test]
     fn map_output_route() {
         let r = ActionResult::Route {
-            port: "out".into(),
+            port: port_key!("out"),
             data: ActionOutput::Value(99),
         };
         let mapped = r.map_output(|n| n as f64);
         match mapped {
             ActionResult::Route { port, data } => {
-                assert_eq!(port, "out");
+                assert_eq!(port.as_str(), "out");
                 assert_eq!(data.into_value(), Some(99.0));
             },
             _ => panic!("expected Route"),
@@ -998,7 +994,7 @@ mod tests {
     #[test]
     fn map_output_multi_output() {
         let mut outputs = HashMap::new();
-        outputs.insert("x".into(), ActionOutput::Value(1));
+        outputs.insert(port_key!("x"), ActionOutput::Value(1));
         let r = ActionResult::MultiOutput {
             outputs,
             main_output: Some(ActionOutput::Value(0)),
@@ -1084,10 +1080,10 @@ mod tests {
     #[test]
     fn try_map_output_branch_partial_failure() {
         let mut alts = HashMap::new();
-        alts.insert("a".into(), ActionOutput::Value(1));
-        alts.insert("b".into(), ActionOutput::Value(2));
+        alts.insert(branch_key!("a"), ActionOutput::Value(1));
+        alts.insert(branch_key!("b"), ActionOutput::Value(2));
         let r = ActionResult::Branch {
-            selected: "a".into(),
+            selected: branch_key!("a"),
             output: ActionOutput::Value(10),
             alternatives: alts,
         };
@@ -1132,7 +1128,7 @@ mod tests {
     #[test]
     fn into_primary_output_branch() {
         let r = ActionResult::Branch {
-            selected: "a".into(),
+            selected: branch_key!("a"),
             output: ActionOutput::Value(10),
             alternatives: HashMap::new(),
         };
@@ -1143,7 +1139,7 @@ mod tests {
     #[test]
     fn into_primary_output_route() {
         let r = ActionResult::Route {
-            port: "out".into(),
+            port: port_key!("out"),
             data: ActionOutput::Value(55),
         };
         let out = r.into_primary_output().unwrap();

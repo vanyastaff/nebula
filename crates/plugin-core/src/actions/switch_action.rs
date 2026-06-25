@@ -57,9 +57,10 @@
 use std::sync::OnceLock;
 
 use nebula_action::{
-    ActionContext, ActionError, ActionMetadata,
+    ActionContext, ActionError, ActionMetadata, branch_key,
     control::{ControlAction, ControlInput, ControlOutcome},
     port::{DynamicPort, OutputPort, default_input_ports},
+    port_key,
 };
 use nebula_core::action_key;
 use nebula_schema::HasSchema;
@@ -128,7 +129,7 @@ impl nebula_action::action::Action for CoreSwitch {
         )
         .with_inputs(default_input_ports())
         .with_outputs(vec![OutputPort::Dynamic(DynamicPort {
-            key: "case".into(),
+            key: port_key!("case"),
             source_field: "cases".into(),
             label_field: Some("port".into()),
             include_fallback: true,
@@ -183,8 +184,14 @@ impl ControlAction for CoreSwitch {
         // Evaluate cases in order. First-match-wins; Fatal propagates immediately.
         for case in &cases {
             if evaluate_condition(&data_object, &case.condition)? {
+                let selected =
+                    nebula_action::BranchKey::new(case.port.clone()).map_err(|validation_err| {
+                        ActionError::fatal(format!(
+                            "core.switch: case port name is invalid — {validation_err}"
+                        ))
+                    })?;
                 return Ok(ControlOutcome::Branch {
-                    selected: case.port.clone(),
+                    selected,
                     output: data_object,
                 });
             }
@@ -192,7 +199,7 @@ impl ControlAction for CoreSwitch {
 
         // No case matched (or cases list is empty) → route to "default".
         Ok(ControlOutcome::Branch {
-            selected: "default".to_string(),
+            selected: branch_key!("default"),
             output: data_object,
         })
     }
@@ -226,7 +233,8 @@ mod tests {
         match outcome {
             ControlOutcome::Branch { selected, .. } => {
                 assert_eq!(
-                    selected, expected_port,
+                    selected.as_str(),
+                    expected_port,
                     "expected port `{expected_port}`, got `{selected}`"
                 );
             },

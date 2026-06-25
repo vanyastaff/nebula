@@ -7,8 +7,8 @@ use std::{
 };
 
 use nebula_action::{
-    ActionError, action::Action, context::CredentialContextExt, metadata::ActionMetadata,
-    result::ActionResult, stateless::StatelessAction,
+    ActionError, BranchKey, action::Action, context::CredentialContextExt,
+    metadata::ActionMetadata, result::ActionResult, stateless::StatelessAction,
 };
 use nebula_core::{Dependencies, action_key, scope::Principal};
 use nebula_storage_port::StorageError;
@@ -727,7 +727,7 @@ impl StatelessAction for SkipHandler {
 }
 
 struct BranchHandler {
-    selected: String,
+    selected: BranchKey,
 }
 
 impl Action for BranchHandler {
@@ -771,7 +771,7 @@ async fn branch_workflow_only_selected_path_executes() {
     registry.register_stateless_instance(
         ActionMetadata::new(action_key!("branch"), "Branch", "branches"),
         BranchHandler {
-            selected: "true".into(),
+            selected: nebula_action::branch_key!("true"),
         },
     );
 
@@ -3747,7 +3747,7 @@ async fn idempotency_replay_preserves_branch_routing() {
     registry.register_stateless_instance(
         ActionMetadata::new(action_key!("branch"), "Branch", "branches"),
         BranchHandler {
-            selected: "true".into(),
+            selected: nebula_action::branch_key!("true"),
         },
     );
     registry.register_stateless_instance(

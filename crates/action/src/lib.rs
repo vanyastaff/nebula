@@ -36,6 +36,8 @@ pub mod action;
 /// [`AgentActionAdapter`] bridging to the engine's turn loop. The
 /// public contract for autonomous multi-turn reasoning nodes.
 pub mod agent;
+/// [`BranchKey`] validated newtype for workflow branch identifiers.
+pub(crate) mod branch_key;
 /// Capability interfaces injected into contexts (resources, logger, trigger).
 pub mod capability;
 /// Runtime context provided to actions during execution.
@@ -58,6 +60,8 @@ pub mod from_workflow_node;
 pub mod handle;
 /// [`IdempotencyKey`] — transport-level dedup identifier returned by triggers.
 pub mod idempotency;
+/// Shared validation logic for port and branch key newtypes.
+mod key_validation;
 /// Assertion macros for testing action results (`assert_success!`, etc.).
 mod macros;
 /// Static metadata, versioning, and execution mode descriptors.
@@ -69,6 +73,8 @@ pub mod output;
 pub mod poll;
 /// Port definitions describing action input/output connection points.
 pub mod port;
+/// [`PortKey`] validated newtype for action port identifiers.
+pub(crate) mod port_key;
 /// Convenience re-exports for action authors.
 pub mod prelude;
 /// [`ResourceAction`] DX trait, [`ResourceHandler`] dyn contract, and adapter.
@@ -104,6 +110,7 @@ pub mod webhook;
 
 pub use action::Action;
 pub use agent::{AgentAction, AgentActionAdapter};
+pub use branch_key::BranchKey;
 pub use capability::{ExecutionEmitter, TriggerHealth, TriggerHealthSnapshot, TriggerScheduler};
 pub use context::{
     ActionContext, ActionContextExt, ActionRuntimeContext, CredentialContextExt, HasNodeIdentity,
@@ -124,6 +131,7 @@ pub use handle::{
     StreamHandle, TriggerHandle,
 };
 pub use idempotency::IdempotencyKey;
+pub use key_validation::{KeyValidationError, KeyValidationErrorKind};
 pub use metadata::{
     ActionKind, ActionMetadata, CheckpointPolicy, IsolationLevel, MetadataCompatibilityError,
 };
@@ -146,12 +154,10 @@ pub use poll::{
     PollCursor, PollOutcome, PollResult, PollSource, PollTriggerAdapter,
 };
 pub use port::{ConnectionFilter, DynamicPort, FlowKind, InputPort, OutputPort, SupportPort};
+pub use port_key::PortKey;
 pub use resource::{ResourceAction, ResourceActionAdapter, ResourceHandler};
 pub use resource_produces::ResourceProduces;
-pub use result::{
-    ActionResult, BranchKey, BreakReason, PortKey, TerminationCode, TerminationReason,
-    WaitCondition,
-};
+pub use result::{ActionResult, BreakReason, TerminationCode, TerminationReason, WaitCondition};
 pub use stateful::{
     BatchAction, BatchItemResult, BatchState, PageResult, PaginatedAction, PaginationState,
     StatefulAction, StatefulActionAdapter, StatefulHandler,
@@ -178,3 +184,49 @@ pub use webhook::{
     hmac_sha256_compute, validate_timestamp, verify_hmac_sha256, verify_hmac_sha256_base64,
     verify_hmac_sha256_with_timestamp, verify_tag_constant_time,
 };
+
+// ── Compile-time key macros ─────────────────────────────────────────────────
+
+/// Constructs a [`PortKey`] from a string literal, validated at **compile time**.
+///
+/// Invalid literals cause a compile error, not a runtime panic.
+///
+/// # Example
+///
+/// ```
+/// use nebula_action::port_key;
+/// let k = port_key!("out");
+/// assert_eq!(k.as_str(), "out");
+/// ```
+#[macro_export]
+macro_rules! port_key {
+    ($s:literal) => {{
+        const _: () = assert!(
+            $crate::PortKey::is_valid_key_const($s),
+            "invalid port key literal"
+        );
+        $crate::PortKey::new($s).unwrap()
+    }};
+}
+
+/// Constructs a [`BranchKey`] from a string literal, validated at **compile time**.
+///
+/// Invalid literals cause a compile error, not a runtime panic.
+///
+/// # Example
+///
+/// ```
+/// use nebula_action::branch_key;
+/// let k = branch_key!("true");
+/// assert_eq!(k.as_str(), "true");
+/// ```
+#[macro_export]
+macro_rules! branch_key {
+    ($s:literal) => {{
+        const _: () = assert!(
+            $crate::BranchKey::is_valid_key_const($s),
+            "invalid branch key literal"
+        );
+        $crate::BranchKey::new($s).unwrap()
+    }};
+}
