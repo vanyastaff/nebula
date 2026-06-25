@@ -98,7 +98,7 @@ mod tests {
         values
             .try_set_raw("token", serde_json::Value::String("sk-abc123".into()))
             .expect("test-only known-good key");
-        let ctx = CredentialContext::for_test("test-user");
+        let ctx = CredentialContext::for_owner("test-user");
         let result = BearerTokenCredential::resolve(&values, &ctx)
             .await
             .expect("resolve ok");
@@ -114,7 +114,7 @@ mod tests {
     #[tokio::test]
     async fn resolve_errors_on_missing_token() {
         let values = FieldValues::new();
-        let ctx = CredentialContext::for_test("test-user");
+        let ctx = CredentialContext::for_owner("test-user");
         assert!(BearerTokenCredential::resolve(&values, &ctx).await.is_err());
     }
 }

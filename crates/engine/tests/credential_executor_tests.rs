@@ -13,7 +13,7 @@ use nebula_storage::credential::InMemoryPendingStore;
 #[tokio::test]
 async fn execute_resolve_static_credential_returns_complete() {
     let store = InMemoryPendingStore::new();
-    let ctx = CredentialContext::for_test("user-1");
+    let ctx = CredentialContext::for_owner("user-1");
 
     let mut values = FieldValues::new();
     values
@@ -41,7 +41,7 @@ async fn execute_continue_returns_pending_store_error_for_missing_token() {
     // `E0277`). This test exercises the runtime "missing token" path
     // against an `Interactive` credential (`OAuth2Credential`).
     let store = InMemoryPendingStore::new();
-    let ctx = CredentialContext::for_test("user-1").with_session_id("sess-1");
+    let ctx = CredentialContext::for_owner("user-1").with_session_id("sess-1");
     let bogus_token = nebula_credential::PendingToken::generate();
     let input = nebula_credential::resolve::UserInput::Poll;
 
@@ -133,7 +133,7 @@ async fn execute_resolve_rejects_base_resolve_pending() {
     // helpers that populate the typed Pending directly via
     // `PendingStateStore::put`.
     let store = InMemoryPendingStore::new();
-    let ctx = CredentialContext::for_test("user-1").with_session_id("sess-1");
+    let ctx = CredentialContext::for_owner("user-1").with_session_id("sess-1");
     let values = FieldValues::new();
 
     let result = nebula_engine::credential::execute_resolve::<BaseResolvePendingCredential, _>(
@@ -158,7 +158,7 @@ async fn execute_continue_rejects_missing_session_id() {
     // `(KEY, owner, session)` slots inside `PendingStateStore`.
     let store = InMemoryPendingStore::new();
     // Note: no `.with_session_id(...)` — exercises the missing path.
-    let ctx = CredentialContext::for_test("user-1");
+    let ctx = CredentialContext::for_owner("user-1");
     let bogus_token = nebula_credential::PendingToken::generate();
     let input = nebula_credential::resolve::UserInput::Poll;
 

@@ -141,7 +141,7 @@ mod tests {
         values
             .try_set_raw("password", serde_json::Value::String("p@ssw0rd".into()))
             .expect("test-only known-good key");
-        let ctx = CredentialContext::for_test("test-user");
+        let ctx = CredentialContext::for_owner("test-user");
         let result = BasicAuthCredential::resolve(&values, &ctx).await.unwrap();
         match result {
             ResolveResult::Complete(auth) => {
@@ -159,7 +159,7 @@ mod tests {
         values
             .try_set_raw("password", serde_json::Value::String("secret".into()))
             .expect("test-only known-good key");
-        let ctx = CredentialContext::for_test("test-user");
+        let ctx = CredentialContext::for_owner("test-user");
         let result = BasicAuthCredential::resolve(&values, &ctx).await;
         assert!(result.is_err());
     }
@@ -170,7 +170,7 @@ mod tests {
         values
             .try_set_raw("username", serde_json::Value::String("alice".into()))
             .expect("test-only known-good key");
-        let ctx = CredentialContext::for_test("test-user");
+        let ctx = CredentialContext::for_owner("test-user");
         let result = BasicAuthCredential::resolve(&values, &ctx).await;
         assert!(result.is_err());
     }

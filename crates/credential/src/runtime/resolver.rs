@@ -6,7 +6,6 @@
 
 use std::{
     any::{Any, TypeId},
-    collections::HashMap,
     sync::Arc,
 };
 
@@ -32,14 +31,21 @@ use crate::{
 /// without re-contacting its provider. Owner ruling: there is no "valid forever".
 /// (Per-credential override is a later configuration concern; this is the default.)
 const DEFAULT_REVALIDATION_FLOOR: std::time::Duration = std::time::Duration::from_hours(24);
+use dashmap::DashMap;
 use nebula_core::auth::{AuthScheme, SchemeFamily};
 use nebula_eventbus::EventBus;
-use parking_lot::Mutex;
 
 #[cfg(feature = "rotation")]
 use crate::runtime::refresh::token_refresh::refresh_oauth2_state;
 
-type HandleCache = Mutex<HashMap<(String, TypeId), Arc<dyn Any + Send + Sync>>>;
+/// Live [`CredentialHandle`] cache keyed by `(credential_id, scheme TypeId)`.
+///
+/// Read-heavy / write-light: `resolve` and `resolve_with_refresh` read on
+/// every call; writes occur only on first resolve (insert) or after a
+/// successful refresh (`replace`). `DashMap`'s per-shard sharding eliminates
+/// the write-lock contention that `Mutex<HashMap>` imposed under concurrent
+/// resolution — a write to one shard does not block reads on others.
+type HandleCache = DashMap<(String, TypeId), Arc<dyn Any + Send + Sync>>;
 
 /// Runtime credential resolver with optional coordinated refresh.
 pub struct CredentialResolver<S: CredentialStore> {
@@ -92,7 +98,7 @@ impl<S: CredentialStore> CredentialResolver<S> {
             refresh_coordinator,
             transport,
             event_bus: None,
-            handle_cache: Arc::new(Mutex::new(HashMap::new())),
+            handle_cache: Arc::new(DashMap::new()),
             external_source_unwired: false,
         }
     }
@@ -124,8 +130,9 @@ impl<S: CredentialStore> CredentialResolver<S> {
         credential_id: &str,
     ) -> Option<CredentialHandle<C::Scheme>> {
         let key = Self::handle_cache_key::<C>(credential_id);
-        self.handle_cache.lock().get(&key).and_then(|entry| {
+        self.handle_cache.get(&key).and_then(|entry| {
             entry
+                .value()
                 .clone()
                 .downcast::<CredentialHandle<C::Scheme>>()
                 .ok()
@@ -139,7 +146,7 @@ impl<S: CredentialStore> CredentialResolver<S> {
         handle: CredentialHandle<C::Scheme>,
     ) {
         let key = Self::handle_cache_key::<C>(credential_id);
-        self.handle_cache.lock().insert(key, Arc::new(handle));
+        self.handle_cache.insert(key, Arc::new(handle));
     }
 
     fn materialize_handle<C: Credential>(
@@ -310,24 +317,26 @@ impl<S: CredentialStore> CredentialResolver<S> {
         // is a scheduler-seam concern, not a per-resolve one.
         let policy = C::policy(&state);
 
-        // F3 containment law, state-level (complete): the live policy's refresh
-        // kind must be one the scheme family sanctions. Registration enforces the
+        // F3 containment law, state-level: the live policy's refresh kind must be
+        // one the scheme family sanctions. Registration enforces the
         // capability-level half at boot (a `Refreshable` credential on a
-        // `Static`-only family is rejected); this catches a hand-written or plugin
-        // policy that returns a refresh outside its family's declared classes.
-        // `debug_assert` — proven for built-ins by tests + at registration, so this
-        // is a dev/test net with zero release hot-path cost. `Lease` and `Watched`
-        // are exempt (orthogonal lifecycle wrappers — see
-        // `SchemeFamily::refresh_classes`).
-        debug_assert!(
-            <C::Scheme as AuthScheme>::Family::permits_refresh(policy.refresh.kind()),
-            "credential '{credential_id}': policy refresh {:?} is not permitted by its \
-             scheme family {:?} (refresh_classes = {:?}) — F3 containment law; the \
-             credential's policy() drifted from its AuthScheme::Family declaration",
-            policy.refresh.kind(),
-            <C::Scheme as AuthScheme>::Family::pattern(),
-            <C::Scheme as AuthScheme>::Family::refresh_classes(),
-        );
+        // `Static`-only family is rejected); this runtime guard catches a
+        // hand-written or plugin policy that returns a refresh kind outside its
+        // family's declared classes. `Lease` and `Watched` are exempt (orthogonal
+        // lifecycle wrappers — see `SchemeFamily::refresh_classes`).
+        //
+        // Hard `Err` in all build profiles — a policy drift is a security
+        // containment violation that must not silently proceed even in release.
+        // The structured `RefreshContainmentViolation` error carries all the
+        // diagnostic information (credential id, disallowed kind, family pattern)
+        // that a developer needs to diagnose the drift without a backtrace.
+        if !<C::Scheme as AuthScheme>::Family::permits_refresh(policy.refresh.kind()) {
+            return Err(ResolveError::RefreshContainmentViolation {
+                credential_id: credential_id.to_owned(),
+                refresh_kind: format!("{:?}", policy.refresh.kind()),
+                family_pattern: format!("{:?}", <C::Scheme as AuthScheme>::Family::pattern()),
+            });
+        }
 
         let decision = policy.decide_refresh(
             // Measure the re-validation floor from the last real provider
@@ -957,10 +966,28 @@ impl<S: CredentialStore> CredentialResolver<S> {
 }
 
 fn resolve_error_to_credential_error(err: ResolveError) -> CredentialError {
-    CredentialError::Provider(Box::new(ProviderErrorContext::new(
-        ProviderErrorKind::ServerError,
-        SecretFreeMessage::new(err.to_string()),
-    )))
+    match err {
+        // F3 containment violation is a local policy/configuration defect —
+        // not a remote provider failure, not retriable, not a transient error.
+        // Mapping it to `CredentialError::InvalidInput` (Validation category,
+        // non-retriable) gives callers and metrics the correct signal.
+        ResolveError::RefreshContainmentViolation {
+            credential_id,
+            refresh_kind,
+            family_pattern,
+        } => CredentialError::InvalidInput(format!(
+            "credential {credential_id}: F3 containment violation — \
+             refresh kind {refresh_kind:?} is not permitted by scheme family {family_pattern:?}; \
+             fix the credential's policy() implementation or its AuthScheme::Family declaration"
+        )),
+        // All other resolve errors stem from store/IO, deserialisation, refresh
+        // provider calls, or re-auth requirements — surface as provider errors
+        // so they get the correct retry/observability treatment.
+        other => CredentialError::Provider(Box::new(ProviderErrorContext::new(
+            ProviderErrorKind::ServerError,
+            SecretFreeMessage::new(other.to_string()),
+        ))),
+    }
 }
 
 /// Errors produced by [`CredentialResolver`].
@@ -1015,6 +1042,28 @@ pub enum ResolveError {
     /// `CredentialServiceError::ExternalSourceNotWired`.
     #[error("external state source is not wired; cannot resolve credential material")]
     ExternalSourceNotWired,
+
+    /// The credential's live `policy()` returned a refresh kind that its scheme
+    /// family does not permit — an F3 containment violation (policy drift from
+    /// the `AuthScheme::Family` declaration). The refresh is aborted rather than
+    /// proceeding with an out-of-family strategy.
+    ///
+    /// This indicates a hand-written or plugin `policy()` that drifted from the
+    /// scheme's `AuthScheme::Family::refresh_classes()`. Fix the credential's
+    /// `CredentialLifecycle::policy` implementation or its `AuthScheme::Family`
+    /// declaration.
+    #[error(
+        "credential {credential_id}: refresh kind {refresh_kind:?} is not permitted by \
+         scheme family {family_pattern:?} — F3 containment violation"
+    )]
+    RefreshContainmentViolation {
+        /// Credential identifier.
+        credential_id: String,
+        /// The disallowed refresh kind the live policy returned.
+        refresh_kind: String,
+        /// The scheme family pattern that rejected it.
+        family_pattern: String,
+    },
 }
 
 /// Fail-closed owner gate for the scoped resolution path: the loaded row's
@@ -1139,6 +1188,29 @@ mod tests {
     fn live_row_passes_tombstone_check() {
         assert!(reject_tombstoned("cred_x", &stored_with_owner(Some("alice"))).is_ok());
     }
+
+    /// F3 containment violation must map to `CredentialError::InvalidInput`
+    /// (Validation, non-retriable), NOT to `Provider(ServerError)` (External,
+    /// retriable). Misclassifying a configuration defect as a retriable provider
+    /// error would cause infinite retry loops and misleading observability.
+    #[test]
+    fn containment_violation_maps_to_invalid_input_not_provider_error() {
+        let resolve_err = ResolveError::RefreshContainmentViolation {
+            credential_id: "cred_abc".to_owned(),
+            refresh_kind: "RefreshToken".to_owned(),
+            family_pattern: "SecretToken".to_owned(),
+        };
+        let mapped = resolve_error_to_credential_error(resolve_err);
+        assert!(
+            matches!(mapped, CredentialError::InvalidInput(_)),
+            "expected InvalidInput (non-retriable, Validation category), got {mapped:?}"
+        );
+        // Confirm it is NOT mapped to a retriable provider error.
+        assert!(
+            !matches!(mapped, CredentialError::Provider(_)),
+            "F3 violation must not be mapped to a provider error (would trigger retries)"
+        );
+    }
 }
 
 /// FIX-1 regressions: a resolve/refresh must never project or resurrect a
@@ -1165,6 +1237,8 @@ mod refresh_revoke_race {
     };
     use serde::{Deserialize, Serialize};
     use zeroize::{Zeroize, ZeroizeOnDrop};
+
+    use parking_lot::Mutex;
 
     use super::*;
     use crate::resolve::{RefreshPolicy, ResolveResult};
@@ -1501,7 +1575,7 @@ mod refresh_revoke_race {
             /* revoke_on_first_put */ true,
         ));
         let resolver = resolver_with(Arc::clone(&store));
-        let ctx = CredentialContext::for_test("test-owner");
+        let ctx = CredentialContext::for_owner("test-owner");
 
         let err = resolver
             .resolve_with_refresh::<TestCred>(TEST_ID, &ctx)
@@ -1532,7 +1606,7 @@ mod refresh_revoke_race {
             /* revoke_on_first_put */ false,
         ));
         let resolver = resolver_with(Arc::clone(&store));
-        let ctx = CredentialContext::for_test("test-owner");
+        let ctx = CredentialContext::for_owner("test-owner");
 
         resolver
             .resolve_with_refresh::<TestCred>(TEST_ID, &ctx)
@@ -1559,7 +1633,7 @@ mod refresh_revoke_race {
     async fn resolve_with_refresh_rejects_pretombstoned_row() {
         let store = Arc::new(ScriptedStore::new(tombstoned_row(), false));
         let resolver = resolver_with(Arc::clone(&store));
-        let ctx = CredentialContext::for_test("test-owner");
+        let ctx = CredentialContext::for_owner("test-owner");
 
         let err = resolver
             .resolve_with_refresh::<TestCred>(TEST_ID, &ctx)
@@ -1610,6 +1684,147 @@ mod refresh_revoke_race {
         assert!(
             matches!(err, ResolveError::ExternalSourceNotWired),
             "got {err:?}"
+        );
+    }
+
+    // ── FIX-1: F3 containment law enforced in release ─────────────────────
+
+    /// A credential whose `policy()` returns a refresh kind outside its
+    /// scheme family's declared `refresh_classes()`. This simulates a
+    /// hand-written `CredentialLifecycle::policy` that drifted from the
+    /// `AuthScheme::Family` declaration.
+    struct MismatchedPolicyCred;
+
+    /// Static-only family: declares no active refresh classes. Uses
+    /// `SecretToken` as its pattern (the closest built-in to "API key").
+    struct StaticOnlyFamily;
+
+    impl SchemeFamily for StaticOnlyFamily {
+        const EGRESS: &'static [EgressShape] = &[EgressShape::InlineSecret];
+        fn refresh_classes() -> &'static [RefreshStrategyKind] {
+            &[] // static-only: no refresh permitted
+        }
+        fn pattern() -> AuthPattern {
+            AuthPattern::SecretToken
+        }
+    }
+
+    #[derive(Debug)]
+    struct StaticScheme;
+
+    impl AuthScheme for StaticScheme {
+        type Family = StaticOnlyFamily;
+        fn pattern() -> AuthPattern {
+            AuthPattern::SecretToken
+        }
+    }
+
+    impl Credential for MismatchedPolicyCred {
+        type Properties = ();
+        type Scheme = StaticScheme;
+        type State = TestState;
+
+        const KEY: &'static str = "test.mismatched_policy";
+
+        fn metadata() -> CredentialMetadata {
+            CredentialMetadata::builder()
+                .key(nebula_core::credential_key!("test.mismatched_policy"))
+                .name("MismatchedPolicyCred")
+                .description("credential whose policy drifts from its family")
+                .schema(crate::schema_of::<Self::Properties>())
+                .pattern(AuthPattern::SecretToken)
+                .build()
+                .expect("MismatchedPolicyCred metadata is valid")
+        }
+
+        fn project(_state: &TestState) -> StaticScheme {
+            StaticScheme
+        }
+
+        async fn resolve(
+            _values: &FieldValues,
+            _ctx: &CredentialContext,
+        ) -> Result<ResolveResult<TestState, ()>, CredentialError> {
+            Ok(ResolveResult::Complete(TestState {
+                token: "live".to_owned(),
+            }))
+        }
+    }
+
+    impl Refreshable for MismatchedPolicyCred {
+        const REFRESH_POLICY: RefreshPolicy = RefreshPolicy::DEFAULT;
+
+        async fn refresh(
+            state: &mut TestState,
+            _ctx: &CredentialContext,
+        ) -> Result<RefreshOutcome, CredentialError> {
+            state.token = "refreshed".to_owned();
+            Ok(RefreshOutcome::Refreshed)
+        }
+    }
+
+    impl CredentialLifecycle for MismatchedPolicyCred {
+        fn policy(_state: &TestState) -> CredentialPolicy {
+            CredentialPolicy {
+                // Already expired to trigger the refresh path.
+                expires_at: Some(Utc::now() - chrono::Duration::minutes(5)),
+                lease: None,
+                // RefreshToken is NOT in StaticOnlyFamily::refresh_classes() —
+                // this is the out-of-family drift the F3 guard must catch.
+                refresh: RefreshStrategy::RefreshToken,
+                revoke: RevokeStrategy::None,
+            }
+        }
+    }
+
+    fn mismatched_row() -> StoredCredential {
+        StoredCredential {
+            id: TEST_ID.to_owned(),
+            name: None,
+            credential_key: MismatchedPolicyCred::KEY.to_owned(),
+            data: serde_json::to_vec(&TestState {
+                token: "live".to_owned(),
+            })
+            .expect("serialize test state"),
+            state_kind: TestState::KIND.to_owned(),
+            state_version: TestState::VERSION,
+            version: 1,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            expires_at: None,
+            reauth_required: false,
+            metadata: serde_json::Map::new(),
+        }
+    }
+
+    /// FIX-1 regression: an out-of-family refresh kind from `policy()` must
+    /// return `Err(RefreshContainmentViolation)` in ALL build profiles, not only
+    /// in debug. This test runs in optimised (non-debug) semantics under the test
+    /// harness and verifies the `if !permits_refresh` guard fires — if the guard
+    /// were still a bare `debug_assert!`, the test would see `Ok` in release.
+    #[tokio::test]
+    async fn out_of_family_refresh_kind_returns_containment_violation_err() {
+        let store = Arc::new(ScriptedStore::new(mismatched_row(), false));
+        let resolver = resolver_with(Arc::clone(&store));
+        let ctx = CredentialContext::for_owner("test-owner");
+
+        let err = resolver
+            .resolve_with_refresh::<MismatchedPolicyCred>(TEST_ID, &ctx)
+            .await
+            .expect_err(
+                "an out-of-family refresh kind must be rejected in all build profiles \
+                 (F3 containment law)",
+            );
+
+        assert!(
+            matches!(err, ResolveError::RefreshContainmentViolation { .. }),
+            "expected RefreshContainmentViolation, got {err:?}"
+        );
+        // The row must not have been written — the guard fires before any refresh.
+        assert_eq!(
+            store.put_count(),
+            0,
+            "no CAS write must occur when the F3 guard rejects the refresh"
         );
     }
 }

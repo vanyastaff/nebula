@@ -1169,23 +1169,25 @@ impl CredentialService {
     ///
     /// # Cross-tenant behaviour
     ///
-    /// Unlike every other read operation in this service (which maps
-    /// cross-tenant ids to [`CredentialServiceError::NotFound`] to prevent
-    /// existence leaks), `validate_credential_binding` intentionally reads
-    /// the foreign row's `owner_id` so it can emit a structured
-    /// [`ScopeMismatch`](crate::ValidatedCredentialBindingError::ScopeMismatch)
-    /// error rather than a misleading `NotFound`. Workflow authors debugging
-    /// a misconfigured binding need to know the mismatch occurred; they are
-    /// not adversarial tenants probing for existence.
+    /// A cross-tenant probe (the id exists but belongs to a different tenant)
+    /// returns [`crate::ValidatedCredentialBindingError::NotFound`] —
+    /// existence-hiding, matching every other cross-tenant read in this service.
+    /// The real owner is logged internally (at `WARN`) for operator visibility
+    /// but is never surfaced to the caller, so an ordinary caller cannot
+    /// distinguish "id absent" from "id owned by another tenant". Workflow
+    /// authors can diagnose a misconfigured binding by checking service logs
+    /// (operator-accessible) rather than by parsing the error message.
     ///
-    /// The raw read path (`store_load_raw`) bypasses the `owner_id`
-    /// existence-hiding gate used by `load_owned`.
+    /// The raw read path (`store_load_raw`) is used so the owner field is
+    /// readable for the internal log; it does not bypass any other gate.
     ///
     /// # Errors
     ///
-    /// - [`crate::ValidatedCredentialBindingError::NotFound`] — id absent from the store.
-    /// - [`crate::ValidatedCredentialBindingError::ScopeMismatch`] — id exists but
-    ///   belongs to a different tenant.
+    /// - [`crate::ValidatedCredentialBindingError::NotFound`] — id absent from
+    ///   the store **or** id exists but belongs to a different tenant
+    ///   (existence-hiding — the two cases are indistinguishable to callers).
+    /// - [`crate::ValidatedCredentialBindingError::CredentialTombstoned`] — id
+    ///   is owned by the caller but has been revoked.
     /// - [`crate::ValidatedCredentialBindingError::Io`] — underlying store error.
     pub async fn validate_credential_binding(
         &self,
@@ -1210,13 +1212,23 @@ impl CredentialService {
             .unwrap_or("");
 
         if owner != scope.owner_id() {
-            return Err(
-                super::binding::ValidatedCredentialBindingError::ScopeMismatch {
-                    id: id.to_owned(),
-                    requested: scope.owner_id().to_owned(),
-                    actual: owner.to_owned(),
-                },
+            // Log the real owner for internal audit/tracing but do NOT expose it
+            // to the caller. Returning the actual owning tenant in a
+            // `ScopeMismatch` error would be a cross-tenant existence oracle — an
+            // ordinary caller could enumerate which ids are owned by other tenants
+            // by observing whether the mismatch error names their id. We return
+            // `NotFound` instead, matching every other cross-tenant probe in this
+            // service (existence-hiding). The structured diagnostic lives only in
+            // the trace, where it is visible to operators but not to API consumers.
+            tracing::warn!(
+                credential.id = id,
+                requested_owner = scope.owner_id(),
+                actual_owner = %owner,
+                "credential binding validation: owner mismatch (cross-tenant probe or misconfigured binding)"
             );
+            return Err(super::binding::ValidatedCredentialBindingError::NotFound {
+                id: id.to_owned(),
+            });
         }
 
         // Reject a revoked credential here — before any binding (and thus any
@@ -1383,9 +1395,9 @@ impl CredentialService {
     ///
     /// `pub(crate)` — callers outside this crate cannot bypass the tenant
     /// isolation enforced by the public operations. The only in-crate
-    /// caller today is `validate_credential_binding`, which needs to read
-    /// the foreign `owner_id` to emit a structured `ScopeMismatch` rather
-    /// than a misleading `NotFound`.
+    /// caller today is `validate_credential_binding`, which reads the stored
+    /// `owner_id` to compare against the requested scope (the result of that
+    /// comparison is logged internally but not returned to callers).
     pub(crate) async fn store_load_raw(
         &self,
         id: &str,
@@ -1482,15 +1494,13 @@ impl CredentialService {
     /// Build the minimal owner-scoped [`CredentialContext`] the resolve
     /// pipeline needs.
     ///
-    /// `CredentialContext::for_test` is the upstream `pub` constructor
-    /// that assembles exactly this shape (default credential/resource
-    /// accessors + an `owner_id` override); despite its name it is **not**
-    /// test-gated. First-party credential types resolve from their typed
-    /// properties and ignore the context accessors, so the defaults are
-    /// correct here. A production context wired with real accessors (for
-    /// plugin credentials that consult them) is a follow-up; routing
-    /// every call through this one helper keeps that migration to a
-    /// single site.
+    /// [`CredentialContext::for_owner`] assembles exactly this shape (default
+    /// credential/resource accessors + an `owner_id` override). First-party
+    /// credential types resolve from their typed properties and ignore the
+    /// context accessors, so the defaults are correct here. A production
+    /// context wired with real accessors (for plugin credentials that consult
+    /// them) is a follow-up; routing every call through this one helper keeps
+    /// that migration to a single site.
     ///
     /// When the scope carries a session it is threaded onto the context
     /// via `with_session_id`: the engine's `execute_continue` (and the
@@ -1499,7 +1509,7 @@ impl CredentialService {
     /// always fail `MissingSessionId`. CRUD passes a session-less scope
     /// and the accessors ignore the (absent) session.
     fn owner_context(scope: &TenantScope) -> CredentialContext {
-        let ctx = CredentialContext::for_test(scope.owner_id());
+        let ctx = CredentialContext::for_owner(scope.owner_id());
         match scope.session_id() {
             Some(session) => ctx.with_session_id(session),
             None => ctx,

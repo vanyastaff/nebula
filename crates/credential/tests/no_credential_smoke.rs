@@ -42,7 +42,7 @@ fn project_returns_unit_scheme() {
 #[tokio::test]
 async fn resolve_returns_complete_state() {
     let values = FieldValues::default();
-    let ctx = CredentialContext::for_test("test-owner");
+    let ctx = CredentialContext::for_owner("test-owner");
     let outcome = NoCredential::resolve(&values, &ctx)
         .await
         .expect("NoCredential::resolve never fails");
