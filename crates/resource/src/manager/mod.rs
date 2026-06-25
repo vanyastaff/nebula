@@ -198,19 +198,17 @@
 //!
 //! ## Latent bugs surfaced but out of scope
 //!
-//! - **`reload_config` live-runtime application — residual: Bounded-Exclusive
-//!   only — LOW** ([#712]). The new config is now applied to the live runtime
-//!   lazily on the next acquire for every topology *except* Bounded-Exclusive:
-//!   Pooled evicts stale-fingerprint idle instances and recreates; Resident
-//!   rebuilds its shared master when the built-against config fingerprint
-//!   changes (`Resident::clone_or_create`); Bounded-Capped/Unbounded create a
-//!   fresh instance from the current config on every acquire. The one residual
-//!   is **Bounded-Exclusive**: its single reused store-held instance carries no
-//!   config fingerprint, so a fingerprint-aware `accept` (or threading the
-//!   config into `accept`) is needed to evict-and-rebuild it on reload. The
-//!   `SwappedImmediately` outcome stays accurate (config swapped immediately;
-//!   live runtime rebuilt lazily) — no eager drain-then-rebuild redesign was
-//!   needed; see the **accepted relabel** note below.
+//! - **`reload_config` live-runtime application — CLOSED** ([#712]). The new
+//!   config is applied to the live runtime lazily on the next acquire across
+//!   *every* topology: Pooled evicts stale-fingerprint idle instances and
+//!   recreates; Resident rebuilds its shared master on a changed config
+//!   fingerprint (`Resident::clone_or_create`); Bounded-Exclusive evicts its
+//!   reused instance via a fingerprint-aware `accept` (`Bounded::accept` /
+//!   `Bounded::set_fingerprint`); Bounded-Capped/Unbounded create a fresh
+//!   instance from the current config on every acquire. The `SwappedImmediately`
+//!   outcome stays accurate (config swapped immediately; live runtime rebuilt
+//!   lazily) — no eager drain-then-rebuild redesign was needed; see the
+//!   **accepted relabel** note below.
 //! - **Pool `CreateGuard` cancel-drop — residual saturation-only leak — LOW**
 //!   ([#713]). The main cancel-drop path is **closed**: `SlotCreateGuard::drop`
 //!   schedules `destroy_within` via the `ReleaseQueue` (see

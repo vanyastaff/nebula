@@ -29,7 +29,7 @@ use std::{
     num::NonZeroUsize,
     sync::{
         Arc,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
     },
 };
 
@@ -66,6 +66,20 @@ pub struct Bounded<R: Provider> {
     /// otherwise lose an update and leave `cap` inconsistent with the real
     /// permit count. Uncontended in the common case (resize is a rare admin op).
     resize_lock: std::sync::Mutex<()>,
+    /// The live `R::Config` fingerprint, updated by
+    /// [`set_fingerprint`](Topology::set_fingerprint) on `Manager::reload_config`.
+    /// Seeded on the first [`create_slot`](Topology::create_slot) from the
+    /// registered config (so it starts equal to the built instance's
+    /// fingerprint and `accept` does not spuriously evict before any reload).
+    /// Only consulted for [`BoundedMode::Exclusive`], the one mode that pools
+    /// (reuses) its instance; `Capped`/`Unbounded` build fresh per acquire.
+    current_fingerprint: AtomicU64,
+    /// The `R::Config` fingerprint the currently-stored Exclusive instance was
+    /// built against (`0` before the first create). A reload changes
+    /// `current_fingerprint`; the next `accept` then evicts the reused instance
+    /// so it is rebuilt against the new config — symmetric to the pool's
+    /// stale-fingerprint eviction and the resident's master rebuild.
+    built_fingerprint: AtomicU64,
     _marker: PhantomData<fn() -> R>,
 }
 
@@ -94,6 +108,8 @@ impl<R: Provider> Bounded<R> {
             sem: Some(Arc::new(Semaphore::new(n.get()))),
             cap: AtomicUsize::new(n.get()),
             resize_lock: std::sync::Mutex::new(()),
+            current_fingerprint: AtomicU64::new(0),
+            built_fingerprint: AtomicU64::new(0),
             _marker: PhantomData,
         })
     }
@@ -107,6 +123,8 @@ impl<R: Provider> Bounded<R> {
             sem: Some(Arc::new(Semaphore::new(1))),
             cap: AtomicUsize::new(1),
             resize_lock: std::sync::Mutex::new(()),
+            current_fingerprint: AtomicU64::new(0),
+            built_fingerprint: AtomicU64::new(0),
             _marker: PhantomData,
         }
     }
@@ -120,6 +138,8 @@ impl<R: Provider> Bounded<R> {
             sem: None,
             cap: AtomicUsize::new(0),
             resize_lock: std::sync::Mutex::new(()),
+            current_fingerprint: AtomicU64::new(0),
+            built_fingerprint: AtomicU64::new(0),
             _marker: PhantomData,
         }
     }
@@ -223,7 +243,20 @@ where
         config: &R::Config,
         ctx: &ResourceContext,
     ) -> Result<R::Instance, Error> {
-        resource.create(config, ctx).await
+        let instance = resource.create(config, ctx).await?;
+        // Stamp the config fingerprint this instance was built against, and
+        // seed the live fingerprint on the very first build. A reload updates
+        // `current_fingerprint` via `set_fingerprint`, so a later rebuild's
+        // `compare_exchange` is a no-op that does not clobber the reloaded
+        // value. Relevant only to `Exclusive` (the reused instance); harmless
+        // for `Capped`/`Unbounded`, which never reach `accept`.
+        use crate::resource::ResourceConfig as _;
+        let fp = config.fingerprint();
+        self.built_fingerprint.store(fp, Ordering::Release);
+        let _ =
+            self.current_fingerprint
+                .compare_exchange(0, fp, Ordering::AcqRel, Ordering::Acquire);
+        Ok(instance)
     }
 
     fn slot_instance<'s>(&self, slot: &'s R::Instance) -> &'s R::Instance {
@@ -232,6 +265,30 @@ where
 
     fn into_instance(&self, slot: R::Instance) -> R::Instance {
         slot
+    }
+
+    /// Evicts the reused `Exclusive` instance when its config has been
+    /// hot-reloaded, so it is rebuilt against the new config on the next
+    /// acquire.
+    ///
+    /// `accept` runs only for a pooling topology — here, `Exclusive`: the
+    /// framework calls it on the checked-out reused instance before handing it
+    /// to a lease, and `false` makes the framework destroy and recreate it via
+    /// `create_slot`. The check compares the built-against vs live config
+    /// fingerprint; `Manager::reload_config` bumps the live one through
+    /// [`set_fingerprint`](Self::set_fingerprint), so the stale instance is
+    /// rebuilt. Normal reuse (unchanged config) matches — the fingerprint is
+    /// seeded at first build. `Capped`/`Unbounded` never pool, so `accept` is
+    /// not reached for them. This mirrors the pool's stale-fingerprint eviction
+    /// and the resident's master rebuild.
+    async fn accept(&self, _slot: &mut R::Instance, _resource: &R, _ctx: &ResourceContext) -> bool {
+        self.built_fingerprint.load(Ordering::Acquire)
+            == self.current_fingerprint.load(Ordering::Acquire)
+    }
+
+    fn set_fingerprint(&self, fingerprint: u64) {
+        self.current_fingerprint
+            .store(fingerprint, Ordering::Release);
     }
 
     async fn on_release(&self, slot: &mut R::Instance, resource: &R) -> Result<bool, Error> {
