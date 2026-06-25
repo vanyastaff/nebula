@@ -30,6 +30,28 @@ use sqlx::{Row, SqlitePool};
 
 use super::execution::conn_err;
 
+/// Decode a NOT NULL column, returning `Err` when the column value is SQL NULL.
+///
+/// sqlx's SQLite backend maps NULL to the zero-value for scalar types (`""`
+/// for `String`, `0` for `i64`, …) because the SQLite C API returns 0/empty
+/// when `sqlite3_value_*` is called on a NULL cell. Calling `try_get::<T>`
+/// therefore returns `Ok(default)` on NULL — the error never fires, so a plain
+/// `.map_err(conn_err)?` silently accepts NULL as the default. We must decode
+/// as `Option<T>` instead (sqlx correctly yields `None` for NULL regardless of
+/// the inner type) and reject `None` explicitly.
+fn required<'r, T>(row: &'r sqlx::sqlite::SqliteRow, col: &'static str) -> Result<T, StorageError>
+where
+    T: sqlx::Decode<'r, sqlx::Sqlite> + sqlx::Type<sqlx::Sqlite>,
+{
+    row.try_get::<Option<T>, _>(col)
+        .map_err(conn_err)?
+        .ok_or_else(|| {
+            StorageError::Connection(format!(
+                "NOT NULL column '{col}' contained SQL NULL (schema/data inconsistency)"
+            ))
+        })
+}
+
 fn json_to_text(v: &serde_json::Value) -> String {
     v.to_string()
 }
@@ -65,25 +87,26 @@ impl SqliteUserStore {
     }
 }
 
-fn user_from_row(r: &sqlx::sqlite::SqliteRow) -> UserRow {
-    UserRow {
-        id: r.try_get("id").unwrap_or_default(),
-        email: r.try_get("email").unwrap_or_default(),
+fn user_from_row(r: &sqlx::sqlite::SqliteRow) -> Result<UserRow, StorageError> {
+    Ok(UserRow {
+        // NOT NULL columns — `required` decodes via Option<T> and rejects NULL;
+        // a bare `try_get::<String>` silently yields "" for NULL in SQLite.
+        id: required(r, "id")?,
+        email: required(r, "email")?,
+        display_name: required(r, "display_name")?,
+        created_at: required(r, "created_at")?,
+        failed_login_count: required::<i64>(r, "failed_login_count")? as i32,
+        mfa_enabled: required::<i64>(r, "mfa_enabled")? != 0,
+        version: required::<i64>(r, "version")? as u64,
+        // Nullable columns — .ok() / Option decode is correct.
         email_verified_at: r.try_get("email_verified_at").ok(),
-        display_name: r.try_get("display_name").unwrap_or_default(),
         avatar_url: r.try_get("avatar_url").ok(),
         password_hash: r.try_get("password_hash").ok(),
-        created_at: r.try_get("created_at").unwrap_or_default(),
         last_login_at: r.try_get("last_login_at").ok(),
         locked_until: r.try_get("locked_until").ok(),
-        failed_login_count: r
-            .try_get::<i64, _>("failed_login_count")
-            .unwrap_or_default() as i32,
-        mfa_enabled: r.try_get::<i64, _>("mfa_enabled").unwrap_or_default() != 0,
         mfa_secret: r.try_get("mfa_secret").ok(),
-        version: r.try_get::<i64, _>("version").unwrap_or_default() as u64,
         deleted_at: r.try_get("deleted_at").ok(),
-    }
+    })
 }
 
 #[async_trait::async_trait]
@@ -129,7 +152,7 @@ impl UserStore for SqliteUserStore {
             .fetch_optional(&self.pool)
             .await
             .map_err(conn_err)?;
-        Ok(row.as_ref().map(user_from_row))
+        row.as_ref().map(user_from_row).transpose()
     }
 
     async fn get_by_email(&self, email: &str) -> Result<Option<UserRow>, StorageError> {
@@ -141,7 +164,7 @@ impl UserStore for SqliteUserStore {
         .fetch_optional(&self.pool)
         .await
         .map_err(conn_err)?;
-        Ok(row.as_ref().map(user_from_row))
+        row.as_ref().map(user_from_row).transpose()
     }
 
     async fn update(&self, row: UserRow, expected_version: u64) -> Result<(), StorageError> {
@@ -197,15 +220,17 @@ impl SqliteOrgStore {
 
 fn org_from_row(r: &sqlx::sqlite::SqliteRow) -> Result<OrgRow, StorageError> {
     Ok(OrgRow {
-        id: r.try_get("id").unwrap_or_default(),
-        slug: r.try_get("slug").unwrap_or_default(),
-        display_name: r.try_get("display_name").unwrap_or_default(),
-        created_at: r.try_get("created_at").unwrap_or_default(),
-        created_by: r.try_get("created_by").unwrap_or_default(),
-        plan: r.try_get("plan").unwrap_or_default(),
+        // NOT NULL columns — use `required` to reject SQL NULL (see its doc).
+        id: required(r, "id")?,
+        slug: required(r, "slug")?,
+        display_name: required(r, "display_name")?,
+        created_at: required(r, "created_at")?,
+        created_by: required(r, "created_by")?,
+        plan: required(r, "plan")?,
+        settings: text_to_json(&required::<String>(r, "settings")?)?,
+        version: required::<i64>(r, "version")? as u64,
+        // Nullable columns.
         billing_email: r.try_get("billing_email").ok(),
-        settings: text_to_json(&r.try_get::<String, _>("settings").unwrap_or_default())?,
-        version: r.try_get::<i64, _>("version").unwrap_or_default() as u64,
         deleted_at: r.try_get("deleted_at").ok(),
     })
 }
@@ -307,16 +332,18 @@ impl SqliteWorkspaceStore {
 
 fn workspace_from_row(r: &sqlx::sqlite::SqliteRow) -> Result<WorkspaceRow, StorageError> {
     Ok(WorkspaceRow {
-        id: r.try_get("id").unwrap_or_default(),
-        org_id: r.try_get("org_id").unwrap_or_default(),
-        slug: r.try_get("slug").unwrap_or_default(),
-        display_name: r.try_get("display_name").unwrap_or_default(),
+        // NOT NULL columns.
+        id: required(r, "id")?,
+        org_id: required(r, "org_id")?,
+        slug: required(r, "slug")?,
+        display_name: required(r, "display_name")?,
+        created_at: required(r, "created_at")?,
+        created_by: required(r, "created_by")?,
+        is_default: required::<i64>(r, "is_default")? != 0,
+        settings: text_to_json(&required::<String>(r, "settings")?)?,
+        version: required::<i64>(r, "version")? as u64,
+        // Nullable columns.
         description: r.try_get("description").ok(),
-        created_at: r.try_get("created_at").unwrap_or_default(),
-        created_by: r.try_get("created_by").unwrap_or_default(),
-        is_default: r.try_get::<i64, _>("is_default").unwrap_or_default() != 0,
-        settings: text_to_json(&r.try_get::<String, _>("settings").unwrap_or_default())?,
-        version: r.try_get::<i64, _>("version").unwrap_or_default() as u64,
         deleted_at: r.try_get("deleted_at").ok(),
     })
 }
@@ -458,21 +485,23 @@ impl SqliteMembershipStore {
 }
 
 fn membership_from_row(r: &sqlx::sqlite::SqliteRow) -> Result<MembershipRow, StorageError> {
-    let scope_kind_txt: String = r.try_get("scope_kind").unwrap_or_default();
-    let principal_kind_txt: String = r.try_get("principal_kind").unwrap_or_default();
+    // NOT NULL columns — `required` rejects SQL NULL (see its doc).
+    let scope_kind_txt: String = required(r, "scope_kind")?;
+    let principal_kind_txt: String = required(r, "principal_kind")?;
     Ok(MembershipRow {
         // Fail-closed: an unrecognized authz-domain value is a hard
         // deserialization error, never silently coerced to a default.
         scope_kind: ScopeKind::parse(&scope_kind_txt).map_err(|bad| {
             StorageError::Serialization(format!("unknown membership scope_kind {bad:?}"))
         })?,
-        scope_id: r.try_get("scope_id").unwrap_or_default(),
+        scope_id: required(r, "scope_id")?,
         principal_kind: PrincipalKind::parse(&principal_kind_txt).map_err(|bad| {
             StorageError::Serialization(format!("unknown membership principal_kind {bad:?}"))
         })?,
-        principal_id: r.try_get("principal_id").unwrap_or_default(),
-        role: r.try_get("role").unwrap_or_default(),
-        added_at: r.try_get("added_at").unwrap_or_default(),
+        principal_id: required(r, "principal_id")?,
+        role: required(r, "role")?,
+        added_at: required(r, "added_at")?,
+        // Nullable column.
         added_by: r.try_get("added_by").ok(),
     })
 }
@@ -579,15 +608,17 @@ impl SqliteResourceStore {
 
 fn resource_from_row(r: &sqlx::sqlite::SqliteRow) -> Result<ResourceRow, StorageError> {
     Ok(ResourceRow {
-        id: r.try_get("id").unwrap_or_default(),
-        workspace_id: r.try_get("workspace_id").unwrap_or_default(),
-        slug: r.try_get("slug").unwrap_or_default(),
-        display_name: r.try_get("display_name").unwrap_or_default(),
-        kind: r.try_get("kind").unwrap_or_default(),
-        config: text_to_json(&r.try_get::<String, _>("config").unwrap_or_default())?,
-        created_at: r.try_get("created_at").unwrap_or_default(),
-        created_by: r.try_get("created_by").unwrap_or_default(),
-        version: r.try_get::<i64, _>("version").unwrap_or_default() as u64,
+        // NOT NULL columns — use `required` to reject SQL NULL (see its doc).
+        id: required(r, "id")?,
+        workspace_id: required(r, "workspace_id")?,
+        slug: required(r, "slug")?,
+        display_name: required(r, "display_name")?,
+        kind: required(r, "kind")?,
+        config: text_to_json(&required::<String>(r, "config")?)?,
+        created_at: required(r, "created_at")?,
+        created_by: required(r, "created_by")?,
+        version: required::<i64>(r, "version")? as u64,
+        // Nullable column.
         deleted_at: r.try_get("deleted_at").ok(),
     })
 }
@@ -740,19 +771,21 @@ impl SqliteTriggerStore {
 
 fn trigger_from_row(r: &sqlx::sqlite::SqliteRow) -> Result<TriggerRow, StorageError> {
     Ok(TriggerRow {
-        id: r.try_get("id").unwrap_or_default(),
-        workspace_id: r.try_get("workspace_id").unwrap_or_default(),
-        workflow_id: r.try_get("workflow_id").unwrap_or_default(),
-        slug: r.try_get("slug").unwrap_or_default(),
-        display_name: r.try_get("display_name").unwrap_or_default(),
-        kind: r.try_get("kind").unwrap_or_default(),
-        config: text_to_json(&r.try_get::<String, _>("config").unwrap_or_default())?,
-        state: r.try_get("state").unwrap_or_default(),
+        // NOT NULL columns — use `required` to reject SQL NULL (see its doc).
+        id: required(r, "id")?,
+        workspace_id: required(r, "workspace_id")?,
+        workflow_id: required(r, "workflow_id")?,
+        slug: required(r, "slug")?,
+        display_name: required(r, "display_name")?,
+        kind: required(r, "kind")?,
+        config: text_to_json(&required::<String>(r, "config")?)?,
+        state: required(r, "state")?,
+        created_at: required(r, "created_at")?,
+        created_by: required(r, "created_by")?,
+        version: required::<i64>(r, "version")? as u64,
+        // Nullable columns.
         run_as: r.try_get("run_as").ok(),
         webhook_path: r.try_get("webhook_path").ok(),
-        created_at: r.try_get("created_at").unwrap_or_default(),
-        created_by: r.try_get("created_by").unwrap_or_default(),
-        version: r.try_get::<i64, _>("version").unwrap_or_default() as u64,
         deleted_at: r.try_get("deleted_at").ok(),
     })
 }
@@ -913,29 +946,25 @@ impl SqliteQuotaStore {
     }
 }
 
-fn quota_from_row(r: &sqlx::sqlite::SqliteRow) -> QuotaRow {
-    QuotaRow {
-        org_id: r.try_get("org_id").unwrap_or_default(),
-        plan: r.try_get("plan").unwrap_or_default(),
-        concurrent_executions_limit: r
-            .try_get::<i64, _>("concurrent_executions_limit")
-            .unwrap_or_default() as i32,
+fn quota_from_row(r: &sqlx::sqlite::SqliteRow) -> Result<QuotaRow, StorageError> {
+    Ok(QuotaRow {
+        // NOT NULL columns — use `required` to reject SQL NULL (see its doc).
+        org_id: required(r, "org_id")?,
+        plan: required(r, "plan")?,
+        concurrent_executions_limit: required::<i64>(r, "concurrent_executions_limit")? as i32,
+        concurrent_executions: required::<i64>(r, "concurrent_executions")? as i32,
+        executions_this_month: required::<i64>(r, "executions_this_month")?,
+        month_reset_at: required(r, "month_reset_at")?,
+        updated_at: required(r, "updated_at")?,
+        // Nullable columns — Option<T> decode is correct; a NULL column becomes None.
         executions_per_month_limit: r
             .try_get::<Option<i64>, _>("executions_per_month_limit")
-            .unwrap_or_default(),
+            .map_err(conn_err)?,
         active_workflows_limit: r
             .try_get::<Option<i64>, _>("active_workflows_limit")
-            .unwrap_or_default()
+            .map_err(conn_err)?
             .map(|v| v as i32),
-        concurrent_executions: r
-            .try_get::<i64, _>("concurrent_executions")
-            .unwrap_or_default() as i32,
-        executions_this_month: r
-            .try_get::<i64, _>("executions_this_month")
-            .unwrap_or_default(),
-        month_reset_at: r.try_get("month_reset_at").unwrap_or_default(),
-        updated_at: r.try_get("updated_at").unwrap_or_default(),
-    }
+    })
 }
 
 #[async_trait::async_trait]
@@ -946,7 +975,7 @@ impl QuotaStore for SqliteQuotaStore {
             .fetch_optional(&self.pool)
             .await
             .map_err(conn_err)?;
-        Ok(row.as_ref().map(quota_from_row))
+        row.as_ref().map(quota_from_row).transpose()
     }
 
     async fn upsert(&self, row: QuotaRow) -> Result<(), StorageError> {
@@ -1043,21 +1072,23 @@ impl SqliteAuditStore {
 
 fn audit_from_row(r: &sqlx::sqlite::SqliteRow) -> Result<AuditLogRow, StorageError> {
     Ok(AuditLogRow {
-        id: r.try_get("id").unwrap_or_default(),
-        org_id: r.try_get("org_id").unwrap_or_default(),
+        // NOT NULL columns — use `required` to reject SQL NULL (see its doc).
+        id: required(r, "id")?,
+        org_id: required(r, "org_id")?,
+        actor_kind: required(r, "actor_kind")?,
+        action: required(r, "action")?,
+        emitted_at: required(r, "emitted_at")?,
+        // Nullable columns.
         workspace_id: r.try_get("workspace_id").ok(),
-        actor_kind: r.try_get("actor_kind").unwrap_or_default(),
         actor_id: r.try_get("actor_id").ok(),
-        action: r.try_get("action").unwrap_or_default(),
         target_kind: r.try_get("target_kind").ok(),
         target_id: r.try_get("target_id").ok(),
         details: opt_text_to_json(
             r.try_get::<Option<String>, _>("details")
-                .unwrap_or_default(),
+                .map_err(conn_err)?,
         )?,
         ip_address: r.try_get("ip_address").ok(),
         user_agent: r.try_get("user_agent").ok(),
-        emitted_at: r.try_get("emitted_at").unwrap_or_default(),
     })
 }
 
@@ -1123,21 +1154,23 @@ impl SqliteBlobStore {
 
 fn blob_from_row(r: &sqlx::sqlite::SqliteRow) -> Result<BlobRow, StorageError> {
     Ok(BlobRow {
-        id: r.try_get("id").unwrap_or_default(),
-        workspace_id: r.try_get("workspace_id").unwrap_or_default(),
+        // NOT NULL columns — use `required` to reject SQL NULL (see its doc).
+        id: required(r, "id")?,
+        workspace_id: required(r, "workspace_id")?,
+        kind: required(r, "kind")?,
+        size_bytes: required::<i64>(r, "size_bytes")?,
+        storage_mode: required(r, "storage_mode")?,
+        created_at: required(r, "created_at")?,
+        // Nullable columns.
         execution_id: r.try_get("execution_id").ok(),
-        kind: r.try_get("kind").unwrap_or_default(),
         content_type: r.try_get("content_type").ok(),
-        size_bytes: r.try_get::<i64, _>("size_bytes").unwrap_or_default(),
         checksum: r.try_get("checksum").ok(),
-        storage_mode: r.try_get("storage_mode").unwrap_or_default(),
         data: r.try_get("data").ok(),
         external_ref: r.try_get("external_ref").ok(),
         metadata: opt_text_to_json(
             r.try_get::<Option<String>, _>("metadata")
-                .unwrap_or_default(),
+                .map_err(conn_err)?,
         )?,
-        created_at: r.try_get("created_at").unwrap_or_default(),
         expires_at: r.try_get("expires_at").ok(),
     })
 }
@@ -1266,5 +1299,200 @@ async fn soft_delete_by_id(
         Ok(())
     } else {
         Err(StorageError::not_found(entity, id))
+    }
+}
+
+#[cfg(test)]
+mod decoder_null_guard_tests {
+    // FIX 1 regression: a NULL in a NOT-NULL-modeled column must surface as
+    // `Err(StorageError::…)`, not silently default to an empty string / zero.
+    // Each test crafts an in-memory SQLite row with a deliberate NULL in one
+    // required column and asserts the decoder returns Err.
+
+    use nebula_storage_port::StorageError;
+    use sqlx::SqlitePool;
+
+    use super::{
+        audit_from_row, blob_from_row, org_from_row, quota_from_row, resource_from_row,
+        trigger_from_row, user_from_row, workspace_from_row,
+    };
+
+    // Open a temporary in-memory SQLite pool with the given DDL applied, then
+    // fetch the sole row and call `decoder` on it. Returns the decoder's Result.
+    //
+    // Both `ddl` and `insert` are `'static` string literals sourced from test
+    // constants — the `sqlx::query` API requires `'static`.
+    async fn with_null_row<T>(
+        ddl: &'static str,
+        insert: &'static str,
+        decoder: impl Fn(&sqlx::sqlite::SqliteRow) -> Result<T, StorageError>,
+    ) -> Result<T, StorageError> {
+        let pool = SqlitePool::connect(":memory:").await.unwrap();
+        sqlx::query(ddl).execute(&pool).await.unwrap();
+        sqlx::query(insert).execute(&pool).await.unwrap();
+        let row = sqlx::query("SELECT * FROM t")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        decoder(&row)
+    }
+
+    #[tokio::test]
+    async fn user_from_row_null_required_id_is_err() {
+        // The `id` column is NOT NULL in the schema; a NULL decode must be Err.
+        let result = with_null_row(
+            "CREATE TABLE t (id TEXT, email TEXT NOT NULL, display_name TEXT NOT NULL, \
+             created_at TEXT NOT NULL, failed_login_count INTEGER NOT NULL DEFAULT 0, \
+             mfa_enabled INTEGER NOT NULL DEFAULT 0, version INTEGER NOT NULL DEFAULT 0, \
+             email_verified_at TEXT, avatar_url TEXT, password_hash TEXT, \
+             last_login_at TEXT, locked_until TEXT, mfa_secret BLOB, deleted_at TEXT)",
+            // Insert a row where `id` is explicitly NULL.
+            "INSERT INTO t VALUES (NULL, 'a@b.com', 'Alice', '2024-01-01T00:00:00Z', \
+             0, 0, 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL)",
+            user_from_row,
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "user_from_row must return Err when the required `id` column is NULL, got Ok"
+        );
+    }
+
+    #[tokio::test]
+    async fn org_from_row_null_required_created_at_is_err() {
+        let result = with_null_row(
+            "CREATE TABLE t (id TEXT NOT NULL, slug TEXT NOT NULL, display_name TEXT NOT NULL, \
+             created_at TEXT, created_by TEXT NOT NULL, plan TEXT NOT NULL, \
+             settings TEXT NOT NULL DEFAULT '{}', version INTEGER NOT NULL DEFAULT 0, \
+             billing_email TEXT, deleted_at TEXT)",
+            // `created_at` is NOT NULL in the schema but NULL here.
+            "INSERT INTO t VALUES ('org-1', 'my-org', 'My Org', NULL, 'user-1', 'free', \
+             '{}', 0, NULL, NULL)",
+            org_from_row,
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "org_from_row must return Err when the required `created_at` column is NULL, got Ok"
+        );
+    }
+
+    #[tokio::test]
+    async fn workspace_from_row_null_required_slug_is_err() {
+        let result = with_null_row(
+            "CREATE TABLE t (id TEXT NOT NULL, org_id TEXT NOT NULL, slug TEXT, \
+             display_name TEXT NOT NULL, created_at TEXT NOT NULL, \
+             created_by TEXT NOT NULL, is_default INTEGER NOT NULL DEFAULT 0, \
+             settings TEXT NOT NULL DEFAULT '{}', version INTEGER NOT NULL DEFAULT 0, \
+             description TEXT, deleted_at TEXT)",
+            // `slug` is NOT NULL in the schema but NULL here.
+            "INSERT INTO t VALUES ('ws-1', 'org-1', NULL, 'My WS', '2024-01-01T00:00:00Z', \
+             'user-1', 0, '{}', 0, NULL, NULL)",
+            workspace_from_row,
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "workspace_from_row must return Err when the required `slug` column is NULL, got Ok"
+        );
+    }
+
+    #[tokio::test]
+    async fn quota_from_row_null_required_plan_is_err() {
+        let result = with_null_row(
+            "CREATE TABLE t (org_id TEXT NOT NULL, plan TEXT, \
+             concurrent_executions_limit INTEGER NOT NULL DEFAULT 0, \
+             concurrent_executions INTEGER NOT NULL DEFAULT 0, \
+             executions_this_month INTEGER NOT NULL DEFAULT 0, \
+             month_reset_at TEXT NOT NULL, updated_at TEXT NOT NULL, \
+             executions_per_month_limit INTEGER, active_workflows_limit INTEGER)",
+            // `plan` is NOT NULL in the schema but NULL here.
+            "INSERT INTO t VALUES ('org-1', NULL, 10, 0, 0, '2024-01-01T00:00:00Z', \
+             '2024-01-01T00:00:00Z', NULL, NULL)",
+            quota_from_row,
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "quota_from_row must return Err when the required `plan` column is NULL, got Ok"
+        );
+    }
+
+    #[tokio::test]
+    async fn audit_from_row_null_required_action_is_err() {
+        let result = with_null_row(
+            "CREATE TABLE t (id TEXT NOT NULL, org_id TEXT NOT NULL, \
+             actor_kind TEXT NOT NULL, action TEXT, emitted_at TEXT NOT NULL, \
+             workspace_id TEXT, actor_id TEXT, target_kind TEXT, target_id TEXT, \
+             details TEXT, ip_address TEXT, user_agent TEXT)",
+            // `action` is NOT NULL in the schema but NULL here.
+            "INSERT INTO t VALUES ('evt-1', 'org-1', 'user', NULL, '2024-01-01T00:00:00Z', \
+             NULL, NULL, NULL, NULL, NULL, NULL, NULL)",
+            audit_from_row,
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "audit_from_row must return Err when the required `action` column is NULL, got Ok"
+        );
+    }
+
+    #[tokio::test]
+    async fn resource_from_row_null_required_kind_is_err() {
+        let result = with_null_row(
+            "CREATE TABLE t (id TEXT NOT NULL, workspace_id TEXT NOT NULL, slug TEXT NOT NULL, \
+             display_name TEXT NOT NULL, kind TEXT, config TEXT NOT NULL DEFAULT '{}', \
+             created_at TEXT NOT NULL, created_by TEXT NOT NULL, \
+             version INTEGER NOT NULL DEFAULT 0, deleted_at TEXT)",
+            // `kind` is NOT NULL in the schema but NULL here.
+            "INSERT INTO t VALUES ('res-1', 'ws-1', 'my-res', 'My Resource', NULL, '{}', \
+             '2024-01-01T00:00:00Z', 'user-1', 0, NULL)",
+            resource_from_row,
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "resource_from_row must return Err when the required `kind` column is NULL, got Ok"
+        );
+    }
+
+    #[tokio::test]
+    async fn trigger_from_row_null_required_workflow_id_is_err() {
+        let result = with_null_row(
+            "CREATE TABLE t (id TEXT NOT NULL, workspace_id TEXT NOT NULL, \
+             workflow_id TEXT, slug TEXT NOT NULL, display_name TEXT NOT NULL, \
+             kind TEXT NOT NULL, config TEXT NOT NULL DEFAULT '{}', \
+             state TEXT NOT NULL, created_at TEXT NOT NULL, created_by TEXT NOT NULL, \
+             version INTEGER NOT NULL DEFAULT 0, run_as TEXT, webhook_path TEXT, deleted_at TEXT)",
+            // `workflow_id` is NOT NULL in the schema but NULL here.
+            "INSERT INTO t VALUES ('trg-1', 'ws-1', NULL, 'my-trg', 'My Trigger', \
+             'webhook', '{}', 'active', '2024-01-01T00:00:00Z', 'user-1', 0, NULL, NULL, NULL)",
+            trigger_from_row,
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "trigger_from_row must return Err when the required `workflow_id` column is NULL, got Ok"
+        );
+    }
+
+    #[tokio::test]
+    async fn blob_from_row_null_required_storage_mode_is_err() {
+        let result = with_null_row(
+            "CREATE TABLE t (id TEXT NOT NULL, workspace_id TEXT NOT NULL, \
+             kind TEXT NOT NULL, size_bytes INTEGER NOT NULL DEFAULT 0, \
+             storage_mode TEXT, created_at TEXT NOT NULL, \
+             execution_id TEXT, content_type TEXT, checksum BLOB, \
+             data BLOB, external_ref TEXT, metadata TEXT, expires_at TEXT)",
+            // `storage_mode` is NOT NULL in the schema but NULL here.
+            "INSERT INTO t VALUES ('blob-1', 'ws-1', 'output', 42, NULL, \
+             '2024-01-01T00:00:00Z', NULL, NULL, NULL, NULL, NULL, NULL, NULL)",
+            blob_from_row,
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "blob_from_row must return Err when the required `storage_mode` column is NULL, got Ok"
+        );
     }
 }

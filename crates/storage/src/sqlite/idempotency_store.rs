@@ -25,11 +25,27 @@ fn expires_at_ms(rfc3339: &str) -> i64 {
         .unwrap_or(i64::MIN)
 }
 
-/// Fold the scope into the cache key (`{workspace_id}:{org_id}:{cache_key}`)
-/// so two tenants' keyspaces are disjoint — a raw key from one tenant can
-/// never collide with another's (§6.1 replay-oracle).
+/// Fold the scope into the cache key so two tenants' keyspaces are
+/// disjoint. Uses the same length-prefix scheme as [`Scope::credential_owner_id`]:
+/// `{ws_len}\x1e{workspace_id}\x1e{org_len}\x1e{org_id}\x1e{cache_key}`.
+///
+/// A raw `:` or `/` delimiter is **not safe** because `workspace_id` and
+/// `org_id` are unvalidated free strings (see `scope.rs` doc), so a component
+/// containing the delimiter could forge a different namespace (confused-deputy
+/// cross-tenant collision). Length-prefixing makes the boundary unforgeable:
+/// the leading `{ws_len}` pins exactly where `workspace_id` ends regardless of
+/// its content, and the same applies to `org_id`. The ASCII Record Separator
+/// (`\x1e`) is a readable sentinel between the length and the value; the full
+/// key is an opaque internal lookup value, never wire-exposed.
 fn namespaced(scope: &Scope, cache_key: &str) -> String {
-    format!("{}:{}:{}", scope.workspace_id, scope.org_id, cache_key)
+    format!(
+        "{}\x1e{}\x1e{}\x1e{}\x1e{}",
+        scope.workspace_id.len(),
+        scope.workspace_id,
+        scope.org_id.len(),
+        scope.org_id,
+        cache_key,
+    )
 }
 
 /// SQLite-backed durable idempotent-replay cache.

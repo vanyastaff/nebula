@@ -2234,12 +2234,16 @@ pub async fn assert_job_dispatch_fencing(backend: &dyn Backend) {
         .expect("claim");
     assert_eq!(claimed.len(), 1, "[{}] claimed one row", backend.name());
 
-    // Stale runner must NOT transition the row.
-    q.mark_dispatched(&job.id, &runner_b)
-        .await
-        .expect("mark_dispatched (stale)");
+    // Stale runner must be rejected: rows_affected == 0 because processed_by ≠ runner_b.
+    let stale_result = q.mark_dispatched(&job.id, &runner_b).await;
+    assert!(
+        matches!(stale_result, Err(StorageError::NotFound { .. })),
+        "[{}] mark_dispatched by a stale processor must return NotFound, got: {:?}",
+        backend.name(),
+        stale_result
+    );
 
-    // The row is still Processing — a re-claim with the REAL runner confirms it.
+    // The row is still Processing (stale call made no change) — the real runner succeeds.
     q.mark_dispatched(&job.id, &runner_a)
         .await
         .expect("mark_dispatched (claimant)");

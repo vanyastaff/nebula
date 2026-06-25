@@ -27,6 +27,16 @@ use crate::sqlite::execution::{conn_err, insert_created_execution};
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
+/// Hex-encode a 16-byte ULID for use in error messages without pulling in the
+/// `hex` crate (which is optional and only enabled by the `postgres` feature).
+fn ulid_hex(id: &[u8; 16]) -> String {
+    id.iter().fold(String::with_capacity(32), |mut s, b| {
+        use std::fmt::Write as _;
+        let _ = write!(s, "{b:02x}");
+        s
+    })
+}
+
 fn decode_id(bytes: &[u8]) -> Result<[u8; 16], StorageError> {
     <[u8; 16]>::try_from(bytes).map_err(|_| {
         StorageError::Serialization(format!(
@@ -235,7 +245,11 @@ impl JobDispatchQueue for SqliteJobDispatchQueue {
         id: &[u8; 16],
         processor: &[u8; 16],
     ) -> Result<(), StorageError> {
-        sqlx::query(
+        // Zero rows_affected means this worker no longer owns the job (reclaimed
+        // by another worker or the job id does not exist). Fail-closed: treat
+        // lost ownership as NotFound — the caller must not assume success when
+        // the ownership predicate (`processed_by = ?`) was not satisfied.
+        let rows_updated = sqlx::query(
             "UPDATE port_job_dispatch_queue SET status = 'Dispatched' \
              WHERE id = ? AND status = 'Processing' AND processed_by = ?",
         )
@@ -243,7 +257,14 @@ impl JobDispatchQueue for SqliteJobDispatchQueue {
         .bind(processor.as_slice())
         .execute(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(conn_err)?
+        .rows_affected();
+        if rows_updated == 0 {
+            return Err(StorageError::NotFound {
+                entity: "job_dispatch",
+                id: ulid_hex(id),
+            });
+        }
         Ok(())
     }
 
@@ -253,7 +274,10 @@ impl JobDispatchQueue for SqliteJobDispatchQueue {
         processor: &[u8; 16],
         error: &str,
     ) -> Result<(), StorageError> {
-        sqlx::query(
+        // Zero rows_affected means this worker no longer owns the job (reclaimed
+        // by another worker or the job id does not exist). Fail-closed: same
+        // NotFound semantics as mark_dispatched.
+        let rows_updated = sqlx::query(
             "UPDATE port_job_dispatch_queue \
              SET status = 'Failed', error_message = ? \
              WHERE id = ? AND status = 'Processing' AND processed_by = ?",
@@ -263,7 +287,14 @@ impl JobDispatchQueue for SqliteJobDispatchQueue {
         .bind(processor.as_slice())
         .execute(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(conn_err)?
+        .rows_affected();
+        if rows_updated == 0 {
+            return Err(StorageError::NotFound {
+                entity: "job_dispatch",
+                id: ulid_hex(id),
+            });
+        }
         Ok(())
     }
 

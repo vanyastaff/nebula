@@ -18,6 +18,17 @@ use tokio::time::Instant;
 
 use super::execution::{QueuedJob, SharedState, insert_created_row};
 
+/// Format a raw 16-byte ULID as lowercase hex for `StorageError` ids. Uses
+/// std formatting so the `inmem` module does not need the optional `hex` crate
+/// that is only enabled by the `postgres`/`sqlite` features.
+fn ulid_hex(id: &[u8; 16]) -> String {
+    id.iter().fold(String::with_capacity(32), |mut s, b| {
+        use std::fmt::Write as _;
+        let _ = write!(s, "{b:02x}");
+        s
+    })
+}
+
 // ── JobDispatchQueue ─────────────────────────────────────────────────────────
 
 /// In-memory job-dispatch queue handle.
@@ -118,14 +129,22 @@ impl JobDispatchQueue for InMemoryJobDispatchQueue {
         id: &[u8; 16],
         processor: &[u8; 16],
     ) -> Result<(), StorageError> {
+        // Fail-closed: if this worker no longer owns the job (reclaimed by
+        // another or the job id is absent), return NotFound — mirrors the SQL
+        // backends' `rows_affected == 0` check. A silent Ok would let a worker
+        // that lost ownership believe it successfully dispatched.
         let mut st = self.inner.lock();
         if let Some(q) = st.jobs.get_mut(id)
             && q.status == "Processing"
             && q.processed_by.as_ref() == Some(processor)
         {
             q.status = "Dispatched".to_owned();
+            return Ok(());
         }
-        Ok(())
+        Err(StorageError::NotFound {
+            entity: "job_dispatch",
+            id: ulid_hex(id),
+        })
     }
 
     async fn mark_failed(
@@ -134,6 +153,7 @@ impl JobDispatchQueue for InMemoryJobDispatchQueue {
         processor: &[u8; 16],
         error: &str,
     ) -> Result<(), StorageError> {
+        // Fail-closed: same NotFound semantics as mark_dispatched.
         let mut st = self.inner.lock();
         if let Some(q) = st.jobs.get_mut(id)
             && q.status == "Processing"
@@ -141,8 +161,12 @@ impl JobDispatchQueue for InMemoryJobDispatchQueue {
         {
             q.status = "Failed".to_owned();
             q.error_message = Some(error.to_owned());
+            return Ok(());
         }
-        Ok(())
+        Err(StorageError::NotFound {
+            entity: "job_dispatch",
+            id: ulid_hex(id),
+        })
     }
 
     async fn reclaim_stuck(
@@ -336,5 +360,139 @@ impl TriggerDedupInbox for InMemoryTriggerDedupInbox {
     async fn cleanup(&self, _retention: Duration) -> Result<u64, StorageError> {
         // No-op stub — TTL sweep wired later without a trait break.
         Ok(0)
+    }
+}
+
+#[cfg(test)]
+mod job_ownership_tests {
+    //! FIX 3 regression: mark_dispatched / mark_failed must return Err (not Ok)
+    //! when the caller does not own the job (wrong processor id, reclaimed row,
+    //! or unknown job id). A silent Ok would let a worker believe it dispatched
+    //! a job it no longer holds.
+
+    use nebula_storage_port::dto::{ControlCommand, JobDispatchMsg};
+    use nebula_storage_port::store::JobDispatchQueue;
+    use nebula_storage_port::{Scope, StorageError as SE};
+
+    use super::InMemoryJobDispatchQueue;
+    use crate::inmem::InMemoryExecutionStore;
+
+    fn make_queue() -> InMemoryJobDispatchQueue {
+        let store = InMemoryExecutionStore::new();
+        InMemoryJobDispatchQueue::new(&store)
+    }
+
+    fn sample_msg(id: [u8; 16]) -> JobDispatchMsg {
+        JobDispatchMsg::new(
+            id,
+            "exec-1".to_owned(),
+            ControlCommand::Start,
+            Scope::new("ws-1", "org-1"),
+            serde_json::Value::Null,
+            None::<String>,
+            String::new(),
+            "plugin-a".parse().unwrap(),
+            vec!["plugin-a".parse().unwrap()],
+            None::<String>,
+            0,
+        )
+    }
+
+    #[tokio::test]
+    async fn mark_dispatched_returns_not_found_for_unknown_job() {
+        let queue = make_queue();
+        let worker_a: [u8; 16] = [1u8; 16];
+        let unknown_id: [u8; 16] = [0xABu8; 16];
+
+        let result = queue.mark_dispatched(&unknown_id, &worker_a).await;
+        assert!(
+            matches!(
+                result,
+                Err(SE::NotFound {
+                    entity: "job_dispatch",
+                    ..
+                })
+            ),
+            "mark_dispatched on an unknown job id must return NotFound, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn mark_dispatched_returns_not_found_when_owned_by_different_processor() {
+        let queue = make_queue();
+        let worker_a: [u8; 16] = [1u8; 16];
+        let worker_b: [u8; 16] = [2u8; 16];
+        let job_id: [u8; 16] = [3u8; 16];
+
+        let msg = sample_msg(job_id);
+        queue.enqueue(&msg).await.unwrap();
+
+        // Worker A claims the job.
+        let claimed = queue
+            .claim_pending(&worker_a, 1, &["plugin-a".parse().unwrap()])
+            .await
+            .unwrap();
+        assert_eq!(claimed.len(), 1);
+
+        // Worker B tries to mark it dispatched — must fail.
+        let result = queue.mark_dispatched(&job_id, &worker_b).await;
+        assert!(
+            matches!(
+                result,
+                Err(SE::NotFound {
+                    entity: "job_dispatch",
+                    ..
+                })
+            ),
+            "mark_dispatched by a non-owner processor must return NotFound, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn mark_failed_returns_not_found_when_owned_by_different_processor() {
+        let queue = make_queue();
+        let worker_a: [u8; 16] = [1u8; 16];
+        let worker_b: [u8; 16] = [2u8; 16];
+        let job_id: [u8; 16] = [4u8; 16];
+
+        let msg = sample_msg(job_id);
+        queue.enqueue(&msg).await.unwrap();
+        queue
+            .claim_pending(&worker_a, 1, &["plugin-a".parse().unwrap()])
+            .await
+            .unwrap();
+
+        // Worker B tries to mark it failed — must fail.
+        let result = queue.mark_failed(&job_id, &worker_b, "some error").await;
+        assert!(
+            matches!(
+                result,
+                Err(SE::NotFound {
+                    entity: "job_dispatch",
+                    ..
+                })
+            ),
+            "mark_failed by a non-owner processor must return NotFound, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn mark_dispatched_succeeds_for_owning_processor() {
+        let queue = make_queue();
+        let worker_a: [u8; 16] = [1u8; 16];
+        let job_id: [u8; 16] = [5u8; 16];
+
+        let msg = sample_msg(job_id);
+        queue.enqueue(&msg).await.unwrap();
+        queue
+            .claim_pending(&worker_a, 1, &["plugin-a".parse().unwrap()])
+            .await
+            .unwrap();
+
+        let result = queue.mark_dispatched(&job_id, &worker_a).await;
+        assert!(
+            result.is_ok(),
+            "mark_dispatched by the owning processor must succeed, got {result:?}"
+        );
     }
 }
