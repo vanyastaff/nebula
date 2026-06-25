@@ -164,9 +164,12 @@ fn parse_expression_source(source: &str) -> Result<(), String> {
 
 /// Equality is **by source string, not by parsed AST** — two expressions that
 /// parse to the same tree but differ in whitespace or formatting compare
-/// unequal. Parsing inside `eq` would be surprising and allocate; a caller that
-/// needs semantic deduplication should key on the canonical-bytes content id
-/// (see `value.rs`), not on `Expression`'s `PartialEq`.
+/// unequal. The canonical-bytes content id keys off the same `source()` bytes
+/// (`value.rs` writes `expr.source().as_bytes()`), so it shares this exact
+/// limitation — neither offers AST-level / semantic dedup. A caller that needs
+/// to collapse whitespace- or formatting-only differences must normalize the
+/// source (or parse and compare the AST) itself. Parsing inside `eq` is
+/// deliberately avoided — it would be surprising and would allocate.
 impl PartialEq for Expression {
     fn eq(&self, other: &Self) -> bool {
         self.source == other.source
