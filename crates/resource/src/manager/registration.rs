@@ -570,9 +570,10 @@ impl Manager {
     ///   `Resident::clone_or_create`).
     /// - **Bounded (Capped / Unbounded)** — every acquire already creates a
     ///   fresh instance from the current config, so the reload is immediate.
-    /// - **Bounded (Exclusive)** — the single reused instance is **not** yet
-    ///   rebuilt on reload (tracked residual; needs a fingerprint-aware
-    ///   `accept`, since the store-held slot carries no config fingerprint).
+    /// - **Bounded (Exclusive)** — the single reused instance is evicted and
+    ///   rebuilt on the next acquire via a fingerprint-aware `accept` (the
+    ///   topology tracks the built-against vs live config fingerprint; see
+    ///   `Bounded::accept` / `Bounded::set_fingerprint`).
     ///
     /// # Errors
     ///
@@ -630,13 +631,13 @@ impl Manager {
         self.emit(ResourceEvent::ConfigReloaded { key: R::key() });
 
         // Reload outcome. The config `ArcSwap` is swapped immediately; the
-        // live runtime is rebuilt LAZILY on the next acquire (Pooled evicts
-        // stale-fingerprint idle instances; Resident rebuilds its master on a
-        // changed config fingerprint; Bounded-Capped/Unbounded create fresh
-        // per acquire). `SwappedImmediately` is therefore accurate: the config
-        // takes effect on the next acquire without an eager drain-then-rebuild.
-        // Residual: Bounded-Exclusive's single reused instance is not yet
-        // rebuilt on reload ([#712]).
+        // live runtime is rebuilt LAZILY on the next acquire across every
+        // topology (Pooled evicts stale-fingerprint idle instances; Resident
+        // rebuilds its master on a changed config fingerprint; Bounded-Exclusive
+        // evicts its reused instance via a fingerprint-aware `accept`;
+        // Bounded-Capped/Unbounded create fresh per acquire).
+        // `SwappedImmediately` is therefore accurate: the config takes effect on
+        // the next acquire without an eager drain-then-rebuild ([#712]).
         let outcome = ReloadOutcome::SwappedImmediately;
 
         tracing::info!(key = %R::key(), ?outcome, "resource config reloaded");
