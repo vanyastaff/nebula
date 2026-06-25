@@ -129,13 +129,16 @@ impl fmt::Display for PermissionDenial {
                 let current_display = current
                     .map(|r| r.to_string())
                     .unwrap_or_else(|| "none".to_owned());
-                write!(f, "{required} required, current role {current_display}")
+                write!(
+                    f,
+                    "workspace role {required} required, current {current_display}"
+                )
             },
             Self::Org { required, current } => {
                 let current_display = current
                     .map(|r| r.to_string())
                     .unwrap_or_else(|| "none".to_owned());
-                write!(f, "{required} required, current role {current_display}")
+                write!(f, "org role {required} required, current {current_display}")
             },
         }
     }
@@ -238,5 +241,35 @@ mod tests {
             }
         );
         assert!(owner.require(Permission::OrgDelete).is_ok());
+    }
+
+    #[test]
+    fn permission_denial_display_discriminates_workspace_vs_org() {
+        use crate::role::{OrgRole, WorkspaceRole};
+
+        let ws_denial = PermissionDenial::Workspace {
+            required: WorkspaceRole::WorkspaceViewer,
+            current: None,
+        };
+        let org_denial = PermissionDenial::Org {
+            required: OrgRole::OrgAdmin,
+            current: Some(OrgRole::OrgMember),
+        };
+
+        let ws_str = ws_denial.to_string();
+        let org_str = org_denial.to_string();
+
+        assert!(
+            ws_str.contains("workspace"),
+            "workspace denial Display must contain 'workspace', got: {ws_str:?}"
+        );
+        assert!(
+            org_str.contains("org"),
+            "org denial Display must contain 'org', got: {org_str:?}"
+        );
+        assert_ne!(
+            ws_str, org_str,
+            "workspace and org denial Display strings must differ"
+        );
     }
 }

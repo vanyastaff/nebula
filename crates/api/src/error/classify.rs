@@ -166,8 +166,12 @@ impl From<nebula_core::PermissionDenied> for ApiError {
                     .unwrap_or_else(|| "none".to_owned()),
             ),
             // `PermissionDenial` is `#[non_exhaustive]`; future variants forward their
-            // human-readable Display output rather than hard-coding field access.
-            _ => (pd.denial.to_string(), String::new()),
+            // human-readable Display output as `required_role`. `current_role` uses
+            // the same string so neither field is silently left blank/half-populated.
+            _ => {
+                let display = pd.denial.to_string();
+                (display.clone(), display)
+            },
         };
         Self::InsufficientRole {
             required_role,

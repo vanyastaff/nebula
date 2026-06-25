@@ -5371,11 +5371,13 @@ impl WorkflowEngine {
                                 error = %e,
                                 "credential resolution failed"
                             );
-                            nebula_core::CoreError::credential_not_found(
-                                CredentialKey::new(&credential_key_str).expect(
-                                    "credential key passed through allowlist must be valid",
+                            match CredentialKey::new(&credential_key_str) {
+                                Ok(key) => nebula_core::CoreError::credential_not_found(key),
+                                Err(_) => nebula_core::CoreError::invalid_key(
+                                    credential_key_str.clone(),
+                                    "credential",
                                 ),
-                            )
+                            }
                         })?;
                         Ok(Box::new(snapshot) as Box<dyn std::any::Any + Send + Sync>)
                     }
@@ -6260,17 +6262,23 @@ impl NodeTask {
             }
         }
 
-        let base = Arc::new(
-            nebula_core::BaseContext::builder(nebula_core::scope::Scope {
-                execution_id: Some(self.execution_id),
-                workflow_id: Some(self.workflow_id),
-                ..nebula_core::scope::Scope::default()
-            })
-            .principal(nebula_core::scope::Principal::System)
-            .cancellation(self.cancel.child_token())
-            .build()
-            .expect("scope + principal must produce a valid BaseContext"),
-        );
+        let base = match nebula_core::BaseContext::builder(nebula_core::scope::Scope {
+            execution_id: Some(self.execution_id),
+            workflow_id: Some(self.workflow_id),
+            ..nebula_core::scope::Scope::default()
+        })
+        .principal(nebula_core::scope::Principal::System)
+        .cancellation(self.cancel.child_token())
+        .build()
+        {
+            Ok(ctx) => Arc::new(ctx),
+            Err(e) => {
+                return (
+                    self.node_key,
+                    Err(EngineError::PlanningFailed(e.to_string())),
+                );
+            },
+        };
         let action_ctx = nebula_action::ActionRuntimeContext::new(
             base,
             self.execution_id,

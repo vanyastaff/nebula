@@ -200,6 +200,29 @@ mod tests {
 
         assert_eq!(ctx.scope().org_id, Some(org_id));
         assert_eq!(ctx.scope().workspace_id, Some(ws_id));
-        assert!(matches!(ctx.principal(), Principal::System));
+        assert_eq!(ctx.principal(), &Principal::System);
+    }
+
+    #[test]
+    fn build_with_user_principal_stores_and_returns_it() {
+        use crate::id::UserId;
+
+        let user_id = UserId::new();
+
+        let ctx = BaseContext::builder(Scope::default())
+            .principal(Principal::User(user_id))
+            .build()
+            .expect("user principal must produce a valid BaseContext");
+
+        assert_eq!(
+            ctx.principal(),
+            &Principal::User(user_id),
+            "stored principal must match the one supplied to the builder"
+        );
+        assert_ne!(
+            ctx.principal(),
+            &Principal::System,
+            "user principal must not compare equal to Principal::System"
+        );
     }
 }
