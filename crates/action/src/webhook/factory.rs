@@ -220,13 +220,15 @@ mod tests {
         let secret = HmacSecret::new(SECRET_BYTES);
         let debug_output = format!("{secret:?}");
 
+        // The raw secret string must not appear — this is the load-bearing assertion.
         assert!(
             !debug_output.contains("super-secret-hmac-key"),
             "raw secret must not appear in Debug output; got: {debug_output}",
         );
+        // The redaction marker must be present so consumers know the field was intentionally hidden.
         assert!(
-            !debug_output.contains("115"), // 's' in ASCII — numeric form should not appear
-            "Debug must not contain raw byte values; got: {debug_output}",
+            debug_output.contains("REDACTED"),
+            "Debug output must include REDACTED marker; got: {debug_output}",
         );
         // Length is safe to reveal (does not expose key material).
         assert!(

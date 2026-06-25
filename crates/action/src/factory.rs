@@ -1032,4 +1032,79 @@ mod tests {
             "error message should name the action key; got: {error_message}",
         );
     }
+
+    // ── ValidMetadataAction ──────────────────────────────────────────────────
+    //
+    // A production-shaped stateless action with a non-empty name, description,
+    // and the default input+output ports from `ActionMetadata::new`. Proves
+    // that `check_metadata_or_fatal` does NOT reject valid metadata — the
+    // positive counterpart to the two fatal-path tests above.
+
+    struct ValidMetadataAction;
+
+    impl Action for ValidMetadataAction {
+        type Input = Value;
+        type Output = Value;
+
+        fn metadata() -> ActionMetadata {
+            ActionMetadata::new(
+                action_key!("test.valid_meta"),
+                "Valid Metadata Action",
+                "A production-shaped action fixture used to prove the metadata gate passes valid registrations.",
+            )
+        }
+
+        fn dependencies() -> &'static Dependencies {
+            static DEPS: OnceLock<Dependencies> = OnceLock::new();
+            DEPS.get_or_init(Dependencies::new)
+        }
+    }
+
+    impl StatelessAction for ValidMetadataAction {
+        async fn execute(
+            &self,
+            _input: Value,
+            _ctx: &(impl ActionContext + ?Sized),
+        ) -> Result<ActionResult<Value>, ActionError> {
+            Ok(ActionResult::success(Value::Null))
+        }
+    }
+
+    impl FromWorkflowNode for ValidMetadataAction {
+        type Error = ActionError;
+
+        async fn from_workflow_node(
+            _node: &NodeDefinition,
+            _ctx: &dyn ActionContext,
+        ) -> Result<Self, Self::Error> {
+            Ok(Self)
+        }
+    }
+
+    /// A factory with valid metadata (non-empty name, description, default
+    /// ports) must succeed — `check_metadata_or_fatal` must not block valid
+    /// registrations (positive counterpart to the two fatal-path tests).
+    #[tokio::test]
+    async fn instantiate_succeeds_with_valid_metadata() {
+        let factory = GenericStatelessFactory::<ValidMetadataAction>::new();
+        let node = NodeDefinition::new(
+            node_key!("test_node"),
+            "Test Node",
+            "nebula.test",
+            "test.valid_meta",
+        )
+        .expect("stub node key is valid");
+        let ctx = TestContextBuilder::new().build();
+
+        let result = factory.instantiate(&node, &ctx).await;
+
+        assert!(
+            result.is_ok(),
+            "valid metadata must not produce a Fatal error; got: {result:?}",
+        );
+        assert!(
+            matches!(result.unwrap(), ActionHandle::Stateless(_)),
+            "valid metadata action should produce a Stateless handle",
+        );
+    }
 }
