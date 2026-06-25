@@ -122,13 +122,15 @@ impl ResourceContext {
 
     /// Creates a minimal context for cases that only need scope + cancellation
     /// (e.g., daemon loops, warmup). Uses no-op accessors internally.
+    ///
+    /// Infallible by construction — the principal is supplied directly
+    /// ([`Principal::System`]) via `BaseContextBuilder::build_with`, so there
+    /// is no `.build().expect(...)` panic to harden on a hot path.
     pub fn minimal(scope: Scope, cancellation: CancellationToken) -> Self {
         let base = BaseContext::builder(scope)
-            .principal(Principal::System)
             .cancellation(cancellation)
             .clock(SystemClock)
-            .build()
-            .expect("scope + principal must produce a valid BaseContext");
+            .build_with(Principal::System);
         Self {
             base,
             resources: Arc::new(NoopResourceAccessor),
@@ -154,9 +156,37 @@ impl ResourceContext {
         self.scope().execution_id
     }
 
-    /// Copies scope + cancellation for type-erased acquire dispatch (no accessor clone).
+    /// Clones the context for the type-erased acquire dispatch path
+    /// ([`Manager::acquire_any`](crate::Manager::acquire_any)).
+    ///
+    /// Forwards the caller's scope, principal, cancellation, and trace/span
+    /// identifiers, **plus** the resource and credential accessor arcs, so a
+    /// `Provider::create`/`prepare` reached through the erased `acquire_any`
+    /// surface observes the same identity, trace correlation, and
+    /// nested-resource/credential access it would on a typed acquire. Earlier
+    /// this returned a [`minimal`](Self::minimal) context, which silently
+    /// clobbered the principal to [`Principal::System`], dropped the trace, and
+    /// substituted no-op accessors — breaking authz checks, span parentage, and
+    /// nested `ctx.resource::<R>()` calls during creation.
+    ///
+    /// The clock is not forwarded — it is not part of the identity and
+    /// `BaseContext` is not `Clone` (its clock is boxed); a fresh `SystemClock`
+    /// is used.
     pub fn clone_for_acquire(&self) -> Self {
-        Self::minimal(self.scope().clone(), self.cancellation().clone())
+        let mut builder = BaseContext::builder(self.scope().clone())
+            .cancellation(self.cancellation().clone())
+            .clock(SystemClock);
+        if let Some(trace_id) = self.trace_id() {
+            builder = builder.trace_id(trace_id);
+        }
+        if let Some(span_id) = self.span_id() {
+            builder = builder.span_id(span_id);
+        }
+        Self {
+            base: builder.build_with(self.principal().clone()),
+            resources: Arc::clone(&self.resources),
+            credentials: Arc::clone(&self.credentials),
+        }
     }
 }
 
@@ -325,5 +355,79 @@ mod tests {
         // Noop accessors should return false for has()
         let _ = ctx.resources();
         let _ = ctx.credentials();
+    }
+
+    #[test]
+    fn clone_for_acquire_forwards_principal_and_accessors() {
+        use nebula_core::{context::HasResources, id::UserId, scope::Principal};
+
+        // Accessor that reports every key as present, distinguishable from the
+        // `NoopResourceAccessor` (which reports `false`) — proves the real
+        // accessor arc is forwarded across the erased-acquire boundary.
+        struct AlwaysHasAccessor;
+        impl ResourceAccessor for AlwaysHasAccessor {
+            fn has(&self, _key: &nebula_core::ResourceKey) -> bool {
+                true
+            }
+            fn acquire_any(
+                &self,
+                _key: &nebula_core::ResourceKey,
+            ) -> Pin<
+                Box<
+                    dyn Future<Output = Result<Box<dyn Any + Send + Sync>, nebula_core::CoreError>>
+                        + Send
+                        + '_,
+                >,
+            > {
+                Box::pin(async {
+                    Err(nebula_core::CoreError::RegistryInvariant(
+                        "test accessor never resolves",
+                    ))
+                })
+            }
+            fn try_acquire_any(
+                &self,
+                _key: &nebula_core::ResourceKey,
+            ) -> Pin<
+                Box<
+                    dyn Future<
+                            Output = Result<
+                                Option<Box<dyn Any + Send + Sync>>,
+                                nebula_core::CoreError,
+                            >,
+                        > + Send
+                        + '_,
+                >,
+            > {
+                Box::pin(async { Ok(None) })
+            }
+        }
+
+        let user = Principal::User(UserId::new());
+        let base = BaseContext::builder(Scope::default())
+            .principal(user.clone())
+            .build()
+            .expect("principal is set");
+        let ctx = ResourceContext::new(
+            base,
+            Arc::new(AlwaysHasAccessor),
+            Arc::new(NoopCredentialAccessor),
+        );
+
+        let cloned = ctx.clone_for_acquire();
+
+        // Identity is forwarded, not clobbered to `Principal::System`.
+        assert_eq!(
+            cloned.principal(),
+            &user,
+            "clone_for_acquire must forward the caller's principal"
+        );
+        // The resource accessor arc is forwarded, not replaced by the no-op —
+        // so a `Provider::create` that resolves a nested resource still works.
+        let nested = nebula_core::resource_key!("nested.dep");
+        assert!(
+            cloned.resources().has(&nested),
+            "clone_for_acquire must forward the resource accessor"
+        );
     }
 }

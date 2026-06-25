@@ -165,6 +165,30 @@ impl BaseContextBuilder {
             span_id: self.span_id,
         })
     }
+
+    /// Build the [`BaseContext`] with the given principal, infallibly.
+    ///
+    /// The principal is supplied here rather than via
+    /// [`principal`](Self::principal), so the only failure path of
+    /// [`build`](Self::build) (a missing principal) is eliminated by
+    /// construction — this cannot return an error. Any principal previously
+    /// staged via [`principal`](Self::principal) is overridden by the argument.
+    ///
+    /// Prefer this on hot / background paths (warmup, maintenance, type-erased
+    /// acquire dispatch) where a `.build().expect(...)` would otherwise sit and
+    /// harden into a real panic if the builder contract ever widens.
+    pub fn build_with(self, principal: Principal) -> BaseContext {
+        BaseContext {
+            scope: self.scope,
+            principal,
+            cancellation: self.cancellation.unwrap_or_default(),
+            clock: self
+                .clock
+                .unwrap_or_else(|| Box::new(crate::accessor::SystemClock)),
+            trace_id: self.trace_id,
+            span_id: self.span_id,
+        }
+    }
 }
 
 #[cfg(test)]

@@ -95,6 +95,13 @@ mod sealed {
 /// HasResourcesExt for C`. New methods can be added here without
 /// breaking downstream code.
 ///
+/// **Call through a concrete context, not `&dyn`.** Both methods carry a
+/// `where Self: Sized` bound (their `impl Future` returns require a sized
+/// receiver pre-AFIT), so `ctx.resource::<R>()` is *not* callable on a
+/// `&dyn Context`/`&dyn ActionContext` even though the blanket impl covers
+/// `?Sized` types. Hold the concrete context type (the action body already
+/// receives `&impl ActionContext`) when reaching for this surface.
+///
 /// # Examples
 ///
 /// ```ignore
@@ -124,9 +131,15 @@ impl<C: HasResources + ?Sized> HasResourcesExt for C {
         Self: Sized,
     {
         let key = R::key();
-        let boxed = self.resources().acquire_any(&key).await.map_err(|e| {
-            Error::new(ErrorKind::Permanent, e.to_string()).with_resource_key(key.clone())
-        })?;
+        // Preserve the retryable/`retry_after` classification carried by the
+        // accessor-seam `CoreError` (see `impl From<CoreError> for Error`);
+        // re-wrapping as `Permanent` would silently disable retries for a
+        // transient acquire failure.
+        let boxed = self
+            .resources()
+            .acquire_any(&key)
+            .await
+            .map_err(|e| Error::from(e).with_resource_key(key.clone()))?;
 
         boxed
             .downcast::<ResourceGuard<R>>()
@@ -166,7 +179,9 @@ impl<C: HasResources + ?Sized> HasResourcesExt for C {
                 Ok(Some(guard))
             },
             Ok(None) => Ok(None),
-            Err(e) => Err(Error::new(ErrorKind::Permanent, e.to_string()).with_resource_key(key)),
+            // Preserve the accessor-seam retryable classification (see
+            // `impl From<CoreError> for Error`).
+            Err(e) => Err(Error::from(e).with_resource_key(key)),
         }
     }
 }

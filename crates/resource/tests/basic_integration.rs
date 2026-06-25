@@ -2969,7 +2969,8 @@ async fn release_bounds_a_hanging_author_teardown() {
     // a caller that awaited `release()`. Per ADR-0093 the per-resource teardown
     // deadline is the effective bound: a tainted lease is a revoke teardown, so
     // the default 30s budget is capped to the 5s revoke cap, and `destroy_within`
-    // abandons the hang with a typed `backpressure` error well before the outer
+    // abandons the hang with a typed `Cancelled` error (a teardown abandonment,
+    // NOT a retryable `Backpressure` overload) well before the outer
     // `hook_guard` ceiling. `start_paused` advances virtual time to the deadline
     // instantly + deterministically — no wall-clock wait.
     let manager = Manager::new();
@@ -2995,8 +2996,12 @@ async fn release_bounds_a_hanging_author_teardown() {
     let outcome = handle.release().await;
     let err = outcome.expect_err("a hanging author teardown must make release() return Err");
     assert!(
-        err.to_string().contains("destroy exceeded teardown budget"),
+        err.to_string().contains("exceeded teardown budget"),
         "release() must surface the per-resource teardown-budget bound, got: {err}"
+    );
+    assert!(
+        !err.is_retryable(),
+        "an abandoned teardown is a Cancelled-class error, not a retryable backpressure, got: {err}"
     );
 }
 

@@ -206,18 +206,24 @@
 //!   Deferred because the reload redesign (drain-then-rebuild + a truthful
 //!   outcome contract) is a separate concern; see the **accepted relabel**
 //!   note below for why this is a preserved no-op, not a regression.
-//! - **Pool `CreateGuard` cancel-drop leaks the instance — MED** ([#713]).
-//!   A *cancelled* acquire whose in-flight `create` already built an instance
-//!   drops it synchronously without the async `destroy()`, leaking the
-//!   server-side handle. (The *other* `CreateGuard` race — an in-flight
-//!   create completing *after a revoke* — is the same isolation defect as
-//!   the revoke→recycle TOCTOU and **was fixed** by the pooled revoke-epoch
-//!   fence; only the cancelled-acquire leak remains.)
-//! - **Resident recreate `take()`+destroy-under-lock vs dispatch — MED**
-//!   ([#714]). The resident recreate clears the slot then destroys under the
-//!   lock; a concurrent revoke/refresh dispatch in that window can run
-//!   against the absent/old runtime, losing the revoke for that window.
-//!   Resident internals, out of the collapse seam.
+//! - **Pool `CreateGuard` cancel-drop — residual saturation-only leak — LOW**
+//!   ([#713]). The main cancel-drop path is **closed**: `SlotCreateGuard::drop`
+//!   schedules `destroy_within` via the `ReleaseQueue` (see
+//!   `runtime/acquire_loop.rs`), proven by
+//!   `slot_create_guard_drop_destroys_via_release_queue`. The residual: under
+//!   extreme double-full saturation (the primary *and* fallback release-queue
+//!   channels both full) a rescue task's timeout can elapse — or the cancel
+//!   token fire — before the destroy task is delivered, and the slot leaks,
+//!   observable via `ReleaseQueue::dropped_count`. Best-effort by design
+//!   (canon §11.4), not a normal-path defect.
+//! - **Resident recreate vs dispatch — closed by `create_lock`** ([#714]).
+//!   Both `clone_or_create` and `dispatch_resident_hook` take the same
+//!   `create_lock` before touching the cell, and the
+//!   `take()`→destroy→create→`store()` sequence runs under a continuously held
+//!   lock with no yield that releases it. Dispatch therefore either observes
+//!   the new runtime (correct delivery) or `None` because create failed
+//!   (correct no-op — nothing is bound). No lost-revoke window exists; earlier
+//!   ledger text overstated this.
 //! - **`graceful_shutdown` phase-4 detached workers can outlive
 //!   `release_queue_timeout` — LOW** ([#715]). The timeout bounds the wait,
 //!   not the detached release work; it eventually drains. shutdown.rs was
@@ -680,6 +686,7 @@ impl Manager {
                 }
                 self.emit(ResourceEvent::AcquireFailed {
                     key,
+                    kind: e.kind().clone(),
                     error: e.to_string(),
                 });
             },

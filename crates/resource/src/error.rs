@@ -1,9 +1,7 @@
 //! Unified error types for the resource subsystem.
 //!
-//! Every resource error carries an [`ErrorKind`] (what happened) and an
-//! [`ErrorScope`] (currently resource-wide only — see the [`ErrorScope`]
-//! type docs for why it is single-variant). The framework uses
-//! `ErrorKind` to decide whether to retry, back off, or propagate.
+//! Every resource error carries an [`ErrorKind`] describing what happened.
+//! The framework uses it to decide whether to retry, back off, or propagate.
 
 use std::{fmt, time::Duration};
 
@@ -16,6 +14,10 @@ pub enum ErrorKind {
     /// Network blip, timeout — retry with backoff.
     Transient,
     /// Auth failure, invalid config — never retry.
+    ///
+    /// This is a caller/configuration fault (the caller presented state the
+    /// resource will never accept), so it classifies as a client error
+    /// (4xx), **not** a server (5xx) failure.
     Permanent,
     /// Rate limit, quota depleted — retry after cooldown.
     Exhausted {
@@ -57,7 +59,10 @@ impl ErrorKind {
     fn classification(&self) -> (nebula_error::ErrorCategory, &'static str) {
         match self {
             Self::Transient => (nebula_error::ErrorCategory::External, "RESOURCE:TRANSIENT"),
-            Self::Permanent => (nebula_error::ErrorCategory::Internal, "RESOURCE:PERMANENT"),
+            Self::Permanent => (
+                nebula_error::ErrorCategory::Validation,
+                "RESOURCE:PERMANENT",
+            ),
             Self::Exhausted { .. } => {
                 (nebula_error::ErrorCategory::Exhausted, "RESOURCE:EXHAUSTED")
             },
@@ -105,28 +110,10 @@ impl fmt::Display for ErrorKind {
     }
 }
 
-/// Whether the error is resource-wide or target-specific.
-///
-/// Currently a single-variant `#[non_exhaustive]` enum: only [`Resource`]
-/// (the default) is constructed by any production code path. Older drafts
-/// included a `Target { id: String }` variant for per-target isolation
-/// failures; it was removed since no consumer ever wired it. New
-/// variants land here when an engine surface genuinely needs them.
-///
-/// [`Resource`]: ErrorScope::Resource
-#[non_exhaustive]
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub enum ErrorScope {
-    /// The resource itself might be broken.
-    #[default]
-    Resource,
-}
-
 /// Unified resource error.
 #[derive(Debug)]
 pub struct Error {
     kind: ErrorKind,
-    scope: ErrorScope,
     message: String,
     resource_key: Option<ResourceKey>,
     source: Option<Box<dyn std::error::Error + Send + Sync>>,
@@ -137,7 +124,6 @@ impl Error {
     pub fn new(kind: ErrorKind, message: impl Into<String>) -> Self {
         Self {
             kind,
-            scope: ErrorScope::default(),
             message: message.into(),
             resource_key: None,
             source: None,
@@ -147,11 +133,6 @@ impl Error {
     /// Returns the error kind.
     pub fn kind(&self) -> &ErrorKind {
         &self.kind
-    }
-
-    /// Returns the error scope.
-    pub fn scope(&self) -> &ErrorScope {
-        &self.scope
     }
 
     /// Returns the resource key, if set.
@@ -193,12 +174,6 @@ impl Error {
     /// Attaches a source error.
     pub fn with_source(mut self, source: impl std::error::Error + Send + Sync + 'static) -> Self {
         self.source = Some(Box::new(source));
-        self
-    }
-
-    /// Sets the error scope.
-    pub fn with_scope(mut self, scope: ErrorScope) -> Self {
-        self.scope = scope;
         self
     }
 
@@ -299,6 +274,47 @@ impl Error {
                 true,
                 self.retry_after(),
             ),
+        }
+    }
+}
+
+impl From<nebula_core::CoreError> for Error {
+    /// Maps an accessor-seam [`CoreError`](nebula_core::CoreError) back into a
+    /// resource [`Error`], preserving the retryable / `retry_after`
+    /// classification that [`to_core_error`](Error::to_core_error) projected
+    /// onto `CoreError`.
+    ///
+    /// `CoreError::ResourceUnavailable` collapses the richer
+    /// `Revoked`/`Backpressure`/`Exhausted` taxonomy into a single
+    /// `retryable + retry_after` shape, so the inverse cannot recover that
+    /// precision: a retryable error with a hint maps to `Exhausted`, a
+    /// retryable error without one to `Transient`. That is enough for
+    /// [`is_retryable`](Error::is_retryable) to stay correct, which is what
+    /// retry machinery reads. Callers attach the resource key via
+    /// [`with_resource_key`](Error::with_resource_key).
+    fn from(err: nebula_core::CoreError) -> Self {
+        use nebula_core::CoreError;
+        match err {
+            CoreError::ResourceUnavailable {
+                detail,
+                retryable,
+                retry_after,
+                ..
+            } => {
+                let kind = match (retryable, retry_after) {
+                    (true, Some(after)) => ErrorKind::Exhausted {
+                        retry_after: Some(after),
+                    },
+                    (true, None) => ErrorKind::Transient,
+                    (false, _) => ErrorKind::Permanent,
+                };
+                Self::new(kind, detail)
+            },
+            CoreError::CredentialNotFound { key } => {
+                Self::new(ErrorKind::NotFound, format!("credential not found: {key}"))
+            },
+            CoreError::ScopeViolation { .. } => Self::new(ErrorKind::Ambiguous, err.to_string()),
+            other => Self::new(ErrorKind::Permanent, other.to_string()),
         }
     }
 }
@@ -522,7 +538,64 @@ mod tests {
     }
 
     #[test]
-    fn default_scope_is_resource() {
-        assert_eq!(ErrorScope::default(), ErrorScope::Resource);
+    fn permanent_is_caller_fault_not_internal() {
+        use nebula_error::{Classify, ErrorCategory};
+
+        let err = Error::permanent("invalid connection config");
+        // `Permanent` is a caller/config fault (auth failure, bad config),
+        // so it must surface as a 4xx client error, never a 5xx server one.
+        assert_eq!(*err.kind(), ErrorKind::Permanent);
+        assert_ne!(
+            Classify::category(&err),
+            ErrorCategory::Internal,
+            "Permanent must not surface as a 5xx server error"
+        );
+        assert!(
+            Classify::category(&err).is_client_error(),
+            "Permanent must classify as a client error"
+        );
+        assert!(
+            !Classify::category(&err).is_server_error(),
+            "Permanent must not classify as a server error"
+        );
+        assert!(!err.is_retryable(), "Permanent is never retried");
+    }
+
+    #[test]
+    fn from_core_error_preserves_retryable_classification() {
+        use nebula_core::CoreError;
+
+        // Retryable-with-hint round-trips to Exhausted (retryable).
+        let retryable_with_hint = Error::from(CoreError::resource_unavailable(
+            "postgres",
+            "pool exhausted",
+            true,
+            Some(Duration::from_millis(250)),
+        ));
+        assert!(retryable_with_hint.is_retryable());
+        assert_eq!(
+            retryable_with_hint.retry_after(),
+            Some(Duration::from_millis(250))
+        );
+
+        // Retryable-without-hint round-trips to Transient (retryable).
+        let retryable_no_hint = Error::from(CoreError::resource_unavailable(
+            "postgres",
+            "upstream blip",
+            true,
+            None,
+        ));
+        assert!(retryable_no_hint.is_retryable());
+        assert_eq!(*retryable_no_hint.kind(), ErrorKind::Transient);
+
+        // Non-retryable round-trips to Permanent (not retryable).
+        let permanent = Error::from(CoreError::resource_unavailable(
+            "postgres",
+            "auth rejected",
+            false,
+            None,
+        ));
+        assert!(!permanent.is_retryable());
+        assert_eq!(*permanent.kind(), ErrorKind::Permanent);
     }
 }

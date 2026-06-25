@@ -10,6 +10,8 @@ use std::time::Duration;
 
 use nebula_core::ResourceKey;
 
+use crate::error::ErrorKind;
+
 /// A lifecycle event emitted by the resource manager.
 ///
 /// Events are lightweight and cheap to clone. They carry enough
@@ -39,6 +41,10 @@ pub enum ResourceEvent {
     AcquireFailed {
         /// The key of the resource that failed to acquire.
         key: ResourceKey,
+        /// Typed classification of the failure, so subscribers can route on
+        /// the kind (retryable / backpressure / revoked / …) without parsing
+        /// the `error` string.
+        kind: ErrorKind,
         /// Human-readable error description.
         error: String,
     },
@@ -129,6 +135,20 @@ pub enum ResourceEvent {
         /// Number of instances evicted in this maintenance cycle.
         evicted: usize,
     },
+    /// A lease was still held past its [`Provider::max_hold_duration`]
+    /// deadline — leak/hang detection (HikariCP `leakDetectionThreshold`
+    /// equivalent). Emitted by the hold-deadline watchdog while the guard is
+    /// still alive; the lease is NOT forcibly released (warn-only).
+    ///
+    /// [`Provider::max_hold_duration`]: crate::resource::Provider::max_hold_duration
+    HoldDeadlineExceeded {
+        /// The key of the resource whose lease overran its hold deadline.
+        key: ResourceKey,
+        /// How long the lease has been held when the watchdog fired.
+        held: Duration,
+        /// The configured hold deadline that was exceeded.
+        deadline: Duration,
+    },
 }
 
 impl ResourceEvent {
@@ -149,7 +169,8 @@ impl ResourceEvent {
             | Self::SlotRevoked { key, .. }
             | Self::SlotRefreshFailed { key, .. }
             | Self::SlotRevokeFailed { key, .. }
-            | Self::MaintenanceEvicted { key, .. } => Some(key),
+            | Self::MaintenanceEvicted { key, .. }
+            | Self::HoldDeadlineExceeded { key, .. } => Some(key),
         }
     }
 }

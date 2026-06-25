@@ -533,6 +533,23 @@ pub trait Provider: Send + Sync + Sized + 'static {
         std::time::Duration::from_secs(30)
     }
 
+    /// Optional maximum lease-hold duration — leak / hang detection.
+    ///
+    /// When `Some(d)`, the framework arms a background watchdog on every
+    /// acquired [`ResourceGuard`](crate::guard::ResourceGuard): if the lease is
+    /// still held `d` after acquisition, it emits a
+    /// [`ResourceEvent::HoldDeadlineExceeded`](crate::events::ResourceEvent::HoldDeadlineExceeded)
+    /// and a `WARN` span. The lease is **not** forcibly released — this is an
+    /// observability signal (the HikariCP `leakDetectionThreshold` equivalent)
+    /// that surfaces a node which acquired a bounded-exclusive lease and hung,
+    /// pinning the slot while siblings back up on the semaphore.
+    ///
+    /// The default is `None` (no watchdog, zero cost). Receiver-less because
+    /// the deadline is a resource-type policy, not a per-instance value.
+    fn max_hold_duration() -> Option<std::time::Duration> {
+        None
+    }
+
     /// Final cleanup — consumes the instance.
     ///
     /// The default implementation drops the instance.

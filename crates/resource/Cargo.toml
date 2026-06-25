@@ -10,6 +10,9 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 documentation.workspace = true
+# Internal crate — only `nebula-sdk` is the public/publishable surface. Guard
+# against an accidental `cargo publish` leaking this adapter to crates.io.
+publish = false
 
 [features]
 default = []

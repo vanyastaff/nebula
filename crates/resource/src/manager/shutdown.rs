@@ -322,7 +322,10 @@ impl Manager {
     pub(super) fn set_phase_all_failed(&self, error: &ShutdownError) {
         let reason = error.to_string();
         for managed in self.registry.all_managed() {
-            managed.set_failed(&reason);
+            // A drain-abort leaves the resource permanently bankrupt — the
+            // manager will reject every subsequent acquire until it is
+            // re-registered, so this is a non-retryable `Permanent` failure.
+            managed.set_failed(crate::error::ErrorKind::Permanent, &reason);
             self.emit(ResourceEvent::HealthChanged {
                 key: managed.resource_key(),
                 healthy: false,

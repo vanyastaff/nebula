@@ -137,6 +137,18 @@ pub struct ResourceGuard<R: Provider> {
     /// release work to queue. [`ResourceGuard::release`] does **not** touch
     /// this — it awaits the future inline instead of queueing it.
     release_queue: Option<Arc<ReleaseQueue>>,
+    /// Liveness token for the optional hold-deadline watchdog
+    /// ([`with_hold_watchdog`](Self::with_hold_watchdog)). When a resource
+    /// opts into [`Provider::max_hold_duration`], the manager spawns a
+    /// background task holding a [`std::sync::Weak`] to this `Arc`; the strong
+    /// reference lives here and dies with the guard, so the watchdog can tell
+    /// "still held past the deadline" (leaked/hung lease) from "released in
+    /// time" without any `Drop`-path logic. `None` when the resource declared
+    /// no hold deadline (the common case — zero cost).
+    // Held only for its `Drop`: the watchdog observes liveness via a `Weak`
+    // upgrade, never by reading this field, so `dead_code` is expected.
+    #[allow(dead_code)]
+    hold_token: Option<Arc<()>>,
 }
 
 enum GuardInner<R: Provider> {
@@ -165,6 +177,7 @@ impl<R: Provider> ResourceGuard<R> {
             drain_counters: None,
             event_bus: None,
             release_queue: None,
+            hold_token: None,
         }
     }
 
@@ -228,6 +241,7 @@ impl<R: Provider> ResourceGuard<R> {
             drain_counters: None,
             event_bus: None,
             release_queue: Some(release_queue),
+            hold_token: None,
         }
     }
 
@@ -257,6 +271,53 @@ impl<R: Provider> ResourceGuard<R> {
     /// discipline applies here too.
     pub(crate) fn with_event_bus(mut self, event_bus: Arc<EventBus<ResourceEvent>>) -> Self {
         self.event_bus = Some(event_bus);
+        self
+    }
+
+    /// Arms the optional hold-deadline watchdog (HikariCP-style leak detection).
+    ///
+    /// When `deadline` is `Some(d)` and an event bus is attached, spawns a
+    /// background task that, after `d` elapses, checks whether this guard is
+    /// still alive (the strong [`Arc`] held in `hold_token` has not yet
+    /// dropped). If so, the lease has been held past its deadline — a likely
+    /// leaked or hung guard pinning a bounded slot — and the watchdog emits a
+    /// [`ResourceEvent::HoldDeadlineExceeded`] plus a `WARN` span. A guard that
+    /// drops before the deadline drops its `hold_token`, the [`std::sync::Weak`]
+    /// fails to upgrade, and the watchdog stays silent — so no `Drop`-path work
+    /// is needed.
+    ///
+    /// `deadline = None` (the default [`Provider::max_hold_duration`]) is a
+    /// no-op: no task is spawned and the guard pays nothing.
+    pub(crate) fn with_hold_watchdog(mut self, deadline: Option<Duration>) -> Self {
+        let Some(deadline) = deadline else {
+            return self;
+        };
+        let Some(event_bus) = self.event_bus.clone() else {
+            return self;
+        };
+        let token = Arc::new(());
+        let weak = Arc::downgrade(&token);
+        self.hold_token = Some(token);
+        let key = self.resource_key.clone();
+        let acquired_at = self.acquired_at;
+        tokio::spawn(async move {
+            tokio::time::sleep(deadline).await;
+            // Guard still alive ⇒ the lease outlived its hold deadline.
+            if weak.upgrade().is_some() {
+                let held = acquired_at.elapsed();
+                tracing::warn!(
+                    resource = %key,
+                    held_secs = held.as_secs_f64(),
+                    deadline_secs = deadline.as_secs_f64(),
+                    "resource lease exceeded its hold deadline — possible leaked or hung guard"
+                );
+                let _ = event_bus.emit(ResourceEvent::HoldDeadlineExceeded {
+                    key,
+                    held,
+                    deadline,
+                });
+            }
+        });
         self
     }
 
@@ -799,6 +860,36 @@ mod tests {
     fn owned_deref() {
         let handle = ResourceGuard::<DummyResource>::owned(42, test_key(), TopologyTag::Pool);
         assert_eq!(*handle, 42);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn hold_watchdog_emits_when_lease_overruns_deadline() {
+        // A guard armed with a hold deadline must surface a
+        // `HoldDeadlineExceeded` event (HikariCP-style leak detection) when it
+        // is still held past the deadline. Reverting `with_hold_watchdog`
+        // makes this event never fire — red-on-revert.
+        let bus = Arc::new(EventBus::<ResourceEvent>::new(256));
+        let mut events = bus.subscribe();
+
+        let _held = ResourceGuard::<DummyResource>::owned(0, test_key(), TopologyTag::Pool)
+            .with_event_bus(Arc::clone(&bus))
+            .with_hold_watchdog(Some(Duration::from_secs(1)));
+
+        // `start_paused` auto-advances the clock to the watchdog's 1s timer
+        // while this `recv` is the only pending work — deterministic, no
+        // wall-clock sleep.
+        let event = events
+            .recv()
+            .await
+            .expect("watchdog must emit a HoldDeadlineExceeded event");
+        assert!(
+            matches!(
+                event,
+                ResourceEvent::HoldDeadlineExceeded { ref key, deadline, .. }
+                    if key == &test_key() && deadline == Duration::from_secs(1)
+            ),
+            "expected HoldDeadlineExceeded, got {event:?}"
+        );
     }
 
     #[tokio::test]

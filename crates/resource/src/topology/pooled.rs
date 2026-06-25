@@ -42,8 +42,6 @@ pub enum RecycleDecision {
 /// keep-or-drop decisions.
 #[derive(Debug, Clone)]
 pub struct InstanceMetrics {
-    /// Number of errors observed during checkouts of this instance.
-    pub error_count: u64,
     /// Number of times this instance has been checked out.
     pub checkout_count: u64,
     /// When this instance was created.
@@ -80,6 +78,14 @@ impl InstanceMetrics {
 /// [`Manager::acquire_pooled`](crate::Manager::acquire_pooled) requires:
 /// - `R: Clone + Send + Sync + 'static`
 /// - `R::Instance: Clone + Send + Sync + 'static`
+///
+/// # Object safety
+///
+/// `PoolProvider` is **not** object-safe: [`recycle`](Self::recycle) and
+/// [`prepare`](Self::prepare) return `impl Future` (RPITIT), and it inherits
+/// [`Provider`]'s receiver-less `key()`. The framework reaches these hooks
+/// monomorphically inside [`Pooled<R>`](crate::topology::Pooled), never through
+/// a trait object — do not attempt `Box<dyn PoolProvider<…>>`.
 pub trait PoolProvider: Provider + crate::resource::HasCredentialSlots {
     /// Sync O(1) broken check. Called in the `Drop` path — NO async, NO I/O.
     ///

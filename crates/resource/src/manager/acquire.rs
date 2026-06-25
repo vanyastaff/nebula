@@ -432,7 +432,8 @@ impl Manager {
             // there is nothing to release.
             Ok(h) => Ok(h
                 .with_drain_tracker(in_flight.release_to_guard())
-                .with_event_bus(Arc::clone(&self.event_bus))),
+                .with_event_bus(Arc::clone(&self.event_bus))
+                .with_hold_watchdog(R::max_hold_duration())),
             Err(e) => Err(e),
         }
     } // visible cross-module after impl split

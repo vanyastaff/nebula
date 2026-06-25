@@ -81,13 +81,13 @@ pub trait ManagedHandle: sealed::Sealed + Send + Sync + 'static {
     /// Terminal failure transition.
     ///
     /// Transitions the resource to [`ResourcePhase::Failed`] and records
-    /// the supplied human-readable reason in `last_error`. Used by
-    /// `Manager::set_phase_all_failed` so `DrainTimeoutPolicy::Abort` can
-    /// signal per-resource failure without needing typed access to each
+    /// the supplied typed `kind` + human-readable reason in `last_error`.
+    /// Used by `Manager::set_phase_all_failed` so `DrainTimeoutPolicy::Abort`
+    /// can signal per-resource failure without needing typed access to each
     /// entry.
     ///
     /// [`ResourcePhase::Failed`]: crate::state::ResourcePhase::Failed
-    fn set_failed(&self, reason: &str);
+    fn set_failed(&self, kind: crate::error::ErrorKind, reason: &str);
 
     /// Current lifecycle phase — diagnostic-only; typed callers should prefer
     /// `ManagedResource::status().phase` after a successful downcast.
@@ -216,8 +216,8 @@ where
         ManagedResource::set_phase(self, phase);
     }
 
-    fn set_failed(&self, reason: &str) {
-        ManagedResource::set_failed(self, reason.to_owned());
+    fn set_failed(&self, kind: crate::error::ErrorKind, reason: &str) {
+        ManagedResource::set_failed(self, kind, reason.to_owned());
     }
 
     fn phase(&self) -> crate::state::ResourcePhase {
@@ -1049,7 +1049,7 @@ mod tests {
                     TypeId::of::<$T>()
                 }
                 fn set_phase(&self, _phase: crate::state::ResourcePhase) {}
-                fn set_failed(&self, _reason: &str) {}
+                fn set_failed(&self, _kind: crate::error::ErrorKind, _reason: &str) {}
                 fn phase(&self) -> crate::state::ResourcePhase {
                     crate::state::ResourcePhase::Ready
                 }

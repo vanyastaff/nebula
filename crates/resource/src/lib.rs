@@ -73,7 +73,7 @@ pub use context::{
     ResourceContext, minimal_scope_for_level, scope_levels_for_acquire, scope_to_level,
 };
 pub use dedup::{DedupKey, SlotIdentity};
-pub use error::{Error, ErrorKind, ErrorScope};
+pub use error::{Error, ErrorKind};
 pub use events::ResourceEvent;
 pub use ext::HasResourcesExt;
 pub use guard::ResourceGuard;
@@ -118,7 +118,7 @@ pub use nebula_resource_macros::ResourceConfig;
 // `nebula-schema` in extern_prelude either.
 pub use factory::{
     BoxFut, KindActivator, RegisterRequest, RegistrarError, ResourceActivatorRegistry,
-    ResourceFactory, ResourceRegistrationOutcome,
+    ResourceFactory, ResourceRegistrationOutcome, SlotBinding,
 };
 pub use nebula_schema::{HasSchema, Schema, ValidSchema, impl_empty_has_schema};
 pub use options::AcquireOptions;
@@ -139,7 +139,7 @@ pub use runtime::{
     pool::{PoolStats, Pooled},
     resident::Resident,
 };
-pub use state::{ResourcePhase, ResourceStatus};
+pub use state::{ResourceErrorSummary, ResourcePhase, ResourceStatus};
 // Topology configurations — used at registration time.
 pub use topology::{
     AdmissionPhase, AdmissionStatus, CheckedOut, Checkout, InstanceStore, Load,

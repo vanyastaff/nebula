@@ -108,9 +108,14 @@ impl<R: Provider> ResourceRef<R> {
             )
         })?;
 
-        let boxed = ctx.resources().acquire_any(&key).await.map_err(|e| {
-            Error::new(ErrorKind::Permanent, e.to_string()).with_resource_key(key.clone())
-        })?;
+        // Preserve the accessor-seam retryable/`retry_after` classification
+        // (see `impl From<CoreError> for Error`); re-wrapping as `Permanent`
+        // would silently disable retries for a transient acquire failure.
+        let boxed = ctx
+            .resources()
+            .acquire_any(&key)
+            .await
+            .map_err(|e| Error::from(e).with_resource_key(key.clone()))?;
 
         boxed
             .downcast::<ResourceGuard<R>>()
