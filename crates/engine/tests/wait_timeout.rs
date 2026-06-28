@@ -42,7 +42,7 @@ use nebula_action::{
     result::{ActionResult, WaitCondition},
     stateless::StatelessAction,
 };
-use nebula_core::{Dependencies, action_key, id::ExecutionId, node_key};
+use nebula_core::{Dependencies, action_key, id::ExecutionId, node_key, port_key};
 use nebula_engine::{
     ActionExecutor, ActionRegistry, ActionRuntime, ControlDispatch, DataPassingPolicy,
     EngineControlDispatch, ExecutionEvent, InProcessRunner, WorkflowEngine,
@@ -380,7 +380,7 @@ fn make_workflow(with_error_port: bool, timeout: Duration) -> WorkflowDefinition
             )
             .unwrap(),
         );
-        connections.push(Connection::new(wait, error_node).with_from_port("error"));
+        connections.push(Connection::new(wait, error_node).with_from_port(port_key!("error")));
     }
     WorkflowDefinition {
         id: nebula_core::WorkflowId::new(),
@@ -433,9 +433,9 @@ fn make_two_wait_workflow() -> WorkflowDefinition {
     ];
     let connections = vec![
         Connection::new(wait_a.clone(), main_a),
-        Connection::new(wait_a, error_a).with_from_port("error"),
+        Connection::new(wait_a, error_a).with_from_port(port_key!("error")),
         Connection::new(wait_b.clone(), main_b),
-        Connection::new(wait_b, error_b).with_from_port("error"),
+        Connection::new(wait_b, error_b).with_from_port(port_key!("error")),
     ];
     WorkflowDefinition {
         id: nebula_core::WorkflowId::new(),
@@ -504,7 +504,7 @@ fn make_workflow_with_blocker() -> WorkflowDefinition {
     ];
     let connections = vec![
         Connection::new(wait.clone(), main_node),
-        Connection::new(wait, error_node).with_from_port("error"),
+        Connection::new(wait, error_node).with_from_port(port_key!("error")),
     ];
     WorkflowDefinition {
         id: nebula_core::WorkflowId::new(),

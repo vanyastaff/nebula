@@ -26,6 +26,7 @@ use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc};
 use nebula_action::{
     ActionContext, ActionError, ActionFactory, ActionHandle, ActionMetadata, ActionResult,
 };
+use nebula_core::port_key;
 use nebula_engine::ActionExecutor;
 use nebula_engine::{
     ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner, PluginWiringError,
@@ -582,10 +583,10 @@ fn if_branch_workflow(
     );
 
     // Wire: if_node["true"] → true_node, if_node["false"] → false_node.
-    let edge_to_true =
-        Connection::new(if_node_key.clone(), true_node_key.clone()).with_from_port("true");
+    let edge_to_true = Connection::new(if_node_key.clone(), true_node_key.clone())
+        .with_from_port(port_key!("true"));
     let edge_to_false =
-        Connection::new(if_node_key, false_node_key.clone()).with_from_port("false");
+        Connection::new(if_node_key, false_node_key.clone()).with_from_port(port_key!("false"));
 
     let workflow = WorkflowDefinition {
         id: nebula_core::WorkflowId::new(),
@@ -799,11 +800,11 @@ fn switch_branch_workflow(
 
     // Wire switch output ports to the three branch nodes.
     let edge_to_a =
-        Connection::new(switch_node_key.clone(), node_a_key.clone()).with_from_port("a");
+        Connection::new(switch_node_key.clone(), node_a_key.clone()).with_from_port(port_key!("a"));
     let edge_to_b =
-        Connection::new(switch_node_key.clone(), node_b_key.clone()).with_from_port("b");
-    let edge_to_default =
-        Connection::new(switch_node_key, node_default_key.clone()).with_from_port("default");
+        Connection::new(switch_node_key.clone(), node_b_key.clone()).with_from_port(port_key!("b"));
+    let edge_to_default = Connection::new(switch_node_key, node_default_key.clone())
+        .with_from_port(port_key!("default"));
 
     let workflow = WorkflowDefinition {
         id: nebula_core::WorkflowId::new(),

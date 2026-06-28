@@ -251,9 +251,9 @@ pub fn validate_workflow_with_resolver(
 /// An edge is **skipped** (fail-open, ADR-0100 T3.2) when **any** of the
 /// following hold:
 /// - the edge is not a main-flow edge: `from_port` resolves to something other
-///   than `"main"` (e.g. `"error"`, `"true"`, a dynamic / support port key), or
+///   than `"out"` (e.g. `"error"`, `"true"`, a dynamic / support port key), or
 ///   `to_port` is a named port (support / supply input). Only default
-///   main-flow edges — `from_port: None` (effective `"main"`) **and**
+///   main-flow edges — `from_port: None` (effective `"out"`) **and**
 ///   `to_port: None` — carry the typed `A::Output` / `A::Input` payload that
 ///   `output_schema` / `base.schema` describe. Named ports carry different
 ///   payloads and must not be validated against the success-output schema.
@@ -312,11 +312,11 @@ pub fn validate_workflow_with_resolver_mode(
         // not be validated against the success output schema, or legitimate
         // error/recovery edges would be falsely rejected at `/activate`/`/validate`.
         //
-        // `effective_from_port()` normalises `None → "main"` (the engine's
+        // `effective_from_port()` normalises `None → "out"` (the engine's
         // canonical main-flow sentinel). `to_port: None` is the engine's default
         // flow input; a named `to_port` indicates a support or supply input whose
         // schema is not captured by `base.schema`.
-        if conn.effective_from_port() != "main" || conn.to_port.is_some() {
+        if conn.effective_from_port().as_str() != "out" || conn.to_port.is_some() {
             continue;
         }
 
@@ -480,7 +480,7 @@ mod tests {
     use std::collections::HashMap;
 
     use chrono::Utc;
-    use nebula_core::{ActionKey, NodeKey, WorkflowId, node_key};
+    use nebula_core::{ActionKey, NodeKey, WorkflowId, node_key, port_key};
     use nebula_schema::{Field, FieldKey, Schema, ValidSchema};
 
     use super::*;
@@ -759,7 +759,7 @@ mod tests {
             vec![node(a.clone()), node(b.clone())],
             vec![
                 Connection::new(a.clone(), b.clone()),
-                Connection::new(a, b).with_from_port("alt"),
+                Connection::new(a, b).with_from_port(port_key!("alt")),
             ],
         );
         let errors = validate_workflow(&def);
@@ -1307,7 +1307,7 @@ mod tests {
                 NodeDefinition::new(b.clone(), "Consumer", "core", "consumer.action").unwrap(),
             ],
             // Error-port edge: producer's "error" output → consumer's default input.
-            vec![Connection::new(a, b).with_from_port("error")],
+            vec![Connection::new(a, b).with_from_port(port_key!("error"))],
         );
 
         let mut schemas = HashMap::new();

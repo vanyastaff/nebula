@@ -49,6 +49,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use anyhow::Context as _;
 use nebula_action::ActionResult;
+use nebula_core::port_key;
 use nebula_engine::ResolvedPlugin;
 use nebula_engine::{
     ActionExecutor, ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner,
@@ -270,9 +271,11 @@ fn build_router_workflow() -> WorkflowDefinition {
     let queue_node = branch_node(&queue_key, &route_key, "Backlog queue", "backlog");
 
     // Port-qualified edges: case ports "pager"/"oncall" plus the "default" port.
-    let edge_pager = Connection::new(route_key.clone(), pager_key).with_from_port("pager");
-    let edge_oncall = Connection::new(route_key.clone(), oncall_key).with_from_port("oncall");
-    let edge_queue = Connection::new(route_key, queue_key).with_from_port("default");
+    let edge_pager =
+        Connection::new(route_key.clone(), pager_key).with_from_port(port_key!("pager"));
+    let edge_oncall =
+        Connection::new(route_key.clone(), oncall_key).with_from_port(port_key!("oncall"));
+    let edge_queue = Connection::new(route_key, queue_key).with_from_port(port_key!("default"));
 
     let now = chrono::Utc::now();
     WorkflowDefinition {

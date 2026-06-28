@@ -42,6 +42,8 @@
 pub mod accessor;
 /// Authentication scheme contract types and pattern classification.
 pub mod auth;
+/// Validated newtype for workflow branch identifiers.
+pub mod branch_key;
 /// Context system -- base trait + capabilities.
 pub mod context;
 /// Dependency declaration types.
@@ -50,12 +52,16 @@ pub mod dependencies;
 pub mod guard;
 /// Unique identifiers for Nebula entities (prefixed ULIDs).
 pub mod id;
+/// Shared validation logic for port/branch key newtypes.
+pub mod key_validation;
 /// Hierarchical cancellation primitive.
 pub mod lifecycle;
 /// Observability identity types.
 pub mod obs;
 /// Granular permission definitions.
 pub mod permission;
+/// Validated newtype for action port identifiers.
+pub mod port_key;
 /// Organization and workspace role enums.
 pub mod role;
 /// Scope system for resource lifecycle management.
@@ -75,6 +81,7 @@ mod keys;
 // ── Re-exports ──────────────────────────────────────────────────────────────
 
 pub use auth::{AuthPattern, AuthScheme};
+pub use branch_key::BranchKey;
 pub use context::{
     BaseContext, BaseContextBuilder, Context, HasCredentials, HasEventBus, HasLogger, HasMetrics,
     HasResources,
@@ -83,6 +90,7 @@ pub use dependencies::*;
 pub use error::*;
 pub use guard::{Guard, TypedGuard, debug_redacted, debug_typed};
 pub use id::*;
+pub use key_validation::{KeyValidationError, KeyValidationErrorKind};
 pub use keys::*;
 pub use lifecycle::{LayerLifecycle, ShutdownOutcome};
 pub use obs::{
@@ -90,11 +98,58 @@ pub use obs::{
     W3cTraceContext, W3cTraceContextError, parse_traceparent,
 };
 pub use permission::Permission;
+pub use port_key::PortKey;
 pub use role::{OrgRole, WorkspaceRole, effective_workspace_role};
 pub use scope::*;
 pub use slug::{Slug, SlugError, SlugKind, is_prefixed_ulid};
 pub use sync::Lazy;
 pub use tenancy::{PermissionDenial, PermissionDenied, ResolvedIds, TenantContext};
+
+// ── Compile-time key macros ─────────────────────────────────────────────────
+
+/// Constructs a [`PortKey`] from a string literal, validated at **compile time**.
+///
+/// Invalid literals cause a compile error, not a runtime panic.
+///
+/// # Example
+///
+/// ```
+/// use nebula_core::port_key;
+/// let k = port_key!("out");
+/// assert_eq!(k.as_str(), "out");
+/// ```
+#[macro_export]
+macro_rules! port_key {
+    ($s:literal) => {{
+        const _: () = assert!(
+            $crate::PortKey::is_valid_key_const($s),
+            "invalid port key literal"
+        );
+        $crate::PortKey::new($s).unwrap()
+    }};
+}
+
+/// Constructs a [`BranchKey`] from a string literal, validated at **compile time**.
+///
+/// Invalid literals cause a compile error, not a runtime panic.
+///
+/// # Example
+///
+/// ```
+/// use nebula_core::branch_key;
+/// let k = branch_key!("true");
+/// assert_eq!(k.as_str(), "true");
+/// ```
+#[macro_export]
+macro_rules! branch_key {
+    ($s:literal) => {{
+        const _: () = assert!(
+            $crate::BranchKey::is_valid_key_const($s),
+            "invalid branch key literal"
+        );
+        $crate::BranchKey::new($s).unwrap()
+    }};
+}
 
 /// Named parse-error type for [`PluginKey`] — `<PluginKey as std::str::FromStr>::Err`.
 ///
@@ -125,6 +180,7 @@ pub mod prelude {
     pub use crate::scope::{Principal, Scope, ScopeLevel, ScopeResolver};
     // Compile-time-validated key construction macros
     pub use crate::{
-        action_key, credential_key, node_key, parameter_key, plugin_key, resource_key,
+        action_key, branch_key, credential_key, node_key, parameter_key, plugin_key, port_key,
+        resource_key,
     };
 }

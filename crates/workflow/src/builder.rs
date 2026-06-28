@@ -3,7 +3,7 @@
 use std::{collections::HashMap, time::Duration};
 
 use chrono::Utc;
-use nebula_core::{ActionKey, NodeKey, PluginKey, WorkflowId};
+use nebula_core::{ActionKey, NodeKey, PluginKey, PortKey, WorkflowId};
 
 use crate::{
     Version,
@@ -113,14 +113,14 @@ impl WorkflowBuilder {
         self
     }
 
-    /// Add a connection on a specific source output port (e.g. `"error"`, a
-    /// branch key such as `"true"`, or a Router port key).
+    /// Add a connection on a specific source output port (e.g. `port_key!("error")`, a
+    /// branch key such as `port_key!("true")`, or a Router port key).
     ///
     /// Replaces the old `connect_with_condition` — per spec 28 port-driven
     /// routing, conditional edges are expressed by the port the upstream
     /// action produced on, not by an `EdgeCondition` sidecar.
     #[must_use]
-    pub fn connect_via(mut self, from: NodeKey, from_port: impl Into<String>, to: NodeKey) -> Self {
+    pub fn connect_via(mut self, from: NodeKey, from_port: PortKey, to: NodeKey) -> Self {
         self.connections
             .push(Connection::new(from, to).with_from_port(from_port));
         self
@@ -131,9 +131,9 @@ impl WorkflowBuilder {
     pub fn connect_port(
         mut self,
         from: NodeKey,
-        from_port: impl Into<String>,
+        from_port: PortKey,
         to: NodeKey,
-        to_port: impl Into<String>,
+        to_port: PortKey,
     ) -> Self {
         self.connections
             .push(Connection::new(from, to).with_ports(from_port, to_port));

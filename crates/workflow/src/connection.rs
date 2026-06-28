@@ -22,17 +22,23 @@
 //!
 //! | `A`'s `ActionResult` variant | Port chosen by engine             |
 //! |------------------------------|------------------------------------|
-//! | `Success`                    | `"main"` (or `from_port == None`)  |
+//! | `Success`                    | `"out"` (or `from_port == None`)   |
 //! | `Route { port }`             | `port`                             |
 //! | `Branch { selected }`        | `selected` (legacy alias for Route)|
 //! | `MultiOutput { outputs }`    | every port present in `outputs`    |
 //! | Failed (error)               | `"error"`                          |
 //! | `Skip` / `Drop` / `Terminate`| no edges activate                  |
 //!
-//! An edge with `from_port: None` is treated as `from_port: Some("main")`.
+//! An edge with `from_port: None` is treated as `from_port: Some("out")`.
 
-use nebula_core::NodeKey;
+use std::sync::LazyLock;
+
+use nebula_core::port_key;
+use nebula_core::{NodeKey, PortKey};
 use serde::{Deserialize, Serialize};
+
+/// Default source output port for a [`Connection`] when `from_port` is `None`.
+static DEFAULT_FROM_PORT: LazyLock<PortKey> = LazyLock::new(|| port_key!("out"));
 
 /// A directed edge from one node's output port to another node's input port.
 ///
@@ -47,16 +53,16 @@ pub struct Connection {
     pub from_node: NodeKey,
     /// Target node.
     pub to_node: NodeKey,
-    /// Source output port. `None` is interpreted as `Some("main")`.
+    /// Source output port. `None` is interpreted as `Some("out")`.
     #[serde(default)]
-    pub from_port: Option<String>,
+    pub from_port: Option<PortKey>,
     /// Target input port. `None` means the node's default flow input.
     #[serde(default)]
-    pub to_port: Option<String>,
+    pub to_port: Option<PortKey>,
 }
 
 impl Connection {
-    /// Create a connection on the default (main) output and input ports.
+    /// Create a connection on the default (`"out"`) output and input ports.
     #[must_use]
     pub fn new(from_node: NodeKey, to_node: NodeKey) -> Self {
         Self {
@@ -73,30 +79,30 @@ impl Connection {
     /// node, or to pull from the `"error"` port of any action that routes
     /// failures explicitly.
     #[must_use]
-    pub fn with_from_port(mut self, port: impl Into<String>) -> Self {
-        self.from_port = Some(port.into());
+    pub fn with_from_port(mut self, port: PortKey) -> Self {
+        self.from_port = Some(port);
         self
     }
 
     /// Set the target input port.
     #[must_use]
-    pub fn with_to_port(mut self, port: impl Into<String>) -> Self {
-        self.to_port = Some(port.into());
+    pub fn with_to_port(mut self, port: PortKey) -> Self {
+        self.to_port = Some(port);
         self
     }
 
     /// Set both source and target ports.
     #[must_use]
-    pub fn with_ports(mut self, from_port: impl Into<String>, to_port: impl Into<String>) -> Self {
-        self.from_port = Some(from_port.into());
-        self.to_port = Some(to_port.into());
+    pub fn with_ports(mut self, from_port: PortKey, to_port: PortKey) -> Self {
+        self.from_port = Some(from_port);
+        self.to_port = Some(to_port);
         self
     }
 
-    /// The effective source port — `from_port` if set, otherwise `"main"`.
+    /// The effective source port — `from_port` if set, otherwise `"out"`.
     #[must_use]
-    pub fn effective_from_port(&self) -> &str {
-        self.from_port.as_deref().unwrap_or("main")
+    pub fn effective_from_port(&self) -> &PortKey {
+        self.from_port.as_ref().unwrap_or(&DEFAULT_FROM_PORT)
     }
 
     /// Returns `true` if this connection forms a self-loop.
@@ -113,7 +119,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn connection_new_defaults_to_main_port() {
+    fn connection_new_defaults_to_out_port() {
         let a = node_key!("a");
         let b = node_key!("b");
         let conn = Connection::new(a.clone(), b.clone());
@@ -121,7 +127,7 @@ mod tests {
         assert_eq!(conn.to_node, b);
         assert!(conn.from_port.is_none());
         assert!(conn.to_port.is_none());
-        assert_eq!(conn.effective_from_port(), "main");
+        assert_eq!(conn.effective_from_port().as_str(), "out");
     }
 
     #[test]
@@ -136,17 +142,20 @@ mod tests {
     fn connection_with_from_port_sets_effective_port() {
         let a = node_key!("a");
         let b = node_key!("b");
-        let conn = Connection::new(a, b).with_from_port("error");
-        assert_eq!(conn.effective_from_port(), "error");
+        let conn = Connection::new(a, b).with_from_port(port_key!("error"));
+        assert_eq!(conn.effective_from_port().as_str(), "error");
     }
 
     #[test]
     fn connection_builder_methods() {
         let a = node_key!("a");
         let b = node_key!("b");
-        let conn = Connection::new(a, b).with_ports("output_0", "model");
-        assert_eq!(conn.from_port.as_deref(), Some("output_0"));
-        assert_eq!(conn.to_port.as_deref(), Some("model"));
+        let conn = Connection::new(a, b).with_ports(port_key!("output_0"), port_key!("model"));
+        assert_eq!(
+            conn.from_port.as_ref().map(PortKey::as_str),
+            Some("output_0")
+        );
+        assert_eq!(conn.to_port.as_ref().map(PortKey::as_str), Some("model"));
     }
 
     #[test]
@@ -154,14 +163,27 @@ mod tests {
         let a = node_key!("a");
         let b = node_key!("b");
         let conn = Connection::new(a.clone(), b.clone())
-            .with_from_port("true")
-            .with_to_port("in");
+            .with_from_port(port_key!("true"))
+            .with_to_port(port_key!("in"));
 
         let json = serde_json::to_string(&conn).unwrap();
         let back: Connection = serde_json::from_str(&json).unwrap();
         assert_eq!(back.from_node, a);
         assert_eq!(back.to_node, b);
-        assert_eq!(back.from_port.as_deref(), Some("true"));
-        assert_eq!(back.to_port.as_deref(), Some("in"));
+        assert_eq!(back.from_port.as_ref().map(PortKey::as_str), Some("true"));
+        assert_eq!(back.to_port.as_ref().map(PortKey::as_str), Some("in"));
+    }
+
+    /// SECURITY: a forged port key in the JSON wire format must be rejected
+    /// at the serde boundary. This test goes RED if `Connection` deserialises
+    /// `from_port` as a raw string instead of a validated [`PortKey`].
+    #[test]
+    fn serde_rejects_forged_from_port() {
+        let json = r#"{"from_node":"a","to_node":"b","from_port":"bad port!"}"#;
+        let result: Result<Connection, _> = serde_json::from_str(json);
+        assert!(
+            result.is_err(),
+            "deserialising a forged from_port string must fail"
+        );
     }
 }
