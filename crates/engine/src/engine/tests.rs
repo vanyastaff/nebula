@@ -10,7 +10,7 @@ use nebula_action::{
     ActionError, BranchKey, action::Action, context::CredentialContextExt,
     metadata::ActionMetadata, result::ActionResult, stateless::StatelessAction,
 };
-use nebula_core::{Dependencies, action_key, scope::Principal};
+use nebula_core::{Dependencies, action_key, port_key, scope::Principal};
 use nebula_storage_port::StorageError;
 use nebula_storage_port::store::{ExecutionStore, NodeResultStore, WorkflowVersionStore};
 use nebula_workflow::{
@@ -789,8 +789,8 @@ async fn branch_workflow_only_selected_path_executes() {
             NodeDefinition::new(d.clone(), "D", "core", "echo").unwrap(),
         ],
         vec![
-            Connection::new(a.clone(), b.clone()).with_from_port("true"),
-            Connection::new(a.clone(), c.clone()).with_from_port("false"),
+            Connection::new(a.clone(), b.clone()).with_from_port(port_key!("true")),
+            Connection::new(a.clone(), c.clone()).with_from_port(port_key!("false")),
             Connection::new(b.clone(), d.clone()),
             Connection::new(c.clone(), d.clone()),
         ],
@@ -893,7 +893,7 @@ async fn error_routing_with_handler() {
         ],
         vec![
             Connection::new(a.clone(), b.clone()),
-            Connection::new(b.clone(), c.clone()).with_from_port("error"),
+            Connection::new(b.clone(), c.clone()).with_from_port(port_key!("error")),
         ],
     );
 
@@ -1906,7 +1906,7 @@ async fn runtime_failure_checkpoint_error_aborts_before_edge_routing() {
             NodeDefinition::new(a.clone(), "A", "core", "fail").unwrap(),
             NodeDefinition::new(b.clone(), "B", "core", "echo").unwrap(),
         ],
-        vec![Connection::new(a.clone(), b.clone()).with_from_port("error")],
+        vec![Connection::new(a.clone(), b.clone()).with_from_port(port_key!("error"))],
         WorkflowConfig {
             error_strategy: ErrorStrategy::ContinueOnError,
             ..WorkflowConfig::default()
@@ -2085,7 +2085,7 @@ async fn setup_failure_checkpoint_error_aborts_before_edge_routing() {
                 .with_parameter("bad", ParamValue::template("Hello {{ unclosed")),
             NodeDefinition::new(b.clone(), "B", "core", "echo").unwrap(),
         ],
-        vec![Connection::new(a.clone(), b.clone()).with_from_port("error")],
+        vec![Connection::new(a.clone(), b.clone()).with_from_port(port_key!("error"))],
         WorkflowConfig {
             error_strategy: ErrorStrategy::ContinueOnError,
             ..WorkflowConfig::default()
@@ -2166,7 +2166,7 @@ async fn on_error_payload_is_persisted_before_checkpoint_commits() {
             NodeDefinition::new(a.clone(), "A", "core", "fail").unwrap(),
             NodeDefinition::new(b.clone(), "B", "core", "echo").unwrap(),
         ],
-        vec![Connection::new(a.clone(), b.clone()).with_from_port("error")],
+        vec![Connection::new(a.clone(), b.clone()).with_from_port(port_key!("error"))],
         WorkflowConfig {
             error_strategy: ErrorStrategy::ContinueOnError,
             ..WorkflowConfig::default()
@@ -2544,7 +2544,7 @@ async fn multi_edge_from_same_source_executes_target() {
         ],
         vec![
             Connection::new(a.clone(), b.clone()),
-            Connection::new(a, b.clone()).with_from_port("alt"),
+            Connection::new(a, b.clone()).with_from_port(port_key!("alt")),
         ],
     );
 
@@ -3776,8 +3776,8 @@ async fn idempotency_replay_preserves_branch_routing() {
             NodeDefinition::new(c.clone(), "C", "core", "echo").unwrap(),
         ],
         vec![
-            Connection::new(a.clone(), b.clone()).with_from_port("true"),
-            Connection::new(a.clone(), c.clone()).with_from_port("false"),
+            Connection::new(a.clone(), b.clone()).with_from_port(port_key!("true")),
+            Connection::new(a.clone(), c.clone()).with_from_port(port_key!("false")),
         ],
     );
 

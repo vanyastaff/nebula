@@ -47,6 +47,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use anyhow::Context as _;
 use nebula_action::ActionResult;
+use nebula_core::port_key;
 use nebula_engine::ResolvedPlugin;
 use nebula_engine::{
     ActionExecutor, ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner,
@@ -273,8 +274,9 @@ fn build_routing_workflow() -> WorkflowDefinition {
     );
 
     // Port-qualified edges drive routing: the engine fires only the matched port.
-    let edge_true = Connection::new(triage_key.clone(), priority_key).with_from_port("true");
-    let edge_false = Connection::new(triage_key, standard_key).with_from_port("false");
+    let edge_true =
+        Connection::new(triage_key.clone(), priority_key).with_from_port(port_key!("true"));
+    let edge_false = Connection::new(triage_key, standard_key).with_from_port(port_key!("false"));
 
     let now = chrono::Utc::now();
     WorkflowDefinition {

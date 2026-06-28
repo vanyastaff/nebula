@@ -37,7 +37,7 @@ use nebula_action::{
     result::{ActionResult, WaitCondition},
     stateless::StatelessAction,
 };
-use nebula_core::{Dependencies, action_key, id::ExecutionId, node_key};
+use nebula_core::{Dependencies, action_key, id::ExecutionId, node_key, port_key};
 use nebula_engine::{
     ActionExecutor, ActionRegistry, ActionRuntime, ControlDispatch, ControlDispatchError,
     DataPassingPolicy, EngineControlDispatch, InProcessRunner, WorkflowEngine,
@@ -1913,7 +1913,8 @@ async fn satisfied_signal_wait_activates_main_port_only_not_error_branch() {
             // main port (default) → main_node
             Connection::new(wait_node.clone(), main_node.clone()),
             // error port → error_node
-            Connection::new(wait_node.clone(), error_node.clone()).with_from_port("error"),
+            Connection::new(wait_node.clone(), error_node.clone())
+                .with_from_port(port_key!("error")),
         ],
         variables: HashMap::new(),
         config: WorkflowConfig::default(),

@@ -23,7 +23,7 @@ use nebula_action::{
     ActionError, ActionResult, capability::default_resource_accessor, result::WaitCondition,
 };
 use nebula_core::{
-    ActionKey, CredentialKey, NodeKey, ResourceKey,
+    ActionKey, CredentialKey, NodeKey, PortKey, ResourceKey,
     accessor::{Clock, CredentialAccessor, ResourceAccessor, SystemClock},
     id::{ExecutionId, InstanceId, WorkflowId},
     node_key,
@@ -47,7 +47,7 @@ use nebula_metrics::naming::{
 };
 use nebula_metrics::{Counter, Histogram, MetricsRegistry};
 use nebula_plugin::PluginRegistry;
-use nebula_workflow::{Connection, DependencyGraph, NodeState, WorkflowDefinition};
+use nebula_workflow::{DependencyGraph, NodeState, WorkflowDefinition};
 use tokio::{
     sync::{Semaphore, mpsc, oneshot},
     task::JoinSet,
@@ -2350,7 +2350,8 @@ fn process_outgoing_edges(
 
     for conn in &outgoing {
         let target = conn.to_node.clone();
-        let activate = evaluate_edge(conn, result, node_failed);
+        let effective_port = conn.effective_from_port();
+        let activate = evaluate_edge(effective_port, result, node_failed);
 
         // Increment the per-edge resolved count (not per-source, so that multiple
         // edges from the same source node to the same target are each counted).
@@ -2393,7 +2394,7 @@ fn process_outgoing_edges(
 /// Evaluate whether an edge should activate given the source node's outcome.
 ///
 /// Port-driven routing (spec 28 ): the engine matches the edge's
-/// effective source port (`from_port`, defaulting to `"main"`) against the
+/// effective source port (`from_port`, defaulting to `"out"`) against the
 /// port the upstream `ActionResult` produced on. There is no "edge
 /// condition" — conditionals are carried by explicit `ControlAction` nodes
 /// (e.g. `If`, `Switch`, `Router` — the canonical 7 from
@@ -2410,16 +2411,16 @@ fn process_outgoing_edges(
 /// - Failed node → only edges with `from_port == "error"` activate; action authors wire their
 ///   failure path to whichever `ControlAction` fits (typically a `Switch` keyed on error class) or
 ///   to a recovery node.
-/// - `Success` → activates edges on `"main"` (or `None`).
+/// - `Success` → activates edges on `"out"` (or `None`).
 /// - `Branch { selected }` → activates edges whose effective source port equals `selected` (legacy
 ///   alias for `Route`).
 /// - `Route { port }` → activates edges whose effective source port equals `port`.
 /// - `MultiOutput { outputs }` → activates edges whose effective source port is present in
 ///   `outputs`.
 /// - `Continue` / `Break` → engine treats these like `Success` for edge activation (they
-///   hit the main port); persistent state handling lives outside this routing decision.
+///   hit the default `out` port); persistent state handling lives outside this routing decision.
 fn evaluate_edge(
-    conn: &Connection,
+    effective_port: &PortKey,
     result: Option<&ActionResult<serde_json::Value>>,
     node_failed: bool,
 ) -> bool {
@@ -2437,24 +2438,22 @@ fn evaluate_edge(
         return false;
     }
 
-    let effective_port = conn.effective_from_port();
-
     // Failures route exclusively through the `"error"` port. Downstream
     // must wire an explicit `ControlAction` (typically a `Switch` keyed on
     // error class) or recovery node to fan out by error class.
     if node_failed {
-        return effective_port == "error";
+        return effective_port.as_str() == "error";
     }
 
     match result {
-        Some(Branch { selected, .. }) => effective_port == selected.as_str(),
-        Some(Route { port, .. }) => effective_port == port.as_str(),
+        Some(Branch { selected, .. }) => effective_port.as_str() == selected.as_str(),
+        Some(Route { port, .. }) => effective_port.as_str() == port.as_str(),
         Some(MultiOutput {
             outputs: port_outputs,
             ..
-        }) => port_outputs.contains_key(effective_port),
-        // Success and every other main-port variant fire the main port.
-        _ => effective_port == "main",
+        }) => port_outputs.contains_key(effective_port.as_str()),
+        // Success and every other main-port variant fire the default `out` port.
+        _ => effective_port.as_str() == "out",
     }
 }
 
@@ -3363,7 +3362,7 @@ fn resolve_node_input_with_support(
             Some(port_name) => {
                 if let Some(output) = outputs.get(&source) {
                     support_inputs
-                        .entry(port_name.clone())
+                        .entry(port_name.as_str().to_owned())
                         .or_default()
                         .push(output.value().clone());
                 }

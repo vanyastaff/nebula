@@ -1,6 +1,6 @@
 //! Workflow-specific error types.
 
-use nebula_core::NodeKey;
+use nebula_core::{NodeKey, PortKey};
 use thiserror::Error;
 
 /// Errors that can occur during workflow definition, validation, or graph construction.
@@ -212,10 +212,10 @@ pub struct PortSchemaIncompatDetails {
     pub from_node: NodeKey,
     /// The consumer (target) node key.
     pub to_node: NodeKey,
-    /// The source output port, if named (`None` = default `"main"`).
-    pub from_port: Option<String>,
+    /// The source output port, if named (`None` = default `"out"`).
+    pub from_port: Option<PortKey>,
     /// The target input port, if named (`None` = default flow input).
-    pub to_port: Option<String>,
+    pub to_port: Option<PortKey>,
     /// Every incompatibility found on this edge (depth-first, consumer-field
     /// order), structured for programmatic inspection. The `Display` impl joins
     /// their [`nebula_schema::SchemaIncompat`] descriptions with `"; "`.
@@ -224,8 +224,16 @@ pub struct PortSchemaIncompatDetails {
 
 impl std::fmt::Display for PortSchemaIncompatDetails {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let from_port = self.from_port.as_deref().unwrap_or("main");
-        let to_port = self.to_port.as_deref().unwrap_or("default");
+        let from_port = self
+            .from_port
+            .as_ref()
+            .map(PortKey::as_str)
+            .unwrap_or("out");
+        let to_port = self
+            .to_port
+            .as_ref()
+            .map(PortKey::as_str)
+            .unwrap_or("default");
         write!(
             f,
             "{}.{} \u{2192} {}.{}: {}",
@@ -249,10 +257,10 @@ pub struct PortSchemaUndecidableDetails {
     pub from_node: NodeKey,
     /// The consumer (target) node key.
     pub to_node: NodeKey,
-    /// The source output port, if named (`None` = default `"main"`).
-    pub from_port: Option<String>,
+    /// The source output port, if named (`None` = default `"out"`).
+    pub from_port: Option<PortKey>,
     /// The target input port, if named (`None` = default flow input).
-    pub to_port: Option<String>,
+    pub to_port: Option<PortKey>,
     /// Every reason the edge is undecidable, structured so a policy can route on
     /// them (e.g. suppress [`OpaqueProducer`](nebula_schema::UnknownReason::OpaqueProducer)
     /// while blocking [`DynamicLoaderBacked`](nebula_schema::UnknownReason::DynamicLoaderBacked))
@@ -262,8 +270,16 @@ pub struct PortSchemaUndecidableDetails {
 
 impl std::fmt::Display for PortSchemaUndecidableDetails {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let from_port = self.from_port.as_deref().unwrap_or("main");
-        let to_port = self.to_port.as_deref().unwrap_or("default");
+        let from_port = self
+            .from_port
+            .as_ref()
+            .map(PortKey::as_str)
+            .unwrap_or("out");
+        let to_port = self
+            .to_port
+            .as_ref()
+            .map(PortKey::as_str)
+            .unwrap_or("default");
         write!(
             f,
             "{}.{} \u{2192} {}.{}: {}",
