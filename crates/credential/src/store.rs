@@ -41,7 +41,7 @@ pub enum PutMode {
 ///
 /// # Examples
 ///
-/// ```rust,ignore
+/// ```
 /// use nebula_credential::ScopeResolver;
 ///
 /// struct StaticScope(Option<String>);
@@ -51,6 +51,14 @@ pub enum PutMode {
 ///         self.0.as_deref()
 ///     }
 /// }
+///
+/// // A concrete owner scopes every store operation to that tenant.
+/// let tenant = StaticScope(Some("tenant-42".to_owned()));
+/// assert_eq!(tenant.current_owner(), Some("tenant-42"));
+///
+/// // `None` means admin / global access — bypasses scope checks.
+/// let admin = StaticScope(None);
+/// assert_eq!(admin.current_owner(), None);
 /// ```
 pub trait ScopeResolver: Send + Sync {
     /// Returns the owner ID for the current request context.

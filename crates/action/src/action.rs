@@ -27,7 +27,7 @@ use crate::metadata::ActionMetadata;
 ///
 /// # Example
 ///
-/// ```rust,ignore
+/// ```rust
 /// use std::sync::OnceLock;
 /// use nebula_action::{Action, ActionMetadata};
 /// use nebula_core::{Dependencies, action_key};
@@ -35,17 +35,24 @@ use crate::metadata::ActionMetadata;
 /// struct Echo;
 ///
 /// impl Action for Echo {
-/// type Input = serde_json::Value;
-/// type Output = serde_json::Value;
+///     type Input = serde_json::Value;
+///     type Output = serde_json::Value;
 ///
-/// fn metadata() -> ActionMetadata {
-/// ActionMetadata::new(action_key!("echo"), "Echo", "Echoes input")
+///     fn metadata() -> ActionMetadata {
+///         ActionMetadata::new(action_key!("echo"), "Echo", "Echoes input")
+///     }
+///     fn dependencies() -> &'static Dependencies {
+///         static D: OnceLock<Dependencies> = OnceLock::new();
+///         D.get_or_init(Dependencies::new)
+///     }
 /// }
-/// fn dependencies() -> &'static Dependencies {
-/// static D: OnceLock<Dependencies> = OnceLock::new();
-/// D.get_or_init(Dependencies::new)
-/// }
-/// }
+///
+/// // Identity is carried by metadata, not a per-trait schema method...
+/// assert_eq!(Echo::metadata().base.key, action_key!("echo"));
+/// assert_eq!(Echo::metadata().base.name, "Echo");
+/// // ...and the schema is reached through the associated type's `HasSchema`
+/// // bound, not a method on the trait itself.
+/// let _input_schema = nebula_schema::schema_of::<<Echo as Action>::Input>();
 /// ```
 ///
 /// The input/output schema is obtained from the associated type, e.g.

@@ -13,17 +13,16 @@
 //! only credentials that explicitly `impl Refreshable` can route
 //! through the engine's refresh dispatcher, and `refresh` has no
 //! defaulted body (`E0046` if omitted). The runtime back-channel
-//! variant has been removed from [`RefreshOutcome`](crate::RefreshOutcome)
+//! variant has been removed from [`RefreshOutcome`]
 //! to seal the silent-downgrade vector at the type level.
 //!
-//! Engine [`RefreshDispatcher::for_credential<C>`] binds
+//! Engine `RefreshDispatcher::for_credential<C>` binds
 //! `where C: Refreshable`. A non-`Refreshable` credential cannot be
 //! passed — `E0277` at the dispatch site. Probe 4
 //! (`compile_fail_engine_dispatch_capability`) cements this guarantee.
 //!
 //! [`State`]: crate::CredentialState
 //! [`refresh`]: Refreshable::refresh
-//! [`RefreshDispatcher::for_credential<C>`]: nebula_engine::credential::rotation::RefreshDispatcher
 
 use std::future::Future;
 
@@ -45,24 +44,53 @@ use crate::{
 ///
 /// # Examples
 ///
-/// ```ignore
-/// use nebula_credential::{Credential, Refreshable};
-/// use nebula_credential::resolve::{RefreshOutcome, RefreshPolicy};
+/// ```
+/// use nebula_credential::{
+///     AuthPattern, Credential, CredentialContext, CredentialMetadata, Refreshable,
+///     SecretString, scheme::SecretToken,
+/// };
+/// use nebula_credential::error::CredentialError;
+/// use nebula_credential::resolve::{RefreshOutcome, RefreshPolicy, ResolveResult};
+/// use nebula_core::credential_key;
+/// use nebula_schema::{FieldValues, ValidSchema};
 ///
 /// struct OAuth2Cred;
 ///
-/// // (impl Credential for OAuth2Cred elided)
-///
+/// # impl Credential for OAuth2Cred {
+/// #     type Properties = FieldValues;
+/// #     type Scheme = SecretToken;
+/// #     type State = SecretToken;
+/// #     const KEY: &'static str = "oauth2_cred";
+/// #     fn metadata() -> CredentialMetadata {
+/// #         CredentialMetadata::new(
+/// #             credential_key!("oauth2_cred"), "OAuth2", "demo",
+/// #             ValidSchema::empty(), AuthPattern::SecretToken,
+/// #         )
+/// #     }
+/// #     fn project(state: &SecretToken) -> SecretToken { state.clone() }
+/// #     async fn resolve(
+/// #         _values: &FieldValues,
+/// #         _ctx: &CredentialContext,
+/// #     ) -> Result<ResolveResult<SecretToken, ()>, CredentialError> {
+/// #         Ok(ResolveResult::Complete(SecretToken::new(SecretString::new(""))))
+/// #     }
+/// # }
 /// impl Refreshable for OAuth2Cred {
 ///     const REFRESH_POLICY: RefreshPolicy = RefreshPolicy::DEFAULT;
 ///
 ///     async fn refresh(
-///         state: &mut OAuth2State,
-///         ctx: &CredentialContext<'_>,
+///         state: &mut SecretToken,
+///         _ctx: &CredentialContext,
 ///     ) -> Result<RefreshOutcome, CredentialError> {
-///         // ... exchange refresh token for new access token ...
+///         // Exchange the refresh token for a new access token, mutating in place.
+///         *state = SecretToken::new(SecretString::new("new-access-token"));
+///         Ok(RefreshOutcome::Refreshed)
 ///     }
 /// }
+///
+/// // Refresh capability is encoded by trait membership — `where C: Refreshable`.
+/// fn assert_refreshable<C: Refreshable>() {}
+/// assert_refreshable::<OAuth2Cred>();
 /// ```
 ///
 /// [`State`]: crate::CredentialState

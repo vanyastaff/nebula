@@ -1,7 +1,7 @@
 //! Implementation of `#[derive(EnumSelect)]`.
 //!
 //! Generates `impl HasSelectOptions for T { fn select_options() -> Vec<SelectOption> { ... } }`
-//! — one [`SelectOption`](nebula_schema::SelectOption) per unit variant. Only
+//! — one `nebula_schema::SelectOption` per unit variant. Only
 //! unit-style enums are supported; the derive rejects variants that carry
 //! payloads with a compile error.
 //!

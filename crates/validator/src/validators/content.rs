@@ -11,7 +11,7 @@
 //!
 //! # Examples
 //!
-//! ```rust,ignore
+//! ```rust
 //! use nebula_validator::prelude::*;
 //!
 //! // Email validation
@@ -48,7 +48,7 @@ crate::validator! {
     ///
     /// # Examples
     ///
-    /// ```rust,ignore
+    /// ```rust
     /// use nebula_validator::validators::matches_regex;
     /// use nebula_validator::foundation::Validate;
     ///
@@ -78,7 +78,7 @@ crate::validator! {
     ///
     /// # Examples
     ///
-    /// ```rust,ignore
+    /// ```rust
     /// use nebula_validator::validators::email;
     /// use nebula_validator::foundation::Validate;
     ///
@@ -104,7 +104,7 @@ crate::validator! {
     ///
     /// # Examples
     ///
-    /// ```rust,ignore
+    /// ```rust
     /// use nebula_validator::validators::url;
     /// use nebula_validator::foundation::Validate;
     ///

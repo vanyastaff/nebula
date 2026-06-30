@@ -1,16 +1,16 @@
-//! Graceful shutdown machinery for the [`Manager`](super::Manager).
+//! Graceful shutdown machinery for the [`Manager`].
 //!
 //! Phases:
 //!
 //! 1. **SIGNAL** — cancel the shared token (rejects new acquires; signals workers to drain).
 //! 2. **DRAIN** — wait for in-flight handles, honouring
-//!    [`DrainTimeoutPolicy`](super::DrainTimeoutPolicy).
+//!    [`DrainTimeoutPolicy`].
 //! 3. **CLEAR** — drop registry entries.
 //! 4. **AWAIT WORKERS** — wait for release-queue workers to exit.
 //!
 //! Errors are typed [`ShutdownError`] variants; the previous behaviour of
 //! silently force-clearing the registry on drain timeout is now opt-in
-//! through [`DrainTimeoutPolicy::Force`](super::DrainTimeoutPolicy::Force).
+//! through [`DrainTimeoutPolicy::Force`].
 
 use std::{
     sync::{Arc, atomic::Ordering as AtomicOrdering},

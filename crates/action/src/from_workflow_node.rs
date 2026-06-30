@@ -40,23 +40,36 @@ use crate::context::ActionContext;
 ///
 /// # Example (derive expansion sketch)
 ///
-/// ```rust,ignore
-/// # use nebula_action::{Action, FromWorkflowNode, ActionContext, ActionError};
-/// # use nebula_workflow::NodeDefinition;
-/// # use std::future::Future;
-/// # struct SendTelegram { /* slot fields */ }
+/// ```rust
+/// use std::future::Future;
+///
+/// use nebula_action::{ActionContext, ActionError, FromWorkflowNode};
+/// use nebula_workflow::NodeDefinition;
+///
+/// struct SendTelegram {
+///     // slot fields resolved from the node + context, e.g.
+///     // credential: nebula_credential::CredentialGuard<…>,
+/// }
+///
 /// impl FromWorkflowNode for SendTelegram {
-/// type Error = ActionError;
-/// fn from_workflow_node<'a>(
-/// node: &'a NodeDefinition,
-/// ctx: &'a dyn ActionContext,
-/// ) -> impl Future<Output = Result<Self, Self::Error>> + Send + 'a {
-/// async move {
-/// // resolve slot fields against ctx + node.slot_bindings here
-/// # unimplemented!()
+///     type Error = ActionError;
+///
+///     fn from_workflow_node<'a>(
+///         node: &'a NodeDefinition,
+///         ctx: &'a dyn ActionContext,
+///     ) -> impl Future<Output = Result<Self, Self::Error>> + Send + 'a {
+///         async move {
+///             // `#[derive(Action)]` emits the real slot resolution here,
+///             // reading `node.slot_bindings` and resolving each guard via `ctx`.
+///             let _ = (node, ctx);
+///             unimplemented!("derive-generated slot resolution")
+///         }
+///     }
 /// }
-/// }
-/// }
+///
+/// // The engine only requires the trait bound; it never sees the concrete type.
+/// fn assert_factory<F: FromWorkflowNode>() {}
+/// assert_factory::<SendTelegram>();
 /// ```
 pub trait FromWorkflowNode: Sized + Send + 'static {
     /// Error returned on factory failure (typically [`ActionError`](crate::ActionError)).

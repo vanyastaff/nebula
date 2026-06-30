@@ -512,7 +512,7 @@ impl ActionRuntime {
 
     /// Stateless dispatch via `Box<dyn StatelessHandle>`.
     ///
-    /// Mirrors [`Self::execute_stateless`] for the factory path. Honours
+    /// Mirrors [`Self::execute_stateless_handle`] for the factory path. Honours
     /// the same isolation contract (`None` runs in-process; capability-gated
     /// dispatch routes through [`ActionRunner`] using the same `metadata`).
     async fn execute_stateless_handle(
@@ -579,7 +579,7 @@ impl ActionRuntime {
 
     /// Stateful dispatch via `Box<dyn StatefulHandle>`.
     ///
-    /// Mirrors [`Self::execute_stateful`] for the factory path. The
+    /// Mirrors [`Self::execute_stateful_handle`] for the factory path. The
     /// handle trait works on `Value` state so the iteration body matches
     /// 1:1 with the legacy `Arc<dyn StatefulHandler>` path — same cancel
     /// race, same checkpoint contract, same iteration cap, same
@@ -1098,7 +1098,7 @@ impl ActionRuntime {
 ///
 /// # Panics
 ///
-/// Panics only if `action_key` is not a valid [`ActionKey`]. Production
+/// Panics only if `action_key` is not a valid [`ActionKey`](nebula_core::ActionKey). Production
 /// callers parse the key separately and never reach this function with an
 /// invalid key.
 fn synthesize_node_definition(

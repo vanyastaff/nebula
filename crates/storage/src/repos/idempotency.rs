@@ -5,7 +5,7 @@
 //!
 //! - [`InMemoryIdempotencyStoreRepo`] — process-local cache with TTL
 //!   eviction (`moka::future::Cache`). Used in tests and dev builds.
-//! - [`crate::pg::PgIdempotencyStore`] (behind `feature = "postgres"`)
+//! - `PgIdempotencyStore` (behind `feature = "postgres"`)
 //!   — PG-backed durable store satisfying ROADMAP §M3 1.0 closure
 //!   ("the dedup store survives process restart in production
 //!   deployments").

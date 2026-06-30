@@ -69,10 +69,21 @@ pub trait ResourceConfig: nebula_schema::HasSchema + Send + Sync + Clone + 'stat
     /// config type. Derive [`ResourceConfig`](nebula_resource_macros::ResourceConfig)
     /// for a correct structural default:
     ///
-    /// ```ignore
+    /// ```
+    /// use nebula_resource::ResourceConfig;
+    ///
     /// #[derive(ResourceConfig, Clone)]
-    /// struct PgConfig { url: String, max_conns: u32 }
-    /// // fingerprint() is emitted automatically — no manual impl needed.
+    /// struct PgConfig {
+    ///     url: String,
+    ///     max_conns: u32,
+    /// }
+    ///
+    /// // `fingerprint()` is emitted automatically — no manual impl needed — and it
+    /// // changes whenever an operationally-significant field changes.
+    /// let cfg = PgConfig { url: "postgres://db".to_owned(), max_conns: 8 };
+    /// let resized = PgConfig { max_conns: 16, ..cfg.clone() };
+    /// assert_ne!(cfg.fingerprint(), resized.fingerprint());
+    /// assert_eq!(cfg.fingerprint(), cfg.clone().fingerprint());
     /// ```
     ///
     /// The only correct use of a constant fingerprint is for a **fieldless** config

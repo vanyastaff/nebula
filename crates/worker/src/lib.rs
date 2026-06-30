@@ -21,15 +21,30 @@
 //!
 //! ## Construction
 //!
-//! ```rust,ignore
+//! ```rust,no_run
 //! use std::sync::Arc;
-//! use nebula_worker::WorkerRuntimeBuilder;
 //!
+//! use nebula_core::PluginKey;
+//! use nebula_engine::{ExecutionStores, WorkflowEngine};
+//! use nebula_storage_port::store::JobDispatchQueue;
+//! use nebula_worker::WorkerRuntimeBuilder;
+//! use tokio_util::sync::CancellationToken;
+//!
+//! # fn wire(
+//! #     engine: Arc<WorkflowEngine>,
+//! #     stores: ExecutionStores,
+//! #     queue: Arc<dyn JobDispatchQueue>,
+//! #     plugins: Vec<PluginKey>,
+//! #     proc_id: [u8; 16],
+//! #     shutdown_token: CancellationToken,
+//! # ) -> Result<(), Box<dyn std::error::Error>> {
 //! let runtime = WorkerRuntimeBuilder::from_wired_engine(engine, stores, queue, plugins, proc_id)
 //!     .with_batch_size(16)
 //!     .build()?;
 //!
 //! runtime.spawn(shutdown_token);
+//! # Ok(())
+//! # }
 //! ```
 //!
 //! [`PluginKey`]: nebula_core::PluginKey

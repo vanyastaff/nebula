@@ -5,22 +5,28 @@
 //!
 //! # Examples
 //!
-//! ```rust,ignore
+//! ```rust
 //! use nebula_validator::combinators::{all_of, any_of};
+//! use nebula_validator::foundation::{AnyValidator, Validate};
 //! use nebula_validator::validators::{min_length, max_length, alphanumeric};
 //!
-//! // All validators must pass
+//! // All validators must pass. Heterogeneous validators are combined by
+//! // type-erasing each one with `AnyValidator`.
 //! let username_validator = all_of([
-//!     min_length(3),
-//!     max_length(20),
-//!     alphanumeric(),
+//!     AnyValidator::new(min_length(3)),
+//!     AnyValidator::new(max_length(20)),
+//!     AnyValidator::new(alphanumeric()),
 //! ]);
+//! assert!(username_validator.validate("alice42").is_ok());
+//! assert!(username_validator.validate("ab").is_err()); // too short
 //!
-//! // At least one validator must pass
+//! // At least one validator must pass.
 //! let flexible_validator = any_of([
-//!     min_length(5),
-//!     max_length(3),  // Allow either short or long
+//!     AnyValidator::new(min_length(5)),
+//!     AnyValidator::new(max_length(3)), // allow either long or short
 //! ]);
+//! assert!(flexible_validator.validate("hello").is_ok()); // satisfies min_length
+//! assert!(flexible_validator.validate("ab").is_ok()); // satisfies max_length
 //! ```
 
 use crate::foundation::{Validate, ValidationError, ValidationErrors, ValidationMode};
@@ -36,12 +42,16 @@ use crate::foundation::{Validate, ValidationError, ValidationErrors, ValidationM
 ///
 /// # Examples
 ///
-/// ```rust,ignore
+/// ```rust
 /// use nebula_validator::combinators::all_of;
 /// use nebula_validator::validators::{min_length, max_length};
-/// use nebula_validator::foundation::Validate;
+/// use nebula_validator::foundation::{AnyValidator, Validate};
 ///
-/// let validator = all_of([min_length(3), max_length(10)]);
+/// // Type-erase the two different validator types so they share an array.
+/// let validator = all_of([
+///     AnyValidator::new(min_length(3)),
+///     AnyValidator::new(max_length(10)),
+/// ]);
 ///
 /// assert!(validator.validate("hello").is_ok());
 /// assert!(validator.validate("hi").is_err());  // too short
@@ -136,7 +146,7 @@ where
 ///
 /// # Examples
 ///
-/// ```rust,ignore
+/// ```rust
 /// use nebula_validator::combinators::any_of;
 /// use nebula_validator::validators::exact_length;
 /// use nebula_validator::foundation::Validate;

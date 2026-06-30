@@ -18,8 +18,8 @@ use core::marker::PhantomData;
 use crate::ValidSchema;
 
 mod sealed {
-    /// Seals [`Polarity`](super::Polarity) so only this crate's [`Input`] and
-    /// [`Output`] can implement it.
+    /// Seals [`Polarity`](super::Polarity) so only this crate's [`Input`](super::Input) and
+    /// [`Output`](super::Output) can implement it.
     pub trait Sealed {}
 }
 

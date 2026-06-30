@@ -185,7 +185,7 @@ impl Schema {
 ///
 /// # Errors
 ///
-/// Returns `invalid_key` when `key` does not satisfy [`FieldKey`] constraints.
+/// Returns `invalid_key` when `key` does not satisfy [`FieldKey`](crate::FieldKey) constraints.
 #[expect(
     clippy::result_large_err,
     reason = "ValidationError is intentionally large; callers are on the validation path"
@@ -506,7 +506,7 @@ impl SchemaBuilder {
         self.build_inner(crate::SchemaKind::Record, None)
     }
 
-    /// Build a [`SchemaKind::Union`] from a builder carrying exactly one root
+    /// Build a [`SchemaKind::Union`](crate::SchemaKind::Union) from a builder carrying exactly one root
     /// `Field::Mode` (the union's variants), recording its serde `tagging`.
     ///
     /// Runs the same lint / index / depth checks as [`build`](Self::build), then

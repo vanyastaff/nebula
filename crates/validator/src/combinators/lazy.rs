@@ -17,21 +17,21 @@ use crate::foundation::{Validate, ValidationError};
 ///
 /// # Examples
 ///
-/// ```rust,ignore
+/// ```rust
 /// use nebula_validator::combinators::Lazy;
 /// use nebula_validator::foundation::Validate;
+/// use nebula_validator::validators::min_length;
 ///
-/// // Validate is created only when first used
-/// let validator = Lazy::new(|| {
-///     println!("Creating expensive validator...");
-///     RegexValidator::new(r"^\d{4}-\d{2}-\d{2}$").unwrap()
-/// });
+/// // The inner validator is created only on first use.
+/// let validator = Lazy::new(|| min_length(5));
+/// assert!(!validator.is_initialized());
 ///
-/// // First call triggers initialization
-/// validator.validate("2024-01-15")?;
+/// // First call triggers initialization.
+/// assert!(validator.validate("hello").is_ok());
+/// assert!(validator.is_initialized());
 ///
-/// // Subsequent calls use cached validator
-/// validator.validate("2024-12-25")?;
+/// // Subsequent calls reuse the cached validator.
+/// assert!(validator.validate("hi").is_err());
 /// ```
 pub struct Lazy<V, F>
 where

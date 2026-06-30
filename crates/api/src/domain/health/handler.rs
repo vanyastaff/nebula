@@ -106,7 +106,7 @@ pub async fn readiness_check(
 
 /// Probe the workflow store with a bounded timeout.
 ///
-/// Uses [`WorkflowStore::is_reachable`] — the tenant-agnostic
+/// Uses [`WorkflowStore::is_reachable`](nebula_storage_port::store::WorkflowStore::is_reachable) — the tenant-agnostic
 /// infrastructure-liveness round-trip (`SELECT 1` on the SQL backends).
 /// The readiness probe is unauthenticated infrastructure with no tenant,
 /// so it deliberately does **not** construct a [`Scope`] or read tenant

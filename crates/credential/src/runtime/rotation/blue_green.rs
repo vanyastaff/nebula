@@ -70,19 +70,26 @@ impl BlueGreenState {
 ///
 /// # Example
 ///
-/// ```rust,ignore
+/// ```rust
+/// use nebula_credential::CredentialId;
 /// use nebula_credential::runtime::rotation::blue_green::{BlueGreenRotation, BlueGreenState};
 ///
-/// let rotation = BlueGreenRotation::new(
-///     blue_id.clone(),
-///     green_id.clone(),
-/// );
+/// let blue_id = CredentialId::new();
+/// let green_id = CredentialId::new();
 ///
-/// // Validate standby credential
-/// rotation.validate_standby().await?;
+/// let mut rotation = BlueGreenRotation::new(blue_id, green_id);
+/// assert_eq!(rotation.state, BlueGreenState::Blue);
+/// assert_eq!(rotation.active(), &blue_id);
 ///
-/// // Swap to new credential
-/// rotation.swap().await?;
+/// // Validate the standby (green) credential before cutting over.
+/// rotation.mark_validated();
+///
+/// // Atomic swap: begin the transition, then commit it.
+/// rotation.start_transition().unwrap();
+/// rotation.complete_swap().unwrap();
+///
+/// assert_eq!(rotation.state, BlueGreenState::Green);
+/// assert_eq!(rotation.active(), &green_id);
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlueGreenRotation {

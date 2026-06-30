@@ -614,7 +614,7 @@ pub(crate) struct SerdeAttrs {
     pub aliases: Vec<String>,
     /// `#[serde(tag = "..")]` — the discriminant key. On an enum container this
     /// selects internally- (no `content`) or adjacently- (`with content`) tagged
-    /// representation; the union derive reads it to record [`SerdeTagging`].
+    /// representation; the union derive reads it to record `SerdeTagging`.
     pub tag: Option<String>,
     /// `#[serde(content = "..")]` — the payload key for adjacent tagging.
     pub content: Option<String>,

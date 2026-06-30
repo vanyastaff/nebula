@@ -205,13 +205,20 @@ macro_rules! define_field {
             ///
             /// # Example
             ///
-            /// ```ignore
+            /// ```rust
+            /// use nebula_schema::{Field, Predicate, RequiredMode, Rule, VisibilityMode, field_key};
+            /// use serde_json::json;
+            ///
             /// // `api_key` only appears and is only required when
             /// // `auth_type == "api_key"`.
-            /// Field::secret(field_key!("api_key"))
+            /// let field = Field::secret(field_key!("api_key"))
             ///     .active_when(Rule::predicate(
             ///         Predicate::eq("auth_type", json!("api_key")).unwrap(),
             ///     ))
+            ///     .into_field();
+            ///
+            /// assert!(matches!(field.visible(), VisibilityMode::When(_)));
+            /// assert!(matches!(field.required(), RequiredMode::When(_)));
             /// ```
             #[must_use]
             pub fn active_when(mut self, rule: Rule) -> Self {

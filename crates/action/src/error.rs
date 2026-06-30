@@ -593,13 +593,23 @@ impl ActionError {
 ///
 /// # Examples
 ///
-/// ```rust,ignore
+/// ```rust
 /// use nebula_action::prelude::*;
 ///
 /// fn fetch_data() -> Result<String, ActionError> {
+///     // `.parse()` yields `Result<_, ParseIntError>`; `.fatal()` maps the
+///     // error into `ActionError::Fatal` so the `?` propagates the right type.
 ///     let value: i32 = "42".parse().fatal()?;
 ///     Ok(format!("got {value}"))
 /// }
+///
+/// assert_eq!(fetch_data().unwrap(), "got 42");
+///
+/// // A parse failure surfaces as a fatal (non-retryable) ActionError.
+/// fn parse_bad() -> Result<i32, ActionError> {
+///     Ok("not a number".parse::<i32>().fatal()?)
+/// }
+/// assert!(parse_bad().unwrap_err().is_fatal());
 /// ```
 pub trait ActionErrorExt<T> {
     /// Convert error to retryable [`ActionError`] (transient — engine may retry).

@@ -26,9 +26,11 @@
 //!
 //! # Examples
 //!
-//! Slot-binding form (preferred):
+//! Slot-binding form (preferred). Shown as `text`, not a compiled doctest: the
+//! `#[derive(Action)]` macro, `StatelessAction`, and `ActionContext` live in
+//! `nebula-action`, which depends on this crate, so they cannot be named here:
 //!
-//! ```rust,ignore
+//! ```text
 //! #[derive(Action)]
 //! #[action(key = "send.report", input = SendReportInput, output = ReportId)]
 //! struct SendReport {
@@ -46,16 +48,20 @@
 //! }
 //! ```
 //!
-//! Ad-hoc form:
+//! Ad-hoc form — `no_run` (acquisition needs a live engine accessor + runtime),
+//! but it type-checks against the real API: `ctx.resource::<R>()` looks the
+//! resource up by `R::key()` only, for any context implementing `HasResources`:
 //!
-//! ```rust,ignore
-//! use nebula_resource::HasResourcesExt;
+//! ```rust,no_run
+//! use nebula_resource::{Error, HasResourcesExt, Provider, ResourceGuard};
 //!
-//! async fn write_audit(ctx: &impl ActionContext, line: &str) -> Result<(), ActionError> {
-//!     // Type-only lookup — searches by AuditLog::key() only.
-//!     let log = ctx.resource::<AuditLog>().await?;
-//!     log.append(line).await?;
-//!     Ok(())
+//! async fn fetch<R, Ctx>(ctx: &Ctx) -> Result<ResourceGuard<R>, Error>
+//! where
+//!     R: Provider,
+//!     Ctx: HasResourcesExt,
+//! {
+//!     // Type-only lookup — no per-node slot binding.
+//!     ctx.resource::<R>().await
 //! }
 //! ```
 
@@ -104,11 +110,23 @@ mod sealed {
 ///
 /// # Examples
 ///
-/// ```ignore
-/// use nebula_resource::HasResourcesExt;
+/// `no_run` (acquisition needs a live accessor + runtime), but type-checked
+/// against the real API. Call through a concrete `HasResources` context — not
+/// `&dyn` — as the note above requires:
 ///
-/// let pool = ctx.resource::<PostgresResource>().await?;
-/// let cache = ctx.try_resource::<RedisResource>().await?;
+/// ```rust,no_run
+/// use nebula_resource::{Error, HasResourcesExt, Provider, ResourceGuard};
+///
+/// async fn acquire<Db, Cache, Ctx>(ctx: &Ctx) -> Result<(), Error>
+/// where
+///     Db: Provider,
+///     Cache: Provider,
+///     Ctx: HasResourcesExt,
+/// {
+///     let _pool: ResourceGuard<Db> = ctx.resource::<Db>().await?;
+///     let _cache: Option<ResourceGuard<Cache>> = ctx.try_resource::<Cache>().await?;
+///     Ok(())
+/// }
 /// ```
 pub trait HasResourcesExt: HasResources + sealed::Sealed {
     /// Acquire a typed resource guard. Returns error if not found or acquisition fails.

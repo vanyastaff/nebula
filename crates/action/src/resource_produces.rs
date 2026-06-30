@@ -11,18 +11,19 @@
 //!
 //! ## Trait constraint usage
 //!
-//! Phase 3 of the M6 resource-finalization integration work adds the
-//! constraint:
+//! [`ResourceAction`](crate::resource::ResourceAction) constrains its
+//! `Action::Output` to `ResourceProduces<Self::Resource>`, so the compiler
+//! enforces that the produced marker is tied to the action's own
+//! `type Resource`. Mismatches surface at impl time, not at runtime — an
+//! action whose `Resource` is `String` produces exactly this marker:
 //!
-//! ```ignore
-//! pub trait ResourceAction:
-//! Action<Output = ResourceProduces<<Self as ResourceAction>::Resource>>
-//! {... }
+//! ```rust
+//! use nebula_action::ResourceProduces;
+//! use nebula_resource::topology_tag::TopologyTag;
+//!
+//! let produced: ResourceProduces<String> = ResourceProduces::new(TopologyTag::Resident);
+//! assert_eq!(produced.topology(), TopologyTag::Resident);
 //! ```
-//!
-//! so the compiler enforces that a ResourceAction's Output is the marker
-//! tied to its own `type Resource`. Mismatches surface at impl time, not
-//! at runtime.
 
 use std::{fmt, marker::PhantomData};
 
@@ -39,14 +40,13 @@ use nebula_resource::{resource::Provider, topology_tag::TopologyTag};
 ///
 /// # Examples
 ///
-/// ```ignore
+/// ```rust
 /// use nebula_action::ResourceProduces;
 /// use nebula_resource::topology_tag::TopologyTag;
 ///
-/// // For a Postgres-pool ResourceAction:
-/// // `type Output = ResourceProduces<Postgres>;`
-///
-/// let marker: ResourceProduces<Postgres> = ResourceProduces::new(TopologyTag::Pool);
+/// // A ResourceAction producing a pooled `R` sets
+/// // `type Output = ResourceProduces<R>;` — here `R` is `String`.
+/// let marker: ResourceProduces<String> = ResourceProduces::new(TopologyTag::Pool);
 /// assert_eq!(marker.topology(), TopologyTag::Pool);
 /// ```
 pub struct ResourceProduces<R: ?Sized> {

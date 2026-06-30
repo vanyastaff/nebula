@@ -6,14 +6,14 @@
 //!
 //! # Examples
 //!
-//! ```rust,ignore
+//! ```rust
 //! use nebula_validator::prelude::*;
 //!
 //! // At least one validator must pass
 //! let validator = exact_length(5).or(exact_length(10));
-//! assert!("hello".validate(&validator).is_ok()); // 5 chars
-//! assert!("helloworld".validate(&validator).is_ok()); // 10 chars
-//! assert!("hi".validate(&validator).is_err()); // neither 5 nor 10
+//! assert!("hello".validate_with(&validator).is_ok()); // 5 chars
+//! assert!("helloworld".validate_with(&validator).is_ok()); // 10 chars
+//! assert!("hi".validate_with(&validator).is_err()); // neither 5 nor 10
 //! ```
 
 use crate::foundation::{Validate, ValidationError};

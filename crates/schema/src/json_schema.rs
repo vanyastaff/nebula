@@ -19,7 +19,7 @@ use crate::{
     validated::SerdeTagging,
 };
 
-/// Canonical draft URI emitted by [`ValidSchema::json_schema`].
+/// Canonical draft URI emitted by [`ValidSchema::json_schema`](crate::validated::ValidSchema::json_schema).
 const DRAFT_2020_12: &str = "https://json-schema.org/draft/2020-12/schema";
 
 /// Error produced while exporting [`crate::validated::ValidSchema`] to JSON Schema.

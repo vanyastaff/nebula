@@ -20,7 +20,7 @@ mod type_infer;
 /// - [`FoundCrate::Itself`] → `::nebula_schema` (works in lib code via `extern crate self as
 ///   nebula_schema;` in `lib.rs`, in doctests via the doctest binary's external crate alias, and in
 ///   integration tests / examples / benches via the package's own crate alias).
-/// - [`FoundCrate::Name(name)`] → `::name` (external crate that renamed the dependency).
+/// - `FoundCrate::Name(name)` → `::name` (external crate that renamed the dependency).
 /// - `Err(_)` → fall back to `::nebula_schema` for unknown contexts.
 pub(crate) fn crate_path() -> TokenStream2 {
     match crate_name("nebula-schema") {

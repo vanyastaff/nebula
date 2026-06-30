@@ -235,7 +235,7 @@ where
     /// Sync capacity gate from the topology — an **advisory** yes/no pre-check
     /// with a typed reason, NOT a held reservation.
     ///
-    /// The [`Ticket`] (and any semaphore permit it carries) is dropped
+    /// The [`Ticket`](crate::topology::contract::Ticket) (and any semaphore permit it carries) is dropped
     /// immediately, so the permit is released the moment this returns. This is a
     /// deliberate pre-flight probe (e.g. for `Manager::admission_status`): under
     /// contention the permit it momentarily held can be taken by another

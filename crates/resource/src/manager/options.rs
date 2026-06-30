@@ -241,7 +241,7 @@ pub struct RegistrationSpec<R: Provider> {
     /// The resource's lease topology, by value. The topology *kind* is static
     /// per `R` (a Postgres is always `Pooled`); only its config (cap, sizes) is
     /// runtime, so callers construct the concrete
-    /// [`Provider::Topology`](crate::resource::Provider::Topology) — e.g.
+    /// [`Provider::Topology`] — e.g.
     /// `Pooled::new(resource.clone(), config, fingerprint)` — and hand it here.
     pub topology: R::Topology,
     /// Optional recovery gate for thundering-herd prevention.

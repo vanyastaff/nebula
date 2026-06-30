@@ -158,7 +158,7 @@ impl Manager {
     /// Spawns the background maintenance reaper for a freshly-registered
     /// pool — the **sole production driver of idle eviction**.
     ///
-    /// [`PoolRuntime::run_maintenance`](crate::runtime::pool::PoolRuntime::run_maintenance)
+    /// [`ManagedResource::run_maintenance`](crate::runtime::managed::ManagedResource::run_maintenance)
     /// evicts idle-timed-out, max-lifetime-exceeded, stale-fingerprint, and
     /// revoked idle instances, but nothing calls it on its own. The return
     /// path enforces `max_lifetime` opportunistically, yet an instance that
@@ -166,7 +166,7 @@ impl Manager {
     /// unless this reaper runs — so without it `idle_timeout` is dead config.
     ///
     /// Spawned **only** for topologies whose
-    /// [`Topology::maintenance_schedule`](crate::topology::Topology::maintenance_schedule)
+    /// [`Topology::maintenance_schedule`]
     /// returns `Some` (the built-in [`Pooled`](crate::topology::Pooled)) and
     /// **only** when a TTL (`idle_timeout` or `max_lifetime`) is configured,
     /// so pools that never expire instances pay zero background cost (bb8's

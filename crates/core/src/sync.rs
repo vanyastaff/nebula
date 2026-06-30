@@ -36,18 +36,20 @@ use tokio::sync::OnceCell;
 ///
 /// # Examples
 ///
-/// ```ignore
+/// ```rust
 /// use nebula_core::sync::Lazy;
 ///
-/// let lazy: Lazy<String> = Lazy::new();
+/// #[tokio::main(flavor = "current_thread")]
+/// async fn main() {
+///     let lazy: Lazy<String> = Lazy::new();
 ///
-/// let value = lazy
-///.get_or_try_init(async {
-/// Ok::<_, std::io::Error>(format!("computed-{}", 42))
-/// })
-///.await?;
+///     let value = lazy
+///         .get_or_try_init(async { Ok::<_, std::io::Error>(format!("computed-{}", 42)) })
+///         .await
+///         .expect("infallible initializer");
 ///
-/// assert_eq!(value, "computed-42");
+///     assert_eq!(value, "computed-42");
+/// }
 /// ```
 pub struct Lazy<X> {
     cell: OnceCell<X>,

@@ -14,7 +14,7 @@
 //! authoring mistake. The sub-trait variant in this module makes the
 //! mistake structurally impossible: only credentials that explicitly
 //! `impl Interactive` can route through interactive dispatch, and the
-//! [`Self::Pending`] associated type plus [`Self::continue_resolve`] are
+//! [`Interactive::Pending`] associated type plus [`Interactive::continue_resolve`] are
 //! both required (no defaulted bodies).
 //!
 //! The `Pending` associated type lives here, *not* on the base
@@ -51,24 +51,57 @@ use crate::{
 ///
 /// # Examples
 ///
-/// ```ignore
-/// use nebula_credential::{Credential, Interactive};
+/// ```
+/// use nebula_credential::{
+///     AuthPattern, Credential, CredentialContext, CredentialMetadata, Interactive,
+///     OAuth2Pending, SecretString, scheme::SecretToken,
+/// };
+/// use nebula_credential::error::CredentialError;
+/// use nebula_credential::resolve::{ResolveResult, UserInput};
+/// use nebula_core::credential_key;
+/// use nebula_schema::{FieldValues, ValidSchema};
 ///
 /// struct OAuth2Cred;
 ///
-/// // (impl Credential for OAuth2Cred elided)
-///
+/// # impl Credential for OAuth2Cred {
+/// #     type Properties = FieldValues;
+/// #     type Scheme = SecretToken;
+/// #     type State = SecretToken;
+/// #     const KEY: &'static str = "oauth2_cred";
+/// #     fn metadata() -> CredentialMetadata {
+/// #         CredentialMetadata::new(
+/// #             credential_key!("oauth2_cred"), "OAuth2", "demo",
+/// #             ValidSchema::empty(), AuthPattern::SecretToken,
+/// #         )
+/// #     }
+/// #     fn project(state: &SecretToken) -> SecretToken { state.clone() }
+/// #     async fn resolve(
+/// #         _values: &FieldValues,
+/// #         _ctx: &CredentialContext,
+/// #     ) -> Result<ResolveResult<SecretToken, ()>, CredentialError> {
+/// #         Ok(ResolveResult::Complete(SecretToken::new(SecretString::new(""))))
+/// #     }
+/// # }
 /// impl Interactive for OAuth2Cred {
+///     // Typed pending state persisted (encrypted, single-use) between
+///     // `resolve()` and `continue_resolve()`.
 ///     type Pending = OAuth2Pending;
 ///
 ///     async fn continue_resolve(
 ///         pending: &OAuth2Pending,
 ///         input: &UserInput,
-///         ctx: &CredentialContext<'_>,
-///     ) -> Result<ResolveResult<OAuth2State, OAuth2Pending>, CredentialError> {
-///         // ... validate callback, exchange code for token ...
+///         _ctx: &CredentialContext,
+///     ) -> Result<ResolveResult<SecretToken, OAuth2Pending>, CredentialError> {
+///         // Validate the callback against the stored anti-CSRF state, then
+///         // exchange the authorization code for an access token.
+///         let _ = (pending, input);
+///         Ok(ResolveResult::Complete(SecretToken::new(SecretString::new("access-token"))))
 ///     }
 /// }
+///
+/// // Interactive capability is encoded by trait membership.
+/// fn assert_interactive<C: Interactive>() {}
+/// assert_interactive::<OAuth2Cred>();
 /// ```
 ///
 /// [`Credential::resolve`]: crate::Credential::resolve
@@ -85,7 +118,7 @@ pub trait Interactive: Credential {
     /// interaction.
     ///
     /// The framework loads and consumes the typed
-    /// [`PendingState`](crate::PendingState) before calling this method —
+    /// [`PendingState`] before calling this method —
     /// credential authors never call `store_pending()` or
     /// `consume_pending()` directly.
     ///

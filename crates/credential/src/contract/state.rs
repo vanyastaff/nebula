@@ -1,6 +1,6 @@
 //! Credential state trait for stored credential data.
 //!
-//! [`CredentialState`](CredentialState) represents what gets persisted
+//! [`CredentialState`] represents what gets persisted
 //! in encrypted storage. It may contain refresh internals
 //! (`refresh_token`, `client_secret`) that are NOT exposed to resource
 //! consumers -- those see only the [`AuthScheme`].
@@ -41,9 +41,24 @@ pub trait CredentialState:
 ///
 /// # Examples
 ///
-/// ```ignore
-/// identity_state!(SecretToken, "secret_token", 1);
-/// // Now SecretToken can be used as both AuthScheme and CredentialState
+/// ```
+/// use nebula_credential::{CredentialState, identity_state};
+/// use serde::{Deserialize, Serialize};
+/// use zeroize::ZeroizeOnDrop;
+///
+/// // A small auth-scheme-like type whose stored state == consumer-facing
+/// // material. `CredentialState` requires `Serialize + DeserializeOwned +
+/// // ZeroizeOnDrop`, all derivable here.
+/// #[derive(Serialize, Deserialize, ZeroizeOnDrop)]
+/// struct ApiKey {
+///     key: String,
+/// }
+///
+/// // Now `ApiKey` is usable as a `CredentialState` (state == scheme).
+/// identity_state!(ApiKey, "api_key_demo", 1);
+///
+/// assert_eq!(<ApiKey as CredentialState>::KIND, "api_key_demo");
+/// assert_eq!(<ApiKey as CredentialState>::VERSION, 1);
 /// ```
 #[macro_export]
 macro_rules! identity_state {

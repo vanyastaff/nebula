@@ -682,18 +682,33 @@ impl fmt::Debug for ScopedResourceGuard<'_> {
 ///
 /// # Examples
 ///
-/// ```rust,ignore
+/// ```rust
 /// use std::sync::Arc;
+///
+/// use nebula_core::{ResourceKey, accessor::ResourceAccessor, scope::Scope};
 /// use nebula_engine::{
-///     EngineResourceAccessor, scoped_resources::{DashScopedResourceMap, LayeredResourceAccessor},
+///     EngineResourceAccessor,
+///     scoped_resources::{DashScopedResourceMap, LayeredResourceAccessor},
 /// };
 /// use nebula_resource::Manager;
+/// use tokio_util::sync::CancellationToken;
 ///
+/// # let rt = tokio::runtime::Runtime::new().unwrap();
+/// # let _guard = rt.enter();
+/// // `Manager` registers a background release queue, so build it inside a
+/// // Tokio runtime context.
 /// let manager = Arc::new(Manager::new());
-/// let global = Arc::new(EngineResourceAccessor::new(manager));
+/// let global = Arc::new(EngineResourceAccessor::new(
+///     manager,
+///     Scope::default(),
+///     CancellationToken::new(),
+/// ));
 /// let scoped = Arc::new(DashScopedResourceMap::new());
-/// let layered = Arc::new(LayeredResourceAccessor::new(scoped, global));
-/// // Inject into ActionRuntimeContext::with_resources(layered)
+/// // `layered` is the `ResourceAccessor` injected into the action context.
+/// let layered = LayeredResourceAccessor::new(scoped, global);
+///
+/// // Neither layer has anything registered, so no key resolves yet.
+/// assert!(!layered.has(&ResourceKey::new("postgres").unwrap()));
 /// ```
 pub struct LayeredResourceAccessor {
     scoped: Arc<dyn ScopedResourceMap>,

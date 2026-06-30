@@ -1280,7 +1280,7 @@ fn first_undeclared_in_level(
 /// items, and a union/mode field's active-variant payload (the `mode`/`value`
 /// envelope keys are structural and never flagged). Scalar fields and shape
 /// mismatches yield `None` — a type mismatch is [`validate`](ValidSchema::validate)'s
-/// concern, not the closed-set check's. Depth-bounded by [`MAX_VALUE_DEPTH`] so an
+/// concern, not the closed-set check's. Depth-bounded by [`MAX_VALUE_DEPTH`](crate::value::MAX_VALUE_DEPTH) so an
 /// adversarial value tree cannot overflow the stack (it is rejected earlier by
 /// `from_json`, but the bound makes this walk panic-free regardless).
 fn first_undeclared_in_value(

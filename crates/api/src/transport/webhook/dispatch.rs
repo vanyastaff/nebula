@@ -14,7 +14,7 @@
 //! 5. Construct [`WebhookRequest`] → 400 / 413
 //! 6. Signature enforcement ([`super::signature::enforce_signature`]) → 401 / 500
 //! 7. Extract `webhook-id` header → `event_id: Option<IdempotencyKey>` (Commit 3)
-//! 8. Dispatch via [`TriggerHandler::handle_event`] with timeout → 504 / 500 / handler response
+//! 8. Dispatch via [`TriggerHandler::handle_event`](nebula_action::TriggerHandler::handle_event) with timeout → 504 / 500 / handler response
 //! 9. Mode-gate: Prod rows with `durable_dispatch` wired call
 //!    [`DurableExecutionEmitter::emit`] before acking the HTTP response (Commit 4)
 
@@ -102,7 +102,7 @@ pub(super) async fn webhook_handler(
 /// 5. construct [`WebhookRequest`] → 400 / 413
 /// 6. [`enforce_signature`] (uses [`nebula_action::Clock`]) → 401 / 500
 /// 7. extract `webhook-id` header → `event_id: Option<IdempotencyKey>`
-/// 8. dispatch via [`TriggerHandler::handle_event`] with a response
+/// 8. dispatch via [`TriggerHandler::handle_event`](nebula_action::TriggerHandler::handle_event) with a response
 ///    timeout → 504 / 500 / handler response
 /// 9. mode-gate: Prod rows call [`DurableExecutionEmitter::emit`] BEFORE
 ///    returning the ack; emit failure → 5xx so the sender retries.

@@ -34,21 +34,42 @@ use super::{
 ///
 /// # Examples
 ///
-/// ```ignore
+/// ```
 /// use std::sync::Arc;
-/// use nebula_credential::{ExternalProvider, ExternalProviderChain};
+///
+/// use nebula_credential::{
+///     ExternalProvider, ExternalProviderChain, ExternalReference, ProviderFuture,
+///     ProviderResolution, SecretString,
+/// };
+///
+/// // Minimal stand-in provider; real ones read env vars, Vault, AWS Secrets
+/// // Manager, and so on. `ExternalProvider` requires `Debug`.
+/// #[derive(Debug)]
+/// struct StubProvider(&'static str);
+/// impl ExternalProvider for StubProvider {
+///     fn resolve<'a>(&'a self, _reference: &'a ExternalReference) -> ProviderFuture<'a> {
+///         ProviderFuture::ready(Ok(ProviderResolution::from_secret(SecretString::new(
+///             "secret",
+///         ))))
+///     }
+///     fn provider_name(&self) -> &str {
+///         self.0
+///     }
+/// }
 ///
 /// // `first_try` / `or_else` take `Arc<dyn ExternalProvider>` — wrap concrete
 /// // provider values explicitly to share them across the chain (and across
 /// // multiple chains, if needed).
 /// let chain = ExternalProviderChain::first_try(
 ///         "env",
-///         Arc::new(env_provider) as Arc<dyn ExternalProvider>,
+///         Arc::new(StubProvider("env")) as Arc<dyn ExternalProvider>,
 ///     )
-///     .or_else("vault", Arc::new(vault_provider) as Arc<dyn ExternalProvider>)
-///     .or_else("aws_sm", Arc::new(aws_sm_provider) as Arc<dyn ExternalProvider>);
+///     .or_else("vault", Arc::new(StubProvider("vault")) as Arc<dyn ExternalProvider>)
+///     .or_else("aws_sm", Arc::new(StubProvider("aws_sm")) as Arc<dyn ExternalProvider>);
 ///
 /// // `chain` is itself an `ExternalProvider`; can be registered or further nested.
+/// assert_eq!(chain.len(), 3);
+/// assert_eq!(chain.provider_name(), "chain");
 /// ```
 #[derive(Clone)]
 pub struct ExternalProviderChain {

@@ -43,15 +43,25 @@
 //!
 //! The runtime constructs snapshots after resolving credentials:
 //!
-//! ```ignore
-//! // In the runtime's CredentialAccessor implementation:
-//! let handle = resolver.resolve::<ApiKeyCredential>(id).await?;
-//! let scheme: Arc<SecretToken> = handle.snapshot();
+//! ```
+//! use nebula_credential::{
+//!     Credential, CredentialRecord, CredentialSnapshot, SecretString,
+//!     credentials::ApiKeyCredential, scheme::SecretToken,
+//! };
+//!
+//! // After resolving a credential the runtime holds the projected scheme; it
+//! // stamps a snapshot with the credential KEY and the runtime record. (The
+//! // live runtime obtains `scheme` from `resolver.resolve::<ApiKeyCredential>(id)`;
+//! // here it is constructed directly.)
+//! let scheme = SecretToken::new(SecretString::new("resolved-token"));
 //! let snapshot = CredentialSnapshot::new(
 //!     ApiKeyCredential::KEY,
-//!     record,
-//!     (*scheme).clone(),
+//!     CredentialRecord::new(),
+//!     scheme,
 //! );
+//!
+//! assert_eq!(snapshot.kind(), "api_key");
+//! assert_eq!(snapshot.scheme_pattern(), "SecretToken");
 //! ```
 
 use std::{any::Any, fmt};

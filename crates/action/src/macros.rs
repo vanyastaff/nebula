@@ -15,9 +15,15 @@
 ///
 /// # Examples
 ///
-/// ```rust,ignore
-/// let result = action.execute(input, &ctx).await;
+/// ```rust
+/// use nebula_action::{ActionError, ActionResult, assert_success};
+///
+/// // Stand in for `let result = action.execute(input, &ctx).await;`
+/// let result: Result<ActionResult<i32>, ActionError> = Ok(ActionResult::success(42));
 /// assert_success!(result);
+///
+/// // The two-argument form additionally asserts on the unwrapped output value.
+/// assert_success!(result, 42);
 /// ```
 #[macro_export]
 macro_rules! assert_success {

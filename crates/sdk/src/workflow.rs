@@ -27,7 +27,7 @@ use nebula_workflow::{
 ///
 /// # Examples
 ///
-/// ```ignore
+/// ```
 /// use nebula_sdk::workflow::WorkflowBuilder;
 ///
 /// let workflow = WorkflowBuilder::new("data_pipeline")
@@ -39,6 +39,9 @@ use nebula_workflow::{
 ///     .connect("transform", "load")
 ///     .build()
 ///     .expect("valid workflow");
+///
+/// assert_eq!(workflow.nodes.len(), 3);
+/// assert_eq!(workflow.connections.len(), 2);
 /// ```
 pub struct WorkflowBuilder {
     id: WorkflowId,

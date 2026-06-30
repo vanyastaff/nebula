@@ -33,12 +33,19 @@ pub struct WatcherGuard {
 ///
 /// # Examples
 ///
-/// ```ignore
+/// ```no_run
+/// use nebula_log::{watch_config, Config};
+///
+/// # fn main() -> nebula_log::LogResult<()> {
 /// let guard = nebula_log::init_with(Config { reloadable: true, ..Config::default() })?;
-/// let handle = guard.reload_handle().expect("reloadable was true");
-/// let watcher = nebula_log::builder::watcher::watch_config("log-level.conf", handle.clone());
-/// // ... watcher auto-reloads when log-level.conf changes
+/// let handle = guard.reload_handle().expect("Config.reloadable was set to true");
+///
+/// // Spawns a background Tokio task that auto-reloads the filter whenever
+/// // `log-level.conf` changes (must run inside a Tokio runtime).
+/// let watcher = watch_config("log-level.conf", handle.clone());
 /// drop(watcher); // stops polling
+/// # Ok(())
+/// # }
 /// ```
 pub fn watch_config(path: impl Into<PathBuf>, handle: ReloadHandle) -> WatcherGuard {
     watch_config_with_interval(path, handle, DEFAULT_POLL_INTERVAL)

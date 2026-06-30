@@ -15,22 +15,24 @@
 //!
 //! # Usage
 //!
-//! Contexts are activated via `scope()` (async) or `scope_sync()` (sync):
+//! Contexts are activated via `scope_sync()` (sync) or, with the `async`
+//! feature, `scope()` (survives `.await` points):
 //!
-//! ```rust,ignore
-//! // Async — survives .await points
-//! ExecutionContext::new("exec-1", "wf-1", "tenant-1")
-//!     .scope(async {
-//!         do_work().await;
-//!         assert!(ExecutionContext::current().is_some());
-//!     })
-//!     .await;
+//! ```
+//! use nebula_log::observability::{ExecutionContext, NodeContext};
 //!
-//! // Sync
-//! NodeContext::new("node-1", "action-1")
-//!     .scope_sync(|| {
-//!         assert!(NodeContext::current().is_some());
+//! // Sync — the context is active for the duration of the closure and
+//! // nested scopes shadow outer ones.
+//! ExecutionContext::new("exec-1", "wf-1", "tenant-1").scope_sync(|| {
+//!     assert_eq!(ExecutionContext::current().unwrap().execution_id, "exec-1");
+//!
+//!     NodeContext::new("node-1", "action-1").scope_sync(|| {
+//!         assert_eq!(NodeContext::current().unwrap().node_key, "node-1");
 //!     });
+//! });
+//!
+//! // Outside every scope, no context is active.
+//! assert!(ExecutionContext::current().is_none());
 //! ```
 
 use std::{

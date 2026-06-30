@@ -139,14 +139,50 @@ pub trait TriggerAction: Action {
     /// `handle` for them) still implement this method — typical pattern for
     /// such triggers using `type Error = ActionError`:
     ///
-    /// ```ignore
-    /// async fn handle(
-    /// &self,
-    /// _ctx: &(impl TriggerContext + ?Sized),
-    /// _event: <Self::Source as TriggerSource>::Event,
-    /// ) -> Result<TriggerEventOutcome, ActionError> {
-    /// Err(ActionError::fatal("trigger does not accept external events"))
+    /// ```rust
+    /// # use std::sync::OnceLock;
+    /// use nebula_action::trigger::{TriggerAction, TriggerEventOutcome, TriggerSource};
+    /// use nebula_action::{Action, ActionError, ActionMetadata, TriggerContext};
+    /// # use nebula_core::{Dependencies, action_key};
+    ///
+    /// struct CronTrigger;
+    /// # struct CronSource;
+    /// # impl TriggerSource for CronSource { type Event = serde_json::Value; }
+    /// # impl Action for CronTrigger {
+    /// #     type Input = serde_json::Value;
+    /// #     type Output = serde_json::Value;
+    /// #     fn metadata() -> ActionMetadata {
+    /// #         ActionMetadata::new(action_key!("example.cron"), "Cron", "Schedule-driven")
+    /// #     }
+    /// #     fn dependencies() -> &'static Dependencies {
+    /// #         static D: OnceLock<Dependencies> = OnceLock::new();
+    /// #         D.get_or_init(Dependencies::new)
+    /// #     }
+    /// # }
+    ///
+    /// impl TriggerAction for CronTrigger {
+    ///     type Source = CronSource;
+    ///     type Error = ActionError;
+    /// #   async fn start(&self, _ctx: &(impl TriggerContext + ?Sized)) -> Result<(), ActionError> { Ok(()) }
+    /// #   async fn stop(&self, _ctx: &(impl TriggerContext + ?Sized)) -> Result<(), ActionError> { Ok(()) }
+    ///
+    ///     // This trigger fires on a schedule; the engine never pushes events
+    ///     // to it (`accepts_events()` stays `false`), so `handle` is
+    ///     // unreachable in practice and fails closed if ever called.
+    ///     async fn handle(
+    ///         &self,
+    ///         _ctx: &(impl TriggerContext + ?Sized),
+    ///         _event: serde_json::Value,
+    ///     ) -> Result<TriggerEventOutcome, ActionError> {
+    ///         Err(ActionError::fatal("trigger does not accept external events"))
+    ///     }
     /// }
+    ///
+    /// # let ctx = nebula_action::testing::TestContextBuilder::new().build_trigger().0;
+    /// # let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
+    /// // A scheduled trigger refuses any event the engine might mis-route to it.
+    /// let outcome = runtime.block_on(CronTrigger.handle(&ctx, serde_json::Value::Null));
+    /// assert!(outcome.is_err());
     /// ```
     fn handle(
         &self,
@@ -461,8 +497,39 @@ pub trait TriggerHandler: Send + Sync + 'static {
 ///
 /// # Example
 ///
-/// ```rust,ignore
-/// let handler: Arc<dyn TriggerHandler> = Arc::new(TriggerActionAdapter::new(my_trigger));
+/// ```rust
+/// # use std::sync::{Arc, OnceLock};
+/// # use nebula_action::trigger::{TriggerAction, TriggerActionAdapter, TriggerEventOutcome, TriggerHandler, TriggerSource};
+/// # use nebula_action::{Action, ActionError, ActionMetadata, TriggerContext};
+/// # use nebula_core::{Dependencies, action_key};
+/// # struct CronTrigger;
+/// # struct CronSource;
+/// # impl TriggerSource for CronSource { type Event = serde_json::Value; }
+/// # impl Action for CronTrigger {
+/// #     type Input = serde_json::Value;
+/// #     type Output = serde_json::Value;
+/// #     fn metadata() -> ActionMetadata {
+/// #         ActionMetadata::new(action_key!("example.cron"), "Cron", "Schedule-driven")
+/// #     }
+/// #     fn dependencies() -> &'static Dependencies {
+/// #         static D: OnceLock<Dependencies> = OnceLock::new();
+/// #         D.get_or_init(Dependencies::new)
+/// #     }
+/// # }
+/// # impl TriggerAction for CronTrigger {
+/// #     type Source = CronSource;
+/// #     type Error = ActionError;
+/// #     async fn start(&self, _ctx: &(impl TriggerContext + ?Sized)) -> Result<(), ActionError> { Ok(()) }
+/// #     async fn stop(&self, _ctx: &(impl TriggerContext + ?Sized)) -> Result<(), ActionError> { Ok(()) }
+/// #     async fn handle(&self, _ctx: &(impl TriggerContext + ?Sized), _event: serde_json::Value)
+/// #         -> Result<TriggerEventOutcome, ActionError> {
+/// #         Err(ActionError::fatal("trigger does not accept external events"))
+/// #     }
+/// # }
+/// // Erase the typed trigger behind the dyn handler contract the runtime stores.
+/// let handler: Arc<dyn TriggerHandler> = Arc::new(TriggerActionAdapter::new(CronTrigger));
+/// assert_eq!(handler.metadata().base.key, action_key!("example.cron"));
+/// assert!(!handler.accepts_events());
 /// ```
 pub struct TriggerActionAdapter<A> {
     action: A,

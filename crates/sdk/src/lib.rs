@@ -131,13 +131,14 @@ pub use serde_json::json;
 ///
 /// # Examples
 ///
-/// ```ignore
+/// ```
 /// use nebula_sdk::params;
 ///
-/// let params = params! {
-/// "name" => "test",
-/// "count" => 42
+/// let values = params! {
+///     "name" => "test",
+///     "count" => 42,
 /// };
+/// assert_eq!(values.len(), 2);
 /// ```
 #[macro_export]
 macro_rules! params {
@@ -163,10 +164,10 @@ macro_rules! params {
 ///
 /// # Examples
 ///
-/// ```ignore
+/// ```
 /// use nebula_sdk::workflow;
 ///
-/// let wf = workflow! {
+/// let builder = workflow! {
 ///     name: "my_workflow",
 ///     nodes: [
 ///         fetch: "http", "get" => transform,
@@ -174,6 +175,9 @@ macro_rules! params {
 ///         store: "db", "insert",
 ///     ]
 /// };
+/// let wf = builder.build().expect("valid workflow");
+/// assert_eq!(wf.nodes.len(), 3);
+/// assert_eq!(wf.connections.len(), 2);
 /// ```
 #[macro_export]
 macro_rules! workflow {
@@ -216,21 +220,24 @@ macro_rules! workflow {
 ///
 /// See `examples/hello_action.rs` for a runnable end-to-end demo.
 ///
-/// ```ignore
+/// ```
 /// use nebula_sdk::{prelude::*, simple_action};
 ///
 /// simple_action! {
-/// name: GreetAction,
-/// key: "demo.greet",
-/// input: serde_json::Value,
-/// output: serde_json::Value,
-/// async fn execute(&self, input, _ctx) {
-/// let name = input.get("name").and_then(|v| v.as_str()).unwrap_or("world");
-/// Ok(ActionResult::success(serde_json::json!({
-/// "message": format!("Hello, {name}!"),
-/// })))
+///     name: GreetAction,
+///     key: "demo.greet",
+///     input: serde_json::Value,
+///     output: serde_json::Value,
+///     async fn execute(&self, input, _ctx) {
+///         let name = input.get("name").and_then(|v| v.as_str()).unwrap_or("world");
+///         Ok(ActionResult::success(serde_json::json!({
+///             "message": format!("Hello, {name}!"),
+///         })))
+///     }
 /// }
-/// }
+///
+/// // The generated type carries static metadata; `execute` runs under an engine.
+/// assert_eq!(<GreetAction as Action>::metadata().base.name, "GreetAction");
 /// ```
 #[macro_export]
 macro_rules! simple_action {

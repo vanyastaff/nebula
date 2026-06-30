@@ -1,9 +1,9 @@
 //! Implementation of `#[derive(Schema)]` for payload-carrying enums.
 //!
-//! A Rust enum becomes a tagged-union schema ([`SchemaKind::Union`]): one
+//! A Rust enum becomes a tagged-union schema (`SchemaKind::Union`): one
 //! variant per enum variant, stored as the schema's sole root `Field::Mode`
 //! (the marker design — see `nebula_schema::SchemaKind::Union`). The variant wire
-//! keys and the recorded [`SerdeTagging`] reproduce serde's exact wire shape so
+//! keys and the recorded `SerdeTagging` reproduce serde's exact wire shape so
 //! the schema variant key always equals the wire key (the C1 invariant the whole
 //! serde-aware derive exists to protect).
 //!
@@ -15,7 +15,7 @@
 //!   **rejected** — the former inlines the tag into the payload's field namespace,
 //!   the latter has no discriminant key, so neither can satisfy C1.
 //! - **Variants:** unit (→ no payload), newtype `V(T)` where `T` derives
-//!   [`HasSchema`] as a struct, and struct `V { .. }`. **Rejected:** tuple
+//!   `HasSchema` as a struct, and struct `V { .. }`. **Rejected:** tuple
 //!   variants with more than one field, a newtype over a non-struct payload
 //!   (primitive / `Vec` / `Option`), and `#[serde(flatten)]` on a variant field.
 //! - **Renaming:** a variant's wire key follows serde — `#[serde(rename = "..")]`

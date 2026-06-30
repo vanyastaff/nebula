@@ -531,7 +531,7 @@ impl Manager {
     /// result.
     ///
     /// There is **no `Ambiguous` arm**: a resolved slot identity pins
-    /// exactly one row by construction, so the [`PinnedLookup`] type has no
+    /// exactly one row by construction, so the [`PinnedLookup`](crate::registry::PinnedLookup) type has no
     /// `Ambiguous` variant for this to handle — the cross-tenant-bleed
     /// failure mode the agnostic [`resolve_typed`](Self::resolve_typed)
     /// guards against is type-unrepresentable on the pinned path rather
@@ -712,7 +712,7 @@ impl Default for Manager {
 /// Recursively resolve `{{ … }}` expression templates inside a JSON tree.
 ///
 /// Strings that contain template markers are routed through
-/// [`ExpressionEngine::parse_template`] +
+/// [`ExpressionEngine::parse_template`](nebula_expression::ExpressionEngine::parse_template) +
 /// [`render_template`](nebula_expression::ExpressionEngine::render_template); strings without
 /// markers, and all non-string scalars, pass through untouched. Object and array containers are
 /// walked recursively.

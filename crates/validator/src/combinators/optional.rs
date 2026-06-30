@@ -6,15 +6,16 @@
 //!
 //! # Examples
 //!
-//! ```rust,ignore
+//! ```rust
 //! use nebula_validator::combinators::Optional;
 //! use nebula_validator::foundation::Validate;
+//! use nebula_validator::validators::min;
 //!
-//! // Validator that accepts None or valid strings
-//! let validator = Optional::new(min_length(5));
-//! assert!(validator.validate(&None).is_ok()); // None passes
-//! assert!(validator.validate(&Some("hello".to_string())).is_ok()); // Some valid passes
-//! assert!(validator.validate(&Some("hi".to_string())).is_err()); // Some invalid fails
+//! // Validator that accepts None or values that are at least 5.
+//! let validator = Optional::new(min(5));
+//! assert!(validator.validate(&None::<i32>).is_ok()); // None passes
+//! assert!(validator.validate(&Some(10)).is_ok()); // Some valid passes
+//! assert!(validator.validate(&Some(3)).is_err()); // Some invalid fails
 //! ```
 
 use crate::foundation::{Validate, ValidationError};
@@ -30,21 +31,22 @@ use crate::foundation::{Validate, ValidationError};
 ///
 /// # Examples
 ///
-/// ```rust,ignore
+/// ```rust
 /// use nebula_validator::combinators::Optional;
 /// use nebula_validator::foundation::Validate;
+/// use nebula_validator::validators::min;
 ///
-/// let validator = Optional::new(min_length(5));
+/// let validator = Optional::new(min(5));
 ///
 /// // None passes automatically
-/// let none: Option<String> = None;
+/// let none: Option<i32> = None;
 /// assert!(validator.validate(&none).is_ok());
 ///
 /// // Some with valid value passes
-/// assert!(validator.validate(&Some("hello".to_string())).is_ok());
+/// assert!(validator.validate(&Some(42)).is_ok());
 ///
 /// // Some with invalid value fails
-/// assert!(validator.validate(&Some("hi".to_string())).is_err());
+/// assert!(validator.validate(&Some(2)).is_err());
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Optional<V> {
@@ -89,14 +91,15 @@ where
 ///
 /// # Examples
 ///
-/// ```rust,ignore
+/// ```rust
 /// use nebula_validator::combinators::optional;
 /// use nebula_validator::foundation::Validate;
+/// use nebula_validator::validators::min;
 ///
-/// let validator = optional(min_length(5));
-/// assert!(validator.validate(&None::<String>).is_ok());
-/// assert!(validator.validate(&Some("hello".to_string())).is_ok());
-/// assert!(validator.validate(&Some("hi".to_string())).is_err());
+/// let validator = optional(min(5));
+/// assert!(validator.validate(&None::<i32>).is_ok());
+/// assert!(validator.validate(&Some(10)).is_ok());
+/// assert!(validator.validate(&Some(1)).is_err());
 /// ```
 pub fn optional<V>(validator: V) -> Optional<V> {
     Optional::new(validator)

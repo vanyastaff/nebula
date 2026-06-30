@@ -91,7 +91,7 @@ pub mod helpers {
     ///
     /// # Examples
     ///
-    /// ```ignore
+    /// ```
     /// use nebula_sdk::action::helpers::validate_schema;
     ///
     /// let schema = serde_json::json!({
@@ -123,8 +123,9 @@ pub mod helpers {
     ///
     /// # Examples
     ///
-    /// ```ignore
+    /// ```
     /// use nebula_sdk::action::helpers::parse_input;
+    /// use serde::Deserialize;
     ///
     /// #[derive(Deserialize)]
     /// struct MyInput {
@@ -133,6 +134,8 @@ pub mod helpers {
     ///
     /// let value = serde_json::json!({ "name": "test" });
     /// let input: MyInput = parse_input(&value)?;
+    /// assert_eq!(input.name, "test");
+    /// # Ok::<(), nebula_sdk::Error>(())
     /// ```
     pub fn parse_input<T: serde::de::DeserializeOwned>(input: &Value) -> Result<T, crate::Error> {
         serde_json::from_value(input.clone()).map_err(crate::Error::Serialization)

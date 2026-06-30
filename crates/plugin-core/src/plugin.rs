@@ -14,17 +14,23 @@ use crate::actions::{
 
 /// First-party core plugin.
 ///
-/// Provides foundational utility actions under the `core` plugin key. Wire it
-/// into the engine with `WorkflowEngine::with_plugin`:
+/// Provides foundational utility actions under the `core` plugin key. Resolve
+/// it once, then wrap the resolved plugin in an `Arc` and hand it to the engine
+/// via `WorkflowEngine::with_plugin` at the composition root.
 ///
-/// ```rust,ignore
+/// ```rust
 /// use std::sync::Arc;
-/// use nebula_engine::WorkflowEngine;
+/// use nebula_core::ActionKey;
 /// use nebula_plugin::ResolvedPlugin;
 /// use nebula_plugin_core::CorePlugin;
 ///
-/// let plugin = Arc::new(ResolvedPlugin::from(CorePlugin::try_new()?)?);
-/// let engine = engine.with_plugin(plugin)?;
+/// let resolved = ResolvedPlugin::from(CorePlugin::try_new()?)?;
+/// assert_eq!(resolved.key().as_str(), "core");
+///
+/// // The resolved plugin (shareable via `Arc`) carries the built-in actions.
+/// let plugin = Arc::new(resolved);
+/// assert!(plugin.action(&ActionKey::new("core.aggregate")?).is_some());
+/// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 #[derive(Debug)]
 pub struct CorePlugin {

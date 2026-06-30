@@ -8,7 +8,7 @@
 //!
 //! # Examples
 //!
-//! ```rust,ignore
+//! ```rust
 //! use nebula_validator::validator;
 //! use nebula_validator::foundation::{Validate, ValidationError};
 //!
@@ -27,6 +27,13 @@
 //!     rule(self, input) { input.len() >= self.min }
 //!     error(self, input) { ValidationError::min_length("", self.min, input.len()) }
 //!     fn min_length(min: usize);
+//! }
+//!
+//! fn main() {
+//!     assert!(not_empty().validate("hello").is_ok());
+//!     assert!(not_empty().validate("").is_err());
+//!     assert!(min_length(3).validate("hello").is_ok());
+//!     assert!(min_length(3).validate("hi").is_err());
 //! }
 //! ```
 
@@ -77,17 +84,25 @@
 /// # Variants
 ///
 /// **Unit validator** (zero-sized, no fields):
-/// ```rust,ignore
+/// ```rust
+/// # use nebula_validator::validator;
+/// # use nebula_validator::foundation::{Validate, ValidationError};
 /// validator! {
 ///     pub NotEmpty for str;
 ///     rule(input) { !input.is_empty() }
 ///     error(input) { ValidationError::new("not_empty", "empty") }
 ///     fn not_empty();
 /// }
+/// # fn main() {
+/// #     assert!(not_empty().validate("x").is_ok());
+/// #     assert!(not_empty().validate("").is_err());
+/// # }
 /// ```
 ///
 /// **Struct with fields** (auto `new` from all fields):
-/// ```rust,ignore
+/// ```rust
+/// # use nebula_validator::validator;
+/// # use nebula_validator::foundation::{Validate, ValidationError};
 /// validator! {
 ///     #[derive(Copy, PartialEq, Eq, Hash)]
 ///     pub MinLength { min: usize } for str;
@@ -95,10 +110,16 @@
 ///     error(self, input) { ValidationError::min_length("", self.min, input.len()) }
 ///     fn min_length(min: usize);
 /// }
+/// # fn main() {
+/// #     assert!(min_length(3).validate("abc").is_ok());
+/// #     assert!(min_length(3).validate("ab").is_err());
+/// # }
 /// ```
 ///
 /// **Custom constructor** (overrides auto `new`):
-/// ```rust,ignore
+/// ```rust
+/// # use nebula_validator::validator;
+/// # use nebula_validator::foundation::{Validate, ValidationError};
 /// validator! {
 ///     pub LengthRange { min: usize, max: usize } for str;
 ///     rule(self, input) { let l = input.len(); l >= self.min && l <= self.max }
@@ -106,10 +127,16 @@
 ///     new(min: usize, max: usize) { Self { min, max } }
 ///     fn length_range(min: usize, max: usize);
 /// }
+/// # fn main() {
+/// #     assert!(length_range(2, 5).validate("abc").is_ok());
+/// #     assert!(length_range(2, 5).validate("a").is_err());
+/// # }
 /// ```
 ///
 /// **Fallible constructor** (returns Result):
-/// ```rust,ignore
+/// ```rust
+/// # use nebula_validator::validator;
+/// # use nebula_validator::foundation::{Validate, ValidationError};
 /// validator! {
 ///     pub Range { lo: usize, hi: usize } for usize;
 ///     rule(self, input) { *input >= self.lo && *input <= self.hi }
@@ -120,10 +147,19 @@
 ///     }
 ///     fn range(lo: usize, hi: usize) -> ValidationError;
 /// }
+/// # fn main() {
+/// #     let v = range(1, 10).unwrap();
+/// #     assert!(v.validate(&5).is_ok());
+/// #     assert!(v.validate(&11).is_err());
+/// #     assert!(range(10, 1).is_err());
+/// # }
 /// ```
 ///
 /// **Generic validator**:
-/// ```rust,ignore
+/// ```rust
+/// # use nebula_validator::validator;
+/// # use nebula_validator::foundation::{Validate, ValidationError};
+/// # use std::fmt::Display;
 /// validator! {
 ///     #[derive(Copy, PartialEq, Eq, Hash)]
 ///     pub Min<T: PartialOrd + Display + Copy> { min: T } for T;
@@ -131,16 +167,26 @@
 ///     error(self, input) { ValidationError::new("min", format!("must be >= {}", self.min)) }
 ///     fn min(value: T);
 /// }
+/// # fn main() {
+/// #     assert!(min(5_i32).validate(&5).is_ok());
+/// #     assert!(min(5_i32).validate(&4).is_err());
+/// # }
 /// ```
 ///
 /// **Phantom generic** (generic with no trait bounds):
-/// ```rust,ignore
+/// ```rust
+/// # use nebula_validator::validator;
+/// # use nebula_validator::foundation::{Validate, ValidationError};
 /// validator! {
 ///     pub Required<T> for Option<T>;
 ///     rule(input) { input.is_some() }
 ///     error(input) { ValidationError::new("required", "required") }
 ///     fn required();
 /// }
+/// # fn main() {
+/// #     assert!(required::<i32>().validate(&Some(1)).is_ok());
+/// #     assert!(required::<i32>().validate(&None::<i32>).is_err());
+/// # }
 /// ```
 #[macro_export]
 macro_rules! validator {
@@ -674,11 +720,16 @@ macro_rules! validator {
 /// **Deprecated** — prefer `.and(...)` method chaining, which produces
 /// identical code with clearer semantics:
 ///
-/// ```rust,ignore
+/// ```rust
+/// # #![allow(deprecated)]
+/// # use nebula_validator::prelude::*;
+/// # use nebula_validator::compose;
 /// // Old:
-/// let v = compose![min_length(5), max_length(20), alphanumeric()];
+/// let with_macro = compose![min_length(5), max_length(20), alphanumeric()];
 /// // New:
-/// let v = min_length(5).and(max_length(20)).and(alphanumeric());
+/// let with_chain = min_length(5).and(max_length(20)).and(alphanumeric());
+/// # assert!(with_macro.validate("hello1").is_ok());
+/// # assert!(with_chain.validate("hello1").is_ok());
 /// ```
 #[macro_export]
 #[deprecated(
@@ -705,11 +756,16 @@ macro_rules! compose {
 /// **Deprecated** — prefer `.or(...)` method chaining, which produces
 /// identical code with clearer semantics:
 ///
-/// ```rust,ignore
+/// ```rust
+/// # #![allow(deprecated)]
+/// # use nebula_validator::prelude::*;
+/// # use nebula_validator::any_of;
 /// // Old:
-/// let v = any_of![exact_length(5), exact_length(10)];
+/// let with_macro = any_of![exact_length(5), exact_length(10)];
 /// // New:
-/// let v = exact_length(5).or(exact_length(10));
+/// let with_chain = exact_length(5).or(exact_length(10));
+/// # assert!(with_macro.validate("hello").is_ok());
+/// # assert!(with_chain.validate("world12345").is_ok());
 /// ```
 #[macro_export]
 #[deprecated(

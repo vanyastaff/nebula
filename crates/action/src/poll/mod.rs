@@ -410,33 +410,46 @@ impl<E> From<Vec<E>> for PollResult<E> {
 /// the pre-poll position (since no checkpoints were made, checkpoint
 /// equals the initial position).
 ///
-/// # Example — paginated Gmail poll
+/// # Example — paginated poll with checkpoints
 ///
-/// ```rust,ignore
-/// async fn poll(&self, cursor: &mut PollCursor<GmailCursor>, ctx: &(impl TriggerContext + ?Sized))
-///     -> Result<PollResult<GmailEvent>, ActionError>
-/// {
-///     let mut all_events = Vec::new();
-///     let mut page_token = None;
+/// A paginated `poll()` advances the cursor and calls
+/// [`checkpoint`](Self::checkpoint) after each successful page. If a later
+/// page fails, it returns [`PollResult::partial`]; the adapter dispatches
+/// the events gathered so far and rolls the cursor back to the last
+/// checkpoint instead of re-fetching completed pages.
 ///
-///     loop {
-///         let page = match self.client.history_list(cursor.history_id, page_token).await {
-///             Ok(p) => p,
-///             Err(e) => return Ok(PollResult::partial(all_events, e.into())),
-///         };
+/// ```rust
+/// use nebula_action::poll::{PollCursor, PollOutcome, PollResult};
+/// use nebula_action::ActionError;
 ///
-///         all_events.extend(page.events);
-///         cursor.history_id = page.last_history_id;
-///         cursor.checkpoint(); // safe to resume from here
+/// // Stand in for a paginated upstream: two good pages, then a failure.
+/// let pages: Vec<Result<Vec<i32>, &str>> =
+///     vec![Ok(vec![1, 2]), Ok(vec![3]), Err("upstream 500")];
 ///
-///         match page.next_page_token {
-///             Some(token) => page_token = Some(token),
-///             None => break,
+/// let mut cursor = PollCursor::new(0u64); // inner cursor = pages consumed
+/// let mut events = Vec::new();
+/// let mut result: Option<PollResult<i32>> = None;
+///
+/// for page in pages {
+///     match page {
+///         Ok(items) => {
+///             events.extend(items);
+///             *cursor += 1;        // advance via DerefMut
+///             cursor.checkpoint(); // safe to resume from here
+///         }
+///         Err(err) => {
+///             result = Some(PollResult::partial(events.clone(), ActionError::retryable(err)));
+///             break;
 ///         }
 ///     }
-///
-///     Ok(all_events.into())
 /// }
+///
+/// let result = result.expect("the third page fails");
+/// match result.outcome {
+///     PollOutcome::Partial { events, .. } => assert_eq!(events.len(), 3),
+///     _ => panic!("expected Partial"),
+/// }
+/// assert_eq!(*cursor, 2); // two pages checkpointed before the failure
 /// ```
 pub struct PollCursor<C> {
     current: C,
@@ -509,21 +522,38 @@ const DEFAULT_MAX_SEEN: usize = 1_000;
 ///
 /// # Example
 ///
-/// ```rust,ignore
+/// ```rust
 /// use nebula_action::poll::DeduplicatingCursor;
 ///
-/// type Cursor = DeduplicatingCursor<String, chrono::DateTime<chrono::Utc>>;
-///
-/// async fn poll(&self, cursor: &mut PollCursor<Cursor>, ctx: &(impl TriggerContext + ?Sized))
-///     -> Result<PollResult<Event>, ActionError>
-/// {
-///     let raw_events = fetch_since(cursor.inner).await?;
-///     let new_events = cursor.filter_new(raw_events, |e| e.id.clone());
-///     if let Some(last) = new_events.last() {
-///         cursor.inner = last.timestamp;
-///     }
-///     Ok(new_events.into())
+/// #[derive(Clone)]
+/// struct Event {
+///     id: String,
+///     timestamp: u64,
 /// }
+///
+/// // Inner cursor is a timestamp; the dedup keys are event ids.
+/// let mut cursor: DeduplicatingCursor<String, u64> = DeduplicatingCursor::new(0);
+///
+/// let batch = vec![
+///     Event { id: "a".into(), timestamp: 1 },
+///     Event { id: "b".into(), timestamp: 2 },
+/// ];
+/// let fresh = cursor.filter_new(batch, |e| e.id.clone());
+/// assert_eq!(fresh.len(), 2);
+/// if let Some(last) = fresh.last() {
+///     cursor.inner = last.timestamp; // advance the inner cursor
+/// }
+/// assert_eq!(cursor.inner, 2);
+///
+/// // Boundary duplicates carried over from the previous cycle are filtered out.
+/// let overlap = vec![
+///     Event { id: "b".into(), timestamp: 2 }, // already seen
+///     Event { id: "c".into(), timestamp: 3 }, // new
+/// ];
+/// let fresh = cursor.filter_new(overlap, |e| e.id.clone());
+/// assert_eq!(fresh.len(), 1);
+/// assert_eq!(fresh[0].id, "c");
+/// assert_eq!(cursor.seen_count(), 3);
 /// ```
 ///
 /// # Sizing `max_seen`
@@ -776,12 +806,30 @@ impl<K: Hash + Eq + Clone, C> DeduplicatingCursor<K, C> {
 ///
 /// # Example
 ///
-/// ```rust,ignore
-/// use nebula_action::poll::{PollAction, PollConfig, PollCursor, PollResult};
+/// ```rust
+/// use std::time::Duration;
+/// use nebula_action::{PollAction, PollConfig, PollCursor, PollResult, TriggerContext};
+/// # use std::sync::OnceLock;
+/// # use nebula_action::{Action, ActionError, ActionMetadata};
+/// # use nebula_core::{Dependencies, action_key};
 ///
-/// struct RssPoll { feed_url: String }
+/// struct RssPoll {
+///     feed_url: String,
+/// }
+///
+/// # impl Action for RssPoll {
+/// #     type Input = serde_json::Value;
+/// #     type Output = serde_json::Value;
+/// #     fn metadata() -> ActionMetadata {
+/// #         ActionMetadata::new(action_key!("rss.poll"), "RSS Poll", "Poll an RSS feed")
+/// #     }
+/// #     fn dependencies() -> &'static Dependencies {
+/// #         static D: OnceLock<Dependencies> = OnceLock::new();
+/// #         D.get_or_init(Dependencies::new)
+/// #     }
+/// # }
 /// impl PollAction for RssPoll {
-///     type Cursor = String;
+///     type Cursor = String; // last-seen entry id
 ///     type Event = serde_json::Value;
 ///
 ///     fn poll_config(&self) -> PollConfig {
@@ -789,15 +837,34 @@ impl<K: Hash + Eq + Clone, C> DeduplicatingCursor<K, C> {
 ///             Duration::from_secs(60),
 ///             Duration::from_secs(3600),
 ///             2.0,
-///         ).with_timeout(Duration::from_secs(10))
+///         )
+///         .with_timeout(Duration::from_secs(10))
 ///     }
 ///
-///     async fn poll(&self, cursor: &mut PollCursor<String>, ctx: &(impl TriggerContext + ?Sized))
-///         -> Result<PollResult<serde_json::Value>, ActionError> {
-///         let items = fetch_rss(&self.feed_url, &*cursor).await?;
+///     async fn poll(
+///         &self,
+///         cursor: &mut PollCursor<String>,
+///         _ctx: &(impl TriggerContext + ?Sized),
+///     ) -> Result<PollResult<serde_json::Value>, ActionError> {
+///         // A real reader would fetch `self.feed_url` for entries after
+///         // `*cursor`; here we synthesize one entry to stay self-contained.
+///         let entry_id = format!("{}#1", self.feed_url);
+///         let items = vec![serde_json::json!({ "id": entry_id, "title": "hello" })];
+///         **cursor = entry_id;
 ///         Ok(items.into())
 ///     }
 /// }
+///
+/// # #[tokio::main]
+/// # async fn main() {
+/// #     use nebula_action::{PollOutcome, TestContextBuilder};
+/// #     let action = RssPoll { feed_url: "https://example.com/feed.xml".into() };
+/// #     let (ctx, ..) = TestContextBuilder::minimal().build_trigger();
+/// #     let mut cursor = PollCursor::new(String::new());
+/// #     let result = action.poll(&mut cursor, &ctx).await.unwrap();
+/// #     assert!(matches!(result.outcome, PollOutcome::Ready { ref events } if events.len() == 1));
+/// #     assert_eq!(*cursor, "https://example.com/feed.xml#1");
+/// # }
 /// ```
 pub trait PollAction: Action + Send + Sync + 'static {
     /// Cursor type for tracking poll position.

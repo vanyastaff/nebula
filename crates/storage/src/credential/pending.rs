@@ -55,12 +55,49 @@ use tokio::sync::RwLock;
 ///
 /// # Examples
 ///
-/// ```rust,ignore
+/// ```rust
+/// # use std::time::Duration;
+/// # use serde::{Deserialize, Serialize};
+/// # use zeroize::{Zeroize, ZeroizeOnDrop};
+/// use nebula_credential::PendingStateStore;
 /// use nebula_storage::credential::InMemoryPendingStore;
 ///
+/// # #[derive(Clone, Serialize, Deserialize, PartialEq, Debug)]
+/// # struct MyPending {
+/// #     code: String,
+/// # }
+/// # impl Zeroize for MyPending {
+/// #     fn zeroize(&mut self) {
+/// #         self.code.zeroize();
+/// #     }
+/// # }
+/// # impl Drop for MyPending {
+/// #     fn drop(&mut self) {
+/// #         self.zeroize();
+/// #     }
+/// # }
+/// # impl ZeroizeOnDrop for MyPending {}
+/// # impl nebula_credential::PendingState for MyPending {
+/// #     const KIND: &'static str = "oauth2";
+/// #     fn expires_in(&self) -> Duration {
+/// #         Duration::from_secs(300)
+/// #     }
+/// # }
 /// let store = InMemoryPendingStore::new();
-/// let token = store.put("oauth2", "user_1", "sess_1", pending).await?;
-/// let state = store.consume::<MyPending>("oauth2", &token, "user_1", "sess_1").await?;
+/// let pending = MyPending {
+///     code: "auth-code".to_owned(),
+/// };
+///
+/// let runtime = tokio::runtime::Runtime::new()?;
+/// runtime.block_on(async {
+///     // The token binds the entry to (credential_kind, owner_id, session_id);
+///     // `consume` is single-use and re-checks that binding.
+///     let token = store.put("oauth2", "user_1", "sess_1", pending).await?;
+///     let restored: MyPending = store.consume("oauth2", &token, "user_1", "sess_1").await?;
+///     assert_eq!(restored.code, "auth-code");
+///     Ok::<(), Box<dyn std::error::Error>>(())
+/// })?;
+/// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 #[derive(Clone)]
 pub struct InMemoryPendingStore {

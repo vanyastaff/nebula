@@ -104,8 +104,51 @@ pub trait ResourceHandler: Send + Sync + 'static {
 ///
 /// # Example
 ///
-/// ```rust,ignore
-/// let handler: Arc<dyn ResourceHandler> = Arc::new(ResourceActionAdapter::new(my_resource));
+/// ```rust
+/// use std::sync::{Arc, OnceLock};
+///
+/// use nebula_action::prelude::*;
+/// use nebula_action::{ResourceHandler, ResourceProduces};
+/// use nebula_core::action_key;
+///
+/// struct StringPool;
+///
+/// impl Action for StringPool {
+///     type Input = serde_json::Value;
+///     // ResourceAction constrains `Output` to `ResourceProduces<Self::Resource>`.
+///     type Output = ResourceProduces<String>;
+///
+///     fn metadata() -> ActionMetadata {
+///         ActionMetadata::new(action_key!("demo.string_pool"), "StringPool", "A pooled String")
+///     }
+///     fn dependencies() -> &'static Dependencies {
+///         static D: OnceLock<Dependencies> = OnceLock::new();
+///         D.get_or_init(Dependencies::new)
+///     }
+/// }
+///
+/// impl ResourceAction for StringPool {
+///     type Resource = String;
+///
+///     async fn configure(
+///         &self,
+///         _ctx: &(impl ActionContext + ?Sized),
+///     ) -> Result<String, ActionError> {
+///         Ok("pool".to_owned())
+///     }
+///
+///     async fn cleanup(
+///         &self,
+///         _resource: String,
+///         _ctx: &(impl ActionContext + ?Sized),
+///     ) -> Result<(), ActionError> {
+///         Ok(())
+///     }
+/// }
+///
+/// // The typed action erases to a `dyn ResourceHandler` the engine can store.
+/// let handler: Arc<dyn ResourceHandler> = Arc::new(ResourceActionAdapter::new(StringPool));
+/// assert_eq!(handler.metadata().base.key, action_key!("demo.string_pool"));
 /// ```
 pub struct ResourceActionAdapter<A> {
     action: A,

@@ -1,6 +1,6 @@
 //! Typed-closure builder for grouped fields with shared visible/required rules.
 //!
-//! A group is not a single [`Field`](crate::field::Field) — it is a collection
+//! A group is not a single [`Field`] — it is a collection
 //! of sibling fields that share a common label prefix and common
 //! `visible_when` / `required_when` conditions. At finish time each child
 //! inherits the shared conditions (AND-composed with any per-child condition).

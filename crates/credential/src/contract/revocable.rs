@@ -29,21 +29,52 @@ use crate::{Credential, CredentialContext, error::CredentialError};
 ///
 /// # Examples
 ///
-/// ```ignore
-/// use nebula_credential::{Credential, Revocable};
+/// ```
+/// use nebula_credential::{
+///     AuthPattern, Credential, CredentialContext, CredentialMetadata, Revocable,
+///     SecretString, scheme::SecretToken,
+/// };
+/// use nebula_credential::error::CredentialError;
+/// use nebula_credential::resolve::ResolveResult;
+/// use nebula_core::credential_key;
+/// use nebula_schema::{FieldValues, ValidSchema};
 ///
 /// struct OAuth2Cred;
 ///
-/// // (impl Credential for OAuth2Cred elided)
-///
+/// # impl Credential for OAuth2Cred {
+/// #     type Properties = FieldValues;
+/// #     type Scheme = SecretToken;
+/// #     type State = SecretToken;
+/// #     const KEY: &'static str = "oauth2_cred";
+/// #     fn metadata() -> CredentialMetadata {
+/// #         CredentialMetadata::new(
+/// #             credential_key!("oauth2_cred"), "OAuth2", "demo",
+/// #             ValidSchema::empty(), AuthPattern::SecretToken,
+/// #         )
+/// #     }
+/// #     fn project(state: &SecretToken) -> SecretToken { state.clone() }
+/// #     async fn resolve(
+/// #         _values: &FieldValues,
+/// #         _ctx: &CredentialContext,
+/// #     ) -> Result<ResolveResult<SecretToken, ()>, CredentialError> {
+/// #         Ok(ResolveResult::Complete(SecretToken::new(SecretString::new(""))))
+/// #     }
+/// # }
 /// impl Revocable for OAuth2Cred {
 ///     async fn revoke(
-///         state: &mut OAuth2State,
-///         ctx: &CredentialContext<'_>,
+///         state: &mut SecretToken,
+///         _ctx: &CredentialContext,
 ///     ) -> Result<(), CredentialError> {
-///         // ... POST to provider's token revocation endpoint ...
+///         // POST to the provider's token revocation endpoint (RFC 7009), then
+///         // zero the stored token so subsequent resolves see it as revoked.
+///         *state = SecretToken::new(SecretString::new(""));
+///         Ok(())
 ///     }
 /// }
+///
+/// // Revoke capability is encoded by trait membership — `where C: Revocable`.
+/// fn assert_revocable<C: Revocable>() {}
+/// assert_revocable::<OAuth2Cred>();
 /// ```
 pub trait Revocable: Credential {
     /// Revoke this credential at the provider.

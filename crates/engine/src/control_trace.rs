@@ -1,5 +1,6 @@
-//! Link control-queue dispatch spans to W3C Trace Context persisted on [`ControlQueueEntry`]
-//! (M3.5). Mirrors the API inbound attach path (`nebula_api::middleware::trace_w3c`) without
+//! Link control-queue dispatch spans to W3C Trace Context persisted on
+//! [`ControlMsg`](nebula_storage_port::dto::ControlMsg) (M3.5). Mirrors the API inbound attach
+//! path (`nebula_api::middleware::trace_w3c`) without
 //! importing the API crate (layer boundary — `deny.toml`).
 
 use nebula_core::W3cTraceContext;

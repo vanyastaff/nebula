@@ -17,26 +17,28 @@
 //!
 //! ## Extension Method Style
 //!
-//! ```rust,ignore
+//! ```rust
 //! use nebula_validator::prelude::*;
 //!
 //! // String validation
-//! "hello@example.com".validate(&email())?;
+//! "hello@example.com".validate_with(&email())?;
 //!
 //! // Numeric validation
-//! 42.validate(&min(10))?;
+//! 42.validate_with(&min(10))?;
 //!
-//! // Collection validation
-//! vec![1, 2, 3].validate(&min_size(2))?;
+//! // Collection validation (collection validators target slices)
+//! [1, 2, 3].as_slice().validate_with(&min_size(2))?;
+//! # Ok::<(), nebula_validator::foundation::ValidationError>(())
 //! ```
 //!
 //! ## Direct Validator Style
 //!
-//! ```rust,ignore
+//! ```rust
 //! use nebula_validator::prelude::*;
 //!
 //! let validator = min_length(3).and(max_length(20));
 //! validator.validate("hello")?;
+//! # Ok::<(), nebula_validator::foundation::ValidationError>(())
 //! ```
 
 use std::borrow::Borrow;
@@ -61,28 +63,29 @@ use crate::{
 ///
 /// # Type Safety Through Bounds
 ///
-/// ```rust,ignore
-/// // String validator - accepts any AsRef<str>
-/// impl<T: AsRef<str> + ?Sized> Validate<T> for MinLength { ... }
+/// ```rust
+/// use nebula_validator::prelude::*;
 ///
-/// // Numeric validator - accepts any Ord type
-/// impl<T: Ord> Validate<T> for Min<T> { ... }
+/// // String validators accept string inputs (bound: `AsRef<str>`).
+/// assert!(min_length(3).validate("hello").is_ok());
 ///
-/// // This ensures compile-time type safety:
-/// "hello".validate(&min_length(3));  // ✓ Compiles
-/// 42.validate(&min_length(3));       // ✗ Compile error: i32 doesn't impl AsRef<str>
+/// // Numeric validators accept the matching numeric type.
+/// assert!(min(10).validate(&42).is_ok());
+///
+/// // Compile-time type safety: `42.validate_with(&min_length(3))` would NOT
+/// // compile, because i32 does not implement `AsRef<str>`.
 /// ```
 ///
 /// # Examples
 ///
-/// ```rust,ignore
+/// ```rust
 /// use nebula_validator::foundation::{Validate, ValidationError};
 ///
 /// struct IsPositive;
 ///
-/// impl<T: Ord + Default> Validate<T> for IsPositive {
+/// impl<T: PartialOrd + Default> Validate<T> for IsPositive {
 ///     fn validate(&self, input: &T) -> Result<(), ValidationError> {
-///         if input > &T::default() {
+///         if *input > T::default() {
 ///             Ok(())
 ///         } else {
 ///             Err(ValidationError::new("positive", "Must be positive"))
@@ -90,9 +93,10 @@ use crate::{
 ///     }
 /// }
 ///
-/// // Works with any Ord + Default type
+/// // Works with any PartialOrd + Default type (covers floats, which are not `Ord`)
 /// assert!(IsPositive.validate(&42i32).is_ok());
 /// assert!(IsPositive.validate(&3.14f64).is_ok());
+/// assert!(IsPositive.validate(&-1i32).is_err());
 /// ```
 pub trait Validate<T: ?Sized> {
     /// Validates the input value.
@@ -111,7 +115,7 @@ pub trait Validate<T: ?Sized> {
     ///
     /// # Examples
     ///
-    /// ```rust,ignore
+    /// ```rust
     /// use nebula_validator::prelude::*;
     /// use serde_json::json;
     ///
@@ -173,21 +177,22 @@ pub trait Validate<T: ?Sized> {
 ///
 /// # Examples
 ///
-/// ```rust,ignore
+/// ```rust
 /// use nebula_validator::prelude::*;
 ///
 /// // Extension method style - read left to right
-/// let result = "hello".validate_with(&min_length(3));
+/// assert!("hello".validate_with(&min_length(3)).is_ok());
 ///
-/// // Chain multiple validations
+/// // Chain multiple validations (each returns `&Self` on success)
 /// "hello"
 ///     .validate_with(&min_length(3))?
 ///     .validate_with(&max_length(20))?;
 ///
-/// // Works with any type
+/// // Works across types: numbers, slices, and bools
 /// 42.validate_with(&min(10))?;
-/// vec![1, 2, 3].validate_with(&not_empty())?;
+/// [1, 2, 3].as_slice().validate_with(&not_empty_collection())?;
 /// true.validate_with(&is_true())?;
+/// # Ok::<(), nebula_validator::foundation::ValidationError>(())
 /// ```
 pub trait Validatable {
     /// Validates this value using the given validator.
@@ -221,19 +226,23 @@ impl<T: ?Sized> Validatable for T {
 ///
 /// # Examples
 ///
-/// ```rust,ignore
+/// ```rust
 /// use nebula_validator::prelude::*;
 ///
 /// // Compose validators fluently
 /// let username = min_length(3)
 ///     .and(max_length(20))
 ///     .and(alphanumeric());
+/// username.validate("alice123")?;
 ///
 /// // Use OR for alternatives
 /// let id = uuid().or(email());
+/// id.validate("user@example.com")?;
 ///
 /// // Use NOT for negation
-/// let not_empty = min_length(1).not().not(); // Double negation = original
+/// let original = min_length(1).not().not(); // Double negation = original
+/// original.validate("hi")?;
+/// # Ok::<(), nebula_validator::foundation::ValidationError>(())
 /// ```
 pub trait ValidateExt<T: ?Sized>: Validate<T> + Sized {
     /// Combines two validators with logical AND.

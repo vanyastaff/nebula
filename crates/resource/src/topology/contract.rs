@@ -245,15 +245,24 @@ impl Unavailable {
 ///
 /// # Examples
 ///
-/// ```ignore
-/// // Capacity-gated topology (Pooled, Bounded::Capped):
-/// let permit = semaphore.acquire_owned().await?;
-/// let ticket = Ticket::permit(permit);
-/// // ... use ticket for acquire ...
+/// ```
+/// use std::sync::Arc;
 ///
-/// // Unconstrained topology (Resident, Unbounded):
+/// use nebula_resource::Ticket;
+/// use tokio::sync::Semaphore;
+///
+/// # #[tokio::main(flavor = "current_thread")]
+/// # async fn main() {
+/// // Capacity-gated topology (Pooled, Bounded::Capped): the permit IS the gate.
+/// let semaphore = Arc::new(Semaphore::new(1));
+/// let permit = semaphore.acquire_owned().await.expect("semaphore is open");
+/// let ticket = Ticket::permit(permit);
+/// assert!(ticket.into_permit().is_some());
+///
+/// // Unconstrained topology (Resident, Unbounded): zero-cost, no permit.
 /// let ticket = Ticket::infallible();
-/// // ... use ticket for acquire ...
+/// assert!(ticket.into_permit().is_none());
+/// # }
 /// ```
 #[must_use = "dropping a Ticket releases the held permit — use it or explicitly drop"]
 pub struct Ticket {

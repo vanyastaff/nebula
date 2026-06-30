@@ -265,13 +265,30 @@ impl ActionMetadata {
     ///
     /// # Example
     ///
-    /// ```ignore
-    /// use nebula_action::ActionMetadata;
-    /// use nebula_core::action_key;
+    /// ```rust
+    /// use std::sync::OnceLock;
+    /// use nebula_action::{Action, ActionMetadata};
+    /// use nebula_core::{Dependencies, action_key};
     ///
+    /// struct MyAction;
+    /// impl Action for MyAction {
+    ///     type Input = serde_json::Value;
+    ///     type Output = serde_json::Value;
+    ///     fn metadata() -> ActionMetadata {
+    ///         ActionMetadata::for_action::<Self>(action_key!("my.action"), "My Action", "desc")
+    ///     }
+    ///     fn dependencies() -> &'static Dependencies {
+    ///         static D: OnceLock<Dependencies> = OnceLock::new();
+    ///         D.get_or_init(Dependencies::new)
+    ///     }
+    /// }
+    ///
+    /// // `for_action` seeds both the parameter schema (from `Input`) and the
+    /// // output schema (from `Output`) — no manual `with_schema` call needed.
     /// let meta = ActionMetadata::for_action::<MyAction>(
     ///     action_key!("my.action"), "My Action", "desc",
     /// );
+    /// assert_eq!(meta.base.key, action_key!("my.action"));
     /// ```
     #[must_use]
     pub fn for_action<A>(

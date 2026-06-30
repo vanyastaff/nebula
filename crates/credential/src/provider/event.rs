@@ -12,7 +12,7 @@
 //! # Why a separate event type
 //!
 //! Lease events carry richer payload than the simple
-//! `{credential_id}` shape of [`CredentialEvent`], and a significant
+//! `{credential_id}` shape of [`CredentialEvent`](crate::CredentialEvent), and a significant
 //! subset of leases are unattributed to a nebula `CredentialId` (e.g.
 //! ad-hoc provider use through composition root). Publishing on
 //! `EventBus<LeaseEvent>` rather than overloading `CredentialEvent`

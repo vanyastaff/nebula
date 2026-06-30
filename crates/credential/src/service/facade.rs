@@ -1059,7 +1059,7 @@ impl CredentialService {
         self.finish_acquire(scope, credential_key, outcome).await
     }
 
-    /// Map an [`AcquireOutcome`] into the public [`Acquisition`]:
+    /// Map an [`AcquireOutcome`](super::ops::AcquireOutcome) into the public [`Acquisition`]:
     /// `Complete` is persisted (shared create path); `Pending`/`Retry`
     /// surface the token + interaction without persisting.
     async fn finish_acquire(

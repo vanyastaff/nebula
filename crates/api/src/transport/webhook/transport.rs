@@ -160,7 +160,7 @@ pub(super) struct TransportInner {
     /// this field is `None`, so no disciplined opt-in is needed.
     pub(super) tenant_rate_limiter: Option<WebhookRateLimiter>,
     /// Optional metrics registry. When `Some`, signature-failure
-    /// outcomes increment [`NEBULA_WEBHOOK_SIGNATURE_FAILURES_TOTAL`]
+    /// outcomes increment [`NEBULA_WEBHOOK_SIGNATURE_FAILURES_TOTAL`](nebula_metrics::NEBULA_WEBHOOK_SIGNATURE_FAILURES_TOTAL)
     ///. `None` means the transport runs without emitting
     /// the counter — the enforcement behaviour is identical.
     pub(super) metrics: Option<Arc<MetricsRegistry>>,

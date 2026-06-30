@@ -77,44 +77,53 @@ use crate::{
 ///
 /// # Examples
 ///
-/// ```ignore
+/// ```
 /// use nebula_credential::{
-///     Credential, identity_state,
+///     AuthPattern, Credential, CredentialContext, CredentialMetadata, SecretString,
 ///     scheme::SecretToken,
-///     resolve::ResolveResult,
 /// };
-/// use nebula_schema::Schema;
-/// use serde::Deserialize;
-///
-/// #[derive(Schema, Deserialize)]
-/// struct SlackBotProperties {
-///     #[field(secret, label = "Bot token")]
-///     #[validate(required)]
-///     bot_token: String,
-/// }
+/// use nebula_credential::error::CredentialError;
+/// use nebula_credential::resolve::ResolveResult;
+/// use nebula_core::credential_key;
+/// use nebula_schema::{FieldValues, ValidSchema};
 ///
 /// struct SlackBotToken;
 ///
-/// identity_state!(SecretToken, "secret_token", 1);
-///
 /// impl Credential for SlackBotToken {
-///     type Properties = SlackBotProperties;
+///     // `State` == `Scheme` for static credentials: `SecretToken` is both an
+///     // `AuthScheme` and (via `identity_state!`) a `CredentialState`.
+///     type Properties = FieldValues;
 ///     type Scheme = SecretToken;
 ///     type State = SecretToken;
 ///
 ///     const KEY: &'static str = "slack_bot_token";
 ///
-///     fn metadata() -> CredentialMetadata { /* ... */ }
+///     fn metadata() -> CredentialMetadata {
+///         CredentialMetadata::new(
+///             credential_key!("slack_bot_token"),
+///             "Slack Bot Token",
+///             "Slack bot OAuth token",
+///             ValidSchema::empty(),
+///             AuthPattern::SecretToken,
+///         )
+///     }
+///
 ///     fn project(state: &SecretToken) -> SecretToken { state.clone() }
 ///
 ///     async fn resolve(
 ///         values: &FieldValues,
-///         _ctx: &CredentialContext<'_>,
+///         _ctx: &CredentialContext,
 ///     ) -> Result<ResolveResult<SecretToken, ()>, CredentialError> {
 ///         let token = values.get_string_by_str("bot_token").unwrap_or_default();
 ///         Ok(ResolveResult::Complete(SecretToken::new(SecretString::new(token.to_owned()))))
 ///     }
 /// }
+///
+/// assert_eq!(SlackBotToken::KEY, "slack_bot_token");
+/// // `project` is a pure, synchronous extraction of auth material from state.
+/// let state = SecretToken::new(SecretString::new("xoxb-123"));
+/// let scheme = SlackBotToken::project(&state);
+/// assert_eq!(scheme.token().expose_secret(), "xoxb-123");
 /// ```
 pub trait Credential: Send + Sync + 'static {
     /// Typed shape of the credential setup-form fields.

@@ -850,7 +850,7 @@ impl Registry {
     /// [`ScopeLevel::Global`] fallback) so the scope-precedence rule is
     /// applied before any reasoning — a Global-scoped row of the wrong
     /// credential must not shadow a correctly-scoped one. Returns
-    /// [`ScopeFind::Found`] iff exactly one row exists at the effective
+    /// [`ScopeFind::Hit`] iff exactly one row exists at the effective
     /// scope and [`ScopeFind::Ambiguous`] if two or more — the registry
     /// refuses to silently alias one tenant's runtime to another.
     ///
@@ -971,7 +971,7 @@ impl Registry {
     /// Still **fail-closed**: the only fallback is a Global row that
     /// matches `want_identity` (and the concrete type) exactly — a
     /// different tenant's row is never aliased. Unambiguous by construction
-    /// (see [`PinnedFind`] / [`find_pinned_at_exact_scope`]).
+    /// (see [`PinnedFind`] / [`find_pinned_at_exact_scope`](Self::find_pinned_at_exact_scope)).
     fn find_pinned_in_entries(
         entries: &[RegistryEntry],
         scope: &ScopeLevel,

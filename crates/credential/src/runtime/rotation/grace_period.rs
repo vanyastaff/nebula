@@ -16,15 +16,19 @@ use crate::CredentialId;
 ///
 /// # Example
 ///
-/// ```rust,ignore
-/// use nebula_credential::runtime::rotation::grace_period::GracePeriodConfig;
+/// ```rust
 /// use std::time::Duration;
+///
+/// use nebula_credential::runtime::rotation::grace_period::GracePeriodConfig;
 ///
 /// let config = GracePeriodConfig {
 ///     duration: Duration::from_secs(7 * 24 * 3600), // 7 days
 ///     allow_overlap: true,
 ///     notify_on_expiry: true,
 /// };
+///
+/// assert_eq!(config.duration, Duration::from_secs(7 * 24 * 3600));
+/// assert!(config.allow_overlap);
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct GracePeriodConfig {

@@ -5,7 +5,7 @@
 //!
 //! # Examples
 //!
-//! ```rust,ignore
+//! ```rust
 //! use nebula_validator::prelude::*;
 //!
 //! // Extension method style - read left-to-right
@@ -18,6 +18,7 @@
 //! // Composition with combinators
 //! let validator = min_length(3).and(max_length(20));
 //! "hello".validate_with(&validator)?;
+//! # Ok::<(), ValidationError>(())
 //! ```
 
 #[allow(clippy::wildcard_imports, ambiguous_glob_reexports)]

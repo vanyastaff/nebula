@@ -22,39 +22,80 @@
 //! for `TriggerAction` DX families: author writes a typed trait, adapter
 //! wraps and bridges to the dyn-compat handler contract. Registration:
 //!
-//! ```rust,ignore
-//! use nebula_action::{ControlAction, ControlActionAdapter, StatelessHandler};
+//! ```rust
+//! # use std::sync::OnceLock;
+//! # use serde_json::Value;
+//! # use nebula_action::{
+//! #     Action, ActionContext, ActionError, ActionKind, ActionMetadata,
+//! #     ControlAction, ControlInput, ControlOutcome, branch_key,
+//! # };
+//! # use nebula_core::{Dependencies, action_key};
 //! use std::sync::Arc;
-//!
+//! use nebula_action::{ControlActionAdapter, StatelessHandler};
+//! # struct MyIf;
+//! # impl MyIf { fn new() -> Self { Self } }
+//! # impl Action for MyIf {
+//! #     type Input = Value;
+//! #     type Output = Value;
+//! #     fn metadata() -> ActionMetadata {
+//! #         ActionMetadata::new(action_key!("control.if"), "If", "Binary branch")
+//! #     }
+//! #     fn dependencies() -> &'static Dependencies {
+//! #         static D: OnceLock<Dependencies> = OnceLock::new();
+//! #         D.get_or_init(Dependencies::new)
+//! #     }
+//! # }
+//! # impl ControlAction for MyIf {
+//! #     async fn evaluate(
+//! #         &self,
+//! #         input: ControlInput,
+//! #         _ctx: &(impl ActionContext + ?Sized),
+//! #     ) -> Result<ControlOutcome, ActionError> {
+//! #         let cond = input.get_bool("/condition")?;
+//! #         let selected = if cond { branch_key!("true") } else { branch_key!("false") };
+//! #         Ok(ControlOutcome::Branch { selected, output: input.into_value() })
+//! #     }
+//! # }
 //! let adapter = ControlActionAdapter::new(MyIf::new());
 //! let handler: Arc<dyn StatelessHandler> = Arc::new(adapter);
-//! registry.register(handler);
+//! // The adapter stamps `ActionKind::Control`, so the registry can classify
+//! // the erased handler without the author tagging the node by hand.
+//! assert_eq!(handler.metadata().kind, ActionKind::Control);
 //! ```
 //!
 //! # Example: writing an `If` node
 //!
-//! ```rust,ignore
+//! ```rust
+//! use std::sync::OnceLock;
+//! use serde_json::Value;
 //! use nebula_action::{
-//!     Action, DeclaresDependencies, ActionError,
-//!     ActionMetadata, ControlAction, ControlInput, ControlOutcome,
+//!     Action, ActionContext, ActionError, ActionMetadata, ActionResult,
+//!     ControlAction, ControlActionAdapter, ControlInput, ControlOutcome,
+//!     StatelessHandler, branch_key, port_key,
+//!     port::{OutputPort, default_input_ports},
 //! };
+//! use nebula_action::testing::TestContextBuilder;
 //! use nebula_core::{Dependencies, action_key};
 //!
 //! pub struct MyIf;
 //!
-//! impl DeclaresDependencies for MyIf {}
 //! impl Action for MyIf {
-//!     type Input = serde_json::Value;
-//!     type Output = serde_json::Value;
+//!     type Input = Value;
+//!     type Output = Value;
 //!
 //!     // The `ControlActionAdapter` stamps `ActionKind::Control` automatically;
 //!     // authors do not classify the node by hand.
 //!     fn metadata() -> ActionMetadata {
 //!         ActionMetadata::new(action_key!("control.if"), "If", "Binary branch")
+//!             .with_inputs(default_input_ports())
+//!             .with_outputs(vec![
+//!                 OutputPort::flow(port_key!("true")),
+//!                 OutputPort::flow(port_key!("false")),
+//!             ])
 //!     }
 //!
 //!     fn dependencies() -> &'static Dependencies {
-//!         static D: std::sync::OnceLock<Dependencies> = std::sync::OnceLock::new();
+//!         static D: OnceLock<Dependencies> = OnceLock::new();
 //!         D.get_or_init(Dependencies::new)
 //!     }
 //! }
@@ -63,15 +104,33 @@
 //!     async fn evaluate(
 //!         &self,
 //!         input: ControlInput,
-//!         _ctx: &(impl nebula_action::ActionContext + ?Sized),
+//!         _ctx: &(impl ActionContext + ?Sized),
 //!     ) -> Result<ControlOutcome, ActionError> {
 //!         let condition = input.get_bool("/condition")?;
-//!         let selected = if condition { nebula_action::branch_key!("true") } else { nebula_action::branch_key!("false") };
+//!         let selected = if condition { branch_key!("true") } else { branch_key!("false") };
 //!         Ok(ControlOutcome::Branch {
 //!             selected,
 //!             output: input.into_value(),
 //!         })
 //!     }
+//! }
+//!
+//! #[tokio::main]
+//! async fn main() {
+//!     // Wrap the typed action and drive it through the erased handler path.
+//!     let adapter = ControlActionAdapter::new(MyIf);
+//!     let ctx = TestContextBuilder::new().build();
+//!     let result = StatelessHandler::execute(
+//!         &adapter,
+//!         serde_json::json!({ "condition": true }),
+//!         &ctx,
+//!     )
+//!     .await
+//!     .unwrap();
+//!     assert!(matches!(
+//!         result,
+//!         ActionResult::Branch { selected, .. } if selected.as_str() == "true"
+//!     ));
 //! }
 //! ```
 
@@ -402,24 +461,91 @@ pub trait ControlAction: Action {
     /// evaluation in `tokio::select!` against cancellation. Either of
     /// these forms is fine:
     ///
-    /// ```ignore
-    /// // Sugar form — `async fn` in trait impls is stable and
-    /// // desugars via RPITIT to the explicit return-type form below.
-    /// async fn evaluate(
-    ///     &self,
-    ///     input: ControlInput,
-    ///     ctx: &(impl ActionContext + ?Sized),
-    /// ) -> Result<ControlOutcome, ActionError> { /* ... */ }
+    /// ```rust
+    /// # use std::sync::OnceLock;
+    /// # use serde_json::Value;
+    /// # use nebula_action::{
+    /// #     Action, ActionContext, ActionError, ActionMetadata,
+    /// #     ControlAction, ControlInput, ControlOutcome,
+    /// # };
+    /// # use nebula_core::{Dependencies, action_key};
+    /// struct SugarPass;
+    /// # impl Action for SugarPass {
+    /// #     type Input = Value;
+    /// #     type Output = Value;
+    /// #     fn metadata() -> ActionMetadata {
+    /// #         ActionMetadata::new(action_key!("control.pass"), "Pass", "Pass through")
+    /// #     }
+    /// #     fn dependencies() -> &'static Dependencies {
+    /// #         static D: OnceLock<Dependencies> = OnceLock::new();
+    /// #         D.get_or_init(Dependencies::new)
+    /// #     }
+    /// # }
+    /// impl ControlAction for SugarPass {
+    ///     // Sugar form — `async fn` in trait impls is stable and
+    ///     // desugars via RPITIT to the explicit return-type form below.
+    ///     async fn evaluate(
+    ///         &self,
+    ///         input: ControlInput,
+    ///         _ctx: &(impl ActionContext + ?Sized),
+    ///     ) -> Result<ControlOutcome, ActionError> {
+    ///         Ok(ControlOutcome::Pass { output: input.into_value() })
+    ///     }
+    /// }
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// #     use nebula_action::testing::TestContextBuilder;
+    /// #     let ctx = TestContextBuilder::new().build();
+    /// #     let outcome = SugarPass
+    /// #         .evaluate(ControlInput::from_value(Value::Null), &ctx)
+    /// #         .await
+    /// #         .unwrap();
+    /// #     assert!(matches!(outcome, ControlOutcome::Pass { .. }));
+    /// # }
     /// ```
     ///
-    /// ```ignore
-    /// // Explicit form — use this if you want to spell out bounds
-    /// // or match the existing `StatelessAction::execute` convention.
-    /// fn evaluate(
-    ///     &self,
-    ///     input: ControlInput,
-    ///     ctx: &(impl ActionContext + ?Sized),
-    /// ) -> impl Future<Output = Result<ControlOutcome, ActionError>> + Send { /* ... */ }
+    /// ```rust
+    /// # use std::future::Future;
+    /// # use std::sync::OnceLock;
+    /// # use serde_json::Value;
+    /// # use nebula_action::{
+    /// #     Action, ActionContext, ActionError, ActionMetadata,
+    /// #     ControlAction, ControlInput, ControlOutcome,
+    /// # };
+    /// # use nebula_core::{Dependencies, action_key};
+    /// struct ExplicitPass;
+    /// # impl Action for ExplicitPass {
+    /// #     type Input = Value;
+    /// #     type Output = Value;
+    /// #     fn metadata() -> ActionMetadata {
+    /// #         ActionMetadata::new(action_key!("control.pass"), "Pass", "Pass through")
+    /// #     }
+    /// #     fn dependencies() -> &'static Dependencies {
+    /// #         static D: OnceLock<Dependencies> = OnceLock::new();
+    /// #         D.get_or_init(Dependencies::new)
+    /// #     }
+    /// # }
+    /// impl ControlAction for ExplicitPass {
+    ///     // Explicit form — use this if you want to spell out bounds
+    ///     // or match the existing `StatelessAction::execute` convention.
+    ///     fn evaluate(
+    ///         &self,
+    ///         input: ControlInput,
+    ///         _ctx: &(impl ActionContext + ?Sized),
+    ///     ) -> impl Future<Output = Result<ControlOutcome, ActionError>> + Send {
+    ///         async move { Ok(ControlOutcome::Pass { output: input.into_value() }) }
+    ///     }
+    /// }
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// #     use nebula_action::testing::TestContextBuilder;
+    /// #     let ctx = TestContextBuilder::new().build();
+    /// #     let outcome = ExplicitPass
+    /// #         .evaluate(ControlInput::from_value(Value::Null), &ctx)
+    /// #         .await
+    /// #         .unwrap();
+    /// #     assert!(matches!(outcome, ControlOutcome::Pass { .. }));
+    /// # }
     /// ```
     ///
     /// Both compile to equivalent code. If your impl accidentally
@@ -446,12 +572,42 @@ pub trait ControlAction: Action {
 ///
 /// # Example
 ///
-/// ```rust,ignore
-/// use nebula_action::{ControlActionAdapter, StatelessHandler};
+/// ```rust
+/// # use std::sync::OnceLock;
+/// # use serde_json::Value;
+/// # use nebula_action::{
+/// #     Action, ActionContext, ActionError, ActionKind, ActionMetadata,
+/// #     ControlAction, ControlInput, ControlOutcome,
+/// # };
+/// # use nebula_core::{Dependencies, action_key};
 /// use std::sync::Arc;
-///
+/// use nebula_action::{ControlActionAdapter, StatelessHandler};
+/// # struct MyIf;
+/// # impl MyIf { fn new() -> Self { Self } }
+/// # impl Action for MyIf {
+/// #     type Input = Value;
+/// #     type Output = Value;
+/// #     fn metadata() -> ActionMetadata {
+/// #         ActionMetadata::new(action_key!("control.if"), "If", "Binary branch")
+/// #     }
+/// #     fn dependencies() -> &'static Dependencies {
+/// #         static D: OnceLock<Dependencies> = OnceLock::new();
+/// #         D.get_or_init(Dependencies::new)
+/// #     }
+/// # }
+/// # impl ControlAction for MyIf {
+/// #     async fn evaluate(
+/// #         &self,
+/// #         input: ControlInput,
+/// #         _ctx: &(impl ActionContext + ?Sized),
+/// #     ) -> Result<ControlOutcome, ActionError> {
+/// #         Ok(ControlOutcome::Pass { output: input.into_value() })
+/// #     }
+/// # }
 /// let adapter = ControlActionAdapter::new(MyIf::new());
 /// let handler: Arc<dyn StatelessHandler> = Arc::new(adapter);
+/// // The kind is stamped at construction, regardless of the inner action.
+/// assert_eq!(handler.metadata().kind, ActionKind::Control);
 /// ```
 pub struct ControlActionAdapter<A: ControlAction> {
     action: A,

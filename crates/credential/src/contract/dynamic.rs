@@ -37,24 +37,55 @@ use crate::{Credential, CredentialContext, error::CredentialError};
 ///
 /// # Examples
 ///
-/// ```ignore
+/// ```
 /// use std::time::Duration;
-/// use nebula_credential::{Credential, Dynamic};
+/// use nebula_credential::{
+///     AuthPattern, Credential, CredentialContext, CredentialMetadata, Dynamic,
+///     SecretString, scheme::SecretToken,
+/// };
+/// use nebula_credential::error::CredentialError;
+/// use nebula_credential::resolve::ResolveResult;
+/// use nebula_core::credential_key;
+/// use nebula_schema::{FieldValues, ValidSchema};
 ///
 /// struct VaultDbCred;
 ///
-/// // (impl Credential for VaultDbCred elided)
-///
+/// # impl Credential for VaultDbCred {
+/// #     type Properties = FieldValues;
+/// #     type Scheme = SecretToken;
+/// #     type State = SecretToken;
+/// #     const KEY: &'static str = "vault_db_cred";
+/// #     fn metadata() -> CredentialMetadata {
+/// #         CredentialMetadata::new(
+/// #             credential_key!("vault_db_cred"), "Vault DB", "demo",
+/// #             ValidSchema::empty(), AuthPattern::SecretToken,
+/// #         )
+/// #     }
+/// #     fn project(state: &SecretToken) -> SecretToken { state.clone() }
+/// #     async fn resolve(
+/// #         _values: &FieldValues,
+/// #         _ctx: &CredentialContext,
+/// #     ) -> Result<ResolveResult<SecretToken, ()>, CredentialError> {
+/// #         Ok(ResolveResult::Complete(SecretToken::new(SecretString::new(""))))
+/// #     }
+/// # }
 /// impl Dynamic for VaultDbCred {
 ///     const LEASE_TTL: Option<Duration> = Some(Duration::from_secs(300));
 ///
 ///     async fn release(
-///         state: &VaultDbState,
-///         ctx: &CredentialContext<'_>,
+///         state: &SecretToken,
+///         _ctx: &CredentialContext,
 ///     ) -> Result<(), CredentialError> {
-///         // ... revoke Vault lease via lease_id ...
+///         // Revoke the ephemeral Vault lease identified by `state`.
+///         let _ = state;
+///         Ok(())
 ///     }
 /// }
+///
+/// // Dynamic-lease capability is encoded by trait membership.
+/// fn assert_dynamic<C: Dynamic>() {}
+/// assert_dynamic::<VaultDbCred>();
+/// assert_eq!(VaultDbCred::LEASE_TTL, Some(Duration::from_secs(300)));
 /// ```
 pub trait Dynamic: Credential {
     /// Lease duration. `None` means release happens only at execution

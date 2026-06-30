@@ -8,29 +8,27 @@
 //! Similar to how serde works, external crates can implement `AsValidatable` for their
 //! own types without any feature flags:
 //!
-//! ```ignore
+//! The pattern below uses a local newtype, but it is exactly how an external
+//! crate would implement `AsValidatable<str>` for a `Display`-style type such as
+//! `uuid::Uuid`, `chrono::DateTime`, or `url::Url` — convert to the string form
+//! and validate that:
+//!
+//! ```rust
 //! use nebula_validator::foundation::{AsValidatable, ValidationError};
 //!
-//! // For types that implement Display (uuid, chrono, url, etc.)
-//! impl AsValidatable<str> for uuid::Uuid {
+//! // A domain type whose canonical string form you want to validate.
+//! struct ProductCode(u32);
+//!
+//! impl AsValidatable<str> for ProductCode {
 //!     type Output<'a> = String;
 //!
 //!     fn as_validatable(&self) -> Result<String, ValidationError> {
-//!         Ok(self.to_string())
+//!         Ok(format!("PRD-{}", self.0))
 //!     }
 //! }
 //!
-//! // For chrono DateTime with RFC3339 format
-//! impl<Tz: chrono::TimeZone> AsValidatable<str> for chrono::DateTime<Tz>
-//! where
-//!     Tz::Offset: std::fmt::Display,
-//! {
-//!     type Output<'a> = String where Self: 'a;
-//!
-//!     fn as_validatable(&self) -> Result<String, ValidationError> {
-//!         Ok(self.to_rfc3339())
-//!     }
-//! }
+//! let code = ProductCode(42);
+//! assert_eq!(code.as_validatable().unwrap(), "PRD-42");
 //! ```
 //!
 //! This design ensures nebula-validator has zero knowledge of third-party crates,

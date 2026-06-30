@@ -90,7 +90,7 @@ impl Manager {
     ///   passed `lookup` while `shutting_down == false` could have its
     ///   `InFlightCounter::new()` increment land *after* `wait_for_drain`
     ///   already observed `0` and `registry.clear()` ran — a logical
-    ///   use-after-drain that hands out a [`ResourceGuard`] for a drained
+    ///   use-after-drain that hands out a [`ResourceGuard`](crate::ResourceGuard) for a drained
     ///   resource. Re-running `shutdown_guard` here — once this acquire is
     ///   reflected in the manager-wide `drain_tracker`
     ///   [`graceful_shutdown`](Self::graceful_shutdown) drains — closes it
@@ -288,7 +288,7 @@ impl Manager {
     /// ([`ManagedResource::run_acquire_loop`]): the framework owns the fenced
     /// checkout, stale-slot destroy, cancel-safe guard-wrap, and on-release
     /// return-or-destroy; the resource's
-    /// [`Provider::Topology`](crate::resource::Provider::Topology) supplies only
+    /// [`Provider::Topology`] supplies only
     /// thin R-aware hooks. There is no runtime variant to mismatch — the
     /// topology is pinned to `R` by the associated type. The loop re-reads
     /// `config`/`generation` itself, so they are fresh on every resilience

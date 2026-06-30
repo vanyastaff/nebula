@@ -15,20 +15,24 @@
 //!
 //! # Examples
 //!
-//! ```rust,ignore
+//! ```rust
 //! use nebula_validator::prelude::*;
 //!
 //! // String validation
 //! let username = min_length(3).and(max_length(20)).and(alphanumeric());
+//! assert!(username.validate("alice").is_ok());
 //!
 //! // Numeric validation
 //! let age = in_range(18, 100);
+//! assert!(age.validate(&25).is_ok());
 //!
 //! // Collection validation
-//! let tags = min_size(1).and(max_size(10));
+//! let tags = min_size::<String>(1).and(max_size::<String>(10));
+//! assert!(tags.validate(&["rust".to_string()]).is_ok());
 //!
 //! // Composition
 //! let email_validator = not_empty().and(email());
+//! assert!(email_validator.validate("user@example.com").is_ok());
 //! ```
 
 // String validators

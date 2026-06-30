@@ -1,7 +1,14 @@
 //! Convenience re-exports for metrics users.
 //!
-//! ```rust,ignore
+//! ```
 //! use nebula_metrics::prelude::*;
+//!
+//! let registry = MetricsRegistry::new();
+//! let requests = registry.counter("requests_total")?;
+//! requests.inc();
+//! requests.inc();
+//! assert_eq!(requests.get(), 2);
+//! # Ok::<(), nebula_metrics::MetricsError>(())
 //! ```
 
 pub use crate::counter::Counter;

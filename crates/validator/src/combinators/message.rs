@@ -14,13 +14,14 @@ use crate::foundation::{Validate, ValidationError};
 ///
 /// # Examples
 ///
-/// ```rust,ignore
+/// ```rust
 /// use nebula_validator::combinators::WithMessage;
+/// use nebula_validator::validators::min_length;
 /// use nebula_validator::foundation::Validate;
 ///
 /// let validator = WithMessage::new(
-///     MinLength { min: 8 },
-///     "Password must be at least 8 characters"
+///     min_length(8),
+///     "Password must be at least 8 characters",
 /// );
 ///
 /// let result = validator.validate("short");
@@ -122,14 +123,18 @@ pub fn with_message<V>(validator: V, message: impl Into<String>) -> WithMessage<
 ///
 /// # Examples
 ///
-/// ```rust,ignore
-/// use nebula_validator::combinators::with_code;
+/// ```rust
+/// use nebula_validator::combinators::{with_code, WithMessage};
+/// use nebula_validator::validators::min_length;
+/// use nebula_validator::foundation::Validate;
 ///
 /// // Correct: use the free function
-/// let validator = with_code(MinLength { min: 8 }, "ERR_PASSWORD_TOO_SHORT");
+/// let validator = with_code(min_length(8), "ERR_PASSWORD_TOO_SHORT");
+/// assert_eq!(validator.validate("short").unwrap_err().code, "ERR_PASSWORD_TOO_SHORT");
 ///
 /// // Also correct: use code_only constructor
-/// let validator = WithMessage::code_only(MinLength { min: 8 }, "ERR_PASSWORD_TOO_SHORT");
+/// let validator = WithMessage::code_only(min_length(8), "ERR_PASSWORD_TOO_SHORT");
+/// assert_eq!(validator.validate("short").unwrap_err().code, "ERR_PASSWORD_TOO_SHORT");
 /// ```
 pub type WithCode<V> = WithMessage<V>;
 

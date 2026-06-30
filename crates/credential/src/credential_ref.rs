@@ -4,12 +4,22 @@
 //! Per typed ref fields, `CredentialRef<C>` is the canonical field type for the
 //! slot-binding pattern: an action or resource declares
 //!
-//! ```ignore
-//! #[derive(Action)]
+//! ```
+//! use nebula_credential::CredentialRef;
+//!
+//! // In the full framework `#[derive(Action)]` populates this field from the
+//! // node's slot binding; here we bind it directly to a credential id. The
+//! // lazy `CredentialRef` variant resolves on demand — see `CredentialGuard`
+//! // for the eager variant.
+//! struct TelegramCredential;
 //! struct SendTelegram {
-//!     #[credential(key = "auth")]
-//!     token: CredentialRef<TelegramCredential>,   // lazy variant — see CredentialGuard for eager
+//!     token: CredentialRef<TelegramCredential>,
 //! }
+//!
+//! let action = SendTelegram {
+//!     token: CredentialRef::new("auth"),
+//! };
+//! assert_eq!(action.token.id(), "auth");
 //! ```
 //!
 //! and the framework resolves the slot per slot binding's binding mechanism: the
