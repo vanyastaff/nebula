@@ -27,5 +27,9 @@ loom-test = ["dep:loom"]
 [lib]
 doctest = false
 
+[package.metadata.docs.rs]
+# Render feature-gated items on docs.rs (build with every feature).
+all-features = true
+
 [lints]
 workspace = true

@@ -135,5 +135,9 @@ doctest = false
 # is landing incrementally.
 ignored = ["aws-config", "aws-sdk-s3", "redis"]
 
+[package.metadata.docs.rs]
+# Render feature-gated items on docs.rs (build with every feature).
+all-features = true
+
 [lints]
 workspace = true

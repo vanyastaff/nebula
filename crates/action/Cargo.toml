@@ -68,5 +68,9 @@ zeroize = { version = "1.8.2", features = ["zeroize_derive"] }
 serde = { workspace = true, features = ["derive"] }
 trybuild = "1"
 
+[package.metadata.docs.rs]
+# Render feature-gated items on docs.rs (build with every feature).
+all-features = true
+
 [lints]
 workspace = true

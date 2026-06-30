@@ -54,5 +54,9 @@ uuid = ["dep:uuid"]
 # Full feature set
 full = ["cache", "regex", "datetime", "uuid"]
 
+[package.metadata.docs.rs]
+# Render feature-gated items on docs.rs (build with every feature).
+all-features = true
+
 [lints]
 workspace = true

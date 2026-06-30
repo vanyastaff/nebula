@@ -42,5 +42,9 @@ proptest = { workspace = true }
 rstest = { workspace = true }
 tempfile = { workspace = true }
 
+[package.metadata.docs.rs]
+# Render feature-gated items on docs.rs (build with every feature).
+all-features = true
+
 [lints]
 workspace = true
