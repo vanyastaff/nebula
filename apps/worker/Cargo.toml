@@ -8,9 +8,14 @@ repository.workspace = true
 publish = false
 description = "Core-flavor worker binary — statically links the first-party core plugin and runs the durable claim-loop over SQLite job-dispatch (ADR-0095 D1). Note: node-result and checkpoint stores are in-process (per-execution lifetime); durability lives in the SQLite execution-state row."
 
+# `doc = false`: the binary target's rustdoc output dir (`nebula_worker`) would
+# collide with the `nebula-worker` library crate's, silently clobbering one set
+# of docs. The library carries the public API docs; the binary has no public
+# surface, so it opts out of rustdoc entirely (no collision, no lost docs).
 [[bin]]
 name = "nebula-worker"
 path = "src/main.rs"
+doc = false
 
 [dependencies]
 # Generic worker runtime — the claim-loop over the job-dispatch queue.
