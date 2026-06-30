@@ -9,6 +9,27 @@
 //! drop. Three built-in topologies cover the integration space: `Pooled`,
 //! `Resident`.
 //!
+//! ## Quick start
+//!
+//! Resource errors are typed and self-classifying — the engine reads the
+//! [`ErrorKind`] to decide whether to retry, back off, or give up:
+//!
+//! ```
+//! use nebula_resource::{Error, ErrorKind};
+//!
+//! let blip = Error::transient("connection reset");
+//! assert!(blip.is_retryable());
+//! assert!(matches!(blip.kind(), ErrorKind::Transient));
+//!
+//! let bad_config = Error::permanent("invalid DSN");
+//! assert!(!bad_config.is_retryable());
+//! ```
+//!
+//! Action code never constructs these directly: it acquires a `ResourceGuard`
+//! (which derefs to the live instance and releases on drop) while the engine
+//! owns the acquire / health / retry / release lifecycle. See the `ext` module
+//! for the `ctx.resource::<R>().await?` access surface.
+//!
 //! ## Key types
 //!
 //! | Type | Purpose |

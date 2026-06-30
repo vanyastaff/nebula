@@ -8,6 +8,24 @@
 //! `Credential` type; they never hand-roll token refresh, never hold plaintext
 //! secrets longer than necessary, and never see secrets in logs.
 //!
+//! ## Quick start
+//!
+//! Secrets are zeroizing wrappers — redacted in `Debug`, wiped from memory on drop:
+//!
+//! ```
+//! use nebula_credential::SecretString;
+//!
+//! let token = SecretString::new("xoxb-secret-value".to_owned());
+//! assert_eq!(token.expose_secret(), "xoxb-secret-value");
+//! // The secret never leaks through Debug formatting:
+//! assert!(!format!("{token:?}").contains("xoxb-secret-value"));
+//! // `token` is zeroized as it drops at end of scope.
+//! ```
+//!
+//! Action authors bind to a [`Credential`] type that maps stored `Properties`
+//! into projected auth material; the engine owns refresh and rotation, so action
+//! code never hand-rolls token lifecycles.
+//!
 //! ## Canonical import paths
 //!
 //! This crate follows the tokio/tracing idiom: submodules (`contract`,
