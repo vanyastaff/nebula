@@ -48,7 +48,10 @@ mod field_slots;
 ///
 /// # Example
 ///
-/// ```ignore
+/// For a compiling end-to-end example, see the runnable doctest on
+/// `nebula_action::Action` in the parent crate.
+///
+/// ```text
 /// #[derive(Action)]
 /// #[action(
 /// key = "slack.send",
@@ -82,7 +85,10 @@ pub fn derive_action(input: TokenStream) -> TokenStream {
 ///
 /// # Example
 ///
-/// ```ignore
+/// For a compiling end-to-end example, see the runnable doctest on
+/// `nebula_action::action_phantom` in the parent crate.
+///
+/// ```text
 /// use nebula_action_macros::{action_phantom, Action};
 /// use nebula_credential::CredentialRef;
 ///

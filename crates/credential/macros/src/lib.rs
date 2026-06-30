@@ -64,8 +64,13 @@ mod credential_attr;
 ///
 /// # Examples
 ///
+/// The blocks below are derive-syntax illustrations. Because this `proc-macro`
+/// crate cannot depend on `nebula_credential`, they are not standalone-runnable;
+/// see `nebula_credential::Credential` in the parent crate for a complete
+/// runnable example.
+///
 /// Protocol mode (the canonical static-credential path):
-/// ```ignore
+/// ```text
 /// use nebula_credential::{Credential, StaticProtocol};
 ///
 /// #[derive(Credential)]
@@ -80,7 +85,7 @@ mod credential_attr;
 /// ```
 ///
 /// Properties mode (schema-only bridging):
-/// ```ignore
+/// ```text
 /// use nebula_credential::Credential;
 /// use nebula_schema::Schema;
 /// use serde::Deserialize;
@@ -134,7 +139,12 @@ pub fn derive_credential(input: TokenStream) -> TokenStream {
 ///
 /// # Example
 ///
-/// ```ignore
+/// The block below is attribute-syntax illustration. Because this `proc-macro`
+/// crate cannot depend on `nebula_credential`, it is not standalone-runnable;
+/// see `nebula_credential::Credential` in the parent crate for a complete
+/// runnable example.
+///
+/// ```text
 /// use nebula_credential::credential;
 ///
 /// #[credential(key = "api_key", name = "API Key", icon = "key")]
@@ -181,7 +191,12 @@ pub fn credential(args: TokenStream, input: TokenStream) -> TokenStream {
 ///
 /// # Example
 ///
-/// ```ignore
+/// The block below is derive-syntax illustration. Because this `proc-macro`
+/// crate cannot depend on `nebula_credential`, it is not standalone-runnable;
+/// see `nebula_credential::Credential` in the parent crate for a complete
+/// runnable example.
+///
+/// ```text
 /// use nebula_credential::AuthScheme;
 ///
 /// #[derive(Clone, Serialize, Deserialize, AuthScheme)]
@@ -220,7 +235,12 @@ pub fn derive_auth_scheme(input: TokenStream) -> TokenStream {
 /// visibility would leak crate-private capabilities through their
 /// phantoms onto the public surface.
 ///
-/// ```ignore
+/// The blocks below are attribute-syntax illustrations. Because this
+/// `proc-macro` crate cannot depend on `nebula_credential`, they are not
+/// standalone-runnable; see `nebula_credential::Credential` in the parent crate
+/// for a complete runnable example.
+///
+/// ```text
 /// // Crate-internal capability — phantom is also pub(crate).
 /// #[nebula_credential_macros::capability(scheme_bound = AcceptsBearer, sealed = LocalSealed)]
 /// pub(crate) trait LocalCapability: LocalService {}
@@ -234,7 +254,7 @@ pub fn derive_auth_scheme(input: TokenStream) -> TokenStream {
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```text
 /// // Crate-root module - declared once by the crate author.
 /// mod sealed_caps {
 ///     pub trait BearerSealed {}

@@ -36,10 +36,15 @@ pub(crate) fn crate_path() -> TokenStream2 {
 /// `FieldKey::new` at **compile time** (non-empty, max 64 chars, ASCII identifier: leading letter
 /// or `_`, then letters, digits, or `_`).
 ///
-/// ```ignore
+/// ```text
 /// let k = field_key!("alpha");   // OK
 /// let k = field_key!("1bad");    // compile error
 /// ```
+///
+/// This crate is `proc-macro = true`, so it cannot depend on `nebula-schema`
+/// and the snippet above cannot be a runnable doctest here. For a compiling
+/// example see `nebula_schema::FieldKey` and the `field_key!` re-export in the
+/// parent `nebula-schema` crate.
 #[proc_macro]
 pub fn field_key(input: TokenStream) -> TokenStream {
     let lit = parse_macro_input!(input as LitStr);

@@ -52,8 +52,13 @@
 //!
 //! # Examples
 //!
+//! The blocks below are derive-syntax illustrations. Because this `proc-macro`
+//! crate cannot depend on `nebula_credential`, they are not standalone-runnable;
+//! see `nebula_credential::Credential` in the parent crate for a complete
+//! runnable example.
+//!
 //! Properties-mode (manual `resolve`):
-//! ```ignore
+//! ```text
 //! use nebula_credential::Credential;
 //! use nebula_schema::Schema;
 //! use serde::Deserialize;
@@ -80,7 +85,7 @@
 //! ```
 //!
 //! Protocol-mode (auto-emitted `resolve`):
-//! ```ignore
+//! ```text
 //! #[derive(Credential)]
 //! #[credential(
 //!     key = "postgres",

@@ -507,7 +507,7 @@ async fn agent_dispatches_through_engine() {
 ///
 /// Add the following guard at the top of the Continue arm inside
 /// `execute_agent_handle`:
-/// ```ignore
+/// ```text
 /// if serde_json::to_vec(&turn_state_before).ok()
 ///     == serde_json::to_vec(&turn_state).ok()
 /// {
