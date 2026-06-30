@@ -475,6 +475,7 @@ pub struct ValidationTest {
 /// Test method for validation
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum TestMethod {
     /// HTTP request test
     HttpRequest {
@@ -495,6 +496,7 @@ pub enum TestMethod {
 /// Success criteria for validation
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum SuccessCriteria {
     /// HTTP 2xx response
     HttpSuccess,
@@ -514,6 +516,7 @@ pub enum SuccessCriteria {
 /// Categorizes validation failures to determine appropriate response.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum FailureKind {
     /// Network connectivity issue (transient - may succeed on retry)
     NetworkError,

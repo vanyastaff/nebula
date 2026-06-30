@@ -294,6 +294,7 @@ where
 /// `Ambiguous`** arm, because a resolved [`SlotIdentity`] addresses exactly
 /// one row by construction, so ambiguity is unrepresentable there rather
 /// than a runtime branch a caller could mis-handle.
+#[non_exhaustive]
 pub enum LookupOutcome {
     /// Exactly one row matched — here it is.
     Found(Arc<dyn ManagedHandle>),
@@ -320,6 +321,7 @@ pub enum LookupOutcome {
 /// runtime arm that downstream code must remember to fail closed on. An
 /// unknown pin is [`PinnedLookup::NotFound`] (never an accidental alias to
 /// a different tenant's row).
+#[non_exhaustive]
 pub enum PinnedLookup {
     /// Exactly one row matched the pinned `(scope, slot_identity)`.
     Found(Arc<dyn ManagedHandle>),

@@ -51,6 +51,7 @@ use nebula_core::{ResourceKey, ScopeLevel};
 /// Equality and hashing are *exact and structural*: there is no digest, so
 /// two distinct resolved binding sets can never alias.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum SlotIdentity {
     /// No resolved slots (or slots not yet resolved). Keeps the
     /// single-row-per-`(key, scope)` dedup behaviour (the shared-resource

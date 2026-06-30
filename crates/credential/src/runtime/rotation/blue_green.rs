@@ -22,6 +22,7 @@ use crate::{
 /// Tracks the current state of a blue-green credential rotation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum BlueGreenState {
     /// Blue (current active) credential is in use
     Blue,
@@ -308,6 +309,7 @@ impl BlueGreenRotation {
 /// Common database permissions for credential validation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+#[non_exhaustive]
 pub enum DatabasePrivilege {
     /// Connect to database
     Connect,

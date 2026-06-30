@@ -15,6 +15,7 @@ const CREDENTIAL_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Outcome of framework-managed credential resolution.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum ResolveResponse<S> {
     /// Credential is ready and can be persisted by the caller.
     Complete(S),

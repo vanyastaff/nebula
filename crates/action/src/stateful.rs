@@ -283,6 +283,7 @@ macro_rules! impl_paginated_action {
 /// Result of processing a single batch item.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "status")]
+#[non_exhaustive]
 pub enum BatchItemResult<T> {
     /// Item processed successfully.
     Ok {

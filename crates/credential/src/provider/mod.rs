@@ -47,6 +47,7 @@ pub use resolution::{LeaseHandle, ProviderResolution};
 /// Extensible via `ProviderKind::Custom(String)` for user-defined providers.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum ProviderKind {
     /// HashiCorp Vault KV v2 or Transit.
     Vault,

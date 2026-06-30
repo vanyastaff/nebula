@@ -76,6 +76,7 @@ impl std::fmt::Debug for TaintedSlot {
 ///   taint, and never at the cost of skipping a hook after a slow drain.
 #[derive(Debug)]
 #[must_use = "the revoke tail outcome must be recorded (it is not a silent success)"]
+#[non_exhaustive]
 pub enum RevokeTail {
     /// Drain + revoke hook completed; the hook returned `Ok`. (A
     /// best-effort drain timeout that still reached a successful hook is

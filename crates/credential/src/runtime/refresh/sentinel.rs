@@ -54,6 +54,7 @@ impl Default for SentinelThresholdConfig {
 /// `nebula_credential::CredentialEvent::ReauthRequired` per
 /// sub-spec.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SentinelDecision {
     /// Sentinel event count is below threshold; resume normal flow.
     Recoverable {

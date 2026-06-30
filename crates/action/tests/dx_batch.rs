@@ -101,6 +101,8 @@ impl BatchAction for DoublerBatch {
             match r {
                 BatchItemResult::Ok { output } => processed.extend(output.processed),
                 BatchItemResult::Failed { .. } => errors += 1,
+                // `BatchItemResult` is `#[non_exhaustive]`; future variants are treated as failures.
+                _ => errors += 1,
             }
         }
         BatchOutput { processed, errors }

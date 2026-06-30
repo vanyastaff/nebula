@@ -83,6 +83,7 @@ pub struct CredentialRotationEvent {
 /// - Failed: If rotation fails
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum NotificationEvent {
     /// Rotation has been scheduled
     RotationScheduled {
@@ -561,6 +562,7 @@ pub struct TransactionLogEntry {
 /// Type of log entry
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum LogEntryType {
     /// State transition occurred
     StateTransition,
@@ -587,6 +589,7 @@ pub enum LogEntryType {
 /// Final outcome of transaction
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum TransactionOutcome {
     /// Transaction committed successfully
     Committed,

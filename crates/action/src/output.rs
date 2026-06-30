@@ -333,6 +333,7 @@ pub struct TokenUsage {
 /// Caching information for an output.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum CacheInfo {
     /// Output is not cacheable.
     Disabled,
