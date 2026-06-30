@@ -18,4 +18,5 @@ pub use base::TelemetryConfig;
 pub use base::{Config, Format, Level};
 pub use env::{ResolvedConfig, ResolvedSource};
 pub use fields::Fields;
-pub use writer::{DestinationFailurePolicy, DisplayConfig, Rolling, WriterConfig};
+pub(crate) use writer::DisplayConfig;
+pub use writer::{DestinationFailurePolicy, Rolling, WriterConfig};

@@ -335,7 +335,7 @@ fn file_prefix(path: &Path) -> LogResult<&std::ffi::OsStr> {
 }
 
 /// Create a writer from configuration
-pub fn make_writer(config: &WriterConfig) -> LogResult<(BoxMakeWriter, WriterGuards)> {
+pub(crate) fn make_writer(config: &WriterConfig) -> LogResult<(BoxMakeWriter, WriterGuards)> {
     #[cfg(feature = "file")]
     let mut guards = Vec::new();
 

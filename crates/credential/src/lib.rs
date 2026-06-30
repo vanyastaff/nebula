@@ -48,6 +48,10 @@
 //!
 //! See `crates/credential/README.md` for the full contract and canon invariants.
 #![forbid(unsafe_code)]
+// Library-first API-surface hardening: a `pub` item unreachable from outside
+// the crate should be `pub(crate)` so the public surface stays intentional
+// (Tokio's `unreachable_pub` discipline). Additive to inherited workspace lints.
+#![warn(unreachable_pub)]
 
 // Self-import so proc-macros that expand to `::nebula_credential::...` paths
 // resolve correctly when the derive is used inside this crate itself (e.g.

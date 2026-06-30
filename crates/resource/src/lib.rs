@@ -35,6 +35,7 @@
 //! and drain mechanism details.
 
 #![warn(missing_docs)]
+#![warn(unreachable_pub)]
 #![forbid(unsafe_code)]
 
 pub(crate) mod cell;

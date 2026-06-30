@@ -1,7 +1,7 @@
 //! Telemetry integrations
 
 #[cfg(feature = "telemetry")]
-pub mod otel;
+pub(crate) mod otel;
 
 #[cfg(feature = "sentry")]
-pub mod sentry;
+pub(crate) mod sentry;

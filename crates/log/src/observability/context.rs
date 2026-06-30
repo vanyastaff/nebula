@@ -169,28 +169,28 @@ mod storage {
     }
 
     #[inline]
-    pub fn current_execution() -> Option<Arc<ExecutionContext>> {
+    pub(crate) fn current_execution() -> Option<Arc<ExecutionContext>> {
         EXECUTION_CTX.try_with(Clone::clone).ok()
     }
 
     #[inline]
-    pub fn current_node() -> Option<Arc<NodeContext>> {
+    pub(crate) fn current_node() -> Option<Arc<NodeContext>> {
         NODE_CTX.try_with(Clone::clone).ok()
     }
 
-    pub async fn with_execution<F: Future>(ctx: Arc<ExecutionContext>, f: F) -> F::Output {
+    pub(crate) async fn with_execution<F: Future>(ctx: Arc<ExecutionContext>, f: F) -> F::Output {
         EXECUTION_CTX.scope(ctx, f).await
     }
 
-    pub async fn with_node<F: Future>(ctx: Arc<NodeContext>, f: F) -> F::Output {
+    pub(crate) async fn with_node<F: Future>(ctx: Arc<NodeContext>, f: F) -> F::Output {
         NODE_CTX.scope(ctx, f).await
     }
 
-    pub fn with_execution_sync<R>(ctx: Arc<ExecutionContext>, f: impl FnOnce() -> R) -> R {
+    pub(crate) fn with_execution_sync<R>(ctx: Arc<ExecutionContext>, f: impl FnOnce() -> R) -> R {
         EXECUTION_CTX.sync_scope(ctx, f)
     }
 
-    pub fn with_node_sync<R>(ctx: Arc<NodeContext>, f: impl FnOnce() -> R) -> R {
+    pub(crate) fn with_node_sync<R>(ctx: Arc<NodeContext>, f: impl FnOnce() -> R) -> R {
         NODE_CTX.sync_scope(ctx, f)
     }
 }

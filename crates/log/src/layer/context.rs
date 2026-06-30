@@ -28,16 +28,16 @@ mod storage {
     }
 
     #[inline]
-    pub fn current() -> Arc<Context> {
+    pub(crate) fn current() -> Arc<Context> {
         CTX.try_with(Clone::clone)
             .unwrap_or_else(|_| Arc::new(Context::default()))
     }
 
-    pub async fn with_ctx<F: Future>(ctx: Arc<Context>, f: F) -> F::Output {
+    pub(crate) async fn with_ctx<F: Future>(ctx: Arc<Context>, f: F) -> F::Output {
         CTX.scope(ctx, f).await
     }
 
-    pub fn with_ctx_sync<R>(ctx: Arc<Context>, f: impl FnOnce() -> R) -> R {
+    pub(crate) fn with_ctx_sync<R>(ctx: Arc<Context>, f: impl FnOnce() -> R) -> R {
         CTX.sync_scope(ctx, f)
     }
 }

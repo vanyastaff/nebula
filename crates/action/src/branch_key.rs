@@ -3,4 +3,4 @@
 //! The generic validation logic and compile-time macro live in
 //! `nebula_core::branch_key`.
 
-pub use nebula_core::BranchKey;
+pub(crate) use nebula_core::BranchKey;

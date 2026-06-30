@@ -11,7 +11,7 @@ mod format;
 mod telemetry;
 mod reload;
 #[cfg(feature = "async")]
-pub mod watcher;
+pub(crate) mod watcher;
 
 // Re-export public types
 pub use reload::ReloadHandle;

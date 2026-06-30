@@ -7,7 +7,7 @@ use sentry::ClientInitGuard;
 ///
 /// Reads `SENTRY_DSN`, `SENTRY_ENV` / `NEBULA_ENV`, `SENTRY_RELEASE`, and
 /// `SENTRY_TRACES_SAMPLE_RATE`, then delegates to [`init_from_dsn`].
-pub fn init() -> Option<ClientInitGuard> {
+pub(crate) fn init() -> Option<ClientInitGuard> {
     let dsn = std::env::var("SENTRY_DSN").ok()?;
 
     if dsn.is_empty() || dsn == "disabled" {

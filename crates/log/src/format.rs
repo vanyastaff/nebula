@@ -18,7 +18,7 @@ use tracing_subscriber::{
 
 /// A timer that formats timestamps using a custom `time` crate format string,
 /// or falls back to [`SystemTime`] when no format is specified.
-pub enum Timer {
+pub(crate) enum Timer {
     /// Default system time output.
     System(SystemTime),
     /// Custom format via the `time` crate.
@@ -46,7 +46,7 @@ impl FormatTime for Timer {
 /// When `format` is `Some(desc)`, parses the description via
 /// `time::format_description::parse_owned`. Returns [`Timer::System`] when
 /// `None` or on parse failure (logs a warning).
-pub fn make_timer(format: Option<&str>) -> Timer {
+pub(crate) fn make_timer(format: Option<&str>) -> Timer {
     match format {
         Some(desc) => match time::format_description::parse_owned::<2>(desc) {
             Ok(compiled) => Timer::Custom { format: compiled },
@@ -70,7 +70,7 @@ pub fn make_timer(format: Option<&str>) -> Timer {
 /// A `tracing_subscriber` event formatter that outputs `key=value` logfmt lines.
 ///
 /// Format: `ts=<RFC3339> level=<LEVEL> target=<target> msg=<message> <fields...>`
-pub struct LogfmtFormatter {
+pub(crate) struct LogfmtFormatter {
     display_time: bool,
     display_target: bool,
     display_source: bool,
@@ -78,7 +78,11 @@ pub struct LogfmtFormatter {
 
 impl LogfmtFormatter {
     /// Create a new logfmt formatter with the given display options.
-    pub const fn new(display_time: bool, display_target: bool, display_source: bool) -> Self {
+    pub(crate) const fn new(
+        display_time: bool,
+        display_target: bool,
+        display_source: bool,
+    ) -> Self {
         Self {
             display_time,
             display_target,
@@ -211,7 +215,7 @@ where
 }
 
 /// Create a logfmt-based `fmt::Layer` ready for use in a tracing subscriber.
-pub fn make_logfmt_layer<S, W>(
+pub(crate) fn make_logfmt_layer<S, W>(
     writer: W,
     display: &crate::config::DisplayConfig,
 ) -> tracing_subscriber::fmt::Layer<
