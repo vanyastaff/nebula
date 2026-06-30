@@ -48,6 +48,7 @@ impl std::fmt::Display for VersionMismatchDetail {
 
 /// Errors from the dependency resolver ([`PluginRegistry::resolve_load_order`]).
 #[derive(Debug, thiserror::Error, nebula_error::Classify, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum PluginDependencyError {
     /// A declared dependency is not registered in the registry.
     #[classify(category = "not_found", code = "PLUGIN_DEP:MISSING")]

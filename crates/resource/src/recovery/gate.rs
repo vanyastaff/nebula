@@ -101,6 +101,7 @@ impl Default for RecoveryGateConfig {
 
 /// Outcome of [`RecoveryGate::try_begin`] when the caller cannot proceed.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum TryBeginError {
     /// Another caller is already recovering; wait on the [`RecoveryWaiter`].
     AlreadyInProgress(RecoveryWaiter),

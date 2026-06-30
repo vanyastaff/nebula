@@ -87,6 +87,7 @@ pub const TRACESTATE_MAX_BYTES: usize = 512;
 
 /// Errors from parsing or constructing W3C trace context values.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[non_exhaustive]
 pub enum W3cTraceContextError {
     /// `traceparent` string failed structural or semantic validation.
     #[error("invalid traceparent: {reason}")]

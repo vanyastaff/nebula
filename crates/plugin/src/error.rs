@@ -25,6 +25,7 @@ impl core::fmt::Display for ComponentKind {
 
 /// Errors from plugin operations.
 #[derive(Debug, thiserror::Error, nebula_error::Classify)]
+#[non_exhaustive]
 pub enum PluginError {
     /// Plugin not found in the registry.
     #[classify(category = "not_found", code = "PLUGIN:NOT_FOUND")]

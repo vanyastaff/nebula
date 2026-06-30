@@ -75,6 +75,7 @@ pub struct TokenPostResponse {
 /// detail; the credential side wraps it into a `SecretFreeMessage` provider
 /// error.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum RefreshTransportError {
     /// Connecting to / sending the request failed (incl. transport-enforced
     /// private-IP refusal, TLS errors, timeouts).

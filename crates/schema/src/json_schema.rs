@@ -24,6 +24,7 @@ const DRAFT_2020_12: &str = "https://json-schema.org/draft/2020-12/schema";
 
 /// Error produced while exporting [`crate::validated::ValidSchema`] to JSON Schema.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum JsonSchemaExportError {
     /// Failed to serialize a root-level rule into JSON.
     RootRuleSerialization {

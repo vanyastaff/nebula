@@ -37,6 +37,7 @@ pub const OAUTH_TOKEN_HTTP_MAX_RESPONSE_BYTES: usize = 256 * 1024;
 
 /// Refresh-related failures produced by [`refresh_oauth2_state`].
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum TokenRefreshError {
     /// Stored state lacks a refresh token, so re-auth is required.
     #[error("no refresh_token available for token refresh")]
