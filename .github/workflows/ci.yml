@@ -86,16 +86,35 @@ jobs:
           cache-on-failure: true
       - name: Clippy (workspace, all features, all targets)
         run: cargo clippy --workspace --all-features --all-targets -- -D warnings
-      - name: Check nebula-resilience (no-default-features)
-        run: cargo check -p nebula-resilience --no-default-features
-      - name: Check nebula-log (no-default-features)
-        run: cargo check -p nebula-log --no-default-features
-      - name: Check nebula-expression (no-default-features)
-        run: cargo check -p nebula-expression --no-default-features
-      - name: Check nebula-api (no-default-features)
-        run: cargo check -p nebula-api --no-default-features
-      - name: Check nebula-credential (no-default-features)
-        run: cargo check -p nebula-credential --no-default-features
+      # Per-crate `--no-default-features` checks moved to the `feature-hygiene`
+      # job below, which covers every member and every feature systematically.
+
+  # ── Feature hygiene (the standalone-crate / modularity promise) ────────────
+  # Tokio's modularity rule: every feature combination must compile. cargo-hack
+  # `--each-feature` checks each feature alone + `--no-default-features` +
+  # all-default across the whole workspace, so a crate like nebula-resilience or
+  # nebula-credential keeps building standalone with a minimal feature set.
+  feature-hygiene:
+    name: Feature Hygiene
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: "1.96"
+      - name: Install cargo-hack
+        uses: taiki-e/install-action@cargo-hack
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@8cbdedb5103daa674dcf46d3590fe06a76645684 # v2.9.1
+        with:
+          shared-key: ci-feature-hygiene
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
+      - name: cargo hack check (each feature, workspace)
+        run: cargo hack check --each-feature --no-dev-deps --workspace
 
   # ── Doctests (workspace-wide, off the critical path) ──────────────────────
   # Tier 2: skipped on draft PRs — re-runs on `ready_for_review`.
@@ -178,7 +197,10 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: true
       - name: Build documentation
-        run: cargo doc --no-deps --workspace
+        # `--document-private-items` so internal intra-doc links (private fns,
+        # pub(crate) types, module docs) are link-checked too — broken internal
+        # links rot silently otherwise and degrade `cargo doc` for contributors.
+        run: cargo doc --no-deps --workspace --document-private-items
 
   # ── Benchmarks ─────────────────────────────────────────────────────────────
   bench:
@@ -233,7 +255,7 @@ jobs:
   required:
     name: CI
     if: always()
-    needs: [fmt, check, doctests, msrv, doc, deny]
+    needs: [fmt, check, feature-hygiene, doctests, msrv, doc, deny]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -241,6 +263,7 @@ jobs:
         env:
           FMT: ${{ needs.fmt.result }}
           CHECK: ${{ needs.check.result }}
+          FEATURE_HYGIENE: ${{ needs.feature-hygiene.result }}
           DOCTESTS: ${{ needs.doctests.result }}
           MSRV: ${{ needs.msrv.result }}
           DOC: ${{ needs.doc.result }}
@@ -248,7 +271,7 @@ jobs:
         run: |
           set -euo pipefail
           fail=0
-          for pair in "fmt=$FMT" "check=$CHECK" \
+          for pair in "fmt=$FMT" "check=$CHECK" "feature-hygiene=$FEATURE_HYGIENE" \
                      "doctests=$DOCTESTS" "msrv=$MSRV" "doc=$DOC" "deny=$DENY"; do
             name="${pair%%=*}"
             result="${pair#*=}"
