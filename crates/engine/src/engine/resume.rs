@@ -640,6 +640,24 @@ impl WorkflowEngine {
             },
         };
 
+        // `mark_setup_failed` and each `transition_status` call bump
+        // `exec_state.version` internally (one per logical mutation — up to
+        // two here: the setup-failure record and the `Failed` transition),
+        // so the serialized blob's `version` can end up higher than
+        // `repo_version + 1`, the row version this commit's CAS will
+        // actually produce. That is expected, not a bug to normalize away:
+        // `ExecutionState::version` is write-time-only bookkeeping of how
+        // many logical mutations were applied to this snapshot (see the
+        // per-call-site asserts in `crates/execution/src/state.rs`, e.g.
+        // "must be bumped" / "must NOT bump version" on no-op paths) — no
+        // reader anywhere deserializes the blob and trusts its `version`
+        // against the row; every CAS (`expected_version`/`new_version`) is
+        // sourced exclusively from the storage row's own counter
+        // (`ExecutionRecord::version`, tracked here as `repo_version`).
+        // `persist_final_state_port` and `checkpoint_node_port` commit the
+        // same way — never normalizing `exec_state.version` to the row
+        // version — and `satisfy_signal_waits` documents the identical
+        // rationale for its own direct-mutation bump.
         if let EngineError::UndeclaredOutputPort { from_node, .. } = reject {
             let _ = exec_state.mark_setup_failed(from_node.clone(), reject.to_string());
         }
