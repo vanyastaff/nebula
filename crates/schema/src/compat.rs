@@ -261,6 +261,33 @@ pub fn explain_assignable(producer: &OutputSchema, consumer: &InputSchema) -> As
     explain_assignable_core(producer.as_schema(), consumer.as_schema())
 }
 
+/// Field-granularity counterpart to [`explain_assignable`]: is `producer_leaf`
+/// assignable where `consumer_leaf` is expected, when a caller has two
+/// individual resolved [`Field`]s in hand rather than two whole schemas (e.g.
+/// `nebula-workflow`'s per-field `Reference`-parameter check, which resolves a
+/// single producer field and a single consumer field, not their enclosing
+/// schemas).
+///
+/// Internally wraps each field into a synthetic one-field schema (both under
+/// `consumer_leaf`'s key, so the two pair up — see
+/// [`ValidSchema::single_field`]), tags them `Output`/`Input`, and runs the
+/// exact same [`explain_assignable`] the schema-level check uses. Those
+/// synthetic schemas are built, compared, and dropped entirely inside this
+/// function — never handed back to the caller, so the bypassed-lint,
+/// bypassed-index construction [`ValidSchema::single_field`] performs never
+/// crosses a crate boundary as a value someone could mistake for a
+/// fully-built schema.
+#[must_use]
+pub fn explain_field_assignable(producer_leaf: &Field, consumer_leaf: &Field) -> Assignability {
+    let key = consumer_leaf.key().clone();
+    let producer = OutputSchema::new(ValidSchema::single_field(
+        key.clone(),
+        producer_leaf.clone(),
+    ));
+    let consumer = InputSchema::new(ValidSchema::single_field(key, consumer_leaf.clone()));
+    explain_assignable(&producer, &consumer)
+}
+
 /// The three-valued (Cue/GraphQL-style) assignability verdict: a producer
 /// schema is provably assignable, provably not, or **not statically decidable**.
 ///
@@ -1901,6 +1928,55 @@ mod tests {
                 producer: SchemaKind::Union,
                 consumer: SchemaKind::Record,
             }),
+        );
+    }
+
+    // ── explain_field_assignable (field-granularity, W0 U5) ────────────────────
+
+    /// A producer leaf's own key differs from the consumer field it is being
+    /// checked against (`email` vs. `recipient`) — `explain_field_assignable`
+    /// must re-key both to the same synthetic key internally so the pairing
+    /// succeeds, exactly as it would if the two keys already matched.
+    #[test]
+    fn field_assignable_pairs_leaves_under_different_keys() {
+        let producer_leaf: Field = Field::string(fk("email")).required().into();
+        let consumer_leaf: Field = Field::string(fk("recipient")).required().into();
+
+        assert_eq!(
+            explain_field_assignable(&producer_leaf, &consumer_leaf),
+            Assignability::Yes
+        );
+    }
+
+    /// A provable type mismatch between the two leaves is `No`, carrying a
+    /// `FieldTypeMismatch` under the consumer's own key.
+    #[test]
+    fn field_assignable_type_mismatch_is_no() {
+        let producer_leaf: Field = Field::number(fk("age")).into();
+        let consumer_leaf: Field = Field::string(fk("name")).required().into();
+
+        match explain_field_assignable(&producer_leaf, &consumer_leaf) {
+            Assignability::No(incompats) => {
+                assert!(incompats.iter().any(|i| matches!(
+                    i,
+                    SchemaIncompat::FieldTypeMismatch { key, .. } if key.as_str() == "name"
+                )));
+            },
+            other => panic!("expected No(FieldTypeMismatch), got {other:?}"),
+        }
+    }
+
+    /// A float producer feeding an integer consumer is `Unknown` (possible
+    /// precision loss, not a provable conflict) — the same `NumberWidening`
+    /// leniency the schema-level check applies.
+    #[test]
+    fn field_assignable_float_to_int_is_unknown() {
+        let producer_leaf: Field = Field::number(fk("amount")).into();
+        let consumer_leaf: Field = Field::integer(fk("qty")).required().into();
+
+        assert_eq!(
+            explain_field_assignable(&producer_leaf, &consumer_leaf),
+            Assignability::Unknown(vec![UnknownReason::NumberWidening { key: fk("qty") }])
         );
     }
 }

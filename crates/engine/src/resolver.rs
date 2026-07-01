@@ -178,6 +178,8 @@ fn navigate_path(value: &serde_json::Value, path: &str) -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use nebula_core::node_key;
+    use nebula_schema::{Field, FieldKey, PathWalk, Schema, ValidSchema};
+    use proptest::prelude::*;
     use serde_json::json;
 
     use super::*;
@@ -472,5 +474,77 @@ mod tests {
             (&err as &dyn StdError).source().is_none(),
             "std::error::Error::source() must return None for reference failures"
         );
+    }
+
+    // -- walk_authored_path vs. navigate_path tripwire (ADR-0100 TypeDAG, W0 U5) --
+    //
+    // `nebula_schema::ValidSchema::walk_authored_path` is a validation-time,
+    // schema-only walk; `navigate_path` above is the runtime, value-only
+    // navigator. This crate is the one place both are reachable together
+    // (`navigate_path` is private to this module; `nebula-schema` cannot depend
+    // on `nebula-engine` to call it, and vice versa this crate already depends
+    // on `nebula-schema`) — see the W0 U5 plan's "Option B" on why the two are
+    // deliberately NOT unified into shared code.
+
+    /// A fully-closed schema for the tripwire: `items: List<Object { name:
+    /// String }>` — matches the plan's example paths (`items.0.name` /
+    /// `$.items.0.name`) exactly.
+    fn tripwire_schema() -> ValidSchema {
+        Schema::builder()
+            .add(
+                Field::list(FieldKey::new("items").unwrap()).item(
+                    Field::object(FieldKey::new("item").unwrap())
+                        .add(Field::string(FieldKey::new("name").unwrap())),
+                ),
+            )
+            .build()
+            .unwrap()
+    }
+
+    /// A value conforming to [`tripwire_schema`]: two items, indices 0 and 1
+    /// resolve to a real (non-`Null`) `name`.
+    fn tripwire_conforming_value() -> serde_json::Value {
+        json!({"items": [{"name": "a"}, {"name": "b"}]})
+    }
+
+    proptest! {
+        /// Tripwire, not a completeness proof (framed per the W0 U5 plan): over a
+        /// fully-closed `(schema, conforming value)` fixture, `walk_authored_path`
+        /// must never claim a path is a PROVABLE MISTAKE
+        /// (`PathWalk::Unresolved`) when the runtime `navigate_path` actually
+        /// resolves that SAME authored path to a real (non-`Null`) value. A
+        /// divergence here would mean the walk hard-rejects a `Reference` the
+        /// engine would happily resolve at runtime — exactly the false-positive
+        /// class the four review rounds were about.
+        ///
+        /// Runtime output is never validated against its declared schema
+        /// (`engine.rs:2565-2567`), so the two navigators CAN legitimately
+        /// diverge outside the cases this design already excludes (this fixture
+        /// is fully closed by construction, so no such divergence is expected
+        /// here — the property still only asserts the one-directional
+        /// implication, not full agreement).
+        #[test]
+        fn walk_never_unresolved_where_navigate_path_resolves(
+            index in 0usize..6,
+            dollar_prefix in any::<bool>(),
+        ) {
+            let schema = tripwire_schema();
+            let value = tripwire_conforming_value();
+            let path = if dollar_prefix {
+                format!("$.items.{index}.name")
+            } else {
+                format!("items.{index}.name")
+            };
+
+            let runtime = navigate_path(&value, &path);
+            if runtime != serde_json::Value::Null {
+                let walked = schema.walk_authored_path(&path);
+                prop_assert!(
+                    !matches!(walked, PathWalk::Unresolved(_)),
+                    "navigate_path resolved `{path}` to {runtime:?}, but walk_authored_path \
+                     claimed it was unresolvable: {walked:?}"
+                );
+            }
+        }
     }
 }

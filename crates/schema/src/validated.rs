@@ -724,6 +724,156 @@ impl ValidSchema {
         Some(cur)
     }
 
+    /// Walk an authored `Reference` parameter's `output_path` through this
+    /// schema's field tree, gating on field **opacity** at every step (ADR-0100
+    /// TypeDAG, W0 U5).
+    ///
+    /// Uses the SAME grammar the runtime resolver's `navigate_path`
+    /// (`crates/engine/src/resolver.rs` — deliberately not touched by this
+    /// walk) uses: an optional leading `$.`/bare `$` root is stripped, the
+    /// remainder is split on `.`, and a segment against a [`Field::List`] parses
+    /// as a `usize` index. This is intentionally **not** [`Self::find_by_path`]
+    /// (which index-jumps straight to a leaf and conflates "absent" with "under
+    /// an opaque node") — it re-walks field-by-field so opacity can be checked at
+    /// every intermediate node, not just the destination.
+    ///
+    /// # Design: three-valued, not two
+    ///
+    /// A `Reference`'s path is only checkable end-to-end when *every* node from
+    /// root to leaf is **closed** (provably, exhaustively typed). Real producer
+    /// shapes are routinely partly opaque (a `serde_json::Value` sub-field, a
+    /// `Select`/`File` that may emit an array, an adjacent-tagged enum), so a
+    /// binary resolve/fail-to-resolve verdict would either hard-reject those
+    /// legitimate workflows or silently stop checking anything. [`PathWalk`]
+    /// instead separates "provably wrong" ([`PathWalk::Unresolved`]) from "hit
+    /// something we cannot reason about" ([`PathWalk::Opaque`], the caller's
+    /// fail-open exit) — only the former is ever a hard error.
+    ///
+    /// ## Field classification (exhaustive — every arm is deliberate)
+    ///
+    /// - **Closed scalar leaf** — `String`/`Secret`/`Number`/`Boolean`/`Code`. A
+    ///   further segment past one of these is provably wrong:
+    ///   [`PathResolveError::DescendPastLeaf`].
+    /// - **`Select`/`File`/`Notice` — opaque, NOT scalar.** A `multiple` `Select`
+    ///   or `File` yields a JSON array, and a `Select` option value or a single
+    ///   `File` value is commonly an object; `Notice` produces no runtime value
+    ///   at all. None is safe to treat as a childless terminal the way the closed
+    ///   scalars are.
+    /// - **Non-empty `Object`** — closed *only* for descending into a key that is
+    ///   actually declared; a missing key is [`PathWalk::Opaque`], **never** a
+    ///   hard error. [`HasSchema`](crate::HasSchema) is a public, **unsealed**
+    ///   trait with real hand-written impls in the tree, and [`Field::Object`]
+    ///   carries no exhaustiveness marker distinguishing a derive-guaranteed-
+    ///   complete object from a possibly-incomplete hand-written one — so a
+    ///   non-empty `Object` cannot be trusted as an exhaustive declaration of
+    ///   every key the real value may carry. Treating a missing key as "unknown"
+    ///   rather than "wrong" is the load-bearing, deliberately conservative
+    ///   choice here.
+    /// - **Empty `Object`** — opaque (the dominant real shape for a nested
+    ///   `serde_json::Value` field, which derives to a fieldless `Object`, not
+    ///   `Any`).
+    /// - **`List`** — closed *for the node itself* (a numeric-index segment is
+    ///   required: [`PathResolveError::NonIndexOnList`] otherwise), but its
+    ///   `item` is reclassified at the descent step: `None` (untyped) or an
+    ///   opaque item (e.g. `Vec<serde_json::Value>`) → [`PathWalk::Opaque`].
+    /// - **`Mode`/`Dynamic`/`Computed`/`Unknown`, or any `Field` variant this
+    ///   version does not yet know about** — opaque, via an explicit wildcard
+    ///   arm so a future variant defaults to opaque rather than silently
+    ///   becoming hard-errorable.
+    ///
+    /// # Returns
+    ///
+    /// - [`PathWalk::Opaque`] — the root schema is not a concrete
+    ///   [`SchemaKind::Record`] (an `Any`/`Union`/future kind), the tokenized
+    ///   path is empty (bare `$`/`""`), the root segment names no declared
+    ///   field, or the walk hit an opaque node / missing key at any later step.
+    /// - [`PathWalk::Unresolved`] — a non-numeric segment against a `List`, or a
+    ///   segment past a closed scalar leaf, on a path that was otherwise
+    ///   fully-closed up to that point.
+    /// - [`PathWalk::Resolved`] — every node from root to leaf was closed; the
+    ///   leaf field the path resolves to.
+    #[must_use]
+    pub fn walk_authored_path(&self, authored: &str) -> PathWalk<'_> {
+        // 1. Root kind gate: only a concrete Record's field tree is walkable.
+        if self.0.kind != SchemaKind::Record {
+            return PathWalk::Opaque;
+        }
+
+        // 2. Tokenize — identical grammar to the runtime navigator.
+        let stripped = authored
+            .strip_prefix("$.")
+            .unwrap_or_else(|| authored.strip_prefix('$').unwrap_or(authored));
+        if stripped.is_empty() {
+            return PathWalk::Opaque;
+        }
+        let mut segments = stripped.split('.');
+
+        // 3. Root segment: absent from the root Record's fields → opaque.
+        let Some(root_key) = segments.next() else {
+            // `stripped` is non-empty, so `split('.')` always yields at least one
+            // item; this arm is unreachable in practice but is a safe fallback,
+            // never a panic.
+            return PathWalk::Opaque;
+        };
+        let Some(root_field) = self.0.fields.iter().find(|f| f.key().as_str() == root_key) else {
+            return PathWalk::Opaque;
+        };
+
+        // 4. Walk each remaining segment, gating opacity at every step.
+        let mut current = root_field;
+        for segment in segments {
+            match walk_step(current, segment) {
+                PathStep::Advance(next) => current = next,
+                PathStep::Opaque => return PathWalk::Opaque,
+                PathStep::Unresolved(err) => return PathWalk::Unresolved(err),
+            }
+        }
+
+        // 5. Classify the final leaf the same way as every intermediate node.
+        if is_opaque_field_node(current) {
+            PathWalk::Opaque
+        } else {
+            PathWalk::Resolved(current)
+        }
+    }
+
+    /// Wrap a single `Field` under a synthetic `key` into a one-field schema, so
+    /// [`explain_assignable`](crate::explain_assignable) — which pairs a
+    /// producer/consumer field by [`Field::key`] equality — can be reused at
+    /// **field granularity**. Crate-private: the only caller is
+    /// [`explain_field_assignable`](crate::compat::explain_field_assignable),
+    /// which builds these, compares them, and discards them within the same
+    /// function call — this bypassed-pipeline schema is never handed back to
+    /// an outside caller (see that function's docs for why that matters).
+    ///
+    /// `field` is **re-keyed** to `key`, not merely wrapped under it: a
+    /// producer's resolved path leaf carries its own intrinsic key (the last
+    /// path segment — e.g. `"email"` for `$.contact.email`), which need not equal
+    /// the consumer parameter key the caller is checking it against. Re-keying
+    /// both the producer leaf and the consumer field to the same synthetic key
+    /// is what lets the assignability check's key-based field pairing match them
+    /// up. (`Field::Unknown`'s key is private to this module and is left
+    /// un-rekeyed; harmless because every caller gates on the field being
+    /// non-opaque first, and `Field::Unknown` is always opaque — see
+    /// [`Self::walk_authored_path`].)
+    ///
+    /// Bypasses the full lint / index-build pipeline `SchemaBuilder::build` runs
+    /// (mirrors [`Self::empty`]/[`Self::any`]): `field` was already lint-clean
+    /// inside its source schema, and the assignability check reads only
+    /// [`Self::fields`]/[`Self::kind`] — never the path index or build-time
+    /// flags — so an empty index and default flags are safe for this narrow,
+    /// internal, single-comparison use.
+    pub(crate) fn single_field(key: FieldKey, field: Field) -> ValidSchema {
+        Self::from_inner(ValidSchemaInner {
+            kind: SchemaKind::Record,
+            serde_tagging: None,
+            fields: vec![rekeyed(field, key)],
+            index: IndexMap::new(),
+            flags: SchemaFlags::default(),
+            root_rules: Vec::new(),
+        })
+    }
+
     /// Resolve dynamic options for a select field through loader registry.
     ///
     /// Same error taxonomy as [`crate::Schema::load_select_options`], but this
@@ -945,6 +1095,169 @@ impl ValidSchema {
         let canonical = canonicalize_aliases(values, &self.0.fields);
         project_level(&self.0.fields, canonical.as_map())
     }
+}
+
+// ── Reference-path opacity walk (ADR-0100 TypeDAG, W0 U5) ───────────────────
+
+/// The result of [`ValidSchema::walk_authored_path`] — see that method for the
+/// full field-opacity classification.
+///
+/// Three-valued rather than a plain `Option`/`Result`: [`Opaque`](Self::Opaque)
+/// (hit something unknowable — the caller must fail open, not reject) is a
+/// distinct outcome from [`Unresolved`](Self::Unresolved) (a provable mistake on
+/// an otherwise fully-closed path — the caller hard-errors).
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq)]
+pub enum PathWalk<'a> {
+    /// Every node from root to leaf was closed (fully, provably typed); here is
+    /// the resolved leaf field.
+    Resolved(&'a Field),
+    /// A provable structural mistake on an otherwise fully-closed path.
+    Unresolved(PathResolveError),
+    /// The walk hit an opaque node, a missing `Object` key, or an untyped/opaque
+    /// `List` item before it could prove or refute anything — the caller must
+    /// treat the reference as unchecked, not invalid.
+    Opaque,
+}
+
+/// Why an authored path is provably wrong on an otherwise fully-closed walk
+/// (see [`ValidSchema::walk_authored_path`]). Never returned for a missing
+/// `Object` key or any other opaque node — those are
+/// [`PathWalk::Opaque`], not this.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum PathResolveError {
+    /// A `List` step's segment does not parse as a `usize` index.
+    #[error("path segment `{segment}` is not a valid list index")]
+    NonIndexOnList {
+        /// The offending non-numeric segment.
+        segment: String,
+    },
+    /// A further segment appears after a closed scalar leaf
+    /// (`String`/`Secret`/`Number`/`Boolean`/`Code`), which has no children to
+    /// descend into.
+    #[error("path segment `{segment}` appears after a scalar leaf, which has no children")]
+    DescendPastLeaf {
+        /// The segment with nowhere to go.
+        segment: String,
+    },
+}
+
+/// Outcome of classifying one further path `segment` against `current` in
+/// [`ValidSchema::walk_authored_path`].
+enum PathStep<'a> {
+    /// Advance the walk into this child field.
+    Advance(&'a Field),
+    /// Opacity (or a missing key) — the caller fails open.
+    Opaque,
+    /// A provable structural mistake.
+    Unresolved(PathResolveError),
+}
+
+/// Whether `field` is opaque **as a landing node** — unknowable without a
+/// runtime value in hand. This is the exhaustive classification
+/// [`ValidSchema::walk_authored_path`] documents in full; the wildcard arm here
+/// is deliberate (not `todo!()`/`unreachable!()`): any `Field` variant this
+/// version does not yet recognize defaults to opaque rather than silently
+/// becoming hard-errorable when a new variant is added.
+///
+/// - Closed scalar (`String`/`Secret`/`Number`/`Boolean`/`Code`): not opaque.
+/// - `List`: not opaque as the node itself — its `item` is reclassified at the
+///   descent step in [`walk_step`], never here.
+/// - Non-empty `Object`: not opaque (closed for descending into a key that is
+///   actually declared).
+/// - Everything else — empty `Object`, `Select`, `File`, `Notice`, `Mode`,
+///   `Dynamic`, `Computed`, `Unknown`, any future variant — is opaque.
+///
+/// Public because a caller that already has a single resolved [`Field`] in
+/// hand (not a whole schema) needs the SAME classification to decide whether
+/// that field is determinable on its own — e.g. `nebula-workflow`'s
+/// `check_reference_edges` applies this to a consumer's declared parameter
+/// field to decide whether the per-field type check
+/// ([`explain_field_assignable`](crate::compat::explain_field_assignable)) can
+/// run at all, or must fail open. Exposing this `&Field -> bool` predicate
+/// (rather than routing through a synthetic schema) keeps that reuse honest:
+/// no impostor [`ValidSchema`] ever needs to leave this crate for it.
+#[must_use]
+pub fn is_opaque_field_node(field: &Field) -> bool {
+    match field {
+        Field::Object(obj) => obj.fields.is_empty(),
+        Field::String(_)
+        | Field::Secret(_)
+        | Field::Number(_)
+        | Field::Boolean(_)
+        | Field::Code(_)
+        | Field::List(_) => false,
+        _ => true,
+    }
+}
+
+/// Classify one further path `segment` against `current`, dispatching on
+/// `current`'s kind. See [`ValidSchema::walk_authored_path`] for the full
+/// rationale of each arm.
+fn walk_step<'a>(current: &'a Field, segment: &str) -> PathStep<'a> {
+    match current {
+        Field::Object(obj) if !obj.fields.is_empty() => {
+            match obj.fields.iter().find(|f| f.key().as_str() == segment) {
+                Some(next) => PathStep::Advance(next),
+                // A missing key fails open rather than hard-erroring: `HasSchema`
+                // is unsealed, so a non-empty `Object` cannot be trusted as an
+                // exhaustive declaration of every key the real value may carry.
+                None => PathStep::Opaque,
+            }
+        },
+        Field::List(list) => {
+            if segment.parse::<usize>().is_err() {
+                return PathStep::Unresolved(PathResolveError::NonIndexOnList {
+                    segment: segment.to_owned(),
+                });
+            }
+            match list.item.as_deref() {
+                Some(item) if !is_opaque_field_node(item) => PathStep::Advance(item),
+                // `None` (untyped item) or an opaque item type (e.g. a
+                // `Vec<serde_json::Value>`, which derives to an opaque item field).
+                _ => PathStep::Opaque,
+            }
+        },
+        Field::String(_)
+        | Field::Secret(_)
+        | Field::Number(_)
+        | Field::Boolean(_)
+        | Field::Code(_) => PathStep::Unresolved(PathResolveError::DescendPastLeaf {
+            segment: segment.to_owned(),
+        }),
+        // Empty `Object`, `Select`, `File`, `Notice`, `Mode`, `Dynamic`,
+        // `Computed`, `Unknown`, or any future `Field` variant: opaque.
+        _ => PathStep::Opaque,
+    }
+}
+
+/// Re-key `field` to `key`, preserving everything else about it. See
+/// [`ValidSchema::single_field`] for why the caller needs this rather than a
+/// plain wrap.
+fn rekeyed(mut field: Field, key: FieldKey) -> Field {
+    match &mut field {
+        Field::String(f) => f.key = key,
+        Field::Secret(f) => f.key = key,
+        Field::Number(f) => f.key = key,
+        Field::Boolean(f) => f.key = key,
+        Field::Select(f) => f.key = key,
+        Field::Object(f) => f.key = key,
+        Field::List(f) => f.key = key,
+        Field::Mode(f) => f.key = key,
+        Field::Code(f) => f.key = key,
+        Field::File(f) => f.key = key,
+        Field::Computed(f) => f.key = key,
+        Field::Dynamic(f) => f.key = key,
+        Field::Notice(f) => f.key = key,
+        // `UnknownField.key` is private to this crate's `field` module, so it
+        // cannot be rewritten from here — left as its original key. Never
+        // reached in practice: every caller of `single_field` gates on the
+        // field being non-opaque first, and `Field::Unknown` is always opaque
+        // (see `is_opaque_field_node`).
+        Field::Unknown(_) => {},
+    }
+    field
 }
 
 /// Project one field-scope level: schema-declared fields (`emit_as` remaps applied,
@@ -3305,5 +3618,203 @@ mod tests {
         let values = FieldValues::from_json(json!({"config": {"enabled": false}})).unwrap();
         let report = schema.validate(&values).expect_err("object rule must fail");
         assert!(report.errors().any(|e| e.code == "one_of"));
+    }
+
+    // ── walk_authored_path / single_field (ADR-0100 TypeDAG, W0 U5) ────────────
+
+    #[test]
+    fn select_field_reference_fails_open() {
+        // `Select` may carry an array (`multiple`) or an arbitrary option value —
+        // never a safe scalar terminal, so a reference into it is opaque.
+        let schema = Schema::builder()
+            .add(Field::select(field_key!("country")))
+            .build()
+            .unwrap();
+        assert_eq!(schema.walk_authored_path("country"), PathWalk::Opaque);
+    }
+
+    #[test]
+    fn file_field_reference_fails_open() {
+        let schema = Schema::builder()
+            .add(Field::file(field_key!("attachment")))
+            .build()
+            .unwrap();
+        assert_eq!(schema.walk_authored_path("attachment"), PathWalk::Opaque);
+    }
+
+    #[test]
+    fn notice_field_reference_fails_open() {
+        // `Notice` produces no runtime value at all.
+        let schema = Schema::builder()
+            .add(Field::notice(field_key!("banner")))
+            .build()
+            .unwrap();
+        assert_eq!(schema.walk_authored_path("banner"), PathWalk::Opaque);
+    }
+
+    #[test]
+    fn untyped_list_item_reference_fails_open() {
+        // An item that is itself opaque (e.g. what a `Vec<serde_json::Value>`
+        // derives to: an empty `Field::Object`) is opaque, not resolved — a
+        // valid numeric index still fails open, it never becomes
+        // `NonIndexOnList` just because the item is opaque.
+        let opaque_item = Schema::builder()
+            .add(Field::list(field_key!("items")).item(Field::object(field_key!("item"))))
+            .build()
+            .unwrap();
+        assert_eq!(opaque_item.walk_authored_path("items.0"), PathWalk::Opaque);
+
+        // `item: None` (truly untyped) is rejected by the builder's own lint
+        // (`missing_item_schema` — a `List` must always declare an item schema
+        // to pass `SchemaBuilder::build`), so it can never reach a real
+        // `ValidSchema` through the public API. `walk_step` still has to
+        // handle it defensively (the field is a plain `Option`) — construct
+        // the otherwise-unreachable shape directly via the crate-private
+        // `from_inner` to prove that defensive arm, rather than asserting on
+        // dead code.
+        let untyped = ValidSchema::from_inner(ValidSchemaInner {
+            kind: SchemaKind::Record,
+            serde_tagging: None,
+            fields: vec![Field::from(Field::list(field_key!("items")))],
+            index: IndexMap::new(),
+            flags: SchemaFlags::default(),
+            root_rules: Vec::new(),
+        });
+        assert_eq!(untyped.walk_authored_path("items.0"), PathWalk::Opaque);
+    }
+
+    #[test]
+    fn missing_object_key_is_opaque_not_an_error() {
+        // A declared-absent key under a non-empty `Object` fails open — `HasSchema`
+        // is unsealed, so a non-empty `Object` cannot be trusted as exhaustive.
+        let schema = Schema::builder()
+            .add(Field::object(field_key!("contact")).add(Field::string(field_key!("email"))))
+            .build()
+            .unwrap();
+        assert_eq!(schema.walk_authored_path("contact.phone"), PathWalk::Opaque);
+        // The declared key still resolves.
+        assert!(matches!(
+            schema.walk_authored_path("contact.email"),
+            PathWalk::Resolved(Field::String(_))
+        ));
+    }
+
+    #[test]
+    fn non_index_on_list_hard_rejected() {
+        let schema = Schema::builder()
+            .add(Field::list(field_key!("items")).item(Field::string(field_key!("item"))))
+            .build()
+            .unwrap();
+        assert_eq!(
+            schema.walk_authored_path("items.first"),
+            PathWalk::Unresolved(PathResolveError::NonIndexOnList {
+                segment: "first".to_owned()
+            })
+        );
+    }
+
+    #[test]
+    fn descend_past_scalar_hard_rejected() {
+        let schema = Schema::builder()
+            .add(Field::string(field_key!("name")))
+            .build()
+            .unwrap();
+        assert_eq!(
+            schema.walk_authored_path("name.first"),
+            PathWalk::Unresolved(PathResolveError::DescendPastLeaf {
+                segment: "first".to_owned()
+            })
+        );
+    }
+
+    #[test]
+    fn bare_dollar_root_is_opaque() {
+        let schema = Schema::builder()
+            .add(Field::string(field_key!("name")))
+            .build()
+            .unwrap();
+        assert_eq!(schema.walk_authored_path("$"), PathWalk::Opaque);
+        assert_eq!(schema.walk_authored_path(""), PathWalk::Opaque);
+    }
+
+    #[test]
+    fn any_and_union_roots_are_opaque() {
+        assert_eq!(
+            ValidSchema::any().walk_authored_path("anything"),
+            PathWalk::Opaque
+        );
+        let u = sample_union(SerdeTagging::External);
+        assert_eq!(u.walk_authored_path("oauth"), PathWalk::Opaque);
+    }
+
+    #[test]
+    fn walk_agrees_with_find_by_path_on_plain_paths() {
+        let schema = Schema::builder()
+            .add(
+                Field::object(field_key!("contact"))
+                    .add(Field::string(field_key!("email")).required()),
+            )
+            .build()
+            .unwrap();
+        let walked = schema.walk_authored_path("contact.email");
+        let found = schema
+            .find_by_path(
+                &FieldPath::root()
+                    .join(field_key!("contact"))
+                    .join(field_key!("email")),
+            )
+            .expect("plain path resolves via find_by_path");
+        assert_eq!(walked, PathWalk::Resolved(found));
+
+        // The `$.` root prefix is accepted identically.
+        assert_eq!(schema.walk_authored_path("$.contact.email"), walked);
+    }
+
+    #[test]
+    fn single_field_rekeys_producer_leaf_so_explain_assignable_can_pair_it() {
+        // The producer leaf's own key (`email`) differs from the consumer
+        // parameter key (`recipient`) it is being checked against; `single_field`
+        // must re-key both to the SAME key so `explain_assignable`'s key-based
+        // pairing matches them up (a `FieldTypeMismatch`/`Yes`, never a spurious
+        // `MissingRequiredField` from a key mismatch).
+        let producer_leaf: Field = Field::string(field_key!("email")).required().into();
+        let consumer_field: Field = Field::string(field_key!("recipient")).required().into();
+
+        let output = crate::OutputSchema::new(ValidSchema::single_field(
+            field_key!("recipient"),
+            producer_leaf,
+        ));
+        let input = crate::InputSchema::new(ValidSchema::single_field(
+            field_key!("recipient"),
+            consumer_field,
+        ));
+
+        assert_eq!(
+            crate::explain_assignable(&output, &input),
+            crate::Assignability::Yes
+        );
+    }
+
+    #[test]
+    fn single_field_type_mismatch_is_reported_under_the_shared_key() {
+        let producer_leaf: Field = Field::number(field_key!("age")).into();
+        let consumer_field: Field = Field::string(field_key!("name")).required().into();
+
+        let output =
+            crate::OutputSchema::new(ValidSchema::single_field(field_key!("name"), producer_leaf));
+        let input = crate::InputSchema::new(ValidSchema::single_field(
+            field_key!("name"),
+            consumer_field,
+        ));
+
+        match crate::explain_assignable(&output, &input) {
+            crate::Assignability::No(incompats) => {
+                assert!(incompats.iter().any(|i| matches!(
+                    i,
+                    crate::SchemaIncompat::FieldTypeMismatch { key, .. } if key.as_str() == "name"
+                )));
+            },
+            other => panic!("expected No(FieldTypeMismatch), got {other:?}"),
+        }
     }
 }
