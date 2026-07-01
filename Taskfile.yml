@@ -128,11 +128,12 @@ tasks:
       - cargo deny check
 
   features:
-    desc: "Feature hygiene: every feature combination compiles (the standalone-crate promise)"
+    desc: "Feature hygiene: each optional feature builds in isolation (standalone-crate promise)"
     cmds:
       # Mirrors the CI `feature-hygiene` job. Requires cargo-hack
       # (`cargo binstall cargo-hack`). Checks each feature alone +
-      # --no-default-features + all-default across every workspace member.
+      # --no-default-features + all-default across every workspace member
+      # (per-feature, not a full --feature-powerset).
       - cargo hack check --each-feature --no-dev-deps --workspace
 
   # ── Test ──────────────────────────────────────────────────────────────────

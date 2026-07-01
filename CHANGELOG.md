@@ -40,7 +40,8 @@ changes are expected between minor releases — call them out here.
   all-features = true` on 15 feature-gated crates so docs.rs renders the
   complete API; a CI `feature-hygiene` job (`cargo hack --each-feature`, wired
   into the required-jobs gate) plus a `task features` target enforcing that
-  every feature combination compiles (the standalone-crate / modularity
+  each optional feature builds in isolation — per-feature + `--no-default-features`
+  + all-default across every workspace member (the standalone-crate / modularity
   promise); and runnable crate-level Quick Start examples on `nebula-credential`
   (zeroizing-secret invariant) and `nebula-resource` (typed retry-classified
   errors).

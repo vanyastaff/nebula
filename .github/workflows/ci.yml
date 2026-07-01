@@ -90,10 +90,14 @@ jobs:
       # job below, which covers every member and every feature systematically.
 
   # ── Feature hygiene (the standalone-crate / modularity promise) ────────────
-  # Tokio's modularity rule: every feature combination must compile. cargo-hack
-  # `--each-feature` checks each feature alone + `--no-default-features` +
+  # Modularity gate: each optional feature must build in isolation. cargo-hack
+  # `--each-feature` checks every feature alone + `--no-default-features` +
   # all-default across the whole workspace, so a crate like nebula-resilience or
   # nebula-credential keeps building standalone with a minimal feature set.
+  # This is per-feature, not a full `--feature-powerset`: it catches the real
+  # "feature X doesn't compile on its own" / "no-default-features is broken"
+  # regressions without the combinatorial cost of powerset on 8-feature crates
+  # (storage, log), which would risk the job timeout.
   feature-hygiene:
     name: Feature Hygiene
     runs-on: ubuntu-latest
@@ -106,7 +110,9 @@ jobs:
         with:
           toolchain: "1.96"
       - name: Install cargo-hack
-        uses: taiki-e/install-action@cargo-hack
+        uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2.82.7
+        with:
+          tool: cargo-hack
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@8cbdedb5103daa674dcf46d3590fe06a76645684 # v2.9.1
         with:
