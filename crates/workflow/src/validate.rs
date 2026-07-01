@@ -393,7 +393,7 @@ pub fn validate_workflow_with_resolver_mode(
 /// - the referenced producer node is missing from `node_by_id`, or either
 ///   endpoint's schema does not resolve (`resolver.io_schemas` returns
 ///   `None`) — mirrors the main-flow edge check's fail-open contract;
-/// - [`ValidSchema::walk_authored_path`] returns [`PathWalk::Opaque`] — an
+/// - `ValidSchema::walk_authored_path` returns [`PathWalk::Opaque`] — an
 ///   opaque node, a missing `Object` key, or an untyped `List` item anywhere
 ///   along the walk (never provably wrong, see the schema crate's opacity
 ///   classification);
@@ -1789,6 +1789,19 @@ mod tests {
     /// `Reference` to node `a`'s output at `output_path`, with a coincident
     /// connection (so the structural `ReferenceWithoutConnection` check does
     /// not also fire and muddy the assertions).
+    ///
+    /// The connection is wired to a named, non-default `to_port` ("params")
+    /// rather than the default main-flow `to_port: None` — deliberately so
+    /// the separate main-flow port-schema check (`validate_workflow_with_resolver_mode`'s
+    /// own loop, which only type-checks `to_port: None` edges) never fires on
+    /// it. `ReferenceWithoutConnection` only requires the (from, to) node
+    /// pair to be connected, port-agnostic, so this does not weaken that
+    /// guard. Without this, a test asserting only `assert_no_reference_errors`
+    /// could stay spuriously green off an unrelated `PortSchemaIncompatible`
+    /// masking a broken reference check, or a producer/consumer pairing
+    /// crafted to make the reference check pass could incidentally also trip
+    /// the main-flow check — either way conflating two independent checks
+    /// under one assertion.
     fn two_node_reference_def(
         param_key: &str,
         output_path: &str,
@@ -1810,7 +1823,7 @@ mod tests {
                 NodeDefinition::new(a.clone(), "Producer", "core", "producer.action").unwrap(),
                 consumer,
             ],
-            vec![Connection::new(a.clone(), b.clone())],
+            vec![Connection::new(a.clone(), b.clone()).with_to_port(port_key!("params"))],
         );
         (def, a, b)
     }
@@ -1993,7 +2006,19 @@ mod tests {
 
         for mode in [SchemaCheckMode::Gradual, SchemaCheckMode::Strict] {
             let errors = validate_workflow_with_resolver_mode(&def, &resolver, mode);
-            assert_no_reference_errors(&errors, &format!("{mode:?}"));
+            // Assert the WHOLE validation succeeds (not merely that no
+            // reference-specific error fired): `two_node_reference_def`'s
+            // connection is wired to a named `to_port`, so the separate
+            // main-flow port-schema check never runs on it, and this test's
+            // producer/consumer schemas carry no other error source — an
+            // `assert_no_reference_errors`-only check here would stay green
+            // even if the reference check were broken, as long as nothing
+            // else happened to fail too.
+            assert!(
+                errors.is_empty(),
+                "{mode:?}: expected zero errors for a fully-resolved, assignable reference; \
+                 got: {errors:?}"
+            );
         }
     }
 

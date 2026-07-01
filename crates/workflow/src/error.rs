@@ -195,7 +195,7 @@ pub enum WorkflowError {
     /// through the producer node's output schema, on a path that walked
     /// through only **closed** (fully-typed) nodes right up to the failure
     /// point (ADR-0100 TypeDAG, W0 U5 — correctness only; see
-    /// [`crate::validate::check_reference_edges`]).
+    /// `crate::validate::check_reference_edges`).
     ///
     /// Emitted only for [`nebula_schema::PathResolveError::NonIndexOnList`] /
     /// [`nebula_schema::PathResolveError::DescendPastLeaf`] — a missing

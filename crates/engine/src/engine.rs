@@ -1893,17 +1893,28 @@ impl WorkflowEngine {
     /// execution is starting under. The version-skew bug itself remains a
     /// follow-up, not solved here.
     ///
-    /// Two deliberate fail-open carve-outs (this is a strict improvement
+    /// Three deliberate fail-open carve-outs (this is a strict improvement
     /// over today's silent no-op, not full protection):
     /// - An unregistered source action skips validation — the registry has
     ///   nothing to check the wire against.
-    /// - A source action that declares any [`OutputPort::Dynamic`] port
+    /// - A node pinning `interface_version` to a version with no matching
+    ///   registered entry skips validation the same way, for the same
+    ///   reason — an actually-unresolvable pinned version still fails later,
+    ///   at dispatch, through `get_factory_versioned`'s own not-found error.
+    /// - A source action that declares any `OutputPort::Dynamic` port
     ///   skips validation for **all** of its outgoing connections. Dynamic
     ///   ports (e.g. `core.switch`) emit config-derived keys (`"a"`, `"b"`,
     ///   `"default"`, ...) that no static check here can enumerate; a
     ///   uniform check would hard-reject every legitimate Switch/Router
     ///   wire. Real protection for dynamic ports is the `DynamicPort`
     ///   concrete-key-expansion follow-up, not this pre-flight.
+    ///
+    /// Checks the SAME action version `ActionRegistry::get_factory_versioned`
+    /// will actually dispatch for a version-pinned node — via
+    /// `ActionRegistry::output_ports_versioned`, threaded through
+    /// `node.interface_version` — rather than always the latest registered
+    /// version. Checking against the wrong version could wrongly reject a
+    /// wire the pinned version supports, or wrongly pass one it doesn't.
     fn validate_declared_output_ports(
         &self,
         graph: &DependencyGraph,
@@ -1922,12 +1933,18 @@ impl WorkflowEngine {
                 continue;
             }
 
-            let Some(declared) = self.runtime.registry().output_ports(&node.action_key) else {
+            let Some(declared) = self
+                .runtime
+                .registry()
+                .output_ports_versioned(&node.action_key, node.interface_version.as_ref())
+            else {
                 tracing::warn!(
                     %source_id,
                     action_key = %node.action_key,
-                    "undeclared-output-port pre-flight: source action is not registered; \
-                     skipping validation for its outgoing connections (fail-open)"
+                    interface_version = ?node.interface_version,
+                    "undeclared-output-port pre-flight: source action is not registered (or its \
+                     pinned interface_version has no matching registered entry); skipping \
+                     validation for its outgoing connections (fail-open)"
                 );
                 continue;
             };

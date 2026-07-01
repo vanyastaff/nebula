@@ -1163,7 +1163,7 @@ enum PathStep<'a> {
 ///
 /// - Closed scalar (`String`/`Secret`/`Number`/`Boolean`/`Code`): not opaque.
 /// - `List`: not opaque as the node itself — its `item` is reclassified at the
-///   descent step in [`walk_step`], never here.
+///   descent step in `walk_step`, never here.
 /// - Non-empty `Object`: not opaque (closed for descending into a key that is
 ///   actually declared).
 /// - Everything else — empty `Object`, `Select`, `File`, `Notice`, `Mode`,
@@ -1233,7 +1233,7 @@ fn walk_step<'a>(current: &'a Field, segment: &str) -> PathStep<'a> {
 }
 
 /// Re-key `field` to `key`, preserving everything else about it. See
-/// [`ValidSchema::single_field`] for why the caller needs this rather than a
+/// `ValidSchema::single_field` for why the caller needs this rather than a
 /// plain wrap.
 fn rekeyed(mut field: Field, key: FieldKey) -> Field {
     match &mut field {
