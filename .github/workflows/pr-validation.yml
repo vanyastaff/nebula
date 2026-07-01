@@ -20,13 +20,13 @@ jobs:
     if: github.event.action != 'edited' || github.event.changes.title != null
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
 
       - name: Install convco
         if: github.actor != 'dependabot[bot]'
-        uses: taiki-e/install-action@481c34c1cf3a84c68b5e46f4eccfc82af798415a # v2.75.23
+        uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2.82.7
         with:
           tool: convco
 
@@ -48,7 +48,7 @@ jobs:
           fi
 
       - name: Auto label PR
-        uses: actions/labeler@634933edcd8ababfe52f92936142cc22ac488b1b # v6
+        uses: actions/labeler@f27b608878404679385c85cfa523b85ccb86e213 # v6
         with:
           repo-token: '${{ secrets.GITHUB_TOKEN }}'
 
