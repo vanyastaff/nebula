@@ -1856,6 +1856,149 @@ impl WorkflowEngine {
         }))
     }
 
+    /// Pre-flight: reject any `Connection` whose `from_port` the source
+    /// action never declares.
+    ///
+    /// Called from two sites, both strictly *before* their caller creates
+    /// the execution row or acquires the execution lease — the placement is
+    /// load-bearing at both, not incidental: it is what makes a rejection
+    /// have zero execution side effects (nothing persisted, nothing leased,
+    /// no node dispatched) rather than orphaning a row under a held lease
+    /// that nothing ever tears down.
+    ///
+    /// - [`execute_workflow_scoped`](Self::execute_workflow_scoped), immediately
+    ///   after [`DependencyGraph::from_definition`] — before that function's
+    ///   `stores.execution.create` / `acquire_and_heartbeat_lease`. Reachable
+    ///   only from tests and direct-embed callers; production dispatch never
+    ///   calls it.
+    /// - [`resume_execution`](Self::resume_execution), gated on
+    ///   `is_first_attempt` (i.e. only on the cold-start branch where
+    ///   `node_states` was empty before seeding — see that function's `W0 U2`
+    ///   comment), immediately after that function's `node_map` is built —
+    ///   before its `acquire_and_heartbeat_lease`. This is production's ONLY
+    ///   path for validating a brand-new execution: `EngineControlDispatch`'s
+    ///   `dispatch_start` / `dispatch_resume` / `dispatch_restart` all
+    ///   converge on `resume_execution`, never on `execute_workflow_scoped`.
+    ///
+    /// Do not move either call site to after its lease acquisition.
+    ///
+    /// Deliberately **not** run on a genuine resume (non-empty `node_states`
+    /// on entry to `resume_execution`): that path reloads the *latest
+    /// published* workflow version rather than the version the execution
+    /// actually started under (a separate, pre-existing bug), so validating
+    /// there risks hard-failing an already in-flight execution over a
+    /// version mismatch its operator never had a chance to see. A true first
+    /// attempt carries no such risk — there is no prior in-flight state to
+    /// conflict with, and the loaded workflow version IS the version the
+    /// execution is starting under. The version-skew bug itself remains a
+    /// follow-up, not solved here.
+    ///
+    /// Two deliberate fail-open carve-outs (this is a strict improvement
+    /// over today's silent no-op, not full protection):
+    /// - An unregistered source action skips validation — the registry has
+    ///   nothing to check the wire against.
+    /// - A source action that declares any [`OutputPort::Dynamic`] port
+    ///   skips validation for **all** of its outgoing connections. Dynamic
+    ///   ports (e.g. `core.switch`) emit config-derived keys (`"a"`, `"b"`,
+    ///   `"default"`, ...) that no static check here can enumerate; a
+    ///   uniform check would hard-reject every legitimate Switch/Router
+    ///   wire. Real protection for dynamic ports is the `DynamicPort`
+    ///   concrete-key-expansion follow-up, not this pre-flight.
+    fn validate_declared_output_ports(
+        &self,
+        graph: &DependencyGraph,
+        node_map: &HashMap<NodeKey, &nebula_workflow::NodeDefinition>,
+    ) -> Result<(), EngineError> {
+        // `(from_node, to_node, port, declared)` per offending connection.
+        // Collected as plain data (not yet wrapped in `EngineError`) so it
+        // can be sorted below — `node_map` is a `HashMap`, so iterating it
+        // directly would make "the first offender" nondeterministic across
+        // runs when more than one connection is bad.
+        let mut offenders: Vec<(NodeKey, NodeKey, PortKey, Vec<PortKey>)> = Vec::new();
+
+        for (source_id, node) in node_map {
+            let outgoing = graph.outgoing_connections(source_id.clone());
+            if outgoing.is_empty() {
+                continue;
+            }
+
+            let Some(declared) = self.runtime.registry().output_ports(&node.action_key) else {
+                tracing::warn!(
+                    %source_id,
+                    action_key = %node.action_key,
+                    "undeclared-output-port pre-flight: source action is not registered; \
+                     skipping validation for its outgoing connections (fail-open)"
+                );
+                continue;
+            };
+
+            if declared.iter().any(nebula_action::OutputPort::is_dynamic) {
+                // Dynamic-port carve-out — see doc comment above.
+                continue;
+            }
+
+            for conn in outgoing {
+                let port = conn.effective_from_port();
+                let is_declared =
+                    port.as_str() == "error" || declared.iter().any(|p| p.key() == port.as_str());
+                if is_declared {
+                    continue;
+                }
+
+                let declared_keys: Vec<PortKey> = declared
+                    .iter()
+                    .filter_map(|p| match p {
+                        nebula_action::OutputPort::Flow { key, .. } => Some(key.clone()),
+                        // Dynamic ports were already ruled out above; any
+                        // future `OutputPort` variant fails safe to
+                        // "excluded" rather than panicking (the enum is
+                        // `#[non_exhaustive]`).
+                        _ => None,
+                    })
+                    .collect();
+                offenders.push((
+                    conn.from_node.clone(),
+                    conn.to_node.clone(),
+                    port.clone(),
+                    declared_keys,
+                ));
+            }
+        }
+
+        // Deterministic order: sort by (from_node, to_node, port) rendered
+        // as strings (`NodeKey`/`PortKey` have no `Ord` impl) so the
+        // "first" offender returned as the `Err` is stable across runs and
+        // hash-seed reseeds, not an artifact of `HashMap` iteration order.
+        offenders.sort_by(|a, b| {
+            (a.0.to_string(), a.1.to_string(), a.2.as_str()).cmp(&(
+                b.0.to_string(),
+                b.1.to_string(),
+                b.2.as_str(),
+            ))
+        });
+
+        for (from_node, to_node, port, declared) in &offenders {
+            tracing::error!(
+                %from_node,
+                %to_node,
+                %port,
+                ?declared,
+                "undeclared output port on connection"
+            );
+        }
+
+        let mut offenders = offenders.into_iter();
+        match offenders.next() {
+            Some((from_node, to_node, port, declared)) => Err(EngineError::UndeclaredOutputPort {
+                from_node,
+                to_node,
+                port,
+                declared,
+            }),
+            None => Ok(()),
+        }
+    }
+
     /// Execute a workflow from start to finish.
     ///
     /// Builds an execution plan for validation, then processes nodes
@@ -1941,6 +2084,25 @@ impl WorkflowEngine {
         // 2. Build dependency graph
         let graph = DependencyGraph::from_definition(workflow)
             .map_err(|e| EngineError::PlanningFailed(e.to_string()))?;
+
+        // 2a. Build node lookup map. Built here (rather than immediately
+        // before the frontier loop) so the pre-flight below can consult it
+        // before anything is persisted or leased — see that call's comment.
+        let node_map: HashMap<NodeKey, &nebula_workflow::NodeDefinition> =
+            workflow.nodes.iter().map(|n| (n.id.clone(), n)).collect();
+
+        // 2b. Fresh-execution-only pre-flight: reject connections wired to
+        // an output port the source action never declared (W0 U2). MUST run
+        // here, before the execution row is created (`stores.execution.create`
+        // below) and before the lease is acquired (`acquire_and_heartbeat_lease`
+        // below) — nothing has been persisted or leased yet at this point, so
+        // an `Err` here requires zero teardown. (An earlier version of this
+        // check ran after both, whose `?` skipped this function's only
+        // `persist_final_state` / `guard.shutdown()` call sites and orphaned
+        // the execution row `Running` with a held lease — caught in review.)
+        // Not run on the resume path — see `validate_declared_output_ports`
+        // doc comment.
+        self.validate_declared_output_ports(&graph, &node_map)?;
 
         // 3. Validate action key mappings exist for all nodes
         // 4. Initialize execution state
@@ -2035,9 +2197,8 @@ impl WorkflowEngine {
         // 6. Record start metric
         self.workflow_executions_started.inc();
 
-        // 7. Build node lookup map
-        let node_map: HashMap<NodeKey, &nebula_workflow::NodeDefinition> =
-            workflow.nodes.iter().map(|n| (n.id.clone(), n)).collect();
+        // 7. `node_map` was built in step 2a (before persistence/lease, for
+        // the pre-flight); reused here for the frontier loop.
 
         // 8. Shared output storage (concurrent access from worker tasks)
         let outputs: Arc<DashMap<NodeKey, serde_json::Value>> = Arc::new(DashMap::new());

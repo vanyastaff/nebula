@@ -135,7 +135,16 @@ impl WorkflowEngine {
         // frontier seeder below treats graph entry nodes as the natural starting
         // set. A warm resume (post-crash, with persisted per-node state) skips
         // this branch untouched.
-        if exec_state.node_states.is_empty() {
+        //
+        // Captured before the seeding mutation below so the W0 U2 pre-flight
+        // further down (`validate_declared_output_ports`) can tell a genuine
+        // first attempt (production `Start` traffic — this is production's
+        // ONLY entry point for a brand-new execution; `execute_workflow_scoped`
+        // is reachable only from tests/direct-embed callers) from an actual
+        // resume of an already-in-progress execution, after this same check
+        // has already emptied the condition it reads.
+        let is_first_attempt = exec_state.node_states.is_empty();
+        if is_first_attempt {
             for node in &workflow.nodes {
                 exec_state.set_node_state(
                     node.id.clone(),
@@ -198,6 +207,38 @@ impl WorkflowEngine {
         //    it evaluates edges from the frontier.
         let node_map: HashMap<NodeKey, &nebula_workflow::NodeDefinition> =
             workflow.nodes.iter().map(|n| (n.id.clone(), n)).collect();
+
+        // W0 U2 fresh-execution-only pre-flight, gated on `is_first_attempt`
+        // (captured above, before the cold-start seed emptied the condition
+        // it was read from): reject connections wired to an output port the
+        // source action never declared. This is production's ONLY path for
+        // validating a brand-new execution — `execute_workflow_scoped` (which
+        // runs the same check) is never reached from production dispatch;
+        // production `Start`/`Resume`/`Restart` all converge on this function
+        // via `EngineControlDispatch::drive` → `resume_execution`.
+        //
+        // Runs ONLY on a genuine first attempt, never on an actual resume of
+        // an already-in-progress execution: re-validating a resumed run
+        // against `resume_execution`'s reloaded *latest published* workflow
+        // version (rather than the version the execution actually started
+        // under — a separate, pre-existing bug, see the module-level
+        // rationale on `validate_declared_output_ports`) could hard-fail an
+        // in-flight execution over a version mismatch its operator never had
+        // a chance to see. A true first attempt carries no such risk: there
+        // is no prior in-flight state to conflict with, and the workflow
+        // version it loads here IS the version it is starting under.
+        //
+        // Placement is load-bearing, same principle as `execute_workflow_scoped`:
+        // this must run before the execution lease is acquired below
+        // (`acquire_and_heartbeat_lease`, ~100 lines down) — verified by
+        // reading every intervening line: nothing between here and the lease
+        // acquire persists anything (`resume_execution` never creates the
+        // execution row itself; the API's start handler already did, before
+        // this function was ever called) or takes a lease, so a rejection
+        // here requires zero teardown.
+        if is_first_attempt {
+            self.validate_declared_output_ports(&graph, &node_map)?;
+        }
 
         let mut activated_edges: HashMap<NodeKey, HashSet<NodeKey>> = HashMap::new();
         let mut resolved_edges: HashMap<NodeKey, usize> = HashMap::new();

@@ -24,8 +24,8 @@ use nebula_action::{
     Action, ActionError, ActionFactory, ActionMetadata, AgentAction, ControlAction,
     FromWorkflowNode, GenericAgentFactory, GenericControlFactory, GenericResourceFactory,
     GenericStatefulFactory, GenericStatelessFactory, GenericStreamFactory, GenericTriggerFactory,
-    InstanceFactory, ResourceAction, StatefulAction, StatelessAction, StreamAction, TriggerAction,
-    WebhookActionFactory,
+    InstanceFactory, OutputPort, ResourceAction, StatefulAction, StatelessAction, StreamAction,
+    TriggerAction, WebhookActionFactory,
 };
 use nebula_core::ActionKey;
 use semver::Version;
@@ -226,6 +226,18 @@ impl ActionRegistry {
         Some((last.metadata.clone(), Arc::clone(&last.factory)))
     }
 
+    /// Declared output ports for the latest registered version of `key`.
+    ///
+    /// Returns `None` if no factory is registered for `key`. Used by the
+    /// engine's undeclared-output-port pre-flight to validate `Connection`
+    /// wires against the source action's declared ports.
+    #[must_use]
+    pub fn output_ports(&self, key: &ActionKey) -> Option<Vec<OutputPort>> {
+        let entries = self.factories.get(key)?;
+        let last = entries.last()?;
+        Some(last.metadata.outputs.clone())
+    }
+
     /// Look up a factory by key and exact version.
     #[must_use]
     pub fn get_factory_versioned(
@@ -421,6 +433,39 @@ mod tests {
         assert_eq!(
             meta.base.version, v2,
             "get_factory returns the latest version"
+        );
+    }
+
+    #[test]
+    fn output_ports_returns_none_for_unregistered_key() {
+        let registry = ActionRegistry::new();
+        let key = ActionKey::new("test.never_registered").unwrap();
+        assert!(registry.output_ports(&key).is_none());
+    }
+
+    #[test]
+    fn output_ports_returns_declared_ports_for_latest_version() {
+        let registry = ActionRegistry::new();
+        registry.register_stateless_instance(
+            meta_with("test.noop", 1, 0)
+                .with_outputs(vec![OutputPort::flow(nebula_core::port_key!("out"))]),
+            NoopAction,
+        );
+        registry.register_stateless_instance(
+            meta_with("test.noop", 2, 0).with_outputs(vec![
+                OutputPort::flow(nebula_core::port_key!("out")),
+                OutputPort::error(nebula_core::port_key!("error")),
+            ]),
+            NoopAction,
+        );
+
+        let key = ActionKey::new("test.noop").unwrap();
+        let ports = registry.output_ports(&key).expect("action is registered");
+        let keys: Vec<&str> = ports.iter().map(OutputPort::key).collect();
+        assert_eq!(
+            keys,
+            vec!["out", "error"],
+            "must report the latest registered version's declared ports, not v1's"
         );
     }
 }
