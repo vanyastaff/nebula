@@ -1,7 +1,7 @@
 //! Engine error types.
 
 use nebula_action::ActionError;
-use nebula_core::{NodeKey, id::ExecutionId};
+use nebula_core::{NodeKey, PortKey, id::ExecutionId};
 use nebula_expression::ExpressionError;
 use nebula_workflow::NodeState;
 
@@ -76,6 +76,30 @@ pub enum EngineError {
         to_node: NodeKey,
         /// The underlying error.
         error: String,
+    },
+
+    /// A connection routes to an output port the source action never declared.
+    ///
+    /// Raised by the fresh-execution pre-flight (`validate_declared_output_ports`)
+    /// before any node dispatches, so a mistyped/undeclared `from_port` fails
+    /// the execution loudly instead of silently never firing. Fail-open by
+    /// design when the source action is unregistered or declares a dynamic
+    /// port — see the pre-flight's doc comment for why.
+    #[error(
+        "node {from_node} routes to {to_node} on undeclared output port \
+         {port}; source action declares [{}]", declared.join(", ")
+    )]
+    UndeclaredOutputPort {
+        /// Source node of the offending connection.
+        from_node: NodeKey,
+        /// Target node of the offending connection.
+        to_node: NodeKey,
+        /// The connection's effective source port, not declared by the
+        /// source action (and not `"error"`).
+        port: PortKey,
+        /// The source action's actually-declared output-port keys, for
+        /// operator diagnostics.
+        declared: Vec<PortKey>,
     },
 
     /// A budget limit was exceeded.
@@ -224,7 +248,8 @@ impl nebula_error::Classify for EngineError {
             Self::PlanningFailed(_)
             | Self::ParameterResolution { .. }
             | Self::ParameterValidation { .. }
-            | Self::EdgeEvaluationFailed { .. } => nebula_error::ErrorCategory::Validation,
+            | Self::EdgeEvaluationFailed { .. }
+            | Self::UndeclaredOutputPort { .. } => nebula_error::ErrorCategory::Validation,
             Self::NodeFailed { .. }
             | Self::TaskPanicked(_)
             | Self::FrontierIntegrity { .. }
@@ -252,6 +277,7 @@ impl nebula_error::Classify for EngineError {
             Self::ParameterResolution { .. } => "ENGINE:PARAM_RESOLUTION",
             Self::ParameterValidation { .. } => "ENGINE:PARAM_VALIDATION",
             Self::EdgeEvaluationFailed { .. } => "ENGINE:EDGE_EVAL",
+            Self::UndeclaredOutputPort { .. } => "ENGINE:UNDECLARED_OUTPUT_PORT",
             Self::BudgetExceeded(_) => "ENGINE:BUDGET_EXCEEDED",
             Self::Runtime(e) => return nebula_error::Classify::code(e),
             Self::Execution(e) => return nebula_error::Classify::code(e),

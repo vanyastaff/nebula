@@ -135,7 +135,16 @@ impl WorkflowEngine {
         // frontier seeder below treats graph entry nodes as the natural starting
         // set. A warm resume (post-crash, with persisted per-node state) skips
         // this branch untouched.
-        if exec_state.node_states.is_empty() {
+        //
+        // Captured before the seeding mutation below so the W0 U2 pre-flight
+        // further down (`validate_declared_output_ports`) can tell a genuine
+        // first attempt (production `Start` traffic — this is production's
+        // ONLY entry point for a brand-new execution; `execute_workflow_scoped`
+        // is reachable only from tests/direct-embed callers) from an actual
+        // resume of an already-in-progress execution, after this same check
+        // has already emptied the condition it reads.
+        let is_first_attempt = exec_state.node_states.is_empty();
+        if is_first_attempt {
             for node in &workflow.nodes {
                 exec_state.set_node_state(
                     node.id.clone(),
@@ -198,6 +207,59 @@ impl WorkflowEngine {
         //    it evaluates edges from the frontier.
         let node_map: HashMap<NodeKey, &nebula_workflow::NodeDefinition> =
             workflow.nodes.iter().map(|n| (n.id.clone(), n)).collect();
+
+        // W0 U2 fresh-execution-only pre-flight, gated on `is_first_attempt`
+        // (captured above, before the cold-start seed emptied the condition
+        // it was read from): reject connections wired to an output port the
+        // source action never declared. This is production's ONLY path for
+        // validating a brand-new execution — `execute_workflow_scoped` (which
+        // runs the same check) is never reached from production dispatch;
+        // production `Start`/`Resume`/`Restart` all converge on this function
+        // via `EngineControlDispatch::drive` → `resume_execution`.
+        //
+        // Runs ONLY on a genuine first attempt, never on an actual resume of
+        // an already-in-progress execution: re-validating a resumed run
+        // against `resume_execution`'s reloaded *latest published* workflow
+        // version (rather than the version the execution actually started
+        // under — a separate, pre-existing bug, see the module-level
+        // rationale on `validate_declared_output_ports`) could hard-fail an
+        // in-flight execution over a version mismatch its operator never had
+        // a chance to see. A true first attempt carries no such risk: there
+        // is no prior in-flight state to conflict with, and the workflow
+        // version it loads here IS the version it is starting under.
+        //
+        // Placement is load-bearing, same principle as `execute_workflow_scoped`:
+        // this must run before the execution lease is acquired below
+        // (`acquire_and_heartbeat_lease`, ~100 lines down) — verified by
+        // reading every intervening line: nothing between here and the lease
+        // acquire persists anything (`resume_execution` never creates the
+        // execution row itself; the API's start handler already did, before
+        // this function was ever called) or takes a lease, so a rejection
+        // here requires zero teardown.
+        if is_first_attempt
+            && let Err(reject) = self.validate_declared_output_ports(&graph, &node_map)
+        {
+            // Production's ONLY entry point for a brand-new execution — the
+            // API start handler already durably created this `Created` row
+            // before `resume_execution` was ever called (see the seam
+            // comment above). A bare `?` here would return before this
+            // function's own `persist_final_state` call ever runs (it is
+            // reached only via the frontier loop below), leaving that row
+            // orphaned in `Created` forever with no visible failure
+            // anywhere — `EngineControlDispatch::drive` only marks the
+            // CONTROL-QUEUE row failed, never the execution row itself.
+            // Durably fail the execution row before propagating so the
+            // rejection is actually observable.
+            self.fail_cold_start_preflight(
+                scope,
+                execution_id,
+                exec_state,
+                repo_version_loaded,
+                &reject,
+            )
+            .await;
+            return Err(reject);
+        }
 
         let mut activated_edges: HashMap<NodeKey, HashSet<NodeKey>> = HashMap::new();
         let mut resolved_edges: HashMap<NodeKey, usize> = HashMap::new();
@@ -504,6 +566,179 @@ impl WorkflowEngine {
             duration: elapsed,
             termination_reason: termination_reason.clone(),
         })
+    }
+
+    /// Durably fail a freshly-`Created` execution row when the W0 U2
+    /// cold-start pre-flight (`validate_declared_output_ports`) rejects it
+    /// inside [`Self::resume_execution`]'s `is_first_attempt` branch.
+    ///
+    /// `resume_execution` never creates its own execution row — production's
+    /// API start handler already durably persisted this row as `Created`
+    /// before `resume_execution` was ever invoked. That makes this call site
+    /// unique: unlike `execute_workflow_scoped` (which runs the same
+    /// pre-flight *before* it creates its own row, so a rejection there
+    /// requires zero teardown), a rejection here must actively transition an
+    /// already-existing row, or it is orphaned in `Created` forever — nothing
+    /// downstream (`EngineControlDispatch::drive`, `ControlConsumer::mark_failed`)
+    /// ever marks the execution row itself, only the control-queue row.
+    ///
+    /// Mirrors [`nebula_execution::state::ExecutionState::mark_setup_failed`]'s
+    /// record-then-fail pattern (used by the frontier loop for a single
+    /// node's setup failure), applied at the execution level: the offending
+    /// node is recorded as `Failed` with the rejection reason so it surfaces
+    /// through the normal per-node error-message read path, then the
+    /// execution status is driven `Created → Running → Failed` (direct
+    /// `Created → Failed` is not a valid transition) and committed with the
+    /// version this call loaded — nothing else has written to the row since.
+    ///
+    /// Best-effort by design: on a lease conflict or CAS race this logs and
+    /// returns without transitioning. The caller still propagates the
+    /// original `EngineError` regardless of whether this durable mark
+    /// succeeds, so no rejection is ever silently swallowed — a row left
+    /// stuck in `Created` after a failed best-effort attempt remains
+    /// reachable by the existing crash-recovery reclaim path.
+    async fn fail_cold_start_preflight(
+        &self,
+        scope: &Scope,
+        execution_id: ExecutionId,
+        mut exec_state: ExecutionState,
+        repo_version: u64,
+        reject: &EngineError,
+    ) {
+        let Some(stores) = &self.stores else {
+            // Library mode (no storage) — no durable row to repair.
+            return;
+        };
+
+        let id = execution_id.to_string();
+        let holder = self.instance_id.to_string();
+
+        let lease_token = match stores
+            .execution
+            .acquire_lease(scope, &id, &holder, self.lease_ttl)
+            .await
+        {
+            Ok(Some(token)) => token,
+            Ok(None) => {
+                tracing::warn!(
+                    %execution_id,
+                    error = %reject,
+                    "cold-start preflight rejection: execution lease held by another runner; \
+                     leaving the execution row for that runner to resolve"
+                );
+                return;
+            },
+            Err(e) => {
+                tracing::warn!(
+                    %execution_id,
+                    error = %e,
+                    reject = %reject,
+                    "cold-start preflight rejection: failed to acquire lease; the execution row \
+                     remains Created (recoverable via reclaim)"
+                );
+                return;
+            },
+        };
+
+        // `mark_setup_failed` and each `transition_status` call bump
+        // `exec_state.version` internally (one per logical mutation — up to
+        // two here: the setup-failure record and the `Failed` transition),
+        // so the serialized blob's `version` can end up higher than
+        // `repo_version + 1`, the row version this commit's CAS will
+        // actually produce. That is expected, not a bug to normalize away:
+        // `ExecutionState::version` is write-time-only bookkeeping of how
+        // many logical mutations were applied to this snapshot (see the
+        // per-call-site asserts in `crates/execution/src/state.rs`, e.g.
+        // "must be bumped" / "must NOT bump version" on no-op paths) — no
+        // reader anywhere deserializes the blob and trusts its `version`
+        // against the row; every CAS (`expected_version`/`new_version`) is
+        // sourced exclusively from the storage row's own counter
+        // (`ExecutionRecord::version`, tracked here as `repo_version`).
+        // `persist_final_state_port` and `checkpoint_node_port` commit the
+        // same way — never normalizing `exec_state.version` to the row
+        // version — and `satisfy_signal_waits` documents the identical
+        // rationale for its own direct-mutation bump.
+        if let EngineError::UndeclaredOutputPort { from_node, .. } = reject {
+            let _ = exec_state.mark_setup_failed(from_node.clone(), reject.to_string());
+        }
+        if exec_state.status == ExecutionStatus::Created {
+            let _ = exec_state.transition_status(ExecutionStatus::Running);
+        }
+        if !exec_state.status.is_terminal() {
+            let _ = exec_state.transition_status(ExecutionStatus::Failed);
+        }
+
+        let commit_outcome = async {
+            let state_json =
+                serde_json::to_value(&exec_state).map_err(|e| EngineError::CheckpointFailed {
+                    node_key: final_state_node_key(),
+                    reason: format!("cold-start preflight rejection: serialise failed state: {e}"),
+                })?;
+            let batch = nebula_storage_port::TransitionBatch::builder()
+                .scope(scope.clone())
+                .execution_id(&id)
+                .expected_version(repo_version)
+                .fencing(lease_token)
+                .new_state(state_json)
+                .build()
+                .map_err(|e| EngineError::CheckpointFailed {
+                    node_key: final_state_node_key(),
+                    reason: format!("cold-start preflight rejection: build batch: {e}"),
+                })?;
+            stores
+                .execution
+                .commit(batch)
+                .await
+                .map_err(|e| EngineError::CheckpointFailed {
+                    node_key: final_state_node_key(),
+                    reason: format!("cold-start preflight rejection: store commit: {e}"),
+                })
+        }
+        .await;
+
+        match commit_outcome {
+            Ok(nebula_storage_port::TransitionOutcome::Applied { new_version }) => {
+                tracing::error!(
+                    %execution_id,
+                    new_version,
+                    error = %reject,
+                    "cold-start preflight rejected the execution; marked the execution row \
+                     Failed instead of leaving it orphaned in Created (W0 U2 gap fix)"
+                );
+                revoke_resume_tokens_best_effort(stores, scope, &id).await;
+            },
+            Ok(other) => {
+                tracing::warn!(
+                    %execution_id,
+                    outcome = ?other,
+                    error = %reject,
+                    "cold-start preflight rejection: CAS did not apply while marking the \
+                     execution row Failed; row may remain Created (recoverable via reclaim)"
+                );
+            },
+            Err(e) => {
+                tracing::warn!(
+                    %execution_id,
+                    error = %e,
+                    reject = %reject,
+                    "cold-start preflight rejection: failed to persist Failed status; the \
+                     execution row remains Created (recoverable via reclaim)"
+                );
+            },
+        }
+
+        if let Err(e) = stores
+            .execution
+            .release_lease(scope, &id, lease_token)
+            .await
+        {
+            tracing::warn!(
+                %execution_id,
+                error = %e,
+                "cold-start preflight rejection: best-effort lease release failed (will expire \
+                 at TTL)"
+            );
+        }
     }
 
     /// Durably satisfy all signal-driven waits on a `Paused` execution.

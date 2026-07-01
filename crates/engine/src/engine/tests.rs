@@ -7,7 +7,7 @@ use std::{
 };
 
 use nebula_action::{
-    ActionError, BranchKey, action::Action, context::CredentialContextExt,
+    ActionError, BranchKey, OutputPort, action::Action, context::CredentialContextExt,
     metadata::ActionMetadata, result::ActionResult, stateless::StatelessAction,
 };
 use nebula_core::{Dependencies, action_key, port_key, scope::Principal};
@@ -769,7 +769,13 @@ async fn branch_workflow_only_selected_path_executes() {
         EchoHandler,
     );
     registry.register_stateless_instance(
-        ActionMetadata::new(action_key!("branch"), "Branch", "branches"),
+        // Declares the "true"/"false" branch ports it actually routes on —
+        // required since W0 U2's undeclared-output-port pre-flight now
+        // rejects connections wired to a flow-only action's undeclared port.
+        ActionMetadata::new(action_key!("branch"), "Branch", "branches").with_outputs(vec![
+            OutputPort::flow(port_key!("true")),
+            OutputPort::flow(port_key!("false")),
+        ]),
         BranchHandler {
             selected: nebula_action::branch_key!("true"),
         },
@@ -1580,6 +1586,195 @@ async fn resume_executes_remaining_nodes_after_crash() {
     assert!(
         result.node_output(&n3).is_some(),
         "n3 should have been re-executed"
+    );
+}
+
+/// Production's ONLY entry point for validating a brand-new execution is
+/// `resume_execution`'s first-attempt branch — `execute_workflow_scoped` is
+/// never reached from production dispatch (`EngineControlDispatch::dispatch_start`
+/// always calls `resume_execution`, not `execute_workflow_scoped`). This
+/// exercises that real path directly: a `Created` row with empty
+/// `node_states` (the exact cold-start shape the API's start handler
+/// persists) wired with an undeclared, non-error output port must be
+/// rejected before any node dispatches.
+///
+/// Unlike `execute_workflow_scoped` (which rejects *before* it creates its
+/// own row, so a rejection there requires zero teardown), `resume_execution`
+/// never creates this row itself — the API start handler already did. A
+/// rejection here must therefore durably transition that pre-existing row to
+/// `Failed` (the W0 U2 orphaned-row fix) rather than leave it stranded in
+/// `Created` forever with no visible failure anywhere. The lease taken to
+/// perform that transition must not be left held afterward.
+#[tokio::test]
+async fn resume_execution_rejects_undeclared_port_on_genuine_first_attempt() {
+    let registry = Arc::new(ActionRegistry::new());
+    registry.register_stateless_instance(
+        ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
+        EchoHandler,
+    );
+
+    let stores = TestStores::new();
+    let (engine, _) = make_engine(registry);
+    let engine = stores.attach(engine);
+
+    let a = node_key!("a");
+    let b = node_key!("b");
+    let wf = make_workflow(
+        vec![
+            NodeDefinition::new(a.clone(), "A", "core", "echo").unwrap(),
+            NodeDefinition::new(b.clone(), "B", "core", "echo").unwrap(),
+        ],
+        vec![Connection::new(a.clone(), b.clone()).with_from_port(port_key!("typo_port"))],
+    );
+    stores.save_workflow(&wf).await;
+
+    // The cold-start shape the API's start handler persists: `Created`
+    // status, no per-node entries (`ExecutionState::new(.., &[])`).
+    let execution_id = ExecutionId::new();
+    let exec_state = ExecutionState::new(execution_id, wf.id, &[]);
+    assert!(
+        exec_state.node_states.is_empty(),
+        "sanity: a cold-start row has no per-node entries"
+    );
+    let state_json = serde_json::to_value(&exec_state).unwrap();
+    stores.inject_state(execution_id, wf.id, state_json).await;
+
+    let scope = crate::store_seam::single_tenant_scope();
+    let result = engine.resume_execution(&scope, execution_id).await;
+
+    assert!(
+        matches!(result, Err(EngineError::UndeclaredOutputPort { .. })),
+        "expected UndeclaredOutputPort, got {result:?}"
+    );
+
+    // The row must exist and be durably `Failed` — not stranded in
+    // `Created` (the W0 U2 orphaned-row bug this test guards against). The
+    // version must have advanced past the injected baseline: unlike
+    // `execute_workflow_scoped`'s zero-teardown rejection (which never
+    // creates a row), this path must actively commit the Failed transition
+    // to the row the API's start handler already persisted.
+    let (version, state_json) = stores
+        .get_state(execution_id)
+        .await
+        .unwrap()
+        .expect("row must still exist — a rejection must not delete it");
+    assert!(
+        version > 0,
+        "the Failed transition must be durably committed, bumping the row version"
+    );
+    // Deserialize via JSON string, not `serde_json::from_value` — `Key<D>`
+    // types expect a borrowed string, which only `from_str` provides (see
+    // `resume_execution`'s own state-deserialize comment for the same
+    // workaround).
+    let state_str = serde_json::to_string(&state_json).unwrap();
+    let persisted: ExecutionState = serde_json::from_str(&state_str).unwrap();
+    assert_eq!(
+        persisted.status,
+        ExecutionStatus::Failed,
+        "a cold-start pre-flight rejection must leave the execution row Failed, \
+         not orphaned in Created"
+    );
+    assert_eq!(
+        persisted.node_states.get(&a).map(|ns| ns.state),
+        Some(NodeState::Failed),
+        "the offending node must record the rejection, mirroring mark_setup_failed's \
+         node-level record-then-fail pattern"
+    );
+
+    // The lease taken to perform the transition must be released afterward,
+    // not left held.
+    let rows = stores.execution.list_all_running().await.unwrap();
+    let row = rows
+        .iter()
+        .find(|r| r.id == execution_id)
+        .expect("row must still exist");
+    assert!(
+        row.lease_holder.is_none(),
+        "the lease taken to mark the row Failed must be released afterward"
+    );
+}
+
+/// The `is_first_attempt` gate must not retroactively enforce the W0 U2
+/// pre-flight on a genuine resume. Mirrors
+/// `resume_execution_rejects_undeclared_port_on_genuine_first_attempt`'s
+/// workflow (same undeclared `"typo_port"` wire) but with a real
+/// crash-resume shape — node A already `Completed` in the injected state,
+/// which is the `node_states.is_empty() == false` case the gate must skip.
+/// B still runs here via `resume_execution`'s own documented port-blind edge
+/// rebuild (every outgoing edge from a terminal node activates, regardless
+/// of port name) — proving the new gate adds no new rejection on this path,
+/// not merely that the workflow happens to succeed.
+#[tokio::test]
+async fn resume_execution_does_not_validate_ports_on_genuine_resume() {
+    let registry = Arc::new(ActionRegistry::new());
+    registry.register_stateless_instance(
+        ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
+        EchoHandler,
+    );
+
+    let stores = TestStores::new();
+    let (engine, _) = make_engine(registry);
+    let engine = stores.attach(engine);
+
+    let a = node_key!("a");
+    let b = node_key!("b");
+    let wf = make_workflow(
+        vec![
+            NodeDefinition::new(a.clone(), "A", "core", "echo").unwrap(),
+            NodeDefinition::new(b.clone(), "B", "core", "echo").unwrap(),
+        ],
+        // Undeclared, non-error port on a flow-only action — rejected on a
+        // first attempt (see the sibling test), must NOT be rejected here.
+        vec![Connection::new(a.clone(), b.clone()).with_from_port(port_key!("typo_port"))],
+    );
+    stores.save_workflow(&wf).await;
+
+    // A genuine crash-resume shape: per-node state already exists (A
+    // completed before the crash) — unlike the empty-`node_states`
+    // cold-start row the sibling test injects.
+    let execution_id = ExecutionId::new();
+    let node_ids = vec![a.clone(), b.clone()];
+    let mut exec_state = ExecutionState::new(execution_id, wf.id, &node_ids);
+    exec_state
+        .transition_status(ExecutionStatus::Running)
+        .unwrap();
+    exec_state
+        .node_states
+        .get_mut(&a)
+        .unwrap()
+        .transition_to(NodeState::Ready)
+        .unwrap();
+    exec_state
+        .node_states
+        .get_mut(&a)
+        .unwrap()
+        .transition_to(NodeState::Running)
+        .unwrap();
+    exec_state
+        .node_states
+        .get_mut(&a)
+        .unwrap()
+        .transition_to(NodeState::Completed)
+        .unwrap();
+    assert!(
+        !exec_state.node_states.is_empty(),
+        "sanity: a genuine resume has per-node state on entry"
+    );
+
+    let state_json = serde_json::to_value(&exec_state).unwrap();
+    stores.inject_state(execution_id, wf.id, state_json).await;
+    stores
+        .inject_node_output(execution_id, a.clone(), serde_json::json!("from_a"))
+        .await;
+
+    let scope = crate::store_seam::single_tenant_scope();
+    let result = engine.resume_execution(&scope, execution_id).await.unwrap();
+
+    assert!(result.is_success());
+    assert!(
+        result.node_output(&b).is_some(),
+        "B must still run on a genuine resume — the pre-flight gate must not \
+         retroactively enforce on an already-in-progress execution"
     );
 }
 
@@ -2527,7 +2722,17 @@ async fn credential_refresh_hook_is_called_before_node_dispatch() {
 async fn multi_edge_from_same_source_executes_target() {
     let registry = Arc::new(ActionRegistry::new());
     registry.register_stateless_instance(
-        ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
+        // Declares "alt" alongside the default "out" — required since W0
+        // U2's undeclared-output-port pre-flight now rejects connections
+        // wired to a flow-only action's undeclared port. The edge-count
+        // regression this test guards fires either way (both edges are
+        // counted as resolved regardless of which port activates); "alt"
+        // just needs to be a *declared* port to pass the pre-flight, not one
+        // `EchoHandler` ever actually produces output on.
+        ActionMetadata::new(action_key!("echo"), "Echo", "echoes input").with_outputs(vec![
+            OutputPort::flow(port_key!("out")),
+            OutputPort::flow(port_key!("alt")),
+        ]),
         EchoHandler,
     );
     let (engine, _) = make_engine(registry);
@@ -2536,7 +2741,11 @@ async fn multi_edge_from_same_source_executes_target() {
     let b = node_key!("b");
 
     // Two distinct (non-identical) edges from A to B: one unconditional,
-    // one via a named source port. Both activate on success.
+    // one via a named source port. Both are counted as resolved edges (the
+    // regression this test guards, see doc comment above); only the "out"
+    // edge actually activates on `Success` (evaluate_edge only fires named
+    // ports for Branch/Route/MultiOutput results) — B still runs via that
+    // edge.
     let wf = make_workflow(
         vec![
             NodeDefinition::new(a.clone(), "A", "core", "echo").unwrap(),
@@ -3751,7 +3960,13 @@ async fn panicked_task_reports_real_node_id() {
 async fn idempotency_replay_preserves_branch_routing() {
     let registry = Arc::new(ActionRegistry::new());
     registry.register_stateless_instance(
-        ActionMetadata::new(action_key!("branch"), "Branch", "branches"),
+        // Declares the "true"/"false" branch ports it actually routes on —
+        // required since W0 U2's undeclared-output-port pre-flight now
+        // rejects connections wired to a flow-only action's undeclared port.
+        ActionMetadata::new(action_key!("branch"), "Branch", "branches").with_outputs(vec![
+            OutputPort::flow(port_key!("true")),
+            OutputPort::flow(port_key!("false")),
+        ]),
         BranchHandler {
             selected: nebula_action::branch_key!("true"),
         },
@@ -5409,4 +5624,509 @@ fn with_clock_builder_wires_injected_clock_into_engine() {
         pinned_instant,
         "engine must read from the injected PinnedClock, not SystemClock"
     );
+}
+
+// ── W0 U2: undeclared-output-port pre-flight ──────────────────────────
+//
+// `validate_declared_output_ports` rejects a `Connection` wired to a flow
+// port its source action never declares (and isn't `"error"`), before
+// `run_frontier` dispatches any node. Two deliberate fail-open carve-outs
+// (unregistered source action; any declared `OutputPort::Dynamic`) keep
+// this a strict improvement over the prior silent-no-op behavior rather
+// than full protection — see the pre-flight's doc comment in `engine.rs`.
+
+/// A → B on a port A never declares (and isn't `"error"`) must fail the
+/// execution before any node dispatches — the exact correctness gap U2
+/// closes. Confirmed RED before the fix: without
+/// `validate_declared_output_ports` wired into `execute_workflow_scoped`,
+/// this connection silently never fires (`evaluate_edge` never matches
+/// `"typo_port"`), B is skipped, and `execute_workflow` returns `Ok` instead
+/// of surfacing the misconfiguration.
+#[tokio::test]
+async fn undeclared_flow_port_rejected_before_execution() {
+    use std::sync::atomic::{AtomicU32, Ordering as AOrdering};
+
+    // Proves no node dispatches: if either A or B ran, this would be > 0.
+    let dispatch_count = Arc::new(AtomicU32::new(0));
+
+    struct CountingHandler {
+        count: Arc<AtomicU32>,
+    }
+
+    impl Action for CountingHandler {
+        type Input = serde_json::Value;
+        type Output = serde_json::Value;
+
+        fn metadata() -> ActionMetadata {
+            ActionMetadata::new(action_key!("counting.static"), "Counting", "counts calls")
+        }
+        fn dependencies() -> &'static Dependencies {
+            static D: OnceLock<Dependencies> = OnceLock::new();
+            D.get_or_init(Dependencies::new)
+        }
+    }
+
+    impl StatelessAction for CountingHandler {
+        async fn execute(
+            &self,
+            input: <Self as Action>::Input,
+            _ctx: &(impl nebula_action::ActionContext + ?Sized),
+        ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
+            self.count.fetch_add(1, AOrdering::Relaxed);
+            Ok(ActionResult::success(input))
+        }
+    }
+
+    let registry = Arc::new(ActionRegistry::new());
+    registry.register_stateless_instance(
+        // Only declares the default "out" port.
+        ActionMetadata::new(action_key!("counting"), "Counting", "counts calls"),
+        CountingHandler {
+            count: dispatch_count.clone(),
+        },
+    );
+
+    let (engine, _) = make_engine(registry);
+
+    let a = node_key!("a");
+    let b = node_key!("b");
+    let wf = make_workflow(
+        vec![
+            NodeDefinition::new(a.clone(), "A", "core", "counting").unwrap(),
+            NodeDefinition::new(b.clone(), "B", "core", "counting").unwrap(),
+        ],
+        vec![
+            // "typo_port" is declared by neither the action's metadata nor
+            // the `∪ {"error"}` carve-out.
+            Connection::new(a.clone(), b.clone()).with_from_port(port_key!("typo_port")),
+        ],
+    );
+
+    let result = engine
+        .execute_workflow(
+            &crate::store_seam::single_tenant_scope(),
+            &wf,
+            serde_json::json!("input"),
+            ExecutionBudget::default(),
+        )
+        .await;
+
+    let err = result.expect_err(
+        "a connection on an undeclared, non-error output port must fail before execution",
+    );
+    match err {
+        EngineError::UndeclaredOutputPort {
+            from_node,
+            to_node,
+            port,
+            declared,
+        } => {
+            assert_eq!(from_node, a);
+            assert_eq!(to_node, b);
+            assert_eq!(port.as_str(), "typo_port");
+            assert_eq!(declared, vec![port_key!("out")]);
+        },
+        other => panic!("expected EngineError::UndeclaredOutputPort, got {other:?}"),
+    }
+
+    assert_eq!(
+        dispatch_count.load(AOrdering::Relaxed),
+        0,
+        "neither A nor B may dispatch — the pre-flight runs before run_frontier starts"
+    );
+}
+
+/// Regression guard for a placement bug caught in review: an earlier version
+/// of the pre-flight ran after `stores.execution.create` and
+/// `acquire_and_heartbeat_lease`, so its `?` early-return skipped
+/// `execute_workflow_scoped`'s only `persist_final_state`/`guard.shutdown()`
+/// call sites — orphaning the execution row permanently `Running` under a
+/// held-but-unrenewed lease. A rejection must leave zero durable trace: no
+/// execution row created, no lease taken out.
+#[tokio::test]
+async fn undeclared_flow_port_rejection_persists_no_row_and_takes_no_lease() {
+    let registry = Arc::new(ActionRegistry::new());
+    registry.register_stateless_instance(
+        ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
+        EchoHandler,
+    );
+
+    let stores = TestStores::new();
+    let (engine, _) = make_engine(registry);
+    let engine = engine.with_execution_stores(stores.execution_stores());
+
+    let a = node_key!("a");
+    let b = node_key!("b");
+    let wf = make_workflow(
+        vec![
+            NodeDefinition::new(a.clone(), "A", "core", "echo").unwrap(),
+            NodeDefinition::new(b.clone(), "B", "core", "echo").unwrap(),
+        ],
+        vec![Connection::new(a.clone(), b.clone()).with_from_port(port_key!("typo_port"))],
+    );
+
+    let result = engine
+        .execute_workflow(
+            &crate::store_seam::single_tenant_scope(),
+            &wf,
+            serde_json::json!("input"),
+            ExecutionBudget::default(),
+        )
+        .await;
+    assert!(
+        matches!(result, Err(EngineError::UndeclaredOutputPort { .. })),
+        "expected UndeclaredOutputPort, got {result:?}"
+    );
+
+    let scope = crate::store_seam::single_tenant_scope();
+    let row_count = stores.execution.count(&scope, None).await.unwrap();
+    assert_eq!(
+        row_count, 0,
+        "a pre-flight rejection must run before `stores.execution.create` — \
+         no execution row may exist afterward"
+    );
+
+    // `acquire_lease` requires an existing row (`Err(not_found)` otherwise —
+    // see `InMemoryExecutionStore::acquire_lease`), so `row_count == 0`
+    // already implies no lease was taken out. `list_all_running` double-checks
+    // directly: no row means nothing can appear as leased/Running.
+    let running = stores.execution.list_all_running().await.unwrap();
+    assert!(
+        running.is_empty(),
+        "a pre-flight rejection must not leave any row leased or Running"
+    );
+}
+
+/// Regression guard for the design this plan avoided: a Switch/Router-style
+/// action that declares a single `OutputPort::Dynamic` template (mirroring
+/// `core.switch`'s `"case"` key) but emits an arbitrary config-derived port
+/// key (`"a"`) at runtime must still execute normally. A uniform undeclared-
+/// port check would hard-reject every such wire; the pre-flight's
+/// dynamic-port carve-out skips validation for the whole source instead.
+#[tokio::test]
+async fn switch_dynamic_port_wire_not_rejected() {
+    let registry = Arc::new(ActionRegistry::new());
+    registry.register_stateless_instance(
+        ActionMetadata::new(action_key!("switch"), "Switch", "routes by config")
+            .with_outputs(vec![OutputPort::dynamic(port_key!("case"), "cases")]),
+        BranchHandler {
+            // A config-derived key never present in the declared "case"
+            // template — exactly what `core.switch` produces at runtime.
+            selected: nebula_action::branch_key!("a"),
+        },
+    );
+    registry.register_stateless_instance(
+        ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
+        EchoHandler,
+    );
+
+    let (engine, _) = make_engine(registry);
+
+    let switch_node = node_key!("switch_node");
+    let target = node_key!("target");
+    let wf = make_workflow(
+        vec![
+            NodeDefinition::new(switch_node.clone(), "Switch", "core", "switch").unwrap(),
+            NodeDefinition::new(target.clone(), "Target", "core", "echo").unwrap(),
+        ],
+        vec![Connection::new(switch_node.clone(), target.clone()).with_from_port(port_key!("a"))],
+    );
+
+    let result = engine
+        .execute_workflow(
+            &crate::store_seam::single_tenant_scope(),
+            &wf,
+            serde_json::json!("input"),
+            ExecutionBudget::default(),
+        )
+        .await
+        .unwrap();
+
+    assert!(result.is_success());
+    assert!(
+        result.node_output(&target).is_some(),
+        "target must execute — the dynamic-port carve-out must not reject this wire"
+    );
+}
+
+/// An `If`-style action declaring `true`/`false` flow ports must route on
+/// either declared port without tripping the pre-flight, regardless of
+/// which branch fires at runtime.
+#[tokio::test]
+async fn if_true_false_declared_routes() {
+    let registry = Arc::new(ActionRegistry::new());
+    registry.register_stateless_instance(
+        ActionMetadata::new(action_key!("if"), "If", "branches on a boolean").with_outputs(vec![
+            OutputPort::flow(port_key!("true")),
+            OutputPort::flow(port_key!("false")),
+        ]),
+        BranchHandler {
+            selected: nebula_action::branch_key!("false"),
+        },
+    );
+    registry.register_stateless_instance(
+        ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
+        EchoHandler,
+    );
+
+    let (engine, _) = make_engine(registry);
+
+    let cond = node_key!("cond");
+    let then_branch = node_key!("then_branch");
+    let else_branch = node_key!("else_branch");
+    let wf = make_workflow(
+        vec![
+            NodeDefinition::new(cond.clone(), "Cond", "core", "if").unwrap(),
+            NodeDefinition::new(then_branch.clone(), "Then", "core", "echo").unwrap(),
+            NodeDefinition::new(else_branch.clone(), "Else", "core", "echo").unwrap(),
+        ],
+        vec![
+            Connection::new(cond.clone(), then_branch.clone()).with_from_port(port_key!("true")),
+            Connection::new(cond.clone(), else_branch.clone()).with_from_port(port_key!("false")),
+        ],
+    );
+
+    let result = engine
+        .execute_workflow(
+            &crate::store_seam::single_tenant_scope(),
+            &wf,
+            serde_json::json!("input"),
+            ExecutionBudget::default(),
+        )
+        .await
+        .unwrap();
+
+    assert!(result.is_success());
+    assert!(
+        result.node_output(&else_branch).is_some(),
+        "false branch is declared and selected — must execute"
+    );
+    assert!(
+        result.node_output(&then_branch).is_none(),
+        "true branch is declared but not selected — must be skipped, not executed"
+    );
+}
+
+/// A source action with no declared `"error"` port, routed on failure, must
+/// still pass the pre-flight — the `∪ {"error"}` rule always allows the
+/// error port regardless of declaration.
+#[tokio::test]
+async fn error_port_allowed_without_declaration() {
+    let registry = Arc::new(ActionRegistry::new());
+    registry.register_stateless_instance(
+        // Declares only the default "out" port — no "error" port.
+        ActionMetadata::new(action_key!("fail"), "Fail", "always fails"),
+        FailHandler,
+    );
+    registry.register_stateless_instance(
+        ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
+        EchoHandler,
+    );
+
+    let (engine, _) = make_engine(registry);
+
+    let a = node_key!("a");
+    let b = node_key!("b");
+    let wf = make_workflow(
+        vec![
+            NodeDefinition::new(a.clone(), "A", "core", "fail").unwrap(),
+            NodeDefinition::new(b.clone(), "B", "core", "echo").unwrap(),
+        ],
+        vec![Connection::new(a.clone(), b.clone()).with_from_port(port_key!("error"))],
+    );
+
+    let result = engine
+        .execute_workflow(
+            &crate::store_seam::single_tenant_scope(),
+            &wf,
+            serde_json::json!("input"),
+            ExecutionBudget::default(),
+        )
+        .await
+        .unwrap();
+
+    assert!(
+        result.is_success(),
+        "error routing must not trip the undeclared-output-port pre-flight"
+    );
+    assert!(
+        result.node_output(&b).is_some(),
+        "B must run via the error port even though A never declares it"
+    );
+}
+
+/// Unit test of `validate_declared_output_ports` directly: an unregistered
+/// source action must fail OPEN (warn + proceed), not reject. This is a
+/// documented limitation, not new protection — an actually-unresolvable
+/// action still fails later, at dispatch, through its own action-not-found
+/// error.
+#[tokio::test]
+async fn unresolvable_action_fails_open() {
+    let registry = Arc::new(ActionRegistry::new());
+    registry.register_stateless_instance(
+        ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
+        EchoHandler,
+    );
+    let (engine, _) = make_engine(registry);
+
+    let a = node_key!("a");
+    let b = node_key!("b");
+    let wf = make_workflow(
+        vec![
+            NodeDefinition::new(a.clone(), "A", "core", "totally.unregistered").unwrap(),
+            NodeDefinition::new(b.clone(), "B", "core", "echo").unwrap(),
+        ],
+        vec![Connection::new(a, b).with_from_port(port_key!("whatever"))],
+    );
+
+    let graph = DependencyGraph::from_definition(&wf).unwrap();
+    let node_map: HashMap<NodeKey, &NodeDefinition> =
+        wf.nodes.iter().map(|n| (n.id.clone(), n)).collect();
+
+    let outcome = engine.validate_declared_output_ports(&graph, &node_map);
+    assert!(
+        outcome.is_ok(),
+        "an unregistered source action must fail open, not reject: {outcome:?}"
+    );
+}
+
+/// Finding 2 follow-up: the pre-flight must validate a version-pinned node's
+/// outgoing connections against the SAME version `get_factory_versioned`
+/// will actually dispatch, not always the latest registered version. v1 and
+/// v2 here declare deliberately disjoint output ports so an always-latest
+/// bug is directly observable: v1 declares only `"legacy"`, v2 declares only
+/// `"out"`. A source node pinned to v1 and wired on `"legacy"` must pass —
+/// an always-latest check (against v2's ports) would wrongly reject it.
+#[tokio::test]
+async fn preflight_accepts_a_port_only_the_pinned_version_declares() {
+    use semver::Version;
+
+    let registry = Arc::new(ActionRegistry::new());
+    let v1 = Version::new(1, 0, 0);
+    let v2 = Version::new(2, 0, 0);
+    registry.register_stateless_instance(
+        ActionMetadata::new(action_key!("versioned_ports"), "V1", "v1")
+            .with_version_full(v1.clone())
+            .with_outputs(vec![OutputPort::flow(port_key!("legacy"))]),
+        EchoHandler,
+    );
+    registry.register_stateless_instance(
+        ActionMetadata::new(action_key!("versioned_ports"), "V2", "v2")
+            .with_version_full(v2)
+            .with_outputs(vec![OutputPort::flow(port_key!("out"))]),
+        EchoHandler,
+    );
+    registry.register_stateless_instance(
+        ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
+        EchoHandler,
+    );
+
+    let (engine, _) = make_engine(registry);
+
+    let a = node_key!("a");
+    let b = node_key!("b");
+    let wf = make_workflow(
+        vec![
+            NodeDefinition::new(a.clone(), "A", "core", "versioned_ports")
+                .unwrap()
+                .with_interface_version(v1),
+            NodeDefinition::new(b.clone(), "B", "core", "echo").unwrap(),
+        ],
+        vec![Connection::new(a, b).with_from_port(port_key!("legacy"))],
+    );
+
+    // Exercise `validate_declared_output_ports` directly (mirrors
+    // `unresolvable_action_fails_open`'s pattern) rather than a full
+    // `execute_workflow` run: a plain (non-branching) `EchoHandler` success
+    // always activates the default `"out"` edge at dispatch time regardless
+    // of what the source action *declares* — that is a separate runtime
+    // concern from this pre-flight, which only checks the connection's port
+    // against the action's DECLARED ports before any node ever dispatches.
+    let graph = DependencyGraph::from_definition(&wf).unwrap();
+    let node_map: HashMap<NodeKey, &NodeDefinition> =
+        wf.nodes.iter().map(|n| (n.id.clone(), n)).collect();
+    let outcome = engine.validate_declared_output_ports(&graph, &node_map);
+    assert!(
+        outcome.is_ok(),
+        "a wire on a port the PINNED v1 declares must pass the pre-flight, even though v2 \
+         (latest) does not declare it — checking always-latest would wrongly reject this: \
+         {outcome:?}"
+    );
+}
+
+/// Mirror of `preflight_accepts_a_port_only_the_pinned_version_declares`:
+/// a source node pinned to v1 (declares only `"legacy"`) wired on `"out"` —
+/// a port only v2 (latest) declares — must be REJECTED. An always-latest
+/// check (against v2's ports, which does declare `"out"`) would wrongly pass
+/// this wire even though the pinned v1 that actually dispatches never
+/// declares it.
+#[tokio::test]
+async fn preflight_rejects_a_port_the_pinned_version_lacks_even_if_latest_declares_it() {
+    use semver::Version;
+
+    let registry = Arc::new(ActionRegistry::new());
+    let v1 = Version::new(1, 0, 0);
+    let v2 = Version::new(2, 0, 0);
+    registry.register_stateless_instance(
+        ActionMetadata::new(action_key!("versioned_ports"), "V1", "v1")
+            .with_version_full(v1.clone())
+            .with_outputs(vec![OutputPort::flow(port_key!("legacy"))]),
+        EchoHandler,
+    );
+    registry.register_stateless_instance(
+        ActionMetadata::new(action_key!("versioned_ports"), "V2", "v2")
+            .with_version_full(v2)
+            .with_outputs(vec![OutputPort::flow(port_key!("out"))]),
+        EchoHandler,
+    );
+    registry.register_stateless_instance(
+        ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
+        EchoHandler,
+    );
+
+    let (engine, _) = make_engine(registry);
+
+    let a = node_key!("a");
+    let b = node_key!("b");
+    let wf = make_workflow(
+        vec![
+            NodeDefinition::new(a.clone(), "A", "core", "versioned_ports")
+                .unwrap()
+                .with_interface_version(v1),
+            NodeDefinition::new(b.clone(), "B", "core", "echo").unwrap(),
+        ],
+        // "out" is declared by v2 (latest) but NOT by the pinned v1.
+        vec![Connection::new(a.clone(), b.clone()).with_from_port(port_key!("out"))],
+    );
+
+    let result = engine
+        .execute_workflow(
+            &crate::store_seam::single_tenant_scope(),
+            &wf,
+            serde_json::json!("input"),
+            ExecutionBudget::default(),
+        )
+        .await;
+
+    match result.expect_err(
+        "a wire on a port only the LATEST version declares must be rejected when the source \
+         node is pinned to a version that lacks it",
+    ) {
+        EngineError::UndeclaredOutputPort {
+            from_node,
+            to_node,
+            port,
+            declared,
+        } => {
+            assert_eq!(from_node, a);
+            assert_eq!(to_node, b);
+            assert_eq!(port.as_str(), "out");
+            assert_eq!(
+                declared,
+                vec![port_key!("legacy")],
+                "the offender's declared-ports diagnostic must reflect the PINNED v1's ports"
+            );
+        },
+        other => panic!("expected EngineError::UndeclaredOutputPort, got {other:?}"),
+    }
 }

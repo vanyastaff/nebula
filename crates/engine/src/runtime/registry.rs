@@ -24,8 +24,8 @@ use nebula_action::{
     Action, ActionError, ActionFactory, ActionMetadata, AgentAction, ControlAction,
     FromWorkflowNode, GenericAgentFactory, GenericControlFactory, GenericResourceFactory,
     GenericStatefulFactory, GenericStatelessFactory, GenericStreamFactory, GenericTriggerFactory,
-    InstanceFactory, ResourceAction, StatefulAction, StatelessAction, StreamAction, TriggerAction,
-    WebhookActionFactory,
+    InstanceFactory, OutputPort, ResourceAction, StatefulAction, StatelessAction, StreamAction,
+    TriggerAction, WebhookActionFactory,
 };
 use nebula_core::ActionKey;
 use semver::Version;
@@ -226,6 +226,48 @@ impl ActionRegistry {
         Some((last.metadata.clone(), Arc::clone(&last.factory)))
     }
 
+    /// Declared output ports for the latest registered version of `key`.
+    ///
+    /// Returns `None` if no factory is registered for `key`. Callers that
+    /// know the node's pinned `interface_version` (if any) should prefer
+    /// [`Self::output_ports_versioned`] — this unpinned form always answers
+    /// against the latest version, which is wrong for a node pinned to an
+    /// older one.
+    #[must_use]
+    pub fn output_ports(&self, key: &ActionKey) -> Option<Vec<OutputPort>> {
+        self.output_ports_versioned(key, None)
+    }
+
+    /// Declared output ports for `key`, pinned to `interface_version` when
+    /// given.
+    ///
+    /// `Some(version)` mirrors [`Self::get_factory_versioned`]'s exact-match
+    /// lookup: if no entry at that exact version is registered, returns
+    /// `None` (fail-open at the call site, same as an unregistered action —
+    /// deliberately does NOT fall back to latest, since that would silently
+    /// reintroduce the mismatch this method exists to avoid). `None` returns
+    /// the latest registered version's ports, mirroring [`Self::get_factory`].
+    ///
+    /// Used by the engine's undeclared-output-port pre-flight
+    /// (`validate_declared_output_ports`) to validate a `Connection` wire
+    /// against the SAME action version [`Self::get_factory_versioned`] will
+    /// actually dispatch for a version-pinned node — checking against the
+    /// latest version instead could wrongly reject a wire the pinned version
+    /// supports, or wrongly pass one it doesn't.
+    #[must_use]
+    pub fn output_ports_versioned(
+        &self,
+        key: &ActionKey,
+        interface_version: Option<&Version>,
+    ) -> Option<Vec<OutputPort>> {
+        let entries = self.factories.get(key)?;
+        let entry = match interface_version {
+            Some(v) => entries.iter().find(|e| e.metadata.base.version == *v)?,
+            None => entries.last()?,
+        };
+        Some(entry.metadata.outputs.clone())
+    }
+
     /// Look up a factory by key and exact version.
     #[must_use]
     pub fn get_factory_versioned(
@@ -421,6 +463,112 @@ mod tests {
         assert_eq!(
             meta.base.version, v2,
             "get_factory returns the latest version"
+        );
+    }
+
+    #[test]
+    fn output_ports_returns_none_for_unregistered_key() {
+        let registry = ActionRegistry::new();
+        let key = ActionKey::new("test.never_registered").unwrap();
+        assert!(registry.output_ports(&key).is_none());
+    }
+
+    #[test]
+    fn output_ports_returns_declared_ports_for_latest_version() {
+        let registry = ActionRegistry::new();
+        registry.register_stateless_instance(
+            meta_with("test.noop", 1, 0)
+                .with_outputs(vec![OutputPort::flow(nebula_core::port_key!("out"))]),
+            NoopAction,
+        );
+        registry.register_stateless_instance(
+            meta_with("test.noop", 2, 0).with_outputs(vec![
+                OutputPort::flow(nebula_core::port_key!("out")),
+                OutputPort::error(nebula_core::port_key!("error")),
+            ]),
+            NoopAction,
+        );
+
+        let key = ActionKey::new("test.noop").unwrap();
+        let ports = registry.output_ports(&key).expect("action is registered");
+        let keys: Vec<&str> = ports.iter().map(OutputPort::key).collect();
+        assert_eq!(
+            keys,
+            vec!["out", "error"],
+            "must report the latest registered version's declared ports, not v1's"
+        );
+    }
+
+    /// W0 U2 follow-up (finding 2): `output_ports_versioned` must answer
+    /// against the EXACT pinned version, not always the latest — v1 and v2
+    /// here declare different ports on purpose so a version-blind lookup
+    /// would silently return the wrong set for either pin.
+    #[test]
+    fn output_ports_versioned_pins_to_the_requested_version() {
+        let registry = ActionRegistry::new();
+        registry.register_stateless_instance(
+            meta_with("test.noop", 1, 0)
+                .with_outputs(vec![OutputPort::flow(nebula_core::port_key!("legacy"))]),
+            NoopAction,
+        );
+        registry.register_stateless_instance(
+            meta_with("test.noop", 2, 0)
+                .with_outputs(vec![OutputPort::flow(nebula_core::port_key!("out"))]),
+            NoopAction,
+        );
+
+        let key = ActionKey::new("test.noop").unwrap();
+        let v1 = Version::new(1, 0, 0);
+        let v2 = Version::new(2, 0, 0);
+
+        let v1_ports = registry
+            .output_ports_versioned(&key, Some(&v1))
+            .expect("v1 is registered");
+        assert_eq!(
+            v1_ports.iter().map(OutputPort::key).collect::<Vec<_>>(),
+            vec!["legacy"],
+            "a node pinned to v1 must see v1's ports, not v2's"
+        );
+
+        let v2_ports = registry
+            .output_ports_versioned(&key, Some(&v2))
+            .expect("v2 is registered");
+        assert_eq!(
+            v2_ports.iter().map(OutputPort::key).collect::<Vec<_>>(),
+            vec!["out"],
+            "a node pinned to v2 must see v2's ports, not v1's"
+        );
+
+        let unpinned = registry
+            .output_ports_versioned(&key, None)
+            .expect("action is registered");
+        assert_eq!(
+            unpinned.iter().map(OutputPort::key).collect::<Vec<_>>(),
+            vec!["out"],
+            "an unpinned lookup must fall back to the latest version, mirroring get_factory"
+        );
+    }
+
+    /// A pinned version with no matching registered entry must fail OPEN
+    /// (return `None`, skipping pre-flight validation), not silently fall
+    /// back to the latest registered version — falling back would
+    /// reintroduce the exact always-latest bug this method exists to fix.
+    #[test]
+    fn output_ports_versioned_pinned_to_unregistered_version_fails_open() {
+        let registry = ActionRegistry::new();
+        registry.register_stateless_instance(
+            meta_with("test.noop", 1, 0)
+                .with_outputs(vec![OutputPort::flow(nebula_core::port_key!("out"))]),
+            NoopAction,
+        );
+
+        let key = ActionKey::new("test.noop").unwrap();
+        let unregistered_pin = Version::new(9, 0, 0);
+        assert!(
+            registry
+                .output_ports_versioned(&key, Some(&unregistered_pin))
+                .is_none(),
+            "a pin with no matching entry must return None, not the latest version's ports"
         );
     }
 }

@@ -190,6 +190,52 @@ pub enum WorkflowError {
         /// Why the config is invalid.
         reason: String,
     },
+
+    /// A `ParamValue::Reference`'s `output_path` provably fails to resolve
+    /// through the producer node's output schema, on a path that walked
+    /// through only **closed** (fully-typed) nodes right up to the failure
+    /// point (ADR-0100 TypeDAG, W0 U5 — correctness only; see
+    /// `crate::validate::check_reference_edges`).
+    ///
+    /// Emitted only for [`nebula_schema::PathResolveError::NonIndexOnList`] /
+    /// [`nebula_schema::PathResolveError::DescendPastLeaf`] — a missing
+    /// `Object` key, or any opaque node encountered along the way, fails open
+    /// instead (never this variant). Fires in **both**
+    /// [`SchemaCheckMode`](crate::validate::SchemaCheckMode)s: it is a provable
+    /// structural mistake, not an undecidable verdict.
+    ///
+    /// This is a **correctness-only** check: a `Reference` into a
+    /// `Field::Secret` producer field is not distinguished from any other
+    /// reference here (see the W0 U5 plan's framing — secret exfiltration via
+    /// parameter references is a separate, filed, not-yet-built initiative).
+    ///
+    /// The payload is `Box`ed for the same `clippy::result_large_err` reason as
+    /// [`Self::PortSchemaIncompatible`].
+    #[classify(category = "validation", code = "WORKFLOW:REFERENCE_PATH_UNRESOLVED")]
+    #[error("reference path unresolved: {0}")]
+    ReferencePathUnresolved(Box<ReferencePathUnresolvedDetails>),
+
+    /// A `ParamValue::Reference`'s `output_path` resolves through the
+    /// producer's output schema (a fully-closed path —
+    /// [`nebula_schema::PathWalk::Resolved`]), but the resolved leaf field is
+    /// provably **not assignable** to the consumer parameter's expected field
+    /// ([`nebula_schema::Assignability::No`]). Classified consistently with
+    /// [`Self::PortSchemaIncompatible`] (always a hard error, both modes).
+    ///
+    /// The payload is `Box`ed for the same `clippy::result_large_err` reason as
+    /// [`Self::PortSchemaIncompatible`].
+    #[classify(category = "validation", code = "WORKFLOW:REFERENCE_TYPE_INCOMPATIBLE")]
+    #[error("reference type incompatible: {0}")]
+    ReferenceTypeIncompatible(Box<ReferenceTypeIncompatDetails>),
+
+    /// Like [`Self::ReferenceTypeIncompatible`], but the assignability verdict
+    /// was [`nebula_schema::Assignability::Unknown`] — classified consistently
+    /// with [`Self::PortSchemaUndecidable`]: blocked only under
+    /// [`SchemaCheckMode::Strict`](crate::validate::SchemaCheckMode::Strict);
+    /// `Gradual` warns-and-passes.
+    #[classify(category = "validation", code = "WORKFLOW:REFERENCE_TYPE_UNDECIDABLE")]
+    #[error("reference type undecidable: {0}")]
+    ReferenceTypeUndecidable(Box<ReferenceTypeUndecidableDetails>),
 }
 
 /// Join a slice of `Display` items with `"; "` (shared by the two payload
@@ -287,6 +333,103 @@ impl std::fmt::Display for PortSchemaUndecidableDetails {
             from_port,
             self.to_node,
             to_port,
+            join_display(&self.reasons)
+        )
+    }
+}
+
+/// Payload for [`WorkflowError::ReferencePathUnresolved`].
+///
+/// Kept separate and `Box`ed on the enum to satisfy `clippy::result_large_err`,
+/// mirroring [`PortSchemaIncompatDetails`].
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct ReferencePathUnresolvedDetails {
+    /// The node whose parameter carries the unresolved reference.
+    pub consumer_node: NodeKey,
+    /// The parameter key on `consumer_node`.
+    pub param_key: String,
+    /// The referenced producer node.
+    pub producer_node: NodeKey,
+    /// The authored `output_path` that failed to resolve.
+    pub output_path: String,
+    /// The rendered [`nebula_schema::PathResolveError`].
+    pub reason: String,
+}
+
+impl std::fmt::Display for ReferencePathUnresolvedDetails {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "node {} parameter `{}` references {}.{}, which does not resolve: {}",
+            self.consumer_node, self.param_key, self.producer_node, self.output_path, self.reason
+        )
+    }
+}
+
+/// Payload for [`WorkflowError::ReferenceTypeIncompatible`].
+///
+/// Kept separate and `Box`ed on the enum to satisfy `clippy::result_large_err`,
+/// mirroring [`PortSchemaIncompatDetails`].
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct ReferenceTypeIncompatDetails {
+    /// The node whose parameter carries the reference.
+    pub consumer_node: NodeKey,
+    /// The parameter key on `consumer_node`.
+    pub param_key: String,
+    /// The referenced producer node.
+    pub producer_node: NodeKey,
+    /// The authored `output_path` the reference resolved through.
+    pub output_path: String,
+    /// Every incompatibility found between the resolved producer leaf field and
+    /// the consumer's expected field, structured for programmatic inspection.
+    pub incompatibilities: Vec<nebula_schema::SchemaIncompat>,
+}
+
+impl std::fmt::Display for ReferenceTypeIncompatDetails {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}.{} \u{2190} {}.{}: {}",
+            self.consumer_node,
+            self.param_key,
+            self.producer_node,
+            self.output_path,
+            join_display(&self.incompatibilities)
+        )
+    }
+}
+
+/// Payload for [`WorkflowError::ReferenceTypeUndecidable`].
+///
+/// Kept separate and `Box`ed on the enum for the same `clippy::result_large_err`
+/// reason as [`ReferenceTypeIncompatDetails`].
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct ReferenceTypeUndecidableDetails {
+    /// The node whose parameter carries the reference.
+    pub consumer_node: NodeKey,
+    /// The parameter key on `consumer_node`.
+    pub param_key: String,
+    /// The referenced producer node.
+    pub producer_node: NodeKey,
+    /// The authored `output_path` the reference resolved through.
+    pub output_path: String,
+    /// Every reason the reference's assignability is undecidable, structured so
+    /// a policy can route on them without string-parsing.
+    pub reasons: Vec<nebula_schema::UnknownReason>,
+}
+
+impl std::fmt::Display for ReferenceTypeUndecidableDetails {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}.{} \u{2190} {}.{}: {}",
+            self.consumer_node,
+            self.param_key,
+            self.producer_node,
+            self.output_path,
             join_display(&self.reasons)
         )
     }

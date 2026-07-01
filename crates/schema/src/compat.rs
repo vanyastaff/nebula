@@ -261,6 +261,53 @@ pub fn explain_assignable(producer: &OutputSchema, consumer: &InputSchema) -> As
     explain_assignable_core(producer.as_schema(), consumer.as_schema())
 }
 
+/// Field-granularity counterpart to [`explain_assignable`]: is `producer_leaf`
+/// assignable where `consumer_leaf` is expected, when a caller has two
+/// individual resolved [`Field`]s in hand rather than two whole schemas (e.g.
+/// `nebula-workflow`'s per-field `Reference`-parameter check, which resolves a
+/// single producer field and a single consumer field, not their enclosing
+/// schemas).
+///
+/// Internally wraps each field into a synthetic one-field schema (both under
+/// `consumer_leaf`'s key, so the two pair up — see the crate-private
+/// `ValidSchema::single_field`), tags them `Output`/`Input`, and runs the
+/// exact same [`explain_assignable`] the schema-level check uses. Those
+/// synthetic schemas are built, compared, and dropped entirely inside this
+/// function — never handed back to the caller, so the bypassed-lint,
+/// bypassed-index construction `ValidSchema::single_field` performs never
+/// crosses a crate boundary as a value someone could mistake for a
+/// fully-built schema.
+///
+/// A [`Field::Unknown`] leaf is handled BEFORE that synthetic-schema
+/// machinery runs, not after: `ValidSchema::single_field`'s re-keying
+/// (`rekeyed`) cannot rewrite an `Unknown` field's private key (see its own
+/// doc comment), so a `Field::Unknown` producer or consumer leaf whose
+/// original key differs from the other side's key would fail to pair up
+/// under the shared synthetic key — surfacing as a spurious
+/// `No(MissingRequiredField)` (required consumer field) or a spurious `Yes`
+/// (optional consumer field), rather than the correct "this version cannot
+/// reason about an unrecognized field kind" verdict.
+#[must_use]
+pub fn explain_field_assignable(producer_leaf: &Field, consumer_leaf: &Field) -> Assignability {
+    // `Field::Unknown` is opaque on either side (mirrors `collect_pair`'s own
+    // same-key `Field::Unknown` handling a few lines below) — decide this
+    // before building any synthetic schema, since the re-key that machinery
+    // relies on cannot reach an `Unknown` field's key.
+    if matches!(producer_leaf, Field::Unknown(_)) || matches!(consumer_leaf, Field::Unknown(_)) {
+        return Assignability::Unknown(vec![UnknownReason::OpaqueFieldKind {
+            key: consumer_leaf.key().clone(),
+        }]);
+    }
+
+    let key = consumer_leaf.key().clone();
+    let producer = OutputSchema::new(ValidSchema::single_field(
+        key.clone(),
+        producer_leaf.clone(),
+    ));
+    let consumer = InputSchema::new(ValidSchema::single_field(key, consumer_leaf.clone()));
+    explain_assignable(&producer, &consumer)
+}
+
 /// The three-valued (Cue/GraphQL-style) assignability verdict: a producer
 /// schema is provably assignable, provably not, or **not statically decidable**.
 ///
@@ -1901,6 +1948,90 @@ mod tests {
                 producer: SchemaKind::Union,
                 consumer: SchemaKind::Record,
             }),
+        );
+    }
+
+    // ── explain_field_assignable (field-granularity, W0 U5) ────────────────────
+
+    /// A producer leaf's own key differs from the consumer field it is being
+    /// checked against (`email` vs. `recipient`) — `explain_field_assignable`
+    /// must re-key both to the same synthetic key internally so the pairing
+    /// succeeds, exactly as it would if the two keys already matched.
+    #[test]
+    fn field_assignable_pairs_leaves_under_different_keys() {
+        let producer_leaf: Field = Field::string(fk("email")).required().into();
+        let consumer_leaf: Field = Field::string(fk("recipient")).required().into();
+
+        assert_eq!(
+            explain_field_assignable(&producer_leaf, &consumer_leaf),
+            Assignability::Yes
+        );
+    }
+
+    /// A provable type mismatch between the two leaves is `No`, carrying a
+    /// `FieldTypeMismatch` under the consumer's own key.
+    #[test]
+    fn field_assignable_type_mismatch_is_no() {
+        let producer_leaf: Field = Field::number(fk("age")).into();
+        let consumer_leaf: Field = Field::string(fk("name")).required().into();
+
+        match explain_field_assignable(&producer_leaf, &consumer_leaf) {
+            Assignability::No(incompats) => {
+                assert!(incompats.iter().any(|i| matches!(
+                    i,
+                    SchemaIncompat::FieldTypeMismatch { key, .. } if key.as_str() == "name"
+                )));
+            },
+            other => panic!("expected No(FieldTypeMismatch), got {other:?}"),
+        }
+    }
+
+    /// A float producer feeding an integer consumer is `Unknown` (possible
+    /// precision loss, not a provable conflict) — the same `NumberWidening`
+    /// leniency the schema-level check applies.
+    #[test]
+    fn field_assignable_float_to_int_is_unknown() {
+        let producer_leaf: Field = Field::number(fk("amount")).into();
+        let consumer_leaf: Field = Field::integer(fk("qty")).required().into();
+
+        assert_eq!(
+            explain_field_assignable(&producer_leaf, &consumer_leaf),
+            Assignability::Unknown(vec![UnknownReason::NumberWidening { key: fk("qty") }])
+        );
+    }
+
+    /// A `Field::Unknown` producer leaf at a key DIFFERENT from the required
+    /// consumer leaf it is checked against must still report
+    /// `Unknown(OpaqueFieldKind)` — not a spurious `No(MissingRequiredField)`.
+    ///
+    /// `ValidSchema::single_field`'s re-key (`rekeyed`) cannot rewrite an
+    /// `Unknown` field's private key, so without the early `Field::Unknown`
+    /// check in `explain_field_assignable`, the producer's synthetic
+    /// one-field schema would keep the leaf's ORIGINAL key (`"bio"`) instead
+    /// of the consumer's key (`"recipient_email"`) — the two synthetic
+    /// schemas would fail to pair up, and `collect_fields` would read that as
+    /// the required consumer field being entirely absent from the producer.
+    #[test]
+    fn field_assignable_unknown_producer_leaf_mismatched_key_is_unknown_not_missing() {
+        let unknown_schema: ValidSchema =
+            serde_json::from_value(json!({"fields": [{"type": "richtext", "key": "bio"}]}))
+                .expect("Unknown producer schema");
+        let producer_leaf = unknown_schema.fields()[0].clone();
+        assert!(
+            matches!(producer_leaf, Field::Unknown(_)),
+            "sanity: leaf must be Field::Unknown"
+        );
+        assert_eq!(producer_leaf.key().as_str(), "bio");
+
+        let consumer_leaf: Field = Field::string(fk("recipient_email")).required().into();
+
+        assert_eq!(
+            explain_field_assignable(&producer_leaf, &consumer_leaf),
+            Assignability::Unknown(vec![UnknownReason::OpaqueFieldKind {
+                key: fk("recipient_email")
+            }]),
+            "an Unknown producer leaf at a different key must report OpaqueFieldKind, not \
+             silently fail to pair up as a spurious MissingRequiredField"
         );
     }
 }

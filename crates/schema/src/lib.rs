@@ -232,7 +232,8 @@ pub use builder::{
 };
 pub use commitment::{CommitmentId, CommitmentKey};
 pub use compat::{
-    Assignability, SchemaIncompat, UnknownReason, explain_assignable, is_assignable_schema,
+    Assignability, SchemaIncompat, UnknownReason, explain_assignable, explain_field_assignable,
+    is_assignable_schema,
 };
 pub use directed::{DirectedSchema, Input, InputSchema, Output, OutputSchema, Polarity};
 pub use error::{
@@ -297,8 +298,8 @@ pub use schema::{Schema, SchemaBuilder};
 pub use secret::{SECRET_REDACTED, SecretBytes, SecretString, SecretValue, SecretWire};
 pub use transformer::Transformer;
 pub use validated::{
-    FieldHandle, ResolvedLookup, ResolvedValues, SchemaFlags, SchemaKind, SerdeTagging,
-    ValidSchema, ValidValues,
+    FieldHandle, PathResolveError, PathWalk, ResolvedLookup, ResolvedValues, SchemaFlags,
+    SchemaKind, SerdeTagging, ValidSchema, ValidValues, is_opaque_field_node,
 };
 pub use value::{ContentId, EXPRESSION_KEY, FieldValue, FieldValues, VALUE_CANON_VERSION};
 pub use widget::{
