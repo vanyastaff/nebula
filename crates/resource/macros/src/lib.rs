@@ -15,7 +15,7 @@
 //!    associated types (`Config`, `Instance`), and the lifecycle methods (`create`,
 //!    optionally `check`, `shutdown`, `destroy`, credential-rotation hooks).
 //!
-//! ```ignore
+//! ```text
 //! use nebula_credential::CredentialGuard;
 //! use nebula_resource::{Provider, Resource, SlotCell};
 //!
@@ -40,6 +40,9 @@
 //! }
 //! ```
 //!
+//! For a compiling end-to-end example, see the runnable doctest on
+//! `nebula_resource::Resource` in the parent crate.
+//!
 //! The `#[resource(...)]` container attribute is not accepted by `Resource` — it
 //! existed only on an older retired derive which emitted a `todo!()` body.
 //!
@@ -53,7 +56,10 @@
 //! Source-error chains are preserved: the original error is attached via
 //! `Error::with_source(err)` so `std::error::Error::source()` returns it.
 //!
-//! ```ignore
+//! For a compiling end-to-end example, see the runnable doctest on
+//! `nebula_resource::ClassifyError` in the parent crate.
+//!
+//! ```text
 //! #[derive(thiserror::Error, Debug, ClassifyError)]
 //! enum DbError {
 //!     #[error("connect timeout")]
@@ -168,7 +174,10 @@ pub fn derive_resource(input: TokenStream) -> TokenStream {
 ///
 /// ## Example
 ///
-/// ```ignore
+/// For a compiling end-to-end example, see the runnable doctest on
+/// `nebula_resource::ResourceConfig` in the parent crate.
+///
+/// ```text
 /// #[derive(ResourceConfig, serde::Deserialize, Clone)]
 /// struct PgConfig {
 ///     url: String,

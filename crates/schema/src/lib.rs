@@ -156,6 +156,7 @@
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
+#![warn(unreachable_pub)]
 // Hard-deny `#[async_trait::async_trait]` on this crate. Project rule
 // (see `ARCHITECTURE.md` anti-patterns + `clippy.toml`) — Rust 1.75+
 // supports `async fn` in traits directly; the schema crate ships a

@@ -7,14 +7,19 @@
 //!
 //! ## Input
 //!
-//! ```ignore
+//! The blocks below are syntax illustrations (this `proc-macro` crate cannot
+//! depend on `nebula_credential`, so they are not standalone-runnable). See
+//! `nebula_credential::Credential` in the parent crate for a complete runnable
+//! example.
+//!
+//! ```text
 //! #[capability(scheme_bound = AcceptsBearer, sealed = BearerSealed)]
 //! pub trait BitbucketBearer: BitbucketCredential {}
 //! ```
 //!
 //! ## Output (hand-expanded equivalent)
 //!
-//! ```ignore
+//! ```text
 //! pub trait BitbucketBearer: BitbucketCredential {}
 //!
 //! impl<T> BitbucketBearer for T

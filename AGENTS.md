@@ -171,8 +171,8 @@ Each layer depends only on layers below. Upward dependency = CI failure.
 | Layer | Crates |
 |-------|--------|
 | **API / Public** | `api`, `sdk` |
-| **Exec** | `engine`, `storage`, `storage-loom-probe` |
-| **Business** | `resource`, `action`, `plugin`, `tenancy` |
+| **Exec** | `engine`, `orchestrator`, `worker`, `storage`, `storage-loom-probe` |
+| **Business** | `resource`, `action`, `plugin`, `plugin-core`, `tenancy` |
 | **Core / shared-infra** | `core`, `validator`, `expression`, `workflow`, `execution`, `schema`, `metadata`, `storage-port`, `credential` |
 | **Cross-cutting** | `crypto`, `log`, `eventbus`, `metrics`, `resilience`, `error`, `env` |
 
@@ -181,6 +181,8 @@ Each layer depends only on layers below. Upward dependency = CI failure.
 - `nebula-storage-port` (Core) is the object-safe storage seam — no backend code.
 - `nebula-storage` (Exec) is the sole adapter implementation (InMemory + SQLite + Postgres).
 - `nebula-credential` is shared infra importable from Exec, Business, and API tiers.
+- `nebula-worker` (Exec) is the composition root that wires the engine into the `nebula-orchestrator` pull-loop (ADR-0095); only per-flavor binaries (`apps/worker`) may depend on it.
+- `nebula-plugin-core` (Business) is the first-party `core` plugin (filter/sort/aggregate, branching, datetime, durable delay) built on `action`/`plugin`.
 - Plugins register in-process (ADR-0091). WASM/process isolation is a non-goal (canon §12.6).
 - Each `+macros` companion lives at the same layer as its parent and ships derives only.
 

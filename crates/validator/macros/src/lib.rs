@@ -4,7 +4,7 @@
 //! `nebula-validator` with the `derive` feature (enabled by default) and
 //! import the [`Validator`] derive through the top-level re-export:
 //!
-//! ```rust,ignore
+//! ```text
 //! use nebula_validator::Validator;
 //!
 //! #[derive(Validator)]
@@ -17,6 +17,11 @@
 //!     age: Option<u8>,
 //! }
 //! ```
+//!
+//! This crate is `proc-macro = true`, so it cannot depend on `nebula-validator`
+//! and the derive above cannot compile as a doctest here. For a runnable
+//! example see `nebula_validator::Validator` in the parent `nebula-validator`
+//! crate.
 //!
 //! # Container attributes (`#[validator(...)]`)
 //!

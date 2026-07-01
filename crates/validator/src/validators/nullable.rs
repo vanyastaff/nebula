@@ -8,8 +8,9 @@
 //!
 //! # Examples
 //!
-//! ```rust,ignore
-//! use nebula_validator::prelude::*;
+//! ```rust
+//! use nebula_validator::validators::required;
+//! use nebula_validator::foundation::Validate;
 //!
 //! // Ensure a value is present
 //! let validator = required::<String>();
@@ -31,11 +32,11 @@ use crate::foundation::{Validate, ValidationError};
 ///
 /// # Examples
 ///
-/// ```rust,ignore
-/// use nebula_validator::validators::Required;
+/// ```rust
+/// use nebula_validator::validators::required;
 /// use nebula_validator::foundation::Validate;
 ///
-/// let validator = Required::<i32>;
+/// let validator = required::<i32>();
 /// assert!(validator.validate(&Some(42)).is_ok());
 /// assert!(validator.validate(&None::<i32>).is_err());
 /// ```
@@ -62,7 +63,7 @@ impl<T> Validate<Option<T>> for Required<T> {
 ///
 /// # Examples
 ///
-/// ```rust,ignore
+/// ```rust
 /// use nebula_validator::validators::required;
 /// use nebula_validator::foundation::Validate;
 ///

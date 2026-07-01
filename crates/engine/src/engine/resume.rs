@@ -558,9 +558,9 @@ impl WorkflowEngine {
     ///
     /// # Returns
     ///
-    /// [`SatisfyOutcome::Satisfied(n)`] when `n` signal-driven waiting nodes
-    /// were armed for completion, or [`SatisfyOutcome::NothingToSatisfy`] when
-    /// none match.
+    /// [`SatisfyOutcome::Satisfied`] carrying `n` when `n` signal-driven waiting
+    /// nodes were armed for completion, or [`SatisfyOutcome::NothingToSatisfy`]
+    /// when none match.
     ///
     /// # Errors
     ///

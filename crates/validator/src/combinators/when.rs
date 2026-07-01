@@ -12,18 +12,16 @@
 //!
 //! # Examples
 //!
-//! ```rust,ignore
+//! ```rust
 //! use nebula_validator::combinators::When;
 //! use nebula_validator::foundation::Validate;
+//! use nebula_validator::validators::min_length;
 //!
-//! // Only validate long strings
-//! let validator = When::new(
-//!     min_length(10),
-//!     |s: &str| s.len() > 5
-//! );
-//! assert!(validator.validate("hi").is_ok()); // skipped
-//! assert!(validator.validate("short").is_err()); // validated, too short
-//! assert!(validator.validate("long enough").is_ok()); // validated, passes
+//! // Only enforce the length rule on strings longer than 5 chars.
+//! let validator = When::new(min_length(10), |s: &str| s.len() > 5);
+//! assert!(validator.validate("hi").is_ok()); // condition false (len 2) -> skipped
+//! assert!(validator.validate("hello!").is_err()); // condition true (len 6), but < 10 -> fails
+//! assert!(validator.validate("long enough!").is_ok()); // condition true, len 12 >= 10 -> passes
 //! ```
 
 use crate::foundation::{Validate, ValidationError};
@@ -41,15 +39,13 @@ use crate::foundation::{Validate, ValidationError};
 ///
 /// # Examples
 ///
-/// ```rust,ignore
+/// ```rust
 /// use nebula_validator::combinators::When;
 /// use nebula_validator::foundation::Validate;
+/// use nebula_validator::validators::min_length;
 ///
 /// // Only validate non-empty strings
-/// let validator = When::new(
-///     min_length(5),
-///     |s: &str| !s.is_empty()
-/// );
+/// let validator = When::new(min_length(5), |s: &str| !s.is_empty());
 ///
 /// // Empty string - skipped, passes
 /// assert!(validator.validate("").is_ok());
@@ -116,14 +112,15 @@ where
 ///
 /// # Examples
 ///
-/// ```rust,ignore
+/// ```rust
 /// use nebula_validator::combinators::when;
 /// use nebula_validator::foundation::Validate;
+/// use nebula_validator::validators::min_length;
 ///
 /// let validator = when(min_length(10), |s: &str| s.starts_with("prefix:"));
-/// assert!(validator.validate("other").is_ok()); // skipped
-/// assert!(validator.validate("prefix:short").is_err()); // validated, fails
-/// assert!(validator.validate("prefix:long enough").is_ok()); // validated, passes
+/// assert!(validator.validate("other").is_ok()); // no prefix -> skipped
+/// assert!(validator.validate("prefix:hi").is_err()); // prefix present, len 9 < 10 -> fails
+/// assert!(validator.validate("prefix:long enough").is_ok()); // prefix present, len >= 10 -> passes
 /// ```
 pub fn when<V, C>(validator: V, condition: C) -> When<V, C> {
     When::new(validator, condition)

@@ -1,8 +1,8 @@
 //! Credential operation context
 //!
 //! Provides request context for credential resolution, refresh, and testing.
-//! Embeds [`BaseContext`] for identity/scope/clock/cancellation and implements
-//! core capability traits ([`HasCredentials`], [`HasResources`]).
+//! Embeds [`BaseContext`](nebula_core::BaseContext) for identity/scope/clock/cancellation and implements
+//! core capability traits ([`HasCredentials`](nebula_core::HasCredentials), [`HasResources`](nebula_core::HasResources)).
 
 use std::{fmt, future::Future, sync::Arc};
 
@@ -80,23 +80,38 @@ fn default_resource_accessor() -> Arc<dyn ResourceAccessor> {
 ///
 /// Use [`CredentialContextBuilder`] for production code:
 ///
-/// ```rust,ignore
-/// use nebula_credential::CredentialContextBuilder;
-/// use nebula_core::BaseContext;
+/// ```no_run
+/// use std::sync::Arc;
 ///
-/// let base = BaseContext::builder(nebula_core::scope::Scope::default())
-///     .principal(nebula_core::scope::Principal::System)
+/// use nebula_credential::{CredentialContextBuilder, default_credential_accessor};
+/// use nebula_core::BaseContext;
+/// use nebula_core::accessor::ResourceAccessor;
+/// use nebula_core::scope::{Principal, Scope};
+///
+/// // Production wires in the application's real resource accessor; this crate
+/// // exposes no constructible default, so the example takes it as a given.
+/// # fn resource_accessor() -> Arc<dyn ResourceAccessor> { unimplemented!() }
+/// let base = BaseContext::builder(Scope::default())
+///     .principal(Principal::System)
 ///     .build()
 ///     .expect("scope + principal must produce a valid BaseContext");
-/// let ctx = CredentialContextBuilder::new(base, credentials, resources)
+/// let ctx = CredentialContextBuilder::new(
+///         base,
+///         default_credential_accessor(),
+///         resource_accessor(),
+///     )
 ///     .callback_url("https://app/callback".to_owned())
 ///     .build();
+/// assert_eq!(ctx.callback_url(), Some("https://app/callback"));
 /// ```
 ///
 /// For contexts requiring only an owner id, use the convenience constructor:
 ///
-/// ```rust,ignore
+/// ```
+/// use nebula_credential::CredentialContext;
+///
 /// let ctx = CredentialContext::for_owner("user-123");
+/// assert_eq!(ctx.owner_id(), "user-123");
 /// ```
 #[derive(Clone)]
 pub struct CredentialContext {

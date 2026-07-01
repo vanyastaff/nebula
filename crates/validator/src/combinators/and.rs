@@ -6,13 +6,13 @@
 //!
 //! # Examples
 //!
-//! ```rust,ignore
+//! ```rust
 //! use nebula_validator::prelude::*;
 //!
 //! // Both validators must pass
 //! let validator = min_length(5).and(max_length(20));
-//! assert!("hello".validate(&validator).is_ok());
-//! assert!("hi".validate(&validator).is_err()); // fails min_length
+//! assert!(validator.validate("hello").is_ok());
+//! assert!(validator.validate("hi").is_err()); // fails min_length
 //! ```
 
 use crate::foundation::{Validate, ValidationError};
@@ -29,19 +29,19 @@ use crate::foundation::{Validate, ValidationError};
 ///
 /// # Examples
 ///
-/// ```rust,ignore
+/// ```rust
 /// use nebula_validator::prelude::*;
 ///
 /// let validator = min_length(5).and(max_length(10));
 ///
 /// // Both conditions satisfied
-/// assert!("hello".validate(&validator).is_ok());
+/// assert!(validator.validate("hello").is_ok());
 ///
-/// // First condition fails
-/// assert!("hi".validate(&validator).is_err());
+/// // First condition fails (too short)
+/// assert!(validator.validate("hi").is_err());
 ///
-/// // Second condition fails
-/// assert!("verylongstring".validate(&validator).is_err());
+/// // Second condition fails (too long)
+/// assert!(validator.validate("verylongstring").is_err());
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct And<L, R> {
@@ -88,11 +88,11 @@ where
 ///
 /// # Examples
 ///
-/// ```rust,ignore
+/// ```rust
 /// use nebula_validator::prelude::*;
 ///
 /// let validator = and(min_length(5), max_length(10));
-/// assert!("hello".validate(&validator).is_ok());
+/// assert!(validator.validate("hello").is_ok());
 /// ```
 pub fn and<L, R>(left: L, right: R) -> And<L, R> {
     And::new(left, right)
@@ -104,13 +104,14 @@ pub fn and<L, R>(left: L, right: R) -> And<L, R> {
 ///
 /// # Examples
 ///
-/// ```rust,ignore
+/// ```rust
 /// use nebula_validator::prelude::*;
+/// use nebula_validator::combinators::and_all;
 ///
 /// let validators = vec![min_length(3), min_length(5), min_length(7)];
 /// let validator = and_all(validators);
-/// assert!("helloworld".validate(&validator).is_ok());
-/// assert!("hello".validate(&validator).is_err());
+/// assert!(validator.validate("helloworld").is_ok());
+/// assert!(validator.validate("hello").is_err());
 /// ```
 #[must_use]
 pub fn and_all<V>(validators: Vec<V>) -> AndAll<V> {

@@ -12,35 +12,35 @@ use arc_swap::ArcSwapOption;
 /// Designed for the Resident topology where a single shared runtime
 /// value is swapped atomically during hot-reload or shutdown.
 #[derive(Debug)]
-pub struct Cell<T> {
+pub(crate) struct Cell<T> {
     inner: ArcSwapOption<T>,
 }
 
 impl<T> Cell<T> {
     /// Creates an empty cell.
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             inner: ArcSwapOption::empty(),
         }
     }
 
     /// Stores a new value, replacing the previous one.
-    pub fn store(&self, value: Arc<T>) {
+    pub(crate) fn store(&self, value: Arc<T>) {
         self.inner.store(Some(value));
     }
 
     /// Loads the current value, if any.
-    pub fn load(&self) -> Option<Arc<T>> {
+    pub(crate) fn load(&self) -> Option<Arc<T>> {
         self.inner.load_full()
     }
 
     /// Takes the value out, leaving the cell empty.
-    pub fn take(&self) -> Option<Arc<T>> {
+    pub(crate) fn take(&self) -> Option<Arc<T>> {
         self.inner.swap(None)
     }
 
     /// Returns `true` if the cell contains a value.
-    pub fn is_some(&self) -> bool {
+    pub(crate) fn is_some(&self) -> bool {
         self.inner.load().is_some()
     }
 }

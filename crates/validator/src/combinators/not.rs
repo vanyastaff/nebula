@@ -5,13 +5,13 @@
 //!
 //! # Examples
 //!
-//! ```rust,ignore
+//! ```rust
 //! use nebula_validator::prelude::*;
 //!
 //! // Validator that forbids a pattern
 //! let validator = contains("forbidden").not();
-//! assert!("this is allowed".validate(&validator).is_ok());
-//! assert!("this is forbidden".validate(&validator).is_err());
+//! assert!("this is allowed".validate_with(&validator).is_ok());
+//! assert!("this is forbidden".validate_with(&validator).is_err());
 //! ```
 
 use crate::foundation::{Validate, ValidationError};

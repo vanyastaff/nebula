@@ -31,15 +31,21 @@ type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 ///
 /// # Examples
 ///
-/// ```rust,ignore
-/// use nebula_core::CredentialKey;
+/// ```rust
 /// use nebula_credential::runtime::ScopedCredentialAccessor;
+/// use nebula_credential::{CredentialAccessor, CredentialKey, default_credential_accessor};
 ///
+/// // In the engine the inner accessor is the real resolver; the crate's
+/// // no-op default keeps this example self-contained.
+/// let inner = default_credential_accessor();
 /// let scoped = ScopedCredentialAccessor::new(
-///     inner_accessor,
+///     inner,
 ///     vec![CredentialKey::new("my_api_key").unwrap()],
 ///     "my_action",
 /// );
+///
+/// // A key outside the allowlist is rejected regardless of the inner accessor.
+/// assert!(!scoped.has(&CredentialKey::new("other_key").unwrap()));
 /// ```
 pub struct ScopedCredentialAccessor {
     inner: Arc<dyn nebula_core::accessor::CredentialAccessor>,

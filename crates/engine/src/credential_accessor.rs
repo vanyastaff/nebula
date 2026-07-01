@@ -63,33 +63,27 @@ type ResolveFn = Arc<
 ///
 /// # Examples
 ///
-/// ```rust,ignore
+/// ```rust
 /// use std::collections::HashSet;
-/// use std::sync::Arc;
-/// use nebula_credential::runtime::CredentialResolver;
-/// use nebula_engine::credential_accessor::EngineCredentialAccessor;
-/// use nebula_storage::credential::SqliteCredentialStore;
 ///
-/// let store = Arc::new(SqliteCredentialStore::connect("sqlite://creds.db").await?);
-/// let coord = Arc::new(nebula_engine::credential::default_in_memory_coordinator()?);
-/// let transport = Arc::new(nebula_api::ports::ReqwestRefreshTransport::default());
-/// let resolver = Arc::new(CredentialResolver::with_dependencies(store, coord, transport));
+/// use nebula_core::{CoreError, accessor::CredentialAccessor, credential_key};
+/// use nebula_engine::EngineCredentialAccessor;
 ///
+/// // Deny-by-default: only the keys in this allowlist may be resolved.
 /// let allowed = HashSet::from(["github_token".to_string()]);
-/// let accessor = EngineCredentialAccessor::new(allowed, {
-///     let resolver = Arc::clone(&resolver);
-///     move |id: &str| {
-///         let resolver = Arc::clone(&resolver);
-///         let id = id.to_owned();
-///         Box::pin(async move {
-///             let credential_key = nebula_core::CredentialKey::new(&id)
-///                 .expect("id passed through allowlist must be a valid CredentialKey");
-///             resolver.resolve_snapshot(&id).await
-///                 .map(|snap| snap)
-///                 .map_err(|_| CoreError::credential_not_found(credential_key))
-///         })
-///     }
-/// });
+/// let accessor = EngineCredentialAccessor::new(
+///     allowed,
+///     // A real resolver returns the boxed `CredentialSnapshot` for `id`
+///     // (e.g. by delegating to `nebula_credential::runtime::CredentialResolver`).
+///     // The synchronous `has` checks below never invoke it.
+///     |_id: &str| async {
+///         Ok::<Box<dyn std::any::Any + Send + Sync>, CoreError>(Box::new(()))
+///     },
+///     "http.request".to_string(),
+/// );
+///
+/// assert!(accessor.has(&credential_key!("github_token")));
+/// assert!(!accessor.has(&credential_key!("unlisted_token")));
 /// ```
 pub struct EngineCredentialAccessor {
     /// Set of credential keys this accessor is permitted to resolve.

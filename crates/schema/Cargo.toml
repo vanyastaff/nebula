@@ -120,5 +120,9 @@ harness = false
 # schema types; cargo-shear doesn't follow derive-macro call paths.
 ignored = ["schemars"]
 
+[package.metadata.docs.rs]
+# Render feature-gated items on docs.rs (build with every feature).
+all-features = true
+
 [lints]
 workspace = true

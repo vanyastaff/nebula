@@ -70,9 +70,15 @@ macro_rules! measure {
 ///
 /// Returns a [`crate::Context`] — use `.scope(future)` or `.scope_sync(closure)` to activate it.
 ///
-/// ```rust,ignore
+/// ```
+/// use nebula_log::with_context;
+///
 /// let ctx = with_context!(request_id = "req-123", user_id = "user-456");
-/// ctx.scope(async { /* context active here */ }).await;
+///
+/// // Activate the context for a synchronous closure (the async `.scope`
+/// // method works the same way across `.await` points).
+/// let field_count = ctx.scope_sync(|| nebula_log::Context::current().fields.len());
+/// assert_eq!(field_count, 2);
 /// ```
 #[macro_export]
 macro_rules! with_context {

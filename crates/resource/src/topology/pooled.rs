@@ -148,6 +148,7 @@ pub mod config {
 
     /// Pool checkout ordering strategy.
     #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+    #[non_exhaustive]
     pub enum PoolStrategy {
         /// Last-in, first-out — reuses the most recently returned instance.
         #[default]
@@ -158,6 +159,7 @@ pub mod config {
 
     /// Strategy for pre-warming the pool at startup.
     #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+    #[non_exhaustive]
     pub enum WarmupStrategy {
         /// No warmup — instances created on demand.
         #[default]

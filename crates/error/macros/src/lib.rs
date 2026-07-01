@@ -8,7 +8,7 @@
 //!
 //! ## Example
 //!
-//! ```ignore
+//! ```text
 //! #[derive(Debug, thiserror::Error, Classify)]
 //! enum MyError {
 //!     #[classify(category = "timeout", code = "MY_TIMEOUT")]
@@ -20,6 +20,10 @@
 //!     Invalid,
 //! }
 //! ```
+//!
+//! This crate is `proc-macro = true`, so it cannot depend on `nebula-error` and
+//! the derive above cannot compile as a doctest here. For a runnable example
+//! see `nebula_error::Classify` in the parent `nebula-error` crate.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]

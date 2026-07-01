@@ -7,9 +7,9 @@
 //! When a holder is about to perform the IdP POST (the operation that
 //! risks invalidating the refresh token if not persisted), it marks the
 //! claim as `SentinelState::RefreshInFlight` via
-//! [`RefreshClaimStore::mark_sentinel`]. On successful release the claim
+//! [`RefreshClaimRepo::mark_sentinel`]. On successful release the claim
 //! row is **deleted** entirely (via
-//! [`RefreshClaimStore::release`]) so the sentinel clears by removal --
+//! [`RefreshClaimRepo::release`]) so the sentinel clears by removal --
 //! no separate "clear sentinel" call is needed on the success path.
 //! If the reclaim sweep finds an expired claim still flagged
 //! `RefreshInFlight`, the holder is presumed crashed mid-refresh.
@@ -54,6 +54,7 @@ impl Default for SentinelThresholdConfig {
 /// `nebula_credential::CredentialEvent::ReauthRequired` per
 /// sub-spec.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SentinelDecision {
     /// Sentinel event count is below threshold; resume normal flow.
     Recoverable {

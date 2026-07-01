@@ -79,9 +79,11 @@ use crate::{
 ///
 /// # Example
 ///
-/// ```rust,ignore
+/// ```rust
+/// use std::sync::OnceLock;
+///
 /// use nebula_action::prelude::*;
-/// use nebula_action::agent::AgentAction;
+/// use nebula_core::action_key;
 ///
 /// struct Summariser;
 ///
@@ -91,8 +93,14 @@ use crate::{
 /// impl Action for Summariser {
 ///     type Input  = String;
 ///     type Output = String;
-/// #   fn metadata() -> nebula_action::ActionMetadata { todo!() }
-/// #   fn dependencies() -> &'static nebula_core::Dependencies { todo!() }
+///
+///     fn metadata() -> ActionMetadata {
+///         ActionMetadata::new(action_key!("demo.summariser"), "Summariser", "Summarises input")
+///     }
+///     fn dependencies() -> &'static Dependencies {
+///         static D: OnceLock<Dependencies> = OnceLock::new();
+///         D.get_or_init(Dependencies::new)
+///     }
 /// }
 ///
 /// impl AgentAction for Summariser {
@@ -111,6 +119,11 @@ use crate::{
 ///         Ok(ActionResult::break_completed("done".to_string()))
 ///     }
 /// }
+///
+/// // The engine drives `step` in a loop bounded by `max_turns` (default 25);
+/// // `init_turn` seeds the per-turn state before the first call.
+/// assert_eq!(Summariser.max_turns(), 25);
+/// assert_eq!(Summariser.init_turn(&"hello".to_string()).attempts, 0);
 /// ```
 #[diagnostic::on_unimplemented(
     message = "`{Self}` does not implement AgentAction",

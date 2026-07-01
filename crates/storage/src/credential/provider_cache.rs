@@ -167,19 +167,39 @@ impl Expiry<CacheKey, Arc<ProviderResolution>> for ProviderExpiry {
 ///
 /// # Examples
 ///
-/// ```rust,ignore
+/// ```rust
 /// use std::{sync::Arc, time::Duration};
-/// use nebula_credential::provider::ExternalProvider;
-/// use nebula_storage::credential::{ProviderCacheLayer, ProviderCacheConfig};
 ///
-/// let inner: Arc<dyn ExternalProvider> = Arc::new(my_vault_provider);
+/// use nebula_credential::provider::{
+///     ExternalProvider, ExternalReference, ProviderFuture, ProviderResolution,
+/// };
+/// use nebula_storage::credential::{ProviderCacheConfig, ProviderCacheLayer};
+///
+/// // Stand-in for a real backend (Vault, AWS SM, …). A production provider
+/// // resolves the reference from its remote system.
+/// #[derive(Debug)]
+/// struct MyVaultProvider;
+/// impl ExternalProvider for MyVaultProvider {
+///     fn resolve<'a>(&'a self, _reference: &'a ExternalReference) -> ProviderFuture<'a> {
+///         ProviderFuture::ready(Ok(ProviderResolution::empty()))
+///     }
+///     fn provider_name(&self) -> &str {
+///         "my-vault"
+///     }
+/// }
+///
+/// let inner: Arc<dyn ExternalProvider> = Arc::new(MyVaultProvider);
 /// let cached = ProviderCacheLayer::new(
 ///     inner,
 ///     ProviderCacheConfig {
 ///         max_entries: 1_000,
-///         default_ttl: Duration::from_mins(1),
+///         default_ttl: Duration::from_secs(60),
 ///     },
 /// );
+///
+/// // The cache layer composes its name over the wrapped provider for telemetry.
+/// assert_eq!(cached.provider_name(), "cache(my-vault)");
+/// assert_eq!(cached.stats().hits, 0);
 /// ```
 pub struct ProviderCacheLayer {
     inner: Arc<dyn ExternalProvider>,

@@ -93,6 +93,7 @@ use super::error::{RotationError, RotationResult};
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum RotationPolicy {
     /// Rotate at fixed intervals (e.g., every 90 days)
     Periodic(PeriodicConfig),

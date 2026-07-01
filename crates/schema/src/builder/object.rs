@@ -1,4 +1,4 @@
-//! Typed-closure builder for [`ObjectField`](crate::field::ObjectField).
+//! Typed-closure builder for [`ObjectField`].
 
 use nebula_validator::Rule;
 

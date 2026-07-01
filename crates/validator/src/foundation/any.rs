@@ -20,9 +20,8 @@
 //!
 //! # Examples
 //!
-//! ```rust,ignore
-//! use nebula_validator::foundation::AnyValidator;
-//! use nebula_validator::validators::{min_length, max_length};
+//! ```rust
+//! use nebula_validator::prelude::*;
 //!
 //! // Complex combinator type becomes simple
 //! let complex = min_length(3).and(max_length(20));
@@ -33,6 +32,9 @@
 //!     AnyValidator::new(min_length(5)),
 //!     AnyValidator::new(max_length(100)),
 //! ];
+//!
+//! assert!(simple.validate("hello").is_ok());
+//! assert_eq!(validators.len(), 2);
 //! ```
 
 use crate::foundation::{Validate, ValidationError};
@@ -73,9 +75,8 @@ where
 ///
 /// # Examples
 ///
-/// ```rust,ignore
-/// use nebula_validator::foundation::AnyValidator;
-/// use nebula_validator::validators::{min_length, email};
+/// ```rust
+/// use nebula_validator::prelude::*;
 ///
 /// // Store heterogeneous validators
 /// let validators: Vec<AnyValidator<str>> = vec![
@@ -87,6 +88,7 @@ where
 /// for v in &validators {
 ///     v.validate("test@example.com")?;
 /// }
+/// # Ok::<(), nebula_validator::foundation::ValidationError>(())
 /// ```
 pub struct AnyValidator<T: ?Sized> {
     inner: Box<dyn ErasedValidator<T>>,
@@ -97,11 +99,12 @@ impl<T: ?Sized> AnyValidator<T> {
     ///
     /// # Examples
     ///
-    /// ```rust,ignore
-    /// use nebula_validator::foundation::AnyValidator;
+    /// ```rust
+    /// use nebula_validator::foundation::{AnyValidator, Validate};
     /// use nebula_validator::validators::min_length;
     ///
     /// let validator = AnyValidator::new(min_length(5));
+    /// assert!(validator.validate("hello").is_ok());
     /// ```
     pub fn new<V>(validator: V) -> Self
     where

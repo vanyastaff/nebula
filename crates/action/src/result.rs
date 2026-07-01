@@ -490,8 +490,12 @@ impl<T> ActionResult<T> {
     ///
     /// # Examples
     ///
-    /// ```rust,ignore
-    /// Ok(ActionResult::continue_with(page_data, Some(0.5)))
+    /// ```rust
+    /// use nebula_action::ActionResult;
+    ///
+    /// let page_data = vec![1, 2, 3];
+    /// let result = ActionResult::continue_with(page_data, Some(0.5));
+    /// assert!(result.is_continue());
     /// ```
     #[must_use]
     pub fn continue_with(output: T, progress: Option<f64>) -> Self {
@@ -506,8 +510,13 @@ impl<T> ActionResult<T> {
     ///
     /// # Examples
     ///
-    /// ```rust,ignore
-    /// Ok(ActionResult::continue_with_delay(data, Some(0.8), Duration::from_secs(5)))
+    /// ```rust
+    /// use std::time::Duration;
+    /// use nebula_action::ActionResult;
+    ///
+    /// let result = ActionResult::continue_with_delay("partial", Some(0.8), Duration::from_secs(5));
+    /// assert!(result.is_continue());
+    /// assert_eq!(result.into_primary_output().and_then(|o| o.into_value()), Some("partial"));
     /// ```
     #[must_use]
     pub fn continue_with_delay(output: T, progress: Option<f64>, delay: Duration) -> Self {
@@ -522,8 +531,14 @@ impl<T> ActionResult<T> {
     ///
     /// # Examples
     ///
-    /// ```rust,ignore
-    /// Ok(ActionResult::break_completed(final_output))
+    /// ```rust
+    /// use nebula_action::{ActionResult, BreakReason};
+    ///
+    /// let result = ActionResult::break_completed("final output");
+    /// match result {
+    ///     ActionResult::Break { reason, .. } => assert_eq!(reason, BreakReason::Completed),
+    ///     _ => panic!("expected Break"),
+    /// }
     /// ```
     #[must_use]
     pub fn break_completed(output: T) -> Self {
@@ -537,8 +552,14 @@ impl<T> ActionResult<T> {
     ///
     /// # Examples
     ///
-    /// ```rust,ignore
-    /// Ok(ActionResult::break_with_reason(output, BreakReason::MaxIterations))
+    /// ```rust
+    /// use nebula_action::{ActionResult, BreakReason};
+    ///
+    /// let result = ActionResult::break_with_reason("truncated", BreakReason::MaxIterations);
+    /// match result {
+    ///     ActionResult::Break { reason, .. } => assert_eq!(reason, BreakReason::MaxIterations),
+    ///     _ => panic!("expected Break"),
+    /// }
     /// ```
     #[must_use]
     pub fn break_with_reason(output: T, reason: BreakReason) -> Self {
@@ -726,8 +747,16 @@ impl<T> ActionResult<T> {
     ///
     /// To extract the inner `T` directly, chain with [`ActionOutput::into_value`]:
     ///
-    /// ```rust,ignore
-    /// let value: Option<T> = result.into_primary_output().and_then(|o| o.into_value());
+    /// ```rust
+    /// use nebula_action::ActionResult;
+    ///
+    /// let result = ActionResult::success(42);
+    /// let value: Option<i32> = result.into_primary_output().and_then(|o| o.into_value());
+    /// assert_eq!(value, Some(42));
+    ///
+    /// // A dropped item carries no primary output.
+    /// let dropped: ActionResult<i32> = ActionResult::drop_item();
+    /// assert!(dropped.into_primary_output().is_none());
     /// ```
     #[must_use]
     pub fn into_primary_output(self) -> Option<ActionOutput<T>> {

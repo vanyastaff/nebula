@@ -1,4 +1,4 @@
-//! Typed-closure builder for [`ListField`](crate::field::ListField).
+//! Typed-closure builder for [`ListField`].
 
 use nebula_validator::Rule;
 

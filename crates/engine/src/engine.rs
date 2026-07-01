@@ -1033,14 +1033,41 @@ impl WorkflowEngine {
     ///
     /// # Examples
     ///
-    /// ```rust,ignore
+    /// ```rust
     /// use std::sync::Arc;
-    /// use nebula_engine::{WorkflowEngine, PluginWiringError};
-    /// use nebula_plugin::ResolvedPlugin;
     ///
-    /// let plugin = Arc::new(ResolvedPlugin::from(MyPlugin::new())?);
-    /// let engine = WorkflowEngine::new(runtime, metrics)?
-    ///     .with_plugin(plugin)?;
+    /// use nebula_engine::{Plugin, PluginManifest, ResolvedPlugin, WorkflowEngine};
+    /// # use nebula_engine::{
+    /// #     ActionExecutor, ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner,
+    /// # };
+    /// # use nebula_action::result::ActionResult;
+    /// # use nebula_metrics::MetricsRegistry;
+    ///
+    /// // A minimal plugin only needs to surface its manifest.
+    /// #[derive(Debug)]
+    /// struct EchoPlugin(PluginManifest);
+    /// impl Plugin for EchoPlugin {
+    ///     fn manifest(&self) -> &PluginManifest {
+    ///         &self.0
+    ///     }
+    /// }
+    ///
+    /// # let registry = Arc::new(ActionRegistry::new());
+    /// # let executor: ActionExecutor =
+    /// #     Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
+    /// # let runner = Arc::new(InProcessRunner::new(executor));
+    /// # let metrics = MetricsRegistry::new();
+    /// # let runtime = Arc::new(
+    /// #     ActionRuntime::try_new(registry, runner, DataPassingPolicy::default(), metrics.clone())
+    /// #         .unwrap(),
+    /// # );
+    /// let manifest = PluginManifest::builder("echo", "Echo").build().unwrap();
+    /// let plugin = Arc::new(ResolvedPlugin::from(EchoPlugin(manifest)).unwrap());
+    ///
+    /// let engine = WorkflowEngine::new(runtime, metrics)?.with_plugin(plugin)?;
+    ///
+    /// assert!(engine.plugin_registry().contains(&"echo".parse().unwrap()));
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn with_plugin(
         mut self,
@@ -1138,27 +1165,39 @@ impl WorkflowEngine {
     ///
     /// # Examples
     ///
-    /// ```rust,ignore
-    /// use std::sync::Arc;
+    /// ```rust
     /// use nebula_engine::WorkflowEngine;
-    /// use nebula_credential::CredentialAccessError;
-    /// use nebula_credential::runtime::CredentialResolver;
-    /// use nebula_storage::credential::SqliteCredentialStore;
+    /// use nebula_credential::{CredentialAccessError, CredentialSnapshot};
+    /// # use std::sync::Arc;
+    /// # use nebula_engine::{
+    /// #     ActionExecutor, ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner,
+    /// # };
+    /// # use nebula_action::result::ActionResult;
+    /// # use nebula_metrics::MetricsRegistry;
+    /// # let registry = Arc::new(ActionRegistry::new());
+    /// # let executor: ActionExecutor =
+    /// #     Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
+    /// # let runner = Arc::new(InProcessRunner::new(executor));
+    /// # let metrics = MetricsRegistry::new();
+    /// # let runtime = Arc::new(
+    /// #     ActionRuntime::try_new(registry, runner, DataPassingPolicy::default(), metrics.clone())
+    /// #         .unwrap(),
+    /// # );
+    /// let engine = WorkflowEngine::new(runtime, metrics)?;
+    /// let engine_id = engine.instance_id();
     ///
-    /// let store = Arc::new(SqliteCredentialStore::connect("sqlite://creds.db").await?);
-    /// let coord = Arc::new(nebula_engine::credential::default_in_memory_coordinator()?);
-    /// let transport = Arc::new(nebula_api::ports::ReqwestRefreshTransport::default());
-    /// let resolver = Arc::new(CredentialResolver::with_dependencies(store, coord, transport));
+    /// // A real resolver returns the credential's current `CredentialSnapshot`
+    /// // (e.g. by delegating to `nebula_credential::runtime::CredentialResolver`).
+    /// let engine = engine.with_credential_resolver(|id: &str| {
+    ///     let id = id.to_owned();
+    ///     async move {
+    ///         Err::<CredentialSnapshot, _>(CredentialAccessError::NotFound(id))
+    ///     }
+    /// });
     ///
-    /// let engine = WorkflowEngine::new(runtime, metrics)?
-    ///     .with_credential_resolver(move |id: &str| {
-    ///         let resolver = Arc::clone(&resolver);
-    ///         let id = id.to_owned();
-    ///         Box::pin(async move {
-    ///             resolver.resolve_snapshot(&id).await
-    ///                 .map_err(|e| CredentialAccessError::NotFound(e.to_string()))
-    ///         })
-    ///     });
+    /// // The builder consumes and returns the same engine instance.
+    /// assert_eq!(engine.instance_id(), engine_id);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     #[must_use = "builder methods must be chained or built"]
     pub fn with_credential_resolver<F, Fut>(mut self, resolver: F) -> Self
@@ -1200,13 +1239,40 @@ impl WorkflowEngine {
     ///
     /// # Examples
     ///
-    /// ```rust,ignore
-    /// let engine = WorkflowEngine::new(runtime, metrics)?
-    ///     .with_credential_resolver(/* ... */)
-    ///     .with_credential_refresh(move |id: &str| {
-    ///         let id = id.to_owned();
-    ///         Box::pin(async move { rotate_if_needed(&id).await })
-    ///     });
+    /// ```rust
+    /// use nebula_engine::WorkflowEngine;
+    /// use nebula_action::ActionError;
+    /// # use std::sync::Arc;
+    /// # use nebula_engine::{
+    /// #     ActionExecutor, ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner,
+    /// # };
+    /// # use nebula_action::result::ActionResult;
+    /// # use nebula_metrics::MetricsRegistry;
+    /// # let registry = Arc::new(ActionRegistry::new());
+    /// # let executor: ActionExecutor =
+    /// #     Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
+    /// # let runner = Arc::new(InProcessRunner::new(executor));
+    /// # let metrics = MetricsRegistry::new();
+    /// # let runtime = Arc::new(
+    /// #     ActionRuntime::try_new(registry, runner, DataPassingPolicy::default(), metrics.clone())
+    /// #         .unwrap(),
+    /// # );
+    /// let engine = WorkflowEngine::new(runtime, metrics)?;
+    /// let engine_id = engine.instance_id();
+    ///
+    /// // A real hook rotates short-lived material before the node runs; this
+    /// // no-op leaves the credential as-is.
+    /// let engine = engine.with_credential_refresh(|id: &str| {
+    ///     let id = id.to_owned();
+    ///     async move {
+    ///         let _ = id;
+    ///         Ok::<(), ActionError>(())
+    ///     }
+    /// });
+    ///
+    /// // The builder consumes and returns the same engine instance.
+    /// assert_eq!(engine.instance_id(), engine_id);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     #[must_use = "builder methods must be chained or built"]
     pub fn with_credential_refresh<F, Fut>(mut self, refresh_fn: F) -> Self
@@ -1256,13 +1322,34 @@ impl WorkflowEngine {
     ///
     /// # Examples
     ///
-    /// ```rust,ignore
+    /// ```rust
     /// use nebula_core::action_key;
     /// use nebula_engine::WorkflowEngine;
+    /// # use std::sync::Arc;
+    /// # use nebula_engine::{
+    /// #     ActionExecutor, ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner,
+    /// # };
+    /// # use nebula_action::result::ActionResult;
+    /// # use nebula_metrics::MetricsRegistry;
+    /// # let registry = Arc::new(ActionRegistry::new());
+    /// # let executor: ActionExecutor =
+    /// #     Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
+    /// # let runner = Arc::new(InProcessRunner::new(executor));
+    /// # let metrics = MetricsRegistry::new();
+    /// # let runtime = Arc::new(
+    /// #     ActionRuntime::try_new(registry, runner, DataPassingPolicy::default(), metrics.clone())
+    /// #         .unwrap(),
+    /// # );
+    /// let engine = WorkflowEngine::new(runtime, metrics)?;
+    /// let engine_id = engine.instance_id();
     ///
-    /// let engine = WorkflowEngine::new(runtime, metrics)?
-    ///     .with_credential_resolver(/* ... */)
-    ///     .with_action_credentials(action_key!("http.request"), ["github_token"]);
+    /// // Allow the `http.request` action to acquire only `github_token`.
+    /// let engine =
+    ///     engine.with_action_credentials(action_key!("http.request"), ["github_token"]);
+    ///
+    /// // The builder consumes and returns the same engine instance.
+    /// assert_eq!(engine.instance_id(), engine_id);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     #[must_use = "builder methods must be chained or built"]
     pub fn with_action_credentials<I, S>(mut self, action: ActionKey, credential_ids: I) -> Self
@@ -1819,9 +1906,10 @@ impl WorkflowEngine {
 
     /// Internal implementation — thread `scope` through the storage port calls.
     ///
-    /// Called by [`execute_workflow`], [`execute_workflow_with_acquire_scope`], and
-    /// [`replay_execution`] with a caller-supplied scope; called by
-    /// [`resume_execution`] with the per-message tenant scope from the
+    /// Called by [`execute_workflow`](Self::execute_workflow),
+    /// [`execute_workflow_with_acquire_scope`](Self::execute_workflow_with_acquire_scope), and
+    /// [`replay_execution`](Self::replay_execution) with a caller-supplied scope; called by
+    /// [`resume_execution`](Self::resume_execution) with the per-message tenant scope from the
     /// control-queue / job-dispatch row.
     async fn execute_workflow_scoped(
         &self,
@@ -2162,13 +2250,13 @@ struct NodeTask {
     action_key: String,
     /// Workflow node being executed. Passed through to
     /// [`ActionRuntime::execute_action_with_node`] so the dispatch path
-    /// can hand the [`NodeDefinition`] to
+    /// can hand the [`NodeDefinition`](nebula_workflow::NodeDefinition) to
     /// [`nebula_action::ActionFactory::instantiate`] (slot bindings,
     /// parameters, version pinning live on the node).
     node: Arc<nebula_workflow::NodeDefinition>,
     /// Pinned interface version for versioned action lookup.
     ///
-    /// When `Some`, the runtime uses [`execute_action_with_node`] with this
+    /// When `Some`, the runtime uses [`ActionRuntime::execute_action_with_node`] with this
     /// exact version. When `None`, the latest registered handler is used.
     interface_version: Option<semver::Version>,
     input: serde_json::Value,

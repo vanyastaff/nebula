@@ -1,19 +1,28 @@
 //! Typed resource reference (`ResourceRef<R>`) — slot-binding handle for action fields.
 //!
 //! Per typed ref fields, `ResourceRef<R>` is the canonical field type for the
-//! slot-binding pattern: an action declares
+//! slot-binding pattern: an action declares a `#[resource(key = "bot")] bot:
+//! ResourceRef<TelegramBot>` field (the lazy variant — see `ResourceGuard` for
+//! the eager one), and the `#[derive(Action)]` factory constructs the ref from
+//! the slot binding. The framework then resolves the slot per slot binding's
+//! binding mechanism: the `key` attribute supplies a default resource id;
+//! workflow-JSON `slot_bindings.<slot_key>.resource_id` overrides it per node.
 //!
-//! ```ignore
-//! #[derive(Action)]
-//! struct SendTelegram {
-//!     #[resource(key = "bot")]
-//!     bot: ResourceRef<TelegramBot>,   // lazy variant — see ResourceGuard for eager
-//! }
+//! The derive-emitted factory builds the ref through [`ResourceRef::new`]:
+//!
 //! ```
+//! use nebula_resource::ResourceRef;
 //!
-//! and the framework resolves the slot per slot binding's binding mechanism: the
-//! `key` attribute supplies a default resource id; workflow-JSON
-//! `slot_bindings.<slot_key>.resource_id` overrides it per node.
+//! // Stand-in for a real `Provider` type the ref binds to.
+//! struct TelegramBot;
+//!
+//! // What the `#[derive(Action)]` factory emits for `#[resource(key = "bot")]`:
+//! let bot: ResourceRef<TelegramBot> = ResourceRef::new("bot");
+//! assert_eq!(bot.id(), "bot");
+//!
+//! // Cloning copies the binding only — it does not acquire a lease.
+//! assert_eq!(bot.clone().id(), "bot");
+//! ```
 //!
 //! ## Current scope
 //!

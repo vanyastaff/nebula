@@ -10,6 +10,7 @@ use nebula_credential::provider::ExternalProvider;
 
 /// Where a credential's resolved material comes from.
 #[derive(Default)]
+#[non_exhaustive]
 pub enum StateSource {
     /// The crate-private layered encrypted store (default).
     #[default]

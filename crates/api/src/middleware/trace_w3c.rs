@@ -63,6 +63,9 @@ fn w3c_error_fields(err: &W3cTraceContextError) -> (&'static str, &'static str) 
     match err {
         W3cTraceContextError::InvalidTraceparent { reason } => (*reason, "traceparent"),
         W3cTraceContextError::InvalidTracestate { reason } => (*reason, "tracestate"),
+        // `W3cTraceContextError` is `#[non_exhaustive]`: a future parse-failure
+        // variant degrades to a generic field rather than failing to compile.
+        _ => ("invalid w3c trace context", "trace"),
     }
 }
 

@@ -21,7 +21,7 @@ use crate::{
 ///
 /// Contains both the tracing layer (for the subscriber stack) and the
 /// `SdkTracerProvider` (for graceful shutdown on drop).
-pub struct OtelLayer {
+pub(crate) struct OtelLayer {
     pub layer: Box<dyn Layer<tracing_subscriber::Registry> + Send + Sync>,
     pub provider: SdkTracerProvider,
 }
@@ -88,7 +88,10 @@ fn resolve_endpoint(config: &TelemetryConfig) -> Option<String> {
 ///
 /// Returns `LogError::Telemetry` if the OTLP exporter or tracer provider cannot
 /// be constructed.
-pub fn build_layer(config: &TelemetryConfig, fields: &Fields) -> LogResult<Option<OtelLayer>> {
+pub(crate) fn build_layer(
+    config: &TelemetryConfig,
+    fields: &Fields,
+) -> LogResult<Option<OtelLayer>> {
     let endpoint_str = match resolve_endpoint(config) {
         Some(e) => e,
         None => return Ok(None),

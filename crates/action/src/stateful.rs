@@ -98,19 +98,49 @@ pub struct PaginationState<C> {
 ///
 /// # Example
 ///
-/// ```rust,ignore
-/// use nebula_action::stateful::{PaginatedAction, PageResult};
+/// ```rust
+/// use std::sync::OnceLock;
+/// use nebula_action::{Action, ActionContext, ActionError, ActionMetadata, StatefulAction};
+/// use nebula_action::stateful::{PageResult, PaginatedAction};
+/// use nebula_core::{Dependencies, action_key};
+/// use serde_json::Value;
 ///
-/// struct ListRepos;
-/// impl PaginatedAction for ListRepos {
+/// struct ListItems;
+///
+/// // Every paginated action is first an `Action` (identity + typed Input/Output).
+/// impl Action for ListItems {
 ///     type Input = Value;
-///     type Output = Vec<Repo>;
+///     type Output = Value;
+///     fn metadata() -> ActionMetadata {
+///         ActionMetadata::new(action_key!("list.items"), "List", "Lists items page by page")
+///     }
+///     fn dependencies() -> &'static Dependencies {
+///         static D: OnceLock<Dependencies> = OnceLock::new();
+///         D.get_or_init(Dependencies::new)
+///     }
+/// }
+///
+/// impl PaginatedAction for ListItems {
 ///     type Cursor = String;
 ///     fn max_pages(&self) -> u32 { 10 }
-///     async fn fetch_page(&self, input: &Value, cursor: Option<&String>, ctx: &(impl ActionContext + ?Sized))
-///         -> Result<PageResult<Vec<Repo>, String>, ActionError> { todo!() }
+///     async fn fetch_page(
+///         &self,
+///         _input: &Value,
+///         cursor: Option<&String>,
+///         _ctx: &(impl ActionContext + ?Sized),
+///     ) -> Result<PageResult<Value, String>, ActionError> {
+///         // First call (no cursor) hands back one more page; the next is the last.
+///         let next_cursor = cursor.is_none().then(|| "page-2".to_string());
+///         Ok(PageResult { data: serde_json::json!({ "items": [] }), next_cursor })
+///     }
 /// }
-/// nebula_action::impl_paginated_action!(ListRepos);
+///
+/// // The macro turns the `PaginatedAction` into the `StatefulAction` the engine drives.
+/// nebula_action::impl_paginated_action!(ListItems);
+///
+/// fn assert_stateful<T: StatefulAction>() {}
+/// assert_stateful::<ListItems>();
+/// assert_eq!(ListItems.max_pages(), 10);
 /// ```
 pub trait PaginatedAction: Action {
     /// Cursor type for tracking pagination position.
@@ -150,10 +180,45 @@ pub trait PaginatedAction: Action {
 ///
 /// # Example
 ///
-/// ```rust,ignore
-/// impl PaginatedAction for MyAction { /* ... */ }
+/// ```rust
+/// use std::sync::OnceLock;
+/// use nebula_action::{Action, ActionContext, ActionError, ActionMetadata, StatefulAction};
+/// use nebula_action::stateful::{PageResult, PaginatedAction};
+/// use nebula_core::{Dependencies, action_key};
+/// use serde_json::Value;
+///
+/// struct MyAction;
+///
+/// impl Action for MyAction {
+///     type Input = Value;
+///     type Output = Value;
+///     fn metadata() -> ActionMetadata {
+///         ActionMetadata::new(action_key!("my.action"), "My", "Paginates a source")
+///     }
+///     fn dependencies() -> &'static Dependencies {
+///         static D: OnceLock<Dependencies> = OnceLock::new();
+///         D.get_or_init(Dependencies::new)
+///     }
+/// }
+///
+/// impl PaginatedAction for MyAction {
+///     type Cursor = String;
+///     async fn fetch_page(
+///         &self,
+///         _input: &Value,
+///         _cursor: Option<&String>,
+///         _ctx: &(impl ActionContext + ?Sized),
+///     ) -> Result<PageResult<Value, String>, ActionError> {
+///         Ok(PageResult { data: Value::Null, next_cursor: None })
+///     }
+/// }
+///
+/// // After this invocation the engine sees only `StatefulAction` — the macro
+/// // wrote the cursor-tracking `execute`/`init_state` body for you.
 /// nebula_action::impl_paginated_action!(MyAction);
-/// registry.register_stateful(MyAction);
+///
+/// fn engine_accepts<T: StatefulAction>() {}
+/// engine_accepts::<MyAction>();
 /// ```
 #[macro_export]
 macro_rules! impl_paginated_action {
@@ -218,6 +283,7 @@ macro_rules! impl_paginated_action {
 /// Result of processing a single batch item.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "status")]
+#[non_exhaustive]
 pub enum BatchItemResult<T> {
     /// Item processed successfully.
     Ok {

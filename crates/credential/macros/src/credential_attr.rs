@@ -5,14 +5,14 @@
 //! credential actually supports; this macro reads which methods are present
 //! and emits:
 //!
-//! - the base [`Credential`] impl (`KEY` + `Properties`/`Scheme`/`State` +
+//! - the base `Credential` impl (`KEY` + `Properties`/`Scheme`/`State` +
 //!   `metadata`/`project`/`resolve`),
 //! - one capability sub-trait impl per capability **method** supplied
 //!   (`refresh` ⇒ `Refreshable`, `revoke` ⇒ `Revocable`, `test` ⇒ `Testable`,
 //!   `continue_resolve` ⇒ `Interactive`, `release` ⇒ `Dynamic`),
 //! - the five `plugin_capability_report::IsX` consts (`true` exactly for the
 //!   capabilities whose method is present),
-//! - a [`CredentialLifecycle::policy`] whose `RefreshStrategy`/`RevokeStrategy`
+//! - a `CredentialLifecycle::policy` whose `RefreshStrategy`/`RevokeStrategy`
 //!   are derived from those same methods.
 //!
 //! # Why an attribute macro and not a richer `#[derive]`

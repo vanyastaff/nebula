@@ -56,6 +56,10 @@ proptest = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
 
+[package.metadata.docs.rs]
+# Render feature-gated items on docs.rs (build with every feature).
+all-features = true
+
 [lints]
 workspace = true
 

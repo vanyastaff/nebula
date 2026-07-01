@@ -85,6 +85,7 @@ impl AsRef<str> for Slug {
 
 /// Error returned when slug validation fails.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SlugError {
     TooShort { min: usize, actual: usize },
     TooLong { max: usize, actual: usize },

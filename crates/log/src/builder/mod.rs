@@ -11,7 +11,7 @@ mod format;
 mod telemetry;
 mod reload;
 #[cfg(feature = "async")]
-pub mod watcher;
+pub(crate) mod watcher;
 
 // Re-export public types
 pub use reload::ReloadHandle;
@@ -271,11 +271,16 @@ impl LoggerGuard {
     ///
     /// # Examples
     ///
-    /// ```ignore
+    /// ```no_run
+    /// use nebula_log::Config;
+    ///
+    /// # fn main() -> nebula_log::LogResult<()> {
     /// let guard = nebula_log::init_with(Config { reloadable: true, ..Config::default() })?;
     /// if let Some(handle) = guard.reload_handle() {
     ///     handle.reload("info,nebula_engine=debug,hyper=warn")?;
     /// }
+    /// # Ok(())
+    /// # }
     /// ```
     #[must_use]
     pub fn reload_handle(&self) -> Option<&ReloadHandle> {

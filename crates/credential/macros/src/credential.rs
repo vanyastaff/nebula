@@ -19,9 +19,9 @@
 //!   #properties`; the generated metadata reads the schema via
 //!   `nebula_schema::schema_of::<Self::Properties>()` (schema-of properties — no per-trait schema method).
 //!   When
-//!   `properties` is supplied, the user is responsible for implementing [`Credential::resolve`]
-//!   (and [`Credential::project`] when scheme ≠ state) on a separate inherent impl block.
-//! - `protocol = TypePath` — Reusable [`StaticProtocol`](nebula_credential::StaticProtocol) for
+//!   `properties` is supplied, the user is responsible for implementing `Credential::resolve`
+//!   (and `Credential::project` when scheme ≠ state) on a separate inherent impl block.
+//! - `protocol = TypePath` — Reusable `StaticProtocol` for
 //!   static (non-interactive) credentials. Mutually exclusive with `properties`. The macro emits
 //!   `type Properties = <protocol as StaticProtocol>::Properties` and a `resolve` body that
 //!   delegates to `<protocol as StaticProtocol>::build(values)`.
@@ -52,8 +52,13 @@
 //!
 //! # Examples
 //!
+//! The blocks below are derive-syntax illustrations. Because this `proc-macro`
+//! crate cannot depend on `nebula_credential`, they are not standalone-runnable;
+//! see `nebula_credential::Credential` in the parent crate for a complete
+//! runnable example.
+//!
 //! Properties-mode (manual `resolve`):
-//! ```ignore
+//! ```text
 //! use nebula_credential::Credential;
 //! use nebula_schema::Schema;
 //! use serde::Deserialize;
@@ -80,7 +85,7 @@
 //! ```
 //!
 //! Protocol-mode (auto-emitted `resolve`):
-//! ```ignore
+//! ```text
 //! #[derive(Credential)]
 //! #[credential(
 //!     key = "postgres",

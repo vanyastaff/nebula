@@ -4,10 +4,18 @@
 //! (defined in `nebula_core::context::capability`) context, providing
 //! ergonomic typed access:
 //!
-//! ```rust,ignore
-//! let guard = ctx.credential::<SlackBotToken>().await?;
-//! client.bearer_auth(guard.token.expose_secret());
-//! // guard drops → zeroized automatically
+//! ```no_run
+//! use nebula_credential::{CredentialContext, HasCredentialsExt};
+//! use nebula_credential::credentials::ApiKeyCredential;
+//!
+//! # async fn demo() -> Result<(), nebula_credential::CredentialError> {
+//! let ctx = CredentialContext::for_owner("tenant-1");
+//! let guard = ctx.credential::<ApiKeyCredential>().await?;
+//! // `guard` derefs to the projected `SecretToken`; read it, then it
+//! // zeroizes on drop.
+//! let _token: &str = guard.token().expose_secret();
+//! # Ok(())
+//! # }
 //! ```
 //!
 //! The trait bridges between the dyn-safe `CredentialAccessor` (which

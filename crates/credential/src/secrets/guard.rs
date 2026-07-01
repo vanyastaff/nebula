@@ -28,10 +28,14 @@ use zeroize::Zeroize;
 ///
 /// # Examples
 ///
-/// ```rust,ignore
-/// let cred = ctx.credential::<BearerSecret>().await?;
-/// client.bearer_auth(cred.token.expose_secret());
-/// // Dropped here — zeroized automatically
+/// ```
+/// use nebula_credential::{CredentialGuard, SecretString};
+/// use nebula_credential::scheme::SecretToken;
+///
+/// let guard = CredentialGuard::new(SecretToken::new(SecretString::new("bearer-xyz")));
+/// // Deref-through access to the wrapped scheme:
+/// assert_eq!(guard.token().expose_secret(), "bearer-xyz");
+/// // `guard` drops here → inner secret zeroized automatically.
 /// ```
 #[must_use = "credential guards must be held for the duration of use"]
 pub struct CredentialGuard<S: Zeroize> {

@@ -398,17 +398,24 @@ pub async fn serve(app: Router, addr: std::net::SocketAddr) -> Result<(), std::i
 /// future fires on either OS signals or when the caller's
 /// `CancellationToken` is flipped — the example pattern is:
 ///
-/// ```ignore
-/// let token = tokio_util::sync::CancellationToken::new();
+/// ```rust,no_run
+/// use std::net::SocketAddr;
+///
+/// use axum::Router;
+/// use nebula_api::app::serve_with_shutdown;
+/// use tokio_util::sync::CancellationToken;
+///
+/// # async fn run(app: Router, addr: SocketAddr) -> Result<(), std::io::Error> {
+/// let token = CancellationToken::new();
 /// let token_for_signal = token.clone();
 /// tokio::spawn(async move {
-///     // wait for OS signal, flip token
-///     wait_for_os_signal().await;
+///     // Wait for an OS signal, then flip the token.
+///     tokio::signal::ctrl_c().await.expect("ctrl_c handler");
 ///     token_for_signal.cancel();
 /// });
-/// // sweep task observes `token.cancelled()`
-/// // tokio::spawn(...);
-/// app::serve_with_shutdown(app, addr, async move { token.cancelled().await }).await
+/// // A background sweep task observes the same `token.cancelled()`.
+/// serve_with_shutdown(app, addr, async move { token.cancelled().await }).await
+/// # }
 /// ```
 pub async fn serve_with_shutdown<F>(
     app: Router,

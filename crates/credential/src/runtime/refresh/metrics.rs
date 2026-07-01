@@ -17,7 +17,7 @@
 //!
 //! Production composition threads the engine-shared registry via
 //! [`RefreshCoordMetrics::with_registry`]. Tests / single-replica desktop
-//! mode use [`RefreshCoordMetrics::for_tests`] (test-only, `#[cfg(test)]`)
+//! mode use `RefreshCoordMetrics::for_tests` (test-only, `#[cfg(test)]`)
 //! which constructs handles backed by a fresh
 //! private registry — production code must always go through the engine
 //! registry so a scraper actually observes the series, which is why the

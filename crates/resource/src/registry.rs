@@ -294,6 +294,7 @@ where
 /// `Ambiguous`** arm, because a resolved [`SlotIdentity`] addresses exactly
 /// one row by construction, so ambiguity is unrepresentable there rather
 /// than a runtime branch a caller could mis-handle.
+#[non_exhaustive]
 pub enum LookupOutcome {
     /// Exactly one row matched — here it is.
     Found(Arc<dyn ManagedHandle>),
@@ -320,6 +321,7 @@ pub enum LookupOutcome {
 /// runtime arm that downstream code must remember to fail closed on. An
 /// unknown pin is [`PinnedLookup::NotFound`] (never an accidental alias to
 /// a different tenant's row).
+#[non_exhaustive]
 pub enum PinnedLookup {
     /// Exactly one row matched the pinned `(scope, slot_identity)`.
     Found(Arc<dyn ManagedHandle>),
@@ -850,7 +852,7 @@ impl Registry {
     /// [`ScopeLevel::Global`] fallback) so the scope-precedence rule is
     /// applied before any reasoning — a Global-scoped row of the wrong
     /// credential must not shadow a correctly-scoped one. Returns
-    /// [`ScopeFind::Found`] iff exactly one row exists at the effective
+    /// [`ScopeFind::Hit`] iff exactly one row exists at the effective
     /// scope and [`ScopeFind::Ambiguous`] if two or more — the registry
     /// refuses to silently alias one tenant's runtime to another.
     ///
@@ -971,7 +973,7 @@ impl Registry {
     /// Still **fail-closed**: the only fallback is a Global row that
     /// matches `want_identity` (and the concrete type) exactly — a
     /// different tenant's row is never aliased. Unambiguous by construction
-    /// (see [`PinnedFind`] / [`find_pinned_at_exact_scope`]).
+    /// (see [`PinnedFind`] / [`find_pinned_at_exact_scope`](Self::find_pinned_at_exact_scope)).
     fn find_pinned_in_entries(
         entries: &[RegistryEntry],
         scope: &ScopeLevel,

@@ -10,67 +10,76 @@
 //!
 //! - **Logical**: `And`, `Or`, `Not` - boolean logic
 //! - **Conditional**: `When` - conditional validation
-//! - **Optional**: `Optional`, `RequiredSome` - nullable handling
-//! - **Performance**: `Cached` - memoization
+//! - **Optional**: `Optional` - nullable handling
 //!
 //! # Examples
 //!
 //! ## Logical Combinators
 //!
-//! ```rust,ignore
+//! ```rust
 //! use nebula_validator::prelude::*;
 //!
 //! // AND: both must pass
 //! let validator = min_length(5).and(max_length(20));
+//! assert!(validator.validate("hello").is_ok());
+//! assert!(validator.validate("hi").is_err());
 //!
 //! // OR: at least one must pass
 //! let validator = exact_length(5).or(exact_length(10));
+//! assert!(validator.validate("hello").is_ok()); // 5 chars
+//! assert!(validator.validate("0123456789").is_ok()); // 10 chars
+//! assert!(validator.validate("nope").is_err()); // neither
 //!
 //! // NOT: must not pass
 //! let validator = contains("test").not();
+//! assert!(validator.validate("hello").is_ok()); // no "test" -> NOT passes
+//! assert!(validator.validate("testing").is_err()); // has "test" -> NOT fails
 //! ```
 //!
 //! ## Conditional Validation
 //!
-//! ```rust,ignore
-//! // WHEN: only validate if condition met
-//! let validator = min_length(10).when(|s| s.starts_with("long_"));
+//! ```rust
+//! use nebula_validator::prelude::*;
 //!
-//! assert!(validator.validate("short").is_ok());  // skipped
-//! assert!(validator.validate("long_enough").is_ok());  // validated
+//! // WHEN: only validate if condition met
+//! let validator = min_length(10).when(|s: &str| s.starts_with("long_"));
+//!
+//! assert!(validator.validate("short").is_ok());  // condition false -> skipped
+//! assert!(validator.validate("long_enough").is_ok());  // condition true, 11 chars
+//! assert!(validator.validate("long_x").is_err());  // condition true, too short
 //! ```
 //!
 //! ## Optional Values
 //!
-//! ```rust,ignore
-//! // OPTIONAL: None is always valid
-//! let validator = min_length(5).optional();
+//! ```rust
+//! use nebula_validator::combinators::Optional;
+//! use nebula_validator::validators::min;
+//! use nebula_validator::foundation::Validate;
 //!
-//! assert!(validator.validate(&None).is_ok());
-//! assert!(validator.validate(&Some("hello")).is_ok());
-//! ```
+//! // OPTIONAL: None is always valid; Some is validated by the inner validator
+//! let validator = Optional::new(min(5));
 //!
-//! ## Performance Optimization
-//!
-//! ```rust,ignore
-//! // CACHED: memoize results
-//! let validator = cached(expensive_validation());
-//!
-//! validator.validate("test")?;  // First call: slow
-//! validator.validate("test")?;  // Second call: instant!
+//! assert!(validator.validate(&None::<i32>).is_ok()); // None passes
+//! assert!(validator.validate(&Some(10)).is_ok()); // Some, inner passes
+//! assert!(validator.validate(&Some(2)).is_err()); // Some, inner fails
 //! ```
 //!
 //! # Composition Patterns
 //!
 //! Combinators can be chained to create complex validation logic:
 //!
-//! ```rust,ignore
-//! let email_validator = not_null()
-//!     .and(string())
-//!     .and(contains("@"))
-//!     .and(regex(r"^[\w\.-]+@[\w\.-]+\.\w+$"))
-//!     .when(|s| !s.is_empty())
-//!     .optional();
+//! ```rust
+//! use nebula_validator::prelude::*;
+//! use nebula_validator::validators::matches_regex;
+//!
+//! let email_validator = contains("@")
+//!     .and(contains("."))
+//!     .and(matches_regex(r"^[\w.-]+@[\w.-]+\.\w+$").unwrap())
+//!     .when(|s: &str| !s.is_empty());
+//!
+//! assert!(email_validator.validate("").is_ok()); // empty -> condition skips
+//! assert!(email_validator.validate("user@example.com").is_ok());
+//! assert!(email_validator.validate("not-an-email").is_err());
 //! ```
 
 // Module declarations
@@ -117,12 +126,18 @@ pub use when::{When, when};
 ///
 /// # Examples
 ///
-/// ```rust,ignore
+/// ```rust
 /// use nebula_validator::combinators::prelude::*;
+/// use nebula_validator::validators::{exact_length, max_length, min_length};
+/// use nebula_validator::foundation::{Validate, ValidateExt};
 ///
 /// let validator = min_length(5)
 ///     .and(max_length(20))
 ///     .or(exact_length(0));
+///
+/// assert!(validator.validate("hello").is_ok()); // within 5..=20
+/// assert!(validator.validate("").is_ok()); // matches exact_length(0)
+/// assert!(validator.validate("hi").is_err()); // too short, non-empty
 /// ```
 pub mod prelude {
     pub use super::{

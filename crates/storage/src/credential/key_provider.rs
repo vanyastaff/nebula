@@ -164,9 +164,21 @@ pub enum ProviderError {
 ///
 /// # Examples
 ///
-/// ```rust,ignore
-/// let provider = EnvKeyProvider::from_env()?;
-/// let layer = EncryptionLayer::new(inner_store, Arc::new(provider));
+/// Production wiring reads the env var via [`EnvKeyProvider::from_env`]; the
+/// runnable example below uses [`EnvKeyProvider::from_base64`] (the same
+/// validators, minus the env lookup) so it exercises the real parse + version
+/// fingerprint without touching the process environment:
+///
+/// ```rust
+/// use base64::Engine;
+/// use nebula_storage::credential::{EnvKeyProvider, KeyProvider};
+///
+/// let key_b64 = base64::engine::general_purpose::STANDARD.encode([0x42u8; 32]);
+/// let provider = EnvKeyProvider::from_base64(&key_b64).expect("valid 32-byte key");
+///
+/// // The version is a stable, non-secret fingerprint of the key material.
+/// assert!(provider.version().starts_with("env:"));
+/// assert!(provider.current_key().is_ok());
 /// ```
 pub struct EnvKeyProvider {
     key: Arc<EncryptionKey>,
@@ -279,9 +291,23 @@ impl std::fmt::Debug for EnvKeyProvider {
 ///
 /// # Examples
 ///
-/// ```rust,ignore
-/// let provider = FileKeyProvider::from_path("/run/secrets/nebula_cred_key")?;
-/// let layer = EncryptionLayer::new(inner_store, Arc::new(provider));
+/// Production points `from_path` at a mounted secret
+/// (`/run/secrets/nebula_cred_key`); the runnable example writes a 32-byte key
+/// to a private temp file (created `0o600` on Unix, satisfying the
+/// world-readable check) and loads it through the real API:
+///
+/// ```rust
+/// use std::io::Write as _;
+///
+/// use nebula_storage::credential::{FileKeyProvider, KeyProvider};
+///
+/// let mut key_file = tempfile::NamedTempFile::new()?;
+/// key_file.write_all(&[0x42u8; 32])?;
+///
+/// let provider = FileKeyProvider::from_path(key_file.path())?;
+/// assert!(provider.version().starts_with("file:"));
+/// assert!(provider.current_key().is_ok());
+/// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 pub struct FileKeyProvider {
     key: Arc<EncryptionKey>,

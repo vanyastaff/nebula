@@ -26,7 +26,7 @@ mod plugin_attrs;
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```text
 /// #[derive(Plugin)]
 /// #[plugin(
 ///     key = "http",
@@ -37,6 +37,10 @@ mod plugin_attrs;
 /// )]
 /// pub struct HttpPlugin;
 /// ```
+///
+/// This crate is `proc-macro = true`, so it cannot depend on `nebula-plugin`
+/// and the derive above cannot compile as a doctest here. For a runnable
+/// example see `nebula_plugin::Plugin` in the parent `nebula-plugin` crate.
 #[proc_macro_derive(Plugin, attributes(plugin))]
 pub fn derive_plugin(input: TokenStream) -> TokenStream {
     plugin::derive(input)

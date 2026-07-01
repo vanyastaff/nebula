@@ -34,22 +34,51 @@ use crate::{Credential, CredentialContext, error::CredentialError, resolve::Test
 ///
 /// # Examples
 ///
-/// ```ignore
-/// use nebula_credential::{Credential, Testable};
-/// use nebula_credential::resolve::TestResult;
+/// ```
+/// use nebula_credential::{
+///     AuthPattern, Credential, CredentialContext, CredentialMetadata, Testable,
+///     SecretString, scheme::SecretToken,
+/// };
+/// use nebula_credential::error::CredentialError;
+/// use nebula_credential::resolve::{ResolveResult, TestResult};
+/// use nebula_core::credential_key;
+/// use nebula_schema::{FieldValues, ValidSchema};
 ///
 /// struct OAuth2Cred;
 ///
-/// // (impl Credential for OAuth2Cred elided)
-///
+/// # impl Credential for OAuth2Cred {
+/// #     type Properties = FieldValues;
+/// #     type Scheme = SecretToken;
+/// #     type State = SecretToken;
+/// #     const KEY: &'static str = "oauth2_cred";
+/// #     fn metadata() -> CredentialMetadata {
+/// #         CredentialMetadata::new(
+/// #             credential_key!("oauth2_cred"), "OAuth2", "demo",
+/// #             ValidSchema::empty(), AuthPattern::SecretToken,
+/// #         )
+/// #     }
+/// #     fn project(state: &SecretToken) -> SecretToken { state.clone() }
+/// #     async fn resolve(
+/// #         _values: &FieldValues,
+/// #         _ctx: &CredentialContext,
+/// #     ) -> Result<ResolveResult<SecretToken, ()>, CredentialError> {
+/// #         Ok(ResolveResult::Complete(SecretToken::new(SecretString::new(""))))
+/// #     }
+/// # }
 /// impl Testable for OAuth2Cred {
 ///     async fn test(
-///         scheme: &Self::Scheme,
-///         ctx: &CredentialContext,
+///         scheme: &SecretToken,
+///         _ctx: &CredentialContext,
 ///     ) -> Result<TestResult, CredentialError> {
-///         // ... probe provider health endpoint with this scheme ...
+///         // Probe a lightweight authenticated "whoami" endpoint with `scheme`.
+///         let _ = scheme;
+///         Ok(TestResult::Success)
 ///     }
 /// }
+///
+/// // Test capability is encoded by trait membership — `where C: Testable`.
+/// fn assert_testable<C: Testable>() {}
+/// assert_testable::<OAuth2Cred>();
 /// ```
 pub trait Testable: Credential {
     /// Test that the credential actually works.

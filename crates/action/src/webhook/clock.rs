@@ -76,11 +76,18 @@ impl Clock for SystemClock {
 ///
 /// # Example
 ///
-/// ```ignore
-/// let clock = Arc::new(MockClock::at_unix_secs(1_700_000_000));
-/// // ... fire webhook ...
-/// clock.advance(Duration::from_secs(310)); // > 5 min replay window
-/// // verify_with should now reject
+/// ```rust
+/// use std::time::Duration;
+/// use nebula_action::webhook::{Clock, MockClock};
+///
+/// let clock = MockClock::at_unix_secs(1_700_000_000);
+/// let started_at = clock.now();
+///
+/// // Advance past the default 5-minute replay window.
+/// clock.advance(Duration::from_secs(310));
+///
+/// let elapsed = clock.now().duration_since(started_at).unwrap();
+/// assert_eq!(elapsed.as_secs(), 310);
 /// ```
 #[derive(Debug)]
 pub struct MockClock {

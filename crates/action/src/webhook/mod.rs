@@ -492,16 +492,28 @@ impl Default for WebhookHttpResponse {
 ///
 /// # Examples
 ///
-/// ```rust,ignore
-/// // Normal event — accept with default 200 OK, emit workflow.
-/// Ok(WebhookResponse::accept(TriggerEventOutcome::emit(payload)))
+/// ```rust
+/// use http::StatusCode;
+/// use nebula_action::trigger::TriggerEventOutcome;
+/// use nebula_action::webhook::WebhookResponse;
 ///
-/// // Slack URL verification — echo challenge, no workflow.
-/// Ok(WebhookResponse::respond(
-/// StatusCode::OK,
-/// challenge_value,
-/// TriggerEventOutcome::skip(),
-/// ))
+/// // Normal event — accept with the default 200 OK and emit a workflow.
+/// let accepted = WebhookResponse::accept(TriggerEventOutcome::emit(
+///     serde_json::json!({ "event": "push" }),
+/// ));
+/// assert!(accepted.outcome().will_emit());
+///
+/// // Slack URL verification — echo the challenge, emit nothing.
+/// let verification = WebhookResponse::respond(
+///     StatusCode::OK,
+///     "challenge-token",
+///     TriggerEventOutcome::skip(),
+/// );
+/// assert!(!verification.outcome().will_emit());
+///
+/// let (http, _outcome) = verification.into_parts();
+/// assert_eq!(http.status, StatusCode::OK);
+/// assert_eq!(&http.body[..], b"challenge-token");
 /// ```
 #[derive(Debug)]
 #[non_exhaustive]
@@ -587,32 +599,78 @@ impl WebhookResponse {
 /// naive `==` comparison on HMAC digests leaks the secret via a
 /// prefix-length timing side-channel.
 ///
-/// ```rust,ignore
-/// use nebula_action::webhook::{WebhookAction, WebhookRequest, WebhookResponse, verify_hmac_sha256};
+/// ```rust
+/// # use std::sync::OnceLock;
+/// use http::{HeaderMap, Method};
 /// use nebula_action::trigger::TriggerEventOutcome;
+/// use nebula_action::webhook::{
+///     verify_hmac_sha256, WebhookAction, WebhookRequest, WebhookResponse,
+/// };
+/// use nebula_action::{Action, ActionError, ActionMetadata, TriggerContext};
+/// # use nebula_core::{Dependencies, action_key};
+///
+/// /// State returned by `on_activate` and handed back to every request.
+/// #[derive(Clone)]
+/// struct Registration { hook_id: String }
 ///
 /// struct GitHubWebhook { secret: Vec<u8> }
+/// # impl Action for GitHubWebhook {
+/// #     type Input = serde_json::Value;
+/// #     type Output = serde_json::Value;
+/// #     fn metadata() -> ActionMetadata {
+/// #         ActionMetadata::new(action_key!("github.webhook"), "GitHub", "Push events")
+/// #     }
+/// #     fn dependencies() -> &'static Dependencies {
+/// #         static D: OnceLock<Dependencies> = OnceLock::new();
+/// #         D.get_or_init(Dependencies::new)
+/// #     }
+/// # }
 ///
 /// impl WebhookAction for GitHubWebhook {
-/// type State = WebhookReg;
+///     type State = Registration;
 ///
-/// async fn on_activate(&self, ctx: &(impl TriggerContext + ?Sized)) -> Result<WebhookReg, ActionError> {
-/// Ok(WebhookReg { hook_id: register(ctx).await? })
+///     async fn on_activate(
+///         &self,
+///         _ctx: &(impl TriggerContext + ?Sized),
+///     ) -> Result<Registration, ActionError> {
+///         // Real actions register the hook with the provider here and store
+///         // the returned id; the `State` flows back into every
+///         // `handle_request` and into `on_deactivate`.
+///         Ok(Registration { hook_id: "hook-42".to_string() })
+///     }
+///
+///     async fn handle_request(
+///         &self,
+///         request: &WebhookRequest,
+///         _state: &Registration,
+///         _ctx: &(impl TriggerContext + ?Sized),
+///     ) -> Result<WebhookResponse, ActionError> {
+///         // Constant-time HMAC check — never compare digests with `==`.
+///         let outcome = verify_hmac_sha256(request, &self.secret, "X-Hub-Signature-256")?;
+///         if !outcome.is_valid() {
+///             return Ok(WebhookResponse::accept(TriggerEventOutcome::skip()));
+///         }
+///         let payload = request
+///             .body_json::<serde_json::Value>()
+///             .map_err(|err| ActionError::fatal(format!("invalid JSON body: {err}")))?;
+///         Ok(WebhookResponse::accept(TriggerEventOutcome::emit(payload)))
+///     }
 /// }
 ///
-/// async fn handle_request(&self, req: &WebhookRequest, _state: &Self::State, _ctx: &(impl TriggerContext + ?Sized))
-/// -> Result<WebhookResponse, ActionError> {
-/// let outcome = verify_hmac_sha256(req, &self.secret, "X-Hub-Signature-256")?;
-/// if !outcome.is_valid() {
-/// return Ok(WebhookResponse::accept(TriggerEventOutcome::skip()));
-/// }
-/// Ok(WebhookResponse::accept(TriggerEventOutcome::emit(req.body_json()?)))
-/// }
-///
-/// async fn on_deactivate(&self, state: WebhookReg, _ctx: &(impl TriggerContext + ?Sized)) -> Result<(), ActionError> {
-/// delete_hook(&state.hook_id).await
-/// }
-/// }
+/// # let action = GitHubWebhook { secret: b"topsecret".to_vec() };
+/// # let ctx = nebula_action::testing::TestContextBuilder::new().build_trigger().0;
+/// # let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
+/// // Activation yields the state threaded back into every request.
+/// let state = runtime.block_on(action.on_activate(&ctx)).unwrap();
+/// assert_eq!(state.hook_id, "hook-42");
+/// # let request = WebhookRequest::try_new(
+/// #     Method::POST, "/hooks/github", None::<String>, HeaderMap::new(), b"{}".to_vec(),
+/// # ).unwrap();
+/// // An unsigned request never passes the HMAC guard, so no workflow emits.
+/// let response = runtime
+///     .block_on(action.handle_request(&request, &state, &ctx))
+///     .unwrap();
+/// assert!(!response.outcome().will_emit());
 /// ```
 pub trait WebhookAction: Action + Send + Sync + 'static {
     /// State held between activate/deactivate (e.g., webhook registration ID).
@@ -1536,20 +1594,28 @@ pub enum SignatureScheme {
 ///
 /// # Example
 ///
-/// ```rust,ignore
-/// async fn on_activate(&self, ctx: &(impl TriggerContext + ?Sized + HasWebhookEndpoint))
-/// -> Result<Self::State, ActionError>
-/// {
-/// let endpoint = ctx.webhook_endpoint().ok_or_else(|| {
-/// ActionError::fatal("webhook trigger activated without endpoint provider")
-/// })?;
-/// let hook_id = github_api::create_hook(
-/// &self.repo,
-/// endpoint.endpoint_url().as_str(),
-/// &self.secret,
-/// ).await?;
-/// Ok(GitHubState { hook_id })
+/// A trigger reads the endpoint from its [`TriggerContext`] during
+/// activation and hands the URL to the provider's registration API. When
+/// the transport injects no provider, resolution fails closed rather than
+/// registering against a missing URL.
+///
+/// ```rust
+/// use nebula_action::webhook::WebhookEndpointProvider;
+/// use nebula_action::{ActionError, HasWebhookEndpoint, TriggerContext};
+///
+/// fn resolve_endpoint(
+///     ctx: &(impl TriggerContext + ?Sized),
+/// ) -> Result<String, ActionError> {
+///     let endpoint = ctx.webhook_endpoint().ok_or_else(|| {
+///         ActionError::fatal("webhook trigger activated without endpoint provider")
+///     })?;
+///     Ok(endpoint.endpoint_url().to_string())
 /// }
+///
+/// # let (ctx, _emitter, _scheduler) =
+/// #     nebula_action::testing::TestContextBuilder::new().build_trigger();
+/// // The bare test context carries no endpoint provider.
+/// assert!(resolve_endpoint(&ctx).is_err());
 /// ```
 pub trait WebhookEndpointProvider: Send + Sync + fmt::Debug {
     /// Full public URL at which the webhook endpoint is reachable.
@@ -1970,10 +2036,24 @@ impl SignatureOutcome {
     ///
     /// Use this as the default "is it safe to emit the event" guard:
     ///
-    /// ```ignore
-    /// if !verify_hmac_sha256(request, secret, "X-Hub-Signature-256")?.is_valid() {
-    /// return Ok(TriggerEventOutcome::skip());
-    /// }
+    /// ```rust
+    /// use http::{HeaderMap, Method};
+    /// use nebula_action::webhook::{verify_hmac_sha256, SignatureOutcome, WebhookRequest};
+    ///
+    /// let request = WebhookRequest::try_new(
+    ///     Method::POST,
+    ///     "/hooks/github",
+    ///     None::<String>,
+    ///     HeaderMap::new(),
+    ///     b"{}".to_vec(),
+    /// )
+    /// .unwrap();
+    ///
+    /// // No `X-Hub-Signature-256` header is present on the request.
+    /// let outcome = verify_hmac_sha256(&request, b"secret", "X-Hub-Signature-256").unwrap();
+    /// assert_eq!(outcome, SignatureOutcome::Missing);
+    /// // `is_valid()` is the emit guard: only `Valid` is safe to act on.
+    /// assert!(!outcome.is_valid());
     /// ```
     #[must_use]
     pub fn is_valid(self) -> bool {
@@ -2543,16 +2623,23 @@ pub fn hmac_sha256_compute(secret: &[u8], payload: &[u8]) -> [u8; 32] {
 ///
 /// # Examples
 ///
-/// ```rust,ignore
+/// ```rust
 /// use nebula_action::webhook::{hmac_sha256_compute, verify_tag_constant_time};
 ///
-/// // Stripe-style "t=…,v1=…" signature.
+/// let secret = b"whsec_example";
+/// let timestamp = "1700000000";
+/// let body = br#"{"id":"evt_1"}"#;
+///
+/// // Stripe-style "t=…,v1=…": sign the derived "{timestamp}.{body}" payload.
 /// let signed_payload = format!("{timestamp}.{}", std::str::from_utf8(body).unwrap());
 /// let expected = hmac_sha256_compute(secret, signed_payload.as_bytes());
-/// let provided = hex::decode(header_v1).unwrap_or_default();
-/// if !verify_tag_constant_time(&expected, &provided) {
-/// return Ok(TriggerEventOutcome::skip());
-/// }
+///
+/// // The provider sends the tag hex-encoded in the `v1=` field.
+/// let provided = hex::decode(hex::encode(expected)).unwrap();
+/// assert!(verify_tag_constant_time(&expected, &provided));
+///
+/// // A tampered tag is rejected without leaking where it differs.
+/// assert!(!verify_tag_constant_time(&expected, b"not-the-tag"));
 /// ```
 #[must_use]
 pub fn verify_tag_constant_time(a: &[u8], b: &[u8]) -> bool {

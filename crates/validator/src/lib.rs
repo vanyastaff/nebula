@@ -26,16 +26,18 @@
 //!
 //! ## Quick Start
 //!
-//! ```rust,ignore
+//! ```rust
 //! use nebula_validator::prelude::*;
 //!
-//! // Compose validators with.and() /.or() /.not()
+//! // Compose validators with .and() / .or() / .not()
 //! let username = min_length(3).and(max_length(20)).and(alphanumeric());
 //! assert!(username.validate("alice").is_ok());
 //!
 //! // Proof token: validate once, carry the guarantee in the type system
 //! let name: Validated<String> = min_length(3).validate_into("alice".to_string())?;
 //! // fn process(name: Validated<String>) — compiler enforces the check happened
+//! # assert_eq!(name.as_ref(), "alice");
+//! # Ok::<(), ValidatorError>(())
 //! ```
 //!
 //! ## Non-goals

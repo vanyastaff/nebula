@@ -11,13 +11,20 @@
 //!
 //! # Examples
 //!
-//! ```rust,ignore
-//! use nebula_validator::combinators::nested_validator;
-//! use nebula_validator::foundation::Validate;
+//! ```rust
+//! use nebula_validator::combinators::{nested_validator, SelfValidating};
+//! use nebula_validator::foundation::{Validate, ValidationError};
 //!
-//! // For types implementing Validatable trait
+//! # struct MyStruct { ok: bool }
+//! # impl SelfValidating for MyStruct {
+//! #     fn check(&self) -> Result<(), ValidationError> {
+//! #         if self.ok { Ok(()) } else { Err(ValidationError::new("invalid", "bad")) }
+//! #     }
+//! # }
+//! // For types implementing the SelfValidating trait
 //! let validator = nested_validator::<MyStruct>();
-//! assert!(validator.validate(&my_struct_instance).is_ok());
+//! assert!(validator.validate(&MyStruct { ok: true }).is_ok());
+//! assert!(validator.validate(&MyStruct { ok: false }).is_err());
 //! ```
 
 use std::marker::PhantomData;
@@ -40,9 +47,11 @@ use crate::foundation::{Validate, ValidationError, ValidationMode};
 ///
 /// # Examples
 ///
-/// ```rust,ignore
+/// ```rust
 /// use nebula_validator::combinators::NestedValidate;
-/// use nebula_validator::foundation::Validate;
+/// use nebula_validator::foundation::{Validate, ValidationError};
+///
+/// struct User { age: u32 }
 ///
 /// let validator = NestedValidate::new(|user: &User| {
 ///     if user.age >= 18 {
@@ -51,6 +60,9 @@ use crate::foundation::{Validate, ValidationError, ValidationMode};
 ///         Err(ValidationError::new("age", "Must be 18+"))
 ///     }
 /// });
+///
+/// assert!(validator.validate(&User { age: 21 }).is_ok());
+/// assert!(validator.validate(&User { age: 16 }).is_err());
 /// ```
 #[derive(Debug, Clone)]
 pub struct NestedValidate<T, F> {
@@ -92,7 +104,12 @@ where
 ///
 /// # Examples
 ///
-/// ```rust,ignore
+/// ```rust
+/// use nebula_validator::combinators::SelfValidating;
+/// use nebula_validator::foundation::ValidationError;
+///
+/// struct User { name: String }
+///
 /// impl SelfValidating for User {
 ///     fn check(&self) -> Result<(), ValidationError> {
 ///         if self.name.is_empty() {
@@ -101,6 +118,9 @@ where
 ///         Ok(())
 ///     }
 /// }
+///
+/// assert!(User { name: "Ada".to_string() }.check().is_ok());
+/// assert!(User { name: String::new() }.check().is_err());
 /// ```
 pub trait SelfValidating {
     /// Validates the instance and returns an error if invalid.
@@ -119,12 +139,19 @@ pub trait SelfValidating {
 ///
 /// # Examples
 ///
-/// ```rust,ignore
-/// use nebula_validator::combinators::nested_validator;
-/// use nebula_validator::foundation::Validate;
+/// ```rust
+/// use nebula_validator::combinators::{nested_validator, SelfValidating};
+/// use nebula_validator::foundation::{Validate, ValidationError};
 ///
+/// # struct User { age: u32 }
+/// # impl SelfValidating for User {
+/// #     fn check(&self) -> Result<(), ValidationError> {
+/// #         if self.age >= 18 { Ok(()) } else { Err(ValidationError::new("age", "18+")) }
+/// #     }
+/// # }
 /// let validator = nested_validator::<User>();
-/// assert!(validator.validate(&user).is_ok());
+/// assert!(validator.validate(&User { age: 30 }).is_ok());
+/// assert!(validator.validate(&User { age: 10 }).is_err());
 /// ```
 #[must_use]
 pub fn nested_validator<T>() -> NestedValidate<T, impl Fn(&T) -> Result<(), ValidationError>>
@@ -142,9 +169,11 @@ where
 ///
 /// # Examples
 ///
-/// ```rust,ignore
+/// ```rust
 /// use nebula_validator::combinators::custom_nested;
-/// use nebula_validator::foundation::Validate;
+/// use nebula_validator::foundation::{Validate, ValidationError};
+///
+/// struct User { email: String }
 ///
 /// let validator = custom_nested(|user: &User| {
 ///     if user.email.contains('@') {
@@ -153,6 +182,9 @@ where
 ///         Err(ValidationError::new("email", "Invalid email"))
 ///     }
 /// });
+///
+/// assert!(validator.validate(&User { email: "a@b.com".to_string() }).is_ok());
+/// assert!(validator.validate(&User { email: "nope".to_string() }).is_err());
 /// ```
 pub fn custom_nested<T, F>(validate_fn: F) -> NestedValidate<T, F>
 where
@@ -212,13 +244,19 @@ where
 ///
 /// # Examples
 ///
-/// ```rust,ignore
-/// use nebula_validator::combinators::optional_nested;
-/// use nebula_validator::foundation::Validate;
+/// ```rust
+/// use nebula_validator::combinators::{optional_nested, SelfValidating};
+/// use nebula_validator::foundation::{Validate, ValidationError};
 ///
+/// # struct Address { zip: String }
+/// # impl SelfValidating for Address {
+/// #     fn check(&self) -> Result<(), ValidationError> {
+/// #         if self.zip.is_empty() { Err(ValidationError::new("zip", "required")) } else { Ok(()) }
+/// #     }
+/// # }
 /// let validator = optional_nested::<Address>();
 /// assert!(validator.validate(&None).is_ok());
-/// assert!(validator.validate(&Some(address)).is_ok());
+/// assert!(validator.validate(&Some(Address { zip: "12345".to_string() })).is_ok());
 /// ```
 #[must_use]
 pub fn optional_nested<T>() -> OptionalNested<T, impl Fn(&T) -> Result<(), ValidationError>>
@@ -318,12 +356,18 @@ where
 ///
 /// # Examples
 ///
-/// ```rust,ignore
-/// use nebula_validator::combinators::collection_nested;
-/// use nebula_validator::foundation::Validate;
+/// ```rust
+/// use nebula_validator::combinators::{collection_nested, SelfValidating};
+/// use nebula_validator::foundation::{Validate, ValidationError};
 ///
+/// # struct User { age: u32 }
+/// # impl SelfValidating for User {
+/// #     fn check(&self) -> Result<(), ValidationError> {
+/// #         if self.age >= 18 { Ok(()) } else { Err(ValidationError::new("age", "18+")) }
+/// #     }
+/// # }
 /// let validator = collection_nested::<User>();
-/// let users = vec![user1, user2, user3];
+/// let users = vec![User { age: 20 }, User { age: 25 }, User { age: 30 }];
 /// assert!(validator.validate(&users).is_ok());
 /// ```
 #[must_use]

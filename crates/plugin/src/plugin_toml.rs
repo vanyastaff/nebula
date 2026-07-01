@@ -29,6 +29,7 @@ pub struct PluginTomlManifest {
 
 /// Errors from [`parse_plugin_toml`].
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum PluginTomlError {
     /// The `plugin.toml` file was not found.
     #[error("plugin.toml not found at {path}")]

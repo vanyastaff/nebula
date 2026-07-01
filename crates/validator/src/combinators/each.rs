@@ -13,19 +13,19 @@ use crate::foundation::{Validate, ValidationError, ValidationMode};
 ///
 /// # Examples
 ///
-/// ```rust,ignore
+/// ```rust
 /// use nebula_validator::combinators::Each;
 /// use nebula_validator::foundation::Validate;
+/// use nebula_validator::validators::min;
 ///
-/// let validator = Each::new(MinLength { min: 3 });
+/// let validator = Each::new(min(3));
 ///
 /// // All elements valid
-/// assert!(validator.validate(&["foo", "bar", "baz"]).is_ok());
+/// assert!(validator.validate(&[3, 4, 5]).is_ok());
 ///
-/// // Some elements invalid
-/// let result = validator.validate(&["foo", "ab", "x"]);
+/// // Some elements invalid (indices 1 and 2 are below 3)
+/// let result = validator.validate(&[5, 1, 2]);
 /// assert!(result.is_err());
-/// // Error contains indices: [1, 2]
 /// ```
 #[derive(Debug, Clone, Copy)]
 pub struct Each<V> {

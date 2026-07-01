@@ -78,12 +78,18 @@ impl RateLimitState {
     ///
     /// Intended for use inside `axum::middleware::from_fn`:
     ///
-    /// ```ignore
-    /// let rl = RateLimitState::new(config.rate_limit_per_second);
-    /// .layer(middleware::from_fn(move |req, next| {
-    ///     let rl = rl.clone();
-    ///     async move { rl.handle(req, next).await }
-    /// }))
+    /// ```rust
+    /// use axum::{Router, middleware, routing::get};
+    /// use nebula_api::middleware::rate_limit::RateLimitState;
+    ///
+    /// let rl = RateLimitState::new(100);
+    /// let app: Router = Router::new()
+    ///     .route("/", get(|| async { "ok" }))
+    ///     .layer(middleware::from_fn(move |req, next| {
+    ///         let rl = rl.clone();
+    ///         async move { rl.handle(req, next).await }
+    ///     }));
+    /// # let _ = app;
     /// ```
     pub async fn handle(&self, request: Request, next: Next) -> Response {
         // Bypass excluded paths (health / readiness probes)

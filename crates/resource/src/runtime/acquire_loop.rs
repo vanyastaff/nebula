@@ -7,13 +7,13 @@
 //! - [`run_acquire_loop`](ManagedResource::run_acquire_loop) — the fenced
 //!   acquire: reserve → checkout → destroy stale → accept-or-create → prepare
 //!   → build guard.
-//! - [`checkout_or_create`] — inner loop factored out for future keyed variants.
-//! - [`build_guard`] — assembles the [`ResourceGuard`] with its release closure.
+//! - [`checkout_or_create`](ManagedResource::checkout_or_create) — inner loop factored out for future keyed variants.
+//! - [`build_guard`](ManagedResource::build_guard) — assembles the [`ResourceGuard`] with its release closure.
 //! - [`bump_revoke_epoch`](ManagedResource::bump_revoke_epoch) /
 //!   [`dispatch_slot_hook`](ManagedResource::dispatch_slot_hook) — credential
 //!   rotation hooks that need topology dispatch.
 //! - [`warmup`](ManagedResource::warmup) / [`run_maintenance`](ManagedResource::run_maintenance) /
-//!   [`probe_idle_slots`] — lifecycle maintenance driven by the registry reaper.
+//!   [`probe_idle_slots`](ManagedResource::probe_idle_slots) — lifecycle maintenance driven by the registry reaper.
 //! - [`release_slot`] — the async release teardown future the guard's drop schedules.
 //! - [`SlotCreateGuard`] — cancel-safety RAII guard for the create-then-prepare window.
 //!

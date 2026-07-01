@@ -254,7 +254,7 @@ fn extract_cookie(request: &Request, name: &str) -> Option<String> {
     None
 }
 
-/// Extract a user-facing ID string from a [`Principal`].
+/// Extract a user-facing ID string from a [`Principal`](nebula_core::Principal).
 fn principal_user_id(principal: &nebula_core::Principal) -> String {
     match principal {
         nebula_core::Principal::User(uid) => uid.to_string(),

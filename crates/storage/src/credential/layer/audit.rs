@@ -42,12 +42,32 @@ use nebula_credential::{
 ///
 /// # Examples
 ///
-/// ```rust,ignore
-/// use nebula_storage::credential::{AuditLayer, SqliteCredentialStore};
+/// Requires the `sqlite` feature; the async `connect` makes this `no_run`
+/// (it still type-checks the real API):
+///
+/// ```rust,no_run
+/// # #[cfg(feature = "sqlite")]
+/// # async fn doc() -> Result<(), Box<dyn std::error::Error>> {
 /// use std::sync::Arc;
 ///
-/// let sink = Arc::new(my_audit_sink);
-/// let store = AuditLayer::new(SqliteCredentialStore::connect("sqlite://creds.db").await?, sink);
+/// use nebula_credential::{AuditEvent, AuditSink, StoreError};
+/// use nebula_storage::credential::{AuditLayer, SqliteCredentialStore};
+///
+/// // A real sink ships each event to durable audit storage; here it is a stub.
+/// struct StdoutSink;
+/// impl AuditSink for StdoutSink {
+///     fn record(&self, event: &AuditEvent) -> Result<(), StoreError> {
+///         println!("{} {:?}", event.credential_id, event.operation);
+///         Ok(())
+///     }
+/// }
+///
+/// let sink: Arc<dyn AuditSink> = Arc::new(StdoutSink);
+/// let backend = SqliteCredentialStore::connect("sqlite://creds.db").await?;
+/// let store = AuditLayer::new(backend, sink);
+/// # let _ = store;
+/// # Ok(())
+/// # }
 /// ```
 pub struct AuditLayer<S> {
     inner: S,

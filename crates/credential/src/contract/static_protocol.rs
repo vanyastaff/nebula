@@ -6,19 +6,20 @@
 //!
 //! # Examples
 //!
-//! ```ignore
+//! ```
 //! use nebula_credential::{CredentialError, SecretString, StaticProtocol};
 //! use nebula_credential::scheme::ConnectionUri;
-//! use nebula_schema::{field_key, Field, FieldValues, ValidSchema};
+//! use nebula_schema::{field_key, Field, FieldValues, Schema, ValidSchema};
 //! use serde_json::json;
 //!
 //! struct PostgresProtocol;
 //!
 //! impl StaticProtocol for PostgresProtocol {
+//!     type Properties = FieldValues;
 //!     type Scheme = ConnectionUri;
 //!
 //!     fn parameters() -> ValidSchema {
-//!         nebula_schema::Schema::builder()
+//!         Schema::builder()
 //!             .add(Field::string(field_key!("host")).required())
 //!             .add(Field::integer(field_key!("port")).default(json!(5432)))
 //!             .build()
@@ -40,6 +41,14 @@
 //!         ))
 //!     }
 //! }
+//!
+//! // `parameters()` is overridden, so it carries the two declared fields.
+//! assert_eq!(PostgresProtocol::parameters().fields().len(), 2);
+//!
+//! let mut values = FieldValues::new();
+//! values.try_set_raw("host", json!("db.example.com")).unwrap();
+//! let uri = PostgresProtocol::build(&values).unwrap();
+//! assert_eq!(uri.host(), "db.example.com");
 //! ```
 
 use nebula_schema::{FieldValues, ValidSchema};
@@ -58,7 +67,7 @@ use crate::{AuthScheme, error::CredentialError};
 ///
 /// # Examples
 ///
-/// ```ignore
+/// ```
 /// use nebula_credential::StaticProtocol;
 /// use nebula_credential::scheme::SecretToken;
 /// use nebula_credential::SecretString;
@@ -68,6 +77,7 @@ use crate::{AuthScheme, error::CredentialError};
 /// struct ApiKeyProtocol;
 ///
 /// impl StaticProtocol for ApiKeyProtocol {
+///     type Properties = FieldValues;
 ///     type Scheme = SecretToken;
 ///
 ///     fn parameters() -> ValidSchema {
@@ -81,6 +91,11 @@ use crate::{AuthScheme, error::CredentialError};
 ///         Ok(SecretToken::new(SecretString::new(token.to_owned())))
 ///     }
 /// }
+///
+/// let mut values = FieldValues::new();
+/// values.try_set_raw("token", serde_json::json!("sk-123")).unwrap();
+/// let scheme = ApiKeyProtocol::build(&values).unwrap();
+/// assert_eq!(scheme.token().expose_secret(), "sk-123");
 /// ```
 pub trait StaticProtocol: Send + Sync + 'static {
     /// Typed shape of the setup-form fields — same role as

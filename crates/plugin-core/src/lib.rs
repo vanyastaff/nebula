@@ -23,16 +23,18 @@
 //!
 //! ## Usage
 //!
-//! Wire the plugin into the engine via `WorkflowEngine::with_plugin`:
+//! Resolve the plugin, then wire it into the engine via
+//! `WorkflowEngine::with_plugin` (wrapped in an `Arc`) at the composition root:
 //!
-//! ```rust,ignore
-//! use nebula_engine::WorkflowEngine;
+//! ```rust
+//! use nebula_core::ActionKey;
 //! use nebula_plugin::ResolvedPlugin;
 //! use nebula_plugin_core::CorePlugin;
 //!
-//! let plugin = ResolvedPlugin::from(CorePlugin::try_new()?)
-//!     .expect("core plugin must resolve");
-//! let engine = engine.with_plugin(std::sync::Arc::new(plugin))?;
+//! let plugin = ResolvedPlugin::from(CorePlugin::try_new()?)?;
+//! assert_eq!(plugin.key().as_str(), "core");
+//! assert!(plugin.action(&ActionKey::new("core.sort")?).is_some());
+//! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 
 #![forbid(unsafe_code)]

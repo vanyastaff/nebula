@@ -43,15 +43,23 @@ use super::super::key_provider::KeyProvider;
 ///
 /// # Examples
 ///
-/// ```rust,ignore
-/// use nebula_storage::credential::{EncryptionLayer, EnvKeyProvider, SqliteCredentialStore};
+/// Requires the `sqlite` feature; the async `connect` and the env-var key
+/// read make this `no_run` (it still type-checks the real API):
+///
+/// ```rust,no_run
+/// # #[cfg(feature = "sqlite")]
+/// # async fn doc() -> Result<(), Box<dyn std::error::Error>> {
 /// use std::sync::Arc;
+///
+/// use nebula_storage::credential::{EncryptionLayer, EnvKeyProvider, SqliteCredentialStore};
 ///
 /// // Production: read the key from NEBULA_CRED_MASTER_KEY.
 /// let provider = Arc::new(EnvKeyProvider::from_env()?);
 /// let backend = SqliteCredentialStore::connect("sqlite://creds.db").await?;
 /// let store = EncryptionLayer::new(backend, provider);
-/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// # let _ = store;
+/// # Ok(())
+/// # }
 /// ```
 pub struct EncryptionLayer<S> {
     inner: S,
@@ -74,12 +82,23 @@ impl<S> EncryptionLayer<S> {
     /// the empty alias explicitly via [`with_legacy_keys`](Self::with_legacy_keys) —
     /// e.g.
     ///
-    /// ```rust,ignore
+    /// ```rust,no_run
+    /// # #[cfg(feature = "sqlite")]
+    /// # async fn doc() -> Result<(), Box<dyn std::error::Error>> {
+    /// use std::sync::Arc;
+    ///
+    /// use nebula_crypto::EncryptionKey;
+    /// use nebula_storage::credential::{EncryptionLayer, EnvKeyProvider, SqliteCredentialStore};
+    ///
+    /// let inner = SqliteCredentialStore::connect("sqlite://creds.db").await?;
+    /// let legacy_key = Arc::new(EncryptionKey::from_bytes([0x42; 32]));
     /// EncryptionLayer::with_legacy_keys(
     ///     inner,
-    ///     Arc::new(EnvKeyProvider::from_env()?), // provider drives "default"
+    ///     Arc::new(EnvKeyProvider::from_env()?), // provider drives the current key
     ///     vec![(String::new(), legacy_key)],     // explicit, audit-visible
     /// );
+    /// # Ok(())
+    /// # }
     /// ```
     ///
     /// The lazy rotation path (see module docs) will then re-encrypt any

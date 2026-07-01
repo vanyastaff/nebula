@@ -4,7 +4,7 @@
 //! `nebula_core::port_key`. This module keeps action-specific serde rejection
 //! tests that exercise `ActionResult` deserialization.
 
-pub use nebula_core::PortKey;
+pub(crate) use nebula_core::PortKey;
 
 #[cfg(test)]
 mod tests {

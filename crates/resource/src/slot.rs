@@ -259,19 +259,28 @@ impl<S> SlotCell<S> {
 ///
 /// `CredentialSlot<C>` is exactly `SlotCell<nebula_credential::CredentialGuard<C>>`.
 /// Use this alias in your resource struct's `#[credential]` fields to reduce
-/// field-type noise:
-///
-/// ```ignore
-/// use nebula_resource::CredentialSlot;
-///
-/// struct Postgres {
-///     #[credential(key = "db")]
-///     iam: CredentialSlot<IamToken>,
-/// }
-/// ```
-///
-/// Both syntactic shapes — `SlotCell<CredentialGuard<C>>` and
+/// field-type noise — e.g. a `#[credential(key = "db")] iam: CredentialSlot<IamToken>`
+/// field. Both syntactic shapes — `SlotCell<CredentialGuard<C>>` and
 /// `CredentialSlot<C>` — are accepted by `#[derive(Resource)]`.
+///
+/// A `CredentialSlot<C>` is exactly a [`SlotCell`] over the credential guard, so
+/// it carries the same generation-stamped, lock-free cell mechanics:
+///
+/// ```
+/// use std::sync::Arc;
+///
+/// use nebula_resource::SlotCell;
+///
+/// // The cell underlying a `CredentialSlot` (here over a plain `u32`; in a
+/// // resource the slot value is `CredentialGuard<C>`).
+/// let cell: SlotCell<u32> = SlotCell::empty();
+/// assert_eq!(cell.generation(), 0, "an unbound slot's epoch is 0");
+/// assert!(cell.load().is_none());
+///
+/// cell.store(Arc::new(7));
+/// assert_eq!(cell.load().as_deref(), Some(&7));
+/// assert_eq!(cell.generation(), 1, "the first store lands at generation 1");
+/// ```
 pub type CredentialSlot<C> = SlotCell<nebula_credential::CredentialGuard<C>>;
 
 impl<S> Default for SlotCell<S> {

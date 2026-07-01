@@ -51,18 +51,27 @@ use crate::{action::Action, context::ActionContext, error::ActionError};
 ///
 /// # Example
 ///
-/// ```rust,ignore
+/// ```rust
+/// use std::sync::OnceLock;
+///
 /// use futures::stream;
 /// use nebula_action::prelude::*;
-/// use nebula_action::stream::StreamAction;
+/// use nebula_action::StreamAction;
+/// use nebula_core::action_key;
 ///
 /// struct SumStream;
 ///
 /// impl Action for SumStream {
 ///     type Input  = serde_json::Value;
 ///     type Output = u64;
-/// # fn metadata() -> nebula_action::ActionMetadata { todo!() }
-/// # fn dependencies() -> &'static nebula_core::Dependencies { todo!() }
+///
+///     fn metadata() -> ActionMetadata {
+///         ActionMetadata::new(action_key!("demo.sum_stream"), "SumStream", "Sums a chunk stream")
+///     }
+///     fn dependencies() -> &'static Dependencies {
+///         static D: OnceLock<Dependencies> = OnceLock::new();
+///         D.get_or_init(Dependencies::new)
+///     }
 /// }
 ///
 /// impl StreamAction for SumStream {
@@ -79,6 +88,14 @@ use crate::{action::Action, context::ActionContext, error::ActionError};
 ///     fn init(&self) -> u64 { 0 }
 ///     fn fold(&self, acc: u64, chunk: u64) -> u64 { acc + chunk }
 /// }
+///
+/// // The adapter folds the stream; here we exercise the fold seam directly:
+/// // init() + 1 + 2 + 3 == 6.
+/// let action = SumStream;
+/// let total = [1u64, 2, 3]
+///     .into_iter()
+///     .fold(action.init(), |acc, chunk| action.fold(acc, chunk));
+/// assert_eq!(total, 6);
 /// ```
 #[diagnostic::on_unimplemented(
     message = "`{Self}` does not implement StreamAction",

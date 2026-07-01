@@ -36,8 +36,8 @@ Most automation platforms are runtime-interpreted, dynamically typed, and treat 
 
 ```
 API / Public    api (HTTP + webhook module) · sdk (integration author façade)
-Exec            engine · storage · storage-loom-probe
-Business        credential · resource · action · plugin · tenancy
+Exec            engine · orchestrator · worker · storage · storage-loom-probe
+Business        credential · resource · action · plugin · plugin-core · tenancy
 Core            core · validator · expression · workflow · execution · schema · metadata · storage-port
 Cross-cutting   crypto · env · log · eventbus · metrics · resilience · error
 ```
@@ -77,9 +77,12 @@ Source of truth: workspace members in `Cargo.toml`.
 |                   | `resource`           | External service lifecycle, typed credential refs, per-slot rotation fan-out         |
 |                   | `action`             | Action trait family (Stateless / Stateful / Trigger / Resource / Control)            |
 |                   | `plugin`             | In-process plugin trait + registry                                                   |
+|                   | `plugin-core`        | First-party `core` plugin: filter/sort/aggregate, reshaping, branching, datetime, durable delay |
 |                   | `tenancy`            | Scope-enforcing decorator wrapping `storage-port` so a tenant scope is substituted on every call (ADR-0072) |
 | **Exec**          | `engine`             | Frontier loop, lease lifecycle, node scheduling, control consumer (ADR-0008)         |
-|                   | `storage`            | Persistence trait family + in-memory + Postgres (SQLite local path planned)          |
+|                   | `orchestrator`       | Capability-routed job-dispatch pull loop (ADR-0095)                                  |
+|                   | `worker`             | Generic worker runtime wiring a `WorkflowEngine` into the orchestrator pull-loop (ADR-0095 D1) |
+|                   | `storage`            | Persistence trait family + in-memory + SQLite + Postgres adapters                    |
 |                   | `storage-loom-probe` | `loom`-checked concurrency probe for storage paths                                   |
 | **API / Public**  | `api`                | REST server, webhook transport, middleware                                           |
 |                   | `sdk`                | **Integration author façade** — re-exports + `WorkflowBuilder` + `TestRuntime`       |

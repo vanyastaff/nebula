@@ -83,6 +83,7 @@ pub struct CredentialRotationEvent {
 /// - Failed: If rotation fails
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum NotificationEvent {
     /// Rotation has been scheduled
     RotationScheduled {
@@ -271,29 +272,43 @@ impl NotificationEvent {
 ///
 /// # Example
 ///
-/// ```rust,ignore
-/// use nebula_credential::rotation::events::{NotificationSender, NotificationEvent};
+/// ```rust
+/// use chrono::Utc;
 ///
-/// pub struct SlackNotifier {
+/// use nebula_credential::CredentialId;
+/// use nebula_credential::rotation::RotationResult;
+/// use nebula_credential::rotation::events::{NotificationEvent, NotificationSender};
+///
+/// struct SlackNotifier {
 ///     webhook_url: String,
 /// }
 ///
 /// impl NotificationSender for SlackNotifier {
 ///     async fn send(&self, event: &NotificationEvent) -> RotationResult<()> {
-///         let payload = json!({
-///             "text": event.description(),
-///             "username": "Credential Rotation Bot",
-///         });
-///
-///         reqwest::Client::new()
-///             .post(&self.webhook_url)
-///             .json(&payload)
-///             .send()
-///             .await?;
-///
+///         // A production sender would POST `event.description()` to
+///         // `self.webhook_url`; this example just renders the line.
+///         let _payload = event.description();
+///         let _ = &self.webhook_url;
 ///         Ok(())
 ///     }
 /// }
+///
+/// let notifier = SlackNotifier {
+///     webhook_url: "https://hooks.example/abc".to_string(),
+/// };
+/// let event = NotificationEvent::RotationStarting {
+///     credential_id: CredentialId::new(),
+///     starting_at: Utc::now(),
+///     transaction_id: "tx-1".to_string(),
+/// };
+///
+/// let runtime = tokio::runtime::Builder::new_current_thread()
+///     .enable_all()
+///     .build()
+///     .unwrap();
+/// runtime.block_on(async {
+///     notifier.send(&event).await.unwrap();
+/// });
 /// ```
 pub trait NotificationSender: Send + Sync {
     /// Send a notification event
@@ -324,15 +339,45 @@ pub trait NotificationSender: Send + Sync {
 ///
 /// # Example
 ///
-/// ```rust,ignore
-/// use nebula_resilience::retry::{BackoffConfig, JitterConfig, RetryConfig};
-/// use nebula_credential::rotation::events::{send_notification, NotificationEvent};
+/// ```rust
+/// use chrono::Utc;
 ///
-/// let config = RetryConfig::new(6).unwrap()
+/// use nebula_credential::CredentialId;
+/// use nebula_credential::rotation::RotationResult;
+/// use nebula_credential::rotation::events::{
+///     NotificationEvent, NotificationSender, send_notification,
+/// };
+/// use nebula_resilience::retry::{BackoffConfig, JitterConfig, RetryConfig};
+///
+/// struct NullNotifier;
+///
+/// impl NotificationSender for NullNotifier {
+///     async fn send(&self, _event: &NotificationEvent) -> RotationResult<()> {
+///         Ok(())
+///     }
+/// }
+///
+/// let config = RetryConfig::new(6)
+///     .unwrap()
 ///     .backoff(BackoffConfig::exponential_default())
 ///     .jitter(JitterConfig::Full { factor: 0.25, seed: None });
-/// let event = NotificationEvent::RotationComplete { /* ... */ };
-/// send_notification(&slack_notifier, &event, config).await?;
+///
+/// let event = NotificationEvent::RotationComplete {
+///     credential_id: CredentialId::new(),
+///     completed_at: Utc::now(),
+///     transaction_id: "tx-42".to_string(),
+///     duration: std::time::Duration::from_secs(30),
+///     old_version: 1,
+///     new_version: 2,
+/// };
+///
+/// let runtime = tokio::runtime::Builder::new_current_thread()
+///     .enable_all()
+///     .build()
+///     .unwrap();
+/// runtime.block_on(async {
+///     send_notification(&NullNotifier, &event, config).await.unwrap();
+/// });
 /// ```
 pub async fn send_notification<S: NotificationSender>(
     sender: &S,
@@ -373,19 +418,44 @@ pub async fn send_notification<S: NotificationSender>(
 ///
 /// # Example
 ///
-/// ```rust,ignore
-/// use nebula_credential::rotation::events::log_rollback_event;
+/// ```rust
+/// use nebula_credential::CredentialId;
+/// use nebula_credential::rotation::RotationResult;
 /// use nebula_credential::rotation::error::RotationErrorLog;
+/// use nebula_credential::rotation::events::{
+///     NotificationEvent, NotificationSender, log_rollback_event,
+/// };
+/// use nebula_resilience::retry::{BackoffConfig, RetryConfig};
+///
+/// struct NullNotifier;
+///
+/// impl NotificationSender for NullNotifier {
+///     async fn send(&self, _event: &NotificationEvent) -> RotationResult<()> {
+///         Ok(())
+///     }
+/// }
 ///
 /// let error_log = RotationErrorLog::new(
-///     transaction_id,
-///     credential_id,
+///     "tx-9c2",
+///     CredentialId::new(),
 ///     "Validation failed",
 /// )
 /// .with_rollback_triggered()
 /// .with_retry_count(3);
 ///
-/// log_rollback_event(&error_log, Some(&notifier), config).await?;
+/// let config = RetryConfig::new(3)
+///     .unwrap()
+///     .backoff(BackoffConfig::exponential_default());
+///
+/// let runtime = tokio::runtime::Builder::new_current_thread()
+///     .enable_all()
+///     .build()
+///     .unwrap();
+/// runtime.block_on(async {
+///     log_rollback_event(&error_log, Some(&NullNotifier), config)
+///         .await
+///         .unwrap();
+/// });
 /// ```
 pub async fn log_rollback_event<S: NotificationSender>(
     error_log: &super::error::RotationErrorLog,
@@ -435,25 +505,22 @@ pub async fn log_rollback_event<S: NotificationSender>(
 ///
 /// # Example
 ///
-/// ```rust,ignore
+/// ```rust
+/// use nebula_credential::CredentialId;
 /// use nebula_credential::rotation::events::TransactionLog;
 /// use nebula_credential::rotation::state::RotationState;
 ///
-/// let mut log = TransactionLog::new(
-///     transaction_id.clone(),
-///     credential_id.clone(),
-/// );
+/// let mut log = TransactionLog::new("tx-001".to_string(), CredentialId::new());
 ///
-/// // Log state transition
+/// // Log a state transition.
 /// log.log_transition(RotationState::Creating, "Starting credential creation");
 ///
-/// // Log validation
+/// // Log a validation result.
 /// log.log_validation_result(true, "Connection test passed");
 ///
-/// // Check if log contains errors
-/// if log.has_errors() {
-///     eprintln!("Transaction had errors: {:?}", log.get_error_entries());
-/// }
+/// assert_eq!(log.entry_count(), 2);
+/// assert!(!log.has_errors());
+/// assert!(log.get_error_entries().is_empty());
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TransactionLog {
@@ -495,6 +562,7 @@ pub struct TransactionLogEntry {
 /// Type of log entry
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum LogEntryType {
     /// State transition occurred
     StateTransition,
@@ -521,6 +589,7 @@ pub enum LogEntryType {
 /// Final outcome of transaction
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum TransactionOutcome {
     /// Transaction committed successfully
     Committed,

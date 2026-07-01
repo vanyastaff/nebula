@@ -15,8 +15,9 @@
 //!
 //! # Examples
 //!
-//! ```rust,ignore
+//! ```rust
 //! use nebula_validator::prelude::*;
+//! use nebula_validator::validators::boolean::IS_TRUE;
 //!
 //! // Validate that a value is true
 //! let validator = is_true();
@@ -39,7 +40,7 @@ crate::validator! {
     ///
     /// # Examples
     ///
-    /// ```rust,ignore
+    /// ```rust
     /// use nebula_validator::validators::is_true;
     /// use nebula_validator::foundation::Validate;
     ///
@@ -57,8 +58,8 @@ crate::validator! {
 ///
 /// # Examples
 ///
-/// ```rust,ignore
-/// use nebula_validator::validators::IS_TRUE;
+/// ```rust
+/// use nebula_validator::validators::boolean::IS_TRUE;
 /// use nebula_validator::foundation::Validate;
 ///
 /// assert!(IS_TRUE.validate(&true).is_ok());
@@ -70,7 +71,7 @@ crate::validator! {
     ///
     /// # Examples
     ///
-    /// ```rust,ignore
+    /// ```rust
     /// use nebula_validator::validators::is_false;
     /// use nebula_validator::foundation::Validate;
     ///
@@ -88,8 +89,8 @@ crate::validator! {
 ///
 /// # Examples
 ///
-/// ```rust,ignore
-/// use nebula_validator::validators::IS_FALSE;
+/// ```rust
+/// use nebula_validator::validators::boolean::IS_FALSE;
 /// use nebula_validator::foundation::Validate;
 ///
 /// assert!(IS_FALSE.validate(&false).is_ok());

@@ -64,24 +64,46 @@ use super::{ExternalProvider, LeaseHandle, ProviderFuture};
 ///
 /// # Examples
 ///
-/// ```rust,ignore
-/// use std::sync::Arc;
-/// use nebula_credential::provider::{
-///     ExternalProvider, ExternalReference, LeasedProvider, LeaseHandle,
-///     ProviderFuture, ProviderResolution,
+/// ```
+/// use nebula_credential::{
+///     ExternalProvider, ExternalReference, LeaseHandle, LeasedProvider,
+///     ProviderFuture, ProviderResolution, SecretString,
 /// };
 ///
-/// // Provider declares the capability via its base-trait override:
+/// // `ExternalProvider` requires `Debug`.
+/// #[derive(Debug)]
+/// struct VaultProvider;
+///
 /// impl ExternalProvider for VaultProvider {
-///     fn resolve<'a>(&'a self, r: &'a ExternalReference) -> ProviderFuture<'a> { /* ... */ }
-///     fn provider_name(&self) -> &str { "vault" }
-///     fn lease_renewal(&self) -> Option<&dyn LeasedProvider> { Some(self) }
+///     fn resolve<'a>(&'a self, _reference: &'a ExternalReference) -> ProviderFuture<'a> {
+///         ProviderFuture::ready(Ok(ProviderResolution::from_secret(SecretString::new(
+///             "dynamic-secret",
+///         ))))
+///     }
+///     fn provider_name(&self) -> &str {
+///         "vault"
+///     }
+///     // Declare lease capability via the base-trait override — callers
+///     // discover it through `lease_renewal`, never a runtime downcast.
+///     fn lease_renewal(&self) -> Option<&dyn LeasedProvider> {
+///         Some(self)
+///     }
 /// }
 ///
 /// impl LeasedProvider for VaultProvider {
-///     fn renew<'a>(&'a self, lease: &'a LeaseHandle) -> ProviderFuture<'a> { /* ... */ }
-///     fn revoke<'a>(&'a self, lease: &'a LeaseHandle) -> ProviderFuture<'a> { /* ... */ }
+///     fn renew<'a>(&'a self, _lease: &'a LeaseHandle) -> ProviderFuture<'a> {
+///         ProviderFuture::ready(Ok(ProviderResolution::from_secret(SecretString::new(
+///             "renewed-secret",
+///         ))))
+///     }
+///     fn revoke<'a>(&'a self, _lease: &'a LeaseHandle) -> ProviderFuture<'a> {
+///         ProviderFuture::ready(Ok(ProviderResolution::empty()))
+///     }
 /// }
+///
+/// let provider = VaultProvider;
+/// assert_eq!(provider.provider_name(), "vault");
+/// assert!(provider.lease_renewal().is_some());
 /// ```
 pub trait LeasedProvider: ExternalProvider {
     /// Whether this provider issued the given lease and is the correct

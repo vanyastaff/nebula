@@ -96,7 +96,7 @@ fn token_summary(record: &PatRecord) -> TokenSummary {
 
 /// Real org-membership count for `MeResponse.orgs_count`.
 ///
-/// `Some(n)` from the shared [`MembershipStore`] when wired;
+/// `Some(n)` from the shared [`MembershipStore`](crate::state::MembershipStore) when wired;
 /// **`None` (field omitted)** when the store is absent — honest
 /// degradation, never a synthesized `0` (honest capability contract / durable control queue). The
 /// `usize`→`u32` cast saturates (a user with more than `u32::MAX`

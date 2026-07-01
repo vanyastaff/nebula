@@ -12,7 +12,7 @@
 //! vocabulary of standard-library primitives plus the `Option<_>` / `Vec<_>`
 //! wrappers. Unknown types fall through to [`FieldKind::UserDefined`], which
 //! the derive layer uses to require the type to implement
-//! [`HasSchema`](nebula_schema::HasSchema).
+//! `nebula_schema::HasSchema`.
 
 use syn::{GenericArgument, PathArguments, Type, TypePath};
 

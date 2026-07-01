@@ -17,14 +17,19 @@ use nebula_credential::{CredentialStore, PutMode, StoreError, StoredCredential};
 ///
 /// # Examples
 ///
-/// ```rust,ignore
+/// ```rust
+/// use std::time::Duration;
+///
 /// use nebula_storage::credential::CacheConfig;
 ///
 /// let config = CacheConfig {
 ///     max_entries: 5_000,
-///     ttl: std::time::Duration::from_secs(600),
-///     tti: std::time::Duration::from_secs(300),
+///     ttl: Duration::from_secs(600),
+///     tti: Duration::from_secs(300),
 /// };
+/// assert_eq!(config.max_entries, 5_000);
+/// assert_eq!(config.ttl, Duration::from_secs(600));
+/// assert_eq!(config.tti, Duration::from_secs(300));
 /// ```
 #[derive(Debug, Clone)]
 pub struct CacheConfig {
@@ -62,7 +67,7 @@ impl CacheStats {
     ///
     /// # Examples
     ///
-    /// ```rust,ignore
+    /// ```rust
     /// use nebula_storage::credential::CacheStats;
     ///
     /// let stats = CacheStats {
@@ -70,6 +75,10 @@ impl CacheStats {
     ///     misses: 20,
     /// };
     /// assert!((stats.hit_rate() - 0.8).abs() < f64::EPSILON);
+    ///
+    /// // No requests recorded -> 0.0, not a division-by-zero.
+    /// let empty = CacheStats { hits: 0, misses: 0 };
+    /// assert_eq!(empty.hit_rate(), 0.0);
     /// ```
     #[must_use]
     pub fn hit_rate(&self) -> f64 {
@@ -89,11 +98,19 @@ impl CacheStats {
 ///
 /// # Examples
 ///
-/// ```rust,ignore
+/// Wiring the cache over a live SQLite backend (requires the `sqlite`
+/// feature; the async `connect` makes this `no_run`):
+///
+/// ```rust,no_run
+/// # #[cfg(feature = "sqlite")]
+/// # async fn doc() -> Result<(), Box<dyn std::error::Error>> {
 /// use nebula_storage::credential::{CacheConfig, CacheLayer, SqliteCredentialStore};
 ///
 /// let backend = SqliteCredentialStore::connect("sqlite://creds.db").await?;
 /// let store = CacheLayer::new(backend, CacheConfig::default());
+/// # let _ = store;
+/// # Ok(())
+/// # }
 /// ```
 pub struct CacheLayer<S> {
     /// The wrapped inner store.

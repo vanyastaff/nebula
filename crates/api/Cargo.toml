@@ -196,5 +196,9 @@ postgres = ["nebula-storage/postgres", "dep:sqlx"]
 # OAuth ceremony deps (nebula-credential, reqwest, hmac, sha2, zeroize)
 # are now unconditional base deps per ADR-0031 §6 (rollout window closed).
 
+[package.metadata.docs.rs]
+# Render feature-gated items on docs.rs (build with every feature).
+all-features = true
+
 [lints]
 workspace = true

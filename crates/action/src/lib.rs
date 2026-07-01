@@ -29,6 +29,7 @@
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
+#![warn(unreachable_pub)]
 
 /// Base action trait defining identity and metadata.
 pub mod action;

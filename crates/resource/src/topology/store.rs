@@ -28,7 +28,7 @@ use tracing::debug;
 /// `bump_revoke_epoch()` detects the stale epoch and evicts rather than
 /// re-pooling.
 ///
-/// `pub(crate)` so the built-in [`Pooled`](crate::topology::pooled::Pooled)
+/// `pub(crate)` so the built-in [`Pooled`](crate::topology::Pooled)
 /// pipeline can iterate the idle queue under [`InstanceStore::lock_idle`] and
 /// read each entry's `.slot` during rotation fan-out without copying it out of
 /// the store. The fields stay crate-visible only — author topologies receive a
@@ -62,7 +62,11 @@ pub(crate) struct StoreEntry<S> {
 ///
 /// # Examples
 ///
-/// ```ignore
+/// ```
+/// use nebula_resource::InstanceStore;
+///
+/// # #[tokio::main(flavor = "current_thread")]
+/// # async fn main() {
 /// let store: InstanceStore<u32> = InstanceStore::new(Some(4));
 /// let epoch = store.stamp_epoch();
 ///
@@ -80,6 +84,7 @@ pub(crate) struct StoreEntry<S> {
 /// // The old epoch is now stale — returning it evicts.
 /// let outcome = store.return_slot(99u32, epoch).await;
 /// assert!(outcome.is_evict());
+/// # }
 /// ```
 ///
 /// [`Manager`]: crate::Manager
@@ -316,7 +321,7 @@ impl<S: Send + 'static> InstanceStore<S> {
     /// Locks the idle queue and returns the guard for in-place iteration.
     ///
     /// Crate-internal: the built-in
-    /// [`Pooled`](crate::topology::pooled::Pooled) rotation fan-out holds this
+    /// [`Pooled`](crate::topology::Pooled) rotation fan-out holds this
     /// guard across **every** `&R::Instance` credential hook `.await` so no
     /// checkout / return can interleave mid-rotation — the same lock
     /// [`checkout`](Self::checkout) / [`return_slot`](Self::return_slot) take.

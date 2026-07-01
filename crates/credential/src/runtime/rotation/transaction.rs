@@ -180,6 +180,7 @@ impl OptimisticLock {
 /// # T086: Transaction Phase
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum TransactionPhase {
     /// Preparing new credential (creating, generating secrets)
     Preparing,
@@ -241,6 +242,7 @@ impl TransactionPhase {
 /// # T072: Rollback Strategy
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum RollbackStrategy {
     /// Automatically rollback on validation failure
     #[default]

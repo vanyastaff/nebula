@@ -105,7 +105,7 @@ impl HasSchema for FieldValues {
 }
 
 /// Baseline `HasSchema` impls for common primitives — useful when a trait
-/// (e.g. [`ResourceConfig`](nebula_resource::ResourceConfig)) requires a
+/// (e.g. `nebula_resource::ResourceConfig`) requires a
 /// `HasSchema` bound and the implementer is using a primitive as a stub.
 /// A bare scalar carries data of no record shape, so it advertises the
 /// gradual-typing `Any` rather than an empty record. Any production usage

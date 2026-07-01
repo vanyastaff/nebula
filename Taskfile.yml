@@ -87,7 +87,7 @@ tasks:
   doc:
     desc: Build documentation for all workspace crates
     cmds:
-      - cargo doc --no-deps {{.CARGO_FLAGS}}
+      - cargo doc --no-deps --document-private-items {{.CARGO_FLAGS}}
 
   doc:open:
     desc: Build and open documentation in browser
@@ -126,6 +126,15 @@ tasks:
     desc: Run cargo-deny supply-chain and license audit
     cmds:
       - cargo deny check
+
+  features:
+    desc: "Feature hygiene: each optional feature builds in isolation (standalone-crate promise)"
+    cmds:
+      # Mirrors the CI `feature-hygiene` job. Requires cargo-hack
+      # (`cargo binstall cargo-hack`). Checks each feature alone +
+      # --no-default-features + all-default across every workspace member
+      # (per-feature, not a full --feature-powerset).
+      - cargo hack check --each-feature --no-dev-deps --workspace
 
   # ── Test ──────────────────────────────────────────────────────────────────
 

@@ -23,10 +23,19 @@ struct Inner<S: AuthScheme> {
 ///
 /// # Examples
 ///
-/// ```ignore
-/// let handle: CredentialHandle<SecretToken> = resolver.resolve::<ApiKeyCredential>("my-cred").await?;
+/// ```
+/// use std::sync::Arc;
+///
+/// use nebula_credential::{CredentialHandle, SecretString};
+/// use nebula_credential::scheme::SecretToken;
+///
+/// // The resolver returns a handle; you can also build one directly:
+/// let handle: CredentialHandle<SecretToken> =
+///     CredentialHandle::new(SecretToken::new(SecretString::new("sk-abc123")), "my-cred");
+///
 /// let token: Arc<SecretToken> = handle.snapshot();
-/// token.token().expose_secret();
+/// assert_eq!(token.token().expose_secret(), "sk-abc123");
+/// assert_eq!(handle.credential_id(), "my-cred");
 /// ```
 pub struct CredentialHandle<S: AuthScheme> {
     inner: Arc<Inner<S>>,

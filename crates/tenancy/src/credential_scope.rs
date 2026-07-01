@@ -1,5 +1,5 @@
 //! Multi-tenant scope isolation layer for
-//! [`CredentialStore`](nebula_credential::CredentialStore).
+//! [`CredentialStore`].
 //!
 //! Re-homed from `nebula_storage::credential::layer::scope` (spec §8): the
 //! credential scope **policy** belongs in the tenancy security boundary,
@@ -58,22 +58,24 @@ const OWNER_KEY: &str = "owner_id";
 ///
 /// # Examples
 ///
-/// ```rust,ignore
-/// use nebula_tenancy::{CredentialScopeLayer, CredentialScopeResolver};
-/// // Composition roots wrap the real storage-side store; the Exec-tier
-/// // adapter is reachable from api/engine (not from this Business crate).
-/// use nebula_storage::credential::SqliteCredentialStore;
-/// use std::sync::Arc;
+/// A tenant binds its identity by implementing [`CredentialScopeResolver`](crate::CredentialScopeResolver); the
+/// composition root then wraps the real Exec-tier `CredentialStore` (reachable
+/// from api/engine, not from this Business crate) in a
+/// [`CredentialScopeLayer`](crate::CredentialScopeLayer) over that resolver.
+///
+/// ```rust
+/// use nebula_tenancy::CredentialScopeResolver;
 ///
 /// struct TenantScope(String);
 /// impl CredentialScopeResolver for TenantScope {
-/// fn current_owner(&self) -> Option<&str> { Some(&self.0) }
+///     fn current_owner(&self) -> Option<&str> {
+///         Some(&self.0)
+///     }
 /// }
 ///
-/// let store = CredentialScopeLayer::new(
-/// SqliteCredentialStore::connect("sqlite://creds.db").await?,
-/// Arc::new(TenantScope("tenant-1".into())),
-/// );
+/// // A tenant resolver reports its owner id; a `None` owner means admin/global.
+/// let tenant = TenantScope("tenant-1".to_owned());
+/// assert_eq!(tenant.current_owner(), Some("tenant-1"));
 /// ```
 pub struct ScopeLayer<S> {
     inner: S,

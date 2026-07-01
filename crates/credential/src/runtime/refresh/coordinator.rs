@@ -255,6 +255,7 @@ impl fmt::Debug for RefreshCoordinator {
 /// lands, this enum (and the L1-delegate methods on `RefreshCoordinator`)
 /// can be removed.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum RefreshAttempt {
     /// This caller won the race; perform the refresh, then call
     /// `RefreshCoordinator::complete()` to wake waiters.

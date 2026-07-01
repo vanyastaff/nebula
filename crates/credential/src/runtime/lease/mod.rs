@@ -26,18 +26,17 @@
 //!
 //! # Wiring
 //!
-//! ```ignore
-//! use std::sync::Arc;
-//! use nebula_credential::runtime::{
-//!     LeaseLifecycle, LeaseLifecycleConfig,
-//! };
+//! ```rust
+//! use nebula_credential::runtime::{LeaseLifecycle, LeaseLifecycleConfig};
 //! use tokio_util::sync::CancellationToken;
 //!
+//! # #[tokio::main(flavor = "current_thread")]
+//! # async fn main() {
 //! let shutdown = CancellationToken::new();
 //! let lifecycle = LeaseLifecycle::spawn(
 //!     LeaseLifecycleConfig::default(),
-//!     None,           // optional EventBus<LeaseEvent>
-//!     None,           // optional MetricsEmitter
+//!     None, // optional EventBus<LeaseEvent>
+//!     None, // optional MetricsEmitter
 //!     shutdown.clone(),
 //! );
 //!
@@ -46,6 +45,11 @@
 //!
 //! // On credential rotation commit:
 //! // lifecycle.revoke_for_credential(credential_id).await;
+//!
+//! // Stop the background scheduler; dropping the runtime aborts its task.
+//! shutdown.cancel();
+//! # let _ = lifecycle;
+//! # }
 //! ```
 //!
 //! # Single-replica

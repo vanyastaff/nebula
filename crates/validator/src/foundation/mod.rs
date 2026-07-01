@@ -12,40 +12,45 @@
 //!
 //! # Two Ways to Validate
 //!
-//! ```rust,ignore
+//! ```rust
 //! use nebula_validator::prelude::*;
 //!
 //! // Extension method: read left-to-right
-//! "hello".validate(&min_length(3))?;
+//! "hello".validate_with(&min_length(3))?;
 //!
 //! // Direct method: traditional style
 //! min_length(3).validate("hello")?;
+//! # Ok::<(), nebula_validator::foundation::ValidationError>(())
 //! ```
 //!
 //! # Type Safety Through Trait Bounds
 //!
 //! Validators use trait bounds to ensure compile-time type safety:
 //!
-//! ```rust,ignore
-//! // String validators: work with any AsRef<str>
-//! impl<T: AsRef<str> + ?Sized> Validate<T> for MinLength { ... }
+//! ```rust
+//! use nebula_validator::prelude::*;
 //!
-//! // Numeric validators: work with any Ord type
-//! impl<T: Ord> Validate<T> for Min<T> { ... }
+//! // String validators work with any `AsRef<str>` input.
+//! assert!(min_length(3).validate("hello").is_ok());
 //!
-//! // Compile-time errors for invalid combinations:
-//! "hello".validate(&min_length(3));  // ✓ Compiles
-//! 42.validate(&min_length(3));       // ✗ Error: i32 doesn't impl AsRef<str>
+//! // Numeric validators work with any matching `Ord` type.
+//! assert!(min(10).validate(&42).is_ok());
+//!
+//! // Invalid combinations are rejected at compile time:
+//! // `42.validate_with(&min_length(3))` does not compile, because i32 is not `AsRef<str>`.
 //! ```
 //!
 //! # Composition
 //!
-//! ```rust,ignore
+//! ```rust
+//! use nebula_validator::prelude::*;
+//!
 //! let validator = min_length(5)
 //!     .and(max_length(20))
 //!     .and(alphanumeric());
 //!
-//! "hello123".validate(&validator)?;
+//! "hello123".validate_with(&validator)?;
+//! # Ok::<(), nebula_validator::foundation::ValidationError>(())
 //! ```
 
 // Module declarations
@@ -71,8 +76,11 @@ pub use validatable::AsValidatable;
 /// Combinator types (`And`, `Or`, `Not`, `When`) live in [`crate::combinators`] —
 /// import them from there or use the top-level [`crate::prelude`] which re-exports both.
 ///
-/// ```rust,ignore
+/// ```rust
 /// use nebula_validator::foundation::prelude::*;
+/// // The foundation prelude brings in the traits; import validator constructors
+/// // from the `validators` module (combinators live in `combinators`).
+/// use nebula_validator::validators::{min, min_length};
 ///
 /// // Extension method style
 /// "hello".validate_with(&min_length(3))?;
@@ -80,6 +88,7 @@ pub use validatable::AsValidatable;
 ///
 /// // Direct method style
 /// min_length(3).validate("hello")?;
+/// # Ok::<(), nebula_validator::foundation::ValidationError>(())
 /// ```
 pub mod prelude {
     pub use super::{

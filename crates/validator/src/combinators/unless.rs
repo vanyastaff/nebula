@@ -12,21 +12,22 @@ use crate::foundation::{Validate, ValidationError};
 ///
 /// # Examples
 ///
-/// ```rust,ignore
+/// ```rust
 /// use nebula_validator::combinators::Unless;
 /// use nebula_validator::foundation::Validate;
+/// use nebula_validator::validators::min_length;
 ///
-/// // Skip validation for admin users
-/// let validator = Unless::new(
-///     MinLength { min: 10 },
-///     |user: &User| user.is_admin
-/// );
+/// // Skip the length check for values flagged with an "admin:" prefix.
+/// let validator = Unless::new(min_length(10), |s: &str| s.starts_with("admin:"));
 ///
-/// // Admin bypasses validation
-/// assert!(validator.validate(&admin_user).is_ok());
+/// // Condition true -> validation skipped
+/// assert!(validator.validate("admin:x").is_ok());
 ///
-/// // Regular user must pass validation
-/// assert!(validator.validate(&regular_user_short_password).is_err());
+/// // Condition false -> validation runs and fails (too short)
+/// assert!(validator.validate("user:hi").is_err());
+///
+/// // Condition false -> validation runs and passes
+/// assert!(validator.validate("user:hello_world").is_ok());
 /// ```
 #[derive(Debug, Clone, Copy)]
 pub struct Unless<V, C> {

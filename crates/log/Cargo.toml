@@ -118,5 +118,9 @@ harness = false
 #     feature; the `log-compat` feature re-exposes it for downstream.
 ignored = ["flate2", "tracing-log"]
 
+[package.metadata.docs.rs]
+# Render feature-gated items on docs.rs (build with every feature).
+all-features = true
+
 [lints]
 workspace = true

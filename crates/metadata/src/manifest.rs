@@ -60,6 +60,7 @@ impl PluginDependency {
 
 /// Errors from [`PluginManifest::builder().build()`](PluginManifestBuilder::build).
 #[derive(Debug, thiserror::Error, nebula_error::Classify, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ManifestError {
     /// A required field was missing during construction.
     #[classify(category = "validation", code = "MANIFEST:MISSING_FIELD")]

@@ -52,7 +52,7 @@ pub struct ApiKeyProperties {
 ///
 /// # Examples
 ///
-/// ```ignore
+/// ```
 /// use nebula_credential::credentials::ApiKeyCredential;
 /// use nebula_credential::Credential;
 ///

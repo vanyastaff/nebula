@@ -159,18 +159,25 @@ pub type RotationResult<T> = Result<T, RotationError>;
 ///
 /// # Example
 ///
-/// ```rust,ignore
+/// ```rust
+/// use nebula_credential::CredentialId;
 /// use nebula_credential::rotation::error::RotationErrorLog;
 ///
 /// let error_log = RotationErrorLog::new(
-///     transaction_id,
-///     credential_id,
+///     "tx-7f3a",
+///     CredentialId::new(),
 ///     "Validation failed: connection timeout",
 /// )
 /// .with_retry_count(3)
 /// .with_error_classification("transient");
 ///
-/// println!("Error: {}", error_log);
+/// assert_eq!(error_log.retry_count, 3);
+/// assert_eq!(error_log.error_classification.as_deref(), Some("transient"));
+///
+/// // `Display` renders a single audit-friendly line.
+/// let rendered = error_log.to_string();
+/// assert!(rendered.contains("tx-7f3a"));
+/// assert!(rendered.contains("retries: 3"));
 /// ```
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RotationErrorLog {
@@ -468,6 +475,7 @@ pub struct ValidationTest {
 /// Test method for validation
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum TestMethod {
     /// HTTP request test
     HttpRequest {
@@ -488,6 +496,7 @@ pub enum TestMethod {
 /// Success criteria for validation
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum SuccessCriteria {
     /// HTTP 2xx response
     HttpSuccess,
@@ -507,6 +516,7 @@ pub enum SuccessCriteria {
 /// Categorizes validation failures to determine appropriate response.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum FailureKind {
     /// Network connectivity issue (transient - may succeed on retry)
     NetworkError,

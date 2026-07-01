@@ -1,7 +1,17 @@
 //! Convenience re-exports for action authors.
 //!
-//! ```rust,ignore
+//! Glob-import the prelude to pull in the action trait family, the result and
+//! error types, metadata, and the test harness in one line:
+//!
+//! ```rust
 //! use nebula_action::prelude::*;
+//!
+//! // Everything an action body reaches for is now in scope, e.g.:
+//! let result: ActionResult<i32> = ActionResult::success(7);
+//! assert!(result.is_success());
+//!
+//! let err = ActionError::validation("email", ValidationReason::MissingField, None::<String>);
+//! assert!(err.is_fatal());
 //! ```
 
 pub use nebula_core::{

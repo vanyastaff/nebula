@@ -11,6 +11,13 @@ changes are expected between minor releases — call them out here.
 
 ### Fixed
 
+- **Library-first: doc-output collision** — the `nebula-worker` binary target
+  and the `nebula-worker` library both emitted `doc/nebula_worker/index.html`,
+  so one silently clobbered the other's published documentation. The binary now
+  sets `doc = false` (no public API surface; the library carries the docs).
+- **Library-first: 72 broken intra-doc links** repaired across the workspace
+  (private-item docs), so `cargo doc --document-private-items` is warning-clean.
+
 - **Plane-A OAuth `redirect_uri` missing `/api/v1` prefix (P2,
   surfaced by PR-5 wave-1 Codex review)** — the
   `derive_oauth_redirect_uri` helper in PRs #758 / #759 / #761
@@ -29,6 +36,15 @@ changes are expected between minor releases — call them out here.
 
 ### Added
 
+- **Library-first hardening pass** — `[package.metadata.docs.rs]
+  all-features = true` on 15 feature-gated crates so docs.rs renders the
+  complete API; a CI `feature-hygiene` job (`cargo hack --each-feature`, wired
+  into the required-jobs gate) plus a `task features` target enforcing that
+  each optional feature builds in isolation — per-feature + `--no-default-features`
+  + all-default across every workspace member (the standalone-crate / modularity
+  promise); and runnable crate-level Quick Start examples on `nebula-credential`
+  (zeroizing-secret invariant) and `nebula-resource` (typed retry-classified
+  errors).
 - **Plane-A OAuth identity providers from operator secrets (ROADMAP
   §M3.1)** — shipped via 5-PR chain (#757 ADR-0085 + #758 trait +
   #759 real authorize URL + OIDC discovery + #761 real
@@ -48,6 +64,22 @@ changes are expected between minor releases — call them out here.
 
 ### Changed
 
+- **(breaking) Public error and open taxonomy enums are now `#[non_exhaustive]`**
+  for additive semver evolution — 10 error enums (credential, core, schema,
+  resource, plugin, metadata) and 22 open outcome/event/state enums (credential
+  rotation, resource, action). Closed sets stay exhaustive on purpose:
+  protocol-bounded OAuth `GrantType`/`PkceMethod`/`AuthStyle`, security-critical
+  `SignaturePolicy`, codegen-driving `SlotKind`, and metric-label-pinned
+  `SlotDispatchOutcome`/`RecycleOutcome`.
+- **Library-first: docs are now compile-checked** — converted 176 `ignore`d
+  doctests to runnable / `no_run` examples across 16 crates (fixing API drift
+  the `ignore` had masked); the workspace now has **zero `ignore` Rust doctest
+  fences** (proc-macro derive examples are honest `text` pointing at the parent
+  crate's runnable example). Hardened the CI doc gate to
+  `--document-private-items`.
+- **Library-first: tighter public surface** — 31 accidental `pub` items lowered
+  to `pub(crate)` with `#![warn(unreachable_pub)]` guards on six crates; README
+  crate map synced (orchestrator/worker/plugin-core; SQLite adapter status).
 - **`nebula-resource`:** crate documentation scrubbed of plan-IDs, ADR
   numbers, internal issue/PR references, and stale temp-file links.
   Rewrote `docs/README.md` and `docs/topology-reference.md` to the v4
