@@ -57,11 +57,19 @@ You need to...
 | **rust-mcp-server** | cargo check/clippy/deny/machete/hack/fmt/test | Symbol-level code navigation (use Serena) |
 | **rust-docs** | Crate documentation, source code, dependency trees | Local crate code (use Serena) |
 | **cratesio** | Searching crates.io for packages | Local workspace queries |
-| **Memory MCP** | Storing cross-session knowledge | One-shot tasks that don't need persistence |
+| **obsidian** (memory) | Cross-session memory: `/recall <area>` before working a known area, `/remember` after a durable learning | One-shot tasks that don't need persistence |
 | **grep** | Searching for string patterns, log messages | Finding symbol definitions (use Serena) |
 | **read** | Reading a known file | Exploring unknown code structure (use Serena) |
 
 **Rule of thumb:** If you're about to do 3+ grep/read calls to find something, use Serena instead.
+
+**Cross-session memory (Obsidian vault):** design records (ADRs, roadmap, specs, research) and
+accumulated agent learnings live in the maintainers' private Obsidian vault — **not tracked in this
+repo** — reachable through the `obsidian` MCP. The vault root is `$OBSIDIAN_VAULT_PATH`; this
+project's notes are under `projects/nebula/` (`agent/`, `codebase/`, `decisions/`, `knowledge/`,
+`planning/`, `research/`, `specs/`, plus `MEMORY.md`). Run `/recall <area>` **before** working in a
+known area so prior decisions and gotchas carry forward; `/remember` **after** a non-obvious
+decision, gotcha, or fix. If the `obsidian` MCP is absent, memory recall is simply skipped.
 
 ---
 
@@ -284,7 +292,7 @@ Slash commands: `.claude/commands/` (project-specific, load on demand).
 | Product canon | `docs/PRODUCT_CANON.md` | Binding invariants (durability, credentials) |
 | Integration model | `docs/INTEGRATION_MODEL.md` | How crates connect (Resource, Credential, Action, Schema, Plugin) |
 | Pitfalls | `docs/pitfalls.md` | Before touching hot paths |
-| Design records (ADRs, roadmap, specs, research) | maintainers' private design vault | Not tracked in this public repository |
+| Design records (ADRs, roadmap, specs, research) | maintainers' private Obsidian vault (`obsidian` MCP → `projects/nebula/`) | Not tracked here — reach via `/recall` |
 
 ---
 
