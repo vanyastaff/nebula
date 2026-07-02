@@ -340,32 +340,83 @@ where
             .await
     }
 
-    /// Creates and cancel-safely deposits up to `requested` fresh entries
-    /// into the framework store — the shared create→guard→deposit-fence
-    /// sequence [`warmup`](Self::warmup) and the reaper's min-idle refill
-    /// ([`refill_min_idle`](Self::refill_min_idle)) both drive, so the
-    /// cancel-safety and revoke-fence contract is written and tested once.
+    /// Creates one fresh entry and cancel-safely deposits it into the
+    /// framework store — the shared create→guard→deposit-fence step
+    /// [`create_and_deposit_entries`](Self::create_and_deposit_entries) (a
+    /// fixed-count batch) and [`refill_min_idle`](Self::refill_min_idle) (a
+    /// headroom-rechecking loop) both drive per attempt, so the cancel-safety
+    /// and revoke-fence contract is written and tested once.
     ///
-    /// Each entry is stamped with the live revoke epoch under the idle lock
-    /// via `InstanceStore::deposit_fresh_locked`, so a revoke that lands
-    /// mid-create is detected at deposit time and the entry is destroyed
-    /// instead of admitted — never a plain evicted-and-re-tried loop
-    /// iteration, `create_entry` failing stops the whole call early (best
-    /// effort: a partially-filled store is better than hammering a backend
-    /// that just started failing). Returns the number of entries actually
-    /// deposited.
+    /// The revoke epoch is snapshotted *before* `create_entry` even runs
+    /// (`created_epoch`, outside any lock), then compared against the
+    /// **live** epoch under the idle lock at deposit time via
+    /// `InstanceStore::deposit_fresh_locked` — so a revoke that lands
+    /// mid-create (after the snapshot, before the deposit) is detected as a
+    /// stale `created_epoch` and the entry is destroyed instead of admitted.
+    ///
+    /// Returns `Ok(true)` if the entry was admitted to the idle store,
+    /// `Ok(false)` if the deposit-time epoch fence evicted it instead (a
+    /// revoke raced this create — a legitimate, retry-worthy outcome, not a
+    /// failure), or `Err(_)` if `Provider::create` itself failed (the
+    /// caller should stop attempting further creates this pass rather than
+    /// hammer a backend that just started failing).
     ///
     /// # Cancel safety
     ///
-    /// A created-but-not-yet-deposited entry is armed in an
+    /// The created-but-not-yet-deposited entry is armed in an
     /// [`EntryCreateGuard`] before the idle-lock await, so a drop of this
     /// future — including the author-hook ceiling timeout
     /// `Manager::warmup_pool` wraps `warmup` in, or the reaper task being
     /// cancelled mid-refill on shutdown — schedules an async
     /// `Provider::destroy` via the [`ReleaseQueue`] instead of leaking the
     /// instance. The guard is defused only once the lock is held and the
-    /// fenced deposit runs synchronously to completion. Entries already
-    /// deposited before a cancellation stay in the store.
+    /// fenced deposit runs synchronously to completion.
+    async fn create_and_deposit_one(
+        self: &Arc<Self>,
+        ctx: &ResourceContext,
+        config: &R::Config,
+    ) -> Result<bool, Error> {
+        let created_epoch = self.store.stamp_epoch();
+        let entry = self
+            .topology
+            .create_entry(&self.resource, config, ctx)
+            .await?;
+        // Cancel-safety: arm the guard before the idle-lock await below — a
+        // cancellation landing there must destroy the just-created instance,
+        // not drop it silently.
+        let cancel_guard =
+            EntryCreateGuard::new(entry, Arc::clone(self), Arc::clone(&self.release_queue));
+        let mut idle = self.store.lock_idle().await;
+        let entry = cancel_guard.defuse();
+        let outcome = self
+            .store
+            .deposit_fresh_locked(&mut idle, entry, created_epoch);
+        // Release the idle lock before any teardown await — the evict
+        // destroy must not block checkout/return.
+        drop(idle);
+        match outcome {
+            ReturnOutcome::Recycled => Ok(true),
+            ReturnOutcome::Evict(entry) => {
+                let _ = destroy_within(
+                    &self.resource,
+                    self.topology.into_instance(entry),
+                    TeardownReason::Evicted,
+                )
+                .await;
+                Ok(false)
+            },
+        }
+    }
+
+    /// Creates and cancel-safely deposits up to `requested` fresh entries
+    /// into the framework store via [`create_and_deposit_one`](Self::create_and_deposit_one)
+    /// — the fixed-count batch [`warmup`](Self::warmup) drives at
+    /// registration. `requested` is a hard attempt cap, not a "keep retrying
+    /// until this many succeed" target: a deposit-time eviction (revoke race)
+    /// consumes one attempt without incrementing the return count, and
+    /// `create_entry` failing stops the whole call early (best effort — a
+    /// partially-filled store is better than hammering a backend that just
+    /// started failing). Returns the number of entries actually deposited.
     async fn create_and_deposit_entries(
         self: &Arc<Self>,
         ctx: &ResourceContext,
@@ -374,41 +425,9 @@ where
         let config = self.config();
         let mut created = 0usize;
         for _ in 0..requested {
-            let created_epoch = self.store.stamp_epoch();
-            match self
-                .topology
-                .create_entry(&self.resource, &config, ctx)
-                .await
-            {
-                Ok(entry) => {
-                    // Cancel-safety: arm the guard before the idle-lock await
-                    // below — a cancellation landing there must destroy the
-                    // just-created instance, not drop it silently.
-                    let cancel_guard = EntryCreateGuard::new(
-                        entry,
-                        Arc::clone(self),
-                        Arc::clone(&self.release_queue),
-                    );
-                    let mut idle = self.store.lock_idle().await;
-                    let entry = cancel_guard.defuse();
-                    let outcome = self
-                        .store
-                        .deposit_fresh_locked(&mut idle, entry, created_epoch);
-                    // Release the idle lock before any teardown await — the
-                    // evict destroy must not block checkout/return.
-                    drop(idle);
-                    match outcome {
-                        ReturnOutcome::Recycled => created += 1,
-                        ReturnOutcome::Evict(entry) => {
-                            let _ = destroy_within(
-                                &self.resource,
-                                self.topology.into_instance(entry),
-                                TeardownReason::Evicted,
-                            )
-                            .await;
-                        },
-                    }
-                },
+            match self.create_and_deposit_one(ctx, &config).await {
+                Ok(true) => created += 1,
+                Ok(false) => {}, // deposit-time eviction — this attempt is spent
                 Err(e) => {
                     tracing::warn!(
                         key = %R::key(),
@@ -448,21 +467,28 @@ where
     /// TTL/idle-expired/stale-fingerprint entries, the idle queue can sit
     /// below `warmup_target` until the next caller-driven acquire creates
     /// one on demand. This closes that gap proactively from the maintenance
-    /// side, reusing [`create_and_deposit_entries`](Self::create_and_deposit_entries)
-    /// — the exact cancel-safe path [`warmup`](Self::warmup) uses — rather
-    /// than a second create/deposit implementation.
+    /// side, reusing [`create_and_deposit_one`](Self::create_and_deposit_one)
+    /// — the exact cancel-safe create→deposit step [`warmup`](Self::warmup)
+    /// drives in a fixed-count batch — one attempt at a time instead.
     ///
-    /// **Bounded by live-instance headroom, not just the idle floor.** The
-    /// naive `warmup_target - idle_len` deficit ignores currently
-    /// checked-out leases; under sustained full load (idle empty, every
-    /// permit leased) that would create `min_size` extra instances on top of
-    /// the `max_size` already checked out. The refill is additionally capped
-    /// at `store.capacity() - (idle_len + in_flight)`, so the tick stays
-    /// bounded to the resource's configured cap up to a concurrent-acquire
-    /// race: `idle_len` and `in_flight` are two independent, non-atomic
-    /// reads, so a caller that checks out or releases between them can shift
-    /// the live-instance count out from under this snapshot by a small
-    /// margin — not a hard, race-free guarantee.
+    /// **Bounded by live-instance headroom, not just the idle floor,
+    /// rechecked before every attempt.** The naive `warmup_target -
+    /// idle_len` deficit ignores currently checked-out leases; under
+    /// sustained full load (idle empty, every permit leased) that would
+    /// create `min_size` extra instances on top of the `max_size` already
+    /// checked out. The refill instead loops **at most `deficit` times**
+    /// (`deficit` sampled once at tick start — a fixed attempt cap, never a
+    /// retry-until-filled loop that could spin against a revoke-racing
+    /// backend), and **before every one of those attempts** re-reads
+    /// `idle_len` + `in_flight` and re-derives headroom
+    /// (`store.capacity() - (idle_len + in_flight)`) fresh, stopping the
+    /// moment headroom hits zero. This shrinks the overshoot window from
+    /// "the whole batch's worth of concurrent-acquire races" (checked once,
+    /// then blindly creating `bounded_deficit` entries) down to "one
+    /// create's worth" (rechecked immediately before each one) — still not a
+    /// hard, race-free guarantee (a concurrent acquire can still land in the
+    /// gap between *this* attempt's headroom read and its own deposit), but
+    /// bounded to a single in-flight create rather than the full batch.
     ///
     /// **Gated on the recovery gate.** When a [`RecoveryGate`](crate::recovery::gate::RecoveryGate)
     /// is attached and its state is anything other than
@@ -480,10 +506,10 @@ where
     /// # Cancel safety
     ///
     /// Identical to [`warmup`](Self::warmup) — see
-    /// [`create_and_deposit_entries`](Self::create_and_deposit_entries). The
-    /// reaper task being cancelled mid-refill (e.g. `graceful_shutdown`)
-    /// destroys any in-flight entry via the [`ReleaseQueue`] instead of
-    /// leaking it; entries already deposited stay in the store.
+    /// [`create_and_deposit_one`](Self::create_and_deposit_one). The reaper
+    /// task being cancelled mid-refill (e.g. `graceful_shutdown`) destroys
+    /// any in-flight entry via the [`ReleaseQueue`] instead of leaking it;
+    /// entries already deposited stay in the store.
     pub(crate) async fn refill_min_idle(self: &Arc<Self>, ctx: &ResourceContext) -> usize {
         if let Some(gate) = &self.recovery_gate
             && !matches!(gate.state(), crate::recovery::gate::GateState::Idle)
@@ -500,33 +526,44 @@ where
         if deficit == 0 {
             return 0;
         }
-        // Bound the refill by remaining headroom under the topology's live-
-        // instance cap (Pooled: `max_size`, via `store.capacity()`), not just
-        // the idle-queue floor: `idle_before` alone ignores currently
-        // checked-out leases, so under full load (idle empty, every permit
-        // leased) an unbounded refill would create up to `warmup_target`
-        // (`min_size`) *extra* instances on top of the ones already checked
-        // out — overshooting `max_size` by `min_size`. `in_flight` (armed at
-        // acquire start, disarmed on guard drop — see `ManagedResource::in_flight`)
-        // plus `idle_before` is the authoritative live-instance count.
-        let in_flight = self.in_flight_count();
-        let headroom = match self.store.capacity() {
-            Some(cap) => cap.saturating_sub(idle_before + in_flight),
-            None => deficit,
-        };
-        let bounded_deficit = deficit.min(headroom);
-        if bounded_deficit == 0 {
-            return 0;
+
+        let mut created = 0usize;
+        for _ in 0..deficit {
+            // Recompute headroom fresh before every attempt — see the doc
+            // above for why this is bounded to `deficit` attempts total
+            // rather than looping until `target` is actually reached.
+            let idle_now = self.store.len().await;
+            let in_flight = self.in_flight_count();
+            let headroom = match self.store.capacity() {
+                Some(cap) => cap.saturating_sub(idle_now + in_flight),
+                // Unbounded topology: the outer `deficit`-attempt cap is the
+                // only limit that applies.
+                None => usize::MAX,
+            };
+            if headroom == 0 {
+                break;
+            }
+            match self.create_and_deposit_one(ctx, &config).await {
+                Ok(true) => created += 1,
+                Ok(false) => {}, // deposit-time eviction (revoke race) — this attempt is spent
+                Err(e) => {
+                    tracing::warn!(
+                        key = %R::key(),
+                        error = %e,
+                        created,
+                        target,
+                        "refill_min_idle: create_entry failed, stopping early"
+                    );
+                    break;
+                },
+            }
         }
-        let created = self.create_and_deposit_entries(ctx, bounded_deficit).await;
         if created > 0 {
             tracing::debug!(
                 key = %R::key(),
                 created,
                 deficit,
-                bounded_deficit,
                 idle_before,
-                in_flight,
                 target,
                 "resource maintenance: refilled min-idle floor"
             );
@@ -600,37 +637,57 @@ where
     ///
     /// # Fence-preserving, non-blocking probe
     ///
-    /// The idle lock is held only twice, both briefly:
+    /// The idle lock is taken repeatedly, but only ever briefly, and never
+    /// across a `check` await:
     ///
-    /// 1. **Drain** — pop every idle entry under the lock, then release it.
-    ///    The idle queue is briefly empty, exactly the same accounting as if
-    ///    every entry had been checked out: a concurrent acquire may create a
-    ///    fresh instance (up to the topology's cap) instead of reusing one of
-    ///    these, which is acceptable and documented — the alternative
-    ///    (holding the lock across every check) is the head-of-line-blocking
-    ///    bug this fix removes: a single slow/expensive `check` no longer
-    ///    blocks every concurrent checkout/return for the probe's duration.
-    /// 2. **Return** — each entry whose check passed is handed back through
+    /// 1. **Drain a batch** — pop at most [`PROBE_CONCURRENCY`] idle entries
+    ///    under the lock, then release it. Bounding the drain to one batch
+    ///    (rather than the whole idle queue in one shot) bounds the transient
+    ///    "outside the idle store" overshoot to [`PROBE_CONCURRENCY`]
+    ///    entries: a concurrent acquire during this window may create a
+    ///    fresh instance instead of reusing one of the drained ones, so the
+    ///    live-instance count can transiently exceed the topology's cap by up
+    ///    to [`PROBE_CONCURRENCY`] — never by the whole idle queue (which, at
+    ///    a large `max_size`, would otherwise let one sweep drive the pool to
+    ///    roughly 2x its configured cap against the backend). Holding the
+    ///    lock across every check instead would remove the overshoot but
+    ///    reintroduce the head-of-line-blocking bug this probe design avoids:
+    ///    a single slow/expensive `check` blocking every concurrent
+    ///    checkout/return for the sweep's duration.
+    /// 2. **Check the batch outside the lock**, then **return** each entry
+    ///    whose check passed through
     ///    [`InstanceStore::return_entry`](crate::topology::store::InstanceStore::return_entry),
     ///    the framework's existing epoch-fenced return path: it re-reads the
     ///    live revoke epoch under the *re-taken* lock and evicts (never
-    ///    re-queues) an entry whose checkout epoch has fallen behind — i.e. a
+    ///    re-queues) an entry whose checkout epoch has fallen behind — i.e. an
     ///    entry revoked *while the probe was running*. A plain
     ///    `*idle = survivors` write-back is **forbidden**: it would bypass the
     ///    fence and resurrect a since-revoked entry into the idle queue.
+    /// 3. **Repeat** for the next batch, until this sweep's target count (the
+    ///    idle-queue length sampled once at sweep start — see below) has been
+    ///    drained or the queue empties early.
     ///
-    /// Checks themselves run **outside** the lock, with bounded concurrency
-    /// ([`PROBE_CONCURRENCY`]) — checkout/return proceed freely against the
-    /// (temporarily probe-owned) entries while a batch of author `check`
+    /// Checks within a batch run **outside** the lock, with bounded
+    /// concurrency ([`PROBE_CONCURRENCY`]) — checkout/return proceed freely
+    /// against the (temporarily probe-owned) batch while its author `check`
     /// calls, each individually bound + panic-isolated through
     /// [`hook_guard::guard_author_hook`](crate::hook_guard::guard_author_hook),
     /// are in flight. The cost-aware cadence in
     /// [`run_maintenance`](Self::run_maintenance) is what bounds how often this
     /// runs, so an expensive `check` does not block the pool every sweep.
     ///
-    /// Complexity: O(n) checks over the drained idle queue (average and worst
-    /// case), bounded by the store's configured idle capacity; at most
-    /// [`PROBE_CONCURRENCY`] run concurrently.
+    /// The sweep probes exactly the entries present when it started (sampled
+    /// once via `store.len()`), not however many keep cycling through the
+    /// idle queue while it runs — an entry returned mid-sweep waits for the
+    /// next maintenance tick. This bounds the number of batches to
+    /// `ceil(initial_len / PROBE_CONCURRENCY)` regardless of concurrent
+    /// churn, instead of the loop chasing a moving target.
+    ///
+    /// Complexity: O(n) checks over the sampled idle-queue length (average
+    /// and worst case), bounded by the store's configured idle capacity; at
+    /// most [`PROBE_CONCURRENCY`] run concurrently within a batch, and at
+    /// most [`PROBE_CONCURRENCY`] entries sit outside the idle store at once
+    /// across the whole sweep.
     ///
     /// # Cancel safety
     ///
@@ -642,82 +699,104 @@ where
     /// racing the background maintenance task) therefore destroys every
     /// still-in-flight entry via the [`ReleaseQueue`] instead of dropping it
     /// silently — this closes the batch-wide exposure the plain-local shape
-    /// had before the drain became "whole batch at once".
+    /// had before the drain became fenced per batch.
     async fn probe_idle_entries(self: &Arc<Self>) -> Vec<EntryOf<R>> {
         let key = R::key();
-
-        // 1. Drain under a brief lock — see the "Fence-preserving" doc above.
-        //    Arm each entry in an `EntryCreateGuard` immediately (see
-        //    "Cancel safety" above) — never a plain local across the check
-        //    awaits below.
-        let entries: Vec<(EntryCreateGuard<R>, u64)> = {
-            let mut idle = self.store.lock_idle().await;
-            std::mem::take(&mut *idle)
-                .into_iter()
-                .map(|stored| {
-                    let guard = EntryCreateGuard::new(
-                        stored.entry,
-                        Arc::clone(self),
-                        Arc::clone(&self.release_queue),
-                    );
-                    (guard, stored.checkout_epoch)
-                })
-                .collect()
-        };
-
-        // 2. Run every check OUTSIDE the lock, bounded concurrency.
-        let checked = stream::iter(entries)
-            .map(|(mut guard, checkout_epoch)| async move {
-                // Route the author's `check` through the bound+isolate
-                // chokepoint like every other author hook: a probe that
-                // hangs is cut at the ceiling and a panicking probe is
-                // caught, never wedging or crashing the reaper.
-                //
-                // SAFETY (unwind): the only state alive across the guarded
-                // await is `guard` (owned, already popped off the queue, not
-                // shared with any other task); a caught panic leaves it
-                // intact and this closure returns it to the caller for
-                // classification, so no partial/torn state survives.
-                let outcome = crate::hook_guard::guard_author_hook(
-                    crate::hook_guard::DEFAULT_AUTHOR_HOOK_CEILING,
-                    self.resource
-                        .check(self.topology.entry_instance(guard.entry_mut())),
-                )
-                .await;
-                (guard, checkout_epoch, outcome)
-            })
-            .buffer_unordered(PROBE_CONCURRENCY)
-            .collect::<Vec<_>>()
-            .await;
-
-        // 3. Classify: a survivor goes back through the epoch-fenced return
-        //    path (never a direct write-back); everything else is collected
-        //    for the caller to destroy. `defuse` disarms the cancel-safety
-        //    guard now that the entry is about to be handed to one of those
-        //    two framework-owned paths instead of sitting in a bare local.
         let mut failed = Vec::new();
-        for (guard, checkout_epoch, outcome) in checked {
-            let entry = guard.defuse();
-            match outcome {
-                // Healthy — return through the fence. `Evict` here means a
-                // revoke landed while this entry was mid-probe (or the
-                // store's capacity was reached by concurrent returns while
-                // the queue sat drained): destroy it, never re-admit.
-                Ok(Ok(())) => {
-                    if let ReturnOutcome::Evict(entry) =
-                        self.store.return_entry(entry, checkout_epoch).await
-                    {
+
+        // Sample the sweep's target count once — see the "Fence-preserving"
+        // doc above for why this bounds the loop to a fixed number of
+        // batches instead of chasing entries returned mid-sweep.
+        let mut remaining = self.store.len().await;
+
+        while remaining > 0 {
+            let batch_size = remaining.min(PROBE_CONCURRENCY);
+
+            // 1. Drain at most `batch_size` entries under a brief lock — see
+            //    the "Fence-preserving" doc above. Arm each entry in an
+            //    `EntryCreateGuard` immediately (see "Cancel safety" above)
+            //    — never a plain local across the check awaits below.
+            let batch: Vec<(EntryCreateGuard<R>, u64)> = {
+                let mut idle = self.store.lock_idle().await;
+                std::iter::from_fn(|| idle.pop_front())
+                    .take(batch_size)
+                    .map(|stored| {
+                        let guard = EntryCreateGuard::new(
+                            stored.entry,
+                            Arc::clone(self),
+                            Arc::clone(&self.release_queue),
+                        );
+                        (guard, stored.checkout_epoch)
+                    })
+                    .collect()
+            };
+
+            let drained = batch.len();
+            if drained == 0 {
+                // The queue emptied early (concurrent checkouts raced ahead
+                // of this sweep) — nothing left to probe this tick.
+                break;
+            }
+            remaining -= drained;
+
+            // 2. Run every check in this batch OUTSIDE the lock, bounded
+            //    concurrency.
+            let checked = stream::iter(batch)
+                .map(|(mut guard, checkout_epoch)| async move {
+                    // Route the author's `check` through the bound+isolate
+                    // chokepoint like every other author hook: a probe that
+                    // hangs is cut at the ceiling and a panicking probe is
+                    // caught, never wedging or crashing the reaper.
+                    //
+                    // SAFETY (unwind): the only state alive across the
+                    // guarded await is `guard` (owned, already popped off
+                    // the queue, not shared with any other task); a caught
+                    // panic leaves it intact and this closure returns it to
+                    // the caller for classification, so no partial/torn
+                    // state survives.
+                    let outcome = crate::hook_guard::guard_author_hook(
+                        crate::hook_guard::DEFAULT_AUTHOR_HOOK_CEILING,
+                        self.resource
+                            .check(self.topology.entry_instance(guard.entry_mut())),
+                    )
+                    .await;
+                    (guard, checkout_epoch, outcome)
+                })
+                .buffer_unordered(PROBE_CONCURRENCY)
+                .collect::<Vec<_>>()
+                .await;
+
+            // 3. Classify: a survivor goes back through the epoch-fenced
+            //    return path (never a direct write-back); everything else is
+            //    collected for the caller to destroy. `defuse` disarms the
+            //    cancel-safety guard now that the entry is about to be
+            //    handed to one of those two framework-owned paths instead of
+            //    sitting in a bare local.
+            for (guard, checkout_epoch, outcome) in checked {
+                let entry = guard.defuse();
+                match outcome {
+                    // Healthy — return through the fence. `Evict` here means
+                    // a revoke landed while this entry was mid-probe (or the
+                    // store's capacity was reached by concurrent returns
+                    // while the batch sat drained): destroy it, never
+                    // re-admit.
+                    Ok(Ok(())) => {
+                        if let ReturnOutcome::Evict(entry) =
+                            self.store.return_entry(entry, checkout_epoch).await
+                        {
+                            failed.push(entry);
+                        }
+                    },
+                    // The check ran and reported the instance unhealthy — evict.
+                    Ok(Err(_)) => failed.push(entry),
+                    // The check hung past the ceiling or panicked —
+                    // bounded/caught by the framework; treat as unhealthy
+                    // and evict.
+                    Err(fault) => {
+                        fault.observe(&key, "probe");
                         failed.push(entry);
-                    }
-                },
-                // The check ran and reported the instance unhealthy — evict.
-                Ok(Err(_)) => failed.push(entry),
-                // The check hung past the ceiling or panicked — bounded/caught
-                // by the framework; treat as unhealthy and evict.
-                Err(fault) => {
-                    fault.observe(&key, "probe");
-                    failed.push(entry);
-                },
+                    },
+                }
             }
         }
         failed
@@ -725,15 +804,19 @@ where
 }
 
 /// Upper bound on concurrently in-flight [`Provider::check`] calls during a
-/// single [`ManagedResource::probe_idle_entries`] sweep.
+/// single [`ManagedResource::probe_idle_entries`] sweep, and also the size of
+/// each batch [`probe_idle_entries`](ManagedResource::probe_idle_entries)
+/// drains from the idle store at a time.
 ///
 /// A fixed, modest cap rather than "all idle entries at once": the idle
 /// queue size tracks the topology's capacity (e.g. `PoolConfig::max_size`),
 /// which can be large, and an unbounded fan-out would let one maintenance
 /// sweep open that many concurrent `check` calls against the backend (a
-/// connection-storming health-check burst). Probing is a background,
-/// off-hot-path sweep, so trading a little probe latency for a bounded
-/// backend load is the right default.
+/// connection-storming health-check burst) *and* pull that many entries out
+/// of the idle store at once, letting concurrent acquires create up to that
+/// many extra instances against the topology's cap. Probing is a background,
+/// off-hot-path sweep, so trading a little probe latency for both a bounded
+/// backend load and a bounded live-instance overshoot is the right default.
 const PROBE_CONCURRENCY: usize = 8;
 
 /// The release teardown future a guard's drop schedules: run the topology's
@@ -1398,6 +1481,74 @@ mod tests {
             1,
             "the survivor must be returned to the idle queue via the \
              epoch-fenced return path"
+        );
+    }
+
+    /// A probe sweep must drain the idle store in batches of at most
+    /// [`PROBE_CONCURRENCY`], never the whole idle queue in one shot — the
+    /// bound on how far live instances can transiently overshoot the
+    /// topology's cap while a sweep is in flight (a concurrent acquire can
+    /// create a fresh instance for each entry currently drained-but-not-yet-
+    /// returned).
+    #[tokio::test]
+    async fn probe_drains_in_bounded_batches_not_the_whole_idle_queue() {
+        let resource = Mock::new();
+        let mr = managed(resource.clone(), PoolConfig::default());
+
+        // Seed more idle entries than a single probe batch holds, so the
+        // batch boundary is observable.
+        let seeded = PROBE_CONCURRENCY + 2;
+        for _ in 0..seeded {
+            let entry = mr
+                .topology
+                .create_entry(&mr.resource, &PoolCfg, &test_ctx())
+                .await
+                .expect("create seed entry");
+            let epoch = mr.store.stamp_epoch();
+            assert!(
+                !mr.store.deposit_fresh(entry, epoch).await.is_evict(),
+                "every seed entry must land in the idle queue"
+            );
+        }
+        assert_eq!(mr.store.len().await, seeded);
+
+        resource.park_in_check.store(true, Ordering::SeqCst);
+        let check_started = Arc::clone(&resource.check_started);
+        let release_check = Arc::clone(&resource.release_check);
+
+        let mr_probe = Arc::clone(&mr);
+        let probe_task = tokio::spawn(async move { mr_probe.probe_idle_entries().await });
+
+        // Deterministic: the first batch's checks have started, which only
+        // happens after that batch's drain (under the idle lock) already
+        // completed.
+        check_started.notified().await;
+
+        // The bounded-batch drain must leave the rest of the idle queue
+        // alone — never the whole-queue drain a single unbounded `mem::take`
+        // would perform.
+        assert_eq!(
+            mr.store.len().await,
+            seeded - PROBE_CONCURRENCY,
+            "one probe batch must drain at most PROBE_CONCURRENCY entries, \
+             leaving the rest of the idle queue available to concurrent \
+             acquires instead of the whole queue at once"
+        );
+
+        // Release the first batch and let the remaining batch(es) proceed
+        // without parking, so the sweep can finish.
+        resource.park_in_check.store(false, Ordering::SeqCst);
+        release_check.notify_waiters();
+
+        let failed = probe_task.await.expect("probe task must not panic");
+        assert!(
+            failed.is_empty(),
+            "every seeded entry is healthy and must survive the sweep"
+        );
+        assert_eq!(
+            mr.store.len().await,
+            seeded,
+            "every entry must be returned to the idle queue across every batch"
         );
     }
 

@@ -67,7 +67,7 @@ pub struct Resident<R: Provider> {
     ///
     /// [`dispatch_resident_hook`]: Self::dispatch_resident_hook
     create_lock: Mutex<()>,
-    /// The credential epoch ([`HasCredentialSlots::credential_slot_epoch`]) the
+    /// The credential epoch ([`HasCredentialSlots::credential_slot_epoch`](crate::resource::HasCredentialSlots::credential_slot_epoch)) the
     /// currently-stored runtime was built against. `0` when no runtime has
     /// been created. Written only under `create_lock`; read under it by
     /// the rotation dispatch. A stored runtime whose `built_epoch` is

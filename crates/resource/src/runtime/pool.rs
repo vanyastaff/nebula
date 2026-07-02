@@ -302,29 +302,49 @@ impl<R: Provider> Pooled<R> {
         }
     }
 
+    /// Whether `entry` has exceeded its max-lifetime deadline.
+    ///
+    /// Compares against the entry's own **jittered** threshold
+    /// ([`PoolEntry::jittered_max_lifetime`], stamped once at creation via
+    /// [`MAX_LIFETIME_JITTER_SPREAD`]), falling back to the raw
+    /// `config.max_lifetime` only when no jittered value was stamped
+    /// (defensive — `jittered_max_lifetime` is `None` exactly when
+    /// `max_lifetime` itself is unset, so the two branches agree there is no
+    /// deadline in that case).
+    ///
+    /// The single chokepoint every max-lifetime comparison in this module
+    /// goes through: `idle_evictable`/`should_evict_nonrevoke` (the reaper),
+    /// `accept` (post-checkout), and `on_release` (pre-recycle) all call
+    /// this instead of separately comparing `created_at.elapsed()` against
+    /// the raw config value — before this, only the reaper path used the
+    /// jittered deadline, so an entry already past its own jittered TTL
+    /// (but not yet past the unjittered `max_lifetime`) could still be
+    /// checked out or recycled instead of evicted, defeating the jitter's
+    /// de-synchronization purpose for exactly the entries it was supposed to
+    /// spread out.
+    fn exceeded_max_lifetime(&self, entry: &PoolEntry<R>) -> bool {
+        let deadline = entry.jittered_max_lifetime.or(self.config.max_lifetime);
+        deadline.is_some_and(|max| entry.metrics.created_at.elapsed() > max)
+    }
+
     /// Whether a pool entry should be evicted for a non-revoke reason (stale
     /// fingerprint, max lifetime, idle timeout). The revoke arm is owned by the
     /// framework store's epoch fence, not this predicate.
     fn should_evict_nonrevoke(&self, entry: &PoolEntry<R>) -> bool {
         let current_fp = self.current_fingerprint.load(Ordering::Acquire);
-        let now = Instant::now();
         // Stale fingerprint.
         if entry.fingerprint != current_fp {
             return true;
         }
-        // Max lifetime exceeded — compared against this entry's own jittered
-        // threshold, stamped once at creation, not the raw config value.
-        if entry
-            .jittered_max_lifetime
-            .is_some_and(|max| now.duration_since(entry.metrics.created_at) > max)
-        {
+        // Max lifetime exceeded — see `exceeded_max_lifetime`.
+        if self.exceeded_max_lifetime(entry) {
             return true;
         }
         // Idle timeout exceeded.
         if let (Some(idle_timeout), Some(returned_at)) =
             (self.config.idle_timeout, entry.returned_at)
         {
-            return now.duration_since(returned_at) > idle_timeout;
+            return Instant::now().duration_since(returned_at) > idle_timeout;
         }
         false
     }
@@ -447,11 +467,7 @@ where
         if entry.fingerprint != current_fp {
             return false;
         }
-        if self
-            .config
-            .max_lifetime
-            .is_some_and(|max| entry.metrics.created_at.elapsed() > max)
-        {
+        if self.exceeded_max_lifetime(entry) {
             return false;
         }
         if resource.is_broken(&entry.instance).is_broken() {
@@ -481,11 +497,7 @@ where
         if entry.fingerprint != current_fp {
             return Ok(false);
         }
-        if self
-            .config
-            .max_lifetime
-            .is_some_and(|max| entry.metrics.created_at.elapsed() > max)
-        {
+        if self.exceeded_max_lifetime(entry) {
             return Ok(false);
         }
         if resource.is_broken(&entry.instance).is_broken() {

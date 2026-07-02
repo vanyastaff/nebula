@@ -131,7 +131,7 @@ pub struct ResourceOpsMetrics {
     /// [`ACQUIRE_WAIT_BUCKET_BOUNDS_SECONDS`] via
     /// [`MetricsRegistry::histogram_with_buckets_labeled`] and an empty
     /// label set — structurally identical to an unlabeled series
-    /// ([`nebula_metrics::labels::MetricKey::unlabeled`] and
+    /// ([`nebula_metrics::MetricKey::unlabeled`] and
     /// `labeled(name, LabelSet::empty())` produce the same key), which is
     /// the only public entry point that accepts custom bucket boundaries.
     /// The histogram's own `_sum`/`_count` exposition fields already carry

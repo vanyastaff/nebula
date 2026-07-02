@@ -37,6 +37,7 @@ pub(crate) fn apply_jitter(nominal: Duration, spread: f64) -> Duration {
         "jitter spread must be finite, got {spread}"
     );
     let spread = spread.clamp(0.0, 1.0);
+    let nominal_nanos = nominal.as_nanos();
     // Floor rather than round: `Duration::mul_f64` rounds to the nearest
     // representable nanosecond, which can round a sub-nanosecond span (e.g.
     // 1ns * 0.5 = 0.5ns) *up* to 1ns — turning a should-be no-op edge case
@@ -44,15 +45,31 @@ pub(crate) fn apply_jitter(nominal: Duration, spread: f64) -> Duration {
     // Flooring matches the original integer-division truncation semantics
     // (`nominal / 2` for the equal-jitter `spread == 0.5` case) and keeps
     // every sub-integer-nanosecond product a deterministic no-op.
-    let span_nanos_f64 = (nominal.as_nanos() as f64 * spread).floor();
-    let span_nanos = u64::try_from(span_nanos_f64 as u128).unwrap_or(u64::MAX);
+    let span_nanos_f64 = (nominal_nanos as f64 * spread).floor();
+    // Stay in `u128` end to end: `nominal_nanos` (a `Duration::as_nanos()`)
+    // can be as large as ~1.8e28 for `Duration::MAX`, so a `u64` span would
+    // saturate to `u64::MAX` there and make the modulus below (`span + 1`)
+    // wrap to `0` — a guaranteed divide-by-zero panic in both debug and
+    // release, not just an overflow. `u128` has enough headroom that
+    // `span_nanos + 1` can never wrap for any real `Duration`. The `as u128`
+    // cast saturates (never UB) on a NaN/negative/out-of-range float; the
+    // trailing `.min(nominal_nanos)` additionally guards against the f64
+    // multiplication rounding a huge `nominal` fractionally *above* its own
+    // true value, so the span can never exceed the nominal it was derived
+    // from.
+    let span_nanos = (span_nanos_f64 as u128).min(nominal_nanos);
     if span_nanos == 0 {
         return nominal;
     }
     // Uniform-enough draw in [0, span]: SipHash output of a fresh
-    // randomly-seeded RandomState. Modulo bias over a 64-bit draw is
-    // negligible for a jitter spread.
-    let draw_nanos = RandomState::new().hash_one(0u64) % (span_nanos + 1);
+    // randomly-seeded RandomState, widened to `u128` before the modulo (the
+    // draw itself is always `<= u64::MAX`, so the `u64::try_from` below
+    // always succeeds — `unwrap_or` is a defensive, unreachable-in-practice
+    // fallback, not a real truncation path). Modulo bias over a 64-bit draw
+    // folded into a much larger `u128` span is negligible for a jitter
+    // spread.
+    let draw_nanos_u128 = u128::from(RandomState::new().hash_one(0u64)) % (span_nanos + 1);
+    let draw_nanos = u64::try_from(draw_nanos_u128).unwrap_or(u64::MAX);
     // `draw <= span <= nominal`, so this never saturates; `saturating_sub`
     // states the no-underflow intent without a panic path.
     nominal.saturating_sub(Duration::from_nanos(draw_nanos))
@@ -110,5 +127,36 @@ mod tests {
             apply_jitter(Duration::from_nanos(1), 0.05),
             Duration::from_nanos(1)
         );
+    }
+
+    /// `Duration::MAX.as_nanos()` (~1.8e28) is the regression case for the
+    /// `u64`-space `span_nanos + 1` overflow: a saturated `u64::MAX` span
+    /// made the modulus wrap to `0`, a guaranteed divide-by-zero panic in
+    /// both debug and release. Doing the modulo math in `u128` must survive
+    /// this without panicking, and the result must still land in
+    /// `[nominal * (1 - spread), nominal]`.
+    #[test]
+    fn u64_max_scale_nominal_does_not_overflow_or_panic() {
+        let nominal = Duration::MAX;
+        for spread in [0.0, 0.05, 0.5, 1.0] {
+            let jittered = apply_jitter(nominal, spread);
+            assert!(
+                jittered <= nominal,
+                "spread {spread}: {jittered:?} must never exceed nominal"
+            );
+        }
+    }
+
+    #[test]
+    fn nominal_at_u64_max_seconds_equal_jitter_stays_in_band() {
+        // `u64::MAX` seconds is itself already far past `u64::MAX`
+        // nanoseconds — squarely in the range the `u64`-space overflow
+        // regression could panic on.
+        let nominal = Duration::from_secs(u64::MAX);
+        for _ in 0..100 {
+            let jittered = apply_jitter(nominal, 0.5);
+            assert!(jittered >= nominal / 2, "{jittered:?} below the half bound");
+            assert!(jittered <= nominal, "{jittered:?} above nominal");
+        }
     }
 }

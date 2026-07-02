@@ -222,9 +222,23 @@ impl Manager {
         // not declare, before the author's `on_credential_refresh` hook ever
         // dispatches. See `ManagedHandle::accepts_credential_slot_name` — a
         // type that declares no credential slots at all rejects every slot
-        // name (fail closed: nothing to rotate).
+        // name (fail closed: nothing to rotate). Still recorded as a real
+        // `Failed` dispatch outcome and `SlotRefreshFailed` event — a
+        // rejected call is observably a failed refresh to any subscriber
+        // counting attempts, not a silent no-op that would undercount
+        // `attempts` relative to `success + failed + timed_out`.
         if !managed.accepts_credential_slot_name(slot) {
-            return Err(Error::unknown_credential_slot(key.clone(), slot));
+            let err = Error::unknown_credential_slot(key.clone(), slot);
+            if let Some(m) = &self.metrics {
+                m.record_slot_refresh_outcome(crate::metrics::SlotDispatchOutcome::Failed);
+            }
+            self.emit(ResourceEvent::SlotRefreshFailed {
+                key: key.clone(),
+                slot: slot.to_owned(),
+                error: err.to_string(),
+            });
+            tracing::warn!(error = %err, "slot refresh rejected: unknown credential slot");
+            return Err(err);
         }
 
         // Outer framework backstop over the WHOLE dispatch (topology
@@ -356,7 +370,7 @@ impl Manager {
         slot_identity: &crate::dedup::SlotIdentity,
     ) -> Result<TaintedSlot, Error> {
         let managed = self.lookup_any_for_slot_identity_structural(key, &scope, slot_identity)?;
-        Self::taint_now(key, slot, managed)
+        self.taint_now(key, slot, managed)
     }
 
     /// [`taint_slot_for_identity`](Self::taint_slot_for_identity) for the
@@ -392,7 +406,7 @@ impl Manager {
         slot: &str,
     ) -> Result<TaintedSlot, Error> {
         let managed = self.lookup_any_for_slot(key, &scope)?;
-        Self::taint_now(key, slot, managed)
+        self.taint_now(key, slot, managed)
     }
 
     /// Validates the slot name, then applies the taint synchronously and
@@ -412,8 +426,13 @@ impl Manager {
     /// credential slot the resolved row's resource type declares (a
     /// no-slot type rejects every slot name — fail closed). Checked
     /// *before* the taint / epoch bump, so a rejected call leaves the row
-    /// untouched — `revoke_slot`'s taint stays all-or-nothing.
+    /// untouched — `revoke_slot`'s taint stays all-or-nothing. Recorded as a
+    /// `Failed` revoke-dispatch outcome and `SlotRevokeFailed` event — this
+    /// is phase 1 of the revoke port, so a rejection here is a failed
+    /// revoke attempt to any subscriber, not a silent no-op that would
+    /// undercount `attempts` relative to `success + failed + timed_out`.
     fn taint_now(
+        &self,
         key: &ResourceKey,
         slot: &str,
         managed: Arc<dyn crate::registry::ManagedHandle>,
@@ -423,7 +442,17 @@ impl Manager {
         // slot name must not taint or bump the epoch — the row stays
         // exactly as it was.
         if !managed.accepts_credential_slot_name(slot) {
-            return Err(Error::unknown_credential_slot(key.clone(), slot));
+            let err = Error::unknown_credential_slot(key.clone(), slot);
+            if let Some(m) = &self.metrics {
+                m.record_slot_revoke_outcome(crate::metrics::SlotDispatchOutcome::Failed);
+            }
+            self.emit(ResourceEvent::SlotRevokeFailed {
+                key: key.clone(),
+                slot: slot.to_owned(),
+                error: err.to_string(),
+            });
+            tracing::warn!(error = %err, "slot taint rejected: unknown credential slot");
+            return Err(err);
         }
         // Phase-1 taint, synchronously before any caller `.await`: this
         // function is not `async`, so the store has already happened by the

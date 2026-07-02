@@ -16,10 +16,12 @@
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReloadOutcome {
-    /// The config `ArcSwap` (and, for Pooled, the topology's fingerprint) is
-    /// swapped **immediately** and synchronously — before this variant is
-    /// returned. Whether the *live runtime* picks up the new config on the
-    /// very next acquire or lazily on a later one is topology-specific:
+    /// The config `ArcSwap` and the topology's fingerprint are swapped
+    /// **immediately** and synchronously — before this variant is returned.
+    /// The fingerprint swap runs unconditionally for every topology (it is
+    /// simply a no-op for one that tracks no config fingerprint of its own);
+    /// what differs per topology is whether the *live runtime* picks up the
+    /// new config on the very next acquire or lazily on a later one:
     ///
     /// - **Pooled** — the new fingerprint evicts stale-fingerprint idle
     ///   instances lazily: an idle instance is only checked (and, if its

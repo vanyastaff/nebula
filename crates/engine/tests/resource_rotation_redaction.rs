@@ -287,9 +287,9 @@ impl HasCredentialSlots for SecretBearingResource {
 
     // `db` is a real `#[credential]`-shaped slot field — the resource is
     // driven through `refresh_slot_for`/`revoke_slot_for(..., "db")` (see
-    // the module docs). Declaring it (final-review item 4) makes those
-    // calls exercise the real A4 unknown-slot validation path instead of
-    // skipping it via the permissive "declares no slots" gap.
+    // the module docs). Declaring it makes those calls exercise the real
+    // unknown-slot validation path against a genuine declared slot name,
+    // rather than a fixture that never declares any slot at all.
     fn declares_credential_slots() -> bool {
         true
     }

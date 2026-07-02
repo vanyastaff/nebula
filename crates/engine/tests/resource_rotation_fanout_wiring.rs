@@ -37,7 +37,9 @@ use nebula_metrics::MetricsRegistry;
 use nebula_resource::Resident;
 use nebula_resource::{
     AcquireOptions, Manager, Provider, RegistrationSpec, ResidentConfig, ResourceConfig,
-    ResourceContext, SlotIdentity, error::Error as ResourceError, resource::ResourceMetadata,
+    ResourceContext, SlotIdentity,
+    error::Error as ResourceError,
+    resource::{HasCredentialSlots, ResourceMetadata},
     topology::resident::ResidentProvider,
 };
 use nebula_resource::{ResourceFanoutDriver, ResourceFanoutIndex};
@@ -110,7 +112,26 @@ impl Provider for Recording {
     }
 }
 
-nebula_resource::no_credential_slots!(Recording);
+// A real declared "db" credential slot — every scenario in this file wires
+// the production rotation fan-out over `SlotIdentity::from_bindings([("db",
+// ..)])` rows and drives `on_credential_refresh`/`on_credential_revoke`
+// against them, so `no_credential_slots!` would misrepresent this fixture as
+// slot-less and (fail-closed) reject every one of those dispatches.
+impl HasCredentialSlots for Recording {
+    fn credential_slot_epoch(&self) -> u64 {
+        // This file's wiring is proven via the `Recorder` hook-entry
+        // counters, not the epoch fold.
+        0
+    }
+
+    fn declares_credential_slots() -> bool {
+        true
+    }
+
+    fn credential_slot_names() -> &'static [&'static str] {
+        &["db"]
+    }
+}
 
 #[async_trait::async_trait]
 impl ResidentProvider for Recording {

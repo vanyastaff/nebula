@@ -22,7 +22,9 @@ use nebula_credential::CredentialId;
 use nebula_resource::Resident;
 use nebula_resource::{
     AcquireOptions, Manager, Provider, RegistrationSpec, ResidentConfig, ResourceConfig,
-    ResourceContext, SlotIdentity, error::Error as ResourceError, resource::ResourceMetadata,
+    ResourceContext, SlotIdentity,
+    error::Error as ResourceError,
+    resource::{HasCredentialSlots, ResourceMetadata},
     topology::resident::ResidentProvider,
 };
 use nebula_resource::{ResourceFanoutIndex, RotationOutcome};
@@ -114,7 +116,26 @@ impl Provider for Ctl {
     }
 }
 
-nebula_resource::no_credential_slots!(Ctl);
+// A real declared "db" credential slot — every fan-out scenario in this
+// file resolves rows under `SlotIdentity::from_bindings([("db", ..)])` and
+// drives the rotation fan-out's refresh dispatch against it, so
+// `no_credential_slots!` would misrepresent this fixture as slot-less and
+// (fail-closed) reject every one of those dispatches.
+impl HasCredentialSlots for Ctl {
+    fn credential_slot_epoch(&self) -> u64 {
+        // This file's fan-out isolation is proven via the `refresh_entered`
+        // counter and the behaviour map, not the epoch fold.
+        0
+    }
+
+    fn declares_credential_slots() -> bool {
+        true
+    }
+
+    fn credential_slot_names() -> &'static [&'static str] {
+        &["db"]
+    }
+}
 
 #[async_trait::async_trait]
 impl ResidentProvider for Ctl {

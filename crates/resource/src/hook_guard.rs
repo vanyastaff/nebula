@@ -67,9 +67,9 @@ pub(crate) const MAX_TEARDOWN_CEILING: Duration = Duration::from_mins(2);
 /// idle-store size varies per resource and isn't known at this layer; a
 /// fixed generous backstop (mirroring `MAX_TEARDOWN_CEILING`'s own precedent)
 /// is simpler and avoids re-deriving a magic number from `max_size`. See
-/// [`Pooled::dispatch_credential_hook`](crate::topology::Pooled::dispatch_credential_hook)'s
-/// docs for the accepted tradeoff (a fully-hung pool's rotation is bounded,
-/// not every slot guaranteed a hook attempt).
+/// [`Topology::dispatch_credential_hook`](crate::topology::Topology::dispatch_credential_hook)
+/// (`Pooled`'s impl in particular) for the accepted tradeoff (a fully-hung
+/// pool's rotation is bounded, not every slot guaranteed a hook attempt).
 pub(crate) const MAX_ROTATION_DISPATCH_CEILING: Duration = Duration::from_mins(2);
 
 /// How a guarded author hook failed the *framework*, independent of any error

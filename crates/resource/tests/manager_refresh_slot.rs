@@ -496,6 +496,106 @@ async fn refresh_slot_unknown_key_is_typed_not_found() {
     );
 }
 
+/// A rejected unknown-slot-name `refresh_slot` call must still be observable
+/// as a real failed dispatch — a `Failed` outcome on the refresh metric and a
+/// `SlotRefreshFailed` event — not a silent early return. Before this fix the
+/// unknown-slot early return in `refresh_resolved` skipped both, so
+/// `attempts` (`success + failed + timed_out`) undercounted a rejected call
+/// relative to every other failure path.
+#[tokio::test]
+async fn refresh_slot_unknown_slot_records_failed_outcome_and_event() {
+    let (mgr, key, _ledger, _registry) = registered_with_metrics().await;
+    let mut events = mgr.subscribe_events();
+
+    let err = mgr
+        .refresh_slot(&key, ScopeLevel::Global, "not-a-declared-slot")
+        .await
+        .expect_err("an undeclared slot name must be rejected");
+    assert!(
+        !err.is_retryable(),
+        "unknown_credential_slot is a permanent caller/wiring fault, got: {err:?}"
+    );
+
+    let snap = mgr
+        .metrics()
+        .expect("manager wired with a registry must expose metrics")
+        .snapshot()
+        .slot_refresh_outcomes;
+    assert_eq!(
+        snap.failed, 1,
+        "a rejected unknown-slot refresh must record exactly one Failed outcome"
+    );
+    assert_eq!(
+        snap.success + snap.failed + snap.timed_out,
+        1,
+        "attempts == success + failed + timed_out, even for a rejected call"
+    );
+
+    let mut saw_refresh_failed = false;
+    while let Some(event) = events.try_recv() {
+        if matches!(
+            &event,
+            nebula_resource::ResourceEvent::SlotRefreshFailed { key: k, slot, .. }
+                if k == &key && slot == "not-a-declared-slot"
+        ) {
+            saw_refresh_failed = true;
+        }
+    }
+    assert!(
+        saw_refresh_failed,
+        "a rejected unknown-slot refresh must emit SlotRefreshFailed"
+    );
+}
+
+/// The taint phase of the revoke port (`taint_slot`, driven directly here and
+/// by `revoke_slot` internally) has the same fail-closed unknown-slot gap as
+/// `refresh_slot`: a rejection must record a `Failed` revoke outcome and a
+/// `SlotRevokeFailed` event, not silently return an error with no
+/// observability.
+#[tokio::test]
+async fn taint_slot_unknown_slot_records_failed_revoke_outcome_and_event() {
+    let (mgr, key, _ledger, _registry) = registered_with_metrics().await;
+    let mut events = mgr.subscribe_events();
+
+    let err = mgr
+        .taint_slot(&key, ScopeLevel::Global, "not-a-declared-slot")
+        .expect_err("an undeclared slot name must be rejected");
+    assert!(
+        !err.is_retryable(),
+        "unknown_credential_slot is a permanent caller/wiring fault, got: {err:?}"
+    );
+
+    let snap = mgr
+        .metrics()
+        .expect("manager wired with a registry must expose metrics")
+        .snapshot()
+        .slot_revoke_outcomes;
+    assert_eq!(
+        snap.failed, 1,
+        "a rejected unknown-slot taint must record exactly one Failed outcome"
+    );
+    assert_eq!(
+        snap.success + snap.failed + snap.timed_out,
+        1,
+        "attempts == success + failed + timed_out, even for a rejected call"
+    );
+
+    let mut saw_revoke_failed = false;
+    while let Some(event) = events.try_recv() {
+        if matches!(
+            &event,
+            nebula_resource::ResourceEvent::SlotRevokeFailed { key: k, slot, .. }
+                if k == &key && slot == "not-a-declared-slot"
+        ) {
+            saw_revoke_failed = true;
+        }
+    }
+    assert!(
+        saw_revoke_failed,
+        "a rejected unknown-slot taint must emit SlotRevokeFailed"
+    );
+}
+
 /// A drain timeout must be **terminal** for the dispatch's outcome metric:
 /// exactly one outcome moves (`timed_out == 1`), and the subsequent
 /// successful hook does NOT also record `Success`. The invariant

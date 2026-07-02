@@ -762,10 +762,14 @@ impl Manager {
         // deadline is "timed out" when it had already elapsed by the time
         // this (failed) acquire completed — mirrors sqlx/bb8's notion of an
         // acquire timeout, independent of which internal error path produced
-        // the failure.
+        // the failure. Reuses the completion instant already captured in
+        // `elapsed` (`started + elapsed`) rather than a fresh `Instant::now()`
+        // here: the event emission above takes nonzero time, so a fresh read
+        // could observe the deadline as elapsed even for a failure that
+        // actually completed strictly before it.
         if let Some(m) = &self.metrics {
-            let timed_out =
-                result.is_err() && options.deadline.is_some_and(|d| Instant::now() >= d);
+            let completed_at = started + elapsed;
+            let timed_out = result.is_err() && options.deadline.is_some_and(|d| completed_at >= d);
             m.record_acquire_wait(elapsed, timed_out);
         }
 
@@ -817,21 +821,42 @@ fn resolve_json_templates(
     engine: &nebula_expression::ExpressionEngine,
     ctx: &nebula_expression::EvaluationContext,
 ) -> Result<serde_json::Value, Error> {
+    resolve_json_templates_at("", value, engine, ctx)
+}
+
+/// [`resolve_json_templates`]'s recursive worker, threading a `/`-joined
+/// JSON-pointer-ish breadcrumb (object keys / array indices from the
+/// document root) down to the value currently being resolved.
+///
+/// `path` names *where* a template failed in an error message — never the
+/// field's own string value, which is caller-supplied config JSON and may
+/// carry a misconfigured secret or other PII (the operator's `{{ }}`
+/// template source, not just its rendered output). The underlying
+/// template-engine error is still chained via `with_source`, so the real
+/// cause is never lost — only the raw offending string is kept out of the
+/// message text.
+fn resolve_json_templates_at(
+    path: &str,
+    value: serde_json::Value,
+    engine: &nebula_expression::ExpressionEngine,
+    ctx: &nebula_expression::EvaluationContext,
+) -> Result<serde_json::Value, Error> {
     use serde_json::Value;
     match value {
         Value::String(s) => {
             if !s.contains("{{") {
                 return Ok(Value::String(s));
             }
+            let field = if path.is_empty() { "<root>" } else { path };
             let template = engine.parse_template(&s).map_err(|e| {
                 Error::permanent(format!(
-                    "register_resolved: template parse failed for `{s}`"
+                    "register_resolved: template parse failed at `{field}`"
                 ))
                 .with_source(e)
             })?;
             let rendered = engine.render_template(&template, ctx).map_err(|e| {
                 Error::permanent(format!(
-                    "register_resolved: template render failed for `{s}`"
+                    "register_resolved: template render failed at `{field}`"
                 ))
                 .with_source(e)
             })?;
@@ -839,15 +864,18 @@ fn resolve_json_templates(
         },
         Value::Array(items) => {
             let mut out = Vec::with_capacity(items.len());
-            for item in items {
-                out.push(resolve_json_templates(item, engine, ctx)?);
+            for (i, item) in items.into_iter().enumerate() {
+                let child_path = format!("{path}/{i}");
+                out.push(resolve_json_templates_at(&child_path, item, engine, ctx)?);
             }
             Ok(Value::Array(out))
         },
         Value::Object(map) => {
             let mut out = serde_json::Map::with_capacity(map.len());
             for (k, v) in map {
-                out.insert(k, resolve_json_templates(v, engine, ctx)?);
+                let child_path = format!("{path}/{k}");
+                let resolved = resolve_json_templates_at(&child_path, v, engine, ctx)?;
+                out.insert(k, resolved);
             }
             Ok(Value::Object(out))
         },
