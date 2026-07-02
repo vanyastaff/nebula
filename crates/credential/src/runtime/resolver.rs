@@ -67,7 +67,7 @@ pub struct CredentialResolver<S: CredentialStore> {
     /// disconnected handles on every resolve/refresh cycle.
     handle_cache: Arc<HandleCache>,
     /// When `true`, the service is configured with an external
-    /// [`StateSource`](crate::service) whose resolution bridge is not yet wired,
+    /// [`StateSource`](crate::StateSource) whose resolution bridge is not yet wired,
     /// so **every** resolution path refuses to read local bytes (fail-closed at
     /// the resolver tail — see [`gate_external_source`](Self::gate_external_source)).
     /// This closes the source gate on the direct-resolver paths
@@ -115,7 +115,7 @@ impl<S: CredentialStore> CredentialResolver<S> {
     /// Fail-closed the resolver against an external, not-yet-wired state source.
     ///
     /// Set by the composition root when the service is built with
-    /// [`StateSource::External`](crate::service). Once gated, **every** resolution
+    /// [`StateSource::External`](crate::StateSource). Once gated, **every** resolution
     /// entry point ([`resolve`](Self::resolve) / [`resolve_scoped`](Self::resolve_scoped)
     /// / [`resolve_with_refresh`](Self::resolve_with_refresh), and therefore
     /// [`scheme_factory`](Self::scheme_factory)) returns

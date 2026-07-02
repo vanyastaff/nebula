@@ -87,9 +87,9 @@ pub mod contract;
 pub mod credentials;
 /// Credential lifecycle as data — `CredentialPolicy` / `RefreshStrategy` /
 /// `RevokeStrategy` (ADR-0088 D2: capabilities are data, not sub-traits).
-pub mod lifecycle;
+pub(crate) mod lifecycle;
 /// Credential operation metrics — counter names and label helpers.
-pub mod metrics;
+pub(crate) mod metrics;
 /// External credential provider abstraction — delegation to external secret managers.
 pub mod provider;
 /// Authentication scheme types — AuthScheme trait, AuthPattern, 12 built-in schemes.
@@ -108,7 +108,7 @@ mod accessor;
 /// Audit trait and value types — [`AuditSink`], [`AuditEvent`],
 /// [`AuditOperation`], [`AuditResult`]. The audit decorator (`AuditLayer`)
 /// stays in `nebula_storage::credential` and imports these from here.
-pub mod audit;
+pub(crate) mod audit;
 /// Credential operation context — CredentialContext, CredentialContextBuilder.
 mod context;
 /// Typed credential reference — `CredentialRef<C>` slot-binding handle (typed ref fields).
@@ -129,11 +129,11 @@ mod record;
 
 /// Dyn-erasure bridge for the two RPITIT storage ports — lets the
 /// `CredentialService` facade be non-generic (ADR-0088 D4).
-pub mod erased;
+pub(crate) mod erased;
 /// Error types for credential operations.
 pub mod error;
 /// Credential lifecycle events for cross-crate signaling.
-pub mod event;
+pub(crate) mod event;
 /// Pending state store trait for interactive credential flows.
 pub mod pending_store;
 /// Credential lifecycle orchestration the execution engine drives —
@@ -143,9 +143,9 @@ pub mod runtime;
 /// `CredentialService` facade — the sole public entry to the credential
 /// management bounded context (ADR-0092, relocated from
 /// `nebula-credential-runtime`).
-pub mod service;
+pub(crate) mod service;
 /// Credential snapshot.
-pub mod snapshot;
+pub(crate) mod snapshot;
 /// Credential store trait with layered composition.
 pub mod store;
 

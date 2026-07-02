@@ -101,7 +101,7 @@ pub(crate) const LAST_VALIDATED_AT_METADATA_KEY: &str = "last_validated_at";
 /// `owner_id` that a prior tenant-scope check proved owns it.
 ///
 /// The constructor is crate-private and the only in-crate caller is
-/// [`ValidatedCredentialBinding::owner_scoped_key`](crate::service::binding::ValidatedCredentialBinding),
+/// [`ValidatedCredentialBinding::owner_scoped_key`](crate::ValidatedCredentialBinding),
 /// whose own constructor is reachable only through
 /// `CredentialService::validate_credential_binding` (the owner gate). A caller
 /// therefore cannot *express* an unscoped (cross-tenant) load on the slot
