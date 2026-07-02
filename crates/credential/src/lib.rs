@@ -265,7 +265,7 @@ pub use crate::{
     error::{
         CredentialAccessError, CredentialError, CryptoError, ProviderErrorContext,
         ProviderErrorKind, RefreshErrorKind, RefreshFailedContext, ResolutionStage, RetryAdvice,
-        RevokeErrorKind, RevokeFailedContext, SchemeMismatch, SecretFreeMessage, ValidationError,
+        SchemeMismatch, SecretFreeMessage, ValidationError,
     },
     event::CredentialEvent,
     metadata::{
