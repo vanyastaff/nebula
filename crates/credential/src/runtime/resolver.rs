@@ -11,17 +11,26 @@ use std::{
 
 #[cfg(feature = "rotation")]
 use crate::credentials::{OAuth2Credential, OAuth2State};
-use crate::error::{CredentialError, ProviderErrorContext, ProviderErrorKind};
+// The resolve-error mapping moved to `resolve_error`; what remains here that
+// names `CredentialError` is the (rotation-gated) OAuth2 HTTP-refresh relic plus
+// the in-crate refresh-race tests, while the typed provider-error constructors
+// are relic-only.
+#[cfg(any(feature = "rotation", test))]
+use crate::error::CredentialError;
+#[cfg(feature = "rotation")]
+use crate::error::{ProviderErrorContext, ProviderErrorKind, SecretFreeMessage};
 use crate::runtime::refresh::transport::RefreshTransport;
 use crate::runtime::refresh::{RefreshCoordinator, RefreshError};
+use crate::runtime::resolve_error::{
+    ResolveError, reject_tombstoned, resolve_error_to_credential_error, verify_owner,
+};
 use crate::{
     Credential, CredentialContext, CredentialEvent, CredentialHandle, CredentialId,
     CredentialLifecycle, CredentialState, Decision, Refreshable, SchemeFactory, SchemeGuard,
-    SecretFreeMessage,
-    resolve::{ReauthReason, RefreshOutcome},
+    resolve::RefreshOutcome,
     store::{
-        CredentialStore, LAST_VALIDATED_AT_METADATA_KEY, OWNER_ID_METADATA_KEY, OwnerScopedKey,
-        PutMode, StoreError, StoredCredential,
+        CredentialStore, LAST_VALIDATED_AT_METADATA_KEY, OwnerScopedKey, PutMode, StoreError,
+        StoredCredential,
     },
 };
 
@@ -962,254 +971,6 @@ impl<S: CredentialStore> CredentialResolver<S> {
                 Ok(self.materialize_handle::<C>(credential_id, scheme))
             },
         }
-    }
-}
-
-fn resolve_error_to_credential_error(err: ResolveError) -> CredentialError {
-    match err {
-        // F3 containment violation is a local policy/configuration defect —
-        // not a remote provider failure, not retriable, not a transient error.
-        // Mapping it to `CredentialError::InvalidInput` (Validation category,
-        // non-retriable) gives callers and metrics the correct signal.
-        ResolveError::RefreshContainmentViolation {
-            credential_id,
-            refresh_kind,
-            family_pattern,
-        } => CredentialError::InvalidInput(format!(
-            "credential {credential_id}: F3 containment violation — \
-             refresh kind {refresh_kind:?} is not permitted by scheme family {family_pattern:?}; \
-             fix the credential's policy() implementation or its AuthScheme::Family declaration"
-        )),
-        // All other resolve errors stem from store/IO, deserialisation, refresh
-        // provider calls, or re-auth requirements — surface as provider errors
-        // so they get the correct retry/observability treatment.
-        other => CredentialError::Provider(Box::new(ProviderErrorContext::new(
-            ProviderErrorKind::ServerError,
-            SecretFreeMessage::new(other.to_string()),
-        ))),
-    }
-}
-
-/// Errors produced by [`CredentialResolver`].
-#[derive(Debug, thiserror::Error)]
-#[non_exhaustive]
-pub enum ResolveError {
-    /// Backing credential store operation failed.
-    #[error("store error: {0}")]
-    Store(#[from] StoreError),
-    /// Stored state kind does not match the credential state type.
-    #[error("credential {credential_id}: expected kind {expected}, found {actual}")]
-    KindMismatch {
-        /// Credential identifier.
-        credential_id: String,
-        /// Expected state kind.
-        expected: String,
-        /// Actual state kind from storage.
-        actual: String,
-    },
-    /// Stored state bytes failed deserialization.
-    #[error("credential {credential_id}: deserialize failed: {reason}")]
-    Deserialize {
-        /// Credential identifier.
-        credential_id: String,
-        /// Deserialization error message.
-        reason: String,
-    },
-    /// Refresh path failed.
-    #[error("credential {credential_id}: refresh failed: {reason}")]
-    Refresh {
-        /// Credential identifier.
-        credential_id: String,
-        /// Refresh error message.
-        reason: String,
-    },
-    /// Credential requires full re-authentication.
-    ///
-    /// Carries a typed [`ReauthReason`] so callers (UI, metrics, audit)
-    /// can distinguish provider-rejected refresh from sentinel-threshold
-    /// escalation per sub-spec.
-    #[error("credential {credential_id}: re-authentication required")]
-    ReauthRequired {
-        /// Credential identifier.
-        credential_id: String,
-        /// Why re-authentication is required.
-        reason: ReauthReason,
-    },
-    /// The service is configured with an external [`StateSource`](crate::service)
-    /// whose resolution bridge (ADR-0051) is not yet wired, so the resolver
-    /// refuses to read local bytes. Fail-closed: never a silent local-store
-    /// fallback. The facade maps this to
-    /// `CredentialServiceError::ExternalSourceNotWired`.
-    #[error("external state source is not wired; cannot resolve credential material")]
-    ExternalSourceNotWired,
-
-    /// The credential's live `policy()` returned a refresh kind that its scheme
-    /// family does not permit — an F3 containment violation (policy drift from
-    /// the `AuthScheme::Family` declaration). The refresh is aborted rather than
-    /// proceeding with an out-of-family strategy.
-    ///
-    /// This indicates a hand-written or plugin `policy()` that drifted from the
-    /// scheme's `AuthScheme::Family::refresh_classes()`. Fix the credential's
-    /// `CredentialLifecycle::policy` implementation or its `AuthScheme::Family`
-    /// declaration.
-    #[error(
-        "credential {credential_id}: refresh kind {refresh_kind:?} is not permitted by \
-         scheme family {family_pattern:?} — F3 containment violation"
-    )]
-    RefreshContainmentViolation {
-        /// Credential identifier.
-        credential_id: String,
-        /// The disallowed refresh kind the live policy returned.
-        refresh_kind: String,
-        /// The scheme family pattern that rejected it.
-        family_pattern: String,
-    },
-}
-
-/// Fail-closed owner gate for the scoped resolution path: the loaded row's
-/// stamped `owner_id` must equal the key's owner. A mismatch maps to
-/// [`StoreError::NotFound`] (existence-hiding, matching the management facade) so
-/// a cross-tenant probe cannot tell "absent" from "owned by another tenant". An
-/// unstamped row (no `owner_id` metadata) is treated as foreign and rejected.
-///
-/// Complexity: O(1).
-fn verify_owner(key: &OwnerScopedKey, stored: &StoredCredential) -> Result<(), ResolveError> {
-    let stored_owner = stored
-        .metadata
-        .get(OWNER_ID_METADATA_KEY)
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or_default();
-    if stored_owner != key.owner_id() {
-        return Err(ResolveError::Store(StoreError::NotFound {
-            id: key.credential_id().to_owned(),
-        }));
-    }
-    Ok(())
-}
-
-/// Fail-closed tombstone gate for the scoped resolution path.
-///
-/// Defence in depth for the resolve-during-revoke race:
-/// `CredentialService::validate_credential_binding` already rejects a tombstoned
-/// id when the binding is minted, but a binding validated immediately before a
-/// concurrent `revoke` could still reach `resolve_scoped`. A revoked row is
-/// mapped to [`StoreError::NotFound`] (same existence-hiding shape as
-/// [`verify_owner`]) so a revoked secret is never projected to a guard.
-///
-/// Complexity: O(1).
-fn reject_tombstoned(credential_id: &str, stored: &StoredCredential) -> Result<(), ResolveError> {
-    if stored.is_tombstoned() {
-        return Err(ResolveError::Store(StoreError::NotFound {
-            id: credential_id.to_owned(),
-        }));
-    }
-    Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn stored_with_owner(owner: Option<&str>) -> StoredCredential {
-        let mut metadata = serde_json::Map::new();
-        if let Some(o) = owner {
-            metadata.insert(
-                OWNER_ID_METADATA_KEY.to_owned(),
-                serde_json::Value::String(o.to_owned()),
-            );
-        }
-        StoredCredential {
-            id: "cred_x".to_owned(),
-            name: None,
-            credential_key: "github_oauth".to_owned(),
-            data: Vec::new(),
-            state_kind: "oauth2_state".to_owned(),
-            state_version: 1,
-            version: 1,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            expires_at: None,
-            reauth_required: false,
-            metadata,
-        }
-    }
-
-    #[test]
-    fn verify_owner_accepts_matching_owner() {
-        let key = OwnerScopedKey::new("alice".to_owned(), "cred_x".to_owned());
-        assert!(verify_owner(&key, &stored_with_owner(Some("alice"))).is_ok());
-    }
-
-    #[test]
-    fn cross_tenant_load_is_not_found() {
-        // Confused-deputy regression: a key for owner "bob" must not read a row
-        // stamped "alice"; the load fails closed as NotFound (existence-hiding),
-        // so a foreign tenant cannot even distinguish existence.
-        let key = OwnerScopedKey::new("bob".to_owned(), "cred_x".to_owned());
-        let err = verify_owner(&key, &stored_with_owner(Some("alice"))).unwrap_err();
-        assert!(matches!(
-            err,
-            ResolveError::Store(StoreError::NotFound { .. })
-        ));
-    }
-
-    #[test]
-    fn unstamped_row_is_treated_as_foreign() {
-        let key = OwnerScopedKey::new("alice".to_owned(), "cred_x".to_owned());
-        let err = verify_owner(&key, &stored_with_owner(None)).unwrap_err();
-        assert!(matches!(
-            err,
-            ResolveError::Store(StoreError::NotFound { .. })
-        ));
-    }
-
-    fn tombstoned(owner: Option<&str>) -> StoredCredential {
-        let mut stored = stored_with_owner(owner);
-        stored.metadata.insert(
-            crate::store::REVOKED_AT_METADATA_KEY.to_owned(),
-            serde_json::Value::String("2026-06-13T10:00:00Z".to_owned()),
-        );
-        stored
-    }
-
-    #[test]
-    fn tombstoned_row_is_rejected_as_not_found() {
-        // Resolve-during-revoke race: a row revoked after its binding was
-        // validated must not project a guard — it fails closed as NotFound,
-        // never exposing the revoked secret.
-        let err = reject_tombstoned("cred_x", &tombstoned(Some("alice"))).unwrap_err();
-        assert!(matches!(
-            err,
-            ResolveError::Store(StoreError::NotFound { .. })
-        ));
-    }
-
-    #[test]
-    fn live_row_passes_tombstone_check() {
-        assert!(reject_tombstoned("cred_x", &stored_with_owner(Some("alice"))).is_ok());
-    }
-
-    /// F3 containment violation must map to `CredentialError::InvalidInput`
-    /// (Validation, non-retriable), NOT to `Provider(ServerError)` (External,
-    /// retriable). Misclassifying a configuration defect as a retriable provider
-    /// error would cause infinite retry loops and misleading observability.
-    #[test]
-    fn containment_violation_maps_to_invalid_input_not_provider_error() {
-        let resolve_err = ResolveError::RefreshContainmentViolation {
-            credential_id: "cred_abc".to_owned(),
-            refresh_kind: "RefreshToken".to_owned(),
-            family_pattern: "SecretToken".to_owned(),
-        };
-        let mapped = resolve_error_to_credential_error(resolve_err);
-        assert!(
-            matches!(mapped, CredentialError::InvalidInput(_)),
-            "expected InvalidInput (non-retriable, Validation category), got {mapped:?}"
-        );
-        // Confirm it is NOT mapped to a retriable provider error.
-        assert!(
-            !matches!(mapped, CredentialError::Provider(_)),
-            "F3 violation must not be mapped to a provider error (would trigger retries)"
-        );
     }
 }
 

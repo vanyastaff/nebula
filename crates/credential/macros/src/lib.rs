@@ -1,5 +1,6 @@
-//! Proc-macro crate for the `Credential` derive macro and the
-//! `#[capability]` attribute macro.
+//! Proc-macro crate for credential authoring: the `#[credential]` attribute
+//! macro (canonical one-impl-block authoring), the `#[derive(AuthScheme)]`
+//! derive, and the `#[capability]` attribute macro.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -10,109 +11,7 @@ use proc_macro::TokenStream;
 
 mod auth_scheme;
 mod capability;
-mod credential;
 mod credential_attr;
-
-/// Derive macro for the `Credential` trait — Phase 5 of the M6 dependency
-/// redesign.
-///
-/// Mirrors `#[derive(Resource)]` (Phase 4) and `#[derive(Action)]` (Phase 3) on
-/// the slot-binding family. Credentials are leaves of the dependency graph
-/// (per spec 23 they cannot statically depend on other credentials), so the
-/// macro's surface is intentionally smaller than the Resource / Action
-/// variants — it emits the type-level `Credential` impl with `KEY`, the
-/// associated types, the `metadata()` static, and the capability-report
-/// const-bool impls (one per declared sub-trait flag).
-///
-/// # Modes
-///
-/// The macro supports two **mutually exclusive** modes for specifying
-/// `Self::Properties`:
-///
-/// - **Properties mode** — `properties = TypePath` points at a `<Name>Properties` struct (typically
-///   `#[derive(Schema, Deserialize)]`). The macro emits `type Properties = <TypePath>` and a
-///   `todo!()` resolver; for non-trivial credentials, prefer writing the entire `impl Credential
-///   for X` by hand rather than mixing the derive with manual overrides (Rust coherence forbids
-///   splitting a single trait impl).
-/// - **Protocol mode** — `protocol = TypePath` points at a `StaticProtocol` impl. The macro emits
-///   `type Properties = <TypePath as StaticProtocol>::Properties` and a resolver body that
-///   delegates to `<TypePath as StaticProtocol>::build`. The canonical ergonomic path for static
-///   (non-interactive) credentials.
-///
-/// # Container attributes (`#[credential(...)]`)
-///
-/// - `key = "..."` — Unique credential type key (required).
-/// - `name = "..."` — Human-readable name (required).
-/// - `scheme = TypePath` — Auth scheme produced by `Credential::project`; doubles as `State`
-///   (identity-state pattern). Required.
-/// - `properties = TypePath` — Direct path to the `<Name>Properties` companion struct (required if
-///   `protocol` is absent).
-/// - `protocol = TypePath` — `StaticProtocol` impl (required if `properties` is absent).
-/// - `icon = "..."` — Catalog icon identifier (optional).
-/// - `doc_url = "..."` — Documentation URL (optional).
-/// - `capabilities(...)` — Sub-traits the credential implements: any subset of `interactive`,
-///   `refreshable`, `revocable`, `testable`, `dynamic`. Per Tech Spec §15.8 (closes security-lead
-///   N6) the macro emits one `plugin_capability_report::IsX` const-bool impl per capability — and a
-///   parity assertion that consumes the actual sub-trait bound, so a missing `impl Refreshable for
-///   X` fails to compile.
-///
-/// # Outer struct attributes
-///
-/// - `#[uses_resource(TypeName, purpose = "...")]` — Declare a resource dependency (repeatable).
-/// - `#[uses_credential(...)]` — Forbidden: credential-to-credential static dependencies are not
-///   allowed (spec 23). Emits a compile error.
-///
-/// # Examples
-///
-/// The blocks below are derive-syntax illustrations. Because this `proc-macro`
-/// crate cannot depend on `nebula_credential`, they are not standalone-runnable;
-/// see `nebula_credential::Credential` in the parent crate for a complete
-/// runnable example.
-///
-/// Protocol mode (the canonical static-credential path):
-/// ```text
-/// use nebula_credential::{Credential, StaticProtocol};
-///
-/// #[derive(Credential)]
-/// #[credential(
-///     key = "postgres",
-///     name = "PostgreSQL",
-///     scheme = ConnectionUri,
-///     protocol = PostgresProtocol,
-///     icon = "postgres",
-/// )]
-/// pub struct PostgresCredential;
-/// ```
-///
-/// Properties mode (schema-only bridging):
-/// ```text
-/// use nebula_credential::Credential;
-/// use nebula_schema::Schema;
-/// use serde::Deserialize;
-///
-/// #[derive(Schema, Deserialize)]
-/// pub struct GithubOAuthProperties {
-///     #[field(label = "Client ID")]
-///     #[validate(required)]
-///     pub client_id: String,
-/// }
-///
-/// #[derive(Credential)]
-/// #[credential(
-///     key = "github_oauth",
-///     name = "GitHub OAuth",
-///     scheme = OAuth2Token,
-///     properties = GithubOAuthProperties,
-/// )]
-/// pub struct GithubOAuthCredential;
-/// ```
-#[proc_macro_derive(
-    Credential,
-    attributes(credential, oauth2, ldap, uses_resource, uses_credential)
-)]
-pub fn derive_credential(input: TokenStream) -> TokenStream {
-    credential::derive(input)
-}
 
 /// Attribute macro for declaring a credential as a single `impl` block
 /// (ADR-0088 D1 — the canonical authoring path, superseding

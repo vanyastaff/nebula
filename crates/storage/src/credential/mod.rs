@@ -26,9 +26,6 @@ pub mod provider_cache;
 #[cfg(any(test, feature = "credential-in-memory"))]
 pub mod pending;
 
-#[cfg(feature = "rotation")]
-pub mod backup;
-
 /// Cross-replica refresh claim repository (CAS + heartbeat).
 pub mod refresh_claim;
 
@@ -38,8 +35,6 @@ pub mod sqlite;
 #[cfg(feature = "postgres")]
 pub mod postgres;
 
-#[cfg(feature = "rotation")]
-pub use backup::RotationBackup;
 pub use key_provider::{EnvKeyProvider, FileKeyProvider, KeyProvider, ProviderError};
 pub use layer::{
     AuditEvent, AuditLayer, AuditOperation, AuditResult, AuditSink, CacheConfig, CacheLayer,

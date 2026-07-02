@@ -19,9 +19,6 @@ use std::collections::HashMap;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-#[cfg(feature = "rotation")]
-use crate::rotation::policy::RotationPolicy;
-
 /// Credential record — runtime operational state (non-sensitive).
 ///
 /// Tracks creation time, access patterns, and user-defined tags
@@ -41,10 +38,6 @@ pub struct CredentialRecord {
     /// Uses `ScopeLevel` from nebula-core for platform consistency.
     pub owner_scope: Option<nebula_core::ScopeLevel>,
 
-    /// Optional rotation policy (for automatic credential rotation)
-    #[cfg(feature = "rotation")]
-    pub rotation_policy: Option<RotationPolicy>,
-
     /// Version number for rotation tracking (incremented on each rotation)
     ///
     /// Used to distinguish between old and new credentials during grace periods.
@@ -54,8 +47,6 @@ pub struct CredentialRecord {
     /// When the credential expires (None if no expiration)
     ///
     /// Used for time-limited credentials like OAuth2 tokens, JWT tokens, temporary passwords.
-    /// The ExpiryMonitor uses this field to determine when to trigger rotation based on
-    /// BeforeExpiry policy.
     pub expires_at: Option<DateTime<Utc>>,
 
     /// Time-to-live in seconds (None if unlimited)
@@ -80,8 +71,6 @@ impl CredentialRecord {
             last_accessed: None,
             last_modified: now,
             owner_scope: None,
-            #[cfg(feature = "rotation")]
-            rotation_policy: None,
             version: 1, // Initial version
             expires_at: None,
             ttl_seconds: None,
@@ -233,32 +222,5 @@ mod tests {
             record.tags.get("environment"),
             Some(&"production".to_string())
         );
-    }
-
-    #[test]
-    #[cfg(feature = "rotation")]
-    fn test_rotation_policy() {
-        use std::time::Duration;
-
-        use crate::rotation::policy::{PeriodicConfig, RotationPolicy};
-
-        let policy = RotationPolicy::Periodic(
-            PeriodicConfig::new(
-                Duration::from_hours(2160), // 90 days
-                Duration::from_hours(24),   // 1 day
-                true,
-            )
-            .unwrap(),
-        );
-        let mut record = CredentialRecord::new();
-        record.rotation_policy = Some(policy);
-
-        assert!(record.rotation_policy.is_some());
-        match record.rotation_policy.unwrap() {
-            RotationPolicy::Periodic(config) => {
-                assert_eq!(config.interval(), Duration::from_hours(2160));
-            },
-            _ => panic!("Expected Periodic policy"),
-        }
     }
 }

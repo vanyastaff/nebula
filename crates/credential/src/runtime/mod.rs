@@ -9,10 +9,10 @@ pub mod dispatchers;
 pub mod executor;
 pub mod lease;
 pub mod refresh;
+/// Resolution error taxonomy + fail-closed owner/tombstone gates (split from
+/// `resolver` for size; behaviour-preserving).
+mod resolve_error;
 pub mod resolver;
-#[cfg(feature = "rotation")]
-pub mod rotation;
-pub mod scoped_accessor;
 
 pub use dispatchers::{dispatch_release, dispatch_revoke, dispatch_test};
 pub use executor::{ExecutorError, ResolveResponse, execute_continue, execute_resolve};
@@ -26,5 +26,5 @@ pub use refresh::{
     SentinelDecision, SentinelThresholdConfig, SentinelTrigger, TokenPostRequest,
     TokenPostResponse,
 };
-pub use resolver::{CredentialResolver, ResolveError};
-pub use scoped_accessor::ScopedCredentialAccessor;
+pub use resolve_error::ResolveError;
+pub use resolver::CredentialResolver;
