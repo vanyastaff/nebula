@@ -164,7 +164,7 @@ pub struct CredentialService {
     /// Engine resolver wired through the layered store stack (erased at the
     /// store→resolver boundary). Used by
     /// [`resolve_for_slot`](Self::resolve_for_slot) to produce a typed
-    /// [`CredentialGuard`] for action slot consumption.
+    /// [`CredentialGuard`](crate::CredentialGuard) for action slot consumption.
     pub(crate) resolver: CredentialResolver<ErasedCredentialStore>,
     pub(crate) lease: LeaseLifecycle,
     pub(crate) pending: ErasedPendingStore,

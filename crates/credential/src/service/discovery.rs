@@ -2,7 +2,7 @@
 //! descriptors of registered credential types for pickers / UIs.
 //!
 //! Split out of `facade.rs` (behaviour-preserving code motion — no logic
-//! change). Reads only the `pub(crate)` [`CredentialRegistry`] field.
+//! change). Reads only the `pub(crate)` [`CredentialRegistry`](crate::CredentialRegistry) field.
 
 use super::facade::{CredentialService, CredentialTypeInfo, TypeCapabilities};
 

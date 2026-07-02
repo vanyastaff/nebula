@@ -2,8 +2,8 @@
 //!
 //! Split out of `resolver.rs` (behaviour-preserving code motion — no logic
 //! change): the [`ResolveError`] enum, its mapping onto the public
-//! [`CredentialError`], and the two O(1) gate helpers
-//! ([`verify_owner`] / [`reject_tombstoned`]) that the scoped resolution
+//! [`CredentialError`](crate::error::CredentialError), and the two O(1) gate
+//! helpers (`verify_owner` / `reject_tombstoned`) that the scoped resolution
 //! path uses to fail closed on cross-tenant or revoked rows. Kept in the
 //! `runtime` module so `resolver.rs` reaches the `pub(crate)` gate fns.
 
