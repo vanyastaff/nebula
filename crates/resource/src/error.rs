@@ -2,6 +2,23 @@
 //!
 //! Every resource error carries an [`ErrorKind`] describing what happened.
 //! The framework uses it to decide whether to retry, back off, or propagate.
+//!
+//! # `ErrorKind` → caller action
+//!
+//! | Kind | Retryable? | Caller action |
+//! |------|------------|----------------|
+//! | [`Transient`](ErrorKind::Transient) | Yes | Retry with backoff (network blip, connect timeout). |
+//! | [`Permanent`](ErrorKind::Permanent) | No | Fail the operation — auth failure or invalid config will not resolve on retry. |
+//! | [`Exhausted`](ErrorKind::Exhausted) | Yes, after `retry_after` | Back off until the hint elapses (rate limit, quota depleted), then retry. |
+//! | [`Backpressure`](ErrorKind::Backpressure) | Caller decides | Shed load or queue — do **not** hot-retry; the pool/semaphore is full, not broken. |
+//! | [`NotFound`](ErrorKind::NotFound) | No | Fail the operation — no resource of that key/scope is registered; this is a wiring bug, not a transient condition. |
+//! | [`Cancelled`](ErrorKind::Cancelled) | No | Propagate cancellation — the caller's own `CancellationToken` fired or the manager is shutting down. |
+//! | [`Revoked`](ErrorKind::Revoked) | Yes, after re-bind | Retry after the credential is re-registered; the resource is tainted until then, not permanently broken. |
+//! | [`Ambiguous`](ErrorKind::Ambiguous) | No | Fail the operation and fix the caller: acquire through a slot-identity-pinned path (`acquire_<topology>_for_identity`) instead of the identity-agnostic one. |
+//!
+//! Use [`Error::is_retryable`] to branch without matching every variant, and
+//! [`Error::retry_after`] to respect a rate-limit hint. `ErrorKind` is
+//! `#[non_exhaustive]` — match with a wildcard arm.
 
 use std::{fmt, time::Duration};
 
@@ -278,6 +295,29 @@ impl Error {
     }
 }
 
+/// Builds the typed error for a downcast failure when a resolved resource
+/// row's erased `Box<dyn Any>` does not match the caller's requested
+/// `ResourceGuard<R>`.
+///
+/// Shared by every acquire-then-downcast call site
+/// ([`HasResourcesExt::resource`](crate::ext::HasResourcesExt::resource),
+/// [`HasResourcesExt::try_resource`](crate::ext::HasResourcesExt::try_resource),
+/// [`ResourceRef::resolve`](crate::resource_ref::ResourceRef::resolve)) so the
+/// message stays identical across all three instead of drifting site-by-site.
+/// A mismatch here means two distinct `Provider` types registered the same
+/// `ResourceKey` — a caller/wiring fault, never a transient condition, hence
+/// [`ErrorKind::Permanent`].
+pub(crate) fn guard_type_mismatch<R>(key: ResourceKey) -> Error {
+    Error::new(
+        ErrorKind::Permanent,
+        format!(
+            "resource type mismatch: expected ResourceGuard<{}> for key `{key}`",
+            std::any::type_name::<R>(),
+        ),
+    )
+    .with_resource_key(key)
+}
+
 impl From<nebula_core::CoreError> for Error {
     /// Maps an accessor-seam [`CoreError`](nebula_core::CoreError) back into a
     /// resource [`Error`], preserving the retryable / `retry_after`
@@ -292,30 +332,41 @@ impl From<nebula_core::CoreError> for Error {
     /// [`is_retryable`](Error::is_retryable) to stay correct, which is what
     /// retry machinery reads. Callers attach the resource key via
     /// [`with_resource_key`](Error::with_resource_key).
+    ///
+    /// The source chain is preserved (`err` becomes
+    /// [`with_source`](Error::with_source)'s payload) so a caller walking
+    /// `std::error::Error::source` still reaches the original `CoreError`
+    /// instead of a dead end at the re-wrapped message.
     fn from(err: nebula_core::CoreError) -> Self {
         use nebula_core::CoreError;
-        match err {
+        // Match on `&err` (not by value) so every arm can read the fields it
+        // needs while leaving `err` itself intact to hand to `with_source`
+        // below — the alternative (moving `err` into the match) would
+        // partial-move `detail` out of the `ResourceUnavailable` arm and
+        // make the source-chain attachment impossible.
+        let built = match &err {
             CoreError::ResourceUnavailable {
                 detail,
                 retryable,
                 retry_after,
                 ..
             } => {
-                let kind = match (retryable, retry_after) {
+                let kind = match (*retryable, *retry_after) {
                     (true, Some(after)) => ErrorKind::Exhausted {
                         retry_after: Some(after),
                     },
                     (true, None) => ErrorKind::Transient,
                     (false, _) => ErrorKind::Permanent,
                 };
-                Self::new(kind, detail)
+                Self::new(kind, detail.clone())
             },
             CoreError::CredentialNotFound { key } => {
                 Self::new(ErrorKind::NotFound, format!("credential not found: {key}"))
             },
             CoreError::ScopeViolation { .. } => Self::new(ErrorKind::Ambiguous, err.to_string()),
-            other => Self::new(ErrorKind::Permanent, other.to_string()),
-        }
+            _ => Self::new(ErrorKind::Permanent, err.to_string()),
+        };
+        built.with_source(err)
     }
 }
 

@@ -267,6 +267,56 @@ impl HasCredentialSlots for TwoSlotResident {
                 acc.wrapping_mul(K).wrapping_add(slot_gen)
             })
     }
+
+    // Declares its two real credential slots (unknown-slot validation +
+    // the declares-vs-names registration consistency check) — mirroring
+    // what `#[derive(Resource)]` would emit for `#[credential(key =
+    // "slot_a")]` / `#[credential(key = "slot_b")]` fields. Without this
+    // pair `refresh_slot` would reject every name against this fixture
+    // (fail-closed for a misrepresented slot-less resource), including the
+    // real slot names the tests below exercise.
+    fn declares_credential_slots() -> bool {
+        true
+    }
+
+    fn credential_slot_names() -> &'static [&'static str] {
+        &["slot_a", "slot_b"]
+    }
+}
+
+impl nebula_core::DeclaresDependencies for TwoSlotResident {
+    // Mirrors `credential_slot_names()` above so the registration
+    // consistency checks (`declares_credential_slots()` vs
+    // `DeclaresDependencies::slot_fields()`, and vs `credential_slot_names()`)
+    // do not themselves reject this fixture — every self-report names the
+    // same two slots.
+    fn dependencies() -> nebula_core::Dependencies {
+        nebula_core::Dependencies::new()
+            .slot_field(nebula_core::SlotField {
+                slot_key: "slot_a",
+                default_id: "slot_a",
+                kind: nebula_core::dependencies::SlotKind::Credential {
+                    type_id: std::any::TypeId::of::<FakeCred>(),
+                    type_name: std::any::type_name::<FakeCred>(),
+                    key: nebula_core::credential_key!("epochfold.fake"),
+                },
+                required: true,
+                lazy: false,
+                purpose: None,
+            })
+            .slot_field(nebula_core::SlotField {
+                slot_key: "slot_b",
+                default_id: "slot_b",
+                kind: nebula_core::dependencies::SlotKind::Credential {
+                    type_id: std::any::TypeId::of::<FakeCred>(),
+                    type_name: std::any::type_name::<FakeCred>(),
+                    key: nebula_core::credential_key!("epochfold.fake"),
+                },
+                required: true,
+                lazy: false,
+                purpose: None,
+            })
+    }
 }
 
 #[async_trait::async_trait]
@@ -344,6 +394,69 @@ async fn resident_reconcile_fires_when_non_max_slot_rotates() {
     );
 }
 
+/// Unknown-slot validation: `TwoSlotResident` declares exactly
+/// `slot_a`/`slot_b` (via `HasCredentialSlots::credential_slot_names`,
+/// migrated above). Rotation against a slot name it does NOT declare must
+/// be rejected with a typed `unknown_credential_slot` error — never
+/// silently dispatched to `on_credential_refresh` for a name the resource
+/// never claimed.
+#[tokio::test]
+async fn refresh_slot_rejects_a_name_not_in_the_declared_slot_list() {
+    let slot_a: SlotCell<CredentialGuard<FakeCred>> = SlotCell::empty();
+    let slot_b: SlotCell<CredentialGuard<FakeCred>> = SlotCell::empty();
+    slot_a.store(Arc::new(CredentialGuard::new(FakeCred(1))));
+    slot_b.store(Arc::new(CredentialGuard::new(FakeCred(2))));
+
+    let refresh_calls = Arc::new(AtomicUsize::new(0));
+    let resource = TwoSlotResident {
+        slot_a: Arc::new(slot_a),
+        slot_b: Arc::new(slot_b),
+        refresh_calls: Arc::clone(&refresh_calls),
+    };
+
+    let mgr = Manager::new();
+    mgr.register(RegistrationSpec {
+        resource: resource.clone(),
+        config: RaceCfg,
+        scope: ScopeLevel::Global,
+        slot_identity: SlotIdentity::Unbound,
+        topology: Resident::<TwoSlotResident>::new(ResidentConfig::default()),
+        recovery_gate: None,
+    })
+    .expect("resident registration must succeed");
+
+    let err = mgr
+        .refresh_slot(&TwoSlotResident::key(), ScopeLevel::Global, "slot_c")
+        .await
+        .expect_err("an undeclared slot name must be rejected, not dispatched");
+
+    assert!(
+        !err.is_retryable(),
+        "unknown_credential_slot is a permanent caller/wiring fault, got: {err:?}"
+    );
+    let msg = err.to_string();
+    assert!(
+        msg.contains("slot_c") && msg.contains("unknown credential slot"),
+        "expected an unknown-credential-slot rejection naming the bad slot, got: {msg}"
+    );
+    assert_eq!(
+        refresh_calls.load(Ordering::SeqCst),
+        0,
+        "on_credential_refresh must never dispatch for an undeclared slot name"
+    );
+
+    // The identity-pinned + taint/revoke entry points are validated through
+    // the same shared `accepts_credential_slot_name` gate — spot-check
+    // `taint_slot` too so the fix is proven at more than one call site.
+    let taint_err = mgr
+        .taint_slot(&TwoSlotResident::key(), ScopeLevel::Global, "slot_c")
+        .expect_err("taint_slot must also reject the undeclared slot name");
+    assert!(
+        taint_err.to_string().contains("slot_c"),
+        "expected the same unknown-slot rejection from taint_slot, got: {taint_err}"
+    );
+}
+
 // ── Part 3: type-level `declares_credential_slots` signal (ADR-0093) ──
 //
 // The derive emits `true` when the struct has >=1 `#[credential]` field and
@@ -385,10 +498,24 @@ fn declares_credential_slots_reflects_credential_fields() {
         !NoSlotDerived::declares_credential_slots(),
         "a derived slot-less resource must not declare credential slots"
     );
-    // Hand-written `impl HasCredentialSlots` (no derive) → trait default false.
+    // `TwoSlotResident` is a hand-written impl that DOES override this (see
+    // its `HasCredentialSlots` impl above, migrated for unknown-slot
+    // validation) — it honestly reports its two real credential slots
+    // rather than the trait default.
     assert!(
-        !TwoSlotResident::declares_credential_slots(),
-        "a hand-written HasCredentialSlots impl defaults to false"
+        TwoSlotResident::declares_credential_slots(),
+        "TwoSlotResident overrides the trait default to report its two \
+         real credential slots"
+    );
+    // A hand-written `impl HasCredentialSlots` that does NOT override this
+    // method keeps the trait default (false) — the common case for a
+    // resource with no `#[credential]` field at all.
+    struct BareHandWritten;
+    nebula_resource::no_credential_slots!(BareHandWritten);
+    assert!(
+        !BareHandWritten::declares_credential_slots(),
+        "a hand-written HasCredentialSlots impl that does not override \
+         declares_credential_slots keeps the trait default of false"
     );
 }
 

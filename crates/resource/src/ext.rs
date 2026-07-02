@@ -71,7 +71,7 @@ use nebula_core::context::HasResources;
 
 use crate::{
     Provider, ResourceGuard,
-    error::{Error, ErrorKind},
+    error::{Error, guard_type_mismatch},
 };
 
 /// Sealing module — keeps [`HasResourcesExt`] closed to external impls.
@@ -162,16 +162,7 @@ impl<C: HasResources + ?Sized> HasResourcesExt for C {
         boxed
             .downcast::<ResourceGuard<R>>()
             .map(|b| *b)
-            .map_err(|_| {
-                Error::new(
-                    ErrorKind::Permanent,
-                    format!(
-                        "resource type mismatch: expected ResourceGuard<{}> for key `{key}`",
-                        std::any::type_name::<R>(),
-                    ),
-                )
-                .with_resource_key(key)
-            })
+            .map_err(|_| guard_type_mismatch::<R>(key))
     }
 
     async fn try_resource<R: Provider>(&self) -> Result<Option<ResourceGuard<R>>, Error>
@@ -184,16 +175,7 @@ impl<C: HasResources + ?Sized> HasResourcesExt for C {
                 let guard = boxed
                     .downcast::<ResourceGuard<R>>()
                     .map(|b| *b)
-                    .map_err(|_| {
-                        Error::new(
-                            ErrorKind::Permanent,
-                            format!(
-                                "resource type mismatch: expected ResourceGuard<{}> for key `{key}`",
-                                std::any::type_name::<R>(),
-                            ),
-                        )
-                        .with_resource_key(key.clone())
-                    })?;
+                    .map_err(|_| guard_type_mismatch::<R>(key.clone()))?;
                 Ok(Some(guard))
             },
             Ok(None) => Ok(None),

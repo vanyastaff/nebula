@@ -60,8 +60,11 @@ use nebula_credential::{CredentialGuard, CredentialId};
 use nebula_resource::Resident;
 use nebula_resource::{
     AcquireOptions, Manager, ManagerConfig, Provider, RegistrationSpec, ResidentConfig,
-    ResourceConfig, ResourceContext, SlotCell, SlotIdentity, error::Error as ResourceError,
-    events::ResourceEvent, resource::ResourceMetadata, topology::resident::ResidentProvider,
+    ResourceConfig, ResourceContext, SlotCell, SlotIdentity,
+    error::Error as ResourceError,
+    events::ResourceEvent,
+    resource::{HasCredentialSlots, ResourceMetadata},
+    topology::resident::ResidentProvider,
 };
 use nebula_resource::{ResourceFanoutIndex, RotationOutcome};
 use tokio_util::sync::CancellationToken;
@@ -273,9 +276,26 @@ impl Provider for SecretBearingResource {
     }
 }
 
-impl nebula_resource::HasCredentialSlots for SecretBearingResource {
+impl HasCredentialSlots for SecretBearingResource {
+    // The rotation hooks borrow the runtime, not `db` (see the field doc
+    // above), so this fixture never mutates the cell's generation — the
+    // constant-0 epoch `no_credential_slots!` used to emit is preserved
+    // verbatim; only the declared-slot signal below changes.
     fn credential_slot_epoch(&self) -> u64 {
         0
+    }
+
+    // `db` is a real `#[credential]`-shaped slot field — the resource is
+    // driven through `refresh_slot_for`/`revoke_slot_for(..., "db")` (see
+    // the module docs). Declaring it makes those calls exercise the real
+    // unknown-slot validation path against a genuine declared slot name,
+    // rather than a fixture that never declares any slot at all.
+    fn declares_credential_slots() -> bool {
+        true
+    }
+
+    fn credential_slot_names() -> &'static [&'static str] {
+        &["db"]
     }
 }
 
@@ -362,10 +382,9 @@ async fn setup(
     Arc<nebula_metrics::MetricsRegistry>,
 ) {
     let registry = Arc::new(nebula_metrics::MetricsRegistry::new());
-    let mgr = Arc::new(Manager::with_config(ManagerConfig {
-        metrics_registry: Some(Arc::clone(&registry)),
-        ..ManagerConfig::default()
-    }));
+    let mgr = Arc::new(Manager::with_config(
+        ManagerConfig::default().with_metrics_registry(Arc::clone(&registry)),
+    ));
     let idx = ResourceFanoutIndex::new();
     let cid = CredentialId::new();
     let org = OrgId::new();

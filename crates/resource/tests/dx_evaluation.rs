@@ -15,7 +15,6 @@ use nebula_resource::{
     AcquireOptions, Manager, PoolConfig, Pooled, Provider, RegistrationSpec, ResidentConfig,
     ResourceConfig, ResourceContext, ScopeLevel, ShutdownConfig, SlotIdentity,
     error::{Error, ErrorKind},
-    resource::HasCredentialSlots,
     resource_key,
     topology::{Resident, pooled::BrokenCheck, resident::ResidentProvider},
 };
@@ -98,11 +97,7 @@ impl Provider for HttpResource {
     }
 }
 
-impl HasCredentialSlots for HttpResource {
-    fn credential_slot_epoch(&self) -> u64 {
-        0
-    }
-}
+nebula_resource::no_credential_slots!(HttpResource);
 
 #[async_trait::async_trait]
 impl PoolProvider for HttpResource {
@@ -252,11 +247,7 @@ impl Provider for ConfigStoreResource {
     }
 }
 
-impl HasCredentialSlots for ConfigStoreResource {
-    fn credential_slot_epoch(&self) -> u64 {
-        0
-    }
-}
+nebula_resource::no_credential_slots!(ConfigStoreResource);
 
 // [FRICTION #8] Resident trait has a `where Self::Lease: Clone` bound on the
 // trait itself. This is fine, my Lease is Clone. But it's an unusual pattern —
@@ -390,11 +381,7 @@ impl Provider for DbResource {
     }
 }
 
-impl HasCredentialSlots for DbResource {
-    fn credential_slot_epoch(&self) -> u64 {
-        0
-    }
-}
+nebula_resource::no_credential_slots!(DbResource);
 
 #[async_trait::async_trait]
 impl PoolProvider for DbResource {}

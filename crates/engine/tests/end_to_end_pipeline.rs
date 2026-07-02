@@ -193,11 +193,7 @@ impl Provider for WitnessResource {
     }
 }
 
-impl nebula_resource::HasCredentialSlots for WitnessResource {
-    fn credential_slot_epoch(&self) -> u64 {
-        0
-    }
-}
+nebula_resource::no_credential_slots!(WitnessResource);
 
 #[async_trait::async_trait]
 impl ResidentProvider for WitnessResource {

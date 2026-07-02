@@ -30,7 +30,7 @@ use crate::{
 /// Shared by the manager-wide [`Manager::wait_for_drain`] (drains
 /// `Manager::drain_tracker` for `graceful_shutdown`) and the per-resource
 /// drain in `Manager::revoke_resolved` (drains a single
-/// [`ManagedResource`](crate::runtime::managed::ManagedResource)'s own
+/// [`ManagedResource`](crate::ManagedResource)'s own
 /// in-flight tracker). This helper is the single source of the subtle
 /// lost-wakeup ordering — it is written **once** here rather than
 /// duplicated per call site (a structural guarantee, not a discipline one);
@@ -179,6 +179,19 @@ impl Manager {
     ///     .expect("graceful shutdown should succeed");
     /// # }
     /// ```
+    ///
+    /// # Errors
+    ///
+    /// - [`ShutdownError::AlreadyShuttingDown`] if a concurrent caller already
+    ///   won the CAS — shutdown is one-shot, not re-entrant.
+    /// - [`ShutdownError::DrainTimeout`] if in-flight handles do not release
+    ///   within [`ShutdownConfig::drain_timeout`] and
+    ///   [`ShutdownConfig::on_drain_timeout`] is
+    ///   [`DrainTimeoutPolicy::Abort`] (the registry is left un-cleared so a
+    ///   caller can inspect what is still outstanding).
+    /// - [`ShutdownError::ReleaseQueueTimeout`] if the release-queue workers
+    ///   do not finish draining within
+    ///   [`ShutdownConfig::release_queue_timeout`].
     ///
     /// # Cancel safety
     ///

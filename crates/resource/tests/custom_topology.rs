@@ -1,12 +1,12 @@
 //! Standalone shape test for a custom `impl Topology<R>` under the inverted,
-//! slot-centric contract.
+//! entry-centric contract.
 //!
 //! Verifies that an author-defined topology:
 //! - compiles and satisfies the `Topology<R>` trait contract with only the thin
-//!   slot-centric hooks (`try_reserve` / `create_slot` / `slot_instance` /
+//!   entry-centric hooks (`try_reserve` / `create_entry` / `entry_instance` /
 //!   `into_instance` / `pools` / `store_capacity`);
 //! - drives `try_reserve` admission (Saturated when the semaphore is exhausted);
-//! - produces slots via `create_slot` that project + consume cleanly;
+//! - produces entries via `create_entry` that project + consume cleanly;
 //! - gets the revoke-epoch fence **for free** via the framework-owned
 //!   `InstanceStore` (the topology writes no fence code).
 //!
@@ -18,7 +18,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use nebula_core::{ResourceKey, resource_key};
 use nebula_resource::error::Error;
-use nebula_resource::resource::{HasCredentialSlots, Provider, ResourceConfig, ResourceMetadata};
+use nebula_resource::resource::{Provider, ResourceConfig, ResourceMetadata};
 use nebula_resource::topology::{
     AdmissionPhase, InstanceStore, ReturnOutcome, Ticket, Topology, Unavailable,
 };
@@ -43,7 +43,7 @@ struct PermitRes;
 impl Provider for PermitRes {
     type Config = PermitCfg;
     type Instance = u32;
-    type Topology = SlotPool;
+    type Topology = EntryPool;
 
     fn key() -> ResourceKey {
         resource_key!("custom.standalone.permit")
@@ -62,23 +62,19 @@ impl Provider for PermitRes {
     }
 }
 
-impl HasCredentialSlots for PermitRes {
-    fn credential_slot_epoch(&self) -> u64 {
-        0
-    }
-}
+nebula_resource::no_credential_slots!(PermitRes);
 
-// ─── A slot-storing custom topology over the framework store ─────────────────
+// ─── An entry-storing custom topology over the framework store ─────────────────
 
-/// A bespoke pool whose `Slot = u32`. It supplies only the slot-centric hooks;
+/// A bespoke pool whose `Entry = u32`. It supplies only the entry-centric hooks;
 /// the framework owns the idle store, the checkout, and the revoke fence. The
 /// topology holds only a semaphore + capacity — no `InstanceStore`.
-struct SlotPool {
+struct EntryPool {
     sem: Arc<Semaphore>,
     cap: usize,
 }
 
-impl SlotPool {
+impl EntryPool {
     fn new(cap: usize) -> Self {
         Self {
             sem: Arc::new(Semaphore::new(cap)),
@@ -88,8 +84,8 @@ impl SlotPool {
 }
 
 #[async_trait]
-impl Topology<PermitRes> for SlotPool {
-    type Slot = u32;
+impl Topology<PermitRes> for EntryPool {
+    type Entry = u32;
 
     fn try_reserve(&self, _store: &InstanceStore<u32>) -> Result<Ticket, Unavailable> {
         self.sem
@@ -99,7 +95,7 @@ impl Topology<PermitRes> for SlotPool {
             .map_err(|_| Unavailable::Saturated { retry_after: None })
     }
 
-    async fn create_slot(
+    async fn create_entry(
         &self,
         resource: &PermitRes,
         config: &PermitCfg,
@@ -108,12 +104,12 @@ impl Topology<PermitRes> for SlotPool {
         resource.create(config, ctx).await
     }
 
-    fn slot_instance<'s>(&self, slot: &'s u32) -> &'s u32 {
-        slot
+    fn entry_instance<'s>(&self, entry: &'s u32) -> &'s u32 {
+        entry
     }
 
-    fn into_instance(&self, slot: u32) -> u32 {
-        slot
+    fn into_instance(&self, entry: u32) -> u32 {
+        entry
     }
 
     fn pools(&self) -> bool {
@@ -150,7 +146,7 @@ fn test_ctx() -> ResourceContext {
 #[tokio::test]
 async fn try_reserve_admission_and_phase() {
     let store: InstanceStore<u32> = InstanceStore::new(Some(2));
-    let topo = SlotPool::new(2);
+    let topo = EntryPool::new(2);
 
     assert_eq!(
         Topology::<PermitRes>::phase(&topo, &store),
@@ -179,57 +175,57 @@ async fn try_reserve_admission_and_phase() {
     );
 }
 
-/// `create_slot` builds a slot; `slot_instance` / `into_instance` project and
+/// `create_entry` builds an entry; `entry_instance` / `into_instance` project and
 /// consume it cleanly.
 #[tokio::test]
-async fn create_slot_and_projections() {
-    let topo = SlotPool::new(2);
+async fn create_entry_and_projections() {
+    let topo = EntryPool::new(2);
     let resource = PermitRes;
-    let slot = topo
-        .create_slot(&resource, &PermitCfg, &test_ctx())
+    let entry = topo
+        .create_entry(&resource, &PermitCfg, &test_ctx())
         .await
-        .expect("create_slot");
-    assert_eq!(*topo.slot_instance(&slot), 42);
-    assert_eq!(topo.into_instance(slot), 42);
+        .expect("create_entry");
+    assert_eq!(*topo.entry_instance(&entry), 42);
+    assert_eq!(topo.into_instance(entry), 42);
     assert!(Topology::<PermitRes>::pools(&topo));
     assert_eq!(Topology::<PermitRes>::store_capacity(&topo), Some(2));
 }
 
 /// The revoke-epoch fence runs on the **framework** `InstanceStore`, not in the
-/// topology: a slot returned at the pre-bump epoch is evicted on return after a
+/// topology: an entry returned at the pre-bump epoch is evicted on return after a
 /// bump. The custom topology writes no fence code — it gets this for free.
 #[tokio::test]
-async fn slot_revoke_fence_via_framework_store() {
+async fn entry_revoke_fence_via_framework_store() {
     let store: InstanceStore<u32> = InstanceStore::new(Some(4));
 
-    // A slot goes idle at epoch 0.
+    // An entry goes idle at epoch 0.
     let epoch = store.stamp_epoch();
     assert_eq!(
-        store.return_slot(7u32, epoch).await,
+        store.return_entry(7u32, epoch).await,
         ReturnOutcome::Recycled
     );
 
     // Credential revoke: advance the epoch.
     store.bump_revoke_epoch();
 
-    // Return another slot stamped at epoch 0 — the framework fence evicts it.
-    let outcome = store.return_slot(9u32, epoch).await;
+    // Return another entry stamped at epoch 0 — the framework fence evicts it.
+    let outcome = store.return_entry(9u32, epoch).await;
     assert!(
         outcome.is_evict(),
-        "a slot checked out before a revoke must be evicted by the framework \
+        "an entry checked out before a revoke must be evicted by the framework \
          store fence — the custom topology writes no fence code"
     );
 
-    // The first (already-idle, pre-revoke) slot is evicted on checkout.
+    // The first (already-idle, pre-revoke) entry is evicted on checkout.
     let checkout = store.checkout().await;
     assert!(
         checkout.fresh.is_none(),
-        "a slot idle since before the revoke must never be handed out as fresh"
+        "an entry idle since before the revoke must never be handed out as fresh"
     );
     assert_eq!(
         checkout.stale,
         vec![7u32],
-        "the framework collects the since-revoked idle slot for destruction"
+        "the framework collects the since-revoked idle entry for destruction"
     );
 }
 

@@ -64,11 +64,7 @@ impl Provider for HttpResource {
     }
 }
 
-impl HasCredentialSlots for HttpResource {
-    fn credential_slot_epoch(&self) -> u64 {
-        0
-    }
-}
+nebula_resource::no_credential_slots!(HttpResource);
 
 #[async_trait::async_trait]
 impl PoolProvider for HttpResource {

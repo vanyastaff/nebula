@@ -210,7 +210,7 @@
 //!   lazily) — no eager drain-then-rebuild redesign was needed; see the
 //!   **accepted relabel** note below.
 //! - **Pool `CreateGuard` cancel-drop — residual saturation-only leak — LOW**
-//!   ([#713]). The main cancel-drop path is **closed**: `SlotCreateGuard::drop`
+//!   ([#713]). The main cancel-drop path is **closed**: `EntryCreateGuard::drop`
 //!   schedules `destroy_within` via the `ReleaseQueue` (see
 //!   `runtime/acquire_loop.rs`), proven by
 //!   `slot_create_guard_drop_destroys_via_release_queue`. The residual: under
@@ -280,12 +280,6 @@
 //!
 //! ## Accepted carve-outs (recorded, not silently inherited)
 //!
-//! - **`reload_config` returns `ReloadOutcome::SwappedImmediately` for all
-//!   variants.** `reload_config` swaps the config `ArcSwap` (and the Pool
-//!   fingerprint) but never drains or rebuilds the live runtime for any
-//!   topology — that missing behavior is exactly [#712]. The enum label is
-//!   accurate for the current behavior; the missing drain/rebuild is the
-//!   deferred work.
 //! - **`register_resolved` carries one `// guard-justified:`
 //!   `#[allow(clippy::too_many_arguments)]`.** The four register-chain
 //!   `too_many_arguments` allows the collapse targeted are gone; this last
@@ -333,7 +327,7 @@ use std::{
     time::Instant,
 };
 
-use nebula_core::{LayerLifecycle, ResourceKey, ScopeLevel};
+use nebula_core::{LayerLifecycle, ResourceKey, ScopeLevel, context::Context as _};
 use nebula_eventbus::EventBus;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
@@ -364,6 +358,7 @@ pub use shutdown::{ShutdownError, ShutdownReport};
 
 /// Snapshot of a resource's health and operational state.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct ResourceHealthSnapshot {
     /// The resource's unique key.
     pub key: ResourceKey,
@@ -386,12 +381,18 @@ pub struct ResourceHealthSnapshot {
 /// Thread-safe: all internal state is behind concurrent data structures.
 /// Share via `Arc<Manager>` across tasks.
 ///
-/// Slot-identity-pinned acquire (the `*_for` entry points —
-/// `acquire_{pooled,resident,service,transport,exclusive}_for`) exists for
-/// every topology: it resolves the registry row whose resolved
-/// `slot_identity` matches, so a caller that resolved tenant A's credential
-/// reaches tenant A's runtime and never tenant B's. The identity-agnostic
-/// `acquire_*` methods stay fail-closed for the no-identity caller: under a
+/// Slot-identity-pinned acquire (the `*_for_identity` entry points —
+/// [`acquire_pooled_for_identity`](Self::acquire_pooled_for_identity),
+/// [`acquire_resident_for_identity`](Self::acquire_resident_for_identity),
+/// [`acquire_bounded_for_identity`](Self::acquire_bounded_for_identity))
+/// exists for every built-in topology: it resolves the registry row whose
+/// resolved `slot_identity` matches, so a caller that resolved tenant A's
+/// credential reaches tenant A's runtime and never tenant B's. The
+/// identity-agnostic [`acquire_pooled`](Self::acquire_pooled) /
+/// [`acquire_resident`](Self::acquire_resident) /
+/// [`acquire_bounded`](Self::acquire_bounded) /
+/// [`acquire_any`](Self::acquire_any) methods stay fail-closed for the
+/// no-identity caller: under a
 /// multi-tenant `(key, scope)` (more than one resolved-credential
 /// registration) they return
 /// [`ErrorKind::Ambiguous`](crate::error::ErrorKind::Ambiguous) rather than
@@ -418,6 +419,29 @@ pub struct Manager {
     pub(super) shutting_down: AtomicBool,
     /// Optional lifecycle handle for coordinated cancellation (spec 08).
     pub(super) lifecycle: Option<LayerLifecycle>,
+    /// Manager-wide default acquire-slow-log threshold. See
+    /// [`ManagerConfig::acquire_slow_threshold`] for the WARN contract;
+    /// [`AcquireOptions::acquire_slow_threshold`](crate::options::AcquireOptions::acquire_slow_threshold)
+    /// overrides this per call.
+    pub(super) acquire_slow_threshold: Option<std::time::Duration>,
+}
+
+impl std::fmt::Debug for Manager {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // `registry` holds live `R`-typed resources and `lifecycle`
+        // (`LayerLifecycle`) is not `Debug`; print the process-visible
+        // state (shutdown flag, tuning knobs) instead of walking either.
+        f.debug_struct("Manager")
+            .field(
+                "shutting_down",
+                &self
+                    .shutting_down
+                    .load(std::sync::atomic::Ordering::Relaxed),
+            )
+            .field("has_metrics", &self.metrics.is_some())
+            .field("acquire_slow_threshold", &self.acquire_slow_threshold)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Manager {
@@ -428,6 +452,7 @@ impl Manager {
 
     /// Creates a new empty manager with the given configuration.
     pub fn with_config(config: ManagerConfig) -> Self {
+        Self::warn_once_if_panic_abort();
         let event_bus = Arc::new(EventBus::new(256));
         let cancel = CancellationToken::new();
         let (release_queue, release_queue_handle) =
@@ -443,6 +468,7 @@ impl Manager {
                         None
                     },
                 });
+        let acquire_slow_threshold = config.acquire_slow_threshold;
         Self {
             registry: Registry::new(),
             cancel,
@@ -453,8 +479,41 @@ impl Manager {
             drain_tracker: Arc::new((AtomicU64::new(0), Notify::new())),
             shutting_down: AtomicBool::new(false),
             lifecycle: None,
+            acquire_slow_threshold,
         }
     }
+
+    /// One-time, process-wide honesty check for `panic = "abort"` builds.
+    /// Every author-hook dispatch in this crate
+    /// ([`guard_author_hook`](crate::hook_guard::guard_author_hook)) bounds a
+    /// `Provider`/`Topology` hook with a timeout *and* isolates a panic via
+    /// `catch_unwind` — but `catch_unwind` cannot catch anything under
+    /// `panic = "abort"`: the process aborts immediately on panic, before
+    /// unwinding (and therefore `catch_unwind`) ever runs. A workspace built
+    /// with the release-profile default (`panic = "abort"`) therefore gets
+    /// the timeout bound only; a panicking hook takes the process down with
+    /// it. This is a one-time, not a per-call, warning — the cost is fixed
+    /// (a build-time profile choice), not per-dispatch.
+    ///
+    /// `#[cfg(panic = "abort")]` is a compile-time check (stable since Rust
+    /// 1.60): the warning is compiled in only for a binary actually built
+    /// under that panic strategy, not evaluated at runtime.
+    #[cfg(panic = "abort")]
+    fn warn_once_if_panic_abort() {
+        static WARNED: std::sync::Once = std::sync::Once::new();
+        WARNED.call_once(|| {
+            tracing::warn!(
+                "nebula-resource: this build uses panic = \"abort\" — author-hook \
+                 panic isolation (guard_author_hook's catch_unwind) is inert under \
+                 abort: a panicking Provider/Topology hook takes the whole process \
+                 down instead of being caught and converted to a typed error. The \
+                 hook-dispatch TIMEOUT bound still applies. See ADR-0093."
+            );
+        });
+    }
+
+    #[cfg(not(panic = "abort"))]
+    fn warn_once_if_panic_abort() {}
 
     /// Attaches a [`LayerLifecycle`] for coordinated cancellation (spec 08).
     ///
@@ -653,24 +712,28 @@ impl Manager {
         })
     }
 
-    /// Records acquire success/failure in aggregate metrics and emits
-    /// the corresponding [`ResourceEvent`].
+    /// Records acquire success/failure in aggregate metrics, the acquire-wait
+    /// histogram, and emits the corresponding [`ResourceEvent`]; also checks
+    /// the acquire-slow-log threshold.
     fn record_acquire_result<R: Provider>(
         &self,
         result: &Result<crate::guard::ResourceGuard<R>, Error>,
         started: Instant,
+        ctx: &crate::context::ResourceContext,
+        options: &crate::options::AcquireOptions,
     ) {
         // Resolve the resource key once: `R::key()` re-validates and re-interns
         // the literal on each call, and the error path emits up to two events.
         let key = R::key();
+        let elapsed = started.elapsed();
         match result {
             Ok(_) => {
                 if let Some(m) = &self.metrics {
                     m.record_acquire();
                 }
                 self.emit(ResourceEvent::AcquireSuccess {
-                    key,
-                    duration: started.elapsed(),
+                    key: key.clone(),
+                    duration: elapsed,
                 });
             },
             Err(e) => {
@@ -688,11 +751,44 @@ impl Manager {
                     self.emit(ResourceEvent::BackpressureDetected { key: key.clone() });
                 }
                 self.emit(ResourceEvent::AcquireFailed {
-                    key,
+                    key: key.clone(),
                     kind: e.kind().clone(),
                     error: e.to_string(),
                 });
             },
+        }
+
+        // Acquire wait-time histogram + waited/timed-out counters. A
+        // deadline is "timed out" when it had already elapsed by the time
+        // this (failed) acquire completed — mirrors sqlx/bb8's notion of an
+        // acquire timeout, independent of which internal error path produced
+        // the failure. Reuses the completion instant already captured in
+        // `elapsed` (`started + elapsed`) rather than a fresh `Instant::now()`
+        // here: the event emission above takes nonzero time, so a fresh read
+        // could observe the deadline as elapsed even for a failure that
+        // actually completed strictly before it.
+        if let Some(m) = &self.metrics {
+            let completed_at = started + elapsed;
+            let timed_out = result.is_err() && options.deadline.is_some_and(|d| completed_at >= d);
+            m.record_acquire_wait(elapsed, timed_out);
+        }
+
+        // Acquire-slow-log threshold — at most one WARN per acquire,
+        // checked once here at completion. `AcquireOptions` overrides the
+        // manager-wide default.
+        if let Some(threshold) = options
+            .acquire_slow_threshold
+            .or(self.acquire_slow_threshold)
+            && elapsed > threshold
+        {
+            tracing::warn!(
+                target: "resource",
+                %key,
+                scope = ?ctx.scope(),
+                elapsed = ?elapsed,
+                threshold = ?threshold,
+                "acquire exceeded the slow-acquire threshold"
+            );
         }
     }
 
@@ -725,35 +821,61 @@ fn resolve_json_templates(
     engine: &nebula_expression::ExpressionEngine,
     ctx: &nebula_expression::EvaluationContext,
 ) -> Result<serde_json::Value, Error> {
+    resolve_json_templates_at("", value, engine, ctx)
+}
+
+/// [`resolve_json_templates`]'s recursive worker, threading a `/`-joined
+/// JSON-pointer-ish breadcrumb (object keys / array indices from the
+/// document root) down to the value currently being resolved.
+///
+/// `path` names *where* a template failed in an error message — never the
+/// field's own string value, which is caller-supplied config JSON and may
+/// carry a misconfigured secret or other PII (the operator's `{{ }}`
+/// template source, not just its rendered output). The underlying
+/// template-engine error is still chained via `with_source`, so the real
+/// cause is never lost — only the raw offending string is kept out of the
+/// message text.
+fn resolve_json_templates_at(
+    path: &str,
+    value: serde_json::Value,
+    engine: &nebula_expression::ExpressionEngine,
+    ctx: &nebula_expression::EvaluationContext,
+) -> Result<serde_json::Value, Error> {
     use serde_json::Value;
     match value {
         Value::String(s) => {
             if !s.contains("{{") {
                 return Ok(Value::String(s));
             }
+            let field = if path.is_empty() { "<root>" } else { path };
             let template = engine.parse_template(&s).map_err(|e| {
                 Error::permanent(format!(
-                    "register_resolved: template parse failed for `{s}`: {e}"
+                    "register_resolved: template parse failed at `{field}`"
                 ))
+                .with_source(e)
             })?;
             let rendered = engine.render_template(&template, ctx).map_err(|e| {
                 Error::permanent(format!(
-                    "register_resolved: template render failed for `{s}`: {e}"
+                    "register_resolved: template render failed at `{field}`"
                 ))
+                .with_source(e)
             })?;
             Ok(Value::String(rendered))
         },
         Value::Array(items) => {
             let mut out = Vec::with_capacity(items.len());
-            for item in items {
-                out.push(resolve_json_templates(item, engine, ctx)?);
+            for (i, item) in items.into_iter().enumerate() {
+                let child_path = format!("{path}/{i}");
+                out.push(resolve_json_templates_at(&child_path, item, engine, ctx)?);
             }
             Ok(Value::Array(out))
         },
         Value::Object(map) => {
             let mut out = serde_json::Map::with_capacity(map.len());
             for (k, v) in map {
-                out.insert(k, resolve_json_templates(v, engine, ctx)?);
+                let child_path = format!("{path}/{k}");
+                let resolved = resolve_json_templates_at(&child_path, v, engine, ctx)?;
+                out.insert(k, resolved);
             }
             Ok(Value::Object(out))
         },
@@ -864,7 +986,7 @@ mod shutdown_post_count_race_tests {
         context::ResourceContext,
         error::ErrorKind,
         options::AcquireOptions,
-        resource::{HasCredentialSlots, ResourceConfig, ResourceMetadata},
+        resource::{ResourceConfig, ResourceMetadata},
         topology::{Resident, resident::config::Config as ResidentConfig},
     };
 
@@ -902,11 +1024,7 @@ mod shutdown_post_count_race_tests {
         }
     }
 
-    impl HasCredentialSlots for ShutdownRaceResident {
-        fn credential_slot_epoch(&self) -> u64 {
-            0
-        }
-    }
+    crate::no_credential_slots!(ShutdownRaceResident);
 
     impl crate::topology::ResidentProvider for ShutdownRaceResident {
         fn is_alive_sync(&self, _runtime: &()) -> bool {
@@ -984,11 +1102,16 @@ mod shutdown_post_count_race_tests {
         // `0` and the registry was cleared. The post-count re-check is the
         // last line of defense; it must reject.
         let result = manager
-            .run_acquire(Arc::clone(&managed), || {
-                let managed = Arc::clone(&managed);
-                let ctx = &acquire_ctx;
-                async move { race_resident_acquire(&managed, ctx).await }
-            })
+            .run_acquire(
+                Arc::clone(&managed),
+                &acquire_ctx,
+                &AcquireOptions::default(),
+                || {
+                    let managed = Arc::clone(&managed);
+                    let ctx = &acquire_ctx;
+                    async move { race_resident_acquire(&managed, ctx).await }
+                },
+            )
             .await;
 
         match result {
@@ -1031,11 +1154,16 @@ mod shutdown_post_count_race_tests {
             .expect("lookup succeeds");
 
         let result = manager
-            .run_acquire(Arc::clone(&managed), || {
-                let managed = Arc::clone(&managed);
-                let ctx = &acquire_ctx;
-                async move { race_resident_acquire(&managed, ctx).await }
-            })
+            .run_acquire(
+                Arc::clone(&managed),
+                &acquire_ctx,
+                &AcquireOptions::default(),
+                || {
+                    let managed = Arc::clone(&managed);
+                    let ctx = &acquire_ctx;
+                    async move { race_resident_acquire(&managed, ctx).await }
+                },
+            )
             .await;
 
         let guard = result.expect("acquire must succeed when not shutting down");

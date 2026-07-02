@@ -11,7 +11,7 @@ use super::Manager;
 use crate::{
     error::Error,
     events::ResourceEvent,
-    hook_guard::{DEFAULT_AUTHOR_HOOK_CEILING, HookFault, guard_author_hook},
+    hook_guard::{HookFault, guard_author_hook},
 };
 
 /// A resource registry row whose credential slot has been **synchronously
@@ -218,11 +218,44 @@ impl Manager {
         let started = Instant::now();
         tracing::Span::current().record("topology", managed.topology_tag().as_str());
 
-        // Bound + isolate the author's `on_credential_refresh` hook: one that
-        // hangs or panics must fail closed as a recorded refresh outcome, never
-        // wedge or crash the rotation fan-out. No caller threads a refresh
-        // budget here, so the framework ceiling is the backstop — which is what
-        // makes the `timed_out` outcome reachable for refresh at all.
+        // Unknown-slot validation: reject a slot name the resource type does
+        // not declare, before the author's `on_credential_refresh` hook ever
+        // dispatches. See `ManagedHandle::accepts_credential_slot_name` — a
+        // type that declares no credential slots at all rejects every slot
+        // name (fail closed: nothing to rotate). Still recorded as a real
+        // `Failed` dispatch outcome and `SlotRefreshFailed` event — a
+        // rejected call is observably a failed refresh to any subscriber
+        // counting attempts, not a silent no-op that would undercount
+        // `attempts` relative to `success + failed + timed_out`.
+        if !managed.accepts_credential_slot_name(slot) {
+            let err = Error::unknown_credential_slot(key.clone(), slot);
+            if let Some(m) = &self.metrics {
+                m.record_slot_refresh_outcome(crate::metrics::SlotDispatchOutcome::Failed);
+            }
+            self.emit(ResourceEvent::SlotRefreshFailed {
+                key: key.clone(),
+                slot: slot.to_owned(),
+                error: err.to_string(),
+            });
+            tracing::warn!(error = %err, "slot refresh rejected: unknown credential slot");
+            return Err(err);
+        }
+
+        // Outer framework backstop over the WHOLE dispatch (topology
+        // lock-wait + the already inner-bounded hook(s) — two-tier
+        // shape, mirroring `MAX_TEARDOWN_CEILING`). No caller threads a
+        // refresh budget here, so this constant is the only backstop; it
+        // must sit above the per-hook inner ceiling
+        // (`DEFAULT_AUTHOR_HOOK_CEILING`, applied INSIDE
+        // `dispatch_on_refresh` after the topology's own lock is held — see
+        // `Resident::dispatch_resident_hook` /
+        // `Pooled::dispatch_credential_hook`) so it only trips on a
+        // genuinely wedged lock-wait, not a normal per-hook timeout. A
+        // per-hook fault is therefore normally already a plain `Err` by the
+        // time it reaches this outer guard (caught and converted at the
+        // inner layer) — this outer `catch_unwind` is a backstop against
+        // wedged/panicking *framework* code around the dispatch, not the
+        // primary hook-panic isolation mechanism anymore.
         //
         // SAFETY (unwind): the dispatch only mutates the author's own borrowed
         // instances under the store lock; a caught panic drops that lock guard
@@ -230,7 +263,7 @@ impl Manager {
         // at worst one instance is left un-refreshed (re-refreshed or evicted on
         // a later sweep), never a torn store.
         let guarded = guard_author_hook(
-            DEFAULT_AUTHOR_HOOK_CEILING,
+            crate::hook_guard::MAX_ROTATION_DISPATCH_CEILING,
             managed.dispatch_on_refresh(slot),
         )
         .await;
@@ -337,7 +370,7 @@ impl Manager {
         slot_identity: &crate::dedup::SlotIdentity,
     ) -> Result<TaintedSlot, Error> {
         let managed = self.lookup_any_for_slot_identity_structural(key, &scope, slot_identity)?;
-        Ok(Self::taint_now(key, slot, managed))
+        self.taint_now(key, slot, managed)
     }
 
     /// [`taint_slot_for_identity`](Self::taint_slot_for_identity) for the
@@ -373,11 +406,12 @@ impl Manager {
         slot: &str,
     ) -> Result<TaintedSlot, Error> {
         let managed = self.lookup_any_for_slot(key, &scope)?;
-        Ok(Self::taint_now(key, slot, managed))
+        self.taint_now(key, slot, managed)
     }
 
-    /// Applies the taint synchronously and packages the [`TaintedSlot`]
-    /// handle. Shared tail of [`taint_slot`](Self::taint_slot) /
+    /// Validates the slot name, then applies the taint synchronously and
+    /// packages the [`TaintedSlot`] handle. Shared tail of
+    /// [`taint_slot`](Self::taint_slot) /
     /// [`taint_slot_for_identity`](Self::taint_slot_for_identity); the
     /// safety-critical
     /// invariant — *taint is fully applied before this returns* — is written
@@ -385,12 +419,41 @@ impl Manager {
     /// [`manager`](crate::manager) module docs for the canonical invariant
     /// (why both stores are synchronous-before-`.await`, the TOCTOU close,
     /// and the revoke-epoch fence).
+    ///
+    /// # Errors
+    ///
+    /// [`Error::unknown_credential_slot`] if `slot` does not match a
+    /// credential slot the resolved row's resource type declares (a
+    /// no-slot type rejects every slot name — fail closed). Checked
+    /// *before* the taint / epoch bump, so a rejected call leaves the row
+    /// untouched — `revoke_slot`'s taint stays all-or-nothing. Recorded as a
+    /// `Failed` revoke-dispatch outcome and `SlotRevokeFailed` event — this
+    /// is phase 1 of the revoke port, so a rejection here is a failed
+    /// revoke attempt to any subscriber, not a silent no-op that would
+    /// undercount `attempts` relative to `success + failed + timed_out`.
     fn taint_now(
+        &self,
         key: &ResourceKey,
         slot: &str,
         managed: Arc<dyn crate::registry::ManagedHandle>,
-    ) -> TaintedSlot {
+    ) -> Result<TaintedSlot, Error> {
         tracing::Span::current().record("topology", managed.topology_tag().as_str());
+        // Unknown-slot validation, checked before any mutation: a rejected
+        // slot name must not taint or bump the epoch — the row stays
+        // exactly as it was.
+        if !managed.accepts_credential_slot_name(slot) {
+            let err = Error::unknown_credential_slot(key.clone(), slot);
+            if let Some(m) = &self.metrics {
+                m.record_slot_revoke_outcome(crate::metrics::SlotDispatchOutcome::Failed);
+            }
+            self.emit(ResourceEvent::SlotRevokeFailed {
+                key: key.clone(),
+                slot: slot.to_owned(),
+                error: err.to_string(),
+            });
+            tracing::warn!(error = %err, "slot taint rejected: unknown credential slot");
+            return Err(err);
+        }
         // Phase-1 taint, synchronously before any caller `.await`: this
         // function is not `async`, so the store has already happened by the
         // time control returns and a subsequently-dropped drain-tail timeout
@@ -401,12 +464,12 @@ impl Manager {
         // instance authenticated with the now-revoked credential before the
         // hook walks the idle queue.
         managed.bump_revoke_epoch();
-        TaintedSlot {
+        Ok(TaintedSlot {
             key: key.clone(),
             slot: slot.to_owned(),
             managed,
             tainted_at: Instant::now(),
-        }
+        })
     }
 
     /// Default per-resource revoke budget for the back-compat
@@ -522,13 +585,26 @@ impl Manager {
         }
 
         // 2. Dispatch the revoke hook against the live runtime, bounded by
-        //    the SAME per-resource budget AND isolated from an unwinding panic.
-        //    This is the only place the budget can cut the tail short: a wedged
-        //    `on_credential_revoke` must not pin the fan-out row forever, and a
-        //    panicking one must not crash the fan-out — both fail closed with
-        //    the row left tainted. A timed-out drain (above) has *already*
-        //    consumed the metric outcome, so a hook that then also faults does
-        //    not double-record.
+        //    the SAME per-resource budget (`drain_timeout`, the single owner
+        //    of this tail's time budget — deliberately NOT the fixed
+        //    `MAX_ROTATION_DISPATCH_CEILING` `refresh_resolved` uses, since
+        //    the caller supplies its own here). This outer guard is the
+        //    only place THIS budget can cut the tail short: a wedged
+        //    `on_credential_revoke` must not pin the fan-out row forever.
+        //    A timed-out drain (above) has *already* consumed the metric
+        //    outcome, so a hook that then also faults does not double-record.
+        //
+        //    Two-tier note: the per-slot hook(s) inside
+        //    `dispatch_on_revoke` are ALSO individually bounded by the
+        //    fixed `DEFAULT_AUTHOR_HOOK_CEILING`, applied INSIDE the
+        //    topology dispatch after its own internal lock is held (see
+        //    `Resident::dispatch_resident_hook` /
+        //    `Pooled::dispatch_credential_hook`) — so a hook panic/timeout
+        //    is normally already caught and converted to a plain `Err`
+        //    before it reaches this outer guard. This outer `catch_unwind`
+        //    is the backstop for wedged/panicking *framework* code around
+        //    the dispatch (including the topology's own lock-wait), not the
+        //    primary hook-panic isolation mechanism anymore.
         //
         // SAFETY (unwind): the row was tainted synchronously before this await,
         // so a caught panic leaves it tainted (fail-closed — no further leases);

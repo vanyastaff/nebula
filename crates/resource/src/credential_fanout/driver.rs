@@ -101,6 +101,39 @@ const REVOKE_DEDUPE_WINDOW: Duration = Duration::from_secs(5);
 /// is bounded so a long-lived driver under heavy revoke churn cannot grow
 /// it without limit; the oldest entry is evicted past the cap (it is
 /// necessarily the least likely to still be inside the window).
+///
+/// # Upstream invariants this safety relies on
+///
+/// A **time-windowed** dedupe (rather than an exact once-per-logical-revoke
+/// tracker) is only safe because the credential-runtime facade guarantees a
+/// given [`CredentialId`] can never legitimately produce a *second*,
+/// independent revoke signal after its first:
+///
+/// - **Facade tombstone CAS.** `CredentialService::revoke` transitions the
+///   stored credential to a tombstoned state via a single compare-and-swap;
+///   the transition happens at most once per credential, so the two signals
+///   this dedupe collapses (`LeaseRevoked` × N + `CredentialEvent::Revoked`)
+///   are always the double-emission of *one* logical CAS, never two distinct
+///   revokes racing each other.
+/// - **Re-revoke ⇒ `NotFound`.** A second `revoke` call against an
+///   already-tombstoned credential fails closed (the facade reports the
+///   credential as gone, not "revoked again") — it never re-emits
+///   `CredentialEvent::Revoked` for the same id, so this dedupe can never
+///   observe a genuine *new* revoke signal for a `CredentialId` it already
+///   admitted.
+/// - **Rebind-to-revoked fails.** A tombstoned `CredentialId` cannot be
+///   reactivated and re-bound to accept a fresh revoke later — the id is
+///   retired for good. So even a revoke arriving *after*
+///   [`REVOKE_DEDUPE_WINDOW`] has elapsed for that id is either a very late
+///   double-emission (harmless — taint is idempotent) or simply cannot
+///   happen, never a legitimate second revoke this window would wrongly
+///   suppress.
+///
+/// Together these mean the dedupe key space (`CredentialId`) is
+/// write-once from this driver's point of view: it never needs to
+/// distinguish "duplicate of an in-window revoke" from "a real second
+/// revoke of the same id," because the latter is structurally impossible
+/// upstream.
 #[derive(Debug)]
 struct RevokeDedupe {
     seen: VecDeque<(CredentialId, Instant)>,

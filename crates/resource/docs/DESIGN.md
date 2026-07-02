@@ -74,14 +74,35 @@
 
 ## 6. Известные напряжения / долг (честно)
 
-1. **Устаревшее имя в миграционном рецепте.** README.md:170 говорит `#[derive(ResourceSlots)]` + «impl `Resource`»; фактически derive называется `Resource`, трейт — `Provider` (`macros/src/lib.rs:9-16`).
-2. **Несуществующий публичный тип в доках.** README.md:140 и docs/README.md:266 упоминают `AnyManagedResource`; в коде его нет — есть sealed `ManagedHandle` (`src/registry.rs:61`).
-3. **Примеры не компилируются.** README.md:288 (Telegram-пример) и README.md:171 (шаг 6) дают `RegistrationSpec` с полями `resilience`/`acquire`; фактическая структура (`src/manager/options.rs:230-249`) их не имеет (`AcquireResilience` удалён, Non-goals README.md:194).
-4. **Недосчёт топологий в doc-комменте.** `src/lib.rs:9-10` пишет «Three built-in topologies … `Pooled`, `Resident`» — перечислены две из трёх (пропущен `Bounded`).
-5. **Устаревшее «fan-out lands in a follow-up».** README.md:174 говорит, что fan-out придёт позже; на деле он уже landed и живёт В ЭТОМ крейте (`src/credential_fanout/mod.rs:1`, ADR-0092 step 5).
-6. **Мёртвая тестовая команда.** AGENTS.md:10 предлагает `cargo test -p nebula-resource --features test-util`; такого feature нет (Cargo.toml: только `rotation`), а Cargo.toml:53 фиксирует, что step 8 ADR-0092 удалил `test-util` из `nebula-credential`.
-7. **Дублирующий комментарий.** Cargo.toml:51-58 — два почти дословных комментария про мок `TestCredential` в `tests/rotation.rs`.
-8. **README отстаёт от кода.** last-reviewed 2026-04-29 — до bind-inversion (ADR-0093) и переноса fan-out; раздел «Public API (v4)» местами расходится с кодом.
+**Batch D (2026-07-02) закрыл пункты 1-8 ниже** — README/docs/AGENTS.md/Cargo.toml
+прогнаны против кода, `docs/{README,pooling,recovery}.md` переписаны prose-only,
+`docs/adapters.md` удалён (см. `docs/README.md`'s "Documentation" table).
+Формулировки оставлены как исторический след audit'а, не как открытый долг:
+
+1. ~~**Устаревшее имя в миграционном рецепте.**~~ **Fixed.** README.md
+   migration step 5 now says `#[derive(Resource)]` + `impl Provider`.
+2. ~~**Несуществующий публичный тип в доках.**~~ **Fixed.** README.md now
+   names the real sealed `ManagedHandle` (`src/registry.rs`), not
+   `AnyManagedResource`.
+3. ~~**Примеры не компилируются.**~~ **Fixed.** The Telegram example and
+   migration step 6 no longer show phantom `resilience`/`acquire` fields;
+   `RegistrationSpec` literals match `src/manager/options.rs`.
+4. ~~**Недосчёт топологий в doc-комменте.**~~ Already accurate — `src/lib.rs`
+   states three topologies (Pooled/Resident/Bounded); this item was stale by
+   the time Batch D landed.
+5. ~~**Устаревшее «fan-out lands in a follow-up».**~~ **Fixed.** README.md
+   now states the fan-out landed in this crate and links
+   `docs/credential-rotation.md`.
+6. ~~**Мёртвая тестовая команда.**~~ **Fixed.** AGENTS.md no longer mentions
+   `--features test-util`; it points at `--features rotation` and the real
+   rotation test files.
+7. ~~**Дублирующий комментарий.**~~ **Fixed.** Cargo.toml's dev-dependency
+   comment collapsed to one, pointing at the current
+   `tests/resident_rotation_race.rs` / `tests/credential_slot_epoch_fold.rs`
+   (not the long-deleted `tests/rotation.rs`).
+8. ~~**README отстаёт от кода.**~~ **Fixed.** `last-reviewed` bumped to
+   2026-07-02; "Public API (v4)" cross-checked against the current
+   `Provider`/`RegistrationSpec`/topology shape.
 
 ## 7. Роль в пост-0092 credential/resource модели
 
@@ -99,6 +120,6 @@
 
 - **Production bind-population (§M12.4) — главный незакрытый хвост.** `register_and_bind` имеет quiesce-контракт, но ноль продакшн-вызовов: нет производственного credential→slot resolver, который наполнял бы `slot_bindings` реальными биндингами. Пока его нет, статус крейта остаётся `frontier`. Это следующий resource-follow-up.
 - **Несинхронизированные breaking-коммиты.** На ветке `dreamy-kare-8698d4` лежат ещё 4 breaking-коммита redesign API, не влитые в этот worktree; их надо re-derive против пост-0093 состояния перед мержем (риск дрейфа `RegistrationSpec`/topology API).
-- **Долг по докам — это риск онбординга, а не косметика.** Несуществующий `AnyManagedResource`, некомпилирующиеся `RegistrationSpec`-примеры и устаревший derive-рецепт (§6.1-6.5) активно дезинформируют авторов ресурсов; README нужно прогнать против кода и поднять last-reviewed.
+- ~~**Долг по докам — это риск онбординга, а не косметика.**~~ **Closed by Batch D (2026-07-02)** — see §6 above.
 - **Authoring-унификация (`#[property]`/единый authoring) — Phase-5, ещё НЕ построена.** Слот-биндинг и параметры пока остаются раздельными поверхностями; решение по унифицированному authoring откладывается до credential Phase-5 и не должно опережать его здесь.
-- **Гигиена feature/тест-команд.** Убрать мёртвую `--features test-util` из AGENTS.md и схлопнуть дублирующий Cargo.toml-комментарий (§6.6-6.7) — мелочь, но ломает доверие к «зелёным» командам.
+- ~~**Гигиена feature/тест-команд.**~~ **Closed by Batch D (2026-07-02)** — see §6, items 6-7 above.

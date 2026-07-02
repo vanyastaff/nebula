@@ -41,6 +41,7 @@ pub enum RecycleDecision {
 /// [`PoolProvider::recycle`] so the implementation can make informed
 /// keep-or-drop decisions.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct InstanceMetrics {
     /// Number of times this instance has been checked out.
     pub checkout_count: u64,
@@ -86,7 +87,7 @@ impl InstanceMetrics {
 /// [`Provider`]'s receiver-less `key()`. The framework reaches these hooks
 /// monomorphically inside [`Pooled<R>`](crate::topology::Pooled), never through
 /// a trait object — do not attempt `Box<dyn PoolProvider<…>>`.
-pub trait PoolProvider: Provider + crate::resource::HasCredentialSlots {
+pub trait PoolProvider: Provider {
     /// Sync O(1) broken check. Called in the `Drop` path — NO async, NO I/O.
     ///
     /// The default implementation reports all instances as healthy.

@@ -1,14 +1,14 @@
 //! Pool topology — manages a pool of N interchangeable resource instances.
 //!
 //! `Pooled<R>` is the built-in framework pool topology. It supplies the
-//! **slot-centric** [`Topology<R>`] hooks the framework acquire loop drives —
-//! `create_slot` (create a `PoolSlot<R>`), `accept` (post-checkout validation),
+//! **entry-centric** [`Topology<R>`] hooks the framework acquire loop drives —
+//! `create_entry` (create a `PoolEntry<R>`), `accept` (post-checkout validation),
 //! `prepare` (per-checkout session init), `on_release` (recycle decision),
 //! `idle_evictable` (maintenance predicate), and the rotation / fingerprint /
 //! admission surface. **It owns no idle store and runs no checkout / fence /
 //! destroy loop** — those live in the framework
 //! ([`ManagedResource::run_acquire_loop`](crate::runtime::managed::ManagedResource)),
-//! over the framework-owned [`InstanceStore<PoolSlot<R>>`]. The revoke-epoch
+//! over the framework-owned [`InstanceStore<PoolEntry<R>>`]. The revoke-epoch
 //! fence is therefore framework-owned for the pool exactly as it is for a custom
 //! topology — no author/pool discipline involved.
 //!
@@ -20,7 +20,7 @@ use std::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use async_trait::async_trait;
@@ -54,32 +54,55 @@ const ERR_CREATE_SEMAPHORE_TIMEOUT: &str =
 /// The `resource.create()` call exceeded `create_timeout`.
 const ERR_CREATE_TIMED_OUT: &str = "pool: create timed out";
 
+/// Max-lifetime jitter spread: each entry's own eviction threshold is
+/// drawn once, at creation, from `[0.95 * max_lifetime, max_lifetime]`.
+///
+/// This is HikariCP's `maxLifetime` attenuation band, deliberately much
+/// narrower than the recovery gate's `[nominal/2, nominal]` equal-jitter
+/// (`EQUAL_JITTER_SPREAD` in `recovery::gate`): a backoff retry has no
+/// meaningful "too early" cost, but an idle-pool entry evicted much earlier
+/// than its configured lifetime wastes a healthy connection and forces an
+/// avoidable reconnect. A small attenuation is enough to de-synchronize a
+/// warmup cohort (they only need to *not* all expire on the exact same
+/// tick) without meaningfully shortening the effective pool lifetime.
+const MAX_LIFETIME_JITTER_SPREAD: f64 = 0.05;
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// A single pooled instance with its metrics and config fingerprint — the
-/// [`Topology::Slot`] for [`Pooled`].
+/// [`Topology::Entry`] for [`Pooled`].
 ///
-/// The framework holds this slot for the whole lease (the guard owns it via the
+/// The framework holds this entry for the whole lease (the guard owns it via the
 /// release closure), so `metrics.created_at` survives checkout → lease → return:
-/// max-lifetime eviction keeps firing because the slot's `created_at` is never
+/// max-lifetime eviction keeps firing because the entry's `created_at` is never
 /// rebuilt from a bare instance.
 ///
 /// The semaphore permit does **not** live here — it is held in the
 /// [`ResourceGuard`](crate::guard::ResourceGuard) so it is returned even if the
 /// release callback panics. The credential-revoke snapshot is not a field
 /// either: it lives in the framework store's `checkout_epoch`.
-pub struct PoolSlot<R: Provider> {
+pub struct PoolEntry<R: Provider> {
     instance: R::Instance,
     metrics: InstanceMetrics,
     fingerprint: u64,
-    /// When this slot was last returned to the idle queue.
-    /// `None` for freshly created slots that have never been idle.
+    /// When this entry was last returned to the idle queue.
+    /// `None` for freshly created entries that have never been idle.
     returned_at: Option<Instant>,
+    /// This entry's own max-lifetime threshold, computed **once** at
+    /// creation via [`apply_jitter`](crate::jitter::apply_jitter) over
+    /// `config.max_lifetime` — HikariCP-style attenuation so a warmup burst
+    /// of entries created in the same instant does not all reach
+    /// `max_lifetime` on the same maintenance tick. `None` when
+    /// `max_lifetime` is unset (unaffected). Stable for the entry's whole
+    /// lifetime: recomputing jitter on every reaper tick would make
+    /// eviction timing flap non-deterministically between ticks for the
+    /// same entry instead of converging once.
+    jittered_max_lifetime: Option<Duration>,
 }
 
-impl<R: Provider> std::fmt::Debug for PoolSlot<R> {
+impl<R: Provider> std::fmt::Debug for PoolEntry<R> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PoolSlot")
+        f.debug_struct("PoolEntry")
             .field("fingerprint", &self.fingerprint)
             .field("checkout_count", &self.metrics.checkout_count)
             .field("returned_at", &self.returned_at)
@@ -115,9 +138,9 @@ pub struct PoolStats {
 ///
 /// `Pooled<R>` holds only the concurrency semaphore, the create-concurrency cap,
 /// the immutable pool [`Config`], and the live config fingerprint. The idle
-/// queue is the framework's [`InstanceStore<PoolSlot<R>>`]
+/// queue is the framework's [`InstanceStore<PoolEntry<R>>`]
 /// (`ManagedResource::store`); the framework runs every checkout / return /
-/// evict against it. The pool implements the slot-centric [`Topology<R>`]
+/// evict against it. The pool implements the entry-centric [`Topology<R>`]
 /// hooks the framework loop calls — it never touches the store directly except
 /// through the rotation fan-out's `lock_idle` (which the framework grants it
 /// transiently; the author can never name it).
@@ -125,7 +148,7 @@ pub struct PoolStats {
 /// [`Topology<R>`]: crate::topology::Topology
 pub struct Pooled<R: Provider> {
     semaphore: Arc<Semaphore>,
-    /// Bounds concurrent invocations of `create_slot` (#390).
+    /// Bounds concurrent invocations of `create_entry` (#390).
     ///
     /// The checkout semaphore gates active leases; this one gates
     /// *creation* so a burst of concurrent acquires cannot fan out into
@@ -135,10 +158,23 @@ pub struct Pooled<R: Provider> {
     config: Config,
     current_fingerprint: Arc<AtomicU64>,
     /// `Pooled<R>` is keyed to its resource through the `Topology<R>` impl and
-    /// `PoolSlot<R>` slot type, but holds no `R`-typed field directly (the
+    /// `PoolEntry<R>` entry type, but holds no `R`-typed field directly (the
     /// resource lives in `ManagedResource`). `fn() -> R` keeps `Pooled<R>`
     /// covariant + `Send + Sync` regardless of `R`'s own auto-traits.
     _marker: PhantomData<fn() -> R>,
+}
+
+impl<R: Provider> std::fmt::Debug for Pooled<R> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Pooled")
+            .field("config", &self.config)
+            .field(
+                "fingerprint",
+                &self.current_fingerprint.load(Ordering::Relaxed),
+            )
+            .field("available_permits", &self.semaphore.available_permits())
+            .finish_non_exhaustive()
+    }
 }
 
 impl<R: Provider> Pooled<R> {
@@ -254,7 +290,7 @@ impl<R: Provider> Pooled<R> {
     /// `idle` is read from the framework store; `available_permits` is read
     /// atomically from the semaphore. Both reads are best-effort and may be
     /// slightly inconsistent in high-concurrency scenarios.
-    pub async fn stats(&self, store: &InstanceStore<PoolSlot<R>>) -> PoolStats {
+    pub async fn stats(&self, store: &InstanceStore<PoolEntry<R>>) -> PoolStats {
         let idle = store.len().await;
         let available_permits = self.semaphore.available_permits();
         let in_use = (self.config.max_size as usize).saturating_sub(available_permits);
@@ -266,29 +302,49 @@ impl<R: Provider> Pooled<R> {
         }
     }
 
-    /// Whether a pool slot should be evicted for a non-revoke reason (stale
+    /// Whether `entry` has exceeded its max-lifetime deadline.
+    ///
+    /// Compares against the entry's own **jittered** threshold
+    /// ([`PoolEntry::jittered_max_lifetime`], stamped once at creation via
+    /// [`MAX_LIFETIME_JITTER_SPREAD`]), falling back to the raw
+    /// `config.max_lifetime` only when no jittered value was stamped
+    /// (defensive — `jittered_max_lifetime` is `None` exactly when
+    /// `max_lifetime` itself is unset, so the two branches agree there is no
+    /// deadline in that case).
+    ///
+    /// The single chokepoint every max-lifetime comparison in this module
+    /// goes through: `idle_evictable`/`should_evict_nonrevoke` (the reaper),
+    /// `accept` (post-checkout), and `on_release` (pre-recycle) all call
+    /// this instead of separately comparing `created_at.elapsed()` against
+    /// the raw config value — before this, only the reaper path used the
+    /// jittered deadline, so an entry already past its own jittered TTL
+    /// (but not yet past the unjittered `max_lifetime`) could still be
+    /// checked out or recycled instead of evicted, defeating the jitter's
+    /// de-synchronization purpose for exactly the entries it was supposed to
+    /// spread out.
+    fn exceeded_max_lifetime(&self, entry: &PoolEntry<R>) -> bool {
+        let deadline = entry.jittered_max_lifetime.or(self.config.max_lifetime);
+        deadline.is_some_and(|max| entry.metrics.created_at.elapsed() > max)
+    }
+
+    /// Whether a pool entry should be evicted for a non-revoke reason (stale
     /// fingerprint, max lifetime, idle timeout). The revoke arm is owned by the
     /// framework store's epoch fence, not this predicate.
-    fn should_evict_nonrevoke(&self, slot: &PoolSlot<R>) -> bool {
+    fn should_evict_nonrevoke(&self, entry: &PoolEntry<R>) -> bool {
         let current_fp = self.current_fingerprint.load(Ordering::Acquire);
-        let now = Instant::now();
         // Stale fingerprint.
-        if slot.fingerprint != current_fp {
+        if entry.fingerprint != current_fp {
             return true;
         }
-        // Max lifetime exceeded.
-        if self
-            .config
-            .max_lifetime
-            .is_some_and(|max| now.duration_since(slot.metrics.created_at) > max)
-        {
+        // Max lifetime exceeded — see `exceeded_max_lifetime`.
+        if self.exceeded_max_lifetime(entry) {
             return true;
         }
         // Idle timeout exceeded.
         if let (Some(idle_timeout), Some(returned_at)) =
-            (self.config.idle_timeout, slot.returned_at)
+            (self.config.idle_timeout, entry.returned_at)
         {
-            return now.duration_since(returned_at) > idle_timeout;
+            return Instant::now().duration_since(returned_at) > idle_timeout;
         }
         false
     }
@@ -299,7 +355,7 @@ where
     R: PoolProvider + Clone + Send + Sync + 'static,
     R::Instance: Clone,
 {
-    /// Creates a new pool slot via `resource.create()`.
+    /// Creates a new pool entry via `resource.create()`.
     ///
     /// All creation goes through this funnel and is gated on `create_semaphore`
     /// so a burst of acquires cannot stampede a fragile backend with `max_size`
@@ -308,7 +364,7 @@ where
     /// single `create_timeout` budget so a slow-creating backend cannot stall
     /// callers forever.
     ///
-    /// The framework loop wraps the returned slot in its cancel-safety guard and
+    /// The framework loop wraps the returned entry in its cancel-safety guard and
     /// fences a fresh-create that straddled a revoke on the store-return path
     /// (the store stamps the live epoch under the idle lock).
     ///
@@ -318,12 +374,12 @@ where
     /// - [`Error::permanent`] when the create-semaphore is closed.
     /// - [`Error::transient`] when `Provider::create` itself times out.
     /// - Propagates the `Provider::create` error otherwise.
-    async fn create_pool_slot(
+    async fn create_pool_entry(
         &self,
         resource: &R,
         config: &R::Config,
         ctx: &ResourceContext,
-    ) -> Result<PoolSlot<R>, Error> {
+    ) -> Result<PoolEntry<R>, Error> {
         let deadline = Instant::now() + self.config.create_timeout;
 
         let _create_permit = match tokio::time::timeout_at(
@@ -347,7 +403,7 @@ where
                 Err(_timeout) => return Err(Error::transient(ERR_CREATE_TIMED_OUT)),
             };
 
-        Ok(PoolSlot {
+        Ok(PoolEntry {
             instance,
             metrics: InstanceMetrics {
                 checkout_count: 1,
@@ -355,32 +411,30 @@ where
             },
             fingerprint: self.current_fingerprint.load(Ordering::Acquire),
             returned_at: None,
+            jittered_max_lifetime: self
+                .config
+                .max_lifetime
+                .map(|max| crate::jitter::apply_jitter(max, MAX_LIFETIME_JITTER_SPREAD)),
         })
     }
 }
 
 // ─── Topology impl for Pooled ────────────────────────────────────────────────
 //
-// `Pooled<R>` supplies the slot-centric hooks the framework acquire loop drives
-// over the framework-owned `InstanceStore<PoolSlot<R>>`. The pool owns no store,
+// `Pooled<R>` supplies the entry-centric hooks the framework acquire loop drives
+// over the framework-owned `InstanceStore<PoolEntry<R>>`. The pool owns no store,
 // runs no checkout/destroy/fence loop, and never compares epochs — that is all
 // the framework's job.
 
 #[async_trait]
 impl<R> Topology<R> for Pooled<R>
 where
-    R: Provider<Topology = Pooled<R>>
-        + PoolProvider
-        + crate::resource::HasCredentialSlots
-        + Clone
-        + Send
-        + Sync
-        + 'static,
+    R: Provider<Topology = Pooled<R>> + PoolProvider + Clone + Send + Sync + 'static,
     R::Instance: Clone + Send + Sync + 'static,
 {
-    type Slot = PoolSlot<R>;
+    type Entry = PoolEntry<R>;
 
-    fn try_reserve(&self, _store: &InstanceStore<PoolSlot<R>>) -> Result<Ticket, Unavailable> {
+    fn try_reserve(&self, _store: &InstanceStore<PoolEntry<R>>) -> Result<Ticket, Unavailable> {
         self.semaphore
             .clone()
             .try_acquire_owned()
@@ -388,80 +442,72 @@ where
             .map_err(|_| Unavailable::Saturated { retry_after: None })
     }
 
-    async fn create_slot(
+    async fn create_entry(
         &self,
         resource: &R,
         config: &R::Config,
         ctx: &ResourceContext,
-    ) -> Result<PoolSlot<R>, Error> {
-        self.create_pool_slot(resource, config, ctx).await
+    ) -> Result<PoolEntry<R>, Error> {
+        self.create_pool_entry(resource, config, ctx).await
     }
 
-    fn slot_instance<'s>(&self, slot: &'s PoolSlot<R>) -> &'s R::Instance {
-        &slot.instance
+    fn entry_instance<'s>(&self, entry: &'s PoolEntry<R>) -> &'s R::Instance {
+        &entry.instance
     }
 
-    fn into_instance(&self, slot: PoolSlot<R>) -> R::Instance {
-        slot.instance
+    fn into_instance(&self, entry: PoolEntry<R>) -> R::Instance {
+        entry.instance
     }
 
-    async fn accept(&self, slot: &mut PoolSlot<R>, resource: &R, _ctx: &ResourceContext) -> bool {
+    async fn accept(&self, entry: &mut PoolEntry<R>, resource: &R, _ctx: &ResourceContext) -> bool {
         // Post-checkout validation: stale fingerprint / max lifetime / broken /
-        // optional health check. `false` ⇒ the framework destroys this slot and
-        // loops to the next idle slot, then create.
+        // optional health check. `false` ⇒ the framework destroys this entry and
+        // loops to the next idle entry, then create.
         let current_fp = self.current_fingerprint.load(Ordering::Acquire);
-        if slot.fingerprint != current_fp {
+        if entry.fingerprint != current_fp {
             return false;
         }
-        if self
-            .config
-            .max_lifetime
-            .is_some_and(|max| slot.metrics.created_at.elapsed() > max)
-        {
+        if self.exceeded_max_lifetime(entry) {
             return false;
         }
-        if resource.is_broken(&slot.instance).is_broken() {
+        if resource.is_broken(&entry.instance).is_broken() {
             return false;
         }
-        if self.config.test_on_checkout && resource.check(&slot.instance).await.is_err() {
+        if self.config.test_on_checkout && resource.check(&entry.instance).await.is_err() {
             return false;
         }
-        slot.metrics.checkout_count += 1;
+        entry.metrics.checkout_count += 1;
         true
     }
 
     async fn prepare(
         &self,
-        slot: &mut PoolSlot<R>,
+        entry: &mut PoolEntry<R>,
         resource: &R,
         ctx: &ResourceContext,
     ) -> Result<(), Error> {
-        resource.prepare(&slot.instance, ctx).await
+        resource.prepare(&entry.instance, ctx).await
     }
 
-    async fn on_release(&self, slot: &mut PoolSlot<R>, resource: &R) -> Result<bool, Error> {
+    async fn on_release(&self, entry: &mut PoolEntry<R>, resource: &R) -> Result<bool, Error> {
         // Recycle decision (the framework already destroyed a *tainted* lease
-        // before calling this, and runs the revoke-epoch fence on `return_slot`
+        // before calling this, and runs the revoke-epoch fence on `return_entry`
         // AFTER this returns `true`).
         let current_fp = self.current_fingerprint.load(Ordering::Acquire);
-        if slot.fingerprint != current_fp {
+        if entry.fingerprint != current_fp {
             return Ok(false);
         }
-        if self
-            .config
-            .max_lifetime
-            .is_some_and(|max| slot.metrics.created_at.elapsed() > max)
-        {
+        if self.exceeded_max_lifetime(entry) {
             return Ok(false);
         }
-        if resource.is_broken(&slot.instance).is_broken() {
+        if resource.is_broken(&entry.instance).is_broken() {
             return Ok(false);
         }
-        match resource.recycle(&slot.instance, &slot.metrics).await {
+        match resource.recycle(&entry.instance, &entry.metrics).await {
             Ok(RecycleDecision::Keep) => {
                 // Stamp the return time so idle-timeout can fire on the next
                 // sweep.
-                slot.returned_at = Some(Instant::now());
+                entry.returned_at = Some(Instant::now());
                 Ok(true)
             },
             Ok(RecycleDecision::Drop) => Ok(false),
@@ -474,7 +520,7 @@ where
     }
 
     fn store_capacity(&self) -> Option<usize> {
-        // Cap the idle queue at `max_size`: an idle slot beyond the concurrency
+        // Cap the idle queue at `max_size`: an idle entry beyond the concurrency
         // cap can never be leased, so it is pure waste.
         Some(self.config.max_size as usize)
     }
@@ -487,8 +533,8 @@ where
         self.config.min_size as usize
     }
 
-    fn idle_evictable(&self, slot: &PoolSlot<R>) -> bool {
-        self.should_evict_nonrevoke(slot)
+    fn idle_evictable(&self, entry: &PoolEntry<R>) -> bool {
+        self.should_evict_nonrevoke(entry)
     }
 
     fn maintenance_schedule(&self) -> Option<MaintenanceSchedule> {
@@ -502,36 +548,86 @@ where
     async fn dispatch_credential_hook(
         &self,
         resource: &R,
-        store: &InstanceStore<PoolSlot<R>>,
+        store: &InstanceStore<PoolEntry<R>>,
         slot: &str,
         refresh: bool,
     ) -> Result<(), Error> {
         // Walk the framework idle store under its lock so no checkout / return
-        // can interleave mid-rotation — the same lock `checkout` / `return_slot`
+        // can interleave mid-rotation — the same lock `checkout` / `return_entry`
         // take. The store reference is granted by the framework dispatcher; the
         // author never names it.
         //
         // Tradeoff: because the idle lock spans every entry's hook `.await`, a
         // slow hook blocks concurrent idle checkouts for the full rotation
-        // duration (head-of-line blocking). New-slot creation is unaffected.
+        // duration (head-of-line blocking). New-entry creation is unaffected.
         // This is tolerated because rotation is rare (not a hot path). Do not
         // "optimize" by dropping and reacquiring the lock between entries: that
         // reopens the window for an instance to be checked out mid-rotation and
         // miss its hook (credential isolation).
+        //
+        // Two-tier hook ceiling: each entry's hook is individually bounded by
+        // `DEFAULT_AUTHOR_HOOK_CEILING` below (the inner tier, timing only the
+        // hook body — the idle lock is already held by the time it starts).
+        // `Manager::refresh_slot` / `drain_and_revoke` additionally wrap the
+        // *whole* fan-out (every entry) in a looser framework-owned outer
+        // backstop (`MAX_ROTATION_DISPATCH_CEILING`); a fully-hung pool's
+        // rotation is therefore bounded overall, but an entry count large
+        // enough to exceed the outer backstop at the per-entry ceiling means
+        // not every idle instance is guaranteed a hook attempt — accepted
+        // (rotation is rare, and a hung per-entry hook is itself the
+        // pathological case this bounds).
         let idle = store.lock_idle().await;
         let mut first_err: Option<Error> = None;
-        for entry in &*idle {
-            let res = if refresh {
-                resource
-                    .on_credential_refresh(slot, &entry.slot.instance)
-                    .await
-            } else {
-                resource
-                    .on_credential_revoke(slot, &entry.slot.instance)
-                    .await
+        let hook_op = if refresh {
+            "on_credential_refresh"
+        } else {
+            "on_credential_revoke"
+        };
+        for item in &*idle {
+            // Bound + isolate this one entry's hook.
+            //
+            // SAFETY (unwind): `idle` (the idle-lock `MutexGuard`) is a local
+            // of this function, not captured by the wrapped future below
+            // (which only borrows `item.entry.instance`); a caught panic
+            // never unwinds past this loop iteration — `catch_unwind` stops
+            // at its own boundary and the loop continues normally, so the
+            // lock still releases via ordinary `Drop` when this function
+            // returns.
+            let res = match crate::hook_guard::guard_author_hook(
+                crate::hook_guard::DEFAULT_AUTHOR_HOOK_CEILING,
+                async {
+                    if refresh {
+                        resource
+                            .on_credential_refresh(slot, &item.entry.instance)
+                            .await
+                    } else {
+                        resource
+                            .on_credential_revoke(slot, &item.entry.instance)
+                            .await
+                    }
+                },
+            )
+            .await
+            {
+                Ok(res) => res,
+                Err(fault) => {
+                    fault.observe(&R::key(), "rotation");
+                    Err(match fault {
+                        crate::hook_guard::HookFault::Panicked => Error::permanent(format!(
+                            "pool {hook_op} hook panicked for an idle instance — caught \
+                             and isolated under panic=unwind (fan-out not crashed); \
+                             inert under panic=abort"
+                        )),
+                        crate::hook_guard::HookFault::TimedOut => Error::backpressure(format!(
+                            "pool {hook_op} hook did not complete within {:?} for an \
+                             idle instance",
+                            crate::hook_guard::DEFAULT_AUTHOR_HOOK_CEILING
+                        )),
+                    })
+                },
             };
             if let Err(error) = res {
-                // Surface EVERY per-slot hook failure. Returning only the
+                // Surface EVERY per-entry hook failure. Returning only the
                 // first would silently hide a partial rotation where some
                 // idle instances refreshed and others did not, leaving them
                 // in an uncertain credential state. The hook error is the
@@ -559,7 +655,7 @@ where
             .store(fingerprint, Ordering::Release);
     }
 
-    fn phase(&self, _store: &InstanceStore<PoolSlot<R>>) -> AdmissionPhase {
+    fn phase(&self, _store: &InstanceStore<PoolEntry<R>>) -> AdmissionPhase {
         if self.semaphore.available_permits() == 0 {
             AdmissionPhase::Saturated
         } else {
@@ -567,7 +663,7 @@ where
         }
     }
 
-    fn load(&self, _store: &InstanceStore<PoolSlot<R>>) -> Option<Load> {
+    fn load(&self, _store: &InstanceStore<PoolEntry<R>>) -> Option<Load> {
         let available = self.semaphore.available_permits();
         let capacity = self.config.max_size as usize;
         let used = capacity.saturating_sub(available);
@@ -588,7 +684,7 @@ mod tests {
     use super::*;
     use crate::{
         context::ResourceContext,
-        resource::{HasCredentialSlots, ResourceConfig, ResourceMetadata},
+        resource::{ResourceConfig, ResourceMetadata},
         topology::{pooled::BrokenCheck, store::ReturnOutcome},
     };
 
@@ -616,6 +712,9 @@ mod tests {
         fail_check: Arc<AtomicBool>,
         recycle_drop: Arc<AtomicBool>,
         revoke_calls: Arc<AtomicU64>,
+        /// Panic-isolation fixture: `on_credential_revoke` panics when
+        /// called with this instance id (`None` = never panics).
+        panic_revoke_for: Arc<std::sync::Mutex<Option<u64>>>,
     }
 
     impl MockPool {
@@ -627,6 +726,7 @@ mod tests {
                 fail_check: Arc::new(AtomicBool::new(false)),
                 recycle_drop: Arc::new(AtomicBool::new(false)),
                 revoke_calls: Arc::new(AtomicU64::new(0)),
+                panic_revoke_for: Arc::new(std::sync::Mutex::new(None)),
             }
         }
     }
@@ -662,7 +762,11 @@ mod tests {
             Ok(())
         }
 
-        async fn on_credential_revoke(&self, _slot: &str, _runtime: &u64) -> Result<(), Error> {
+        async fn on_credential_revoke(&self, _slot: &str, runtime: &u64) -> Result<(), Error> {
+            assert!(
+                *self.panic_revoke_for.lock().unwrap() != Some(*runtime),
+                "MockPool::on_credential_revoke: forced panic fixture"
+            );
             self.revoke_calls.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
@@ -672,11 +776,7 @@ mod tests {
         }
     }
 
-    impl HasCredentialSlots for MockPool {
-        fn credential_slot_epoch(&self) -> u64 {
-            0
-        }
-    }
+    crate::no_credential_slots!(MockPool);
 
     impl PoolProvider for MockPool {
         fn is_broken(&self, _runtime: &u64) -> BrokenCheck {
@@ -718,27 +818,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_slot_builds_pool_slot_with_metrics() {
+    async fn create_entry_builds_pool_entry_with_metrics() {
         let resource = MockPool::new();
         let topo = mock_pool(Config::default(), 0);
-        let slot = topo
-            .create_pool_slot(&resource, &PoolTestConfig, &test_ctx())
+        let entry = topo
+            .create_pool_entry(&resource, &PoolTestConfig, &test_ctx())
             .await
-            .expect("create_slot must succeed");
-        assert_eq!(slot.metrics.checkout_count, 1);
+            .expect("create_entry must succeed");
+        assert_eq!(entry.metrics.checkout_count, 1);
         assert_eq!(resource.created.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
-    async fn slot_instance_and_into_instance_round_trip() {
+    async fn entry_instance_and_into_instance_round_trip() {
         let resource = MockPool::new();
         let topo = mock_pool(Config::default(), 0);
-        let slot = topo
-            .create_pool_slot(&resource, &PoolTestConfig, &test_ctx())
+        let entry = topo
+            .create_pool_entry(&resource, &PoolTestConfig, &test_ctx())
             .await
             .expect("create");
-        let id = *topo.slot_instance(&slot);
-        let owned = topo.into_instance(slot);
+        let id = *topo.entry_instance(&entry);
+        let owned = topo.into_instance(entry);
         assert_eq!(owned, id, "into_instance returns the same instance");
     }
 
@@ -746,37 +846,37 @@ mod tests {
     async fn accept_accepts_healthy_and_bumps_checkout() {
         let resource = MockPool::new();
         let topo = mock_pool(Config::default(), 0);
-        let mut slot = topo
-            .create_pool_slot(&resource, &PoolTestConfig, &test_ctx())
+        let mut entry = topo
+            .create_pool_entry(&resource, &PoolTestConfig, &test_ctx())
             .await
             .expect("create");
-        let before = slot.metrics.checkout_count;
-        assert!(topo.accept(&mut slot, &resource, &test_ctx()).await);
-        assert_eq!(slot.metrics.checkout_count, before + 1);
+        let before = entry.metrics.checkout_count;
+        assert!(topo.accept(&mut entry, &resource, &test_ctx()).await);
+        assert_eq!(entry.metrics.checkout_count, before + 1);
     }
 
     #[tokio::test]
     async fn accept_rejects_broken() {
         let resource = MockPool::new();
         let topo = mock_pool(Config::default(), 0);
-        let mut slot = topo
-            .create_pool_slot(&resource, &PoolTestConfig, &test_ctx())
+        let mut entry = topo
+            .create_pool_entry(&resource, &PoolTestConfig, &test_ctx())
             .await
             .expect("create");
         resource.broken.store(true, Ordering::SeqCst);
-        assert!(!topo.accept(&mut slot, &resource, &test_ctx()).await);
+        assert!(!topo.accept(&mut entry, &resource, &test_ctx()).await);
     }
 
     #[tokio::test]
     async fn accept_rejects_stale_fingerprint() {
         let resource = MockPool::new();
         let topo = mock_pool(Config::default(), 0);
-        let mut slot = topo
-            .create_pool_slot(&resource, &PoolTestConfig, &test_ctx())
+        let mut entry = topo
+            .create_pool_entry(&resource, &PoolTestConfig, &test_ctx())
             .await
             .expect("create");
         topo.set_fingerprint(7);
-        assert!(!topo.accept(&mut slot, &resource, &test_ctx()).await);
+        assert!(!topo.accept(&mut entry, &resource, &test_ctx()).await);
     }
 
     #[tokio::test]
@@ -787,42 +887,42 @@ mod tests {
             ..Default::default()
         };
         let topo = mock_pool(cfg, 0);
-        let mut slot = topo
-            .create_pool_slot(&resource, &PoolTestConfig, &test_ctx())
+        let mut entry = topo
+            .create_pool_entry(&resource, &PoolTestConfig, &test_ctx())
             .await
             .expect("create");
         resource.fail_check.store(true, Ordering::SeqCst);
-        assert!(!topo.accept(&mut slot, &resource, &test_ctx()).await);
+        assert!(!topo.accept(&mut entry, &resource, &test_ctx()).await);
     }
 
     #[tokio::test]
-    async fn on_release_keeps_clean_slot() {
+    async fn on_release_keeps_clean_entry() {
         let resource = MockPool::new();
         let topo = mock_pool(Config::default(), 0);
-        let mut slot = topo
-            .create_pool_slot(&resource, &PoolTestConfig, &test_ctx())
+        let mut entry = topo
+            .create_pool_entry(&resource, &PoolTestConfig, &test_ctx())
             .await
             .expect("create");
         assert!(
-            topo.on_release(&mut slot, &resource)
+            topo.on_release(&mut entry, &resource)
                 .await
                 .expect("release")
         );
-        assert!(slot.returned_at.is_some(), "on_release stamps returned_at");
+        assert!(entry.returned_at.is_some(), "on_release stamps returned_at");
     }
 
     #[tokio::test]
     async fn on_release_drops_stale_fingerprint() {
         let resource = MockPool::new();
         let topo = mock_pool(Config::default(), 0);
-        let mut slot = topo
-            .create_pool_slot(&resource, &PoolTestConfig, &test_ctx())
+        let mut entry = topo
+            .create_pool_entry(&resource, &PoolTestConfig, &test_ctx())
             .await
             .expect("create");
         topo.set_fingerprint(99);
         assert!(
             !topo
-                .on_release(&mut slot, &resource)
+                .on_release(&mut entry, &resource)
                 .await
                 .expect("release")
         );
@@ -832,14 +932,14 @@ mod tests {
     async fn on_release_drops_broken() {
         let resource = MockPool::new();
         let topo = mock_pool(Config::default(), 0);
-        let mut slot = topo
-            .create_pool_slot(&resource, &PoolTestConfig, &test_ctx())
+        let mut entry = topo
+            .create_pool_entry(&resource, &PoolTestConfig, &test_ctx())
             .await
             .expect("create");
         resource.broken.store(true, Ordering::SeqCst);
         assert!(
             !topo
-                .on_release(&mut slot, &resource)
+                .on_release(&mut entry, &resource)
                 .await
                 .expect("release")
         );
@@ -849,14 +949,14 @@ mod tests {
     async fn on_release_honours_recycle_drop() {
         let resource = MockPool::new();
         let topo = mock_pool(Config::default(), 0);
-        let mut slot = topo
-            .create_pool_slot(&resource, &PoolTestConfig, &test_ctx())
+        let mut entry = topo
+            .create_pool_entry(&resource, &PoolTestConfig, &test_ctx())
             .await
             .expect("create");
         resource.recycle_drop.store(true, Ordering::SeqCst);
         assert!(
             !topo
-                .on_release(&mut slot, &resource)
+                .on_release(&mut entry, &resource)
                 .await
                 .expect("release")
         );
@@ -892,15 +992,18 @@ mod tests {
     async fn idle_evictable_stale_fingerprint() {
         let resource = MockPool::new();
         let topo = mock_pool(Config::default(), 0);
-        let slot = topo
-            .create_pool_slot(&resource, &PoolTestConfig, &test_ctx())
+        let entry = topo
+            .create_pool_entry(&resource, &PoolTestConfig, &test_ctx())
             .await
             .expect("create");
-        assert!(!topo.idle_evictable(&slot), "a fresh slot is not evictable");
+        assert!(
+            !topo.idle_evictable(&entry),
+            "a fresh entry is not evictable"
+        );
         topo.set_fingerprint(5);
         assert!(
-            topo.idle_evictable(&slot),
-            "a stale-fingerprint slot is idle-evictable"
+            topo.idle_evictable(&entry),
+            "a stale-fingerprint entry is idle-evictable"
         );
     }
 
@@ -912,12 +1015,94 @@ mod tests {
         };
         let resource = MockPool::new();
         let topo = mock_pool(cfg, 0);
-        let slot = topo
-            .create_pool_slot(&resource, &PoolTestConfig, &test_ctx())
+        let entry = topo
+            .create_pool_entry(&resource, &PoolTestConfig, &test_ctx())
             .await
             .expect("create");
         tokio::time::sleep(Duration::from_millis(5)).await;
-        assert!(topo.idle_evictable(&slot));
+        assert!(topo.idle_evictable(&entry));
+    }
+
+    // ── max_lifetime jitter ──────────────────────────────────────────────────
+
+    /// Each created entry's jittered max-lifetime threshold stays within
+    /// HikariCP's `[0.95*L, L]` attenuation band — proportional to the
+    /// configured lifetime, never below it, never above.
+    #[tokio::test]
+    async fn jittered_max_lifetime_stays_within_hikaricp_band() {
+        let lifetime = Duration::from_mins(30);
+        let lower_bound = lifetime.mul_f64(0.95);
+        let cfg = Config {
+            max_lifetime: Some(lifetime),
+            ..Default::default()
+        };
+        let resource = MockPool::new();
+        let topo = mock_pool(cfg, 0);
+
+        for _ in 0..50 {
+            let entry = topo
+                .create_pool_entry(&resource, &PoolTestConfig, &test_ctx())
+                .await
+                .expect("create");
+            let jittered = entry
+                .jittered_max_lifetime
+                .expect("max_lifetime is configured");
+            assert!(
+                jittered >= lower_bound,
+                "{jittered:?} fell below the 0.95*lifetime band floor"
+            );
+            assert!(
+                jittered <= lifetime,
+                "{jittered:?} exceeded the configured lifetime"
+            );
+        }
+    }
+
+    /// A pool with `max_lifetime: None` is unaffected: entries never carry a
+    /// jittered threshold and are never max-lifetime-evictable.
+    #[tokio::test]
+    async fn no_max_lifetime_configured_leaves_entries_unjittered() {
+        let cfg = Config {
+            max_lifetime: None,
+            ..Default::default()
+        };
+        let resource = MockPool::new();
+        let topo = mock_pool(cfg, 0);
+        let entry = topo
+            .create_pool_entry(&resource, &PoolTestConfig, &test_ctx())
+            .await
+            .expect("create");
+        assert_eq!(entry.jittered_max_lifetime, None);
+        assert!(
+            !topo.idle_evictable(&entry),
+            "no max_lifetime configured ⇒ never max-lifetime-evictable"
+        );
+    }
+
+    /// The jittered threshold is stable across repeated maintenance checks —
+    /// it is stamped once at creation, not re-drawn on every
+    /// `idle_evictable` call (which would make eviction timing flap
+    /// non-deterministically between reaper ticks for the same entry).
+    #[tokio::test]
+    async fn jittered_max_lifetime_is_stable_across_repeated_checks() {
+        let cfg = Config {
+            max_lifetime: Some(Duration::from_mins(30)),
+            ..Default::default()
+        };
+        let resource = MockPool::new();
+        let topo = mock_pool(cfg, 0);
+        let entry = topo
+            .create_pool_entry(&resource, &PoolTestConfig, &test_ctx())
+            .await
+            .expect("create");
+        let first = entry.jittered_max_lifetime;
+        for _ in 0..10 {
+            assert!(!topo.idle_evictable(&entry), "fresh entry not evictable");
+            assert_eq!(
+                entry.jittered_max_lifetime, first,
+                "the jittered threshold must not change across repeated checks"
+            );
+        }
     }
 
     #[tokio::test]
@@ -929,7 +1114,7 @@ mod tests {
             },
             0,
         );
-        let store: InstanceStore<PoolSlot<MockPool>> = InstanceStore::new(None);
+        let store: InstanceStore<PoolEntry<MockPool>> = InstanceStore::new(None);
         let ticket = topo.try_reserve(&store).expect("first ticket");
         assert!(
             matches!(topo.try_reserve(&store), Err(Unavailable::Saturated { .. })),
@@ -949,7 +1134,7 @@ mod tests {
             },
             0,
         );
-        let store: InstanceStore<PoolSlot<MockPool>> = InstanceStore::new(None);
+        let store: InstanceStore<PoolEntry<MockPool>> = InstanceStore::new(None);
         let load = topo.load(&store).expect("pool reports load");
         assert!(load.saturation.abs() < f32::EPSILON, "idle pool is 0.0");
         let _t = topo.try_reserve(&store).expect("ticket");
@@ -970,13 +1155,13 @@ mod tests {
             },
             0,
         );
-        let store: InstanceStore<PoolSlot<MockPool>> = InstanceStore::new(None);
-        let slot = topo
-            .create_pool_slot(&resource, &PoolTestConfig, &test_ctx())
+        let store: InstanceStore<PoolEntry<MockPool>> = InstanceStore::new(None);
+        let entry = topo
+            .create_pool_entry(&resource, &PoolTestConfig, &test_ctx())
             .await
             .expect("create");
         let epoch = store.stamp_epoch();
-        let _ = store.return_slot(slot, epoch).await;
+        let _ = store.return_entry(entry, epoch).await;
         let stats = topo.stats(&store).await;
         assert_eq!(stats.idle, 1);
         assert_eq!(stats.capacity, 4);
@@ -993,7 +1178,7 @@ mod tests {
             0,
         );
         assert_eq!(topo.tag(), TopologyTag::Pool);
-        assert!(topo.pools(), "the pool topology pools released slots");
+        assert!(topo.pools(), "the pool topology pools released entries");
         assert_eq!(topo.warmup_target(&PoolTestConfig), 3);
         assert!(
             topo.maintenance_schedule().is_some(),
@@ -1005,16 +1190,16 @@ mod tests {
     async fn dispatch_credential_hook_walks_idle_store() {
         let resource = MockPool::new();
         let topo = mock_pool(Config::default(), 0);
-        let store: InstanceStore<PoolSlot<MockPool>> = InstanceStore::new(None);
+        let store: InstanceStore<PoolEntry<MockPool>> = InstanceStore::new(None);
 
-        // Two idle slots.
+        // Two idle entries.
         for _ in 0..2 {
-            let slot = topo
-                .create_pool_slot(&resource, &PoolTestConfig, &test_ctx())
+            let entry = topo
+                .create_pool_entry(&resource, &PoolTestConfig, &test_ctx())
                 .await
                 .expect("create");
             let epoch = store.stamp_epoch();
-            let _ = store.return_slot(slot, epoch).await;
+            let _ = store.return_entry(entry, epoch).await;
         }
 
         topo.dispatch_credential_hook(&resource, &store, "db", false)
@@ -1023,7 +1208,54 @@ mod tests {
         assert_eq!(
             resource.revoke_calls.load(Ordering::SeqCst),
             2,
-            "the revoke hook visits every idle slot in the framework store"
+            "the revoke hook visits every idle entry in the framework store"
+        );
+    }
+
+    /// Each idle entry's credential hook is bounded + panic-isolated
+    /// *individually*, not only by the caller's single outer guard. A
+    /// panicking hook on one entry must not abort the fan-out before the
+    /// remaining entries get their own hook attempt — before this fix the
+    /// whole `for entry in &*idle` loop had no per-entry isolation, so an
+    /// unwind from entry N would propagate straight out of
+    /// `dispatch_credential_hook` (caught only by the caller's OUTER guard,
+    /// which by then has already abandoned every entry after N).
+    #[tokio::test]
+    async fn dispatch_credential_hook_isolates_a_panicking_entry_and_continues() {
+        let resource = MockPool::new();
+        let topo = mock_pool(Config::default(), 0);
+        let store: InstanceStore<PoolEntry<MockPool>> = InstanceStore::new(None);
+
+        // Two idle entries — instances `0` and `1` (creation order).
+        for _ in 0..2 {
+            let entry = topo
+                .create_pool_entry(&resource, &PoolTestConfig, &test_ctx())
+                .await
+                .expect("create");
+            let epoch = store.stamp_epoch();
+            let _ = store.return_entry(entry, epoch).await;
+        }
+        // Force the FIRST entry's hook to panic.
+        *resource.panic_revoke_for.lock().unwrap() = Some(0);
+
+        let outcome = topo
+            .dispatch_credential_hook(&resource, &store, "db", false)
+            .await;
+        assert!(
+            outcome.is_err(),
+            "a panicking per-entry hook must surface as a typed error, not \
+             a silent success"
+        );
+        assert!(
+            !outcome.unwrap_err().is_retryable(),
+            "an isolated hook panic is a permanent author-hook bug"
+        );
+        assert_eq!(
+            resource.revoke_calls.load(Ordering::SeqCst),
+            1,
+            "the SECOND idle entry must still receive its revoke hook — the \
+             panic on the first entry must not abort the whole fan-out \
+             (per-entry isolation)"
         );
     }
 
@@ -1060,40 +1292,40 @@ mod tests {
         assert!(err.to_string().contains("min_size") && err.to_string().contains("max_size"));
     }
 
-    /// The revoke fence is the store's, framework-owned: a slot returned at the
+    /// The revoke fence is the store's, framework-owned: an entry returned at the
     /// pre-bump epoch must be evicted on return after a bump. This exercises the
-    /// exact store path the framework `release_slot` uses for the pool.
+    /// exact store path the framework `release_entry` uses for the pool.
     #[tokio::test]
     async fn store_return_is_revoke_fenced() {
         let resource = MockPool::new();
         let topo = mock_pool(Config::default(), 0);
-        let store: InstanceStore<PoolSlot<MockPool>> = InstanceStore::new(Some(4));
+        let store: InstanceStore<PoolEntry<MockPool>> = InstanceStore::new(Some(4));
 
-        let slot = topo
-            .create_pool_slot(&resource, &PoolTestConfig, &test_ctx())
+        let entry = topo
+            .create_pool_entry(&resource, &PoolTestConfig, &test_ctx())
             .await
             .expect("create");
         let epoch = store.stamp_epoch();
         store.bump_revoke_epoch();
         assert!(
-            store.return_slot(slot, epoch).await.is_evict(),
-            "a slot checked out before a revoke must be evicted by the store fence"
+            store.return_entry(entry, epoch).await.is_evict(),
+            "an entry checked out before a revoke must be evicted by the store fence"
         );
 
-        let slot2 = topo
-            .create_pool_slot(&resource, &PoolTestConfig, &test_ctx())
+        let entry2 = topo
+            .create_pool_entry(&resource, &PoolTestConfig, &test_ctx())
             .await
             .expect("create");
         let fresh = store.stamp_epoch();
-        // `ReturnOutcome<PoolSlot<_>>` is not `Debug`/`PartialEq` (the slot is
+        // `ReturnOutcome<PoolEntry<_>>` is not `Debug`/`PartialEq` (the entry is
         // not), so match the recycled arm rather than comparing for equality.
         assert!(
             matches!(
-                store.return_slot(slot2, fresh).await,
+                store.return_entry(entry2, fresh).await,
                 ReturnOutcome::Recycled
             ),
-            "a slot checked out after the revoke is unaffected"
+            "an entry checked out after the revoke is unaffected"
         );
-        assert_eq!(store.len().await, 1, "the post-revoke slot recycled");
+        assert_eq!(store.len().await, 1, "the post-revoke entry recycled");
     }
 }

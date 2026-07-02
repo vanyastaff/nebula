@@ -25,7 +25,7 @@ use tokio::sync::Notify;
 use crate::{
     recovery::RecoveryGate,
     release_queue::ReleaseQueue,
-    resource::{HasCredentialSlots, Provider},
+    resource::Provider,
     state::{ResourcePhase, ResourceStatus},
     topology::{
         AdmissionPhase, Load, MaintenanceSchedule, Topology, Unavailable, store::InstanceStore,
@@ -33,9 +33,9 @@ use crate::{
     topology_tag::TopologyTag,
 };
 
-/// The `Slot` type of a resource's topology — the leasable unit the framework
+/// The `Entry` type of a resource's topology — the leasable unit the framework
 /// stores and the guard holds for its whole lease.
-pub(crate) type SlotOf<R> = <<R as Provider>::Topology as Topology<R>>::Slot;
+pub(crate) type EntryOf<R> = <<R as Provider>::Topology as Topology<R>>::Entry;
 
 /// Per-registration runtime holding topology + metadata.
 ///
@@ -56,12 +56,12 @@ pub struct ManagedResource<R: Provider> {
     /// return / sweep.
     ///
     /// This is the **real** idle queue: built-in [`Pooled`](crate::topology::Pooled)
-    /// recycles `PoolSlot<R>`s here; [`Resident`](crate::topology::Resident)
+    /// recycles `PoolEntry<R>`s here; [`Resident`](crate::topology::Resident)
     /// (which does not pool) leaves it empty. A custom topology receives a
     /// borrowed `&store` it cannot retain — the structural barrier against a
     /// cross-scope instance cache — and the framework, not the topology, runs
-    /// `checkout` / `return_slot` / `evict_stale` against it.
-    pub(crate) store: InstanceStore<SlotOf<R>>,
+    /// `checkout` / `return_entry` / `evict_stale` against it.
+    pub(crate) store: InstanceStore<EntryOf<R>>,
     /// Background worker pool for async cleanup.
     pub(crate) release_queue: Arc<ReleaseQueue>,
     /// Monotonically increasing generation counter (bumped on reload).
@@ -97,13 +97,30 @@ pub struct ManagedResource<R: Provider> {
     pub(crate) in_flight: Arc<(AtomicU64, Notify)>,
     /// Count of background maintenance sweeps run so far.
     ///
-    /// Drives the cost-aware health-probe cadence: the reaper probes idle slots
+    /// Drives the cost-aware health-probe cadence: the reaper probes idle entries
     /// via [`Provider::check`] only on sweeps where
     /// `sweeps % R::check_cost().probe_every_n_sweeps() == 0`, so an
     /// [`Expensive`](crate::CheckCost::Expensive) check runs far less often than
     /// a [`Cheap`](crate::CheckCost::Cheap) one. Bumped once per
     /// [`run_maintenance`](Self::run_maintenance).
     pub(crate) maintenance_sweeps: AtomicU64,
+}
+
+impl<R: Provider> std::fmt::Debug for ManagedResource<R> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // `resource: R`, `topology: R::Topology`, and `store` hold live
+        // `R::Instance`s with no `Debug` bound — print the process-visible
+        // bookkeeping counters instead of the instance payload.
+        f.debug_struct("ManagedResource")
+            .field("key", &R::key())
+            .field("generation", &self.generation.load(Ordering::Relaxed))
+            .field("tainted", &self.tainted.load(Ordering::Relaxed))
+            .field(
+                "maintenance_sweeps",
+                &self.maintenance_sweeps.load(Ordering::Relaxed),
+            )
+            .finish_non_exhaustive()
+    }
 }
 
 impl<R: Provider> ManagedResource<R> {
@@ -183,6 +200,13 @@ impl<R: Provider> ManagedResource<R> {
         Arc::clone(&self.in_flight)
     }
 
+    /// Current in-flight-acquire count for *this* resource row — a
+    /// point-in-time read of the counter [`in_flight_tracker`](Self::in_flight_tracker)
+    /// hands out, without exposing the tracker's tuple shape at call sites.
+    pub(crate) fn in_flight_count(&self) -> usize {
+        self.in_flight.0.load(Ordering::Acquire) as usize
+    }
+
     /// Drains *this* resource's in-flight acquires (bounded by `timeout`).
     ///
     /// The per-resource analogue of `Manager::wait_for_drain`: it waits on
@@ -203,7 +227,7 @@ impl<R: Provider> ManagedResource<R> {
 // a separate block usable by the erased admission probes.
 impl<R> ManagedResource<R>
 where
-    R: Provider + HasCredentialSlots,
+    R: Provider,
     R::Topology: Topology<R>,
 {
     /// The topology tag for rotation / diagnostic spans.
@@ -217,7 +241,7 @@ where
     }
 
     /// Updates the topology's config fingerprint (no-op for topologies that
-    /// track none) so stale idle slots evict on the next sweep / acquire.
+    /// track none) so stale idle entries evict on the next sweep / acquire.
     pub(crate) fn set_fingerprint(&self, fingerprint: u64) {
         self.topology.set_fingerprint(fingerprint);
     }
@@ -362,11 +386,7 @@ mod tests {
         }
     }
 
-    impl HasCredentialSlots for Mock {
-        fn credential_slot_epoch(&self) -> u64 {
-            0
-        }
-    }
+    crate::no_credential_slots!(Mock);
 
     impl crate::topology::pooled::PoolProvider for Mock {}
 
@@ -409,35 +429,35 @@ mod tests {
             },
         );
 
-        // First acquire creates one slot.
+        // First acquire creates one entry.
         let g = mr
             .run_acquire_loop(&test_ctx(), &AcquireOptions::default(), None)
             .await
             .expect("first acquire");
         assert_eq!(*g, 0);
-        // Release inline so the slot recycles into the framework store.
+        // Release inline so the entry recycles into the framework store.
         g.release().await.expect("release recycles");
-        assert_eq!(mr.store.len().await, 1, "the slot recycled into the store");
+        assert_eq!(mr.store.len().await, 1, "the entry recycled into the store");
 
-        // Second acquire reuses the idle slot — no new create.
+        // Second acquire reuses the idle entry — no new create.
         let g2 = mr
             .run_acquire_loop(&test_ctx(), &AcquireOptions::default(), None)
             .await
             .expect("second acquire");
-        assert_eq!(*g2, 0, "reused the recycled slot");
+        assert_eq!(*g2, 0, "reused the recycled entry");
         assert_eq!(
             created.load(Ordering::SeqCst),
             1,
-            "the second acquire reused the idle slot — no extra create"
+            "the second acquire reused the idle entry — no extra create"
         );
         g2.release().await.expect("release");
     }
 
-    /// The framework loop's revoke fence: a slot idle before a bump is evicted
+    /// The framework loop's revoke fence: an entry idle before a bump is evicted
     /// (and destroyed by the framework) on the next acquire — the author writes
     /// no fence code.
     #[tokio::test]
-    async fn loop_evicts_revoke_stale_idle_slot_on_acquire() {
+    async fn loop_evicts_revoke_stale_idle_entry_on_acquire() {
         let resource = Mock::new();
         let destroyed = Arc::clone(&resource.destroyed);
         let created = Arc::clone(&resource.created);
@@ -449,7 +469,7 @@ mod tests {
             },
         );
 
-        // Acquire + release so a clean slot sits idle.
+        // Acquire + release so a clean entry sits idle.
         let g = mr
             .run_acquire_loop(&test_ctx(), &AcquireOptions::default(), None)
             .await
@@ -460,7 +480,7 @@ mod tests {
         // Revoke (the manager phase-1 synchronous bump).
         mr.bump_revoke_epoch();
 
-        // Next acquire: the FRAMEWORK loop checks out, sees the stale slot,
+        // Next acquire: the FRAMEWORK loop checks out, sees the stale entry,
         // destroys it, and creates a fresh one. The author wrote no fence code.
         let g2 = mr
             .run_acquire_loop(&test_ctx(), &AcquireOptions::default(), None)
@@ -469,24 +489,24 @@ mod tests {
         assert_eq!(
             destroyed.load(Ordering::SeqCst),
             1,
-            "the framework destroyed the since-revoked idle slot on checkout"
+            "the framework destroyed the since-revoked idle entry on checkout"
         );
         assert_eq!(
             created.load(Ordering::SeqCst),
             2,
-            "a fresh slot was created after the stale one was fenced"
+            "a fresh entry was created after the stale one was fenced"
         );
         // The fresh lease is the post-revoke instance, not the stale one.
         assert_eq!(*g2, 1);
         g2.release().await.expect("release");
     }
 
-    /// Max-lifetime eviction keeps firing because the slot's `created_at`
-    /// survives the round-trip (slot-centric). A slot older than max_lifetime is
+    /// Max-lifetime eviction keeps firing because the entry's `created_at`
+    /// survives the round-trip (entry-centric). An entry older than max_lifetime is
     /// not re-handed-out: the loop's `accept` rejects it and the framework
     /// creates a fresh one.
     #[tokio::test]
-    async fn loop_max_lifetime_rejects_aged_idle_slot() {
+    async fn loop_max_lifetime_rejects_aged_idle_entry() {
         let resource = Mock::new();
         let created = Arc::clone(&resource.created);
         let mr = managed(
@@ -505,7 +525,7 @@ mod tests {
         g.release().await.expect("release");
         assert_eq!(mr.store.len().await, 1);
 
-        // Age the idle slot past max_lifetime.
+        // Age the idle entry past max_lifetime.
         tokio::time::sleep(Duration::from_millis(40)).await;
 
         let g2 = mr
@@ -515,14 +535,14 @@ mod tests {
         assert_eq!(
             created.load(Ordering::SeqCst),
             2,
-            "the aged idle slot was rejected by `accept` (created_at survived \
-             the round-trip) and a fresh slot was created"
+            "the aged idle entry was rejected by `accept` (created_at survived \
+             the round-trip) and a fresh entry was created"
         );
         g2.release().await.expect("release");
     }
 
     /// Maintenance over the framework store evicts both revoke-stale and
-    /// non-revoke (fingerprint) idle slots, destroying each.
+    /// non-revoke (fingerprint) idle entries, destroying each.
     #[tokio::test]
     async fn maintenance_evicts_stale_and_revoked() -> Result<(), Error> {
         let resource = Mock::new();
@@ -537,10 +557,10 @@ mod tests {
             },
         );
 
-        // Two clean idle slots: hold BOTH guards live, then release both. A
-        // serial acquire-release reuses the single idle slot (correct pooling),
+        // Two clean idle entries: hold BOTH guards live, then release both. A
+        // serial acquire-release reuses the single idle entry (correct pooling),
         // which would deposit only one — so the two leases must overlap to
-        // accumulate two distinct slots for the maintenance sweep to evict.
+        // accumulate two distinct entries for the maintenance sweep to evict.
         let g1 = mr
             .run_acquire_loop(&test_ctx(), &AcquireOptions::default(), None)
             .await?;
@@ -584,7 +604,7 @@ mod tests {
                 .run_acquire_loop(&test_ctx(), &AcquireOptions::default(), None)
                 .await?;
             g.release().await?;
-            assert_eq!(mr.store.len().await, 1, "one slot recycled into the store");
+            assert_eq!(mr.store.len().await, 1, "one entry recycled into the store");
             Ok((checks, mr))
         }
 
@@ -610,9 +630,9 @@ mod tests {
     }
 
     /// A11: a probe whose `check` fails evicts and destroys the unhealthy idle
-    /// slot, so the next acquire rebuilds a fresh one.
+    /// entry, so the next acquire rebuilds a fresh one.
     #[tokio::test]
-    async fn health_probe_evicts_unhealthy_idle_slot() -> Result<(), Error> {
+    async fn health_probe_evicts_unhealthy_idle_entry() -> Result<(), Error> {
         let resource = Mock::new();
         let destroyed = Arc::clone(&resource.destroyed);
         let check_fails = Arc::clone(&resource.check_fails);
@@ -630,23 +650,27 @@ mod tests {
         g.release().await?;
         assert_eq!(mr.store.len().await, 1);
 
-        // The slot's health check now fails — the probe must evict + destroy it.
+        // The entry's health check now fails — the probe must evict + destroy it.
         check_fails.store(true, Ordering::SeqCst);
         let evicted = mr.run_maintenance().await;
 
-        assert_eq!(evicted, 1, "the failing probe evicted the unhealthy slot");
-        assert_eq!(mr.store.len().await, 0, "the unhealthy slot left the store");
+        assert_eq!(evicted, 1, "the failing probe evicted the unhealthy entry");
+        assert_eq!(
+            mr.store.len().await,
+            0,
+            "the unhealthy entry left the store"
+        );
         assert_eq!(
             destroyed.load(Ordering::SeqCst),
             1,
-            "the probed-out slot was destroyed"
+            "the probed-out entry was destroyed"
         );
         Ok(())
     }
 
     /// A11 foolproofing: a probe whose `check` PANICS is caught by the framework
     /// (routed through `guard_author_hook`) — the reaper is not crashed, and the
-    /// slot is treated as unhealthy and evicted/destroyed.
+    /// entry is treated as unhealthy and evicted/destroyed.
     #[tokio::test]
     async fn health_probe_isolates_panicking_check() -> Result<(), Error> {
         let resource = Mock::new();
@@ -667,24 +691,24 @@ mod tests {
         assert_eq!(mr.store.len().await, 1);
 
         // The probe's `check` now panics — the chokepoint must catch it (not
-        // crash the reaper) and evict the slot.
+        // crash the reaper) and evict the entry.
         check_panics.store(true, Ordering::SeqCst);
         let evicted = mr.run_maintenance().await;
 
         assert_eq!(
             evicted, 1,
-            "a panicking probe is isolated and the slot evicted"
+            "a panicking probe is isolated and the entry evicted"
         );
         assert_eq!(mr.store.len().await, 0);
         assert_eq!(
             destroyed.load(Ordering::SeqCst),
             1,
-            "the panicked-on slot was destroyed"
+            "the panicked-on entry was destroyed"
         );
         Ok(())
     }
 
-    /// Warmup pre-creates `warmup_target` slots into the framework store.
+    /// Warmup pre-creates `warmup_target` entries into the framework store.
     #[tokio::test]
     async fn warmup_fills_store() {
         let resource = Mock::new();
@@ -697,8 +721,8 @@ mod tests {
             },
         );
         let created = mr.warmup(&test_ctx()).await;
-        assert_eq!(created, 3, "warmup creates `min_size` slots");
-        assert_eq!(mr.store.len().await, 3, "warmed slots land in the store");
+        assert_eq!(created, 3, "warmup creates `min_size` entries");
+        assert_eq!(mr.store.len().await, 3, "warmed entries land in the store");
     }
 
     // ----- ADR-0093 per-resource teardown deadline -----
@@ -753,11 +777,7 @@ mod tests {
         }
     }
 
-    impl HasCredentialSlots for SlowTeardown {
-        fn credential_slot_epoch(&self) -> u64 {
-            0
-        }
-    }
+    crate::no_credential_slots!(SlowTeardown);
 
     impl crate::topology::pooled::PoolProvider for SlowTeardown {}
 

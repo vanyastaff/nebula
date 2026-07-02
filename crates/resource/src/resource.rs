@@ -52,6 +52,15 @@ pub trait ResourceConfig: nebula_schema::HasSchema + Send + Sync + Clone + 'stat
     /// Validates the configuration, returning an error if invalid.
     ///
     /// The default implementation accepts all configurations.
+    ///
+    /// # Errors
+    ///
+    /// Implementors return [`Error::permanent`](crate::Error::permanent) for
+    /// a malformed config (bad DSN, out-of-range size, missing required
+    /// field) — this runs on [`Manager::register`](crate::Manager::register)
+    /// and [`Manager::reload_config`](crate::Manager::reload_config), so the
+    /// caller sees the rejection at registration/reload time rather than a
+    /// later `create` failure. The default implementation never errors.
     fn validate(&self) -> Result<(), crate::Error> {
         Ok(())
     }
@@ -203,6 +212,14 @@ impl ResourceMetadata {
     /// variant; the wrapper exists for shape parity with `nebula-action` and
     /// `nebula-credential`, so callers can match the error across all three
     /// catalog-leaf consumers uniformly.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MetadataCompatibilityError`] when `self.base.key` differs
+    /// from `previous.base.key`, `self.base.version` is not monotonically
+    /// increasing over `previous.base.version`, or the schema changed in a
+    /// way that requires a major version bump — see
+    /// [`nebula_metadata::validate_base_compat`] for the exact rule set.
     pub fn validate_compatibility(
         &self,
         previous: &Self,
@@ -363,8 +380,16 @@ impl CheckCost {
 // topology's `R` (which carries an implicit `Sized` bound). `Provider` is never
 // object-safe regardless — `fn key() -> ResourceKey` has no receiver — so no
 // `dyn Provider` usage is foreclosed by this.
+//
+// `HasCredentialSlots` supertrait: every `Provider` must state its
+// credential-slot posture, either via `#[derive(Resource)]` (which emits the
+// real fold) or the `no_credential_slots!` macro for slot-less types. This
+// folds what used to be two independently-implementable traits (a resource
+// could implement `Provider` and silently skip `HasCredentialSlots`, leaving
+// the framework's rotation/revoke fan-out unable to see it) into one
+// compile-time-enforced contract.
 #[async_trait]
-pub trait Provider: Send + Sync + Sized + 'static {
+pub trait Provider: HasCredentialSlots + Send + Sync + Sized + 'static {
     /// Operational configuration type (no secrets).
     type Config: ResourceConfig;
     /// The live resource handle.
@@ -380,7 +405,7 @@ pub trait Provider: Send + Sync + Sized + 'static {
     /// spell this — `type Topology = Pooled<Self>;`, etc.
     ///
     /// The topology is keyed to the resource (`Topology<Self>`): every topology
-    /// needs the R-aware slot lifecycle hooks (`create_slot` produces
+    /// needs the R-aware entry lifecycle hooks (`create_entry` produces
     /// `R::Instance`), so the trait carries `R` rather than splitting an
     /// R-agnostic open trait from an R-aware bridge.
     type Topology: crate::topology::Topology<Self>;
@@ -409,7 +434,7 @@ pub trait Provider: Send + Sync + Sized + 'static {
     /// - [`Backpressure`](crate::ErrorKind::Backpressure) — your own quota saturated.
     /// - [`Cancelled`](crate::ErrorKind::Cancelled) — observed `ctx.cancel_token()` and aborted.
     ///
-    /// # Cancellation
+    /// # Cancel safety
     ///
     /// `create` MUST be cancel-safe: observing
     /// `ctx.cancel_token().cancelled()` MAY drop the future at any
@@ -437,8 +462,12 @@ pub trait Provider: Send + Sync + Sized + 'static {
     /// swap into an `Arc<RwLock<Pool>>`, let RAII drain old handles.
     ///
     /// **Invariant** per slot model §Seam: implementer must handle every
-    /// declared credential slot name; the engine emits a `WARN
-    /// [resource]` if rotation arrives for an unhandled slot.
+    /// declared credential slot name. `slot_name` is validated before this
+    /// hook is ever dispatched: `Manager::refresh_slot` / `taint_slot`
+    /// reject a slot name that does not match one of
+    /// [`HasCredentialSlots::credential_slot_names`] with a typed
+    /// [`Error::unknown_credential_slot`](crate::Error::unknown_credential_slot)
+    /// — this hook never observes an undeclared slot.
     ///
     /// Cancellation safety: implementations MUST be cancel-safe — if
     /// the returned future is dropped mid-await, the resource MUST
@@ -489,11 +518,18 @@ pub trait Provider: Send + Sync + Sized + 'static {
     /// The default implementation always succeeds.
     ///
     /// The framework also calls this from its background maintenance probe
-    /// (spaced by [`check_cost`](Self::check_cost)) while holding the topology's
-    /// idle lock, so a `check` impl MUST NOT re-enter the resource manager for
-    /// the same resource (acquire / return through a captured `Manager` handle)
-    /// — that would deadlock on the non-reentrant idle lock. Read instance state
-    /// only.
+    /// (spaced by [`check_cost`](Self::check_cost)). The idle lock is **NOT**
+    /// held while `check` runs: the probe briefly locks the idle queue
+    /// only to drain it, runs every check concurrently outside that lock,
+    /// then returns each survivor through the framework's epoch-fenced
+    /// return path (re-checking the revoke epoch under the re-taken lock —
+    /// an entry whose credential was revoked mid-probe is destroyed, never
+    /// silently re-admitted). A
+    /// `check` impl still MUST NOT re-enter the resource manager for the
+    /// same resource (acquire / return through a captured `Manager`
+    /// handle): this is a **policy** boundary now (an author hook must stay
+    /// read-only and side-effect-free), not a lock-reentrancy hazard the
+    /// framework depends on to avoid deadlock. Read instance state only.
     ///
     /// # Errors
     ///
@@ -583,7 +619,7 @@ pub trait Provider: Send + Sync + Sized + 'static {
     /// instance is going away ([`TeardownReason`]), letting an impl adapt
     /// (full flush on `Shutdown`, fast abandon on `Revoked`).
     ///
-    /// # Cancellation
+    /// # Cancel safety
     ///
     /// `destroy` typically runs through
     /// [`ReleaseQueue`](crate::ReleaseQueue) so caller-side `Drop` is
@@ -643,13 +679,88 @@ pub trait HasCredentialSlots {
     /// Distinct from [`credential_slot_epoch`](Self::credential_slot_epoch),
     /// which is `0` both for a slot-less resource and for a declared-but-unbound
     /// slot and so cannot answer this at the type level. The derive emits `true`
-    /// when the struct has at least one `#[credential]` field; hand-written
-    /// impls default to `false`. The framework uses it to nudge credentialed
+    /// when the struct has at least one `#[credential]` field. **Required, no
+    /// default:** a slot-less hand-written impl must say `false`
+    /// explicitly — use [`no_credential_slots!`](crate::no_credential_slots) for
+    /// the honest one-line zero impl rather than silently inheriting a default,
+    /// so a resource can never implement [`Provider`] without having stated its
+    /// credential-slot posture. The framework uses it to nudge credentialed
     /// Pooled resources toward a session-state-wiping `recycle` (see ADR-0093
     /// foolproofing Tier-3).
-    fn declares_credential_slots() -> bool {
-        false
+    fn declares_credential_slots() -> bool;
+
+    /// Names of every declared `#[credential]` slot field, for unknown-slot
+    /// validation.
+    ///
+    /// `#[derive(Resource)]` emits the real list — the `key = "..."` (or
+    /// field name) of every `#[credential]` field, in declaration order.
+    /// Hand-written impls default to empty.
+    ///
+    /// [`Manager::refresh_slot`](crate::Manager::refresh_slot) /
+    /// [`taint_slot`](crate::Manager::taint_slot) (and their `_for_identity`
+    /// / `revoke_slot*` counterparts) validate every incoming slot-name
+    /// argument against this list, unconditionally — a slot-less type (empty
+    /// list, `declares_credential_slots() -> false`) therefore rejects every
+    /// slot name with [`Error::unknown_credential_slot`](crate::Error::unknown_credential_slot);
+    /// there is no name that reaches the dispatch hook unchecked. A type
+    /// that declares credential slots must declare their names here too —
+    /// leaving this at the empty default while overriding
+    /// `declares_credential_slots() -> true` makes every rotation/revoke
+    /// call against it fail closed the same way.
+    fn credential_slot_names() -> &'static [&'static str] {
+        &[]
     }
+}
+
+/// Emits the honest zero [`HasCredentialSlots`] impl for a resource with no
+/// `#[credential]` slot fields.
+///
+/// `Provider` requires `HasCredentialSlots`, and
+/// [`declares_credential_slots`](HasCredentialSlots::declares_credential_slots)
+/// has no default — every hand-written `impl Provider` must state its
+/// credential-slot posture. `#[derive(Resource)]` does this for you when the
+/// struct has `#[credential]` fields; for a resource with none, call this
+/// macro once instead of hand-rolling the same three-line impl. Because
+/// [`credential_slot_names`](HasCredentialSlots::credential_slot_names) also
+/// defaults to empty, every rotation/revoke entry point on the resulting
+/// type rejects every slot name with
+/// [`Error::unknown_credential_slot`](crate::Error::unknown_credential_slot) —
+/// there is no slot to rotate, so there is no name that should ever be
+/// accepted:
+///
+/// ```
+/// use nebula_resource::no_credential_slots;
+///
+/// struct MyResource;
+///
+/// no_credential_slots!(MyResource);
+/// ```
+///
+/// expands to:
+///
+/// ```
+/// # struct MyResource;
+/// impl nebula_resource::HasCredentialSlots for MyResource {
+///     fn credential_slot_epoch(&self) -> u64 {
+///         0
+///     }
+///     fn declares_credential_slots() -> bool {
+///         false
+///     }
+/// }
+/// ```
+#[macro_export]
+macro_rules! no_credential_slots {
+    ($ty:ty) => {
+        impl $crate::HasCredentialSlots for $ty {
+            fn credential_slot_epoch(&self) -> u64 {
+                0
+            }
+            fn declares_credential_slots() -> bool {
+                false
+            }
+        }
+    };
 }
 
 #[cfg(test)]

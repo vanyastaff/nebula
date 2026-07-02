@@ -117,11 +117,7 @@ impl Provider for HttpPool {
 
 impl nebula_core::DeclaresDependencies for HttpPool {}
 
-impl nebula_resource::HasCredentialSlots for HttpPool {
-    fn credential_slot_epoch(&self) -> u64 {
-        0
-    }
-}
+nebula_resource::no_credential_slots!(HttpPool);
 
 #[async_trait::async_trait]
 impl ResidentProvider for HttpPool {

@@ -27,9 +27,7 @@ use nebula_core::{OrgId, ResourceKey, ScopeLevel, resource_key, scope::Scope};
 use nebula_resource::Resident;
 use nebula_resource::{
     AcquireOptions, Manager, Provider, RegisterOptions, RegistrationSpec, ResidentConfig,
-    ResourceConfig, ResourceContext, SlotIdentity,
-    error::Error,
-    resource::{HasCredentialSlots, ResourceMetadata},
+    ResourceConfig, ResourceContext, SlotIdentity, error::Error, resource::ResourceMetadata,
     topology::resident::ResidentProvider,
 };
 use tokio_util::sync::CancellationToken;
@@ -106,11 +104,7 @@ impl Provider for CountingResource {
     }
 }
 
-impl HasCredentialSlots for CountingResource {
-    fn credential_slot_epoch(&self) -> u64 {
-        0
-    }
-}
+nebula_resource::no_credential_slots!(CountingResource);
 
 #[async_trait::async_trait]
 impl ResidentProvider for CountingResource {
@@ -466,11 +460,7 @@ impl Provider for SiblingResidentResource {
     }
 }
 
-impl HasCredentialSlots for SiblingResidentResource {
-    fn credential_slot_epoch(&self) -> u64 {
-        0
-    }
-}
+nebula_resource::no_credential_slots!(SiblingResidentResource);
 
 #[async_trait::async_trait]
 impl ResidentProvider for SiblingResidentResource {
@@ -618,4 +608,69 @@ async fn typed_lookup_skips_sibling_type_and_falls_through_to_global() {
     manager
         .lookup::<SiblingResidentResource>(&ScopeLevel::Organization(org))
         .expect("sibling type must still resolve its own org-scope row");
+}
+
+/// `Manager::remove_for` removes exactly the one resolved row it names —
+/// a multi-tenant sibling under the same `(key, scope)` but a DIFFERENT
+/// resolved slot identity must survive untouched. This is the narrow
+/// counterpart to `Manager::remove`'s whole-key blast radius.
+#[tokio::test]
+async fn remove_for_removes_one_tenant_row_and_keeps_siblings() {
+    let manager = Manager::new();
+    let org = OrgId::new();
+    let scope = ScopeLevel::Organization(org);
+    let counter = Arc::new(AtomicU64::new(0));
+
+    let id_a = SlotIdentity::from_bindings([("db", "cred-tenant-a")]);
+    let id_b = SlotIdentity::from_bindings([("db", "cred-tenant-b")]);
+    register_counting(
+        &manager,
+        CountingResource::new(Arc::clone(&counter)),
+        RegisterOptions::default()
+            .with_scope(scope.clone())
+            .with_slot_bindings(&[("db", "cred-tenant-a")]),
+    )
+    .expect("register tenant A must succeed");
+    register_counting(
+        &manager,
+        CountingResource::new(Arc::clone(&counter)),
+        RegisterOptions::default()
+            .with_scope(scope.clone())
+            .with_slot_bindings(&[("db", "cred-tenant-b")]),
+    )
+    .expect("register tenant B must succeed");
+
+    let ctx = ctx_for_org(org);
+
+    // Remove ONLY tenant A's resolved row.
+    manager
+        .remove_for(&CountingResource::key(), &scope, &id_a)
+        .expect("remove_for must succeed for a row that exists");
+
+    // Tenant A's row is gone: acquiring it now fails.
+    let err = manager
+        .acquire_resident_for_identity::<CountingResource>(&ctx, &AcquireOptions::default(), &id_a)
+        .await
+        .expect_err("tenant A's row must no longer resolve after remove_for");
+    assert!(
+        !err.is_retryable(),
+        "a removed row must resolve to a permanent NotFound, got: {err:?}"
+    );
+
+    // Tenant B's sibling row — same key, same scope, different resolved
+    // identity — must be completely untouched.
+    let _sibling_guard = manager
+        .acquire_resident_for_identity::<CountingResource>(&ctx, &AcquireOptions::default(), &id_b)
+        .await
+        .expect(
+            "tenant B's sibling row must survive remove_for targeting only \
+             tenant A's resolved identity",
+        );
+
+    // A second `remove_for` on the now-absent row is a clean NotFound, not
+    // a panic or a silent no-op success.
+    let repeat_err = manager
+        .remove_for(&CountingResource::key(), &scope, &id_a)
+        .expect_err("remove_for on an already-removed row must report NotFound");
+    assert!(!repeat_err.is_retryable());
 }

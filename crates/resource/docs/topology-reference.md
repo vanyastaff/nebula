@@ -290,5 +290,6 @@ Before sending the PR, verify:
 - [`README.md`](README.md) — library overview, public API surface
 - [`pooling.md`](pooling.md) — Pool topology deep-dive (warmup, metrics, stats)
 - [`recovery.md`](recovery.md) — recovery gating and resilience composition
+- [`credential-rotation.md`](credential-rotation.md) — the rotate → slot swap → refresh/taint/revoke sequence
 - [`events.md`](events.md) — lifecycle event streaming
 - [`api-reference.md`](api-reference.md) — full surface API listing

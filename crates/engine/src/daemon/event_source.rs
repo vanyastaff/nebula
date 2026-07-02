@@ -504,6 +504,8 @@ mod tests {
         }
     }
 
+    nebula_resource::no_credential_slots!(ThreeEventSource);
+
     impl EventSource for ThreeEventSource {
         type Event = u32;
         type Subscription = ();
@@ -625,6 +627,8 @@ mod tests {
             ResourceMetadata::from_key(&Self::key())
         }
     }
+
+    nebula_resource::no_credential_slots!(PermanentlyBrokenSource);
 
     impl EventSource for PermanentlyBrokenSource {
         type Event = u32;

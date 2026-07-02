@@ -2,7 +2,7 @@
 name: nebula-resource
 role: Bulkhead Pool (Release It! ch "Stability Patterns — Bulkhead"; resource lifecycle acquire / health / release)
 status: frontier
-last-reviewed: 2026-04-29
+last-reviewed: 2026-07-02
 canon-invariants: [L2-11.4, L2-13.3]
 related: [nebula-core, nebula-schema, nebula-error, nebula-resilience, nebula-credential, nebula-action]
 ---
@@ -19,7 +19,7 @@ External connections — database pools, HTTP clients, message brokers — are a
 
 ## Public API (v4 — slot-binding pattern, 2026-04-29)
 
-The v4 surface — singular `type Credential` is dropped in favor of typed credential **slot fields** declared via `#[credential(key = "…")]` field attributes on the resource struct. Each slot field is a lock-free `SlotCell<CredentialGuard<C>>` the framework populates and rotates through `&self`; the derive emits a `<field>_slot()` read accessor. Multi-credential resources are now natural; per-slot rotation lands via `Resource::on_credential_refresh(&self, slot_name, runtime)` with a companion `Resource::on_credential_revoke(&self, slot_name, runtime)`.
+The v4 surface — singular `type Credential` is dropped in favor of typed credential **slot fields** declared via `#[credential(key = "…")]` field attributes on the resource struct. Each slot field is a lock-free `SlotCell<CredentialGuard<C>>` the framework populates and rotates through `&self`; the derive emits a `<field>_slot()` read accessor. Multi-credential resources are now natural; per-slot rotation lands via `Provider::on_credential_refresh(&self, slot_name, instance)` with a companion `Provider::on_credential_revoke(&self, slot_name, instance)`.
 
 ### `Provider` trait — 3 associated types, slot fields on Self
 
@@ -128,7 +128,7 @@ manager.register(RegistrationSpec {
 
 `slot_identity` is the **collision-free structural cross-tenant barrier** (`SlotIdentity::{Unbound, Structural(Arc<[(String, String)]>)}`): two registrations of the same resource type at the same `scope` whose resolved `(slot, credential)` bindings differ occupy **distinct** registry rows with **distinct** runtimes. Equality/hash is over the exact pair list — a distinct resolved credential is a distinct identity *by construction*, not a hash digest, so there is no collision space. `SlotIdentity::Unbound` preserves the historical single-row-per-`(key, scope)` dedup contract and carries no secret bytes. The JSON/`{{ … }}` engine-facing entry is `Manager::register_resolved::<R>(…)` (an internal positional ABI the engine registrar drives, not a general-purpose API).
 
-The framework resolves declared `#[credential]` slots **before** invoking `Resource::create` — implementations read each resolved credential through the derive-emitted `self.<field>_slot()` accessor (`Option<Arc<CredentialGuard<C>>>`), handling the `None` (unbound) case explicitly.
+The framework resolves declared `#[credential]` slots **before** invoking `Provider::create` — implementations read each resolved credential through the derive-emitted `self.<field>_slot()` accessor (`Option<Arc<CredentialGuard<C>>>`), handling the `None` (unbound) case explicitly.
 
 ### Other public API
 
@@ -137,7 +137,7 @@ The framework resolves declared `#[credential]` slots **before** invoking `Resou
 - `RegistrationSpec` — the single registration param aggregate (see above).
 - `SlotIdentity` — collision-free structural resolved-credential identity (`Unbound` / `Structural`); the cross-tenant barrier.
 - `ManagerConfig`, `RegisterOptions` — configuration surface.
-- `Registry`, `AnyManagedResource`, `LookupOutcome` — type-erased storage + lookup result for registered resource instances.
+- `Registry`, `ManagedHandle` (sealed), `LookupOutcome` — type-erased storage + lookup result for registered resource instances.
 - `ResourceMetadata` — static descriptor: key, name, description, schema, version, tags.
 - `ResourceConfig` — operational config trait (no secrets); supertype `HasSchema`.
 - `SlotCell` — lock-free `ArcSwap`-based slot cell the framework populates/rotates (the public cell type; the internal `Cell` alias is no longer exported).
@@ -163,23 +163,29 @@ The framework resolves declared `#[credential]` slots **before** invoking `Resou
 
 The slot-binding break is hard. To migrate an existing `Resource` impl:
 
-1. **Drop `type Credential`.** Move the credential dependency to a `#[credential(key = "…")]` slot field of type `SlotCell<CredentialGuard<C>>` on the struct, constructed with `SlotCell::empty()`. Change `Resource::Credential` references to read through the derive-emitted `self.<field>_slot()` accessor.
+1. **Drop `type Credential`.** Move the credential dependency to a `#[credential(key = "…")]` slot field of type `SlotCell<CredentialGuard<C>>` on the struct, constructed with `SlotCell::empty()`. Change `Provider::Credential` references to read through the derive-emitted `self.<field>_slot()` accessor.
 2. **Drop the `scheme: &<R::Credential as Credential>::Scheme` parameter** from `create`. The framework populates the slot cells before `create` runs; read the resolved guard via `self.<field>_slot()` (`Option<Arc<CredentialGuard<C>>>`) and handle the `None` (unbound) case explicitly.
-3. **Replace `on_credential_refresh(scheme, ctx)` with `on_credential_refresh(&self, slot_name, runtime)`** and add an `on_credential_revoke(&self, slot_name, runtime)` override where the resource held revoke logic. The engine swaps the rotated guard into the slot cell before the call; `&self` is an immutable descriptor, so blue-green / re-auth acts on `runtime`'s interior mutability. Multi-credential resources can branch on `slot_name` to refresh only the affected sub-system.
+3. **Replace `on_credential_refresh(scheme, ctx)` with `on_credential_refresh(&self, slot_name, instance)`** and add an `on_credential_revoke(&self, slot_name, instance)` override where the resource held revoke logic. The engine swaps the rotated guard into the slot cell before the call; `&self` is an immutable descriptor, so blue-green / re-auth acts on `instance`'s interior mutability. Multi-credential resources can branch on `slot_name` to refresh only the affected sub-system.
 4. **Drop `nebula_credential::NoCredential`.** Resources without credentials simply have no `#[credential]` fields. The `NoCredential` opt-out is no longer needed.
-5. **Use the two-derive pattern**: annotate the struct with `#[derive(ResourceSlots)]`; write a hand-written `impl Resource` with real `create` / `check` / `shutdown` / `destroy` bodies. No `#[resource(...)]` container attribute. Topology traits (`Pooled`, `Resident`, etc.) are still hand-written.
-6. **Update test code** — registration now goes through one funnel: `Manager::register::<R>(RegistrationSpec { resource, config, scope, slot_identity, topology, acquire, resilience, recovery_gate })`. The per-topology `register_<topo>[_with]` shorthands and the previous `acquire_*_default` shorthand were removed; acquire is the single `acquire_<topo>` / `acquire_<topo>_for_identity` family (or the erased `acquire_erased_for`).
+5. **Use the two-derive pattern**: annotate the struct with `#[derive(Resource)]` (emits slot plumbing only); write a hand-written `impl Provider` with real `create` / `check` / `shutdown` / `destroy` bodies. No `#[resource(...)]` container attribute. Topology traits (`Pooled`, `Resident`, `Bounded`) are still hand-written.
+6. **Update test code** — registration now goes through one funnel: `Manager::register::<R>(RegistrationSpec { resource, config, scope, slot_identity, topology, recovery_gate })`. The per-topology `register_<topo>[_with]` shorthands and the previous `acquire_*_default` shorthand were removed; acquire is the single `acquire_<topo>` / `acquire_<topo>_for_identity` family (or the type-erased `acquire_any`).
 7. **For credential slot identity**, pass `SlotIdentity::Unbound` for the historical single-row dedup, or build a `SlotIdentity::Structural` from the resolved `(slot, credential)` pairs for per-binding row separation. The old `u64` `slot_identity` digest was removed.
 
-The trait-shape changes ship complete; the engine-side fan-out machinery for delivering slot-name rotation events lands in a follow-up.
+The trait-shape changes ship complete; the per-slot rotation fan-out
+(`credential_fanout`, gated behind the `rotation` feature) has also landed
+in this crate — see [`credential-rotation.md`](docs/credential-rotation.md)
+for the full sequence.
 
 ## Runnable examples
 
 - `cargo run -p nebula-examples --example resource_postgres_pool` — `Pooled` topology + `ResourceAction` for per-execution test schema (configure / cleanup ordering)
 - `cargo run -p nebula-examples --example resource_resident_http` — `Resident` topology + OAuth-style credential refresh hook
-- `cargo run -p nebula-examples --example resource_telegram_multi_workflow` — `Resident` topology + cross-workflow shared-resource dedupe (1 bot, 10 workflows, 1 `Resource::create`)
+- `cargo run -p nebula-examples --example resource_telegram_multi_workflow` — `Resident` topology + cross-workflow shared-resource dedupe (1 bot, 10 workflows, 1 `Provider::create`)
 
-The headline patterns and topology selection guidance are distilled into `crates/resource/docs/topology-reference.md`.
+The headline patterns and topology selection guidance are distilled into
+`crates/resource/docs/topology-reference.md`; the credential rotate → slot
+swap → refresh/revoke sequence behind the second example is diagrammed in
+`crates/resource/docs/credential-rotation.md`.
 
 ## Contract
 
@@ -195,14 +201,58 @@ The headline patterns and topology selection guidance are distilled into `crates
 - Not a secret holder — credentials are populated into slot fields by the framework; secret material is managed by `nebula-credential`.
 - Not an expression evaluator — resource `Config` comes from `nebula-schema`-validated parameters; expression resolution is `nebula-expression`'s job. The engine-facing `Manager::register_resolved` orchestrates the resolve→validate→register pipeline but the evaluator itself stays out.
 
+## Positioning
+
+`nebula-resource` is `publish = false` — an internal workspace crate, not
+published to crates.io. This section frames it honestly for the workspace
+audience deciding whether to reach for it over a general-purpose pool crate
+inside this repo; publishing it standalone is a separate, unmade owner
+decision.
+
+### Why this instead of deadpool / bb8 / sqlx's pool?
+
+The workspace already depends on `tokio` throughout, so runtime-agnosticism
+is not a design goal here — what those general-purpose pools don't give a
+multi-tenant, credential-rotating workflow engine is:
+
+| Capability | `nebula-resource` | deadpool | bb8 | sqlx (built-in pool) |
+|------------|--------------------|----------|-----|------------------------|
+| Credential-rotation fan-out + revoke fence (no TOCTOU window) | Yes — built-in, see [`credential-rotation.md`](docs/credential-rotation.md) | No | No | No |
+| Hold-deadline leak watchdog (HikariCP `leakDetectionThreshold` lineage) | Yes — `Provider::max_hold_duration` + `HoldDeadlineExceeded` event | No | No | No |
+| Jittered anti-thundering-herd recovery gate | Yes — `RecoveryGate`, equal-jitter backoff | No | No | Partial (connection-level retry only) |
+| Topology choice (Pooled / Resident / Bounded) + an open `Topology` trait for a fourth | Yes | Pool only | Pool only | Pool only |
+| Typed, retryable `ErrorKind` taxonomy | Yes — see the `error` module's caller-action table | Partial (typed but not retry-classified) | Partial | Partial |
+| Documented + tested cancel safety on every acquire path | Yes — see "Guarantees" in the crate-root rustdoc | Not documented as a contract | Not documented as a contract | Not documented as a contract |
+| Scope-aware registry: create-once dedupe + hot config reload | Yes — `(key, scope, slot_identity)` dedupe, `reload_config` | No (one pool per `Pool` value you manage) | No | No |
+| Runtime-agnostic (no forced `tokio` dependency) | No — `tokio`-only | Yes | Yes | Partial |
+| Zero background tasks | No — maintenance reaper + release-queue workers | Yes | Yes | Partial |
+| Published, versioned crate with an existing adapter ecosystem | No — `publish = false`, in-tree only | Yes | Yes | Yes |
+
+### When NOT to use this crate
+
+- **A standalone binary with no credential rotation and no multi-tenant
+  scoping.** `deadpool`/`bb8` are lighter, published, and runtime-agnostic —
+  reach for one of those instead of pulling in the engine's registry and
+  event-bus machinery for a single always-on connection pool.
+- **You need a published, externally-consumable crate today.** This crate is
+  `publish = false` and its API still moves between minor releases
+  (`frontier` maturity) — publishing it is an unmade decision, not a
+  roadmap item you can currently depend on.
+- **A pure DB-driver integration with no cross-cutting lifecycle needs.**
+  `sqlx`'s built-in pool already handles connection-level retry and
+  driver-specific health checks tightly coupled to its own query path;
+  wrapping it in another pooling layer buys nothing unless you specifically
+  need credential rotation, hold-deadline detection, or scope-aware dedupe.
+
 ## Maturity
 
 See `docs/MATURITY.md` row for `nebula-resource`.
 
-- API stability: `frontier` — slot-binding pattern shipped; 2 topologies (`Pooled` / `Resident`), `Manager`, `ReleaseQueue`, and `ResourceGuard` are the authoritative lifecycle surface; topology runtime variants are actively evolving.
-- `#![forbid(unsafe_code)]` enforced, `#![warn(missing_docs)]` active.
+- API stability: `frontier` — slot-binding pattern shipped; 3 topologies (`Pooled` / `Resident` / `Bounded`), `Manager`, `ReleaseQueue`, and `ResourceGuard` are the authoritative lifecycle surface; topology runtime variants are actively evolving.
+- `#![forbid(unsafe_code)]` enforced, `#![deny(missing_docs)]` +
+  `#![warn(missing_debug_implementations)]` active.
 - Integration tests: shared-resource cross-workflow path is verified in `crates/engine/tests/resource_integration.rs::shared_resource::cross_workflow_resource_sharing`.
-- Per-slot rotation fan-out: lands in a follow-up.
+- Per-slot rotation fan-out: landed in this crate (`credential_fanout`, feature `rotation`) — see [`credential-rotation.md`](docs/credential-rotation.md).
 
 ## Related
 
@@ -235,12 +285,12 @@ Long-running workers (`Daemon`) and pull-based event subscriptions (`EventSource
 
 `Pooled` / `Resident` are not special — they are two `impl Topology<R>`s. An
 author can supply a bespoke topology (a permit pool, an FFmpeg transcoder pool,
-a sticky-session pool) by implementing the **slot-centric** `Topology<R>` trait
+a sticky-session pool) by implementing the **entry-centric** `Topology<R>` trait
 and pinning `type Topology = MyPool` on the resource. The contract is
 **framework-driven and safe-by-construction**: the framework owns the acquire
-loop — the fenced `InstanceStore::checkout`, the stale-slot destroy, the
+loop — the fenced `InstanceStore::checkout`, the stale-entry destroy, the
 cancel-safe guard wrap, and the on-release return-or-destroy. The topology
-supplies only thin R-aware hooks (`create_slot`, `slot_instance`,
+supplies only thin R-aware hooks (`create_entry`, `entry_instance`,
 `into_instance`, `accept`, `prepare`, `on_release`, `pools`, `store_capacity`,
 `dispatch_credential_hook`, …). A custom topology therefore writes **zero**
 store / checkout / destroy / revoke-fence code — the credential-revoke fence is
@@ -254,7 +304,7 @@ loud warning when it does not.
 When multiple workflows acquire the same `Resource` impl at the same scope,
 the manager deduplicates by `(R::key(), ScopeLevel)` and — for topologies
 backed by a single shared runtime — by the config `fingerprint()`. Exactly
-one `Resource::create` invocation runs, and every acquirer receives a lease
+one `Provider::create` invocation runs, and every acquirer receives a lease
 that points at the same backing runtime.
 
 This is the foundation of the "one bot, ten workflows" headline: a single
@@ -264,26 +314,27 @@ across duplicate clients.
 
 #### Telegram bot example
 
+`rust,ignore`: `TelegramBot`, `bot_config`, and `build_workflow_resource_ctx`
+are illustrative stand-ins, not real types in this crate — for a fully
+compiling register→acquire example, see the doctest on `Manager::register`.
+
 ```rust,ignore
 use std::sync::Arc;
 
 use nebula_resource::{
-    AcquireOptions, Manager, RegistrationSpec, ResidentConfig, ScopeLevel,
+    AcquireOptions, Manager, RegistrationSpec, Resident, ResidentConfig, ScopeLevel,
     dedup::SlotIdentity,
-    topology::Resident,
 };
 
 // One bot, registered once at organization scope through the single funnel.
 let manager = Arc::new(Manager::new());
 let bot = TelegramBot::new(/* construct from credentials */);
-let resident_rt = ResidentRuntime::<TelegramBot>::new(ResidentConfig::default());
 manager.register(RegistrationSpec {
     resource: bot,
     config: bot_config,
     scope: ScopeLevel::Organization(org_id),
     slot_identity: SlotIdentity::Unbound,
     topology: Resident::new(ResidentConfig::default()),
-    resilience: None,
     recovery_gate: None,
 })?;
 
@@ -297,7 +348,7 @@ for _ in 0..10 {
     }));
 }
 
-// `Resource::create` was invoked exactly once; every acquirer holds a
+// `Provider::create` was invoked exactly once; every acquirer holds a
 // lease whose underlying `Arc` is pointer-equal to every other acquirer's.
 ```
 

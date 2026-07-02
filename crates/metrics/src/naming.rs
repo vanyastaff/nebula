@@ -519,8 +519,36 @@ pub const NEBULA_RESOURCE_CREATE_TOTAL: &str = "nebula_resource_create_total";
 /// Counter: resource acquisitions.
 pub const NEBULA_RESOURCE_ACQUIRE_TOTAL: &str = "nebula_resource_acquire_total";
 /// Histogram: wait time before acquisition in seconds.
+///
+/// Fixed µs-scale log buckets tuned for acquire waits (tokio-metrics /
+/// HikariCP style): `<100µs`, `<1ms`, `<10ms`, `<100ms`, `<1s`, `<10s`, with
+/// an implicit final `>=10s` overflow bucket — a warm pooled/resident hit
+/// (low-single-digit µs) and a cold create-and-connect path both land in a
+/// bucket that separates them, unlike the crate's sub-second-to-10s default
+/// histogram layout which would collapse every hot-path acquire into its
+/// first bucket.
 pub const NEBULA_RESOURCE_ACQUIRE_WAIT_DURATION_SECONDS: &str =
     "nebula_resource_acquire_wait_duration_seconds";
+/// Counter: acquires whose wait exceeded the crate's "did not complete
+/// immediately" threshold before a lease was minted or the acquire failed.
+///
+/// Complements [`NEBULA_RESOURCE_ACQUIRE_WAIT_DURATION_SECONDS`] — this is
+/// the coarse yes/no signal ("was this acquire ever not instantaneous"),
+/// the histogram is the distribution.
+pub const NEBULA_RESOURCE_ACQUIRE_WAITED_TOTAL: &str = "nebula_resource_acquire_waited_total";
+/// Counter: acquires that failed after the caller's `AcquireOptions`
+/// deadline had already elapsed — a real, caller-observed acquire timeout
+/// (sqlx/bb8/deadpool "acquire timed out" precedent), independent of which
+/// internal error path produced the failure.
+pub const NEBULA_RESOURCE_ACQUIRE_TIMED_OUT_TOTAL: &str = "nebula_resource_acquire_timed_out_total";
+/// Counter: hold-deadline watchdog firings (HikariCP `leakDetectionThreshold`
+/// equivalent) — a resource lease still held past the resource's declared
+/// `Provider::max_hold_duration`, a likely leaked or hung guard. The
+/// `nebula-resource` crate's `ResourceEvent::HoldDeadlineExceeded` carries
+/// the per-event detail (execution/workflow id, span id); this counter is
+/// the aggregate crossing-zero signal.
+pub const NEBULA_RESOURCE_HOLD_DEADLINE_EXCEEDED_TOTAL: &str =
+    "nebula_resource_hold_deadline_exceeded_total";
 /// Counter: resource releases.
 pub const NEBULA_RESOURCE_RELEASE_TOTAL: &str = "nebula_resource_release_total";
 /// Counter: release-hook failures (`release_one` / reset / close / destroy

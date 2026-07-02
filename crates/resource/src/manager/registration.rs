@@ -51,9 +51,75 @@ impl Manager {
     /// # Errors
     ///
     /// Returns an error if config validation fails on the provided config.
+    ///
+    /// # Examples
+    ///
+    /// The end-to-end author flow: `#[derive(Resource)]` for slot plumbing
+    /// (empty here — no `#[credential]` fields), a hand-written `impl
+    /// Provider`, `register`, then [`acquire_pooled`](Self::acquire_pooled).
+    /// See [`acquire_pooled`](Self::acquire_pooled) for the same flow
+    /// continued through acquire / deref / release.
+    ///
+    /// ```
+    /// use async_trait::async_trait;
+    /// use nebula_core::{ResourceKey, ScopeLevel, resource_key};
+    /// use nebula_resource::{
+    ///     AcquireOptions, Error, Manager, PoolConfig, PoolProvider, Pooled, Provider,
+    ///     RegistrationSpec, Resource, ResourceContext, SlotIdentity,
+    /// };
+    ///
+    /// // `Resource` emits the (here-empty) credential-slot plumbing; the
+    /// // lifecycle itself is a hand-written `impl Provider`.
+    /// #[derive(Resource, Clone)]
+    /// struct HttpClient;
+    ///
+    /// #[async_trait]
+    /// impl Provider for HttpClient {
+    ///     type Config = ();
+    ///     type Instance = ();
+    ///     type Topology = Pooled<Self>;
+    ///
+    ///     fn key() -> ResourceKey {
+    ///         resource_key!("doctest.http_client")
+    ///     }
+    ///
+    ///     async fn create(&self, _config: &(), _ctx: &ResourceContext) -> Result<(), Error> {
+    ///         Ok(())
+    ///     }
+    /// }
+    ///
+    /// // Every method has a default — an empty impl opts `HttpClient` into
+    /// // pool topology as-is.
+    /// impl PoolProvider for HttpClient {}
+    ///
+    /// # #[tokio::main(flavor = "current_thread")]
+    /// # async fn main() -> Result<(), Error> {
+    /// let manager = Manager::new();
+    ///
+    /// manager.register(RegistrationSpec {
+    ///     resource: HttpClient,
+    ///     config: (),
+    ///     scope: ScopeLevel::Global,
+    ///     slot_identity: SlotIdentity::Unbound,
+    ///     topology: Pooled::<HttpClient>::new(PoolConfig::default(), 0),
+    ///     recovery_gate: None,
+    /// })?;
+    ///
+    /// let ctx = ResourceContext::minimal(
+    ///     nebula_core::scope::Scope::default(),
+    ///     tokio_util::sync::CancellationToken::new(),
+    /// );
+    /// let guard = manager
+    ///     .acquire_pooled::<HttpClient>(&ctx, &AcquireOptions::default())
+    ///     .await?;
+    /// let _instance: &() = &*guard; // guard derefs to `R::Instance`
+    /// drop(guard); // release: recycled back into the pool, not destroyed
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn register<R>(&self, spec: RegistrationSpec<R>) -> Result<(), Error>
     where
-        R: Provider + crate::resource::HasCredentialSlots,
+        R: Provider,
         R::Instance: Clone,
         R::Topology: Topology<R>,
     {
@@ -161,7 +227,7 @@ impl Manager {
     /// Spawns the background maintenance reaper for a freshly-registered
     /// pool — the **sole production driver of idle eviction**.
     ///
-    /// [`ManagedResource::run_maintenance`](crate::runtime::managed::ManagedResource::run_maintenance)
+    /// [`ManagedResource::run_maintenance`](crate::ManagedResource::run_maintenance)
     /// evicts idle-timed-out, max-lifetime-exceeded, stale-fingerprint, and
     /// revoked idle instances, but nothing calls it on its own. The return
     /// path enforces `max_lifetime` opportunistically, yet an instance that
@@ -196,7 +262,7 @@ impl Manager {
     /// frozen for the pool's lifetime.
     fn spawn_pool_maintenance<R>(&self, managed: &Arc<ManagedResource<R>>)
     where
-        R: Provider + crate::resource::HasCredentialSlots,
+        R: Provider,
         R::Instance: Clone,
         R::Topology: Topology<R>,
     {
@@ -220,6 +286,15 @@ impl Manager {
         let cancel = self.cancel.clone();
         let bus = Arc::clone(&self.event_bus);
         let key = R::key();
+        // The reaper has no caller-supplied context (it runs on a timer, not
+        // behind an acquire) — `minimal` is exactly the "daemon loop" case
+        // its doc comment names. Built once: scope + cancellation are the
+        // same across every tick, so there is no reason to rebuild it per
+        // sweep.
+        let refill_ctx = crate::context::ResourceContext::minimal(
+            nebula_core::scope::Scope::default(),
+            cancel.clone(),
+        );
 
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(period);
@@ -243,13 +318,25 @@ impl Manager {
                     break;
                 };
                 let span = tracing::debug_span!("pool_maintenance", %key);
-                let evicted = managed.run_maintenance().instrument(span).await;
+                let evicted = managed.run_maintenance().instrument(span.clone()).await;
                 if evicted > 0 {
                     let _ = bus.emit(ResourceEvent::MaintenanceEvicted {
                         key: key.clone(),
                         evicted,
                     });
                 }
+                // Min-idle refill: top the idle queue back up to `warmup_target` after
+                // eviction, gated on the recovery gate being `Idle` (or
+                // absent) inside `refill_min_idle` itself. Also skip if
+                // shutdown landed between the eviction sweep above and here —
+                // creating fresh instances while `graceful_shutdown` is
+                // draining the resource would race the drain with brand-new
+                // in-flight creates for no benefit (the reaper task is about
+                // to be cancelled anyway).
+                if cancel.is_cancelled() {
+                    break;
+                }
+                let _refilled = managed.refill_min_idle(&refill_ctx).instrument(span).await;
             }
         });
     }
@@ -431,17 +518,70 @@ impl Manager {
         recovery_gate: Option<Arc<RecoveryGate>>,
     ) -> Result<crate::dedup::SlotIdentity, Error>
     where
-        R: Provider + crate::resource::HasCredentialSlots + nebula_core::DeclaresDependencies,
+        R: Provider + nebula_core::DeclaresDependencies,
         R::Config: serde::de::DeserializeOwned,
         R::Instance: Clone,
         R::Topology: Topology<R>,
     {
+        // -1. Registration consistency check (belt to a future compile-time
+        //     fold): `HasCredentialSlots::declares_credential_slots()` and
+        //     `DeclaresDependencies::dependencies().slot_fields()` are two
+        //     independent self-reports a hand-written `Provider` impl can
+        //     drift apart (e.g. override one and forget the other) — the
+        //     `#[derive(Resource)]` derive keeps them consistent by
+        //     construction, but nothing enforces that for a hand-written
+        //     pair. `Manager::refresh_slot` / `taint_slot` key their
+        //     unknown-slot validation off exactly this pair via the erased
+        //     `ManagedHandle`, so a silent contradiction here would surface
+        //     downstream as a confusing false-negative or false-positive at
+        //     rotation time instead of a clear registration-time reject.
+        let deps = R::dependencies();
+        let declares_credential_slot_fields = deps.slot_fields().iter().any(|sf| {
+            matches!(
+                sf.kind,
+                nebula_core::dependencies::SlotKind::Credential { .. }
+            )
+        });
+        if R::declares_credential_slots() != declares_credential_slot_fields {
+            return Err(Error::permanent(format!(
+                "register_resolved: `{ty}` HasCredentialSlots::declares_credential_slots() \
+                 = {epoch_flag} but DeclaresDependencies::dependencies() reports \
+                 {has_fields} credential slot field(s) declared — the two self-reported \
+                 slot signals have drifted apart; fix whichever implementation is stale",
+                ty = std::any::type_name::<R>(),
+                epoch_flag = R::declares_credential_slots(),
+                has_fields = declares_credential_slot_fields,
+            )));
+        }
+
+        // -1b. Same-family cross-check against `credential_slot_names()`: a
+        //      hand-written impl can override `declares_credential_slots`
+        //      without also populating `credential_slot_names` (or vice
+        //      versa), and `accepts_credential_slot_name` trusts
+        //      `credential_slot_names()` alone (fail-closed: empty names
+        //      rejects every slot). A `true`/empty-names or
+        //      `false`/non-empty-names pair is exactly the drift that would
+        //      make every future rotation call against this resource a
+        //      silent false-negative or false-positive, so reject it here
+        //      instead of at rotation time.
+        let declares_credential_slot_names = !R::credential_slot_names().is_empty();
+        if R::declares_credential_slots() != declares_credential_slot_names {
+            return Err(Error::permanent(format!(
+                "register_resolved: `{ty}` HasCredentialSlots::declares_credential_slots() \
+                 = {declares_flag} but credential_slot_names() returned {names_len} name(s) \
+                 — the two self-reported slot signals have drifted apart; fix whichever \
+                 implementation is stale",
+                ty = std::any::type_name::<R>(),
+                declares_flag = R::declares_credential_slots(),
+                names_len = R::credential_slot_names().len(),
+            )));
+        }
+
         // 0. Validate that every binding matches a declared credential slot.
         //    Hard error on unknown slot — refuses to register a resource
         //    whose credential surface diverged from the one the workflow
         //    JSON specified, so misconfiguration surfaces at register time
         //    rather than as a confusing rotation no-op later.
-        let deps = R::dependencies();
         for slot_name in slot_bindings.keys() {
             let known = deps.slot_fields().iter().any(|sf| {
                 sf.slot_key == slot_name.as_str()
@@ -590,7 +730,7 @@ impl Manager {
         scope: &ScopeLevel,
     ) -> Result<ReloadOutcome, Error>
     where
-        R: Provider + crate::resource::HasCredentialSlots,
+        R: Provider,
         R::Instance: Clone,
         R::Topology: Topology<R>,
     {
@@ -649,6 +789,19 @@ impl Manager {
 
     /// Removes a resource from the registry by key.
     ///
+    /// # Blast radius
+    ///
+    /// This removes **every** row registered under `key` — every scope
+    /// *and* every resolved [`SlotIdentity`](crate::dedup::SlotIdentity),
+    /// including every multi-tenant sibling row a
+    /// [`register_resolved`](Self::register_resolved) caller staged with a
+    /// distinct resolved credential. It is an **admin-only, whole-key**
+    /// operation, not scoped to one tenant's registration. A caller that
+    /// only wants to undo a single `register`/`register_resolved` call —
+    /// e.g. the engine deactivating one node's resolved resource binding
+    /// without disturbing sibling tenants at the same key — must use
+    /// [`remove_for`](Self::remove_for) instead.
+    ///
     /// # Errors
     ///
     /// Returns [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound) if
@@ -663,6 +816,42 @@ impl Manager {
         }
         self.emit(ResourceEvent::Removed { key: key.clone() });
         tracing::debug!(%key, "resource removed");
+        Ok(())
+    }
+
+    /// Removes the single resolved row `(key, scope, slot_identity)`,
+    /// leaving every sibling row under `key` — other scopes, or other
+    /// resolved slot identities at the same scope — untouched.
+    ///
+    /// The narrow, additive counterpart to [`remove`](Self::remove): see
+    /// its doc for the full-key blast radius this method avoids. Mirrors
+    /// the row identity [`register`](Self::register) itself uses
+    /// (`(scope, slot_identity)`, per
+    /// [`Registry::register`](crate::registry::Registry::register)'s doc),
+    /// and the same pinning discipline the credential-rotation fan-out
+    /// index applies via `ResourceFanoutIndex::unbind_resource_identity`
+    /// when a single resolved row is torn down without disturbing
+    /// multi-tenant siblings.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound) if
+    /// no row matches `(key, scope, slot_identity)` exactly.
+    pub fn remove_for(
+        &self,
+        key: &ResourceKey,
+        scope: &ScopeLevel,
+        slot_identity: &crate::dedup::SlotIdentity,
+    ) -> Result<(), Error> {
+        if !self.registry.remove_for(key, scope, slot_identity) {
+            return Err(Error::not_found(key));
+        }
+
+        if let Some(m) = &self.metrics {
+            m.record_destroy();
+        }
+        self.emit(ResourceEvent::Removed { key: key.clone() });
+        tracing::debug!(%key, ?scope, "resource removed (single resolved row)");
         Ok(())
     }
 }

@@ -1,21 +1,20 @@
 # Recovery
 
-Thundering-herd prevention and health monitoring for resource backends.
+Thundering-herd prevention for a flapping backend.
 
 ---
 
 ## Overview
 
-When a backend fails, naive retry logic causes all callers to independently
-hammer the dead service — a thundering herd. The recovery layer serializes
-recovery attempts through a CAS-based state machine ([`RecoveryGate`]) so
-only one caller probes at a time.
+When a backend fails, naive retry logic causes every caller to independently
+hammer the dead service — a thundering herd. `RecoveryGate` (`crate::recovery`)
+serializes recovery attempts through a CAS-based state machine so only one
+caller probes the backend at a time; everyone else gets a typed, immediate
+answer instead of piling onto a dying connection.
 
 ---
 
-## RecoveryGate
-
-### State machine
+## State machine
 
 ```text
 Idle ──try_begin──▶ InProgress ──resolve──▶ Idle
@@ -26,150 +25,66 @@ Idle ──try_begin──▶ InProgress ──resolve──▶ Idle
  └──(retry_at expired)── Failed ──(max_attempts)──▶ PermanentlyFailed
 ```
 
-### States
-
 | State | Meaning | What callers see |
-|-------|---------|-----------------|
+|-------|---------|-------------------|
 | `Idle` | Backend presumed healthy | Acquire proceeds normally |
-| `InProgress` | One caller is probing | Others get `Transient` error immediately |
-| `Failed` | Last probe failed | Callers get `Exhausted` with `retry_after` hint |
-| `PermanentlyFailed` | Max attempts exceeded | Callers get `Permanent` error |
+| `InProgress` | One caller is probing | Others get a `Transient` error immediately |
+| `Failed` | Last probe failed | Callers get `Exhausted` with a `retry_after` hint |
+| `PermanentlyFailed` | `max_attempts` exceeded | Callers get `Permanent`; requires `gate.reset()` |
 
-### API
+## `RecoveryTicket` (RAII)
 
-```rust,ignore
-use nebula_resource::{RecoveryGate, RecoveryGateConfig};
+`try_begin()` hands the winning caller a `#[must_use]` `RecoveryTicket`. The
+caller **must** resolve it:
 
-let gate = RecoveryGate::new(RecoveryGateConfig {
-    max_attempts: 5,       // then PermanentlyFailed
-    base_backoff: Duration::from_secs(1), // exponential: 1s, 2s, 4s, 8s...
-});
+- `ticket.resolve()` — backend is healthy again → `Idle`.
+- `ticket.fail_transient(msg)` — still down → `Failed`, schedule retry.
+- `ticket.fail_permanent(msg)` — give up → `PermanentlyFailed`, requires
+  manual `gate.reset()`.
 
-// Only one caller wins the CAS race:
-match gate.try_begin() {
-    Ok(ticket) => {
-        // This caller is the recovery probe.
-        match attempt_connection().await {
-            Ok(_) => ticket.resolve(),           // → Idle, notify waiters
-            Err(e) => ticket.fail_transient(e),  // → Failed with backoff
-        }
-    }
-    Err(TryBeginError::AlreadyInProgress(waiter)) => {
-        // Wait for the probe caller to finish.
-        let state = waiter.wait().await;
-    }
-    Err(TryBeginError::RetryLater { retry_at }) => {
-        // Backoff not expired yet.
-    }
-    Err(TryBeginError::PermanentlyFailed { message }) => {
-        // Manual intervention required.
-    }
-}
-```
+A dropped ticket (no explicit resolution) auto-fails with a transient error
+so the gate can never get stuck in `InProgress`.
 
-### RecoveryTicket (RAII)
+## Backoff
 
-`RecoveryTicket` is `#[must_use]` — you **must** call one of:
-- `ticket.resolve()` — backend is healthy again
-- `ticket.fail_transient(msg)` — backend still down, schedule retry
-- `ticket.fail_permanent(msg)` — give up, require manual reset
-
-If the ticket is dropped without calling any of these, it auto-fails
-with a transient error to prevent the gate from being stuck in `InProgress`.
-
-### Backoff schedule
-
-| Attempt | Backoff (`base = 1s`) |
-|---------|----------------------|
-| 1 | 1s |
-| 2 | 2s |
-| 3 | 4s |
-| 4 | 8s |
-| 5 | 16s (capped at 5min) |
-
-### Reset
-
-Call `gate.reset()` to return from `PermanentlyFailed` to `Idle`.
+Failed attempts back off exponentially (`base_backoff` doubled per attempt,
+capped at 5 minutes), then randomized within an **equal-jitter** band —
+`[nominal / 2, nominal]` — so a cohort of callers that all failed at the same
+instant does not all retry in lockstep (the classic thundering-herd-on-retry
+failure mode). `RecoveryGateConfig::max_attempts` (default `5`) and
+`base_backoff` (default `1 s`) are the two tunables.
 
 ---
 
-## Integration with Manager
+## Wiring into `Manager`
 
-When registering a resource, pass an optional `RecoveryGate`:
+Pass an optional `Arc<RecoveryGate>` via `RegistrationSpec::recovery_gate`
+when registering a resource — see the doctest on `Manager::register` for the
+registration shape. The manager checks the gate before each acquire and
+triggers it on transient acquire failures; callers never interact with the
+gate directly.
 
-```rust,ignore
-use std::sync::Arc;
-use nebula_resource::{
-    Manager, PoolRuntime, RegistrationSpec, ScopeLevel, TopologyRuntime,
-    dedup::SlotIdentity,
-    recovery::{RecoveryGate, RecoveryGateConfig},
-    topology::pooled::config::Config as PoolConfig,
-};
-
-let gate = Arc::new(RecoveryGate::new(RecoveryGateConfig::default()));
-let pool_rt = PoolRuntime::<PostgresResource>::try_new(
-    PoolConfig::default(),
-    pg_config.fingerprint(),
-)?;
-
-manager.register(RegistrationSpec {
-    resource: PostgresResource,
-    config: pg_config,
-    scope: ScopeLevel::Global,
-    slot_identity: SlotIdentity::Unbound,
-    topology: TopologyRuntime::Pool(pool_rt),
-    acquire: Manager::erased_acquire_pooled_for::<PostgresResource>(),
-    recovery_gate: Some(gate.clone()),
-})?;
-```
-
-For credential-bound resources, declare `#[credential(key = "...")]`
-fields on the resource struct — the framework resolves them before
-`Resource::create` runs. Per-tenant routing uses
-`SlotIdentity::from_bindings(...)` plus `acquire_pooled_for_identity`.
-
-The Manager automatically:
-1. **Checks the gate** before each acquire (admission helper in
-   `crate::manager::gate`).
-2. **Triggers the gate** on transient acquire failures, surfacing the
-   `Failed`/`PermanentlyFailed` state to subsequent callers.
-
-Callers don't interact with the gate directly — it works transparently to
-prevent thundering herd on the failing backend.
-
----
-
-## RecoveryGroupRegistry
-
-Groups multiple resources behind a shared recovery gate (e.g., all databases
-on the same server). Resources in the same group share gate state, so one
-failure blocks all resources in the group.
-
-```rust,ignore
-let groups = manager.recovery_groups();
-let gate = groups.get_or_create(
-    RecoveryGroupKey::new("db-server-1"),
-    RecoveryGateConfig::default(),
-);
-// Pass `gate` (Arc<RecoveryGate>) to RegisterOptions::recovery_gate
-// for every resource on the same backend.
-```
+To share one gate across multiple resources on the same backend (so one
+failure fast-fails acquires for all of them), construct a single
+`Arc::new(RecoveryGate::new(config))` and pass a clone of it in each
+resource's `RegistrationSpec::recovery_gate`.
 
 ---
 
 ## Background health probes
 
-`nebula-resource` does **not** ship a built-in background health-probe
-type. If you need one, drive `Resource::check()` from an
-application-owned `tokio::spawn` loop. The manager publishes
-`ResourceEvent::HealthChanged` whenever it observes a transition, so
-consumers can react without polling.
+`nebula-resource` does **not** ship a built-in background health-probe type.
+The framework maintenance reaper already probes idle pool entries via
+`Provider::check` (see `topology-reference.md`'s "Background health probes"
+section for the `CheckCost`-driven cadence); for anything beyond that, drive
+`Provider::check()` from an application-owned `tokio::spawn` loop. The
+manager publishes `ResourceEvent::HealthChanged` on every observed
+transition, so consumers can react without polling.
 
 ---
 
-## Differences from v1
+## See also
 
-- **No `HealthChecker`** — drive `Resource::check()` directly.
-- **No `QuarantineManager`** — replaced by `RecoveryGate` (simpler, CAS-based).
-- **No `HealthState` enum** — health is a `bool` (healthy/unhealthy).
-- **No `HealthPipeline`** — multi-stage checks removed.
+- [`pooling.md`](pooling.md) — the pool topology this most commonly guards.
+- [`events.md`](events.md) — `RecoveryGateChanged` and `HealthChanged` events.
+- The crate-root "Tuning" rustdoc section — the config-knob table incl. `RecoveryGateConfig`.

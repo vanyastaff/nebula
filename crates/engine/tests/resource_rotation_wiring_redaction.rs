@@ -35,8 +35,10 @@ use nebula_eventbus::EventBus;
 use nebula_resource::Resident;
 use nebula_resource::{
     AcquireOptions, Manager, Provider, RegistrationSpec, ResidentConfig, ResourceConfig,
-    ResourceContext, SlotCell, SlotIdentity, error::Error as ResourceError,
-    resource::ResourceMetadata, topology::resident::ResidentProvider,
+    ResourceContext, SlotCell, SlotIdentity,
+    error::Error as ResourceError,
+    resource::{HasCredentialSlots, ResourceMetadata},
+    topology::resident::ResidentProvider,
 };
 use nebula_resource::{ResourceFanoutDriver, ResourceFanoutIndex};
 use tokio_util::sync::CancellationToken;
@@ -188,9 +190,26 @@ impl Provider for SecretRes {
     }
 }
 
-impl nebula_resource::HasCredentialSlots for SecretRes {
+impl HasCredentialSlots for SecretRes {
+    // The rotation hooks borrow the runtime, not `db` (see the field doc
+    // above), so this fixture never mutates the cell's generation — the
+    // constant-0 epoch `no_credential_slots!` used to emit is preserved
+    // verbatim; only the declared-slot signal below changes.
     fn credential_slot_epoch(&self) -> u64 {
         0
+    }
+
+    // `db` is a real `#[credential]`-shaped slot field — the resource is
+    // driven through the wired fan-out driver against slot `"db"` (see
+    // below). Declaring it (final-review item 4) makes that dispatch
+    // exercise the real A4 unknown-slot validation path instead of skipping
+    // it via the permissive "declares no slots" gap.
+    fn declares_credential_slots() -> bool {
+        true
+    }
+
+    fn credential_slot_names() -> &'static [&'static str] {
+        &["db"]
     }
 }
 

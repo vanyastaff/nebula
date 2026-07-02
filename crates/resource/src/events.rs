@@ -8,7 +8,7 @@
 
 use std::time::Duration;
 
-use nebula_core::ResourceKey;
+use nebula_core::{ExecutionId, ResourceKey, WorkflowId, obs::SpanId};
 
 use crate::error::ErrorKind;
 
@@ -148,6 +148,16 @@ pub enum ResourceEvent {
         held: Duration,
         /// The configured hold deadline that was exceeded.
         deadline: Duration,
+        /// The execution id of the [`ResourceContext`](crate::context::ResourceContext)
+        /// that acquired this lease, if the scope carried one — names which
+        /// execution to go blame for the leak.
+        execution_id: Option<ExecutionId>,
+        /// The workflow id of the acquiring context's scope, if present.
+        workflow_id: Option<WorkflowId>,
+        /// The tracing span id active at acquire time, if the acquiring
+        /// context carried one — lets a trace backend jump straight from
+        /// this event to the acquiring span.
+        span_id: Option<SpanId>,
     },
 }
 

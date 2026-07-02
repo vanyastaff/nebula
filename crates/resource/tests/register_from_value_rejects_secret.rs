@@ -25,7 +25,7 @@ use nebula_resource::Resident;
 use nebula_resource::{
     Manager, ResidentConfig, ResourceContext,
     error::Error,
-    resource::{HasCredentialSlots, Provider, ResourceConfig, ResourceMetadata},
+    resource::{Provider, ResourceConfig, ResourceMetadata},
     topology::resident::ResidentProvider,
 };
 use nebula_schema::{Field, HasSchema, Schema, ValidSchema, field_key};
@@ -114,11 +114,7 @@ impl Provider for Db {
     }
 }
 
-impl HasCredentialSlots for Db {
-    fn credential_slot_epoch(&self) -> u64 {
-        0
-    }
-}
+nebula_resource::no_credential_slots!(Db);
 
 #[async_trait::async_trait]
 impl ResidentProvider for Db {

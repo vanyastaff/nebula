@@ -13,9 +13,9 @@ use crate::{
     events::ResourceEvent,
     hook_guard::{DEFAULT_AUTHOR_HOOK_CEILING, HookFault, guard_author_hook},
     options::AcquireOptions,
-    resource::{HasCredentialSlots, Provider},
+    resource::Provider,
     runtime::managed::ManagedResource,
-    topology::{PoolProvider, ResidentProvider, Topology},
+    topology::{BoundedProvider, PoolProvider, ResidentProvider, Topology},
 };
 
 impl Manager {
@@ -242,6 +242,12 @@ impl Manager {
     /// An instance in flight between checkout/create and the returned guard
     /// is destroyed asynchronously via the release queue, never leaked. The
     /// only effect of cancellation is that no guard is returned.
+    ///
+    /// # Examples
+    ///
+    /// See the doctest on [`register`](Self::register) for the full
+    /// derive → `impl Provider` → register → acquire → deref → drop flow
+    /// this method sits in the middle of.
     pub async fn acquire_pooled<R>(
         &self,
         ctx: &ResourceContext,
@@ -250,7 +256,6 @@ impl Manager {
     where
         R: PoolProvider
             + Provider<Topology = crate::topology::Pooled<R>>
-            + HasCredentialSlots
             + Clone
             + Send
             + Sync
@@ -295,7 +300,6 @@ impl Manager {
     where
         R: PoolProvider
             + Provider<Topology = crate::topology::Pooled<R>>
-            + HasCredentialSlots
             + Clone
             + Send
             + Sync
@@ -325,26 +329,26 @@ impl Manager {
         options: &AcquireOptions,
     ) -> Result<crate::guard::ResourceGuard<R>, Error>
     where
-        R: Provider + HasCredentialSlots,
+        R: Provider,
         R::Instance: Clone,
         R::Topology: Topology<R>,
     {
         // Foolproofing for open (third-party) topologies: bound the author's
-        // acquire hooks (`try_reserve` / `create_slot` / `accept` / `prepare`)
+        // acquire hooks (`try_reserve` / `create_entry` / `accept` / `prepare`)
         // so a careless `impl Topology` cannot wedge the caller by hanging, nor
         // crash it by panicking. The caller's deadline wins; absent one, a
         // framework ceiling caps the worst case so a blocking hook can never
         // hang forever. The dropped loop future releases the permit and
-        // destroys any in-flight slot via `SlotCreateGuard`.
+        // destroys any in-flight entry via `EntryCreateGuard`.
         let hook_timeout = options.remaining().unwrap_or(DEFAULT_AUTHOR_HOOK_CEILING);
-        self.run_acquire(Arc::clone(&managed), || {
+        self.run_acquire(Arc::clone(&managed), ctx, options, || {
             let managed = Arc::clone(&managed);
             let metrics = self.metrics.clone();
             async move {
                 // SAFETY (unwind): any instance in flight inside the acquire
-                // loop is held by a `SlotCreateGuard` whose `Drop` destroys it,
+                // loop is held by an `EntryCreateGuard` whose `Drop` destroys it,
                 // and the revoke-epoch/taint reads happen before the guarded
-                // await — so a caught panic unwinds through the `SlotCreateGuard`
+                // await — so a caught panic unwinds through the `EntryCreateGuard`
                 // (tearing the half-built slot down) and leaves no torn state.
                 match guard_author_hook(
                     hook_timeout,
@@ -388,6 +392,8 @@ impl Manager {
     pub(crate) async fn run_acquire<R, F, Fut>(
         &self,
         managed: Arc<ManagedResource<R>>,
+        ctx: &ResourceContext,
+        options: &AcquireOptions,
         mut dispatch: F,
     ) -> Result<crate::guard::ResourceGuard<R>, Error>
     where
@@ -449,7 +455,7 @@ impl Manager {
         // `fail_permanent`. The `Drop` impl of `RecoveryTicket` covers
         // cancellation/panic paths.
         settle_gate_admission(gate_admission, &result);
-        self.record_acquire_result(&result, started);
+        self.record_acquire_result(&result, started, ctx, options);
         match result {
             // Attach the manager's event bus so the guard's `Drop` emits
             // `ResourceEvent::Released`. Done here, on the success path only,
@@ -458,7 +464,7 @@ impl Manager {
             Ok(h) => Ok(h
                 .with_drain_tracker(in_flight.release_to_guard())
                 .with_event_bus(Arc::clone(&self.event_bus))
-                .with_hold_watchdog(R::max_hold_duration())),
+                .with_hold_watchdog(R::max_hold_duration(), ctx, self.metrics.clone())),
             Err(e) => Err(e),
         }
     } // visible cross-module after impl split
@@ -487,7 +493,6 @@ impl Manager {
     where
         R: ResidentProvider
             + Provider<Topology = crate::topology::Resident<R>>
-            + HasCredentialSlots
             + Send
             + Sync
             + 'static,
@@ -533,7 +538,99 @@ impl Manager {
     where
         R: ResidentProvider
             + Provider<Topology = crate::topology::Resident<R>>
-            + HasCredentialSlots
+            + Send
+            + Sync
+            + 'static,
+        R::Instance: Clone + Send + Sync + 'static,
+    {
+        let managed = self.lookup_for_acquire_with_identity::<R>(ctx, slot_identity)?;
+        self.run_acquire_dispatch(managed, ctx, options).await
+    }
+
+    /// Acquires a handle to a bounded resource.
+    ///
+    /// Bounded holds no owned `R`-typed instance in the topology itself — it
+    /// gates concurrency (unbounded / capped / exclusive) over a resource
+    /// that either builds fresh per lease (`Capped`/`Unbounded`) or reuses a
+    /// single reset-between-leases instance (`Exclusive`); see
+    /// [`Bounded`](crate::topology::Bounded) and [`BoundedMode`](crate::topology::BoundedMode).
+    ///
+    /// # Errors
+    ///
+    /// - [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound) if no resource of type `R` is
+    ///   registered.
+    /// - [`ErrorKind::Permanent`](crate::error::ErrorKind::Permanent) if the resource is not using
+    ///   bounded topology.
+    /// - [`ErrorKind::Ambiguous`](crate::error::ErrorKind::Ambiguous) — a
+    ///   permanent (non-retryable) caller-conflict deny — if more than one
+    ///   resolved-credential registration exists for `(R, scope)`
+    ///   (multi-tenant). Acquire through the slot-identity-pinned
+    ///   [`acquire_bounded_for_identity`](Self::acquire_bounded_for_identity)
+    ///   when the resolved slot identity is known; this identity-agnostic
+    ///   path stays fail-closed for the no-identity caller.
+    /// - Propagates bounded-specific acquire errors (e.g. `Saturated` when
+    ///   the concurrency cap is exhausted).
+    ///
+    /// # Cancel safety
+    ///
+    /// Cancel safe — same contract as
+    /// [`acquire_pooled`](Self::acquire_pooled): permit, drain accounting,
+    /// and gate ticket all settle on drop; an in-flight instance is destroyed
+    /// asynchronously via the release queue.
+    pub async fn acquire_bounded<R>(
+        &self,
+        ctx: &ResourceContext,
+        options: &AcquireOptions,
+    ) -> Result<crate::guard::ResourceGuard<R>, Error>
+    where
+        R: BoundedProvider
+            + Provider<Topology = crate::topology::Bounded<R>>
+            + Send
+            + Sync
+            + 'static,
+        R::Instance: Clone + Send + Sync + 'static,
+    {
+        let managed = self.lookup_for_acquire_scope::<R>(ctx)?;
+        self.run_acquire_dispatch(managed, ctx, options).await
+    }
+
+    /// [`acquire_bounded`](Self::acquire_bounded) pinned to the
+    /// **collision-free structural** resolved per-slot credential identity.
+    ///
+    /// Resolves the registry row whose `slot_identity` matches, so a caller
+    /// that resolved tenant A's credential reaches tenant A's runtime and
+    /// never tenant B's. This is the unambiguous acquire path the engine
+    /// resolution layer uses once it has resolved a node's slot bindings;
+    /// it is also how callers reach a resource registered with a non-default
+    /// [`RegisterOptions::with_slot_bindings`](crate::RegisterOptions::with_slot_bindings). Two registrations whose
+    /// resolved `(slot, credential)` bindings differ are distinct rows with
+    /// distinct runtimes; equality is exact (no digest), so a forced digest
+    /// collision cannot merge two tenants here.
+    ///
+    /// # Errors
+    ///
+    /// - [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound) if no row of type `R` matches
+    ///   `(scope, slot_identity)`.
+    /// - [`ErrorKind::Permanent`](crate::error::ErrorKind::Permanent) if the resource is not using
+    ///   bounded topology.
+    /// - Propagates bounded-specific acquire errors (e.g. `Saturated` when
+    ///   the concurrency cap is exhausted).
+    ///
+    /// # Cancel safety
+    ///
+    /// Cancel safe — same contract as
+    /// [`acquire_pooled`](Self::acquire_pooled): permit, drain accounting,
+    /// and gate ticket all settle on drop; an in-flight instance is destroyed
+    /// asynchronously via the release queue.
+    pub async fn acquire_bounded_for_identity<R>(
+        &self,
+        ctx: &ResourceContext,
+        options: &AcquireOptions,
+        slot_identity: &crate::dedup::SlotIdentity,
+    ) -> Result<crate::guard::ResourceGuard<R>, Error>
+    where
+        R: BoundedProvider
+            + Provider<Topology = crate::topology::Bounded<R>>
             + Send
             + Sync
             + 'static,
@@ -546,11 +643,10 @@ impl Manager {
     /// Returns a snapshot of current pool utilization for a registered Pool resource.
     ///
     /// Returns `None` if the resource is not registered or does not use Pool topology.
-    pub async fn pool_stats<R>(&self, scope: &ScopeLevel) -> Option<crate::runtime::pool::PoolStats>
+    pub async fn pool_stats<R>(&self, scope: &ScopeLevel) -> Option<crate::PoolStats>
     where
         R: PoolProvider
             + Provider<Topology = crate::topology::Pooled<R>>
-            + HasCredentialSlots
             + Clone
             + Send
             + Sync
@@ -597,7 +693,6 @@ impl Manager {
     where
         R: PoolProvider
             + Provider<Topology = crate::topology::Pooled<R>>
-            + HasCredentialSlots
             + Clone
             + Send
             + Sync
@@ -625,17 +720,17 @@ impl Manager {
         let _in_flight =
             InFlightCounter::new(self.drain_tracker.clone(), managed.in_flight_tracker());
         self.reject_if_tainted_or_shutting_down_post_count::<R>(&managed)?;
-        // The framework-owned warmup creates `warmup_target` slots via the
-        // topology's `create_slot` (which runs the author's `Provider::create`)
+        // The framework-owned warmup creates `warmup_target` entries via the
+        // topology's `create_entry` (which runs the author's `Provider::create`)
         // and deposits them (fenced) into the framework store. `config` is read
         // inside `warmup` itself. Bound + isolate it through the same guard the
         // acquire pipeline uses: a careless `Provider::create` that hangs or
         // panics during warmup must fail closed, not wedge or crash the caller.
         let _ = config;
-        // SAFETY (unwind): a slot being built inside `warmup` is held by its
-        // `SlotCreateGuard` (destroyed on unwind) and a slot already warmed is
+        // SAFETY (unwind): an entry being built inside `warmup` is held by its
+        // `EntryCreateGuard` (destroyed on unwind) and an entry already warmed is
         // deposited into the fenced store before the next is built — so a caught
-        // panic tears down only the in-flight slot and leaves no torn state.
+        // panic tears down only the in-flight entry and leaves no torn state.
         let count = match guard_author_hook(DEFAULT_AUTHOR_HOOK_CEILING, managed.warmup(ctx)).await
         {
             Ok(n) => n,
@@ -644,7 +739,7 @@ impl Manager {
                 match fault {
                     HookFault::Panicked => {
                         return Err(Error::permanent(format!(
-                            "{}: warmup panicked — the topology's `create_slot` hook unwound \
+                            "{}: warmup panicked — the topology's `create_entry` hook unwound \
                              (isolated, caller not crashed)",
                             R::key()
                         )));
@@ -652,7 +747,7 @@ impl Manager {
                     HookFault::TimedOut => {
                         return Err(Error::backpressure(format!(
                             "{}: warmup exceeded {DEFAULT_AUTHOR_HOOK_CEILING:?} — the topology's \
-                             `create_slot` hook did not complete in time",
+                             `create_entry` hook did not complete in time",
                             R::key()
                         )));
                     },

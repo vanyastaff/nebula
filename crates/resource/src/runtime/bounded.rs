@@ -3,20 +3,13 @@
 //! `Bounded<R>` is the built-in framework topology for resources that limit how
 //! many leases are live at once without keeping a warm idle pool. It backs the
 //! gate with a `tokio::Semaphore` whose size is read from a runtime value (not a
-//! const generic), so a config-driven seat count flows through the same code:
-//!
-//! - [`BoundedMode::Capped`] (cap `n`) / [`BoundedMode::Unbounded`] — `pools()`
-//!   is `false`: each acquire builds a fresh instance via
-//!   [`create_slot`](crate::topology::Topology::create_slot) and destroys it on
-//!   release. There is no idle reuse (that is [`Pooled`](crate::topology::Pooled)).
-//! - [`BoundedMode::Exclusive`] — `pools()` is `true` with a store capacity of
-//!   one: the single instance is reset on release and returned to the framework
-//!   store for the next lease. A failed reset destroys it instead (the S4
-//!   invariant — a half-reset instance is never reissued), and the next acquire
-//!   builds a fresh one.
+//! const generic), so a config-driven seat count flows through the same code.
+//! See [`crate::topology::bounded`] for the per-mode table (cap gate / instance
+//! lifecycle / use case); this module is the framework-owned drive logic behind
+//! it, not a second copy of that contract.
 //!
 //! Because `Capped`/`Unbounded` keep no idle credentialed instance, the store
-//! revoke-fence (which only reaches *pooled* idle slots) has nothing to evict
+//! revoke-fence (which only reaches *pooled* idle entries) has nothing to evict
 //! and there is no revoke leak to guard against — they report
 //! [`handles_own_revoke`](crate::topology::Topology::handles_own_revoke) so the
 //! registration footgun-guard stays quiet. `Exclusive` pools its one instance,
@@ -39,7 +32,7 @@ use tokio::sync::{Semaphore, TryAcquireError};
 use crate::{
     context::ResourceContext,
     error::Error,
-    resource::{HasCredentialSlots, Provider},
+    resource::Provider,
     topology::{
         AdmissionPhase, Load, Ticket, Topology, Unavailable, bounded::BoundedMode,
         store::InstanceStore,
@@ -48,7 +41,7 @@ use crate::{
 };
 
 /// Framework bounded topology — a runtime concurrency cap over a non-pooled
-/// resource. See the [module docs](self) for the mode table.
+/// resource. See [`crate::topology::bounded`] for the mode table.
 ///
 /// [`Topology<R>`]: crate::topology::Topology
 pub struct Bounded<R: Provider> {
@@ -68,7 +61,7 @@ pub struct Bounded<R: Provider> {
     resize_lock: std::sync::Mutex<()>,
     /// The live `R::Config` fingerprint, updated by
     /// [`set_fingerprint`](Topology::set_fingerprint) on `Manager::reload_config`.
-    /// Seeded on the first [`create_slot`](Topology::create_slot) from the
+    /// Seeded on the first [`create_entry`](Topology::create_entry) from the
     /// registered config (so it starts equal to the built instance's
     /// fingerprint and `accept` does not spuriously evict before any reload).
     /// Only consulted for [`BoundedMode::Exclusive`], the one mode that pools
@@ -203,8 +196,8 @@ impl<R: Provider> Bounded<R> {
 
 // ─── Topology impl for Bounded ────────────────────────────────────────────────
 //
-// `Bounded<R>` gates concurrency with a semaphore. `Slot = R::Instance`,
-// `slot_instance` / `into_instance` are identity. Only `Exclusive` pools (one
+// `Bounded<R>` gates concurrency with a semaphore. `Entry = R::Instance`,
+// `entry_instance` / `into_instance` are identity. Only `Exclusive` pools (one
 // reused instance, reset on release); `Capped` / `Unbounded` destroy every
 // instance on release.
 
@@ -213,13 +206,12 @@ impl<R> Topology<R> for Bounded<R>
 where
     R: Provider<Topology = Bounded<R>>
         + crate::topology::bounded::BoundedProvider
-        + HasCredentialSlots
         + Send
         + Sync
         + 'static,
     R::Instance: Clone + Send + Sync + 'static,
 {
-    type Slot = R::Instance;
+    type Entry = R::Instance;
 
     fn try_reserve(&self, _store: &InstanceStore<R::Instance>) -> Result<Ticket, Unavailable> {
         match &self.sem {
@@ -237,7 +229,7 @@ where
         }
     }
 
-    async fn create_slot(
+    async fn create_entry(
         &self,
         resource: &R,
         config: &R::Config,
@@ -259,12 +251,12 @@ where
         Ok(instance)
     }
 
-    fn slot_instance<'s>(&self, slot: &'s R::Instance) -> &'s R::Instance {
-        slot
+    fn entry_instance<'s>(&self, entry: &'s R::Instance) -> &'s R::Instance {
+        entry
     }
 
-    fn into_instance(&self, slot: R::Instance) -> R::Instance {
-        slot
+    fn into_instance(&self, entry: R::Instance) -> R::Instance {
+        entry
     }
 
     /// Evicts the reused `Exclusive` instance when its config has been
@@ -274,14 +266,19 @@ where
     /// `accept` runs only for a pooling topology — here, `Exclusive`: the
     /// framework calls it on the checked-out reused instance before handing it
     /// to a lease, and `false` makes the framework destroy and recreate it via
-    /// `create_slot`. The check compares the built-against vs live config
+    /// `create_entry`. The check compares the built-against vs live config
     /// fingerprint; `Manager::reload_config` bumps the live one through
     /// [`set_fingerprint`](Self::set_fingerprint), so the stale instance is
     /// rebuilt. Normal reuse (unchanged config) matches — the fingerprint is
     /// seeded at first build. `Capped`/`Unbounded` never pool, so `accept` is
     /// not reached for them. This mirrors the pool's stale-fingerprint eviction
     /// and the resident's master rebuild.
-    async fn accept(&self, _slot: &mut R::Instance, _resource: &R, _ctx: &ResourceContext) -> bool {
+    async fn accept(
+        &self,
+        _entry: &mut R::Instance,
+        _resource: &R,
+        _ctx: &ResourceContext,
+    ) -> bool {
         self.built_fingerprint.load(Ordering::Acquire)
             == self.current_fingerprint.load(Ordering::Acquire)
     }
@@ -291,14 +288,14 @@ where
             .store(fingerprint, Ordering::Release);
     }
 
-    async fn on_release(&self, slot: &mut R::Instance, resource: &R) -> Result<bool, Error> {
+    async fn on_release(&self, entry: &mut R::Instance, resource: &R) -> Result<bool, Error> {
         match self.mode {
             // The single instance is reset and reused. A failed reset returns
             // `Err`, so the framework destroys it (never reissues a half-reset
             // instance — S4) and surfaces the error; a fresh one is built next
             // acquire.
             BoundedMode::Exclusive => {
-                resource.reset(slot).await?;
+                resource.reset(entry).await?;
                 Ok(true)
             },
             // No reuse: every released instance is destroyed.
@@ -413,11 +410,7 @@ mod tests {
         }
     }
 
-    impl HasCredentialSlots for MockBounded {
-        fn credential_slot_epoch(&self) -> u64 {
-            0
-        }
-    }
+    crate::no_credential_slots!(MockBounded);
 
     #[async_trait]
     impl BoundedProvider for MockBounded {
@@ -494,10 +487,10 @@ mod tests {
     async fn exclusive_resets_and_keeps_on_release() {
         let resource = MockBounded::new();
         let topo = Bounded::<MockBounded>::exclusive();
-        let mut slot = 7u32;
+        let mut entry = 7u32;
 
         let keep = topo
-            .on_release(&mut slot, &resource)
+            .on_release(&mut entry, &resource)
             .await
             .expect("a clean reset keeps the instance");
         assert!(
@@ -517,9 +510,9 @@ mod tests {
         let resource = MockBounded::new();
         resource.reset_ok.store(false, Ordering::Relaxed);
         let topo = Bounded::<MockBounded>::exclusive();
-        let mut slot = 7u32;
+        let mut entry = 7u32;
 
-        let outcome = topo.on_release(&mut slot, &resource).await;
+        let outcome = topo.on_release(&mut entry, &resource).await;
         assert!(
             outcome.is_err(),
             "a failed reset surfaces the error so the framework destroys the \
@@ -531,9 +524,9 @@ mod tests {
     async fn capped_destroys_on_release() {
         let resource = MockBounded::new();
         let topo = Bounded::<MockBounded>::capped(4).expect("cap >= 1");
-        let mut slot = 7u32;
+        let mut entry = 7u32;
 
-        let keep = topo.on_release(&mut slot, &resource).await.expect("ok");
+        let keep = topo.on_release(&mut entry, &resource).await.expect("ok");
         assert!(
             !keep,
             "capped does not pool — released instances are destroyed"
@@ -603,11 +596,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_slot_builds_a_fresh_instance() {
+    async fn create_entry_builds_a_fresh_instance() {
         let resource = MockBounded::new();
         let topo = Bounded::<MockBounded>::capped(2).expect("cap >= 1");
         let inst = topo
-            .create_slot(&resource, &BoundedCfg, &test_ctx())
+            .create_entry(&resource, &BoundedCfg, &test_ctx())
             .await
             .expect("create");
         assert_eq!(inst, 7);

@@ -44,7 +44,7 @@ use nebula_core::{ResourceKey, context::HasResources};
 
 use crate::{
     Provider, ResourceGuard,
-    error::{Error, ErrorKind},
+    error::{Error, ErrorKind, guard_type_mismatch},
 };
 
 /// Typed reference to a registered resource.
@@ -111,10 +111,11 @@ impl<R: Provider> ResourceRef<R> {
             Error::new(
                 ErrorKind::Permanent,
                 format!(
-                    "resource id `{id}` is not a valid ResourceKey: {e}",
+                    "resource id `{id}` is not a valid ResourceKey",
                     id = self.id
                 ),
             )
+            .with_source(e)
         })?;
 
         // Preserve the accessor-seam retryable/`retry_after` classification
@@ -129,17 +130,7 @@ impl<R: Provider> ResourceRef<R> {
         boxed
             .downcast::<ResourceGuard<R>>()
             .map(|b| *b)
-            .map_err(|_| {
-                Error::new(
-                    ErrorKind::Permanent,
-                    format!(
-                        "resource `{id}`: type mismatch (expected ResourceGuard<{ty}>)",
-                        id = self.id,
-                        ty = std::any::type_name::<R>(),
-                    ),
-                )
-                .with_resource_key(key)
-            })
+            .map_err(|_| guard_type_mismatch::<R>(key))
     }
 }
 

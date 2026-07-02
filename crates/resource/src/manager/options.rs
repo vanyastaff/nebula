@@ -88,7 +88,13 @@ impl ShutdownConfig {
 }
 
 /// Configuration for the [`Manager`](super::Manager).
+///
+/// `#[non_exhaustive]`: like the sibling [`ShutdownConfig`] /
+/// [`RegisterOptions`], new tuning fields must be additive without a
+/// breaking struct-literal change. Construct via [`ManagerConfig::default`]
+/// then the `with_*` setters.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct ManagerConfig {
     /// Number of background workers for the release queue.
     ///
@@ -100,6 +106,29 @@ pub struct ManagerConfig {
     /// (`acquire_total`, `release_total`, etc.) into the registry.
     /// When `None`, metrics are silently skipped (zero overhead).
     pub metrics_registry: Option<Arc<nebula_metrics::MetricsRegistry>>,
+    /// Default acquire-slow-log threshold (sqlx `acquire_slow_threshold`
+    /// precedent).
+    ///
+    /// `knob`: `acquire_slow_threshold` | `default`: `None` (no slow-acquire
+    /// logging) | `rationale`: an acquire that takes unexpectedly long is a
+    /// backend-health or pool-sizing signal an operator wants surfaced
+    /// without wiring a histogram dashboard first. When `Some(threshold)`,
+    /// an acquire whose total wall-clock time (lookup through guard mint or
+    /// terminal failure) exceeds `threshold` emits one
+    /// `tracing::warn!(target: "resource")` naming the resource key, scope,
+    /// and elapsed time — **at most once per acquire** (the check runs once,
+    /// at completion, not on a timer). This is the manager-wide default;
+    /// [`AcquireOptions::with_acquire_slow_threshold`](crate::AcquireOptions::with_acquire_slow_threshold)
+    /// overrides it per call. Distinct from
+    /// [`AcquireOptions::deadline`](crate::AcquireOptions::deadline): the
+    /// deadline is an enforced budget an acquire is cancelled/rejected for
+    /// exceeding, while the slow threshold is purely observational — an
+    /// acquire that succeeds slowly still succeeds, it is just logged. A
+    /// threshold larger than the deadline never fires (the acquire fails
+    /// from the deadline first); a threshold smaller than the deadline warns
+    /// on a still-successful-but-sluggish acquire before the deadline would
+    /// have failed it.
+    pub acquire_slow_threshold: Option<Duration>,
 }
 
 impl Default for ManagerConfig {
@@ -107,7 +136,33 @@ impl Default for ManagerConfig {
         Self {
             release_queue_workers: 2,
             metrics_registry: None,
+            acquire_slow_threshold: None,
         }
+    }
+}
+
+impl ManagerConfig {
+    /// Override the number of background release-queue workers.
+    #[must_use]
+    pub fn with_release_queue_workers(mut self, workers: usize) -> Self {
+        self.release_queue_workers = workers;
+        self
+    }
+
+    /// Attach a shared metrics registry for telemetry counters.
+    #[must_use]
+    pub fn with_metrics_registry(mut self, registry: Arc<nebula_metrics::MetricsRegistry>) -> Self {
+        self.metrics_registry = Some(registry);
+        self
+    }
+
+    /// Sets the manager-wide default acquire-slow-log threshold. See
+    /// [`Self::acquire_slow_threshold`] for the WARN contract and its
+    /// interplay with [`AcquireOptions::deadline`](crate::AcquireOptions::deadline).
+    #[must_use]
+    pub fn with_acquire_slow_threshold(mut self, threshold: Duration) -> Self {
+        self.acquire_slow_threshold = Some(threshold);
+        self
     }
 }
 
@@ -241,9 +296,24 @@ pub struct RegistrationSpec<R: Provider> {
     /// The resource's lease topology, by value. The topology *kind* is static
     /// per `R` (a Postgres is always `Pooled`); only its config (cap, sizes) is
     /// runtime, so callers construct the concrete
-    /// [`Provider::Topology`] — e.g.
-    /// `Pooled::new(resource.clone(), config, fingerprint)` — and hand it here.
+    /// [`Provider::Topology`] — e.g. `Pooled::new(pool_config, fingerprint)`
+    /// — and hand it here.
     pub topology: R::Topology,
     /// Optional recovery gate for thundering-herd prevention.
     pub recovery_gate: Option<Arc<RecoveryGate>>,
+}
+
+impl<R: Provider> std::fmt::Debug for RegistrationSpec<R> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // `resource: R` and `topology: R::Topology` are unconstrained
+        // generics with no `Debug` bound (and may hold a live credential
+        // guard behind a slot cell) — identify the spec by its registry
+        // coordinates instead of the opaque payload.
+        f.debug_struct("RegistrationSpec")
+            .field("key", &R::key())
+            .field("scope", &self.scope)
+            .field("slot_identity", &self.slot_identity)
+            .field("recovery_gate", &self.recovery_gate.is_some())
+            .finish_non_exhaustive()
+    }
 }

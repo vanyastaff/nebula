@@ -16,13 +16,13 @@ use std::{
     time::{Duration, Instant},
 };
 
-use nebula_core::ResourceKey;
+use nebula_core::{ResourceKey, context::Context as _};
 use nebula_eventbus::EventBus;
 use tokio::sync::{Notify, OwnedSemaphorePermit};
 
 use crate::{
-    events::ResourceEvent, release_queue::ReleaseQueue, resource::Provider,
-    topology_tag::TopologyTag,
+    context::ResourceContext, events::ResourceEvent, metrics::ResourceOpsMetrics,
+    release_queue::ReleaseQueue, resource::Provider, topology_tag::TopologyTag,
 };
 
 /// The awaited teardown future a release callback produces.
@@ -82,7 +82,7 @@ pub(crate) type DrainTrackers = (DrainTracker, DrainTracker);
 /// Call [`ResourceGuard::taint`] **before** drop to skip recycle and
 /// force destroy on a misbehaving lease.
 ///
-/// # Cancellation
+/// # Cancel safety
 ///
 /// Drop runs in any cancellation context, including a cancelled
 /// `tokio::task`. The drop path itself contains no `.await`; any async
@@ -281,14 +281,26 @@ impl<R: Provider> ResourceGuard<R> {
     /// still alive (the strong [`Arc`] held in `hold_token` has not yet
     /// dropped). If so, the lease has been held past its deadline — a likely
     /// leaked or hung guard pinning a bounded slot — and the watchdog emits a
-    /// [`ResourceEvent::HoldDeadlineExceeded`] plus a `WARN` span. A guard that
-    /// drops before the deadline drops its `hold_token`, the [`std::sync::Weak`]
-    /// fails to upgrade, and the watchdog stays silent — so no `Drop`-path work
-    /// is needed.
+    /// [`ResourceEvent::HoldDeadlineExceeded`] plus a `WARN` span, both
+    /// carrying the acquiring context's execution id, workflow id, and
+    /// tracing span id — enough to go find *who* leaked it — and bumps
+    /// `metrics`' `hold_deadline_exceeded` counter if metrics are
+    /// configured. A guard
+    /// that drops before the deadline drops its `hold_token`, the
+    /// [`std::sync::Weak`] fails to upgrade, and the watchdog stays silent —
+    /// so no `Drop`-path work is needed.
     ///
     /// `deadline = None` (the default [`Provider::max_hold_duration`]) is a
-    /// no-op: no task is spawned and the guard pays nothing.
-    pub(crate) fn with_hold_watchdog(mut self, deadline: Option<Duration>) -> Self {
+    /// no-op: no task is spawned and the guard pays nothing. `ctx`'s
+    /// identifiers are read eagerly (before the task is spawned) since they
+    /// are cheap `Copy` ids, not the context itself — the spawned task does
+    /// not borrow or outlive `ctx`.
+    pub(crate) fn with_hold_watchdog(
+        mut self,
+        deadline: Option<Duration>,
+        ctx: &ResourceContext,
+        metrics: Option<ResourceOpsMetrics>,
+    ) -> Self {
         let Some(deadline) = deadline else {
             return self;
         };
@@ -300,6 +312,9 @@ impl<R: Provider> ResourceGuard<R> {
         self.hold_token = Some(token);
         let key = self.resource_key.clone();
         let acquired_at = self.acquired_at;
+        let execution_id = ctx.execution_id();
+        let workflow_id = ctx.scope().workflow_id;
+        let span_id = ctx.span_id();
         tokio::spawn(async move {
             tokio::time::sleep(deadline).await;
             // Guard still alive ⇒ the lease outlived its hold deadline.
@@ -309,12 +324,21 @@ impl<R: Provider> ResourceGuard<R> {
                     resource = %key,
                     held_secs = held.as_secs_f64(),
                     deadline_secs = deadline.as_secs_f64(),
+                    ?execution_id,
+                    ?workflow_id,
+                    ?span_id,
                     "resource lease exceeded its hold deadline — possible leaked or hung guard"
                 );
+                if let Some(m) = &metrics {
+                    m.record_hold_deadline_exceeded();
+                }
                 let _ = event_bus.emit(ResourceEvent::HoldDeadlineExceeded {
                     key,
                     held,
                     deadline,
+                    execution_id,
+                    workflow_id,
+                    span_id,
                 });
             }
         });
@@ -527,11 +551,14 @@ fn settle(
 /// drain settle (wedging `graceful_shutdown` / `revoke_slot`).
 ///
 /// The teardown runs through the shared [`hook_guard::guard_author_hook`]
-/// chokepoint — bounded by [`MAX_TEARDOWN_CEILING`] and panic-isolated — so a
-/// careless author teardown that hangs or panics still settles the drain (the
-/// fault is surfaced as a typed error), mirroring the queued `Drop` path. The
-/// effective teardown bound is the per-resource `timeout_at(cx.deadline)` the
-/// teardown future already carries (ADR-0093); this outer ceiling is a generous
+/// chokepoint — bounded by [`MAX_TEARDOWN_CEILING`] and, under `panic =
+/// "unwind"`, panic-isolated — so a careless author teardown that hangs or
+/// panics still settles the drain (the fault is surfaced as a typed error),
+/// mirroring the queued `Drop` path. Under `panic = "abort"` the isolation
+/// half is inert (`catch_unwind` catches nothing — see the `hook_guard`
+/// module docs); only the timeout bound still applies. The effective
+/// teardown bound is the per-resource `timeout_at(cx.deadline)` the teardown
+/// future already carries (ADR-0093); this outer ceiling is a generous
 /// catch-all that only trips on a wedged framework future. The semaphore permit
 /// is moved in and dropped only after the teardown resolves (#384).
 ///
@@ -571,8 +598,21 @@ async fn spawn_teardown_and_settle(
             Err(fault) => {
                 fault.observe(&key, "release");
                 match fault {
-                    crate::hook_guard::HookFault::Panicked => Err(crate::Error::transient(
-                        "resource teardown panicked during release() (isolated, caller not crashed)",
+                    // Permanent, not transient: a teardown panic is an
+                    // author-hook bug (a broken `destroy`/`on_release`
+                    // impl), not a condition that resolves with time or
+                    // backoff — retrying the SAME instance's teardown would
+                    // panic again deterministically. This matches every
+                    // other `HookFault::Panicked` site in the crate
+                    // (`manager/rotation.rs` refresh/revoke dispatch); this
+                    // was the one outlier still mapping to `Transient`. This
+                    // teardown runs under `MAX_TEARDOWN_CEILING` (2 min),
+                    // not the 30s `DEFAULT_AUTHOR_HOOK_CEILING` author-hook
+                    // budget other sites use.
+                    crate::hook_guard::HookFault::Panicked => Err(crate::Error::permanent(
+                        "resource teardown panicked during release() — caught and \
+                         isolated under panic=unwind (caller not crashed); inert \
+                         under panic=abort, which aborts the process instead",
                     )),
                     crate::hook_guard::HookFault::TimedOut => {
                         Err(crate::Error::transient(format!(
@@ -798,36 +838,36 @@ mod tests {
     /// that satisfies the `Provider::Topology: Topology<Self>` bound for any
     /// resource (including those whose `Instance` is **not** `Clone`, e.g. a
     /// `Drop`-probe). The guard tests construct `ResourceGuard<R>` directly
-    /// without going through registration/acquire, so the slot lifecycle hooks
-    /// are never exercised — `create_slot` therefore just errors.
+    /// without going through registration/acquire, so the entry lifecycle hooks
+    /// are never exercised — `create_entry` therefore just errors.
     struct FixtureTopology;
 
     #[async_trait::async_trait]
     impl<R: Provider> Topology<R> for FixtureTopology {
-        type Slot = R::Instance;
+        type Entry = R::Instance;
 
         fn try_reserve(&self, _s: &InstanceStore<R::Instance>) -> Result<Ticket, Unavailable> {
             Ok(Ticket::infallible())
         }
 
-        async fn create_slot(
+        async fn create_entry(
             &self,
             _resource: &R,
             _config: &R::Config,
-            _ctx: &crate::context::ResourceContext,
+            _ctx: &ResourceContext,
         ) -> Result<R::Instance, crate::Error> {
             Err(crate::Error::permanent(
                 "FixtureTopology: guard tests construct ResourceGuard directly; \
-                 create_slot is never driven",
+                 create_entry is never driven",
             ))
         }
 
-        fn slot_instance<'s>(&self, slot: &'s R::Instance) -> &'s R::Instance {
-            slot
+        fn entry_instance<'s>(&self, entry: &'s R::Instance) -> &'s R::Instance {
+            entry
         }
 
-        fn into_instance(&self, slot: R::Instance) -> R::Instance {
-            slot
+        fn into_instance(&self, entry: R::Instance) -> R::Instance {
+            entry
         }
     }
 
@@ -843,14 +883,12 @@ mod tests {
             nebula_core::resource_key!("dummy")
         }
 
-        async fn create(
-            &self,
-            _config: &(),
-            _ctx: &crate::context::ResourceContext,
-        ) -> Result<u32, crate::Error> {
+        async fn create(&self, _config: &(), _ctx: &ResourceContext) -> Result<u32, crate::Error> {
             Ok(0)
         }
     }
+
+    crate::no_credential_slots!(DummyResource);
 
     fn test_key() -> ResourceKey {
         nebula_core::resource_key!("test")
@@ -872,6 +910,19 @@ mod tests {
         assert_eq!(*handle, 42);
     }
 
+    /// A `ResourceContext` with a distinct execution id and workflow id, for
+    /// asserting the hold-deadline watchdog forwards them.
+    fn watchdog_test_ctx() -> ResourceContext {
+        use nebula_core::scope::Scope;
+        use tokio_util::sync::CancellationToken;
+        let scope = Scope {
+            execution_id: Some(nebula_core::ExecutionId::new()),
+            workflow_id: Some(nebula_core::WorkflowId::new()),
+            ..Default::default()
+        };
+        ResourceContext::minimal(scope, CancellationToken::new())
+    }
+
     #[tokio::test(start_paused = true)]
     async fn hold_watchdog_emits_when_lease_overruns_deadline() {
         // A guard armed with a hold deadline must surface a
@@ -880,10 +931,16 @@ mod tests {
         // makes this event never fire — red-on-revert.
         let bus = Arc::new(EventBus::<ResourceEvent>::new(256));
         let mut events = bus.subscribe();
+        let ctx = watchdog_test_ctx();
+        // The watchdog must carry the acquiring context's identifiers —
+        // captured here, before the ctx is passed by reference below, so the
+        // assertion compares against the exact values the context held.
+        let expected_execution_id = ctx.execution_id();
+        let expected_workflow_id = ctx.scope().workflow_id;
 
         let _held = ResourceGuard::<DummyResource>::owned(0, test_key(), TopologyTag::Pool)
             .with_event_bus(Arc::clone(&bus))
-            .with_hold_watchdog(Some(Duration::from_secs(1)));
+            .with_hold_watchdog(Some(Duration::from_secs(1)), &ctx, None);
 
         // `start_paused` auto-advances the clock to the watchdog's 1s timer
         // while this `recv` is the only pending work — deterministic, no
@@ -892,14 +949,25 @@ mod tests {
             .recv()
             .await
             .expect("watchdog must emit a HoldDeadlineExceeded event");
-        assert!(
-            matches!(
-                event,
-                ResourceEvent::HoldDeadlineExceeded { ref key, deadline, .. }
-                    if key == &test_key() && deadline == Duration::from_secs(1)
-            ),
-            "expected HoldDeadlineExceeded, got {event:?}"
-        );
+        match event {
+            ResourceEvent::HoldDeadlineExceeded {
+                ref key,
+                deadline,
+                execution_id,
+                workflow_id,
+                ..
+            } if key == &test_key() && deadline == Duration::from_secs(1) => {
+                assert_eq!(
+                    execution_id, expected_execution_id,
+                    "watchdog must carry the acquiring context's execution id"
+                );
+                assert_eq!(
+                    workflow_id, expected_workflow_id,
+                    "watchdog must carry the acquiring context's workflow id"
+                );
+            },
+            other => panic!("expected HoldDeadlineExceeded, got {other:?}"),
+        }
     }
 
     #[tokio::test]
@@ -1126,11 +1194,13 @@ mod tests {
         async fn create(
             &self,
             _config: &(),
-            _ctx: &crate::context::ResourceContext,
+            _ctx: &ResourceContext,
         ) -> Result<DropProbe, crate::Error> {
             Ok(DropProbe(Arc::new(AtomicU32::new(0))))
         }
     }
+
+    crate::no_credential_slots!(DropProbeResource);
 
     #[tokio::test]
     async fn detach_guarded_with_observable_drop_lease_does_not_double_drop_or_leak() {
