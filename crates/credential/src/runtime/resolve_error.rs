@@ -53,13 +53,23 @@ pub(crate) fn resolve_error_to_credential_error(err: ResolveError) -> Credential
         ResolveError::Deserialize { .. }
         | ResolveError::KindMismatch { .. }
         | ResolveError::ExternalSourceNotWired => CredentialError::InvalidInput(err.to_string()),
-        // Permanent store faults: a missing / already-existing row, or a
-        // fail-closed audit alarm. Retrying will not change the outcome.
-        ResolveError::Store(
-            StoreError::NotFound { .. }
-            | StoreError::AlreadyExists { .. }
-            | StoreError::AuditFailure(_),
-        ) => CredentialError::InvalidInput(err.to_string()),
+        // Permanent store faults for a specific row — missing or already
+        // existing. Retrying will not change the outcome.
+        ResolveError::Store(StoreError::NotFound { .. } | StoreError::AlreadyExists { .. }) => {
+            CredentialError::InvalidInput(err.to_string())
+        },
+        // A fail-closed audit-sink alarm is an operational fault, NOT user
+        // input: the audit trail is compromised and an operator must
+        // investigate (the store contract says retry only once the sink is
+        // healthy). Keep it non-retryable (`Other`) but off the validation
+        // path so it never reads as a client 4xx that hides a compromised
+        // audit trail.
+        ResolveError::Store(StoreError::AuditFailure(_)) => {
+            CredentialError::Provider(Box::new(ProviderErrorContext::new(
+                ProviderErrorKind::Other,
+                SecretFreeMessage::new(err.to_string()),
+            )))
+        },
         // Genuinely transient: backend I/O, a CAS version conflict, or a
         // provider refresh call that failed — retryable `ServerError`.
         ResolveError::Store(_) | ResolveError::Refresh { .. } => {
@@ -275,6 +285,26 @@ mod tests {
         assert!(
             refresh.is_retryable(),
             "provider refresh call should be retryable"
+        );
+    }
+
+    #[test]
+    fn audit_failure_is_operational_not_client_validation() {
+        use nebula_error::Classify;
+        // A fail-closed audit-sink alarm must NOT be mislabelled as user input
+        // (which would surface as a client 4xx and hide a compromised audit
+        // trail). It stays non-retryable but is classified operational, not
+        // validation.
+        let mapped = resolve_error_to_credential_error(ResolveError::Store(
+            StoreError::AuditFailure("audit sink refused".to_owned()),
+        ));
+        assert!(
+            !matches!(mapped, CredentialError::InvalidInput(_)),
+            "audit-sink failure must not be classified as client validation input"
+        );
+        assert!(
+            !mapped.is_retryable(),
+            "audit-sink failure must be non-retryable (retry only once the sink is healthy)"
         );
     }
 
