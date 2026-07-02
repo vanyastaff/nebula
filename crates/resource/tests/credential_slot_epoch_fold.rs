@@ -268,13 +268,13 @@ impl HasCredentialSlots for TwoSlotResident {
             })
     }
 
-    // Declares its two real credential slots (A4 unknown-slot validation +
-    // A5' consistency check) — mirroring what `#[derive(Resource)]` would
-    // emit for `#[credential(key = "slot_a")]` / `#[credential(key =
-    // "slot_b")]` fields. Without this pair the fixture's `refresh_slot`
-    // calls below would still pass (a type that declares NO credential
-    // slots skips A4's validation entirely), but that would misrepresent a
-    // real two-credential-slot resource as slot-less.
+    // Declares its two real credential slots (unknown-slot validation +
+    // the declares-vs-names registration consistency check) — mirroring
+    // what `#[derive(Resource)]` would emit for `#[credential(key =
+    // "slot_a")]` / `#[credential(key = "slot_b")]` fields. Without this
+    // pair `refresh_slot` would reject every name against this fixture
+    // (fail-closed for a misrepresented slot-less resource), including the
+    // real slot names the tests below exercise.
     fn declares_credential_slots() -> bool {
         true
     }
@@ -285,10 +285,11 @@ impl HasCredentialSlots for TwoSlotResident {
 }
 
 impl nebula_core::DeclaresDependencies for TwoSlotResident {
-    // Mirrors `credential_slot_names()` above so the A5' registration
-    // consistency check (`declares_credential_slots()` vs
-    // `DeclaresDependencies::slot_fields()`) does not itself reject this
-    // fixture — both self-reports name the same two slots.
+    // Mirrors `credential_slot_names()` above so the registration
+    // consistency checks (`declares_credential_slots()` vs
+    // `DeclaresDependencies::slot_fields()`, and vs `credential_slot_names()`)
+    // do not themselves reject this fixture — every self-report names the
+    // same two slots.
     fn dependencies() -> nebula_core::Dependencies {
         nebula_core::Dependencies::new()
             .slot_field(nebula_core::SlotField {
@@ -393,7 +394,7 @@ async fn resident_reconcile_fires_when_non_max_slot_rotates() {
     );
 }
 
-/// A4 unknown-slot validation: `TwoSlotResident` declares exactly
+/// Unknown-slot validation: `TwoSlotResident` declares exactly
 /// `slot_a`/`slot_b` (via `HasCredentialSlots::credential_slot_names`,
 /// migrated above). Rotation against a slot name it does NOT declare must
 /// be rejected with a typed `unknown_credential_slot` error — never
@@ -498,7 +499,7 @@ fn declares_credential_slots_reflects_credential_fields() {
         "a derived slot-less resource must not declare credential slots"
     );
     // `TwoSlotResident` is a hand-written impl that DOES override this (see
-    // its `HasCredentialSlots` impl above, migrated for A4 unknown-slot
+    // its `HasCredentialSlots` impl above, migrated for unknown-slot
     // validation) — it honestly reports its two real credential slots
     // rather than the trait default.
     assert!(

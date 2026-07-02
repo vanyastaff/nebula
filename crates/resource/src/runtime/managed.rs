@@ -200,6 +200,13 @@ impl<R: Provider> ManagedResource<R> {
         Arc::clone(&self.in_flight)
     }
 
+    /// Current in-flight-acquire count for *this* resource row — a
+    /// point-in-time read of the counter [`in_flight_tracker`](Self::in_flight_tracker)
+    /// hands out, without exposing the tracker's tuple shape at call sites.
+    pub(crate) fn in_flight_count(&self) -> usize {
+        self.in_flight.0.load(Ordering::Acquire) as usize
+    }
+
     /// Drains *this* resource's in-flight acquires (bounded by `timeout`).
     ///
     /// The per-resource analogue of `Manager::wait_for_drain`: it waits on

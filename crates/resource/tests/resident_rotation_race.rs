@@ -77,7 +77,7 @@ struct RaceGate {
     /// When `true`, `create()` performs the park; when `false` it returns
     /// immediately (used for the warm / never-activated fixtures).
     park_in_create: Arc<std::sync::atomic::AtomicBool>,
-    /// A3' regression fixture: when `true`, `on_credential_refresh` parks on
+    /// Two-tier-ceiling regression fixture: when `true`, `on_credential_refresh` parks on
     /// `release_refresh` before doing its work, so a test can hold the
     /// rotation dispatch's per-hook window open independently of
     /// `create_lock` contention (proving the two-tier ceiling times the
@@ -155,7 +155,7 @@ impl Provider for RaceResource {
         _slot_name: &str,
         runtime: &RaceRuntime,
     ) -> Result<(), Error> {
-        // A3' regression fixture: park before doing any work when armed
+        // Two-tier-ceiling regression fixture: park before doing any work when armed
         // (see `RaceGate::park_in_refresh`); every other test leaves this
         // false and the hook proceeds immediately.
         if self.gate.park_in_refresh.load(Ordering::SeqCst) {
@@ -197,9 +197,9 @@ impl HasCredentialSlots for RaceResource {
 
     // `db` is a real `#[credential]`-shaped slot field driven by
     // `refresh_slot`/`taint_slot(..., "db")` throughout this file —
-    // declaring it (final-review item 4) makes those calls exercise the
-    // real A4 unknown-slot validation path instead of skipping it via the
-    // permissive "declares no slots" gap.
+    // declaring it makes those calls exercise the real unknown-slot
+    // validation path against a genuine declared slot name, rather than a
+    // fixture that never declares any slot at all.
     fn declares_credential_slots() -> bool {
         true
     }
@@ -346,8 +346,8 @@ async fn resident_create_during_rotation_delivers_hook_not_false_success() {
     assert_eq!(resource.refresh_calls.load(Ordering::SeqCst), 2);
 }
 
-/// A3' regression: the rotation-dispatch ceiling must not be billed by
-/// TOPOLOGY LOCK-WAIT — only by the author's hook body.
+/// Two-tier-ceiling regression: the rotation-dispatch ceiling must not be
+/// billed by TOPOLOGY LOCK-WAIT — only by the author's hook body.
 ///
 /// Before the fix, `refresh_resolved` wrapped the WHOLE dispatch
 /// (`create_lock` acquisition + the hook itself) in a single fixed 30s
@@ -417,7 +417,7 @@ async fn refresh_slot_lock_wait_does_not_consume_the_hook_ceiling() {
         .expect(
             "refresh_slot must succeed: ~20s lock-wait + ~20s hook (~40s \
              total) exceeds the old single-tier 30s ceiling, but neither \
-             phase alone exceeds its own tier (A3')",
+             phase alone exceeds its own tier (two-tier ceiling)",
         );
 
     assert_eq!(

@@ -764,7 +764,7 @@ async fn pool_acquire_with_deadline() {
 }
 
 // ---------------------------------------------------------------------------
-// C2: acquire-slow-log threshold (observational only — never affects outcome)
+// Acquire-slow-log threshold (observational only — never affects outcome)
 // ---------------------------------------------------------------------------
 
 /// A per-call [`AcquireOptions::with_acquire_slow_threshold`] override well

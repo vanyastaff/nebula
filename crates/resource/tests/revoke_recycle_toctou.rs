@@ -45,7 +45,7 @@ use nebula_resource::{
     AcquireOptions, Manager, PoolConfig, Pooled, Provider, RegistrationSpec, ResourceConfig,
     ResourceContext, SlotIdentity,
     error::{Error, ErrorKind},
-    resource::ResourceMetadata,
+    resource::{HasCredentialSlots, ResourceMetadata},
     topology::pooled::{PoolProvider, RecycleDecision, config::WarmupStrategy},
 };
 use tokio::sync::Notify;
@@ -163,7 +163,27 @@ impl Provider for PoolResource {
     }
 }
 
-nebula_resource::no_credential_slots!(PoolResource);
+// A real declared "db" credential slot — every scenario in this file drives
+// `revoke_slot`/`taint_slot(..., "db")` against `on_credential_revoke`, so
+// `no_credential_slots!` would misrepresent this fixture as slot-less and
+// (post fail-closed fix) make every one of those calls rejected outright.
+impl HasCredentialSlots for PoolResource {
+    fn credential_slot_epoch(&self) -> u64 {
+        // This file's revoke-vs-recycle fence is proven with its own
+        // `revoked: Arc<AtomicBool>` observable, not the epoch fold — a
+        // constant is honest here (no `#[credential]` slot field to fold
+        // over).
+        0
+    }
+
+    fn declares_credential_slots() -> bool {
+        true
+    }
+
+    fn credential_slot_names() -> &'static [&'static str] {
+        &["db"]
+    }
+}
 
 impl PoolProvider for PoolResource {
     fn recycle(

@@ -283,8 +283,9 @@ impl<R: Provider> ResourceGuard<R> {
     /// leaked or hung guard pinning a bounded slot — and the watchdog emits a
     /// [`ResourceEvent::HoldDeadlineExceeded`] plus a `WARN` span, both
     /// carrying the acquiring context's execution id, workflow id, and
-    /// tracing span id (C5: enough to go find *who* leaked it), and bumps
-    /// `metrics`' `leaks_detected` counter if metrics are configured. A guard
+    /// tracing span id — enough to go find *who* leaked it — and bumps
+    /// `metrics`' `hold_deadline_exceeded` counter if metrics are
+    /// configured. A guard
     /// that drops before the deadline drops its `hold_token`, the
     /// [`std::sync::Weak`] fails to upgrade, and the watchdog stays silent —
     /// so no `Drop`-path work is needed.
@@ -329,7 +330,7 @@ impl<R: Provider> ResourceGuard<R> {
                     "resource lease exceeded its hold deadline — possible leaked or hung guard"
                 );
                 if let Some(m) = &metrics {
-                    m.record_leak_detected();
+                    m.record_hold_deadline_exceeded();
                 }
                 let _ = event_bus.emit(ResourceEvent::HoldDeadlineExceeded {
                     key,
@@ -597,7 +598,7 @@ async fn spawn_teardown_and_settle(
             Err(fault) => {
                 fault.observe(&key, "release");
                 match fault {
-                    // Permanent, not transient (A2): a teardown panic is an
+                    // Permanent, not transient: a teardown panic is an
                     // author-hook bug (a broken `destroy`/`on_release`
                     // impl), not a condition that resolves with time or
                     // backoff — retrying the SAME instance's teardown would
@@ -910,7 +911,7 @@ mod tests {
     }
 
     /// A `ResourceContext` with a distinct execution id and workflow id, for
-    /// asserting the watchdog forwards them (C5).
+    /// asserting the hold-deadline watchdog forwards them.
     fn watchdog_test_ctx() -> ResourceContext {
         use nebula_core::scope::Scope;
         use tokio_util::sync::CancellationToken;
@@ -931,7 +932,7 @@ mod tests {
         let bus = Arc::new(EventBus::<ResourceEvent>::new(256));
         let mut events = bus.subscribe();
         let ctx = watchdog_test_ctx();
-        // C5: the watchdog must carry the acquiring context's identifiers —
+        // The watchdog must carry the acquiring context's identifiers —
         // captured here, before the ctx is passed by reference below, so the
         // assertion compares against the exact values the context held.
         let expected_execution_id = ctx.execution_id();
@@ -958,11 +959,11 @@ mod tests {
             } if key == &test_key() && deadline == Duration::from_secs(1) => {
                 assert_eq!(
                     execution_id, expected_execution_id,
-                    "C5: watchdog must carry the acquiring context's execution id"
+                    "watchdog must carry the acquiring context's execution id"
                 );
                 assert_eq!(
                     workflow_id, expected_workflow_id,
-                    "C5: watchdog must carry the acquiring context's workflow id"
+                    "watchdog must carry the acquiring context's workflow id"
                 );
             },
             other => panic!("expected HoldDeadlineExceeded, got {other:?}"),

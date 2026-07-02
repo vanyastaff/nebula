@@ -608,7 +608,9 @@ mod tests {
 
         use crate::{
             AcquireOptions, Manager, Provider, Resident, ResidentConfig, ResourceConfig,
-            ResourceContext, error::Error as ResourceError, resource::ResourceMetadata,
+            ResourceContext,
+            error::Error as ResourceError,
+            resource::{HasCredentialSlots, ResourceMetadata},
             topology::resident::ResidentProvider,
         };
         use nebula_core::{OrgId, ResourceKey, ScopeLevel, resource_key, scope::Scope};
@@ -759,7 +761,26 @@ mod tests {
             }
         }
 
-        crate::no_credential_slots!(CtlResource);
+        // A real declared "db" credential slot — every fan-out scenario in
+        // this module drives `refresh_slot`/`taint_slot`/`revoke_slot(...,
+        // "db")` against `on_credential_refresh`/`on_credential_revoke`, so
+        // `no_credential_slots!` would misrepresent this fixture as
+        // slot-less and (fail-closed) reject every one of those calls.
+        impl HasCredentialSlots for CtlResource {
+            fn credential_slot_epoch(&self) -> u64 {
+                // This module's fan-out isolation is proven via the
+                // `Ledger` hook-entry counters, not the epoch fold.
+                0
+            }
+
+            fn declares_credential_slots() -> bool {
+                true
+            }
+
+            fn credential_slot_names() -> &'static [&'static str] {
+                &["db"]
+            }
+        }
 
         #[async_trait::async_trait]
         impl ResidentProvider for CtlResource {

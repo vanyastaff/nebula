@@ -232,7 +232,7 @@ fn register_topo(manager: &Manager, ffmpeg: Ffmpeg, topology: FfmpegPool) {
         .expect("a custom topology must register through Manager::register");
 }
 
-/// C8 (1): a custom `impl Topology<R>` registers through `Manager::register()`,
+/// A custom `impl Topology<R>` registers through `Manager::register()`,
 /// acquires + releases end-to-end through the erased acquire path, reporting the
 /// `Custom` tag.
 #[tokio::test]
@@ -274,7 +274,7 @@ async fn custom_topology_registers_and_acquires_through_manager() {
     );
 }
 
-/// C8 (2) — the safety-by-construction proof: an entry idle **before** a revoke is
+/// The safety-by-construction proof: an entry idle **before** a revoke is
 /// evicted (destroyed) by the **FRAMEWORK** on the next acquire. The author
 /// wrote zero fence code; bumping the revoke epoch through the erased
 /// `ManagedHandle::bump_revoke_epoch` (exactly as `Manager::revoke_slot` phase 1

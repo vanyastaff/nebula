@@ -189,9 +189,9 @@ impl<R: Provider> Resident<R> {
     /// Propagates the resource's `on_credential_*` error; on a stale-reconcile
     /// failure the recorded epoch is deliberately not advanced so the next
     /// dispatch re-attempts. A hook that hangs or panics is bounded/isolated
-    /// (A3') and surfaces as a typed [`Error`] the same way.
+    /// and surfaces as a typed [`Error`] the same way.
     ///
-    /// # Two-tier hook ceiling (A3')
+    /// # Two-tier hook ceiling
     ///
     /// The hook dispatch below is bounded by
     /// [`DEFAULT_AUTHOR_HOOK_CEILING`](crate::hook_guard::DEFAULT_AUTHOR_HOOK_CEILING)
@@ -245,8 +245,8 @@ impl<R: Provider> Resident<R> {
         }
 
         // Bound + isolate the author hook itself — after `create_lock` is
-        // already held, so the ceiling times only the hook body (A3'; see
-        // the doc section above).
+        // already held, so the ceiling times only the hook body (see the
+        // two-tier hook ceiling doc section above).
         //
         // SAFETY (unwind): `_guard` (the `create_lock` `MutexGuard`) is a
         // local of this function, not captured by the wrapped future below,

@@ -26,6 +26,12 @@
 //!   guard's drop. Prose only in this crate (not a type family — the typed
 //!   `Lease` vocabulary belongs to `nebula-credential`'s rotation events).
 //!
+//! A fourth word shows up nearby but names none of these: "permit" /
+//! "concurrency slot" in the guard/semaphore code (`OwnedSemaphorePermit`,
+//! `Topology::try_reserve`) is the **concurrency axis** — how many leases may
+//! be outstanding at once — unrelated to the credential axis above despite
+//! sharing the word "slot".
+//!
 //! [`Topology`]: crate::topology::Topology
 //! [`Topology::Entry`]: crate::topology::Topology::Entry
 
@@ -706,7 +712,7 @@ mod tests {
         assert_eq!(store.len().await, 0);
     }
 
-    // C1 fence-on-checkout (a): an entry that went idle, then had its credential
+    // Fence-on-checkout (a): an entry that went idle, then had its credential
     // revoked, must land in `stale` — never `fresh`.
     #[tokio::test]
     async fn checkout_evicts_entry_revoked_while_idle() {
@@ -730,7 +736,7 @@ mod tests {
         assert_eq!(store.len().await, 0, "the idle queue is drained");
     }
 
-    // C1 fence-on-checkout (b): a mix of stale and fresh entries returns only
+    // Fence-on-checkout (b): a mix of stale and fresh entries returns only
     // the first fresh one, with every stale entry collected.
     #[tokio::test]
     async fn checkout_returns_fresh_after_collecting_stale() {
@@ -759,7 +765,7 @@ mod tests {
         assert_eq!(store.len().await, 0, "the idle queue is now drained");
     }
 
-    // C1 fence-on-checkout (c): an empty queue returns no fresh and no stale.
+    // Fence-on-checkout (c): an empty queue returns no fresh and no stale.
     #[tokio::test]
     async fn checkout_empty_queue_returns_none() {
         let store: InstanceStore<u32> = InstanceStore::new(None);

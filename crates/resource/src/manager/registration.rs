@@ -325,7 +325,7 @@ impl Manager {
                         evicted,
                     });
                 }
-                // C4: top the idle queue back up to `warmup_target` after
+                // Min-idle refill: top the idle queue back up to `warmup_target` after
                 // eviction, gated on the recovery gate being `Idle` (or
                 // absent) inside `refill_min_idle` itself. Also skip if
                 // shutdown landed between the eviction sweep above and here —
@@ -523,14 +523,14 @@ impl Manager {
         R::Instance: Clone,
         R::Topology: Topology<R>,
     {
-        // -1. Registration consistency check (A5', belt to the future B2'
-        //     compile-time fold): `HasCredentialSlots::declares_credential_slots()` and
+        // -1. Registration consistency check (belt to a future compile-time
+        //     fold): `HasCredentialSlots::declares_credential_slots()` and
         //     `DeclaresDependencies::dependencies().slot_fields()` are two
         //     independent self-reports a hand-written `Provider` impl can
         //     drift apart (e.g. override one and forget the other) — the
         //     `#[derive(Resource)]` derive keeps them consistent by
         //     construction, but nothing enforces that for a hand-written
-        //     pair. `Manager::refresh_slot` / `taint_slot` (A4) key their
+        //     pair. `Manager::refresh_slot` / `taint_slot` key their
         //     unknown-slot validation off exactly this pair via the erased
         //     `ManagedHandle`, so a silent contradiction here would surface
         //     downstream as a confusing false-negative or false-positive at
@@ -551,6 +551,29 @@ impl Manager {
                 ty = std::any::type_name::<R>(),
                 epoch_flag = R::declares_credential_slots(),
                 has_fields = declares_credential_slot_fields,
+            )));
+        }
+
+        // -1b. Same-family cross-check against `credential_slot_names()`: a
+        //      hand-written impl can override `declares_credential_slots`
+        //      without also populating `credential_slot_names` (or vice
+        //      versa), and `accepts_credential_slot_name` trusts
+        //      `credential_slot_names()` alone (fail-closed: empty names
+        //      rejects every slot). A `true`/empty-names or
+        //      `false`/non-empty-names pair is exactly the drift that would
+        //      make every future rotation call against this resource a
+        //      silent false-negative or false-positive, so reject it here
+        //      instead of at rotation time.
+        let declares_credential_slot_names = !R::credential_slot_names().is_empty();
+        if R::declares_credential_slots() != declares_credential_slot_names {
+            return Err(Error::permanent(format!(
+                "register_resolved: `{ty}` HasCredentialSlots::declares_credential_slots() \
+                 = {declares_flag} but credential_slot_names() returned {names_len} name(s) \
+                 — the two self-reported slot signals have drifted apart; fix whichever \
+                 implementation is stale",
+                ty = std::any::type_name::<R>(),
+                declares_flag = R::declares_credential_slots(),
+                names_len = R::credential_slot_names().len(),
             )));
         }
 
@@ -766,7 +789,7 @@ impl Manager {
 
     /// Removes a resource from the registry by key.
     ///
-    /// # Blast radius (A6)
+    /// # Blast radius
     ///
     /// This removes **every** row registered under `key` — every scope
     /// *and* every resolved [`SlotIdentity`](crate::dedup::SlotIdentity),
@@ -798,7 +821,7 @@ impl Manager {
 
     /// Removes the single resolved row `(key, scope, slot_identity)`,
     /// leaving every sibling row under `key` — other scopes, or other
-    /// resolved slot identities at the same scope — untouched (A6).
+    /// resolved slot identities at the same scope — untouched.
     ///
     /// The narrow, additive counterpart to [`remove`](Self::remove): see
     /// its doc for the full-key blast radius this method avoids. Mirrors

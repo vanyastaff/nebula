@@ -9,7 +9,7 @@
 //! - [`runtime::pool`](crate::runtime::pool) — a small attenuation (`spread`
 //!   a few percent) on `max_lifetime`, HikariCP-style, so a warmup burst of
 //!   pool entries created together does not all expire on the same
-//!   maintenance tick (C3).
+//!   maintenance tick.
 
 use std::time::Duration;
 
@@ -23,12 +23,19 @@ use std::time::Duration;
 /// while still de-synchronizing entities that started together. A zero
 /// `nominal` stays zero regardless of `spread`.
 ///
-/// Entropy is [`std::hash::RandomState`] — per-call random seeding from
-/// std, deliberately no `rand` dependency for the cold paths that call this
+/// Entropy is [`std::hash::RandomState`] — a per-thread OS-seeded key mixed
+/// with a per-instance counter (std draws fresh OS randomness only once per
+/// thread, then derives each `RandomState::new()` from that seed), not a
+/// fresh OS random draw on every call. That is uniform enough for a jitter
+/// spread and needs no `rand` dependency for the cold paths that call this
 /// (one draw per failed recovery attempt, or per newly-created pool entry).
 pub(crate) fn apply_jitter(nominal: Duration, spread: f64) -> Duration {
     use std::hash::{BuildHasher, RandomState};
 
+    debug_assert!(
+        spread.is_finite(),
+        "jitter spread must be finite, got {spread}"
+    );
     let spread = spread.clamp(0.0, 1.0);
     // Floor rather than round: `Duration::mul_f64` rounds to the nearest
     // representable nanosecond, which can round a sub-nanosecond span (e.g.
@@ -81,7 +88,7 @@ mod tests {
 
     #[test]
     fn small_spread_band_matches_hikaricp_attenuation() {
-        // [0.95 * L, L] — jitter proportional to lifetime (C3).
+        // [0.95 * L, L] — jitter proportional to lifetime.
         let nominal = Duration::from_mins(30);
         let lower_bound = nominal.mul_f64(0.95);
         for _ in 0..1_000 {

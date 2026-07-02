@@ -197,7 +197,7 @@
 //! | Knob | Default | Rationale |
 //! |------|---------|-----------|
 //! | [`ManagerConfig::acquire_slow_threshold`] | `None` (WARN disabled) | Per-manager default for the slow-acquire WARN log (sqlx `slow_acquire` precedent); override per call via [`AcquireOptions::acquire_slow_threshold`]. |
-//! | [`Provider::max_hold_duration`] | `None` (watchdog disabled) | HikariCP `leakDetectionThreshold` lineage: a lease held past this logs `ResourceEvent::HoldDeadlineExceeded` (with the acquiring execution/workflow/span ids) and bumps a `leaks_detected` counter — diagnostic only, never force-releases. |
+//! | [`Provider::max_hold_duration`] | `None` (watchdog disabled) | HikariCP `leakDetectionThreshold` lineage: a lease held past this logs `ResourceEvent::HoldDeadlineExceeded` (with the acquiring execution/workflow/span ids) and bumps a `hold_deadline_exceeded` counter — diagnostic only, never force-releases. |
 //! | `PoolConfig::idle_timeout` | `Some(5 min)` | Evicts idle instances so a burst-sized pool shrinks back down between bursts. |
 //! | `PoolConfig::max_lifetime` | `Some(30 min)` | Forces periodic reconnect (picks up DNS/LB changes, bounds worst-case staleness); evicted with a small per-entry jitter band (`[0.95×, 1.0×]`, drawn once at creation) so a warmup cohort does not all expire on the same maintenance tick. |
 //! | `PoolConfig::min_size` (the pool's `warmup_target`) | `1` | The reaper's min-idle floor: after a maintenance sweep evicts idle entries below this, `refill_min_idle` tops the store back up (HikariCP `minimumIdle` lineage) — gated through the resource's `RecoveryGate` (if attached) so a flapping backend is not hammered by refill attempts. |

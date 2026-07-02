@@ -149,8 +149,8 @@ pub enum ResourceEvent {
         /// The configured hold deadline that was exceeded.
         deadline: Duration,
         /// The execution id of the [`ResourceContext`](crate::context::ResourceContext)
-        /// that acquired this lease, if the scope carried one (C5
-        /// diagnosability: which execution to go blame for the leak).
+        /// that acquired this lease, if the scope carried one — names which
+        /// execution to go blame for the leak.
         execution_id: Option<ExecutionId>,
         /// The workflow id of the acquiring context's scope, if present.
         workflow_id: Option<WorkflowId>,

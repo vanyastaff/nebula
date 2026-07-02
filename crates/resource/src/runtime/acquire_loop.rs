@@ -343,7 +343,7 @@ where
     /// Creates and cancel-safely deposits up to `requested` fresh entries
     /// into the framework store — the shared create→guard→deposit-fence
     /// sequence [`warmup`](Self::warmup) and the reaper's min-idle refill
-    /// ([`refill_min_idle`](Self::refill_min_idle), C4) both drive, so the
+    /// ([`refill_min_idle`](Self::refill_min_idle)) both drive, so the
     /// cancel-safety and revoke-fence contract is written and tested once.
     ///
     /// Each entry is stamped with the live revoke epoch under the idle lock
@@ -443,7 +443,7 @@ where
         created
     }
 
-    /// Reaper-tick min-idle floor refill (C4; HikariCP `minimumIdle`
+    /// Reaper-tick min-idle floor refill (HikariCP `minimumIdle`
     /// topping-off). After [`run_maintenance`](Self::run_maintenance) evicts
     /// TTL/idle-expired/stale-fingerprint entries, the idle queue can sit
     /// below `warmup_target` until the next caller-driven acquire creates
@@ -457,8 +457,12 @@ where
     /// checked-out leases; under sustained full load (idle empty, every
     /// permit leased) that would create `min_size` extra instances on top of
     /// the `max_size` already checked out. The refill is additionally capped
-    /// at `store.capacity() - (idle_len + in_flight)`, so the tick never
-    /// pushes the resource's live-instance count past its configured cap.
+    /// at `store.capacity() - (idle_len + in_flight)`, so the tick stays
+    /// bounded to the resource's configured cap up to a concurrent-acquire
+    /// race: `idle_len` and `in_flight` are two independent, non-atomic
+    /// reads, so a caller that checks out or releases between them can shift
+    /// the live-instance count out from under this snapshot by a small
+    /// margin — not a hard, race-free guarantee.
     ///
     /// **Gated on the recovery gate.** When a [`RecoveryGate`](crate::recovery::gate::RecoveryGate)
     /// is attached and its state is anything other than
@@ -481,8 +485,6 @@ where
     /// destroys any in-flight entry via the [`ReleaseQueue`] instead of
     /// leaking it; entries already deposited stay in the store.
     pub(crate) async fn refill_min_idle(self: &Arc<Self>, ctx: &ResourceContext) -> usize {
-        use std::sync::atomic::Ordering;
-
         if let Some(gate) = &self.recovery_gate
             && !matches!(gate.state(), crate::recovery::gate::GateState::Idle)
         {
@@ -507,7 +509,7 @@ where
         // out — overshooting `max_size` by `min_size`. `in_flight` (armed at
         // acquire start, disarmed on guard drop — see `ManagedResource::in_flight`)
         // plus `idle_before` is the authoritative live-instance count.
-        let in_flight = self.in_flight.0.load(Ordering::Acquire) as usize;
+        let in_flight = self.in_flight_count();
         let headroom = match self.store.capacity() {
             Some(cap) => cap.saturating_sub(idle_before + in_flight),
             None => deficit,
@@ -596,7 +598,7 @@ where
     /// Health-probes every idle entry via [`Provider::check`], removing and
     /// returning the entries that fail so the caller destroys them.
     ///
-    /// # Fence-preserving, non-blocking probe (A1')
+    /// # Fence-preserving, non-blocking probe
     ///
     /// The idle lock is held only twice, both briefly:
     ///
@@ -640,7 +642,7 @@ where
     /// racing the background maintenance task) therefore destroys every
     /// still-in-flight entry via the [`ReleaseQueue`] instead of dropping it
     /// silently — this closes the batch-wide exposure the plain-local shape
-    /// had before the drain became "whole batch at once" (A1').
+    /// had before the drain became "whole batch at once".
     async fn probe_idle_entries(self: &Arc<Self>) -> Vec<EntryOf<R>> {
         let key = R::key();
 
@@ -987,7 +989,7 @@ mod tests {
         /// When `true`, `check` parks forever — the deterministic suspension
         /// point for the accept-await cancellation tests.
         hang_check: Arc<AtomicBool>,
-        /// A1' regression fixture: when `true`, `check` notifies
+        /// Probe-lock regression fixture: when `true`, `check` notifies
         /// `check_started` the instant it begins, then parks on
         /// `release_check` until the test releases it — a *slow* (it
         /// eventually resolves) check, distinct from `hang_check` (never
@@ -996,7 +998,7 @@ mod tests {
         park_in_check: Arc<AtomicBool>,
         check_started: Arc<Notify>,
         release_check: Arc<Notify>,
-        /// C4 fixture: when `true`, the *next* `create` call notifies
+        /// Min-idle-refill fixture: when `true`, the *next* `create` call notifies
         /// `create_entered` the instant it begins, then parks on
         /// `release_create` until the test releases it — lets a test observe
         /// "a create is in flight, entry not yet deposited" deterministically
@@ -1333,7 +1335,7 @@ mod tests {
         );
     }
 
-    // ── A1' probe-lock fix regression tests ────────────────────────────
+    // ── Probe-lock fix regression tests ─────────────────────────────────
 
     /// A slow (but eventually healthy) `Provider::check` must not block a
     /// concurrent checkout while a maintenance probe is running — the idle
@@ -1402,8 +1404,8 @@ mod tests {
     /// A credential revoke that lands WHILE an entry is mid-probe (drained,
     /// health check in flight) must destroy that entry on return — never
     /// re-admit it to the idle queue. This is the fence-preservation half of
-    /// A1': a plain `*idle = survivors` write-back would resurrect a
-    /// since-revoked entry; routing survivors back through
+    /// the probe-lock fix: a plain `*idle = survivors` write-back would
+    /// resurrect a since-revoked entry; routing survivors back through
     /// `InstanceStore::return_entry` re-checks the epoch under the re-taken
     /// lock and evicts instead.
     #[tokio::test]
@@ -1475,7 +1477,7 @@ mod tests {
         );
     }
 
-    // ── C4: reaper-tick min-idle floor refill ───────────────────────────
+    // ── Reaper-tick min-idle floor refill ───────────────────────────────
 
     /// After a maintenance sweep evicts every idle entry, `refill_min_idle`
     /// tops the store back up to `min_size` (warmup_target) — the reaper
@@ -1646,7 +1648,7 @@ mod tests {
         );
     }
 
-    /// REQUIRED (C4): shutdown-during-refill race is clean. A refill task
+    /// Cancel-safety invariant: shutdown-during-refill race is clean. A refill task
     /// aborted while `create` is in flight (before the entry is deposited —
     /// here: parked in the mock's `create`; in production the reaper task
     /// being cancelled by `graceful_shutdown`) must destroy the created
@@ -1735,7 +1737,7 @@ mod tests {
         );
     }
 
-    /// REQUIRED (C4): revoke-during-refill. A `revoke_slot` epoch bump that
+    /// Fence invariant: revoke-during-refill. A `revoke_slot` epoch bump that
     /// lands while a refill-created entry is still mid-`create` (the window
     /// between the epoch snapshot and the fenced deposit) must make the
     /// deposit fence destroy the entry, never admit it to the idle queue as

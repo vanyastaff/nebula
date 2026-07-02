@@ -137,7 +137,7 @@ fn register(manager: &Manager, seats: Seats, topology: Bounded<Seats>) {
         .expect("a bounded resource must register through Manager::register");
 }
 
-/// Typed acquire path — `Manager::acquire_bounded` (B4). This is the path
+/// Typed acquire path — `Manager::acquire_bounded`. This is the path
 /// every test but one exercises; a real caller with `Seats` known at compile
 /// time never goes through the erased downcast below.
 async fn acquire(
@@ -304,7 +304,7 @@ async fn exclusive_failed_reset_destroys_then_recreates() {
 }
 
 /// `Unbounded` never rejects an acquire. Also the one test on the erased
-/// `Manager::acquire_any` + downcast path (B4): every other test in this file
+/// `Manager::acquire_any` + downcast path: every other test in this file
 /// exercises the typed `Manager::acquire_bounded`.
 #[tokio::test]
 async fn unbounded_never_rejects_through_manager() {

@@ -114,18 +114,13 @@ pub trait ManagedHandle: sealed::Sealed + Send + Sync + 'static {
     /// for single-runtime topologies, which have no idle queue).
     fn bump_revoke_epoch(&self);
 
-    /// Validates `slot` against this row's declared credential slot names
-    /// (A4 unknown-slot validation).
+    /// Validates `slot` against this row's declared credential slot names.
     ///
-    /// `true` when either: the resource type declares no credential slots
-    /// at all
-    /// ([`HasCredentialSlots::declares_credential_slots`](crate::resource::HasCredentialSlots::declares_credential_slots)
-    /// is `false` — nothing to validate against, so any name passes, which
-    /// keeps every hand-written `HasCredentialSlots` impl that predates
-    /// this check behaviorally unchanged); or `slot` matches one of
+    /// `true` only when `slot` matches one of
     /// [`HasCredentialSlots::credential_slot_names`](crate::resource::HasCredentialSlots::credential_slot_names).
-    /// `false` only when the type positively declares a non-empty
-    /// credential surface and `slot` names none of it.
+    /// Fail-closed: a resource type that declares no credential slots at all
+    /// has an empty name list, so this returns `false` for every slot name —
+    /// there is no slot to rotate, so no name should ever be accepted.
     ///
     /// Called by `Manager::refresh_slot` / `taint_slot` (and their
     /// `_for_identity` variants — `revoke_slot*` calls `taint_slot*`
@@ -262,7 +257,7 @@ where
     }
 
     fn accepts_credential_slot_name(&self, slot: &str) -> bool {
-        !R::declares_credential_slots() || R::credential_slot_names().contains(&slot)
+        R::credential_slot_names().contains(&slot)
     }
 
     async fn dispatch_on_refresh(&self, slot: &str) -> Result<(), Error> {
@@ -785,7 +780,7 @@ impl Registry {
     /// Returns `true` if the key existed and was removed, `false` otherwise.
     /// Also removes the type index entry if it points to this key.
     ///
-    /// **Blast radius (A6):** this drops *every* row under `key` — every
+    /// **Blast radius:** this drops *every* row under `key` — every
     /// scope and every resolved [`SlotIdentity`], including multi-tenant
     /// siblings that differ only in resolved credential. Use
     /// [`remove_for`](Self::remove_for) to remove a single resolved row
@@ -800,8 +795,7 @@ impl Registry {
 
     /// Removes exactly the row for `(key, scope, slot_identity)`, leaving
     /// every sibling row under `key` — other scopes, or other resolved
-    /// slot identities at the same scope (multi-tenant rows) — untouched
-    /// (A6).
+    /// slot identities at the same scope (multi-tenant rows) — untouched.
     ///
     /// The narrower, additive counterpart to [`remove`](Self::remove): it
     /// is the precise inverse of the single [`register`](Self::register)
@@ -1276,7 +1270,7 @@ mod tests {
 
     #[test]
     fn remove_for_removes_one_tenant_row_and_keeps_sibling() {
-        // A6: `remove_for` is the narrow, additive counterpart to `remove`
+        // `remove_for` is the narrow, additive counterpart to `remove`
         // (which nukes every row under a key). Two tenants share
         // `(key, scope)` but resolve different credentials — removing one
         // resolved row must not disturb the other, and the shared

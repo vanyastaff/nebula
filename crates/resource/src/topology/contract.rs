@@ -310,8 +310,8 @@ impl Ticket {
 /// maintenance reaper task only when a topology returns `Some` here and at
 /// least one TTL is configured. The reaper runs the framework store's
 /// [`evict_stale`](crate::topology::store::InstanceStore::evict_stale) (revoke
-/// fence) plus the per-slot [`Topology::idle_evictable`] predicate
-/// (fingerprint / max-lifetime / idle-timeout), destroying evicted slots via
+/// fence) plus the per-entry [`Topology::idle_evictable`] predicate
+/// (fingerprint / max-lifetime / idle-timeout), destroying evicted entries via
 /// [`Topology::into_instance`] → [`Provider::destroy`].
 #[derive(Debug, Clone, Copy)]
 pub struct MaintenanceSchedule {

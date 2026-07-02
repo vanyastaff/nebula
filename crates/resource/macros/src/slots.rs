@@ -105,9 +105,9 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
     // `#[credential]` field. Emitted explicitly (rather than relying on the
     // trait default) so the slot-less case reads `false` at the impl site.
     let declares_credential_slots = !slots.is_empty();
-    // A4 unknown-slot validation: the real declared slot-key list, in field
-    // declaration order — each `quote!{ #slot_key }` on a `String` emits a
-    // `&'static str` literal token.
+    // Unknown-slot validation source list: the real declared slot-key list,
+    // in field declaration order — each `quote!{ #slot_key }` on a `String`
+    // emits a `&'static str` literal token.
     let slot_key_literals: Vec<String> = slots
         .iter()
         .map(field_slots::ParsedCredentialSlot::slot_key)

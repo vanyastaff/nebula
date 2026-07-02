@@ -184,9 +184,9 @@ mod counting {
 
         // `db` is a real `#[credential]`-shaped slot field driven by
         // `refresh_slot`/`revoke_slot(..., "db")` throughout this file —
-        // declaring it (final-review item 4) makes those calls exercise the
-        // real A4 unknown-slot validation path instead of skipping it via
-        // the permissive "declares no slots" gap.
+        // declaring it makes those calls exercise the real unknown-slot
+        // validation path against a genuine declared slot name, rather
+        // than a fixture that never declares any slot at all.
         fn declares_credential_slots() -> bool {
             true
         }
@@ -1360,10 +1360,10 @@ mod u9_gate {
         }
 
         // `db` is a real `#[credential]`-shaped slot field driven by
-        // `refresh_slot(..., "db")` below — declaring it (final-review item
-        // 4) makes those calls exercise the real A4 unknown-slot validation
-        // path instead of skipping it via the permissive "declares no
-        // slots" gap.
+        // `refresh_slot(..., "db")` below — declaring it makes those calls
+        // exercise the real unknown-slot validation path against a genuine
+        // declared slot name, rather than a fixture that never declares
+        // any slot at all.
         fn declares_credential_slots() -> bool {
             true
         }

@@ -505,7 +505,7 @@ async fn release_isolates_a_panicking_author_teardown() {
         err.to_string().contains("panicked"),
         "release() must surface the isolated-panic message, got: {err}"
     );
-    // A2: a teardown panic is an author-hook bug (a broken `destroy`/
+    // Permanent, not transient: a teardown panic is an author-hook bug (a broken `destroy`/
     // `on_release` impl), not a condition that resolves with time or
     // backoff — retrying the SAME instance's teardown would panic again
     // deterministically. Must classify Permanent (not retryable), matching
@@ -1206,4 +1206,71 @@ async fn release_then_drop_emits_exactly_one_released_event() {
         )
         .await
         .expect("graceful_shutdown must succeed");
+}
+
+// ---------------------------------------------------------------------------
+// Fail-closed slot-name validation on a no-slot resource
+// ---------------------------------------------------------------------------
+
+/// A `no_credential_slots!` resource (`declares_credential_slots() == false`,
+/// `credential_slot_names() == &[]`) has no slot to rotate, so
+/// `refresh_slot`/`taint_slot` must reject EVERY slot name — not just names
+/// that happen to collide with some other resource's declared slots. Before
+/// the fail-closed fix, `accepts_credential_slot_name` short-circuited to
+/// `true` whenever `declares_credential_slots()` was `false`, so a typo'd
+/// slot name on a no-slot resource silently reached `taint_slot`'s
+/// destructive taint + revoke-epoch bump instead of being rejected.
+#[tokio::test]
+async fn refresh_and_taint_slot_reject_any_name_on_a_no_slot_resource() {
+    let resource = PoolTestResource::new();
+    let config = nebula_resource::topology::pooled::config::Config {
+        max_size: 2,
+        ..Default::default()
+    };
+    let pool = Pooled::<PoolTestResource>::new(config, 1);
+    let mgr = Manager::new();
+    register_pool(&mgr, resource.clone(), test_config(), pool);
+    let ctx = test_ctx();
+
+    // Seed one idle entry so "the pool still serves" is an observable fact,
+    // not just an absence of a panic.
+    let handle = mgr
+        .acquire_pooled::<PoolTestResource>(&ctx, &AcquireOptions::default())
+        .await
+        .expect("initial acquire must succeed");
+    drop(handle);
+    wait_idle_count::<PoolTestResource>(&mgr, 1).await;
+
+    let key = resource_key!("test-pool");
+
+    let refresh_err = mgr
+        .refresh_slot(&key, ScopeLevel::Global, "totally-made-up")
+        .await
+        .expect_err("a no-slot resource must reject every slot name");
+    assert!(
+        refresh_err.to_string().contains("unknown credential slot"),
+        "expected an unknown-credential-slot rejection, got: {refresh_err}"
+    );
+
+    let taint_err = mgr
+        .taint_slot(&key, ScopeLevel::Global, "totally-made-up")
+        .expect_err("taint_slot must also reject every slot name on a no-slot resource");
+    assert!(
+        taint_err.to_string().contains("unknown credential slot"),
+        "expected an unknown-credential-slot rejection, got: {taint_err}"
+    );
+
+    // No taint happened: the pool's idle entry must still be there, and a
+    // fresh acquire must still succeed — the rejected slot-name calls left
+    // the resource completely untouched.
+    assert_eq!(
+        idle_count::<PoolTestResource>(&mgr).await,
+        1,
+        "a rejected slot-name call must not taint or otherwise disturb the pool"
+    );
+    let final_handle = mgr
+        .acquire_pooled::<PoolTestResource>(&ctx, &AcquireOptions::default())
+        .await
+        .expect("the pool must still serve acquires after the rejected slot-name calls");
+    drop(final_handle);
 }

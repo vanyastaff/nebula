@@ -157,12 +157,15 @@ impl RecoveryTicket {
     /// Marks the recovery as transiently failed with exponential backoff.
     ///
     /// The imposed delay is the jittered nominal backoff — uniform in
-    /// `[backoff/2, backoff]` (internal `apply_equal_jitter`), so a fleet of
-    /// gates failing at the same instant does not re-line up on the same
-    /// retry tick.
+    /// `[backoff/2, backoff]` (equal jitter, spread `0.5`, internal
+    /// `EQUAL_JITTER_SPREAD`), so a fleet of gates failing at the same
+    /// instant does not re-line up on the same retry tick.
     pub fn fail_transient(mut self, message: impl Into<String>) {
         self.consumed = true;
-        let backoff = apply_equal_jitter(compute_backoff(self.gate.base_backoff, self.attempt));
+        let backoff = crate::jitter::apply_jitter(
+            compute_backoff(self.gate.base_backoff, self.attempt),
+            EQUAL_JITTER_SPREAD,
+        );
         let next = Arc::new(GateState::Failed {
             message: message.into(),
             retry_at: Instant::now() + backoff,
@@ -195,7 +198,10 @@ impl RecoveryTicket {
 impl Drop for RecoveryTicket {
     fn drop(&mut self) {
         if !self.consumed {
-            let backoff = apply_equal_jitter(compute_backoff(self.gate.base_backoff, self.attempt));
+            let backoff = crate::jitter::apply_jitter(
+                compute_backoff(self.gate.base_backoff, self.attempt),
+                EQUAL_JITTER_SPREAD,
+            );
             let next = Arc::new(GateState::Failed {
                 message: "recovery ticket dropped without resolution".into(),
                 retry_at: Instant::now() + backoff,
@@ -369,9 +375,9 @@ impl RecoveryGate {
     /// [`ResourceEvent::RetryAttempt`] without reimplementing the math.
     ///
     /// The delay actually imposed on failure is this value with equal
-    /// jitter applied (uniform in `[nominal/2, nominal]` — see the internal
-    /// `apply_equal_jitter`), so the published figure is the upper bound
-    /// of the real retry window.
+    /// jitter applied (uniform in `[nominal/2, nominal]` — internal
+    /// `EQUAL_JITTER_SPREAD` via `crate::jitter::apply_jitter`), so the
+    /// published figure is the upper bound of the real retry window.
     pub fn backoff_for_attempt(&self, attempt: u32) -> Duration {
         compute_backoff(self.inner.base_backoff, attempt)
     }
@@ -551,32 +557,23 @@ fn compute_backoff(base: Duration, attempt: u32) -> Duration {
     Duration::from_millis(backoff_millis.min(max_millis))
 }
 
-/// Spread of [`apply_equal_jitter`]'s band below `nominal` — `0.5` means
-/// `[nominal/2, nominal]` ("equal jitter"), the classic AWS retry-jitter
-/// spread. See [`crate::jitter::apply_jitter`] for the shared algorithm and
-/// its other consumer (the pool reaper's smaller `max_lifetime` attenuation,
-/// C3), which is *why* the spread is a parameter there rather than
-/// hardcoded here.
-const EQUAL_JITTER_SPREAD: f64 = 0.5;
-
-/// Spreads a nominal backoff uniformly over `[nominal/2, nominal]`
-/// ("equal jitter").
+/// Spread of the equal-jitter band below `nominal`, passed to
+/// [`crate::jitter::apply_jitter`] at every call site in this module —
+/// `0.5` means `[nominal/2, nominal]` ("equal jitter"), the classic AWS
+/// retry-jitter spread.
 ///
 /// Without jitter, a fleet of gates that failed at the same instant (one
 /// dead backend behind many resources, a cold-start stampede) all expire
 /// their `retry_at` on the same tick and re-probe in lockstep — the exact
 /// herd the gate exists to prevent, just phase-shifted. Keeping at least
 /// half the nominal delay preserves the exponential-escalation contract
-/// (`retry_at` never lands before `nominal/2`, never after `nominal`, so
-/// the [`MAX_BACKOFF`] cap still holds).
-///
-/// Thin wrapper over the shared [`crate::jitter::apply_jitter`] helper (also
-/// used by the pool reaper's `max_lifetime` attenuation, C3, at a much
-/// smaller spread) — see that function for the entropy source and the
-/// zero-nominal edge case.
-fn apply_equal_jitter(nominal: Duration) -> Duration {
-    crate::jitter::apply_jitter(nominal, EQUAL_JITTER_SPREAD)
-}
+/// (`retry_at` never lands before `nominal/2`, never after `nominal`, so the
+/// [`MAX_BACKOFF`] cap still holds). See [`crate::jitter::apply_jitter`] for
+/// the shared algorithm, entropy source, and zero-nominal edge case — its
+/// other consumer is the pool reaper's much smaller `max_lifetime`
+/// attenuation, which is *why* the spread is a parameter there rather than
+/// hardcoded into the helper.
+const EQUAL_JITTER_SPREAD: f64 = 0.5;
 
 #[cfg(test)]
 mod tests {
@@ -681,7 +678,7 @@ mod tests {
     fn equal_jitter_stays_within_half_to_nominal() {
         let nominal = Duration::from_secs(10);
         for _ in 0..1_000 {
-            let jittered = apply_equal_jitter(nominal);
+            let jittered = crate::jitter::apply_jitter(nominal, EQUAL_JITTER_SPREAD);
             assert!(
                 jittered >= nominal / 2 && jittered <= nominal,
                 "equal jitter must spread over [nominal/2, nominal], got {jittered:?}"
@@ -693,10 +690,13 @@ mod tests {
     fn equal_jitter_zero_backoff_stays_zero() {
         // Zero-backoff test configs rely on retry_at being immediately
         // expired — jitter must not resurrect a delay from nothing.
-        assert_eq!(apply_equal_jitter(Duration::ZERO), Duration::ZERO);
+        assert_eq!(
+            crate::jitter::apply_jitter(Duration::ZERO, EQUAL_JITTER_SPREAD),
+            Duration::ZERO
+        );
         // Sub-2ns backoff has a zero half; passes through unjittered.
         assert_eq!(
-            apply_equal_jitter(Duration::from_nanos(1)),
+            crate::jitter::apply_jitter(Duration::from_nanos(1), EQUAL_JITTER_SPREAD),
             Duration::from_nanos(1)
         );
     }

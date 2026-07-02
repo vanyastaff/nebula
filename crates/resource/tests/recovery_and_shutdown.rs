@@ -732,7 +732,7 @@ async fn recovery_gate_blocks_acquire_when_in_progress() {
 }
 
 // ---------------------------------------------------------------------------
-// C6: GateState point-in-time read via `Manager::health_check`
+// GateState point-in-time read via `Manager::health_check`
 // ---------------------------------------------------------------------------
 
 /// `ResourceHealthSnapshot::gate_state` is the point-in-time dashboard read

@@ -610,7 +610,7 @@ async fn typed_lookup_skips_sibling_type_and_falls_through_to_global() {
         .expect("sibling type must still resolve its own org-scope row");
 }
 
-/// A6: `Manager::remove_for` removes exactly the one resolved row it names —
+/// `Manager::remove_for` removes exactly the one resolved row it names —
 /// a multi-tenant sibling under the same `(key, scope)` but a DIFFERENT
 /// resolved slot identity must survive untouched. This is the narrow
 /// counterpart to `Manager::remove`'s whole-key blast radius.

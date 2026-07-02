@@ -381,7 +381,7 @@ impl CheckCost {
 // object-safe regardless — `fn key() -> ResourceKey` has no receiver — so no
 // `dyn Provider` usage is foreclosed by this.
 //
-// `HasCredentialSlots` supertrait (B2'): every `Provider` must state its
+// `HasCredentialSlots` supertrait: every `Provider` must state its
 // credential-slot posture, either via `#[derive(Resource)]` (which emits the
 // real fold) or the `no_credential_slots!` macro for slot-less types. This
 // folds what used to be two independently-implementable traits (a resource
@@ -463,12 +463,11 @@ pub trait Provider: HasCredentialSlots + Send + Sync + Sized + 'static {
     ///
     /// **Invariant** per slot model §Seam: implementer must handle every
     /// declared credential slot name. `slot_name` is validated before this
-    /// hook is ever dispatched (A4): `Manager::refresh_slot` /
-    /// `taint_slot` reject a slot name that does not match one of
+    /// hook is ever dispatched: `Manager::refresh_slot` / `taint_slot`
+    /// reject a slot name that does not match one of
     /// [`HasCredentialSlots::credential_slot_names`] with a typed
     /// [`Error::unknown_credential_slot`](crate::Error::unknown_credential_slot)
-    /// — this hook never observes an undeclared slot for a type that
-    /// declares its slots.
+    /// — this hook never observes an undeclared slot.
     ///
     /// Cancellation safety: implementations MUST be cancel-safe — if
     /// the returned future is dropped mid-await, the resource MUST
@@ -520,11 +519,12 @@ pub trait Provider: HasCredentialSlots + Send + Sync + Sized + 'static {
     ///
     /// The framework also calls this from its background maintenance probe
     /// (spaced by [`check_cost`](Self::check_cost)). The idle lock is **NOT**
-    /// held while `check` runs (A1'): the probe briefly locks the idle queue
+    /// held while `check` runs: the probe briefly locks the idle queue
     /// only to drain it, runs every check concurrently outside that lock,
     /// then returns each survivor through the framework's epoch-fenced
     /// return path (re-checking the revoke epoch under the re-taken lock —
-    /// a slot revoked mid-probe is destroyed, never silently re-admitted). A
+    /// an entry whose credential was revoked mid-probe is destroyed, never
+    /// silently re-admitted). A
     /// `check` impl still MUST NOT re-enter the resource manager for the
     /// same resource (acquire / return through a captured `Manager`
     /// handle): this is a **policy** boundary now (an author hook must stay
@@ -680,7 +680,7 @@ pub trait HasCredentialSlots {
     /// which is `0` both for a slot-less resource and for a declared-but-unbound
     /// slot and so cannot answer this at the type level. The derive emits `true`
     /// when the struct has at least one `#[credential]` field. **Required, no
-    /// default (B2'):** a slot-less hand-written impl must say `false`
+    /// default:** a slot-less hand-written impl must say `false`
     /// explicitly — use [`no_credential_slots!`](crate::no_credential_slots) for
     /// the honest one-line zero impl rather than silently inheriting a default,
     /// so a resource can never implement [`Provider`] without having stated its
@@ -689,8 +689,8 @@ pub trait HasCredentialSlots {
     /// foolproofing Tier-3).
     fn declares_credential_slots() -> bool;
 
-    /// Names of every declared `#[credential]` slot field (A4 unknown-slot
-    /// validation).
+    /// Names of every declared `#[credential]` slot field, for unknown-slot
+    /// validation.
     ///
     /// `#[derive(Resource)]` emits the real list — the `key = "..."` (or
     /// field name) of every `#[credential]` field, in declaration order.
@@ -698,19 +698,15 @@ pub trait HasCredentialSlots {
     ///
     /// [`Manager::refresh_slot`](crate::Manager::refresh_slot) /
     /// [`taint_slot`](crate::Manager::taint_slot) (and their `_for_identity`
-    /// / `revoke_slot*` counterparts) validate an incoming slot-name
-    /// argument against this list **only when
-    /// [`declares_credential_slots`](Self::declares_credential_slots) is
-    /// `true`** — a type that declares no credential slots at all has no
-    /// declared-slot data to validate against, so any slot name still
-    /// reaches the dispatch hook unchecked (the historical behavior, kept
-    /// for hand-written `HasCredentialSlots` impls that predate this check
-    /// and never named their slots here). A type that *does* declare
-    /// credential slots must also declare their names here — leaving this
-    /// at the empty default while overriding
+    /// / `revoke_slot*` counterparts) validate every incoming slot-name
+    /// argument against this list, unconditionally — a slot-less type (empty
+    /// list, `declares_credential_slots() -> false`) therefore rejects every
+    /// slot name with [`Error::unknown_credential_slot`](crate::Error::unknown_credential_slot);
+    /// there is no name that reaches the dispatch hook unchecked. A type
+    /// that declares credential slots must declare their names here too —
+    /// leaving this at the empty default while overriding
     /// `declares_credential_slots() -> true` makes every rotation/revoke
-    /// call against it fail closed with
-    /// [`Error::unknown_credential_slot`](crate::Error::unknown_credential_slot).
+    /// call against it fail closed the same way.
     fn credential_slot_names() -> &'static [&'static str] {
         &[]
     }
@@ -719,12 +715,18 @@ pub trait HasCredentialSlots {
 /// Emits the honest zero [`HasCredentialSlots`] impl for a resource with no
 /// `#[credential]` slot fields.
 ///
-/// `Provider` requires `HasCredentialSlots` (B2') and
+/// `Provider` requires `HasCredentialSlots`, and
 /// [`declares_credential_slots`](HasCredentialSlots::declares_credential_slots)
 /// has no default — every hand-written `impl Provider` must state its
 /// credential-slot posture. `#[derive(Resource)]` does this for you when the
 /// struct has `#[credential]` fields; for a resource with none, call this
-/// macro once instead of hand-rolling the same three-line impl:
+/// macro once instead of hand-rolling the same three-line impl. Because
+/// [`credential_slot_names`](HasCredentialSlots::credential_slot_names) also
+/// defaults to empty, every rotation/revoke entry point on the resulting
+/// type rejects every slot name with
+/// [`Error::unknown_credential_slot`](crate::Error::unknown_credential_slot) —
+/// there is no slot to rotate, so there is no name that should ever be
+/// accepted:
 ///
 /// ```
 /// use nebula_resource::no_credential_slots;

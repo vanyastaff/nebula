@@ -15,7 +15,7 @@
 //! crash-propagating author hook" unrepresentable rather than a hazard each new
 //! call site must remember to guard.
 //!
-//! **The panic isolation half of this contract is unwind-only (A8).**
+//! **The panic isolation half of this contract is unwind-only.**
 //! `catch_unwind` catches nothing under `panic = "abort"` — the process
 //! aborts immediately on panic, before unwinding (and therefore
 //! `catch_unwind`) ever runs. A build under that profile (the workspace
@@ -49,7 +49,7 @@ pub(crate) const MAX_TEARDOWN_CEILING: Duration = Duration::from_mins(2);
 
 /// Catch-all backstop for the **rotation-dispatch** path (`Manager::refresh_slot`
 /// → `Topology::dispatch_credential_hook`) — the same two-tier shape as
-/// [`MAX_TEARDOWN_CEILING`], sized identically (A3').
+/// [`MAX_TEARDOWN_CEILING`], sized identically.
 ///
 /// The per-slot rotation hook itself (`on_credential_refresh` /
 /// `on_credential_revoke`) is bounded *individually* by

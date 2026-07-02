@@ -30,7 +30,7 @@ use nebula_resource::{
     AcquireOptions, Manager, Provider, RegisterOptions, RegistrationSpec, ResourceConfig,
     ResourceContext, SlotIdentity,
     error::Error,
-    resource::ResourceMetadata,
+    resource::{HasCredentialSlots, ResourceMetadata},
     topology::{Resident, pooled::BrokenCheck},
 };
 use tokio_util::sync::CancellationToken;
@@ -89,7 +89,25 @@ impl Provider for PoolRes {
     }
 }
 
-nebula_resource::no_credential_slots!(PoolRes);
+// A real declared "db" credential slot — every rotation scenario in this
+// file drives `refresh_slot`/`taint_slot`/`revoke_slot(..., "db")` against
+// this resource, so `no_credential_slots!` would misrepresent it as
+// slot-less and (fail-closed) reject every one of those calls.
+impl HasCredentialSlots for PoolRes {
+    fn credential_slot_epoch(&self) -> u64 {
+        // This file's identity-pinned routing is proven via the distinct
+        // per-tenant `create_counter` witness, not the epoch fold.
+        0
+    }
+
+    fn declares_credential_slots() -> bool {
+        true
+    }
+
+    fn credential_slot_names() -> &'static [&'static str] {
+        &["db"]
+    }
+}
 
 impl PoolProvider for PoolRes {
     fn is_broken(&self, _runtime: &u64) -> BrokenCheck {
@@ -245,7 +263,26 @@ impl Provider for ResRes {
     }
 }
 
-nebula_resource::no_credential_slots!(ResRes);
+// A real declared "db" credential slot — `refresh_slot_for_identity` /
+// `revoke_slot_for_identity(..., "db")` below drive `on_credential_refresh`
+// / `on_credential_revoke`, so `no_credential_slots!` would misrepresent
+// this fixture as slot-less and (fail-closed) reject every one of those
+// calls.
+impl HasCredentialSlots for ResRes {
+    fn credential_slot_epoch(&self) -> u64 {
+        // This file's identity-pinned routing is proven via the
+        // `refresh_saw`/`revoke_saw` id-tag witnesses, not the epoch fold.
+        0
+    }
+
+    fn declares_credential_slots() -> bool {
+        true
+    }
+
+    fn credential_slot_names() -> &'static [&'static str] {
+        &["db"]
+    }
+}
 
 #[async_trait::async_trait]
 impl ResidentProvider for ResRes {

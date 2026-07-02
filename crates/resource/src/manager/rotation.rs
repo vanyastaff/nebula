@@ -218,18 +218,17 @@ impl Manager {
         let started = Instant::now();
         tracing::Span::current().record("topology", managed.topology_tag().as_str());
 
-        // A4 unknown-slot validation: reject a slot name the resource type
-        // does not declare, before the author's `on_credential_refresh`
-        // hook ever dispatches. See
-        // `ManagedHandle::accepts_credential_slot_name` for the permissive
-        // case (a type that declares no credential slots at all is not
-        // validated — nothing to check against).
+        // Unknown-slot validation: reject a slot name the resource type does
+        // not declare, before the author's `on_credential_refresh` hook ever
+        // dispatches. See `ManagedHandle::accepts_credential_slot_name` — a
+        // type that declares no credential slots at all rejects every slot
+        // name (fail closed: nothing to rotate).
         if !managed.accepts_credential_slot_name(slot) {
             return Err(Error::unknown_credential_slot(key.clone(), slot));
         }
 
         // Outer framework backstop over the WHOLE dispatch (topology
-        // lock-wait + the already inner-bounded hook(s) — A3' two-tier
+        // lock-wait + the already inner-bounded hook(s) — two-tier
         // shape, mirroring `MAX_TEARDOWN_CEILING`). No caller threads a
         // refresh budget here, so this constant is the only backstop; it
         // must sit above the per-hook inner ceiling
@@ -409,8 +408,9 @@ impl Manager {
     ///
     /// # Errors
     ///
-    /// [`Error::unknown_credential_slot`] (A4) if `slot` does not match a
-    /// credential slot the resolved row's resource type declares. Checked
+    /// [`Error::unknown_credential_slot`] if `slot` does not match a
+    /// credential slot the resolved row's resource type declares (a
+    /// no-slot type rejects every slot name — fail closed). Checked
     /// *before* the taint / epoch bump, so a rejected call leaves the row
     /// untouched — `revoke_slot`'s taint stays all-or-nothing.
     fn taint_now(
@@ -419,9 +419,9 @@ impl Manager {
         managed: Arc<dyn crate::registry::ManagedHandle>,
     ) -> Result<TaintedSlot, Error> {
         tracing::Span::current().record("topology", managed.topology_tag().as_str());
-        // A4 unknown-slot validation, checked before any mutation: a
-        // rejected slot name must not taint or bump the epoch — the row
-        // stays exactly as it was.
+        // Unknown-slot validation, checked before any mutation: a rejected
+        // slot name must not taint or bump the epoch — the row stays
+        // exactly as it was.
         if !managed.accepts_credential_slot_name(slot) {
             return Err(Error::unknown_credential_slot(key.clone(), slot));
         }
@@ -565,7 +565,7 @@ impl Manager {
         //    A timed-out drain (above) has *already* consumed the metric
         //    outcome, so a hook that then also faults does not double-record.
         //
-        //    A3' two-tier note: the per-slot hook(s) inside
+        //    Two-tier note: the per-slot hook(s) inside
         //    `dispatch_on_revoke` are ALSO individually bounded by the
         //    fixed `DEFAULT_AUTHOR_HOOK_CEILING`, applied INSIDE the
         //    topology dispatch after its own internal lock is held (see

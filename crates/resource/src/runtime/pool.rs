@@ -54,7 +54,7 @@ const ERR_CREATE_SEMAPHORE_TIMEOUT: &str =
 /// The `resource.create()` call exceeded `create_timeout`.
 const ERR_CREATE_TIMED_OUT: &str = "pool: create timed out";
 
-/// Max-lifetime jitter spread (C3): each entry's own eviction threshold is
+/// Max-lifetime jitter spread: each entry's own eviction threshold is
 /// drawn once, at creation, from `[0.95 * max_lifetime, max_lifetime]`.
 ///
 /// This is HikariCP's `maxLifetime` attenuation band, deliberately much
@@ -88,7 +88,7 @@ pub struct PoolEntry<R: Provider> {
     /// When this entry was last returned to the idle queue.
     /// `None` for freshly created entries that have never been idle.
     returned_at: Option<Instant>,
-    /// This entry's own max-lifetime threshold (C3), computed **once** at
+    /// This entry's own max-lifetime threshold, computed **once** at
     /// creation via [`apply_jitter`](crate::jitter::apply_jitter) over
     /// `config.max_lifetime` — HikariCP-style attenuation so a warmup burst
     /// of entries created in the same instant does not all reach
@@ -313,7 +313,7 @@ impl<R: Provider> Pooled<R> {
             return true;
         }
         // Max lifetime exceeded — compared against this entry's own jittered
-        // threshold (C3), stamped once at creation, not the raw config value.
+        // threshold, stamped once at creation, not the raw config value.
         if entry
             .jittered_max_lifetime
             .is_some_and(|max| now.duration_since(entry.metrics.created_at) > max)
@@ -553,7 +553,7 @@ where
         // reopens the window for an instance to be checked out mid-rotation and
         // miss its hook (credential isolation).
         //
-        // A3' two-tier ceiling: each entry's hook is individually bounded by
+        // Two-tier hook ceiling: each entry's hook is individually bounded by
         // `DEFAULT_AUTHOR_HOOK_CEILING` below (the inner tier, timing only the
         // hook body — the idle lock is already held by the time it starts).
         // `Manager::refresh_slot` / `drain_and_revoke` additionally wrap the
@@ -700,7 +700,7 @@ mod tests {
         fail_check: Arc<AtomicBool>,
         recycle_drop: Arc<AtomicBool>,
         revoke_calls: Arc<AtomicU64>,
-        /// A3' panic-isolation fixture: `on_credential_revoke` panics when
+        /// Panic-isolation fixture: `on_credential_revoke` panics when
         /// called with this instance id (`None` = never panics).
         panic_revoke_for: Arc<std::sync::Mutex<Option<u64>>>,
     }
@@ -1011,7 +1011,7 @@ mod tests {
         assert!(topo.idle_evictable(&entry));
     }
 
-    // ── C3: max_lifetime jitter ─────────────────────────────────────────────
+    // ── max_lifetime jitter ──────────────────────────────────────────────────
 
     /// Each created entry's jittered max-lifetime threshold stays within
     /// HikariCP's `[0.95*L, L]` attenuation band — proportional to the
@@ -1200,8 +1200,8 @@ mod tests {
         );
     }
 
-    /// A3': each idle entry's credential hook is bounded + panic-isolated
-    /// *individually* now, not only by the caller's single outer guard. A
+    /// Each idle entry's credential hook is bounded + panic-isolated
+    /// *individually*, not only by the caller's single outer guard. A
     /// panicking hook on one entry must not abort the fan-out before the
     /// remaining entries get their own hook attempt — before this fix the
     /// whole `for entry in &*idle` loop had no per-entry isolation, so an
@@ -1243,7 +1243,7 @@ mod tests {
             1,
             "the SECOND idle entry must still receive its revoke hook — the \
              panic on the first entry must not abort the whole fan-out \
-             (per-entry isolation, A3')"
+             (per-entry isolation)"
         );
     }
 

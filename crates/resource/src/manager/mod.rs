@@ -419,7 +419,7 @@ pub struct Manager {
     pub(super) shutting_down: AtomicBool,
     /// Optional lifecycle handle for coordinated cancellation (spec 08).
     pub(super) lifecycle: Option<LayerLifecycle>,
-    /// Manager-wide default acquire-slow-log threshold (C2). See
+    /// Manager-wide default acquire-slow-log threshold. See
     /// [`ManagerConfig::acquire_slow_threshold`] for the WARN contract;
     /// [`AcquireOptions::acquire_slow_threshold`](crate::options::AcquireOptions::acquire_slow_threshold)
     /// overrides this per call.
@@ -483,8 +483,8 @@ impl Manager {
         }
     }
 
-    /// One-time, process-wide honesty check for `panic = "abort"` builds
-    /// (A8). Every author-hook dispatch in this crate
+    /// One-time, process-wide honesty check for `panic = "abort"` builds.
+    /// Every author-hook dispatch in this crate
     /// ([`guard_author_hook`](crate::hook_guard::guard_author_hook)) bounds a
     /// `Provider`/`Topology` hook with a timeout *and* isolates a panic via
     /// `catch_unwind` — but `catch_unwind` cannot catch anything under
@@ -713,8 +713,8 @@ impl Manager {
     }
 
     /// Records acquire success/failure in aggregate metrics, the acquire-wait
-    /// histogram (C1), and emits the corresponding [`ResourceEvent`]; also
-    /// checks the acquire-slow-log threshold (C2).
+    /// histogram, and emits the corresponding [`ResourceEvent`]; also checks
+    /// the acquire-slow-log threshold.
     fn record_acquire_result<R: Provider>(
         &self,
         result: &Result<crate::guard::ResourceGuard<R>, Error>,
@@ -758,7 +758,7 @@ impl Manager {
             },
         }
 
-        // C1: acquire wait-time histogram + waited/timed-out counters. A
+        // Acquire wait-time histogram + waited/timed-out counters. A
         // deadline is "timed out" when it had already elapsed by the time
         // this (failed) acquire completed — mirrors sqlx/bb8's notion of an
         // acquire timeout, independent of which internal error path produced
@@ -769,7 +769,7 @@ impl Manager {
             m.record_acquire_wait(elapsed, timed_out);
         }
 
-        // C2: acquire-slow-log threshold — at most one WARN per acquire,
+        // Acquire-slow-log threshold — at most one WARN per acquire,
         // checked once here at completion. `AcquireOptions` overrides the
         // manager-wide default.
         if let Some(threshold) = options
