@@ -179,6 +179,17 @@ impl Manager {
     ///     .expect("graceful shutdown should succeed");
     /// # }
     /// ```
+    ///
+    /// # Cancel safety
+    ///
+    /// Cancel safe with respect to correctness: the shutdown flag and the
+    /// cancellation token are set synchronously before the first await, so
+    /// dropping this future still leaves new acquires permanently rejected
+    /// and the release-queue workers still drain and exit on their own. It
+    /// is **not** idempotent-on-cancel: a drop mid-shutdown skips the
+    /// registry clear and the final [`ShutdownReport`], and a retry
+    /// immediately returns `AlreadyShuttingDown` — treat shutdown as
+    /// one-shot and do not race it against a timeout you intend to retry.
     pub async fn graceful_shutdown(
         &self,
         config: ShutdownConfig,

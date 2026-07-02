@@ -155,9 +155,14 @@ impl RecoveryTicket {
     }
 
     /// Marks the recovery as transiently failed with exponential backoff.
+    ///
+    /// The imposed delay is the jittered nominal backoff — uniform in
+    /// `[backoff/2, backoff]` (internal `apply_equal_jitter`), so a fleet of
+    /// gates failing at the same instant does not re-line up on the same
+    /// retry tick.
     pub fn fail_transient(mut self, message: impl Into<String>) {
         self.consumed = true;
-        let backoff = compute_backoff(self.gate.base_backoff, self.attempt);
+        let backoff = apply_equal_jitter(compute_backoff(self.gate.base_backoff, self.attempt));
         let next = Arc::new(GateState::Failed {
             message: message.into(),
             retry_at: Instant::now() + backoff,
@@ -190,7 +195,7 @@ impl RecoveryTicket {
 impl Drop for RecoveryTicket {
     fn drop(&mut self) {
         if !self.consumed {
-            let backoff = compute_backoff(self.gate.base_backoff, self.attempt);
+            let backoff = apply_equal_jitter(compute_backoff(self.gate.base_backoff, self.attempt));
             let next = Arc::new(GateState::Failed {
                 message: "recovery ticket dropped without resolution".into(),
                 retry_at: Instant::now() + backoff,
@@ -253,6 +258,13 @@ impl RecoveryWaiter {
     /// Switching any notifier to `notify_one`, or loading the state before
     /// constructing the `Notified` future, would reintroduce a lost-wakeup
     /// window; the `#[cfg(test)]` correctness-pin below guards that ordering.
+    ///
+    /// # Cancel safety
+    ///
+    /// This method is cancel safe. It performs no mutation — it only
+    /// observes gate state and waits on a notification. If the future is
+    /// dropped, no wakeup or state transition is lost; a subsequent call
+    /// re-observes the gate correctly.
     pub async fn wait(&self) -> GateState {
         loop {
             // Register notification BEFORE checking state to avoid missing
@@ -350,11 +362,16 @@ impl RecoveryGate {
         self.inner.base_backoff
     }
 
-    /// Returns the backoff that would be imposed if the attempt with the
-    /// given 1-based index were to fail transiently. Mirrors the internal
-    /// `compute_backoff` formula (`base * 2^(attempt - 1)`, capped at 5
-    /// minutes) so callers can publish a truthful expected delay in
+    /// Returns the **nominal** backoff that would be imposed if the attempt
+    /// with the given 1-based index were to fail transiently. Mirrors the
+    /// internal `compute_backoff` formula (`base * 2^(attempt - 1)`, capped
+    /// at 5 minutes) so callers can publish a truthful expected delay in
     /// [`ResourceEvent::RetryAttempt`] without reimplementing the math.
+    ///
+    /// The delay actually imposed on failure is this value with equal
+    /// jitter applied (uniform in `[nominal/2, nominal]` — see the internal
+    /// `apply_equal_jitter`), so the published figure is the upper bound
+    /// of the real retry window.
     pub fn backoff_for_attempt(&self, attempt: u32) -> Duration {
         compute_backoff(self.inner.base_backoff, attempt)
     }
@@ -534,6 +551,37 @@ fn compute_backoff(base: Duration, attempt: u32) -> Duration {
     Duration::from_millis(backoff_millis.min(max_millis))
 }
 
+/// Spreads a nominal backoff uniformly over `[nominal/2, nominal]`
+/// ("equal jitter").
+///
+/// Without jitter, a fleet of gates that failed at the same instant (one
+/// dead backend behind many resources, a cold-start stampede) all expire
+/// their `retry_at` on the same tick and re-probe in lockstep — the exact
+/// herd the gate exists to prevent, just phase-shifted. Keeping at least
+/// half the nominal delay preserves the exponential-escalation contract
+/// (`retry_at` never lands before `nominal/2`, never after `nominal`, so
+/// the [`MAX_BACKOFF`] cap still holds).
+///
+/// Entropy is [`std::hash::RandomState`] — per-instance random seeding from
+/// std, deliberately no `rand` dependency for one draw per *failed*
+/// recovery attempt (cold path). A zero nominal backoff stays zero, so
+/// zero-backoff tests remain deterministic.
+fn apply_equal_jitter(nominal: Duration) -> Duration {
+    use std::hash::{BuildHasher, RandomState};
+
+    let half_nanos = (nominal / 2).as_nanos() as u64;
+    if half_nanos == 0 {
+        return nominal;
+    }
+    // Uniform-enough draw in [0, half]: SipHash output of a fresh
+    // randomly-seeded RandomState. Modulo bias over a 64-bit draw is
+    // negligible for a retry spread.
+    let draw_nanos = RandomState::new().hash_one(0u64) % (half_nanos + 1);
+    // `draw <= half <= nominal`, so this never saturates; `saturating_sub`
+    // states the no-underflow intent without a panic path.
+    nominal.saturating_sub(Duration::from_nanos(draw_nanos))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -631,6 +679,51 @@ mod tests {
         let base = Duration::from_mins(1);
         // 60 * 2^4 = 960s > 300s cap
         assert_eq!(compute_backoff(base, 5), MAX_BACKOFF);
+    }
+
+    #[test]
+    fn equal_jitter_stays_within_half_to_nominal() {
+        let nominal = Duration::from_secs(10);
+        for _ in 0..1_000 {
+            let jittered = apply_equal_jitter(nominal);
+            assert!(
+                jittered >= nominal / 2 && jittered <= nominal,
+                "equal jitter must spread over [nominal/2, nominal], got {jittered:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn equal_jitter_zero_backoff_stays_zero() {
+        // Zero-backoff test configs rely on retry_at being immediately
+        // expired — jitter must not resurrect a delay from nothing.
+        assert_eq!(apply_equal_jitter(Duration::ZERO), Duration::ZERO);
+        // Sub-2ns backoff has a zero half; passes through unjittered.
+        assert_eq!(
+            apply_equal_jitter(Duration::from_nanos(1)),
+            Duration::from_nanos(1)
+        );
+    }
+
+    #[test]
+    fn failed_retry_at_lands_within_the_jitter_window() {
+        let gate = RecoveryGate::new(RecoveryGateConfig {
+            max_attempts: 5,
+            base_backoff: Duration::from_secs(8),
+        });
+        let before = Instant::now();
+        let ticket = gate.try_begin().expect("gate starts idle");
+        ticket.fail_transient("probe refused");
+        match gate.state() {
+            GateState::Failed { retry_at, .. } => {
+                let delay = retry_at.duration_since(before);
+                assert!(
+                    delay >= Duration::from_secs(4) && delay <= Duration::from_secs(8),
+                    "attempt 1 delay must land in [nominal/2, nominal] = [4s, 8s], got {delay:?}"
+                );
+            },
+            other => panic!("expected Failed, got: {other:?}"),
+        }
     }
 
     #[test]

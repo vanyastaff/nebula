@@ -35,7 +35,7 @@ use crate::{
     context::ResourceContext,
     error::{Error, ErrorKind},
     resource::Provider,
-    topology::store::InstanceStore,
+    topology::store::{InstanceStore, PoolStrategy},
     topology_tag::TopologyTag,
 };
 
@@ -526,6 +526,20 @@ pub trait Topology<R: Provider>: Send + Sync + 'static {
     /// `ManagedResource::store`. Default `None`.
     fn store_capacity(&self) -> Option<usize> {
         None
+    }
+
+    /// The idle-queue ordering the framework applies to this topology's store
+    /// (see [`PoolStrategy`]): checkout always pops the front; the strategy
+    /// chooses the push side on return. Read once at registration alongside
+    /// [`store_capacity`](Topology::store_capacity).
+    ///
+    /// Only meaningful for topologies whose store can hold more than one idle
+    /// slot (Pooled overrides this with its configured strategy); single-slot
+    /// and permit-only topologies are unaffected by either choice. Default
+    /// [`PoolStrategy::Fifo`] — even wear, the least surprising order for a
+    /// custom topology that never opted in.
+    fn queue_strategy(&self) -> PoolStrategy {
+        PoolStrategy::Fifo
     }
 
     // ── warmup / maintenance (framework-driven over the store) ──────────────

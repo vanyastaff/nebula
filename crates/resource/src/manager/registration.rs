@@ -95,9 +95,11 @@ impl Manager {
         }
 
         // The framework-owned idle store the acquire loop fences. Its capacity
-        // is the topology's (`Pooled`: `max_size`; non-pooling topologies:
-        // `None`, store stays empty). Read before moving `topology` in.
+        // and queue order are the topology's (`Pooled`: `max_size` + the
+        // configured LIFO/FIFO strategy; non-pooling topologies: `None`,
+        // store stays empty). Read before moving `topology` in.
         let store_capacity = <R::Topology as Topology<R>>::store_capacity(&topology);
+        let store_strategy = <R::Topology as Topology<R>>::queue_strategy(&topology);
 
         // Tier-3 foolproofing (ADR-0093): a credentialed *Pooled* resource is
         // safe by default — `PoolProvider::recycle` DISCARDS on release, so the
@@ -121,7 +123,8 @@ impl Manager {
             topology,
             // Framework-owned idle store the acquire loop runs checkout / return
             // / evict against — the real idle queue, not a throwaway sentinel.
-            store: crate::topology::store::InstanceStore::new(store_capacity),
+            store: crate::topology::store::InstanceStore::new(store_capacity)
+                .with_strategy(store_strategy),
             release_queue: Arc::clone(&self.release_queue),
             generation: AtomicU64::new(0),
             status: arc_swap::ArcSwap::from_pointee(crate::state::ResourceStatus::new()),

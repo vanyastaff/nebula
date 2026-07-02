@@ -139,6 +139,15 @@ impl Manager {
     ///
     /// Same as the typed `acquire_*_for_identity` family: not found,
     /// ambiguous, shutdown, taint, topology, and acquire-time failures.
+    ///
+    /// # Cancel safety
+    ///
+    /// This method is cancel safe. Dropping the future at any await point
+    /// releases the topology permit, settles the drain accounting, and
+    /// auto-fails a held recovery-gate probe ticket (its backoff applies).
+    /// An instance in flight between checkout/create and the returned guard
+    /// is destroyed asynchronously via the release queue, never leaked. The
+    /// only effect of cancellation is that no guard is returned.
     pub async fn acquire_any(
         manager: Arc<Self>,
         key: &ResourceKey,
@@ -224,6 +233,15 @@ impl Manager {
     ///   when the resolved slot identity is known; this identity-agnostic
     ///   path stays fail-closed for the no-identity caller.
     /// - Propagates pool-specific acquire errors.
+    ///
+    /// # Cancel safety
+    ///
+    /// This method is cancel safe. Dropping the future at any await point
+    /// releases the topology permit, settles the drain accounting, and
+    /// auto-fails a held recovery-gate probe ticket (its backoff applies).
+    /// An instance in flight between checkout/create and the returned guard
+    /// is destroyed asynchronously via the release queue, never leaked. The
+    /// only effect of cancellation is that no guard is returned.
     pub async fn acquire_pooled<R>(
         &self,
         ctx: &ResourceContext,
@@ -261,6 +279,13 @@ impl Manager {
     /// - [`ErrorKind::Permanent`](crate::error::ErrorKind::Permanent) if the resource is not using
     ///   pool topology.
     /// - Propagates pool-specific acquire errors.
+    ///
+    /// # Cancel safety
+    ///
+    /// Cancel safe — same contract as
+    /// [`acquire_pooled`](Self::acquire_pooled): permit, drain accounting,
+    /// and gate ticket all settle on drop; an in-flight instance is destroyed
+    /// asynchronously via the release queue.
     pub async fn acquire_pooled_for_identity<R>(
         &self,
         ctx: &ResourceContext,
@@ -447,6 +472,13 @@ impl Manager {
     /// - [`ErrorKind::Permanent`](crate::error::ErrorKind::Permanent) if the resource is not using
     ///   resident topology.
     /// - Propagates resident-specific acquire errors.
+    ///
+    /// # Cancel safety
+    ///
+    /// Cancel safe — same contract as
+    /// [`acquire_pooled`](Self::acquire_pooled): permit, drain accounting,
+    /// and gate ticket all settle on drop; an in-flight instance is destroyed
+    /// asynchronously via the release queue.
     pub async fn acquire_resident<R>(
         &self,
         ctx: &ResourceContext,
@@ -485,6 +517,13 @@ impl Manager {
     /// - [`ErrorKind::Permanent`](crate::error::ErrorKind::Permanent) if the resource is not using
     ///   resident topology.
     /// - Propagates resident-specific acquire errors.
+    ///
+    /// # Cancel safety
+    ///
+    /// Cancel safe — same contract as
+    /// [`acquire_pooled`](Self::acquire_pooled): permit, drain accounting,
+    /// and gate ticket all settle on drop; an in-flight instance is destroyed
+    /// asynchronously via the release queue.
     pub async fn acquire_resident_for_identity<R>(
         &self,
         ctx: &ResourceContext,
@@ -546,6 +585,14 @@ impl Manager {
     ///   a multi-tenant pool is warmed per resolved row through the
     ///   slot-identity-pinned acquire path
     ///   ([`acquire_pooled_for_identity`](Self::acquire_pooled_for_identity)).
+    ///
+    /// # Cancel safety
+    ///
+    /// This method is cancel safe. Slots already deposited stay in the pool;
+    /// a slot in flight between creation and its fenced deposit is destroyed
+    /// asynchronously via the release queue (this also covers the internal
+    /// author-hook ceiling timeout). Cancellation only means the caller
+    /// never learns how many slots were admitted.
     pub async fn warmup_pool<R>(&self, ctx: &ResourceContext) -> Result<usize, Error>
     where
         R: PoolProvider

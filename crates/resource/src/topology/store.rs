@@ -19,6 +19,33 @@ use std::{
 use tokio::sync::{Mutex, MutexGuard};
 use tracing::debug;
 
+// ─── PoolStrategy ─────────────────────────────────────────────────────────────
+
+/// Idle-queue ordering strategy: which end of the queue a returned slot
+/// re-enters.
+///
+/// Checkout always pops the **front** ([`InstanceStore::checkout`]); the
+/// strategy chooses the **push side** on return
+/// ([`return_slot`](InstanceStore::return_slot) /
+/// [`deposit_fresh`](InstanceStore::deposit_fresh)):
+///
+/// - [`Lifo`](Self::Lifo) pushes to the front — the most recently returned
+///   slot is reused first, keeping a hot working set warm while the queue's
+///   tail ages out, so an `idle_timeout` reaper can actually shrink the pool
+///   under falling load.
+/// - [`Fifo`](Self::Fifo) pushes to the back — leases rotate through every
+///   idle slot for even wear, keeping the whole pool warm at the cost of
+///   never letting any slot idle long enough to be reaped.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum PoolStrategy {
+    /// Last-in, first-out — reuses the most recently returned instance.
+    #[default]
+    Lifo,
+    /// First-in, first-out — spreads load evenly across instances.
+    Fifo,
+}
+
 // ─── InstanceStore ────────────────────────────────────────────────────────────
 
 /// A timestamped slot entry: the slot value plus the revoke-epoch snapshot
@@ -109,6 +136,9 @@ pub struct InstanceStore<S> {
     /// Maximum number of slots the store will hold idle.
     /// `None` = unbounded (Resident / permit-only topologies).
     capacity: Option<usize>,
+    /// Which end of the idle queue a returned slot re-enters — see
+    /// [`PoolStrategy`]. Checkout always pops the front.
+    strategy: PoolStrategy,
 }
 
 impl<S> Clone for InstanceStore<S> {
@@ -117,6 +147,7 @@ impl<S> Clone for InstanceStore<S> {
             idle: Arc::clone(&self.idle),
             revoke_epoch: Arc::clone(&self.revoke_epoch),
             capacity: self.capacity,
+            strategy: self.strategy,
         }
     }
 }
@@ -125,6 +156,7 @@ impl<S> std::fmt::Debug for InstanceStore<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("InstanceStore")
             .field("capacity", &self.capacity)
+            .field("strategy", &self.strategy)
             .field("revoke_epoch", &self.revoke_epoch.load(Ordering::Acquire))
             .finish()
     }
@@ -135,11 +167,39 @@ impl<S: Send + 'static> InstanceStore<S> {
     ///
     /// Pass `None` for unbounded (e.g., Resident or permit-only topologies);
     /// pass `Some(n)` for Pooled-like topologies that cap the idle queue.
+    /// The idle queue defaults to FIFO ordering — see
+    /// [`with_strategy`](Self::with_strategy).
     pub fn new(capacity: Option<usize>) -> Self {
         Self {
             idle: Arc::new(Mutex::new(VecDeque::new())),
             revoke_epoch: Arc::new(AtomicU64::new(0)),
             capacity,
+            strategy: PoolStrategy::Fifo,
+        }
+    }
+
+    /// Sets the idle-queue ordering strategy (see [`PoolStrategy`]).
+    ///
+    /// Ordering only matters when the store can hold more than one idle slot
+    /// (Pooled); single-slot and permit-only topologies are unaffected by
+    /// either choice.
+    #[must_use]
+    pub fn with_strategy(mut self, strategy: PoolStrategy) -> Self {
+        self.strategy = strategy;
+        self
+    }
+
+    /// The configured idle-queue ordering strategy.
+    pub fn strategy(&self) -> PoolStrategy {
+        self.strategy
+    }
+
+    /// Enqueues on the strategy's push side: back for FIFO (even wear),
+    /// front for LIFO (hot-set reuse). Checkout always pops the front.
+    fn enqueue(&self, idle: &mut VecDeque<StoreEntry<S>>, entry: StoreEntry<S>) {
+        match self.strategy {
+            PoolStrategy::Fifo => idle.push_back(entry),
+            PoolStrategy::Lifo => idle.push_front(entry),
         }
     }
 
@@ -182,6 +242,16 @@ impl<S: Send + 'static> InstanceStore<S> {
     /// lock — the same lock the credential-revoke idle-walk
     /// ([`evict_stale`](Self::evict_stale)) holds — so a slot revoked while
     /// idle is observed as stale here even if the revoke raced the checkout.
+    ///
+    /// # Cancel safety
+    ///
+    /// This method is cancel safe. If the future is dropped before the
+    /// idle-queue lock is acquired, no slot is popped and the store is
+    /// unchanged. Once the lock is held the method completes without any
+    /// further await, so a drop cannot observe or leave behind a partial
+    /// state. (The returned [`Checkout`] transfers ownership of live slots —
+    /// the *caller* must not drop it across a cancellation point without
+    /// destroying them.)
     ///
     /// [`Provider::destroy`]: crate::resource::Provider::destroy
     pub async fn checkout(&self) -> Checkout<S> {
@@ -234,6 +304,15 @@ impl<S: Send + 'static> InstanceStore<S> {
     /// lock, so a concurrent `bump_revoke_epoch` followed by an idle-walk
     /// cannot enqueue a stale slot: the walk holds the same lock and sees the
     /// already-bumped counter.
+    ///
+    /// # Cancel safety
+    ///
+    /// The lock-then-mutate shape is cancel safe (a drop before the lock is
+    /// acquired mutates nothing; after, the method finishes without another
+    /// await) — but the future *owns* `slot` while it waits for the lock, so
+    /// a caller that can be cancelled must hold the slot in a destroy-on-drop
+    /// guard (the framework acquire loop's `SlotCreateGuard` pattern) rather
+    /// than rely on this method to place it.
     pub async fn return_slot(&self, slot: S, checkout_epoch: u64) -> ReturnOutcome<S> {
         let mut idle = self.idle.lock().await;
         // Revoke-epoch fence: re-read under the idle lock (same lock the
@@ -254,10 +333,13 @@ impl<S: Send + 'static> InstanceStore<S> {
         {
             return ReturnOutcome::Evict(slot);
         }
-        idle.push_back(StoreEntry {
-            slot,
-            checkout_epoch,
-        });
+        self.enqueue(
+            &mut idle,
+            StoreEntry {
+                slot,
+                checkout_epoch,
+            },
+        );
         ReturnOutcome::Recycled
     }
 
@@ -293,8 +375,12 @@ impl<S: Send + 'static> InstanceStore<S> {
     /// reaper sweep — so a stale slot can never be served regardless of which
     /// path observes it first.
     pub async fn evict_stale(&self) -> Vec<S> {
-        let live_epoch = self.current_revoke_epoch();
         let mut idle = self.idle.lock().await;
+        // Epoch read under the idle lock — the same discipline as `checkout` /
+        // `return_slot` — so a revoke racing this sweep is either fully
+        // observed (its slots evicted now) or fully deferred to the next
+        // fence crossing, never half-applied against a pre-lock snapshot.
+        let live_epoch = self.current_revoke_epoch();
         let mut evicted = Vec::new();
         let mut keep = VecDeque::with_capacity(idle.len());
         for entry in idle.drain(..) {
@@ -383,8 +469,34 @@ impl<S: Send + 'static> InstanceStore<S> {
     /// The epoch read and the push happen under the idle lock — the same lock
     /// the revoke idle-walk holds — so the compare-then-push is atomic against
     /// a concurrent `bump_revoke_epoch` + reaper sweep.
+    ///
+    /// # Cancel safety
+    ///
+    /// Same contract as [`return_slot`](Self::return_slot): the store is
+    /// never left half-mutated, but the future owns `slot` while awaiting the
+    /// lock. Cancellation-guarded callers should use the crate-internal
+    /// `lock_idle` + `deposit_fresh_locked` split so their destroy-on-drop
+    /// guard stays armed across the lock acquisition — the warmup loop does
+    /// exactly this.
     pub async fn deposit_fresh(&self, slot: S, created_epoch: u64) -> ReturnOutcome<S> {
         let mut idle = self.idle.lock().await;
+        self.deposit_fresh_locked(&mut idle, slot, created_epoch)
+    }
+
+    /// The synchronous core of [`deposit_fresh`](Self::deposit_fresh),
+    /// against an already-held idle lock.
+    ///
+    /// Split out for cancellation-guarded callers (the warmup loop): they
+    /// acquire the lock via [`lock_idle`](Self::lock_idle) while the slot is
+    /// still armed in its cancel guard, then defuse and hand the slot over
+    /// only once no await remains — so a caller cancellation can never drop
+    /// a created-but-undeposited instance through a plain `Drop`.
+    pub(crate) fn deposit_fresh_locked(
+        &self,
+        idle: &mut VecDeque<StoreEntry<S>>,
+        slot: S,
+        created_epoch: u64,
+    ) -> ReturnOutcome<S> {
         let live_epoch = self.revoke_epoch.load(Ordering::Acquire);
         if created_epoch != live_epoch {
             debug!(
@@ -398,10 +510,13 @@ impl<S: Send + 'static> InstanceStore<S> {
         {
             return ReturnOutcome::Evict(slot);
         }
-        idle.push_back(StoreEntry {
-            slot,
-            checkout_epoch: created_epoch,
-        });
+        self.enqueue(
+            idle,
+            StoreEntry {
+                slot,
+                checkout_epoch: created_epoch,
+            },
+        );
         ReturnOutcome::Recycled
     }
 }
@@ -660,6 +775,52 @@ mod tests {
             "third slot exceeds cap of 2 → evicted"
         );
         assert_eq!(store.len().await, 2);
+    }
+
+    // Default FIFO: checkout order matches return order (even wear).
+    #[tokio::test]
+    async fn fifo_default_checks_out_in_return_order() {
+        let store: InstanceStore<u32> = InstanceStore::new(None);
+        assert_eq!(store.strategy(), PoolStrategy::Fifo, "new() defaults FIFO");
+        let epoch = store.stamp_epoch();
+        store.return_slot(1, epoch).await;
+        store.return_slot(2, epoch).await;
+        let first = store.checkout().await.fresh.map(|c| c.slot);
+        assert_eq!(first, Some(1), "FIFO hands out the oldest return first");
+    }
+
+    // LIFO: the most recently returned slot is reused first (hot-set reuse,
+    // the tail ages out for the idle_timeout reaper).
+    #[tokio::test]
+    async fn lifo_checks_out_most_recent_return_first() {
+        let store: InstanceStore<u32> = InstanceStore::new(None).with_strategy(PoolStrategy::Lifo);
+        let epoch = store.stamp_epoch();
+        store.return_slot(1, epoch).await;
+        store.return_slot(2, epoch).await;
+        let first = store.checkout().await.fresh.map(|c| c.slot);
+        assert_eq!(first, Some(2), "LIFO hands out the hottest slot first");
+        let second = store.checkout().await.fresh.map(|c| c.slot);
+        assert_eq!(second, Some(1), "the colder slot is next");
+    }
+
+    // LIFO first-deposit: deposit_fresh honors the same push side.
+    #[tokio::test]
+    async fn lifo_deposit_fresh_lands_at_the_front() {
+        let store: InstanceStore<u32> = InstanceStore::new(None).with_strategy(PoolStrategy::Lifo);
+        let epoch = store.stamp_epoch();
+        store.deposit_fresh(1, epoch).await;
+        store.deposit_fresh(2, epoch).await;
+        let first = store.checkout().await.fresh.map(|c| c.slot);
+        assert_eq!(first, Some(2), "LIFO deposits land at the checkout end");
+    }
+
+    // A cloned handle shares queue AND strategy.
+    #[tokio::test]
+    async fn clone_preserves_strategy() {
+        let store: InstanceStore<u32> = InstanceStore::new(None).with_strategy(PoolStrategy::Lifo);
+        let cloned = store.clone();
+        assert_eq!(cloned.strategy(), store.strategy());
+        assert_eq!(cloned.strategy(), PoolStrategy::Lifo);
     }
 
     // drain_all empties the queue.

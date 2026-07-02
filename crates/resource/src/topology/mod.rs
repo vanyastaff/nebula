@@ -30,7 +30,7 @@ pub use contract::{
 };
 pub use pooled::{BrokenCheck, InstanceMetrics, PoolProvider, RecycleDecision};
 pub use resident::ResidentProvider;
-pub use store::{CheckedOut, Checkout, InstanceStore, ReturnOutcome};
+pub use store::{CheckedOut, Checkout, InstanceStore, PoolStrategy, ReturnOutcome};
 
 /// Framework topology structs that implement the open [`Topology`] contract.
 ///

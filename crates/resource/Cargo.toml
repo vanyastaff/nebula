@@ -67,10 +67,16 @@ insta = { workspace = true }
 pretty_assertions = { workspace = true }
 rstest = { workspace = true }
 trybuild = "1.0"
-criterion = { workspace = true }
+# `async_tokio` for `Bencher::to_async` — the acquire bench drives the real
+# Manager acquire loop on a tokio runtime.
+criterion = { workspace = true, features = ["async_tokio"] }
 
 [[bench]]
 name = "slotcell"
+harness = false
+
+[[bench]]
+name = "acquire"
 harness = false
 
 [package.metadata.docs.rs]

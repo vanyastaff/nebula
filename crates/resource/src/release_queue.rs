@@ -347,6 +347,14 @@ impl ReleaseQueue {
     /// Workers must have been signaled to stop first — either by dropping
     /// the `ReleaseQueue` (closing channels) or by cancelling the token
     /// (via [`close`](Self::close) or external cancellation).
+    ///
+    /// # Cancel safety
+    ///
+    /// This method is cancel safe. If dropped while awaiting a worker's
+    /// `JoinHandle`, that worker (and any not yet reached) is not aborted —
+    /// it keeps draining and exits on its own once the shared cancellation
+    /// token fires. The caller only loses the "all workers finished"
+    /// observation, not correctness.
     pub async fn shutdown(handle: ReleaseQueueHandle) {
         for worker in handle.workers {
             let _ = worker.await;
