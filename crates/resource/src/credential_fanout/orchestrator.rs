@@ -48,6 +48,14 @@ impl ResourceFanoutIndex {
     ///
     /// An empty `affected(cid)` returns
     /// [`RotationOutcome::default()`](RotationOutcome) (a no-op fan-out).
+    ///
+    /// # Cancel safety
+    ///
+    /// This method is cancel safe. Dropping it mid-fan-out abandons
+    /// whichever per-row dispatches had not yet completed; each row is left
+    /// in a well-defined state (an un-dispatched refresh simply never ran).
+    /// The only effect of cancellation is that the aggregate
+    /// [`RotationOutcome`] for this call is never produced.
     #[tracing::instrument(
         level = "debug",
         name = "nebula.credential.rotation.fanout_refresh",
@@ -74,6 +82,15 @@ impl ResourceFanoutIndex {
     /// [`dispatch_refresh`](Self::dispatch_refresh) — only the per-row port
     /// differs (`revoke_slot_for_identity` taints → drains → runs the revoke
     /// hook).
+    ///
+    /// # Cancel safety
+    ///
+    /// This method is cancel safe. A revoke row that had already
+    /// synchronously tainted its resource stays tainted — new acquires
+    /// remain rejected — even if its drain/hook tail never ran (see
+    /// [`Manager::drain_and_revoke`](crate::Manager::drain_and_revoke)).
+    /// Cancellation only means the aggregate [`RotationOutcome`] is never
+    /// produced.
     #[tracing::instrument(
         level = "debug",
         name = "nebula.credential.rotation.fanout_revoke",

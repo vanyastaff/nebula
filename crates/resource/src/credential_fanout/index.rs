@@ -37,6 +37,7 @@
 use dashmap::DashMap;
 use nebula_core::{ResourceKey, ScopeLevel};
 use nebula_credential::CredentialId;
+use smallvec::SmallVec;
 
 use crate::SlotIdentity;
 
@@ -117,6 +118,12 @@ struct BindRef {
     refs: usize,
 }
 
+/// Per-credential row list. Most credentials resolve into one or two
+/// resource rows, so two rows live inline in the map entry (no heap
+/// allocation, better locality on the rotation fan-out read); larger
+/// families spill to the heap transparently.
+type BindRows = SmallVec<[BindRef; 2]>;
+
 /// Reverse index from a rotated `CredentialId` to the resource registry
 /// rows that resolved it.
 ///
@@ -130,12 +137,17 @@ struct BindRef {
 #[derive(Debug, Default)]
 pub struct ResourceFanoutIndex {
     /// `CredentialId` -> refcounted rows whose resolved slot bound that
-    /// credential.
+    /// credential. See [`BindRows`] for the inline-buffer rationale.
     ///
-    /// `nebula-resource` has no direct `smallvec` dependency, so the
-    /// per-credential row list is a plain `Vec`. Promoting this to a small
-    /// inline buffer is a deferred, dependency-gated optimisation.
-    by_credential: DashMap<CredentialId, Vec<BindRef>>,
+    /// Deliberately **one-way**: the unbind paths scan-and-`retain` across
+    /// credentials (O(total binds), average O(rows-per-credential) per
+    /// bucket) instead of keeping a resource→credential reverse map. Unbind
+    /// runs only on registration removal (cold), while the reverse map would
+    /// buy that cold path speed at the price of a two-map consistency
+    /// protocol on every bind/rollback (the TOCTOU discipline below relies
+    /// on a single shard lock). Rotation fan-out — the hot read — is already
+    /// a single-key lookup.
+    by_credential: DashMap<CredentialId, BindRows>,
 }
 
 impl ResourceFanoutIndex {

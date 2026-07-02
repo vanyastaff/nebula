@@ -113,15 +113,16 @@ where
             .map_err(|u| u.into_error(R::key()))?
             .into_permit();
 
-        // 2-4. Fenced checkout → destroy stale → accept-or-create. The whole
+        // 2-5. Fenced checkout → destroy stale → accept-or-create. The whole
         //      idle-then-create decision is the framework's; the topology only
-        //      validates (`accept`) or makes (`create_slot`).
-        let (slot, checkout_epoch) = self.checkout_or_create(ctx, &config).await?;
-
-        // 5. Cancel-safety: from here until the guard is built, a drop must
-        //    `destroy(into_instance(slot))` via the ReleaseQueue.
-        let mut cancel_guard =
-            SlotCreateGuard::new(slot, Arc::clone(self), Arc::clone(&self.release_queue));
+        //      validates (`accept`) or makes (`create_slot`). The slot comes
+        //      back already armed in its cancel guard — `checkout_or_create`
+        //      wraps it the moment it leaves the store / creation call, so a
+        //      drop at ANY await from the pop onward (stale destroys, the
+        //      `accept` hook, `prepare` below) schedules an async
+        //      `destroy(into_instance(slot))` via the ReleaseQueue instead of
+        //      leaking the instance through a plain `Drop`.
+        let (mut cancel_guard, checkout_epoch) = self.checkout_or_create(ctx, &config).await?;
 
         // 6. Per-acquire session init. `prepare` borrows the slot mutably from
         //    the cancel guard (a distinct object from `self`), so the topology
@@ -153,18 +154,43 @@ where
     ///
     /// This is the inner half of the acquire loop; factored out so a future
     /// `checkout_keyed` (affinity) variant slots in beside it without reshaping
-    /// the loop. Returns the chosen slot and its checkout epoch (the create
-    /// path stamps the current epoch).
+    /// the loop. Returns the chosen slot — already armed in its
+    /// [`SlotCreateGuard`] — and its checkout epoch (the create path stamps
+    /// the current epoch).
+    ///
+    /// # Cancel safety
+    ///
+    /// A popped or freshly-created slot is wrapped in a [`SlotCreateGuard`]
+    /// **before** any subsequent await (the stale-destroy loop, the `accept`
+    /// hook, the fence destroy), so a caller cancellation — a `tokio::select!`
+    /// branch or `tokio::time::timeout` dropping the acquire future — never
+    /// discards a live instance through a plain `Drop`: the guard schedules an
+    /// async `Provider::destroy` via the [`ReleaseQueue`]. A cancellation that
+    /// lands *inside* one of the inline `destroy_within` awaits abandons only
+    /// that teardown attempt (teardown is best-effort and deadline-bounded);
+    /// the instance is already consumed by the destroy at that point, never
+    /// leaked live.
     ///
     /// Complexity: O(stale + 1) idle pops per call (average and worst case);
     /// bounded by the store's idle capacity.
     async fn checkout_or_create(
-        &self,
+        self: &Arc<Self>,
         ctx: &ResourceContext,
         config: &R::Config,
-    ) -> Result<(SlotOf<R>, u64), Error> {
+    ) -> Result<(SlotCreateGuard<R>, u64), Error> {
         loop {
             let checkout = self.store.checkout().await;
+            // Cancel-safety: arm the fresh slot's guard NOW, before the stale
+            // destroys and the `accept` hook below get a chance to park this
+            // future — a drop while suspended there must schedule an async
+            // destroy, not leak the popped instance.
+            let fresh = checkout.fresh.map(|co| {
+                let (slot, epoch) = co.into_parts();
+                (
+                    SlotCreateGuard::new(slot, Arc::clone(self), Arc::clone(&self.release_queue)),
+                    epoch,
+                )
+            });
             // FRAMEWORK destroys since-revoked stale slots — the author can
             // never skip this fence.
             for stale in checkout.stale {
@@ -175,7 +201,7 @@ where
                 )
                 .await;
             }
-            let Some(co) = checkout.fresh else {
+            let Some((mut cancel_guard, epoch)) = fresh else {
                 // Idle-miss — create a fresh slot. Snapshot the revoke epoch
                 // BEFORE create so a revoke that lands *during* `create_slot` is
                 // detectable (HikariCP #1836): stamping after the await would
@@ -208,14 +234,24 @@ where
                         R::key()
                     )));
                 }
-                return Ok((slot, create_epoch));
+                // No await between `create_slot` returning and this wrap, so
+                // the created instance is guarded before the caller's next
+                // suspension point.
+                return Ok((
+                    SlotCreateGuard::new(slot, Arc::clone(self), Arc::clone(&self.release_queue)),
+                    create_epoch,
+                ));
             };
-            let (mut slot, epoch) = co.into_parts();
-            if self.topology.accept(&mut slot, &self.resource, ctx).await {
-                return Ok((slot, epoch));
+            if self
+                .topology
+                .accept(cancel_guard.slot_mut(), &self.resource, ctx)
+                .await
+            {
+                return Ok((cancel_guard, epoch));
             }
             // Rejected (stale fingerprint / max-lifetime / broken) — destroy and
             // loop to the next idle slot, then create.
+            let slot = cancel_guard.defuse();
             let _ = destroy_within(
                 &self.resource,
                 self.topology.into_instance(slot),
@@ -307,10 +343,19 @@ where
     /// (fenced) at registration. Returns the number admitted.
     ///
     /// Each warmed slot is stamped with the live revoke epoch under the idle
-    /// lock via [`crate::topology::store::InstanceStore::deposit_fresh`], so a revoke that already
-    /// landed evicts it immediately rather than admitting a since-revoked
-    /// instance.
-    pub(crate) async fn warmup(&self, ctx: &ResourceContext) -> usize {
+    /// lock via `InstanceStore::deposit_fresh_locked`, so a revoke that
+    /// already landed evicts it immediately rather than admitting a
+    /// since-revoked instance.
+    ///
+    /// # Cancel safety
+    ///
+    /// A created-but-not-yet-deposited slot is armed in a [`SlotCreateGuard`]
+    /// before the idle lock is awaited, so a drop of this future — including
+    /// the author-hook ceiling timeout `Manager::warmup_pool` wraps it in —
+    /// schedules an async `Provider::destroy` via the [`ReleaseQueue`]
+    /// instead of leaking the instance. The guard is defused only once the
+    /// lock is held and the fenced deposit runs synchronously to completion.
+    pub(crate) async fn warmup(self: &Arc<Self>, ctx: &ResourceContext) -> usize {
         let config = self.config();
         let target = self.topology.warmup_target(&config);
         if target == 0 {
@@ -324,16 +369,34 @@ where
                 .create_slot(&self.resource, &config, ctx)
                 .await
             {
-                Ok(slot) => match self.store.deposit_fresh(slot, created_epoch).await {
-                    ReturnOutcome::Recycled => created += 1,
-                    ReturnOutcome::Evict(slot) => {
-                        let _ = destroy_within(
-                            &self.resource,
-                            self.topology.into_instance(slot),
-                            TeardownReason::Evicted,
-                        )
-                        .await;
-                    },
+                Ok(slot) => {
+                    // Cancel-safety: arm the guard before the idle-lock await
+                    // below — a cancellation landing there must destroy the
+                    // just-created instance, not drop it silently.
+                    let cancel_guard = SlotCreateGuard::new(
+                        slot,
+                        Arc::clone(self),
+                        Arc::clone(&self.release_queue),
+                    );
+                    let mut idle = self.store.lock_idle().await;
+                    let slot = cancel_guard.defuse();
+                    let outcome = self
+                        .store
+                        .deposit_fresh_locked(&mut idle, slot, created_epoch);
+                    // Release the idle lock before any teardown await — the
+                    // evict destroy must not block checkout/return.
+                    drop(idle);
+                    match outcome {
+                        ReturnOutcome::Recycled => created += 1,
+                        ReturnOutcome::Evict(slot) => {
+                            let _ = destroy_within(
+                                &self.resource,
+                                self.topology.into_instance(slot),
+                                TeardownReason::Evicted,
+                            )
+                            .await;
+                        },
+                    }
                 },
                 Err(e) => {
                     tracing::warn!(
@@ -716,6 +779,9 @@ mod tests {
     struct Mock {
         created: Arc<AtomicU64>,
         destroyed: Arc<AtomicU64>,
+        /// When `true`, `check` parks forever — the deterministic suspension
+        /// point for the accept-await cancellation tests.
+        hang_check: Arc<AtomicBool>,
     }
 
     impl Mock {
@@ -723,6 +789,7 @@ mod tests {
             Self {
                 created: Arc::new(AtomicU64::new(0)),
                 destroyed: Arc::new(AtomicU64::new(0)),
+                hang_check: Arc::new(AtomicBool::new(false)),
             }
         }
     }
@@ -740,6 +807,16 @@ mod tests {
         async fn create(&self, _config: &PoolCfg, _ctx: &ResourceContext) -> Result<u64, Error> {
             let id = self.created.fetch_add(1, Ordering::SeqCst);
             Ok(id)
+        }
+
+        async fn check(&self, _runtime: &u64) -> Result<(), Error> {
+            if self.hang_check.load(Ordering::SeqCst) {
+                std::future::pending::<()>().await;
+                // guard-justified: `std::future::pending()` never resolves,
+                // so this line is statically unreachable.
+                unreachable!("pending future never resolves")
+            }
+            Ok(())
         }
 
         async fn destroy(&self, _runtime: u64, _cx: TeardownCx) -> Result<(), Error> {
@@ -785,6 +862,162 @@ mod tests {
             in_flight: Arc::new((AtomicU64::new(0), Notify::new())),
             maintenance_sweeps: AtomicU64::new(0),
         })
+    }
+
+    /// Cancel-safety regression (audit 2026-07-01 bug #1): an acquire future
+    /// cancelled while suspended in `Topology::accept` (here: a hanging
+    /// `test_on_checkout` health check) must destroy the popped idle slot via
+    /// the release queue — before the fix the slot was a plain local across
+    /// the `accept().await` and a cancellation dropped the live instance
+    /// without ever calling `Provider::destroy` (permanent leak: the slot was
+    /// already off the idle queue).
+    #[tokio::test]
+    async fn cancelled_acquire_during_accept_destroys_the_popped_slot() {
+        let resource = Mock::new();
+        let destroyed = Arc::clone(&resource.destroyed);
+        let hang_check = Arc::clone(&resource.hang_check);
+        let (rq, rq_handle) = ReleaseQueue::new(1);
+        let rq = Arc::new(rq);
+        let mr = {
+            let topology = Pooled::<Mock>::new(
+                PoolConfig {
+                    test_on_checkout: true,
+                    ..PoolConfig::default()
+                },
+                0,
+            );
+            Arc::new(ManagedResource {
+                resource,
+                config: ArcSwap::from_pointee(PoolCfg),
+                topology,
+                store: InstanceStore::new(None),
+                release_queue: Arc::clone(&rq),
+                generation: AtomicU64::new(0),
+                status: ArcSwap::from_pointee(ResourceStatus::new()),
+                recovery_gate: None,
+                tainted: AtomicBool::new(false),
+                in_flight: Arc::new((AtomicU64::new(0), Notify::new())),
+                maintenance_sweeps: AtomicU64::new(0),
+            })
+        };
+
+        // Seed one healthy idle slot, then arm the hang so the NEXT acquire
+        // parks inside `accept`'s health check with the slot popped.
+        let slot = mr
+            .topology
+            .create_slot(&mr.resource, &PoolCfg, &test_ctx())
+            .await
+            .expect("create the seed slot");
+        let epoch = mr.store.stamp_epoch();
+        assert!(
+            !mr.store.deposit_fresh(slot, epoch).await.is_evict(),
+            "the seed slot must land in the idle queue"
+        );
+        hang_check.store(true, Ordering::SeqCst);
+
+        // The cancellation: a timeout drops the acquire future while it is
+        // suspended in `accept` → `resource.check`.
+        let cancelled = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            mr.run_acquire_loop(&test_ctx(), &AcquireOptions::default(), None),
+        )
+        .await;
+        assert!(
+            cancelled.is_err(),
+            "the acquire must still be parked in the hanging health check \
+             when the timeout fires"
+        );
+        assert!(
+            mr.store.is_empty().await,
+            "the popped slot must not have been silently re-queued"
+        );
+
+        // Drain the release queue and assert the destroy actually ran.
+        rq.close();
+        drop(rq);
+        drop(mr);
+        ReleaseQueue::shutdown(rq_handle).await;
+        assert_eq!(
+            destroyed.load(Ordering::SeqCst),
+            1,
+            "a cancellation during `accept` must destroy the popped slot via \
+             the ReleaseQueue, never leak it through a plain Drop"
+        );
+    }
+
+    /// Cancel-safety regression (audit 2026-07-01 bug #2): a warmup future
+    /// dropped between `create_slot` succeeding and the fenced deposit
+    /// completing (here: parked on the held idle lock; in production the
+    /// author-hook ceiling timeout in `Manager::warmup_pool`) must destroy
+    /// the created instance via the release queue — before the fix the slot
+    /// travelled unguarded into `deposit_fresh`'s future and a cancellation
+    /// dropped it without `Provider::destroy`.
+    #[tokio::test]
+    async fn cancelled_warmup_between_create_and_deposit_destroys_the_slot() {
+        let resource = Mock::new();
+        let created = Arc::clone(&resource.created);
+        let destroyed = Arc::clone(&resource.destroyed);
+        let (rq, rq_handle) = ReleaseQueue::new(1);
+        let rq = Arc::new(rq);
+        let mr = {
+            let topology = Pooled::<Mock>::new(
+                PoolConfig {
+                    min_size: 1, // warmup_target = 1
+                    ..PoolConfig::default()
+                },
+                0,
+            );
+            Arc::new(ManagedResource {
+                resource,
+                config: ArcSwap::from_pointee(PoolCfg),
+                topology,
+                store: InstanceStore::new(None),
+                release_queue: Arc::clone(&rq),
+                generation: AtomicU64::new(0),
+                status: ArcSwap::from_pointee(ResourceStatus::new()),
+                recovery_gate: None,
+                tainted: AtomicBool::new(false),
+                in_flight: Arc::new((AtomicU64::new(0), Notify::new())),
+                maintenance_sweeps: AtomicU64::new(0),
+            })
+        };
+
+        // Hold the idle lock so warmup creates its slot, then parks on the
+        // lock acquisition — the exact created-but-undeposited window.
+        let idle_lock = mr.store.lock_idle().await;
+        let ctx = test_ctx();
+        {
+            let mut warmup = Box::pin(mr.warmup(&ctx));
+            let parked =
+                tokio::time::timeout(std::time::Duration::from_millis(100), &mut warmup).await;
+            assert!(
+                parked.is_err(),
+                "warmup must be parked awaiting the idle lock with a created slot in hand"
+            );
+            drop(warmup); // the cancellation
+        }
+        drop(idle_lock);
+
+        assert_eq!(
+            created.load(Ordering::SeqCst),
+            1,
+            "exactly one instance was created before the cancellation"
+        );
+        assert!(
+            mr.store.is_empty().await,
+            "the cancelled warmup must not have deposited the slot"
+        );
+
+        rq.close();
+        drop(rq);
+        drop(mr);
+        ReleaseQueue::shutdown(rq_handle).await;
+        assert_eq!(
+            destroyed.load(Ordering::SeqCst),
+            1,
+            "a warmup cancelled between create and deposit must destroy the \
+             created instance via the ReleaseQueue, never leak it"
+        );
     }
 
     /// Cancel-safety: a [`SlotCreateGuard`] dropped before `defuse` schedules an

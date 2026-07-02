@@ -135,6 +135,13 @@ impl Manager {
     /// - [`ErrorKind::Cancelled`](crate::error::ErrorKind::Cancelled) if the manager is shutting
     ///   down.
     /// - Whatever the resource's `on_credential_refresh` hook maps into [`Error`].
+    ///
+    /// # Cancel safety
+    ///
+    /// This method is cancel safe. It mutates no framework state before
+    /// dispatching the hook; if the future is dropped, the only effect is
+    /// that `on_credential_refresh` may not have run for this call and no
+    /// `SlotRefreshed` / `SlotRefreshFailed` event is emitted.
     #[tracing::instrument(
         level = "debug",
         name = "nebula.resource.slot_refresh",
@@ -173,6 +180,10 @@ impl Manager {
     /// - [`ErrorKind::Cancelled`](crate::error::ErrorKind::Cancelled) if the manager is shutting
     ///   down.
     /// - Whatever the resource's `on_credential_refresh` hook maps into [`Error`].
+    ///
+    /// # Cancel safety
+    ///
+    /// Cancel safe — same contract as [`refresh_slot`](Self::refresh_slot).
     #[tracing::instrument(
         level = "debug",
         name = "nebula.resource.slot_refresh",
@@ -446,12 +457,17 @@ impl Manager {
     /// timed-out drain can never skip the hook, and only a hung hook is
     /// bounded — never the taint.
     ///
-    /// **Cancellation-safety.** The taint is *not* in this future — it
+    /// # Cancel safety
+    ///
+    /// This method is cancel safe. The taint is *not* in this future — it
     /// ran in the synchronous
     /// [`taint_slot_for_identity`](Self::taint_slot_for_identity)
     /// phase. So if this future *is* dropped anyway (an outer abort, task
     /// cancel), the row stays tainted and consistent: new acquires are
-    /// still rejected, the credential is never silently un-revoked.
+    /// still rejected, the credential is never silently un-revoked. The
+    /// only effect of a drop is that
+    /// [`Provider::on_credential_revoke`](crate::resource::Provider::on_credential_revoke)
+    /// may never run for this attempt.
     #[tracing::instrument(
         level = "debug",
         name = "nebula.resource.slot_drain_revoke",
@@ -611,6 +627,13 @@ impl Manager {
     /// - [`ErrorKind::Cancelled`](crate::error::ErrorKind::Cancelled) if the manager is shutting
     ///   down.
     /// - Whatever the resource's `on_credential_revoke` hook maps into [`Error`].
+    ///
+    /// # Cancel safety
+    ///
+    /// This method is cancel safe. The taint and revoke-epoch bump run
+    /// synchronously before the first await, so dropping the future never
+    /// un-revokes the row — same contract as
+    /// [`drain_and_revoke`](Self::drain_and_revoke).
     pub async fn revoke_slot(
         &self,
         key: &ResourceKey,

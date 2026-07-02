@@ -400,6 +400,16 @@ impl<R: Provider> ResourceGuard<R> {
     /// bounded `Exclusive` cap the failed reset has already latched the
     /// runtime poisoned and returned the permit before the error reaches
     /// here (S4 / #384), exactly as on the queued path.
+    ///
+    /// # Cancel safety
+    ///
+    /// This method is cancel safe. The release state is taken out of `self`
+    /// synchronously before the first await, and the teardown plus
+    /// drain-accounting run on a detached background task; if this future is
+    /// dropped while awaited, that task still runs to completion — the
+    /// resource is still torn down or recycled and the drain trackers still
+    /// settle. Dropping only means the caller never observes the resulting
+    /// `Result`.
     pub async fn release(mut self) -> Result<(), crate::Error> {
         // Take the post-callback settle inputs OUT of `self` so the drop of
         // the husk at end of scope is inert — no double settle, no double

@@ -6,8 +6,9 @@
 //! The engine is the owner of the resource lifecycle: acquire, health-check,
 //! hot-reload via `ReloadOutcome`, and scope-bounded release. Action code
 //! receives a `ResourceGuard` that derefs to `R::Instance` and releases on
-//! drop. Three built-in topologies cover the integration space: `Pooled`,
-//! `Resident`.
+//! drop. Three built-in topologies cover the integration space: `Pooled`
+//! (N interchangeable instances), `Resident` (one shared instance, cloned
+//! per acquire), and `Bounded` (a concurrency cap with no warm idle pool).
 //!
 //! ## Quick start
 //!
@@ -45,6 +46,24 @@
 //! | `ResourceContext` | Execution context with cancellation and capabilities |
 //! | `ResourceEvent` | Lifecycle events for observability |
 //! | `ResourceOpsMetrics` | Registry-backed operation counters |
+//!
+//! ## Cancel safety
+//!
+//! Public async methods document their cancellation contract in a
+//! `# Cancel safety` section (the tokio convention). The load-bearing
+//! guarantees: dropping an acquire future never leaks an instance (a slot in
+//! flight is destroyed asynchronously via the `ReleaseQueue`), and dropping a
+//! revoke future never un-revokes a credential (the taint runs synchronously
+//! before the first await).
+//!
+//! ## Feature flags
+//!
+//! - `rotation` — enables the credential-rotation fan-out module
+//!   (`credential_fanout`): the `CredentialId` → resource-rows reverse
+//!   index, the rotation orchestrator, and
+//!   `ResourceActivatorRegistry::register_and_bind`. Off by default so the
+//!   base build pays no eventbus-subscriber or extra-task overhead; the
+//!   engine enables it together with its own `rotation` feature.
 //!
 //! ## Canon note — §11.4
 //!
@@ -165,7 +184,7 @@ pub use state::{ResourceErrorSummary, ResourcePhase, ResourceStatus};
 // Topology configurations — used at registration time.
 pub use topology::{
     AdmissionPhase, AdmissionStatus, CheckedOut, Checkout, InstanceStore, Load,
-    MaintenanceSchedule, NoTopology, ReturnOutcome, Ticket, Topology, Unavailable,
+    MaintenanceSchedule, NoTopology, PoolStrategy, ReturnOutcome, Ticket, Topology, Unavailable,
     bounded::{BoundedMode, BoundedProvider},
     pooled::{
         BrokenCheck, InstanceMetrics, PoolProvider, RecycleDecision, config::Config as PoolConfig,

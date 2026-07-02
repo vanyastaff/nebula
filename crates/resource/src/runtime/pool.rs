@@ -479,6 +479,10 @@ where
         Some(self.config.max_size as usize)
     }
 
+    fn queue_strategy(&self) -> crate::topology::store::PoolStrategy {
+        self.config.strategy
+    }
+
     fn warmup_target(&self, _config: &R::Config) -> usize {
         self.config.min_size as usize
     }
@@ -855,6 +859,32 @@ mod tests {
                 .on_release(&mut slot, &resource)
                 .await
                 .expect("release")
+        );
+    }
+
+    #[tokio::test]
+    async fn queue_strategy_forwards_the_configured_strategy() {
+        use crate::topology::store::PoolStrategy;
+        // The registration path builds the framework store from this hook —
+        // a Pooled topology must forward its configured strategy, not the
+        // trait's FIFO fallback (the pre-fix behavior: `Config::strategy`
+        // was declared but never read, so every pool silently ran FIFO).
+        let lifo_pool = mock_pool(Config::default(), 0);
+        assert_eq!(
+            Topology::<MockPool>::queue_strategy(&lifo_pool),
+            PoolStrategy::Lifo,
+            "default pool config promises LIFO and the store must honor it"
+        );
+        let fifo_pool = mock_pool(
+            Config {
+                strategy: PoolStrategy::Fifo,
+                ..Default::default()
+            },
+            0,
+        );
+        assert_eq!(
+            Topology::<MockPool>::queue_strategy(&fifo_pool),
+            PoolStrategy::Fifo
         );
     }
 

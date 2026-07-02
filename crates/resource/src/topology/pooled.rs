@@ -146,16 +146,12 @@ pub trait PoolProvider: Provider + crate::resource::HasCredentialSlots {
 pub mod config {
     use std::time::Duration;
 
-    /// Pool checkout ordering strategy.
-    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-    #[non_exhaustive]
-    pub enum PoolStrategy {
-        /// Last-in, first-out — reuses the most recently returned instance.
-        #[default]
-        Lifo,
-        /// First-in, first-out — spreads load evenly across instances.
-        Fifo,
-    }
+    /// Idle-queue ordering strategy — canonical definition lives on the
+    /// framework store whose queue it governs
+    /// ([`InstanceStore`](crate::topology::store::InstanceStore));
+    /// re-exported here because pool authors configure it through
+    /// [`Config::strategy`].
+    pub use crate::topology::store::PoolStrategy;
 
     /// Strategy for pre-warming the pool at startup.
     #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -188,7 +184,10 @@ pub mod config {
         pub max_lifetime: Option<Duration>,
         /// Timeout for creating a new instance.
         pub create_timeout: Duration,
-        /// Checkout ordering strategy.
+        /// Idle-queue ordering strategy: LIFO reuses the hottest instance
+        /// (lets the tail age out so `idle_timeout` can shrink the pool);
+        /// FIFO rotates through every instance for even wear. Read once at
+        /// registration to build the framework store.
         pub strategy: PoolStrategy,
         /// Warmup strategy at pool startup.
         pub warmup: WarmupStrategy,
