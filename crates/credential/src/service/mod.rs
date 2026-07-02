@@ -10,7 +10,7 @@
 /// `CredentialService` (split from `facade` for size; behaviour-preserving
 /// `impl` block).
 mod acquire;
-pub mod binding;
+pub(crate) mod binding;
 /// Capability operations (`test` / `refresh` / `revoke`) of
 /// `CredentialService` (split from `facade` for size; behaviour-preserving
 /// `impl` block).
@@ -21,16 +21,16 @@ mod crud;
 /// Type-discovery methods of `CredentialService` (split from `facade` for
 /// size; behaviour-preserving `impl` block).
 mod discovery;
-pub mod error;
-pub mod facade;
-pub mod head;
-pub mod observer;
-pub mod ops;
-pub mod scope;
+pub(crate) mod error;
+pub(crate) mod facade;
+pub(crate) mod head;
+pub(crate) mod observer;
+pub(crate) mod ops;
+pub(crate) mod scope;
 /// Slot / binding resolution methods of `CredentialService` (split from
 /// `facade` for size; behaviour-preserving `impl` block).
 mod slot;
-pub mod state_source;
+pub(crate) mod state_source;
 
 pub use binding::{TenantFingerprint, ValidatedCredentialBinding, ValidatedCredentialBindingError};
 pub use error::CredentialServiceError;
