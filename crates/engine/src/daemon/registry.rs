@@ -370,6 +370,8 @@ mod tests {
         }
     }
 
+    nebula_resource::no_credential_slots!(CountedDaemon);
+
     impl Daemon for CountedDaemon {
         async fn run(
             &self,
@@ -477,6 +479,7 @@ mod tests {
             ResourceMetadata::from_key(&Self::key())
         }
     }
+    nebula_resource::no_credential_slots!(CountedDaemonB);
     impl Daemon for CountedDaemonB {
         async fn run(
             &self,

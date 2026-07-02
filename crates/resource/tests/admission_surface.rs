@@ -16,7 +16,7 @@ use nebula_resource::topology::{pooled::PoolProvider, resident::ResidentProvider
 use nebula_resource::{
     AcquireOptions, Manager, RegistrationSpec, ResourceContext, ScopeLevel, SlotIdentity,
     error::{Error, ErrorKind},
-    resource::{HasCredentialSlots, Provider, ResourceConfig, ResourceMetadata},
+    resource::{Provider, ResourceConfig, ResourceMetadata},
     topology::{AdmissionPhase, Load, Pooled, Resident, Unavailable},
 };
 use tokio_util::sync::CancellationToken;
@@ -47,11 +47,7 @@ impl ResourceConfig for MinCfg {
 #[derive(Clone)]
 struct TinyPool;
 
-impl HasCredentialSlots for TinyPool {
-    fn credential_slot_epoch(&self) -> u64 {
-        0
-    }
-}
+nebula_resource::no_credential_slots!(TinyPool);
 
 #[async_trait::async_trait]
 impl Provider for TinyPool {
@@ -79,11 +75,7 @@ impl PoolProvider for TinyPool {}
 #[derive(Clone)]
 struct SimpleResident;
 
-impl HasCredentialSlots for SimpleResident {
-    fn credential_slot_epoch(&self) -> u64 {
-        0
-    }
-}
+nebula_resource::no_credential_slots!(SimpleResident);
 
 #[async_trait::async_trait]
 impl Provider for SimpleResident {

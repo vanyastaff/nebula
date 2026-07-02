@@ -168,6 +168,18 @@ impl nebula_resource::HasCredentialSlots for XResource {
     fn credential_slot_epoch(&self) -> u64 {
         0
     }
+
+    // Must agree with `DeclaresDependencies::dependencies()` above (one
+    // real `#[credential]`-shaped slot, "auth") — nebula-resource's
+    // registration-time consistency check (A5') rejects a hand-written
+    // `Provider` whose two self-reported slot signals disagree.
+    fn declares_credential_slots() -> bool {
+        true
+    }
+
+    fn credential_slot_names() -> &'static [&'static str] {
+        &[SLOT_KEY]
+    }
 }
 
 impl resident::ResidentProvider for XResource {

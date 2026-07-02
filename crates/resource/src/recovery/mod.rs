@@ -5,4 +5,6 @@
 
 pub mod gate;
 
-pub use gate::{GateState, RecoveryGate, RecoveryGateConfig, RecoveryTicket, RecoveryWaiter};
+pub use gate::{
+    GateState, RecoveryGate, RecoveryGateConfig, RecoveryTicket, RecoveryWaiter, TryBeginError,
+};

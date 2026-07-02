@@ -18,9 +18,8 @@ use std::hint::black_box;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use nebula_resource::{
-    AcquireOptions, Error, HasCredentialSlots, Manager, PoolConfig, Pooled, Provider,
-    RegistrationSpec, Resident, ResidentConfig, ResourceConfig, ResourceContext, ResourceKey,
-    ScopeLevel, SlotIdentity,
+    AcquireOptions, Error, Manager, PoolConfig, Pooled, Provider, RegistrationSpec, Resident,
+    ResidentConfig, ResourceConfig, ResourceContext, ResourceKey, ScopeLevel, SlotIdentity,
     resource::ResourceMetadata,
     resource_key,
     topology::pooled::{PoolProvider, RecycleDecision},
@@ -67,11 +66,7 @@ impl Provider for KeepPool {
     }
 }
 
-impl HasCredentialSlots for KeepPool {
-    fn credential_slot_epoch(&self) -> u64 {
-        0
-    }
-}
+nebula_resource::no_credential_slots!(KeepPool);
 
 impl PoolProvider for KeepPool {}
 
@@ -99,11 +94,7 @@ impl Provider for DiscardPool {
     }
 }
 
-impl HasCredentialSlots for DiscardPool {
-    fn credential_slot_epoch(&self) -> u64 {
-        0
-    }
-}
+nebula_resource::no_credential_slots!(DiscardPool);
 
 impl PoolProvider for DiscardPool {
     async fn recycle(
@@ -138,11 +129,7 @@ impl Provider for SharedResident {
     }
 }
 
-impl HasCredentialSlots for SharedResident {
-    fn credential_slot_epoch(&self) -> u64 {
-        0
-    }
-}
+nebula_resource::no_credential_slots!(SharedResident);
 
 #[async_trait::async_trait]
 impl ResidentProvider for SharedResident {

@@ -45,7 +45,7 @@ use nebula_resource::{
     AcquireOptions, Manager, PoolConfig, Pooled, Provider, RegistrationSpec, ResourceConfig,
     ResourceContext, SlotIdentity,
     error::{Error, ErrorKind},
-    resource::{HasCredentialSlots, ResourceMetadata},
+    resource::ResourceMetadata,
     topology::pooled::{PoolProvider, RecycleDecision, config::WarmupStrategy},
 };
 use tokio::sync::Notify;
@@ -163,11 +163,7 @@ impl Provider for PoolResource {
     }
 }
 
-impl HasCredentialSlots for PoolResource {
-    fn credential_slot_epoch(&self) -> u64 {
-        0
-    }
-}
+nebula_resource::no_credential_slots!(PoolResource);
 
 impl PoolProvider for PoolResource {
     fn recycle(

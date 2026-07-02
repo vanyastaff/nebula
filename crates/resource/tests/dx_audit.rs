@@ -32,7 +32,7 @@ use nebula_resource::{
     AcquireOptions, Manager, PoolConfig, RegistrationSpec, ResidentConfig, ResourceContext,
     ResourceGuard, ScopeLevel, ShutdownConfig, SlotIdentity,
     error::{Error, ErrorKind},
-    resource::{HasCredentialSlots, Provider, ResourceConfig, ResourceMetadata},
+    resource::{Provider, ResourceConfig, ResourceMetadata},
     topology::{Resident, pooled::BrokenCheck},
 };
 
@@ -142,11 +142,7 @@ impl Provider for HttpClientResource {
     }
 }
 
-impl HasCredentialSlots for HttpClientResource {
-    fn credential_slot_epoch(&self) -> u64 {
-        0
-    }
-}
+nebula_resource::no_credential_slots!(HttpClientResource);
 
 // FRICTION NOTE [Pooled requires Instance: Clone + Into<Lease>]: The Pooled
 // trait itself has no bounds on Clone/Into, but acquire_pooled on Manager
@@ -311,11 +307,7 @@ impl Provider for ConfigStoreResource {
     }
 }
 
-impl HasCredentialSlots for ConfigStoreResource {
-    fn credential_slot_epoch(&self) -> u64 {
-        0
-    }
-}
+nebula_resource::no_credential_slots!(ConfigStoreResource);
 
 // FRICTION NOTE [Resident BOUNDS ON LEASE]: The Resident trait has
 //   `where Self::Lease: Clone`
@@ -464,11 +456,7 @@ impl Provider for DbResource {
     }
 }
 
-impl HasCredentialSlots for DbResource {
-    fn credential_slot_epoch(&self) -> u64 {
-        0
-    }
-}
+nebula_resource::no_credential_slots!(DbResource);
 
 impl PoolProvider for DbResource {
     fn is_broken(&self, _runtime: &FakeDbConnection) -> BrokenCheck {

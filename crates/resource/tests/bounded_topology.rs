@@ -19,7 +19,7 @@ use nebula_core::{ResourceKey, ScopeLevel, resource_key, scope::Scope};
 use nebula_resource::{
     AcquireOptions, Bounded, Manager, RegistrationSpec, ResourceContext, SlotIdentity, TopologyTag,
     error::Error,
-    resource::{HasCredentialSlots, Provider, ResourceConfig, ResourceMetadata},
+    resource::{Provider, ResourceConfig, ResourceMetadata},
     topology::bounded::BoundedProvider,
 };
 use tokio_util::sync::CancellationToken;
@@ -100,11 +100,7 @@ impl Provider for Seats {
     }
 }
 
-impl HasCredentialSlots for Seats {
-    fn credential_slot_epoch(&self) -> u64 {
-        0
-    }
-}
+nebula_resource::no_credential_slots!(Seats);
 
 #[async_trait::async_trait]
 impl BoundedProvider for Seats {
@@ -141,7 +137,24 @@ fn register(manager: &Manager, seats: Seats, topology: Bounded<Seats>) {
         .expect("a bounded resource must register through Manager::register");
 }
 
+/// Typed acquire path — `Manager::acquire_bounded` (B4). This is the path
+/// every test but one exercises; a real caller with `Seats` known at compile
+/// time never goes through the erased downcast below.
 async fn acquire(
+    manager: &Arc<Manager>,
+    _key: &ResourceKey,
+    ctx: &ResourceContext,
+) -> Result<nebula_resource::guard::ResourceGuard<Seats>, Error> {
+    manager
+        .acquire_bounded::<Seats>(ctx, &AcquireOptions::default())
+        .await
+}
+
+/// Erased acquire path — `Manager::acquire_any` + downcast. Kept as the one
+/// coverage test for the object-safe engine/action-accessor entry point
+/// (used when the concrete resource type is not known at compile time); see
+/// `unbounded_never_rejects_through_manager`.
+async fn acquire_erased(
     manager: &Arc<Manager>,
     key: &ResourceKey,
     ctx: &ResourceContext,
@@ -290,7 +303,9 @@ async fn exclusive_failed_reset_destroys_then_recreates() {
     );
 }
 
-/// `Unbounded` never rejects an acquire.
+/// `Unbounded` never rejects an acquire. Also the one test on the erased
+/// `Manager::acquire_any` + downcast path (B4): every other test in this file
+/// exercises the typed `Manager::acquire_bounded`.
 #[tokio::test]
 async fn unbounded_never_rejects_through_manager() {
     let manager = Arc::new(Manager::new());
@@ -302,7 +317,7 @@ async fn unbounded_never_rejects_through_manager() {
     let mut guards = Vec::new();
     for _ in 0..8 {
         guards.push(
-            acquire(&manager, &key, &ctx)
+            acquire_erased(&manager, &key, &ctx)
                 .await
                 .expect("unbounded admits"),
         );

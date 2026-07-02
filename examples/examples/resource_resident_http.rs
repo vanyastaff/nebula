@@ -340,11 +340,11 @@ impl Provider for GoogleSheets {
     }
 }
 
-impl nebula_resource::HasCredentialSlots for GoogleSheets {
-    fn credential_slot_epoch(&self) -> u64 {
-        0
-    }
-}
+// The mock OAuth credential above is a plain field (`GoogleSheets::cred`),
+// not a framework `SlotCell<CredentialGuard<C>>` — this example
+// deliberately skips nebula-credential's storage + projection layers (see
+// module docs), so it has no real credential slots to declare.
+nebula_resource::no_credential_slots!(GoogleSheets);
 
 impl ResidentProvider for GoogleSheets {
     fn is_alive_sync(&self, _runtime: &GoogleSheetsClient) -> bool {

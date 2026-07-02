@@ -77,6 +77,18 @@ pub struct ReleaseQueueHandle {
     fallback_worker: tokio::task::JoinHandle<()>,
 }
 
+impl std::fmt::Debug for ReleaseQueueHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ReleaseQueueHandle")
+            .field("workers", &self.workers.len())
+            .field(
+                "fallback_worker_finished",
+                &self.fallback_worker.is_finished(),
+            )
+            .finish()
+    }
+}
+
 /// Distributes async release tasks across a pool of background workers.
 ///
 /// # Shutdown

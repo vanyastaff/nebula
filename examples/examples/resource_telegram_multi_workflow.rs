@@ -164,11 +164,7 @@ impl Provider for TelegramBot {
     }
 }
 
-impl nebula_resource::HasCredentialSlots for TelegramBot {
-    fn credential_slot_epoch(&self) -> u64 {
-        0
-    }
-}
+nebula_resource::no_credential_slots!(TelegramBot);
 
 impl ResidentProvider for TelegramBot {
     fn is_alive_sync(&self, _runtime: &Arc<TelegramBotInner>) -> bool {

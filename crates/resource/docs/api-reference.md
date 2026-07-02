@@ -14,15 +14,14 @@ this page intentionally does not duplicate it.
   ```
 
 - **[`../README.md`](../README.md)** — the shipped public surface in prose:
-  the `Resource` trait and its associated types, the two topologies
-  (`Pooled` and `Resident`), the single
-  `Manager::register(RegistrationSpec { … })`
-  registration funnel, the structural `SlotIdentity` cross-tenant barrier
-  (`Unbound` / `Structural`), the `acquire_<topology>` /
-  `acquire_<topology>_for_identity` acquire family and `acquire_erased_for`,
-  the engine-driven slot operations (`refresh_slot` /
-  `refresh_slot_for_identity`, `revoke_slot` / `revoke_slot_for_identity`),
-  `reload_config`, `lookup`, and `ResourceGuard`.
+  the `Provider` trait and its associated types (`Config` / `Instance` /
+  `Topology`), the three topologies (`Pooled` / `Resident` / `Bounded`), the
+  single `Manager::register(RegistrationSpec { … })` registration funnel, the
+  structural `SlotIdentity` cross-tenant barrier (`Unbound` / `Structural`),
+  the `acquire_any` / `acquire_<topology>` /
+  `acquire_<topology>_for_identity` acquire family, the engine-driven slot
+  operations (`refresh_slot` / `refresh_slot_for_identity`, `revoke_slot` /
+  `revoke_slot_for_identity`), `reload_config`, `lookup`, and `ResourceGuard`.
 
 ## Topic-specific docs
 
@@ -31,8 +30,8 @@ this page intentionally does not duplicate it.
 | Topology selection and authoring | [`topology-reference.md`](topology-reference.md) |
 | Pool internals | [`pooling.md`](pooling.md) |
 | Recovery / thundering-herd serializer | [`recovery.md`](recovery.md) |
+| Credential rotation sequence | [`credential-rotation.md`](credential-rotation.md) |
 | Event catalog | [`events.md`](events.md) |
-| Concrete integration adapters | [`adapters.md`](adapters.md) |
 
 See also [`README.md`](README.md) in this directory for the documentation
 map.

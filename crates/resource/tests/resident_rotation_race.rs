@@ -77,6 +77,16 @@ struct RaceGate {
     /// When `true`, `create()` performs the park; when `false` it returns
     /// immediately (used for the warm / never-activated fixtures).
     park_in_create: Arc<std::sync::atomic::AtomicBool>,
+    /// A3' regression fixture: when `true`, `on_credential_refresh` parks on
+    /// `release_refresh` before doing its work, so a test can hold the
+    /// rotation dispatch's per-hook window open independently of
+    /// `create_lock` contention (proving the two-tier ceiling times the
+    /// hook and the lock-wait separately). `false` for every other test —
+    /// `on_credential_refresh` returns immediately.
+    park_in_refresh: Arc<std::sync::atomic::AtomicBool>,
+    /// `on_credential_refresh` parks on this *when armed* (see
+    /// `park_in_refresh`) until the test releases it.
+    release_refresh: Arc<Notify>,
 }
 
 /// The live runtime. `bound_cred` is the credential tag the runtime is
@@ -145,6 +155,12 @@ impl Provider for RaceResource {
         _slot_name: &str,
         runtime: &RaceRuntime,
     ) -> Result<(), Error> {
+        // A3' regression fixture: park before doing any work when armed
+        // (see `RaceGate::park_in_refresh`); every other test leaves this
+        // false and the hook proceeds immediately.
+        if self.gate.park_in_refresh.load(Ordering::SeqCst) {
+            self.gate.release_refresh.notified().await;
+        }
         // The blue-green `&self` reaction: re-read the (now rotated) slot
         // and rebind the live runtime to it via interior mutability.
         if let Some(g) = self.db.load() {
@@ -177,6 +193,19 @@ impl HasCredentialSlots for RaceResource {
     // this fixture is not derived. NOT author discipline for production code.
     fn credential_slot_epoch(&self) -> u64 {
         self.db.generation()
+    }
+
+    // `db` is a real `#[credential]`-shaped slot field driven by
+    // `refresh_slot`/`taint_slot(..., "db")` throughout this file —
+    // declaring it (final-review item 4) makes those calls exercise the
+    // real A4 unknown-slot validation path instead of skipping it via the
+    // permissive "declares no slots" gap.
+    fn declares_credential_slots() -> bool {
+        true
+    }
+
+    fn credential_slot_names() -> &'static [&'static str] {
+        &["db"]
     }
 }
 
@@ -315,6 +344,88 @@ async fn resident_create_during_rotation_delivers_hook_not_false_success() {
         .expect("second refresh must succeed");
     assert_eq!(guard.bound_cred.load(Ordering::SeqCst), 123);
     assert_eq!(resource.refresh_calls.load(Ordering::SeqCst), 2);
+}
+
+/// A3' regression: the rotation-dispatch ceiling must not be billed by
+/// TOPOLOGY LOCK-WAIT — only by the author's hook body.
+///
+/// Before the fix, `refresh_resolved` wrapped the WHOLE dispatch
+/// (`create_lock` acquisition + the hook itself) in a single fixed 30s
+/// `DEFAULT_AUTHOR_HOOK_CEILING`. This test builds a scenario whose total
+/// wall-clock time (~40 virtual seconds: ~20s of `create_lock` contention
+/// from a concurrent slow build, then ~20s inside the hook itself) exceeds
+/// that 30s single-tier budget, but where NEITHER phase alone does — proving
+/// the two tiers are billed separately:
+///
+/// - the *inner* per-hook ceiling (`DEFAULT_AUTHOR_HOOK_CEILING`, 30s) times
+///   only the ~20s spent inside `on_credential_refresh` — comfortably under;
+/// - the *outer* backstop (`MAX_ROTATION_DISPATCH_CEILING`, 2min) times the
+///   whole ~40s dispatch (lock-wait + hook) — also comfortably under.
+///
+/// Under the old single-tier design this would have failed closed at 30s
+/// (a misreport: "the hook timed out" when it had barely started). Under
+/// the fix, `refresh_slot` succeeds and the hook is actually delivered.
+#[tokio::test(start_paused = true)]
+async fn refresh_slot_lock_wait_does_not_consume_the_hook_ceiling() {
+    let (mgr, key, resource) = build(true);
+    resource.gate.park_in_refresh.store(true, Ordering::SeqCst);
+
+    let acquire_task = {
+        let mgr = Arc::clone(&mgr);
+        tokio::spawn(async move {
+            mgr.acquire_resident::<RaceResource>(&ctx(), &AcquireOptions::default())
+                .await
+        })
+    };
+
+    // Deterministic: `create()` has read the OLD credential and is now
+    // parked, still holding `create_lock`.
+    resource.gate.slot_read.notified().await;
+    resource
+        .db
+        .store(Arc::new(CredentialGuard::new(FakeCred(CRED_NEW))));
+
+    let refresh_task = {
+        let mgr = Arc::clone(&mgr);
+        let key = key.clone();
+        tokio::spawn(async move { mgr.refresh_slot(&key, ScopeLevel::Global, "db").await })
+    };
+
+    // Phase 1: hold `create_lock` for ~20 VIRTUAL seconds (task A's own
+    // `create()` — under its 30s `create_timeout` AND under the acquire
+    // path's own 30s dispatch ceiling, so this phase alone never trips
+    // anything). `refresh_task` is blocked on `create_lock` the whole time.
+    tokio::time::sleep(std::time::Duration::from_secs(20)).await;
+    resource.gate.release_create.notify_one();
+    let _held_guard = acquire_task
+        .await
+        .expect("acquire task must not panic")
+        .expect("first acquire must succeed (create alone stays under 30s)");
+
+    // Phase 2: `create_lock` is now free, so `refresh_task` proceeds into
+    // `dispatch_resident_hook` and parks inside `on_credential_refresh`
+    // (armed above). Hold it there for ~20 MORE virtual seconds — under the
+    // 30s inner per-hook ceiling on its own, but the CUMULATIVE dispatch
+    // time (20s lock-wait + 20s hook = ~40s) exceeds the old single-tier 30s
+    // budget, which is exactly what this test proves no longer matters.
+    tokio::time::sleep(std::time::Duration::from_secs(20)).await;
+    resource.gate.release_refresh.notify_one();
+
+    refresh_task
+        .await
+        .expect("refresh task must not panic")
+        .expect(
+            "refresh_slot must succeed: ~20s lock-wait + ~20s hook (~40s \
+             total) exceeds the old single-tier 30s ceiling, but neither \
+             phase alone exceeds its own tier (A3')",
+        );
+
+    assert_eq!(
+        resource.refresh_calls.load(Ordering::SeqCst),
+        1,
+        "on_credential_refresh must have actually been delivered, not \
+         short-circuited by a spurious lock-wait-attributed ceiling timeout"
+    );
 }
 
 /// Revoke inverse: a revoke racing the first resident acquire must not

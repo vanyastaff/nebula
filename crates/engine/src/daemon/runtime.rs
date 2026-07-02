@@ -322,6 +322,8 @@ mod tests {
         }
     }
 
+    nebula_resource::no_credential_slots!(FlakyDaemon);
+
     impl Daemon for FlakyDaemon {
         async fn run(
             &self,
@@ -359,6 +361,8 @@ mod tests {
             ResourceMetadata::from_key(&Self::key())
         }
     }
+
+    nebula_resource::no_credential_slots!(OneShotDaemon);
 
     impl Daemon for OneShotDaemon {
         async fn run(

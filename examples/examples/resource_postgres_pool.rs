@@ -222,11 +222,7 @@ impl Provider for Postgres {
     }
 }
 
-impl nebula_resource::HasCredentialSlots for Postgres {
-    fn credential_slot_epoch(&self) -> u64 {
-        0
-    }
-}
+nebula_resource::no_credential_slots!(Postgres);
 
 impl PoolProvider for Postgres {
     fn is_broken(&self, runtime: &Arc<MockPgConnection>) -> BrokenCheck {

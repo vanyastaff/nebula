@@ -115,6 +115,21 @@ pub struct RegisterRequest<'a> {
     pub recovery_gate: Option<Arc<RecoveryGate>>,
 }
 
+impl std::fmt::Debug for RegisterRequest<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // `expr_engine` (`nebula_expression::ExpressionEngine`) does not
+        // implement `Debug`, so a derive is not available here — print a
+        // type-name placeholder for it instead of skipping it silently.
+        f.debug_struct("RegisterRequest")
+            .field("config_json", &self.config_json)
+            .field("expr_engine", &"<ExpressionEngine>")
+            .field("slot_bindings", &self.slot_bindings)
+            .field("scope", &self.scope)
+            .field("recovery_gate", &self.recovery_gate.is_some())
+            .finish()
+    }
+}
+
 /// Errors raised by the closed allowlist `kind → factory` bridge.
 ///
 /// `UnknownKind` is a caller/wiring fault caught at activation — the `kind`
@@ -288,6 +303,23 @@ where
     _marker: std::marker::PhantomData<fn() -> R>,
 }
 
+impl<R, FRes, FTopo> std::fmt::Debug for KindActivator<R, FRes, FTopo>
+where
+    R: Provider + nebula_core::DeclaresDependencies,
+    R::Config: serde::de::DeserializeOwned,
+    FRes: Fn() -> R + Send + Sync,
+    FTopo: Fn() -> R::Topology + Send + Sync,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // `resource_factory` / `topology_factory` are closures — neither is
+        // `Debug` and neither should be invoked just to print it. Identify
+        // the activator by the resource key it constructs instead.
+        f.debug_struct("KindActivator")
+            .field("key", &<R as Provider>::key())
+            .finish_non_exhaustive()
+    }
+}
+
 impl<R, FRes, FTopo> KindActivator<R, FRes, FTopo>
 where
     R: Provider + nebula_core::DeclaresDependencies,
@@ -314,7 +346,7 @@ where
 
 impl<R, FRes, FTopo> ResourceFactory for KindActivator<R, FRes, FTopo>
 where
-    R: Provider + crate::resource::HasCredentialSlots + nebula_core::DeclaresDependencies,
+    R: Provider + nebula_core::DeclaresDependencies,
     R::Config: serde::de::DeserializeOwned,
     R::Instance: Clone,
     R::Topology: Topology<R>,
@@ -380,6 +412,18 @@ where
 #[derive(Default)]
 pub struct ResourceActivatorRegistry {
     factories: HashMap<String, Arc<dyn ResourceFactory>>,
+}
+
+impl std::fmt::Debug for ResourceActivatorRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // `dyn ResourceFactory` is not `Debug` (and closes over per-`R`
+        // closures via `KindActivator`) — list the registered kinds only.
+        let mut kinds: Vec<&str> = self.factories.keys().map(String::as_str).collect();
+        kinds.sort_unstable();
+        f.debug_struct("ResourceActivatorRegistry")
+            .field("kinds", &kinds)
+            .finish()
+    }
 }
 
 impl ResourceActivatorRegistry {
@@ -682,11 +726,7 @@ mod tests {
 
     impl nebula_core::DeclaresDependencies for TestRes {}
 
-    impl crate::HasCredentialSlots for TestRes {
-        fn credential_slot_epoch(&self) -> u64 {
-            0
-        }
-    }
+    crate::no_credential_slots!(TestRes);
 
     #[async_trait::async_trait]
     impl ResidentProvider for TestRes {

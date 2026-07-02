@@ -759,11 +759,7 @@ mod tests {
             }
         }
 
-        impl crate::HasCredentialSlots for CtlResource {
-            fn credential_slot_epoch(&self) -> u64 {
-                0
-            }
-        }
+        crate::no_credential_slots!(CtlResource);
 
         #[async_trait::async_trait]
         impl ResidentProvider for CtlResource {

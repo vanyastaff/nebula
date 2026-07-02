@@ -94,11 +94,7 @@ impl Provider for Postgres {
     }
 }
 
-impl HasCredentialSlots for Postgres {
-    fn credential_slot_epoch(&self) -> u64 {
-        0
-    }
-}
+nebula_resource::no_credential_slots!(Postgres);
 
 #[async_trait::async_trait]
 impl ResidentProvider for Postgres {
@@ -260,6 +256,89 @@ async fn register_from_value_unknown_slot_binding_rejected() {
     );
 }
 
+// ── A5' registration consistency check: HasCredentialSlots vs
+//    DeclaresDependencies drift ───────────────────────────────────────────
+
+/// A hand-written resource whose two self-reported slot signals
+/// deliberately disagree: `declares_credential_slots()` says `true` but
+/// `DeclaresDependencies::dependencies()` declares zero credential slot
+/// fields. Models the drift a hand-written pair can accumulate that
+/// `#[derive(Resource)]` structurally cannot (it emits both from the same
+/// `#[credential]` field list, so they can never disagree).
+#[derive(Clone)]
+struct DriftedSlotSignals;
+
+#[async_trait::async_trait]
+impl Provider for DriftedSlotSignals {
+    type Config = PgConfig;
+    type Instance = Arc<()>;
+    type Topology = Resident<Self>;
+
+    fn key() -> ResourceKey {
+        resource_key!("phase9-drifted-slot-signals")
+    }
+
+    async fn create(&self, _config: &PgConfig, _ctx: &ResourceContext) -> Result<Arc<()>, Error> {
+        Ok(Arc::new(()))
+    }
+
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::from_key(&Self::key())
+    }
+}
+
+impl HasCredentialSlots for DriftedSlotSignals {
+    fn credential_slot_epoch(&self) -> u64 {
+        0
+    }
+
+    // Deliberately drifted from `dependencies()` below (which declares NO
+    // credential slot fields) — the contradiction under test.
+    fn declares_credential_slots() -> bool {
+        true
+    }
+}
+
+#[async_trait::async_trait]
+impl ResidentProvider for DriftedSlotSignals {
+    fn is_alive_sync(&self, _runtime: &Arc<()>) -> bool {
+        true
+    }
+}
+
+impl DeclaresDependencies for DriftedSlotSignals {
+    fn dependencies() -> Dependencies {
+        // Deliberately empty — disagrees with `declares_credential_slots()`
+        // above.
+        Dependencies::new()
+    }
+}
+
+#[tokio::test]
+async fn register_from_value_rejects_drifted_slot_signals() {
+    let manager = Manager::new();
+    let engine = ExpressionEngine::new();
+
+    let err = manager
+        .register_resolved::<DriftedSlotSignals>(
+            json!({"host": "example.com", "port": 5432}),
+            &engine,
+            HashMap::new(),
+            DriftedSlotSignals,
+            ScopeLevel::Global,
+            Resident::<DriftedSlotSignals>::new(ResidentConfig::default()),
+            None,
+        )
+        .await
+        .expect_err("a HasCredentialSlots vs DeclaresDependencies contradiction must be rejected");
+
+    let msg = err.to_string();
+    assert!(
+        msg.contains("drifted apart"),
+        "expected the slot-signal drift rejection message, got: {msg}"
+    );
+}
+
 #[tokio::test]
 async fn register_from_value_passthrough_no_templates() {
     // Plain JSON with no `{{ }}` markers — the engine fast-path is
@@ -366,11 +445,7 @@ impl Provider for CacheBackend {
     }
 }
 
-impl HasCredentialSlots for CacheBackend {
-    fn credential_slot_epoch(&self) -> u64 {
-        0
-    }
-}
+nebula_resource::no_credential_slots!(CacheBackend);
 
 #[async_trait::async_trait]
 impl ResidentProvider for CacheBackend {

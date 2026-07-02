@@ -114,6 +114,25 @@ pub trait ManagedHandle: sealed::Sealed + Send + Sync + 'static {
     /// for single-runtime topologies, which have no idle queue).
     fn bump_revoke_epoch(&self);
 
+    /// Validates `slot` against this row's declared credential slot names
+    /// (A4 unknown-slot validation).
+    ///
+    /// `true` when either: the resource type declares no credential slots
+    /// at all
+    /// ([`HasCredentialSlots::declares_credential_slots`](crate::resource::HasCredentialSlots::declares_credential_slots)
+    /// is `false` — nothing to validate against, so any name passes, which
+    /// keeps every hand-written `HasCredentialSlots` impl that predates
+    /// this check behaviorally unchanged); or `slot` matches one of
+    /// [`HasCredentialSlots::credential_slot_names`](crate::resource::HasCredentialSlots::credential_slot_names).
+    /// `false` only when the type positively declares a non-empty
+    /// credential surface and `slot` names none of it.
+    ///
+    /// Called by `Manager::refresh_slot` / `taint_slot` (and their
+    /// `_for_identity` variants — `revoke_slot*` calls `taint_slot*`
+    /// internally) before dispatching the rotation hook, so an unknown slot
+    /// name is rejected before any author code runs.
+    fn accepts_credential_slot_name(&self, slot: &str) -> bool;
+
     /// Per-slot refresh dispatch.
     ///
     /// `#[async_trait]` boxes the future for `dyn`-safety. Forwards to
@@ -168,6 +187,12 @@ pub trait ManagedHandle: sealed::Sealed + Send + Sync + 'static {
     /// reject callers early when the topology is saturated, warming, recovering,
     /// or tainted. The ticket produced internally is dropped immediately; this
     /// method is purely a yes/no gate with a typed reason.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Unavailable`](crate::topology::Unavailable) with the typed
+    /// reason (saturated / warming / recovering / tainted) when no ticket
+    /// could be reserved right now.
     fn try_reserve_gate(&self) -> Result<(), crate::topology::Unavailable>;
 
     /// Optional load snapshot (saturation in `0.0..=1.0`, etc.).
@@ -196,7 +221,7 @@ impl<R: Provider> sealed::Sealed for ManagedResource<R> {}
 #[async_trait]
 impl<R> ManagedHandle for ManagedResource<R>
 where
-    R: Provider + crate::resource::HasCredentialSlots + Send + Sync + 'static,
+    R: Provider + Send + Sync + 'static,
     R::Instance: Clone,
     R::Topology: crate::topology::Topology<R>,
 {
@@ -234,6 +259,10 @@ where
 
     fn bump_revoke_epoch(&self) {
         ManagedResource::bump_revoke_epoch(self);
+    }
+
+    fn accepts_credential_slot_name(&self, slot: &str) -> bool {
+        !R::declares_credential_slots() || R::credential_slot_names().contains(&slot)
     }
 
     async fn dispatch_on_refresh(&self, slot: &str) -> Result<(), Error> {
@@ -755,12 +784,78 @@ impl Registry {
     ///
     /// Returns `true` if the key existed and was removed, `false` otherwise.
     /// Also removes the type index entry if it points to this key.
+    ///
+    /// **Blast radius (A6):** this drops *every* row under `key` — every
+    /// scope and every resolved [`SlotIdentity`], including multi-tenant
+    /// siblings that differ only in resolved credential. Use
+    /// [`remove_for`](Self::remove_for) to remove a single resolved row
+    /// without disturbing siblings.
     pub fn remove(&self, key: &ResourceKey) -> bool {
         let existed = self.entries.remove(key).is_some();
         if existed {
             self.type_index.retain(|_type_id, k| k != key);
         }
         existed
+    }
+
+    /// Removes exactly the row for `(key, scope, slot_identity)`, leaving
+    /// every sibling row under `key` — other scopes, or other resolved
+    /// slot identities at the same scope (multi-tenant rows) — untouched
+    /// (A6).
+    ///
+    /// The narrower, additive counterpart to [`remove`](Self::remove): it
+    /// is the precise inverse of the single [`register`](Self::register)
+    /// call that created this row (row identity is `(scope,
+    /// slot_identity)`, per `register`'s own doc), mirroring the same
+    /// per-row pinning the `rotation`-gated credential fan-out reverse
+    /// index applies via its own `unbind_resource_identity` (not
+    /// intra-doc-linked here — it is feature-gated and this doc must
+    /// resolve under the default build too).
+    ///
+    /// Returns `true` if a matching row existed and was removed.
+    pub fn remove_for(
+        &self,
+        key: &ResourceKey,
+        scope: &ScopeLevel,
+        slot_identity: &SlotIdentity,
+    ) -> bool {
+        // Lock order matches `register`: all `entries` work happens in a
+        // scoped block so the shard guard drops before `type_index` (a
+        // different DashMap) is touched — never both shards held at once.
+        let (removed, stale_type_id) = {
+            let Some(mut entries) = self.entries.get_mut(key) else {
+                return false;
+            };
+            let Some(pos) = entries
+                .iter()
+                .position(|e| e.scope == *scope && e.slot_identity == *slot_identity)
+            else {
+                return false;
+            };
+            let removed_type_id = entries[pos].managed.managed_type_id();
+            entries.remove(pos);
+            // #382 discipline: only this concrete type's `type_index` row
+            // is stale if NO other row under `key` still uses it — a
+            // sibling row of the same type at another scope/identity must
+            // keep `get_typed::<R>` resolving.
+            let stale = !entries
+                .iter()
+                .any(|e| e.managed.managed_type_id() == removed_type_id);
+            (true, stale.then_some(removed_type_id))
+        };
+
+        if let Some(stale) = stale_type_id {
+            self.type_index.remove_if(&stale, |_, k| k == key);
+        }
+        // Tidy up an emptied `entries` row (harmless either way — an empty
+        // Vec resolves every scope walk to `NotFound`, same as a missing
+        // key — but this avoids leaving dead rows behind under
+        // register/remove_for churn). Re-checks emptiness atomically
+        // inside its own DashMap operation rather than trusting the
+        // now-stale local snapshot.
+        self.entries.remove_if(key, |_, v| v.is_empty());
+
+        removed
     }
 
     /// Returns all registered resource keys.
@@ -1060,6 +1155,9 @@ mod tests {
                 }
                 fn taint(&self) {}
                 fn bump_revoke_epoch(&self) {}
+                fn accepts_credential_slot_name(&self, _slot: &str) -> bool {
+                    true
+                }
                 async fn dispatch_on_refresh(&self, _slot: &str) -> Result<(), Error> {
                     Ok(())
                 }
@@ -1174,6 +1272,77 @@ mod tests {
             "stale TypeId for FakeA still in type_index after replace"
         );
         assert!(reg.type_index.contains_key(&TypeId::of::<FakeB>()));
+    }
+
+    #[test]
+    fn remove_for_removes_one_tenant_row_and_keeps_sibling() {
+        // A6: `remove_for` is the narrow, additive counterpart to `remove`
+        // (which nukes every row under a key). Two tenants share
+        // `(key, scope)` but resolve different credentials — removing one
+        // resolved row must not disturb the other, and the shared
+        // `type_index` entry must survive as long as ANY row still uses
+        // that concrete type.
+        let reg = Registry::new();
+        let key = ResourceKey::new("fake").unwrap();
+        let scope = ScopeLevel::Global;
+        let id_a = ident("db", "cred-a");
+        let id_b = ident("db", "cred-b");
+
+        reg.register(
+            key.clone(),
+            TypeId::of::<FakeA>(),
+            scope.clone(),
+            id_a.clone(),
+            Arc::new(FakeA),
+        );
+        reg.register(
+            key.clone(),
+            TypeId::of::<FakeA>(),
+            scope.clone(),
+            id_b.clone(),
+            Arc::new(FakeA),
+        );
+
+        assert!(
+            reg.remove_for(&key, &scope, &id_a),
+            "remove_for must report success for a row that exists"
+        );
+
+        // Tenant A's row is gone; tenant B's sibling row survives.
+        assert!(matches!(
+            reg.get_for(&key, &scope, &id_a),
+            PinnedLookup::NotFound
+        ));
+        assert!(matches!(
+            reg.get_for(&key, &scope, &id_b),
+            PinnedLookup::Found(_)
+        ));
+        // `type_index` must still resolve FakeA — tenant B's row still
+        // uses it (the #382 "don't scrub while a sibling still needs it"
+        // discipline, mirrored from `register`).
+        assert!(
+            reg.type_index.contains_key(&TypeId::of::<FakeA>()),
+            "type_index must survive remove_for while a sibling row of the \
+             same concrete type remains"
+        );
+
+        // A second remove_for on the same (now-absent) row is a clean
+        // no-op `false`, not a panic.
+        assert!(!reg.remove_for(&key, &scope, &id_a));
+
+        // Removing the LAST row for this key must scrub the (now genuinely
+        // stale) `type_index` entry too.
+        assert!(reg.remove_for(&key, &scope, &id_b));
+        assert!(
+            !reg.type_index.contains_key(&TypeId::of::<FakeA>()),
+            "type_index must be scrubbed once no row under the key uses \
+             that concrete type anymore"
+        );
+        assert!(
+            matches!(reg.get(&key, &scope), LookupOutcome::NotFound),
+            "the key's entries row must be empty (and behave as NotFound) \
+             once every row under it is removed via remove_for"
+        );
     }
 
     #[test]

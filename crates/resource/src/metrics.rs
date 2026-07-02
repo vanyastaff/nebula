@@ -27,17 +27,51 @@
 //! scraper observes; [`OutcomeCountersSnapshot`] keeps an in-process view of
 //! the same three series for tests and inspection.
 
-use nebula_metrics::{Counter, LabelSet, MetricsRegistry};
+use std::time::Duration;
+
+use nebula_metrics::{Counter, Histogram, LabelSet, MetricsRegistry};
 use nebula_metrics::{
     MetricsResult,
     naming::{
-        NEBULA_RESOURCE_ACQUIRE_ERROR_TOTAL, NEBULA_RESOURCE_ACQUIRE_TOTAL,
+        NEBULA_RESOURCE_ACQUIRE_ERROR_TOTAL, NEBULA_RESOURCE_ACQUIRE_TIMED_OUT_TOTAL,
+        NEBULA_RESOURCE_ACQUIRE_TOTAL, NEBULA_RESOURCE_ACQUIRE_WAIT_DURATION_SECONDS,
+        NEBULA_RESOURCE_ACQUIRE_WAIT_MICROS_TOTAL, NEBULA_RESOURCE_ACQUIRE_WAITED_TOTAL,
         NEBULA_RESOURCE_CREATE_TOTAL, NEBULA_RESOURCE_CREDENTIAL_REVOKE_ATTEMPTS_TOTAL,
         NEBULA_RESOURCE_CREDENTIAL_ROTATION_ATTEMPTS_TOTAL, NEBULA_RESOURCE_DESTROY_TOTAL,
-        NEBULA_RESOURCE_RECYCLE_OUTCOME_TOTAL, NEBULA_RESOURCE_RELEASE_ERROR_TOTAL,
-        NEBULA_RESOURCE_RELEASE_TOTAL, recycle_outcome, rotation_outcome,
+        NEBULA_RESOURCE_LEAKS_DETECTED_TOTAL, NEBULA_RESOURCE_RECYCLE_OUTCOME_TOTAL,
+        NEBULA_RESOURCE_RELEASE_ERROR_TOTAL, NEBULA_RESOURCE_RELEASE_TOTAL, recycle_outcome,
+        rotation_outcome,
     },
 };
+
+/// Upper bounds (in seconds) for the acquire wait-time histogram's finite
+/// buckets — fixed, µs-scale log buckets tuned for acquire waits
+/// (tokio-metrics / HikariCP style): `<100µs`, `<1ms`, `<10ms`, `<100ms`,
+/// `<1s`, `<10s`, with an implicit final `>=10s` overflow bucket. A warm
+/// pooled/resident hit is low-single-digit microseconds (see
+/// `benches/acquire.rs`); these buckets keep that hot path resolvable
+/// instead of collapsing into the crate's sub-second-to-10s default
+/// histogram layout.
+const ACQUIRE_WAIT_BUCKET_BOUNDS_SECONDS: [f64; 6] = [0.0001, 0.001, 0.01, 0.1, 1.0, 10.0];
+
+/// Upper bounds (in microseconds) matching the crate-internal
+/// `ACQUIRE_WAIT_BUCKET_BOUNDS_SECONDS`, for callers that want to label
+/// [`AcquireWaitSnapshot::bucket_counts`] without re-deriving the table.
+/// `bucket_counts[i]` counts observations `<= ACQUIRE_WAIT_BUCKET_UPPER_BOUNDS_MICROS[i]`;
+/// `bucket_counts[6]` (the final slot) is the `>= 10s` overflow bucket.
+pub const ACQUIRE_WAIT_BUCKET_UPPER_BOUNDS_MICROS: [u64; 6] =
+    [100, 1_000, 10_000, 100_000, 1_000_000, 10_000_000];
+
+/// Number of acquire-wait histogram buckets, including the implicit
+/// `>= 10s` overflow bucket.
+const ACQUIRE_WAIT_BUCKET_COUNT: usize = ACQUIRE_WAIT_BUCKET_BOUNDS_SECONDS.len() + 1;
+
+/// Below this, an acquire is "immediate" — pure hot-path overhead, not a
+/// real wait. Tuned above the pooled/resident-hit bench baseline
+/// (`.rust-studio/specs/bench-baseline.txt`: ~2.3µs / ~1.66µs) so ordinary
+/// jitter on a warm pool does not count as "waited"; anything above this
+/// reflects actual contention, creation, or backend work.
+const ACQUIRE_IMMEDIATE_THRESHOLD: Duration = Duration::from_micros(50);
 
 /// Builds the `outcome=<value>` label set for the rotation/revoke attempt
 /// counters, interned against the registry that owns the series.
@@ -85,6 +119,24 @@ pub struct ResourceOpsMetrics {
     slot_refresh_outcomes: OutcomeCounters,
     slot_revoke_outcomes: OutcomeCounters,
     recycle_outcomes: RecycleOutcomeCounters,
+    /// C1: bucketed acquire wait-time distribution. Registered against
+    /// [`NEBULA_RESOURCE_ACQUIRE_WAIT_DURATION_SECONDS`] with
+    /// [`ACQUIRE_WAIT_BUCKET_BOUNDS_SECONDS`] via
+    /// [`MetricsRegistry::histogram_with_buckets_labeled`] and an empty
+    /// label set — structurally identical to an unlabeled series
+    /// ([`nebula_metrics::labels::MetricKey::unlabeled`] and
+    /// `labeled(name, LabelSet::empty())` produce the same key), which is
+    /// the only public entry point that accepts custom bucket boundaries.
+    acquire_wait_seconds: Histogram,
+    /// C1: acquires whose wait exceeded [`ACQUIRE_IMMEDIATE_THRESHOLD`].
+    acquire_waited: Counter,
+    /// C1: acquires that failed after the caller's deadline had elapsed.
+    acquire_timed_out: Counter,
+    /// C1: cumulative acquire wait time, in whole microseconds.
+    acquire_wait_micros: Counter,
+    /// C5: hold-deadline watchdog firings (HikariCP `leakDetectionThreshold`
+    /// equivalent) — see [`Self::record_leak_detected`].
+    leaks_detected: Counter,
 }
 
 /// How a single per-slot dispatch resolved.
@@ -216,6 +268,12 @@ impl ResourceOpsMetrics {
     ///
     /// Counters are registered (or retrieved if already present) using the
     /// standard naming constants from `nebula-metrics`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`nebula_metrics::MetricsError`] if `registry` rejects a
+    /// counter/histogram registration (e.g. a name collision with an
+    /// incompatible metric type already registered under the same key).
     pub fn new(registry: &MetricsRegistry) -> MetricsResult<Self> {
         Ok(Self {
             acquire_total: registry.counter(NEBULA_RESOURCE_ACQUIRE_TOTAL)?,
@@ -233,6 +291,15 @@ impl ResourceOpsMetrics {
                 NEBULA_RESOURCE_CREDENTIAL_REVOKE_ATTEMPTS_TOTAL,
             )?,
             recycle_outcomes: RecycleOutcomeCounters::new(registry)?,
+            acquire_wait_seconds: registry.histogram_with_buckets_labeled(
+                NEBULA_RESOURCE_ACQUIRE_WAIT_DURATION_SECONDS,
+                &LabelSet::empty(),
+                ACQUIRE_WAIT_BUCKET_BOUNDS_SECONDS.to_vec(),
+            )?,
+            acquire_waited: registry.counter(NEBULA_RESOURCE_ACQUIRE_WAITED_TOTAL)?,
+            acquire_timed_out: registry.counter(NEBULA_RESOURCE_ACQUIRE_TIMED_OUT_TOTAL)?,
+            acquire_wait_micros: registry.counter(NEBULA_RESOURCE_ACQUIRE_WAIT_MICROS_TOTAL)?,
+            leaks_detected: registry.counter(NEBULA_RESOURCE_LEAKS_DETECTED_TOTAL)?,
         })
     }
 
@@ -308,6 +375,43 @@ impl ResourceOpsMetrics {
         self.recycle_outcomes.record(outcome);
     }
 
+    /// Records one acquire's wait time (C1): buckets it into the acquire
+    /// wait-time histogram, adds it to the cumulative-microseconds counter,
+    /// and bumps [`Self::record_leak_detected`]'s siblings — the "did not
+    /// complete immediately" and "timed out" counters — when applicable.
+    ///
+    /// Called exactly once per acquire completion (success or failure) from
+    /// `Manager::record_acquire_result`, with `elapsed` measured from
+    /// acquire entry to guard mint (success) or terminal failure. `timed_out`
+    /// is `true` when the caller's [`AcquireOptions`](crate::AcquireOptions)
+    /// deadline had already elapsed by the time the (failed) acquire
+    /// completed — the caller decides this, since it alone knows the
+    /// deadline.
+    ///
+    /// Hot-path cost: one bucket-index computation (the histogram's internal
+    /// binary search), up to four atomic `Relaxed` increments — no locks, no
+    /// allocation.
+    pub fn record_acquire_wait(&self, elapsed: Duration, timed_out: bool) {
+        self.acquire_wait_seconds.observe(elapsed.as_secs_f64());
+        let micros = u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX);
+        self.acquire_wait_micros.inc_by(micros);
+        if elapsed > ACQUIRE_IMMEDIATE_THRESHOLD {
+            self.acquire_waited.inc();
+        }
+        if timed_out {
+            self.acquire_timed_out.inc();
+        }
+    }
+
+    /// Records one hold-deadline watchdog firing (C5) — a lease still held
+    /// past its [`Provider::max_hold_duration`](crate::resource::Provider::max_hold_duration)
+    /// deadline (HikariCP `leakDetectionThreshold` equivalent). Called by
+    /// [`ResourceGuard`](crate::guard::ResourceGuard)'s hold-deadline watchdog
+    /// task when it observes the guard still alive past the deadline.
+    pub fn record_leak_detected(&self) {
+        self.leaks_detected.inc();
+    }
+
     /// Captures a point-in-time snapshot of all counters.
     ///
     /// Each counter is read with [`Relaxed`](std::sync::atomic::Ordering::Relaxed)
@@ -326,6 +430,28 @@ impl ResourceOpsMetrics {
             slot_refresh_outcomes: self.slot_refresh_outcomes.snapshot(),
             slot_revoke_outcomes: self.slot_revoke_outcomes.snapshot(),
             recycle_outcomes: self.recycle_outcomes.snapshot(),
+            acquire_wait: self.acquire_wait_snapshot(),
+            leaks_detected: self.leaks_detected.get(),
+        }
+    }
+
+    /// The C1 acquire-wait sub-snapshot: bucket counts read from the
+    /// histogram's seqlock-consistent [`nebula_metrics::HistogramSnapshot`],
+    /// plus the sibling counters.
+    fn acquire_wait_snapshot(&self) -> AcquireWaitSnapshot {
+        let histogram = self.acquire_wait_seconds.snapshot();
+        let mut bucket_counts = [0u64; ACQUIRE_WAIT_BUCKET_COUNT];
+        for (slot, count) in bucket_counts
+            .iter_mut()
+            .zip(histogram.per_bucket_counts().iter().copied())
+        {
+            *slot = count;
+        }
+        AcquireWaitSnapshot {
+            waited_count: self.acquire_waited.get(),
+            timed_out_count: self.acquire_timed_out.get(),
+            cumulative_wait_micros: self.acquire_wait_micros.get(),
+            bucket_counts,
         }
     }
 }
@@ -340,6 +466,7 @@ impl ResourceOpsMetrics {
 /// This is an in-process view of the same registry series a scraper reads
 /// off `*_ATTEMPTS_TOTAL{outcome=…}`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct OutcomeCountersSnapshot {
     /// Resources that completed the dispatch hook with `Ok(())`.
     pub success: u64,
@@ -358,6 +485,7 @@ pub struct OutcomeCountersSnapshot {
 /// registry series a scraper reads off the
 /// `NEBULA_RESOURCE_RECYCLE_OUTCOME_TOTAL` `outcome` label.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct RecycleOutcomeSnapshot {
     /// Clean leases returned to the idle store.
     pub recycled: u64,
@@ -365,8 +493,40 @@ pub struct RecycleOutcomeSnapshot {
     pub discarded: u64,
 }
 
+/// C1 acquire wait-time snapshot: the fixed-bucket histogram distribution
+/// plus its sibling counters.
+///
+/// `bucket_counts` is non-cumulative (each slot counts observations that
+/// fell in *that* bucket, not `<= ` every prior boundary too) and indexed by
+/// [`ACQUIRE_WAIT_BUCKET_UPPER_BOUNDS_MICROS`]: `bucket_counts[i]` is the
+/// count of acquires whose wait was in
+/// `(ACQUIRE_WAIT_BUCKET_UPPER_BOUNDS_MICROS[i-1], ACQUIRE_WAIT_BUCKET_UPPER_BOUNDS_MICROS[i]]`
+/// microseconds (or `[0, bound]` for `i == 0`); the final slot
+/// (`bucket_counts[6]`) is the `>= 10s` overflow bucket. `waited_count` and
+/// `timed_out_count` are the two derived yes/no signals HikariCP-style
+/// dashboards want without computing them from the buckets;
+/// `cumulative_wait_micros / (acquire_total + acquire_errors)` is the mean
+/// acquire wait.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub struct AcquireWaitSnapshot {
+    /// Acquires whose wait exceeded the crate's "did not complete
+    /// immediately" threshold (see `ACQUIRE_IMMEDIATE_THRESHOLD`).
+    pub waited_count: u64,
+    /// Acquires that failed after the caller's `AcquireOptions` deadline had
+    /// already elapsed.
+    pub timed_out_count: u64,
+    /// Cumulative acquire wait time, in whole microseconds, across every
+    /// acquire attempt (success and failure).
+    pub cumulative_wait_micros: u64,
+    /// Non-cumulative per-bucket observation counts; see the struct docs for
+    /// the indexing contract.
+    pub bucket_counts: [u64; ACQUIRE_WAIT_BUCKET_COUNT],
+}
+
 /// Point-in-time snapshot of resource operation counters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct ResourceOpsSnapshot {
     /// Total successful acquires.
     pub acquire_total: u64,
@@ -394,6 +554,16 @@ pub struct ResourceOpsSnapshot {
     /// [`RecycleOutcomeSnapshot`]. A pool with `recycled == 0` and
     /// `discarded > 0` is silently discarding every instance.
     pub recycle_outcomes: RecycleOutcomeSnapshot,
+    /// C1: acquire wait-time histogram + waited/timed-out counters. See
+    /// [`AcquireWaitSnapshot`].
+    pub acquire_wait: AcquireWaitSnapshot,
+    /// C5: hold-deadline watchdog firings (HikariCP `leakDetectionThreshold`
+    /// equivalent) — a lease still held past
+    /// [`Provider::max_hold_duration`](crate::resource::Provider::max_hold_duration)
+    /// when the watchdog checked. Warn-only; the lease is not forcibly
+    /// released. A non-zero, climbing count is a leaked-guard or
+    /// stuck-caller signal.
+    pub leaks_detected: u64,
 }
 
 #[cfg(test)]
@@ -551,5 +721,136 @@ mod tests {
             labeled_series, 3,
             "all three outcome series of the refresh attempts counter must be registered"
         );
+    }
+
+    // ── C1: acquire wait-time histogram + waited/timed-out counters ────────
+
+    #[test]
+    fn acquire_wait_starts_at_zero() {
+        let registry = MetricsRegistry::new();
+        let metrics = ResourceOpsMetrics::new(&registry).unwrap();
+        let snap = metrics.snapshot().acquire_wait;
+        assert_eq!(snap.waited_count, 0);
+        assert_eq!(snap.timed_out_count, 0);
+        assert_eq!(snap.cumulative_wait_micros, 0);
+        assert_eq!(snap.bucket_counts, [0u64; ACQUIRE_WAIT_BUCKET_COUNT]);
+    }
+
+    #[test]
+    fn record_acquire_wait_falls_in_the_expected_bucket() {
+        let registry = MetricsRegistry::new();
+        let metrics = ResourceOpsMetrics::new(&registry).unwrap();
+
+        // 5µs: well under the 100µs first bucket — the hot pooled/resident-hit
+        // path (bench baseline ~2.3µs / ~1.66µs) must resolve here, not
+        // collapse into a coarser bucket.
+        metrics.record_acquire_wait(Duration::from_micros(5), false);
+        // 50ms: falls in the <100ms bucket (index 3).
+        metrics.record_acquire_wait(Duration::from_millis(50), false);
+        // 20s: exceeds every finite bound — the `>= 10s` overflow bucket.
+        metrics.record_acquire_wait(Duration::from_secs(20), false);
+
+        let snap = metrics.snapshot().acquire_wait;
+        assert_eq!(
+            snap.bucket_counts[0], 1,
+            "5µs must land in the <100µs bucket"
+        );
+        assert_eq!(
+            snap.bucket_counts[3], 1,
+            "50ms must land in the <100ms bucket"
+        );
+        assert_eq!(
+            snap.bucket_counts[ACQUIRE_WAIT_BUCKET_COUNT - 1],
+            1,
+            "20s must land in the >=10s overflow bucket"
+        );
+        assert_eq!(
+            snap.bucket_counts.iter().sum::<u64>(),
+            3,
+            "every observation must land in exactly one bucket"
+        );
+    }
+
+    #[test]
+    fn record_acquire_wait_tracks_waited_and_cumulative_micros() {
+        let registry = MetricsRegistry::new();
+        let metrics = ResourceOpsMetrics::new(&registry).unwrap();
+
+        // Below the immediate threshold: not "waited".
+        metrics.record_acquire_wait(Duration::from_micros(5), false);
+        // Above it: counts as "waited".
+        metrics.record_acquire_wait(Duration::from_millis(1), false);
+
+        let snap = metrics.snapshot().acquire_wait;
+        assert_eq!(
+            snap.waited_count, 1,
+            "only the above-threshold acquire counts as waited"
+        );
+        assert_eq!(snap.cumulative_wait_micros, 5 + 1_000);
+    }
+
+    #[test]
+    fn record_acquire_wait_counts_timed_out_only_when_flagged() {
+        let registry = MetricsRegistry::new();
+        let metrics = ResourceOpsMetrics::new(&registry).unwrap();
+
+        metrics.record_acquire_wait(Duration::from_millis(1), false);
+        metrics.record_acquire_wait(Duration::from_millis(1), true);
+
+        let snap = metrics.snapshot().acquire_wait;
+        assert_eq!(snap.timed_out_count, 1);
+    }
+
+    #[test]
+    fn acquire_wait_histogram_is_registry_bound() {
+        let registry = MetricsRegistry::new();
+        let metrics = ResourceOpsMetrics::new(&registry).unwrap();
+        metrics.record_acquire_wait(Duration::from_millis(1), false);
+
+        // A sibling handle built the same way (same name, empty label set,
+        // same custom buckets) must see the same underlying series — proving
+        // the empty-`LabelSet` construction in `ResourceOpsMetrics::new` is
+        // registry-bound and not a private, unexported histogram.
+        let sibling = registry
+            .histogram_with_buckets_labeled(
+                NEBULA_RESOURCE_ACQUIRE_WAIT_DURATION_SECONDS,
+                &LabelSet::empty(),
+                ACQUIRE_WAIT_BUCKET_BOUNDS_SECONDS.to_vec(),
+            )
+            .unwrap();
+        assert_eq!(
+            sibling.count(),
+            1,
+            "acquire-wait histogram must be registry-bound"
+        );
+
+        // And an unlabeled lookup resolves to the very same `MetricKey`
+        // (empty label set == unlabeled) — this is *why* the custom-bucket
+        // empty-labeled construction works as the crate's de facto unlabeled
+        // custom-bucket entry point.
+        let name_spur = registry
+            .interner()
+            .intern(NEBULA_RESOURCE_ACQUIRE_WAIT_DURATION_SECONDS);
+        let unlabeled_series = registry
+            .snapshot_histograms()
+            .into_iter()
+            .filter(|(k, _)| k.name == name_spur && k.labels.is_empty())
+            .count();
+        assert_eq!(
+            unlabeled_series, 1,
+            "the acquire-wait histogram must be the sole unlabeled series under its name"
+        );
+    }
+
+    // ── C5: leak-detection counter ──────────────────────────────────────────
+
+    #[test]
+    fn record_leak_detected_increments() {
+        let registry = MetricsRegistry::new();
+        let metrics = ResourceOpsMetrics::new(&registry).unwrap();
+        assert_eq!(metrics.snapshot().leaks_detected, 0);
+        metrics.record_leak_detected();
+        metrics.record_leak_detected();
+        assert_eq!(metrics.snapshot().leaks_detected, 2);
     }
 }

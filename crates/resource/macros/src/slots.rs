@@ -7,9 +7,11 @@
 //! 1. `#[derive(Resource)]` (this macro) — emits the slot plumbing:
 //!    - `impl DeclaresDependencies` enumerating `#[credential]` slot fields.
 //!    - An inherent `pub fn <field>_slot(&self) -> Option<Arc<...>>` accessor per slot.
-//!    - `impl HasCredentialSlots` with the order-sensitive positional fold
-//!      and a `declares_credential_slots()` that is `true` iff the struct
-//!      has at least one `#[credential]` field.
+//!    - `impl HasCredentialSlots` with the order-sensitive positional fold,
+//!      a `declares_credential_slots()` that is `true` iff the struct has at
+//!      least one `#[credential]` field, and a `credential_slot_names()`
+//!      listing every declared slot key (used by
+//!      `Manager::refresh_slot`/`taint_slot`'s unknown-slot validation).
 //!
 //! 2. Hand-written `impl Provider` — the implementor supplies `key()`, the two
 //!    associated types (`Config`, `Instance`), and the lifecycle methods
@@ -33,8 +35,8 @@
 //!
 //! Deriving on a struct with no `#[credential]` fields is legal. The macro
 //! emits empty `DeclaresDependencies` and `HasCredentialSlots { fn
-//! credential_slot_epoch → 0, fn declares_credential_slots → false }`
-//! implementations. No accessors are emitted.
+//! credential_slot_epoch → 0, fn declares_credential_slots → false, fn
+//! credential_slot_names → &[] }` implementations. No accessors are emitted.
 //!
 //! ## Rejected forms
 //!
@@ -103,6 +105,13 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
     // `#[credential]` field. Emitted explicitly (rather than relying on the
     // trait default) so the slot-less case reads `false` at the impl site.
     let declares_credential_slots = !slots.is_empty();
+    // A4 unknown-slot validation: the real declared slot-key list, in field
+    // declaration order — each `quote!{ #slot_key }` on a `String` emits a
+    // `&'static str` literal token.
+    let slot_key_literals: Vec<String> = slots
+        .iter()
+        .map(field_slots::ParsedCredentialSlot::slot_key)
+        .collect();
 
     let has_credential_slots_impl = quote! {
         impl #impl_generics ::nebula_resource::HasCredentialSlots for #struct_name #ty_generics #where_clause {
@@ -112,6 +121,10 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
 
             fn declares_credential_slots() -> bool {
                 #declares_credential_slots
+            }
+
+            fn credential_slot_names() -> &'static [&'static str] {
+                &[#(#slot_key_literals),*]
             }
         }
     };

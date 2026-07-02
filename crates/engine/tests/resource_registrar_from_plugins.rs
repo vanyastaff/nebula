@@ -138,11 +138,7 @@ impl Provider for DemoResource {
 
 impl nebula_core::DeclaresDependencies for DemoResource {}
 
-impl nebula_resource::HasCredentialSlots for DemoResource {
-    fn credential_slot_epoch(&self) -> u64 {
-        0
-    }
-}
+nebula_resource::no_credential_slots!(DemoResource);
 
 impl resident::ResidentProvider for DemoResource {
     fn is_alive_sync(&self, runtime: &Arc<AtomicU64>) -> bool {

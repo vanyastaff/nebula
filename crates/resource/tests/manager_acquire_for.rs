@@ -30,7 +30,7 @@ use nebula_resource::{
     AcquireOptions, Manager, Provider, RegisterOptions, RegistrationSpec, ResourceConfig,
     ResourceContext, SlotIdentity,
     error::Error,
-    resource::{HasCredentialSlots, ResourceMetadata},
+    resource::ResourceMetadata,
     topology::{Resident, pooled::BrokenCheck},
 };
 use tokio_util::sync::CancellationToken;
@@ -89,11 +89,7 @@ impl Provider for PoolRes {
     }
 }
 
-impl HasCredentialSlots for PoolRes {
-    fn credential_slot_epoch(&self) -> u64 {
-        0
-    }
-}
+nebula_resource::no_credential_slots!(PoolRes);
 
 impl PoolProvider for PoolRes {
     fn is_broken(&self, _runtime: &u64) -> BrokenCheck {
@@ -249,11 +245,7 @@ impl Provider for ResRes {
     }
 }
 
-impl HasCredentialSlots for ResRes {
-    fn credential_slot_epoch(&self) -> u64 {
-        0
-    }
-}
+nebula_resource::no_credential_slots!(ResRes);
 
 #[async_trait::async_trait]
 impl ResidentProvider for ResRes {

@@ -114,11 +114,7 @@ impl Provider for Ctl {
     }
 }
 
-impl nebula_resource::HasCredentialSlots for Ctl {
-    fn credential_slot_epoch(&self) -> u64 {
-        0
-    }
-}
+nebula_resource::no_credential_slots!(Ctl);
 
 #[async_trait::async_trait]
 impl ResidentProvider for Ctl {

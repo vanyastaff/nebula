@@ -1,354 +1,128 @@
 # nebula-resource — Pooling
 
-[`PoolRuntime<R>`] is the runtime side of the `Pooled` topology. It manages a
-bounded set of `R::Runtime` instances with semaphore-controlled access,
-idle/lifetime expiry, FIFO/LIFO checkout ordering, configurable warmup, and
-optional per-checkout health probes. The corresponding trait is
-[`Pooled`](crate::topology::pooled::Pooled), and the configuration object is
-[`PoolConfig`].
+`Pooled<R>` is the runtime side of the pool topology (`crate::runtime::pool`,
+re-exported as `nebula_resource::Pooled`). It manages a bounded set of
+`R::Instance`s with semaphore-controlled access, idle/lifetime expiry,
+FIFO/LIFO checkout ordering, configurable warmup, and optional per-checkout
+health probes over the framework-owned `InstanceStore`. The author-facing
+hook trait is `PoolProvider` (`crate::topology::pooled`); the configuration
+type is `PoolConfig` (`crate::topology::pooled::config::Config`).
+
+This page is a prose field reference — for the trait shape and a runnable
+skeleton, see [`topology-reference.md`](topology-reference.md#pool); for the
+full derive → register → acquire flow, see the doctest on `Manager::register`.
 
 ---
 
-## Table of Contents
+## How the pool works
 
-- [How the Pool Works](#how-the-pool-works)
-- [PoolConfig Reference](#poolconfig-reference)
-- [Idle Selection Strategy](#idle-selection-strategy)
-- [Warmup Strategy](#warmup-strategy)
-- [Test On Checkout](#test-on-checkout)
-- [PoolStats](#poolstats)
-- [Lifecycle of an Instance](#lifecycle-of-an-instance)
-- [Configuration Examples](#configuration-examples)
+**Acquire** (`Manager::acquire_pooled`, or `acquire_pooled_for_identity` for
+credential-bound routes):
 
----
-
-## How the Pool Works
-
-```text
-PoolRuntime<R>
-  ├── idle_queue: VecDeque<IdleEntry<R::Runtime>>   // ordered by checkout strategy
-  ├── semaphore:  Semaphore (max_size permits)      // bounds in-flight + idle
-  ├── active:     AtomicUsize
-  └── waiters:    AtomicUsize
-```
-
-**Acquire** (`Manager::acquire_pooled`, or `acquire_pooled_for_identity` for credential-bound routes):
-
-1. Atomically increment waiter count (RAII counter).
-2. Acquire one semaphore permit (waits up to `AcquireOptions::remaining()`
-   if a deadline is set, otherwise `PoolConfig::create_timeout`).
-3. Pop from `idle_queue` (`Lifo`: back / `Fifo`: front, per
+1. Non-blocking concurrency gate (`Topology::try_reserve`) — a semaphore
+   permit, bounded by `PoolConfig::max_size`.
+2. Pop from the idle queue (`Lifo`: most-recently-used / `Fifo`: oldest, per
    `PoolConfig::strategy`).
-4. If `test_on_checkout` is true, call `Resource::check`. Discard on `Err`.
-5. If no idle instance (or all discarded), call `Resource::create` —
-   bounded by `max_concurrent_creates` to prevent thundering on the backend.
-6. Wrap the runtime in a [`ResourceGuard`] with a release callback.
-7. Emit `ResourceEvent::AcquireSuccess { duration }`.
+3. If `test_on_checkout` is `true`, run `Provider::check`; discard on `Err`.
+4. If no idle instance survived, call `Provider::create` — bounded by
+   `max_concurrent_creates` so a burst of concurrent acquires cannot fan out
+   into unbounded parallel creates against a fragile backend.
+5. Wrap the instance in a `ResourceGuard` (release callback attached).
 
 **Release** (`ResourceGuard` drop):
 
-- If `taint()` was called: skip recycle, call `Resource::destroy` via the
-  `ReleaseQueue`, emit `ResourceEvent::Released { tainted: true, .. }`.
-- Otherwise: call `Pooled::recycle` synchronously to obtain a
-  `RecycleDecision`:
-  - `Keep` → `Pooled::is_broken` runs; if `Healthy`, push back to
-    `idle_queue` and release the semaphore permit.
-  - `Drop` → `Resource::destroy` via the `ReleaseQueue`; semaphore permit
-    released.
-- Emit `ResourceEvent::Released { held, tainted }`.
+- Tainted (`guard.taint()` called) → skip recycle, `Provider::destroy` via
+  the `ReleaseQueue`.
+- Otherwise → `PoolProvider::recycle` decides `Keep` (pushed back to the idle
+  queue, subject to the revoke-epoch fence) or `Drop` (destroyed).
+- A resource that declares `#[credential]` slots is **discarded by default**
+  on release rather than re-pooled (cross-lease state bleed prevention) —
+  override `recycle` to wipe per-lease state and return `Keep` to actually
+  pool a credentialed connection.
 
-**Background maintenance** (`maintenance_interval`):
-
-- Sweeps the idle queue. Instances older than `max_lifetime` or idle longer
-  than `idle_timeout` are evicted via `Resource::destroy`.
+**Background maintenance** (`maintenance_interval`): sweeps the idle queue;
+instances past `idle_timeout` or `max_lifetime` are evicted via
+`Provider::destroy`. `max_lifetime` eviction uses a small per-entry jitter
+(`[0.95 × max_lifetime, max_lifetime]`, drawn once at creation) so a warmup
+cohort created in the same instant does not all expire on the same
+maintenance tick.
 
 ---
 
-## PoolConfig Reference
-
-```rust,ignore
-use std::time::Duration;
-use nebula_resource::PoolConfig;
-use nebula_resource::topology::pooled::{PoolStrategy, WarmupStrategy};
-```
-
-The struct (`crate::topology::pooled::config::Config`, re-exported as
-`nebula_resource::PoolConfig`):
-
-```rust,ignore
-pub struct PoolConfig {
-    pub min_size:               u32,
-    pub max_size:               u32,
-    pub idle_timeout:           Option<Duration>,
-    pub max_lifetime:           Option<Duration>,
-    pub create_timeout:         Duration,
-    pub strategy:               PoolStrategy,
-    pub warmup:                 WarmupStrategy,
-    pub test_on_checkout:       bool,
-    pub maintenance_interval:   Duration,
-    pub max_concurrent_creates: u32,
-}
-```
+## `PoolConfig` field reference
 
 | Field | Default | Effect |
 |-------|---------|--------|
-| `min_size` | `1` | Pool proactively maintains at least this many idle instances (driven by `WarmupStrategy` at startup). |
-| `max_size` | `10` | Hard cap on instances (idle + checked out). Acquires beyond this wait on the semaphore. |
+| `min_size` | `1` | The pool's warmup target — see [Warmup strategy](#warmup-strategy). |
+| `max_size` | `10` | Hard cap on instances (idle + checked out). Acquires beyond this wait on the semaphore. Rejected at construction if `0` (would deadlock the checkout semaphore) — use `Pooled::try_new` on any config sourced from operator/JSON input. |
 | `idle_timeout` | `Some(5 min)` | Evicts instances idle longer than this. `None` disables idle eviction. |
-| `max_lifetime` | `Some(30 min)` | Evicts instances older than this regardless of idle time. `None` disables. |
-| `create_timeout` | `30 s` | Per-call timeout for `Resource::create`. |
-| `strategy` | `Lifo` | `Lifo` (hot working set) or `Fifo` (even spread). See [Idle Selection Strategy](#idle-selection-strategy). |
-| `warmup` | `WarmupStrategy::None` | Pre-create instances at pool startup. See [Warmup Strategy](#warmup-strategy). |
-| `test_on_checkout` | `false` | If `true`, runs `Resource::check` on each checkout; `Err` discards the instance and creates fresh. |
+| `max_lifetime` | `Some(30 min)` | Evicts instances older than this (± the jitter band above). `None` disables. |
+| `create_timeout` | `30 s` | Per-call timeout for `Provider::create`. |
+| `strategy` | `Lifo` | `Lifo` (hot working set) or `Fifo` (even spread) — see [Idle selection strategy](#idle-selection-strategy). |
+| `warmup` | `None` (no eager warmup) | Pre-create instances at pool startup — see [Warmup strategy](#warmup-strategy). |
+| `test_on_checkout` | `false` | If `true`, runs `Provider::check` on every checkout; `Err` discards and recreates. |
 | `maintenance_interval` | `30 s` | Background sweep interval for idle/lifetime eviction. |
-| `max_concurrent_creates` | `3` | Caps concurrent `Resource::create` calls during cold-start / warmup. |
+| `max_concurrent_creates` | `3` | Caps concurrent `Provider::create` calls during cold-start / warmup. |
 
-`PoolConfig::default()` produces a sensible starting point; tune `min_size`/
-`max_size`/`max_lifetime` against your backend's connection-budget and TTL.
-
-`PoolConfig::validate()` enforces `min_size <= max_size` and non-zero
-`max_size`. `PoolRuntime::try_new` calls it implicitly, so an invalid
-config surfaces as a typed error at runtime construction — before
-`Manager::register` ever sees the `TopologyRuntime::Pool(...)` value.
-
----
-
-## Idle Selection Strategy
-
-```rust,ignore
-pub enum PoolStrategy {
-    Lifo,   // pop_back  — return most recently used instance (default)
-    Fifo,   // pop_front — return oldest idle instance
-}
-```
-
-### When to use LIFO (default)
-
-- Keeps a small "hot" working set active; lets excess idle instances expire
-  naturally via `idle_timeout`.
-- Ideal when `min_size` is much smaller than `max_size` and load is bursty:
-  most requests hit the same few connections; the rest idle out.
-- PostgreSQL connection pools behind PgBouncer often benefit from LIFO.
-
-### When to use FIFO
-
-- Equal distribution across all pooled instances.
-- Prevents any single connection from going stale under steady load.
-- Use when all instances have equivalent cost AND the pool is consistently
-  near-full utilisation.
+`PoolConfig::default()` is a sensible starting point; tune `min_size` /
+`max_size` / `max_lifetime` against your backend's connection budget and TTL.
+`Pooled::try_new` (the registration-path constructor) rejects
+`min_size > max_size` or `max_size == 0` as a typed `Error::permanent` rather
+than deadlocking on first acquire; `Pooled::new` asserts the same invariants
+for compile-time-known configs (doctests, fixtures).
 
 ---
 
-## Warmup Strategy
+## Idle selection strategy
 
-`WarmupStrategy` controls how `min_size` instances are created at pool
-startup:
+`Lifo` (default) keeps a small "hot" working set active and lets excess idle
+instances expire naturally via `idle_timeout` — good when `min_size` is much
+smaller than `max_size` and load is bursty (e.g. a PostgreSQL pool behind
+PgBouncer). `Fifo` distributes evenly across all pooled instances, preventing
+any single connection from going stale under steady, near-full utilization.
 
-```rust,ignore
-pub enum WarmupStrategy {
-    None,                                    // create on demand (default)
-    Sequential,                              // one at a time
-    Parallel,                                // all at once
-    Staggered { interval: Duration },        // with delay between creations
-}
-```
+---
 
-- `None` — first acquire pays the cold-start cost. Cheapest, slowest first
-  request.
-- `Sequential` — `min_size` instances created back-to-back at the first
-  `Manager::acquire_pooled` (or via the warmup hook on the pool runtime).
+## Warmup strategy
+
+Controls how instances are created at pool startup, up to `min_size`:
+
+- **None** (default) — first acquire pays the cold-start cost.
+- **Sequential** — instances created back-to-back, on the first acquire.
   Predictable startup latency.
-- `Parallel` — fastest warmup but spikes connection count; verify the
+- **Parallel** — fastest warmup but spikes connection count; verify the
   backend tolerates it.
-- `Staggered { interval }` — connection rate-limited startup. Use when the
-  backend has connection-rate caps (e.g., shared cloud DB).
+- **Staggered (interval)** — connection-rate-limited startup, for a backend
+  with connection-rate caps.
 
-`max_concurrent_creates` clamps `Parallel` and the active count for
-`Staggered` to avoid overwhelming the backend.
-
----
-
-## Test On Checkout
-
-`test_on_checkout: true` runs `Resource::check` on every checkout. If
-`check` returns `Err`, the instance is discarded and a fresh one is
-created:
-
-```rust,ignore
-PoolConfig { test_on_checkout: true, ..PoolConfig::default() }
-```
-
-**Cost:** one round-trip per acquire. **Benefit:** never hand out a dead
-connection. Use when:
-
-- Your driver's `Resource::is_broken` cannot detect TCP-half-open or
-  server-side timeouts cheaply.
-- The cost of a failed query (caller-side retry, transaction abort) is
-  much higher than a connection-test ping.
-
-For most adapters, prefer letting `Pooled::is_broken` (synchronous, runs
-in `Drop`) handle obvious closures and skip `test_on_checkout`.
+`max_concurrent_creates` clamps `Parallel` and bounds `Staggered`'s active
+count regardless of the chosen strategy.
 
 ---
 
-## PoolStats
+## Test on checkout
 
-`Manager::lookup::<R>(scope)?.topology()` returns the `TopologyRuntime<R>`
-variant; `PoolRuntime<R>::stats()` exposes runtime counters:
-
-```rust,ignore
-pub struct PoolStats {
-    pub active:                 usize,    // currently checked out
-    pub idle:                   usize,    // in idle_queue
-    pub waiters:                usize,    // blocked on the semaphore
-    pub total_acquisitions:     u64,
-    pub total_creations:        u64,
-    pub total_destroys:         u64,
-}
-```
-
-For aggregate cross-pool counters, use `Manager::metrics()` — see
-[`api-reference.md`](api-reference.md) for `ResourceOpsMetrics` /
-`ResourceOpsSnapshot`.
+`test_on_checkout: true` runs `Provider::check` on every checkout and
+discards+recreates on `Err`. Costs one round-trip per acquire; use it when
+`PoolProvider::is_broken` (sync, no I/O) cannot detect TCP-half-open or
+server-side timeouts cheaply, or when the cost of a failed downstream call
+is much higher than a connection-test ping. For most adapters, prefer
+letting the cheap synchronous `is_broken` check (runs in `Drop`) handle
+obvious closures and skip `test_on_checkout`.
 
 ---
 
-## Lifecycle of an Instance
+## `PoolStats`
 
-```text
-Resource::create(&self, config, ctx)   (credential slots pre-populated on &self)
-  │
-  ▼ [instance enters pool, idle_queue.push_back]
-  │
-  ├─ idle in VecDeque
-  │    │ idle_timeout exceeded     → Resource::destroy (background sweep)
-  │    │ max_lifetime exceeded     → Resource::destroy (background sweep)
-  │    └─ test_on_checkout enabled → Resource::check on each checkout
-  │         └─ Err                 → Resource::destroy + create fresh
-  │
-  ├─ checked out (ResourceGuard held by caller)
-  │    │ guard.taint() called      → Resource::destroy via ReleaseQueue
-  │    └─ guard dropped            → Pooled::recycle:
-  │         ├─ RecycleDecision::Keep + is_broken=Healthy → push back to idle
-  │         └─ RecycleDecision::Drop OR is_broken=Broken → Resource::destroy
-  │
-  └─ Manager::graceful_shutdown    → drain in-flight + Resource::destroy on idle
-```
-
-`Resource::destroy` runs through `ReleaseQueue` (per-Manager background
-worker pool) so caller-side drop is non-blocking. See `recovery.md` for
-the `RecoveryGate` interaction when `is_broken` returns `Broken` repeatedly.
+`Manager::pool_stats::<R>(scope)` returns a point-in-time snapshot
+(`idle`, `capacity`, `available_permits`, `in_use`). For aggregate
+cross-pool counters, use `Manager::metrics()` (`ResourceOpsMetrics` /
+`ResourceOpsSnapshot`).
 
 ---
 
-## Configuration Examples
+## See also
 
-### Minimal — defaults
-
-```rust,ignore
-use nebula_resource::PoolConfig;
-
-let config = PoolConfig::default();
-// min_size=1, max_size=10, idle=5min, lifetime=30min, Lifo, no warmup,
-// no test_on_checkout, maintenance every 30s, max_concurrent_creates=3
-```
-
-### High-throughput API backend
-
-```rust,ignore
-use std::time::Duration;
-use nebula_resource::PoolConfig;
-use nebula_resource::topology::pooled::{PoolStrategy, WarmupStrategy};
-
-PoolConfig {
-    min_size: 5,
-    max_size: 50,
-    idle_timeout: Some(Duration::from_secs(300)),
-    max_lifetime: Some(Duration::from_secs(3600)),
-    create_timeout: Duration::from_secs(5),
-    strategy: PoolStrategy::Lifo,
-    warmup: WarmupStrategy::Parallel,
-    max_concurrent_creates: 10,
-    ..PoolConfig::default()
-}
-```
-
-### Single-tenant background worker
-
-```rust,ignore
-PoolConfig {
-    min_size: 1,
-    max_size: 3,
-    idle_timeout: Some(Duration::from_secs(600)),
-    strategy: PoolStrategy::Fifo,
-    ..PoolConfig::default()
-}
-```
-
-### Cloud backend with connection-rate caps
-
-```rust,ignore
-PoolConfig {
-    min_size: 5,
-    max_size: 25,
-    warmup: WarmupStrategy::Staggered {
-        interval: Duration::from_millis(500),
-    },
-    max_concurrent_creates: 1,    // serial cold-start to respect rate limits
-    ..PoolConfig::default()
-}
-```
-
-### Strict health verification (test on each checkout)
-
-```rust,ignore
-PoolConfig {
-    test_on_checkout: true,
-    ..PoolConfig::default()
-}
-```
-
----
-
-## Integration with Resilience
-
-Per-acquire timeout / retry composes one layer up (action handler /
-engine activity / caller-supplied `nebula-resilience` pipeline) — the
-manager-side `AcquireResilience` wrapper was removed (peer Rust pools
-— sqlx, deadpool, bb8 — all ship acquire-timeout only). Acquire-timeout
-itself lives on the topology config (`create_timeout` field on the pool
-config).
-
-`RecoveryGate` is the remaining manager-level resilience seam: a
-CAS-based single-probe admission that prevents thundering-herd against
-a flapping backend. Wire it through `RegistrationSpec::recovery_gate`:
-
-```rust,ignore
-use std::sync::Arc;
-use nebula_resource::{
-    Manager, PoolRuntime, RegistrationSpec, ScopeLevel, TopologyRuntime,
-    dedup::SlotIdentity,
-    recovery::{RecoveryGate, RecoveryGateConfig},
-    topology::pooled::config::Config as PoolConfig,
-};
-
-let gate = Arc::new(RecoveryGate::new(RecoveryGateConfig::default()));
-let pool_rt = PoolRuntime::<PostgresResource>::try_new(
-    PoolConfig::default(),
-    pg_config.fingerprint(),
-)?;
-
-manager.register(RegistrationSpec {
-    resource: PostgresResource,
-    config: pg_config,
-    scope: ScopeLevel::Global,
-    slot_identity: SlotIdentity::Unbound,
-    topology: TopologyRuntime::Pool(pool_rt),
-    acquire: Manager::erased_acquire_pooled_for::<PostgresResource>(),
-    recovery_gate: Some(gate),
-})?;
-```
-
-See [`api-reference.md`](api-reference.md) for the `RegistrationSpec`
-public fields and [`recovery.md`](recovery.md) for `RecoveryGate`
-behaviour (state machine + thundering-herd admission semantics).
+- [`topology-reference.md`](topology-reference.md#pool) — trait skeleton, registration shape, friction points.
+- [`recovery.md`](recovery.md) — thundering-herd protection for a flapping backend.
+- The crate-root "Tuning" rustdoc section — the full config-knob table across all topologies.

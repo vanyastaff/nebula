@@ -551,6 +551,14 @@ fn compute_backoff(base: Duration, attempt: u32) -> Duration {
     Duration::from_millis(backoff_millis.min(max_millis))
 }
 
+/// Spread of [`apply_equal_jitter`]'s band below `nominal` — `0.5` means
+/// `[nominal/2, nominal]` ("equal jitter"), the classic AWS retry-jitter
+/// spread. See [`crate::jitter::apply_jitter`] for the shared algorithm and
+/// its other consumer (the pool reaper's smaller `max_lifetime` attenuation,
+/// C3), which is *why* the spread is a parameter there rather than
+/// hardcoded here.
+const EQUAL_JITTER_SPREAD: f64 = 0.5;
+
 /// Spreads a nominal backoff uniformly over `[nominal/2, nominal]`
 /// ("equal jitter").
 ///
@@ -562,24 +570,12 @@ fn compute_backoff(base: Duration, attempt: u32) -> Duration {
 /// (`retry_at` never lands before `nominal/2`, never after `nominal`, so
 /// the [`MAX_BACKOFF`] cap still holds).
 ///
-/// Entropy is [`std::hash::RandomState`] — per-instance random seeding from
-/// std, deliberately no `rand` dependency for one draw per *failed*
-/// recovery attempt (cold path). A zero nominal backoff stays zero, so
-/// zero-backoff tests remain deterministic.
+/// Thin wrapper over the shared [`crate::jitter::apply_jitter`] helper (also
+/// used by the pool reaper's `max_lifetime` attenuation, C3, at a much
+/// smaller spread) — see that function for the entropy source and the
+/// zero-nominal edge case.
 fn apply_equal_jitter(nominal: Duration) -> Duration {
-    use std::hash::{BuildHasher, RandomState};
-
-    let half_nanos = (nominal / 2).as_nanos() as u64;
-    if half_nanos == 0 {
-        return nominal;
-    }
-    // Uniform-enough draw in [0, half]: SipHash output of a fresh
-    // randomly-seeded RandomState. Modulo bias over a 64-bit draw is
-    // negligible for a retry spread.
-    let draw_nanos = RandomState::new().hash_one(0u64) % (half_nanos + 1);
-    // `draw <= half <= nominal`, so this never saturates; `saturating_sub`
-    // states the no-underflow intent without a panic path.
-    nominal.saturating_sub(Duration::from_nanos(draw_nanos))
+    crate::jitter::apply_jitter(nominal, EQUAL_JITTER_SPREAD)
 }
 
 #[cfg(test)]

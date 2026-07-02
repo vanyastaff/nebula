@@ -344,11 +344,7 @@ impl Provider for IntegrationProbeResource {
     }
 }
 
-impl nebula_resource::HasCredentialSlots for IntegrationProbeResource {
-    fn credential_slot_epoch(&self) -> u64 {
-        0
-    }
-}
+nebula_resource::no_credential_slots!(IntegrationProbeResource);
 
 #[async_trait::async_trait]
 impl ResidentProvider for IntegrationProbeResource {
@@ -670,11 +666,7 @@ mod shared_resource {
         }
     }
 
-    impl nebula_resource::HasCredentialSlots for TelegramBot {
-        fn credential_slot_epoch(&self) -> u64 {
-            0
-        }
-    }
+    nebula_resource::no_credential_slots!(TelegramBot);
 
     #[async_trait::async_trait]
     impl ResidentProvider for TelegramBot {
@@ -736,11 +728,7 @@ mod shared_resource {
         }
     }
 
-    impl nebula_resource::HasCredentialSlots for AlternateBot {
-        fn credential_slot_epoch(&self) -> u64 {
-            0
-        }
-    }
+    nebula_resource::no_credential_slots!(AlternateBot);
 
     #[async_trait::async_trait]
     impl ResidentProvider for AlternateBot {

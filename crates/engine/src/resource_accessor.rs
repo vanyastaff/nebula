@@ -230,11 +230,7 @@ mod tests {
         }
     }
 
-    impl nebula_resource::HasCredentialSlots for AccResource {
-        fn credential_slot_epoch(&self) -> u64 {
-            0
-        }
-    }
+    nebula_resource::no_credential_slots!(AccResource);
 
     #[async_trait::async_trait]
     impl ResidentProvider for AccResource {

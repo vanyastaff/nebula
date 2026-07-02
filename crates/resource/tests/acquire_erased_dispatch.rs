@@ -11,7 +11,7 @@ use nebula_resource::topology::resident::ResidentProvider;
 use nebula_resource::{
     AcquireOptions, Manager, RegistrationSpec, ResourceContext, ScopeLevel, SlotIdentity,
     error::Error,
-    resource::{HasCredentialSlots, Provider, ResourceConfig, ResourceMetadata},
+    resource::{Provider, ResourceConfig, ResourceMetadata},
 };
 use nebula_resource::{Pooled, Resident, ResidentConfig};
 use tokio_util::sync::CancellationToken;
@@ -66,11 +66,7 @@ impl Provider for ProbeResource {
     }
 }
 
-impl HasCredentialSlots for ProbeResource {
-    fn credential_slot_epoch(&self) -> u64 {
-        0
-    }
-}
+nebula_resource::no_credential_slots!(ProbeResource);
 
 #[async_trait::async_trait]
 impl ResidentProvider for ProbeResource {
@@ -325,11 +321,7 @@ mod pool_parity {
         }
     }
 
-    impl HasCredentialSlots for PoolParity {
-        fn credential_slot_epoch(&self) -> u64 {
-            0
-        }
-    }
+    nebula_resource::no_credential_slots!(PoolParity);
 
     impl PoolProvider for PoolParity {
         fn is_broken(&self, _runtime: &u64) -> BrokenCheck {
@@ -451,11 +443,7 @@ mod resident_erased_reuses_runtime {
         }
     }
 
-    impl HasCredentialSlots for ResidentReuse {
-        fn credential_slot_epoch(&self) -> u64 {
-            0
-        }
-    }
+    nebula_resource::no_credential_slots!(ResidentReuse);
 
     #[async_trait::async_trait]
     impl ResidentProvider for ResidentReuse {
@@ -574,11 +562,7 @@ mod pool_erased_distinct_instances {
         }
     }
 
-    impl HasCredentialSlots for PoolErased {
-        fn credential_slot_epoch(&self) -> u64 {
-            0
-        }
-    }
+    nebula_resource::no_credential_slots!(PoolErased);
 
     impl PoolProvider for PoolErased {
         fn is_broken(&self, _runtime: &u64) -> nebula_resource::topology::pooled::BrokenCheck {

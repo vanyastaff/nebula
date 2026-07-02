@@ -10,6 +10,10 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 documentation.workspace = true
+# Internal proc-macro crate for nebula-resource — never published standalone.
+# Guards against an accidental `cargo publish` leaking this adapter to
+# crates.io (matches the `publish = false` precedent on the parent crate).
+publish = false
 
 [lib]
 proc-macro = true

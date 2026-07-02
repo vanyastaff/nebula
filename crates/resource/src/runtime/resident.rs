@@ -2,16 +2,16 @@
 //!
 //! `Resident<R>` is the built-in framework resident topology. It holds a single
 //! shared runtime in a lock-free `Cell` and, on each acquire, clones it into an
-//! owned lease. It supplies the slot-centric [`Topology<R>`] hooks the framework
+//! owned lease. It supplies the entry-centric [`Topology<R>`] hooks the framework
 //! acquire loop drives:
 //!
-//! - `Slot = R::Instance` (the cloned shared handle the guard holds).
+//! - `Entry = R::Instance` (the cloned shared handle the guard holds).
 //! - `pools() == false`: a released clone is dropped, never pooled, so the
 //!   framework idle store stays empty and every acquire is an idle-miss that
-//!   calls `create_slot`.
-//! - `create_slot` clones the live master handle (building it under the create
+//!   calls `create_entry`.
+//! - `create_entry` clones the live master handle (building it under the create
 //!   lock on first acquire / after a failed liveness check).
-//! - `slot_instance` / `into_instance` are identity.
+//! - `entry_instance` / `into_instance` are identity.
 //! - `dispatch_credential_hook` runs the create-vs-rotate reconcile against the
 //!   master cell.
 //!
@@ -34,7 +34,7 @@ use crate::{
     cell::Cell,
     context::ResourceContext,
     error::Error,
-    resource::{HasCredentialSlots, Provider, TeardownReason},
+    resource::{Provider, TeardownReason},
     runtime::teardown::destroy_within,
     topology::{Ticket, Topology, Unavailable, resident::config::Config, store::InstanceStore},
     topology_tag::TopologyTag,
@@ -43,7 +43,7 @@ use crate::{
 /// Framework resident topology — one shared instance, clone on acquire.
 ///
 /// Holds a single shared runtime instance in a lock-free `Cell`. On acquire, the
-/// framework calls [`create_slot`](Topology::create_slot), which clones the live
+/// framework calls [`create_entry`](Topology::create_entry), which clones the live
 /// master handle (building it under the create lock on the first acquire or
 /// after a failed liveness check). The framework idle store stays empty —
 /// `pools()` is `false`, so a released clone is dropped, never recycled.
@@ -103,12 +103,29 @@ pub struct Resident<R: Provider> {
     /// Distinct from [`built_epoch`](Self::built_epoch) (credential rotation)
     /// and from `Pooled::current_fingerprint` (the pool is seeded with the
     /// fingerprint at construction; the resident instead derives it from the
-    /// live config the framework threads into every `create_slot`, so no
+    /// live config the framework threads into every `create_entry`, so no
     /// constructor or `set_fingerprint` change is needed).
     built_fingerprint: AtomicU64,
 }
 
-impl<R: Provider + HasCredentialSlots> Resident<R> {
+impl<R: Provider> std::fmt::Debug for Resident<R> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // `cell: Cell<R::Instance>` holds the live master handle with no
+        // `Debug` bound on `R::Instance` — report only whether it is
+        // populated, not its contents.
+        f.debug_struct("Resident")
+            .field("config", &self.config)
+            .field("is_initialized", &self.cell.is_some())
+            .field("built_epoch", &self.built_epoch.load(Ordering::Relaxed))
+            .field(
+                "built_fingerprint",
+                &self.built_fingerprint.load(Ordering::Relaxed),
+            )
+            .finish_non_exhaustive()
+    }
+}
+
+impl<R: Provider> Resident<R> {
     /// Creates a new resident topology with the given configuration.
     pub fn new(config: Config) -> Self {
         Self {
@@ -146,7 +163,7 @@ impl<R: Provider + HasCredentialSlots> Resident<R> {
     /// create-vs-rotate reconcile (per-resource revoke deferral / #680).
     ///
     /// Takes `create_lock` so it is **mutually excluded** with the
-    /// `create_slot` slow path: a rotation dispatch and a first-acquire create
+    /// `create_entry` slow path: a rotation dispatch and a first-acquire create
     /// can never interleave, which is what makes the reconcile exactly-once.
     /// Under the lock:
     ///
@@ -171,7 +188,20 @@ impl<R: Provider + HasCredentialSlots> Resident<R> {
     ///
     /// Propagates the resource's `on_credential_*` error; on a stale-reconcile
     /// failure the recorded epoch is deliberately not advanced so the next
-    /// dispatch re-attempts.
+    /// dispatch re-attempts. A hook that hangs or panics is bounded/isolated
+    /// (A3') and surfaces as a typed [`Error`] the same way.
+    ///
+    /// # Two-tier hook ceiling (A3')
+    ///
+    /// The hook dispatch below is bounded by
+    /// [`DEFAULT_AUTHOR_HOOK_CEILING`](crate::hook_guard::DEFAULT_AUTHOR_HOOK_CEILING)
+    /// *after* `create_lock` is already held — the ceiling times only the
+    /// author's hook body, never the lock-wait. `Manager::refresh_slot` /
+    /// `drain_and_revoke` additionally wrap the *whole* dispatch (lock-wait
+    /// included) in a looser framework-owned outer backstop. Deriving the
+    /// ceiling from author-set `Config::create_timeout` was rejected
+    /// (ADR-0093 Tier-1: the author must never extend the framework's own
+    /// budget) — this fixed constant is independent of it.
     pub(crate) async fn dispatch_resident_hook(
         &self,
         resource: &R,
@@ -214,10 +244,47 @@ impl<R: Provider + HasCredentialSlots> Resident<R> {
             );
         }
 
-        let res = if refresh {
-            resource.on_credential_refresh(slot, &runtime).await
+        // Bound + isolate the author hook itself — after `create_lock` is
+        // already held, so the ceiling times only the hook body (A3'; see
+        // the doc section above).
+        //
+        // SAFETY (unwind): `_guard` (the `create_lock` `MutexGuard`) is a
+        // local of this function, not captured by the wrapped future below,
+        // so a caught panic never unwinds past this call — `catch_unwind`
+        // stops at its own boundary and control returns here normally. The
+        // guard therefore still releases via its ordinary `Drop` at this
+        // function's return, never left held or torn.
+        let hook_op = if refresh {
+            "on_credential_refresh"
         } else {
-            resource.on_credential_revoke(slot, &runtime).await
+            "on_credential_revoke"
+        };
+        let res = match crate::hook_guard::guard_author_hook(
+            crate::hook_guard::DEFAULT_AUTHOR_HOOK_CEILING,
+            async {
+                if refresh {
+                    resource.on_credential_refresh(slot, &runtime).await
+                } else {
+                    resource.on_credential_revoke(slot, &runtime).await
+                }
+            },
+        )
+        .await
+        {
+            Ok(res) => res,
+            Err(fault) => {
+                fault.observe(&R::key(), "rotation");
+                Err(match fault {
+                    crate::hook_guard::HookFault::Panicked => Error::permanent(format!(
+                        "resident {hook_op} hook panicked — caught and isolated under \
+                         panic=unwind (fan-out not crashed); inert under panic=abort"
+                    )),
+                    crate::hook_guard::HookFault::TimedOut => Error::backpressure(format!(
+                        "resident {hook_op} hook did not complete within {:?}",
+                        crate::hook_guard::DEFAULT_AUTHOR_HOOK_CEILING
+                    )),
+                })
+            },
         };
 
         match res {
@@ -234,13 +301,13 @@ impl<R: Provider + HasCredentialSlots> Resident<R> {
 
 impl<R> Resident<R>
 where
-    R: crate::topology::resident::ResidentProvider + HasCredentialSlots + Send + Sync + 'static,
+    R: crate::topology::resident::ResidentProvider + Send + Sync + 'static,
     R::Instance: Clone + Send + Sync + 'static,
 {
     /// Clones the shared runtime, building it under the create lock on the
     /// first acquire / after a failed liveness check.
     ///
-    /// This is the body of [`Topology::create_slot`] for the resident: because
+    /// This is the body of [`Topology::create_entry`] for the resident: because
     /// `pools()` is `false`, the framework store stays empty and the framework
     /// calls this on **every** acquire — the clone-or-create logic lives here,
     /// not a fast/slow split in the framework loop.
@@ -343,9 +410,9 @@ where
 
 // ─── Topology impl for Resident ───────────────────────────────────────────────
 //
-// `Resident<R>` clones one shared instance on acquire. `Slot = R::Instance`,
+// `Resident<R>` clones one shared instance on acquire. `Entry = R::Instance`,
 // `pools() == false`, so the framework store stays empty and every acquire is an
-// idle-miss that calls `create_slot` (clone-or-create). The revoke fence cannot
+// idle-miss that calls `create_entry` (clone-or-create). The revoke fence cannot
 // reach the master cell (it is not in the store), so revoke teardown runs
 // through `dispatch_credential_hook`.
 
@@ -354,20 +421,19 @@ impl<R> Topology<R> for Resident<R>
 where
     R: Provider<Topology = Resident<R>>
         + crate::topology::resident::ResidentProvider
-        + HasCredentialSlots
         + Send
         + Sync
         + 'static,
     R::Instance: Clone + Send + Sync + 'static,
 {
-    type Slot = R::Instance;
+    type Entry = R::Instance;
 
     /// Always succeeds — resident is unbounded (one shared instance).
     fn try_reserve(&self, _store: &InstanceStore<R::Instance>) -> Result<Ticket, Unavailable> {
         Ok(Ticket::infallible())
     }
 
-    async fn create_slot(
+    async fn create_entry(
         &self,
         resource: &R,
         config: &R::Config,
@@ -376,12 +442,12 @@ where
         self.clone_or_create(resource, config, ctx).await
     }
 
-    fn slot_instance<'s>(&self, slot: &'s R::Instance) -> &'s R::Instance {
-        slot
+    fn entry_instance<'s>(&self, entry: &'s R::Instance) -> &'s R::Instance {
+        entry
     }
 
-    fn into_instance(&self, slot: R::Instance) -> R::Instance {
-        slot
+    fn into_instance(&self, entry: R::Instance) -> R::Instance {
+        entry
     }
 
     /// Resident does not pool: a released clone is dropped, never recycled, so
@@ -430,7 +496,7 @@ mod tests {
     use super::*;
     use crate::{
         context::ResourceContext,
-        resource::{HasCredentialSlots, ResourceConfig, ResourceMetadata},
+        resource::{ResourceConfig, ResourceMetadata},
         topology::resident::ResidentProvider,
     };
 
@@ -487,11 +553,7 @@ mod tests {
         }
     }
 
-    impl HasCredentialSlots for MockResident {
-        fn credential_slot_epoch(&self) -> u64 {
-            0
-        }
-    }
+    crate::no_credential_slots!(MockResident);
 
     impl ResidentProvider for MockResident {
         fn is_alive_sync(&self, _runtime: &u32) -> bool {
@@ -510,7 +572,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_slot_creates_on_first_call() {
+    async fn create_entry_creates_on_first_call() {
         let resource = MockResident::new();
         let rt = Resident::<MockResident>::new(Config::default());
         let ctx = test_ctx();
@@ -525,7 +587,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_slot_reuses_existing_instance() {
+    async fn create_entry_reuses_existing_instance() {
         let resource = MockResident::new();
         let rt = Resident::<MockResident>::new(Config::default());
         let ctx = test_ctx();
@@ -541,7 +603,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn concurrent_create_slot_creates_only_once() {
+    async fn concurrent_create_entry_creates_only_once() {
         let resource = MockResident::new();
         let rt = Arc::new(Resident::<MockResident>::new(Config::default()));
         let ctx = Arc::new(test_ctx());
@@ -642,11 +704,7 @@ mod tests {
         }
     }
 
-    impl HasCredentialSlots for HangingResident {
-        fn credential_slot_epoch(&self) -> u64 {
-            0
-        }
-    }
+    crate::no_credential_slots!(HangingResident);
 
     impl ResidentProvider for HangingResident {}
 
@@ -736,6 +794,19 @@ mod tests {
     impl crate::resource::HasCredentialSlots for SlotReadResident {
         fn credential_slot_epoch(&self) -> u64 {
             self.slot.generation()
+        }
+
+        // `slot` is a real `#[credential]`-shaped field — declaring it
+        // (final-review item 4) is the honest signal `#[derive(Resource)]`
+        // would emit for a struct with a `#[credential]` field, even though
+        // this fixture drives it directly via `clone_or_create` rather than
+        // through `Manager::refresh_slot`.
+        fn declares_credential_slots() -> bool {
+            true
+        }
+
+        fn credential_slot_names() -> &'static [&'static str] {
+            &["slot"]
         }
     }
 

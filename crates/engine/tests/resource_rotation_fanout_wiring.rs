@@ -110,11 +110,7 @@ impl Provider for Recording {
     }
 }
 
-impl nebula_resource::HasCredentialSlots for Recording {
-    fn credential_slot_epoch(&self) -> u64 {
-        0
-    }
-}
+nebula_resource::no_credential_slots!(Recording);
 
 #[async_trait::async_trait]
 impl ResidentProvider for Recording {

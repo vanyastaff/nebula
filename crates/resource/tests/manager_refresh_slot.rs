@@ -173,8 +173,26 @@ mod counting {
     }
 
     impl HasCredentialSlots for CountingResource {
+        // The fixture never mutates `db`'s generation in these tests (the
+        // dispatch hooks borrow the runtime, not the cell — see the field
+        // doc above), so the constant-0 epoch this crate's derive would
+        // compute from an untouched slot is preserved verbatim; only the
+        // declared-slot signal below changes.
         fn credential_slot_epoch(&self) -> u64 {
             0
+        }
+
+        // `db` is a real `#[credential]`-shaped slot field driven by
+        // `refresh_slot`/`revoke_slot(..., "db")` throughout this file —
+        // declaring it (final-review item 4) makes those calls exercise the
+        // real A4 unknown-slot validation path instead of skipping it via
+        // the permissive "declares no slots" gap.
+        fn declares_credential_slots() -> bool {
+            true
+        }
+
+        fn credential_slot_names() -> &'static [&'static str] {
+            &["db"]
         }
     }
 
@@ -243,10 +261,9 @@ mod counting {
         };
 
         let registry = Arc::new(nebula_metrics::MetricsRegistry::new());
-        let mgr = Manager::with_config(ManagerConfig {
-            metrics_registry: Some(Arc::clone(&registry)),
-            ..ManagerConfig::default()
-        });
+        let mgr = Manager::with_config(
+            ManagerConfig::default().with_metrics_registry(Arc::clone(&registry)),
+        );
         register_counting(&mgr, resource, RegisterOptions::default())
             .expect("resident registration must succeed");
 
@@ -1341,6 +1358,19 @@ mod u9_gate {
         fn credential_slot_epoch(&self) -> u64 {
             self.db.generation()
         }
+
+        // `db` is a real `#[credential]`-shaped slot field driven by
+        // `refresh_slot(..., "db")` below — declaring it (final-review item
+        // 4) makes those calls exercise the real A4 unknown-slot validation
+        // path instead of skipping it via the permissive "declares no
+        // slots" gap.
+        fn declares_credential_slots() -> bool {
+            true
+        }
+
+        fn credential_slot_names() -> &'static [&'static str] {
+            &["db"]
+        }
     }
 
     #[async_trait::async_trait]
@@ -1466,7 +1496,7 @@ mod reload_deferral {
         Manager, PoolConfig, Provider, RegistrationSpec, ReloadOutcome, ResidentConfig,
         ResourceConfig, ResourceContext, SlotIdentity,
         error::Error,
-        resource::{HasCredentialSlots, ResourceMetadata},
+        resource::ResourceMetadata,
         topology::{Pooled, Resident, pooled::PoolProvider, resident::ResidentProvider},
     };
 
@@ -1528,11 +1558,7 @@ mod reload_deferral {
                 }
             }
 
-            impl HasCredentialSlots for $name {
-                fn credential_slot_epoch(&self) -> u64 {
-                    0
-                }
-            }
+            nebula_resource::no_credential_slots!($name);
         };
     }
 

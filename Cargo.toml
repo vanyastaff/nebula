@@ -371,7 +371,10 @@ lto = "thin"       # Link-time optimization without ICE issues
 codegen-units = 16 # Parallel compilation, more stable than 1
 opt-level = 3      # Maximum optimization level
 strip = "symbols"  # Remove symbols for smaller binary
-panic = 'abort'    # Smaller binary, faster unwinding
+panic = 'abort'    # No unwind tables to generate/store: smaller binary. NOTE:
+                    # panics abort the process instead of unwinding — no Drop
+                    # runs, and any crate's catch_unwind-based panic isolation
+                    # (e.g. nebula-resource's guard_author_hook) is inert here.
 
 [profile.profiling]
 inherits = "release"
