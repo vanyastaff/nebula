@@ -298,56 +298,6 @@ impl std::fmt::Display for RefreshFailedContext {
 
 // ── Revoke failure ───────────────────────────────────────────────────────────
 
-/// Discriminated kind for a credential revocation error.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum RevokeErrorKind {
-    /// The provider explicitly rejected the revocation.
-    ProviderRejected,
-    /// Network-level failure during revocation.
-    Network,
-    /// The token was already revoked at the provider.
-    AlreadyRevoked,
-    /// Revocation is not supported for this credential type.
-    Unsupported,
-    /// Catch-all for other revocation errors.
-    Other,
-}
-
-/// Context struct for [`CredentialError::RevokeFailed`].
-///
-/// Each field is accessible only via the provided accessor methods — the
-/// struct is `#[non_exhaustive]` so future fields do not break callers.
-#[derive(Debug, Clone)]
-#[non_exhaustive]
-pub struct RevokeFailedContext {
-    kind: RevokeErrorKind,
-    cause: SecretFreeMessage,
-}
-
-impl RevokeFailedContext {
-    /// Construct with kind and a secret-free cause message.
-    pub fn new(kind: RevokeErrorKind, cause: SecretFreeMessage) -> Self {
-        Self { kind, cause }
-    }
-
-    /// The kind of revocation failure.
-    pub fn kind(&self) -> RevokeErrorKind {
-        self.kind
-    }
-
-    /// The secret-free cause message.
-    pub fn cause(&self) -> &SecretFreeMessage {
-        &self.cause
-    }
-}
-
-impl std::fmt::Display for RevokeFailedContext {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}: {}", self.kind, self.cause)
-    }
-}
-
 // ── Access errors ─────────────────────────────────────────────────────────────
 
 /// Error type for credential access operations.
@@ -403,7 +353,6 @@ pub enum CredentialAccessError {
 ///   [`ProviderErrorContext::new`] + accessors.
 /// - `RefreshFailed(Box<RefreshFailedContext>)` — boxed context; use
 ///   [`RefreshFailedContext::new`] + accessors.
-/// - `RevokeFailed(Box<RevokeFailedContext>)` — boxed context.
 /// - `SchemeMismatch(Box<SchemeMismatch>)` — boxed; carries two scheme-name strings.
 /// - `NotInteractive` — unit variant.
 /// - `InvalidInput(String)` — 24-byte string payload (ptr+len+cap); fits.
@@ -431,10 +380,6 @@ pub enum CredentialError {
     /// Refresh failed with structured error info.
     #[error("refresh failed: {0}")]
     RefreshFailed(Box<RefreshFailedContext>),
-
-    /// Credential revocation failed.
-    #[error("revoke failed: {0}")]
-    RevokeFailed(Box<RevokeFailedContext>),
 
     /// Operation requires an interactive credential, but this credential
     /// is non-interactive.
@@ -482,7 +427,7 @@ impl nebula_error::Classify for CredentialError {
             Self::Validation(s) => nebula_error::Classify::category(s.as_ref()),
             Self::NotInteractive => nebula_error::ErrorCategory::Unsupported,
             Self::Provider(_) => nebula_error::ErrorCategory::External,
-            Self::RefreshFailed(_) | Self::RevokeFailed(_) => nebula_error::ErrorCategory::External,
+            Self::RefreshFailed(_) => nebula_error::ErrorCategory::External,
             Self::SchemeMismatch(_) => nebula_error::ErrorCategory::Validation,
             Self::InvalidInput(_) => nebula_error::ErrorCategory::Validation,
             Self::Resolution(s) => nebula_error::Classify::category(s.as_ref()),
@@ -496,7 +441,6 @@ impl nebula_error::Classify for CredentialError {
             Self::NotInteractive => nebula_error::ErrorCode::new("CREDENTIAL:NOT_INTERACTIVE"),
             Self::Provider(_) => nebula_error::ErrorCode::new("CREDENTIAL:PROVIDER"),
             Self::RefreshFailed(_) => nebula_error::ErrorCode::new("CREDENTIAL:REFRESH_FAILED"),
-            Self::RevokeFailed(_) => nebula_error::ErrorCode::new("CREDENTIAL:REVOKE_FAILED"),
             Self::SchemeMismatch(_) => nebula_error::ErrorCode::new("CREDENTIAL:SCHEME_MISMATCH"),
             Self::InvalidInput(_) => nebula_error::ErrorCode::new("CREDENTIAL:INVALID_INPUT"),
             Self::Resolution(_) => nebula_error::ErrorCode::new("CREDENTIAL:RESOLUTION_FAILED"),
@@ -590,7 +534,6 @@ pub type Result<T> = std::result::Result<T, CredentialError>;
 //   Validation(Box<ValidationError>) — 8B pointer
 //   Provider(Box<ProviderErrorContext>) — 8B pointer
 //   RefreshFailed(Box<RefreshFailedContext>) — 8B pointer
-//   RevokeFailed(Box<RevokeFailedContext>)   — 8B pointer
 //   NotInteractive                   — 0B payload
 //   SchemeMismatch(Box<SchemeMismatch>) — 8B pointer
 //      (boxed: `SchemeMismatch` carries two `CompactString` scheme names,
