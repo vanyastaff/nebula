@@ -22,7 +22,6 @@ pub mod registry;
 pub mod resolve;
 mod revocable;
 mod state;
-mod static_protocol;
 mod testable;
 
 pub use any::AnyCredential;
@@ -39,5 +38,4 @@ pub use resolve::{
 };
 pub use revocable::Revocable;
 pub use state::CredentialState;
-pub use static_protocol::StaticProtocol;
 pub use testable::Testable;

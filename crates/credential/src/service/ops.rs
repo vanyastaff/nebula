@@ -561,9 +561,7 @@ where
             Box::pin(async move {
                 let response = execute_resolve::<C, PS>(values, ctx, pending)
                     .await
-                    .map_err(|e| CredentialServiceError::ValidationFailed {
-                        reason: format!("credential resolve failed: {e}"),
-                    })?;
+                    .map_err(executor_error_to_service_error)?;
                 match response {
                     ResolveResponse::Complete(state) => {
                         // Cleartext serialization for the encrypted-at-rest
@@ -607,9 +605,7 @@ where
             Box::pin(async move {
                 let response = execute_resolve::<C, PS>(values, ctx, pending)
                     .await
-                    .map_err(|e| CredentialServiceError::ValidationFailed {
-                        reason: format!("credential resolve failed: {e}"),
-                    })?;
+                    .map_err(executor_error_to_service_error)?;
                 map_resolve_response::<C>(response)
             }) as AcquireFuture<'_>
         },
@@ -763,6 +759,68 @@ where
     Ok(())
 }
 
+/// Map a framework [`ExecutorError`](crate::runtime::ExecutorError) from an
+/// `execute_resolve` / `execute_continue` call onto a `CredentialServiceError`,
+/// preserving the fault class instead of flattening everything to
+/// `ValidationFailed` (which the API renders as a client 400).
+///
+/// A resolve timeout is transient (503), a pending-store backend outage is
+/// internal (500), an absent / expired / already-consumed pending token means
+/// "restart the interactive flow" (401), and only a genuine input problem stays
+/// `validation` (400).
+fn executor_error_to_service_error(e: crate::runtime::ExecutorError) -> CredentialServiceError {
+    use crate::pending_store::PendingStoreError;
+    use crate::runtime::ExecutorError;
+    match e {
+        ExecutorError::Timeout { timeout } => CredentialServiceError::TransientProvider(format!(
+            "credential resolution timed out after {timeout:?}"
+        )),
+        ExecutorError::PendingStore(PendingStoreError::Backend(src)) => {
+            CredentialServiceError::Store(format!("pending store backend error: {src}"))
+        },
+        ExecutorError::PendingStore(PendingStoreError::ValidationFailed { reason }) => {
+            CredentialServiceError::ValidationFailed { reason }
+        },
+        ExecutorError::PendingStore(
+            PendingStoreError::NotFound
+            | PendingStoreError::Expired
+            | PendingStoreError::AlreadyConsumed,
+        ) => CredentialServiceError::PendingExpired,
+        ExecutorError::MissingSessionId => CredentialServiceError::SessionRequired {
+            capability: "resolve",
+        },
+        ExecutorError::Credential(ce) => credential_error_to_service_error(ce),
+        // Base `Credential::resolve` returned `Pending` — an internal contract
+        // violation (kickoffs must use the credential-specific helpers), not a
+        // client input error.
+        ExecutorError::BaseResolvePending => CredentialServiceError::Internal(
+            "base Credential::resolve returned Pending; interactive flows must use \
+             credential-specific kickoff helpers"
+                .to_owned(),
+        ),
+    }
+}
+
+/// Classify a [`CredentialError`](crate::CredentialError) surfaced by a
+/// credential implementation into a `CredentialServiceError`, keeping its
+/// transient / terminal / validation character rather than collapsing it to a
+/// blanket `ValidationFailed`.
+fn credential_error_to_service_error(e: crate::CredentialError) -> CredentialServiceError {
+    use nebula_error::{Classify, ErrorCategory};
+    if e.is_retryable() {
+        return CredentialServiceError::TransientProvider(e.to_string());
+    }
+    match e.category() {
+        ErrorCategory::Validation | ErrorCategory::NotFound => {
+            CredentialServiceError::ValidationFailed {
+                reason: e.to_string(),
+            }
+        },
+        ErrorCategory::External => CredentialServiceError::Provider(e.to_string()),
+        _ => CredentialServiceError::Internal(e.to_string()),
+    }
+}
+
 /// Map a `CredentialError` from a `Refreshable::refresh` call to a
 /// `CredentialServiceError`, preserving transience information so the
 /// fallback-on-interrupt path in `CredentialService::refresh` can
@@ -858,9 +916,15 @@ where
                     Ok(RefreshOutcomeKind::CoalescedReRead)
                 },
                 crate::RefreshOutcome::ReauthRequired(reason) => {
-                    Err(CredentialServiceError::Provider(format!(
-                        "credential refresh requires re-authentication: {reason:?}"
-                    )))
+                    // Typed re-auth signal — non-retryable (category `validation`),
+                    // so the facade's retry layer does not re-POST a rejected
+                    // grant. `credential_id` is empty here (the erased closure
+                    // sees only bytes + ctx); `CredentialService::refresh` fills
+                    // it from the id it holds before returning.
+                    Err(CredentialServiceError::ReauthRequired {
+                        credential_id: String::new(),
+                        reason,
+                    })
                 },
                 // `RefreshOutcome` is exhaustively matched here (this crate
                 // defines it). Adding a variant is a compile error at this
@@ -950,9 +1014,7 @@ where
             Box::pin(async move {
                 let response = execute_continue::<C, PS>(token, input, ctx, pending)
                     .await
-                    .map_err(|e| CredentialServiceError::ValidationFailed {
-                        reason: format!("credential continuation failed: {e}"),
-                    })?;
+                    .map_err(executor_error_to_service_error)?;
                 map_resolve_response::<C>(response)
             }) as AcquireFuture<'_>
         },

@@ -56,7 +56,7 @@
 //! - AES-256-GCM primitives (`EncryptedData`, `EncryptionKey`, `encrypt_with_aad`,
 //!   `encrypt_with_key_id`, `decrypt`, `decrypt_with_aad`) moved to `nebula-crypto`
 //!   (ADR-0088). The AAD-free `encrypt` path is intentionally not exposed (SEC-11).
-//! - `#[derive(Credential)]`, `#[derive(AuthScheme)]` — proc-macro derivations.
+//! - `#[credential]` (attribute), `#[derive(AuthScheme)]` — authoring macros.
 //!
 //! ## Security invariant (credential secrecy)
 //!
@@ -85,8 +85,6 @@ extern crate self as nebula_credential;
 pub mod contract;
 /// Built-in credential type implementations.
 pub mod credentials;
-/// Typed credential extension trait for capability contexts.
-pub mod ext;
 /// Credential lifecycle as data — `CredentialPolicy` / `RefreshStrategy` /
 /// `RevokeStrategy` (ADR-0088 D2: capabilities are data, not sub-traits).
 pub mod lifecycle;
@@ -94,9 +92,6 @@ pub mod lifecycle;
 pub mod metrics;
 /// External credential provider abstraction — delegation to external secret managers.
 pub mod provider;
-/// Credential rotation (blue-green, transaction, state machine).
-#[cfg(feature = "rotation")]
-pub mod rotation;
 /// Authentication scheme types — AuthScheme trait, AuthPattern, 12 built-in schemes.
 pub mod scheme;
 /// credential secrecy primitives — guards, zeroizing wrappers, PKCE + serde helpers (AES-256-GCM moved to nebula-crypto).
@@ -106,9 +101,9 @@ pub mod secrets;
 
 /// Credential accessor stub — NoopCredentialAccessor + default_credential_accessor.
 ///
-/// The allowlist-enforcing scoped accessor (`ScopedCredentialAccessor`) lives in
-/// this crate's `runtime` module (relocated from `nebula-engine` per ADR-0092);
-/// `nebula-engine` re-exports it for backward-compatible import paths.
+/// Engine execution enforces the per-action credential allowlist with its own
+/// `EngineCredentialAccessor` (`nebula-engine`); this crate supplies only the
+/// no-op default accessor.
 mod accessor;
 /// Audit trait and value types — [`AuditSink`], [`AuditEvent`],
 /// [`AuditOperation`], [`AuditResult`]. The audit decorator (`AuditLayer`)
@@ -170,7 +165,7 @@ pub use contract::resolve;
 pub use contract::{
     AnyCredential, Capabilities, Credential, CredentialRegistry, CredentialState, Dynamic,
     Interactive, NoPendingState, PendingState, PendingToken, Refreshable, RegisterError, Revocable,
-    StaticProtocol, Testable, compute_capabilities,
+    Testable, compute_capabilities,
 };
 // Resolve types
 pub use contract::{
@@ -191,14 +186,15 @@ pub use metrics::CredentialMetrics;
 pub use nebula_core::accessor::CredentialAccessor;
 // Domain identifiers — re-exported from nebula_core for discoverability.
 pub use nebula_core::{CredentialId, CredentialKey, credential_key};
-// Re-exported so `#[derive(Credential)]` can emit `::nebula_credential::schema_of`
+// Re-exported so `#[credential]` can emit `::nebula_credential::schema_of`
 // without forcing plugin authors onto a direct `nebula-schema` dependency
 // (schema-of properties: `Self::Properties: HasSchema` is the single source of truth).
 pub use nebula_schema::schema_of;
-// Derive + attribute macros. `credential` is the ADR-0088 D1 attribute macro
-// (one-impl-block authoring); `Credential` is the legacy derive kept during
-// the migration window.
-pub use nebula_credential_macros::{AuthScheme, Credential, credential};
+// Authoring macros. `credential` is the canonical ADR-0088 D1 attribute macro
+// (one-impl-block authoring); `AuthScheme` derives the scheme's `AuthPattern`.
+// (The legacy `#[derive(Credential)]` was removed — the attribute macro covers
+// every case and infers capabilities from method presence.)
+pub use nebula_credential_macros::{AuthScheme, credential};
 // Opt-out built-in (lives at root, not under credentials::, because it has
 // no Input form and is never registered in CredentialRegistry — it's a
 // Resource-side type marker per credential isolation).
@@ -259,9 +255,6 @@ pub use store::{CredentialStore, PutMode, ScopeResolver, StoreError, StoredCrede
 // Audit contract — trait + value types (decorator AuditLayer stays in nebula_storage::credential)
 pub use audit::{AuditEvent, AuditOperation, AuditResult, AuditSink};
 
-// Rotation (feature-gated)
-#[cfg(feature = "rotation")]
-pub use crate::rotation::{CredentialRotationEvent, RotationError, RotationResult};
 /// Back-compat alias: serde attribute paths
 /// `nebula_credential::serde_secret` and `nebula_credential::serde_secret::option`
 /// continue to resolve here after the `secrets/` submodule move.
@@ -272,11 +265,9 @@ pub use crate::{
     error::{
         CredentialAccessError, CredentialError, CryptoError, ProviderErrorContext,
         ProviderErrorKind, RefreshErrorKind, RefreshFailedContext, ResolutionStage, RetryAdvice,
-        RevokeErrorKind, RevokeFailedContext, SchemeIdentity, SchemeKind, SchemeMismatch,
-        SecretFreeMessage, ValidationError,
+        RevokeErrorKind, RevokeFailedContext, SchemeMismatch, SecretFreeMessage, ValidationError,
     },
     event::CredentialEvent,
-    ext::HasCredentialsExt,
     metadata::{
         CredentialMetadata, CredentialMetadataBuildError, CredentialMetadataBuilder,
         MetadataCompatibilityError,
@@ -309,8 +300,8 @@ pub mod prelude {
         AuthPattern, AuthScheme, Credential, CredentialContext, CredentialContextBuilder,
         CredentialError, CredentialGuard, CredentialHandle, CredentialId, CredentialKey,
         CredentialMetadata, CredentialPolicy, CredentialRecord, CredentialRegistry,
-        CredentialService, CredentialState, Dynamic, ExternalScheme, HasCredentialsExt,
-        Interactive, PublicScheme, Refreshable, Revocable, SecretString, SensitiveScheme, Testable,
-        credential, credential_key, schema_of,
+        CredentialService, CredentialState, Dynamic, ExternalScheme, Interactive, PublicScheme,
+        Refreshable, Revocable, SecretString, SensitiveScheme, Testable, credential,
+        credential_key, schema_of,
     };
 }

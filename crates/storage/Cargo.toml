@@ -30,9 +30,7 @@ chrono = { workspace = true }
 # parking_lot mutex for the in-memory CAS path.
 uuid = { workspace = true }
 parking_lot = { workspace = true }
-# Used for structured logging in layers (audit, cache) and rotation/backup
-# restore path. Credential-side rotation also carries `tracing`, so when the
-# `rotation` feature is enabled we inherit the same observability surface.
+# Used for structured logging in layers (audit, cache).
 tracing = { workspace = true }
 
 # Storage-local encoding / hashing / zeroizing — used directly by
@@ -81,10 +79,6 @@ rmp-serde = { version = "1", optional = true }
 [features]
 default = []
 credential-in-memory = []
-# `rotation` gates `RotationBackup` on storage's side and forwards to
-# `nebula-credential/rotation` so the backup type can reference credential's
-# rotation error / id types (ADR-0029 §4, ADR-0032).
-rotation = ["nebula-credential/rotation"]
 # Postgres backend. TLS is included by default because every managed
 # Postgres tier (RDS, Cloud SQL, Neon, Supabase, Azure) requires TLS —
 # without this, downstream consumers had to layer the TLS feature

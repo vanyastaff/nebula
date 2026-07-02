@@ -170,6 +170,13 @@ fn map_service_err(err: CredentialServiceError, cred: &str) -> ApiError {
         CredentialServiceError::Store(reason) => {
             ApiError::Internal(format!("credential store error: {reason}"))
         },
+        // Re-auth is a routine, client-actionable outcome (rejected grant /
+        // sentinel escalation / missing refresh material) — a 401 "reconnect",
+        // never a 500. The typed `reason` stays on the service error for
+        // programmatic consumers; the response avoids echoing provider detail.
+        CredentialServiceError::ReauthRequired { .. } => ApiError::Unauthorized(format!(
+            "credential '{cred}' requires re-authentication; reconnect the account"
+        )),
         // SessionRequired / ScopeViolation / Cancelled / CapabilityWithoutOps
         // are composition or defence-in-depth faults the api wiring prevents
         // (a session is always attached on the acquisition paths); surfacing

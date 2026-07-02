@@ -91,97 +91,43 @@ fn looks_like_secret(s: &str) -> bool {
 
 // ── Scheme classification ────────────────────────────────────────────────────
 
-/// Identifies a credential auth scheme by kind. Used in
-/// [`SchemeMismatch`] without leaking scheme-internal types into the
-/// error surface.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum SchemeKind {
-    /// Simple opaque bearer / API token.
-    SecretToken,
-    /// Username + password credential.
-    IdentityPassword,
-    /// OAuth 2 access/refresh token pair.
-    OAuth2Token,
-    /// Asymmetric key pair.
-    KeyPair,
-    /// TLS or mTLS certificate.
-    Certificate,
-    /// Request-signing key (HMAC / SigV4).
-    SigningKey,
-    /// Database or service connection URI.
-    ConnectionUri,
-    /// Cloud-provider instance metadata credential.
-    InstanceBinding,
-    /// Pre-shared symmetric key.
-    SharedKey,
-}
-
-impl std::fmt::Display for SchemeKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Debug::fmt(self, f)
-    }
-}
-
-/// Identity of an auth scheme on either side of a [`SchemeMismatch`].
+/// Scheme mismatch between what a consumer expects and what is actually
+/// present, identified by auth-scheme **name**.
 ///
-/// First-party schemes are referred to by their typed [`SchemeKind`]
-/// variant; plugin / third-party schemes are carried by their pattern
-/// name string (the snapshot layer only knows them by name, not by
-/// enum variant — see [`SchemeMismatch::by_name`]).
-#[derive(Debug, Clone)]
-#[non_exhaustive]
-pub enum SchemeIdentity {
-    /// A first-party scheme (compile-time-known variant).
-    Typed(SchemeKind),
-    /// A scheme identified by its pattern name (typically a plugin scheme
-    /// whose [`SchemeKind`] is not in the first-party enum).
-    Named(CompactString),
-}
-
-impl std::fmt::Display for SchemeIdentity {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Typed(k) => std::fmt::Display::fmt(k, f),
-            Self::Named(n) => f.write_str(n.as_str()),
-        }
-    }
-}
-
-/// Scheme mismatch between what a consumer expects and what is present.
+/// The materialization boundary
+/// ([`CredentialSnapshot::into_project`](crate::snapshot::CredentialSnapshot::into_project))
+/// knows schemes only by their pattern name, so both sides are carried as
+/// names. The canonical scheme taxonomy is
+/// [`nebula_core::auth::AuthPattern`](crate::AuthPattern); this type deliberately
+/// does **not** duplicate it — the earlier `SchemeKind` enum mirrored
+/// `AuthPattern` variant-for-variant yet was never populated on the live path.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct SchemeMismatch {
-    expected: SchemeIdentity,
-    actual: SchemeIdentity,
+    expected: CompactString,
+    actual: CompactString,
 }
 
 impl SchemeMismatch {
-    /// Construct from typed [`SchemeKind`] sides (first-party schemes).
-    pub fn new(expected: SchemeKind, actual: SchemeKind) -> Self {
-        Self {
-            expected: SchemeIdentity::Typed(expected),
-            actual: SchemeIdentity::Typed(actual),
-        }
-    }
-
-    /// Construct from pattern-name strings (used by the snapshot layer
-    /// which only knows plugin schemes by name).
+    /// Construct from auth-scheme pattern names — the names the snapshot layer
+    /// carries, for first-party and plugin schemes alike.
     pub fn by_name(expected: impl Into<CompactString>, actual: impl Into<CompactString>) -> Self {
         Self {
-            expected: SchemeIdentity::Named(expected.into()),
-            actual: SchemeIdentity::Named(actual.into()),
+            expected: expected.into(),
+            actual: actual.into(),
         }
     }
 
     /// The scheme the consumer expected.
-    pub fn expected(&self) -> &SchemeIdentity {
-        &self.expected
+    #[must_use]
+    pub fn expected(&self) -> &str {
+        self.expected.as_str()
     }
 
     /// The scheme that was actually present.
-    pub fn actual(&self) -> &SchemeIdentity {
-        &self.actual
+    #[must_use]
+    pub fn actual(&self) -> &str {
+        self.actual.as_str()
     }
 }
 
@@ -458,7 +404,7 @@ pub enum CredentialAccessError {
 /// - `RefreshFailed(Box<RefreshFailedContext>)` — boxed context; use
 ///   [`RefreshFailedContext::new`] + accessors.
 /// - `RevokeFailed(Box<RevokeFailedContext>)` — boxed context.
-/// - `SchemeMismatch(SchemeMismatch)` — inline (two `SchemeKind` bytes + tag ≤ 8 B).
+/// - `SchemeMismatch(Box<SchemeMismatch>)` — boxed; carries two scheme-name strings.
 /// - `NotInteractive` — unit variant.
 /// - `InvalidInput(String)` — 24-byte string payload (ptr+len+cap); fits.
 /// - `Crypto(Box<CryptoError>)` — boxed so the largest CryptoError variant
@@ -495,10 +441,9 @@ pub enum CredentialError {
     #[error("credential does not support interactive flows")]
     NotInteractive,
 
-    /// Scheme type mismatch between credential and resource. Boxed
-    /// because the inner `SchemeMismatch` now carries `SchemeIdentity`
-    /// variants that may hold a [`CompactString`] (plugin scheme name)
-    /// — keeping it inline would push the enum past the 32-byte cap.
+    /// Scheme type mismatch between credential and resource. Boxed because
+    /// the inner `SchemeMismatch` carries two [`CompactString`] scheme names —
+    /// keeping it inline would push the enum past the 32-byte cap.
     #[error("scheme mismatch: {0}")]
     SchemeMismatch(Box<SchemeMismatch>),
 
@@ -648,8 +593,8 @@ pub type Result<T> = std::result::Result<T, CredentialError>;
 //   RevokeFailed(Box<RevokeFailedContext>)   — 8B pointer
 //   NotInteractive                   — 0B payload
 //   SchemeMismatch(Box<SchemeMismatch>) — 8B pointer
-//      (was 2B payload pre-#732 fixup; boxed once `SchemeIdentity::Named`
-//      carries a `CompactString` so the inline form pushed past 32B).
+//      (boxed: `SchemeMismatch` carries two `CompactString` scheme names,
+//      so the inline form would push the enum past 32B).
 //   InvalidInput(String)             — 24B (ptr+len+cap)
 //   Resolution(Box<CoreError>)       — 8B pointer
 //
@@ -727,9 +672,9 @@ mod tests {
 
     #[test]
     fn scheme_mismatch_error() {
-        let err = CredentialError::SchemeMismatch(Box::new(SchemeMismatch::new(
-            SchemeKind::SecretToken,
-            SchemeKind::ConnectionUri,
+        let err = CredentialError::SchemeMismatch(Box::new(SchemeMismatch::by_name(
+            "SecretToken",
+            "ConnectionUri",
         )));
         assert!(err.to_string().contains("SecretToken"));
         assert!(err.to_string().contains("ConnectionUri"));

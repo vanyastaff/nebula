@@ -8,6 +8,8 @@
 
 use thiserror::Error;
 
+use crate::ReauthReason;
+
 /// Failure modes of the credential management facade. The API layer maps
 /// each `category` to an HTTP status; `code` is the stable machine label.
 #[derive(Debug, Error, nebula_error::Classify)]
@@ -120,6 +122,30 @@ pub enum CredentialServiceError {
     #[error("transient provider error during refresh: {0}")]
     TransientProvider(String),
 
+    /// The credential can no longer refresh itself and needs interactive
+    /// re-authentication — the IdP rejected the stored grant
+    /// ([`ReauthReason::ProviderRejected`]), the sentinel threshold escalated
+    /// ([`ReauthReason::SentinelRepeated`]), or the local state lacks refresh
+    /// material ([`ReauthReason::MissingRefreshMaterial`]).
+    ///
+    /// A routine OAuth2 outcome, **not** a server fault: classified
+    /// `validation` (a client-actionable 4xx "reconnect", never a retryable
+    /// 5xx) so a retry layer keyed on [`is_retryable`](nebula_error::Classify::is_retryable)
+    /// does not re-POST a dead grant, and the typed [`ReauthReason`] survives to
+    /// the API boundary instead of being flattened into a string.
+    ///
+    /// [`ReauthReason::ProviderRejected`]: crate::ReauthReason::ProviderRejected
+    /// [`ReauthReason::SentinelRepeated`]: crate::ReauthReason::SentinelRepeated
+    /// [`ReauthReason::MissingRefreshMaterial`]: crate::ReauthReason::MissingRefreshMaterial
+    #[classify(category = "validation", code = "CREDENTIAL_SERVICE:REAUTH_REQUIRED")]
+    #[error("credential {credential_id} requires re-authentication")]
+    ReauthRequired {
+        /// The credential id that needs re-authentication.
+        credential_id: String,
+        /// Why re-authentication is required (typed, for UI / metrics / audit).
+        reason: ReauthReason,
+    },
+
     /// The persistence layer failed.
     #[classify(category = "internal", code = "CREDENTIAL_SERVICE:STORE")]
     #[error("credential store error: {0}")]
@@ -208,5 +234,24 @@ mod tests {
     fn is_std_error() {
         fn assert_error<E: std::error::Error + Send + Sync + 'static>() {}
         assert_error::<CredentialServiceError>();
+    }
+
+    #[test]
+    fn reauth_required_is_validation_and_not_retryable() {
+        use nebula_error::Classify;
+        // Re-auth is client-actionable, not a server fault: it must classify
+        // `validation` (a 4xx "reconnect") and be non-retryable so the facade's
+        // retry layer does not re-POST a rejected grant (F14 / F23).
+        let e = CredentialServiceError::ReauthRequired {
+            credential_id: "cred-1".to_owned(),
+            reason: crate::ReauthReason::ProviderRejected {
+                detail: "invalid_grant".to_owned(),
+            },
+        };
+        assert_eq!(e.category(), nebula_error::ErrorCategory::Validation);
+        assert!(
+            !e.is_retryable(),
+            "re-authentication must not be retried — retrying re-POSTs a dead grant"
+        );
     }
 }
