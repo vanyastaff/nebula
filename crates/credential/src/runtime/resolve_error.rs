@@ -126,7 +126,7 @@ pub enum ResolveError {
         /// Why re-authentication is required.
         reason: ReauthReason,
     },
-    /// The service is configured with an external [`StateSource`](crate::service)
+    /// The service is configured with an external [`StateSource`](crate::StateSource)
     /// whose resolution bridge (ADR-0051) is not yet wired, so the resolver
     /// refuses to read local bytes. Fail-closed: never a silent local-store
     /// fallback. The facade maps this to
