@@ -16,6 +16,28 @@ fn has_nonempty_loader_key(loader: Option<&str>) -> bool {
     loader.is_some_and(|key| !key.trim().is_empty())
 }
 
+/// Advisory lint: `$root.foo` rule references still resolve but JSON Pointer is preferred.
+fn lint_legacy_root_reference(field_ref: &str, path: &FieldPath, report: &mut ValidationReport) {
+    let Some(rest) = field_ref.strip_prefix("$root.") else {
+        return;
+    };
+    if rest.split('.').any(str::is_empty) {
+        return;
+    }
+    let suggested = format!("/{}", rest.replace('.', "/"));
+    report.push(
+        ValidationError::builder("reference.legacy_root")
+            .at(path.clone())
+            .warn()
+            .param("reference", serde_json::Value::String(field_ref.to_owned()))
+            .param("suggested", serde_json::Value::String(suggested.clone()))
+            .message(format!(
+                "rule reference `{field_ref}` uses legacy `$root.` syntax; prefer JSON Pointer `{suggested}`"
+            ))
+            .build(),
+    );
+}
+
 /// Build-time lint entry point used by `SchemaBuilder::build()`.
 ///
 /// Walks the field tree rooted at `prefix` and appends `ValidationError`
@@ -79,6 +101,7 @@ pub(crate) fn lint_root_rules(rules: &[Rule], fields: &[Field], report: &mut Val
         let mut refs = Vec::new();
         rule.field_references(&mut refs);
         for field_ref in refs {
+            lint_legacy_root_reference(field_ref, &FieldPath::root(), report);
             let Some(target) = resolve_rule_dependency(field_ref) else {
                 report.push(
                     ValidationError::builder("dangling_reference")
@@ -713,16 +736,14 @@ fn lint_mode_new(
         let variant_key = match crate::key::FieldKey::new(variant.key.as_str()) {
             Ok(vk) => Some(vk),
             Err(e) => {
-                report.push(
-                    ValidationError::builder("invalid_key")
-                        .at(path.clone())
-                        .message(format!(
-                            "mode variant key `{}` cannot participate in schema paths: {}",
-                            variant.key, e.message
-                        ))
-                        .param("key", variant.key.clone())
-                        .build(),
-                );
+                report.push(ValidationError::invalid_key(
+                    path.clone(),
+                    variant.key.as_str(),
+                    format!(
+                        "mode variant key cannot participate in schema paths: {}",
+                        e.message
+                    ),
+                ));
                 None
             },
         };
@@ -839,6 +860,7 @@ fn lint_rule_refs_new(
     let mut refs = Vec::new();
     rule.field_references(&mut refs);
     for field_ref in refs {
+        lint_legacy_root_reference(field_ref, path, report);
         // Field-level refs intentionally validate only referenced_root_key
         // against root_keys; lint_root_rules uses defined_field_paths for full
         // paths because root-level rules have global schema semantics.
@@ -2009,6 +2031,29 @@ mod tests {
             !report.has_errors(),
             "expected no errors, got {:?}",
             report.errors().map(|e| &e.code).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn legacy_root_rule_reference_emits_advisory_warning() {
+        let mut report = ValidationReport::new();
+        lint_legacy_root_reference("$root.tier", &FieldPath::root(), &mut report);
+        assert!(
+            report.warnings().any(|e| e.code == "reference.legacy_root"),
+            "expected legacy root reference warning, got {:?}",
+            report
+                .iter()
+                .map(|e| (&e.code, e.severity))
+                .collect::<Vec<_>>()
+        );
+        let warning = report
+            .warnings()
+            .find(|e| e.code == "reference.legacy_root")
+            .expect("warning");
+        assert_eq!(
+            warning.params[1].1.as_str(),
+            Some("/tier"),
+            "suggested JSON Pointer"
         );
     }
 }

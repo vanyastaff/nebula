@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 #![warn(clippy::all)]
 #![warn(unreachable_pub)]
 #![allow(clippy::excessive_nesting)]

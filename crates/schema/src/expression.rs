@@ -162,6 +162,111 @@ fn parse_expression_source(source: &str) -> Result<(), String> {
     nebula_expression::parse_expression(source).map_err(|e| e.to_string())
 }
 
+/// Production-ready [`ExpressionContext`] backed by [`nebula_expression::ExpressionEngine`].
+///
+/// Centralizes the schema↔expression bridge so callers (integration tests,
+/// future engine wiring) do not reimplement `evaluate` →
+/// `engine.evaluate(source, ctx)` themselves. [`ExpressionAst`] exposes only
+/// the source string by design, so evaluation always routes through the engine's
+/// parse+eval path.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// use nebula_schema::{EngineExpressionContext, Field, FieldValues, Schema, field_key};
+/// use serde_json::json;
+///
+/// # async fn demo() {
+/// let schema = Schema::builder()
+///     .add(Field::string(field_key!("greeting")))
+///     .build()
+///     .unwrap();
+/// let values = FieldValues::from_json(json!({"greeting": "{{ $input.name }}"})).unwrap();
+/// let valid = schema.validate(&values).unwrap();
+/// let ctx = EngineExpressionContext::with_input(json!({"name": "world"}));
+/// let resolved = valid.resolve(&ctx).await.unwrap();
+/// assert_eq!(resolved.get(&field_key!("greeting")), Some(&json!("world")));
+/// # }
+/// ```
+pub struct EngineExpressionContext {
+    engine: nebula_expression::ExpressionEngine,
+    ctx: nebula_expression::EvaluationContext,
+}
+
+impl EngineExpressionContext {
+    /// Wrap an engine and evaluation context.
+    #[must_use]
+    pub fn new(
+        engine: nebula_expression::ExpressionEngine,
+        ctx: nebula_expression::EvaluationContext,
+    ) -> Self {
+        Self { engine, ctx }
+    }
+
+    /// Convenience: default engine with `$input` bound to `input`.
+    #[must_use]
+    pub fn with_input(input: serde_json::Value) -> Self {
+        let mut ctx = nebula_expression::EvaluationContext::new();
+        ctx.set_input(input);
+        Self::new(nebula_expression::ExpressionEngine::new(), ctx)
+    }
+
+    /// Borrow the underlying evaluation context (for adding `$execution` / `$node` vars).
+    #[must_use]
+    pub fn evaluation_context(&self) -> &nebula_expression::EvaluationContext {
+        &self.ctx
+    }
+
+    /// Mutably borrow the evaluation context.
+    pub fn evaluation_context_mut(&mut self) -> &mut nebula_expression::EvaluationContext {
+        &mut self.ctx
+    }
+}
+
+impl ExpressionContext for EngineExpressionContext {
+    fn evaluate<'a>(&'a self, ast: &'a ExpressionAst) -> EvalFuture<'a> {
+        let source = ast.source().to_owned();
+        Box::pin(async move {
+            resolve_expression_value(&self.engine, &self.ctx, &source).map_err(|e| {
+                ValidationError::builder("expression.runtime")
+                    .message(format!("expression `{source}` failed: {e}"))
+                    .build()
+            })
+        })
+    }
+}
+
+/// Evaluate a schema expression source, mirroring [`nebula_expression::parse_expression`]
+/// dispatch: mixed templates render to a string; a lone `{{ ... }}` envelope keeps
+/// typed evaluation; raw expression sources go through `ExpressionEngine::evaluate`.
+fn resolve_expression_value(
+    engine: &nebula_expression::ExpressionEngine,
+    ctx: &nebula_expression::EvaluationContext,
+    source: &str,
+) -> Result<serde_json::Value, nebula_expression::ExpressionError> {
+    use nebula_expression::TemplatePart;
+
+    if let Ok(template) = nebula_expression::Template::new(source.to_owned())
+        && template.expression_count() > 0
+    {
+        let has_static = template
+            .parts()
+            .iter()
+            .any(|part| matches!(part, TemplatePart::Static { .. }));
+
+        if has_static || template.expression_count() > 1 {
+            let rendered = engine.render_template(&template, ctx)?;
+            return Ok(serde_json::Value::String(rendered));
+        }
+
+        if let Some(expr) = template.expressions().into_iter().next() {
+            return engine.evaluate(expr.trim(), ctx);
+        }
+    }
+
+    engine.evaluate(source, ctx)
+}
+
 /// Equality is **by source string, not by parsed AST** — two expressions that
 /// parse to the same tree but differ in whitespace or formatting compare
 /// unequal. The canonical-bytes content id keys off the same `source()` bytes
@@ -222,5 +327,66 @@ mod tests {
             .parse_at(&FieldPath::parse("foo.bar").expect("valid path"))
             .unwrap_err();
         assert_eq!(err.path.to_string(), "foo.bar");
+    }
+
+    #[tokio::test]
+    async fn engine_context_evaluates_input_template() {
+        use serde_json::json;
+
+        use crate::{Field, FieldValues, Schema, field_key};
+
+        let schema = Schema::builder()
+            .add(Field::string(field_key!("greeting")))
+            .build()
+            .expect("schema builds");
+        let values =
+            FieldValues::from_json(json!({"greeting": "{{ $input.name }}"})).expect("values parse");
+        let valid = schema.validate(&values).expect("values validate");
+        let ctx = EngineExpressionContext::with_input(json!({"name": "world"}));
+        let resolved = valid.resolve(&ctx).await.expect("resolve succeeds");
+        assert_eq!(resolved.get(&field_key!("greeting")), Some(&json!("world")));
+    }
+
+    #[tokio::test]
+    async fn engine_context_renders_inline_template() {
+        use serde_json::json;
+
+        use crate::{Field, FieldValues, Schema, field_key};
+
+        let schema = Schema::builder()
+            .add(Field::string(field_key!("greeting")))
+            .build()
+            .expect("schema builds");
+        let values = FieldValues::from_json(json!({"greeting": "hello {{ $input.name }}"}))
+            .expect("values parse");
+        let valid = schema.validate(&values).expect("values validate");
+        let ctx = EngineExpressionContext::with_input(json!({"name": "world"}));
+        let resolved = valid.resolve(&ctx).await.expect("resolve succeeds");
+        assert_eq!(
+            resolved.get(&field_key!("greeting")),
+            Some(&json!("hello world"))
+        );
+    }
+
+    #[test]
+    fn resolve_expression_value_preserves_typed_lone_envelope() {
+        let engine = nebula_expression::ExpressionEngine::new();
+        let mut ctx = nebula_expression::EvaluationContext::new();
+        ctx.set_input(serde_json::json!({"count": 7}));
+
+        let value = resolve_expression_value(&engine, &ctx, "{{ $input.count + 1 }}")
+            .expect("typed lone envelope evaluates");
+        assert_eq!(value, serde_json::json!(8));
+    }
+
+    #[test]
+    fn resolve_expression_value_renders_mixed_template() {
+        let engine = nebula_expression::ExpressionEngine::new();
+        let mut ctx = nebula_expression::EvaluationContext::new();
+        ctx.set_input(serde_json::json!({"name": "world"}));
+
+        let value = resolve_expression_value(&engine, &ctx, "hello {{ $input.name }}")
+            .expect("mixed template renders");
+        assert_eq!(value, serde_json::json!("hello world"));
     }
 }

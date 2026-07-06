@@ -42,7 +42,8 @@ impl FieldKey {
         if value.is_empty() {
             return Err(Self::err(value, "key cannot be empty"));
         }
-        if value.chars().count() > 64 {
+        // Valid keys are ASCII-only (checked below), so byte length equals char count.
+        if bytes.len() > 64 {
             return Err(Self::err(value, "key max 64 chars"));
         }
         let first = bytes[0] as char;
@@ -78,11 +79,7 @@ impl FieldKey {
     }
 
     pub(crate) fn err_at(path: FieldPath, value: &str, msg: &'static str) -> ValidationError {
-        ValidationError::builder("invalid_key")
-            .at(path)
-            .message(msg)
-            .param("key", value.to_owned())
-            .build()
+        ValidationError::invalid_key(path, value, msg)
     }
 }
 

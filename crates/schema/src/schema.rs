@@ -191,13 +191,8 @@ impl Schema {
     reason = "ValidationError is intentionally large; callers are on the validation path"
 )]
 fn parse_top_level_key(key: &str) -> Result<crate::key::FieldKey, ValidationError> {
-    crate::key::FieldKey::new(key).map_err(|e| {
-        ValidationError::builder("invalid_key")
-            .at(FieldPath::root())
-            .param("key", Value::String(key.to_owned()))
-            .message(format!("invalid key `{key}`: {e}"))
-            .build()
-    })
+    crate::key::FieldKey::new(key)
+        .map_err(|e| ValidationError::invalid_key(FieldPath::root(), key, e.message))
 }
 
 #[allow(
@@ -262,25 +257,28 @@ fn loader_key_or_error(loader: Option<&str>, path: &FieldPath) -> Result<String,
     loader
         .filter(|loader| !loader.trim().is_empty())
         .map(str::to_owned)
-        .ok_or_else(|| {
-            ValidationError::builder("loader.missing_config")
-                .at(path.clone())
-                .param("key", Value::String(path.to_string()))
-                .message(format!("field `{path}` has no loader configured"))
-                .build()
-        })
+        .ok_or_else(|| ValidationError::loader_missing_config(path.clone()))
 }
 
 fn loader_type_mismatch(path: &FieldPath, expected: &str, actual: &str) -> ValidationError {
-    ValidationError::builder("field.type_mismatch")
-        .at(path.clone())
-        .param("key", Value::String(path.to_string()))
-        .param("expected", Value::String(expected.to_owned()))
-        .param("actual", Value::String(actual.to_owned()))
-        .message(format!(
-            "field `{path}` is not a {expected} field (got {actual})"
-        ))
-        .build()
+    ValidationError::field_type_mismatch(path.clone(), expected, actual)
+}
+
+/// Look up a named child field under `parent_path`, returning the child and its full path.
+#[allow(
+    clippy::result_large_err,
+    reason = "ValidationError is intentionally large; callers are on the validation path"
+)]
+fn find_named_child<'a>(
+    fields: &'a [Field],
+    key: &crate::key::FieldKey,
+    parent_path: &FieldPath,
+) -> Result<(&'a Field, FieldPath), ValidationError> {
+    let child_path = parent_path.clone().join(key.clone());
+    match fields.iter().find(|field| field.key() == key) {
+        Some(field) => Ok((field, child_path)),
+        None => Err(ValidationError::field_not_found(child_path)),
+    }
 }
 
 #[allow(
@@ -293,71 +291,28 @@ fn find_field_by_schema_path<'a>(
 ) -> Result<&'a Field, ValidationError> {
     let mut segments = path.segments().iter();
     let Some(PathSegment::Key(first_key)) = segments.next() else {
-        return Err(ValidationError::builder("field.not_found")
-            .at(path.clone())
-            .param("key", Value::String(path.to_string()))
-            .message(format!("field `{path}` not found in schema"))
-            .build());
+        return Err(ValidationError::field_not_found(path.clone()));
     };
 
-    let mut current_path = FieldPath::root().join(first_key.clone());
-    let mut current = fields
-        .iter()
-        .find(|field| field.key() == first_key)
-        .ok_or_else(|| {
-            ValidationError::builder("field.not_found")
-                .at(current_path.clone())
-                .param("key", Value::String(current_path.to_string()))
-                .message(format!("field `{current_path}` not found in schema"))
-                .build()
-        })?;
+    let (mut current, mut current_path) = find_named_child(fields, first_key, &FieldPath::root())?;
 
     for segment in segments {
         match segment {
             PathSegment::Key(key) => match current {
                 Field::Object(object) => {
-                    current_path = current_path.join(key.clone());
-                    current = object
-                        .fields
-                        .iter()
-                        .find(|field| field.key() == key)
-                        .ok_or_else(|| {
-                            ValidationError::builder("field.not_found")
-                                .at(current_path.clone())
-                                .param("key", Value::String(current_path.to_string()))
-                                .message(format!("field `{current_path}` not found in schema"))
-                                .build()
-                        })?;
+                    (current, current_path) = find_named_child(&object.fields, key, &current_path)?;
                 },
                 Field::List(list) => {
                     let Some(item) = list.item.as_deref() else {
                         current_path = current_path.join(key.clone());
-                        return Err(ValidationError::builder("field.not_found")
-                            .at(current_path.clone())
-                            .param("key", Value::String(current_path.to_string()))
-                            .message(format!("field `{current_path}` not found in schema"))
-                            .build());
+                        return Err(ValidationError::field_not_found(current_path));
                     };
                     if let Field::Object(object) = item {
-                        current_path = current_path.join(key.clone());
-                        current = object
-                            .fields
-                            .iter()
-                            .find(|field| field.key() == key)
-                            .ok_or_else(|| {
-                                ValidationError::builder("field.not_found")
-                                    .at(current_path.clone())
-                                    .param("key", Value::String(current_path.to_string()))
-                                    .message(format!("field `{current_path}` not found in schema"))
-                                    .build()
-                            })?;
+                        (current, current_path) =
+                            find_named_child(&object.fields, key, &current_path)?;
                     } else {
                         current_path = current_path.join(key.clone());
-                        return Err(ValidationError::builder("field.not_found")
-                            .at(current_path.clone())
-                            .param("key", Value::String(current_path.to_string()))
-                            .message(format!("field `{current_path}` not found in schema"))
-                            .build());
+                        return Err(ValidationError::field_not_found(current_path));
                     }
                 },
                 Field::Mode(mode) => {
@@ -367,21 +322,11 @@ fn find_field_by_schema_path<'a>(
                         .iter()
                         .find(|variant| variant.key == key.as_str())
                         .map(|variant| variant.field.as_ref())
-                        .ok_or_else(|| {
-                            ValidationError::builder("field.not_found")
-                                .at(current_path.clone())
-                                .param("key", Value::String(current_path.to_string()))
-                                .message(format!("field `{current_path}` not found in schema"))
-                                .build()
-                        })?;
+                        .ok_or_else(|| ValidationError::field_not_found(current_path.clone()))?;
                 },
                 _ => {
                     current_path = current_path.join(key.clone());
-                    return Err(ValidationError::builder("field.not_found")
-                        .at(current_path.clone())
-                        .param("key", Value::String(current_path.to_string()))
-                        .message(format!("field `{current_path}` not found in schema"))
-                        .build());
+                    return Err(ValidationError::field_not_found(current_path));
                 },
             },
             PathSegment::Index(index) => {
@@ -389,19 +334,11 @@ fn find_field_by_schema_path<'a>(
                 match current {
                     Field::List(list) => {
                         current = list.item.as_deref().ok_or_else(|| {
-                            ValidationError::builder("field.not_found")
-                                .at(current_path.clone())
-                                .param("key", Value::String(current_path.to_string()))
-                                .message(format!("field `{current_path}` not found in schema"))
-                                .build()
+                            ValidationError::field_not_found(current_path.clone())
                         })?;
                     },
                     _ => {
-                        return Err(ValidationError::builder("field.not_found")
-                            .at(current_path.clone())
-                            .param("key", Value::String(current_path.to_string()))
-                            .message(format!("field `{current_path}` not found in schema"))
-                            .build());
+                        return Err(ValidationError::field_not_found(current_path));
                     },
                 }
             },
@@ -495,8 +432,7 @@ impl SchemaBuilder {
         &self.fields
     }
 
-    /// Run lint passes and produce a validated schema, or a report of errors.
-    /// Build a validated runtime schema.
+    /// Run lint passes and produce a validated runtime schema.
     ///
     /// # Errors
     ///
@@ -652,7 +588,7 @@ fn dedupe_rules_and_transformers(
 fn dedupe_stable_eq<T: PartialEq>(items: &mut Vec<T>) {
     let mut unique = Vec::with_capacity(items.len());
     for item in items.drain(..) {
-        if !unique.contains(&item) {
+        if !unique.iter().any(|existing| existing == &item) {
             unique.push(item);
         }
     }
