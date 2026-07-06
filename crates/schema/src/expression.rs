@@ -176,7 +176,7 @@ fn parse_expression_source(source: &str) -> Result<(), String> {
 /// use nebula_schema::{EngineExpressionContext, Field, FieldValues, Schema, field_key};
 /// use serde_json::json;
 ///
-/// # async fn demo() -> Result<(), nebula_schema::ValidationReport> {
+/// # async fn demo() {
 /// let schema = Schema::builder()
 ///     .add(Field::string(field_key!("greeting")))
 ///     .build()
@@ -184,10 +184,8 @@ fn parse_expression_source(source: &str) -> Result<(), String> {
 /// let values = FieldValues::from_json(json!({"greeting": "{{ $input.name }}"})).unwrap();
 /// let valid = schema.validate(&values).unwrap();
 /// let ctx = EngineExpressionContext::with_input(json!({"name": "world"}));
-/// let resolved = valid.resolve(&ctx).await?;
-/// # let resolved = valid.resolve(&ctx).await.unwrap();
+/// let resolved = valid.resolve(&ctx).await.unwrap();
 /// assert_eq!(resolved.get(&field_key!("greeting")), Some(&json!("world")));
-/// # Ok(())
 /// # }
 /// ```
 pub struct EngineExpressionContext {
