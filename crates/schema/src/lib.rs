@@ -239,7 +239,7 @@ pub use directed::{DirectedSchema, Input, InputSchema, Output, OutputSchema, Pol
 pub use error::{
     STANDARD_CODES, Severity, ValidationError, ValidationErrorBuilder, ValidationReport,
 };
-pub use expression::{EvalFuture, Expression, ExpressionAst, ExpressionContext};
+pub use expression::{EngineExpressionContext, EvalFuture, Expression, ExpressionAst, ExpressionContext};
 /// Discriminated field: one of several payload shapes (auth scheme, body kind, etc.).
 ///
 /// # JSON wire format

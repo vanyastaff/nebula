@@ -1124,11 +1124,7 @@ impl Field {
     )]
     fn parse_key_or_error(key: &str) -> Result<FieldKey, ValidationError> {
         FieldKey::new(key).map_err(|err| {
-            ValidationError::builder("invalid_key")
-                .at(FieldPath::root())
-                .param("key", Value::String(key.to_owned()))
-                .message(format!("invalid key `{key}`: {err}"))
-                .build()
+            ValidationError::invalid_key(FieldPath::root(), key, err.message)
         })
     }
 

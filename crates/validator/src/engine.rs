@@ -85,7 +85,7 @@ pub fn validate_rules_with_ctx(
         return Ok(());
     }
 
-    let mut errors = Vec::new();
+    let mut errors = Vec::with_capacity(rules.len());
 
     for rule in rules {
         let should_run = match mode {

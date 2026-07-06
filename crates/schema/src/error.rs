@@ -96,6 +96,51 @@ impl ValidationError {
             source: None,
         }
     }
+
+    /// Build `field.not_found` for a schema path lookup miss.
+    #[must_use]
+    pub(crate) fn field_not_found(path: FieldPath) -> Self {
+        let key = path.to_string();
+        Self::builder("field.not_found")
+            .at(path)
+            .param("key", Value::String(key.clone()))
+            .message(format!("field `{key}` not found in schema"))
+            .build()
+    }
+
+    /// Build `field.type_mismatch` when a field exists but is the wrong kind.
+    #[must_use]
+    pub(crate) fn field_type_mismatch(path: FieldPath, expected: &str, actual: &str) -> Self {
+        let key = path.to_string();
+        Self::builder("field.type_mismatch")
+            .at(path)
+            .param("key", Value::String(key.clone()))
+            .param("expected", Value::String(expected.to_owned()))
+            .param("actual", Value::String(actual.to_owned()))
+            .message(format!("field `{key}` is not a {expected} field (got {actual})"))
+            .build()
+    }
+
+    /// Build `loader.missing_config` when a loader-backed field has no loader key.
+    #[must_use]
+    pub(crate) fn loader_missing_config(path: FieldPath) -> Self {
+        let key = path.to_string();
+        Self::builder("loader.missing_config")
+            .at(path)
+            .param("key", Value::String(key.clone()))
+            .message(format!("field `{key}` has no loader configured"))
+            .build()
+    }
+
+    /// Build `invalid_key` with a caller-supplied detail message.
+    #[must_use]
+    pub(crate) fn invalid_key(path: FieldPath, key: &str, detail: impl fmt::Display) -> Self {
+        Self::builder("invalid_key")
+            .at(path)
+            .param("key", Value::String(key.to_owned()))
+            .message(format!("invalid key `{key}`: {detail}"))
+            .build()
+    }
 }
 
 impl fmt::Display for ValidationError {
@@ -406,6 +451,15 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn field_not_found_factory_is_stable() {
+        let path = FieldPath::parse("user.email").unwrap();
+        let err = ValidationError::field_not_found(path.clone());
+        assert_eq!(err.code, "field.not_found");
+        assert_eq!(err.path, path);
+        assert_eq!(err.params[0].1, json!("user.email"));
+    }
 
     #[test]
     fn builder_produces_full_error() {

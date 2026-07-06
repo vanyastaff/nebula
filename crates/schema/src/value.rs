@@ -758,10 +758,11 @@ impl FieldValues {
         value: Value,
     ) -> Result<(), crate::error::ValidationError> {
         let fk = FieldKey::new(key).map_err(|e| {
-            crate::error::ValidationError::builder("invalid_key")
-                .message(format!("try_set_raw: invalid key {key:?}: {e}"))
-                .param("key", Value::String(key.to_owned()))
-                .build()
+            crate::error::ValidationError::invalid_key(
+                FieldPath::root(),
+                key,
+                format!("try_set_raw: {e}"),
+            )
         })?;
         let field_path = FieldPath::root().join(fk.clone());
         validate_json_keys(&value, &field_path, 0)?;
@@ -1104,11 +1105,7 @@ fn validate_json_keys(
 
             for (raw_key, child) in map {
                 let key = FieldKey::new(raw_key).map_err(|e| {
-                    crate::error::ValidationError::builder("invalid_key")
-                        .at(path.clone())
-                        .message(format!("invalid key `{raw_key}`: {e}"))
-                        .param("key", Value::String(raw_key.clone()))
-                        .build()
+                    crate::error::ValidationError::invalid_key(path.clone(), raw_key, e)
                 })?;
                 let child_path = path.clone().join(key);
                 validate_json_keys(child, &child_path, depth.saturating_add(1))?;
