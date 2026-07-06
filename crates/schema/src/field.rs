@@ -1123,9 +1123,8 @@ impl Field {
         reason = "ValidationError is intentionally large; field creation is on the authoring path"
     )]
     fn parse_key_or_error(key: &str) -> Result<FieldKey, ValidationError> {
-        FieldKey::new(key).map_err(|err| {
-            ValidationError::invalid_key(FieldPath::root(), key, err.message)
-        })
+        FieldKey::new(key)
+            .map_err(|err| ValidationError::invalid_key(FieldPath::root(), key, err.message))
     }
 
     /// Create a [`StringField`] with the given key.

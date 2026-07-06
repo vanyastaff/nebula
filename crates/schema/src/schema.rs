@@ -191,9 +191,8 @@ impl Schema {
     reason = "ValidationError is intentionally large; callers are on the validation path"
 )]
 fn parse_top_level_key(key: &str) -> Result<crate::key::FieldKey, ValidationError> {
-    crate::key::FieldKey::new(key).map_err(|e| {
-        ValidationError::invalid_key(FieldPath::root(), key, e.message)
-    })
+    crate::key::FieldKey::new(key)
+        .map_err(|e| ValidationError::invalid_key(FieldPath::root(), key, e.message))
 }
 
 #[allow(
@@ -301,8 +300,7 @@ fn find_field_by_schema_path<'a>(
         match segment {
             PathSegment::Key(key) => match current {
                 Field::Object(object) => {
-                    (current, current_path) =
-                        find_named_child(&object.fields, key, &current_path)?;
+                    (current, current_path) = find_named_child(&object.fields, key, &current_path)?;
                 },
                 Field::List(list) => {
                     let Some(item) = list.item.as_deref() else {

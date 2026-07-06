@@ -117,7 +117,9 @@ impl ValidationError {
             .param("key", Value::String(key.clone()))
             .param("expected", Value::String(expected.to_owned()))
             .param("actual", Value::String(actual.to_owned()))
-            .message(format!("field `{key}` is not a {expected} field (got {actual})"))
+            .message(format!(
+                "field `{key}` is not a {expected} field (got {actual})"
+            ))
             .build()
     }
 

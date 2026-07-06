@@ -17,11 +17,7 @@ fn has_nonempty_loader_key(loader: Option<&str>) -> bool {
 }
 
 /// Advisory lint: `$root.foo` rule references still resolve but JSON Pointer is preferred.
-fn lint_legacy_root_reference(
-    field_ref: &str,
-    path: &FieldPath,
-    report: &mut ValidationReport,
-) {
+fn lint_legacy_root_reference(field_ref: &str, path: &FieldPath, report: &mut ValidationReport) {
     let Some(rest) = field_ref.strip_prefix("$root.") else {
         return;
     };
@@ -743,7 +739,10 @@ fn lint_mode_new(
                 report.push(ValidationError::invalid_key(
                     path.clone(),
                     variant.key.as_str(),
-                    format!("mode variant key cannot participate in schema paths: {}", e.message),
+                    format!(
+                        "mode variant key cannot participate in schema paths: {}",
+                        e.message
+                    ),
                 ));
                 None
             },
@@ -2042,7 +2041,10 @@ mod tests {
         assert!(
             report.warnings().any(|e| e.code == "reference.legacy_root"),
             "expected legacy root reference warning, got {:?}",
-            report.iter().map(|e| (&e.code, e.severity)).collect::<Vec<_>>()
+            report
+                .iter()
+                .map(|e| (&e.code, e.severity))
+                .collect::<Vec<_>>()
         );
         let warning = report
             .warnings()
