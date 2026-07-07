@@ -21,7 +21,7 @@ use crate::compose::{TransportInitError, health_ok};
 
 /// Clap value-enum for `--transport` / `NEBULA_TRANSPORT`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum Transport {
+pub(crate) enum Transport {
     /// Full REST API (same behaviour as the former `nebula-server` binary).
     Api,
     /// Webhook ingress only (same behaviour as the former `nebula-webhook` binary).
@@ -33,7 +33,7 @@ pub enum Transport {
 }
 
 /// A server transport profile selected by a binary target.
-pub trait ServerTransport {
+pub(crate) trait ServerTransport {
     /// Human-readable transport name for logs.
     fn name(&self) -> &'static str;
 
@@ -63,7 +63,7 @@ pub trait ServerTransport {
 
 /// Full REST API transport.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct ApiTransport;
+pub(crate) struct ApiTransport;
 
 impl ServerTransport for ApiTransport {
     fn name(&self) -> &'static str {
@@ -87,7 +87,7 @@ impl ServerTransport for ApiTransport {
 
 /// Webhook ingress transport.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct WebhookIngressTransport;
+pub(crate) struct WebhookIngressTransport;
 
 impl ServerTransport for WebhookIngressTransport {
     fn name(&self) -> &'static str {
@@ -170,7 +170,7 @@ impl ServerTransport for WebhookIngressTransport {
 
 /// Realtime transport placeholder.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct RealtimeTransport;
+pub(crate) struct RealtimeTransport;
 
 impl ServerTransport for RealtimeTransport {
     fn name(&self) -> &'static str {

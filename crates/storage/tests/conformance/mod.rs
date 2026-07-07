@@ -37,7 +37,7 @@ use nebula_storage_port::{FencingToken, Scope, StorageError, TransitionBatch, Tr
 /// A storage backend under conformance test. Returns port handles built on
 /// that backend's concrete adapter.
 #[async_trait::async_trait]
-pub trait Backend: Send + Sync {
+pub(crate) trait Backend: Send + Sync {
     /// Human-readable backend name (used in assertion messages).
     fn name(&self) -> &'static str;
     /// An execution store backed by this backend.
@@ -75,7 +75,7 @@ pub trait Backend: Send + Sync {
 /// `Arc<Mutex<…>>`), so the control queue, journal reader, job-dispatch queue,
 /// and trigger-dedup inbox all observe the same rows and operate atomically
 /// under one lock.
-pub struct InMemoryBackend {
+pub(crate) struct InMemoryBackend {
     store: nebula_storage::inmem::InMemoryExecutionStore,
     guard: nebula_storage::inmem::InMemoryIdempotencyGuard,
     idem_store: nebula_storage::inmem::InMemoryIdempotencyStore,
@@ -156,7 +156,7 @@ impl Backend for InMemoryBackend {
 /// lazily on first store request. Only built when the `sqlite` feature is
 /// on; without it the case skips like Postgres.
 #[derive(Default)]
-pub struct SqliteBackend {
+pub(crate) struct SqliteBackend {
     #[cfg(feature = "sqlite")]
     pool: tokio::sync::OnceCell<sqlx::SqlitePool>,
 }
@@ -300,7 +300,7 @@ impl Backend for SqliteBackend {
 /// a database. Each `Backend` instance owns one pool created lazily on
 /// first store request; the port schema is installed once.
 #[derive(Default)]
-pub struct PostgresBackend {
+pub(crate) struct PostgresBackend {
     #[cfg(feature = "postgres")]
     pool: tokio::sync::OnceCell<sqlx::PgPool>,
 }
@@ -477,7 +477,7 @@ fn sqlite_skip() -> Option<&'static str> {
 /// `None` if the case should run. Postgres skips without `DATABASE_URL` or
 /// the `postgres` feature; SQLite skips without the `sqlite` feature.
 #[must_use]
-pub fn skip_reason(backend: &dyn Backend) -> Option<&'static str> {
+pub(crate) fn skip_reason(backend: &dyn Backend) -> Option<&'static str> {
     match backend.name() {
         "Postgres" => postgres_skip(),
         "Sqlite(:memory:)" => sqlite_skip(),
@@ -496,7 +496,7 @@ fn scope_b() -> Scope {
 // ── shared contract assertions ────────────────────────────────────────────
 
 /// create → get returns the row within the same scope.
-pub async fn assert_create_get_roundtrip(backend: &dyn Backend) {
+pub(crate) async fn assert_create_get_roundtrip(backend: &dyn Backend) {
     let store = backend.execution_store().await;
     let s = scope_a();
     store
@@ -511,7 +511,7 @@ pub async fn assert_create_get_roundtrip(backend: &dyn Backend) {
 
 /// A commit whose `expected_version` does not match the row returns
 /// `VersionConflict { actual }`.
-pub async fn assert_cas_conflict(backend: &dyn Backend) {
+pub(crate) async fn assert_cas_conflict(backend: &dyn Backend) {
     let store = backend.execution_store().await;
     let s = scope_a();
     store
@@ -540,7 +540,7 @@ pub async fn assert_cas_conflict(backend: &dyn Backend) {
 }
 
 /// A commit carrying a superseded fencing token returns `FencedOut`.
-pub async fn assert_stale_fencing_is_fenced_out(backend: &dyn Backend) {
+pub(crate) async fn assert_stale_fencing_is_fenced_out(backend: &dyn Backend) {
     let store = backend.execution_store().await;
     let s = scope_a();
     store
@@ -584,7 +584,7 @@ pub async fn assert_stale_fencing_is_fenced_out(backend: &dyn Backend) {
 /// two concurrent runners must see exactly one winner, and a
 /// crashed-then-restarted runner reusing its holder id cannot revive its
 /// pre-crash token.
-pub async fn assert_live_lease_blocks_acquire(backend: &dyn Backend) {
+pub(crate) async fn assert_live_lease_blocks_acquire(backend: &dyn Backend) {
     let store = backend.execution_store().await;
     let s = scope_a();
     store
@@ -677,7 +677,7 @@ pub async fn assert_live_lease_blocks_acquire(backend: &dyn Backend) {
 
 /// The atomic triple commits state + outbox + journal together; a reader
 /// observes all three after a successful commit.
-pub async fn assert_atomic_triple(backend: &dyn Backend) {
+pub(crate) async fn assert_atomic_triple(backend: &dyn Backend) {
     let store = backend.execution_store().await;
     let s = scope_a();
     store
@@ -739,7 +739,7 @@ pub async fn assert_atomic_triple(backend: &dyn Backend) {
 /// Idempotency key shape `{execution_id}:{node_id}:{attempt}` is
 /// first-writer-wins: the first `check_and_mark` returns true, the second
 /// false.
-pub async fn assert_idempotency_first_writer_wins(backend: &dyn Backend) {
+pub(crate) async fn assert_idempotency_first_writer_wins(backend: &dyn Backend) {
     let guard = backend.idempotency_guard().await;
     let s = scope_a();
     let first = guard
@@ -760,7 +760,7 @@ pub async fn assert_idempotency_first_writer_wins(backend: &dyn Backend) {
 
 /// A `get` with a mismatched scope yields `Ok(None)` — never another
 /// tenant's row, never an error that leaks existence.
-pub async fn assert_cross_scope_get_is_none(backend: &dyn Backend) {
+pub(crate) async fn assert_cross_scope_get_is_none(backend: &dyn Backend) {
     let store = backend.execution_store().await;
     store
         .create(&scope_a(), "exe_x", "wf_1", serde_json::json!({}))
@@ -776,7 +776,7 @@ pub async fn assert_cross_scope_get_is_none(backend: &dyn Backend) {
 
 /// A `commit` against an id that exists only in another tenant's scope
 /// must not Apply (the row is invisible cross-tenant).
-pub async fn assert_cross_scope_commit_is_rejected(backend: &dyn Backend) {
+pub(crate) async fn assert_cross_scope_commit_is_rejected(backend: &dyn Backend) {
     let store = backend.execution_store().await;
     store
         .create(&scope_a(), "exe_y", "wf_1", serde_json::json!({}))
@@ -822,7 +822,7 @@ pub async fn assert_cross_scope_commit_is_rejected(backend: &dyn Backend) {
 /// and the version store round-trips a version and lists newest-first.
 /// Asserted across every backend so the SQL adapters match the in-memory
 /// reference exactly.
-pub async fn assert_workflow_store_contract(backend: &dyn Backend) {
+pub(crate) async fn assert_workflow_store_contract(backend: &dyn Backend) {
     let wf = backend.workflow_store().await;
     let ver = backend.workflow_version_store().await;
     let s = scope_a();
@@ -1032,7 +1032,7 @@ pub async fn assert_workflow_store_contract(backend: &dyn Backend) {
 /// orphan-row invariant (a workflow row with no published version is
 /// invisible to readers — "the workflow vanished") that the previous
 /// two-await sequence could violate on a partial failure.
-pub async fn assert_save_with_published_version_is_atomic(backend: &dyn Backend) {
+pub(crate) async fn assert_save_with_published_version_is_atomic(backend: &dyn Backend) {
     let wf = backend.workflow_store().await;
     let ver = backend.workflow_version_store().await;
     let s = scope_a();
@@ -1164,7 +1164,7 @@ pub async fn assert_save_with_published_version_is_atomic(backend: &dyn Backend)
 /// cleared). The original in-memory `find` returned an arbitrary
 /// `HashMap`-order row; this locks the deterministic
 /// `ORDER BY number DESC LIMIT 1` contract across every backend.
-pub async fn assert_get_published_is_highest_numbered(backend: &dyn Backend) {
+pub(crate) async fn assert_get_published_is_highest_numbered(backend: &dyn Backend) {
     let ver = backend.workflow_version_store().await;
     let s = scope_a();
     // Two published versions for the same workflow (1 and 3) plus an
@@ -1203,7 +1203,7 @@ pub async fn assert_get_published_is_highest_numbered(backend: &dyn Backend) {
 /// the claiming processor fences `mark_completed` (a stale runner whose
 /// row was reclaimed cannot flip a newer claim). Also exercises the
 /// typed-16-byte-id contract end to end.
-pub async fn assert_control_queue_outbox_and_fencing(backend: &dyn Backend) {
+pub(crate) async fn assert_control_queue_outbox_and_fencing(backend: &dyn Backend) {
     let store = backend.execution_store().await;
     let queue = backend.control_queue().await;
     let s = scope_a();
@@ -1294,7 +1294,7 @@ pub async fn assert_control_queue_outbox_and_fencing(backend: &dyn Backend) {
 /// **Falsifiability**: before the `resume_target TEXT` column was added to
 /// `port_control_queue`, `claim_pending` hardcoded `resume_target: None` and
 /// the `Some(target)` assertion failed → RED.
-pub async fn assert_resume_target_survives_queue_round_trip(backend: &dyn Backend) {
+pub(crate) async fn assert_resume_target_survives_queue_round_trip(backend: &dyn Backend) {
     let store = backend.execution_store().await;
     let queue = backend.control_queue().await;
     let s = scope_a();
@@ -1505,7 +1505,7 @@ async fn enqueue_and_climb_reclaim_count(
 /// `OR command = 'Resume'` redeliver complement) → the row at `reclaim_count >=
 /// max` is force-Failed → the post-sweep `claim_pending` finds nothing → the
 /// "still claimable" assertion fails → RED.
-pub async fn assert_resume_row_exempt_from_reclaim_budget(backend: &dyn Backend) {
+pub(crate) async fn assert_resume_row_exempt_from_reclaim_budget(backend: &dyn Backend) {
     let max_reclaim_count = 2;
     let row_id =
         enqueue_and_climb_reclaim_count(backend, ControlCommand::Resume, max_reclaim_count).await;
@@ -1561,7 +1561,7 @@ pub async fn assert_resume_row_exempt_from_reclaim_budget(backend: &dyn Backend)
 /// `Start` row at `reclaim_count >= max` redelivers instead of failing → the
 /// post-sweep `claim_pending` returns it → the "must be Failed (not claimable)"
 /// assertion fails → RED.
-pub async fn assert_non_resume_row_still_exhausts(backend: &dyn Backend) {
+pub(crate) async fn assert_non_resume_row_still_exhausts(backend: &dyn Backend) {
     let max_reclaim_count = 2;
     let row_id =
         enqueue_and_climb_reclaim_count(backend, ControlCommand::Start, max_reclaim_count).await;
@@ -1596,7 +1596,7 @@ pub async fn assert_non_resume_row_still_exhausts(backend: &dyn Backend) {
 /// Journal entries appended by a `commit` are readable in order, and a
 /// cross-tenant read yields an empty journal (never another tenant's
 /// entries).
-pub async fn assert_journal_visibility_and_scope(backend: &dyn Backend) {
+pub(crate) async fn assert_journal_visibility_and_scope(backend: &dyn Backend) {
     let store = backend.execution_store().await;
     let reader = backend.journal_reader().await;
     let s = scope_a();
@@ -1659,7 +1659,7 @@ pub async fn assert_journal_visibility_and_scope(backend: &dyn Backend) {
 /// `put` on the same key keeps the original record + fingerprint (replay
 /// race). Purely within `scope_a`, so it is decorator-transparent and runs
 /// in both the raw and scoped matrices.
-pub async fn assert_idempotency_store_first_writer(backend: &dyn Backend) {
+pub(crate) async fn assert_idempotency_store_first_writer(backend: &dyn Backend) {
     let store = backend.idempotency_store().await;
     let raw_key = "POST /x:idem-1".to_string();
     let first = CachedRecord {
@@ -1723,7 +1723,7 @@ pub async fn assert_idempotency_store_first_writer(backend: &dyn Backend) {
 /// only in the raw matrix. The decorator substitutes the per-call scope
 /// away by design, so decorator-level cross-tenant denial is proven in
 /// `cross_tenant_denial.rs` instead.
-pub async fn assert_idempotency_store_cross_scope_isolated(backend: &dyn Backend) {
+pub(crate) async fn assert_idempotency_store_cross_scope_isolated(backend: &dyn Backend) {
     let store = backend.idempotency_store().await;
     let raw_key = "POST /x:idem-1".to_string();
     let record = CachedRecord {
@@ -1764,7 +1764,7 @@ pub async fn assert_idempotency_store_cross_scope_isolated(backend: &dyn Backend
 /// Also covers the ADR-0096 extended fields: safe-default round-trip
 /// (new fields default to `Test` / `None` / zero-sentinel) and full
 /// round-trip of `workflow_id`, `mode`, and `token_hash`.
-pub async fn assert_webhook_activation_and_scope(backend: &dyn Backend) {
+pub(crate) async fn assert_webhook_activation_and_scope(backend: &dyn Backend) {
     let store = backend.webhook_store().await;
     let s = scope_a();
     // Use the constructor so the call site is future-proof against further
@@ -1881,7 +1881,7 @@ pub async fn assert_webhook_activation_and_scope(backend: &dyn Backend) {
 /// - Unknown hash returns `None` (no false-positive).
 /// - `list_all_active` enumerates rows from both tenants (cross-tenant
 ///   bootstrap enumeration).
-pub async fn assert_webhook_system_surface(backend: &dyn Backend) {
+pub(crate) async fn assert_webhook_system_surface(backend: &dyn Backend) {
     let store = backend.webhook_store().await;
     let sa = scope_a();
     let sb = scope_b();
@@ -2049,7 +2049,7 @@ pub async fn assert_webhook_system_surface(backend: &dyn Backend) {
 /// own `WHERE` filtering with an explicit foreign-scope argument, which
 /// the decorator *substitutes away* — a different mechanism, tested in
 /// its own suite.
-pub struct ScopedBackend<B: Backend> {
+pub(crate) struct ScopedBackend<B: Backend> {
     inner: B,
 }
 
@@ -2173,7 +2173,7 @@ fn make_job(id: u8, required_plugin_key: &str, tags: &[&str]) -> JobDispatchMsg 
 
 /// `claim_pending` only delivers rows whose required plugin is in the worker's
 /// `available_plugins`; a row requiring an unavailable plugin is not delivered.
-pub async fn assert_job_dispatch_routes_by_plugin(backend: &dyn Backend) {
+pub(crate) async fn assert_job_dispatch_routes_by_plugin(backend: &dyn Backend) {
     let q = backend.job_dispatch_queue().await;
 
     let job_a = make_job(0x10, "plugin.alpha", &["plugin.alpha"]);
@@ -2221,7 +2221,7 @@ pub async fn assert_job_dispatch_routes_by_plugin(backend: &dyn Backend) {
 
 /// `mark_dispatched` and `mark_failed` are both fenced by processor id: a
 /// stale processor cannot transition a row it did not claim.
-pub async fn assert_job_dispatch_fencing(backend: &dyn Backend) {
+pub(crate) async fn assert_job_dispatch_fencing(backend: &dyn Backend) {
     let q = backend.job_dispatch_queue().await;
     let plugin_tags = &["plugin.x".parse::<PluginKey>().unwrap()];
 
@@ -2303,7 +2303,7 @@ pub async fn assert_job_dispatch_fencing(backend: &dyn Backend) {
 /// is provided: the second call with the same `(trigger_id, event_id)` must
 /// return `Duplicate` and must NOT enqueue a second job.  The `Duplicate`
 /// outcome carries the winner's execution id, not the candidate's.
-pub async fn assert_trigger_dedup_first_writer(backend: &dyn Backend) {
+pub(crate) async fn assert_trigger_dedup_first_writer(backend: &dyn Backend) {
     let inbox = backend.trigger_dedup_inbox().await;
     let q = backend.job_dispatch_queue().await;
 
@@ -2378,7 +2378,7 @@ pub async fn assert_trigger_dedup_first_writer(backend: &dyn Backend) {
 
 /// `claim_and_materialize_start` with `row = None` always dispatches without
 /// a dedup row (unconditional dispatch path).
-pub async fn assert_dispatch_without_dedup_key(backend: &dyn Backend) {
+pub(crate) async fn assert_dispatch_without_dedup_key(backend: &dyn Backend) {
     let inbox = backend.trigger_dedup_inbox().await;
     let q = backend.job_dispatch_queue().await;
 
@@ -2441,7 +2441,7 @@ pub async fn assert_dispatch_without_dedup_key(backend: &dyn Backend) {
 /// from scope_b (cross-scope `exists` returns false), and after a Dispatched
 /// compose the execution row is visible in the store and exactly one Start job
 /// is claimable from the dispatch queue.
-pub async fn assert_dedup_compose_is_atomic(backend: &dyn Backend) {
+pub(crate) async fn assert_dedup_compose_is_atomic(backend: &dyn Backend) {
     let inbox = backend.trigger_dedup_inbox().await;
     let store = backend.execution_store().await;
     let q = backend.job_dispatch_queue().await;
@@ -2538,7 +2538,7 @@ pub async fn assert_dedup_compose_is_atomic(backend: &dyn Backend) {
 /// 4. Advertised `["plugin.alpha", "plugin.beta", "plugin.gamma"]` → claimed
 ///    (strict superset); claimed job identity verified.
 /// 5. Empty advertised set → claims nothing (parity across all backends).
-pub async fn assert_job_dispatch_routes_by_plugin_superset(backend: &dyn Backend) {
+pub(crate) async fn assert_job_dispatch_routes_by_plugin_superset(backend: &dyn Backend) {
     let q = backend.job_dispatch_queue().await;
 
     // Job requires alpha AND beta (required_plugins covers both; invariant upheld).
@@ -2667,7 +2667,7 @@ pub async fn assert_job_dispatch_routes_by_plugin_superset(backend: &dyn Backend
 ///    still fires).
 /// 4. `exists` confirms the row is visible inside each scope and invisible
 ///    across scopes.
-pub async fn assert_trigger_dedup_is_scoped(backend: &dyn Backend) {
+pub(crate) async fn assert_trigger_dedup_is_scoped(backend: &dyn Backend) {
     let inbox = backend.trigger_dedup_inbox().await;
 
     let row_a = TriggerDedupRow::new("trg_iso", "evt_iso", scope_a(), "2026-01-01T00:00:00Z");
@@ -2777,7 +2777,7 @@ pub async fn assert_trigger_dedup_is_scoped(backend: &dyn Backend) {
 ///    `execution_id` matches — must return `Err(StorageError::Duplicate)`.
 /// 3. Assert: no dedup guard was inserted (`exists` returns false), and no
 ///    Start job was enqueued (`claim_pending` returns empty).
-pub async fn assert_dedup_compose_rolls_back_on_id_collision(backend: &dyn Backend) {
+pub(crate) async fn assert_dedup_compose_rolls_back_on_id_collision(backend: &dyn Backend) {
     let inbox = backend.trigger_dedup_inbox().await;
     let store = backend.execution_store().await;
     let q = backend.job_dispatch_queue().await;
@@ -2841,7 +2841,7 @@ pub async fn assert_dedup_compose_rolls_back_on_id_collision(backend: &dyn Backe
 /// The second compose reuses the SAME job id but a DIFFERENT execution id and a
 /// DIFFERENT `(trigger, event)`, so it is not a dedup duplicate — the only
 /// collision is on the job-dispatch primary key.
-pub async fn assert_dedup_compose_rejects_duplicate_job_id(backend: &dyn Backend) {
+pub(crate) async fn assert_dedup_compose_rejects_duplicate_job_id(backend: &dyn Backend) {
     let inbox = backend.trigger_dedup_inbox().await;
     let q = backend.job_dispatch_queue().await;
     let s = scope_a();
@@ -2913,7 +2913,7 @@ pub async fn assert_dedup_compose_rejects_duplicate_job_id(backend: &dyn Backend
 ///    `winner_id = outcome.execution_id`.
 /// 2. Second compose with the same `(trg_rb2, evt_rb2)` → `Duplicate`;
 ///    `outcome.execution_id` must equal `winner_id`.
-pub async fn assert_dedup_duplicate_returns_winner_id(backend: &dyn Backend) {
+pub(crate) async fn assert_dedup_duplicate_returns_winner_id(backend: &dyn Backend) {
     let inbox = backend.trigger_dedup_inbox().await;
     let s = scope_a();
 

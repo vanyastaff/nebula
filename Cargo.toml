@@ -220,10 +220,10 @@ unused_lifetimes = "warn"
 unused_qualifications = "warn"
 trivial_numeric_casts = "warn"
 redundant_lifetimes = "warn"
+unreachable_pub = "warn"
 # Deliberately NOT enabled workspace-wide (revisit once the core stabilises):
 # - `missing_docs` — too noisy on internal modules; will land crate-by-crate.
 # - `missing_debug_implementations` — same.
-# - `unreachable_pub` — conflicts with re-export chains in the sdk façade.
 # - `let_underscore_drop` — `let _ = tokio::spawn(...)` / `let _ = tx.send(_)`
 #   is the standard idiom for fire-and-forget; forcing `drop(x)` hurts clarity.
 #
@@ -269,7 +269,7 @@ cast_lossless = "allow"
 option_if_let_else = "allow"            # `match` often reads cleaner than .map_or
 missing_const_for_fn = "allow"          # churns with every generic bound change
 use_self = "allow"                      # fires inside macro expansions
-redundant_pub_crate = "allow"           # conflicts with the sdk re-export façade
+redundant_pub_crate = "allow"           # loses to `unreachable_pub` (the two fight; iroh precedent)
 significant_drop_tightening = "allow"   # too many false positives
 significant_drop_in_scrutinee = "allow"
 cognitive_complexity = "allow"          # threshold lives in clippy.toml

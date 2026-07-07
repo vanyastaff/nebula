@@ -32,12 +32,12 @@ mod counting {
 
     /// Sentinel stamped on the test `Runtime` so the refresh hook can
     /// prove it received *this* live runtime by reference.
-    pub const RUNTIME_TAG: usize = 4_242;
+    pub(crate) const RUNTIME_TAG: usize = 4_242;
 
     /// A fake credential secret — `Zeroize` so it can sit inside a
     /// `CredentialGuard`.
     #[derive(Default)]
-    pub struct FakeCred(pub u32);
+    pub(crate) struct FakeCred(pub u32);
 
     impl Zeroize for FakeCred {
         fn zeroize(&mut self) {
@@ -49,7 +49,7 @@ mod counting {
     /// (which owns the `&self` hooks) and the `Runtime` handle (so a hook
     /// that received a live `&Runtime` can prove it).
     #[derive(Clone, Default)]
-    pub struct Ledger {
+    pub(crate) struct Ledger {
         /// Bumped by `on_credential_refresh`.
         pub refresh_calls: Arc<AtomicUsize>,
         /// Bumped by `on_credential_revoke`.
@@ -71,7 +71,7 @@ mod counting {
     /// The live runtime handle. Carries the ledger + a tag so the hook can
     /// prove it received *this* runtime by reference.
     #[derive(Clone)]
-    pub struct CountingRuntime {
+    pub(crate) struct CountingRuntime {
         pub ledger: Ledger,
         pub tag: usize,
     }
@@ -79,7 +79,7 @@ mod counting {
     /// The resource descriptor. Owns the `SlotCell` credential field and the
     /// `&self` rotation hooks.
     #[derive(Clone)]
-    pub struct CountingResource {
+    pub(crate) struct CountingResource {
         pub ledger: Ledger,
         /// `#[credential]`-shaped slot field (declared by the author per
         /// the Alternative (a) slot model). Pre-populated in the helper to
@@ -97,7 +97,7 @@ mod counting {
     // `crate::Error` directly (HasCredentialSlots redesign).
 
     #[derive(Clone)]
-    pub struct CountingConfig;
+    pub(crate) struct CountingConfig;
 
     nebula_schema::impl_empty_has_schema!(CountingConfig);
 
@@ -208,7 +208,7 @@ mod counting {
     /// way the (now-deleted) `register_resident[_with]` shorthands did.
     /// Centralised so the two-tenant isolation strong-net threads the
     /// identity through one verified path.
-    pub fn register_counting(
+    pub(crate) fn register_counting(
         mgr: &Manager,
         resource: CountingResource,
         opts: RegisterOptions,
@@ -227,7 +227,7 @@ mod counting {
     /// Builds a manager with a `CountingResource` registered as Resident,
     /// its `db` slot pre-populated, and the resident runtime warmed so the
     /// dispatch has a live `&Runtime` to borrow.
-    pub async fn registered() -> (Manager, ResourceKey, Ledger) {
+    pub(crate) async fn registered() -> (Manager, ResourceKey, Ledger) {
         let ledger = Ledger::default();
         let slot: SlotCell<CredentialGuard<FakeCred>> = SlotCell::empty();
         slot.store(Arc::new(CredentialGuard::new(FakeCred(7))));
@@ -246,7 +246,7 @@ mod counting {
     /// Same as [`registered`], but the manager is wired with a real
     /// `MetricsRegistry` so `manager.snapshot()` reflects the rotation
     /// outcome counters.
-    pub async fn registered_with_metrics() -> (
+    pub(crate) async fn registered_with_metrics() -> (
         Manager,
         ResourceKey,
         Ledger,
@@ -275,22 +275,22 @@ mod counting {
     /// `(key, Global)` occupy two distinct registry rows — each its own
     /// `ManagedResource` with its own per-resource in-flight counter
     /// (per-resource revoke deferral).
-    pub const SLOT_A: &[(&str, &str)] = &[("db", "cred-tenant-a")];
-    pub const SLOT_B: &[(&str, &str)] = &[("db", "cred-tenant-b")];
+    pub(crate) const SLOT_A: &[(&str, &str)] = &[("db", "cred-tenant-a")];
+    pub(crate) const SLOT_B: &[(&str, &str)] = &[("db", "cred-tenant-b")];
 
     /// Structural [`SlotIdentity`] for [`SLOT_A`] / [`SLOT_B`] — the
     /// collision-free row key the acquire / revoke ports pin on.
-    pub fn slot_a_id() -> nebula_resource::SlotIdentity {
+    pub(crate) fn slot_a_id() -> nebula_resource::SlotIdentity {
         nebula_resource::SlotIdentity::from_bindings(SLOT_A.iter().copied())
     }
-    pub fn slot_b_id() -> nebula_resource::SlotIdentity {
+    pub(crate) fn slot_b_id() -> nebula_resource::SlotIdentity {
         nebula_resource::SlotIdentity::from_bindings(SLOT_B.iter().copied())
     }
 
     /// Registers `CountingResource` twice as Resident at `SLOT_A` / `SLOT_B`
     /// so a revoke on one row can be proven isolated from in-flight traffic
     /// to the other. Returns the manager and per-row ledgers.
-    pub async fn registered_two_tenant() -> (Arc<Manager>, ResourceKey, Ledger, Ledger) {
+    pub(crate) async fn registered_two_tenant() -> (Arc<Manager>, ResourceKey, Ledger, Ledger) {
         use nebula_resource::RegisterOptions;
 
         let ledger_a = Ledger::default();

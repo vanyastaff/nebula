@@ -24,7 +24,7 @@ use crate::{
 
 /// Runtime errors for transport binaries.
 #[derive(Debug, Error)]
-pub enum ServerRunError {
+pub(crate) enum ServerRunError {
     /// API configuration cannot be loaded from environment.
     #[error("failed to load API config")]
     Config(#[from] ApiConfigError),
@@ -62,7 +62,7 @@ pub enum ServerRunError {
 
 /// Transport-specific initialization failure.
 #[derive(Debug, Error)]
-pub enum TransportInitError {
+pub(crate) enum TransportInitError {
     /// Webhook transport was not attached to `AppState`.
     #[error(
         "webhook transport is not configured; attach it with AppState::with_webhook_transport before running nebula-webhook"
@@ -492,7 +492,7 @@ fn warn_execution_memory_outside_dev() {
 /// runtime attaches the OTLP metrics pipeline against the shared [`MetricsRegistry`] once
 /// `AppState` is built and holds the guard until the transport returns so spans and metric
 /// batches are flushed deterministically on shutdown.
-pub async fn run_transport<T: ServerTransport>(
+pub(crate) async fn run_transport<T: ServerTransport>(
     transport: T,
     telemetry_guard: TelemetryGuard,
 ) -> Result<(), ServerRunError> {
@@ -502,16 +502,16 @@ pub async fn run_transport<T: ServerTransport>(
 }
 
 /// Transport runtime orchestrator for binary composition roots.
-pub struct ServerRuntime;
+pub(crate) struct ServerRuntime;
 
 impl ServerRuntime {
     /// Create a new runtime.
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self
     }
 
     /// Run a selected transport with this runtime.
-    pub async fn run_transport<T: ServerTransport>(
+    pub(crate) async fn run_transport<T: ServerTransport>(
         &self,
         transport: T,
         mut telemetry_guard: TelemetryGuard,
@@ -758,7 +758,9 @@ pub(crate) fn default_state(
 /// operator who set `API_SMTP_HOST` never silently boots with the
 /// in-process echo sink. `SmtpTlsMode::None` emits a startup
 /// `tracing::warn!` because plaintext SMTP is a dev-only posture.
-pub fn build_email_port(api_config: &ApiConfig) -> Result<Arc<dyn EmailPort>, TransportInitError> {
+pub(crate) fn build_email_port(
+    api_config: &ApiConfig,
+) -> Result<Arc<dyn EmailPort>, TransportInitError> {
     if let Some(smtp_cfg) = api_config.smtp.as_ref() {
         if matches!(smtp_cfg.tls, SmtpTlsMode::None) {
             tracing::warn!(
@@ -802,7 +804,7 @@ pub fn build_email_port(api_config: &ApiConfig) -> Result<Arc<dyn EmailPort>, Tr
 /// Today this builder constructs its own `sqlx::Pool<Postgres>`
 /// alongside the idempotency pool; consolidating the two onto one
 /// shared pool is a follow-up.
-pub async fn build_auth_backend(
+pub(crate) async fn build_auth_backend(
     api_config: &ApiConfig,
     email_port: Arc<dyn EmailPort>,
     metrics_registry: Option<Arc<MetricsRegistry>>,
@@ -834,7 +836,7 @@ pub async fn build_auth_backend(
 /// reachable `DATABASE_URL`; either missing component fails closed with
 /// [`TransportInitError::IdempotencyBackendUnavailable`] (silent
 /// fallback to memory is rejected per `feedback_no_shims.md`).
-pub async fn build_idempotency_store(
+pub(crate) async fn build_idempotency_store(
     api_config: &ApiConfig,
 ) -> Result<Arc<dyn IdempotencyStore>, TransportInitError> {
     match api_config.idempotency.backend {
