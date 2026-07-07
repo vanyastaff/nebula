@@ -31,7 +31,7 @@ pub mod queue;
 pub mod registry;
 pub mod runner;
 // guard-justified: module_inception is intentional — runtime/runtime.rs carries ActionRuntime; kept stable for external callers
-#[allow(
+#[expect(
     clippy::module_inception,
     reason = "runtime/runtime.rs carries ActionRuntime; kept stable for external callers"
 )]

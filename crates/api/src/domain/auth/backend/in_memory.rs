@@ -187,7 +187,7 @@ pub struct EmailEnvelope {
 
 // guard-justified: the `From` impl exists exclusively to feed the
 // deprecated `EmailEnvelope` type and cannot itself avoid touching it.
-#[allow(deprecated, reason = "shim feeds the deprecated public type")]
+#[expect(deprecated, reason = "shim feeds the deprecated public type")]
 impl From<EmailMessage> for EmailEnvelope {
     fn from(m: EmailMessage) -> Self {
         Self {
@@ -258,7 +258,7 @@ impl InMemoryAuthBackend {
     // guard-justified: this accessor IS the back-compat shim and must
     // return the deprecated `EmailEnvelope` type by contract.
     #[must_use]
-    #[allow(deprecated, reason = "deliberate back-compat shim over EmailEnvelope")]
+    #[expect(deprecated, reason = "deliberate back-compat shim over EmailEnvelope")]
     pub fn emails(&self) -> Vec<EmailEnvelope> {
         self.default_echo
             .as_ref()
@@ -1232,7 +1232,7 @@ impl AuthBackend for InMemoryAuthBackend {
 // guard-justified: the tests below intentionally exercise the
 // deprecated `EmailEnvelope` shim and `emails()` accessor.
 #[cfg(test)]
-#[allow(
+#[expect(
     deprecated,
     reason = "tests still assert on the deprecated `EmailEnvelope` back-compat shim"
 )]

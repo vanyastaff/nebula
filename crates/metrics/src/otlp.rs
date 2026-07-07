@@ -165,6 +165,10 @@ impl OtlpMetricsGuard {
     ///
     /// Called automatically on `Drop`; exposed so callers that want a deterministic shutdown
     /// (e.g. after `axum::serve` returns) can drain exports before process exit.
+    #[expect(
+        clippy::print_stderr,
+        reason = "shutdown-at-exit edge; tracing dispatch may already be torn down"
+    )]
     pub fn shutdown(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
         if let Some(provider) = self.provider.take()

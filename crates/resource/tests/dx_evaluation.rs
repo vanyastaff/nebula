@@ -318,7 +318,6 @@ async fn use_case_2_resident_config_store() {
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Clone, Debug)]
-#[allow(dead_code)]
 struct DbConfig {
     dsn: String,
     pool_size: u32,

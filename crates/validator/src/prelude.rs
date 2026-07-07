@@ -21,7 +21,6 @@
 //! # Ok::<(), ValidationError>(())
 //! ```
 
-#[allow(clippy::wildcard_imports, ambiguous_glob_reexports)]
 pub use crate::validators::*;
 pub use crate::{
     combinators::{

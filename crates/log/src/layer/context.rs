@@ -53,11 +53,11 @@ mod storage {
     }
 
     #[inline]
-    pub fn current() -> Arc<Context> {
+    pub(crate) fn current() -> Arc<Context> {
         CTX.with(|c| c.borrow().clone())
     }
 
-    pub fn with_ctx_sync<R>(ctx: Arc<Context>, f: impl FnOnce() -> R) -> R {
+    pub(crate) fn with_ctx_sync<R>(ctx: Arc<Context>, f: impl FnOnce() -> R) -> R {
         CTX.with(|cell| {
             let prev = cell.borrow().clone();
             *cell.borrow_mut() = ctx;

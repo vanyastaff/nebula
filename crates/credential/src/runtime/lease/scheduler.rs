@@ -654,7 +654,7 @@ impl Scheduler {
 
     fn update_active_gauge(&self) {
         if let Some(m) = &self.inputs.metrics {
-            #[allow(clippy::cast_precision_loss)] // counts beyond f64 mantissa are not realistic
+            #[expect(clippy::cast_precision_loss)] // counts beyond f64 mantissa are not realistic
             let value = self.registry.len() as f64;
             m.gauge(CredentialMetrics::DYNAMIC_LEASE_ACTIVE, value, &[]);
         }

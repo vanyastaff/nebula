@@ -545,8 +545,6 @@ fn map_oauth_store_err(err: StoreError, credential_id: &str) -> ApiError {
 }
 
 #[cfg(test)]
-// `SecretString::expose_secret` is HRTB; `|s| s.to_owned()` is the correct pattern.
-#[allow(clippy::redundant_closure_for_method_calls)]
 mod tests {
     use std::sync::Arc;
 

@@ -187,6 +187,10 @@ pub(crate) fn install_globals(provider: &SdkTracerProvider) {
 /// Uses `eprintln!` rather than `tracing::error!` because this runs only after
 /// `try_init` failed, so the tracing dispatcher is not installed — a
 /// `tracing::error!` call would silently go to the global no-op dispatcher.
+#[expect(
+    clippy::print_stderr,
+    reason = "runs only after try_init failed, so no tracing dispatcher is installed (see doc comment)"
+)]
 pub(crate) fn shutdown_unused_provider(provider: SdkTracerProvider) {
     if let Err(e) = provider.shutdown() {
         eprintln!("nebula-log: unused OTel provider shutdown error: {e}");

@@ -4,6 +4,11 @@
 //! Run:
 //! `cargo run -p nebula-schema --example conditional_fields`
 
+#![expect(
+    clippy::print_stderr,
+    reason = "example: errors are reported to stderr"
+)]
+
 use nebula_schema::prelude::*;
 use serde_json::json;
 

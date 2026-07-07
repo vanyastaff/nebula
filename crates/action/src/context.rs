@@ -739,10 +739,6 @@ pub trait ActionContextExt: HasResources + HasCredentials {
     /// Returns [`ActionError::Fatal`] if the id is not a valid
     /// [`ResourceKey`], the resource is not
     /// registered, or the accessor returns the wrong type.
-    #[allow(
-        clippy::type_complexity,
-        reason = "object-safe Pin<Box<dyn Future>> is required so derive-emitted call sites can dispatch through &dyn ActionContext"
-    )]
     fn acquire_resource_by_id<'a, R>(
         &'a self,
         id: &'a str,
@@ -786,7 +782,7 @@ pub trait ActionContextExt: HasResources + HasCredentials {
     /// Returns [`ActionError::Fatal`] if the id is not a valid
     /// [`CredentialKey`], the credential is not registered, or the auth
     /// scheme does not match `C::Scheme`.
-    #[allow(
+    #[expect(
         clippy::type_complexity,
         reason = "object-safe Pin<Box<dyn Future>> is required so derive-emitted call sites can dispatch through &dyn ActionContext"
     )]

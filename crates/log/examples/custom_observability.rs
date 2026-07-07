@@ -6,6 +6,11 @@
 //! - Integration with external monitoring systems
 //! - Advanced observability patterns
 
+#![expect(
+    clippy::print_stdout,
+    reason = "example: printed output is the demonstration"
+)]
+
 use std::{
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
@@ -127,7 +132,7 @@ impl ObservabilityEvent for UserActionEvent {
 }
 
 #[derive(Debug)]
-#[allow(dead_code)]
+#[expect(dead_code)]
 enum HealthStatus {
     Healthy,
     Degraded,
@@ -197,7 +202,7 @@ impl ObservabilityEvent for BusinessMetricEvent {
 }
 
 #[derive(Debug)]
-#[allow(dead_code)]
+#[expect(dead_code)]
 enum ErrorSeverity {
     Low,
     Medium,

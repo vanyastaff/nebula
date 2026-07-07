@@ -58,7 +58,7 @@ where
 /// Marker every `Scoped*` decorator satisfies for its port trait: it can
 /// be built from a raw `Arc<dyn P>` plus the tenant `Scope` it binds.
 trait ScopeDecorator<P: ?Sized> {
-    #[allow(dead_code)] // guard-justified: linked only for the type-bound proof above.
+    #[expect(dead_code)] // guard-justified: linked only for the type-bound proof above.
     fn bind(inner: Arc<P>, scope: Scope) -> Self;
 }
 

@@ -338,7 +338,7 @@ macro_rules! define_field {
             /// For use by builders and derive-macro code that has already validated
             /// the key. Callers must ensure uniqueness themselves.
             #[must_use]
-            #[allow(dead_code)] // used by derive-macro code (not yet generated)
+            #[expect(dead_code)] // used by derive-macro code (not yet generated)
             pub(crate) fn read_alias_unchecked(mut self, key: FieldKey) -> Self {
                 self.read_aliases.push_unchecked(key);
                 self
@@ -349,7 +349,7 @@ macro_rules! define_field {
             /// For use by builders and derive-macro code that has already validated
             /// the key.
             #[must_use]
-            #[allow(dead_code)] // used by derive-macro code (not yet generated)
+            #[expect(dead_code)] // used by derive-macro code (not yet generated)
             pub(crate) fn emit_as_unchecked(mut self, key: FieldKey) -> Self {
                 self.emit_as = Some(key);
                 self
@@ -1150,7 +1150,7 @@ impl Field {
     /// # Errors
     ///
     /// Returns `invalid_key` when `key` cannot be parsed into a [`FieldKey`].
-    #[allow(clippy::result_large_err)]
+    #[expect(clippy::result_large_err)]
     pub fn try_string(key: impl AsRef<str>) -> Result<StringField, ValidationError> {
         let key = Self::parse_key_or_error(key.as_ref())?;
         Ok(StringField::with_key(key))
@@ -1167,7 +1167,7 @@ impl Field {
     /// # Errors
     ///
     /// Returns `invalid_key` when `key` cannot be parsed into a [`FieldKey`].
-    #[allow(clippy::result_large_err)]
+    #[expect(clippy::result_large_err)]
     pub fn try_secret(key: impl AsRef<str>) -> Result<SecretField, ValidationError> {
         let key = Self::parse_key_or_error(key.as_ref())?;
         Ok(SecretField::with_key(key))
@@ -1184,7 +1184,7 @@ impl Field {
     /// # Errors
     ///
     /// Returns `invalid_key` when `key` cannot be parsed into a [`FieldKey`].
-    #[allow(clippy::result_large_err)]
+    #[expect(clippy::result_large_err)]
     pub fn try_number(key: impl AsRef<str>) -> Result<NumberField, ValidationError> {
         let key = Self::parse_key_or_error(key.as_ref())?;
         Ok(NumberField::with_key(key))
@@ -1201,7 +1201,7 @@ impl Field {
     /// # Errors
     ///
     /// Returns `invalid_key` when `key` cannot be parsed into a [`FieldKey`].
-    #[allow(clippy::result_large_err)]
+    #[expect(clippy::result_large_err)]
     pub fn try_integer(key: impl AsRef<str>) -> Result<NumberField, ValidationError> {
         let key = Self::parse_key_or_error(key.as_ref())?;
         Ok(NumberField::with_key(key).integer())
@@ -1235,7 +1235,7 @@ impl Field {
     /// # Errors
     ///
     /// Returns `invalid_key` when `key` cannot be parsed into a [`FieldKey`].
-    #[allow(clippy::result_large_err)]
+    #[expect(clippy::result_large_err)]
     pub fn try_boolean(key: impl AsRef<str>) -> Result<BooleanField, ValidationError> {
         let key = Self::parse_key_or_error(key.as_ref())?;
         Ok(BooleanField::with_key(key))
@@ -1252,7 +1252,7 @@ impl Field {
     /// # Errors
     ///
     /// Returns `invalid_key` when `key` cannot be parsed into a [`FieldKey`].
-    #[allow(clippy::result_large_err)]
+    #[expect(clippy::result_large_err)]
     pub fn try_select(key: impl AsRef<str>) -> Result<SelectField, ValidationError> {
         let key = Self::parse_key_or_error(key.as_ref())?;
         Ok(SelectField::with_key(key))
@@ -1269,7 +1269,7 @@ impl Field {
     /// # Errors
     ///
     /// Returns `invalid_key` when `key` cannot be parsed into a [`FieldKey`].
-    #[allow(clippy::result_large_err)]
+    #[expect(clippy::result_large_err)]
     pub fn try_object(key: impl AsRef<str>) -> Result<ObjectField, ValidationError> {
         let key = Self::parse_key_or_error(key.as_ref())?;
         Ok(ObjectField::with_key(key))
@@ -1286,7 +1286,7 @@ impl Field {
     /// # Errors
     ///
     /// Returns `invalid_key` when `key` cannot be parsed into a [`FieldKey`].
-    #[allow(clippy::result_large_err)]
+    #[expect(clippy::result_large_err)]
     pub fn try_list(key: impl AsRef<str>) -> Result<ListField, ValidationError> {
         let key = Self::parse_key_or_error(key.as_ref())?;
         Ok(ListField::with_key(key))
@@ -1304,7 +1304,7 @@ impl Field {
     /// # Errors
     ///
     /// Returns `invalid_key` when `key` cannot be parsed into a [`FieldKey`].
-    #[allow(clippy::result_large_err)]
+    #[expect(clippy::result_large_err)]
     pub fn try_mode(key: impl AsRef<str>) -> Result<ModeField, ValidationError> {
         let key = Self::parse_key_or_error(key.as_ref())?;
         Ok(ModeField::with_key(key))
@@ -1321,7 +1321,7 @@ impl Field {
     /// # Errors
     ///
     /// Returns `invalid_key` when `key` cannot be parsed into a [`FieldKey`].
-    #[allow(clippy::result_large_err)]
+    #[expect(clippy::result_large_err)]
     pub fn try_code(key: impl AsRef<str>) -> Result<CodeField, ValidationError> {
         let key = Self::parse_key_or_error(key.as_ref())?;
         Ok(CodeField::with_key(key))
@@ -1338,7 +1338,7 @@ impl Field {
     /// # Errors
     ///
     /// Returns `invalid_key` when `key` cannot be parsed into a [`FieldKey`].
-    #[allow(clippy::result_large_err)]
+    #[expect(clippy::result_large_err)]
     pub fn try_file(key: impl AsRef<str>) -> Result<FileField, ValidationError> {
         let key = Self::parse_key_or_error(key.as_ref())?;
         Ok(FileField::with_key(key))
@@ -1355,7 +1355,7 @@ impl Field {
     /// # Errors
     ///
     /// Returns `invalid_key` when `key` cannot be parsed into a [`FieldKey`].
-    #[allow(clippy::result_large_err)]
+    #[expect(clippy::result_large_err)]
     pub fn try_computed(key: impl AsRef<str>) -> Result<ComputedField, ValidationError> {
         let key = Self::parse_key_or_error(key.as_ref())?;
         Ok(ComputedField::with_key(key))
@@ -1372,7 +1372,7 @@ impl Field {
     /// # Errors
     ///
     /// Returns `invalid_key` when `key` cannot be parsed into a [`FieldKey`].
-    #[allow(clippy::result_large_err)]
+    #[expect(clippy::result_large_err)]
     pub fn try_dynamic(key: impl AsRef<str>) -> Result<DynamicField, ValidationError> {
         let key = Self::parse_key_or_error(key.as_ref())?;
         Ok(DynamicField::with_key(key))
@@ -1389,7 +1389,7 @@ impl Field {
     /// # Errors
     ///
     /// Returns `invalid_key` when `key` cannot be parsed into a [`FieldKey`].
-    #[allow(clippy::result_large_err)]
+    #[expect(clippy::result_large_err)]
     pub fn try_notice(key: impl AsRef<str>) -> Result<NoticeField, ValidationError> {
         let key = Self::parse_key_or_error(key.as_ref())?;
         Ok(NoticeField::with_key(key))

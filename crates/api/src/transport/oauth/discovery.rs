@@ -465,10 +465,6 @@ pub async fn resolve_provider_endpoints(
 /// module + the `nebula_test_util` cfg-gated `test_support` module
 /// can reach it.
 #[cfg(any(test, nebula_test_util))]
-#[allow(
-    dead_code,
-    reason = "surfaced only through the test_support cfg-gated re-export; in regular `cargo test` the inner cache is not yet exercised"
-)]
 pub(crate) fn clear_discovery_cache_for_tests() {
     cache().clear();
 }

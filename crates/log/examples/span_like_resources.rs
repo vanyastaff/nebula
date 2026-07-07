@@ -3,6 +3,11 @@
 //! Demonstrates how resources automatically merge from parent contexts,
 //! similar to how `tracing` spans inherit attributes.
 
+#![expect(
+    clippy::print_stdout,
+    reason = "example: printed output is the demonstration"
+)]
+
 use nebula_log::observability::{
     ExecutionContext, LogLevel, LoggerResource, NodeContext, ObservabilityEvent,
     ResourceAwareAdapter, ResourceAwareHook, emit_event, get_current_logger_resource,

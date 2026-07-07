@@ -113,7 +113,7 @@ impl ResumeTokenRow {
     /// The only public constructor — needed cross-crate because
     /// `#[non_exhaustive]` makes struct-literal syntax unavailable outside
     /// the defining crate.
-    #[allow(clippy::too_many_arguments)] // flat DTO; a builder would obscure the schema
+    #[expect(clippy::too_many_arguments)] // flat DTO; a builder would obscure the schema
     pub fn new(
         token_hash: TokenHash,
         scope: Scope,

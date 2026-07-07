@@ -193,7 +193,7 @@ impl CredentialService {
     // guard-justified: from_secure_parts mirrors the eight mandatory collaborators
     // the builder composes; bundling them into a struct would just move the
     // arity to that struct's literal at the single call site.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub fn from_secure_parts(
         store: Arc<dyn DynCredentialStore>,
         scan_store: ErasedCredentialStore,

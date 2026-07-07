@@ -35,10 +35,9 @@ mod coverage_smoke {
     //! Fails to compile if an item listed in the prelude doc comment stops
     //! being re-exported. Add any newly-documented item here.
 
-    #[allow(unused_imports)]
     use super::*;
 
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     fn touch_all_reexports() {
         fn _j<T: HasSchema>(_: &T) {}
         fn _k<T: HasSelectOptions>(_: &T) {}

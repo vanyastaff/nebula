@@ -30,10 +30,6 @@ use serde_json::json;
 // ── Test resource ──────────────────────────────────────────────────────────
 
 #[derive(Clone, Debug, Deserialize)]
-#[allow(
-    dead_code,
-    reason = "fields exercised through ResourceConfig::validate + serde::Deserialize, not direct read"
-)]
 struct PgConfig {
     host: String,
     #[serde(default = "default_port")]

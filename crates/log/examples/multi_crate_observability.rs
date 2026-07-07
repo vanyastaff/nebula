@@ -9,6 +9,11 @@
 //! - Event correlation and tracing
 //! - Centralized observability configuration
 
+#![expect(
+    clippy::print_stdout,
+    reason = "example: printed output is the demonstration"
+)]
+
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},

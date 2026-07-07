@@ -10,6 +10,11 @@
 //!
 //! Run: `cargo run -p nebula-examples --example credential_plugin_scheme_family`
 
+#![expect(
+    clippy::print_stdout,
+    reason = "example: printed output is the demonstration"
+)]
+
 use nebula_core::auth::{
     AuthPattern, AuthScheme, EgressShape, ExternalScheme, RefreshStrategyKind, SchemeFamily,
 };

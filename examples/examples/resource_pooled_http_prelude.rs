@@ -7,6 +7,11 @@
 //! cargo run -p nebula-examples --example resource_pooled_http_prelude
 //! ```
 
+#![expect(
+    clippy::print_stdout,
+    reason = "example: printed output is the demonstration"
+)]
+
 use nebula_core::{ExecutionId, scope::Scope};
 use nebula_resource::prelude::*;
 use nebula_resource::topology::pooled::{BrokenCheck, PoolProvider};

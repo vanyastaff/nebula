@@ -497,7 +497,7 @@ impl Manager {
     // guard-justified: irreducible engine ABI — the engine registrar dispatches
     // positionally with a JSON-driven shape; collapsing to a struct reintroduces
     // the navigation hop the single register funnel removed. See issue #718.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     #[tracing::instrument(
         level = "debug",
         target = "nebula_resource::register_resolved",

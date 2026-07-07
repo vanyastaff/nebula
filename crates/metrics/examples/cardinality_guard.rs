@@ -13,6 +13,11 @@
 //! cargo run -p nebula-metrics --example cardinality_guard
 //! ```
 
+#![expect(
+    clippy::print_stdout,
+    reason = "example: printed output is the demonstration"
+)]
+
 use std::time::Duration;
 
 use nebula_metrics::{LabelAllowlist, MetricsRegistry, naming::NEBULA_ACTION_EXECUTIONS_TOTAL};

@@ -6,6 +6,11 @@
 //! 3. Lag monitoring with lagged_count()
 //! 4. Multi-bus registry pattern
 
+#![expect(
+    clippy::print_stdout,
+    reason = "example: printed output is the demonstration"
+)]
+
 use std::sync::Arc;
 
 use nebula_eventbus::{BackPressurePolicy, EventBus, EventBusRegistry, EventFilter};

@@ -100,7 +100,7 @@ impl SentinelTrigger {
 
     // guard-justified: consumed by reclaim-sweep wiring that lands in Stage 3.3; removing
     // silences the compiler but breaks the planned composition root
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     pub(crate) fn repo(&self) -> &Arc<dyn RefreshClaimRepo> {
         &self.repo
     }

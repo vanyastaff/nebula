@@ -53,7 +53,7 @@ impl ResourceConfig for FfmpegCfg {
 /// directly in assertions (the destroy/create counters are the observables).
 #[derive(Clone)]
 struct Transcoder(
-    #[allow(
+    #[expect(
         dead_code,
         reason = "entry identity carried by the handle, not asserted on directly"
     )]

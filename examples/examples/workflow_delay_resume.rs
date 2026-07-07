@@ -44,6 +44,11 @@
 //!
 //! It completes in a fraction of a second (the real timer span) plus engine overhead.
 
+#![expect(
+    clippy::print_stdout,
+    reason = "example: printed output is the demonstration"
+)]
+
 use std::{collections::HashMap, sync::Arc, time::Duration, time::Instant};
 
 use anyhow::Context as _;

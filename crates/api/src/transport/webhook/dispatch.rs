@@ -1044,7 +1044,7 @@ mod tests {
     ///
     /// Stores the `ActivationHandle` so `dispatch_with_id` / `dispatch_without_id`
     /// can derive the correct `(trigger_uuid, nonce)` webhook key.
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     struct TestFixture {
         transport: WebhookTransport,
         version_store: Arc<InMemoryWorkflowVersionStore>,

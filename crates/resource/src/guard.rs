@@ -146,8 +146,7 @@ pub struct ResourceGuard<R: Provider> {
     /// time" without any `Drop`-path logic. `None` when the resource declared
     /// no hold deadline (the common case — zero cost).
     // Held only for its `Drop`: the watchdog observes liveness via a `Weak`
-    // upgrade, never by reading this field, so `dead_code` is expected.
-    #[allow(dead_code)]
+    // upgrade, never by reading this field.
     hold_token: Option<Arc<()>>,
 }
 

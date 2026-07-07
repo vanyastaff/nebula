@@ -73,7 +73,7 @@ impl<B: CredentialStore + 'static> CredentialServiceBuilder<B> {
     // guard-justified: the ten mandatory collaborators are the secure-construction
     // contract; bundling them into a params struct just moves the arity to that
     // struct's single literal at the call site.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub fn new(
         raw_store: B,
         key_provider: Arc<dyn KeyProvider>,

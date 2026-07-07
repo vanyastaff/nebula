@@ -32,11 +32,6 @@ use crate::{error::ApiError, state::AppState};
 /// bucket). The `?` maps [`nebula_tenancy::TenancyError`] through the
 /// coarse [`From`] impl (`MissingWorkspace` → 404, `Unauthorized` → 403)
 /// so no tenant-graph detail leaks (spec §6.1).
-//
-// guard-justified: additive seam — wired into the workflow/execution
-// handlers in the following expand-contract commits; dead until the
-// first handler is migrated off the placeholder-scoped `AppState` path.
-#[allow(dead_code)]
 pub(crate) fn request_scope(tenant: &TenantContext) -> Result<Scope, ApiError> {
     Ok(nebula_tenancy::request_scope(tenant)?)
 }

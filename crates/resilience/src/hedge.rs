@@ -242,7 +242,7 @@ impl HedgeExecutor {
                 // Fire the next hedge after the configured delay.
                 () = &mut delay, if hedges_sent < self.config.max_hedges => {
                     // Reason: max_hedges is a small config value, never exceeds u32.
-                    #[allow(clippy::cast_possible_truncation)]
+                    #[expect(clippy::cast_possible_truncation)]
                     let hedge_num = (hedges_sent + 1) as u32;
                     self.sink.record(ResilienceEvent::HedgeFired { hedge_number: hedge_num });
                     set.spawn(operation());
@@ -439,12 +439,9 @@ impl LatencyTracker {
         }
     }
 
-    // Reason: u128 nanosecond values from Duration::as_nanos() are truncated to u64
-    // (max ~584 years), and f64 precision loss is acceptable for percentile calculations.
-    #[allow(
+    #[expect(
         clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        clippy::cast_precision_loss
+        reason = "u128 nanoseconds from Duration::as_nanos() truncate to u64 (max ~584 years)"
     )]
     pub fn record(&mut self, latency: Duration) {
         let nanos = latency.as_nanos() as u64;
@@ -468,7 +465,7 @@ impl LatencyTracker {
     }
 
     // Reason: f64 precision loss and sign loss are acceptable for percentile index calculation.
-    #[allow(
+    #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
         clippy::cast_precision_loss

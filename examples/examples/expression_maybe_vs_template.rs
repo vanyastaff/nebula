@@ -2,6 +2,11 @@
 //!
 //! This example demonstrates when to use each type and how they work together.
 
+#![expect(
+    clippy::print_stdout,
+    reason = "example: printed output is the demonstration"
+)]
+
 use nebula_expression::{
     EvaluationContext, ExpressionEngine, MaybeExpression, MaybeTemplate, Template,
 };

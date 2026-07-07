@@ -37,7 +37,7 @@ impl<'a> NewExecution<'a> {
 // guard-justified: `state` is `serde_json::Value`, which is not `Eq`
 // (it can hold a float). `Eq` is therefore not derivable; the clippy
 // hint is a false positive for any DTO carrying an opaque JSON payload.
-#[allow(clippy::derive_partial_eq_without_eq)]
+#[expect(clippy::derive_partial_eq_without_eq)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ExecutionRecord {
     /// Execution id (opaque string form).

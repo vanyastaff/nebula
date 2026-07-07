@@ -25,6 +25,11 @@
 //! cargo run -p nebula-examples --example resource_telegram_multi_workflow
 //! ```
 
+#![expect(
+    clippy::print_stdout,
+    reason = "example: printed output is the demonstration"
+)]
+
 use std::{
     sync::{
         Arc,

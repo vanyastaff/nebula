@@ -20,7 +20,7 @@ struct ClaimRow {
     claim_id: Uuid,
     generation: u64,
     holder: ReplicaId,
-    #[allow(dead_code, reason = "kept for future event/metric emission")]
+    #[expect(dead_code, reason = "kept for future event/metric emission")]
     acquired_at: DateTime<Utc>,
     expires_at: DateTime<Utc>,
     sentinel: SentinelState,
@@ -31,12 +31,12 @@ struct ClaimRow {
 struct SentinelEventRow {
     credential_id: CredentialId,
     detected_at: DateTime<Utc>,
-    #[allow(
+    #[expect(
         dead_code,
         reason = "kept for symmetry with the SQL backends; surfaces in diagnostics"
     )]
     crashed_holder: ReplicaId,
-    #[allow(
+    #[expect(
         dead_code,
         reason = "kept for symmetry with the SQL backends; surfaces in diagnostics"
     )]

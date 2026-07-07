@@ -162,7 +162,7 @@ fn derive_handles_vec_and_nested_user_type() {
 }
 
 #[derive(Schema)]
-#[allow(dead_code)]
+#[expect(dead_code)]
 struct WithSkip {
     keep: String,
     #[field(skip)]
@@ -178,7 +178,7 @@ fn derive_respects_skip() {
 
 #[derive(Schema)]
 #[schema(reserved("legacy_token", "v1_secret"))]
-#[allow(dead_code)]
+#[expect(dead_code)]
 struct WithReservedKeys {
     name: String,
     enabled: bool,
@@ -197,7 +197,7 @@ fn derive_reserved_keys_do_not_materialize_or_block_other_fields() {
 
 #[derive(Schema)]
 #[schema(reserved("dropped"))]
-#[allow(dead_code)]
+#[expect(dead_code)]
 struct ReservedMatchesSkippedField {
     keep: String,
     // A skipped field has no wire key, so reserving its name is not a collision —
@@ -219,7 +219,7 @@ fn derive_reserved_key_matching_a_skipped_field_is_allowed() {
 
 #[derive(Schema, serde::Deserialize)]
 #[schema(reserved("removed"))]
-#[allow(dead_code)]
+#[expect(dead_code)]
 struct AliasDoesNotCollide {
     // An alias that does NOT match a reserved key is allowed — only a collision
     // is rejected, aliases are not blanket-forbidden on reserved-key structs.
@@ -292,7 +292,7 @@ fn derive_enum_select_field_becomes_select() {
 }
 
 #[derive(Schema)]
-#[allow(dead_code)]
+#[expect(dead_code)]
 struct Uses {
     #[field(label = "Plain string")]
     value: String,
@@ -505,10 +505,6 @@ fn derive_same_field_read_and_emit_as_reuse_builds() {
 
 #[derive(Schema, serde::Deserialize)]
 #[expect(dead_code, reason = "exercised via HasSchema::schema")]
-#[allow(
-    unreachable_patterns,
-    reason = "serde emits a duplicate match arm for the repeated alias"
-)]
 struct DuplicateAlias {
     #[serde(alias = "alt", alias = "alt")]
     name: String,
@@ -540,7 +536,7 @@ fn derive_duplicate_serde_alias_is_deduped_not_rejected() {
 /// An enum with no `rename_all` annotation: serde keeps variant names verbatim
 /// but EnumSelect converts them to heck snake_case.
 #[derive(EnumSelect, serde::Serialize, Clone, Copy)]
-#[allow(dead_code)] // AnotherOne is exercised only via select_options(), not direct construction
+#[expect(dead_code)] // AnotherOne is exercised only via select_options(), not direct construction
 enum NoPolicyEnum {
     SimpleVariant,
     AnotherOne,

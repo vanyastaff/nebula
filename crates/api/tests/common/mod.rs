@@ -38,7 +38,7 @@ pub fn ws_path(suffix: &str) -> String {
 }
 
 /// Helper to build an org-scoped API path.
-#[allow(dead_code)]
+#[expect(dead_code)]
 pub fn org_path(suffix: &str) -> String {
     format!("/api/v1/orgs/{TEST_ORG}{suffix}")
 }

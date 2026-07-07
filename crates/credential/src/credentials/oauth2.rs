@@ -31,7 +31,6 @@ pub use crate::scheme::oauth2::AuthStyle;
 // from this submodule; the inner items themselves are NOT deprecated,
 // only the legacy `AuthStyle` constant on `oauth2_config` is, and the
 // deprecation surfaces at the caller's import site, not here.
-#[allow(deprecated)]
 pub use oauth2_config::{
     AuthCodeBuilder, ClientCredentialsBuilder, DeviceCodeBuilder, GrantType, OAuth2Config,
     PkceMethod,
@@ -897,7 +896,7 @@ mod tests {
     // (returning `oauth2_http_transport_disabled()`); the trait
     // membership is still required so the engine's revoke / test
     // dispatchers can bind on it once the transport is wired.
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     fn assert_oauth2_capabilities()
     where
         OAuth2Credential: Credential + Interactive + Refreshable + Revocable + Testable,

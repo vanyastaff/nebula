@@ -17,6 +17,11 @@
 //! [`CorePlugin`]: nebula_plugin_core::CorePlugin
 //! [`WorkflowEngine`]: nebula_engine::WorkflowEngine
 
+#![expect(
+    clippy::print_stderr,
+    reason = "binary edge: startup/exit errors must reach stderr outside the tracing lifetime"
+)]
+
 mod compose_main;
 
 use compose_main::run;

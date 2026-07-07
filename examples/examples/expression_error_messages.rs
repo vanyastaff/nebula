@@ -3,6 +3,11 @@
 //! This example shows how the template engine provides detailed error messages
 //! with source code context and visual highlighting.
 
+#![expect(
+    clippy::print_stdout,
+    reason = "example: printed output is the demonstration"
+)]
+
 use nebula_expression::{EvaluationContext, ExpressionEngine, Template};
 use serde_json::Value;
 

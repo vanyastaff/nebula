@@ -1199,7 +1199,6 @@ fn classify_error_cb_outcome(
 }
 
 /// Execute the Retry step of the pipeline.
-#[allow(clippy::excessive_nesting)]
 async fn run_retry_step<T, E, F>(
     config: &RetryConfig<E>,
     ctx: PipelineRunContext<E>,

@@ -1,5 +1,10 @@
 //! Combinators example for nebula-validator
 
+#![expect(
+    clippy::print_stdout,
+    reason = "example: printed output is the demonstration"
+)]
+
 use nebula_validator::prelude::{Validate, and, max_length, min_length};
 
 fn main() {

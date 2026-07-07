@@ -9,6 +9,11 @@
 //! cargo run -p nebula-metrics --example prometheus_export
 //! ```
 
+#![expect(
+    clippy::print_stdout,
+    reason = "example: printed output is the demonstration"
+)]
+
 use nebula_metrics::{
     MetricsRegistry,
     naming::{

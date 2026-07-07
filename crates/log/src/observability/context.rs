@@ -209,16 +209,16 @@ mod storage {
     }
 
     #[inline]
-    pub fn current_execution() -> Option<Arc<ExecutionContext>> {
+    pub(crate) fn current_execution() -> Option<Arc<ExecutionContext>> {
         EXECUTION_CTX.with(|ctx| ctx.borrow().clone())
     }
 
     #[inline]
-    pub fn current_node() -> Option<Arc<NodeContext>> {
+    pub(crate) fn current_node() -> Option<Arc<NodeContext>> {
         NODE_CTX.with(|ctx| ctx.borrow().clone())
     }
 
-    pub fn with_execution_sync<R>(ctx: Arc<ExecutionContext>, f: impl FnOnce() -> R) -> R {
+    pub(crate) fn with_execution_sync<R>(ctx: Arc<ExecutionContext>, f: impl FnOnce() -> R) -> R {
         EXECUTION_CTX.with(|cell| {
             let prev = cell.borrow_mut().replace(ctx);
             let result = f();
@@ -227,7 +227,7 @@ mod storage {
         })
     }
 
-    pub fn with_node_sync<R>(ctx: Arc<NodeContext>, f: impl FnOnce() -> R) -> R {
+    pub(crate) fn with_node_sync<R>(ctx: Arc<NodeContext>, f: impl FnOnce() -> R) -> R {
         NODE_CTX.with(|cell| {
             let prev = cell.borrow_mut().replace(ctx);
             let result = f();

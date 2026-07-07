@@ -104,6 +104,16 @@ name = "sentry_setup"
 path = "examples/sentry_setup.rs"
 required-features = ["sentry"]
 
+[[example]]
+name = "async_timing"
+path = "examples/async_timing.rs"
+required-features = ["async"]
+
+[[example]]
+name = "context_propagation"
+path = "examples/context_propagation.rs"
+required-features = ["async"]
+
 [[bench]]
 name = "log_hot_path"
 harness = false

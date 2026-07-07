@@ -342,6 +342,14 @@ rc_mutex = "warn"
 arc_with_non_send_sync = "warn"
 # `dbg!` must not ship in non-test code (tests exempt via clippy.toml).
 dbg_macro = "warn"
+# Output goes through `tracing`, not stdout/stderr. The only sanctioned prints
+# are pre/post-tracing edges (telemetry bootstrap/shutdown fallbacks), each
+# marked `#[expect]` at the site (tests exempt via clippy.toml).
+print_stdout = "warn"
+print_stderr = "warn"
+# Prefer `#[expect(...)]` over `#[allow(...)]`: an expectation warns when the
+# suppressed lint stops firing, so stale suppressions can't accumulate.
+allow_attributes = "warn"
 # Pattern-matching recall (Rust Reference + Clippy)
 match_like_matches_macro = "warn"
 redundant_pattern_matching = "warn"

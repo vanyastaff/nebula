@@ -41,6 +41,11 @@
 //! cargo run -p nebula-examples --example workflow_data_pipeline
 //! ```
 
+#![expect(
+    clippy::print_stdout,
+    reason = "example: printed output is the demonstration"
+)]
+
 use std::{collections::HashMap, sync::Arc};
 
 use anyhow::Context as _;

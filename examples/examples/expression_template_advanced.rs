@@ -5,6 +5,11 @@
 //! - Position tracking for error reporting
 //! - MaybeTemplate for conditional rendering
 
+#![expect(
+    clippy::print_stdout,
+    reason = "example: printed output is the demonstration"
+)]
+
 use nebula_expression::{
     EvaluationContext, ExpressionEngine, MaybeTemplate, Template, TemplatePart,
 };

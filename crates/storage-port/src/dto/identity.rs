@@ -44,7 +44,7 @@ pub struct UserRow {
 // guard-justified: `settings` is `serde_json::Value` (not `Eq` — can
 // hold a float); the clippy `Eq`-derivable hint is a false positive for
 // JSON-bearing rows.
-#[allow(clippy::derive_partial_eq_without_eq)]
+#[expect(clippy::derive_partial_eq_without_eq)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct OrgRow {
     /// `org_` ULID (opaque string form).
@@ -73,7 +73,7 @@ pub struct OrgRow {
 // guard-justified: `settings` is `serde_json::Value` (not `Eq` — can
 // hold a float); the clippy `Eq`-derivable hint is a false positive for
 // JSON-bearing rows.
-#[allow(clippy::derive_partial_eq_without_eq)]
+#[expect(clippy::derive_partial_eq_without_eq)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct WorkspaceRow {
     /// `ws_` ULID (opaque string form).
@@ -204,7 +204,7 @@ pub struct MembershipRow {
 // guard-justified: `config` is `serde_json::Value` (not `Eq` — can
 // hold a float); the clippy `Eq`-derivable hint is a false positive for
 // JSON-bearing rows.
-#[allow(clippy::derive_partial_eq_without_eq)]
+#[expect(clippy::derive_partial_eq_without_eq)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ResourceRow {
     /// `res_` ULID (opaque string form).
@@ -233,7 +233,7 @@ pub struct ResourceRow {
 // guard-justified: `config` is `serde_json::Value` (not `Eq` — can
 // hold a float); the clippy `Eq`-derivable hint is a false positive for
 // JSON-bearing rows.
-#[allow(clippy::derive_partial_eq_without_eq)]
+#[expect(clippy::derive_partial_eq_without_eq)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TriggerRow {
     /// `trg_` ULID (opaque string form).
@@ -294,7 +294,7 @@ pub struct QuotaRow {
 // guard-justified: `details` is `Option<serde_json::Value>` (not `Eq`
 // — can hold a float); the clippy `Eq`-derivable hint is a false
 // positive for JSON-bearing rows.
-#[allow(clippy::derive_partial_eq_without_eq)]
+#[expect(clippy::derive_partial_eq_without_eq)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AuditLogRow {
     /// ULID primary key (opaque string form).
@@ -327,7 +327,7 @@ pub struct AuditLogRow {
 // guard-justified: `metadata` is `Option<serde_json::Value>` (not `Eq`
 // — can hold a float); the clippy `Eq`-derivable hint is a false
 // positive for JSON-bearing rows.
-#[allow(clippy::derive_partial_eq_without_eq)]
+#[expect(clippy::derive_partial_eq_without_eq)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BlobRow {
     /// ULID primary key (opaque string form).

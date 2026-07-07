@@ -145,7 +145,13 @@ impl Expression {
     }
 
     /// Build a parse error tagged for this expression.
-    #[allow(dead_code)]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "currently exercised only by unit tests; the expression parser wires this in"
+        )
+    )]
     pub(crate) fn parse_error(
         &self,
         msg: impl Into<std::borrow::Cow<'static, str>>,

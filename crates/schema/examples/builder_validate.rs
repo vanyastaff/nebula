@@ -4,6 +4,11 @@
 //! Run:
 //! `cargo run -p nebula-schema --example builder_validate`
 
+#![expect(
+    clippy::print_stderr,
+    reason = "example: errors are reported to stderr"
+)]
+
 use nebula_schema::{Field, FieldValues, Schema, field_key};
 use serde_json::json;
 

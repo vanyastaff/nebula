@@ -14,6 +14,11 @@
 //! store via `unimplemented!()`, so the suite compiles and that backend's
 //! cases are red. That red is the TDD target for the remaining P2 tasks.
 
+#![expect(
+    clippy::print_stderr,
+    reason = "conformance harness reports skip/diagnostic lines to stderr"
+)]
+
 #[path = "conformance/mod.rs"]
 mod harness;
 

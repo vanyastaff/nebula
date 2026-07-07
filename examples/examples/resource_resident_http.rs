@@ -27,6 +27,11 @@
 //! 4. The example explicitly forces three refreshes to demonstrate the pattern — production code
 //!    refreshes only when the cached token has actually expired.
 
+#![expect(
+    clippy::print_stdout,
+    reason = "example: printed output is the demonstration"
+)]
+
 use std::{
     sync::{
         Arc, OnceLock,
@@ -53,7 +58,7 @@ use tokio_util::sync::CancellationToken;
 /// from `nebula-credential`. The mock keeps the shape but skips the storage
 /// + projection layers so the example focuses on the refresh flow.
 #[derive(Clone)]
-#[allow(
+#[expect(
     dead_code,
     reason = "client_secret models the SecretString slot — never read in mock, never logged in production"
 )]
