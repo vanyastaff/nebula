@@ -61,13 +61,18 @@ jobs:
       - name: Select packages to test
         id: select
         shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          MG_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          MG_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
         run: |
           set -euo pipefail
 
           FULL='["nebula-action","nebula-api","nebula-core","nebula-credential","nebula-engine","nebula-error","nebula-eventbus","nebula-execution","nebula-expression","nebula-log","nebula-metrics","nebula-plugin","nebula-resilience","nebula-resource","nebula-schema","nebula-sdk","nebula-storage","nebula-telemetry","nebula-validator","nebula-workflow"]'
           SMOKE='["nebula-core","nebula-engine"]'
 
-          EVENT="${{ github.event_name }}"
           if [[ "$EVENT" == "push" || "$EVENT" == "workflow_dispatch" ]]; then
             echo "packages=$FULL" >> "$GITHUB_OUTPUT"
             exit 0
@@ -76,11 +81,11 @@ jobs:
           BASE_SHA=""
           HEAD_SHA=""
           if [[ "$EVENT" == "pull_request" ]]; then
-            BASE_SHA="${{ github.event.pull_request.base.sha }}"
-            HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+            BASE_SHA="$PR_BASE_SHA"
+            HEAD_SHA="$PR_HEAD_SHA"
           elif [[ "$EVENT" == "merge_group" ]]; then
-            BASE_SHA="${{ github.event.merge_group.base_sha }}"
-            HEAD_SHA="${{ github.event.merge_group.head_sha }}"
+            BASE_SHA="$MG_BASE_SHA"
+            HEAD_SHA="$MG_HEAD_SHA"
           fi
 
           # Fail-safe: if event payload does not provide diff SHAs, run full set
@@ -161,14 +166,16 @@ jobs:
       # Note: `nebula-api`'s `credential-oauth` feature was deleted 2026-04-24 —
       # OAuth ceremony now ships unconditionally per ADR-0031 §6.
       - name: Run tests for ${{ matrix.package }}
+        env:
+          PKG: ${{ matrix.package }}
         run: |
           set -euo pipefail
-          if [[ "${{ matrix.package }}" == "nebula-engine" ]]; then
+          if [[ "$PKG" == "nebula-engine" ]]; then
             cargo nextest run -p nebula-engine --features "rotation" --profile ci --no-tests=pass
-          elif [[ "${{ matrix.package }}" == "nebula-storage" ]]; then
+          elif [[ "$PKG" == "nebula-storage" ]]; then
             cargo nextest run -p nebula-storage --features "credential-in-memory" --profile ci --no-tests=pass
           else
-            cargo nextest run -p "${{ matrix.package }}" --profile ci --no-tests=pass
+            cargo nextest run -p "$PKG" --profile ci --no-tests=pass
           fi
 
       - name: Test summary

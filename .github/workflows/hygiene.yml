@@ -36,3 +36,21 @@ jobs:
 
       - name: Check TOML formatting
         run: taplo fmt --check .
+
+  # ── Workflow security audit (ENGINEERING_2026 C12; uv/reth precedent) ─────
+  # Gate on high severity: excessive permissions, template injection into
+  # `run:` blocks, etc. Medium findings (persist-credentials on checkouts)
+  # are tracked as follow-up and intentionally not blocking yet.
+  zizmor:
+    name: zizmor (workflow security)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Install zizmor
+        uses: taiki-e/install-action@481c34c1cf3a84c68b5e46f4eccfc82af798415a # v2.75.23
+        with:
+          tool: zizmor
+      - name: Audit workflows (high severity blocks)
+        run: zizmor --no-progress --min-severity high .github/workflows/

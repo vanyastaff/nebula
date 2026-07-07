@@ -35,7 +35,6 @@ on:
 
 permissions:
   contents: read
-  id-token: write
 
 env:
   CARGO_TERM_COLOR: always
@@ -190,6 +189,9 @@ jobs:
           echo "Planned shards: $SHARDS"
 
   codspeed:
+    permissions:
+      contents: read
+      id-token: write
     name: Run benchmarks (${{ matrix.shard }})
     needs: [changes]
     # Gate is shard-level only: draft PRs still get partial CodSpeed feedback

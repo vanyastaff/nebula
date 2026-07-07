@@ -26,17 +26,17 @@ project studied. Divergence from these needs a written reason.
 | C1 | `[workspace.lints]` in root Cargo.toml; every crate `[lints] workspace = true`; **every allow/deny decision listed with a comment, never silent** | all five | ✅ done |
 | C2 | Restriction lints promoted: `print_stdout`, `print_stderr`, `dbg_macro` warn/deny — all output flows through one sink (`tracing` / a `Printer`) | uv, rust-analyzer, iroh | ✅ done (2026-07-06) |
 | C3 | `#[expect(..., reason)]` over `#[allow]`; stale suppressions fail the gate | uv (AGENTS.md), Nebula | ✅ done (2026-07-06) |
-| C4 | **Lint the feature matrix, not just `--all-features`**: clippy on default + `--no-default-features` + all-features, or `cargo hack` | iroh (3 configs), reth (hack, sharded), omicron (`xtask check-features`) | ❌ gap #1 — proven by the 2026-07-06 `cfg_attr(not(feature))` incident |
-| C5 | Rustdoc is a hard gate: `RUSTDOCFLAGS="-D warnings"` on the workspace | reth, omicron, iroh | ❌ gap |
-| C6 | Unused-dependency control is mechanized: `unused_crate_dependencies` warn per crate + udeps/machete/shear in CI | reth (all three layers), uv (shear) | 🟡 partial (machete only) |
+| C4 | **Lint the feature matrix, not just `--all-features`**: clippy on default + `--no-default-features` + all-features, or `cargo hack` | iroh (3 configs), reth (hack, sharded), omicron (`xtask check-features`) | ✅ done (2026-07-07): workspace clippy on default + no-default in `check`, cargo-hack each-feature |
+| C5 | Rustdoc is a hard gate: `RUSTDOCFLAGS="-D warnings"` on the workspace | reth, omicron, iroh | ✅ already in place (`doc` job runs `RUSTDOCFLAGS=-D warnings`) |
+| C6 | Unused-dependency control is mechanized: `unused_crate_dependencies` warn per crate + udeps/machete/shear in CI | reth (all three layers), uv (shear) | ✅ done (2026-07-07): per-crate `unused_crate_dependencies` + udeps weekly + machete; 15 dead deps purged on adoption |
 | C7 | Generated artifacts are committed and CI re-generates + `git diff --exit-code` | rust-analyzer (`codegen --check`), uv (`check-generated-files`), omicron (openapi), reth (CLI docs) | ❌ not yet needed at scale; adopt with schema export |
 | C8 | A project-specific hermetic **test-context crate** (temp dirs, pinned env, frozen clock, redaction filters) | uv (`uv-test`, 2500 loc), omicron (`#[nexus_test]`), iroh (patchbay netsim) | 🟡 partial (`test-utils` exists, not formalized) |
-| C9 | One aggregator required-check (`alls-green` / `required-checks-passed`); branch protection points at it, not at N jobs | reth, uv | ❌ gap |
+| C9 | One aggregator required-check (`alls-green` / `required-checks-passed`); branch protection points at it, not at N jobs | reth, uv | ✅ already in place (`required` aggregator job) |
 | C10 | Conventional commits enforced mechanically (PR title check / convco) | iroh, reth, uv, Nebula | ✅ done |
-| C11 | nextest as the runner, with per-test overrides (serial groups, slow-timeouts, retries) | reth, uv, omicron | 🟡 partial (no `.config/nextest.toml` tuning) |
-| C12 | SHA-pinned GitHub Actions + workflow security audit (`zizmor`) | uv, reth | ❌ gap |
+| C11 | nextest as the runner, with per-test overrides (serial groups, slow-timeouts, retries) | reth, uv, omicron | ✅ already in place (trybuild groups, ci/agent/chaos profiles) |
+| C12 | SHA-pinned GitHub Actions + workflow security audit (`zizmor`) | uv, reth | ✅ done (2026-07-07): actions were already SHA-pinned; zizmor gate added (high severity) |
 | C13 | Path-/label-driven CI matrix: a plan job diffs changed files and toggles expensive suites; opt-in labels or commit magic (`prtest:full`) for the rest | uv (plan job), wasmtime (`determine` + `prtest:`), turso (diff→targeted Antithesis coverage) | ❌ gap |
-| C14 | Async-perf footgun lints **denied**: `await_holding_lock`, `redundant_clone`, `or_fun_call`, `assigning_clones`, `large_stack_frames` | restate + turso (deny), vector (`await_holding_lock` warn) | 🟡 partial — Nebula *allows* `or_fun_call`/`assigning_clones`; reconsider |
+| C14 | Async-perf footgun lints **denied**: `await_holding_lock`, `redundant_clone`, `or_fun_call`, `assigning_clones`, `large_stack_frames` | restate + turso (deny), vector (`await_holding_lock` warn) | ✅ done (2026-07-07): all four now warn; 13 sites fixed |
 | C15 | Every `unsafe` block carries a `SAFETY:` comment, lint-enforced (`undocumented_unsafe_blocks`) | wasmtime (~341 in one crate + policy doc), bevy (lint = warn) | ✅ clippy.toml configures it; `unsafe_code = "warn"` workspace-wide |
 | C16 | Backend conformance suite: one shared test suite run against every implementation of a port/trait | restate (`loglet_tests.rs` over memory/local/replicated), vector (component compliance) | ✅ `crates/storage/tests/conformance.rs` — same instinct, keep extending |
 
@@ -237,20 +237,34 @@ The blueprint for making durable execution deterministically testable:
 
 ## 3. Adoption plan
 
-### Tier 1 — quick wins (CI/config only, no code churn)
+### Tier 1 — quick wins (CI/config only, no code churn) — **SHIPPED 2026-07-07**
 
-1. **Feature-matrix clippy** (C4): add default + `--no-default-features`
-   clippy jobs; `cargo hack --each-feature` for feature-heavy crates
-   (`log`, `credential`, `resource`, `storage`).
-2. **Rustdoc gate** (C5): `RUSTDOCFLAGS="-D warnings"` workspace job.
-3. **Dep hygiene** (C6): `unused_crate_dependencies` in workspace lints
-   (cfg-gated to non-test) + reth's no-test-deps-in-release `cargo tree` check.
-4. **`cargo-check-external-types`** on `sdk` and `api` (the public crates).
-5. **Aggregator check** (C9) + SHA-pin actions + `zizmor` (C12).
-6. `.config/nextest.toml`: serial groups for DB tests, slow-timeout kill.
-7. **Async-footgun lints** (C14): flip `or_fun_call` and `assigning_clones`
-   from allow to warn; add `large_futures` and `await_holding_lock` warns
-   (restate/turso/vector consensus).
+1. ✅ **Feature-matrix clippy** (C4): `check` job now runs workspace clippy on
+   default and `--no-default-features` after the all-features pass;
+   `feature-hygiene` (cargo-hack `--each-feature`, 108 configs) was already
+   in place for type errors.
+2. ✅ **Rustdoc gate** (C5): was already in place (`doc` job,
+   `RUSTDOCFLAGS=-D warnings`, `--document-private-items`).
+3. ✅ **Dep hygiene** (C6): `#![cfg_attr(not(test), warn(unused_crate_dependencies))]`
+   in all 36 lib.rs. Adoption immediately exposed **15 dead dependencies**
+   (incl. the whole never-implemented `redis`/`s3` storage features, which
+   machete had been told to ignore) — all purged. Feature-conditional deps
+   (`loom`, `smallvec`, `uuid`) became properly optional or cfg-anchored.
+   Plus reth's no-test-deps-in-release `cargo tree` gate (`test-dep-leak` job).
+4. ✅ **`cargo-check-external-types`** on `sdk` and `api` with per-crate
+   allowlists (`external-types` job, nightly-2026-03-20 ↔ tool 0.5.0).
+5. ✅ **Aggregator + workflow security**: aggregator (`required` job) and
+   SHA-pinned actions were already in place; **zizmor** gate added at
+   high severity — its 4 pre-existing high findings (workflow-level
+   `actions:/issues:/id-token: write` permissions, template injection in
+   `test-matrix.yml`) fixed. 24 medium findings (persist-credentials on
+   checkouts) tracked as follow-up.
+6. ✅ `.config/nextest.toml`: was already in place (trybuild serial group,
+   ci/agent/chaos profiles).
+7. ✅ **Async-footgun lints** (C14): `or_fun_call`, `assigning_clones`,
+   `large_futures`, `await_holding_lock` now warn; 13 call sites fixed;
+   `large_futures`/`await_holding_lock` had zero hits — the architecture
+   was already clean.
 
 ### Tier 2 — medium (a week of focused work each)
 
