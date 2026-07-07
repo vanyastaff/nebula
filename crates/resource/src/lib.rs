@@ -224,6 +224,7 @@
 #![warn(clippy::missing_panics_doc)]
 #![warn(clippy::missing_errors_doc)]
 #![forbid(unsafe_code)]
+#![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
 pub(crate) mod cell;
 pub mod context;

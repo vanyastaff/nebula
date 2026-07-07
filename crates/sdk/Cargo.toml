@@ -34,7 +34,7 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 
 # Utilities
-uuid = { workspace = true }
+uuid = { workspace = true, optional = true }
 chrono = { workspace = true }
 
 [dev-dependencies]
@@ -46,7 +46,7 @@ rstest = { workspace = true }
 [features]
 default = ["derive", "testing"]
 derive = []
-testing = []
+testing = ["dep:uuid"]
 
 [package.metadata.docs.rs]
 all-features = true
@@ -54,3 +54,22 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [lints]
 workspace = true
+
+# ── cargo-check-external-types (ENGINEERING_2026 Tier 1 §4; iroh/wasmtime) ──
+# The SDK is the public facade: re-exporting the nebula-* crates is its job.
+# Ecosystem types below are deliberate public-API surface; anything NOT listed
+# failing the gate means a foreign type leaked into the API by accident.
+[package.metadata.cargo_check_external_types]
+allowed_external_types = [
+  "nebula_*",
+  # whole-crate re-exports (`pub use serde;` etc.) need the bare form
+  "serde",
+  "serde_json",
+  "thiserror",
+  "tokio",
+  "serde_core::*",
+  "serde_derive::*",
+  "serde_json::*",
+  "chrono::*",
+  "thiserror_impl::*",
+]

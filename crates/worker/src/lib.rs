@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
+#![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
 //! # nebula-worker — Generic worker runtime (ADR-0095 D1)
 //!

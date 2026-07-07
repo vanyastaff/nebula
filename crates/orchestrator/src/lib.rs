@@ -23,6 +23,8 @@
 //! [`JobDispatchQueue::reclaim_stuck`]: nebula_storage_port::store::JobDispatchQueue::reclaim_stuck
 //! [`JobDispatchMsg`]: nebula_storage_port::dto::JobDispatchMsg
 
+#![cfg_attr(not(test), warn(unused_crate_dependencies))]
+
 pub mod orchestrator;
 pub mod sink;
 

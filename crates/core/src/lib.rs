@@ -36,6 +36,8 @@
 //! - **Tenancy** — `TenantContext`, `ResolvedIds` (module `tenancy`).
 //! - **Slugs** — `Slug`, `SlugKind`, `SlugError`, `is_prefixed_ulid()` (module `slug`).
 
+#![cfg_attr(not(test), warn(unused_crate_dependencies))]
+
 // ── Modules ─────────────────────────────────────────────────────────────────
 
 /// Accessor trait definitions for capability injection.

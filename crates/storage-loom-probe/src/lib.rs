@@ -27,6 +27,7 @@
 //! --profile ci --no-tests=pass
 
 #![cfg(loom)]
+#![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
 pub mod lease_handoff;
 

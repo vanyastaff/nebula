@@ -130,6 +130,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs, rust_2018_idioms)]
 #![warn(unreachable_pub)]
+#![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
 pub mod core;
 

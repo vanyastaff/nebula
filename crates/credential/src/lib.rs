@@ -70,6 +70,7 @@
 // the crate should be `pub(crate)` so the public surface stays intentional
 // (Tokio's `unreachable_pub` discipline). Additive to inherited workspace lints.
 #![warn(unreachable_pub)]
+#![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
 // Self-import so proc-macros that expand to `::nebula_credential::...` paths
 // resolve correctly when the derive is used inside this crate itself (e.g.

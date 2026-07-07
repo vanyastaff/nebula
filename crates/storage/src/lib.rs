@@ -53,6 +53,7 @@
 
 #![warn(missing_docs)]
 #![warn(clippy::all)]
+#![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
 /// Credential persistence (encryption, audit, refresh claims, pending state).
 pub mod credential;

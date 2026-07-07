@@ -20,7 +20,7 @@ default = []
 # `register_and_bind` method on `ResourceActivatorRegistry` (which stages
 # rotation fan-out reverse-index binds before the Manager row is published).
 # `scopeguard` is required only for the RAII rollback in `register_and_bind`.
-rotation = ["scopeguard"]
+rotation = ["scopeguard", "smallvec"]
 
 [dependencies]
 # Nebula ecosystem
@@ -46,7 +46,7 @@ arc-swap = { workspace = true }
 serde = { workspace = true }
 semver = { workspace = true }
 dashmap = { workspace = true }
-smallvec = { workspace = true }
+smallvec = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 scopeguard = { workspace = true, optional = true }

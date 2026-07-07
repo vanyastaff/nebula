@@ -53,6 +53,7 @@
 // Deep combinator nesting (And<Or<Not<...>,...>,...>) produces complex types
 // that are inherent to the type-safe combinator architecture.
 #![allow(clippy::type_complexity)]
+#![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
 // ── Public modules ──────────────────────────────────────────────────────────
 /// Combinator types for composing validators.

@@ -23,7 +23,6 @@ nebula-storage-port = { path = "../storage-port" }
 nebula-credential = { path = "../credential" }
 async-trait = { workspace = true }
 thiserror = { workspace = true }
-tracing = { workspace = true }
 serde_json = { workspace = true }
 
 [dev-dependencies]
