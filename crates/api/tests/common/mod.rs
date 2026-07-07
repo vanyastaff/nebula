@@ -22,29 +22,29 @@ use nebula_storage_port::Scope;
 pub(crate) const TEST_JWT_SECRET: &str = "test-secret-for-integration-tests-0123456789";
 
 /// Fixed test org ID — use this in all test URLs.
-pub const TEST_ORG: &str = "org_00000000000000000000000001";
+pub(crate) const TEST_ORG: &str = "org_00000000000000000000000001";
 /// Fixed test workspace ID — use this in all test URLs.
-pub const TEST_WS: &str = "ws_00000000000000000000000001";
+pub(crate) const TEST_WS: &str = "ws_00000000000000000000000001";
 
 /// CSRF token value used by tests for state-changing requests.
-pub const TEST_CSRF_TOKEN: &str = "test-csrf-token";
+pub(crate) const TEST_CSRF_TOKEN: &str = "test-csrf-token";
 /// Pre-formatted cookie header value for CSRF.
-pub const TEST_CSRF_COOKIE: &str = "nebula_csrf=test-csrf-token";
+pub(crate) const TEST_CSRF_COOKIE: &str = "nebula_csrf=test-csrf-token";
 
 /// Helper to build a tenant-scoped workspace API path.
 /// Example: `ws_path("/workflows")` → `/api/v1/orgs/org_.../workspaces/ws_.../workflows`
-pub fn ws_path(suffix: &str) -> String {
+pub(crate) fn ws_path(suffix: &str) -> String {
     format!("/api/v1/orgs/{TEST_ORG}/workspaces/{TEST_WS}{suffix}")
 }
 
 /// Helper to build an org-scoped API path.
 #[expect(dead_code)]
-pub fn org_path(suffix: &str) -> String {
+pub(crate) fn org_path(suffix: &str) -> String {
     format!("/api/v1/orgs/{TEST_ORG}{suffix}")
 }
 
 /// Stub OrgResolver that accepts any slug and returns a fixed OrgId.
-pub struct TestOrgResolver;
+pub(crate) struct TestOrgResolver;
 
 #[async_trait::async_trait]
 impl OrgResolver for TestOrgResolver {
@@ -54,7 +54,7 @@ impl OrgResolver for TestOrgResolver {
 }
 
 /// Stub WorkspaceResolver that accepts any slug and returns a fixed WorkspaceId.
-pub struct TestWorkspaceResolver;
+pub(crate) struct TestWorkspaceResolver;
 
 #[async_trait::async_trait]
 impl WorkspaceResolver for TestWorkspaceResolver {

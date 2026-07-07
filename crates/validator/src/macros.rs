@@ -537,7 +537,7 @@ macro_rules! validator {
         impl $($gd)* $name $($gu)* {
             /// Creates a new instance.
             #[must_use] #[inline]
-            pub fn new() -> Self {
+            $vis fn new() -> Self {
                 Self { $($ei)+ }
             }
         }
@@ -551,7 +551,7 @@ macro_rules! validator {
         impl $($gd)* $name $($gu)* {
             /// Creates a new instance.
             #[must_use] #[inline]
-            pub fn new($($field: $fty),+) -> Self {
+            $vis fn new($($field: $fty),+) -> Self {
                 Self { $($field,)+ $($ei)* }
             }
         }
@@ -566,7 +566,7 @@ macro_rules! validator {
         impl $($gd)* $name $($gu)* {
             /// Creates a new instance.
             #[must_use] #[inline]
-            pub fn new($($args)*) -> Self $body
+            $vis fn new($($args)*) -> Self $body
         }
     };
 
@@ -578,7 +578,7 @@ macro_rules! validator {
         impl $($gd)* $name $($gu)* {
             /// Creates a new instance, returning an error if configuration is invalid.
             #[inline]
-            pub fn new($($args)*) -> ::std::result::Result<Self, $ety> $body
+            $vis fn new($($args)*) -> ::std::result::Result<Self, $ety> $body
         }
     };
 

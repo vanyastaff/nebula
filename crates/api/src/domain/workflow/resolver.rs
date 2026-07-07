@@ -33,7 +33,7 @@ use semver::Version;
 /// the calling edge to be skipped. Unknown keys are already caught by the
 /// structural validator (`WorkflowError::InvalidActionKey`) before the schema
 /// check runs, so fail-open here is safe.
-pub struct CatalogSchemaResolver {
+pub(crate) struct CatalogSchemaResolver {
     registry: Option<Arc<ActionRegistry>>,
 }
 
@@ -43,7 +43,7 @@ impl CatalogSchemaResolver {
     /// Pass `state.action_registry.clone()` directly — the `Option<Arc<_>>`
     /// is cloned cheaply (one `Arc` increment or a `None` copy).
     #[must_use]
-    pub fn new(registry: Option<Arc<ActionRegistry>>) -> Self {
+    pub(crate) fn new(registry: Option<Arc<ActionRegistry>>) -> Self {
         Self { registry }
     }
 }

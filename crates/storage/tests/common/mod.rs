@@ -7,7 +7,7 @@
 use nebula_credential::StoredCredential;
 
 /// Build a minimal [`StoredCredential`] for use in integration tests.
-pub fn make_credential(id: &str, data: &[u8]) -> StoredCredential {
+pub(crate) fn make_credential(id: &str, data: &[u8]) -> StoredCredential {
     StoredCredential {
         id: id.into(),
         name: None,

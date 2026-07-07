@@ -31,10 +31,10 @@ use crate::{error::StorageError, pg::map_db_err, repos::UserRepo, rows::UserRow}
 
 /// Failed-login threshold before [`PgUserRepo::record_login_failure`]
 /// arms the lockout.
-pub const LOCKOUT_THRESHOLD: i32 = 5;
+pub(crate) const LOCKOUT_THRESHOLD: i32 = 5;
 
 /// Duration a user account stays locked once the threshold is hit.
-pub const LOCKOUT_DURATION: Duration = Duration::from_mins(15);
+pub(crate) const LOCKOUT_DURATION: Duration = Duration::from_mins(15);
 
 /// Postgres-backed user repository.
 #[derive(Clone)]

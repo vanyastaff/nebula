@@ -16,6 +16,6 @@
 //! `EmailError::Transport` redaction discipline that keeps the SMTP
 //! password out of `tracing` lines and `problem-details` bodies.
 
-pub mod smtp;
+pub(crate) mod smtp;
 
-pub use smtp::{SmtpEmailPort, SmtpEmailPortBuildError};
+pub(crate) use smtp::{SmtpEmailPort, SmtpEmailPortBuildError};

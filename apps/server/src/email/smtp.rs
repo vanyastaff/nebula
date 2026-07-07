@@ -61,7 +61,7 @@ use thiserror::Error;
 /// a typed error instead of a string-formatted runtime path.
 #[derive(Debug, Error)]
 #[non_exhaustive]
-pub enum SmtpEmailPortBuildError {
+pub(crate) enum SmtpEmailPortBuildError {
     /// `from_address` failed to parse as an RFC 5321 mailbox. The
     /// `from_env` validator already enforces the `@` test but does
     /// not parse the full local-part / domain grammar; lettre's
@@ -94,7 +94,7 @@ pub enum SmtpEmailPortBuildError {
 /// metadata (no credentials), and lettre's stub transport carries only
 /// the test-recorded message log.
 #[derive(Debug)]
-pub struct SmtpEmailPort {
+pub(crate) struct SmtpEmailPort {
     transport: TransportImpl,
     from_address: Mailbox,
 }
@@ -122,7 +122,7 @@ impl SmtpEmailPort {
     /// TLS parameters. The composition root treats both as
     /// startup-fatal (per the fail-closed contract documented on
     /// [`nebula_api::ApiConfig::smtp`]).
-    pub fn new(config: &SmtpEmailConfig) -> Result<Self, SmtpEmailPortBuildError> {
+    pub(crate) fn new(config: &SmtpEmailConfig) -> Result<Self, SmtpEmailPortBuildError> {
         let from_address = config
             .from_address
             .parse::<Mailbox>()
