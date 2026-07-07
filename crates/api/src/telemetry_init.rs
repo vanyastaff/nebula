@@ -268,9 +268,8 @@ pub fn init_api_telemetry() -> Result<TelemetryGuard, TelemetryInitError> {
 fn build_tracer_provider() -> Result<(SdkTracerProvider, Tracer, bool), TelemetryInitError> {
     let resource = build_resource();
     let mut builder = SdkTracerProvider::builder().with_resource(resource);
-    let mut otlp_attached = false;
 
-    if let Some(endpoint) = resolve_otlp_endpoint() {
+    let otlp_attached = if let Some(endpoint) = resolve_otlp_endpoint() {
         let exporter = build_otlp_span_exporter(&endpoint).map_err(|source| {
             TelemetryInitError::SpanExporter {
                 endpoint: endpoint.clone(),
@@ -285,8 +284,10 @@ fn build_tracer_provider() -> Result<(SdkTracerProvider, Tracer, bool), Telemetr
         } else {
             builder = builder.with_simple_exporter(exporter);
         }
-        otlp_attached = true;
-    }
+        true
+    } else {
+        false
+    };
 
     let provider = builder.build();
     let tracer = provider.tracer(TRACER_INSTRUMENTATION_NAME);

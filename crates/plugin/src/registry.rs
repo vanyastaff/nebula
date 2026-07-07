@@ -246,7 +246,6 @@ mod tests {
         let mut reg = PluginRegistry::new();
         reg.register(make("a")).unwrap();
         reg.register(make("b")).unwrap();
-        let keys: Vec<_> = reg.iter().map(|(k, _)| k.as_str().to_owned()).collect();
-        assert_eq!(keys.len(), 2);
+        assert_eq!(reg.iter().count(), 2);
     }
 }

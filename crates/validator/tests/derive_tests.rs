@@ -573,6 +573,10 @@ fn canonical_inner_nested_rejects_invalid_nested_element() {
 // 11. Custom validator
 // ============================================================================
 
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "custom-validator contract passes fields by reference"
+)]
 fn validate_even(value: &i32) -> Result<(), ValidationError> {
     if value % 2 == 0 {
         Ok(())

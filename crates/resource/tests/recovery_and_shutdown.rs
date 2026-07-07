@@ -1028,7 +1028,7 @@ async fn graceful_shutdown_abort_marks_resources_failed_not_ready() {
     }
     assert!(
         saw_health_change,
-        "drain-abort must emit HealthChanged{{healthy:false}} per resource"
+        "drain-abort must emit HealthChanged(healthy=false) per resource"
     );
 }
 

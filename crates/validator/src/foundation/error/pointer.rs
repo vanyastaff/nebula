@@ -29,7 +29,7 @@ pub(crate) fn to_json_pointer(path: &str) -> Option<String> {
 
     let mut segments: Vec<String> = Vec::new();
     let mut current = String::new();
-    let mut chars = path.chars().peekable();
+    let mut chars = path.chars();
 
     while let Some(ch) = chars.next() {
         match ch {

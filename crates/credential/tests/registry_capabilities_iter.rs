@@ -287,12 +287,11 @@ fn iter_compatible_with_anded_filter_requires_every_flag() {
 
     // Asking for a flag the refreshable probe does NOT declare (TESTABLE)
     // returns nothing.
-    let none: Vec<&str> = registry
-        .iter_compatible(Capabilities::REFRESHABLE | Capabilities::TESTABLE)
-        .map(|(k, _)| k)
-        .collect();
     assert!(
-        none.is_empty(),
+        registry
+            .iter_compatible(Capabilities::REFRESHABLE | Capabilities::TESTABLE)
+            .next()
+            .is_none(),
         "AND filter requires every flag; missing TESTABLE must exclude every entry"
     );
 }

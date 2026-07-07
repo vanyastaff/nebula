@@ -162,17 +162,9 @@ impl CredentialSchemaPort for RegistryCredentialSchema {
     fn list_types(&self) -> Vec<CredentialTypeDescriptor> {
         // `iter_compatible(empty)` enumerates every registered type
         // (registry.rs:212 — empty is a subset of any capability set).
-        let keys: Vec<String> = self
-            .registry
+        self.registry
             .iter_compatible(Capabilities::empty())
-            .map(|(k, _caps)| k.to_owned())
-            .collect();
-        keys.into_iter()
-            .filter_map(|k| {
-                self.registry
-                    .resolve_any(&k)
-                    .map(|any| self.descriptor(any))
-            })
+            .filter_map(|(k, _caps)| self.registry.resolve_any(k).map(|any| self.descriptor(any)))
             .collect()
     }
 

@@ -87,7 +87,11 @@ fn validate_fields_returns_collection_validate_returns_single() {
     let single: ValidationError = creds.validate(&creds).unwrap_err();
     assert_eq!(single.nested().len(), 2);
     assert_has_code(
-        &ValidationErrors::from_iter(single.nested().iter().cloned()),
+        &single
+            .nested()
+            .iter()
+            .cloned()
+            .collect::<ValidationErrors>(),
         "min_length",
     );
 }

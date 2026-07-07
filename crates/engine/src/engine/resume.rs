@@ -482,13 +482,7 @@ impl WorkflowEngine {
             // reach this point when the spec-16 bundle is configured.
             // Mirrors `execute_workflow` — see its comment for the full contract.
             match self
-                .persist_final_state(
-                    scope,
-                    execution_id,
-                    &mut exec_state,
-                    &mut repo_version,
-                    fencing,
-                )
+                .persist_final_state(scope, execution_id, &exec_state, &mut repo_version, fencing)
                 .await
             {
                 Ok(None) => final_status,

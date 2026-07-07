@@ -16,26 +16,29 @@ use super::{
 ///
 /// This mimics `tracing` span behavior where child spans inherit parent attributes.
 pub fn get_current_logger_resource() -> Option<LoggerResource> {
-    let mut base = LoggerResource::default();
-    let mut found_any = false;
+    let mut acc: Option<LoggerResource> = None;
 
     // 1. Merge from Execution context (lower priority)
     if let Some(exec) = ExecutionContext::current()
         && let Some(logger) = exec.resources.get::<LoggerResource>()
     {
-        base = merge_logger_resources(base, (*logger).clone());
-        found_any = true;
+        acc = Some(merge_logger_resources(
+            acc.unwrap_or_default(),
+            (*logger).clone(),
+        ));
     }
 
     // 2. Merge from Node context (highest priority)
     if let Some(node) = NodeContext::current()
         && let Some(logger) = node.get_resource::<LoggerResource>()
     {
-        base = merge_logger_resources(base, (*logger).clone());
-        found_any = true;
+        acc = Some(merge_logger_resources(
+            acc.unwrap_or_default(),
+            (*logger).clone(),
+        ));
     }
 
-    if found_any { Some(base) } else { None }
+    acc
 }
 
 /// Merge two LoggerResources (second overrides first)

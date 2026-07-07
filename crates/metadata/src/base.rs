@@ -61,6 +61,10 @@ pub struct BaseMetadata<K> {
     pub deprecation: Option<DeprecationNotice>,
 }
 
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde skip_serializing_if requires the &T signature"
+)]
 fn is_default_maturity(m: &MaturityLevel) -> bool {
     *m == MaturityLevel::default()
 }

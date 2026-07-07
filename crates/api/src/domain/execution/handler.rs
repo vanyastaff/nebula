@@ -58,10 +58,10 @@ pub async fn list_executions(
     // Apply pagination over the running list.
     let offset = params.offset();
     let limit = params.limit();
-    let page_ids: Vec<&ExecutionId> = running_ids.iter().skip(offset).take(limit).collect();
-
-    let executions: Vec<RunningExecutionSummary> = page_ids
-        .into_iter()
+    let executions: Vec<RunningExecutionSummary> = running_ids
+        .iter()
+        .skip(offset)
+        .take(limit)
         .map(|id| RunningExecutionSummary { id: id.to_string() })
         .collect();
 
