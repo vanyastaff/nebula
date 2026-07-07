@@ -31,7 +31,6 @@ jobs:
   audit:
     permissions:
       contents: read
-      issues: write
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -77,6 +76,8 @@ jobs:
           exit 1
 
   notify:
+    permissions:
+      issues: write
     runs-on: ubuntu-latest
     timeout-minutes: 5
     needs: audit
